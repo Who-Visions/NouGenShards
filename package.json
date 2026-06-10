@@ -1,0 +1,32 @@
+{
+  "name": "nougenshards",
+  "version": "1.0.0",
+  "description": "Persistent local memory for coding agents. Store machine experience as shards.",
+  "main": "bin/nougenshards.js",
+  "bin": {
+    "nougen": "bin/nougenshards.js"
+  },
+  "scripts": {
+    "start": "node bin/nougenshards.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "keywords": [
+    "ai",
+    "mcp",
+    "agents",
+    "memory",
+    "shards",
+    "sqlite",
+    "fts5",
+    "llm"
+  ],
+  "author": "Who Visions LLC",
+  "license": "MIT",
+  "dependencies": {
+    "cross-spawn": "^7.0.3"
+  }
+}
