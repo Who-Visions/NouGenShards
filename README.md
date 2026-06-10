@@ -1,8 +1,8 @@
 # NouGenShards
 
-**Store and find information for your AI tools.**
+**Persistent local memory for your AI tools.**
 
-NouGenShards helps your AI tools remember their work. It saves what worked and what did not work in a database on your computer. This lets your tools find the right information quickly without repeating previous tasks.
+NouGenShards helps your AI tools remember their work. It saves "shards" of information—records of what worked and what did not work—in a database on your computer. This persistent memory lets your tools find the right information quickly without repeating previous tasks.
 
 > This tool is built by Who Visions to help people use AI tools on their own computers, even without an internet connection.
 
@@ -25,35 +25,35 @@ npm install -g .
 ```bash
 nougen init
 ```
-This creates a folder on your computer to store your data and sets up the database.
+This creates a folder on your computer to store your shards and sets up the database.
 
-### 3. Save Information
+### 3. Save Shards
 
-Save what you have learned or what you have done.
+Save what you have learned or what you have done as a memory shard.
 
 ```bash
-# Save a new note
+# Save a new shard
 nougen add "I fixed the map by changing the web address in the file app/MarsMap.tsx" --tags fix,map
 ```
 
 ### 4. Search and Find
 
-Find information you saved before. The tool will show you the most relevant results first.
+Find shards you saved before. The tool will show you the most relevant results first.
 
 ```bash
-# Search your saved notes
+# Search your shards
 nougen search "map fix"
 ```
 
 ### 5. Mark Results
 
-Tell the tool if a piece of information was helpful. This helps the tool give you better answers in the future.
+Tell the tool if a shard was helpful. This helps the tool give you better answers in the future.
 
 ```bash
-# Mark record number 1 as helpful
+# Mark shard number 1 as helpful
 nougen mark 1 --worked
 
-# Mark record number 2 as not helpful
+# Mark shard number 2 as not helpful
 nougen mark 2 --failed
 ```
 
@@ -68,7 +68,7 @@ nougen ctx init
 # Run code and see the result
 nougen ctx execute "const data = [10, 20, 30]; console.log(data.length)"
 
-# Save a result from your session so you can find it later
+# Save a result from your session as a durable shard
 nougen ctx promote 1
 ```
 
