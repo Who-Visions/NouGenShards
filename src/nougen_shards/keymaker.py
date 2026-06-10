@@ -91,6 +91,7 @@ def _export_to_csv():
 
 def init_vault():
     """Initializes the vault database schema."""
+    VAULT_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
@@ -108,6 +109,14 @@ def init_vault():
             table_name TEXT NOT NULL,
             title_col TEXT NOT NULL,
             content_col TEXT NOT NULL,
+            last_connected TEXT NOT NULL
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cloud_nodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
             last_connected TEXT NOT NULL
         )
     ''')
@@ -133,6 +142,29 @@ def list_external_dbs() -> list:
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute("SELECT * FROM external_dbs").fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.OperationalError: return []
+    finally: conn.close()
+
+def register_cloud_node(url: str, name: str):
+    """Registers a new remote NouGenShards cloud node."""
+    init_vault()
+    conn = sqlite3.connect(DB_PATH)
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn.execute('''
+        INSERT OR REPLACE INTO cloud_nodes (url, name, last_connected)
+        VALUES (?, ?, ?)
+    ''', (url, name, timestamp))
+    conn.commit()
+    conn.close()
+
+def list_cloud_nodes() -> list:
+    """Returns all registered cloud node configurations."""
+    if not DB_PATH.exists(): return []
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT * FROM cloud_nodes").fetchall()
         return [dict(r) for r in rows]
     except sqlite3.OperationalError: return []
     finally: conn.close()

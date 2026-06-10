@@ -17,6 +17,13 @@ from . import federation
 
 VERSION = "1.0.0"
 
+# UTF-8 Console protection for Windows
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, Exception):
+        pass
+
 def get_client(provider: str):
     """Helper to get a client by provider name."""
     provider = provider.lower()
@@ -224,6 +231,24 @@ def cmd_db(args):
         for d in dbs:
             print(f" - #{d['id']}: {d['uri'][:30]}... | Table: {d['table_name']}")
 
+def cmd_node(args):
+    """Manages remote NouGenShards cloud nodes."""
+    if args.action == "link":
+        if not args.url:
+            print("Error: Usage: nougen node link <url> [--name <name>]")
+            return
+        name = args.name or f"node_{abs(hash(args.url)) % 1000}"
+        keymaker.register_cloud_node(args.url, name)
+        print(f"[*] Remote node linked: {name} ({args.url})")
+    elif args.action == "list":
+        nodes = keymaker.list_cloud_nodes()
+        if not nodes:
+            print(" No remote nodes linked.")
+            return
+        print("[*] Linked Remote Nodes:")
+        for n in nodes:
+            print(f" - #{n['id']}: {n['name']} | URL: {n['url']}")
+
 def cmd_config(args):
     """Update CLI or database configuration."""
     if args.action == "set" and args.key and args.value:
@@ -318,6 +343,11 @@ def get_parser():
     p_db.add_argument("--title", default="title", help="Title column name")
     p_db.add_argument("--content", default="content", help="Content column name")
 
+    p_node = subparsers.add_parser("node", help="Manage remote cloud nodes")
+    p_node.add_argument("action", choices=["link", "list"])
+    p_node.add_argument("url", nargs="?", help="Remote node API URL")
+    p_node.add_argument("--name", help="Friendly name for the node")
+
     return parser
 
 def main():
@@ -327,7 +357,7 @@ def main():
         "init": cmd_init, "add": cmd_add, "search": cmd_search, "chat": cmd_chat, 
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
-        "db": cmd_db
+        "db": cmd_db, "node": cmd_node
     }
     if args.command in cmds: cmds[args.command](args)
     else: parser.print_help()
