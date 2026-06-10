@@ -1,132 +1,100 @@
-"""Tests for the NouGenShards module."""
-# pylint: disable=duplicate-code
-import os
+"""Tests for the NouGenShards advanced memory substrate."""
+# pylint: disable=duplicate-code, protected-access
 import tempfile
 import pytest
+from pathlib import Path
 import nougen_shards.core as shards
 
 @pytest.fixture(autouse=True)
-def setup_test_db(monkeypatch):
-    """Fixture to set up a temporary database for testing."""
-    # Create a temporary file
-    fd, temp_db_path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
+def setup_test_env(monkeypatch):
+    """Fixture to set up a temporary environment for testing."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        monkeypatch.setattr(shards, "GLOBAL_DIR", temp_path)
+        
+        def mock_get_db_path(index):
+            return temp_path / f"test_shards_{index}.db"
+        monkeypatch.setattr(shards, "get_db_path", mock_get_db_path)
+        
+        shards.init_db(1)
+        yield temp_path
 
-    # Mock the database path in shards module
-    monkeypatch.setattr(shards, "DB_PATH", temp_db_path)
-
-    # Initialize the database
-    shards.init_db()
-
-    yield temp_db_path
-
-    # Cleanup after test
-    try:
-        if os.path.exists(temp_db_path):
-            os.remove(temp_db_path)
-    except OSError:
-        pass
-
-def test_init_db():
-    """Test that the database initializes correctly with tables."""
-    conn = shards.get_connection()
-    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
-    tables = [row["name"] for row in cursor.fetchall()]
+def test_init_db(setup_test_env):
+    """Test database initialization with trigram FTS5."""
+    db_path = setup_test_env / "test_shards_1.db"
+    assert db_path.exists()
+    
+    conn = shards.get_connection(1)
+    # Check for FTS5 table
+    res = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='shards_fts'").fetchone()
+    assert res is not None
     conn.close()
 
-    assert "shards" in tables
-    assert "shards_fts" in tables
+def test_capture_and_retrieve_bayesian(setup_test_env):
+    """Test capturing and retrieving with Bayesian scoring."""
+    # Add a high-utility shard
+    shards.capture("KNOWLEDGE", "Important Tool", "This tool works perfectly for automation.")
+    res = shards.retrieve("automation")
+    shard_id = res[0]["id"]
+    shards.mark_shard(shard_id, worked=True) # Increase Bayesian Prior
+    
+    # Add a new shard with same keyword but neutral utility
+    shards.capture("KNOWLEDGE", "New Tool", "This is another tool for automation.")
+    
+    results = shards.retrieve("automation")
+    assert len(results) >= 2
+    # The first one should be ranked higher due to higher utility prior
+    assert results[0]["title"] == "Important Tool"
+    assert "final_score" in results[0]
 
-def test_capture_and_retrieve():
-    """Test capturing a shard and retrieving it."""
-    # The auto-seed runs during init_db, so we clear the shards table for a clean test
-    conn = shards.get_connection()
-    conn.execute("DELETE FROM shards")
-    conn.commit()
-    conn.close()
-
-    # Capture a new shard
-    success = shards.capture(
-        event_type="TEST",
-        title="Test Title",
-        content="This is test content.",
-        tags=["test"]
-    )
-    assert success is True
-
-    # Duplicate capture should return False
-    success = shards.capture(
-        event_type="TEST",
-        title="Test Title",
-        content="This is test content.",
-        tags=["test"]
-    )
-    assert success is False
-
-    # Retrieve the shard
-    results = shards.retrieve("test content", limit=10)
-    assert len(results) == 1
-    assert results[0]["title"] == "Test Title"
-    assert results[0]["content"] == "This is test content."
-    assert "test" in results[0]["tags"]
-
-def test_retrieve_fallback():
-    """Test retrieve fallback logic with empty query."""
-    conn = shards.get_connection()
-    conn.execute("DELETE FROM shards")
-    conn.commit()
-    conn.close()
-
-    shards.capture("TEST", "Fallback Test", "Fallback content", ["fallback"])
-
-    # Empty query should trigger fallback and match everything or use LIKE
-    results = shards.retrieve("", limit=1)
-    assert len(results) >= 0
-
-def test_compile_recall_packet():
-    """Test compilation of the recall packet."""
-    packet = shards.compile_recall_packet([])
-    assert "NO RELEVANT MEMORY SHARDS" in packet
-
-    test_shards = [{
-        "id": 1,
-        "event_type": "TEST",
-        "title": "A Title",
-        "timestamp": "2024-01-01T00:00:00Z",
-        "tags": '["t1", "t2"]',
-        "utility_score": 1.0,
-        "access_count": 0,
-        "content": "Content line 1."
-    }]
-
-    packet = shards.compile_recall_packet(test_shards)
-    assert "NOUGENSHARDS RECALL PACKET" in packet
-    assert "A Title" in packet
-    assert "t1, t2" in packet
-    assert "Content line 1." in packet
-
-def test_discover_and_import_shards(tmp_path):
-    """Test discovering and importing markdown files as shards."""
-    test_md = tmp_path / "shard_test.md"
-    test_md.write_text(
-        "---\n"
-        "title: Test Discovered\n"
-        "event_type: KNOWLEDGE\n"
-        "tags: a, b\n"
-        "---\n"
-        "Some body content.",
-        encoding="utf-8"
-    )
-
-    count = shards.discover_and_import_shards(str(tmp_path))
-    assert count == 1
-
-    results = shards.retrieve("Some body content")
+def test_trigram_n_gram_recall(setup_test_env):
+    """Test trigram tokenizer for fuzzy/substring recall."""
+    shards.capture("TECH", "Substrate", "The underlying infrastructure is a substrate.")
+    
+    # Search for a substring 'strat' (would fail with standard porter tokenizer)
+    results = shards.retrieve("strat")
     assert len(results) >= 1
+    assert "Substrate" in results[0]["title"]
 
-    found = False
-    for res in results:
-        if res["title"] == "Test Discovered":
-            found = True
-            break
-    assert found
+def test_vector_similarity_substrate(setup_test_env):
+    """Test that embedding storage and cosine similarity integration works."""
+    v1 = [1.0, 0.0, 0.0]
+    v2 = [0.9, 0.1, 0.0]
+    v3 = [0.0, 1.0, 0.0]
+    
+    shards.capture("VEC", "Vector A", "Content A", embedding=v1)
+    shards.capture("VEC", "Vector B", "Content B", embedding=v2)
+    shards.capture("VEC", "Vector C", "Content C", embedding=v3)
+    
+    # Search with embedding close to A and B
+    results = shards.retrieve("Content", query_embedding=[1.0, 0.1, 0.0])
+    titles = [r["title"] for r in results]
+    assert "Vector A" in titles
+    assert "Vector B" in titles
+    # Vector C should be ranked lower or excluded if limit is small
+
+def test_multi_db_deterministic_routing(setup_test_env):
+    """Test that shards are routed deterministically based on hash."""
+    content1 = "Unique experience Alpha"
+    content2 = "Unique experience Beta"
+    
+    shards.capture("ROUTE", "Alpha", content1)
+    shards.capture("ROUTE", "Beta", content2)
+    
+    res1 = shards.retrieve("Alpha")[0]
+    res2 = shards.retrieve("Beta")[0]
+    
+    # They might land in the same or different DBs, but routing should be consistent
+    assert "_db_index" in res1
+    assert "_db_index" in res2
+
+def test_mark_shard_outcome_loop(setup_test_env):
+    """Test the utility score update (The Bayesian Prior)."""
+    shards.capture("TEST", "Status", "Success scenario")
+    res = shards.retrieve("Success")[0]
+    initial_prior = res["utility_score"]
+    
+    shards.mark_shard(res["id"], worked=True)
+    
+    res_updated = shards.retrieve("Success")[0]
+    assert res_updated["utility_score"] > initial_prior

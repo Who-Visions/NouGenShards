@@ -1,36 +1,42 @@
-"""NouGenShards core database and retrieval module."""
+"""
+NouGenShards: Advanced Memory-Core Substrate.
+Substrate: SQLite + FTS5 + BM25 + Trigram (n-gram) + Vector Embeddings + Bayesian Reranking.
+"""
 # pylint: disable=duplicate-code
 from pathlib import Path
 import os
 import sqlite3
 import hashlib
 import json
-import glob
-import re
+import math
 from datetime import datetime
+import sys
 
-# Database path resolution: check local root first, then default to global .nougen folder
-LOCAL_DB = Path("shards.db")
+# Configuration
+MAX_DB_SIZE = 1 * 1024 * 1024 * 1024  # 1GB protection
+MAX_DB_COUNT = 9
 GLOBAL_DIR = Path.home() / ".nougen" / "shards"
-GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
-GLOBAL_DB = GLOBAL_DIR / "nougen_shards.db"
 
-DB_PATH = str(LOCAL_DB) if LOCAL_DB.exists() else str(GLOBAL_DB)
+def get_db_path(index: int) -> Path:
+    local_name = f"shards_{index}.db" if index > 1 else "shards.db"
+    local_path = Path(local_name)
+    if local_path.exists(): return local_path
+    GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
+    return GLOBAL_DIR / f"nougen_shards_{index}.db"
 
-def get_connection():
-    """Establishes an SQLite connection with WAL enabled."""
-    # Ensure init_db uses the intended path
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+def get_connection(index: int):
+    path = get_db_path(index)
+    conn = sqlite3.connect(str(path), timeout=10.0)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.row_factory = sqlite3.Row
     return conn
 
-def init_db():
-    """Initializes the database schema and FTS5 triggers."""
-    conn = get_connection()
+def init_db(index: int = 1):
+    """Initializes the advanced substrate schema."""
+    conn = get_connection(index)
     cursor = conn.cursor()
 
-    # Create main shards table
+    # 1. Main Shards Table with Vector Storage
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS shards (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,40 +45,38 @@ def init_db():
             title TEXT NOT NULL,
             content TEXT NOT NULL,
             tags TEXT,
-            utility_score REAL DEFAULT 1.0,
+            utility_score REAL DEFAULT 1.0, -- Bayesian Prior
             access_count INTEGER DEFAULT 0,
-            file_hash TEXT UNIQUE NOT NULL
+            file_hash TEXT UNIQUE NOT NULL,
+            embedding BLOB -- Vector Substrate
         );
     """)
 
-    # Create FTS5 virtual table
-    cursor.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS shards_fts USING fts5(
-            title,
-            content,
-            content='shards',
-            content_rowid='id'
-        );
-    """)
+    # 2. FTS5 with Trigram (n-gram) Tokenizer
+    try:
+        cursor.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS shards_fts USING fts5(
+                title,
+                content,
+                content='shards',
+                content_rowid='id',
+                tokenize='trigram'
+            );
+        """)
+    except sqlite3.OperationalError:
+        cursor.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS shards_fts USING fts5(
+                title,
+                content,
+                content='shards',
+                content_rowid='id'
+            );
+        """)
 
-    # Triggers to keep FTS5 virtual table synchronized with the main shards table
+    # 3. Synchronization Triggers
+    cursor.execute("DROP TRIGGER IF EXISTS shards_ai")
     cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS shards_ai AFTER INSERT ON shards BEGIN
-            INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
-        END;
-    """)
-
-    cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS shards_ad AFTER DELETE ON shards BEGIN
-            INSERT INTO shards_fts(shards_fts, rowid, title, content)
-            VALUES('delete', old.id, old.title, old.content);
-        END;
-    """)
-
-    cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS shards_au AFTER UPDATE ON shards BEGIN
-            INSERT INTO shards_fts(shards_fts, rowid, title, content)
-            VALUES('delete', old.id, old.title, old.content);
+        CREATE TRIGGER shards_ai AFTER INSERT ON shards BEGIN
             INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
         END;
     """)
@@ -80,267 +84,107 @@ def init_db():
     conn.commit()
     conn.close()
 
-    # Auto-seed the database with predefined default workspace experience shards
-    seed_default_shards()
+def cosine_similarity(v1: list, v2: list) -> float:
+    """Calculates similarity between two vectors."""
+    if not v1 or not v2 or len(v1) != len(v2): return 0.0
+    dot_product = sum(a * b for a, b in zip(v1, v2))
+    magnitude1 = math.sqrt(sum(a * a for a in v1))
+    magnitude2 = math.sqrt(sum(b * b for b in v2))
+    if not magnitude1 or not magnitude2: return 0.0
+    return dot_product / (magnitude1 * magnitude2)
 
-
-def get_hash(content: str) -> str:
-    """Returns MD5 hash for deduplication."""
-    return hashlib.md5(content.encode("utf-8", errors="ignore")).hexdigest()
-
-def capture(event_type: str, title: str, content: str, tags: list = None) -> bool:
-    """
-    Saves a persistent unit of machine experience (Shard).
-    Returns True if successfully written, False if it already exists or fails.
-    """
-    fhash = get_hash(content)
+def capture(event_type: str, title: str, content: str, tags: list = None, embedding: list = None) -> bool:
+    """Stores experience into the substrate with optional vector embedding."""
+    fhash = hashlib.md5(content.encode("utf-8", errors="ignore")).hexdigest()
+    target_idx = (int(fhash, 16) % MAX_DB_COUNT) + 1
+    init_db(target_idx)
+    
+    emb_blob = sqlite3.Binary(json.dumps(embedding).encode()) if embedding else None
     tags_str = json.dumps(tags or [])
     timestamp = datetime.utcnow().isoformat() + "Z"
 
-    conn = get_connection()
+    conn = get_connection(target_idx)
     try:
         conn.execute("""
-            INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (timestamp, event_type, title, content, tags_str, fhash))
+            INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (timestamp, event_type, title, content, tags_str, fhash, emb_blob))
         conn.commit()
         return True
-    except sqlite3.IntegrityError:
-        # Shard already exists (duplicate hash)
-        return False
-    finally:
-        conn.close()
+    except sqlite3.IntegrityError: return False
+    finally: conn.close()
 
-def retrieve(query: str, limit: int = 3) -> list:
+def retrieve(query: str, limit: int = 3, query_embedding: list = None) -> list:
     """
-    Retrieves matching shards using FTS5 BM25 ranked query with utility weighting.
-    Falls back to LIKE syntax if query contains invalid syntax or is empty.
-    Also increments the access count for retrieved shards.
+    Advanced Retrieval with Bayesian Reranking.
     """
-    init_db()
-    conn = get_connection()
-    shards = []
+    all_results = []
+    for i in range(1, MAX_DB_COUNT + 1):
+        if not get_db_path(i).exists(): continue
+        conn = get_connection(i)
+        try:
+            # BM25 Keyword Search
+            cursor = conn.execute("""
+                SELECT s.id, s.title, s.content, s.utility_score, s.embedding, s.tags, bm25(f) as bm25_score
+                FROM shards s JOIN shards_fts f ON s.id = f.rowid
+                WHERE shards_fts MATCH ?
+                ORDER BY bm25_score ASC LIMIT 20
+            """, (query,))
+            
+            for row in cursor:
+                item = dict(row)
+                item["_db_index"] = i
+                
+                semantic_score = 0.0
+                if query_embedding and item["embedding"]:
+                    stored_v = json.loads(item["embedding"].decode())
+                    semantic_score = cosine_similarity(query_embedding, stored_v)
+                
+                # Normalize BM25
+                norm_bm25 = 1.0 / (1.0 + abs(item["bm25_score"]))
+                relevance = (norm_bm25 * 0.4) + (semantic_score * 0.6)
+                
+                # Bayesian Update
+                item["final_score"] = (relevance * 0.7) + (item["utility_score"] * 0.3)
+                all_results.append(item)
+        except sqlite3.OperationalError:
+            # Fallback to LIKE
+            like_query = f"%{query}%"
+            cursor = conn.execute("""
+                SELECT id, title, content, utility_score, embedding, tags
+                FROM shards
+                WHERE title LIKE ? OR content LIKE ?
+                ORDER BY utility_score DESC LIMIT 20
+            """, (like_query, like_query))
+            for row in cursor:
+                item = dict(row)
+                item["_db_index"] = i
+                item["bm25_score"] = 0.0
+                item["final_score"] = item["utility_score"] * 0.5 # Weak relevance
+                all_results.append(item)
+        finally:
+            conn.close()
 
-    # Attempt FTS5 search
-    try:
-        # Sanitize query for FTS5 (replace special chars or keep simple keywords)
-        clean_query = " OR ".join([f'"{word}"' for word in query.split() if word.isalnum()])
-        if not clean_query:
-            clean_query = query
+    all_results.sort(key=lambda x: x["final_score"], reverse=True)
+    return all_results[:limit]
 
-        # Incorporate utility_score into ranking logic (Utility-Weighted BM25)
-        cursor = conn.execute("""
-            SELECT s.id, s.timestamp, s.event_type, s.title, s.content, s.tags,
-                   s.utility_score, s.access_count
-            FROM shards s
-            JOIN shards_fts f ON s.id = f.rowid
-            WHERE shards_fts MATCH ?
-            ORDER BY (bm25(shards_fts) * (1.0 / (s.utility_score + 0.1))) ASC
-            LIMIT ?
-        """, (clean_query, limit))
-        shards = [dict(row) for row in cursor.fetchall()]
-    except sqlite3.OperationalError:
-        # Fallback to standard LIKE matching with utility weighting
-        like_query = f"%{query}%"
-        cursor = conn.execute("""
-            SELECT id, timestamp, event_type, title, content, tags, utility_score, access_count
-            FROM shards
-            WHERE title LIKE ? OR content LIKE ?
-            ORDER BY utility_score DESC, timestamp DESC
-            LIMIT ?
-        """, (like_query, like_query, limit))
-        shards = [dict(row) for row in cursor.fetchall()]
-
-    # Increment access counts for retrieved shards
-    if shards:
-        ids = [s["id"] for s in shards]
-        conn.executemany(
-            "UPDATE shards SET access_count = access_count + 1 WHERE id = ?",
-            [(id_,) for id_ in ids]
-        )
-        conn.commit()
-
-    conn.close()
-    return shards
-
-def mark_shard(shard_id: int, worked: bool) -> bool:
-    """Updates the utility score based on whether the shard worked or failed."""
-    conn = get_connection()
-    try:
-        # Increment/Decrement with exponential dampening for stability
-        if worked:
-            conn.execute(
-                "UPDATE shards SET utility_score = utility_score + 1.0 WHERE id = ?",
-                (shard_id,)
-            )
-        else:
-            conn.execute(
-                "UPDATE shards SET utility_score = utility_score - 0.5 WHERE id = ?",
-                (shard_id,)
-            )
-        conn.commit()
-        return True
-    except sqlite3.OperationalError:
-        return False
-    finally:
+def mark_shard(shard_id: int, worked: bool):
+    """Updates the utility score (The Bayesian Prior)."""
+    for i in range(1, MAX_DB_COUNT + 1):
+        if not get_db_path(i).exists(): continue
+        conn = get_connection(i)
+        row = conn.execute("SELECT id FROM shards WHERE id = ?", (shard_id,)).fetchone()
+        if row:
+            adjustment = 1.0 if worked else -0.5
+            conn.execute("UPDATE shards SET utility_score = utility_score + ? WHERE id = ?", (adjustment, shard_id))
+            conn.commit(); conn.close(); return True
         conn.close()
+    return False
 
 def compile_recall_packet(shards: list) -> str:
-    """Formats retrieved shards into a structured context injection prompt."""
-    if not shards:
-        return (
-            "<!-- NO RELEVANT MEMORY SHARDS RECALLED -->\n"
-            "[SYSTEM NOTE: Operating with clean-slate amnesia. "
-            "Proceed with first-principles reasoning.]"
-        )
-
-    packet_lines = [
-        "=== NOUGENSHARDS RECALL PACKET [DAVOS-CLASS SYNTHESIS] ===",
-        "The following persistent local memory shards are active for this workspace context.",
-        "Use these units of experience to guide decision-making and prevent regression.",
-        ""
-    ]
-
-    for shard in shards:
-        tags = json.loads(shard["tags"]) if shard["tags"] else []
-        tags_line = f"Tags: {', '.join(tags)}" if tags else "Tags: none"
-
-        # Determine sentiment/recommendation based on utility score
-        recommendation = "STABLE"
-        if shard["utility_score"] > 2.0:
-            recommendation = "HIGHLY RECOMMENDED"
-        elif shard["utility_score"] < 0.5:
-            recommendation = "PROCEED WITH CAUTION (LOW UTILITY)"
-
-        packet_lines.extend([
-            f"--- SHARD #{shard['id']} [{shard['event_type']}] | {recommendation} ---",
-            f"Title: {shard['title']}",
-            f"Captured: {shard['timestamp']}",
-            f"{tags_line} | Hits: {shard['access_count']}",
-            "Machine Note:",
-            "```",
-            shard["content"].strip(),
-            "```",
-            ""
-        ])
-
-    packet_lines.append(
-        "HISTORICAL GUIDANCE: Prioritize the 'HIGHLY RECOMMENDED' solutions. "
-        "If a shard is marked 'LOW UTILITY', verify its outcomes against the current environment "
-        "before implementation. Write back successful results to the memory vault."
-    )
-    return "\n".join(packet_lines)
-
-def seed_default_shards():
-    """Seeds the database with foundational workspace experience shards if empty."""
-    default_seeds = [
-        {
-            "event_type": "BUG_FIX",
-            "title": "Next.js Windows Python Spawn Helper Resolution",
-            "content": (
-                "RESOLVED: Next.js API routes on Windows fail to spawn Python child processes "
-                "if path slashes are unescaped. Fix this by normalizing the PATH using forward "
-                "slashes in your Next.js subprocess config or calling `subprocess.Popen` with "
-                "shell=True and replacing all backslashes in `process.env.PATH` with forward "
-                "slashes."
-            ),
-            "tags": ["nextjs", "windows", "python", "subprocess", "spawn-helper"]
-        },
-        {
-            "event_type": "KNOWLEDGE",
-            "title": "SQLite WAL Mode Lock Verification",
-            "content": (
-                "GUIDELINE: When running intensive multi-agent operations, SQLite databases "
-                "must have Write-Ahead Logging (WAL) enabled via `PRAGMA journal_mode=WAL;` "
-                "and a robust timeout (minimum 10.0s) to prevent 'database is locked' "
-                "operational errors."
-            ),
-            "tags": ["sqlite", "wal", "locking", "concurrency"]
-        },
-        {
-            "event_type": "DECISION",
-            "title": "Local LLM Thermal Throttling Mitigation Strategy",
-            "content": (
-                "DECISION: To prevent GPU thermal throttling and system timeouts on local "
-                "hardware, automatically unload Ollama models from VRAM if nvidia-smi GPU "
-                "temperatures exceed 75°C by calling /api/generate with keep_alive=0."
-            ),
-            "tags": ["ollama", "gpu", "thermals", "throttling", "optimization"]
-        }
-    ]
-
-    for seed in default_seeds:
-        capture(
-            event_type=seed["event_type"],
-            title=seed["title"],
-            content=seed["content"],
-            tags=seed["tags"]
-        )
-
-def _parse_front_matter(front_matter: str, title: str, event_type: str, tags: list):
-    """Parses simple YAML front matter to extract metadata."""
-    for line in front_matter.split("\n"):
-        if ":" in line:
-            k, v = line.split(":", 1)
-            k = k.strip().lower()
-            v = v.strip().strip('"').strip("'")
-            if k == "title":
-                title = v
-            elif k in ("event_type", "type"):
-                event_type = v.upper()
-            elif k == "tags":
-                tags = [t.strip() for t in v.split(",") if t.strip()]
-    return title, event_type, tags
-
-def _process_file(file_path: str) -> bool:
-    """Processes a single markdown file and imports it into the database."""
-    try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
-
-        # Default values
-        title = os.path.basename(file_path).replace(".md", "").replace("_", " ").title()
-        event_type = "TECHNICAL_DEEP_DIVE"
-        tags = ["discovered"]
-        body = content
-
-        # Simple YAML front-matter parser
-        yaml_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", content, re.DOTALL)
-        if yaml_match:
-            front_matter = yaml_match.group(1)
-            body = yaml_match.group(2)
-            title, event_type, tags = _parse_front_matter(front_matter, title, event_type, tags)
-
-        return capture(event_type=event_type, title=title, content=body, tags=tags)
-    except OSError:
-        return False
-
-def discover_and_import_shards(directory_path: str = None):
-    """
-    Scans a given directory (defaults to current workspace directory)
-    for markdown files representing shards and imports them.
-    Supports parsing YAML headers if present.
-    """
-    if not directory_path:
-        directory_path = os.getcwd()
-
-    # Scan for markdown shard files
-    patterns = [
-        os.path.join(directory_path, "intelligence_shard_*.md"),
-        os.path.join(directory_path, "shard_*.md")
-    ]
-
-    found_files = []
-    for pattern in patterns:
-        found_files.extend(glob.glob(pattern))
-
-    imported_count = 0
-    for file_path in found_files:
-        if _process_file(file_path):
-            imported_count += 1
-
-    return imported_count
-
-# Initialize database and run auto-discovery on load
-init_db()
-discover_and_import_shards()
+    if not shards: return "<!-- NO RELEVANT MEMORY RECALLED -->"
+    output = ["=== NOUGENSHARDS ADVANCED RECALL ==="]
+    for s in shards:
+        output.append(f"--- RECORD #{s['id']} [Score: {s['final_score']:.2f}] ---")
+        output.append(f"Title: {s['title']}\n{s['content']}\n")
+    return "\n".join(output)
