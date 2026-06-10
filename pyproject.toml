@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nougen_shards"
+version = "1.0.0"
+authors = [
+  { name="Who Visions LLC", email="contact@whovisions.com" },
+]
+description = "Persistent local memory for coding agents. Store machine experience as shards."
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "mcp",
+    "fastapi",
+    "uvicorn",
+]
+
+[project.urls]
+"Homepage" = "https://whovisions.com"
+"Bug Tracker" = "https://github.com/whovisions/nougen/issues"
+
+[project.scripts]
+nougen = "nougen_shards.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
