@@ -9,14 +9,12 @@ class TestCLI(unittest.TestCase):
     """Test suite for CLI commands."""
 
     @patch('nougen_shards.cli.shards.init_db')
-    @patch('nougen_shards.cli.shards.DB_PATH', '/tmp/test.db')
     def test_cmd_init(self, mock_init):
         """Test the init command."""
         args = MagicMock()
         with patch('sys.stdout', new=io.StringIO()) as fake_out:
             cli.cmd_init(args)
             self.assertIn("Bootstraping NouGenShards local layer...", fake_out.getvalue())
-            self.assertIn("/tmp/test.db", fake_out.getvalue())
             mock_init.assert_called_once()
 
     @patch('nougen_shards.cli.shards.capture')
@@ -126,27 +124,40 @@ class TestCLI(unittest.TestCase):
             mock_mark.assert_called_once_with(1, True)
 
     @patch('nougen_shards.cli.shards.get_connection')
-    @patch('nougen_shards.cli.shards.DB_PATH', '/tmp/test.db')
-    def test_cmd_status(self, mock_get_conn):
+    @patch('nougen_shards.cli.shards.get_db_path')
+    @patch('nougen_shards.cli.shards.get_active_db_index', return_value=1)
+    def test_cmd_status(self, mock_active, mock_get_path, mock_get_conn):
         """Test the status command."""
         args = MagicMock()
         mock_conn = MagicMock()
         mock_get_conn.return_value = mock_conn
         mock_cursor = mock_conn.execute.return_value
         mock_cursor.fetchone.return_value = [10]
+        
+        # Mock first DB as existing
+        mock_path = MagicMock()
+        mock_path.exists.return_value = True
+        mock_path.stat.return_value.st_size = 1024 * 1024
+        
+        # Side effect to handle multiple DB calls in loop
+        def side_effect(idx):
+            if idx == 1: return mock_path
+            m = MagicMock()
+            m.exists.return_value = False
+            return m
+        
+        mock_get_path.side_effect = side_effect
 
         with patch('sys.stdout', new=io.StringIO()) as fake_out:
             cli.cmd_status(args)
-            self.assertIn("📊 Status: 10 active shards in memory.", fake_out.getvalue())
-            self.assertIn("/tmp/test.db", fake_out.getvalue())
+            self.assertIn("DB #1: 10 shards", fake_out.getvalue())
+            self.assertIn("1.00 MB / 1024 MB", fake_out.getvalue())
 
     @patch('nougen_shards.cli.shards.get_connection')
     def test_cmd_status_error(self, mock_get_conn):
         """Test the status command when database is not initialized."""
         args = MagicMock()
-        mock_conn = MagicMock()
-        mock_get_conn.return_value = mock_conn
-        mock_conn.execute.side_effect = sqlite3.Error("Test Error")
+        mock_get_conn.side_effect = sqlite3.Error("Test Error")
 
         with patch('sys.stdout', new=io.StringIO()) as fake_out:
             cli.cmd_status(args)
