@@ -60,10 +60,12 @@ class OpenAIClient(LLMClient):
         for line in response:
             line_str = line.decode().strip()
             if line_str.startswith("data: ") and line_str != "data: [DONE]":
-                chunk = json.loads(line_str[6:])
-                content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                full_content += content
-                sys.stdout.write(content); sys.stdout.flush()
+                try:
+                    chunk = json.loads(line_str[6:])
+                    content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    full_content += content
+                    sys.stdout.write(content); sys.stdout.flush()
+                except Exception: continue
         return full_content
 
     def embed(self, model: str, text: str) -> list:
@@ -106,11 +108,13 @@ class AnthropicClient(LLMClient):
         for line in response:
             line_str = line.decode().strip()
             if line_str.startswith("data: "):
-                chunk = json.loads(line_str[6:])
-                if chunk.get("type") == "content_block_delta":
-                    content = chunk.get("delta", {}).get("text", "")
-                    full_content += content
-                    sys.stdout.write(content); sys.stdout.flush()
+                try:
+                    chunk = json.loads(line_str[6:])
+                    if chunk.get("type") == "content_block_delta":
+                        content = chunk.get("delta", {}).get("text", "")
+                        full_content += content
+                        sys.stdout.write(content); sys.stdout.flush()
+                except Exception: continue
         return full_content
 
     def embed(self, model: str, text: str) -> list: return []
@@ -198,10 +202,12 @@ class HuggingFaceClient(LLMClient):
         for line in response:
             line_str = line.decode().strip()
             if line_str.startswith("data: "):
-                chunk = json.loads(line_str[6:])
-                content = chunk.get("token", {}).get("text", "")
-                full_content += content
-                sys.stdout.write(content); sys.stdout.flush()
+                try:
+                    chunk = json.loads(line_str[6:])
+                    content = chunk.get("token", {}).get("text", "")
+                    full_content += content
+                    sys.stdout.write(content); sys.stdout.flush()
+                except Exception: continue
         return full_content
 
     def embed(self, model: str, text: str) -> list: return []
@@ -271,6 +277,32 @@ class OllamaClient(LocalLLMClient):
                 if m.startswith(p): return m
         return models[0] if models else ""
 
+    def pull_model(self, model_name: str):
+        """Ollama-specific: pull model."""
+        url = f"{self.base_url}/api/pull"
+        data = json.dumps({"model": model_name, "stream": True}).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req) as response:
+                for line in response:
+                    if line:
+                        chunk = json.loads(line.decode("utf-8"))
+                        status = chunk.get("status", "")
+                        completed = chunk.get("completed")
+                        total = chunk.get("total")
+                        if total and completed:
+                            pct = (completed / total) * 100
+                            sys.stdout.write(f"\r[*] Pulling {model_name}: {pct:.1f}% ({status})")
+                        elif status:
+                            sys.stdout.write(f"\r[*] {status}...")
+                        sys.stdout.flush()
+                print("\n✅ Model pull complete.")
+                return True
+        except Exception as exc:
+            print(f"\n[ERR] Failed to pull model: {exc}")
+            return False
+
 class LMStudioClient(LocalLLMClient):
     """Client for local LM Studio."""
     def __init__(self, base_url: str = "http://127.0.0.1:1234/v1"): self.base_url = base_url
@@ -300,9 +332,11 @@ class LMStudioClient(LocalLLMClient):
         for line in response:
             line_str = line.decode().strip()
             if line_str.startswith("data: ") and line_str != "data: [DONE]":
-                chunk = json.loads(line_str[6:])
-                content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                full += content; sys.stdout.write(content); sys.stdout.flush()
+                try:
+                    chunk = json.loads(line_str[6:])
+                    content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    full += content; sys.stdout.write(content); sys.stdout.flush()
+                except Exception: continue
         return full
 
     def embed(self, model: str, text: str) -> list: return []

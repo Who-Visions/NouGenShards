@@ -1,6 +1,7 @@
 """
 NouGenShards: Advanced Memory-Core Substrate.
-Substrate: SQLite + FTS5 + BM25 + Trigram (n-gram) + Vector Embeddings + Bayesian Reranking.
+Logic: SQLite + FTS5 + BM25 + Trigram (n-gram) + Vector Embeddings + Bayesian Reranking.
+Architecture: Reverse Epistemics (Manifesto of Bayesian Orchestration).
 """
 # pylint: disable=duplicate-code
 from pathlib import Path
@@ -12,19 +13,35 @@ import math
 from datetime import datetime
 import sys
 
-# Configuration
-MAX_DB_SIZE = 1 * 1024 * 1024 * 1024  # 1GB protection
+# Configuration (Module 10: Integrate Constraints)
+MAX_DB_SIZE = 1 * 1024 * 1024 * 1024  # 1GB Safety Limit
 MAX_DB_COUNT = 9
 GLOBAL_DIR = Path.home() / ".nougen" / "shards"
 
 def get_db_path(index: int) -> Path:
+    """Returns the path for a specific database index (Module 11: Transform Architecture)."""
     local_name = f"shards_{index}.db" if index > 1 else "shards.db"
     local_path = Path(local_name)
     if local_path.exists(): return local_path
     GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
     return GLOBAL_DIR / f"nougen_shards_{index}.db"
 
+def is_db_full(index: int) -> bool:
+    """Checks if a database file has reached its 1GB constraint."""
+    path = get_db_path(index)
+    if not path.exists(): return False
+    try:
+        return path.stat().st_size >= MAX_DB_SIZE
+    except OSError: return True
+
+def get_active_db_index() -> int:
+    """Finds an available database under the 1GB limit (Module 4: Surface Leverage)."""
+    for i in range(1, MAX_DB_COUNT + 1):
+        if not is_db_full(i): return i
+    return MAX_DB_COUNT
+
 def get_connection(index: int):
+    """Establishes an SQLite connection with WAL enabled (Module 19: Stabilize Reasoning)."""
     path = get_db_path(index)
     conn = sqlite3.connect(str(path), timeout=10.0)
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -32,11 +49,11 @@ def get_connection(index: int):
     return conn
 
 def init_db(index: int = 1):
-    """Initializes the advanced substrate schema."""
+    """Initializes the substrate schema (Module 6: Copy Successful Topology)."""
     conn = get_connection(index)
     cursor = conn.cursor()
 
-    # 1. Main Shards Table with Vector Storage
+    # Main table for shards (Module 3: Deep Grep Latent Structure)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS shards (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,14 +62,14 @@ def init_db(index: int = 1):
             title TEXT NOT NULL,
             content TEXT NOT NULL,
             tags TEXT,
-            utility_score REAL DEFAULT 1.0, -- Bayesian Prior
+            utility_score REAL DEFAULT 1.0, -- The Bayesian Prior (Module 20)
             access_count INTEGER DEFAULT 0,
             file_hash TEXT UNIQUE NOT NULL,
-            embedding BLOB -- Vector Substrate
+            embedding BLOB -- The Latent Substrate (Module 3)
         );
     """)
 
-    # 2. FTS5 with Trigram (n-gram) Tokenizer
+    # FTS5 with Trigram for fuzzy recall (Module 1: Metamers)
     try:
         cursor.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS shards_fts USING fts5(
@@ -73,7 +90,7 @@ def init_db(index: int = 1):
             );
         """)
 
-    # 3. Synchronization Triggers
+    # Sync triggers for coherent state (Module 18: Reconstruct Coherence)
     cursor.execute("DROP TRIGGER IF EXISTS shards_ai")
     cursor.execute("""
         CREATE TRIGGER shards_ai AFTER INSERT ON shards BEGIN
@@ -85,18 +102,29 @@ def init_db(index: int = 1):
     conn.close()
 
 def cosine_similarity(v1: list, v2: list) -> float:
-    """Calculates similarity between two vectors."""
+    """Measures semantic alignment (Module 7: Transpose Patterns)."""
     if not v1 or not v2 or len(v1) != len(v2): return 0.0
     dot_product = sum(a * b for a, b in zip(v1, v2))
-    magnitude1 = math.sqrt(sum(a * a for a in v1))
-    magnitude2 = math.sqrt(sum(b * b for b in v2))
-    if not magnitude1 or not magnitude2: return 0.0
-    return dot_product / (magnitude1 * magnitude2)
+    mag1 = math.sqrt(sum(a * a for a in v1))
+    mag2 = math.sqrt(sum(b * b for b in v2))
+    if not mag1 or not mag2: return 0.0
+    return dot_product / (mag1 * mag2)
 
 def capture(event_type: str, title: str, content: str, tags: list = None, embedding: list = None) -> bool:
-    """Stores experience into the substrate with optional vector embedding."""
+    """Saves a unit of experience (Module 5: Extract Invariants)."""
     fhash = hashlib.md5(content.encode("utf-8", errors="ignore")).hexdigest()
-    target_idx = (int(fhash, 16) % MAX_DB_COUNT) + 1
+    
+    # Check all active DBs for duplicate
+    for i in range(1, MAX_DB_COUNT + 1):
+        if not get_db_path(i).exists(): continue
+        conn = get_connection(i)
+        try:
+            row = conn.execute("SELECT id FROM shards WHERE file_hash = ?", (fhash,)).fetchone()
+            if row: return False
+        except sqlite3.OperationalError: pass
+        finally: conn.close()
+
+    target_idx = get_active_db_index()
     init_db(target_idx)
     
     emb_blob = sqlite3.Binary(json.dumps(embedding).encode()) if embedding else None
@@ -115,53 +143,57 @@ def capture(event_type: str, title: str, content: str, tags: list = None, embedd
     finally: conn.close()
 
 def retrieve(query: str, limit: int = 3, query_embedding: list = None) -> list:
-    """
-    Advanced Retrieval with Bayesian Reranking.
-    """
+    """Advanced Retrieval with Bayesian Reranking."""
     all_results = []
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists(): continue
         conn = get_connection(i)
         try:
-            # BM25 Keyword Search
-            cursor = conn.execute("""
-                SELECT s.id, s.title, s.content, s.utility_score, s.embedding, s.tags, bm25(f) as bm25_score
-                FROM shards s JOIN shards_fts f ON s.id = f.rowid
-                WHERE shards_fts MATCH ?
-                ORDER BY bm25_score ASC LIMIT 20
-            """, (query,))
-            
-            for row in cursor:
-                item = dict(row)
-                item["_db_index"] = i
-                
-                semantic_score = 0.0
-                if query_embedding and item["embedding"]:
-                    stored_v = json.loads(item["embedding"].decode())
-                    semantic_score = cosine_similarity(query_embedding, stored_v)
-                
-                # Normalize BM25
-                norm_bm25 = 1.0 / (1.0 + abs(item["bm25_score"]))
-                relevance = (norm_bm25 * 0.4) + (semantic_score * 0.6)
-                
-                # Bayesian Update
-                item["final_score"] = (relevance * 0.7) + (item["utility_score"] * 0.3)
-                all_results.append(item)
-        except sqlite3.OperationalError:
-            # Fallback to LIKE
-            like_query = f"%{query}%"
-            cursor = conn.execute("""
-                SELECT id, title, content, utility_score, embedding, tags
-                FROM shards
-                WHERE title LIKE ? OR content LIKE ?
-                ORDER BY utility_score DESC LIMIT 20
-            """, (like_query, like_query))
-            for row in cursor:
-                item = dict(row)
-                item["_db_index"] = i
-                item["bm25_score"] = 0.0
-                item["final_score"] = item["utility_score"] * 0.5 # Weak relevance
-                all_results.append(item)
+            # Prefer FTS5 if query length allows (trigram needs 3+ for optimal)
+            fts_worked = False
+            if len(query) >= 2:
+                try:
+                    cursor = conn.execute("""
+                        SELECT s.id, s.title, s.content, s.utility_score, s.embedding, s.tags, bm25(f) as bm25_score
+                        FROM shards s JOIN shards_fts f ON s.id = f.rowid
+                        WHERE shards_fts MATCH ?
+                        ORDER BY bm25_score ASC LIMIT 20
+                    """, (query,))
+                    res = [dict(row) for row in cursor.fetchall()]
+                    if res:
+                        for r in res:
+                            r["_db_index"] = i
+                            # Bayesian Math
+                            norm_bm25 = 1.0 / (1.0 + abs(r["bm25_score"]))
+                            sem_score = 0.0
+                            if query_embedding and r["embedding"]:
+                                sem_score = cosine_similarity(query_embedding, json.loads(r["embedding"].decode()))
+                            likelihood = (norm_bm25 * 0.4) + (sem_score * 0.6)
+                            r["final_score"] = (likelihood * 0.7) + (r["utility_score"] * 0.3)
+                            all_results.append(r)
+                        fts_worked = True
+                except sqlite3.OperationalError: pass
+
+            if not fts_worked:
+                # Fallback to LIKE (Module 1: Metamers - handling small substrings)
+                like_query = f"%{query}%"
+                cursor = conn.execute("""
+                    SELECT id, title, content, utility_score, embedding, tags
+                    FROM shards
+                    WHERE title LIKE ? OR content LIKE ?
+                    ORDER BY utility_score DESC LIMIT 20
+                """, (like_query, like_query))
+                for row in cursor:
+                    item = dict(row)
+                    item["_db_index"] = i
+                    item["bm25_score"] = 0.0
+                    sem_score = 0.0
+                    if query_embedding and item["embedding"]:
+                        sem_score = cosine_similarity(query_embedding, json.loads(item["embedding"].decode()))
+                    # LIKE results have no BM25, so we use semantic or just prior
+                    likelihood = sem_score if query_embedding else 0.5
+                    item["final_score"] = (likelihood * 0.5) + (item["utility_score"] * 0.5)
+                    all_results.append(item)
         finally:
             conn.close()
 
@@ -169,22 +201,21 @@ def retrieve(query: str, limit: int = 3, query_embedding: list = None) -> list:
     return all_results[:limit]
 
 def mark_shard(shard_id: int, worked: bool):
-    """Updates the utility score (The Bayesian Prior)."""
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists(): continue
         conn = get_connection(i)
         row = conn.execute("SELECT id FROM shards WHERE id = ?", (shard_id,)).fetchone()
         if row:
-            adjustment = 1.0 if worked else -0.5
-            conn.execute("UPDATE shards SET utility_score = utility_score + ? WHERE id = ?", (adjustment, shard_id))
+            val = 1.0 if worked else -0.5
+            conn.execute("UPDATE shards SET utility_score = utility_score + ? WHERE id = ?", (val, shard_id))
             conn.commit(); conn.close(); return True
         conn.close()
     return False
 
 def compile_recall_packet(shards: list) -> str:
     if not shards: return "<!-- NO RELEVANT MEMORY RECALLED -->"
-    output = ["=== NOUGENSHARDS ADVANCED RECALL ==="]
+    output = ["=== NOUGENSHARDS RECALL PACKET [BAYESIAN SYNTHESIS] ==="]
     for s in shards:
-        output.append(f"--- RECORD #{s['id']} [Score: {s['final_score']:.2f}] ---")
+        output.append(f"--- RECORD #{s['id']} [Posterior: {s['final_score']:.2f}] ---")
         output.append(f"Title: {s['title']}\n{s['content']}\n")
     return "\n".join(output)

@@ -70,4 +70,4 @@ def test_cloud_clients_no_key(mock_get_secret):
         assert client.is_alive() is False
         resp = client.chat("any-model", [])
         assert "Error:" in resp
-        assert "not configured" in resp
+        assert "Key missing" in resp
