@@ -29,7 +29,7 @@ This creates a folder on your computer to store your shards and sets up the data
 
 ### 3. 🔐 Connect Your Subscriptions (BYOK)
 
-Connect your own API keys for cloud AI services like ChatGPT, Claude, Gemini, and Hugging Face. 🔑
+Connect your own API keys for cloud AI services like ChatGPT, Claude, Gemini, Hugging Face, and OpenRouter. 🔑
 
 ```bash
 # Set your API keys
@@ -37,6 +37,7 @@ nougen auth set-key openai <your-key>
 nougen auth set-key anthropic <your-key>
 nougen auth set-key google <your-key>
 nougen auth set-key huggingface <your-key>
+nougen auth set-key openrouter <your-key>
 
 # List your connected services
 nougen auth list
@@ -89,14 +90,14 @@ Talk to AI models that run on your computer or in the cloud. 🏠☁️
 # See models from different providers
 nougen models --provider local
 nougen models --provider openai
-nougen models --provider huggingface
+nougen models --provider openrouter
 
 # Start talking to a local model
 nougen chat --provider local --model llama3
 
 # Start talking to a cloud model
 nougen chat --provider anthropic --model claude-3-5-sonnet-latest
-nougen chat --provider huggingface --model meta-llama/Llama-3.2-3B-Instruct
+nougen chat --provider openrouter --model google/gemma-3-27b-it:free
 ```
 
 ---
@@ -110,7 +111,7 @@ nougen chat --provider huggingface --model meta-llama/Llama-3.2-3B-Instruct
 ## 🥇 Quality and Standards
 
 - ✨ The code is written clearly and correctly.
-- ✅ All 102 tests pass correctly.
+- ✅ All 107 tests pass correctly.
 - 💻 The tool is tested and works on Windows, macOS, and Linux.
 
 ## 📜 License
