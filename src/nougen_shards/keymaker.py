@@ -89,6 +89,27 @@ def _export_to_csv():
         writer.writerows(rows)
     conn.close()
 
+def get_secret(key: str) -> str:
+    """Retrieves a secret value from the DB by its key."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT secret_value FROM secrets WHERE secret_key = ?", (key,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+def list_providers() -> list:
+    """Returns a list of keys currently stored in the vault."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT secret_key FROM secrets")
+        return [row[0] for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:

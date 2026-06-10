@@ -5,11 +5,57 @@ import json
 import sqlite3
 from pathlib import Path
 from . import core as shards
-from .models_client import get_best_available_client, OllamaClient
+from . import keymaker
+from .models_client import (
+    get_best_available_client, OllamaClient, 
+    OpenAIClient, AnthropicClient, GeminiClient, LocalLLMClient
+)
 from . import nougen_context
 from . import nougen_sandbox
 
 VERSION = "1.0.0"
+
+def cmd_auth(args):
+    """Manages authentication and API keys."""
+    if args.action == "set-key":
+        if not args.provider or not args.input:
+            print("Error: Usage: nougen auth set-key <provider> <key>")
+            return
+        
+        # Standardize keys
+        key_map = {
+            "openai": "OPENAI_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "google": "GOOGLE_API_KEY",
+            "gemini": "GOOGLE_API_KEY"
+        }
+        provider = args.provider.lower()
+        if provider not in key_map:
+            print(f"Error: Unknown provider '{args.provider}'. Available: openai, anthropic, google")
+            return
+        
+        keymaker.ingest_secret(key_map[provider], args.input)
+        print(f"✅ API key for {provider} saved to your secure vault.")
+
+    elif args.action == "list":
+        keys = keymaker.list_providers()
+        print("🔐 Connected Services:")
+        providers = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"]
+        display_names = {"OPENAI_API_KEY": "OpenAI", "ANTHROPIC_API_KEY": "Anthropic", "GOOGLE_API_KEY": "Google/Gemini"}
+        
+        found = False
+        for k in providers:
+            if k in keys:
+                print(f" ✅ {display_names[k]}")
+                found = True
+        
+        if not found:
+            print(" No cloud services connected. (Use `nougen auth set-key`) ")
+
+    elif args.action == "login":
+        print(f"[*] Starting OAuth flow for {args.provider}...")
+        print("Error: Browser-based OAuth login is not yet fully implemented in this build.")
+        print("Please use `nougen auth set-key <provider> <key>` instead.")
 
 def _ctx_init(args):
     clean = not getattr(args, 'continue_session', False)
@@ -114,20 +160,43 @@ def cmd_init(_args):
     print('  4. Connect to agent:       nougen connect --mcp')
 
 def cmd_chat(args):
-    """Starts a chat session with the local edge model, using retrieved shards as context."""
-    client = get_best_available_client()
-    if not client.is_alive():
-        print("Error: Local LLM (Ollama/LM Studio) is offline.")
+    """Starts a chat session with an LLM."""
+    # Determine which client to use
+    provider = args.provider.lower() if args.provider else "local"
+    
+    if provider == "local":
+        client = get_best_available_client()
+    elif provider == "openai":
+        client = OpenAIClient()
+    elif provider == "anthropic":
+        client = AnthropicClient()
+    elif provider in ["google", "gemini"]:
+        client = GeminiClient()
+    else:
+        print(f"Error: Unknown provider '{provider}'")
         return
 
-    model = args.model or client.find_best_edge_model()
+    if not client.is_alive():
+        if provider == "local":
+            print("Error: Local LLM (Ollama/LM Studio) is offline.")
+        else:
+            print(f"Error: {provider} is not configured. Run `nougen auth set-key {provider}`.")
+        return
+
+    model = args.model
     if not model:
-        print("Error: No local models found.")
+        if isinstance(client, LocalLLMClient):
+            model = client.find_best_edge_model()
+        else:
+            model = client.list_models()[0]
+
+    if not model:
+        print("Error: No model specified or found.")
         return
 
     query = args.query
     if not query:
-        print(f"Entering interactive chat with {model} (type 'exit' to quit)...")
+        print(f"Entering interactive chat with {model} ({provider}) (type 'exit' to quit)...")
         messages = []
         while True:
             try:
@@ -150,15 +219,28 @@ def cmd_chat(args):
         found = shards.retrieve(query, limit=3)
         context = shards.compile_recall_packet(found)
         messages = [{"role": "user", "content": f"{query}\n\n{context}"}]
-        print(f"[*] Querying {model}...")
+        print(f"[*] Querying {model} via {provider}...")
         response = client.chat(model, messages, stream=False)
         print(f"\n[Response]:\n{response}")
 
 def cmd_models(args):
-    """Manages local models."""
-    client = get_best_available_client()
+    """Manages LLM models."""
+    provider = args.provider.lower() if args.provider else "local"
+    
+    if provider == "local":
+        client = get_best_available_client()
+    elif provider == "openai":
+        client = OpenAIClient()
+    elif provider == "anthropic":
+        client = AnthropicClient()
+    elif provider in ["google", "gemini"]:
+        client = GeminiClient()
+    else:
+        print(f"Error: Unknown provider '{provider}'")
+        return
+
     if not client.is_alive():
-        print("Error: Local LLM is offline.")
+        print(f"Error: {provider} is not reachable or configured.")
         return
 
     if args.pull:
@@ -166,13 +248,11 @@ def cmd_models(args):
             client.pull_model(args.pull)
         else:
             print("Error: Model pulling is currently only supported via Ollama.")
-    elif args.list:
+    else:
         models = client.list_models()
-        print("Local Models:")
+        print(f"{provider.capitalize()} Models:")
         for m in models:
             print(f" - {m}")
-    else:
-        print("Usage: nougen models --list OR nougen models --pull <name>")
 
 def cmd_add(args):
     """Add a new shard to the local database."""
@@ -335,14 +415,22 @@ def get_parser():
     parser_mark.add_argument("--failed", action="store_true", help="Mark as failed")
 
     # chat
-    parser_chat = subparsers.add_parser("chat", help="Chat with the local edge model")
+    parser_chat = subparsers.add_parser("chat", help="Chat with an LLM")
     parser_chat.add_argument("query", nargs="?", help="One-off query")
     parser_chat.add_argument("--model", help="Specific model to use")
+    parser_chat.add_argument("--provider", default="local", help="AI provider (local, openai, anthropic, google)")
 
     # models
-    parser_models = subparsers.add_parser("models", help="Manage local models")
-    parser_models.add_argument("--list", action="store_true", help="List local models")
-    parser_models.add_argument("--pull", help="Pull a model from registry")
+    parser_models = subparsers.add_parser("models", help="Manage LLM models")
+    parser_models.add_argument("--provider", default="local", help="AI provider (local, openai, anthropic, google)")
+    parser_models.add_argument("--list", action="store_true", help="List models (default)")
+    parser_models.add_argument("--pull", help="Pull a model (Ollama only)")
+
+    # auth
+    parser_auth = subparsers.add_parser("auth", help="Manage AI subscriptions and API keys")
+    parser_auth.add_argument("action", choices=["set-key", "list", "login"], help="Auth action")
+    parser_auth.add_argument("provider", nargs="?", help="Provider (openai, anthropic, google)")
+    parser_auth.add_argument("input", nargs="?", help="API Key or data")
 
     # status
     subparsers.add_parser("status", help="Status of the layer")
@@ -393,7 +481,8 @@ def main():
         "models": cmd_models,
         "status": cmd_status,
         "hook": cmd_hook,
-        "ctx": cmd_ctx
+        "ctx": cmd_ctx,
+        "auth": cmd_auth
     }
 
     if args.command in commands:

@@ -27,7 +27,21 @@ nougen init
 ```
 This creates a folder on your computer to store your shards and sets up the database. 📂
 
-### 3. 💾 Save Shards
+### 3. 🔐 Connect Your Subscriptions (BYOK)
+
+Connect your own API keys for cloud AI services like ChatGPT, Claude, and Gemini. 🔑
+
+```bash
+# Set your API keys
+nougen auth set-key openai <your-key>
+nougen auth set-key anthropic <your-key>
+nougen auth set-key google <your-key>
+
+# List your connected services
+nougen auth list
+```
+
+### 4. 💾 Save Shards
 
 Save what you have learned or what you have done as a memory shard. 🧩
 
@@ -36,7 +50,7 @@ Save what you have learned or what you have done as a memory shard. 🧩
 nougen add "I fixed the map by changing the web address in the file app/MarsMap.tsx" --tags fix,map
 ```
 
-### 4. 🔍 Search and Find
+### 5. 🔍 Search and Find
 
 Find shards you saved before. The tool will show you the most relevant results first. 🥇
 
@@ -45,19 +59,16 @@ Find shards you saved before. The tool will show you the most relevant results f
 nougen search "map fix"
 ```
 
-### 5. ✅ Mark Results
+### 6. ✅ Mark Results
 
 Tell the tool if a shard was helpful. This helps the tool give you better answers in the future. 📈
 
 ```bash
 # Mark shard number 1 as helpful 👍
 nougen mark 1 --worked
-
-# Mark shard number 2 as not helpful 👎
-nougen mark 2 --failed
 ```
 
-### 6. ⚡ Run Code Safely
+### 7. ⚡ Run Code Safely
 
 Run scripts on your computer to process data. This keeps your AI tool from getting cluttered with too much raw data. 🧹
 
@@ -67,21 +78,24 @@ nougen ctx init
 
 # Run code and see the result 💻
 nougen ctx execute "const data = [10, 20, 30]; console.log(data.length)"
-
-# Save a result from your session as a durable shard 💎
-nougen ctx promote 1
 ```
 
-### 7. 🤖 Use Local AI Models
+### 8. 🤖 Use AI Models (Local & Cloud)
 
-Talk to AI models that run on your computer instead of the internet. 🏠
+Talk to AI models that run on your computer or in the cloud. 🏠☁️
 
 ```bash
-# See which models are on your computer 📜
-nougen models
+# See local models
+nougen models --provider local
 
-# Start talking to a model 💬
-nougen chat --model llama3
+# See cloud models
+nougen models --provider openai
+
+# Start talking to a local model
+nougen chat --provider local --model llama3
+
+# Start talking to a cloud model
+nougen chat --provider anthropic --model claude-3-5-sonnet-latest
 ```
 
 ---

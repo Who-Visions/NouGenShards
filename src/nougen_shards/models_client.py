@@ -6,12 +6,14 @@ import urllib.error
 import socket
 import sys
 
-class LocalLLMClient(ABC):
-    """Abstract base class for local LLM clients."""
+from . import keymaker
+
+class LLMClient(ABC):
+    """Abstract base class for all LLM clients."""
 
     @abstractmethod
     def is_alive(self) -> bool:
-        """Check if the server is reachable."""
+        """Check if the service is reachable/configured."""
 
     @abstractmethod
     def list_models(self) -> list:
@@ -21,9 +23,191 @@ class LocalLLMClient(ABC):
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         """Send chat request."""
 
+class LocalLLMClient(LLMClient, ABC):
+    """Abstract base class for local LLM clients."""
     @abstractmethod
     def find_best_edge_model(self) -> str:
         """Heuristic for best local model."""
+
+class OpenAIClient(LLMClient):
+    """Client for OpenAI (ChatGPT)."""
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or keymaker.get_secret("OPENAI_API_KEY")
+        self.base_url = "https://api.openai.com/v1"
+
+    def is_alive(self) -> bool:
+        return bool(self.api_key)
+
+    def list_models(self) -> list:
+        return ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+
+    def chat(self, model: str, messages: list, stream: bool = False) -> str:
+        if not self.api_key:
+            return "Error: OpenAI API Key not configured. Run `nougen auth set-key openai`."
+        
+        payload = {"model": model, "messages": messages, "stream": stream}
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Bearer {self.api_key}")
+
+        try:
+            with urllib.request.urlopen(req, timeout=120.0) as response:
+                if not stream:
+                    result = json.loads(response.read().decode("utf-8"))
+                    return result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                
+                return self._stream_chat(response)
+        except Exception as exc:
+            return f"Error: OpenAI execution failed: {exc}"
+
+    def _stream_chat(self, response) -> str:
+        full_content = ""
+        for line in response:
+            line_str = line.decode("utf-8").strip()
+            if line_str.startswith("data: "):
+                if line_str == "data: [DONE]":
+                    break
+                try:
+                    chunk = json.loads(line_str[6:])
+                    content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    full_content += content
+                    sys.stdout.write(content)
+                    sys.stdout.flush()
+                except json.JSONDecodeError:
+                    continue
+        return full_content
+
+class AnthropicClient(LLMClient):
+    """Client for Anthropic (Claude)."""
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or keymaker.get_secret("ANTHROPIC_API_KEY")
+        self.base_url = "https://api.anthropic.com/v1"
+
+    def is_alive(self) -> bool:
+        return bool(self.api_key)
+
+    def list_models(self) -> list:
+        return ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"]
+
+    def chat(self, model: str, messages: list, stream: bool = False) -> str:
+        if not self.api_key:
+            return "Error: Anthropic API Key not configured. Run `nougen auth set-key anthropic`."
+        
+        # Anthropic uses 'system' role at top level, not in messages list for some versions
+        # but the Messages API accepts system property.
+        system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
+        user_messages = [m for m in messages if m["role"] != "system"]
+
+        payload = {
+            "model": model,
+            "messages": user_messages,
+            "max_tokens": 4096,
+            "system": system_msg,
+            "stream": stream
+        }
+        req = urllib.request.Request(
+            f"{self.base_url}/messages",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        req.add_header("x-api-key", self.api_key)
+        req.add_header("anthropic-version", "2023-06-01")
+
+        try:
+            with urllib.request.urlopen(req, timeout=120.0) as response:
+                if not stream:
+                    result = json.loads(response.read().decode("utf-8"))
+                    return result.get("content", [{}])[0].get("text", "")
+                
+                return self._stream_chat(response)
+        except Exception as exc:
+            return f"Error: Anthropic execution failed: {exc}"
+
+    def _stream_chat(self, response) -> str:
+        full_content = ""
+        for line in response:
+            line_str = line.decode("utf-8").strip()
+            if line_str.startswith("data: "):
+                try:
+                    chunk = json.loads(line_str[6:])
+                    if chunk.get("type") == "content_block_delta":
+                        content = chunk.get("delta", {}).get("text", "")
+                        full_content += content
+                        sys.stdout.write(content)
+                        sys.stdout.flush()
+                except json.JSONDecodeError:
+                    continue
+        return full_content
+
+class GeminiClient(LLMClient):
+    """Client for Google (Gemini)."""
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or keymaker.get_secret("GOOGLE_API_KEY")
+        self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
+
+    def is_alive(self) -> bool:
+        return bool(self.api_key)
+
+    def list_models(self) -> list:
+        return ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
+
+    def chat(self, model: str, messages: list, stream: bool = False) -> str:
+        if not self.api_key:
+            return "Error: Google API Key not configured. Run `nougen auth set-key google`."
+        
+        # Convert messages to Gemini format
+        contents = []
+        for m in messages:
+            role = "user" if m["role"] in ["user", "system"] else "model"
+            contents.append({"role": role, "parts": [{"text": m["content"]}]})
+
+        endpoint = "streamGenerateContent" if stream else "generateContent"
+        url = f"{self.base_url}/{model}:{endpoint}?key={self.api_key}"
+        
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({"contents": contents}).encode("utf-8"),
+            method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+
+        try:
+            with urllib.request.urlopen(req, timeout=120.0) as response:
+                if not stream:
+                    result = json.loads(response.read().decode("utf-8"))
+                    return result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                
+                return self._stream_chat(response)
+        except Exception as exc:
+            return f"Error: Gemini execution failed: {exc}"
+
+    def _stream_chat(self, response) -> str:
+        full_content = ""
+        # Gemini streaming returns a JSON array of objects or individual objects per line
+        # but the REST API for streaming can be tricky with raw urllib.
+        # We'll handle the common NDJSON pattern if it occurs.
+        for line in response:
+            line_str = line.decode("utf-8").strip()
+            if not line_str: continue
+            try:
+                # Handle possible array wrapper [{}, {}]
+                if line_str.startswith("["): line_str = line_str[1:]
+                if line_str.endswith("]"): line_str = line_str[:-1]
+                if line_str.endswith(","): line_str = line_str[:-1]
+                
+                chunk = json.loads(line_str)
+                content = chunk.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                full_content += content
+                sys.stdout.write(content)
+                sys.stdout.flush()
+            except json.JSONDecodeError:
+                continue
+        return full_content
 
 class OllamaClient(LocalLLMClient):
     """Client for local Ollama instance."""
