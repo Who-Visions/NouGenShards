@@ -13,6 +13,7 @@ from .models_client import (
 )
 from . import nougen_context
 from . import nougen_sandbox
+from . import federation
 
 VERSION = "1.0.0"
 
@@ -102,7 +103,7 @@ def cmd_chat(args):
                 if not user_input: continue
 
                 # Advanced Retrieval (Keyword + Bayesian)
-                found = shards.retrieve(user_input, limit=2)
+                found = federation.federated_retrieve(user_input, limit=2)
                 context = shards.compile_recall_packet(found)
                 messages.append({"role": "user", "content": f"{user_input}\n\n{context}"})
                 print(f"\n[{model}]: ", end="")
@@ -111,7 +112,7 @@ def cmd_chat(args):
                 print()
             except KeyboardInterrupt: break
     else:
-        found = shards.retrieve(query, limit=3)
+        found = federation.federated_retrieve(query, limit=3)
         context = shards.compile_recall_packet(found)
         messages = [{"role": "user", "content": f"{query}\n\n{context}"}]
         print(f"[*] Querying {model}...")
@@ -155,7 +156,7 @@ def cmd_add(args):
     else: print("ℹ️ Shard already exists.")
 
 def cmd_search(args):
-    """Search for shards using the advanced substrate."""
+    """Search for shards across local substrate and external DBs."""
     embedding = None
     if getattr(args, 'semantic', False):
         client = get_client(args.provider or "openai")
@@ -164,12 +165,13 @@ def cmd_search(args):
             print(f"[*] Generating query embedding via {args.provider or 'openai'}...")
             embedding = client.embed(model, args.query)
 
-    results = shards.retrieve(args.query, limit=5, query_embedding=embedding)
+    # Use Federation for unified search
+    results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding)
     if not results: print("No shards found."); return
 
-    print(f"🔍 Found {len(results)} shards (Ranked by Bayesian Relevance):\n")
+    print(f"🔍 Found {len(results)} records across the fabric (Ranked by Bayesian Relevance):\n")
     for res in results:
-        header = f"[{res['id']}] Final Score: {res['final_score']:.2f} | Prior: {res['utility_score']} | DB #{res['_db_index']}"
+        header = f"[{res['id']}] Final Score: {res['final_score']:.2f} | Prior: {res['utility_score']} | Source: {res['_db_index']}"
         print(header)
         print(f"Title: {res['title']}\n{res['content'].strip()}\n" + "-" * 40)
 
@@ -204,6 +206,23 @@ def cmd_ctx(args):
         print("✅ Session initialized.")
     elif args.action == "execute":
         print(nougen_sandbox.execute_sandboxed(args.input))
+
+def cmd_db(args):
+    """Manages external database connections."""
+    if args.action == "link":
+        if not args.uri or not args.table:
+            print("Error: Usage: nougen db link <uri> --table <name> --title <col> --content <col>")
+            return
+        keymaker.register_external_db(args.uri, args.table, args.title, args.content)
+        print(f"✅ External DB linked: {args.table}")
+    elif args.action == "list":
+        dbs = keymaker.list_external_dbs()
+        if not dbs:
+            print(" No external databases linked.")
+            return
+        print("📊 Linked External Databases:")
+        for d in dbs:
+            print(f" - #{d['id']}: {d['uri'][:30]}... | Table: {d['table_name']}")
 
 def cmd_config(args):
     """Update CLI or database configuration."""
@@ -292,6 +311,13 @@ def get_parser():
     p_ingest = subparsers.add_parser("ingest", help="Ingest file")
     p_ingest.add_argument("file")
 
+    p_db = subparsers.add_parser("db", help="Link external databases")
+    p_db.add_argument("action", choices=["link", "list"])
+    p_db.add_argument("uri", nargs="?", help="Database connection URI")
+    p_db.add_argument("--table", help="Table name")
+    p_db.add_argument("--title", default="title", help="Title column name")
+    p_db.add_argument("--content", default="content", help="Content column name")
+
     return parser
 
 def main():
@@ -300,7 +326,8 @@ def main():
     cmds = {
         "init": cmd_init, "add": cmd_add, "search": cmd_search, "chat": cmd_chat, 
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
-        "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest
+        "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
+        "db": cmd_db
     }
     if args.command in cmds: cmds[args.command](args)
     else: parser.print_help()
