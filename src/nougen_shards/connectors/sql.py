@@ -1,6 +1,11 @@
 """SQLAlchemy Connector for external databases."""
+import re
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
+
+def is_valid_identifier(ident: str) -> bool:
+    """Strict regex for safe SQL identifiers."""
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", ident))
 
 def query_external_dbs(query: str, db_configs: list, limit: int = 3) -> list:
     """Queries external databases and maps results to Shard format."""
@@ -10,13 +15,17 @@ def query_external_dbs(query: str, db_configs: list, limit: int = 3) -> list:
     
     for conf in db_configs:
         try:
+            table = conf['table_name']
+            title_col = conf['title_col']
+            content_col = conf['content_col']
+
+            # Patch 16.E: Validate identifiers (Module 10: Constraints)
+            if not all(is_valid_identifier(x) for x in [table, title_col, content_col]):
+                continue
+
             # Module 10: Integrate Constraints (Timeout & Connection Pooling)
             engine = create_engine(conf['uri'], pool_pre_ping=True, connect_args={"connect_timeout": 5})
             with engine.connect() as conn:
-                table = conf['table_name']
-                title_col = conf['title_col']
-                content_col = conf['content_col']
-                
                 where_clauses = []
                 params = {}
                 for i, kw in enumerate(keywords):

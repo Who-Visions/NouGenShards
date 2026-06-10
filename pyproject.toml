@@ -20,6 +20,7 @@ dependencies = [
     "mcp",
     "fastapi",
     "uvicorn",
+    "sqlalchemy",
 ]
 
 [project.urls]

@@ -1,19 +1,20 @@
 """NouGenShards command-line interface."""
-import sys
 import argparse
+import sys
 import json
 import sqlite3
 from pathlib import Path
 from . import core as shards
 from . import keymaker
 from .models_client import (
-    get_best_available_client, OllamaClient, 
+    get_best_available_client, OllamaClient,
     OpenAIClient, AnthropicClient, GeminiClient, LocalLLMClient,
     HuggingFaceClient, OpenRouterClient
 )
 from . import nougen_context
 from . import nougen_sandbox
 from . import federation
+from . import history
 
 VERSION = "1.0.0"
 
@@ -21,19 +22,27 @@ VERSION = "1.0.0"
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, Exception):
+    except (AttributeError, ValueError):
         pass
+
 
 def get_client(provider: str):
     """Helper to get a client by provider name."""
     provider = provider.lower()
-    if provider == "local": return get_best_available_client()
-    if provider == "openai": return OpenAIClient()
-    if provider == "anthropic": return AnthropicClient()
-    if provider in ["google", "gemini"]: return GeminiClient()
-    if provider in ["huggingface", "hf"]: return HuggingFaceClient()
-    if provider in ["openrouter", "or"]: return OpenRouterClient()
+    if provider == "local":
+        return get_best_available_client()
+    if provider == "openai":
+        return OpenAIClient()
+    if provider == "anthropic":
+        return AnthropicClient()
+    if provider in ["google", "gemini"]:
+        return GeminiClient()
+    if provider in ["huggingface", "hf"]:
+        return HuggingFaceClient()
+    if provider in ["openrouter", "or"]:
+        return OpenRouterClient()
     return None
+
 
 def cmd_auth(args):
     """Manages authentication and API keys."""
@@ -41,7 +50,7 @@ def cmd_auth(args):
         if not args.provider or not args.input:
             print("Error: Usage: nougen auth set-key <provider> <key>")
             return
-        
+
         key_map = {
             "openai": "OPENAI_API_KEY",
             "anthropic": "ANTHROPIC_API_KEY",
@@ -56,17 +65,21 @@ def cmd_auth(args):
         if provider not in key_map:
             print(f"Error: Unknown provider '{args.provider}'.")
             return
-        
+
         keymaker.ingest_secret(key_map[provider], args.input)
         print(f"✅ API key for {provider} saved to vault.")
 
     elif args.action == "list":
         keys = keymaker.list_providers()
+        if getattr(args, 'json', False) is True:
+            print(json.dumps(keys))
+            return
         print("🔐 Connected Services:")
-        providers = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "HUGGINGFACE_API_KEY", "OPENROUTER_API_KEY"]
+        providers = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
+                     "HUGGINGFACE_API_KEY", "OPENROUTER_API_KEY"]
         display_names = {
-            "OPENAI_API_KEY": "OpenAI", 
-            "ANTHROPIC_API_KEY": "Anthropic", 
+            "OPENAI_API_KEY": "OpenAI",
+            "ANTHROPIC_API_KEY": "Anthropic",
             "GOOGLE_API_KEY": "Google/Gemini",
             "HUGGINGFACE_API_KEY": "Hugging Face",
             "OPENROUTER_API_KEY": "OpenRouter"
@@ -74,63 +87,80 @@ def cmd_auth(args):
         found = False
         for k in providers:
             if k in keys:
-                print(f" ✅ {display_names[k]}"); found = True
-        if not found: print(" No cloud services connected.")
+                print(f" ✅ {display_names[k]}")
+                found = True
+        if not found:
+            print(" No cloud services connected.")
+
 
 def cmd_init(_args):
     """Bootstrap the local shard layer."""
     print("Bootstraping NouGenShards local layer...")
     shards.init_db(index=1)
-    print(f"✅ Created local-first database substrate.")
+    print("✅ Created local-first database substrate.")
     print("\nNext steps: nougen auth set-key OR nougen add \"first memory\"")
+
+
+def _run_interactive_chat(model, provider, client):
+    """Interactive chat loop."""
+    print(f"Entering interactive chat with {model} ({provider})...")
+    msgs = []
+    while True:
+        try:
+            user_input = input("\n[You]: ").strip()
+            if user_input.lower() in ['exit', 'quit']:
+                break
+            if not user_input:
+                continue
+
+            found = federation.federated_retrieve(user_input, limit=2)
+            context = shards.compile_recall_packet(found)
+            msgs.append({"role": "user", "content": f"{user_input}\n\n{context}"})
+            print(f"\n[{model}]: ", end="")
+            response = client.chat(model, msgs, stream=True)
+            msgs.append({"role": "assistant", "content": response})
+            print()
+        except KeyboardInterrupt:
+            break
+
 
 def cmd_chat(args):
     """Starts a chat session with an LLM."""
-    client = get_client(args.provider or "local")
+    prov_name = args.provider or "local"
+    client = get_client(prov_name)
     if not client or not client.is_alive():
-        print(f"Error: {args.provider or 'local'} is not configured.")
+        print(f"Error: {prov_name} is not configured.")
         return
 
     model = args.model
     if not model:
-        if isinstance(client, LocalLLMClient): model = client.find_best_edge_model()
-        else: model = client.list_models()[0]
+        if isinstance(client, LocalLLMClient):
+            model = client.find_best_edge_model()
+        else:
+            model = client.list_models()[0]
 
     if not model:
-        print("Error: No model found."); return
+        print("Error: No model found.")
+        return
 
-    query = args.query
-    if not query:
-        print(f"Entering interactive chat with {model}...")
-        messages = []
-        while True:
-            try:
-                user_input = input("\n[You]: ").strip()
-                if user_input.lower() in ['exit', 'quit']: break
-                if not user_input: continue
-
-                # Advanced Retrieval (Keyword + Bayesian)
-                found = federation.federated_retrieve(user_input, limit=2)
-                context = shards.compile_recall_packet(found)
-                messages.append({"role": "user", "content": f"{user_input}\n\n{context}"})
-                print(f"\n[{model}]: ", end="")
-                response = client.chat(model, messages, stream=True)
-                messages.append({"role": "assistant", "content": response})
-                print()
-            except KeyboardInterrupt: break
+    if not args.query:
+        _run_interactive_chat(model, prov_name, client)
     else:
-        found = federation.federated_retrieve(query, limit=3)
-        context = shards.compile_recall_packet(found)
-        messages = [{"role": "user", "content": f"{query}\n\n{context}"}]
+        found = federation.federated_retrieve(args.query, limit=3)
+        ctx = shards.compile_recall_packet(found)
+        msgs = [{"role": "user", "content": f"{args.query}\n\n{ctx}"}]
         print(f"[*] Querying {model}...")
-        response = client.chat(model, messages, stream=False)
-        print(f"\n[Response]:\n{response}")
+        resp = client.chat(model, msgs, stream=False)
+        print(f"\n[Response]:\n{resp}")
+
 
 def cmd_models(args):
     """Manages LLM models."""
-    client = get_client(args.provider or "local")
+    prov_name = args.provider or "local"
+    client = get_client(prov_name)
     if not client or not client.is_alive():
-        print(f"Error: {args.provider or 'local'} not configured."); return
+        print(f"Error: {prov_name} not configured.")
+        return
 
     if getattr(args, 'pull', None):
         if isinstance(client, OllamaClient):
@@ -139,28 +169,41 @@ def cmd_models(args):
             print("Error: Model pulling is currently only supported via Ollama.")
     else:
         models = client.list_models()
-        print(f"{args.provider or 'local'} Models:")
-        for m in models: print(f" - {m}")
+        if getattr(args, 'json', False) is True:
+            print(json.dumps(models))
+            return
+        print(f"{prov_name.capitalize()} Models:")
+        for m in models:
+            print(f" - {m}")
+
 
 def cmd_add(args):
     """Add a new shard with optional embedding support."""
     content = ""
-    if args.stdin: content = sys.stdin.read().strip()
-    elif args.content: content = args.content.strip()
-    else: print("Error: Content missing."); sys.exit(1)
+    if args.stdin:
+        content = sys.stdin.read().strip()
+    elif args.content:
+        content = args.content.strip()
+    else:
+        print("Error: Content missing.")
+        sys.exit(1)
 
     embedding = None
     if getattr(args, 'embed', False):
         client = get_client(args.provider or "openai")
         if client and client.is_alive():
-            model = "text-embedding-3-small" if args.provider == "openai" else "models/text-embedding-004"
+            model = "text-embedding-3-small" if args.provider == "openai" \
+                else "models/text-embedding-004"
             print(f"[*] Generating embeddings via {args.provider or 'openai'}...")
             embedding = client.embed(model, content)
 
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
     success = shards.capture("KNOWLEDGE", content[:30], content, tags, embedding=embedding)
-    if success: print(f"✅ Shard captured!")
-    else: print("ℹ️ Shard already exists.")
+    if success:
+        print("✅ Shard captured!")
+    else:
+        print("ℹ️ Shard already exists.")
+
 
 def cmd_search(args):
     """Search for shards across local substrate and external DBs."""
@@ -168,43 +211,106 @@ def cmd_search(args):
     if getattr(args, 'semantic', False):
         client = get_client(args.provider or "openai")
         if client and client.is_alive():
-            model = "text-embedding-3-small" if args.provider == "openai" else "models/text-embedding-004"
+            model = "text-embedding-3-small" if args.provider == "openai" \
+                else "models/text-embedding-004"
             print(f"[*] Generating query embedding via {args.provider or 'openai'}...")
             embedding = client.embed(model, args.query)
 
     # Use Federation for unified search
     results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding)
-    if not results: print("No shards found."); return
+    if not results:
+        if getattr(args, 'json', False) is True:
+            print("[]")
+        else:
+            print("No shards found.")
+        return
+
+    if getattr(args, 'json', False) is True:
+        # Convert binary embeddings to lists for JSON serialization
+        for res in results:
+            if 'embedding' in res and isinstance(res['embedding'], bytes):
+                res['embedding'] = json.loads(res['embedding'].decode())
+        print(json.dumps(results))
+        return
 
     print(f"🔍 Found {len(results)} records across the fabric (Ranked by Bayesian Relevance):\n")
     for res in results:
-        header = f"[{res['id']}] Final Score: {res['final_score']:.2f} | Prior: {res['utility_score']} | Source: {res['_db_index']}"
+        header = f"[{res['id']}] Final Score: {res['final_score']:.2f} | " \
+                 f"Prior: {res['utility_score']} | Source: {res['_db_index']}"
         print(header)
         print(f"Title: {res['title']}\n{res['content'].strip()}\n" + "-" * 40)
+
 
 def cmd_mark(args):
     """Close the outcome loop (Bayesian Update)."""
     if shards.mark_shard(args.id, worked=args.worked):
         print(f"✅ Shard #{args.id} updated. Bayesian prior adjusted.")
-    else: print(f"Error finding shard #{args.id}.")
+    else:
+        print(f"Error finding shard #{args.id}.")
 
-def cmd_status(_args):
+
+def cmd_status(args):
     """Check the status of the Multi-DB cluster."""
-    total = 0; active = shards.get_active_db_index()
-    print("📊 NouGenShards Substrate Status:")
+    active = shards.get_active_db_index()
+    db_stats = []
+    total_count = 0
     for i in range(1, shards.MAX_DB_COUNT + 1):
         path = shards.get_db_path(i)
-        if not path.exists(): continue
+        if not path.exists():
+            continue
         try:
             conn = shards.get_connection(i)
             count = conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
             conn.close()
             size_mb = path.stat().st_size / (1024 * 1024)
-            status = " (ACTIVE)" if i == active else ""
-            print(f" - DB #{i}: {count} shards | {size_mb:.2f} MB / 1024 MB{status}")
-            total += count
-        except Exception: print(f" - DB #{i}: Database not initialized.")
-    print(f"\nTotal records in memory: {total}")
+            db_stats.append({
+                "index": i,
+                "shards": count,
+                "size_mb": size_mb,
+                "is_active": i == active
+            })
+            total_count += count
+        except (sqlite3.Error, OSError):
+            pass
+
+    if getattr(args, 'json', False) is True:
+        print(json.dumps({"databases": db_stats, "total_shards": total_count}))
+        return
+
+    print("📊 NouGenShards Substrate Status:")
+    for db in db_stats:
+        status = " (ACTIVE)" if db['is_active'] else ""
+        print(f" - DB #{db['index']}: {db['shards']} shards | {db['size_mb']:.2f} MB / 1024 MB{status}")
+    print(f"\nTotal records in memory: {total_count}")
+
+
+def cmd_stats(args):
+    """Reports memory growth and utility trends across horizons."""
+    period = args.period or "week"
+    engine = history.HistoryEngine()
+
+    growth = engine.get_growth_rate(period)
+    utility = engine.get_utility_delta(period)
+    timeline = engine.get_timeline(period)
+
+    if getattr(args, 'json', False) is True:
+        print(json.dumps({
+            "period": period,
+            "growth": growth,
+            "utility_delta": utility
+        }))
+        return
+
+    print(f"📈 NouGenShards History ({period})")
+    print(timeline)
+    print(f"\n - New Shards Captured: {growth['new_shards']}")
+    print(f" - Total Memory Size:   {growth['total_shards']} shards")
+    print(f" - Bayesian Utility \u0394: {'+' if utility >= 0 else ''}{utility:.2f}")
+
+    if growth['total_shards'] > 0:
+        rate = (growth['new_shards'] / growth['total_shards']) * 100
+        print(f" - Acceleration Rate:   {rate:.1f}% expansion")
+
 
 def cmd_ctx(args):
     """Handles NouGenContext commands."""
@@ -213,6 +319,28 @@ def cmd_ctx(args):
         print("✅ Session initialized.")
     elif args.action == "execute":
         print(nougen_sandbox.execute_sandboxed(args.input))
+    elif args.action == "promote":
+        if not args.input:
+            print("Error: Usage: nougen ctx promote <event_id> [--tags <tags>]")
+            return
+        event = nougen_context.get_event(int(args.input))
+        if not event:
+            print(f"Error: Context event #{args.input} not found.")
+            return
+        
+        tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
+        tags.append("promoted")
+        success = shards.capture(
+            event_type=f"PROMOTED_{event['type']}",
+            title=f"Promoted Context #{event['id']}",
+            content=event['content'],
+            tags=tags
+        )
+        if success:
+            print(f"✅ Context event #{event['id']} promoted to durable memory.")
+        else:
+            print(f"ℹ️ Shard already exists.")
+
 
 def cmd_db(args):
     """Manages external database connections."""
@@ -224,12 +352,16 @@ def cmd_db(args):
         print(f"✅ External DB linked: {args.table}")
     elif args.action == "list":
         dbs = keymaker.list_external_dbs()
+        if getattr(args, 'json', False) is True:
+            print(json.dumps(dbs))
+            return
         if not dbs:
             print(" No external databases linked.")
             return
         print("📊 Linked External Databases:")
         for d in dbs:
             print(f" - #{d['id']}: {d['uri'][:30]}... | Table: {d['table_name']}")
+
 
 def cmd_node(args):
     """Manages remote NouGenShards cloud nodes."""
@@ -242,6 +374,9 @@ def cmd_node(args):
         print(f"[*] Remote node linked: {name} ({args.url})")
     elif args.action == "list":
         nodes = keymaker.list_cloud_nodes()
+        if getattr(args, 'json', False) is True:
+            print(json.dumps(nodes))
+            return
         if not nodes:
             print(" No remote nodes linked.")
             return
@@ -249,12 +384,14 @@ def cmd_node(args):
         for n in nodes:
             print(f" - #{n['id']}: {n['name']} | URL: {n['url']}")
 
+
 def cmd_config(args):
     """Update CLI or database configuration."""
     if args.action == "set" and args.key and args.value:
         print(f"✅ Configuration updated: {args.key} = {args.value}")
     else:
         print("Usage: nougen config set <key> <value>")
+
 
 def cmd_connect(args):
     """Connect NouGenShards to an agent (e.g., via MCP)."""
@@ -268,6 +405,7 @@ def cmd_connect(args):
     else:
         print("Usage: nougen connect --mcp")
 
+
 def cmd_hook(args):
     """Install auto-capture hooks into the user's shell."""
     if args.action == "install":
@@ -275,19 +413,22 @@ def cmd_hook(args):
     else:
         print("Usage: nougen hook install")
 
+
 def cmd_ingest(args):
     """Ingest a file's content as a single shard."""
-    file_path = args.file
-    if not Path(file_path).exists():
-        print(f"Error: File not found: {file_path}")
+    path = Path(args.file)
+    if not path.exists():
+        print(f"Error: File not found: {path}")
         sys.exit(1)
-    print(f"Ingesting {file_path}...")
+    print(f"Ingesting {path}...")
     try:
-        with open(file_path, "r", encoding="utf-8") as f_in:
+        with open(path, "r", encoding="utf-8") as f_in:
             content = f_in.read()
-        shards.capture("INGEST", Path(file_path).name, content, ["ingested", "docs"])
+        shards.capture("INGEST", path.name, content, ["ingested", "docs"])
         print("✅ Ingestion complete.")
-    except Exception as exc: print(f"Failed: {exc}")
+    except (OSError, sqlite3.Error) as exc:
+        print(f"Failed: {exc}")
+
 
 def get_parser():
     """Create the CLI parser."""
@@ -296,10 +437,11 @@ def get_parser():
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("init", help="Bootstrap substrate")
-    
+
     p_add = subparsers.add_parser("add", help="Save shard")
     p_add.add_argument("content", nargs="?")
-    p_add.add_argument("--tags"); p_add.add_argument("--stdin", action="store_true")
+    p_add.add_argument("--tags")
+    p_add.add_argument("--stdin", action="store_true")
     p_add.add_argument("--embed", action="store_true", help="Generate vector embedding")
     p_add.add_argument("--provider", help="Embedding provider")
 
@@ -307,25 +449,40 @@ def get_parser():
     p_search.add_argument("query")
     p_search.add_argument("--semantic", action="store_true", help="Use vector search")
     p_search.add_argument("--provider", help="Embedding provider")
+    p_search.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_chat = subparsers.add_parser("chat", help="Chat with memory")
     p_chat.add_argument("query", nargs="?")
-    p_chat.add_argument("--model"); p_chat.add_argument("--provider")
+    p_chat.add_argument("--model")
+    p_chat.add_argument("--provider")
 
     p_auth = subparsers.add_parser("auth", help="Manage keys")
     p_auth.add_argument("action", choices=["set-key", "list"])
-    p_auth.add_argument("provider", nargs="?"); p_auth.add_argument("input", nargs="?")
+    p_auth.add_argument("provider", nargs="?")
+    p_auth.add_argument("input", nargs="?")
+    p_auth.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_mark = subparsers.add_parser("mark", help="Update utility")
-    p_mark.add_argument("id", type=int); p_mark.add_argument("--worked", action="store_true")
+    p_mark.add_argument("id", type=int)
+    p_mark.add_argument("--worked", action="store_true")
 
-    subparsers.add_parser("status", help="Show cluster health")
-    
+    p_status = subparsers.add_parser("status", help="Show cluster health")
+    p_status.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_stats = subparsers.add_parser("stats", help="Historical analytics")
+    p_stats.add_argument("--period", choices=["24h", "week", "month", "quarter", "year"],
+                         default="week")
+    p_stats.add_argument("--json", action="store_true", help="Machine-readable output")
+
     p_ctx = subparsers.add_parser("ctx", help="Context layer")
-    p_ctx.add_argument("action", choices=["init", "execute"]); p_ctx.add_argument("input", nargs="?")
+    p_ctx.add_argument("action", choices=["init", "execute", "promote"])
+    p_ctx.add_argument("input", nargs="?")
+    p_ctx.add_argument("--tags", help="Tags for promoted shard")
 
     p_config = subparsers.add_parser("config", help="Configuration")
-    p_config.add_argument("action", choices=["set"]); p_config.add_argument("key"); p_config.add_argument("value")
+    p_config.add_argument("action", choices=["set"])
+    p_config.add_argument("key")
+    p_config.add_argument("value")
 
     p_connect = subparsers.add_parser("connect", help="Connect agent")
     p_connect.add_argument("--mcp", action="store_true")
@@ -342,28 +499,37 @@ def get_parser():
     p_db.add_argument("--table", help="Table name")
     p_db.add_argument("--title", default="title", help="Title column name")
     p_db.add_argument("--content", default="content", help="Content column name")
+    p_db.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_node = subparsers.add_parser("node", help="Manage remote cloud nodes")
     p_node.add_argument("action", choices=["link", "list"])
     p_node.add_argument("url", nargs="?", help="Remote node API URL")
     p_node.add_argument("--name", help="Friendly name for the node")
+    p_node.add_argument("--json", action="store_true", help="Machine-readable output")
 
     return parser
 
+
 def main():
+    """Execution entry point."""
     if len(sys.argv) == 1:
         print("🪩 NouGenShards CLI")
         print("░█▀█░█▀█░█░█░█▀▀░█▀▀░█▀█░█▀▀░█░█░█▀█░█▀▄░█▀▄░█▀▀")
         print("░█░█░█░█░█░█░█░█░█▀▀░█░█░▀▀█░█▀█░█▀█░█▀░▀░▀░▀▀▀")
         sys.exit(0)
-    parser = get_parser(); args = parser.parse_args()
+    parser = get_parser()
+    args = parser.parse_args()
     cmds = {
-        "init": cmd_init, "add": cmd_add, "search": cmd_search, "chat": cmd_chat, 
+        "init": cmd_init, "add": cmd_add, "search": cmd_search, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
-        "db": cmd_db, "node": cmd_node
+        "db": cmd_db, "node": cmd_node, "stats": cmd_stats
     }
-    if args.command in cmds: cmds[args.command](args)
-    else: parser.print_help()
+    if args.command in cmds:
+        cmds[args.command](args)
+    else:
+        parser.print_help()
 
-if __name__ == "__main__": main()
+
+if __name__ == "__main__":
+    main()
