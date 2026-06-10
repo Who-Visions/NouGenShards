@@ -105,6 +105,15 @@ def search_context(query: str, limit: int = 5):
     conn.close()
     return results
 
+def get_event(event_id: int):
+    """Retrieves a specific event from the context by ID."""
+    conn = get_context_connection()
+    try:
+        row = conn.execute("SELECT id, type, content, timestamp, metadata FROM ctx_events WHERE id = ?", (event_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
 def store_sandbox(handle: str, data: str, summary: str = ""):
     """Stores large tool output in the sandbox."""
     timestamp = datetime.now(timezone.utc).isoformat() + "Z"
