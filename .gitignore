@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Databases
+*.db
+*.sqlite3
+
+# Local configuration
+mcp.config.json
+.env
+secrets/
+
+# Node dependencies
+node_modules/
+package-lock.json
+
+# Development tools
+.pytest_cache/
+.benchmarks/
+.agents/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# OS specific
+Thumbs.db
+.DS_Store

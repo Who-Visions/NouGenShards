@@ -100,4 +100,4 @@ nougen chat --model llama3
 
 ## License
 
-MIT License. © 2026 Who Visions LLC.
+Copyright © 2026 Who Visions LLC. All rights reserved. This source code is provided for visibility purposes only. Reuse is not granted.
