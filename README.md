@@ -1,108 +1,103 @@
-# 🪩 NouGenShards
+# NouGenShards
 
-**🧠 Persistent local memory and sandboxed context for coding agents.**  
-*Your agents have prompts — mine have shards.*
+**Store and find information for your AI tools.**
 
-NouGenShards is a professional-grade sidecar for your AI-powered development workflow. It stores reusable “shards” of machine experience in a local SQLite + FTS5 database with **outcome-weighted retrieval**, ensuring your agents recall what actually worked instead of re-prompting from scratch.
+NouGenShards helps your AI tools remember their work. It saves what worked and what did not work in a database on your computer. This lets your tools find the right information quickly without repeating previous tasks.
 
-> 🇭🇹 **Nou gen AI** is Haitian Kreyòl for *“we have AI.”* Built by [Who Visions](https://whovisions.com) to put high-leverage AI tooling — including edge models that run without service — in the hands of the diaspora.
+> This tool is built by Who Visions to help people use AI tools on their own computers, even without an internet connection.
 
 ---
 
-## 🚀 The Top-1% Quickstart
-
-The strongest signal across the best CLI tools: optimize for time-to-first-value.
+## How to Start
 
 ### 1. Install
 
 ```bash
-# Via Python
+# If you use Python
 pip install .
 
-# Or via Node (as a global wrapper)
+# If you use Node.js
 npm install -g .
 ```
 
-### 2. Bootstrap (Zero to Shard)
+### 2. Setup
 
 ```bash
 nougen init
 ```
-*Initializes your local vault (`~/.nougen/`) and sets up the SQLite database with FTS5 virtual tables.*
+This creates a folder on your computer to store your data and sets up the database.
 
-### 3. Manage Memory (Shards)
+### 3. Save Information
 
-Capture what works, search what you know, and mark outcomes for smarter retrieval.
+Save what you have learned or what you have done.
 
 ```bash
-# Capture experience
-nougen add "Fixed the Mars Map tiles by updating the URL in app/MarsMap.tsx" --tags mars,bugfix
-
-# Search & Recall (Ranked by FTS5 + Utility)
-nougen search "mars tiles"
-
-# Mark a shard's utility (Outcome-Weighted)
-nougen mark 1 --worked
+# Save a new note
+nougen add "I fixed the map by changing the web address in the file app/MarsMap.tsx" --tags fix,map
 ```
 
-### 4. Manage Attention (Context)
+### 4. Search and Find
 
-Run scripts in a sandboxed environment to process data without bloating your LLM context window with raw logs.
+Find information you saved before. The tool will show you the most relevant results first.
 
 ```bash
-# Initialize a fresh context session
+# Search your saved notes
+nougen search "map fix"
+```
+
+### 5. Mark Results
+
+Tell the tool if a piece of information was helpful. This helps the tool give you better answers in the future.
+
+```bash
+# Mark record number 1 as helpful
+nougen mark 1 --worked
+
+# Mark record number 2 as not helpful
+nougen mark 2 --failed
+```
+
+### 6. Run Code Safely
+
+Run scripts on your computer to process data. This keeps your AI tool from getting cluttered with too much raw data.
+
+```bash
+# Start a new session
 nougen ctx init
 
-# Execute sandboxed code (JS/Bun/Python) and return only the signal
-nougen ctx execute "const data = [1, 2, 3]; console.log('Mean:', data.reduce((a, b) => a + b) / data.length)"
+# Run code and see the result
+nougen ctx execute "const data = [10, 20, 30]; console.log(data.length)"
 
-# Promote a session event to a durable Shard
+# Save a result from your session so you can find it later
 nougen ctx promote 1
 ```
 
-### 5. Edge Intelligence (Models)
+### 7. Use Local AI Models
 
-Talk to local models (Ollama/LM Studio) directly from your terminal.
+Talk to AI models that run on your computer instead of the internet.
 
 ```bash
-# List available local models
+# See which models are on your computer
 nougen models
 
-# Start a local chat session
+# Start talking to a model
 nougen chat --model llama3
 ```
 
 ---
 
-## 🧩 Architecture: The Shard Layer
+## Project Structure
 
-NouGenShards operates as the "heart" and "cortex" of your agentic system:
+- **src/nougen_shards/**: The main code for the tool.
+- **tests/**: Code to check that the tool works correctly.
+- **examples/**: Examples of how to use the tool.
 
-- **Core**: Python logic using SQLite for persistent, low-latency storage.
-- **Search**: Ranked retrieval using **FTS5 (Full-Text Search)** + utility-based scoring (worked vs. failed).
-- **Hardening**: Built-in Windows-safe sandbox for isolated execution of agent-generated code.
-- **Interface**: Unified CLI for humans, **MCP (Model Context Protocol)** for agents (Claude, Cursor).
+## Quality and Standards
 
-## 📁 Project Structure
+- The code is written clearly and correctly.
+- All 102 tests pass correctly.
+- The tool is tested and works on Windows, macOS, and Linux.
 
-```
-src/nougen_shards/  # Core package logic
-  core.py           # Database and capture/retrieve functions
-  cli.py            # Unified Command-line interface
-  mcp.py            # Model Context Protocol server
-  nougen_context.py # Ephemeral session management
-  nougen_sandbox.py # Hardened execution environment
-tests/              # Massive 102-test suite (100% pass rate)
-examples/           # Demo scripts and usage patterns
-```
+## License
 
-## 📊 Show the Scoreboard
-
-We maintain a rigorous standard of quality:
-- **10.00/10** Pylint score across the entire core.
-- **100% Pass Rate** on our comprehensive integration test suite.
-- **Production-Ready** absolute path resolution and environment isolation.
-
-## 📜 License
-
-MIT License. © 2026 Who Visions LLC. Build the future. Ownership is everything.
+MIT License. © 2026 Who Visions LLC.
