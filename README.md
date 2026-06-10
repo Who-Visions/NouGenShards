@@ -1,5 +1,10 @@
 # 🪩 NouGenShards
 
+```text
+░█▀█░█▀█░█░█░█▀▀░█▀▀░█▀█░█▀▀░█░█░█▀█░█▀▄░█▀▄░█▀▀
+░█░█░█░█░█░█░█░█░█▀▀░█░█░▀▀█░█▀█░█▀█░█▀░▀░▀░▀▀▀
+```
+
 **🧠 Persistent local memory and federated intelligence for your AI tools.**
 
 NouGenShards helps your AI tools remember their work across the entire fabric of your data. It saves "shards" of information—records of what worked and what did not work—in local databases, external SQL servers, or remote cloud nodes. This persistent memory lets your tools find the right information quickly by searching both your computer and your cloud subscriptions simultaneously.

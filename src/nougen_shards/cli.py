@@ -351,7 +351,11 @@ def get_parser():
     return parser
 
 def main():
-    if len(sys.argv) == 1: print("🪩 NouGenShards CLI"); sys.exit(0)
+    if len(sys.argv) == 1:
+        print("🪩 NouGenShards CLI")
+        print("░█▀█░█▀█░█░█░█▀▀░█▀▀░█▀█░█▀▀░█░█░█▀█░█▀▄░█▀▄░█▀▀")
+        print("░█░█░█░█░█░█░█░█░█▀▀░█░█░▀▀█░█▀█░█▀█░█▀░▀░▀░▀▀▀")
+        sys.exit(0)
     parser = get_parser(); args = parser.parse_args()
     cmds = {
         "init": cmd_init, "add": cmd_add, "search": cmd_search, "chat": cmd_chat, 
