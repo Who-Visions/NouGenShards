@@ -9,7 +9,7 @@ from . import keymaker
 from .models_client import (
     get_best_available_client, OllamaClient, 
     OpenAIClient, AnthropicClient, GeminiClient, LocalLLMClient,
-    HuggingFaceClient
+    HuggingFaceClient, OpenRouterClient
 )
 from . import nougen_context
 from . import nougen_sandbox
@@ -30,11 +30,13 @@ def cmd_auth(args):
             "google": "GOOGLE_API_KEY",
             "gemini": "GOOGLE_API_KEY",
             "huggingface": "HUGGINGFACE_API_KEY",
-            "hf": "HUGGINGFACE_API_KEY"
+            "hf": "HUGGINGFACE_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+            "or": "OPENROUTER_API_KEY"
         }
         provider = args.provider.lower()
         if provider not in key_map:
-            print(f"Error: Unknown provider '{args.provider}'. Available: openai, anthropic, google, huggingface")
+            print(f"Error: Unknown provider '{args.provider}'. Available: openai, anthropic, google, huggingface, openrouter")
             return
         
         keymaker.ingest_secret(key_map[provider], args.input)
@@ -43,12 +45,13 @@ def cmd_auth(args):
     elif args.action == "list":
         keys = keymaker.list_providers()
         print("🔐 Connected Services:")
-        providers = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "HUGGINGFACE_API_KEY"]
+        providers = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "HUGGINGFACE_API_KEY", "OPENROUTER_API_KEY"]
         display_names = {
             "OPENAI_API_KEY": "OpenAI", 
             "ANTHROPIC_API_KEY": "Anthropic", 
             "GOOGLE_API_KEY": "Google/Gemini",
-            "HUGGINGFACE_API_KEY": "Hugging Face"
+            "HUGGINGFACE_API_KEY": "Hugging Face",
+            "OPENROUTER_API_KEY": "OpenRouter"
         }
         
         found = False
@@ -182,6 +185,8 @@ def cmd_chat(args):
         client = GeminiClient()
     elif provider in ["huggingface", "hf"]:
         client = HuggingFaceClient()
+    elif provider in ["openrouter", "or"]:
+        client = OpenRouterClient()
     else:
         print(f"Error: Unknown provider '{provider}'")
         return
@@ -247,6 +252,8 @@ def cmd_models(args):
         client = GeminiClient()
     elif provider in ["huggingface", "hf"]:
         client = HuggingFaceClient()
+    elif provider in ["openrouter", "or"]:
+        client = OpenRouterClient()
     else:
         print(f"Error: Unknown provider '{provider}'")
         return
@@ -430,18 +437,18 @@ def get_parser():
     parser_chat = subparsers.add_parser("chat", help="Chat with an LLM")
     parser_chat.add_argument("query", nargs="?", help="One-off query")
     parser_chat.add_argument("--model", help="Specific model to use")
-    parser_chat.add_argument("--provider", default="local", help="AI provider (local, openai, anthropic, google, huggingface)")
+    parser_chat.add_argument("--provider", default="local", help="AI provider (local, openai, anthropic, google, huggingface, openrouter)")
 
     # models
     parser_models = subparsers.add_parser("models", help="Manage LLM models")
-    parser_models.add_argument("--provider", default="local", help="AI provider (local, openai, anthropic, google, huggingface)")
+    parser_models.add_argument("--provider", default="local", help="AI provider (local, openai, anthropic, google, huggingface, openrouter)")
     parser_models.add_argument("--list", action="store_true", help="List models (default)")
     parser_models.add_argument("--pull", help="Pull a model (Ollama only)")
 
     # auth
     parser_auth = subparsers.add_parser("auth", help="Manage AI subscriptions and API keys")
     parser_auth.add_argument("action", choices=["set-key", "list", "login"], help="Auth action")
-    parser_auth.add_argument("provider", nargs="?", help="Provider (openai, anthropic, google, huggingface)")
+    parser_auth.add_argument("provider", nargs="?", help="Provider (openai, anthropic, google, huggingface, openrouter)")
     parser_auth.add_argument("input", nargs="?", help="API Key or data")
 
     # status

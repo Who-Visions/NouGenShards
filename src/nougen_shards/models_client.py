@@ -284,6 +284,26 @@ class HuggingFaceClient(LLMClient):
                     continue
         return full_content
 
+class OpenRouterClient(OpenAIClient):
+    """Client for OpenRouter (OpenAI-compatible)."""
+    def __init__(self, api_key: str = None):
+        super().__init__(api_key=api_key or keymaker.get_secret("OPENROUTER_API_KEY"))
+        self.base_url = "https://openrouter.ai/api/v1"
+
+    def list_models(self) -> list:
+        # OpenRouter has too many models to list statically
+        return [
+            "google/gemma-2-9b-it:free",
+            "google/gemma-3-27b-it:free",
+            "anthropic/claude-3.5-sonnet",
+            "openai/gpt-4o"
+        ]
+
+    def chat(self, model: str, messages: list, stream: bool = False) -> str:
+        if not self.api_key:
+            return "Error: OpenRouter API Key not configured. Run `nougen auth set-key openrouter`."
+        return super().chat(model, messages, stream=stream)
+
 class OllamaClient(LocalLLMClient):
     """Client for local Ollama instance."""
 
