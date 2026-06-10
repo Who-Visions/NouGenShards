@@ -34,7 +34,7 @@ class TestCLI(unittest.TestCase):
                 "KNOWLEDGE", "Test content", "Test content", ["tag1", "tag2"], embedding=None
             )
 
-    @patch('nougen_shards.cli.shards.retrieve')
+    @patch('nougen_shards.cli.federation.federated_retrieve')
     def test_cmd_search(self, mock_retrieve):
         """Test the search command."""
         args = MagicMock()
@@ -54,7 +54,7 @@ class TestCLI(unittest.TestCase):
     
         with patch('sys.stdout', new=io.StringIO()) as fake_out:
             cli.cmd_search(args)
-            self.assertIn("🔍 Found 1 shards", fake_out.getvalue())
+            self.assertIn("🔍 Found 1 records across the fabric", fake_out.getvalue())
             self.assertIn("Final Score: 0.85", fake_out.getvalue())
 
     @patch('nougen_shards.cli.shards.mark_shard')

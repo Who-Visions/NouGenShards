@@ -89,6 +89,54 @@ def _export_to_csv():
         writer.writerows(rows)
     conn.close()
 
+def init_vault():
+    """Initializes the vault database schema."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS secrets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            secret_key TEXT UNIQUE NOT NULL,
+            secret_value TEXT NOT NULL,
+            last_rotated TEXT NOT NULL
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS external_dbs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uri TEXT NOT NULL,
+            table_name TEXT NOT NULL,
+            title_col TEXT NOT NULL,
+            content_col TEXT NOT NULL,
+            last_connected TEXT NOT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def register_external_db(uri: str, table_name: str, title_col: str, content_col: str):
+    """Registers a new external database connection."""
+    init_vault()
+    conn = sqlite3.connect(DB_PATH)
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn.execute('''
+        INSERT INTO external_dbs (uri, table_name, title_col, content_col, last_connected)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (uri, table_name, title_col, content_col, timestamp))
+    conn.commit()
+    conn.close()
+
+def list_external_dbs() -> list:
+    """Returns all registered external database configurations."""
+    if not DB_PATH.exists(): return []
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT * FROM external_dbs").fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.OperationalError: return []
+    finally: conn.close()
+
 def get_secret(key: str) -> str:
     """Retrieves a secret value from the DB by its key."""
     conn = sqlite3.connect(DB_PATH)
