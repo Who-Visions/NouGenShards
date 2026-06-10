@@ -12,11 +12,19 @@ NouGenShards helps your AI tools remember their work across the entire fabric of
 
 ### 1. 📦 Install
 
+**Windows (One-Click)** 🪟
 ```bash
-# If you use Python 🐍
+# Just run the launcher
+nougen.bat
+```
+*The launcher automatically sets up a secure virtual environment and installs all dependencies.*
+
+**Other Platforms** 🐍🟢
+```bash
+# If you use Python
 pip install .
 
-# If you use Node.js 🟢
+# If you use Node.js
 npm install -g .
 ```
 
