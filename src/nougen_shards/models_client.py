@@ -209,6 +209,81 @@ class GeminiClient(LLMClient):
                 continue
         return full_content
 
+class HuggingFaceClient(LLMClient):
+    """Client for Hugging Face Inference API."""
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or keymaker.get_secret("HUGGINGFACE_API_KEY")
+        self.base_url = "https://api-inference.huggingface.co/models"
+
+    def is_alive(self) -> bool:
+        return bool(self.api_key)
+
+    def list_models(self) -> list:
+        # Hugging Face doesn't have a simple 'list all' for the inference API in this context
+        # We'll return a few popular defaults
+        return [
+            "meta-llama/Llama-3.2-3B-Instruct",
+            "mistralai/Mistral-7B-Instruct-v0.3",
+            "google/gemma-2-2b-it"
+        ]
+
+    def chat(self, model: str, messages: list, stream: bool = False) -> str:
+        if not self.api_key:
+            return "Error: Hugging Face API Key not configured. Run `nougen auth set-key huggingface`."
+        
+        # Prepare inputs (simple concatenation for non-chat specific models or standard format)
+        # Most modern models on HF support the chat template if using specific endpoints
+        # but here we'll use the standard Inference API pattern.
+        prompt = ""
+        for m in messages:
+            role = m["role"].upper()
+            prompt += f"{role}: {m['content']}\n"
+        prompt += "ASSISTANT: "
+
+        payload = {
+            "inputs": prompt,
+            "parameters": {"max_new_tokens": 1024, "return_full_text": False},
+            "stream": stream
+        }
+        
+        url = f"{self.base_url}/{model}"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Bearer {self.api_key}")
+
+        try:
+            with urllib.request.urlopen(req, timeout=120.0) as response:
+                if not stream:
+                    result = json.loads(response.read().decode("utf-8"))
+                    # Result is often a list of objects
+                    if isinstance(result, list) and len(result) > 0:
+                        return result[0].get("generated_text", "")
+                    return str(result)
+                
+                return self._stream_chat(response)
+        except Exception as exc:
+            return f"Error: Hugging Face execution failed: {exc}"
+
+    def _stream_chat(self, response) -> str:
+        full_content = ""
+        for line in response:
+            line_str = line.decode("utf-8").strip()
+            if not line_str: continue
+            if line_str.startswith("data: "):
+                try:
+                    chunk = json.loads(line_str[6:])
+                    content = chunk.get("token", {}).get("text", "")
+                    full_content += content
+                    sys.stdout.write(content)
+                    sys.stdout.flush()
+                except json.JSONDecodeError:
+                    continue
+        return full_content
+
 class OllamaClient(LocalLLMClient):
     """Client for local Ollama instance."""
 
