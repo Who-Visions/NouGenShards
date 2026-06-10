@@ -1,0 +1,4 @@
+﻿nougen_shards@git+https://github.com/Who-Visions/NouGenShards.git
+gradio
+fastapi
+uvicorn
