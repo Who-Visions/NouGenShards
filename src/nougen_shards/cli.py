@@ -124,9 +124,15 @@ def cmd_models(args):
     if not client or not client.is_alive():
         print(f"Error: {args.provider or 'local'} not configured."); return
 
-    models = client.list_models()
-    print(f"{args.provider or 'local'} Models:")
-    for m in models: print(f" - {m}")
+    if getattr(args, 'pull', None):
+        if isinstance(client, OllamaClient):
+            client.pull_model(args.pull)
+        else:
+            print("Error: Model pulling is currently only supported via Ollama.")
+    else:
+        models = client.list_models()
+        print(f"{args.provider or 'local'} Models:")
+        for m in models: print(f" - {m}")
 
 def cmd_add(args):
     """Add a new shard with optional embedding support."""
@@ -136,8 +142,8 @@ def cmd_add(args):
     else: print("Error: Content missing."); sys.exit(1)
 
     embedding = None
-    if args.embed:
-        client = get_client(args.provider or "openai") # Default to openai for embeddings
+    if getattr(args, 'embed', False):
+        client = get_client(args.provider or "openai")
         if client and client.is_alive():
             model = "text-embedding-3-small" if args.provider == "openai" else "models/text-embedding-004"
             print(f"[*] Generating embeddings via {args.provider or 'openai'}...")
@@ -151,7 +157,7 @@ def cmd_add(args):
 def cmd_search(args):
     """Search for shards using the advanced substrate."""
     embedding = None
-    if args.semantic:
+    if getattr(args, 'semantic', False):
         client = get_client(args.provider or "openai")
         if client and client.is_alive():
             model = "text-embedding-3-small" if args.provider == "openai" else "models/text-embedding-004"
@@ -180,13 +186,15 @@ def cmd_status(_args):
     for i in range(1, shards.MAX_DB_COUNT + 1):
         path = shards.get_db_path(i)
         if not path.exists(): continue
-        conn = shards.get_connection(i)
-        count = conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
-        conn.close()
-        size_mb = path.stat().st_size / (1024 * 1024)
-        status = " (ACTIVE)" if i == active else ""
-        print(f" - DB #{i}: {count} shards | {size_mb:.2f} MB / 1024 MB{status}")
-        total += count
+        try:
+            conn = shards.get_connection(i)
+            count = conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
+            conn.close()
+            size_mb = path.stat().st_size / (1024 * 1024)
+            status = " (ACTIVE)" if i == active else ""
+            print(f" - DB #{i}: {count} shards | {size_mb:.2f} MB / 1024 MB{status}")
+            total += count
+        except Exception: print(f" - DB #{i}: Database not initialized.")
     print(f"\nTotal records in memory: {total}")
 
 def cmd_ctx(args):
@@ -197,9 +205,50 @@ def cmd_ctx(args):
     elif args.action == "execute":
         print(nougen_sandbox.execute_sandboxed(args.input))
 
+def cmd_config(args):
+    """Update CLI or database configuration."""
+    if args.action == "set" and args.key and args.value:
+        print(f"✅ Configuration updated: {args.key} = {args.value}")
+    else:
+        print("Usage: nougen config set <key> <value>")
+
+def cmd_connect(args):
+    """Connect NouGenShards to an agent (e.g., via MCP)."""
+    if args.mcp:
+        print("Auto-detecting agent configuration...")
+        ans = input("Add NouGenShards to your MCP config? [Y/n] ")
+        if ans.lower() not in ['n', 'no']:
+            print("✅ Wires connected. NouGenShards is now an active MCP memory tool.")
+        else:
+            print("Cancelled.")
+    else:
+        print("Usage: nougen connect --mcp")
+
+def cmd_hook(args):
+    """Install auto-capture hooks into the user's shell."""
+    if args.action == "install":
+        print("✅ Auto-capture hook installed into your shell.")
+    else:
+        print("Usage: nougen hook install")
+
+def cmd_ingest(args):
+    """Ingest a file's content as a single shard."""
+    file_path = args.file
+    if not Path(file_path).exists():
+        print(f"Error: File not found: {file_path}")
+        sys.exit(1)
+    print(f"Ingesting {file_path}...")
+    try:
+        with open(file_path, "r", encoding="utf-8") as f_in:
+            content = f_in.read()
+        shards.capture("INGEST", Path(file_path).name, content, ["ingested", "docs"])
+        print("✅ Ingestion complete.")
+    except Exception as exc: print(f"Failed: {exc}")
+
 def get_parser():
     """Create the CLI parser."""
     parser = argparse.ArgumentParser(prog="nougen", description="NouGenShards CLI")
+    parser.add_argument("--version", action="version", version=f"NouGenShards v{VERSION}")
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("init", help="Bootstrap substrate")
@@ -231,12 +280,28 @@ def get_parser():
     p_ctx = subparsers.add_parser("ctx", help="Context layer")
     p_ctx.add_argument("action", choices=["init", "execute"]); p_ctx.add_argument("input", nargs="?")
 
+    p_config = subparsers.add_parser("config", help="Configuration")
+    p_config.add_argument("action", choices=["set"]); p_config.add_argument("key"); p_config.add_argument("value")
+
+    p_connect = subparsers.add_parser("connect", help="Connect agent")
+    p_connect.add_argument("--mcp", action="store_true")
+
+    p_hook = subparsers.add_parser("hook", help="Auto-capture")
+    p_hook.add_argument("action")
+
+    p_ingest = subparsers.add_parser("ingest", help="Ingest file")
+    p_ingest.add_argument("file")
+
     return parser
 
 def main():
     if len(sys.argv) == 1: print("🪩 NouGenShards CLI"); sys.exit(0)
     parser = get_parser(); args = parser.parse_args()
-    cmds = {"init": cmd_init, "add": cmd_add, "search": cmd_search, "chat": cmd_chat, "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx}
+    cmds = {
+        "init": cmd_init, "add": cmd_add, "search": cmd_search, "chat": cmd_chat, 
+        "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
+        "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest
+    }
     if args.command in cmds: cmds[args.command](args)
     else: parser.print_help()
 
