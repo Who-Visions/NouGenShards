@@ -14,7 +14,7 @@ from datetime import datetime
 import sys
 
 # Configuration (Module 10: Integrate Constraints)
-MAX_DB_SIZE = 1 * 1024 * 1024 * 1024  # 1GB Safety Limit
+MAX_DB_SIZE = 1 * 1024 * 1024 * 1024  # 1GB Safety Limit per DB
 MAX_DB_COUNT = 9
 GLOBAL_DIR = Path.home() / ".nougen" / "shards"
 
@@ -62,14 +62,15 @@ def init_db(index: int = 1):
             title TEXT NOT NULL,
             content TEXT NOT NULL,
             tags TEXT,
-            utility_score REAL DEFAULT 1.0, -- The Bayesian Prior (Module 20)
+            utility_score REAL DEFAULT 1.0, -- Bayesian Prior (Module 20)
             access_count INTEGER DEFAULT 0,
             file_hash TEXT UNIQUE NOT NULL,
-            embedding BLOB -- The Latent Substrate (Module 3)
+            embedding BLOB -- Vector Substrate (Module 3)
         );
     """)
 
     # FTS5 with Trigram for fuzzy recall (Module 1: Metamers)
+    # The 'trigram' tokenizer allows for high-yield adjacency matching.
     try:
         cursor.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS shards_fts USING fts5(
@@ -90,7 +91,7 @@ def init_db(index: int = 1):
             );
         """)
 
-    # Sync triggers for coherent state (Module 18: Reconstruct Coherence)
+    # Sync triggers (Module 18: Reconstruct Coherence)
     cursor.execute("DROP TRIGGER IF EXISTS shards_ai")
     cursor.execute("""
         CREATE TRIGGER shards_ai AFTER INSERT ON shards BEGIN
@@ -114,7 +115,7 @@ def capture(event_type: str, title: str, content: str, tags: list = None, embedd
     """Saves a unit of experience (Module 5: Extract Invariants)."""
     fhash = hashlib.md5(content.encode("utf-8", errors="ignore")).hexdigest()
     
-    # Check all active DBs for duplicate
+    # Global Deduplication (The Invariant Check)
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists(): continue
         conn = get_connection(i)
@@ -143,13 +144,16 @@ def capture(event_type: str, title: str, content: str, tags: list = None, embedd
     finally: conn.close()
 
 def retrieve(query: str, limit: int = 3, query_embedding: list = None) -> list:
-    """Advanced Retrieval with Bayesian Reranking."""
+    """
+    Advanced Retrieval and Bayesian Orchestration (Module 21).
+    Synthesizes BM25 (Adjacency) and Semantic (Latent) signals.
+    """
     all_results = []
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists(): continue
         conn = get_connection(i)
         try:
-            # Prefer FTS5 if query length allows (trigram needs 3+ for optimal)
+            # Module 12: Refactor Complexity (Scatter-Gather Search)
             fts_worked = False
             if len(query) >= 2:
                 try:
@@ -163,19 +167,25 @@ def retrieve(query: str, limit: int = 3, query_embedding: list = None) -> list:
                     if res:
                         for r in res:
                             r["_db_index"] = i
-                            # Bayesian Math
+                            # 1. Likelihood Part A: BM25 (The Adjacency Score)
                             norm_bm25 = 1.0 / (1.0 + abs(r["bm25_score"]))
+                            
+                            # 2. Likelihood Part B: Semantic (The Latent Score)
                             sem_score = 0.0
                             if query_embedding and r["embedding"]:
                                 sem_score = cosine_similarity(query_embedding, json.loads(r["embedding"].decode()))
+                            
+                            # Synthesize Coherent Likelihood (Module 9)
                             likelihood = (norm_bm25 * 0.4) + (sem_score * 0.6)
+                            
+                            # 3. Bayesian Posterior = Likelihood * Prior (utility_score)
                             r["final_score"] = (likelihood * 0.7) + (r["utility_score"] * 0.3)
                             all_results.append(r)
                         fts_worked = True
                 except sqlite3.OperationalError: pass
 
             if not fts_worked:
-                # Fallback to LIKE (Module 1: Metamers - handling small substrings)
+                # Fallback to LIKE (Module 1: Resolving Metamers for small query strings)
                 like_query = f"%{query}%"
                 cursor = conn.execute("""
                     SELECT id, title, content, utility_score, embedding, tags
@@ -190,22 +200,25 @@ def retrieve(query: str, limit: int = 3, query_embedding: list = None) -> list:
                     sem_score = 0.0
                     if query_embedding and item["embedding"]:
                         sem_score = cosine_similarity(query_embedding, json.loads(item["embedding"].decode()))
-                    # LIKE results have no BM25, so we use semantic or just prior
                     likelihood = sem_score if query_embedding else 0.5
                     item["final_score"] = (likelihood * 0.5) + (item["utility_score"] * 0.5)
                     all_results.append(item)
         finally:
             conn.close()
 
+    # Final Convergence: Re-rank by Posterior Confidence (Module 21)
     all_results.sort(key=lambda x: x["final_score"], reverse=True)
     return all_results[:limit]
 
 def mark_shard(shard_id: int, worked: bool):
+    """Bayesian Inversion: Updates the Prior (utility_score) based on outcome evidence."""
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists(): continue
         conn = get_connection(i)
         row = conn.execute("SELECT id FROM shards WHERE id = ?", (shard_id,)).fetchone()
         if row:
+            # Positive observation (worked) increases the prior weight.
+            # Negative observation (failed) discounts it.
             val = 1.0 if worked else -0.5
             conn.execute("UPDATE shards SET utility_score = utility_score + ? WHERE id = ?", (val, shard_id))
             conn.commit(); conn.close(); return True
@@ -213,6 +226,7 @@ def mark_shard(shard_id: int, worked: bool):
     return False
 
 def compile_recall_packet(shards: list) -> str:
+    """Synthesis of retrieved experience into a coherent context packet (Module 18)."""
     if not shards: return "<!-- NO RELEVANT MEMORY RECALLED -->"
     output = ["=== NOUGENSHARDS RECALL PACKET [BAYESIAN SYNTHESIS] ==="]
     for s in shards:
