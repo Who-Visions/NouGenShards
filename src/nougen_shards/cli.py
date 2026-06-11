@@ -736,7 +736,7 @@ def main():
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
-        "doctor": cmd_doctor
+        "doctor": cmd_doctor, "brain": cmd_brain
     }
     if args.command in cmds:
         cmds[args.command](args)

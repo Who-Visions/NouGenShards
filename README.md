@@ -5,9 +5,9 @@
 ░█░█░█░█░█░█░█░█░█▀▀░█░█░▀▀█░█▀█░█▀█░█▀░▀░▀░▀▀▀
 ```
 
-**NouGenShards gives AI tools local memory.**
+**NouGenShards turns your existing AI work into one searchable local memory.**
 
-It stores useful work as searchable "shards" on your machine, so agents can remember what worked without sending everything to the cloud. Local use is free for personal use.
+AI tools forget because their memory is trapped inside separate apps and limited context windows. NouGenShards acts as a **Metameric Memory Engine**. It scans your machine for scattered AI traces (from Claude, Gemini, Cursor, Codex, etc.), extracts the useful context, normalizes it, and helps you reuse what worked without sending everything to the cloud.
 
 > ⚠️ **Source-Available, Not Open Source**: This project is provided so users can inspect, learn, and trust the local client. Commercial reuse, redistribution for a fee, and competing hosted services are strictly prohibited. See [LICENSE.md](./LICENSE.md).
 
@@ -15,7 +15,8 @@ It stores useful work as searchable "shards" on your machine, so agents can reme
 
 ## 🚀 Why NouGenShards?
 
-- **Privacy First**: Your core memory stays on your machine in local SQLite databases.
+- **AI Memory Recon**: Run `nougen brain scan` to discover and import your fragmented AI history across 15+ known tool formats.
+- **Privacy First**: Your core memory stays on your machine in local SQLite databases. We redact secrets during import automatically.
 - **Federated Intelligence**: Search your local shards, your production SQL databases, and remote cloud nodes simultaneously.
 - **Bayesian Ranking**: The tool learns what is useful. "Marking" a shard as helpful improves future search relevance automatically.
 - **Production Ready**: Built-in OpenRouter routing with automatic fallback and response healing.
@@ -38,12 +39,44 @@ nougen.bat
 pip install .
 ```
 
-### 2. Initialize
+### 2. Find Your AI Brain
 
 ```bash
-nougen init
+# Discover local AI tool history
+nougen brain scan
+
+# Import history into your local memory (dry-run by default)
+nougen brain import
+
+# Write to the database
+nougen brain import --confirm
 ```
-This sets up your local substrate and secure vault.
+
+### 3. Check Health
+
+```bash
+nougen doctor
+```
+
+---
+
+## 💾 Core Workflow
+
+### Capture Experience
+```bash
+nougen add "Fixed the N+1 query bug in the user controller" --tags rails,fix,performance
+```
+
+### Search Memory
+```bash
+nougen search "N+1 query" --semantic
+```
+
+### Close the Loop
+```bash
+# Tell the tool Shard #5 was helpful to update its Bayesian utility score
+nougen mark 5 --worked
+```
 
 ---
 
@@ -63,7 +96,7 @@ See [Cloud Modes](./docs/cloud-modes.md) and [Licensing](./docs/licensing.md) fo
 
 To protect Who Visions' intellectual property, this repository contains the **Public Client**. High-value intelligence features are maintained in private modules:
 
-- **Public Client**: CLI, local memory, BYOK adapters, and plugin interfaces.
+- **Public Client**: CLI, local memory, BYOK adapters, AI Memory Recon, and plugin interfaces.
 - **Private Brain**: Proprietary ranking formulas, agent orchestration recipes, and cost optimizers.
 - **Paid API**: Hosted model gateway and global synchronization.
 
@@ -71,7 +104,7 @@ To protect Who Visions' intellectual property, this repository contains the **Pu
 
 ## 🥇 Standards
 
-- ✅ 100% Pass Rate on 112+ unit tests.
+- ✅ 100% Pass Rate on 121+ unit tests.
 - 💻 Hardened for Windows, macOS, and Linux.
 
 ## 📜 Notice
