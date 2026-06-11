@@ -173,6 +173,12 @@ def capture(event_type: str, title: str, content: str,
         conn.close()
 
 
+# Bayesian Ranking Config (Module 20)
+WEIGHT_BM25 = 0.4
+WEIGHT_SEMANTIC = 0.6
+WEIGHT_LIKELIHOOD = 0.7
+WEIGHT_PRIOR = 0.3
+
 def _process_fts_result(row, db_index, query_embedding):
     """Helper to process a single FTS result with Bayesian math."""
     item = dict(row)
@@ -186,10 +192,10 @@ def _process_fts_result(row, db_index, query_embedding):
         sem_score = cosine_similarity(query_embedding, json.loads(item["embedding"].decode()))
 
     # Synthesize Coherent Likelihood (Module 9)
-    likelihood = (norm_bm25 * 0.4) + (sem_score * 0.6)
+    likelihood = (norm_bm25 * WEIGHT_BM25) + (sem_score * WEIGHT_SEMANTIC)
 
     # 3. Bayesian Posterior = Likelihood * Prior (utility_score)
-    item["final_score"] = (likelihood * 0.7) + (item["utility_score"] * 0.3)
+    item["final_score"] = (likelihood * WEIGHT_LIKELIHOOD) + (item["utility_score"] * WEIGHT_PRIOR)
     return item
 
 
