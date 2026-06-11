@@ -616,10 +616,11 @@ def cmd_dream(args):
 def cmd_evolve(args):
     """Universal Open-World Skill Evolution (OpenSkill)."""
     if args.action == "run":
-        if not getattr(args, 'json', False):
+        is_json = getattr(args, 'json', False)
+        if not is_json:
             print(f"[*] Evolution: Initiating OpenSkill cycle for '{args.instruction}'...")
-        summary = evolution.run_autonomous_evolution(args.instruction)
-        if getattr(args, 'json', False):
+        summary = evolution.run_autonomous_evolution(args.instruction, verbose=not is_json)
+        if is_json:
             print(json.dumps(summary, indent=2))
         else:
             if summary.get("verified"):
@@ -635,16 +636,19 @@ def cmd_evolve(args):
 def cmd_dashboard(args):
     """Launches the Cortex HUD (Visual Dashboard)."""
     import uvicorn
-    # Import app from parent directory of nougen_shards package
-    # In a real install, app.py would be part of the package or a script
+    # app.py is in the project root. When installed, we assume it's discoverable
+    # in the path or we use absolute import if available.
     try:
-        from ...app import app # type: ignore
-    except (ImportError, ValueError):
-        print("Error: Dashboard module not found in path. Ensure you are running from the project root.")
+        # For local execution from root
+        sys.path.append(os.getcwd())
+        import app
+        dashboard_app = app.app
+    except ImportError:
+        print("Error: Dashboard module (app.py) not found in path.")
         return
 
     print(f"🚀 Igniting Cortex HUD on http://127.0.0.1:{args.port}...")
-    uvicorn.run(app, host="127.0.0.1", port=args.port)
+    uvicorn.run(dashboard_app, host="127.0.0.1", port=args.port)
 
 
 def get_parser():

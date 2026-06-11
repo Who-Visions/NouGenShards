@@ -14,10 +14,11 @@ class EvolutionEngine:
     """
     Implements the OpenSkill framework for autonomous skill construction.
     """
-    def __init__(self, workspace_path: Optional[Path] = None):
+    def __init__(self, workspace_path: Optional[Path] = None, verbose: bool = True):
         self.workspace = workspace_path or core.GLOBAL_DIR / "evolution_sandbox"
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.client = get_best_available_client()
+        self.verbose = verbose
 
     def acquire_knowledge(self, task_instruction: str) -> str:
         """
@@ -27,7 +28,8 @@ class EvolutionEngine:
         # In a real implementation, this would call Exa or Gemini Deep Research.
         # For the local substrate, we simulate the 'Wing' output.
         query = f"API documentation and best practices for: {task_instruction}"
-        print(f"[*] Wings: Querying open-world resources for '{query}'...")
+        if self.verbose:
+            print(f"[*] Wings: Querying open-world resources for '{query}'...")
         
         # Simulated grounding from 'Intelligence Wing'
         return f"Grounding for '{task_instruction}': Standard implementations involve using FTS5 for search and trigram tokenization for fuzzy matching."
@@ -37,7 +39,8 @@ class EvolutionEngine:
         Stage 2: Self-Built Virtual Tasks.
         Creates a test script that validates the skill without target-task supervision.
         """
-        print(f"[*] Evolution: Generating virtual verification task for '{instruction}'...")
+        if self.verbose:
+            print(f"[*] Evolution: Generating virtual verification task for '{instruction}'...")
         # Simulated virtual task creation
         test_script = f"""
 import sys
@@ -61,7 +64,8 @@ print('Virtual Task Passed')
         virtual_task = self.build_virtual_task(instruction, grounding)
         
         # 3. Refine (Simulated)
-        print(f"[*] Evolution: Refining skill against virtual verifier...")
+        if self.verbose:
+            print(f"[*] Evolution: Refining skill against virtual verifier...")
         skill_content = f"# SKILL: {instruction}\n\n## Grounding\n{grounding}\n\n## Implementation\nFollow the verified invariants."
         
         # 4. Verify
@@ -93,7 +97,7 @@ print('Virtual Task Passed')
         
         return {"verified": False, "error": "Virtual verification failed."}
 
-def run_autonomous_evolution(instruction: str):
+def run_autonomous_evolution(instruction: str, verbose: bool = True):
     """Entry point for the autonomous evolution loop."""
-    engine = EvolutionEngine()
+    engine = EvolutionEngine(verbose=verbose)
     return engine.evolve_skill(instruction)

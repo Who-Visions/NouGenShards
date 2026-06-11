@@ -28,7 +28,9 @@ def check_ollama_alive() -> bool:
     except Exception:
         return False
 
-def get_best_model() -> str | None:
+from typing import List, Optional, Dict, Any
+
+def get_best_model() -> Optional[str]:
     """Retrieve the best available local LLM model."""
     if not check_ollama_alive():
         return None
@@ -130,7 +132,7 @@ def get_backup_papers() -> list:
         }
     ]
 
-def evaluate_paper(paper: dict, model: str | None) -> str:
+def evaluate_paper(paper: dict, model: Optional[str]) -> str:
     """
     Evaluates a paper with recursive autonomous improvement.
     Transposes DavOs-class 'Machine Note' patterns for 3x hit-rate boost.

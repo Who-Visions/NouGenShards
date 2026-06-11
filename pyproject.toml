@@ -21,6 +21,12 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "sqlalchemy",
+    "gradio",
+    "tqdm",
+    "colorama",
+    "openai",
+    "google-generativeai",
+    "pydantic",
 ]
 
 [project.urls]

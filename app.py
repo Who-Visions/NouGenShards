@@ -21,9 +21,8 @@ if os.environ.get("SPACE_ID"):
     os.environ["NOUGEN_HOME"] = "/data"
     os.environ["NOUGEN_VAULT_DIR"] = "/data/.vault"
 
-from nougen_shards import core, federation, history, keymaker, billing
-from nougen_shards.brain_scan import scan_environment, run_import
-from nougen_shards.models_client import OpenRouterClient
+from nougen_shards import core, history
+from nougen_shards.brain_scan import scan_environment
 
 app = FastAPI(title="NouGenShards Node")
 
@@ -81,7 +80,7 @@ def run_recon():
     for t, count in tools.items():
         if t != "unknown": report.append(f"- **.{t}**: {count} artifacts found")
     
-report.append(f"\n**Total potential shards**: {len(high) * 2}")
+    report.append(f"\n**Total potential shards**: {len(high) * 2}")
     return "\n".join(report)
 
 def gr_search(query):
