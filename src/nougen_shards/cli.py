@@ -3,13 +3,14 @@ import argparse
 import sys
 import json
 import sqlite3
+import os
 from pathlib import Path
 from . import core as shards
 from . import keymaker
 from .models_client import (
     get_best_available_client, OllamaClient,
     OpenAIClient, AnthropicClient, GeminiClient, LocalLLMClient,
-    HuggingFaceClient, OpenRouterClient
+    HuggingFaceClient, OpenRouterClient, WhoVisionsCloudClient
 )
 from . import nougen_context
 from . import nougen_sandbox
@@ -44,6 +45,13 @@ def get_client(provider: str):
         return HuggingFaceClient()
     if provider in ["openrouter", "or"]:
         return OpenRouterClient()
+    if provider in ["whovisions", "cloud"]:
+        # Load cloud config from vault
+        creds = keymaker.get_secret("NGS_CLOUD_CREDENTIALS")
+        if creds and "," in creds:
+            url, token = creds.split(",", 1)
+            return WhoVisionsCloudClient(node_url=url, user_token=token)
+        return WhoVisionsCloudClient()
     return None
 
 
@@ -62,7 +70,8 @@ def cmd_auth(args):
             "huggingface": "HUGGINGFACE_API_KEY",
             "hf": "HUGGINGFACE_API_KEY",
             "openrouter": "OPENROUTER_API_KEY",
-            "or": "OPENROUTER_API_KEY"
+            "or": "OPENROUTER_API_KEY",
+            "cloud": "NGS_CLOUD_CREDENTIALS"
         }
         provider = args.provider.lower()
         if provider not in key_map:
@@ -78,19 +87,18 @@ def cmd_auth(args):
             print(json.dumps(keys))
             return
         print("🔐 Connected Services:")
-        providers = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
-                     "HUGGINGFACE_API_KEY", "OPENROUTER_API_KEY"]
-        display_names = {
-            "OPENAI_API_KEY": "OpenAI",
-            "ANTHROPIC_API_KEY": "Anthropic",
-            "GOOGLE_API_KEY": "Google/Gemini",
-            "HUGGINGFACE_API_KEY": "Hugging Face",
-            "OPENROUTER_API_KEY": "OpenRouter"
+        providers = {
+            "OPENAI_API_KEY": "OpenAI (BYOK)",
+            "ANTHROPIC_API_KEY": "Anthropic (BYOK)",
+            "GOOGLE_API_KEY": "Google/Gemini (BYOK)",
+            "HUGGINGFACE_API_KEY": "Hugging Face (BYOK)",
+            "OPENROUTER_API_KEY": "OpenRouter (BYOK)",
+            "NGS_CLOUD_CREDENTIALS": "Who Visions Cloud (Pro)"
         }
         found = False
-        for k in providers:
+        for k, display in providers.items():
             if k in keys:
-                print(f" ✅ {display_names[k]}")
+                print(f" ✅ {display}")
                 found = True
         if not found:
             print(" No cloud services connected.")

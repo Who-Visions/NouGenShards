@@ -1,6 +1,6 @@
 """
 NouGenShards Production Node for Hugging Face Spaces.
-Architecture: FastAPI + Persistent Storage (/data) + Token Auth.
+Architecture: FastAPI + Persistent Storage (/data) + Token Auth + Cloud Gateway.
 """
 import os
 import sys
@@ -14,13 +14,12 @@ from pydantic import BaseModel
 sys.path.append(os.path.join(os.getcwd(), 'src'))
 
 # Override Storage for HF Persistence
-# (Module 10: Integrate Constraints)
 if os.environ.get("SPACE_ID"):
-    # We are in a HF Space, use persistent storage
     os.environ["NOUGEN_HOME"] = "/data"
     os.environ["NOUGEN_VAULT_DIR"] = "/data/.vault"
 
-from nougen_shards import core, federation, history, keymaker
+from nougen_shards import core, federation, history, keymaker, billing
+from nougen_shards.models_client import OpenRouterClient, OpenAIClient
 
 app = FastAPI(title="NouGenShards Node")
 
@@ -29,13 +28,12 @@ app = FastAPI(title="NouGenShards Node")
 NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN")
 
 def verify_token(x_ngs_token: str = Header(None)):
-    """Verifies the NGS_NODE_TOKEN for mutative operations."""
+    """Verifies the NGS_NODE_TOKEN for mutative operations and gateway access."""
     if not NODE_TOKEN:
-        # If no token set in environment, fail closed for writes
         raise HTTPException(status_code=503, detail="Node write-auth not configured.")
     if x_ngs_token != NODE_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid node token.")
-    return True
+    return x_ngs_token
 
 # --- Schemas ---
 
@@ -58,11 +56,17 @@ class MarkInput(BaseModel):
 class SyncPushInput(BaseModel):
     shards: List[dict]
 
+class CloudChatInput(BaseModel):
+    model: str
+    messages: List[dict]
+    stream: bool = False
+    fallback_models: Optional[List[str]] = None
+    session_id: Optional[str] = None
+
 # --- Endpoints ---
 
 @app.get("/health")
 def health():
-    """Module 21: Heartbeat verification."""
     return {
         "status": "ignited",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -71,9 +75,7 @@ def health():
 
 @app.post("/search")
 def search(q: SearchQuery):
-    """Unified federated search over this node's substrate."""
     results = core.retrieve(q.query, limit=q.limit)
-    # Strip internal DB paths before sending over wire
     for r in results:
         if "embedding" in r and isinstance(r["embedding"], bytes):
             r["embedding"] = json.loads(r["embedding"].decode())
@@ -81,7 +83,6 @@ def search(q: SearchQuery):
 
 @app.post("/capture", dependencies=[Depends(verify_token)])
 def capture(shard: ShardInput):
-    """Store a new experience shard on this remote node."""
     success = core.capture(
         shard.event_type, 
         shard.title, 
@@ -93,17 +94,41 @@ def capture(shard: ShardInput):
         return {"status": "exists", "message": "Shard already in substrate."}
     return {"status": "captured"}
 
-@app.post("/mark", dependencies=[Depends(verify_token)])
-def mark(input: MarkInput):
-    """Update Bayesian utility based on outcome."""
-    success = core.mark_shard(input.shard_id, worked=input.worked)
-    if not success:
-        raise HTTPException(status_code=404, detail="Shard not found.")
-    return {"status": "updated"}
+# --- Who Visions Cloud Gateway (Module 8: System Harmonization) ---
+
+@app.post("/cloud/chat")
+def cloud_chat(input: CloudChatInput, token: str = Depends(verify_token)):
+    """
+    Hosted Cloud LLM Gateway.
+    Protects Who Visions keys and enforces metered billing.
+    """
+    # 1. Check Subscription
+    sub = billing.check_subscription(token)
+    if sub["status"] != "active":
+        raise HTTPException(status_code=402, detail=sub["message"])
+        
+    # 2. Call Provider Server-Side
+    # (Uses the node's own OpenRouter key from environment)
+    client = OpenRouterClient()
+    if not client.is_alive():
+        raise HTTPException(status_code=500, detail="Cloud provider not configured on node.")
+        
+    res = client.chat_with_fallback(
+        model=input.model,
+        messages=input.messages,
+        fallback_models=input.fallback_models,
+        session_id=input.session_id,
+        stream=input.stream
+    )
+    
+    # 3. Meter Usage
+    if "usage" in res:
+        billing.log_usage(token, "openrouter", res.get("model", "unknown"), res["usage"])
+        
+    return res
 
 @app.get("/stats")
 def stats(period: str = "week"):
-    """Node-level memory growth and utility analytics."""
     engine = history.HistoryEngine()
     return {
         "growth": engine.get_growth_rate(period),
@@ -111,12 +136,10 @@ def stats(period: str = "week"):
         "timeline": engine.get_timeline(period)
     }
 
-# --- Sync Fabric (Module 18: Reconstruct Coherence) ---
+# --- Sync Fabric ---
 
 @app.get("/sync/pull", dependencies=[Depends(verify_token)])
-def sync_pull(since: Optional[str] = None):
-    """Returns shards created after the specified timestamp."""
-    # Simple pull: all shards (future implementation will add timestamp filtering)
+def sync_pull():
     all_shards = []
     for i in range(1, core.MAX_DB_COUNT + 1):
         if not core.get_db_path(i).exists(): continue
@@ -131,7 +154,6 @@ def sync_pull(since: Optional[str] = None):
 
 @app.post("/sync/push", dependencies=[Depends(verify_token)])
 def sync_push(input: SyncPushInput):
-    """Batch-ingest shards from another node."""
     count = 0
     for s in input.shards:
         success = core.capture(
@@ -164,5 +186,4 @@ app = gr.mount_gradio_app(app, io, path="/")
 
 if __name__ == "__main__":
     import uvicorn
-    # Local dev on 4444 to match constitution
     uvicorn.run(app, host="0.0.0.0", port=4444)
