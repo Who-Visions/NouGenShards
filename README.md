@@ -5,143 +5,99 @@
 ░█░█░█░█░█░█░█░█░█▀▀░█░█░▀▀█░█▀█░█▀█░█▀░▀░▀░▀▀▀
 ```
 
-**🧠 Persistent local memory and federated intelligence for your AI tools.**
+**NouGenShards gives AI tools local memory.**
 
-NouGenShards helps your AI tools remember their work across the entire fabric of your data. It saves "shards" of information—records of what worked and what did not work—in local databases, external SQL servers, or remote cloud nodes. This persistent memory lets your tools find the right information quickly by searching both your computer and your cloud subscriptions simultaneously.
+It stores useful work as searchable "shards" on your machine, so agents can remember what worked without sending everything to the cloud. Local use is free. Cloud models are optional through your own key (BYOK) or paid Who Visions cloud access.
 
-> 🇭🇹 This tool is built by **Who Visions** to help people use AI tools on their own computers and in the cloud, creating a unified bridge for global diaspora intelligence.
+> 🇭🇹 Built by **Who Visions** to empower global diaspora intelligence with durable, private memory.
 
 ---
 
-## 🚀 How to Start
+## 🚀 Why NouGenShards?
 
-### 1. 📦 Install
+- **Privacy First**: Your core memory stays on your machine in local SQLite databases.
+- **Federated Intelligence**: Search your local shards, your production SQL databases, and remote cloud nodes simultaneously.
+- **Bayesian Ranking**: The tool learns what is useful. "Marking" a shard as helpful improves future search relevance automatically.
+- **Production Ready**: Built-in OpenRouter routing with automatic fallback, prompt caching, and response healing.
+
+---
+
+## 📦 Quick Start
+
+### 1. Install
 
 **Windows (One-Click)** 🪟
 ```bash
 # Just run the launcher
 nougen.bat
 ```
-*The launcher automatically sets up a secure virtual environment and installs all dependencies.*
 
 **Other Platforms** 🐍🟢
 ```bash
-# If you use Python
+# Using Python
 pip install .
 
-# If you use Node.js
+# Using Node.js
 npm install -g .
 ```
 
-### 2. 🛡️ Setup
+### 2. Initialize
 
 ```bash
 nougen init
 ```
-This initializes your local memory substrate and sets up the secure vault. 📂
+This sets up your local substrate and secure vault.
+
+### 3. Check Health
+
+```bash
+nougen doctor
+```
+Verifies your installation, database paths, and connected services.
 
 ---
 
-## ☁️ Hybrid Intelligence (Cloud & Local)
+## 💾 Core Workflow
 
-NouGenShards connects your local environment to the cloud AI ecosystem.
-
-### 🔐 Connect Your Subscriptions (BYOK)
-Bring your own API keys for cloud AI services. 🔑
+### Capture Experience
 ```bash
-# Set your API keys
-nougen auth set-key openai <your-key>
-nougen auth set-key openrouter <your-key>
-nougen auth set-key huggingface <your-key>
-
-# List your connected services
-nougen auth list
+nougen add "Fixed the N+1 query bug in the user controller" --tags rails,fix,performance
 ```
 
-### 🌉 Link External Databases
-Connect to your existing databases (Postgres, MySQL, SQLite) to search your production data alongside your memory. 🔗
+### Search Memory
 ```bash
-# Link an external SQL database
-nougen db link "postgresql://user:pass@localhost/mydb" --table production_logs
+nougen search "N+1 query" --semantic
 ```
 
-### 📡 Federated Memory Nodes
-Connect to other NouGenShards instances (like your team's server or a remote orchestrator). 🌐
+### Close the Loop
 ```bash
-# Link a remote NouGen cloud node
-nougen node link "https://your-space.hf.space" --name team_core
+# Tell the tool Shard #5 was helpful to update its Bayesian utility score
+nougen mark 5 --worked
 ```
 
 ---
 
-## 💾 Manage Memory (Shards)
+## ☁️ Cloud & Hybrid Modes
 
-### 📝 Save Shards
-Save what you have learned or what you have done as a memory shard. 🧩
-```bash
-# Save a new shard with optional vector embedding
-nougen add "Updated the API endpoint to v2" --tags api,update --embed
-```
+NouGenShards supports three ways to use cloud intelligence:
 
-### 🕵️ Search and Find
-Find shards across your local computer, linked databases, and cloud nodes. 🥇
-```bash
-# Unified search (Ranked by Bayesian Relevance)
-nougen search "api update" --semantic
-```
+1.  **Local (Free)**: Use Ollama or LM Studio on your own machine.
+2.  **BYOK (Bring Your Own Key)**: Connect your own OpenAI, Anthropic, or OpenRouter keys.
+3.  **Who Visions Cloud (Pro)**: Access our hosted resilient brain with metered billing.
 
-### 👍 Mark Results
-Tell the tool if a shard was helpful. This updates the **Bayesian Prior**, helping the tool give you better answers in the future. 📈
-```bash
-# Mark record number 1 as helpful
-nougen mark 1 --worked
-```
-
----
-
-## ⚡ OpenRouter Production Routing
-
-NouGenShards includes a production-grade routing layer for OpenRouter, designed for maximum resilience and cost-efficiency.
-
-### 🛡️ Features
-*   **Model Fallback**: Automatically tries multiple models in order if the primary fails.
-*   **Prompt Caching**: Maximizes cache hits using stable message prefixes and `session_id` for sticky provider routing.
-*   **Response Healing**: Automatically repairs malformed JSON, markdown-wrapped JSON, and common syntax errors using the OpenRouter healing plugin.
-*   **Structured Outputs**: Enforces JSON Schema validation with `strict: true` at the API level.
-*   **Local Validation**: Final JSON schema validation layer before memory ingestion.
-*   **Usage Telemetry**: Detailed tracking of `prompt_tokens`, `completion_tokens`, and `cached_tokens`.
-
-### 🚀 Usage
-
-**Chat with Fallback**
-```bash
-# Uses openrouter/auto with default fallback models
-nougen router chat "What is the capital of Haiti?" --session-id nougen-dev
-```
-
-**Structured JSON Output**
-```bash
-# Requests JSON matching the provided schema, with auto-healing enabled
-nougen router json "Extract the entities: Dav3 went to the Stadium." --schema person_schema.json --healing
-```
-
-**Check Routing Health**
-```bash
-nougen router doctor
-```
+See [Cloud Modes](./docs/cloud-modes.md) and [Billing Boundaries](./docs/billing-boundaries.md) for details.
 
 ---
 
 ## 🧩 Project Structure
 
-- **📂 src/nougen_shards/**: The main code for the tool.
-- **🔌 src/nougen_shards/connectors/**: SQL and Cloud database connectors.
-- **🧪 tests/**: Code to check that the tool works correctly.
+- **📂 src/nougen_shards/**: Core logic (Shards, Context, Models).
+- **🔌 src/nougen_shards/connectors/**: SQL and Cloud federation adapters.
+- **🧪 tests/**: Comprehensive validation suite.
 
-## 🥇 Quality and Standards
+## 🥇 Standards
 
-- ✨ 10.00/10 Pylint score on all core modules.
-- ✅ 100% Pass Rate on all 102+ unit tests.
+- ✅ 100% Pass Rate on 112+ unit tests.
 - 💻 Hardened for Windows, macOS, and Linux.
 
 ## 📜 License

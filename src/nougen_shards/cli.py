@@ -673,6 +673,52 @@ def get_parser():
     return parser
 
 
+def cmd_doctor(args):
+    """Verifies installation, database health, and service connectivity."""
+    print("👨‍⚕️ NouGenShards Doctor: Running diagnostics...")
+    
+    # 1. Check Substrate
+    print("\n[Substrate]")
+    active = shards.get_active_db_index()
+    found_db = False
+    for i in range(1, shards.MAX_DB_COUNT + 1):
+        p = shards.get_db_path(i)
+        if p.exists():
+            size = p.stat().st_size / (1024 * 1024)
+            print(f" ✅ DB #{i}: {p} ({size:.2f} MB)")
+            found_db = True
+    if not found_db:
+        print(" ❌ No database shards found. Run 'nougen init' to bootstrap.")
+
+    # 2. Check Vault
+    print("\n[Vault]")
+    vault_path = keymaker.DB_PATH
+    if vault_path.exists():
+        print(f" ✅ Vault: {vault_path.absolute()}")
+        providers = keymaker.list_providers()
+        print(f" ✅ Connected Providers: {', '.join(providers) if providers else 'None'}")
+    else:
+        print(" ❌ Vault not found.")
+
+    # 3. Check Providers
+    print("\n[Service Connectivity]")
+    p_status = {}
+    for name in ["openai", "anthropic", "google", "openrouter", "local"]:
+        c = get_client(name)
+        alive = c.is_alive() if c else False
+        p_status[name] = alive
+        print(f" {'✅' if alive else '❌'} {name.capitalize()}")
+
+    if getattr(args, 'json', False):
+        import json
+        print("\n[JSON Output]")
+        report = {
+            "substrate": {"active_index": active, "found": found_db},
+            "vault": {"path": str(vault_path.absolute()), "providers": keymaker.list_providers()},
+            "connectivity": p_status
+        }
+        print(json.dumps(report, indent=2))
+
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
@@ -686,7 +732,8 @@ def main():
         "init": cmd_init, "add": cmd_add, "search": cmd_search, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
-        "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router
+        "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
+        "doctor": cmd_doctor
     }
     if args.command in cmds:
         cmds[args.command](args)
