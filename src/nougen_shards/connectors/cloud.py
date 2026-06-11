@@ -5,47 +5,74 @@ import urllib.error
 
 def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
     """
-    Queries remote NouGenShards cloud nodes and maps to standard format.
-    Expects a remote POST endpoint that accepts {"query": "...", "limit": 3}
+    Queries remote NouGenShards nodes and maps results to standard format.
     """
     results = []
     
     for conf in cloud_configs:
-        url = conf.get("url")
-        name = conf.get("name", "remote_node")
-        node_id = conf.get("id", "cloud")
+        url = conf['url'].rstrip('/')
+        name = conf['name']
         
         try:
+            # POST /search
             payload = {"query": query, "limit": limit}
-            data = json.dumps(payload).encode("utf-8")
-            
-            # Use standard search endpoint (Module 10 strategy)
-            req = urllib.request.Request(f"{url}/search", data=data, method="POST")
+            req = urllib.request.Request(
+                f"{url}/search",
+                data=json.dumps(payload).encode(),
+                method="POST"
+            )
             req.add_header("Content-Type", "application/json")
-            # In v2.2, we might want to add X-Sol-Ai-Key if available in vault
             
-            with urllib.request.urlopen(req, timeout=5) as response:
-                remote_data = json.loads(response.read().decode("utf-8"))
-                
-                # Remote data might be a list of shards already
-                for item in remote_data:
-                    # Standardize Shard format with cloud source tracking
-                    results.append({
-                        "id": f"cloud_{node_id}_{item.get('id', hash(item.get('title', '')))}",
-                        "event_type": "CLOUD_SHARD",
-                        "title": item.get("title", "Remote Shard"),
-                        "content": item.get("content", ""),
-                        "tags": item.get("tags", "[\"cloud\"]"),
-                        "utility_score": item.get("utility_score", 1.0),
-                        "access_count": 0,
-                        "file_hash": item.get("file_hash", ""),
-                        "bm25_score": 0.0,
-                        "final_score": 0.45, # Slightly lower prior than local/SQL
-                        "_db_index": f"cloud_{name}"
-                    })
-        except Exception as e:
+            with urllib.request.urlopen(req, timeout=5.0) as res:
+                remote_data = json.loads(res.read().decode())
+                if isinstance(remote_data, list):
+                    for r in remote_data:
+                        # Normalize to local shard shape
+                        results.append({
+                            "id": f"cloud_{conf['id']}_{r.get('id')}",
+                            "event_type": f"CLOUD_{r.get('event_type', 'SHARD')}",
+                            "title": r.get('title', 'Untitled Cloud Shard'),
+                            "content": r.get('content', ''),
+                            "tags": r.get('tags', '[]'),
+                            "utility_score": r.get('utility_score', 1.0),
+                            "access_count": r.get('access_count', 0),
+                            "file_hash": r.get('file_hash', ''),
+                            "final_score": r.get('final_score', 0.45),
+                            "_db_index": f"cloud_{name}"
+                        })
+        except Exception:
             # Silent fail to prevent blocking the federation loop
             # (Module 10: Graceful Degradation)
             continue
             
     return results
+
+def push_to_cloud(shards: list, cloud_url: str, token: str) -> dict:
+    """Pushes a list of shards to a remote cloud node."""
+    url = cloud_url.rstrip('/')
+    payload = {"shards": shards}
+    try:
+        req = urllib.request.Request(
+            f"{url}/sync/push",
+            data=json.dumps(payload).encode(),
+            method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        req.add_header("X-NGS-Token", token)
+        
+        with urllib.request.urlopen(req, timeout=10.0) as res:
+            return json.loads(res.read().decode())
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def pull_from_cloud(cloud_url: str, token: str) -> list:
+    """Pulls all shards from a remote cloud node."""
+    url = cloud_url.rstrip('/')
+    try:
+        req = urllib.request.Request(f"{url}/sync/pull", method="GET")
+        req.add_header("X-NGS-Token", token)
+        
+        with urllib.request.urlopen(req, timeout=10.0) as res:
+            return json.loads(res.read().decode())
+    except Exception:
+        return []
