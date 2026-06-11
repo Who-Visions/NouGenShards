@@ -23,7 +23,7 @@ from .brain_scan import scan_environment, run_import, print_scan_report, print_i
 from . import dream
 from . import evolution
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 
