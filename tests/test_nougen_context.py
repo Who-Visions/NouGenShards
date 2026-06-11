@@ -10,7 +10,24 @@ def mock_db_path(tmp_path, monkeypatch):
     """Fixture to use a temporary database path for testing."""
     db_file = tmp_path / "test_session.db"
     monkeypatch.setattr(nougen_context, "SESSION_DB_PATH", str(db_file))
+    # Sandbox execution is opt-in by default; enable it for these capability tests.
+    monkeypatch.setenv("NOUGEN_ENABLE_SANDBOX", "1")
     return str(db_file)
+
+
+def test_sandbox_disabled_by_default(monkeypatch):
+    """By default the sandbox refuses to run arbitrary code (security gate)."""
+    monkeypatch.delenv("NOUGEN_ENABLE_SANDBOX", raising=False)
+    result = nougen_sandbox.execute_sandboxed("print('should not run')", language="python")
+    assert "disabled by default" in result
+
+
+def test_sandbox_trusted_bypasses_gate(monkeypatch):
+    """Trusted internal callers may run even when the gate is off."""
+    monkeypatch.delenv("NOUGEN_ENABLE_SANDBOX", raising=False)
+    result = nougen_sandbox.execute_sandboxed(
+        "print('trusted ok')", language="python", trusted=True)
+    assert result == "trusted ok"
 
 def test_init_context_db():
     """Test database initialization."""

@@ -49,6 +49,20 @@ def get_routing_index(fhash: str) -> int:
     return (int(fhash, 16) % MAX_DB_COUNT) + 1
 
 
+def get_write_index(fhash: str) -> int:
+    """
+    Resolves the destination DB for a new shard (Module 4: Surface Leverage).
+    Routes deterministically by content hash for uniform O(1) distribution across
+    the 9-DB cluster, then skips any database that has hit its 1GB constraint.
+    """
+    start = get_routing_index(fhash)
+    for offset in range(MAX_DB_COUNT):
+        idx = ((start - 1 + offset) % MAX_DB_COUNT) + 1
+        if not is_db_full(idx):
+            return idx
+    return start  # All databases full; fall back to the hash target.
+
+
 def get_active_db_index() -> int:
     """Legacy alias, preserved for cli.py compatibility."""
     return get_routing_index(hashlib.md5(b"default").hexdigest())
@@ -154,7 +168,7 @@ def capture(event_type: str, title: str, content: str,
         finally:
             conn.close()
 
-    target_idx = get_active_db_index()
+    target_idx = get_write_index(fhash)
     init_db(target_idx)
 
     emb_blob = sqlite3.Binary(json.dumps(embedding).encode()) if embedding else None

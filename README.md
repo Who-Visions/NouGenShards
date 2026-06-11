@@ -23,8 +23,8 @@ AI tools forget because their memory is trapped inside separate apps and limited
 - **[The Metameric Memory Engine](docs/architecture.md)**: Built on a strict 21-step cognitive architecture, transforming chaotic logs into unified, Bayesian-ranked memory shards.
 - **The Visual Soul (Cortex HUD)**: Don't just trust the CLI; see your memory grow. The HUD provides a 3x3 substrate map, high-velocity timelines, and a point-and-click shard browser.
 - **AI Memory Recon**: Run `nougen brain scan` to discover and import your fragmented AI history across 15+ known tool formats.
-- **Parametric Dreams**: The engine "sleeps" to consolidate knowledge, using fast-weight LoRA updates (TMEM) to burn distilled wisdom directly into your local model.
-- **Privacy First**: Your core memory stays on your machine in local SQLite databases. We redact secrets during import automatically. Cloud platforms forget, but local memory belongs to you.
+- **Parametric Dreams** *(experimental / preview)*: The engine "sleeps" to consolidate knowledge — it applies Bayesian decay and exports a distilled SFT dataset (TMEM) ready for a fast-weight LoRA update. The dataset export is real; the weight-update step and the open-world skill **Evolution** engine are simulated scaffolding today, not production self-evolution.
+- **Privacy First**: Your core memory stays on your machine in local SQLite databases. Secrets are redacted on import, and the credential vault encrypts values at rest (Windows DPAPI; macOS/Linux via the OS keyring when `keyring` is installed). Cloud platforms forget, but local memory belongs to you.
 - **Federated Intelligence**: Search your local shards, your production SQL databases, and remote cloud nodes simultaneously.
 - **Bayesian Ranking**: The tool learns what is useful. "Marking" a shard as helpful improves future search relevance automatically.
 - **Production Ready**: Built-in OpenRouter routing with automatic fallback and response healing.

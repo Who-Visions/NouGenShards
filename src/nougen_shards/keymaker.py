@@ -16,6 +16,14 @@ from typing import Optional
 
 # Marker prefix for values encrypted at rest via Windows DPAPI (user-bound).
 _DPAPI_PREFIX = "dpapi1:"
+# Marker prefix for values stored in the OS keyring (macOS Keychain / Secret Service).
+_KEYRING_PREFIX = "keyring1:"
+_KEYRING_SERVICE = "nougenshards-vault"
+
+
+def _is_encrypted(stored: str) -> bool:
+    """True if the stored value is protected (DPAPI or keyring), not legacy plaintext."""
+    return str(stored).startswith((_DPAPI_PREFIX, _KEYRING_PREFIX))
 
 
 class _DataBlob(ctypes.Structure):
@@ -37,24 +45,46 @@ def _dpapi_call(func_name: str, data: bytes) -> bytes:
         ctypes.windll.kernel32.LocalFree(blob_out.pbData)
 
 
-def _protect(value: str) -> str:
-    """Encrypts a secret value at rest. Fails closed: never stores plaintext on Windows."""
-    if os.name != "nt":
-        # Non-Windows fallback: refuse silent plaintext unless explicitly allowed.
+def _protect(value: str, key: Optional[str] = None) -> str:
+    """
+    Encrypts a secret value at rest. Fails closed: never stores plaintext silently.
+
+    Windows  -> DPAPI (user-bound).
+    Other OS -> OS keyring (macOS Keychain / freedesktop Secret Service) if `keyring`
+                is installed; the DB then stores only a reference, not the secret.
+                If keyring is unavailable, refuse unless NOUGEN_ALLOW_PLAINTEXT_VAULT=1.
+    """
+    if os.name == "nt":
+        encrypted = _dpapi_call("CryptProtectData", value.encode("utf-8"))
+        return _DPAPI_PREFIX + base64.b64encode(encrypted).decode("ascii")
+
+    try:
+        import keyring  # pylint: disable=import-outside-toplevel
+        ref = key or hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+        keyring.set_password(_KEYRING_SERVICE, ref, value)
+        return _KEYRING_PREFIX + ref
+    except ImportError:
         if os.getenv("NOUGEN_ALLOW_PLAINTEXT_VAULT") == "1":
             return value
         raise RuntimeError(
-            "DPAPI unavailable on this OS. Set NOUGEN_ALLOW_PLAINTEXT_VAULT=1 to override (not recommended).")
-    encrypted = _dpapi_call("CryptProtectData", value.encode("utf-8"))
-    return _DPAPI_PREFIX + base64.b64encode(encrypted).decode("ascii")
+            "No OS keyring backend available on this platform. "
+            "Install it with 'pip install keyring', or set "
+            "NOUGEN_ALLOW_PLAINTEXT_VAULT=1 to override (not recommended).") from None
 
 
 def _unprotect(stored: str) -> str:
     """Decrypts a stored value; passes through legacy plaintext rows untouched."""
-    if not stored.startswith(_DPAPI_PREFIX):
-        return stored  # legacy plaintext row (pre-encryption migration)
-    raw = base64.b64decode(stored[len(_DPAPI_PREFIX):])
-    return _dpapi_call("CryptUnprotectData", raw).decode("utf-8")
+    if stored.startswith(_DPAPI_PREFIX):
+        raw = base64.b64decode(stored[len(_DPAPI_PREFIX):])
+        return _dpapi_call("CryptUnprotectData", raw).decode("utf-8")
+    if stored.startswith(_KEYRING_PREFIX):
+        import keyring  # pylint: disable=import-outside-toplevel
+        ref = stored[len(_KEYRING_PREFIX):]
+        value = keyring.get_password(_KEYRING_SERVICE, ref)
+        if value is None:
+            raise OSError(f"Keyring entry '{ref}' not found.")
+        return value
+    return stored  # legacy plaintext row (pre-encryption migration)
 
 
 def _fingerprint(value: str) -> str:
@@ -120,7 +150,7 @@ def _export_to_csv():
                     fp = _fingerprint(_unprotect(stored))
                 except OSError:
                     fp = "unreadable"
-                writer.writerow([row_id, key, fp, stored.startswith(_DPAPI_PREFIX), rotated])
+                writer.writerow([row_id, key, fp, _is_encrypted(stored), rotated])
     except sqlite3.Error:
         pass
     finally:
@@ -138,7 +168,7 @@ def ingest_secret(key: str, value: str):
         conn.execute("""
             INSERT OR REPLACE INTO secrets (secret_key, secret_value, last_rotated)
             VALUES (?, ?, ?)
-        """, (key, _protect(value), timestamp))
+        """, (key, _protect(value, key), timestamp))
         conn.commit()
         print(f"  [+] Ingested: {key} (Value Redacted)")
         _export_to_csv()
@@ -276,9 +306,9 @@ def migrate_to_encrypted() -> int:
     try:
         rows = conn.execute("SELECT secret_key, secret_value FROM secrets").fetchall()
         for key, stored in rows:
-            if not str(stored).startswith(_DPAPI_PREFIX):
+            if not _is_encrypted(stored):
                 conn.execute("UPDATE secrets SET secret_value = ? WHERE secret_key = ?",
-                             (_protect(str(stored)), key))
+                             (_protect(str(stored), key), key))
                 migrated += 1
         conn.commit()
     finally:
