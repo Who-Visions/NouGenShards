@@ -8,10 +8,11 @@
 
 ## SECTION 1: CORE ARCHITECTURE
 
-1. **Shard Layer**: Persistent local memory using SQLite + FTS5.
-2. **Multi-DB Sharding**: Horizontal scaling across 9 databases, each capped at 1GB.
-3. **Context Layer**: Ephemeral session memory with sandboxed execution.
-4. **Universal Interface**: Unified binary `nougen` for all operations.
+1. **The 21-Step Cognitive Architecture**: The agent must adhere strictly to the [Metameric Memory Engine](docs/architecture.md) blueprint mapped directly to this codebase. The operating loop moves from Reconnaissance (Metamers) to Substrate Hardening to Dream State Evolution.
+2. **Shard Layer**: Persistent local memory using SQLite + FTS5.
+3. **Multi-DB Sharding**: Horizontal scaling across 9 databases, each capped at 1GB, accessed via deterministic O(1) hash routing.
+4. **Context Layer**: Ephemeral session memory with sandboxed execution.
+5. **Universal Interface**: Unified binary `nougen` and FastMCP standard protocol for all operations.
 
 ## SECTION 2: QUALITY & HARDENING
 
