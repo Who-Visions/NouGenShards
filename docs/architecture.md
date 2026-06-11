@@ -6,6 +6,9 @@ We do not ask AI to remember. We reverse-engineer where it stores its state, abs
 
 Here is the exact software architecture mapped to the 21-step operating loop:
 
+## Theoretical Foundation: The Architecture of Adjacency
+The Metameric Memory Engine is mathematically grounded in the [Architecture of Adjacency](theory/n-gram-topologies.md). We leverage N-gram topologies and latent linguistic structures to transform raw symbolic streams into actionable Markovian spaces.
+
 ---
 
 ## Phase 1: The Reconnaissance (Discovery & Parsing)
