@@ -593,7 +593,8 @@ def cmd_ingest(args):
 def cmd_dream(args):
     """Executes the Dream cycle (Autonomous Metameric Evolution)."""
     if args.action == "wake":
-        print("🌌 Entering the Dream State...")
+        if not getattr(args, 'json', False):
+            print("🌌 Entering the Dream State...")
         summary = dream.wake()
         if getattr(args, 'json', False):
             print(json.dumps(summary, indent=2))
@@ -609,7 +610,8 @@ def cmd_dream(args):
 def cmd_evolve(args):
     """Universal Open-World Skill Evolution (OpenSkill)."""
     if args.action == "run":
-        print(f"[*] Evolution: Initiating OpenSkill cycle for '{args.instruction}'...")
+        if not getattr(args, 'json', False):
+            print(f"[*] Evolution: Initiating OpenSkill cycle for '{args.instruction}'...")
         summary = evolution.run_autonomous_evolution(args.instruction)
         if getattr(args, 'json', False):
             print(json.dumps(summary, indent=2))
