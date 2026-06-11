@@ -6,7 +6,14 @@ SECRET_PATTERNS = [
     (re.compile(r'sk-or-v1-[a-zA-Z0-9_-]{20,}'), "<REDACTED_OPENROUTER_KEY>"),
     (re.compile(r'sk-[a-zA-Z0-9]{20,}'), "<REDACTED_OPENAI_KEY>"),
     (re.compile(r'hf_[a-zA-Z0-9_-]{20,}'), "<REDACTED_HF_KEY>"),
-    
+    (re.compile(r'gh[pousr]_[A-Za-z0-9]{20,}'), "<REDACTED_GITHUB_TOKEN>"),
+    (re.compile(r'github_pat_[A-Za-z0-9_]{20,}'), "<REDACTED_GITHUB_TOKEN>"),
+    (re.compile(r'AKIA[0-9A-Z]{16}'), "<REDACTED_AWS_ACCESS_KEY>"),
+    (re.compile(r'AIza[0-9A-Za-z_-]{30,}'), "<REDACTED_GOOGLE_KEY>"),
+    (re.compile(r'xox[baprs]-[A-Za-z0-9-]{10,}'), "<REDACTED_SLACK_TOKEN>"),
+    (re.compile(r'(?:^|[\s"\'=:])(nougen_[a-z]+_token_[A-Za-z0-9]+)'), "<REDACTED_NOUGEN_TOKEN>"),
+    (re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]+?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----'), "<REDACTED_PRIVATE_KEY>"),
+
     # Database URLs
     (re.compile(r'(postgres|mysql|sqlite|mongodb)://[^:]+:[^@]+@[^/]+/[^\s"\']+'), "<REDACTED_DB_URL>"),
     
