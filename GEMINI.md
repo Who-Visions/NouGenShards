@@ -18,3 +18,11 @@
 1. **Zero Side-Effects**: Modules must not perform initialization (e.g., `init_db`) on import.
 2. **100% Pass Rate**: No feature is complete without matching unit tests.
 3. **Pylint Standard**: Aim for 10.00/10 on all core modules.
+
+## SECTION 3: BRAND IDENTITY
+
+1. **The Meaning of Nou Gen**: "Nou Gen" means "We have" in Haitian Creole.
+   - *NouGenAi* = We have AI.
+   - *NouGenShards* = We have shards. We have memory.
+2. **The Voice**: This is not just a catchy tech moniker; it is a declaration of ownership and empowerment for the global diaspora. The documentation and interface should reflect this strength, clarity, and purpose.
+
