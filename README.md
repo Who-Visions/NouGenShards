@@ -99,6 +99,39 @@ nougen mark 1 --worked
 
 ---
 
+## ⚡ OpenRouter Production Routing
+
+NouGenShards includes a production-grade routing layer for OpenRouter, designed for maximum resilience and cost-efficiency.
+
+### 🛡️ Features
+*   **Model Fallback**: Automatically tries multiple models in order if the primary fails.
+*   **Prompt Caching**: Maximizes cache hits using stable message prefixes and `session_id` for sticky provider routing.
+*   **Response Healing**: Automatically repairs malformed JSON, markdown-wrapped JSON, and common syntax errors using the OpenRouter healing plugin.
+*   **Structured Outputs**: Enforces JSON Schema validation with `strict: true` at the API level.
+*   **Local Validation**: Final JSON schema validation layer before memory ingestion.
+*   **Usage Telemetry**: Detailed tracking of `prompt_tokens`, `completion_tokens`, and `cached_tokens`.
+
+### 🚀 Usage
+
+**Chat with Fallback**
+```bash
+# Uses openrouter/auto with default fallback models
+nougen router chat "What is the capital of Haiti?" --session-id nougen-dev
+```
+
+**Structured JSON Output**
+```bash
+# Requests JSON matching the provided schema, with auto-healing enabled
+nougen router json "Extract the entities: Dav3 went to the Stadium." --schema person_schema.json --healing
+```
+
+**Check Routing Health**
+```bash
+nougen router doctor
+```
+
+---
+
 ## 🧩 Project Structure
 
 - **📂 src/nougen_shards/**: The main code for the tool.

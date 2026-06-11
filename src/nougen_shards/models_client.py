@@ -6,6 +6,8 @@ import urllib.error
 import sys
 
 from . import keymaker
+from . import router
+from . import structured
 
 
 class LLMClient(ABC):
@@ -324,6 +326,136 @@ class OpenRouterClient(OpenAIClient):
                 return self._stream_chat(res)
         except Exception as exc: # pylint: disable=broad-except
             return f"Error: {exc}"
+
+    def chat_with_fallback(self, model: str, messages: list,
+                           fallback_models: list = None, session_id: str = None,
+                           stream: bool = False, **kwargs) -> dict:
+        """
+        Executes a chat request with OpenRouter model fallback.
+        """
+        if not self.api_key:
+            return {"content": "Error: OR Key missing.", "model": "unknown"}
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": stream,
+            "models": fallback_models or [
+                "anthropic/claude-3.5-sonnet",
+                "google/gemini-2.0-flash-001",
+                "deepseek/deepseek-chat"
+            ]
+        }
+
+        if session_id:
+            payload["session_id"] = session_id
+
+        # Add optional params
+        for key in ["temperature", "max_tokens"]:
+            if key in kwargs and kwargs[key] is not None:
+                payload[key] = kwargs[key]
+
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode(),
+            method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Bearer {self.api_key}")
+        req.add_header("HTTP-Referer", "https://whovisions.com")
+        req.add_header("X-OpenRouter-Title", "NouGenShards")
+
+        try:
+            with urllib.request.urlopen(req) as res:
+                if not stream:
+                    resp_data = json.loads(res.read().decode())
+                    choice = resp_data.get("choices", [{}])[0]
+                    return {
+                        "content": choice.get("message", {}).get("content", ""),
+                        "model": resp_data.get("model", model),
+                        "usage": self._extract_usage_metadata(resp_data),
+                        "finish_reason": choice.get("finish_reason")
+                    }
+                # For streaming, we currently only return the content string for compatibility
+                return {"content": self._stream_chat(res), "model": model}
+        except Exception as exc:
+            return {"content": f"Error: {exc}", "model": "error"}
+
+    def structured_chat(self, model: str, messages: list, schema: dict,
+                        fallback_models: list = None, session_id: str = None,
+                        healing: bool = True, strict: bool = True) -> dict:
+        """
+        Executes a request for structured JSON output with response healing.
+        """
+        if not self.api_key:
+            return {"error": "OR Key missing."}
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "models": fallback_models or [],
+            "stream": False,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "nougen_schema",
+                    "strict": strict,
+                    "schema": schema
+                }
+            }
+        }
+
+        if session_id:
+            payload["session_id"] = session_id
+
+        if healing:
+            payload["plugins"] = [{"id": "response-healing"}]
+
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode(),
+            method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Bearer {self.api_key}")
+        req.add_header("HTTP-Referer", "https://whovisions.com")
+        req.add_header("X-OpenRouter-Title", "NouGenShards")
+
+        try:
+            with urllib.request.urlopen(req) as res:
+                resp_data = json.loads(res.read().decode())
+                content = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+                # 1. Parse JSON
+                try:
+                    data = structured.parse_json_content(content)
+                except ValueError as e:
+                    return {"error": f"JSON Parse Failed: {e}", "raw": content}
+
+                # 2. Validate Schema
+                valid, errors = structured.validate_against_schema(data, schema)
+
+                return {
+                    "data": data,
+                    "valid": valid,
+                    "errors": errors,
+                    "model": resp_data.get("model"),
+                    "usage": self._extract_usage_metadata(resp_data)
+                }
+        except Exception as exc:
+            return {"error": f"Request Failed: {exc}"}
+
+    def _extract_usage_metadata(self, response_json: dict) -> dict:
+        """Normalizes OpenRouter usage data including cached tokens."""
+        usage = response_json.get("usage", {})
+        details = usage.get("prompt_tokens_details", {})
+        return {
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+            "cached_tokens": details.get("cached_tokens", 0),
+            "cache_write_tokens": details.get("cache_write_tokens", 0)
+        }
 
 
 class OllamaClient(LocalLLMClient):
