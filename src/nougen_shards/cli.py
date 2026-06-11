@@ -19,16 +19,35 @@ from . import history
 from . import router
 from . import structured
 from .connectors.cloud import push_to_cloud, pull_from_cloud
+from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
 
 VERSION = "1.0.0"
 
 # UTF-8 Console protection for Windows
 if sys.platform == "win32":
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
     except (AttributeError, ValueError):
         pass
 
+def cmd_brain(args):
+    """Universal AI Memory Forensic Engine."""
+    if args.action == "scan":
+        candidates = scan_environment(
+            project_path=str(getattr(args, 'project')) if getattr(args, 'project', None) else None, 
+            include_unknown=getattr(args, 'unknown', False)
+        )
+        print_scan_report(candidates, as_json=getattr(args, 'json', False))
+    elif args.action == "import":
+        result = run_import(
+            project_path=str(getattr(args, 'project')) if getattr(args, 'project', None) else None,
+            include_unknown=getattr(args, 'unknown', False),
+            source_filter=str(getattr(args, 'source')) if getattr(args, 'source', None) else None,
+            redact=not getattr(args, 'no_redact', False),
+            confirm=getattr(args, 'confirm', False)
+        )
+        print_import_report(result, dry_run=not getattr(args, 'confirm', False), as_json=getattr(args, 'json', False))
 
 def get_client(provider: str):
     """Helper to get a client by provider name."""
@@ -300,7 +319,7 @@ def cmd_stats(args):
     period = args.period or "week"
     engine = history.HistoryEngine()
 
-    growth = engine.get_growth_stats(period)
+    growth = engine.get_growth_rate(period)
     utility = engine.get_utility_delta(period)
     timeline = engine.get_timeline(period)
 
@@ -414,9 +433,9 @@ def cmd_router(args):
                 if "raw" in res: print(f"Raw Output: {res['raw']}")
             else:
                 print("✅ Structured Output Validated:")
-                print(json.dumps(res["data"], indent=2))
+                print(json.dumps(res["data"], indent=2))  # type: ignore
                 if not res["valid"]:
-                    print(f"⚠️ Schema Errors: {res['errors']}")
+                    print(f"⚠️ Schema Errors: {res['errors']}")  # type: ignore
 
     elif args.action == "doctor":
         diag = {

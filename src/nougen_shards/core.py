@@ -10,6 +10,7 @@ import math
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from typing import List, Optional
 
 # Configuration (Module 10: Integrate Constraints)
 MAX_DB_SIZE = 1 * 1024 * 1024 * 1024  # 1GB Safety Limit per DB
@@ -39,12 +40,18 @@ def is_db_full(index: int) -> bool:
         return True
 
 
+def get_routing_index(fhash: str) -> int:
+    """
+    Module 4: Surface Leverage (Intelligent Scaling).
+    Deterministic Hash-Based Routing ensures O(1) deduplication and uniform distribution.
+    Distributes load evenly across the 9-DB cluster.
+    """
+    return (int(fhash, 16) % MAX_DB_COUNT) + 1
+
+
 def get_active_db_index() -> int:
-    """Finds an available database under the 1GB limit (Module 4: Surface Leverage)."""
-    for i in range(1, MAX_DB_COUNT + 1):
-        if not is_db_full(i):
-            return i
-    return MAX_DB_COUNT
+    """Legacy alias, preserved for cli.py compatibility."""
+    return get_routing_index(hashlib.md5(b"default").hexdigest())
 
 
 def get_connection(index: int):
@@ -128,7 +135,7 @@ def cosine_similarity(vec1: list, vec2: list) -> float:
 
 
 def capture(event_type: str, title: str, content: str,
-            tags: list = None, embedding: list = None) -> bool:
+            tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants)."""
     fhash = hashlib.md5(content.encode("utf-8", errors="ignore")).hexdigest()
 
@@ -164,7 +171,7 @@ def capture(event_type: str, title: str, content: str,
 
         # Log CREATED event
         from . import history # pylint: disable=import-outside-toplevel
-        history.log_event(cursor.lastrowid, target_idx, "CREATED", new_score=1.0)
+        history.log_event(cursor.lastrowid or 0, target_idx, "CREATED", new_score=1.0)
 
         return True
     except sqlite3.IntegrityError:
@@ -199,7 +206,7 @@ def _process_fts_result(row, db_index, query_embedding):
     return item
 
 
-def retrieve(query: str, limit: int = 3, query_embedding: list = None) -> list:
+def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None) -> list:
     """
     Advanced Retrieval and Bayesian Orchestration (Module 21).
     Synthesizes BM25 (Adjacency) and Semantic (Latent) signals.

@@ -1,5 +1,7 @@
 """Model Context Protocol (MCP) server for NouGenShards."""
 import json
+from typing import Optional, List
+
 try:
     from mcp.server.fastapi import FastServer
 except ImportError:
@@ -17,7 +19,7 @@ server = FastServer("NouGenShards")
 # --- Memory Core (Shards) ---
 
 @server.tool()
-def capture_experience(event_type: str, title: str, content: str, tags: list = None) -> str:
+def capture_experience(event_type: str, title: str, content: str, tags: Optional[List[str]] = None) -> str:
     """Store a unit of agent experience as a shard."""
     success = capture(event_type, title, content, tags)
     return "Shard captured successfully." if success else "Shard already exists."
@@ -40,7 +42,7 @@ def mark_utility(shard_id: int, worked: bool) -> str:
 # --- Attention Layer (Context) ---
 
 @server.tool()
-def log_context_event(event_type: str, description: str, metadata: dict = None) -> str:
+def log_context_event(event_type: str, description: str, metadata: Optional[dict] = None) -> str:
     """Log an ephemeral session event to the context layer."""
     nougen_context.log_event(event_type, description, metadata)
     return "Context event logged."

@@ -5,6 +5,7 @@ import urllib.request
 import urllib.error
 import sys
 import os
+from typing import Optional, List, Dict
 
 from . import keymaker
 from . import router
@@ -40,7 +41,7 @@ class LocalLLMClient(LLMClient, ABC):
 
 class OpenAIClient(LLMClient):
     """Client for OpenAI (ChatGPT)."""
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or keymaker.get_secret("OPENAI_API_KEY")
         self.base_url = "https://api.openai.com/v1"
 
@@ -60,7 +61,7 @@ class OpenAIClient(LLMClient):
             method="POST"
         )
         req.add_header("Content-Type", "application/json")
-        req.add_header("Authorization", f"Bearer {self.api_key}")
+        req.add_header("Authorization", f"Bearer {self.api_key or ''}")
         try:
             with urllib.request.urlopen(req) as res:
                 if not stream:
@@ -95,7 +96,7 @@ class OpenAIClient(LLMClient):
             method="POST"
         )
         req.add_header("Content-Type", "application/json")
-        req.add_header("Authorization", f"Bearer {self.api_key}")
+        req.add_header("Authorization", f"Bearer {self.api_key or ''}")
         try:
             with urllib.request.urlopen(req) as res:
                 resp_data = json.loads(res.read().decode())
@@ -106,7 +107,7 @@ class OpenAIClient(LLMClient):
 
 class AnthropicClient(LLMClient):
     """Client for Anthropic (Claude)."""
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or keymaker.get_secret("ANTHROPIC_API_KEY")
         self.base_url = "https://api.anthropic.com/v1"
 
@@ -134,7 +135,7 @@ class AnthropicClient(LLMClient):
             method="POST"
         )
         req.add_header("Content-Type", "application/json")
-        req.add_header("x-api-key", self.api_key)
+        req.add_header("x-api-key", self.api_key or "")
         req.add_header("anthropic-version", "2023-06-01")
         try:
             with urllib.request.urlopen(req) as res:
@@ -167,7 +168,7 @@ class AnthropicClient(LLMClient):
 
 class GeminiClient(LLMClient):
     """Client for Google (Gemini)."""
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or keymaker.get_secret("GOOGLE_API_KEY")
         self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
 
@@ -242,7 +243,7 @@ class GeminiClient(LLMClient):
 
 class HuggingFaceClient(LLMClient):
     """Client for Hugging Face Inference API."""
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or keymaker.get_secret("HUGGINGFACE_API_KEY")
         self.base_url = "https://api-inference.huggingface.co/models"
 
@@ -266,7 +267,7 @@ class HuggingFaceClient(LLMClient):
             method="POST"
         )
         req.add_header("Content-Type", "application/json")
-        req.add_header("Authorization", f"Bearer {self.api_key}")
+        req.add_header("Authorization", f"Bearer {self.api_key or ''}")
         try:
             with urllib.request.urlopen(req) as res:
                 if not stream:
@@ -299,7 +300,7 @@ class HuggingFaceClient(LLMClient):
 
 class OpenRouterClient(OpenAIClient):
     """Client for OpenRouter (Unified API)."""
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: Optional[str] = None):
         super().__init__(api_key=api_key or keymaker.get_secret("OPENROUTER_API_KEY"))
         self.base_url = "https://openrouter.ai/api/v1"
 
@@ -316,7 +317,7 @@ class OpenRouterClient(OpenAIClient):
             method="POST"
         )
         req.add_header("Content-Type", "application/json")
-        req.add_header("Authorization", f"Bearer {self.api_key}")
+        req.add_header("Authorization", f"Bearer {self.api_key or ''}")
         req.add_header("HTTP-Referer", "https://whovisions.com")
         req.add_header("X-OpenRouter-Title", "NouGenShards")
         try:
@@ -329,7 +330,7 @@ class OpenRouterClient(OpenAIClient):
             return f"Error: {exc}"
 
     def chat_with_fallback(self, model: str, messages: list,
-                           fallback_models: list = None, session_id: str = None,
+                           fallback_models: Optional[list] = None, session_id: Optional[str] = None,
                            stream: bool = False, **kwargs) -> dict:
         """
         Executes a chat request with OpenRouter model fallback.
@@ -362,7 +363,7 @@ class OpenRouterClient(OpenAIClient):
             method="POST"
         )
         req.add_header("Content-Type", "application/json")
-        req.add_header("Authorization", f"Bearer {self.api_key}")
+        req.add_header("Authorization", f"Bearer {self.api_key or ''}")
         req.add_header("HTTP-Referer", "https://whovisions.com")
         req.add_header("X-OpenRouter-Title", "NouGenShards")
 
@@ -382,7 +383,7 @@ class OpenRouterClient(OpenAIClient):
             return {"content": f"Error: {exc}", "model": "error"}
 
     def structured_chat(self, model: str, messages: list, schema: dict,
-                        fallback_models: list = None, session_id: str = None,
+                        fallback_models: Optional[list] = None, session_id: Optional[str] = None,
                         healing: bool = True, strict: bool = True) -> dict:
         """
         Executes a request for structured JSON output with response healing.
@@ -417,7 +418,7 @@ class OpenRouterClient(OpenAIClient):
             method="POST"
         )
         req.add_header("Content-Type", "application/json")
-        req.add_header("Authorization", f"Bearer {self.api_key}")
+        req.add_header("Authorization", f"Bearer {self.api_key or ''}")
         req.add_header("HTTP-Referer", "https://whovisions.com")
         req.add_header("X-OpenRouter-Title", "NouGenShards")
 
@@ -461,7 +462,7 @@ class WhoVisionsCloudClient(LLMClient):
     Client for Who Visions Hosted Cloud Brain.
     Securely bridges local CLI to remote node for metered inference.
     """
-    def __init__(self, node_url: str = None, user_token: str = None):
+    def __init__(self, node_url: Optional[str] = None, user_token: Optional[str] = None):
         self.node_url = node_url or os.environ.get("NGS_CLOUD_URL")
         self.user_token = user_token or os.environ.get("NGS_CLOUD_TOKEN")
 
@@ -482,12 +483,12 @@ class WhoVisionsCloudClient(LLMClient):
             "stream": stream
         }
         req = urllib.request.Request(
-            f"{self.node_url.rstrip('/')}/cloud/chat",
+            f"{self.node_url.rstrip('/') if self.node_url else ''}/cloud/chat",
             data=json.dumps(payload).encode(),
             method="POST"
         )
         req.add_header("Content-Type", "application/json")
-        req.add_header("X-NGS-Token", self.user_token)
+        req.add_header("X-NGS-Token", self.user_token or "")
         
         try:
             with urllib.request.urlopen(req) as res:

@@ -15,7 +15,8 @@ from nougen_shards import capture, retrieve, compile_recall_packet
 
 # UTF-8 Console protection for Windows
 if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
 
 def check_ollama_alive() -> bool:
     """Check if the local Ollama server is running."""

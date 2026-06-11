@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import asyncio
+from pathlib import Path
 from typing import Dict, List, Any
 from contextlib import AsyncExitStack
 
@@ -18,7 +19,48 @@ sys.path.append(r"%USERPROFILE%\Watchtower")
 # pylint: disable=import-error,wrong-import-position
 from openrouter_guard import call_openrouter
 
-MCP_CONFIG_PATH = r"%USERPROFILE%\.gemini\antigravity\mcp_config.json"
+MCP_CONFIG_PATH = os.environ.get(
+    "NOUGEN_MCP_CONFIG_PATH",
+    r"%USERPROFILE%\.gemini\antigravity\mcp_config.json"
+)
+REPO_ROOT = Path(__file__).resolve().parents[2]
+FLEET_REGISTRY_NAME = "nougenai-fleet-registry"
+MCP_SERVER_ALLOWLIST = {
+    "exa",
+    "google-developer-knowledge",
+    "youtube",
+    "web-search",
+    FLEET_REGISTRY_NAME,
+}
+
+
+def _build_server_params(name: str, srv_config: dict) -> StdioServerParameters:
+    """Build stdio parameters with local Windows/Python startup fixes."""
+    cmd = srv_config["command"]
+    args = list(srv_config.get("args", []))
+    env = srv_config.get("env")
+
+    if env is not None:
+        merged_env = os.environ.copy()
+        merged_env.update(env)
+        env = merged_env
+
+    if cmd.lower() in {"python", "python.exe", "python3", "python3.exe"}:
+        cmd = sys.executable
+
+    if name.lower() == FLEET_REGISTRY_NAME:
+        wrapper = REPO_ROOT / "tools" / "nougenai_fleet_registry_mcp.py"
+        if wrapper.exists():
+            cmd = sys.executable
+            args = [str(wrapper)]
+
+        env = os.environ.copy() if env is None else env
+        env.setdefault(
+            "NOUGENAI_MCP_LOCK_DIR",
+            str(REPO_ROOT / ".mcp-locks" / f"{FLEET_REGISTRY_NAME}-{os.getpid()}")
+        )
+
+    return StdioServerParameters(command=cmd, args=args, env=env)
 
 class MultiMCPBridge:
     """Bridge for managing multiple MCP connections."""
@@ -44,21 +86,13 @@ class MultiMCPBridge:
 
         for name, srv_config in mcp_servers.items():
             # Only connect to specific search servers to avoid crashes and timeouts
-            if name not in ["exa", "google-developer-knowledge", "youtube", "web-search"]:
+            if name.lower() not in MCP_SERVER_ALLOWLIST:
                 continue
 
             if "command" in srv_config:
-                cmd = srv_config["command"]
-                args = srv_config.get("args", [])
-                env = srv_config.get("env", None)
-
-                # Normalize command if python
-                if cmd == "python":
-                    cmd = sys.executable
-
                 print(f"[*] Connecting to local server '{name}' via Stdio...")
                 try:
-                    server_params = StdioServerParameters(command=cmd, args=args, env=env)
+                    server_params = _build_server_params(name, srv_config)
 
                     # Manage async exit stack manually to keep processes running
                     exit_stack = AsyncExitStack()

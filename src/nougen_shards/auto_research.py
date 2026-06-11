@@ -14,7 +14,8 @@ from .core import capture
 
 # UTF-8 terminal protection
 if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
 
 def check_ollama_alive() -> bool:
     """Check if the local Ollama instance is alive."""
