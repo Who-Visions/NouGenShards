@@ -7,6 +7,11 @@
 
 **NouGenShards turns your existing AI work into one searchable local memory.**
 
+> **"Nou Gen"** means *"We have"* in Haitian Creole.
+> NouGenAi means: **We have AI.**
+> NouGenShards means: **We have memory.**
+> 🇭🇹 Built by **Who Visions** to empower global diaspora intelligence.
+
 AI tools forget because their memory is trapped inside separate apps and limited context windows. NouGenShards acts as a **Metameric Memory Engine**. It scans your machine for scattered AI traces (from Claude, Gemini, Cursor, Codex, etc.), extracts the useful context, normalizes it, and helps you reuse what worked without sending everything to the cloud.
 
 > ⚠️ **Source-Available, Not Open Source**: This project is provided so users can inspect, learn, and trust the local client. Commercial reuse, redistribution for a fee, and competing hosted services are strictly prohibited. See [LICENSE.md](./LICENSE.md).
