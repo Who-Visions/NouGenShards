@@ -670,6 +670,9 @@ def get_parser():
     p_node.add_argument("--token", help="Auth token for push/pull")
     p_node.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    p_doctor = subparsers.add_parser("doctor", help="Check system health")
+    p_doctor.add_argument("--json", action="store_true", help="Machine-readable output")
+
     return parser
 
 
