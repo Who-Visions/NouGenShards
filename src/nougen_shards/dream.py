@@ -74,9 +74,11 @@ def wake() -> Dict[str, Any]:
     dataset_path = parametric_burn_in(sft_pairs)
     
     return {
+        "experimental": True,
         "pruned": "Applied 0.95x Bayesian decay to all shards.",
         "shards_extracted": len(top_shards),
         "sft_pairs_generated": len(sft_pairs),
         "parametric_dataset_path": dataset_path,
-        "status": "Dream sequence complete. Ready for fast-weight LoRA update."
+        "status": ("Decay applied and SFT dataset exported. NOTE: this prepares a "
+                   "training dataset; it does not itself perform a LoRA weight update.")
     }

@@ -1,6 +1,12 @@
 """
 Open-World Evolution Engine (OpenSkill Implementation).
 Bootstraps skills and verification signals from open-world resources.
+
+EXPERIMENTAL / PREVIEW: the knowledge-acquisition and virtual-verification stages
+below are currently simulated stubs, not a live open-world research + verification
+loop. The scaffolding mirrors the OpenSkill design so it can be wired to real
+retrieval (Exa / deep research) and real test generation later. Do not present
+this as production self-evolution.
 """
 
 import json
@@ -68,8 +74,8 @@ print('Virtual Task Passed')
             print(f"[*] Evolution: Refining skill against virtual verifier...")
         skill_content = f"# SKILL: {instruction}\n\n## Grounding\n{grounding}\n\n## Implementation\nFollow the verified invariants."
         
-        # 4. Verify
-        result = nougen_sandbox.execute_sandboxed(virtual_task)
+        # 4. Verify (trusted: this runs the engine's own generated stub, not user input)
+        result = nougen_sandbox.execute_sandboxed(virtual_task, language="python", trusted=True)
         verified = "Virtual Task Passed" in result
         
         if verified:
@@ -92,10 +98,12 @@ print('Virtual Task Passed')
                 "skill_id": skill_id,
                 "path": str(skill_path),
                 "verified": True,
-                "grounding_source": "Open-World Intelligence Wing"
+                "experimental": True,
+                "grounding_source": "Open-World Intelligence Wing (simulated)"
             }
-        
-        return {"verified": False, "error": "Virtual verification failed."}
+
+        return {"verified": False, "experimental": True,
+                "error": "Virtual verification failed."}
 
 def run_autonomous_evolution(instruction: str, verbose: bool = True):
     """Entry point for the autonomous evolution loop."""

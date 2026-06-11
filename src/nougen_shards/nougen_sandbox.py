@@ -5,11 +5,27 @@ import tempfile
 import shutil
 import sys
 
-def execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10):
+def sandbox_enabled() -> bool:
+    """Whether arbitrary code execution is opted-in via NOUGEN_ENABLE_SANDBOX."""
+    return os.getenv("NOUGEN_ENABLE_SANDBOX", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10,
+                      trusted: bool = False):
     """
     Executes code in a sandboxed subprocess.
     Only stdout is returned; network is disabled if possible.
+
+    Note: this is process-level isolation (no parent env, no shell), NOT a full
+    security sandbox. Untrusted callers (MCP tools, `nougen ctx execute`) are
+    refused unless the operator opts in with NOUGEN_ENABLE_SANDBOX=1. Internal
+    callers running their own generated code may pass trusted=True.
     """
+    if not trusted and not sandbox_enabled():
+        return ("Error: Sandboxed code execution is disabled by default for safety. "
+                "It allows arbitrary code to run on this machine. "
+                "Set NOUGEN_ENABLE_SANDBOX=1 to enable it.")
+
     # Create temp file for code
     suffix = ".js" if language in ["javascript", "typescript"] else ".py"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, mode='w', encoding='utf-8') as f:

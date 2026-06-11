@@ -600,7 +600,7 @@ def cmd_dream(args):
     """Executes the Dream cycle (Autonomous Metameric Evolution)."""
     if args.action == "wake":
         if not getattr(args, 'json', False):
-            print("🌌 Entering the Dream State...")
+            print("🌌 Entering the Dream State...  [EXPERIMENTAL: exports an SFT dataset; no live weight update]")
         summary = dream.wake()
         if getattr(args, 'json', False):
             print(json.dumps(summary, indent=2))
@@ -618,6 +618,7 @@ def cmd_evolve(args):
     if args.action == "run":
         is_json = getattr(args, 'json', False)
         if not is_json:
+            print("[EXPERIMENTAL: OpenSkill acquisition + verification are simulated stubs]")
             print(f"[*] Evolution: Initiating OpenSkill cycle for '{args.instruction}'...")
         summary = evolution.run_autonomous_evolution(args.instruction, verbose=not is_json)
         if is_json:
