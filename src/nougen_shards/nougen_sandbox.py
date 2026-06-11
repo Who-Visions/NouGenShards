@@ -31,18 +31,19 @@ def execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10
         else:
             return f"Error: Unsupported language '{language}'"
 
-        # Execute
-        # On Windows, using the absolute path and careful env setup is key
-        use_shell = os.name == 'nt'
+        # Execute with shell disabled (runtime is an absolute path; shell adds injection surface)
+        use_shell = False
 
-        # Robust environment for Windows
-        env = os.environ.copy()
+        # Minimal environment: do NOT inherit the parent env (it carries API keys and
+        # tokens that untrusted code could exfiltrate). Pass only what runtimes need.
+        _ALLOWED_ENV = ("SystemRoot", "SystemDrive", "PATH", "PATHEXT", "COMSPEC",
+                        "WINDIR", "USERPROFILE", "HOME", "LANG", "PROCESSOR_ARCHITECTURE",
+                        "NUMBER_OF_PROCESSORS")
+        env = {k: os.environ[k] for k in _ALLOWED_ENV if k in os.environ}
+        env["TEMP"] = env["TMP"] = tempfile.gettempdir()
         if os.name == 'nt':
-            # Ensure critical Windows env vars are present to avoid 0xC0000005
-            env.setdefault("SystemRoot", os.environ.get("SystemRoot", r"C:\Windows"))
-            env.setdefault("SystemDrive", os.environ.get("SystemDrive", "C:"))
-            env.setdefault("TEMP", tempfile.gettempdir())
-            env.setdefault("TMP", tempfile.gettempdir())
+            env.setdefault("SystemRoot", r"C:\Windows")
+            env.setdefault("SystemDrive", "C:")
 
         result = subprocess.run(
             cmd,

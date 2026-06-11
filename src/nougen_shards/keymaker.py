@@ -2,6 +2,10 @@
 Keymaker Agent: Secure Secret Ingestion & Management
 Mimics the 'Atibon' workflow for the NouGenAi franchise.
 """
+import base64
+import ctypes
+import ctypes.wintypes
+import hashlib
 import os
 import sqlite3
 import csv
@@ -9,6 +13,53 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+# Marker prefix for values encrypted at rest via Windows DPAPI (user-bound).
+_DPAPI_PREFIX = "dpapi1:"
+
+
+class _DataBlob(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.wintypes.DWORD),
+                ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _dpapi_call(func_name: str, data: bytes) -> bytes:
+    """Invokes CryptProtectData/CryptUnprotectData on the given bytes."""
+    blob_in = _DataBlob(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)),
+                                              ctypes.POINTER(ctypes.c_char)))
+    blob_out = _DataBlob()
+    func = getattr(ctypes.windll.crypt32, func_name)
+    if not func(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)):
+        raise OSError(f"{func_name} failed (DPAPI)")
+    try:
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+
+
+def _protect(value: str) -> str:
+    """Encrypts a secret value at rest. Fails closed: never stores plaintext on Windows."""
+    if os.name != "nt":
+        # Non-Windows fallback: refuse silent plaintext unless explicitly allowed.
+        if os.getenv("NOUGEN_ALLOW_PLAINTEXT_VAULT") == "1":
+            return value
+        raise RuntimeError(
+            "DPAPI unavailable on this OS. Set NOUGEN_ALLOW_PLAINTEXT_VAULT=1 to override (not recommended).")
+    encrypted = _dpapi_call("CryptProtectData", value.encode("utf-8"))
+    return _DPAPI_PREFIX + base64.b64encode(encrypted).decode("ascii")
+
+
+def _unprotect(stored: str) -> str:
+    """Decrypts a stored value; passes through legacy plaintext rows untouched."""
+    if not stored.startswith(_DPAPI_PREFIX):
+        return stored  # legacy plaintext row (pre-encryption migration)
+    raw = base64.b64decode(stored[len(_DPAPI_PREFIX):])
+    return _dpapi_call("CryptUnprotectData", raw).decode("utf-8")
+
+
+def _fingerprint(value: str) -> str:
+    """Non-reversible audit fingerprint of a secret (first 12 hex of SHA-256)."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 # Portable Vault Resolution
 VAULT_DIR = Path(os.getenv("NOUGEN_VAULT_DIR", ".nougen_vault"))
@@ -55,7 +106,7 @@ def init_vault():
 
 
 def _export_to_csv():
-    """Exports the secrets table to a CSV for human-auditable backup."""
+    """Exports a metadata-only audit ledger. NEVER writes secret values to disk."""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     try:
@@ -63,8 +114,13 @@ def _export_to_csv():
         rows = cursor.fetchall()
         with open(CSV_PATH, "w", newline="", encoding="utf-8") as f_out:
             writer = csv.writer(f_out)
-            writer.writerow(["id", "secret_key", "secret_value", "last_rotated"])
-            writer.writerows(rows)
+            writer.writerow(["id", "secret_key", "fingerprint_sha256_12", "encrypted", "last_rotated"])
+            for row_id, key, stored, rotated in rows:
+                try:
+                    fp = _fingerprint(_unprotect(stored))
+                except OSError:
+                    fp = "unreadable"
+                writer.writerow([row_id, key, fp, stored.startswith(_DPAPI_PREFIX), rotated])
     except sqlite3.Error:
         pass
     finally:
@@ -82,7 +138,7 @@ def ingest_secret(key: str, value: str):
         conn.execute("""
             INSERT OR REPLACE INTO secrets (secret_key, secret_value, last_rotated)
             VALUES (?, ?, ?)
-        """, (key, value, timestamp))
+        """, (key, _protect(value), timestamp))
         conn.commit()
         print(f"  [+] Ingested: {key} (Value Redacted)")
         _export_to_csv()
@@ -106,6 +162,15 @@ def ingest_service_account(json_data: str):
 
         with open(target_path, "w", encoding="utf-8") as f_out:
             json.dump(data, f_out, indent=2)
+
+        # Lock file ACL to the current user only (constitution 0.2 rule 3)
+        if os.name == "nt":
+            import subprocess  # pylint: disable=import-outside-toplevel
+            user = os.environ.get("USERNAME", "")
+            if user:
+                subprocess.run(
+                    ["icacls", str(target_path), "/inheritance:r", "/grant:r", f"{user}:F"],
+                    capture_output=True, check=False)
 
         # Store metadata in DB
         ingest_secret(f"GCP_SA_{project_id.upper()}", client_email)
@@ -180,8 +245,8 @@ def get_secret(key: str) -> Optional[str]:
     try:
         cursor.execute("SELECT secret_value FROM secrets WHERE secret_key = ?", (key,))
         row = cursor.fetchone()
-        return str(row[0]) if row else None
-    except sqlite3.Error:
+        return _unprotect(str(row[0])) if row else None
+    except (sqlite3.Error, OSError):
         return None
     finally:
         conn.close()
@@ -202,14 +267,38 @@ def list_providers() -> list:
         conn.close()
 
 
+def migrate_to_encrypted() -> int:
+    """Re-encrypts any legacy plaintext rows in place. Returns count migrated."""
+    if not DB_PATH.exists():
+        return 0
+    conn = sqlite3.connect(str(DB_PATH))
+    migrated = 0
+    try:
+        rows = conn.execute("SELECT secret_key, secret_value FROM secrets").fetchall()
+        for key, stored in rows:
+            if not str(stored).startswith(_DPAPI_PREFIX):
+                conn.execute("UPDATE secrets SET secret_value = ? WHERE secret_key = ?",
+                             (_protect(str(stored)), key))
+                migrated += 1
+        conn.commit()
+    finally:
+        conn.close()
+    if migrated:
+        _export_to_csv()
+    return migrated
+
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
-        print("Usage: python keymaker.py init | add <key> <value> | sa <json_content>")
+        print("Usage: python keymaker.py init | add <key> <value> | sa <json_content> | migrate")
         sys.exit(1)
 
     CMD = sys.argv[1]
-    if CMD == "init":
+    if CMD == "migrate":
+        COUNT = migrate_to_encrypted()
+        print(f"[*] Migrated {COUNT} legacy plaintext secrets to DPAPI encryption.")
+    elif CMD == "init":
         init_vault()
         print(f"[*] Keymaker initialized at {VAULT_DIR.absolute()}")
     elif CMD == "add" and len(sys.argv) == 4:
