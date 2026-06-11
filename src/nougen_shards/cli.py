@@ -17,6 +17,7 @@ from . import federation
 from . import history
 from . import router
 from . import structured
+from .connectors.cloud import push_to_cloud, pull_from_cloud
 
 VERSION = "1.0.0"
 
@@ -465,6 +466,52 @@ def cmd_node(args):
         print("[*] Linked Remote Nodes:")
         for n in nodes:
             print(f" - #{n['id']}: {n['name']} | URL: {n['url']}")
+    elif args.action == "push":
+        if not args.url:
+            print("Error: Usage: nougen node push <url> --token <token>")
+            return
+        if not args.token:
+            print("Error: --token <token> is required for push.")
+            return
+        
+        print(f"[*] Extracting shards for push...")
+        all_shards = []
+        for i in range(1, shards.MAX_DB_COUNT + 1):
+            if not shards.get_db_path(i).exists(): continue
+            conn = shards.get_connection(i)
+            rows = conn.execute("SELECT * FROM shards").fetchall()
+            for r in rows:
+                d = dict(r)
+                if d.get("embedding"): d["embedding"] = json.loads(d["embedding"].decode())
+                all_shards.append(d)
+            conn.close()
+        
+        print(f"[*] Pushing {len(all_shards)} shards to {args.url}...")
+        res = push_to_cloud(all_shards, args.url, args.token)
+        print(f"✅ Sync result: {res.get('status')} (Count: {res.get('count')})")
+        
+    elif args.action == "pull":
+        if not args.url:
+            print("Error: Usage: nougen node pull <url> --token <token>")
+            return
+        if not args.token:
+            print("Error: --token <token> is required for pull.")
+            return
+        
+        print(f"[*] Pulling shards from {args.url}...")
+        remote_shards = pull_from_cloud(args.url, args.token)
+        print(f"[*] Pulled {len(remote_shards)} shards. Ingesting locally...")
+        count = 0
+        for s in remote_shards:
+            success = shards.capture(
+                s.get("event_type", "SYNC"),
+                s.get("title", "Synced Shard"),
+                s.get("content", ""),
+                json.loads(s.get("tags", "[]")) if isinstance(s.get("tags"), str) else s.get("tags"),
+                embedding=s.get("embedding")
+            )
+            if success: count += 1
+        print(f"✅ Ingestion complete. {count} new shards added.")
 
 
 def cmd_config(args):
@@ -609,9 +656,10 @@ def get_parser():
     p_db.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_node = subparsers.add_parser("node", help="Manage remote cloud nodes")
-    p_node.add_argument("action", choices=["link", "list"])
+    p_node.add_argument("action", choices=["link", "list", "push", "pull"])
     p_node.add_argument("url", nargs="?", help="Remote node API URL")
     p_node.add_argument("--name", help="Friendly name for the node")
+    p_node.add_argument("--token", help="Auth token for push/pull")
     p_node.add_argument("--json", action="store_true", help="Machine-readable output")
 
     return parser
