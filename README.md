@@ -20,6 +20,7 @@ AI tools forget because their memory is trapped inside separate apps and limited
 
 ## 🚀 Why NouGenShards?
 
+- **[The Metameric Memory Engine](docs/architecture.md)**: Built on a strict 21-step cognitive architecture, transforming chaotic logs into unified, Bayesian-ranked memory shards.
 - **AI Memory Recon**: Run `nougen brain scan` to discover and import your fragmented AI history across 15+ known tool formats.
 - **Privacy First**: Your core memory stays on your machine in local SQLite databases. We redact secrets during import automatically. Cloud platforms forget, but local memory belongs to you.
 - **Federated Intelligence**: Search your local shards, your production SQL databases, and remote cloud nodes simultaneously.
