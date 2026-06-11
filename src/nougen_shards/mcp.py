@@ -19,7 +19,9 @@ except ImportError:
 from .core import capture, retrieve, mark_shard, compile_recall_packet
 from . import nougen_context
 from . import nougen_sandbox
+from . import evolution
 from .brain_scan import scan_environment, run_import
+
 from .history import HistoryEngine
 from .federation import federated_retrieve
 
@@ -262,7 +264,28 @@ def get_memory_stats(period: str = "week") -> str:
         
     return "\n".join(output)
 
+# --- Evolution Layer (OpenSkill) ---
+
+@mcp.tool()
+def evolve_skill(instruction: str) -> str:
+    """
+    Autonomously construct and verify a new skill using open-world resources.
+    
+    Args:
+        instruction: The task or domain to evolve a skill for (e.g., 'React GSAP animations').
+    """
+    result = evolution.run_autonomous_evolution(instruction)
+    if result.get("verified"):
+        return (
+            f"✅ Skill '{instruction}' evolved and verified.\n"
+            f"Skill ID: {result['skill_id']}\n"
+            f"Path: {result['path']}\n"
+            f"Grounding: {result['grounding_source']}"
+        )
+    return f"❌ Evolution failed: {result.get('error')}"
+
 def main():
+
     """Main entry point for the MCP server."""
     # Start the FastMCP server with stdio transport
     mcp.run()

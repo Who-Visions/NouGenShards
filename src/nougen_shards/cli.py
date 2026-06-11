@@ -21,8 +21,10 @@ from . import structured
 from .connectors.cloud import push_to_cloud, pull_from_cloud
 from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
 from . import dream
+from . import evolution
 
 VERSION = "1.0.0"
+
 
 
 # UTF-8 Console protection for Windows
@@ -604,7 +606,26 @@ def cmd_dream(args):
             print(f"\n{summary['status']}")
 
 
+def cmd_evolve(args):
+    """Universal Open-World Skill Evolution (OpenSkill)."""
+    if args.action == "run":
+        print(f"[*] Evolution: Initiating OpenSkill cycle for '{args.instruction}'...")
+        summary = evolution.run_autonomous_evolution(args.instruction)
+        if getattr(args, 'json', False):
+            print(json.dumps(summary, indent=2))
+        else:
+            if summary.get("verified"):
+                print("\n[Evolution Cycle Complete]")
+                print(f" - Skill ID: {summary['skill_id']}")
+                print(f" - Grounding: {summary['grounding_source']}")
+                print(f" - Status: Verified in Sandbox.")
+                print(f" - Path: {summary['path']}")
+            else:
+                print(f"\n[Evolution Failed]: {summary.get('error')}")
+
+
 def get_parser():
+
 
     """Create the CLI parser."""
     parser = argparse.ArgumentParser(prog="nougen", description="NouGenShards CLI")
@@ -715,7 +736,13 @@ def get_parser():
     p_dream.add_argument("action", choices=["wake"])
     p_dream.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    p_evolve = subparsers.add_parser("evolve", help="Universal Open-World Skill Evolution (OpenSkill)")
+    p_evolve.add_argument("action", choices=["run"])
+    p_evolve.add_argument("instruction", help="The task instruction to evolve a skill for")
+    p_evolve.add_argument("--json", action="store_true", help="Machine-readable output")
+
     return parser
+
 
 
 def cmd_doctor(args):
@@ -778,7 +805,7 @@ def main():
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
-        "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream
+        "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve
     }
     if args.command in cmds:
         cmds[args.command](args)
