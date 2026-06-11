@@ -15,6 +15,8 @@ from . import nougen_context
 from . import nougen_sandbox
 from . import federation
 from . import history
+from . import router
+from . import structured
 
 VERSION = "1.0.0"
 
@@ -289,7 +291,7 @@ def cmd_stats(args):
     period = args.period or "week"
     engine = history.HistoryEngine()
 
-    growth = engine.get_growth_rate(period)
+    growth = engine.get_growth_stats(period)
     utility = engine.get_utility_delta(period)
     timeline = engine.get_timeline(period)
 
@@ -340,6 +342,86 @@ def cmd_ctx(args):
             print(f"✅ Context event #{event['id']} promoted to durable memory.")
         else:
             print(f"ℹ️ Shard already exists.")
+
+
+def cmd_router(args):
+    """Handles OpenRouter production routing commands."""
+    client = OpenRouterClient()
+    if not client.is_alive():
+        print("Error: OpenRouter key not found in vault. Use: nougen auth set-key openrouter <key>")
+        return
+
+    if args.action == "chat":
+        # Cache-friendly messages
+        sys_prompt = "You are a NouGenShards reasoning agent. Be concise."
+        messages = router.build_cache_friendly_messages(sys_prompt, [{"role": "user", "content": args.input}])
+        
+        res = client.chat_with_fallback(
+            model=args.model or "openrouter/auto",
+            messages=messages,
+            fallback_models=args.fallback,
+            session_id=args.session_id,
+            stream=args.stream,
+            temperature=args.temperature,
+            max_tokens=args.max_tokens
+        )
+        
+        if getattr(args, 'json', False):
+            print(json.dumps(res, indent=2))
+        else:
+            print(f"--- [Model: {res.get('model')}] ---")
+            print(res.get("content"))
+            if "usage" in res:
+                u = res["usage"]
+                print(f"\nUsage: {u['total_tokens']} tokens ({u['cached_tokens']} cached)")
+
+    elif args.action == "json":
+        if not args.schema:
+            print("Error: --schema path/to/schema.json is required.")
+            return
+        
+        try:
+            with open(args.schema, "r") as f:
+                schema = json.load(f)
+        except Exception as e:
+            print(f"Error loading schema: {e}")
+            return
+
+        messages = [{"role": "user", "content": args.input}]
+        res = client.structured_chat(
+            model=args.model or "openrouter/auto",
+            messages=messages,
+            schema=schema,
+            fallback_models=args.fallback,
+            session_id=args.session_id,
+            healing=args.healing
+        )
+
+        if getattr(args, 'json', False):
+            print(json.dumps(res, indent=2))
+        else:
+            if "error" in res:
+                print(f"❌ Error: {res['error']}")
+                if "raw" in res: print(f"Raw Output: {res['raw']}")
+            else:
+                print("✅ Structured Output Validated:")
+                print(json.dumps(res["data"], indent=2))
+                if not res["valid"]:
+                    print(f"⚠️ Schema Errors: {res['errors']}")
+
+    elif args.action == "doctor":
+        diag = {
+            "openrouter_key": client.is_alive(),
+            "default_model": "openrouter/auto",
+            "response_healing": True,
+            "session_id_recommendation": router.make_session_id("default", "cli")
+        }
+        if getattr(args, 'json', False):
+            print(json.dumps(diag, indent=2))
+        else:
+            print("🏥 OpenRouter Routing Doctor:")
+            for k, v in diag.items():
+                print(f" - {k}: {v}")
 
 
 def cmd_db(args):
@@ -479,6 +561,31 @@ def get_parser():
     p_ctx.add_argument("input", nargs="?")
     p_ctx.add_argument("--tags", help="Tags for promoted shard")
 
+    # router
+    p_router = subparsers.add_parser("router", help="OpenRouter production routing")
+    p_router_sub = p_router.add_subparsers(dest="action")
+    
+    p_router_chat = p_router_sub.add_parser("chat", help="Chat with fallback")
+    p_router_chat.add_argument("input")
+    p_router_chat.add_argument("--model", default="openrouter/auto")
+    p_router_chat.add_argument("--fallback", action="append", help="Fallback models")
+    p_router_chat.add_argument("--session-id")
+    p_router_chat.add_argument("--stream", action="store_true")
+    p_router_chat.add_argument("--json", action="store_true")
+    p_router_chat.add_argument("--temperature", type=float)
+    p_router_chat.add_argument("--max-tokens", type=int)
+    
+    p_router_json = p_router_sub.add_parser("json", help="Structured JSON chat")
+    p_router_json.add_argument("input")
+    p_router_json.add_argument("--schema", required=True)
+    p_router_json.add_argument("--model", default="openrouter/auto")
+    p_router_json.add_argument("--fallback", action="append")
+    p_router_json.add_argument("--session-id")
+    p_router_json.add_argument("--healing", action="store_true", default=True)
+    p_router_json.add_argument("--json", action="store_true")
+
+    p_router_sub.add_parser("doctor", help="Check routing health")
+
     p_config = subparsers.add_parser("config", help="Configuration")
     p_config.add_argument("action", choices=["set"])
     p_config.add_argument("key")
@@ -523,7 +630,7 @@ def main():
         "init": cmd_init, "add": cmd_add, "search": cmd_search, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
-        "db": cmd_db, "node": cmd_node, "stats": cmd_stats
+        "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router
     }
     if args.command in cmds:
         cmds[args.command](args)
