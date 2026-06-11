@@ -24,6 +24,6 @@
 1. **The Meaning of Nou Gen**: "Nou Gen" means "We have" in Haitian Creole.
    - *NouGenAi* = We have AI.
    - *NouGenShards* = We have shards. We have memory.
-2. **The Context of Erasure**: In 2026, global institutions (FIFA, IOC) forced Haitian national teams to strip imagery of the Battle of Vertières and Jean-Jacques Dessalines from their uniforms, deeming Black liberation "too political." They erased the history from the physical stage.
-3. **The Voice of Preservation**: NouGenShards is the digital response. They can ban a jersey; they cannot ban a local SQLite database. We build local-first, decentralized memory because centralized platforms will always seek to overwrite, censor, or forget inconvenient truths. The documentation and interface must reflect this unyielding stance: Memory is not just an AI utility; it is an act of preservation.
+2. **The Subtext of Preservation**: When external platforms dictate what can be kept or displayed, the only defense is a substrate you control. NouGenShards is built on the quiet understanding that memory must be local, immutable, and decentralized.
+3. **The Voice**: We play the game under layers of subtlety and entendre. The documentation and interface operate with quiet strength—focusing on local control, resilience, and the power of owning your own context. We don't shout the stance; the architecture *is* the stance.
 
