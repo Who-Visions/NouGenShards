@@ -21,7 +21,7 @@ AI tools forget because their memory is trapped inside separate apps and limited
 ## 🚀 Why NouGenShards?
 
 - **AI Memory Recon**: Run `nougen brain scan` to discover and import your fragmented AI history across 15+ known tool formats.
-- **Privacy First**: Your core memory stays on your machine in local SQLite databases. We redact secrets during import automatically.
+- **Privacy First**: Your core memory stays on your machine in local SQLite databases. We redact secrets during import automatically. Centralized platforms forget or censor; local memory is immutable preservation.
 - **Federated Intelligence**: Search your local shards, your production SQL databases, and remote cloud nodes simultaneously.
 - **Bayesian Ranking**: The tool learns what is useful. "Marking" a shard as helpful improves future search relevance automatically.
 - **Production Ready**: Built-in OpenRouter routing with automatic fallback and response healing.
