@@ -20,8 +20,10 @@ from . import router
 from . import structured
 from .connectors.cloud import push_to_cloud, pull_from_cloud
 from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
+from . import dream
 
 VERSION = "1.0.0"
+
 
 # UTF-8 Console protection for Windows
 if sys.platform == "win32":
@@ -586,7 +588,24 @@ def cmd_ingest(args):
         print(f"Failed: {exc}")
 
 
+def cmd_dream(args):
+    """Executes the Dream cycle (Autonomous Metameric Evolution)."""
+    if args.action == "wake":
+        print("🌌 Entering the Dream State...")
+        summary = dream.wake()
+        if getattr(args, 'json', False):
+            print(json.dumps(summary, indent=2))
+        else:
+            print("\n[Dream Sequence Complete]")
+            print(f" - {summary['pruned']}")
+            print(f" - Extracted top {summary['shards_extracted']} high-utility shards.")
+            print(f" - Synthesized {summary['sft_pairs_generated']} invariants into SFT pairs.")
+            print(f" - Burn-in dataset ready at: {summary['parametric_dataset_path']}")
+            print(f"\n{summary['status']}")
+
+
 def get_parser():
+
     """Create the CLI parser."""
     parser = argparse.ArgumentParser(prog="nougen", description="NouGenShards CLI")
     parser.add_argument("--version", action="version", version=f"NouGenShards v{VERSION}")
@@ -692,6 +711,10 @@ def get_parser():
     p_doctor = subparsers.add_parser("doctor", help="Check system health")
     p_doctor.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    p_dream = subparsers.add_parser("dream", help="Autonomous Metameric Evolution (TMEM)")
+    p_dream.add_argument("action", choices=["wake"])
+    p_dream.add_argument("--json", action="store_true", help="Machine-readable output")
+
     return parser
 
 
@@ -755,7 +778,7 @@ def main():
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
-        "doctor": cmd_doctor, "brain": cmd_brain
+        "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream
     }
     if args.command in cmds:
         cmds[args.command](args)
