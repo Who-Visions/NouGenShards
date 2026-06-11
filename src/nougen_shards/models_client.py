@@ -4,6 +4,7 @@ import json
 import urllib.request
 import urllib.error
 import sys
+import os
 
 from . import keymaker
 from . import router
@@ -376,7 +377,6 @@ class OpenRouterClient(OpenAIClient):
                         "usage": self._extract_usage_metadata(resp_data),
                         "finish_reason": choice.get("finish_reason")
                     }
-                # For streaming, we currently only return the content string for compatibility
                 return {"content": self._stream_chat(res), "model": model}
         except Exception as exc:
             return {"content": f"Error: {exc}", "model": "error"}
@@ -426,13 +426,11 @@ class OpenRouterClient(OpenAIClient):
                 resp_data = json.loads(res.read().decode())
                 content = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-                # 1. Parse JSON
                 try:
                     data = structured.parse_json_content(content)
                 except ValueError as e:
                     return {"error": f"JSON Parse Failed: {e}", "raw": content}
 
-                # 2. Validate Schema
                 valid, errors = structured.validate_against_schema(data, schema)
 
                 return {
@@ -456,6 +454,51 @@ class OpenRouterClient(OpenAIClient):
             "cached_tokens": details.get("cached_tokens", 0),
             "cache_write_tokens": details.get("cache_write_tokens", 0)
         }
+
+
+class WhoVisionsCloudClient(LLMClient):
+    """
+    Client for Who Visions Hosted Cloud Brain.
+    Securely bridges local CLI to remote node for metered inference.
+    """
+    def __init__(self, node_url: str = None, user_token: str = None):
+        self.node_url = node_url or os.environ.get("NGS_CLOUD_URL")
+        self.user_token = user_token or os.environ.get("NGS_CLOUD_TOKEN")
+
+    def is_alive(self) -> bool:
+        return bool(self.node_url and self.user_token)
+
+    def list_models(self) -> list:
+        # Return canonical cloud models
+        return ["whovisions/brain-v1", "openrouter/auto"]
+
+    def chat(self, model: str, messages: list, stream: bool = False) -> str:
+        if not self.is_alive():
+            return "Error: Who Visions Cloud not configured. Use: nougen auth set-key cloud <url>,<token>"
+        
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": stream
+        }
+        req = urllib.request.Request(
+            f"{self.node_url.rstrip('/')}/cloud/chat",
+            data=json.dumps(payload).encode(),
+            method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        req.add_header("X-NGS-Token", self.user_token)
+        
+        try:
+            with urllib.request.urlopen(req) as res:
+                resp_data = json.loads(res.read().decode())
+                return resp_data.get("content", "")
+        except Exception as exc:
+            return f"Error: {exc}"
+
+    def embed(self, model: str, text: str) -> list:
+        # Future: implement remote embedding gateway
+        return []
 
 
 class OllamaClient(LocalLLMClient):
