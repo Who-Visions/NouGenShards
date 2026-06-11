@@ -8,6 +8,7 @@ import csv
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 # Portable Vault Resolution
 VAULT_DIR = Path(os.getenv("NOUGEN_VAULT_DIR", ".nougen_vault"))
@@ -170,7 +171,7 @@ def list_cloud_nodes() -> list:
         conn.close()
 
 
-def get_secret(key: str) -> str:
+def get_secret(key: str) -> Optional[str]:
     """Retrieves a secret value from the DB by its key."""
     if not DB_PATH.exists():
         return None
@@ -179,7 +180,7 @@ def get_secret(key: str) -> str:
     try:
         cursor.execute("SELECT secret_value FROM secrets WHERE secret_key = ?", (key,))
         row = cursor.fetchone()
-        return row[0] if row else None
+        return str(row[0]) if row else None
     except sqlite3.Error:
         return None
     finally:

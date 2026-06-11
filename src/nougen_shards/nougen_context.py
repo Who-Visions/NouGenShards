@@ -3,6 +3,7 @@ from pathlib import Path
 import sqlite3
 import json
 from datetime import datetime, timezone
+from typing import Optional
 
 NOUGEN_CONTEXT_DIR = Path.home() / ".nougen" / "context"
 NOUGEN_CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
@@ -78,7 +79,7 @@ def init_context_db(clean_slate: bool = True):
     conn.commit()
     conn.close()
 
-def log_event(event_type: str, content: str, metadata: dict = None):
+def log_event(event_type: str, content: str, metadata: Optional[dict] = None):
     """Logs an event into the session context."""
     timestamp = datetime.now(timezone.utc).isoformat() + "Z"
     metadata_str = json.dumps(metadata or {})
@@ -131,3 +132,11 @@ def fetch_sandbox(handle: str):
     row = conn.execute("SELECT data FROM ctx_sandbox WHERE handle = ?", (handle,)).fetchone()
     conn.close()
     return row["data"] if row else None
+
+def search_events(query: str, limit: int = 5) -> list:
+    conn = get_context_connection()
+    try:
+        rows = conn.execute("SELECT id, type, content as description, timestamp, metadata FROM ctx_events LIMIT ?", (limit,)).fetchall()
+        return [{"id": r["id"], "event_type": r["type"], "description": r["description"], "timestamp": r["timestamp"], "metadata": r["metadata"]} for r in rows]
+    finally:
+        conn.close()

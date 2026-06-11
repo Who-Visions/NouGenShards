@@ -1,6 +1,6 @@
 import json
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Dict, Optional
 from .candidate import CandidateFile
 from .scanner import scan_environment
 from .parsers import parse_universal
@@ -15,8 +15,8 @@ class ImportResult:
     duplicates_skipped: int
     secrets_redacted: int
 
-def run_import(project_path: str = None, include_unknown: bool = False, 
-               source_filter: str = None, redact: bool = True, confirm: bool = False) -> ImportResult:
+def run_import(project_path: Optional[str] = None, include_unknown: bool = False, 
+               source_filter: Optional[str] = None, redact: bool = True, confirm: bool = False) -> ImportResult:
     """Executes the Brain Import pipeline (Dry-Run by default)."""
     
     candidates = scan_environment(project_path, include_unknown)

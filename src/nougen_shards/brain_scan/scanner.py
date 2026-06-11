@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from .candidate import CandidateFile
 from .registry import GLOBAL_ROOTS, PROJECT_ROOT_NAMES, PROJECT_FILES, DANGER_ZONES, SKIP_DIRS, SUPPORTED_EXTS
 from .classifiers import classify_file, detect_tool
@@ -10,7 +10,7 @@ def _is_safe_dir(path: Path) -> bool:
             return False
     return True
 
-def scan_environment(project_path: str = None, include_unknown: bool = False) -> List[CandidateFile]:
+def scan_environment(project_path: Optional[str] = None, include_unknown: bool = False) -> List[CandidateFile]:
     """Scans the environment for local AI tool history and context."""
     candidates = []
     

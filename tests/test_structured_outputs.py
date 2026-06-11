@@ -4,6 +4,8 @@ Unit tests for structured output parsing and validation.
 import pytest
 from nougen_shards.structured import parse_json_content, validate_against_schema
 
+from typing import Dict, Any
+
 def test_parse_json_direct():
     content = '{"key": "value"}'
     assert parse_json_content(content) == {"key": "value"}
@@ -17,7 +19,7 @@ def test_parse_json_braces():
     assert parse_json_content(content) == {"bar": True}
 
 def test_validate_against_schema_success():
-    schema = {
+    schema: Dict[str, Any] = {
         "type": "object",
         "properties": {
             "name": {"type": "string"},
@@ -25,13 +27,13 @@ def test_validate_against_schema_success():
         },
         "required": ["name"]
     }
-    data = {"name": "Dave", "age": 30}
+    data: Dict[str, Any] = {"name": "Dave", "age": 30}
     valid, errors = validate_against_schema(data, schema)
     assert valid is True
     assert len(errors) == 0
 
 def test_validate_against_schema_failure():
-    schema = {
+    schema: Dict[str, Any] = {
         "type": "object",
         "properties": {
             "name": {"type": "string"},
@@ -40,7 +42,7 @@ def test_validate_against_schema_failure():
         "required": ["name", "id"],
         "additionalProperties": False
     }
-    data = {"name": 123, "extra": "data"}
+    data: Dict[str, Any] = {"name": 123, "extra": "data"}
     valid, errors = validate_against_schema(data, schema)
     assert valid is False
     assert any("Missing required field: id" in e for e in errors)

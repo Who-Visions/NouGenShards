@@ -3,8 +3,9 @@ from . import core
 from .connectors.sql import query_external_dbs
 from .connectors.cloud import query_cloud_shards
 from . import keymaker
+from typing import List, Optional
 
-def federated_retrieve(query: str, limit: int = 3, query_embedding: list = None) -> list:
+def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None) -> list:
     """
     Module 8: Combine Compatible Systems.
     Polls local Shard substrate, external DBs, and remote cloud nodes.

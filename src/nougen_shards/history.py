@@ -6,6 +6,7 @@ import sqlite3
 import json
 from pathlib import Path
 from datetime import datetime, timedelta
+from typing import Optional
 
 # Configuration
 HISTORY_DIR = Path.home() / ".nougen" / "shards"
@@ -49,7 +50,7 @@ def init_history_db():
 
 
 def log_event(shard_id: int, db_index: int, event_type: str,
-              old_score: float = None, new_score: float = None, metadata: dict = None):
+              old_score: Optional[float] = None, new_score: Optional[float] = None, metadata: Optional[dict] = None):
     """Writes a historical event to the substrate."""
     # Lazy init to prevent side-effects on import
     if not DB_PATH.exists():

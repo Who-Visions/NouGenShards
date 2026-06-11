@@ -4,9 +4,9 @@ Handles local JSON validation and repair.
 """
 import json
 import re
-from typing import Any, Tuple, List, Optional
+from typing import Any, Tuple, List, Optional, Dict
 
-def parse_json_content(content: str) -> dict:
+def parse_json_content(content: str) -> Dict[str, Any]:
     """
     Attempts to parse JSON from a string, handling common LLM formatting issues.
     """
@@ -14,7 +14,9 @@ def parse_json_content(content: str) -> dict:
     
     # 1. Direct Parse
     try:
-        return json.loads(content)
+        parsed = json.loads(content)
+        if isinstance(parsed, dict):
+            return parsed
     except json.JSONDecodeError:
         pass
         
@@ -22,7 +24,9 @@ def parse_json_content(content: str) -> dict:
     match = re.search(r"```(?:json)?\s*(.*?)\s*```", content, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group(1))
+            parsed = json.loads(match.group(1))
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             pass
             
@@ -31,18 +35,20 @@ def parse_json_content(content: str) -> dict:
     end = content.rfind('}')
     if start != -1 and end != -1:
         try:
-            return json.loads(content[start:end+1])
+            parsed = json.loads(content[start:end+1])
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             pass
             
     raise ValueError("Failed to parse JSON from content.")
 
-def validate_against_schema(data: dict, schema: dict) -> Tuple[bool, List[str]]:
+def validate_against_schema(data: Dict[str, Any], schema: Dict[str, Any]) -> Tuple[bool, List[str]]:
     """
     Minimal schema validation fallback.
     Checks required fields and basic types.
     """
-    errors = []
+    errors: List[str] = []
     
     # Check Required Fields
     required = schema.get("required", [])
