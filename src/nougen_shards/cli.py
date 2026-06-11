@@ -129,10 +129,16 @@ def cmd_auth(args):
 
 def cmd_init(_args):
     """Bootstrap the local shard layer."""
-    print("Bootstraping NouGenShards local layer...")
+    print("🪩 Initializing the Metameric Memory Engine...")
     shards.init_db(index=1)
     print("✅ Created local-first database substrate.")
-    print("\nNext steps: nougen auth set-key OR nougen add \"first memory\"")
+    print("\n[IGNITION COMPLETE]")
+    print(" NouGenShards is now active. Your machine has memory.")
+    print("\nNext Plays:")
+    print(" 1. nougen brain scan         (Discover your lost AI history)")
+    print(" 2. nougen dashboard          (Launch the visual Cortex HUD)")
+    print(" 3. nougen auth set-key OR    (Connect to the cloud)")
+    print(" 4. nougen add \"first shard\" (Start capturing manually)")
 
 
 def _run_interactive_chat(model, provider, client):
@@ -626,7 +632,23 @@ def cmd_evolve(args):
                 print(f"\n[Evolution Failed]: {summary.get('error')}")
 
 
+def cmd_dashboard(args):
+    """Launches the Cortex HUD (Visual Dashboard)."""
+    import uvicorn
+    # Import app from parent directory of nougen_shards package
+    # In a real install, app.py would be part of the package or a script
+    try:
+        from ...app import app # type: ignore
+    except (ImportError, ValueError):
+        print("Error: Dashboard module not found in path. Ensure you are running from the project root.")
+        return
+
+    print(f"🚀 Igniting Cortex HUD on http://127.0.0.1:{args.port}...")
+    uvicorn.run(app, host="127.0.0.1", port=args.port)
+
+
 def get_parser():
+
 
 
     """Create the CLI parser."""
@@ -743,7 +765,11 @@ def get_parser():
     p_evolve.add_argument("instruction", help="The task instruction to evolve a skill for")
     p_evolve.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    p_dashboard = subparsers.add_parser("dashboard", help="Launch visual Cortex HUD")
+    p_dashboard.add_argument("--port", type=int, default=4444, help="Port to run on")
+
     return parser
+
 
 
 
@@ -783,6 +809,15 @@ def cmd_doctor(args):
         p_status[name] = alive
         print(f" {'✅' if alive else '❌'} {name.capitalize()}")
 
+    # 4. Check Engine Modules
+    print("\n[Cognitive Engines]")
+    try:
+        from . import dream, evolution
+        print(" ✅ Dream State (TMEM): Ready")
+        print(" ✅ Evolution Engine (OpenSkill): Ready")
+    except ImportError as e:
+        print(f" ❌ Engine Modules missing: {e}")
+
     if getattr(args, 'json', False):
         import json
         print("\n[JSON Output]")
@@ -807,7 +842,8 @@ def main():
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
-        "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve
+        "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
+        "dashboard": cmd_dashboard
     }
     if args.command in cmds:
         cmds[args.command](args)
