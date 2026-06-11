@@ -29,6 +29,7 @@ dependencies = [
 
 [project.scripts]
 nougen = "nougen_shards.cli:main"
+nougen-mcp = "nougen_shards.mcp:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
