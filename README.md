@@ -6,14 +6,12 @@
 ╵ ╵└─┘└─┘└─┘└─╴╵ ╵└─┘╵ ╵╵ ╵╵└╴╶┴┘└─┘
 ```
 
-**NouGenShards gives every AI assistant a persistent local memory by turning conversations, code, and logs into searchable knowledge that stays on your machine.**
+**NouGenShards gives AI assistants persistent local memory — so your best fixes, decisions, and context don't disappear between tools.**
 
-> **"Nou Gen"** means *"We have"* in Haitian Creole.
-> NouGenAi means: **We have AI.**
-> NouGenShards means: **We have memory.**
+> **"Nou Gen"** means *"We have"* in Haitian Creole. NouGenShards means: **We have memory.**
 > 🇭🇹 Built by **Who Visions** to empower global diaspora intelligence.
 
-AI tools forget because their memory is trapped inside separate apps and limited context windows. NouGenShards acts as a local memory engine that scans your machine for scattered AI traces (from Claude, Gemini, Cursor, etc.), extracts the useful context, normalizes it, and helps you reuse what worked without sending everything to the cloud.
+Every AI tool you use forgets when the session ends. NouGenShards scans your machine for scattered AI traces — Claude, Gemini, Cursor, Codex, and more — extracts the useful context, and stores it locally in encrypted SQLite databases you control. No cloud required.
 
 > ⚠️ **Source-Available, Not Open Source**: This project is provided so users can inspect, learn, and trust the local client. Commercial reuse, redistribution for a fee, and competing hosted services are strictly prohibited. See [LICENSE.md](./LICENSE.md).
 
@@ -53,14 +51,14 @@ graph TD
 
 ## 🚀 Why NouGenShards?
 
-- **[The Metameric Memory Engine](docs/architecture.md)**: Built on a strict 21-step cognitive architecture, transforming chaotic logs into unified, Bayesian-ranked memory shards.
-- **The Visual Soul (Cortex HUD)**: Don't just trust the CLI; see your memory grow. The HUD provides a 3x3 substrate map, high-velocity timelines, and a point-and-click shard browser.
 - **AI Memory Recon**: Run `nougen brain scan` to discover and import your fragmented AI history across 15+ known tool formats.
-- **Parametric Dreams** *(experimental / preview)*: The engine "sleeps" to consolidate knowledge — it applies Bayesian decay and exports a distilled SFT dataset (TMEM) ready for a fast-weight LoRA update. The dataset export is real; the weight-update step and the open-world skill **Evolution** engine are simulated scaffolding today, not production self-evolution.
-- **Privacy First**: Your core memory stays on your machine in local SQLite databases. Secrets are redacted on import, and the credential vault encrypts values at rest (Windows DPAPI; macOS/Linux via the OS keyring when `keyring` is installed). Cloud platforms forget, but local memory belongs to you.
+- **Cortex HUD**: See your memory grow — a 3x3 substrate map, high-velocity timelines, and a point-and-click shard browser. Ships as a native desktop app (Tauri) and web view.
+- **Privacy First**: Your core memory stays on your machine in local SQLite databases. Secrets are redacted on import, and the credential vault encrypts values at rest. Cloud platforms forget, but local memory belongs to you.
+- **Bayesian Ranking**: The tool learns what is useful. Marking a shard as helpful improves future search relevance automatically.
 - **Federated Intelligence**: Search your local shards, your production SQL databases, and remote cloud nodes simultaneously.
-- **Bayesian Ranking**: The tool learns what is useful. "Marking" a shard as helpful improves future search relevance automatically.
+- **Parametric Dreams** *(experimental)*: The engine consolidates knowledge via Bayesian decay and exports distilled SFT datasets (TMEM) for fast-weight LoRA updates. Dataset export is real; the weight-update step is simulated scaffolding today.
 - **Production Ready**: Built-in OpenRouter routing with automatic fallback and response healing.
+- **[Deep Architecture →](docs/architecture.md)**: The full 21-step Metameric Memory Engine blueprint.
 
 ---
 
