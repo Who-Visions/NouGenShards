@@ -7,7 +7,7 @@ We do not ask AI to remember. We reverse-engineer where it stores its state, abs
 Here is the exact software architecture mapped to the 21-step operating loop:
 
 ## Theoretical Foundation: The Architecture of Adjacency
-The Metameric Memory Engine is mathematically grounded in the [Architecture of Adjacency](file:///C:/Users/super/Watchtower/NouGen/NouGenShards/docs/theory/n-gram-topologies.md) and the [Clinical Handoff Convergence Theory](file:///C:/Users/super/Watchtower/NouGen/NouGenShards/docs/theory/clinical-handoffs.md). We leverage N-gram topologies and clinical safety protocols (SBAR/5 Ps) to transform raw symbolic streams into resilient, state-conserving agent boundaries.
+The Metameric Memory Engine is mathematically grounded in the [Architecture of Adjacency](theory/n-gram-topologies.md) and the [Clinical Handoff Convergence Theory](theory/clinical-handoffs.md). We leverage N-gram topologies and clinical safety protocols (SBAR/5 Ps) to transform raw symbolic streams into resilient, state-conserving agent boundaries.
 
 ---
 
