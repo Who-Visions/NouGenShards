@@ -8,6 +8,9 @@
   },
   "scripts": {
     "start": "node bin/nougenshards.js",
+    "dev": "vite",
+    "build": "vite build",
+    "tauri": "tauri",
     "test": "python -m pytest"
   },
   "repository": {
@@ -27,6 +30,7 @@
   "author": "Who Visions LLC",
   "license": "SEE LICENSE IN LICENSE.md",
   "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
     "cross-spawn": "^7.0.3"
   },
   "devDependencies": {
