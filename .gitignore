@@ -18,6 +18,8 @@ secrets/
 venv/
 transcript.log
 .handoffs/
+.vault/
+pending_shards/
 
 # Node dependencies
 node_modules/
