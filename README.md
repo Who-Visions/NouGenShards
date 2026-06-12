@@ -47,6 +47,22 @@ nougen.bat
 pip install .
 ```
 
+### 1b. Desktop HUD (Tauri)
+
+The Cortex HUD also ships as a native desktop app (Rust + Tauri v2, React frontend):
+
+```bash
+npm install          # frontend deps
+npm run tauri dev    # live-reload development window
+npm run tauri build  # production app at src-tauri/target/release/
+```
+
+Prerequisites: Node 20+, Rust toolchain (`winget install Rustlang.Rustup`), and
+`npm i -g @tauri-apps/cli`. On first checkout run `tauri icon src-tauri/icons/icon.png`
+to regenerate the platform icon binaries (they are not committed).
+The HUD talks to the Python engine through Tauri commands (`search_shards`,
+`engine_status`, `memory_stats`) that proxy the `nougen … --json` CLI contract.
+
 ### 2. Find Your AI Brain
 
 ```bash

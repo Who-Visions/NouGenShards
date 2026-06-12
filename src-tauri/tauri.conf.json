@@ -13,14 +13,16 @@
     "windows": [
       {
         "title": "NouGenShards Cortex HUD",
-        "width": 800,
-        "height": 600,
+        "width": 1100,
+        "height": 720,
+        "minWidth": 760,
+        "minHeight": 520,
         "resizable": true,
         "fullscreen": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {
@@ -29,12 +31,7 @@
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ],
-    "externalBin": [
-      "bin/python-sidecar"
+      "icons/128x128@2x.png"
     ]
   }
 }
