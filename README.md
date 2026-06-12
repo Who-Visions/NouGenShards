@@ -1,12 +1,24 @@
-# 🪩 NouGenShards
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo_dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/logo_light.png">
+    <img alt="NouGenShards Logo" src="docs/images/logo_dark.png" width="160">
+  </picture>
+</p>
 
-```text
-┌┐╷┌─┐╷ ╷┌─╴┌─╴┌┐╷┌─┐╷ ╷┌─┐┌─┐╶┬┐┌─┐
-│└┤│ ││ ││╶┐├╴ │└┤└─┐├─┤├─┤├┬┘ ││└─┐
-╵ ╵└─┘└─┘└─┘└─╴╵ ╵└─┘╵ ╵╵ ╵╵└╴╶┴┘└─┘
-```
+<h1 align="center">🪩 NouGenShards</h1>
 
-**NouGenShards gives AI assistants persistent local memory — so your best fixes, decisions, and context don't disappear between tools.**
+<p align="center">
+  <strong>Persistent local memory for AI assistants — so your best fixes, decisions, and context don't disappear between tools.</strong>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/federated_union_dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/federated_union_light.png">
+    <img alt="The Federated Union" src="docs/images/federated_union_dark.png" width="100%">
+  </picture>
+</p>
 
 > **"Nou Gen"** means *"We have"* in Haitian Creole. NouGenShards means: **We have memory.**
 > 🇭🇹 Built by **Who Visions** to empower global diaspora intelligence.
@@ -51,10 +63,27 @@ graph TD
 
 ## 🚀 Why NouGenShards?
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/palmis_logo_dark.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/palmis_logo_light.png">
+    <img alt="Sovereign Palm Emblem" src="docs/images/palmis_logo_dark.jpg" width="300">
+  </picture>
+</p>
+
 - **AI Memory Recon**: Run `nougen brain scan` to discover and import your fragmented AI history across 15+ known tool formats.
 - **Cortex HUD**: See your memory grow — a 3x3 substrate map, high-velocity timelines, and a point-and-click shard browser. Ships as a native desktop app (Tauri) and web view.
 - **Privacy First**: Your core memory stays on your machine in local SQLite databases. Secrets are redacted on import, and the credential vault encrypts values at rest. Cloud platforms forget, but local memory belongs to you.
 - **Bayesian Ranking**: The tool learns what is useful. Marking a shard as helpful improves future search relevance automatically.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/decay_curve_dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/decay_curve_light.png">
+    <img alt="Bayesian Decay Curve" src="docs/images/decay_curve_dark.png" width="550">
+  </picture>
+</p>
+
 - **Federated Intelligence**: Search your local shards, your production SQL databases, and remote cloud nodes simultaneously.
 - **Parametric Dreams** *(experimental)*: The engine consolidates knowledge via Bayesian decay and exports distilled SFT datasets (TMEM) for fast-weight LoRA updates. Dataset export is real; the weight-update step is simulated scaffolding today.
 - **Production Ready**: Built-in OpenRouter routing with automatic fallback and response healing.
@@ -134,6 +163,11 @@ nougen mark 5 --worked
 ```
 
 ### Agent Handoffs
+
+<p align="center">
+  <img alt="Agent Handoff Flow" src="docs/images/handoff_flow_dark.png" width="500">
+</p>
+
 Leave a structured note for the next coding agent when you transfer work between
 sessions (Gemini, Claude, Codex, local models). Captures the goal, git state,
 open tasks, and a free-text note. See **[docs/handoffs.md](docs/handoffs.md)** for
