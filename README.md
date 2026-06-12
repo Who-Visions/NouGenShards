@@ -6,16 +6,48 @@
 ╵ ╵└─┘└─┘└─┘└─╴╵ ╵└─┘╵ ╵╵ ╵╵└╴╶┴┘└─┘
 ```
 
-**NouGenShards turns your existing AI work into one searchable local memory.**
+**NouGenShards gives every AI assistant a persistent local memory by turning conversations, code, and logs into searchable knowledge that stays on your machine.**
 
 > **"Nou Gen"** means *"We have"* in Haitian Creole.
 > NouGenAi means: **We have AI.**
 > NouGenShards means: **We have memory.**
 > 🇭🇹 Built by **Who Visions** to empower global diaspora intelligence.
 
-AI tools forget because their memory is trapped inside separate apps and limited context windows. NouGenShards acts as a **Metameric Memory Engine**. It scans your machine for scattered AI traces (from Claude, Gemini, Cursor, Codex, etc.), extracts the useful context, normalizes it, and helps you reuse what worked without sending everything to the cloud.
+AI tools forget because their memory is trapped inside separate apps and limited context windows. NouGenShards acts as a local memory engine that scans your machine for scattered AI traces (from Claude, Gemini, Cursor, etc.), extracts the useful context, normalizes it, and helps you reuse what worked without sending everything to the cloud.
 
 > ⚠️ **Source-Available, Not Open Source**: This project is provided so users can inspect, learn, and trust the local client. Commercial reuse, redistribution for a fee, and competing hosted services are strictly prohibited. See [LICENSE.md](./LICENSE.md).
+
+---
+
+## 📖 CLI Workflow Example
+
+```bash
+# 1. Discover and import scattered AI history from Claude, Gemini, Cursor, etc.
+$ nougen brain scan
+Found:
+✓ Claude (3,412 items)
+✓ Gemini (1,209 items)
+✓ Cursor (4,891 items)
+
+# 2. Search your memory substrate semantically
+$ nougen search "React auth bug" --semantic
+[Shard #142] (8 months ago via Claude)
+"Fixed JWT token expiration handler..."
+```
+
+---
+
+## 🏗️ Architecture
+
+```mermaid
+graph TD
+    A[Claude / Gemini / Cursor / Logs] -->|nougen brain scan| B[AI Memory Recon]
+    B -->|Extract & Normalize| C[Normalizer]
+    C -->|Deterministic Hash Routing| D[(9-Db Shard Grid)]
+    D -->|BM25 + Semantic Search| E[Bayesian Ranker]
+    E -->|Prior/Utility Updates| F[Search API]
+    F -->|Telemetry / CLI| G[Cortex HUD / TUI]
+```
 
 ---
 

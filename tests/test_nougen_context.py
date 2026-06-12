@@ -54,6 +54,20 @@ def test_log_and_search_event():
     assert results[0]["content"] == "Unique content for search"
     assert results[0]["type"] == "test_type"
 
+
+def test_search_events_filters_query():
+    """search_events should only return events matching the query."""
+    nougen_context.init_context_db(clean_slate=True)
+    nougen_context.log_event("alpha_type", "needle context payload")
+    nougen_context.log_event("beta_type", "irrelevant payload")
+
+    results = nougen_context.search_events("needle", limit=10)
+
+    assert len(results) == 1
+    assert results[0]["event_type"] == "alpha_type"
+    assert results[0]["description"] == "needle context payload"
+
+
 def test_sandbox_store_fetch():
     """Test sandbox storage and retrieval."""
     nougen_context.init_context_db(clean_slate=True)

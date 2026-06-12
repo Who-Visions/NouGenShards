@@ -361,6 +361,28 @@ def cmd_ctx(args):
         print("✅ Session initialized.")
     elif args.action == "execute":
         print(nougen_sandbox.execute_sandboxed(args.input))
+    elif args.action == "search":
+        if not args.input:
+            print("Error: Usage: nougen ctx search <query> [--limit <n>]")
+            return
+        results = nougen_context.search_events(args.input, limit=args.limit)
+        if not results:
+            print("No context events found.")
+            return
+        for event in results:
+            print(
+                f"#{event['id']} {event['timestamp']} "
+                f"{event['event_type']}: {event['description']}"
+            )
+    elif args.action == "get":
+        if not args.input:
+            print("Error: Usage: nougen ctx get <event_id>")
+            return
+        event = nougen_context.get_event(int(args.input))
+        if not event:
+            print(f"Error: Context event #{args.input} not found.")
+            return
+        print(json.dumps(event, indent=2))
     elif args.action == "promote":
         if not args.input:
             print("Error: Usage: nougen ctx promote <event_id> [--tags <tags>]")
@@ -702,9 +724,10 @@ def get_parser():
     p_stats.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_ctx = subparsers.add_parser("ctx", help="Context layer")
-    p_ctx.add_argument("action", choices=["init", "execute", "promote"])
+    p_ctx.add_argument("action", choices=["init", "execute", "search", "get", "promote"])
     p_ctx.add_argument("input", nargs="?")
     p_ctx.add_argument("--tags", help="Tags for promoted shard")
+    p_ctx.add_argument("--limit", type=int, default=5, help="Max results for ctx search")
 
     # router
     p_router = subparsers.add_parser("router", help="OpenRouter production routing")
@@ -776,14 +799,17 @@ def get_parser():
     p_dashboard.add_argument("--port", type=int, default=4444, help="Port to run on")
 
     p_handoff = subparsers.add_parser("handoff", help="Cross-agent session handoff notes")
-    p_handoff.add_argument("action", choices=["create", "read", "list", "ack"],
-                           help="create | read | list | ack")
+    p_handoff.add_argument("action", choices=[
+        "create", "read", "list", "ack", "start", "checkpoint", "complete", "rebuild-db"
+    ], help="create | read | list | ack | start | checkpoint | complete | rebuild-db")
     p_handoff.add_argument("--message", "-m", default="", help="Handoff note or acknowledgement message")
     p_handoff.add_argument("--agent", "-a", default=None,
                            help="Agent type (gemini, claude, codex, ollama, openrouter)")
     p_handoff.add_argument("--goal", "-g", default=None, help="The active goal/objective for this handoff")
     p_handoff.add_argument("--id", dest="handoff_id", default=None,
-                           help="Target a specific handoff id (used with 'ack')")
+                           help="Target a specific handoff id")
+    p_handoff.add_argument("--state", choices=["in_progress", "blocked", "complete"],
+                           default="in_progress", help="Checkpoint state")
 
     return parser
 
@@ -856,6 +882,20 @@ def cmd_handoff(args):
         handoff.list_handoffs(args.agent)
     elif args.action == "ack":
         handoff.acknowledge_handoff(args.agent, args.message, getattr(args, "handoff_id", None))
+    elif args.action == "start":
+        handoff.start_orchestration(args.agent, args.message, getattr(args, "handoff_id", None))
+    elif args.action == "checkpoint":
+        handoff.checkpoint_orchestration(
+            args.agent,
+            args.message,
+            getattr(args, "handoff_id", None),
+            getattr(args, "state", "in_progress"),
+        )
+    elif args.action == "complete":
+        handoff.complete_orchestration(args.agent, args.message, getattr(args, "handoff_id", None))
+    elif args.action == "rebuild-db":
+        count = handoff.rebuild_handoff_db(args.agent)
+        print(f"Indexed {count} handoff record(s) in {handoff.get_handoff_db_path()}")
 
 def main():
     """Execution entry point."""

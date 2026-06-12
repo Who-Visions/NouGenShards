@@ -1,8 +1,9 @@
 import json
+import sqlite3
 import tempfile
 import pytest
 from pathlib import Path
-from nougen_shards import handoff
+from nougen_shards import handoff, nougen_context
 
 @pytest.fixture(autouse=True)
 def setup_handoff_env(monkeypatch):
@@ -10,6 +11,11 @@ def setup_handoff_env(monkeypatch):
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         monkeypatch.setattr(handoff, "HANDOFF_DIR", temp_path)
+        monkeypatch.setattr(
+            nougen_context,
+            "SESSION_DB_PATH",
+            str(temp_path / "context_session.db"),
+        )
         yield temp_path
 
 def test_handoff_creation(setup_handoff_env):
@@ -35,6 +41,14 @@ def test_handoff_creation(setup_handoff_env):
         assert data["message"] == "Testing handoff system"
         assert "git" in data
         assert "tasks" in data
+
+    conn = sqlite3.connect(handoff.get_handoff_db_path())
+    row = conn.execute(
+        "SELECT agent, status, goal FROM handoff_records WHERE handoff_id = ?",
+        (data["handoff_id"],),
+    ).fetchone()
+    conn.close()
+    assert row == ("gemini", "open", data["goal"])
 
 def test_handoff_creation_generic(setup_handoff_env):
     temp_path = setup_handoff_env
@@ -84,6 +98,93 @@ def test_acknowledge_flow(setup_handoff_env, monkeypatch):
 
     # Nothing open left to acknowledge
     assert handoff.acknowledge_handoff() is None
+
+
+def test_start_orchestration_claims_handoff(setup_handoff_env, monkeypatch):
+    monkeypatch.setenv("NOUGEN_AGENT", "codex")
+    created = handoff.create_handoff(message="ready", agent="gemini", goal="G")
+
+    started = handoff.start_orchestration(message="taking over")
+    assert started == created
+    data = json.loads(started.read_text(encoding="utf-8"))
+    assert data["status"] == "in_progress"
+    assert data["acknowledged_by"] == "codex"
+    assert data["orchestration"]["started_by"] == "codex"
+    assert data["orchestration"]["checkpoints"][0]["state"] == "started"
+
+
+def test_checkpoint_and_complete_orchestration(setup_handoff_env, monkeypatch):
+    monkeypatch.setenv("NOUGEN_AGENT", "codex")
+    handoff.create_handoff(message="ready", agent="gemini", goal="G")
+    started = handoff.start_orchestration(message="start")
+    handoff.checkpoint_orchestration(message="halfway", handoff_id=None)
+
+    data = json.loads(started.read_text(encoding="utf-8"))
+    assert data["status"] == "in_progress"
+    assert data["orchestration"]["checkpoints"][-1]["message"] == "halfway"
+
+    completed = handoff.complete_orchestration(message="done")
+    assert completed == started
+    data = json.loads(started.read_text(encoding="utf-8"))
+    assert data["status"] == "complete"
+    assert data["completed_by"] == "codex"
+    assert data["orchestration"]["checkpoints"][-1]["state"] == "complete"
+
+    conn = sqlite3.connect(handoff.get_handoff_db_path())
+    status = conn.execute(
+        "SELECT status FROM handoff_records WHERE handoff_id = ?",
+        (data["handoff_id"],),
+    ).fetchone()[0]
+    checkpoint_count = conn.execute(
+        "SELECT COUNT(*) FROM handoff_checkpoints WHERE handoff_id = ?",
+        (data["handoff_id"],),
+    ).fetchone()[0]
+    conn.close()
+    assert status == "complete"
+    assert checkpoint_count == 3
+
+
+def test_handoff_transitions_are_mirrored_to_context_mode(setup_handoff_env, monkeypatch):
+    monkeypatch.setenv("NOUGEN_AGENT", "codex")
+    created = handoff.create_handoff(message="ready", agent="gemini", goal="Context mirror")
+    handoff.start_orchestration(message="start")
+    handoff.checkpoint_orchestration(message="halfway")
+    handoff.complete_orchestration(message="done")
+
+    data = json.loads(created.read_text(encoding="utf-8"))
+    events = nougen_context.search_events(data["handoff_id"], limit=10)
+    event_types = {event["event_type"] for event in events}
+
+    assert "HANDOFF_CREATED" in event_types
+    assert "HANDOFF_ORCHESTRATION_STARTED" in event_types
+    assert "HANDOFF_ORCHESTRATION_CHECKPOINT" in event_types
+    assert "HANDOFF_ORCHESTRATION_COMPLETED" in event_types
+
+    completed = next(
+        event for event in events
+        if event["event_type"] == "HANDOFF_ORCHESTRATION_COMPLETED"
+    )
+    metadata = json.loads(completed["metadata"])
+    assert metadata["handoff_id"] == data["handoff_id"]
+    assert metadata["state"] == "complete"
+
+
+def test_rebuild_handoff_db_from_json(setup_handoff_env):
+    path = handoff.create_handoff(message="old file", agent="gemini", goal="G")
+    db_path = handoff.get_handoff_db_path()
+    for suffix in ("", "-wal", "-shm"):
+        candidate = Path(f"{db_path}{suffix}")
+        if candidate.exists():
+            candidate.unlink()
+
+    assert not db_path.exists()
+    assert handoff.rebuild_handoff_db() == 1
+    conn = sqlite3.connect(db_path)
+    count = conn.execute("SELECT COUNT(*) FROM handoff_records").fetchone()[0]
+    stored_path = conn.execute("SELECT path FROM handoff_records").fetchone()[0]
+    conn.close()
+    assert count == 1
+    assert stored_path == str(path)
 
 
 def test_agent_env_override(setup_handoff_env, monkeypatch):
