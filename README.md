@@ -186,6 +186,10 @@ nougen handoff ack --message "picking this up"
 nougen handoff list
 ```
 
+<p align="center">
+  <img alt="Multi-Agent Handoff Log Mockup" src="docs/images/handoff_log_mockup.png" width="550">
+</p>
+
 ---
 
 ## ☁️ Cloud & Hybrid Modes
