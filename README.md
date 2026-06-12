@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo_dark.png">
     <source media="(prefers-color-scheme: light)" srcset="docs/images/logo_light.png">
-    <img alt="NouGenShards Logo" src="docs/images/logo_dark.png" width="160">
+    <img alt="NouGenShards Logo" src="docs/images/logo_dark.png" width="108">
   </picture>
 </p>
 
@@ -16,7 +16,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/federated_union_dark.png">
     <source media="(prefers-color-scheme: light)" srcset="docs/images/federated_union_light.png">
-    <img alt="The Federated Union" src="docs/images/federated_union_dark.png" width="100%">
+    <img alt="The Federated Union" src="docs/images/federated_union_dark.png" width="67%">
   </picture>
 </p>
 
@@ -67,7 +67,7 @@ graph TD
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/palmis_logo_dark.jpg">
     <source media="(prefers-color-scheme: light)" srcset="docs/images/palmis_logo_light.png">
-    <img alt="Sovereign Palm Emblem" src="docs/images/palmis_logo_dark.jpg" width="300">
+    <img alt="Sovereign Palm Emblem" src="docs/images/palmis_logo_dark.jpg" width="201">
   </picture>
 </p>
 
@@ -80,7 +80,7 @@ graph TD
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/decay_curve_dark.png">
     <source media="(prefers-color-scheme: light)" srcset="docs/images/decay_curve_light.png">
-    <img alt="Bayesian Decay Curve" src="docs/images/decay_curve_dark.png" width="550">
+    <img alt="Bayesian Decay Curve" src="docs/images/decay_curve_dark.png" width="368">
   </picture>
 </p>
 
@@ -165,7 +165,7 @@ nougen mark 5 --worked
 ### Agent Handoffs
 
 <p align="center">
-  <img alt="Agent Handoff Flow" src="docs/images/handoff_flow_dark.png" width="500">
+  <img alt="Agent Handoff Flow" src="docs/images/handoff_flow_dark.png" width="335">
 </p>
 
 Leave a structured note for the next coding agent when you transfer work between
@@ -187,7 +187,7 @@ nougen handoff list
 ```
 
 <p align="center">
-  <img alt="Multi-Agent Handoff Log Mockup" src="docs/images/handoff_log_mockup.png" width="550">
+  <img alt="Multi-Agent Handoff Log Mockup" src="docs/images/handoff_log_mockup.png" width="368">
 </p>
 
 ---
