@@ -23,9 +23,14 @@ if _watchtower_root not in sys.path:
 # pylint: disable=import-error,wrong-import-position
 from openrouter_guard import call_openrouter
 
+# Resolve mcp.config.json from repository root if it exists, otherwise fall back to global path
+_repo_mcp_path = Path(__file__).resolve().parents[2] / "mcp.config.json"
+if not _repo_mcp_path.exists():
+    _repo_mcp_path = Path(__file__).resolve().parents[2] / "mcp_config.json"
+
 MCP_CONFIG_PATH = os.environ.get(
     "NOUGEN_MCP_CONFIG_PATH",
-    str(Path.home() / ".gemini" / "antigravity" / "mcp_config.json")
+    str(_repo_mcp_path) if _repo_mcp_path.exists() else str(Path.home() / ".gemini" / "antigravity" / "mcp_config.json")
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
