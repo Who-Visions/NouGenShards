@@ -1,4 +1,4 @@
-# 🪩 NouGenShards: Shard History Implementation Plan (Coach Apollo)
+# NouGenShards: Shard History Implementation Plan
 
 ## OBJECTIVE
 Implement a time-series analytics substrate for the Shard Layer. Track the creation, access, and utility evolution of machine memory over multiple horizons (24h to 1 Year).
@@ -40,4 +40,4 @@ Implement a time-series analytics substrate for the Shard Layer. Track the creat
 Deep Grep. Leverage. Copy. Combine. Transform. Refactor. Remix.
 
 ---
-Coach Apollo: "Play initiated. Stadium locked. Fleet advancing."
+Execution Node: "Play initiated. Substrate locked. Sync advancing."

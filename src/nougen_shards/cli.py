@@ -32,6 +32,8 @@ if sys.platform == "win32":
     try:
         if hasattr(sys.stdout, "reconfigure"):
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
     except (AttributeError, ValueError):
         pass
 
@@ -773,6 +775,11 @@ def get_parser():
     p_dashboard = subparsers.add_parser("dashboard", help="Launch visual Cortex HUD")
     p_dashboard.add_argument("--port", type=int, default=4444, help="Port to run on")
 
+    p_handoff = subparsers.add_parser("handoff", help="Intelligent agent handoff system")
+    p_handoff.add_argument("action", choices=["create", "read", "list"], help="Handoff action to execute")
+    p_handoff.add_argument("--message", "-m", default="", help="Optional handoff note or message")
+    p_handoff.add_argument("--agent", "-a", default=None, help="The agent type (gemini, claude, codex, ollama, openrouter)")
+
     return parser
 
 
@@ -833,12 +840,25 @@ def cmd_doctor(args):
         }
         print(json.dumps(report, indent=2))
 
+def cmd_handoff(args):
+    """Executes agent handoff subcommands."""
+    from . import handoff
+    if args.action == "create":
+        handoff.create_handoff(args.message, args.agent)
+    elif args.action == "read":
+        handoff.show_latest_handoff(args.agent)
+    elif args.action == "list":
+        handoff.list_handoffs(args.agent)
+
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
         print("🪩 NouGenShards CLI")
-        print("░█▀█░█▀█░█░█░█▀▀░█▀▀░█▀█░█▀▀░█░█░█▀█░█▀▄░█▀▄░█▀▀")
-        print("░█░█░█░█░█░█░█░█░█▀▀░█░█░▀▀█░█▀█░█▀█░█▀░▀░▀░▀▀▀")
+        print("┌┐╷┌─┐╷ ╷┌─╴┌─╴┌┐╷┌─┐╷ ╷┌─┐┌─┐╶┬┐┌─┐")
+        print("│└┤│ ││ ││╶┐├╴ │└┤└─┐├─┤├─┤├┬┘ ││└─┐")
+        print("╵ ╵└─┘└─┘└─┘└─╴╵ ╵└─┘╵ ╵╵ ╵╵└╴╶┴┘└─┘")
+        print()
+        get_parser().print_help()
         sys.exit(0)
     parser = get_parser()
     args = parser.parse_args()
@@ -848,7 +868,7 @@ def main():
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
-        "dashboard": cmd_dashboard
+        "dashboard": cmd_dashboard, "handoff": cmd_handoff
     }
     if args.command in cmds:
         cmds[args.command](args)

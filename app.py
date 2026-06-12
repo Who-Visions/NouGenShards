@@ -12,6 +12,8 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Depends
 from pydantic import BaseModel
 import gradio as gr
+import subprocess
+
 
 # Add src to path for absolute imports
 sys.path.append(os.path.join(os.getcwd(), 'src'))
@@ -107,6 +109,32 @@ def get_analytics():
 """
     return stats, timeline
 
+
+def check_current_transcript():
+    log_path = os.path.join(os.getcwd(), "transcript.log")
+    if os.path.exists(log_path):
+        size_mb = os.path.getsize(log_path) / (1024 * 1024)
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                # Read last 100 lines for preview
+                lines = f.readlines()
+                preview = "".join(lines[-100:])
+        except Exception as e:
+            preview = f"Error reading log preview: {e}"
+        return f"🟢 Transcript exists.\n- **Size**: {size_mb:.2f} MB\n- **Log File**: `{log_path}`", log_path, preview
+    return "⚪ No transcript generated yet. Click 'Generate Transcript' below.", None, ""
+
+
+def generate_transcript():
+    script_path = os.path.join(os.getcwd(), "tools", "read_vault_shards.py")
+    res = subprocess.run([sys.executable, script_path, "--cluster"], capture_output=True, text=True, encoding="utf-8")
+    if res.returncode == 0:
+        return check_current_transcript()
+    else:
+        err_msg = res.stderr or res.stdout or "Unknown execution error."
+        return f"🔴 Generation failed:\n```\n{err_msg}\n```", None, ""
+
+
 # --- The HUD Layout ---
 
 with gr.Blocks(title="NouGenShards Cortex HUD", theme=gr.themes.Soft()) as cortex_hud:
@@ -140,6 +168,25 @@ with gr.Blocks(title="NouGenShards Cortex HUD", theme=gr.themes.Soft()) as corte
             recon_output = gr.Markdown("Click to scan local AI history.")
             recon_btn = gr.Button("Run Brain Scan")
             recon_btn.click(fn=run_recon, outputs=recon_output)
+
+        with gr.Tab("📝 Transcript"):
+            gr.Markdown("## 🗂️ Local Node Transcripter")
+            status_md = gr.Markdown("Checking status...")
+            download_file = gr.File(label="Download transcript.log")
+            preview_box = gr.Textbox(label="Log Preview (Last 100 lines)", lines=15, interactive=False)
+            generate_btn = gr.Button("Generate Transcript")
+            
+            generate_btn.click(
+                fn=generate_transcript,
+                inputs=[],
+                outputs=[status_md, download_file, preview_box]
+            )
+            cortex_hud.load(
+                fn=check_current_transcript,
+                inputs=[],
+                outputs=[status_md, download_file, preview_box]
+            )
+
 
 app = gr.mount_gradio_app(app, cortex_hud, path="/")
 

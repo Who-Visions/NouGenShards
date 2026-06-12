@@ -4,12 +4,50 @@ from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-# Hardcoded from mcp_config.json observation
+import os
+from pathlib import Path
+
+# Dynamic resolution of Watchtower root
+_watchtower_root = os.environ.get("WATCHTOWER_ROOT")
+if not _watchtower_root:
+    _watchtower_root = str(Path.home() / "Watchtower")
+
+# Dynamic resolution of context-mode start script path
+_nvm_symlink = os.environ.get("NVM_SYMLINK")
+_appdata = os.environ.get("APPDATA")
+
+_start_mjs = None
+_candidates = []
+if _nvm_symlink:
+    _candidates.append(Path(_nvm_symlink) / "node_modules/context-mode/start.mjs")
+if _appdata:
+    _candidates.append(Path(_appdata) / "npm/node_modules/context-mode/start.mjs")
+
+_candidates.extend([
+    Path.home() / "AppData/Roaming/npm/node_modules/context-mode/start.mjs",
+    Path("/usr/local/lib/node_modules/context-mode/start.mjs"),
+    Path("/usr/lib/node_modules/context-mode/start.mjs")
+])
+
+for _path in _candidates:
+    try:
+        if _path.exists():
+            _start_mjs = str(_path)
+            break
+    except Exception:
+        pass
+
+if not _start_mjs:
+    # Default fallback path
+    _symlink_base = _nvm_symlink or "C:/nvm4w/nodejs"
+    _start_mjs = str(Path(_symlink_base) / "node_modules/context-mode/start.mjs")
+
+# Dynamic parameters from system folders observation
 CONTEXT_MODE_PARAMS = StdioServerParameters(
     command="node",
     args=[
-        "C:/nvm4w/nodejs/node_modules/context-mode/start.mjs",
-        "c:%USERPROFILE%/Watchtower"
+        _start_mjs,
+        _watchtower_root
     ]
 )
 

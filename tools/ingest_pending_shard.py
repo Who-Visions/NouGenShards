@@ -1,18 +1,23 @@
 """Ingest a pending markdown shard into the Watchtower memory vault.
 
 Run this from a normal user shell, not from the restricted Codex sandbox, when
-the sandbox cannot write to ``%USERPROFILE%\\Watchtower\\vault``.
+the sandbox cannot write to the Watchtower vault directory.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 
-DEFAULT_DB = Path(r"%USERPROFILE%\Watchtower\vault\nougenai_memory_vault.db")
+_watchtower_root = os.environ.get("WATCHTOWER_ROOT")
+if not _watchtower_root:
+    _watchtower_root = str(Path.home() / "Watchtower")
+
+DEFAULT_DB = Path(_watchtower_root) / "vault" / "nougenai_memory_vault.db"
 DEFAULT_SHARD = (
     Path(__file__).resolve().parents[1]
     / "pending_shards"

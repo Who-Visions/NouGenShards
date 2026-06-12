@@ -15,14 +15,19 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 # Add Watchtower directory to python path for importing openrouter_guard
-sys.path.append(r"%USERPROFILE%\Watchtower")
+_watchtower_root = os.environ.get("WATCHTOWER_ROOT")
+if not _watchtower_root:
+    _watchtower_root = str(Path.home() / "Watchtower")
+if _watchtower_root not in sys.path:
+    sys.path.append(_watchtower_root)
 # pylint: disable=import-error,wrong-import-position
 from openrouter_guard import call_openrouter
 
 MCP_CONFIG_PATH = os.environ.get(
     "NOUGEN_MCP_CONFIG_PATH",
-    r"%USERPROFILE%\.gemini\antigravity\mcp_config.json"
+    str(Path.home() / ".gemini" / "antigravity" / "mcp_config.json")
 )
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FLEET_REGISTRY_NAME = "nougenai-fleet-registry"
 MCP_SERVER_ALLOWLIST = {

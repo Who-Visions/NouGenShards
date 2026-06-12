@@ -7,6 +7,7 @@ Architecture: Reverse Epistemics (Manifesto of Bayesian Orchestration).
 import hashlib
 import json
 import math
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +16,17 @@ from typing import List, Optional
 # Configuration (Module 10: Integrate Constraints)
 MAX_DB_SIZE = 1 * 1024 * 1024 * 1024  # 1GB Safety Limit per DB
 MAX_DB_COUNT = 9
-GLOBAL_DIR = Path.home() / ".nougen" / "shards"
+
+_vault_dir = os.environ.get("NOUGEN_VAULT_DIR")
+if not _vault_dir:
+    local_vault = Path(".vault")
+    if local_vault.exists() and local_vault.is_dir():
+        _vault_dir = str(local_vault)
+    else:
+        _vault_dir = str(Path.home() / ".nougen" / "shards")
+
+GLOBAL_DIR = Path(_vault_dir)
+
 
 
 def get_db_path(index: int) -> Path:
