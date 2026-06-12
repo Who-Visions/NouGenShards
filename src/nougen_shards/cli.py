@@ -775,10 +775,15 @@ def get_parser():
     p_dashboard = subparsers.add_parser("dashboard", help="Launch visual Cortex HUD")
     p_dashboard.add_argument("--port", type=int, default=4444, help="Port to run on")
 
-    p_handoff = subparsers.add_parser("handoff", help="Intelligent agent handoff system")
-    p_handoff.add_argument("action", choices=["create", "read", "list"], help="Handoff action to execute")
-    p_handoff.add_argument("--message", "-m", default="", help="Optional handoff note or message")
-    p_handoff.add_argument("--agent", "-a", default=None, help="The agent type (gemini, claude, codex, ollama, openrouter)")
+    p_handoff = subparsers.add_parser("handoff", help="Cross-agent session handoff notes")
+    p_handoff.add_argument("action", choices=["create", "read", "list", "ack"],
+                           help="create | read | list | ack")
+    p_handoff.add_argument("--message", "-m", default="", help="Handoff note or acknowledgement message")
+    p_handoff.add_argument("--agent", "-a", default=None,
+                           help="Agent type (gemini, claude, codex, ollama, openrouter)")
+    p_handoff.add_argument("--goal", "-g", default=None, help="The active goal/objective for this handoff")
+    p_handoff.add_argument("--id", dest="handoff_id", default=None,
+                           help="Target a specific handoff id (used with 'ack')")
 
     return parser
 
@@ -844,11 +849,13 @@ def cmd_handoff(args):
     """Executes agent handoff subcommands."""
     from . import handoff
     if args.action == "create":
-        handoff.create_handoff(args.message, args.agent)
+        handoff.create_handoff(args.message, args.agent, goal=getattr(args, "goal", None))
     elif args.action == "read":
         handoff.show_latest_handoff(args.agent)
     elif args.action == "list":
         handoff.list_handoffs(args.agent)
+    elif args.action == "ack":
+        handoff.acknowledge_handoff(args.agent, args.message, getattr(args, "handoff_id", None))
 
 def main():
     """Execution entry point."""

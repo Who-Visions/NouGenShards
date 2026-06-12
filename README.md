@@ -104,16 +104,22 @@ nougen mark 5 --worked
 ```
 
 ### Agent Handoffs
-Save or restore work state when transferring tasks between different coding agents (e.g. Gemini, Claude, Codex, etc.).
+Leave a structured note for the next coding agent when you transfer work between
+sessions (Gemini, Claude, Codex, local models). Captures the goal, git state,
+open tasks, and a free-text note. See **[docs/handoffs.md](docs/handoffs.md)** for
+the full protocol, schema, and environment overrides.
 ```bash
-# Create a handoff for the current agent with a message
-nougen handoff create --message "Patched core logic, ready for testing"
+# Outgoing agent records where it left off
+nougen handoff create --goal "Wire the Tauri sidecar" --message "frontend done, rust stubbed"
 
-# List all historical agent handoffs
-nougen handoff list
-
-# Read the latest handoff state to pick up where the last agent left off
+# Incoming agent reviews the latest open handoff...
 nougen handoff read
+
+# ...then acknowledges it (the read-back that marks it picked up)
+nougen handoff ack --message "picking this up"
+
+# See history and which handoffs are still open
+nougen handoff list
 ```
 
 ---

@@ -60,3 +60,41 @@ def test_list_and_read_handoffs(setup_handoff_env):
     # Run UI output functions to verify no exceptions
     handoff.list_handoffs()
     handoff.show_latest_handoff()
+
+
+def test_handoff_goal_passthrough(setup_handoff_env):
+    json_path = handoff.create_handoff(message="x", agent="claude", goal="Ship the launcher fix")
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["goal"] == "Ship the launcher fix"
+    assert data["status"] == "open"
+    assert data["acknowledged_by"] is None
+    assert data["handoff_id"]
+
+
+def test_acknowledge_flow(setup_handoff_env, monkeypatch):
+    monkeypatch.setenv("NOUGEN_AGENT", "claude")
+    handoff.create_handoff(message="please pick up", agent="gemini", goal="G")
+
+    acked = handoff.acknowledge_handoff()
+    assert acked is not None
+    data = json.loads(acked.read_text(encoding="utf-8"))
+    assert data["status"] == "acknowledged"
+    assert data["acknowledged_by"] == "claude"
+    assert data["acknowledged_at"] is not None
+
+    # Nothing open left to acknowledge
+    assert handoff.acknowledge_handoff() is None
+
+
+def test_agent_env_override(setup_handoff_env, monkeypatch):
+    monkeypatch.setenv("NOUGEN_AGENT", "codex")
+    assert handoff.detect_current_agent() == "codex"
+
+
+def test_atomic_write_produces_valid_json(setup_handoff_env):
+    p = handoff.create_handoff(message="integrity", agent="ollama")
+    # Must be complete, parseable JSON — no truncation, no leftover temp files
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert data["handoff_id"]
+    leftovers = list(p.parent.glob("*.tmp"))
+    assert leftovers == []
