@@ -6,11 +6,11 @@ from datetime import datetime, timezone
 from typing import Optional
 
 NOUGEN_CONTEXT_DIR = Path.home() / ".nougen" / "context"
-NOUGEN_CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
 SESSION_DB_PATH = str(NOUGEN_CONTEXT_DIR / "session.db")
 
 def get_context_connection():
     """Establishes an SQLite connection for the session context with WAL enabled."""
+    Path(SESSION_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(SESSION_DB_PATH, timeout=10.0)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.row_factory = sqlite3.Row
@@ -134,9 +134,26 @@ def fetch_sandbox(handle: str):
     return row["data"] if row else None
 
 def search_events(query: str, limit: int = 5) -> list:
+    """Searches context events by content, event type, or metadata."""
     conn = get_context_connection()
     try:
-        rows = conn.execute("SELECT id, type, content as description, timestamp, metadata FROM ctx_events LIMIT ?", (limit,)).fetchall()
-        return [{"id": r["id"], "event_type": r["type"], "description": r["description"], "timestamp": r["timestamp"], "metadata": r["metadata"]} for r in rows]
+        pattern = f"%{query}%"
+        rows = conn.execute("""
+            SELECT id, type, content as description, timestamp, metadata
+            FROM ctx_events
+            WHERE content LIKE ? OR type LIKE ? OR metadata LIKE ?
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+        """, (pattern, pattern, pattern, limit)).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "event_type": r["type"],
+                "description": r["description"],
+                "timestamp": r["timestamp"],
+                "metadata": r["metadata"],
+            }
+            for r in rows
+        ]
     finally:
         conn.close()

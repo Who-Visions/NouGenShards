@@ -1,5 +1,7 @@
 import os
+import sys
 import json
+import sqlite3
 import subprocess
 import tempfile
 from datetime import datetime
@@ -14,6 +16,26 @@ from rich.panel import Panel
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 HANDOFF_DIR = Path(os.environ.get("NOUGEN_HANDOFF_DIR", PROJECT_ROOT / ".handoffs"))
 
+_CONSOLE_CONFIGURED = False
+
+
+def _make_console() -> Console:
+    """Return a Rich Console safe for non-UTF-8 Windows terminals.
+
+    The default cp1252 encoding on legacy Windows shells cannot represent
+    emoji characters, which causes Rich to crash with UnicodeEncodeError.
+    Reconfiguring stdout to UTF-8 with 'replace' error handling lets the
+    output degrade gracefully instead of aborting mid-write.
+    """
+    global _CONSOLE_CONFIGURED
+    if not _CONSOLE_CONFIGURED and sys.platform == "win32":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass
+        _CONSOLE_CONFIGURED = True
+    return Console()
+
 AGENT_FOLDERS = {
     "gemini": "gemini handoffs",
     "claude": "claude handoffs",
@@ -21,6 +43,9 @@ AGENT_FOLDERS = {
     "ollama": "ollama handoffs",
     "openrouter": "openrouter handoffs",
 }
+
+OPEN_STATUSES = {"open", "acknowledged", "in_progress", "blocked"}
+HANDOFF_DB_NAME = "handoffs.db"
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
@@ -36,6 +61,245 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         if os.path.exists(tmp):
             os.remove(tmp)
         raise
+
+
+def _read_handoff(path: Path) -> Optional[Dict]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _append_markdown(path: Path, title: str, lines: List[str]) -> None:
+    md_path = path.with_suffix(".md")
+    if not md_path.exists():
+        return
+    try:
+        with open(md_path, "a", encoding="utf-8") as f:
+            f.write(f"\n## {title}\n")
+            for line in lines:
+                f.write(f"- {line}\n")
+    except Exception:
+        pass
+
+
+def _find_handoff(
+    agent: Optional[str] = None,
+    handoff_id: Optional[str] = None,
+    statuses: Optional[set] = None,
+) -> tuple[Optional[Path], Optional[Dict]]:
+    """Find a target handoff by id, or the newest handoff matching statuses."""
+    for path in get_handoff_files(agent):
+        data = _read_handoff(path)
+        if not data:
+            continue
+        if handoff_id and data.get("handoff_id") != handoff_id:
+            continue
+        status = data.get("status") or "open"
+        if statuses and status not in statuses:
+            continue
+        return path, data
+    return None, None
+
+
+def _ensure_orchestration(data: Dict, receiver: str, timestamp: str) -> Dict:
+    orchestration = data.setdefault("orchestration", {})
+    orchestration.setdefault(
+        "run_id", f"{timestamp.replace(':', '').replace('.', '')}_{receiver}"
+    )
+    orchestration.setdefault("started_by", receiver)
+    orchestration.setdefault("started_at", timestamp)
+    orchestration.setdefault("checkpoints", [])
+    return orchestration
+
+
+def get_handoff_db_path() -> Path:
+    """Return the local SQLite index path for handoff records."""
+    return HANDOFF_DIR / HANDOFF_DB_NAME
+
+
+def _get_db_connection():
+    HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(get_handoff_db_path()), timeout=10.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_handoff_db() -> None:
+    """Initialize the local handoff/orchestration index."""
+    conn = _get_db_connection()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS handoff_records (
+                handoff_id TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                markdown_path TEXT,
+                agent TEXT,
+                status TEXT,
+                goal TEXT,
+                message TEXT,
+                branch TEXT,
+                session_id TEXT,
+                created_at TEXT,
+                acknowledged_by TEXT,
+                acknowledged_at TEXT,
+                completed_by TEXT,
+                completed_at TEXT,
+                updated_at TEXT NOT NULL,
+                data_json TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS handoff_checkpoints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                handoff_id TEXT NOT NULL,
+                checkpoint_index INTEGER NOT NULL,
+                timestamp TEXT,
+                agent TEXT,
+                state TEXT NOT NULL,
+                message TEXT,
+                FOREIGN KEY (handoff_id) REFERENCES handoff_records(handoff_id)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_handoff_records_status "
+            "ON handoff_records(status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_handoff_records_agent "
+            "ON handoff_records(agent)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_handoff_checkpoints_handoff "
+            "ON handoff_checkpoints(handoff_id, checkpoint_index)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _sync_handoff_to_db(path: Path, data: Dict) -> bool:
+    """Mirror one handoff JSON record into SQLite for indexed orchestration."""
+    try:
+        init_handoff_db()
+        conn = _get_db_connection()
+        git_info = data.get("git") or {}
+        orchestration = data.get("orchestration") or {}
+        checkpoints = orchestration.get("checkpoints") or []
+        now = datetime.now().isoformat()
+        handoff_id = data.get("handoff_id") or path.stem
+        try:
+            conn.execute("""
+                INSERT INTO handoff_records (
+                    handoff_id, path, markdown_path, agent, status, goal, message,
+                    branch, session_id, created_at, acknowledged_by, acknowledged_at,
+                    completed_by, completed_at, updated_at, data_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(handoff_id) DO UPDATE SET
+                    path=excluded.path,
+                    markdown_path=excluded.markdown_path,
+                    agent=excluded.agent,
+                    status=excluded.status,
+                    goal=excluded.goal,
+                    message=excluded.message,
+                    branch=excluded.branch,
+                    session_id=excluded.session_id,
+                    created_at=excluded.created_at,
+                    acknowledged_by=excluded.acknowledged_by,
+                    acknowledged_at=excluded.acknowledged_at,
+                    completed_by=excluded.completed_by,
+                    completed_at=excluded.completed_at,
+                    updated_at=excluded.updated_at,
+                    data_json=excluded.data_json
+            """, (
+                handoff_id,
+                str(path),
+                str(path.with_suffix(".md")),
+                data.get("agent"),
+                data.get("status") or "open",
+                data.get("goal"),
+                data.get("message"),
+                git_info.get("branch"),
+                data.get("session_id"),
+                data.get("timestamp"),
+                data.get("acknowledged_by"),
+                data.get("acknowledged_at"),
+                data.get("completed_by"),
+                data.get("completed_at"),
+                now,
+                json.dumps(data, sort_keys=True),
+            ))
+            conn.execute(
+                "DELETE FROM handoff_checkpoints WHERE handoff_id = ?",
+                (handoff_id,),
+            )
+            for index, checkpoint in enumerate(checkpoints):
+                conn.execute("""
+                    INSERT INTO handoff_checkpoints (
+                        handoff_id, checkpoint_index, timestamp, agent, state, message
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    handoff_id,
+                    index,
+                    checkpoint.get("timestamp"),
+                    checkpoint.get("agent"),
+                    checkpoint.get("state") or "unknown",
+                    checkpoint.get("message"),
+                ))
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except (OSError, sqlite3.Error):
+        return False
+
+
+def _handoff_context_metadata(path: Path, data: Dict, **extra: object) -> Dict:
+    """Build compact NouGenContext metadata without storing the full handoff."""
+    git_info = data.get("git") or {}
+    metadata = {
+        "handoff_id": data.get("handoff_id") or path.stem,
+        "path": str(path),
+        "agent": data.get("agent"),
+        "status": data.get("status"),
+        "goal": data.get("goal"),
+        "branch": git_info.get("branch"),
+        "handoff_db_path": str(get_handoff_db_path()),
+    }
+    metadata.update({key: value for key, value in extra.items() if value is not None})
+    return metadata
+
+
+def _log_context_event(event_type: str, content: str, metadata: Optional[Dict] = None) -> None:
+    """Mirror handoff state into NouGenContext without making handoffs depend on it."""
+    try:
+        from . import nougen_context
+
+        nougen_context.init_context_db(clean_slate=False)
+        nougen_context.log_event(event_type, content, metadata or {})
+    except Exception:
+        return
+
+
+def rebuild_handoff_db(agent: Optional[str] = None) -> int:
+    """Rebuild the SQLite index from handoff JSON files."""
+    init_handoff_db()
+    count = 0
+    for path in get_handoff_files(agent):
+        data = _read_handoff(path)
+        if data and _sync_handoff_to_db(path, data):
+            count += 1
+    _log_context_event(
+        "HANDOFF_DB_REBUILT",
+        f"Handoff DB rebuilt with {count} indexed record(s).",
+        {
+            "agent_filter": agent,
+            "count": count,
+            "handoff_db_path": str(get_handoff_db_path()),
+        },
+    )
+    return count
 
 
 def get_active_brain_dir() -> Optional[Path]:
@@ -148,7 +412,7 @@ def get_git_status() -> Dict:
 def create_handoff(
     message: str = "", agent: Optional[str] = None, goal: Optional[str] = None
 ) -> Optional[Path]:
-    console = Console()
+    console = _make_console()
     HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
 
     if not agent:
@@ -256,6 +520,15 @@ def create_handoff(
         console.print(f"[red]Error saving handoff Markdown: {e}[/red]")
         return None
 
+    db_synced = _sync_handoff_to_db(json_path, handoff_data)
+    _log_context_event(
+        "HANDOFF_CREATED",
+        (
+            f"Handoff {handoff_data['handoff_id']} created for "
+            f"{agent}: {handoff_data['goal']}"
+        ),
+        _handoff_context_metadata(json_path, handoff_data, db_synced=db_synced),
+    )
     console.print(f"[bold green]🤝 Handoff created successfully for {agent.upper()}![/bold green]")
     console.print(f"- Metadata: [yellow]{json_path}[/yellow]")
     console.print(f"- Summary: [yellow]{md_path}[/yellow]")
@@ -286,6 +559,141 @@ def get_handoff_files(agent: Optional[str] = None) -> List[Path]:
     )
 
 
+def start_orchestration(
+    agent: Optional[str] = None,
+    message: str = "",
+    handoff_id: Optional[str] = None,
+) -> Optional[Path]:
+    """Claim a handoff and open a durable orchestration run around it."""
+    console = _make_console()
+    target_path, data = _find_handoff(agent, handoff_id, OPEN_STATUSES)
+    if not target_path or not data:
+        console.print("[yellow]No open handoff found to orchestrate.[/yellow]")
+        return None
+
+    receiver = (os.environ.get("NOUGEN_AGENT") or detect_current_agent()).lower()
+    timestamp = datetime.now().isoformat()
+    if (data.get("status") or "open") == "open":
+        data["acknowledged_by"] = receiver
+        data["acknowledged_at"] = timestamp
+        if message:
+            data["acknowledgement_note"] = message
+
+    orchestration = _ensure_orchestration(data, receiver, timestamp)
+    orchestration["checkpoints"].append({
+        "timestamp": timestamp,
+        "agent": receiver,
+        "state": "started",
+        "message": message,
+    })
+    data["status"] = "in_progress"
+    _atomic_write_json(target_path, data)
+    db_synced = _sync_handoff_to_db(target_path, data)
+    _log_context_event(
+        "HANDOFF_ORCHESTRATION_STARTED",
+        (
+            f"Handoff {data.get('handoff_id', target_path.stem)} "
+            f"orchestration started by {receiver}: {message or 'started'}"
+        ),
+        _handoff_context_metadata(
+            target_path,
+            data,
+            db_synced=db_synced,
+            run_id=orchestration.get("run_id"),
+            checkpoint_count=len(orchestration["checkpoints"]),
+        ),
+    )
+    _append_markdown(target_path, "Orchestration Started", [
+        f"By: `{receiver.upper()}`",
+        f"At: {timestamp}",
+        f"Run ID: `{orchestration['run_id']}`",
+        f"Note: {message or 'started'}",
+    ])
+    console.print(
+        f"[bold green]Orchestration started for "
+        f"{data.get('handoff_id', target_path.stem)} by {receiver.upper()}.[/bold green]"
+    )
+    return target_path
+
+
+def checkpoint_orchestration(
+    agent: Optional[str] = None,
+    message: str = "",
+    handoff_id: Optional[str] = None,
+    state: str = "in_progress",
+) -> Optional[Path]:
+    """Append an orchestration checkpoint to a handoff record."""
+    console = _make_console()
+    if state not in {"in_progress", "blocked", "complete"}:
+        console.print(f"[red]Invalid orchestration state '{state}'.[/red]")
+        return None
+
+    target_path, data = _find_handoff(agent, handoff_id, OPEN_STATUSES)
+    if not target_path or not data:
+        console.print("[yellow]No active handoff found for checkpoint.[/yellow]")
+        return None
+
+    receiver = (os.environ.get("NOUGEN_AGENT") or detect_current_agent()).lower()
+    timestamp = datetime.now().isoformat()
+    orchestration = _ensure_orchestration(data, receiver, timestamp)
+    orchestration["checkpoints"].append({
+        "timestamp": timestamp,
+        "agent": receiver,
+        "state": state,
+        "message": message,
+    })
+    data["status"] = state
+    if state == "complete":
+        data["completed_by"] = receiver
+        data["completed_at"] = timestamp
+    elif state == "blocked":
+        data["blocked_by"] = receiver
+        data["blocked_at"] = timestamp
+
+    _atomic_write_json(target_path, data)
+    db_synced = _sync_handoff_to_db(target_path, data)
+    context_event_type = {
+        "blocked": "HANDOFF_ORCHESTRATION_BLOCKED",
+        "complete": "HANDOFF_ORCHESTRATION_COMPLETED",
+    }.get(state, "HANDOFF_ORCHESTRATION_CHECKPOINT")
+    _log_context_event(
+        context_event_type,
+        (
+            f"Handoff {data.get('handoff_id', target_path.stem)} "
+            f"orchestration checkpoint by {receiver} as {state}: "
+            f"{message or state}"
+        ),
+        _handoff_context_metadata(
+            target_path,
+            data,
+            db_synced=db_synced,
+            state=state,
+            checkpoint_count=len(orchestration["checkpoints"]),
+            run_id=orchestration.get("run_id"),
+        ),
+    )
+    _append_markdown(target_path, "Orchestration Checkpoint", [
+        f"By: `{receiver.upper()}`",
+        f"At: {timestamp}",
+        f"State: `{state}`",
+        f"Note: {message or state}",
+    ])
+    console.print(
+        f"[bold green]Checkpoint recorded for "
+        f"{data.get('handoff_id', target_path.stem)} as {state}.[/bold green]"
+    )
+    return target_path
+
+
+def complete_orchestration(
+    agent: Optional[str] = None,
+    message: str = "",
+    handoff_id: Optional[str] = None,
+) -> Optional[Path]:
+    """Mark an orchestration run complete."""
+    return checkpoint_orchestration(agent, message, handoff_id, state="complete")
+
+
 def acknowledge_handoff(
     agent: Optional[str] = None,
     message: str = "",
@@ -295,7 +703,7 @@ def acknowledge_handoff(
     the transfer of responsibility unambiguous. By default acknowledges the most
     recent still-open handoff; pass handoff_id to target a specific one, or
     --agent to filter by the agent that created it."""
-    console = Console()
+    console = _make_console()
     files = get_handoff_files(agent)
     if not files:
         console.print("[yellow]No handoff records found to acknowledge.[/yellow]")
@@ -331,6 +739,15 @@ def acknowledge_handoff(
         if message:
             data["acknowledgement_note"] = message
         _atomic_write_json(target_path, data)
+        db_synced = _sync_handoff_to_db(target_path, data)
+        _log_context_event(
+            "HANDOFF_ACKNOWLEDGED",
+            (
+                f"Handoff {data.get('handoff_id', target_path.stem)} "
+                f"acknowledged by {receiver}: {message or 'acknowledged'}"
+            ),
+            _handoff_context_metadata(target_path, data, db_synced=db_synced),
+        )
     except Exception as e:
         console.print(f"[red]Error acknowledging handoff: {e}[/red]")
         return None
@@ -356,7 +773,7 @@ def acknowledge_handoff(
 
 
 def list_handoffs(agent: Optional[str] = None):
-    console = Console()
+    console = _make_console()
     files = get_handoff_files(agent)
     if not files:
         console.print("[yellow]No handoff records found.[/yellow]")
@@ -382,6 +799,12 @@ def list_handoffs(agent: Optional[str] = None):
             if data.get("status") == "acknowledged":
                 ack_by = (data.get("acknowledged_by") or "?").upper()
                 status_disp = f"[green]✅ {ack_by}[/green]"
+            elif data.get("status") == "in_progress":
+                status_disp = "[cyan]in_progress[/cyan]"
+            elif data.get("status") == "complete":
+                status_disp = "[green]complete[/green]"
+            elif data.get("status") == "blocked":
+                status_disp = "[red]blocked[/red]"
             else:
                 status_disp = "[yellow]🟡 open[/yellow]"
             table.add_row(dt, agent_name, data["git"]["branch"], data["goal"], pct, status_disp)
@@ -392,7 +815,7 @@ def list_handoffs(agent: Optional[str] = None):
 
 
 def show_latest_handoff(agent: Optional[str] = None):
-    console = Console()
+    console = _make_console()
     files = get_handoff_files(agent)
     if not files:
         console.print("[yellow]No handoff records found.[/yellow]")
@@ -413,6 +836,14 @@ def show_latest_handoff(agent: Optional[str] = None):
                 f"[bold green]Status:[/bold green] ✅ acknowledged by "
                 f"{(data.get('acknowledged_by') or '?').upper()} "
                 f"at {data.get('acknowledged_at', '?')}\n"
+            )
+        elif data.get("status") in {"in_progress", "blocked", "complete"}:
+            orchestration = data.get("orchestration") or {}
+            checkpoints = orchestration.get("checkpoints") or []
+            ack_line = (
+                f"[bold green]Status:[/bold green] {data.get('status')}\n"
+                f"[bold cyan]Run ID:[/bold cyan] {orchestration.get('run_id', '?')}\n"
+                f"[bold cyan]Checkpoints:[/bold cyan] {len(checkpoints)}\n"
             )
         else:
             ack_line = "[bold yellow]Status:[/bold yellow] 🟡 OPEN — run `nougen handoff ack` to claim it\n"

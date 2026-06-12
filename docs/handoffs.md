@@ -32,6 +32,22 @@ The acknowledgement is the "read-back" / forcing function: it makes the transfer
 of responsibility unambiguous, so you can always tell whether a handoff was
 actually picked up or just left hanging.
 
+## Orchestration boundary
+
+The same file also acts as a lightweight orchestration boundary. It does not
+spawn agents or run a scheduler. Instead, it records the state transitions that a
+separate orchestrator, human operator, or next agent can trust:
+
+1. **start** - claim the latest open handoff, acknowledge it, and create an
+   `orchestration` run with a checkpoint stream.
+2. **checkpoint** - append durable progress with a state of `in_progress`,
+   `blocked`, or `complete`.
+3. **complete** - close the run with a final checkpoint.
+
+These actions make the handoff record usable as a local control plane: the live
+runner can stay simple, while the state history survives process exits, model
+switches, and desktop restarts.
+
 ## Usage
 
 ```bash
@@ -47,6 +63,19 @@ nougen handoff ack --message "Picking this up, starting on the sidecar"
 
 # See the full history and which handoffs are still open
 nougen handoff list
+
+# Optional: use the handoff as an orchestration state boundary
+nougen handoff start --message "Claiming this run"
+nougen handoff checkpoint --message "Routes restored; testing now"
+nougen handoff checkpoint --state blocked --message "Need Keymaker for deploy token"
+nougen handoff complete --message "Verified and ready"
+
+# Rebuild the local SQLite index from JSON records
+nougen handoff rebuild-db
+
+# Search the NouGenContext mirror for handoff state events
+nougen ctx search "handoff"
+nougen ctx get 12
 ```
 
 `create` auto-detects the agent and, under Gemini Antigravity, auto-fills the
@@ -59,7 +88,8 @@ to acknowledge a specific one, or `--agent <name>` to filter by who created it.
 ## Storage layout
 
 Handoffs are written to `.handoffs/` in the repo, one folder per agent, as a
-machine-readable `.json` plus a human-readable `.md`:
+machine-readable `.json` plus a human-readable `.md`. They are also mirrored
+into `.handoffs/handoffs.db` for indexed local orchestration queries:
 
 ```
 .handoffs/
@@ -67,11 +97,46 @@ machine-readable `.json` plus a human-readable `.md`:
 │   ├── handoff_20260611_212647_main.json
 │   └── handoff_20260611_212647_main.md
 ├── claude handoffs/
+├── handoffs.db
 └── ...
 ```
 
 `.handoffs/` is gitignored — these are local session artifacts, not repo
 history.
+
+### SQLite index
+
+The JSON record is still the portable source artifact. The SQLite database is a
+local index for fast orchestration state queries and checkpoint history:
+
+- `handoff_records` stores one row per handoff with current status, agent, goal,
+  branch, acknowledgement fields, completion fields, and the full JSON payload.
+- `handoff_checkpoints` stores the ordered orchestration checkpoint stream.
+
+Every `create`, `ack`, `start`, `checkpoint`, and `complete` command syncs the
+record into SQLite. If the DB is missing or stale, run `nougen handoff rebuild-db`
+to rebuild it from the JSON files.
+
+### NouGenContext mirror
+
+The same state transitions also write compact events to NouGenContext
+`ctx_events`. This makes handoff activity searchable by context mode without
+dumping full handoff JSON into the session database.
+
+Mirrored event types:
+
+- `HANDOFF_CREATED`
+- `HANDOFF_ACKNOWLEDGED`
+- `HANDOFF_ORCHESTRATION_STARTED`
+- `HANDOFF_ORCHESTRATION_CHECKPOINT`
+- `HANDOFF_ORCHESTRATION_BLOCKED`
+- `HANDOFF_ORCHESTRATION_COMPLETED`
+- `HANDOFF_DB_REBUILT`
+
+Use `nougen ctx search <query>` to find compact event cards, then
+`nougen ctx get <event_id>` to inspect the exact event and metadata. The JSON
+handoff remains the portable source artifact, SQLite remains the local handoff
+index, and NouGenContext is the searchable session-memory mirror.
 
 ### JSON schema
 
@@ -91,7 +156,20 @@ history.
   "agent": "gemini",
   "status": "open",            // "open" until acknowledged
   "acknowledged_by": null,     // agent that ran `ack`
-  "acknowledged_at": null      // ISO timestamp of the ack
+  "acknowledged_at": null,     // ISO timestamp of the ack
+  "orchestration": {
+    "run_id": "2026-06-11T230401_codex",
+    "started_by": "codex",
+    "started_at": "2026-06-11T23:04:01",
+    "checkpoints": [
+      {
+        "timestamp": "2026-06-11T23:04:01",
+        "agent": "codex",
+        "state": "started",
+        "message": "Claiming this run"
+      }
+    ]
+  }
 }
 ```
 
@@ -110,6 +188,8 @@ The system is portable — nothing is hardcoded to one machine or one agent:
 - **Atomic writes.** Every JSON record is written to a temp file and atomically
   renamed into place, so an interrupted or concurrent write can never leave a
   truncated handoff that breaks `list` / `read`.
+- **Queryable index.** State changes mirror into `.handoffs/handoffs.db`, while
+  the JSON files remain readable even if the DB is deleted and rebuilt.
 - **Git capture is bounded.** The `git` subprocess calls have a 10-second
   timeout each, so a wedged git process can't hang the CLI.
 
