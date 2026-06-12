@@ -4,6 +4,24 @@ Verification script for NouGenShards HistoryEngine.
 from nougen_shards import capture, retrieve, mark_shard, HistoryEngine
 import json
 import time
+import tempfile
+import pytest
+from pathlib import Path
+import nougen_shards.core as shards
+
+@pytest.fixture(autouse=True)
+def setup_test_env(monkeypatch):
+    """Fixture to set up a temporary environment for testing."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        monkeypatch.setattr(shards, "GLOBAL_DIR", temp_path)
+        
+        def mock_get_db_path(index):
+            return temp_path / f"test_shards_{index}.db"
+        monkeypatch.setattr(shards, "get_db_path", mock_get_db_path)
+        
+        shards.init_db(1)
+        yield temp_path
 
 def test_history():
     print("--- 🚀 Testing HistoryEngine ---")

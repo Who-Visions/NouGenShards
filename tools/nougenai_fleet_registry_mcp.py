@@ -1,7 +1,7 @@
 """Workspace-safe launcher for the NouGenAi fleet-registry MCP server.
 
 The upstream Watchtower server defaults its lock file to
-``C:\\Users\\super\\.codex\\memories``, which is not writable from this Codex
+a user-profile path, which is not writable from this restricted
 sandbox. This wrapper keeps the lock in the current repo and then executes the
 real server unchanged.
 """
@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-WATCHTOWER_ROOT = Path(os.environ.get("WATCHTOWER_ROOT", r"C:\Users\super\Watchtower"))
+WATCHTOWER_ROOT = Path(os.environ.get("WATCHTOWER_ROOT", str(Path.home() / "Watchtower")))
 SERVER_PATH = WATCHTOWER_ROOT / "local_search_mcp.py"
 
 

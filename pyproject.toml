@@ -23,6 +23,7 @@ dependencies = [
     "sqlalchemy",
     "gradio",
     "tqdm",
+    "rich",
     "colorama",
     "openai",
     "google-generativeai",

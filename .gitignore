@@ -17,6 +17,7 @@ secrets/
 .venv/
 venv/
 transcript.log
+.handoffs/
 
 # Node dependencies
 node_modules/
