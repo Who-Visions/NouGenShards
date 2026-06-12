@@ -34,7 +34,7 @@ To formalize the convergence between clinical workflows and automated multi-agen
 | **Funneling** | Progressive loss of clinical parameters across shifts. | **Context Window Decay** | Loss of historical reasoning and active checklists. |
 | **Verification / Read-Back** | Technician-nurse verbal validation cycle. | **Test Verification / HUD View** | Automated `pytest` execution & Cortex HUD reload. |
 | **Bedside Walking Rounds** | Direct joint visual assessment of the patient. | **HUD Substrate Rendering** | UI rendering of active databases and shards. |
-| **QD / QOD Abbreviations** | Ambiguous terminology leading to patient risk. | **Hardcoded Paths / Key Exposure** | Developer directories (`C:\Users\super`) & Plaintext Keys. |
+| **QD / QOD Abbreviations** | Ambiguous terminology leading to patient risk. | **Hardcoded Paths / Key Exposure** | Developer directories (`C:\Users\<user>`) & Plaintext Keys. |
 
 ---
 
@@ -122,7 +122,7 @@ The Joint Commission National Patient Safety Goals outline five expectations to 
 
 Just as the Joint Commission banned confusing abbreviations like "QD" (daily) and "QOD" (every other day) because they look identical in handwritten orders, NouGenShards enforces strict formatting rules to prevent agent misinterpretation:
 
-1.  **Dynamic Workspace Resolution**: Hardcoded paths like `C:\Users\super\...` are banned. All directories are resolved dynamically relative to `Path.home()` or environment variables. This prevents an agent from writing to a path that does not exist in the host environment.
+1.  **Dynamic Workspace Resolution**: Hardcoded paths like `C:\Users\<user>\...` are banned. All directories are resolved dynamically relative to `Path.home()` or environment variables. This prevents an agent from writing to a path that does not exist in the host environment.
 2.  **Credential Protection (Atibon Vault)**: Plaintext secrets are strictly blocked from being written to logs, summaries, or Git history. Values are encrypted at rest using Windows DPAPI or keyrings, with metadata audit logs stored in a clean CSV ledger.
 3.  **Checklist Standardization**: The system parses markdown checklists under strict formats (`- [ ]`, `- [/]`, `- [x]`). Ambiguous notations are skipped to ensure cross-agent parsing compatibility.
 
