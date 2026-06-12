@@ -1,7 +1,7 @@
 import os
-import sys
 import json
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -9,9 +9,10 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 
-# Directory where handoffs are stored: %USERPROFILE%\Watchtower\NouGen\NouGenShards\.handoffs
+# Handoff notes live in <repo>/.handoffs by default. Override with NOUGEN_HANDOFF_DIR
+# so the system works regardless of where it is installed or invoked from.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-HANDOFF_DIR = PROJECT_ROOT / ".handoffs"
+HANDOFF_DIR = Path(os.environ.get("NOUGEN_HANDOFF_DIR", PROJECT_ROOT / ".handoffs"))
 
 AGENT_FOLDERS = {
     "gemini": "gemini handoffs",
@@ -22,7 +23,30 @@ AGENT_FOLDERS = {
 }
 
 
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """Writes JSON via a temp file + atomic replace, so an interrupted or
+    concurrent write can never leave a truncated handoff record on disk."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
 def get_active_brain_dir() -> Optional[Path]:
+    """Locates the directory holding the current session's task.md /
+    implementation_plan.md. Defaults to the Gemini Antigravity brain layout but
+    can point anywhere via NOUGEN_HANDOFF_TASKS_DIR, so Claude/Codex/other agents
+    can supply their own task tracking instead of being locked out."""
+    override = os.environ.get("NOUGEN_HANDOFF_TASKS_DIR")
+    if override:
+        p = Path(override)
+        return p if p.exists() else None
     brain_root = Path.home() / ".gemini" / "antigravity-cli" / "brain"
     if not brain_root.exists():
         return None
@@ -34,7 +58,11 @@ def get_active_brain_dir() -> Optional[Path]:
 
 
 def detect_current_agent() -> str:
-    """Attempts to auto-detect the current agent type based on environment or path."""
+    """Detects the current agent type. An explicit NOUGEN_AGENT env var always
+    wins; otherwise we infer from known environment markers."""
+    explicit = os.environ.get("NOUGEN_AGENT")
+    if explicit:
+        return explicit.strip().lower()
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         return "gemini"
     if os.environ.get("CLAUDE_CODE") or os.environ.get("ANTHROPIC_API_KEY"):
@@ -117,7 +145,9 @@ def get_git_status() -> Dict:
     return status
 
 
-def create_handoff(message: str = "", agent: Optional[str] = None) -> Optional[Path]:
+def create_handoff(
+    message: str = "", agent: Optional[str] = None, goal: Optional[str] = None
+) -> Optional[Path]:
     console = Console()
     HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -133,24 +163,28 @@ def create_handoff(message: str = "", agent: Optional[str] = None) -> Optional[P
     git_info = get_git_status()
     branch = git_info["branch"].replace("/", "_").replace("\\", "_")
 
-    # Brain task files
+    # Task tracking (Gemini Antigravity brain layout by default; override via
+    # NOUGEN_HANDOFF_TASKS_DIR). An explicitly passed goal always takes precedence.
     brain_dir = get_active_brain_dir()
     tasks = {"completed": [], "in_progress": [], "pending": []}
-    goal = "No active goal found in implementation plan."
     if brain_dir:
         tasks = parse_task_md(brain_dir / "task.md")
-        plan_path = brain_dir / "implementation_plan.md"
-        if plan_path.exists():
-            try:
-                with open(plan_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if line.startswith("# "):
-                            goal = line[2:].strip()
-                            break
-            except Exception:
-                pass
+        if not goal:
+            plan_path = brain_dir / "implementation_plan.md"
+            if plan_path.exists():
+                try:
+                    with open(plan_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if line.startswith("# "):
+                                goal = line[2:].strip()
+                                break
+                except Exception:
+                    pass
+    if not goal:
+        goal = "No active goal recorded. Pass --goal to set one."
 
     handoff_data = {
+        "handoff_id": f"{timestamp}_{branch}",
         "timestamp": datetime.now().isoformat(),
         "goal": goal,
         "message": message,
@@ -158,13 +192,15 @@ def create_handoff(message: str = "", agent: Optional[str] = None) -> Optional[P
         "tasks": tasks,
         "session_id": brain_dir.name if brain_dir else "unknown",
         "agent": agent.lower(),
+        "status": "open",
+        "acknowledged_by": None,
+        "acknowledged_at": None,
     }
 
-    # Save JSON file
+    # Save JSON file (atomic: temp + replace prevents truncated records)
     json_path = target_folder / f"handoff_{timestamp}_{branch}.json"
     try:
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(handoff_data, f, indent=2)
+        _atomic_write_json(json_path, handoff_data)
     except Exception as e:
         console.print(f"[red]Error saving handoff JSON: {e}[/red]")
         return None
@@ -250,6 +286,75 @@ def get_handoff_files(agent: Optional[str] = None) -> List[Path]:
     )
 
 
+def acknowledge_handoff(
+    agent: Optional[str] = None,
+    message: str = "",
+    handoff_id: Optional[str] = None,
+) -> Optional[Path]:
+    """Marks a handoff as received — the read-back / forcing function that makes
+    the transfer of responsibility unambiguous. By default acknowledges the most
+    recent still-open handoff; pass handoff_id to target a specific one, or
+    --agent to filter by the agent that created it."""
+    console = Console()
+    files = get_handoff_files(agent)
+    if not files:
+        console.print("[yellow]No handoff records found to acknowledge.[/yellow]")
+        return None
+
+    target_path: Optional[Path] = None
+    for p in files:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if handoff_id:
+            if data.get("handoff_id") == handoff_id:
+                target_path = p
+                break
+        elif data.get("status", "open") == "open":
+            target_path = p
+            break
+
+    if target_path is None:
+        if handoff_id:
+            console.print(f"[red]No handoff found with id '{handoff_id}'.[/red]")
+        else:
+            console.print("[yellow]All handoffs are already acknowledged.[/yellow]")
+        return None
+
+    receiver = (os.environ.get("NOUGEN_AGENT") or detect_current_agent()).lower()
+    try:
+        data = json.loads(target_path.read_text(encoding="utf-8"))
+        data["status"] = "acknowledged"
+        data["acknowledged_by"] = receiver
+        data["acknowledged_at"] = datetime.now().isoformat()
+        if message:
+            data["acknowledgement_note"] = message
+        _atomic_write_json(target_path, data)
+    except Exception as e:
+        console.print(f"[red]Error acknowledging handoff: {e}[/red]")
+        return None
+
+    # Append acknowledgement to the markdown sibling, if present.
+    md_path = target_path.with_suffix(".md")
+    if md_path.exists():
+        try:
+            with open(md_path, "a", encoding="utf-8") as f:
+                f.write("\n## ✅ Acknowledged\n")
+                f.write(f"- **By**: `{receiver.upper()}`\n")
+                f.write(f"- **At**: {data['acknowledged_at']}\n")
+                if message:
+                    f.write(f"- **Note**: {message}\n")
+        except Exception:
+            pass
+
+    console.print(
+        f"[bold green]✅ Handoff {data.get('handoff_id', target_path.stem)} "
+        f"acknowledged by {receiver.upper()}.[/bold green]"
+    )
+    return target_path
+
+
 def list_handoffs(agent: Optional[str] = None):
     console = Console()
     files = get_handoff_files(agent)
@@ -262,7 +367,8 @@ def list_handoffs(agent: Optional[str] = None):
     table.add_column("Agent", style="blue")
     table.add_column("Branch", style="magenta")
     table.add_column("Active Goal", style="green")
-    table.add_column("Completion", style="yellow", justify="right")
+    table.add_column("Tasks", style="yellow", justify="right")
+    table.add_column("Status", style="white")
 
     for p in files:
         try:
@@ -273,7 +379,12 @@ def list_handoffs(agent: Optional[str] = None):
             pct = f"{len(t['completed'])}/{total}" if total > 0 else "0/0"
             dt = datetime.fromisoformat(data["timestamp"]).strftime("%Y-%m-%d %H:%M")
             agent_name = data.get("agent", "generic").upper()
-            table.add_row(dt, agent_name, data["git"]["branch"], data["goal"], pct)
+            if data.get("status") == "acknowledged":
+                ack_by = (data.get("acknowledged_by") or "?").upper()
+                status_disp = f"[green]✅ {ack_by}[/green]"
+            else:
+                status_disp = "[yellow]🟡 open[/yellow]"
+            table.add_row(dt, agent_name, data["git"]["branch"], data["goal"], pct, status_disp)
         except Exception:
             pass
 
@@ -296,6 +407,16 @@ def show_latest_handoff(agent: Optional[str] = None):
         tasks = data["tasks"]
         agent_name = data.get("agent", "generic").upper()
 
+        # Acknowledgement status (the read-back state)
+        if data.get("status") == "acknowledged":
+            ack_line = (
+                f"[bold green]Status:[/bold green] ✅ acknowledged by "
+                f"{(data.get('acknowledged_by') or '?').upper()} "
+                f"at {data.get('acknowledged_at', '?')}\n"
+            )
+        else:
+            ack_line = "[bold yellow]Status:[/bold yellow] 🟡 OPEN — run `nougen handoff ack` to claim it\n"
+
         # Format handoff details into rich panels
         summary = (
             f"[bold cyan]Timestamp:[/bold cyan] {data['timestamp']}\n"
@@ -303,6 +424,7 @@ def show_latest_handoff(agent: Optional[str] = None):
             f"[bold cyan]Goal:[/bold cyan] {data['goal']}\n"
             f"[bold cyan]Session ID:[/bold cyan] {data['session_id']}\n"
             f"[bold cyan]Notes:[/bold cyan] {data.get('message', 'None')}\n"
+            f"{ack_line}"
         )
         console.print(
             Panel(summary, title="🤝 Latest Agent Handoff Summary", border_style="cyan")
