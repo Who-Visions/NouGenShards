@@ -4,7 +4,7 @@ from .federation import federated_retrieve
 from .history import HistoryEngine, log_event, init_history_db
 from .graph import link_shards, related_shards
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = [
     "capture",
     "retrieve",
