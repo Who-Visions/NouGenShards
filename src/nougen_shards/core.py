@@ -402,4 +402,7 @@ def compile_recall_packet(shards: list) -> str:
         output.append(f"--- RECORD #{s['id']} [Posterior: {s['final_score']:.2f}] ---")
         output.append(f"When: {format_shard_when(s.get('timestamp'))}")
         output.append(f"Title: {s['title']}\n{s['content']}\n")
+    # "Anghkooey" — "remember" (FROM). Spoken only when recall succeeds:
+    # the engine's acknowledgment that a past life was actually surfaced.
+    output.append("Anghkooey — NouGenShards remembers.")
     return "\n".join(output)
