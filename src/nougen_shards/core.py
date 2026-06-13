@@ -9,7 +9,7 @@ import json
 import math
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -184,7 +184,7 @@ def capture(event_type: str, title: str, content: str,
 
     emb_blob = sqlite3.Binary(json.dumps(embedding).encode()) if embedding else None
     tags_str = json.dumps(tags or [])
-    timestamp = datetime.utcnow().isoformat() + "Z"
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     conn = get_connection(target_idx)
     try:
@@ -266,8 +266,8 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             if fts_query is not None:
                 try:
                     cursor = conn.execute("""
-                        SELECT s.id, s.title, s.content, s.utility_score, s.embedding,
-                               s.tags, bm25(shards_fts) as bm25_score
+                        SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                               s.embedding, s.tags, bm25(shards_fts) as bm25_score
                         FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
                         WHERE shards_fts MATCH ?
                         ORDER BY bm25_score ASC LIMIT 20
@@ -290,7 +290,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
                 
                 like_query = f"%{query}%"
                 cursor = conn.execute("""
-                    SELECT id, title, content, utility_score, embedding, tags
+                    SELECT id, timestamp, title, content, utility_score, embedding, tags
                     FROM shards
                     WHERE title LIKE ? OR content LIKE ?
                     ORDER BY utility_score DESC LIMIT 20
@@ -364,6 +364,35 @@ def decay_utility_scores(factor: float = 0.95):
     return True
 
 
+def format_shard_when(timestamp: Optional[str]) -> str:
+    """
+    Render a stored UTC ISO timestamp as local wall-clock time plus relative age,
+    so recalled memories are grounded against *now* (e.g.
+    '2026-06-12 04:28 PM EDT (2h ago)'). Returns 'unknown time' for missing or
+    unparseable values (legacy shards predating the timestamp surfacing).
+    """
+    if not timestamp:
+        return "unknown time"
+    try:
+        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        if dt.tzinfo is None:  # legacy naive rows were written as UTC
+            dt = dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return "unknown time"
+    local = dt.astimezone()
+    age = datetime.now(timezone.utc) - dt
+    secs = age.total_seconds()
+    if secs < 0:
+        rel = "in the future?"
+    elif secs < 3600:
+        rel = f"{int(secs // 60)}m ago"
+    elif secs < 86400:
+        rel = f"{int(secs // 3600)}h ago"
+    else:
+        rel = f"{int(secs // 86400)}d ago"
+    return f"{local.strftime('%Y-%m-%d %I:%M %p %Z').strip()} ({rel})"
+
+
 def compile_recall_packet(shards: list) -> str:
     """Synthesis of retrieved experience into a coherent context packet (Module 18)."""
     if not shards:
@@ -371,5 +400,6 @@ def compile_recall_packet(shards: list) -> str:
     output = ["=== NOUGENSHARDS RECALL PACKET [BAYESIAN SYNTHESIS] ==="]
     for s in shards:
         output.append(f"--- RECORD #{s['id']} [Posterior: {s['final_score']:.2f}] ---")
+        output.append(f"When: {format_shard_when(s.get('timestamp'))}")
         output.append(f"Title: {s['title']}\n{s['content']}\n")
     return "\n".join(output)

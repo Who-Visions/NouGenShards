@@ -291,8 +291,8 @@ export function retrieve(query: string, limit: number = 3, query_embedding: numb
         try {
           const res = conn
             .prepare(`
-                        SELECT s.id, s.title, s.content, s.utility_score, s.embedding,
-                               s.tags, bm25(shards_fts) as bm25_score
+                        SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                               s.embedding, s.tags, bm25(shards_fts) as bm25_score
                         FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
                         WHERE shards_fts MATCH ?
                         ORDER BY bm25_score ASC LIMIT 20
@@ -316,7 +316,7 @@ export function retrieve(query: string, limit: number = 3, query_embedding: numb
         const like_query = `%${query}%`;
         const rows = conn
           .prepare(`
-                    SELECT id, title, content, utility_score, embedding, tags
+                    SELECT id, timestamp, title, content, utility_score, embedding, tags
                     FROM shards
                     WHERE title LIKE ? OR content LIKE ?
                     ORDER BY utility_score DESC LIMIT 20
@@ -402,6 +402,40 @@ export function decay_utility_scores(factor: number = 0.95): boolean {
   return true;
 }
 
+/**
+ * Render a stored UTC ISO timestamp as local wall-clock time plus relative age,
+ * so recalled memories are grounded against *now* (e.g.
+ * '2026-06-12 04:28 PM EDT (2h ago)'). Returns 'unknown time' for missing or
+ * unparseable values (legacy shards predating the timestamp surfacing).
+ */
+export function format_shard_when(timestamp?: string | null): string {
+  if (!timestamp) {
+    return "unknown time";
+  }
+  const dt = new Date(timestamp);
+  if (Number.isNaN(dt.getTime())) {
+    return "unknown time";
+  }
+  const secs = (Date.now() - dt.getTime()) / 1000;
+  let rel: string;
+  if (secs < 0) {
+    rel = "in the future?";
+  } else if (secs < 3600) {
+    rel = `${Math.floor(secs / 60)}m ago`;
+  } else if (secs < 86400) {
+    rel = `${Math.floor(secs / 3600)}h ago`;
+  } else {
+    rel = `${Math.floor(secs / 86400)}d ago`;
+  }
+  const local = dt
+    .toLocaleString("en-US", {
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hour12: true, timeZoneName: "long",
+    })
+    .replace(/(\d+)\/(\d+)\/(\d+),/, "$3-$1-$2");
+  return `${local} (${rel})`;
+}
+
 /** Synthesis of retrieved experience into a coherent context packet (Module 18). */
 export function compile_recall_packet(shards: Shard[]): string {
   if (!shards.length) {
@@ -410,6 +444,7 @@ export function compile_recall_packet(shards: Shard[]): string {
   const output = ["=== NOUGENSHARDS RECALL PACKET [BAYESIAN SYNTHESIS] ==="];
   for (const s of shards) {
     output.push(`--- RECORD #${s.id} [Posterior: ${(s.final_score as number).toFixed(2)}] ---`);
+    output.push(`When: ${format_shard_when(s.timestamp)}`);
     output.push(`Title: ${s.title}\n${s.content}\n`);
   }
   return output.join("\n");
