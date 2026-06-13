@@ -1,0 +1,38 @@
+{
+  "name": "nougen-shards",
+  "version": "1.1.0",
+  "description": "Persistent local memory for coding agents. Store machine experience as shards. (TypeScript mimic of the Python nougen_shards package)",
+  "author": "Who Visions LLC <contact@whovisions.com>",
+  "license": "SEE LICENSE IN ../pyproject.toml",
+  "homepage": "https://whovisions.com",
+  "type": "module",
+  "main": "dist/nougen_shards/index.js",
+  "types": "dist/nougen_shards/index.d.ts",
+  "bin": {
+    "nougen-ts": "dist/nougen_shards/cli.js",
+    "nougen-mcp-ts": "dist/nougen_shards/mcp.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
+    "smoke": "node dist/test/smoke.js",
+    "start:hud": "node dist/app/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "better-sqlite3": "^11.8.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.15.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "typescript": "^5.8.0"
+  }
+}

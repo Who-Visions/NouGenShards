@@ -75,6 +75,50 @@ def mark_utility(shard_id: int, worked: bool) -> str:
         return f"Utility for Shard #{shard_id} updated successfully."
     return f"Shard #{shard_id} not found."
 
+# --- Graph Memory (Latent Mesh) ---
+
+@mcp.tool()
+def link_shards(src_id: int, dst_id: int, relation: str = "relates",
+                src_db: int = 1, dst_db: int = 1) -> str:
+    """
+    Link two memory shards into the graph mesh (e.g. a fix to the file it touched,
+    a command to the decision that caused it).
+
+    Args:
+        src_id: ID of the source shard.
+        dst_id: ID of the destination shard.
+        relation: Edge label (e.g. 'fixes', 'touches', 'caused_by', 'relates').
+        src_db: Database index the source shard lives in (the recall result's _db_index; default 1).
+        dst_db: Database index the destination shard lives in (default 1).
+    """
+    from . import graph  # pylint: disable=import-outside-toplevel
+    if graph.link_shards(src_id, dst_id, relation, src_db, dst_db):
+        return f"Edge created: shard {src_id} -[{relation}]-> shard {dst_id}."
+    return "No edge created (a shard was missing, identical, or already linked)."
+
+@mcp.tool()
+def recall_related(shard_id: int, db_index: int = 1, relation: Optional[str] = None,
+                   limit: int = 10) -> str:
+    """
+    Recall shards connected to a given shard in the graph mesh (walks links in
+    either direction). Surfaces the latent context around a memory.
+
+    Args:
+        shard_id: ID of the shard to expand from.
+        db_index: Database index the shard lives in (the recall result's _db_index; default 1).
+        relation: Optional filter to a single relation label.
+        limit: Max number of neighbours to return.
+    """
+    from . import graph  # pylint: disable=import-outside-toplevel
+    related = graph.related_shards(shard_id, db_index, relation, limit)
+    if not related:
+        return "No related shards found in the mesh."
+    output = ["=== GRAPH MEMORY: RELATED SHARDS ==="]
+    for r in related:
+        output.append(
+            f"[{r['direction']}|{r['relation']}] #{r['id']} {r['title']}\n{r['content'][:160]}")
+    return "\n".join(output)
+
 # --- Attention Layer (Context) ---
 
 @mcp.tool()

@@ -231,6 +231,24 @@ def _process_fts_result(row, db_index, query_embedding):
     return item
 
 
+def _build_fts_match_query(query: str) -> Optional[str]:
+    """
+    Build a safe FTS5 MATCH expression from arbitrary user input.
+
+    Every word is treated as a literal phrase: each token is double-quoted (any
+    embedded quote doubled, per FTS5 escaping), so query text can never be parsed
+    as FTS5 operators (AND/OR/NOT/NEAR/*, bare quotes, parentheses). Without this,
+    inputs like `c++`, `foo"bar`, or a lone `AND` raise OperationalError and the
+    search silently degrades to a LIKE substring scan. Tokens shorter than 3 chars
+    are dropped because the trigram tokenizer cannot index them. Returns None when
+    nothing matchable remains (caller then uses the LIKE fallback).
+    """
+    tokens = [t for t in query.split() if len(t) >= 3]
+    if not tokens:
+        return None
+    return " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
+
+
 def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None) -> list:
     """
     Advanced Retrieval and Bayesian Orchestration (Module 21).
@@ -244,15 +262,16 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         conn = get_connection(i)
         try:
             fts_worked = False
-            if len(query) >= 2:
+            fts_query = _build_fts_match_query(query)
+            if fts_query is not None:
                 try:
                     cursor = conn.execute("""
                         SELECT s.id, s.title, s.content, s.utility_score, s.embedding,
-                               s.tags, bm25(f) as bm25_score
-                        FROM shards s JOIN shards_fts f ON s.id = f.rowid
+                               s.tags, bm25(shards_fts) as bm25_score
+                        FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
                         WHERE shards_fts MATCH ?
                         ORDER BY bm25_score ASC LIMIT 20
-                    """, (query,))
+                    """, (fts_query,))
                     res = cursor.fetchall()
                     if res:
                         for row in res:
@@ -265,6 +284,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
 
             if not fts_worked:
                 # Fallback to LIKE (Module 1: Resolving Metamers for small query strings)
+                # Audit visibility: Log fallback event.
+                from . import history # pylint: disable=import-outside-toplevel
+                history.log_event(0, i, "SEARCH_FALLBACK", metadata={"query": query})
+                
                 like_query = f"%{query}%"
                 cursor = conn.execute("""
                     SELECT id, title, content, utility_score, embedding, tags

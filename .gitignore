@@ -13,6 +13,17 @@ mcp.config.json
 secrets/
 .mcp-locks/
 
+# Keymaker vault (DPAPI-encrypted, user-bound — never ship). Covers the CSV
+# ledger and service_accounts/ JSON that *.db alone would miss.
+.nougen_vault/
+*_secrets.csv
+*_secrets.db
+service_accounts/
+
+# Fleet test reports / ad-hoc audit output
+tools/reports/
+ts/audit_results.json
+
 # Virtual environments & session logs
 .venv/
 venv/
