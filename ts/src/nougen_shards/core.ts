@@ -1,7 +1,7 @@
 /**
  * NouGenShards: Advanced Memory-Core Substrate. (TS mimic of core.py)
- * Logic: SQLite + FTS5 + BM25 + Trigram (n-gram) + Vector Embeddings + Bayesian Reranking.
- * Architecture: Reverse Epistemics (Manifesto of Bayesian Orchestration).
+ * Logic: SQLite + FTS5 + BM25 + Trigram (n-gram) + Vector Embeddings + Weighted Relevance Reranking.
+ * Architecture: weighted multi-signal relevance blend (BM25 + semantic + usefulness prior).
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, statSync } from "node:fs";
@@ -158,7 +158,7 @@ export function init_db(index: number = 1): void {
             title TEXT NOT NULL,
             content TEXT NOT NULL,
             tags TEXT,
-            utility_score REAL DEFAULT 1.0, -- Bayesian Prior (Module 20)
+            utility_score REAL DEFAULT 1.0, -- usefulness prior: weight term in the relevance blend (Module 20)
             access_count INTEGER DEFAULT 0,
             file_hash TEXT UNIQUE NOT NULL
         );
@@ -193,10 +193,29 @@ export function init_db(index: number = 1): void {
         `);
   }
 
-  // Sync triggers (Module 18: Reconstruct Coherence)
+  // Sync triggers (Module 18: Reconstruct Coherence).
+  // The FTS index must stay coherent on every write, not just inserts: without
+  // the delete/update triggers, edited or removed shards leave stale rows that
+  // keep matching searches. External-content FTS5 needs the special 'delete'
+  // command rows to retract a row before re-indexing it.
   conn.exec("DROP TRIGGER IF EXISTS shards_ai");
+  conn.exec("DROP TRIGGER IF EXISTS shards_ad");
+  conn.exec("DROP TRIGGER IF EXISTS shards_au");
   conn.exec(`
         CREATE TRIGGER shards_ai AFTER INSERT ON shards BEGIN
+            INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+        END;
+    `);
+  conn.exec(`
+        CREATE TRIGGER shards_ad AFTER DELETE ON shards BEGIN
+            INSERT INTO shards_fts(shards_fts, rowid, title, content)
+            VALUES ('delete', old.id, old.title, old.content);
+        END;
+    `);
+  conn.exec(`
+        CREATE TRIGGER shards_au AFTER UPDATE ON shards BEGIN
+            INSERT INTO shards_fts(shards_fts, rowid, title, content)
+            VALUES ('delete', old.id, old.title, old.content);
             INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
         END;
     `);
@@ -280,13 +299,13 @@ export function capture(
   }
 }
 
-// Bayesian Ranking Config (Module 20)
+// Relevance blend weights (Module 20)
 export const WEIGHT_BM25 = 0.4;
 export const WEIGHT_SEMANTIC = 0.6;
 export const WEIGHT_LIKELIHOOD = 0.7;
 export const WEIGHT_PRIOR = 0.3;
 
-/** Helper to process a single FTS result with Bayesian math. */
+/** Helper to score a single FTS result via the weighted relevance blend. */
 function _process_fts_result(row: Shard, db_index: number, query_embedding: number[] | null): Shard {
   const item: Shard = { ...row };
   item._db_index = db_index;
@@ -302,7 +321,9 @@ function _process_fts_result(row: Shard, db_index: number, query_embedding: numb
   // Synthesize Coherent Likelihood (Module 9)
   const likelihood = norm_bm25 * WEIGHT_BM25 + sem_score * WEIGHT_SEMANTIC;
 
-  // 3. Bayesian Posterior = Likelihood * Prior (utility_score)
+  // 3. Final relevance: a weighted blend of the likelihood signal and the
+  //    shard's usefulness prior — a linear combination of two scores, not a
+  //    true Bayesian posterior (no normalization over a likelihood model).
   item.final_score = likelihood * WEIGHT_LIKELIHOOD + item.utility_score * WEIGHT_PRIOR;
   return item;
 }
@@ -327,7 +348,7 @@ function _build_fts_match_query(query: string): string | null {
 }
 
 /**
- * Advanced Retrieval and Bayesian Orchestration (Module 21).
+ * Advanced Retrieval (Module 21): weighted blend of BM25 (adjacency) and semantic (latent) signals.
  * Synthesizes BM25 (Adjacency) and Semantic (Latent) signals.
  */
 export function retrieve(query: string, limit: number = 3, query_embedding: number[] | null = null): Shard[] {
@@ -409,7 +430,7 @@ export function get_shard_by_id(shard_id: number, db_index: number): Shard | nul
   }
 }
 
-/** Bayesian Inversion: Updates the Prior (utility_score) based on outcome evidence. */
+/** Updates the usefulness prior (utility_score) from outcome evidence (helpful / not). */
 export function mark_shard(shard_id: number, worked: boolean): boolean {
   for (let i = 1; i <= MAX_DB_COUNT; i++) {
     if (!existsSync(get_db_path(i))) {
@@ -496,7 +517,7 @@ export function compile_recall_packet(shards: Shard[]): string {
   }
   const output = ["=== NOUGENSHARDS RECALL PACKET [BAYESIAN SYNTHESIS] ==="];
   for (const s of shards) {
-    output.push(`--- RECORD #${s.id} [Posterior: ${(s.final_score as number).toFixed(2)}] ---`);
+    output.push(`--- RECORD #${s.id} [Score: ${(s.final_score as number).toFixed(2)}] ---`);
     output.push(`When: ${format_shard_when(s.timestamp)}`);
     output.push(`Title: ${s.title}\n${s.content}\n`);
   }

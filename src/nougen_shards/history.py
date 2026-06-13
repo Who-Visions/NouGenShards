@@ -110,7 +110,7 @@ class HistoryEngine:
 
     @staticmethod
     def get_utility_delta(period: str = "week"):
-        """Measures the net change in Bayesian confidence across the fabric."""
+        """Measures the net change in usefulness across the fabric."""
         delta = HistoryEngine.get_period_delta(period)
         cutoff = (datetime.utcnow() - delta).isoformat() + "Z"
 

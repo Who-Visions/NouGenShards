@@ -105,7 +105,7 @@ def get_analytics():
 # 📈 Intelligence Growth
 - **New Shards (Week)**: {growth['new_shards']}
 - **Total Substrate Size**: {growth['total_shards']} shards
-- **Bayesian Delta**: {'+' if utility >= 0 else ''}{utility:.2f}
+- **Usefulness Delta**: {'+' if utility >= 0 else ''}{utility:.2f}
 """
     return stats, timeline
 

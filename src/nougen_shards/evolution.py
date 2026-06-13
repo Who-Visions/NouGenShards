@@ -47,16 +47,23 @@ class EvolutionEngine:
         """
         if self.verbose:
             print(f"[*] Evolution: Generating virtual verification task for '{instruction}'...")
-        # Simulated virtual task creation
-        test_script = f"""
-import sys
-# Virtual test for {instruction}
-# Grounding: {grounding}
-def test_invariant():
-    assert True # In a real loop, this would check specific logic
-test_invariant()
-print('Virtual Task Passed')
-"""
+        # The generated virtual test asserts the pipeline actually produced
+        # usable grounding for this instruction. An empty or off-topic Wing
+        # result fails verification here instead of trivially passing — so a
+        # "Virtual Task Passed" result means the acquisition stage did its job.
+        test_script = (
+            "import sys\n"
+            f"GROUNDING = {grounding!r}\n"
+            f"INSTRUCTION = {instruction!r}\n"
+            "def test_invariant():\n"
+            "    assert GROUNDING.strip(), 'no grounding produced'\n"
+            "    assert len(GROUNDING) > 40, 'grounding too thin to build a skill'\n"
+            "    tokens = [t for t in INSTRUCTION.lower().split() if len(t) > 3]\n"
+            "    assert (not tokens) or any(t in GROUNDING.lower() for t in tokens), \\\n"
+            "        'grounding unrelated to instruction'\n"
+            "test_invariant()\n"
+            "print('Virtual Task Passed')\n"
+        )
         return test_script
 
     def evolve_skill(self, instruction: str) -> Dict[str, Any]:

@@ -31,7 +31,7 @@ def test_init_db(setup_test_env):
     conn.close()
 
 def test_capture_and_retrieve_bayesian(setup_test_env):
-    """Test capturing and retrieving with Bayesian scoring."""
+    """Test capturing and retrieving with weighted relevance scoring."""
     # Add a high-utility shard
     shards.capture("KNOWLEDGE", "Important Tool", "This tool works perfectly for automation.")
     
@@ -40,7 +40,7 @@ def test_capture_and_retrieve_bayesian(setup_test_env):
     assert len(res) >= 1
     
     shard_id = res[0]["id"]
-    shards.mark_shard(shard_id, worked=True) # Increase Bayesian Prior
+    shards.mark_shard(shard_id, worked=True) # Increase usefulness prior
     
     # Add a new shard with same keyword but neutral utility
     shards.capture("KNOWLEDGE", "New Tool", "This is another tool for automation.")
@@ -92,7 +92,7 @@ def test_multi_db_deterministic_routing(setup_test_env):
     assert "_db_index" in res2
 
 def test_mark_shard_outcome_loop(setup_test_env):
-    """Test the utility score update (The Bayesian Prior)."""
+    """Test the utility score update (the usefulness prior)."""
     shards.capture("TEST", "Status", "Success scenario")
     res = shards.retrieve("scenario")[0]
     initial_prior = res["utility_score"]
@@ -101,3 +101,46 @@ def test_mark_shard_outcome_loop(setup_test_env):
     
     res_updated = shards.retrieve("scenario")[0]
     assert res_updated["utility_score"] > initial_prior
+
+def test_fts_triggers_sync_on_update_and_delete(setup_test_env):
+    """Edited/deleted shards must not linger in the FTS index.
+
+    Regression for the missing AFTER UPDATE / AFTER DELETE triggers: with only
+    the insert trigger, an edited or removed shard left a stale row in
+    shards_fts that kept matching searches. We assert directly against the FTS
+    index so the test detects retraction, not just join masking.
+    """
+    def fts_count(conn, term):
+        # Query the FTS index exactly the way production builds its MATCH expr.
+        return conn.execute(
+            "SELECT count(*) FROM shards_fts WHERE shards_fts MATCH ?",
+            (shards._build_fts_match_query(term),),
+        ).fetchone()[0]
+
+    shards.capture("KNOWLEDGE", "Trigger Probe", "contains zubzubzub marker token")
+    res = shards.retrieve("zubzubzub")
+    assert len(res) == 1
+    sid = res[0]["id"]
+    db = res[0]["_db_index"]  # capture hash-routes across the 9-db grid
+
+    conn = shards.get_connection(db)
+    try:
+        assert fts_count(conn, "zubzubzub") == 1
+
+        # UPDATE: the AFTER UPDATE trigger must retract the old token and index the new.
+        conn.execute(
+            "UPDATE shards SET content = ? WHERE id = ?",
+            ("now contains wexwexwex marker instead", sid),
+        )
+        conn.commit()
+        assert fts_count(conn, "zubzubzub") == 0
+        assert fts_count(conn, "wexwexwex") == 1
+
+        # DELETE: the AFTER DELETE trigger must retract the row entirely.
+        conn.execute("DELETE FROM shards WHERE id = ?", (sid,))
+        conn.commit()
+        assert fts_count(conn, "wexwexwex") == 0
+    finally:
+        conn.close()
+
+    assert shards.retrieve("wexwexwex") == []

@@ -236,7 +236,7 @@ export function get_analytics(): [string, string] {
 # 📈 Intelligence Growth
 - **New Shards (Week)**: ${growth.new_shards}
 - **Total Substrate Size**: ${growth.total_shards} shards
-- **Bayesian Delta**: ${utility >= 0 ? "+" : ""}${utility.toFixed(2)}
+- **Usefulness Delta**: ${utility >= 0 ? "+" : ""}${utility.toFixed(2)}
 `;
   return [stats, timeline];
 }

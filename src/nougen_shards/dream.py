@@ -75,7 +75,7 @@ def wake() -> Dict[str, Any]:
     
     return {
         "experimental": True,
-        "pruned": "Applied 0.95x Bayesian decay to all shards.",
+        "pruned": "Applied 0.95x utility decay to all shards.",
         "shards_extracted": len(top_shards),
         "sft_pairs_generated": len(sft_pairs),
         "parametric_dataset_path": dataset_path,

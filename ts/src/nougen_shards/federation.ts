@@ -15,7 +15,7 @@ export async function federated_retrieve(
   limit: number = 3,
   query_embedding: number[] | null = null,
 ): Promise<Shard[]> {
-  // 1. Get Local Shards (Bayesian Posterior)
+  // 1. Get Local Shards (weighted relevance blend)
   const local_results = core.retrieve(query, limit, query_embedding);
 
   // 2. Get Configs from Keymaker
@@ -34,7 +34,7 @@ export async function federated_retrieve(
     cloud_results = await query_cloud_shards(query, cloud_configs, limit);
   }
 
-  // 5. Merge and re-rank via Bayesian Posterior
+  // 5. Merge and re-rank via weighted relevance blend
   // (Module 21: Orchestrate Convergence)
   const combined = [...local_results, ...external_results, ...cloud_results];
   combined.sort((a, b) => (b.final_score ?? 0) - (a.final_score ?? 0));

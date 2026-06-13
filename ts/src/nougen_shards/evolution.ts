@@ -56,16 +56,23 @@ export class EvolutionEngine {
     if (this.verbose) {
       console.log(`[*] Evolution: Generating virtual verification task for '${instruction}'...`);
     }
-    // Simulated virtual task creation
-    const test_script = `
-import sys
-# Virtual test for ${instruction}
-# Grounding: ${grounding}
-def test_invariant():
-    assert True # In a real loop, this would check specific logic
-test_invariant()
-print('Virtual Task Passed')
-`;
+    // The generated virtual test asserts the pipeline actually produced usable
+    // grounding for this instruction. An empty or off-topic Wing result fails
+    // verification here instead of trivially passing — so a "Virtual Task
+    // Passed" result means the acquisition stage did its job.
+    const test_script = [
+      "import sys",
+      `GROUNDING = ${JSON.stringify(grounding)}`,
+      `INSTRUCTION = ${JSON.stringify(instruction)}`,
+      "def test_invariant():",
+      "    assert GROUNDING.strip(), 'no grounding produced'",
+      "    assert len(GROUNDING) > 40, 'grounding too thin to build a skill'",
+      "    tokens = [t for t in INSTRUCTION.lower().split() if len(t) > 3]",
+      "    assert (not tokens) or any(t in GROUNDING.lower() for t in tokens), 'grounding unrelated to instruction'",
+      "test_invariant()",
+      "print('Virtual Task Passed')",
+      "",
+    ].join("\n");
     return test_script;
   }
 

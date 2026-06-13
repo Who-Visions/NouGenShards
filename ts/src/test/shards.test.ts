@@ -18,12 +18,12 @@ test("init_db creates trigram FTS5 table", () => {
   conn.close();
 });
 
-test("capture and retrieve with Bayesian scoring", () => {
+test("capture and retrieve with weighted relevance scoring", () => {
   shards.capture("KNOWLEDGE", "Important Tool", "This tool works perfectly for automation.");
   const res = shards.retrieve("automation");
   assert.ok(res.length >= 1);
 
-  shards.mark_shard(res[0].id, true); // raise Bayesian prior
+  shards.mark_shard(res[0].id, true); // raise usefulness prior
 
   shards.capture("KNOWLEDGE", "New Tool", "This is another tool for automation.");
   const results = shards.retrieve("automation");

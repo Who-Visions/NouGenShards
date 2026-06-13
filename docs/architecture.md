@@ -34,7 +34,7 @@ The Metameric Memory Engine is mathematically grounded in the [Architecture of A
 14. **Expand Solution Space**: `core.retrieve` uses Vector Embeddings and `cosine_similarity` to find semantically related shards even if keywords don't match.
 15. **Remix Viable Patterns**: `core.compile_recall_packet` batches the best historical solutions into an injected payload for the LLM.
 16. **Invert Assumptions**: We do not inject context into every prompt; we use `OpenRouter` caching arrays and sticky `session_id`s to keep history server-side.
-17. **Reverse-Engineer Intent**: `core.mark_utility` (Bayesian Inversion) adjusts the `utility_score` of a shard based on whether the recalled memory actually worked in practice.
+17. **Reverse-Engineer Intent**: `core.mark_utility` (outcome-driven update of the usefulness prior) adjusts the `utility_score` of a shard based on whether the recalled memory actually worked in practice.
 18. **Reconstruct Coherence**: `history.py` graphs the total memory growth across all platforms into a single, unified timeline.
 19. **Stabilize Reasoning**: `decay_utility_scores` runs a slow, background 0.95x multiplier to prune stale memories over time, ensuring only high-signal knowledge survives.
 

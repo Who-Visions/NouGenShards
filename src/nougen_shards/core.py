@@ -1,7 +1,7 @@
 """
 NouGenShards: Advanced Memory-Core Substrate.
-Logic: SQLite + FTS5 + BM25 + Trigram (n-gram) + Vector Embeddings + Bayesian Reranking.
-Architecture: Reverse Epistemics (Manifesto of Bayesian Orchestration).
+Logic: SQLite + FTS5 + BM25 + Trigram (n-gram) + Vector Embeddings + Weighted Relevance Reranking.
+Architecture: weighted multi-signal relevance blend (BM25 + semantic + usefulness prior).
 """
 # pylint: disable=duplicate-code
 import hashlib
@@ -114,7 +114,7 @@ def init_db(index: int = 1):
             title TEXT NOT NULL,
             content TEXT NOT NULL,
             tags TEXT,
-            utility_score REAL DEFAULT 1.0, -- Bayesian Prior (Module 20)
+            utility_score REAL DEFAULT 1.0, -- usefulness prior: weight term in the relevance blend (Module 20)
             access_count INTEGER DEFAULT 0,
             file_hash TEXT UNIQUE NOT NULL
         );
@@ -147,10 +147,29 @@ def init_db(index: int = 1):
             );
         """)
 
-    # Sync triggers (Module 18: Reconstruct Coherence)
+    # Sync triggers (Module 18: Reconstruct Coherence).
+    # The FTS index must stay coherent on every write, not just inserts. Without
+    # the delete/update triggers, edited or removed shards leave stale rows that
+    # keep matching searches. External-content FTS5 needs the special 'delete'
+    # command rows to retract a row before re-indexing it.
     cursor.execute("DROP TRIGGER IF EXISTS shards_ai")
+    cursor.execute("DROP TRIGGER IF EXISTS shards_ad")
+    cursor.execute("DROP TRIGGER IF EXISTS shards_au")
     cursor.execute("""
         CREATE TRIGGER shards_ai AFTER INSERT ON shards BEGIN
+            INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+        END;
+    """)
+    cursor.execute("""
+        CREATE TRIGGER shards_ad AFTER DELETE ON shards BEGIN
+            INSERT INTO shards_fts(shards_fts, rowid, title, content)
+            VALUES ('delete', old.id, old.title, old.content);
+        END;
+    """)
+    cursor.execute("""
+        CREATE TRIGGER shards_au AFTER UPDATE ON shards BEGIN
+            INSERT INTO shards_fts(shards_fts, rowid, title, content)
+            VALUES ('delete', old.id, old.title, old.content);
             INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
         END;
     """)
@@ -272,14 +291,14 @@ def capture(event_type: str, title: str, content: str,
         dconn.close()
 
 
-# Bayesian Ranking Config (Module 20)
+# Relevance blend weights (Module 20)
 WEIGHT_BM25 = 0.4
 WEIGHT_SEMANTIC = 0.6
 WEIGHT_LIKELIHOOD = 0.7
 WEIGHT_PRIOR = 0.3
 
 def _process_fts_result(row, db_index, query_embedding):
-    """Helper to process a single FTS result with Bayesian math."""
+    """Helper to score a single FTS result via the weighted relevance blend."""
     item = dict(row)
     item["_db_index"] = db_index
     # 1. Likelihood Part A: BM25 (The Adjacency Score)
@@ -293,7 +312,9 @@ def _process_fts_result(row, db_index, query_embedding):
     # Synthesize Coherent Likelihood (Module 9)
     likelihood = (norm_bm25 * WEIGHT_BM25) + (sem_score * WEIGHT_SEMANTIC)
 
-    # 3. Bayesian Posterior = Likelihood * Prior (utility_score)
+    # 3. Final relevance: a weighted blend of the likelihood signal and the
+    #    shard's usefulness prior. This is a linear combination of two scores,
+    #    not a true Bayesian posterior (no normalization over a likelihood model).
     item["final_score"] = (likelihood * WEIGHT_LIKELIHOOD) + (item["utility_score"] * WEIGHT_PRIOR)
     return item
 
@@ -318,8 +339,8 @@ def _build_fts_match_query(query: str) -> Optional[str]:
 
 def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None) -> list:
     """
-    Advanced Retrieval and Bayesian Orchestration (Module 21).
-    Synthesizes BM25 (Adjacency) and Semantic (Latent) signals.
+    Advanced Retrieval (Module 21): weighted blend of BM25 (Adjacency) and
+    Semantic (Latent) signals with the shard's usefulness prior.
     """
     all_results = []
     from . import history # pylint: disable=import-outside-toplevel
@@ -391,7 +412,7 @@ def get_shard_by_id(shard_id: int, db_index: int):
         conn.close()
 
 def mark_shard(shard_id: int, worked: bool):
-    """Bayesian Inversion: Updates the Prior (utility_score) based on outcome evidence."""
+    """Updates the usefulness prior (utility_score) from outcome evidence (helpful / not)."""
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists():
             continue
@@ -466,7 +487,7 @@ def compile_recall_packet(shards: list) -> str:
         return "<!-- NO RELEVANT MEMORY RECALLED -->"
     output = ["=== NOUGENSHARDS RECALL PACKET [BAYESIAN SYNTHESIS] ==="]
     for s in shards:
-        output.append(f"--- RECORD #{s['id']} [Posterior: {s['final_score']:.2f}] ---")
+        output.append(f"--- RECORD #{s['id']} [Score: {s['final_score']:.2f}] ---")
         output.append(f"When: {format_shard_when(s.get('timestamp'))}")
         output.append(f"Title: {s['title']}\n{s['content']}\n")
     # "Anghkooey" — "remember" (FROM). Spoken only when recall succeeds:

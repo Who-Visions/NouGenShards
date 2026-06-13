@@ -116,7 +116,7 @@ export class HistoryEngine {
     }
   }
 
-  /** Measures the net change in Bayesian confidence across the fabric. */
+  /** Measures the net change in usefulness across the fabric. */
   static get_utility_delta(period: string = "week"): number {
     const delta = HistoryEngine.get_period_delta(period);
     const cutoff = new Date(Date.now() - delta).toISOString();

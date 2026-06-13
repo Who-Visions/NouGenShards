@@ -54,7 +54,7 @@ graph TD
     A[Claude / Gemini / Cursor / Logs] -->|nougen brain scan| B[AI Memory Recon]
     B -->|Extract & Normalize| C[Normalizer]
     C -->|Deterministic Hash Routing| D[(9-Db Shard Grid)]
-    D -->|BM25 + Semantic Search| E[Bayesian Ranker]
+    D -->|BM25 + Semantic Search| E[Relevance Ranker]
     E -->|Prior/Utility Updates| F[Search API]
     F -->|Telemetry / CLI| G[Cortex HUD / TUI]
 ```
@@ -74,18 +74,18 @@ graph TD
 - **AI Memory Recon**: Run `nougen brain scan` to discover and import your fragmented AI history across 15+ known tool formats.
 - **Cortex HUD**: See your memory grow — a 3x3 substrate map, high-velocity timelines, and a point-and-click shard browser. Ships as a native desktop app (Tauri) and web view.
 - **Privacy First**: Your core memory stays on your machine in local SQLite databases. Secrets are redacted on import, and the credential vault encrypts values at rest. Cloud platforms forget, but local memory belongs to you.
-- **Bayesian Ranking**: The tool learns what is useful. Marking a shard as helpful improves future search relevance automatically.
+- **Adaptive Relevance Ranking**: The tool learns what is useful. Marking a shard as helpful raises its usefulness weight, so it ranks higher in a weighted blend of keyword (BM25), semantic, and usefulness scores. (A linear blend, not a true Bayesian posterior.)
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/decay_curve_dark.png">
     <source media="(prefers-color-scheme: light)" srcset="docs/images/decay_curve_light.png">
-    <img alt="Bayesian Decay Curve" src="docs/images/decay_curve_dark.png" width="368">
+    <img alt="Utility Decay Curve" src="docs/images/decay_curve_dark.png" width="368">
   </picture>
 </p>
 
-- **Federated Intelligence**: Search your local shards, your production SQL databases, and remote cloud nodes simultaneously.
-- **Parametric Dreams** *(experimental)*: The engine consolidates knowledge via Bayesian decay and exports distilled SFT datasets (TMEM) for fast-weight LoRA updates. Dataset export is real; the weight-update step is simulated scaffolding today.
+- **Federated Intelligence**: Search across your local shards, your production SQL databases, and remote cloud nodes — results merged and re-ranked into one set. (Sources are queried in sequence today; concurrency is on the roadmap.)
+- **Parametric Dreams** *(experimental)*: The engine consolidates knowledge via time-based utility decay and exports distilled SFT datasets (TMEM) for fast-weight LoRA updates. Dataset export is real; the weight-update step is simulated scaffolding today.
 - **Production Ready**: Built-in OpenRouter routing with automatic fallback and response healing.
 - **[Deep Architecture →](docs/architecture.md)**: The full 21-step Metameric Memory Engine blueprint.
 

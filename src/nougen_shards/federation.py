@@ -10,7 +10,7 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     Module 8: Combine Compatible Systems.
     Polls local Shard substrate, external DBs, and remote cloud nodes.
     """
-    # 1. Get Local Shards (Bayesian Posterior)
+    # 1. Get Local Shards (weighted relevance blend)
     local_results = core.retrieve(query, limit=limit, query_embedding=query_embedding)
 
     # 2. Get Configs from Keymaker
@@ -27,7 +27,7 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     if cloud_configs:
         cloud_results = query_cloud_shards(query, cloud_configs, limit=limit)
 
-    # 5. Merge and re-rank via Bayesian Posterior
+    # 5. Merge and re-rank via weighted relevance blend
     # (Module 21: Orchestrate Convergence)
     combined = local_results + external_results + cloud_results
     combined.sort(key=lambda x: x.get("final_score", 0), reverse=True)
