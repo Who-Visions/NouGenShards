@@ -58,6 +58,33 @@ src-tauri/icons/*.icns
 src-tauri/icons/android/
 src-tauri/icons/ios/
 
+# Vault introspection / dump utilities — local-only crowbars that sit next to
+# the encrypted vault. Never ship in the public package.
+dump_vault.py
+dump_elevated.py
+dump_memories_schema.py
+get_memories_schema.py
+list_tables.py
+list_backup_tables.py
+tmp_dump.py
+tmp_dump_global.py
+tools/read_vault_shards.py
+
+# One-time / version-numbered migration scripts — history belongs in git, not
+# in filenames. Local-only.
+migrate_vault.py
+migrate_vault_v2.py
+incremental_migration.py
+incremental_migration_v2.py
+migrate_memories.py
+verify_swap.py
+fix_types.py
+
+# Fleet / orchestration tooling — internal, not part of the public package
+# (banned from the user-facing tree by the project constitution).
+tools/fleet_test.py
+tools/nougenai_fleet_registry_mcp.py
+
 # OS specific
 Thumbs.db
 .DS_Store
