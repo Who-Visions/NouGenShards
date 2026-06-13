@@ -354,7 +354,7 @@ async function cmd_search(args: Args): Promise<void> {
     return;
   }
 
-  console.log(`🔍 Found ${results.length} records across the fabric (Ranked by Bayesian Relevance):\n`);
+  console.log(`🔍 Found ${results.length} records across the fabric (Ranked by Relevance):\n`);
   for (const res of results) {
     const header =
       `[${res.id}] Final Score: ${(res.final_score as number).toFixed(2)} | ` +
@@ -366,7 +366,7 @@ async function cmd_search(args: Args): Promise<void> {
 
 async function cmd_mark(args: Args): Promise<void> {
   if (shards.mark_shard(args.id, args.worked)) {
-    console.log(`✅ Shard #${args.id} updated. Bayesian prior adjusted.`);
+    console.log(`✅ Shard #${args.id} updated. Usefulness prior adjusted.`);
   } else {
     console.log(`Error finding shard #${args.id}.`);
   }
@@ -435,7 +435,7 @@ async function cmd_stats(args: Args): Promise<void> {
   console.log(timeline);
   console.log(`\n - New Shards Captured: ${growth.new_shards}`);
   console.log(` - Total Memory Size:   ${growth.total_shards} shards`);
-  console.log(` - Bayesian Utility Δ: ${utility >= 0 ? "+" : ""}${utility.toFixed(2)}`);
+  console.log(` - Usefulness Δ: ${utility >= 0 ? "+" : ""}${utility.toFixed(2)}`);
 
   if (growth.total_shards > 0) {
     const rate = (growth.new_shards / growth.total_shards) * 100;

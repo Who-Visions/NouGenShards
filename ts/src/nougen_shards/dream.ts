@@ -85,7 +85,7 @@ export function wake(): Record<string, any> {
 
   return {
     experimental: true,
-    pruned: "Applied 0.95x Bayesian decay to all shards.",
+    pruned: "Applied 0.95x utility decay to all shards.",
     shards_extracted: top_shards.length,
     sft_pairs_generated: sft_pairs.length,
     parametric_dataset_path: dataset_path,

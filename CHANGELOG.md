@@ -4,7 +4,7 @@ All notable changes to NouGenShards will be documented in this file.
 
 ## [1.0.0] - 2026-06-10
 ### Added
-- **Core**: Advanced Memory Substrate with SQLite, FTS5, and Bayesian reranking.
+- **Core**: Advanced Memory Substrate with SQLite, FTS5, and weighted relevance reranking.
 - **Federation**: Universal Connector Fabric for SQL and remote Cloud Nodes.
 - **Models**: Unified clients for OpenAI, Anthropic, Gemini, HF, OpenRouter, and local providers.
 - **Resilience**: OpenRouter production routing with fallback, caching, and response healing.

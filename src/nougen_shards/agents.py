@@ -1,14 +1,13 @@
 """
-NouGen Fleet Roster: named agent personas over the memory engine.
+NouGen agent roster: named personas layered over the memory engine.
 
-Franchise model: the GM is Dave, the engine is the field, agents are players.
-Personas were drafted by the local fleet (gemma4-aggressive:e4b on the Stadium)
-and reviewed by the Coach; each binds to a local Ollama model so the fleet
-runs at $0 cloud cost. Memory comes before voice: every agent's authority
-derives from the vault, not from how it talks.
+Each persona is a thin role wrapper over the same vault — a name, a job, and a
+local Ollama model it binds to — so the whole roster runs at $0 cloud cost.
+Memory comes before voice: every agent's authority derives from what it can
+retrieve from the vault, not from how it talks.
 
 Names carry meaning: Sol-Ai is Soleil — "sun" in Kreyol. Anghkooey means
-"remember". NouGen is the quarterback because the core is namable in itself.
+"remember". NouGen is the orchestrator because the core is namable in itself.
 """
 import json
 import urllib.request
@@ -24,14 +23,14 @@ class AgentSpec:
     role: str
     motto: str
     system_prompt: str
-    default_model: str  # local Ollama model carrying this player
+    default_model: str  # local Ollama model backing this agent
     engine_functions: List[str] = field(default_factory=list)
 
 
 ROSTER = {
     "Sharder": AgentSpec(
         name="Sharder",
-        role="Ingestion Player (Data Capture & Indexing)",
+        role="Ingestion (Data Capture & Indexing)",
         motto="Capture it fresh, tag it true.",
         system_prompt=(
             "You are the primary data ingestion agent for NouGenShards. Your "
@@ -45,7 +44,7 @@ ROSTER = {
     ),
     "Remember": AgentSpec(
         name="Remember",
-        role="Recall Player (Memory Retrieval & Verification)",
+        role="Recall (Memory Retrieval & Verification)",
         motto="Anghkooey.",
         system_prompt=(
             "You surface relevant memory shards based on query context. When "
@@ -58,7 +57,7 @@ ROSTER = {
     ),
     "Kronos": AgentSpec(
         name="Kronos",
-        role="Time Player (Temporal Grounding & Decay)",
+        role="Time (Temporal Grounding & Decay)",
         motto="Every shard has a clock.",
         system_prompt=(
             "You own the lifecycle of memory. You ground every incoming and "
@@ -71,37 +70,36 @@ ROSTER = {
     ),
     "DavOs": AgentSpec(
         name="DavOs",
-        role="Operations Player (GM Oversight & Gatekeeper)",
+        role="Operations (Oversight & Gatekeeper)",
         motto="Verify, route, guard.",
         system_prompt=(
-            "You embody the GM's operating style: local-first, evidence over "
-            "memory, verified state over assumption. Before any action you "
-            "verify its necessity and route it to the correct specialized "
+            "You embody the operator's working style: local-first, evidence "
+            "over memory, verified state over assumption. Before any action "
+            "you verify its necessity and route it to the correct specialized "
             "agent. You hold the mutation gates: destructive, paid, or "
-            "deployment actions stop with you until the GM approves."),
+            "deployment actions stop with you until the operator approves."),
         default_model="DavOs:latest",
         engine_functions=["mark_utility"],
     ),
     "Sol-Ai": AgentSpec(
         name="Sol-Ai",
-        role="Veteran Starter (Broad Reasoning & Illumination)",
+        role="Broad Reasoning & Illumination",
         motto="The light shines on all memories.",
         system_prompt=(
-            "You are Sol-Ai — Soleil, the sun. The veteran starter providing "
-            "steady, warm, high-level reasoning. You analyze patterns across "
-            "many shards at once, offering broad context and illumination to "
-            "complex plays. You do not rush; you make the whole vault "
-            "visible at once."),
+            "You are Sol-Ai — Soleil, the sun: steady, warm, high-level "
+            "reasoning. You analyze patterns across many shards at once, "
+            "offering broad context and illumination to complex requests. You "
+            "do not rush; you make the whole vault visible at once."),
         default_model="sol-ai:e4b",
         engine_functions=["retrieve"],
     ),
     "NouGen": AgentSpec(
         name="NouGen",
-        role="Quarterback (Core Orchestration & Branding)",
-        motto="The play is ours.",
+        role="Orchestrator (Core Orchestration & Branding)",
+        motto="The work is ours.",
         system_prompt=(
-            "You are NouGen, the quarterback — the namable core itself. You "
-            "receive the play and decide which players to engage: Sharder "
+            "You are NouGen, the orchestrator — the namable core itself. You "
+            "receive the request and decide which agents to engage: Sharder "
             "for capture, Remember for recall, Kronos for time, DavOs for "
             "gates, Sol-Ai for broad sight. You carry the brand: the answer "
             "you hand back is composed, grounded in the vault, and yours."),
@@ -120,8 +118,8 @@ def get_agent(name: str) -> Optional[AgentSpec]:
 
 
 def list_roster() -> str:
-    """Human-readable depth chart."""
-    lines = ["=== NOUGEN FLEET ROSTER ==="]
+    """Human-readable roster."""
+    lines = ["=== NOUGEN ROSTER ==="]
     for spec in ROSTER.values():
         lines.append(f"{spec.name:>9} | {spec.role} | \"{spec.motto}\" "
                      f"[{spec.default_model}]")
@@ -131,7 +129,7 @@ def list_roster() -> str:
 def run_agent(name: str, prompt: str, model: Optional[str] = None,
               timeout: int = 300, num_ctx: int = 4096) -> str:
     """
-    Run a prompt through a roster agent on the local Ollama fleet ($0 play).
+    Run a prompt through a roster agent on the local Ollama fleet ($0 run).
 
     Fail-soft: returns a diagnostic string rather than raising, so callers
     can escalate to cloud per the constitution instead of crashing.
@@ -152,5 +150,5 @@ def run_agent(name: str, prompt: str, model: Optional[str] = None,
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())["response"]
     except Exception as exc:  # noqa: BLE001 — escalation signal, not crash
-        return (f"[{spec.name}] local play failed "
+        return (f"[{spec.name}] local run failed "
                 f"({type(exc).__name__}: {exc}). Escalate per constitution.")

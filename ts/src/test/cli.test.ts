@@ -89,7 +89,7 @@ test("cmd_search prints ranked fabric results", async () => {
   assert.ok(out.includes("Final Score:"));
 });
 
-// 4) mark -> Bayesian prior adjusted message.
+// 4) mark -> usefulness prior adjusted message.
 test("cmd_mark updates a shard prior", async () => {
   await runCli(["add", "Markable target shard", "--tags", "mark"]);
   const id = shards.retrieve("Markable target shard")[0].id;

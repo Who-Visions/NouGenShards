@@ -275,7 +275,7 @@ def cmd_search(args):
         print(json.dumps(results))
         return
 
-    print(f"🔍 Found {len(results)} records across the fabric (Ranked by Bayesian Relevance):\n")
+    print(f"🔍 Found {len(results)} records across the fabric (Ranked by Relevance):\n")
     for res in results:
         header = f"[{res['id']}] Final Score: {res['final_score']:.2f} | " \
                  f"Prior: {res['utility_score']} | Source: {res['_db_index']}"
@@ -284,9 +284,9 @@ def cmd_search(args):
 
 
 def cmd_mark(args):
-    """Close the outcome loop (Bayesian Update)."""
+    """Close the outcome loop (usefulness update)."""
     if shards.mark_shard(args.id, worked=args.worked):
-        print(f"✅ Shard #{args.id} updated. Bayesian prior adjusted.")
+        print(f"✅ Shard #{args.id} updated. Usefulness prior adjusted.")
     else:
         print(f"Error finding shard #{args.id}.")
 
@@ -347,7 +347,7 @@ def cmd_stats(args):
     print(timeline)
     print(f"\n - New Shards Captured: {growth['new_shards']}")
     print(f" - Total Memory Size:   {growth['total_shards']} shards")
-    print(f" - Bayesian Utility \u0394: {'+' if utility >= 0 else ''}{utility:.2f}")
+    print(f" - Usefulness \u0394: {'+' if utility >= 0 else ''}{utility:.2f}")
 
     if growth['total_shards'] > 0:
         rate = (growth['new_shards'] / growth['total_shards']) * 100

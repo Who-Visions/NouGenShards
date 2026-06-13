@@ -66,7 +66,7 @@ mcp.registerTool(
   "recall_memory",
   {
     description: [
-      "Search for relevant history shards using the federated Bayesian retrieval engine.",
+      "Search for relevant history shards using the federated weighted-relevance retrieval engine.",
       "This searches local shards, external DBs, and remote cloud nodes.",
       "",
       "Args:",
@@ -91,7 +91,7 @@ mcp.registerTool(
   "mark_utility",
   {
     description: [
-      "Update the Bayesian utility score of a shard based on its performance outcome.",
+      "Update the usefulness score of a shard based on its performance outcome.",
       "",
       "Args:",
       "    shard_id: The ID of the shard to update.",
@@ -423,7 +423,7 @@ mcp.registerTool(
       timeline,
       `\n - New Shards Captured: ${growth.new_shards ?? 0}`,
       ` - Total Memory Size:   ${growth.total_shards ?? 0} shards`,
-      ` - Bayesian Utility Δ: ${utility >= 0 ? "+" : ""}${utility.toFixed(2)}`,
+      ` - Usefulness Δ: ${utility >= 0 ? "+" : ""}${utility.toFixed(2)}`,
     ];
 
     const total = growth.total_shards ?? 0;

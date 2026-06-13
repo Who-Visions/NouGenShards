@@ -50,7 +50,7 @@ def capture_experience(event_type: str, title: str, content: str, tags: Optional
 @mcp.tool()
 def recall_memory(query: str, limit: int = 3) -> str:
     """
-    Search for relevant history shards using the federated Bayesian retrieval engine.
+    Search for relevant history shards using the federated weighted-relevance retrieval engine.
     This searches local shards, external DBs, and remote cloud nodes.
     
     Args:
@@ -65,7 +65,7 @@ def recall_memory(query: str, limit: int = 3) -> str:
 @mcp.tool()
 def mark_utility(shard_id: int, worked: bool) -> str:
     """
-    Update the Bayesian utility score of a shard based on its performance outcome.
+    Update the usefulness score of a shard based on its performance outcome.
     
     Args:
         shard_id: The ID of the shard to update.
@@ -297,7 +297,7 @@ def get_memory_stats(period: str = "week") -> str:
         timeline,
         f"\n - New Shards Captured: {growth.get('new_shards', 0)}",
         f" - Total Memory Size:   {growth.get('total_shards', 0)} shards",
-        f" - Bayesian Utility \u0394: {'+' if utility >= 0 else ''}{utility:.2f}"
+        f" - Usefulness \u0394: {'+' if utility >= 0 else ''}{utility:.2f}"
     ]
     
     total = growth.get('total_shards', 0)
