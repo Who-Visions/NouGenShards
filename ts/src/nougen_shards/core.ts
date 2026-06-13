@@ -447,5 +447,8 @@ export function compile_recall_packet(shards: Shard[]): string {
     output.push(`When: ${format_shard_when(s.timestamp)}`);
     output.push(`Title: ${s.title}\n${s.content}\n`);
   }
+  // "Anghkooey" — "remember" (FROM). Spoken only when recall succeeds:
+  // the engine's acknowledgment that a past life was actually surfaced.
+  output.push("Anghkooey — NouGenShards remembers.");
   return output.join("\n");
 }
