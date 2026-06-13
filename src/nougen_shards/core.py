@@ -88,8 +88,20 @@ def get_connection(index: int):
     return conn
 
 
+_INITIALIZED_DBS = set()
+
+
 def init_db(index: int = 1):
-    """Initializes the substrate schema (Module 6: Copy Successful Topology)."""
+    """Initializes the substrate schema (Module 6: Copy Successful Topology).
+
+    Idempotent, but re-running CREATE TABLE / DROP+CREATE TRIGGER on every
+    capture dominates bulk-ingestion cost — so each (vault, index) pair is
+    initialized once per process. Keyed by vault dir because tests and tools
+    repoint NOUGEN_VAULT_DIR/GLOBAL_DIR mid-process.
+    """
+    key = (str(GLOBAL_DIR), index)
+    if key in _INITIALIZED_DBS:
+        return
     conn = get_connection(index)
     cursor = conn.cursor()
 
@@ -145,6 +157,53 @@ def init_db(index: int = 1):
 
     conn.commit()
     conn.close()
+    _INITIALIZED_DBS.add(key)
+
+
+def get_dedup_path():
+    """Path to the central dedup index (Module 12: Refactor Complexity)."""
+    GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
+    return GLOBAL_DIR / "dedup_index.db"
+
+
+def _get_dedup_connection():
+    """
+    Connection to the central file_hash -> db_index map that makes global
+    deduplication O(1): one indexed lookup instead of opening all 9 cluster
+    databases per capture. The per-DB UNIQUE(file_hash) constraint remains
+    the authority; this index is a router/cache in front of it.
+    """
+    conn = sqlite3.connect(str(get_dedup_path()), timeout=10.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hashes (
+            file_hash TEXT PRIMARY KEY,
+            db_index INTEGER NOT NULL
+        ) WITHOUT ROWID;
+    """)
+    return conn
+
+
+def _ensure_dedup_index(conn) -> None:
+    """
+    Lazy one-time backfill: an empty index alongside populated shard DBs
+    means we predate the index (or it was deleted) — rebuild it with one
+    scan so legacy hashes in overflow DBs keep deduplicating correctly.
+    """
+    if conn.execute("SELECT 1 FROM hashes LIMIT 1").fetchone():
+        return
+    for i in range(1, MAX_DB_COUNT + 1):
+        if not get_db_path(i).exists():
+            continue
+        src = get_connection(i)
+        try:
+            rows = src.execute("SELECT file_hash FROM shards").fetchall()
+            conn.executemany(
+                "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
+                [(r["file_hash"], i) for r in rows])
+        finally:
+            src.close()
+    conn.commit()
 
 
 def cosine_similarity(vec1: list, vec2: list) -> float:
@@ -164,45 +223,53 @@ def capture(event_type: str, title: str, content: str,
     """Saves a unit of experience (Module 5: Extract Invariants)."""
     fhash = hashlib.md5(content.encode("utf-8", errors="ignore")).hexdigest()
 
-    # Global Deduplication (The Invariant Check)
-    for i in range(1, MAX_DB_COUNT + 1):
-        if not get_db_path(i).exists():
-            continue
-        conn = get_connection(i)
+    # Global Deduplication (Module 12): one indexed lookup in the central
+    # hash index — O(1) — instead of scanning all 9 cluster databases.
+    # The index also covers legacy hashes living in overflow DBs (a shard's
+    # home shifts off its routing target when that DB was full at write time).
+    dconn = _get_dedup_connection()
+    try:
+        _ensure_dedup_index(dconn)
+        if dconn.execute("SELECT 1 FROM hashes WHERE file_hash = ?",
+                         (fhash,)).fetchone():
+            return False
+
+        target_idx = get_write_index(fhash)
+        init_db(target_idx)
+
+        emb_blob = sqlite3.Binary(json.dumps(embedding).encode()) if embedding else None
+        tags_str = json.dumps(tags or [])
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        conn = get_connection(target_idx)
         try:
-            row = conn.execute("SELECT id FROM shards WHERE file_hash = ?", (fhash,)).fetchone()
-            if row:
-                conn.close()
-                return False
-        except sqlite3.OperationalError:
-            pass
+            cursor = conn.execute("""
+                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (timestamp, event_type, title, content, tags_str, fhash, emb_blob))
+            conn.commit()
+
+            # Log CREATED event
+            from . import history # pylint: disable=import-outside-toplevel
+            history.log_event(cursor.lastrowid or 0, target_idx, "CREATED", new_score=1.0)
+        except sqlite3.IntegrityError:
+            # Target DB already holds the hash (index was stale) — repair the
+            # index so the next lookup short-circuits without touching shards.
+            dconn.execute(
+                "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
+                (fhash, target_idx))
+            dconn.commit()
+            return False
         finally:
             conn.close()
 
-    target_idx = get_write_index(fhash)
-    init_db(target_idx)
-
-    emb_blob = sqlite3.Binary(json.dumps(embedding).encode()) if embedding else None
-    tags_str = json.dumps(tags or [])
-    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-    conn = get_connection(target_idx)
-    try:
-        cursor = conn.execute("""
-            INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (timestamp, event_type, title, content, tags_str, fhash, emb_blob))
-        conn.commit()
-
-        # Log CREATED event
-        from . import history # pylint: disable=import-outside-toplevel
-        history.log_event(cursor.lastrowid or 0, target_idx, "CREATED", new_score=1.0)
-
+        dconn.execute(
+            "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
+            (fhash, target_idx))
+        dconn.commit()
         return True
-    except sqlite3.IntegrityError:
-        return False
     finally:
-        conn.close()
+        dconn.close()
 
 
 # Bayesian Ranking Config (Module 20)
