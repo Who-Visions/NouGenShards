@@ -92,6 +92,59 @@ export function get_connection(index: number): DatabaseSync {
   return createDatabase(p);
 }
 
+/** Path to the central dedup index (Module 12: Refactor Complexity). */
+export function get_dedup_path(): string {
+  mkdirSync(GLOBAL_DIR, { recursive: true });
+  return path.join(GLOBAL_DIR, "dedup_index.db");
+}
+
+/**
+ * Connection to the central file_hash -> db_index map that makes global
+ * deduplication O(1): one indexed lookup instead of opening all 9 cluster
+ * databases per capture. The per-DB UNIQUE(file_hash) constraint remains
+ * the authority; this index is a router/cache in front of it.
+ */
+function get_dedup_connection(): DatabaseSync {
+  const conn = createDatabase(get_dedup_path());
+  conn
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS hashes (
+            file_hash TEXT PRIMARY KEY,
+            db_index INTEGER NOT NULL
+        ) WITHOUT ROWID`,
+    )
+    .run();
+  return conn;
+}
+
+/**
+ * Lazy one-time backfill: an empty index alongside populated shard DBs
+ * means we predate the index (or it was deleted) — rebuild it with one
+ * scan so legacy hashes in overflow DBs keep deduplicating correctly.
+ */
+function ensure_dedup_index(conn: DatabaseSync): void {
+  if (conn.prepare("SELECT 1 FROM hashes LIMIT 1").get()) {
+    return;
+  }
+  for (let i = 1; i <= MAX_DB_COUNT; i++) {
+    if (!existsSync(get_db_path(i))) {
+      continue;
+    }
+    const src = get_connection(i);
+    try {
+      const rows = src.prepare("SELECT file_hash FROM shards").all() as { file_hash: string }[];
+      const ins = conn.prepare("INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)");
+      for (const r of rows) {
+        ins.run(r.file_hash, i);
+      }
+    } catch {
+      /* table may not exist yet */
+    } finally {
+      src.close();
+    }
+  }
+}
+
 /** Initializes the substrate schema (Module 6: Copy Successful Topology). */
 export function init_db(index: number = 1): void {
   const conn = get_connection(index);
@@ -182,48 +235,48 @@ export function capture(
 ): boolean {
   const fhash = createHash("md5").update(content, "utf-8").digest("hex");
 
-  // Global Deduplication (The Invariant Check)
-  for (let i = 1; i <= MAX_DB_COUNT; i++) {
-    if (!existsSync(get_db_path(i))) {
-      continue;
+  // Global Deduplication (Module 12): one indexed lookup in the central
+  // hash index — O(1) — instead of scanning all 9 cluster databases.
+  // The index also covers legacy hashes living in overflow DBs (a shard's
+  // home shifts off its routing target when that DB was full at write time).
+  const dconn = get_dedup_connection();
+  try {
+    ensure_dedup_index(dconn);
+    if (dconn.prepare("SELECT 1 FROM hashes WHERE file_hash = ?").get(fhash)) {
+      return false;
     }
-    const conn = get_connection(i);
+
+    const target_idx = get_write_index(fhash);
+    init_db(target_idx);
+
+    const emb_blob = embedding ? Buffer.from(JSON.stringify(embedding)) : null;
+    const tags_str = JSON.stringify(tags ?? []);
+    const timestamp = new Date().toISOString();
+
+    const conn = get_connection(target_idx);
     try {
-      const row = conn.prepare("SELECT id FROM shards WHERE file_hash = ?").get(fhash);
-      if (row) {
-        return false;
-      }
+      const result = conn
+        .prepare(`
+              INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+          `)
+        .run(timestamp, event_type, title, content, tags_str, fhash, emb_blob);
+
+      // Log CREATED event
+      history.log_event(Number(result.lastInsertRowid) || 0, target_idx, "CREATED", null, 1.0);
     } catch {
-      /* table may not exist yet; mirror OperationalError pass */
+      // Target DB already holds the hash (index was stale) — repair the
+      // index so the next lookup short-circuits without touching shards.
+      dconn.prepare("INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)").run(fhash, target_idx);
+      return false; // mirror sqlite3.IntegrityError
     } finally {
       conn.close();
     }
-  }
 
-  const target_idx = get_write_index(fhash);
-  init_db(target_idx);
-
-  const emb_blob = embedding ? Buffer.from(JSON.stringify(embedding)) : null;
-  const tags_str = JSON.stringify(tags ?? []);
-  const timestamp = new Date().toISOString();
-
-  const conn = get_connection(target_idx);
-  try {
-    const result = conn
-      .prepare(`
-            INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        `)
-      .run(timestamp, event_type, title, content, tags_str, fhash, emb_blob);
-
-    // Log CREATED event
-    history.log_event(Number(result.lastInsertRowid) || 0, target_idx, "CREATED", null, 1.0);
-
+    dconn.prepare("INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)").run(fhash, target_idx);
     return true;
-  } catch {
-    return false; // mirror sqlite3.IntegrityError
   } finally {
-    conn.close();
+    dconn.close();
   }
 }
 
