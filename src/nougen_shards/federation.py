@@ -5,13 +5,14 @@ from .connectors.cloud import query_cloud_shards
 from . import keymaker
 from typing import List, Optional
 
-def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None) -> list:
+def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None,
+                       domain_key: Optional[str] = None) -> list:
     """
     Module 8: Combine Compatible Systems.
     Polls local Shard substrate, external DBs, and remote cloud nodes.
     """
     # 1. Get Local Shards (weighted relevance blend)
-    local_results = core.retrieve(query, limit=limit, query_embedding=query_embedding)
+    local_results = core.retrieve(query, limit=limit, query_embedding=query_embedding, domain_key=domain_key)
 
     # 2. Get Configs from Keymaker
     external_configs = keymaker.list_external_dbs()

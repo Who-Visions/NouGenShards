@@ -32,7 +32,7 @@ class TestCLI(unittest.TestCase):
             cli.cmd_add(args)
             self.assertIn("✅ Shard captured!", fake_out.getvalue())
             mock_capture.assert_called_once_with(
-                "KNOWLEDGE", "Test content", "Test content", ["tag1", "tag2"], embedding=None
+                "KNOWLEDGE", "Test content", "Test content", ["tag1", "tag2"], embedding=None, domain_key=None
             )
 
     @patch('nougen_shards.cli.federation.federated_retrieve')

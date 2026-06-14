@@ -4,6 +4,7 @@ import os
 import tempfile
 import shutil
 import sys
+from nougen_shards.gatekeeper import check_mutation_gate
 
 def sandbox_enabled() -> bool:
     """Whether arbitrary code execution is opted-in via NOUGEN_ENABLE_SANDBOX."""
@@ -11,7 +12,7 @@ def sandbox_enabled() -> bool:
 
 
 def execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10,
-                      trusted: bool = False):
+                      trusted: bool = False, bypass_gatekeeper: bool = False):
     """
     Executes code in a sandboxed subprocess.
     Only stdout is returned; network is disabled if possible.
@@ -21,6 +22,11 @@ def execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10
     refused unless the operator opts in with NOUGEN_ENABLE_SANDBOX=1. Internal
     callers running their own generated code may pass trusted=True.
     """
+    if not bypass_gatekeeper:
+        res = check_mutation_gate(code)
+        if not res.get("allowed", True):
+            return f"Error: Sandboxed execution blocked by DavOs Gatekeeper (Gate: {res['gate']}). Reason: {res['reason']}"
+
     if not trusted and not sandbox_enabled():
         return ("Error: Sandboxed code execution is disabled by default for safety. "
                 "It allows arbitrary code to run on this machine. "
