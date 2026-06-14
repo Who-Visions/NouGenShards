@@ -27,4 +27,5 @@
    - *NouGenShards* = We have shards. We have memory.
 2. **The Subtext of Preservation**: When external platforms dictate what can be kept or displayed, the only defense is a substrate you control. NouGenShards is built on the quiet understanding that memory must be local, immutable, and decentralized.
 3. **The Voice**: We play the game under layers of subtlety and entendre. The documentation and interface operate with quiet strength—focusing on local control, resilience, and the power of owning your own context. We don't shout the stance; the architecture *is* the stance.
+4. **Primary Aesthetic**: The main brand color for NouGenShards is **Purple**.
 
