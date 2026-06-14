@@ -1,18 +1,37 @@
 """SQLAlchemy Connector for external databases."""
+import hashlib
+import json
+import logging
 import re
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
+
+logger = logging.getLogger(__name__)
+
 
 def is_valid_identifier(ident: str) -> bool:
     """Strict regex for safe SQL identifiers."""
     return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", ident))
 
+
+def _stable_hash(value) -> str:
+    """Deterministic content hash.
+
+    Python's built-in hash() is salted per process (PYTHONHASHSEED), so it
+    produced a different id/file_hash for the same external row on every
+    restart — breaking dedup and stable identity. SHA-256 is reproducible.
+    """
+    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+
 def query_external_dbs(query: str, db_configs: list, limit: int = 3) -> list:
     """Queries external databases and maps results to Shard format."""
     results = []
     keywords = [w for w in query.split() if w.isalnum()]
-    if not keywords: keywords = [query]
-    
+    if not keywords:
+        keywords = [query]
+
     for conf in db_configs:
         try:
             table = conf['table_name']
@@ -24,33 +43,42 @@ def query_external_dbs(query: str, db_configs: list, limit: int = 3) -> list:
                 continue
 
             # Module 10: Integrate Constraints (Timeout & Connection Pooling)
-            engine = create_engine(conf['uri'], pool_pre_ping=True, connect_args={"connect_timeout": 5})
+            engine = create_engine(conf['uri'], pool_pre_ping=True,
+                                   connect_args={"connect_timeout": 5})
             with engine.connect() as conn:
                 where_clauses = []
                 params = {}
                 for i, kw in enumerate(keywords):
-                    where_clauses.append(f"({title_col} LIKE :kw{i} OR {content_col} LIKE :kw{i})")
+                    where_clauses.append(
+                        f"({title_col} LIKE :kw{i} OR {content_col} LIKE :kw{i})")
                     params[f"kw{i}"] = f"%{kw}%"
-                
+
                 where_sql = " OR ".join(where_clauses)
-                sql_text = text(f"SELECT {title_col} AS title, {content_col} AS content FROM {table} WHERE {where_sql} LIMIT :limit")
+                sql_text = text(
+                    f"SELECT {title_col} AS title, {content_col} AS content "
+                    f"FROM {table} WHERE {where_sql} LIMIT :limit")
                 params['limit'] = limit
-                
+
                 res = conn.execute(sql_text, params)
                 for row in res:
                     item = dict(row._mapping)
                     results.append({
-                        "id": f"ext_{conf['id']}_{abs(hash(item['title']))}",
+                        "id": f"ext_{conf['id']}_{_stable_hash(item['title'])[:16]}",
                         "event_type": "EXTERNAL_DB",
                         "title": item['title'],
                         "content": item['content'],
-                        "tags": "[\"external\"]",
+                        "tags": json.dumps(["external"]),
                         "utility_score": 1.0,
                         "access_count": 0,
-                        "file_hash": str(hash(item['content'])),
+                        "file_hash": _stable_hash(item['content']),
                         "bm25_score": 0.0,
                         "final_score": 0.5,
                         "_db_index": f"ext_{conf['id']}"
                     })
-        except Exception: continue
+        except (SQLAlchemyError, KeyError, TypeError, ValueError) as exc:
+            # Resilient (one bad external DB must not kill the sweep) but no
+            # longer silent. Log by conf id, never the URI — it carries creds.
+            logger.warning("external DB skipped (conf %s): %s: %s",
+                           conf.get('id', '?'), type(exc).__name__, exc)
+            continue
     return results
