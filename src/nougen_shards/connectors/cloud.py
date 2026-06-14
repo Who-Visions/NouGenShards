@@ -1,18 +1,26 @@
 """Cloud Connector for remote NouGenShards instances."""
 import json
-import urllib.request
+import logging
 import urllib.error
+import urllib.request
+
+logger = logging.getLogger(__name__)
+
+# Network/parse failures that should degrade gracefully, not crash federation.
+_NET_ERRORS = (urllib.error.URLError, json.JSONDecodeError, KeyError,
+               ValueError, TimeoutError, OSError)
+
 
 def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
     """
     Queries remote NouGenShards nodes and maps results to standard format.
     """
     results = []
-    
+
     for conf in cloud_configs:
         url = conf['url'].rstrip('/')
         name = conf['name']
-        
+
         try:
             # POST /search
             payload = {"query": query, "limit": limit}
@@ -22,7 +30,7 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
                 method="POST"
             )
             req.add_header("Content-Type", "application/json")
-            
+
             with urllib.request.urlopen(req, timeout=5.0) as res:
                 remote_data = json.loads(res.read().decode())
                 if isinstance(remote_data, list):
@@ -40,12 +48,15 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
                             "final_score": r.get('final_score', 0.45),
                             "_db_index": f"cloud_{name}"
                         })
-        except Exception:
-            # Silent fail to prevent blocking the federation loop
-            # (Module 10: Graceful Degradation)
+        except _NET_ERRORS as exc:
+            # Resilient (one unreachable node must not kill federation) but no
+            # longer silent. (Module 10: Graceful Degradation)
+            logger.warning("cloud node skipped (%s): %s: %s",
+                           name, type(exc).__name__, exc)
             continue
-            
+
     return results
+
 
 def push_to_cloud(shards: list, cloud_url: str, token: str) -> dict:
     """Pushes a list of shards to a remote cloud node."""
@@ -59,11 +70,12 @@ def push_to_cloud(shards: list, cloud_url: str, token: str) -> dict:
         )
         req.add_header("Content-Type", "application/json")
         req.add_header("X-NGS-Token", token)
-        
+
         with urllib.request.urlopen(req, timeout=10.0) as res:
             return json.loads(res.read().decode())
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except _NET_ERRORS as exc:
+        return {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
+
 
 def pull_from_cloud(cloud_url: str, token: str) -> list:
     """Pulls all shards from a remote cloud node."""
@@ -71,8 +83,10 @@ def pull_from_cloud(cloud_url: str, token: str) -> list:
     try:
         req = urllib.request.Request(f"{url}/sync/pull", method="GET")
         req.add_header("X-NGS-Token", token)
-        
+
         with urllib.request.urlopen(req, timeout=10.0) as res:
             return json.loads(res.read().decode())
-    except Exception:
+    except _NET_ERRORS as exc:
+        # No longer silent — a failed pull is logged, then degrades to empty.
+        logger.warning("cloud pull failed: %s: %s", type(exc).__name__, exc)
         return []
