@@ -25,11 +25,14 @@ class RouterConfig:
     stream: bool = False
     extra_body: dict = field(default_factory=dict)
 
+from .hooks import pre_tool_use_hook
+
 def build_cache_friendly_messages(system_prompt: str, task_messages: List[dict]) -> List[dict]:
     """
     Module 19: Stabilize Reasoning.
     Constructs a message list optimized for prompt caching.
     Ensures stable prefix (System prompt) is at the front.
+    Applies Play 2: Pointer Compaction via Reversed Hooks.
     """
     messages = []
     # 1. Permanent System Instruction (The Anchor)
@@ -39,7 +42,8 @@ def build_cache_friendly_messages(system_prompt: str, task_messages: List[dict])
     # 2. Append Task-Specific Messages
     messages.extend(task_messages)
     
-    return messages
+    # 3. Apply Reversed Hooks for Pointer Compaction (Play 2)
+    return pre_tool_use_hook(messages)
 
 def make_session_id(project: str, agent: str, thread: Optional[str] = None) -> str:
     """
