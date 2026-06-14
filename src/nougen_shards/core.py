@@ -31,11 +31,6 @@ GLOBAL_DIR = Path(_vault_dir)
 
 def get_db_path(index: int) -> Path:
     """Returns the path for a specific database index (Module 11: Transform Architecture)."""
-    local_name = f"shards_{index}.db" if index > 1 else "shards.db"
-    local_path = Path(local_name)
-    if local_path.exists():
-        return local_path
-
     GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
     return GLOBAL_DIR / f"nougen_shards_{index}.db"
 
@@ -116,7 +111,8 @@ def init_db(index: int = 1):
             tags TEXT,
             utility_score REAL DEFAULT 1.0, -- usefulness prior: weight term in the relevance blend (Module 20)
             access_count INTEGER DEFAULT 0,
-            file_hash TEXT UNIQUE NOT NULL
+            file_hash TEXT UNIQUE NOT NULL,
+            domain_key TEXT DEFAULT 'global'
         );
     """)
 
@@ -125,6 +121,19 @@ def init_db(index: int = 1):
         cursor.execute("ALTER TABLE shards ADD COLUMN embedding BLOB;")
     except sqlite3.OperationalError:
         pass
+
+    # Add domain_key column if missing (Sub-Graph Context Isolation)
+    try:
+        cursor.execute("ALTER TABLE shards ADD COLUMN domain_key TEXT DEFAULT 'global';")
+    except sqlite3.OperationalError:
+        pass
+
+    # Create composite index for domain-bound retrieval
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_shards_domain_utility 
+        ON shards (domain_key, utility_score DESC);
+    """)
+
 
     # FTS5 with Trigram for fuzzy recall (Module 1: Metamers)
     try:
@@ -237,10 +246,44 @@ def cosine_similarity(vec1: list, vec2: list) -> float:
     return dot_product / (mag1 * mag2)
 
 
+def resolve_domain_from_path(target_path: Optional[str] = None) -> str:
+    """
+    Dynamically resolve the domain key by walking up the directory tree
+    to find a project indicator (.git, pyproject.toml, package.json, or .nougen_vault).
+    """
+    if not target_path:
+        target_path = os.getcwd()
+    
+    current = Path(target_path).resolve()
+    if current.is_file():
+        current = current.parent
+        
+    for parent in [current] + list(current.parents):
+        # Look for project indicators
+        indicators = [".git", ".nougen_vault", "pyproject.toml", "package.json"]
+        if any((parent / ind).exists() for ind in indicators):
+            parts = parent.parts
+            if len(parts) >= 2:
+                if parts[-2].lower() in ["watchtower", "nougen", "agents"]:
+                    return f"{parts[-2]}/{parts[-1]}"
+            return parts[-1]
+            
+    return "global"
+
+
 def capture(event_type: str, title: str, content: str,
-            tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None) -> bool:
+            tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
+            domain_key: Optional[str] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants)."""
-    fhash = hashlib.md5(content.encode("utf-8", errors="ignore")).hexdigest()
+    if not domain_key:
+        domain_key = resolve_domain_from_path()
+
+    # Clean the content for O(1) deduplication hashing to exclude injected recall packets or static context.
+    clean_content = content
+    if "=== NOUGENSHARDS RECALL PACKET" in content:
+        clean_content = content.split("=== NOUGENSHARDS RECALL PACKET")[0].strip()
+
+    fhash = hashlib.md5(clean_content.encode("utf-8", errors="ignore")).hexdigest()
 
     # Global Deduplication (Module 12): one indexed lookup in the central
     # hash index — O(1) — instead of scanning all 9 cluster databases.
@@ -263,9 +306,9 @@ def capture(event_type: str, title: str, content: str,
         conn = get_connection(target_idx)
         try:
             cursor = conn.execute("""
-                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (timestamp, event_type, title, content, tags_str, fhash, emb_blob))
+                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (timestamp, event_type, title, content, tags_str, fhash, emb_blob, domain_key))
             conn.commit()
 
             # Log CREATED event
@@ -312,10 +355,23 @@ def _process_fts_result(row, db_index, query_embedding):
     # Synthesize Coherent Likelihood (Module 9)
     likelihood = (norm_bm25 * WEIGHT_BM25) + (sem_score * WEIGHT_SEMANTIC)
 
-    # 3. Final relevance: a weighted blend of the likelihood signal and the
-    #    shard's usefulness prior. This is a linear combination of two scores,
-    #    not a true Bayesian posterior (no normalization over a likelihood model).
-    item["final_score"] = (likelihood * WEIGHT_LIKELIHOOD) + (item["utility_score"] * WEIGHT_PRIOR)
+    # 3. Temporal decay factor (half-life of 30 days) to prevent stale successful sessions from dominating results
+    decay = 1.0
+    ts_str = item.get("timestamp")
+    if ts_str:
+        try:
+            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+            decay = max(0.1, 0.5 ** (age_days / 30.0))
+        except Exception:
+            pass
+
+    decayed_utility = item["utility_score"] * decay
+
+    # 4. Final relevance: a weighted blend of the likelihood signal and the decayed utility score
+    item["final_score"] = (likelihood * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
     return item
 
 
@@ -334,68 +390,104 @@ def _build_fts_match_query(query: str) -> Optional[str]:
     tokens = [t for t in query.split() if len(t) >= 3]
     if not tokens:
         return None
+
+    # Strip common agent boilerplate and stop-words to prevent BM25 inflation
+    boilerplate = {
+        "write", "python", "script", "code", "file", "fix", "error", "run", "test",
+        "implement", "create", "add", "modify", "update", "delete", "change", "verify",
+        "using", "with", "from", "that", "this", "here", "there", "what", "where", "how",
+        "and", "the", "for", "you", "are", "not", "out", "but"
+    }
+    filtered_tokens = [t for t in tokens if t.lower() not in boilerplate]
+    if filtered_tokens:
+        tokens = filtered_tokens
+
     return " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
 
 
-def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None) -> list:
+def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None,
+             domain_key: Optional[str] = None) -> list:
     """
     Advanced Retrieval (Module 21): weighted blend of BM25 (Adjacency) and
     Semantic (Latent) signals with the shard's usefulness prior.
     """
-    all_results = []
+    if not domain_key:
+        domain_key = resolve_domain_from_path()
+        
     from . import history # pylint: disable=import-outside-toplevel
-    for i in range(1, MAX_DB_COUNT + 1):
-        if not get_db_path(i).exists():
-            continue
-        conn = get_connection(i)
-        try:
-            fts_worked = False
-            fts_query = _build_fts_match_query(query)
-            if fts_query is not None:
-                try:
-                    cursor = conn.execute("""
-                        SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
-                               s.embedding, s.tags, bm25(shards_fts) as bm25_score
-                        FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
-                        WHERE shards_fts MATCH ?
-                        ORDER BY bm25_score ASC LIMIT 20
-                    """, (fts_query,))
-                    res = cursor.fetchall()
-                    if res:
-                        for row in res:
-                            # Log ACCESSED event
-                            history.log_event(row["id"], i, "ACCESSED")
-                            all_results.append(_process_fts_result(row, i, query_embedding))
-                        fts_worked = True
-                except sqlite3.OperationalError:
-                    pass
 
-            if not fts_worked:
-                # Fallback to LIKE (Module 1: Resolving Metamers for small query strings)
-                # Audit visibility: Log fallback event.
-                from . import history # pylint: disable=import-outside-toplevel
-                history.log_event(0, i, "SEARCH_FALLBACK", metadata={"query": query})
-                
-                like_query = f"%{query}%"
-                cursor = conn.execute("""
-                    SELECT id, timestamp, title, content, utility_score, embedding, tags
-                    FROM shards
-                    WHERE title LIKE ? OR content LIKE ?
-                    ORDER BY utility_score DESC LIMIT 20
-                """, (like_query, like_query))
-                for row in cursor:
-                    item = dict(row)
-                    item["_db_index"] = i
-                    history.log_event(item["id"], i, "ACCESSED")
-                    sem_score = 0.0
-                    if query_embedding and item["embedding"]:
-                        sem_score = cosine_similarity(
-                            query_embedding, json.loads(item["embedding"].decode()))
-                    likelihood = sem_score if query_embedding else 0.5
-                    item["final_score"] = (likelihood * 0.5) + (item["utility_score"] * 0.5)
-                    all_results.append(item)
-        finally:
-            conn.close()
+    
+    def run_retrieval(active_domain: str) -> list:
+        results = []
+        for i in range(1, MAX_DB_COUNT + 1):
+            if not get_db_path(i).exists():
+                continue
+            conn = get_connection(i)
+            try:
+                fts_worked = False
+                fts_query = _build_fts_match_query(query)
+                if fts_query is not None:
+                    try:
+                        cursor = conn.execute("""
+                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                                   s.embedding, s.tags, s.domain_key, bm25(shards_fts) as bm25_score
+                            FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
+                            WHERE s.domain_key = ? AND shards_fts MATCH ?
+                            ORDER BY bm25_score ASC LIMIT 20
+                        """, (active_domain, fts_query))
+                        res = cursor.fetchall()
+                        if res:
+                            for row in res:
+                                history.log_event(row["id"], i, "ACCESSED")
+                                results.append(_process_fts_result(row, i, query_embedding))
+                            fts_worked = True
+                    except sqlite3.OperationalError:
+                        pass
+
+                if not fts_worked:
+                    history.log_event(0, i, "SEARCH_FALLBACK", metadata={"query": query})
+                    
+                    like_query = f"%{query}%"
+                    cursor = conn.execute("""
+                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
+                        FROM shards
+                        WHERE domain_key = ? AND (title LIKE ? OR content LIKE ?)
+                        ORDER BY utility_score DESC LIMIT 20
+                    """, (active_domain, like_query, like_query))
+                    for row in cursor:
+                        item = dict(row)
+                        item["_db_index"] = i
+                        history.log_event(item["id"], i, "ACCESSED")
+                        sem_score = 0.0
+                        if query_embedding and item["embedding"]:
+                            sem_score = cosine_similarity(
+                                query_embedding, json.loads(item["embedding"].decode()))
+                        likelihood = sem_score if query_embedding else 0.5
+
+                        decay = 1.0
+                        ts_str = item.get("timestamp")
+                        if ts_str:
+                            try:
+                                dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                                if dt.tzinfo is None:
+                                    dt = dt.replace(tzinfo=timezone.utc)
+                                age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+                                decay = max(0.1, 0.5 ** (age_days / 30.0))
+                            except Exception:
+                                pass
+
+                        decayed_utility = item["utility_score"] * decay
+                        item["final_score"] = (likelihood * 0.5) + (decayed_utility * 0.5)
+                        results.append(item)
+            finally:
+                conn.close()
+        return results
+
+    all_results = run_retrieval(domain_key)
+    
+    # Fallback to global if active_domain is not global and we found no matches
+    if not all_results and domain_key != "global":
+        all_results = run_retrieval("global")
 
     all_results.sort(key=lambda x: x["final_score"], reverse=True)
     return all_results[:limit]

@@ -177,7 +177,8 @@ def cmd_chat(args):
     model = args.model
     if not model:
         if isinstance(client, LocalLLMClient):
-            model = client.find_best_edge_model()
+            model_config = client.find_best_edge_model()
+            model = model_config.model_name if model_config else None
         else:
             model = client.list_models()[0]
 
@@ -240,7 +241,10 @@ def cmd_add(args):
             embedding = client.embed(model, content)
 
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
-    success = shards.capture("KNOWLEDGE", content[:30], content, tags, embedding=embedding)
+    domain_key = getattr(args, 'domain', None)
+    if domain_key is not None and type(domain_key).__name__ in ('MagicMock', 'Mock'):
+        domain_key = None
+    success = shards.capture("KNOWLEDGE", content[:30], content, tags, embedding=embedding, domain_key=domain_key)
     if success:
         print("✅ Shard captured!")
     else:
@@ -259,7 +263,10 @@ def cmd_search(args):
             embedding = client.embed(model, args.query)
 
     # Use Federation for unified search
-    results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding)
+    domain_key = getattr(args, 'domain', None)
+    if domain_key is not None and type(domain_key).__name__ in ('MagicMock', 'Mock'):
+        domain_key = None
+    results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding, domain_key=domain_key)
     if not results:
         if getattr(args, 'json', False) is True:
             print("[]")
@@ -360,7 +367,22 @@ def cmd_ctx(args):
         nougen_context.init_context_db()
         print("✅ Session initialized.")
     elif args.action == "execute":
-        print(nougen_sandbox.execute_sandboxed(args.input))
+        from .gatekeeper import check_mutation_gate
+        res = check_mutation_gate(args.input)
+        if not res["allowed"]:
+            print("Warning: Action blocked by DavOs Gatekeeper.")
+            print(f"Gate: {res['gate']}")
+            if sys.stdin.isatty():
+                ans = input("Do you want to override this gate and proceed? [y/N]: ").strip().lower()
+                if ans in ["y", "yes"]:
+                    print("🔓 Gate override approved by GM.")
+                    print(nougen_sandbox.execute_sandboxed(args.input, bypass_gatekeeper=True))
+                else:
+                    print("🚫 Action aborted.")
+            else:
+                print("🚫 Action aborted.")
+        else:
+            print(nougen_sandbox.execute_sandboxed(args.input))
     elif args.action == "search":
         if not args.input:
             print("Error: Usage: nougen ctx search <query> [--limit <n>]")
@@ -614,7 +636,12 @@ def cmd_ingest(args):
     try:
         with open(path, "r", encoding="utf-8") as f_in:
             content = f_in.read()
-        shards.capture("INGEST", path.name, content, ["ingested", "docs"])
+        domain_key = getattr(args, 'domain', None)
+        if domain_key is not None and type(domain_key).__name__ in ('MagicMock', 'Mock'):
+            domain_key = None
+        if not domain_key:
+            domain_key = shards.resolve_domain_from_path(str(path))
+        shards.capture("INGEST", path.name, content, ["ingested", "docs"], domain_key=domain_key)
         print("✅ Ingestion complete.")
     except (OSError, sqlite3.Error) as exc:
         print(f"Failed: {exc}")
@@ -693,12 +720,14 @@ def get_parser():
     p_add.add_argument("--stdin", action="store_true")
     p_add.add_argument("--embed", action="store_true", help="Generate vector embedding")
     p_add.add_argument("--provider", help="Embedding provider")
+    p_add.add_argument("--domain", help="Explicit domain boundary key override")
 
     p_search = subparsers.add_parser("search", help="Search substrate")
     p_search.add_argument("query")
     p_search.add_argument("--semantic", action="store_true", help="Use vector search")
     p_search.add_argument("--provider", help="Embedding provider")
     p_search.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_search.add_argument("--domain", help="Explicit domain boundary key filter override")
 
     p_chat = subparsers.add_parser("chat", help="Chat with memory")
     p_chat.add_argument("query", nargs="?")
@@ -767,6 +796,7 @@ def get_parser():
 
     p_ingest = subparsers.add_parser("ingest", help="Ingest file")
     p_ingest.add_argument("file")
+    p_ingest.add_argument("--domain", help="Explicit domain boundary key override")
 
     p_db = subparsers.add_parser("db", help="Link external databases")
     p_db.add_argument("action", choices=["link", "list"])

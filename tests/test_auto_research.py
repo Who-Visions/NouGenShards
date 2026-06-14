@@ -54,13 +54,13 @@ def test_get_best_model_not_alive(mock_ollama_alive):
 
 
 def test_get_best_model_success(mock_ollama_alive, mock_urlopen):
-    """Test get best model success."""
+    """Test get best model success preferring custom model."""
     mock_ollama_alive.return_value = True
 
     mock_response = MagicMock()
     mock_response.getcode.return_value = 200
     mock_response.read.return_value = json.dumps({
-        "models": [{"name": "model_1"}, {"name": "test_e2b_model"}]
+        "models": [{"name": "gemma4:latest"}, {"name": "my-custom-model"}]
     }).encode("utf-8")
 
     mock_context = MagicMock()
@@ -68,7 +68,7 @@ def test_get_best_model_success(mock_ollama_alive, mock_urlopen):
     mock_urlopen.return_value = mock_context
 
     model = auto_research.get_best_model()
-    assert model == "test_e2b_model"
+    assert model == "my-custom-model"
 
 
 def test_get_best_model_fallback(mock_ollama_alive, mock_urlopen):

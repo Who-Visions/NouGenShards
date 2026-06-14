@@ -13,6 +13,7 @@ import json
 import urllib.request
 from dataclasses import dataclass, field
 from typing import List, Optional
+from nougen_shards.gatekeeper import check_mutation_gate
 
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 
@@ -134,6 +135,10 @@ def run_agent(name: str, prompt: str, model: Optional[str] = None,
     Fail-soft: returns a diagnostic string rather than raising, so callers
     can escalate to cloud per the constitution instead of crashing.
     """
+    res = check_mutation_gate(prompt)
+    if not res.get("allowed", True):
+        return f"[gatekeeper] Blocked by DavOs Gatekeeper (Gate: {res['gate']}). Reason: {res['reason']}"
+
     spec = get_agent(name)
     if spec is None:
         return f"[roster] No agent named '{name}'. Roster: {', '.join(ROSTER)}."

@@ -35,16 +35,14 @@ def get_best_model() -> Optional[str]:
     if not check_ollama_alive():
         return None
     try:
+        from .models_client import find_best_model_from_list
         req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
         with urllib.request.urlopen(req, timeout=3) as r:
             if r.getcode() == 200:
                 data = json.loads(r.read().decode("utf-8"))
                 models = [m["name"] for m in data.get("models", [])]
-                for m in models:
-                    if any(x in m.lower() for x in ["e2b", "e4b", "2b", "4b"]):
-                        return m
-                if models:
-                    return models[0]
+                best = find_best_model_from_list(models)
+                return best.model_name if best else None
     except Exception:
         pass
     return None

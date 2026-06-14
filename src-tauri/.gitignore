@@ -2,3 +2,9 @@
 # will have compiled files and executables
 /target/
 /gen/schemas
+
+# PyInstaller sidecar build artifacts (build the engine via build-sidecar.ps1)
+/bin/build/
+/bin/dist/
+/bin/nougen_engine-*.exe
+/bin/nougen_engine-*

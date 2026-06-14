@@ -79,7 +79,9 @@ def test_ollama_find_best_edge_model(mock_urlopen):
     mock_urlopen.return_value.__enter__.return_value = mock_response
 
     client = OllamaClient()
-    assert client.find_best_edge_model() == "dav1d:e2b"
+    config = client.find_best_edge_model()
+    assert config is not None
+    assert config.model_name == "dav1d:e2b"
 
 def test_ollama_pull_model(mock_urlopen):
     """Test OllamaClient.pull_model."""
@@ -164,7 +166,9 @@ def test_lmstudio_find_best_edge_model(mock_urlopen):
     mock_urlopen.return_value.__enter__.return_value = mock_response
 
     client = LMStudioClient()
-    assert client.find_best_edge_model() == "path/to/model-2b-q4"
+    config = client.find_best_edge_model()
+    assert config is not None
+    assert config.model_name == "path/to/model-2b-q4"
 
 def test_ollama_list_models_empty(mock_urlopen):
     """Test OllamaClient.list_models with empty response."""
@@ -183,14 +187,16 @@ def test_ollama_find_best_edge_model_no_pref(mock_urlopen):
     mock_response.read.return_value = mock_data
     mock_urlopen.return_value.__enter__.return_value = mock_response
     client = OllamaClient()
-    assert client.find_best_edge_model() == "random"
+    config = client.find_best_edge_model()
+    assert config is not None
+    assert config.model_name == "random"
 
 def test_ollama_find_best_edge_model_none(mock_urlopen):
     """Test OllamaClient.find_best_edge_model when no models exist."""
     mock_urlopen.return_value.__enter__.return_value.read.return_value = b'{"models": []}'
     mock_urlopen.return_value.__enter__.return_value.getcode.return_value = 200
     client = OllamaClient()
-    assert client.find_best_edge_model() == ""
+    assert client.find_best_edge_model() is None
 
 def test_lm_studio_chat_error(mock_urlopen):
     """Test LMStudioClient.chat error."""
@@ -203,3 +209,55 @@ def test_lm_studio_list_models_error(mock_urlopen):
     mock_urlopen.side_effect = urllib.error.URLError("fail")
     client = LMStudioClient()
     assert client.list_models() == []
+
+def test_find_best_model_from_list():
+    """Test find_best_model_from_list with various scenarios."""
+    from nougen_shards.models_client import find_best_model_from_list
+
+    # Scenario 1: Known custom system model (Tier 1: low temp, tight context)
+    models = ["gemma4:latest", "dav1d:e2b", "random-model"]
+    config = find_best_model_from_list(models)
+    assert config is not None
+    assert config.model_name == "dav1d:e2b"
+    assert config.n_ctx == 2048
+    assert config.temperature == 0.2
+
+    # Scenario 2: User custom model (not starting with official prefixes) over official default
+    models = ["llama3:latest", "my-finetuned-gemma", "gemma4:latest"]
+    config = find_best_model_from_list(models)
+    assert config is not None
+    assert config.model_name == "my-finetuned-gemma"
+    assert config.n_ctx == 4096
+    assert config.temperature == 0.7
+
+    # Scenario 2b: User custom model with dynamic context tag
+    models = ["llama3:latest", "my-finetuned-gemma-8k", "gemma4:latest"]
+    config = find_best_model_from_list(models)
+    assert config is not None
+    assert config.model_name == "my-finetuned-gemma-8k"
+    assert config.n_ctx == 8192
+    assert config.temperature == 0.7
+
+    # Scenario 3: Path-based user custom model over default
+    models = ["gemma4:e4b", "C:\\models\\custom-brain-v1.gguf", "llama3"]
+    config = find_best_model_from_list(models)
+    assert config is not None
+    assert config.model_name == "C:\\models\\custom-brain-v1.gguf"
+    assert config.n_ctx == 4096
+
+    # Scenario 4: Official Gemma 4 default over other fallbacks
+    models = ["llama3", "gemma4:e4b", "gemma:latest"]
+    config = find_best_model_from_list(models)
+    assert config is not None
+    assert config.model_name == "gemma4:e4b"
+    assert config.n_ctx == 4096
+
+    # Scenario 5: Fallback to first if all official
+    models = ["llama3", "mistral"]
+    config = find_best_model_from_list(models)
+    assert config is not None
+    assert config.model_name == "llama3"
+    assert config.n_ctx == 4096
+
+    # Scenario 6: None if empty
+    assert find_best_model_from_list([]) is None

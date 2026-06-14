@@ -44,6 +44,30 @@ const DEMO_STATUS = {
   })),
 };
 
+// Client-side guard slightly longer than the Rust engine timeout (30s), so a
+// real engine error message wins the race; this only fires if the bridge itself
+// wedges. Guarantees the UI never sticks on a spinner.
+const CLIENT_TIMEOUT_MS = 35_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error('Engine did not respond (timed out). Is the substrate reachable?')),
+      ms
+    );
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
+
 async function callEngine(cmd: string, args: Record<string, unknown>): Promise<unknown> {
   if (!tauriInvoke) {
     await new Promise((r) => setTimeout(r, 250));
@@ -51,7 +75,7 @@ async function callEngine(cmd: string, args: Record<string, unknown>): Promise<u
     if (cmd === 'engine_status') return JSON.stringify(DEMO_STATUS);
     return JSON.stringify({ period: args.period ?? 'week', demo: true });
   }
-  return tauriInvoke(cmd, args);
+  return withTimeout(tauriInvoke(cmd, args), CLIENT_TIMEOUT_MS);
 }
 
 // ---------------------------------------------------------------------------
@@ -97,21 +121,23 @@ export default function App() {
     refreshStatus();
   }, [refreshStatus]);
 
+  const loadStats = useCallback(async () => {
+    setBusy(true);
+    try {
+      const raw = (await callEngine('memory_stats', { period })) as string;
+      setStats(JSON.parse(raw));
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [period]);
+
   useEffect(() => {
     if (tab !== 'stats') return;
-    (async () => {
-      setBusy(true);
-      try {
-        const raw = (await callEngine('memory_stats', { period })) as string;
-        setStats(JSON.parse(raw));
-        setError(null);
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        setBusy(false);
-      }
-    })();
-  }, [tab, period]);
+    loadStats();
+  }, [tab, loadStats]);
 
   const runSearch = useCallback(async () => {
     if (!query.trim()) return;
@@ -127,6 +153,13 @@ export default function App() {
       setBusy(false);
     }
   }, [query]);
+
+  const retry = useCallback(() => {
+    setError(null);
+    refreshStatus();
+    if (tab === 'search' && query.trim()) runSearch();
+    if (tab === 'stats') loadStats();
+  }, [tab, query, refreshStatus, runSearch, loadStats]);
 
   const totalShards = status?.total_shards ?? 0;
   const maxScore = useMemo(
@@ -161,7 +194,14 @@ export default function App() {
         ))}
       </nav>
 
-      {error && <div className="error-bar">{error}</div>}
+      {error && (
+        <div className="error-bar">
+          <span className="error-msg">{error}</span>
+          <button className="error-retry" onClick={retry} disabled={busy}>
+            Retry
+          </button>
+        </div>
+      )}
 
       {tab === 'search' && (
         <section className="panel">

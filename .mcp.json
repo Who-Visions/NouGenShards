@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "nougen-shards": {
+      "command": "%USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/.venv/Scripts/python.exe",
+      "args": ["-m", "nougen_shards.mcp"],
+      "env": {
+        "PYTHONPATH": "%USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/src",
+        "NOUGEN_VAULT_DIR": "%USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/.vault"
+      }
+    },
+    "ollama": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "ollama-mcp"],
+      "env": {
+        "OLLAMA_HOST": "http://127.0.0.1:11434"
+      }
+    },
+    "nougen-fleet-registry": {
+      "command": "python",
+      "args": ["%USERPROFILE%/Watchtower/local_search_mcp.py"]
+    },
+    "sequentialthinking": {
+      "type": "http",
+      "url": "https://remote.mcpservers.org/sequentialthinking/mcp"
+    },
+    "Ref": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-e", "REF_API_KEY", "mcp/ref-tools-mcp"],
+      "env": {
+        "REF_API_KEY": "${REF_API_KEY}"
+      }
+    }
+  }
+}

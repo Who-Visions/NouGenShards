@@ -144,3 +144,30 @@ def test_fts_triggers_sync_on_update_and_delete(setup_test_env):
         conn.close()
 
     assert shards.retrieve("wexwexwex") == []
+
+
+def test_domain_isolation_capture_and_retrieve(setup_test_env):
+    """Test that shards captured in different domains are isolated from retrieval."""
+    shards.capture("TEST", "Python Code", "Writing python logic for NouGen.", domain_key="Watchtower/NouGen")
+    shards.capture("TEST", "Flutter Code", "Writing dart code for Mobile.", domain_key="Mobile/Trader")
+
+    # Retrieve from Watchtower/NouGen domain
+    res_domain_a = shards.retrieve("code", domain_key="Watchtower/NouGen")
+    assert len(res_domain_a) == 1
+    assert res_domain_a[0]["title"] == "Python Code"
+
+    # Retrieve from Mobile/Trader domain
+    res_domain_b = shards.retrieve("code", domain_key="Mobile/Trader")
+    assert len(res_domain_b) == 1
+    assert res_domain_b[0]["title"] == "Flutter Code"
+
+
+def test_domain_global_fallback(setup_test_env):
+    """Test fallback to global domain if no domain-specific matches exist."""
+    shards.capture("TEST", "Global Document", "This content lives globally.", domain_key="global")
+
+    # Retrieve targeting an empty domain - should fall back to global
+    res = shards.retrieve("globally", domain_key="NonExistentDomain")
+    assert len(res) >= 1
+    assert res[0]["title"] == "Global Document"
+

@@ -410,7 +410,7 @@ def get_git_status() -> Dict:
 
 
 def create_handoff(
-    message: str = "", agent: Optional[str] = None, goal: Optional[str] = None
+    message: str = "", agent: Optional[str] = None, goal: Optional[str] = None, compact: bool = True
 ) -> Optional[Path]:
     console = _make_console()
     HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
@@ -447,13 +447,24 @@ def create_handoff(
     if not goal:
         goal = "No active goal recorded. Pass --goal to set one."
 
+    # Phase 2: Pointer Compaction (The Arbitrage Sharpener)
+    # If compact mode is enabled, we condense the task lists into a single summary block
+    # for the handoff metadata, saving context tokens for the next session.
+    compact_tasks = tasks
+    if compact:
+        total_count = len(tasks["completed"]) + len(tasks["in_progress"]) + len(tasks["pending"])
+        summary_note = f"Semantic Anchor: {len(tasks['completed'])}/{total_count} tasks completed."
+        if tasks["in_progress"]:
+            summary_note += f" ACTIVE: {', '.join(tasks['in_progress'][:3])}"
+        compact_tasks = {"summary": summary_note, "raw_count": total_count}
+
     handoff_data = {
         "handoff_id": f"{timestamp}_{branch}",
         "timestamp": datetime.now().isoformat(),
         "goal": goal,
         "message": message,
         "git": git_info,
-        "tasks": tasks,
+        "tasks": compact_tasks if compact else tasks,
         "session_id": brain_dir.name if brain_dir else "unknown",
         "agent": agent.lower(),
         "status": "open",

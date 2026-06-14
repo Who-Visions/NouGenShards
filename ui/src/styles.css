@@ -144,13 +144,36 @@ body {
 }
 
 .error-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   background: rgba(248, 113, 113, 0.12);
   border: 1px solid rgba(248, 113, 113, 0.4);
   color: var(--danger);
   border-radius: 8px;
   padding: 9px 12px;
   font-size: 13px;
+}
+
+.error-msg {
+  flex: 1;
   white-space: pre-wrap;
+}
+
+.error-retry {
+  flex: none;
+  background: rgba(248, 113, 113, 0.18);
+  border: 1px solid rgba(248, 113, 113, 0.5);
+  color: var(--danger);
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.error-retry:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Search */

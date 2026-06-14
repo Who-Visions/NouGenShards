@@ -6,10 +6,29 @@ import urllib.error
 import sys
 import os
 from typing import Optional, List, Dict
+from dataclasses import dataclass, asdict
 
 from . import keymaker
 from . import router
 from . import structured
+
+
+@dataclass
+class ModelBudgetConfig:
+    """Configuration budget for a model matching physical VRAM parameters."""
+    model_name: str
+    n_ctx: int = 4096
+    max_tokens: Optional[int] = None
+    temperature: float = 0.7
+
+    def to_kwargs(self) -> dict:
+        """Helper to unpack into Ollama or LMStudio options."""
+        return {
+            "model": self.model_name,
+            "num_ctx": self.n_ctx,
+            "temperature": self.temperature,
+            "num_predict": self.max_tokens
+        }
 
 
 class LLMClient(ABC):
@@ -35,7 +54,7 @@ class LLMClient(ABC):
 class LocalLLMClient(LLMClient, ABC):
     """Abstract base class for local LLM clients."""
     @abstractmethod
-    def find_best_edge_model(self) -> str:
+    def find_best_edge_model(self) -> Optional[ModelBudgetConfig]:
         """Heuristic for best local model."""
 
 
@@ -502,6 +521,89 @@ class WhoVisionsCloudClient(LLMClient):
         return []
 
 
+def find_best_model_from_list(models: List[str]) -> Optional[ModelBudgetConfig]:
+    """Helper to select the best available model, preferring custom models over defaults."""
+    if not models:
+        return None
+
+    # 1. First tier: Known custom system models (tight context, low temp)
+    custom_system_tags = ["dav1d:e2b", "rhea-noir:e2b", "sol-ai:e2b"]
+    for tag in custom_system_tags:
+        for model in models:
+            model_lower = model.lower()
+            if model_lower.startswith(tag) or f"/{tag}" in model_lower or f"\\{tag}" in model_lower:
+                return ModelBudgetConfig(
+                    model_name=model,
+                    n_ctx=2048,
+                    temperature=0.2
+                )
+                
+    # 2. Second tier: Any other user-created custom/finetuned models (not starting with official vendor prefixes)
+    official_prefixes = (
+        "gemma", "llama", "qwen", "mistral", "phi", "deepseek", "codellama", "mixtral"
+    )
+    for model in models:
+        base_name = os.path.basename(model.replace("\\", "/")).lower()
+        if not any(base_name.startswith(p) for p in official_prefixes):
+            # Dynamic context detection for user finetunes (capped at 8K for safety)
+            n_ctx = 4096
+            if "-8k" in base_name or "8k" in base_name:
+                n_ctx = 8192
+            elif "-16k" in base_name or "16k" in base_name:
+                n_ctx = 8192
+            elif "-2k" in base_name or "2k" in base_name:
+                n_ctx = 2048
+            return ModelBudgetConfig(
+                model_name=model,
+                n_ctx=n_ctx,
+                temperature=0.7
+            )
+            
+    # 3. Third tier: Official Gemma 4 QAT/edge/workstation defaults
+    gemma4_tags = [
+        "gemma4:e4b", "gemma4:e4b-it-qat",
+        "gemma4:12b", "gemma4:12b-it-qat",
+        "gemma4:e2b", "gemma4:e2b-it-qat",
+        "gemma4:latest"
+    ]
+    for tag in gemma4_tags:
+        for model in models:
+            model_lower = model.lower()
+            if model_lower.startswith(tag) or f"/{tag}" in model_lower or f"\\{tag}" in model_lower:
+                return ModelBudgetConfig(
+                    model_name=model,
+                    n_ctx=4096,
+                    temperature=0.7
+                )
+                
+    # 4. Fourth tier: Generic fallback to any Gemma family
+    for prefix in ["gemma4:", "gemma:"]:
+        for model in models:
+            model_lower = model.lower()
+            if model_lower.startswith(prefix) or prefix in model_lower:
+                return ModelBudgetConfig(
+                    model_name=model,
+                    n_ctx=4096,
+                    temperature=0.7
+                )
+                
+    # Default fallback to first available model
+    model = models[0]
+    base_name = os.path.basename(model.replace("\\", "/")).lower()
+    n_ctx = 4096
+    if "-8k" in base_name or "8k" in base_name:
+        n_ctx = 8192
+    elif "-16k" in base_name or "16k" in base_name:
+        n_ctx = 8192
+    elif "-2k" in base_name or "2k" in base_name:
+        n_ctx = 2048
+    return ModelBudgetConfig(
+        model_name=model,
+        n_ctx=n_ctx,
+        temperature=0.7
+    )
+
+
 class OllamaClient(LocalLLMClient):
     """Client for local Ollama instance."""
     def __init__(self, base_url: str = "http://127.0.0.1:11434"):
@@ -561,12 +663,7 @@ class OllamaClient(LocalLLMClient):
             return []
 
     def find_best_edge_model(self) -> str:
-        models = self.list_models()
-        for prefix in ["dav1d:e2b", "rhea-noir:e2b", "sol-ai:e2b"]:
-            for model in models:
-                if model.startswith(prefix):
-                    return model
-        return models[0] if models else ""
+        return find_best_model_from_list(self.list_models())
 
     def pull_model(self, model_name: str):
         """Ollama-specific: pull model."""
@@ -651,8 +748,7 @@ class LMStudioClient(LocalLLMClient):
         return []
 
     def find_best_edge_model(self) -> str:
-        models = self.list_models()
-        return models[0] if models else ""
+        return find_best_model_from_list(self.list_models())
 
 
 def get_best_available_client() -> LocalLLMClient:
