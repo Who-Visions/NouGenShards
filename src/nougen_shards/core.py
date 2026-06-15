@@ -130,6 +130,12 @@ def init_db(index: int = 1):
     except sqlite3.OperationalError:
         pass
 
+    # Add density_score column if missing
+    try:
+        cursor.execute("ALTER TABLE shards ADD COLUMN density_score REAL DEFAULT 1.0;")
+    except sqlite3.OperationalError:
+        pass
+
     # Create composite index for domain-bound retrieval
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_shards_domain_utility 
@@ -268,12 +274,89 @@ def resolve_domain_from_path(target_path: Optional[str] = None) -> str:
     return "global"
 
 
+def calculate_contrastive_perplexity(content: str) -> float:
+    """Estimates information density / contrastive perplexity using local Ollama or OpenRouter."""
+    if not content:
+        return 1.0
+    
+    # Heuristic compression-based fallback: ratio of gzip size to raw size
+    import zlib
+    try:
+        compressed_len = len(zlib.compress(content.encode('utf-8')))
+        raw_len = len(content.encode('utf-8'))
+        compression_ratio = compressed_len / max(1, raw_len)
+        fallback_score = float(min(1.0, max(0.1, compression_ratio * 1.5)))
+    except Exception:
+        fallback_score = 0.5
+
+    # Try local Ollama first
+    try:
+        from .models_client import get_best_available_client
+        client = get_best_available_client()
+        if client and client.is_alive():
+            models = client.list_models()
+            best_model = "gemma2:2b" if "gemma2:2b" in models else (models[0] if models else None)
+            if best_model:
+                prompt = (
+                    "Analyze the following text and estimate its information density / contrastive perplexity score "
+                    "between 0.0 (generic filler, boilerplate, highly redundant) and 1.0 (extremely dense, novel, high surprisal). "
+                    "Provide ONLY the float number in your response, nothing else.\n\n"
+                    f"Text: {content[:1000]}"
+                )
+                res_str = client.chat(best_model, [{"role": "user", "content": prompt}])
+                import re
+                match = re.search(r"\d+\.\d+", res_str)
+                if match:
+                    return float(match.group(0))
+    except Exception:
+        pass
+
+    # Try OpenRouter free model
+    try:
+        from openrouter_guard import call_openrouter
+        prompt = (
+            "Analyze the following text and estimate its information density / contrastive perplexity score "
+            "between 0.0 (generic filler, boilerplate, highly redundant) and 1.0 (extremely dense, novel, high surprisal). "
+            "Provide ONLY the float number in your response, nothing else.\n\n"
+            f"Text: {content[:1000]}"
+        )
+        res_str = call_openrouter(prompt=prompt, model="google/gemma-3-27b-it:free", temperature=0.1)
+        import re
+        match = re.search(r"\d+\.\d+", res_str)
+        if match:
+            return float(match.group(0))
+    except Exception:
+        pass
+
+    return fallback_score
+
+
+def lost_in_the_middle_reorder(shards: list) -> list:
+    """Place highest utility shards at the absolute beginning and end of the retrieval packet."""
+    if not shards:
+        return []
+    reordered = [None] * len(shards)
+    left = 0
+    right = len(shards) - 1
+    for i, shard in enumerate(shards):
+        if i % 2 == 0:
+            reordered[left] = shard
+            left += 1
+        else:
+            reordered[right] = shard
+            right -= 1
+    return reordered
+
+
 def capture(event_type: str, title: str, content: str,
             tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
-            domain_key: Optional[str] = None) -> bool:
+            domain_key: Optional[str] = None, density_score: Optional[float] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants)."""
     if not domain_key:
         domain_key = resolve_domain_from_path()
+
+    if density_score is None:
+        density_score = calculate_contrastive_perplexity(content)
 
     # Clean the content for O(1) deduplication hashing to exclude injected recall packets or static context.
     clean_content = content
@@ -310,9 +393,9 @@ def capture(event_type: str, title: str, content: str,
         conn = get_connection(target_idx)
         try:
             cursor = conn.execute("""
-                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (timestamp, event_type, title, content, tags_str, fhash, emb_blob, domain_key))
+                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (timestamp, event_type, title, content, tags_str, fhash, emb_blob, domain_key, density_score))
             conn.commit()
 
             # Log CREATED event
@@ -685,6 +768,11 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     """
     import concurrent.futures
 
+    # Ensure all existing shard databases are schema-upgraded to the current version before querying
+    for i in range(1, MAX_DB_COUNT + 1):
+        if get_db_path(i).exists():
+            init_db(i)
+
     if not domain_key:
         domain_key = resolve_domain_from_path()
         
@@ -718,9 +806,66 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
 
     # Stage 2: cross-encoder rerank the top RRF candidates (no-op unless enabled).
     if RERANK_ENABLED:
-        return rerank(query, all_results[:RERANK_CANDIDATES], limit)
+        all_results = rerank(query, all_results[:RERANK_CANDIDATES], len(all_results))
 
-    return all_results[:limit]
+    # Tripartite Utility Score & Eviction policy
+    # Formula: U = (w_r * relevance) * (e^(-lambda * delta_t)) * density_score + epsilon
+    import random
+    scored_results = []
+    
+    # Normalize relevance scores to a consistent [0.1, 1.0] scale to prevent scale mismatch
+    # between RRF rank-based scores (max 0.016) and cross-encoder scores (max 1.0).
+    raw_relevances = [item.get("rerank_score", item.get("final_score", 0.5)) for item in all_results]
+    max_rel = max(raw_relevances) if raw_relevances else 1.0
+    min_rel = min(raw_relevances) if raw_relevances else 0.0
+    rel_span = max_rel - min_rel
+
+    for item in all_results:
+        raw_rel = item.get("rerank_score", item.get("final_score", 0.5))
+        if rel_span > 0:
+            relevance = 0.1 + 0.9 * ((raw_rel - min_rel) / rel_span)
+        else:
+            relevance = 1.0 if raw_rel > 0 else 0.5
+            
+        decay = 1.0
+        ts_str = item.get("timestamp")
+        if ts_str:
+            try:
+                dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+                decay = max(0.1, 0.5 ** (age_days / 30.0))
+            except Exception:
+                pass
+        
+        density = item.get("density_score", 1.0)
+        epsilon = random.uniform(0.0, 0.02)
+        
+        u_shard = (1.0 * relevance) * decay * density + epsilon
+        item["utility_score_tripartite"] = u_shard
+        scored_results.append(item)
+    
+    # Sort candidates by the tripartite score
+    scored_results.sort(key=lambda x: x["utility_score_tripartite"], reverse=True)
+    
+    # Dynamic Thresholding / Drop bottom 50% if we have many candidates
+    if scored_results:
+        if len(scored_results) > limit:
+            cutoff = len(scored_results) // 2
+            surviving = scored_results[:max(limit, cutoff)]
+        else:
+            surviving = scored_results
+        # Filter anything below dynamic threshold (e.g. 0.05)
+        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.05]
+        if not surviving and scored_results:
+            surviving = [scored_results[0]]
+    else:
+        surviving = []
+        
+    # Lost in the Middle Mitigation (interleave)
+    reordered = lost_in_the_middle_reorder(surviving[:limit])
+    return reordered
 
 
 def get_shard_by_id(shard_id: int, db_index: int):
