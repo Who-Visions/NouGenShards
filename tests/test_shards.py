@@ -262,3 +262,35 @@ def test_retrieve_parallel_rrf_boost(setup_test_env):
     assert results[0]["title"] == "Pineapple"
 
 
+
+
+def test_bm25_stronger_match_scores_higher(setup_test_env):
+    """Regression: FTS5 bm25() is negative with more-negative == stronger match.
+
+    The relevance blend must be monotonically decreasing in the raw bm25 value, so
+    a stronger keyword hit outranks a weaker one. A prior abs()-based normalization
+    folded both onto the same magnitude and inverted the ranking.
+    """
+    base = {"id": 1, "_db_index": 1, "title": "t", "content": "c",
+            "embedding": None, "timestamp": None, "utility_score": 1.0}
+    strong = shards._process_fts_result({**base, "bm25_score": -8.0}, 1, None)
+    weak = shards._process_fts_result({**base, "bm25_score": -0.5}, 1, None)
+    assert strong["final_score"] > weak["final_score"]
+
+
+def test_mark_shard_targets_specific_db(setup_test_env):
+    """Regression: shard ids are per-DB, so mark_shard must honor db_index.
+
+    Marking with the wrong/non-existent db index must not silently update a
+    same-id shard in another DB; the correct db index updates the real shard.
+    """
+    shards.capture("TEST", "Outcome", "targeted feedback scenario")
+    res = shards.retrieve("targeted")[0]
+    sid, db = res["id"], res["_db_index"]
+    before = res["utility_score"]
+
+    wrong_db = next(i for i in range(1, shards.MAX_DB_COUNT + 1) if i not in (1, db))
+    assert shards.mark_shard(sid, worked=True, db_index=wrong_db) is False
+
+    assert shards.mark_shard(sid, worked=True, db_index=db) is True
+    assert shards.retrieve("targeted")[0]["utility_score"] > before

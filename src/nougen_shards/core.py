@@ -349,7 +349,14 @@ def _process_fts_result(row, db_index, query_embedding):
     item = dict(row)
     item["_db_index"] = db_index
     # 1. Likelihood Part A: BM25 (The Adjacency Score)
-    norm_bm25 = 1.0 / (1.0 + abs(item["bm25_score"]))
+    # FTS5 bm25() returns negative values where *more negative == stronger match*
+    # (the query orders bm25_score ASC for exactly this reason). Taking abs() folds
+    # strong and weak matches onto the same magnitude and inverts the signal — a
+    # strong hit (-8 -> 0.11) scored *below* a weak one (-0.5 -> 0.67). Map it
+    # through a logistic instead: monotonically decreasing in bm25 and bounded in
+    # (0, 1), so stronger matches contribute more. Exponent clamped against the
+    # rare positive score to avoid math.exp overflow.
+    norm_bm25 = 1.0 / (1.0 + math.exp(max(-60.0, min(60.0, item["bm25_score"]))))
 
     # 2. Likelihood Part B: Semantic (The Latent Score)
     sem_score = 0.0
@@ -673,9 +680,16 @@ def get_shard_by_id(shard_id: int, db_index: int):
     finally:
         conn.close()
 
-def mark_shard(shard_id: int, worked: bool):
-    """Updates the usefulness prior (utility_score) from outcome evidence (helpful / not)."""
-    for i in range(1, MAX_DB_COUNT + 1):
+def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
+    """Updates the usefulness prior (utility_score) from outcome evidence (helpful / not).
+
+    Shard ids are per-DB AUTOINCREMENT, so the same id exists in several of the
+    9 cluster DBs. Pass db_index (a recall result's _db_index) to target the exact
+    shard; without it we fall back to the first id match across the grid, which is
+    ambiguous once ids collide and can update the wrong shard.
+    """
+    indices = [db_index] if db_index else range(1, MAX_DB_COUNT + 1)
+    for i in indices:
         if not get_db_path(i).exists():
             continue
         conn = get_connection(i)
@@ -749,7 +763,11 @@ def compile_recall_packet(shards: list) -> str:
         return "<!-- NO RELEVANT MEMORY RECALLED -->"
     output = ["=== NOUGENSHARDS RECALL PACKET [BAYESIAN SYNTHESIS] ==="]
     for s in shards:
-        output.append(f"--- RECORD #{s['id']} [Score: {s['final_score']:.2f}] ---")
+        # Surface the source DB so callers can target this exact shard in the
+        # 9-DB grid (mark_utility / link_shards / recall_related take db_index).
+        db_idx = s.get("_db_index")
+        db_tag = f" (db {db_idx})" if db_idx is not None else ""
+        output.append(f"--- RECORD #{s['id']}{db_tag} [Score: {s['final_score']:.2f}] ---")
         output.append(f"When: {format_shard_when(s.get('timestamp'))}")
         output.append(f"Title: {s['title']}\n{s['content']}\n")
     # "Anghkooey" — "remember" (FROM). Spoken only when recall succeeds:
