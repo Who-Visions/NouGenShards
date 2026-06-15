@@ -84,7 +84,7 @@ graph TD
 - **AI Memory Recon**: Run `nougen brain scan` to discover and import your fragmented AI history across 15+ known tool formats.
 - **Cortex HUD**: See your memory grow — a 3x3 substrate map, high-velocity timelines, and a point-and-click shard browser. Ships as a native desktop app (Tauri) and web view.
 - **Privacy First**: Your core memory stays on your machine in local SQLite databases. Secrets are redacted on import, and the credential vault encrypts values at rest. Cloud platforms forget, but local memory belongs to you.
-- **Adaptive Relevance Ranking**: The tool learns what is useful. Marking a shard as helpful raises its usefulness weight, so it ranks higher in a weighted blend of keyword (BM25), semantic, and usefulness scores. (A linear blend, not a true Bayesian posterior.)
+- **Relevance ranking that learns**: Mark a shard as helpful and it ranks higher next time. Results are scored by a weighted blend of keyword match (BM25), semantic similarity, and your usefulness votes.
 
 <p align="center">
   <picture>
@@ -94,10 +94,10 @@ graph TD
   </picture>
 </p>
 
-- **Federated Intelligence**: Search across your local shards, your production SQL databases, and remote cloud nodes — results merged and re-ranked into one set. (Sources are queried in sequence today; concurrency is on the roadmap.)
-- **Parametric Dreams** *(experimental)*: The engine consolidates knowledge via time-based utility decay and exports distilled SFT datasets (TMEM) for fast-weight LoRA updates. Dataset export is real; the weight-update step is simulated scaffolding today.
-- **Production Ready**: Built-in OpenRouter routing with automatic fallback and response healing.
-- **[Deep Architecture → Valerion Engine](docs/architecture.md)**: The full 21-step Metameric Memory Engine blueprint.
+- **One search across sources**: Search your local memory and any cloud nodes you connect. Results are merged into one ranked list.
+- **Memory consolidation** *(experimental)*: The engine ages out stale memory over time so the most useful context stays on top.
+- **Bring your own provider**: Route requests through OpenRouter with automatic fallback if a model is unavailable.
+- **[How it works](docs/architecture.md)**: How the memory engine maps onto the code.
 
 ---
 
@@ -168,7 +168,7 @@ nougen search "N+1 query" --semantic
 
 ### Close the Loop
 ```bash
-# Tell the tool Shard #5 was helpful to update its Bayesian utility score
+# Tell the tool Shard #5 was helpful so it ranks higher next time
 nougen mark 5 --worked
 ```
 
@@ -214,19 +214,15 @@ See [Cloud Modes](./docs/cloud-modes.md) and [Licensing](./docs/licensing.md) fo
 
 ---
 
-## 🧩 Extension Boundaries
+## 🧩 What's in this repo
 
-To protect Who Visions' intellectual property, this repository contains the **Public Client**. High-value intelligence features are maintained in private modules:
-
-- **Public Client**: CLI, local memory, BYOK adapters, AI Memory Recon, and plugin interfaces.
-- **Private Brain**: Proprietary ranking formulas, agent orchestration recipes, and cost optimizers.
-- **Paid API**: Hosted model gateway and global synchronization.
+This repository is the public client: the CLI, the local memory engine, bring-your-own-key adapters, AI Memory Recon, and the plugin interfaces. Some hosted and advanced features are not part of this repository.
 
 ---
 
 ## 🥇 Standards
 
-- ✅ 100% Pass Rate on 121+ unit tests.
+- ✅ 100% pass rate on 190+ unit tests.
 - 💻 Hardened for Windows, macOS, and Linux.
 
 ## 📜 Notice
