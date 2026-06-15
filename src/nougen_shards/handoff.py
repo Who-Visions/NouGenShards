@@ -1004,27 +1004,31 @@ def show_latest_handoff(agent: Optional[str] = None):
 
         # Checklist
         checklist = ""
-        total = (
-            len(tasks["completed"])
-            + len(tasks["in_progress"])
-            + len(tasks["pending"])
-        )
-        if total > 0:
-            checklist += f"[bold yellow]Completion Rate:[/bold yellow] {len(tasks['completed'])}/{total} ({len(tasks['completed'])/total*100:.1f}%)\n\n"
-        if tasks["in_progress"]:
-            checklist += "[bold orange3]⏳ In Progress:[/bold orange3]\n"
-            for t in tasks["in_progress"]:
-                checklist += f"  - {t}\n"
-        if tasks["pending"]:
-            checklist += "\n[bold red]⏹️ Pending:[/bold red]\n"
-            for t in tasks["pending"]:
-                checklist += f"  - {t}\n"
-        if tasks["completed"]:
-            checklist += "\n[bold green]✅ Completed:[/bold green]\n"
-            for t in tasks["completed"][:5]:  # Show top 5 to avoid spam
-                checklist += f"  - {t}\n"
-            if len(tasks["completed"]) > 5:
-                checklist += f"  ... and {len(tasks['completed']) - 5} more.\n"
+        if "summary" in tasks:
+            checklist += f"[bold yellow]Task Summary:[/bold yellow] {tasks['summary']}\n"
+            if "raw_count" in tasks:
+                checklist += f"[bold cyan]Total Tasks:[/bold cyan] {tasks['raw_count']}\n"
+        else:
+            completed = tasks.get("completed", [])
+            in_progress = tasks.get("in_progress", [])
+            pending = tasks.get("pending", [])
+            total = len(completed) + len(in_progress) + len(pending)
+            if total > 0:
+                checklist += f"[bold yellow]Completion Rate:[/bold yellow] {len(completed)}/{total} ({len(completed)/total*100:.1f}%)\n\n"
+            if in_progress:
+                checklist += "[bold orange3]⏳ In Progress:[/bold orange3]\n"
+                for t in in_progress:
+                    checklist += f"  - {t}\n"
+            if pending:
+                checklist += "\n[bold red]⏹️ Pending:[/bold red]\n"
+                for t in pending:
+                    checklist += f"  - {t}\n"
+            if completed:
+                checklist += "\n[bold green]✅ Completed:[/bold green]\n"
+                for t in completed[:5]:  # Show top 5 to avoid spam
+                    checklist += f"  - {t}\n"
+                if len(completed) > 5:
+                    checklist += f"  ... and {len(completed) - 5} more.\n"
         console.print(
             Panel(
                 checklist or "No tasks defined.",
