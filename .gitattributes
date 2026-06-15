@@ -1,0 +1,23 @@
+# GitHub Linguist — make the repo index as what it is: a Python client.
+# (These flags only affect language stats / diff collapsing, NOT code search.)
+
+# Documentation shouldn't count as code in the language bar.
+docs/**            linguist-documentation
+*.md               linguist-documentation
+
+# Generated / lock files — exclude from language stats.
+package-lock.json  linguist-generated
+pnpm-lock.yaml     linguist-generated
+*.lock             linguist-generated
+src-tauri/gen/**   linguist-generated
+
+# The TypeScript port and the Tauri (Rust) desktop shell are secondary to the
+# canonical Python client — mark vendored so the language bar reflects the product.
+ts/**              linguist-vendored
+src-tauri/**       linguist-vendored
+
+# Normalize line endings so cross-platform diffs/blame index cleanly.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
