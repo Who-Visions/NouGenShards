@@ -262,3 +262,68 @@ def test_retrieve_parallel_rrf_boost(setup_test_env):
     assert results[0]["title"] == "Pineapple"
 
 
+
+
+def test_bm25_stronger_match_scores_higher(setup_test_env):
+    """Regression: FTS5 bm25() is negative with more-negative == stronger match.
+
+    The relevance blend must be monotonically decreasing in the raw bm25 value, so
+    a stronger keyword hit outranks a weaker one. A prior abs()-based normalization
+    folded both onto the same magnitude and inverted the ranking.
+    """
+    base = {"id": 1, "_db_index": 1, "title": "t", "content": "c",
+            "embedding": None, "timestamp": None, "utility_score": 1.0}
+    strong = shards._process_fts_result({**base, "bm25_score": -8.0}, 1, None)
+    weak = shards._process_fts_result({**base, "bm25_score": -0.5}, 1, None)
+    assert strong["final_score"] > weak["final_score"]
+
+
+def test_mark_shard_targets_specific_db(setup_test_env):
+    """Regression: shard ids are per-DB, so mark_shard must honor db_index.
+
+    Marking with the wrong/non-existent db index must not silently update a
+    same-id shard in another DB; the correct db index updates the real shard.
+    """
+    shards.capture("TEST", "Outcome", "targeted feedback scenario")
+    res = shards.retrieve("targeted")[0]
+    sid, db = res["id"], res["_db_index"]
+    before = res["utility_score"]
+
+    wrong_db = next(i for i in range(1, shards.MAX_DB_COUNT + 1) if i not in (1, db))
+    assert shards.mark_shard(sid, worked=True, db_index=wrong_db) is False
+
+    assert shards.mark_shard(sid, worked=True, db_index=db) is True
+    assert shards.retrieve("targeted")[0]["utility_score"] > before
+
+
+def test_rerank_reorders_by_cross_encoder(setup_test_env, monkeypatch):
+    """Stage-2 reranker must reorder candidates by the cross-encoder score."""
+    class FakeReranker:
+        def compute_score(self, pairs, normalize=True):
+            return [float(len(p[1])) for p in pairs]  # longer passage scores higher
+    monkeypatch.setattr(shards, "_get_reranker", lambda: FakeReranker())
+    items = [
+        {"id": 1, "title": "a", "content": "short"},
+        {"id": 2, "title": "b", "content": "a considerably longer passage body here"},
+    ]
+    out = shards.rerank("q", items, top_k=2)
+    assert out[0]["id"] == 2
+    assert out[0]["rerank_score"] >= out[1]["rerank_score"]
+
+
+def test_rerank_falls_back_without_model(setup_test_env, monkeypatch):
+    """No model/lib available -> degrade gracefully to the input (RRF) order."""
+    monkeypatch.setattr(shards, "_get_reranker", lambda: False)
+    items = [{"id": 1, "title": "a", "content": "x"}, {"id": 2, "title": "b", "content": "y"}]
+    out = shards.rerank("q", items, top_k=5)
+    assert [i["id"] for i in out] == [1, 2]
+
+
+def test_retrieve_invokes_reranker_when_enabled(setup_test_env, monkeypatch):
+    """retrieve() routes through the reranker only when NOUGEN_RERANK is on."""
+    shards.capture("TEST", "Rerank Probe", "alpha bravo charlie content")
+    called = {}
+    monkeypatch.setattr(shards, "RERANK_ENABLED", True)
+    monkeypatch.setattr(shards, "rerank", lambda q, items, k: (called.setdefault("hit", True), items[:k])[1])
+    shards.retrieve("alpha")
+    assert called.get("hit") is True

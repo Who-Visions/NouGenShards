@@ -200,7 +200,7 @@ def ingest_service_account(json_data: str):
             if user:
                 subprocess.run(
                     ["icacls", str(target_path), "/inheritance:r", "/grant:r", f"{user}:F"],
-                    capture_output=True, check=False)
+                    capture_output=True, check=False, timeout=10)
 
         # Store metadata in DB
         ingest_secret(f"GCP_SA_{project_id.upper()}", client_email)
