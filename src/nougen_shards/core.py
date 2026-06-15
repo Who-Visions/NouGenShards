@@ -344,12 +344,28 @@ WEIGHT_SEMANTIC = 0.6
 WEIGHT_LIKELIHOOD = 0.7
 WEIGHT_PRIOR = 0.3
 
+# Stage-2 cross-encoder reranker (Tier-1 elevation). 2026 SOTA: a hybrid->rerank
+# two-stage pipeline lifts Recall@5 ~+17% / MRR ~+40% over RRF alone. Off by
+# default and lazy-loaded, so this is a no-op (zero new deps) until activated:
+#   NOUGEN_RERANK=1   pip install FlagEmbedding   (bge-reranker-v2-m3 ~2.27GB)
+RERANK_ENABLED = os.environ.get("NOUGEN_RERANK", "0") == "1"
+RERANK_MODEL = os.environ.get("NOUGEN_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+RERANK_CANDIDATES = int(os.environ.get("NOUGEN_RERANK_CANDIDATES", "60"))
+_RERANKER = None  # process-cached reranker handle
+
 def _process_fts_result(row, db_index, query_embedding):
     """Helper to score a single FTS result via the weighted relevance blend."""
     item = dict(row)
     item["_db_index"] = db_index
     # 1. Likelihood Part A: BM25 (The Adjacency Score)
-    norm_bm25 = 1.0 / (1.0 + abs(item["bm25_score"]))
+    # FTS5 bm25() returns negative values where *more negative == stronger match*
+    # (the query orders bm25_score ASC for exactly this reason). Taking abs() folds
+    # strong and weak matches onto the same magnitude and inverts the signal — a
+    # strong hit (-8 -> 0.11) scored *below* a weak one (-0.5 -> 0.67). Map it
+    # through a logistic instead: monotonically decreasing in bm25 and bounded in
+    # (0, 1), so stronger matches contribute more. Exponent clamped against the
+    # rare positive score to avoid math.exp overflow.
+    norm_bm25 = 1.0 / (1.0 + math.exp(max(-60.0, min(60.0, item["bm25_score"]))))
 
     # 2. Likelihood Part B: Semantic (The Latent Score)
     sem_score = 0.0
@@ -363,7 +379,7 @@ def _process_fts_result(row, db_index, query_embedding):
             try:
                 emb_array = np.array(json.loads(item["embedding"].decode()), dtype=np.float32)
                 sem_score = float(np.dot(query_embedding, emb_array))
-            except:
+            except Exception:
                 sem_score = 0.0
 
     # Synthesize Coherent Likelihood (Module 9)
@@ -475,7 +491,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                             try:
                                 emb_array = np.array(json.loads(item["embedding"].decode()), dtype=np.float32)
                                 sem_score = float(np.dot(query_embedding, emb_array))
-                            except:
+                            except Exception:
                                 sem_score = 0.0
                     likelihood = sem_score if query_embedding is not None else 0.5
 
@@ -533,7 +549,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                     try:
                         emb_array = np.array(json.loads(item["embedding"].decode()), dtype=np.float32)
                         sem_score = float(np.dot(query_embedding, emb_array))
-                    except:
+                    except Exception:
                         sem_score = 0.0
 
                 decay = 1.0
@@ -621,11 +637,51 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
     return merged
 
 
+def _get_reranker():
+    """Lazy-load and cache the cross-encoder reranker. Returns None if unavailable
+    so callers degrade gracefully to the RRF ordering (no hard dependency)."""
+    global _RERANKER
+    if _RERANKER is not None:
+        return _RERANKER
+    try:
+        from FlagEmbedding import FlagReranker  # pylint: disable=import-outside-toplevel
+        _RERANKER = FlagReranker(RERANK_MODEL, use_fp16=True)
+    except Exception:  # missing lib/model/VRAM — stay on RRF
+        _RERANKER = False
+    return _RERANKER
+
+
+def rerank(query: str, items: List[dict], top_k: int) -> List[dict]:
+    """Stage-2 cross-encoder reranking of RRF candidates.
+
+    Scores each (query, title+content) pair with all-to-all attention and returns
+    the top_k by that score. Any failure (no model, OOM) falls back to the input
+    order, so retrieval never breaks because the reranker is unavailable.
+    """
+    if not items:
+        return items[:top_k]
+    reranker = _get_reranker()
+    if not reranker:
+        return items[:top_k]
+    try:
+        pairs = [[query, f"{it.get('title','')}\n{it.get('content','')}"[:2048]] for it in items]
+        scores = reranker.compute_score(pairs, normalize=True)
+        if not isinstance(scores, list):
+            scores = [scores]
+        for it, sc in zip(items, scores):
+            it["rerank_score"] = float(sc)
+        ranked = sorted(items, key=lambda x: x.get("rerank_score", 0.0), reverse=True)
+        return ranked[:top_k]
+    except Exception:
+        return items[:top_k]
+
+
 def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None,
              domain_key: Optional[str] = None) -> list:
     """
     Advanced Retrieval (Module 21): Runs both keyword (FTS/LIKE) and vector (semantic)
     searches in parallel lanes and merges them using Reciprocal Rank Fusion (RRF).
+    When NOUGEN_RERANK=1, a cross-encoder reranks the top RRF candidates (Stage 2).
     """
     import concurrent.futures
 
@@ -660,6 +716,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     if not all_results and domain_key != "global":
         all_results = run_parallel_retrieval("global")
 
+    # Stage 2: cross-encoder rerank the top RRF candidates (no-op unless enabled).
+    if RERANK_ENABLED:
+        return rerank(query, all_results[:RERANK_CANDIDATES], limit)
+
     return all_results[:limit]
 
 
@@ -673,9 +733,16 @@ def get_shard_by_id(shard_id: int, db_index: int):
     finally:
         conn.close()
 
-def mark_shard(shard_id: int, worked: bool):
-    """Updates the usefulness prior (utility_score) from outcome evidence (helpful / not)."""
-    for i in range(1, MAX_DB_COUNT + 1):
+def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
+    """Updates the usefulness prior (utility_score) from outcome evidence (helpful / not).
+
+    Shard ids are per-DB AUTOINCREMENT, so the same id exists in several of the
+    9 cluster DBs. Pass db_index (a recall result's _db_index) to target the exact
+    shard; without it we fall back to the first id match across the grid, which is
+    ambiguous once ids collide and can update the wrong shard.
+    """
+    indices = [db_index] if db_index else range(1, MAX_DB_COUNT + 1)
+    for i in indices:
         if not get_db_path(i).exists():
             continue
         conn = get_connection(i)
@@ -749,7 +816,11 @@ def compile_recall_packet(shards: list) -> str:
         return "<!-- NO RELEVANT MEMORY RECALLED -->"
     output = ["=== NOUGENSHARDS RECALL PACKET [BAYESIAN SYNTHESIS] ==="]
     for s in shards:
-        output.append(f"--- RECORD #{s['id']} [Score: {s['final_score']:.2f}] ---")
+        # Surface the source DB so callers can target this exact shard in the
+        # 9-DB grid (mark_utility / link_shards / recall_related take db_index).
+        db_idx = s.get("_db_index")
+        db_tag = f" (db {db_idx})" if db_idx is not None else ""
+        output.append(f"--- RECORD #{s['id']}{db_tag} [Score: {s['final_score']:.2f}] ---")
         output.append(f"When: {format_shard_when(s.get('timestamp'))}")
         output.append(f"Title: {s['title']}\n{s['content']}\n")
     # "Anghkooey" — "remember" (FROM). Spoken only when recall succeeds:

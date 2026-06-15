@@ -292,7 +292,7 @@ def cmd_search(args):
 
 def cmd_mark(args):
     """Close the outcome loop (usefulness update)."""
-    if shards.mark_shard(args.id, worked=args.worked):
+    if shards.mark_shard(args.id, worked=args.worked, db_index=args.db):
         print(f"✅ Shard #{args.id} updated. Usefulness prior adjusted.")
     else:
         print(f"Error finding shard #{args.id}.")
@@ -743,6 +743,8 @@ def get_parser():
     p_mark = subparsers.add_parser("mark", help="Update utility")
     p_mark.add_argument("id", type=int)
     p_mark.add_argument("--worked", action="store_true")
+    p_mark.add_argument("--db", type=int, default=None,
+                        help="Source DB index (the 'Source:' column from search) to target the exact shard")
 
     p_status = subparsers.add_parser("status", help="Show cluster health")
     p_status.add_argument("--json", action="store_true", help="Machine-readable output")
