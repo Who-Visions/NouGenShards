@@ -131,7 +131,7 @@ def cmd_auth(args):
 
 def cmd_init(_args):
     """Bootstrap the local shard layer."""
-    print("🪩 Initializing the Metameric Memory Engine...")
+    print("🪩 Initializing Valerion — The Metameric Memory Engine...")
     shards.init_db(index=1)
     print("✅ Created local-first database substrate.")
     print("\n[IGNITION COMPLETE]")
@@ -708,8 +708,8 @@ def get_parser():
 
 
     """Create the CLI parser."""
-    parser = argparse.ArgumentParser(prog="nougen", description="NouGenShards CLI")
-    parser.add_argument("--version", action="version", version=f"NouGenShards v{VERSION}")
+    parser = argparse.ArgumentParser(prog="nougen", description="NouGenShards CLI — Powered by Valerion")
+    parser.add_argument("--version", action="version", version=f"NouGenShards v{VERSION} (Valerion Engine)")
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("init", help="Bootstrap substrate")
@@ -830,8 +830,9 @@ def get_parser():
 
     p_handoff = subparsers.add_parser("handoff", help="Cross-agent session handoff notes")
     p_handoff.add_argument("action", choices=[
-        "create", "read", "list", "ack", "start", "checkpoint", "complete", "rebuild-db"
-    ], help="create | read | list | ack | start | checkpoint | complete | rebuild-db")
+        "create", "read", "list", "ack", "start", "checkpoint", "complete",
+        "rebuild-db", "reconcile", "watch",
+    ], help="create | read | list | ack | start | checkpoint | complete | rebuild-db | reconcile | watch")
     p_handoff.add_argument("--message", "-m", default="", help="Handoff note or acknowledgement message")
     p_handoff.add_argument("--agent", "-a", default=None,
                            help="Agent type (gemini, claude, codex, ollama, openrouter)")
@@ -840,6 +841,10 @@ def get_parser():
                            help="Target a specific handoff id")
     p_handoff.add_argument("--state", choices=["in_progress", "blocked", "complete"],
                            default="in_progress", help="Checkpoint state")
+    p_handoff.add_argument("--write", action="store_true", default=False,
+                           help="(reconcile/watch) Persist resolved stale-complete status to disk")
+    p_handoff.add_argument("--interval", type=float, default=5.0,
+                           help="(watch) Poll interval in seconds (default: 5.0)")
 
     return parser
 
@@ -847,8 +852,8 @@ def get_parser():
 
 
 def cmd_doctor(args):
-    """Verifies installation, database health, and service connectivity."""
-    print("👨‍⚕️ NouGenShards Doctor: Running diagnostics...")
+    """Verifies installation, database health, and service connectivity (Valerion Engine)."""
+    print("👨‍⚕️ NouGenShards Doctor (Valerion): Running diagnostics...")
     
     # 1. Check Substrate
     print("\n[Substrate]")
@@ -882,8 +887,8 @@ def cmd_doctor(args):
         p_status[name] = alive
         print(f" {'✅' if alive else '❌'} {name.capitalize()}")
 
-    # 4. Check Engine Modules
-    print("\n[Cognitive Engines]")
+    # 4. Check Valerion Engine Modules
+    print("\n[Valerion Cognitive Engines]")
     try:
         from . import dream, evolution
         print(" ✅ Dream State (TMEM): Ready")
@@ -926,6 +931,19 @@ def cmd_handoff(args):
     elif args.action == "rebuild-db":
         count = handoff.rebuild_handoff_db(args.agent)
         print(f"Indexed {count} handoff record(s) in {handoff.get_handoff_db_path()}")
+    elif args.action == "reconcile":
+        counts = handoff.reconcile_handoffs(
+            agent=getattr(args, "agent", None),
+            write=getattr(args, "write", False),
+        )
+        import json as _json
+        print(_json.dumps(counts, indent=2))
+    elif args.action == "watch":
+        handoff.watch_handoffs(
+            agent=getattr(args, "agent", None),
+            interval=getattr(args, "interval", 5.0),
+            write=getattr(args, "write", False),
+        )
 
 def main():
     """Execution entry point."""
@@ -934,6 +952,7 @@ def main():
         print("┌┐╷┌─┐╷ ╷┌─╴┌─╴┌┐╷┌─┐╷ ╷┌─┐┌─┐╶┬┐┌─┐")
         print("│└┤│ ││ ││╶┐├╴ │└┤└─┐├─┤├─┤├┬┘ ││└─┐")
         print("╵ ╵└─┘└─┘└─┘└─╴╵ ╵└─┘╵ ╵╵ ╵╵└╴╶┴┘└─┘")
+        print(f"  ⚡ Valerion Engine · v{VERSION}")
         print()
         get_parser().print_help()
         sys.exit(0)

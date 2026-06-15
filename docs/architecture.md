@@ -1,13 +1,14 @@
-# The Metameric Memory Engine: 21 Steps of Orchestration
+# Valerion: The Metameric Memory Engine
+### 21 Steps of Orchestration
 
-NouGenShards (NGS) is not just a database wrapper; it is an implementation of a 21-step cognitive architecture. It treats the chaotic output of disparate AI tools as a single, continuous stream of machine experience.
+NouGenShards (NGS) is not just a database wrapper; it is an implementation of **Valerion** — a 21-step cognitive architecture that treats the chaotic output of disparate AI tools as a single, continuous stream of machine experience.
 
 We do not ask AI to remember. We reverse-engineer where it stores its state, abstract the invariants, and orchestrate convergence into a unified local memory substrate.
 
-Here is the exact software architecture mapped to the 21-step operating loop:
+Here is the exact software architecture mapped to the Valerion operating loop:
 
 ## Theoretical Foundation: The Architecture of Adjacency
-The Metameric Memory Engine is mathematically grounded in the [Architecture of Adjacency](theory/n-gram-topologies.md) and the [Clinical Handoff Convergence Theory](theory/clinical-handoffs.md). We leverage N-gram topologies and clinical safety protocols (SBAR/5 Ps) to transform raw symbolic streams into resilient, state-conserving agent boundaries.
+Valerion is mathematically grounded in the [Architecture of Adjacency](theory/n-gram-topologies.md) and the [Clinical Handoff Convergence Theory](theory/clinical-handoffs.md). We leverage N-gram topologies and clinical safety protocols (SBAR/5 Ps) to transform raw symbolic streams into resilient, state-conserving agent boundaries.
 
 ---
 
@@ -38,6 +39,7 @@ The Metameric Memory Engine is mathematically grounded in the [Architecture of A
 18. **Reconstruct Coherence**: `history.py` graphs the total memory growth across all platforms into a single, unified timeline.
 19. **Stabilize Reasoning**: `decay_utility_scores` runs a slow, background 0.95x multiplier to prune stale memories over time, ensuring only high-signal knowledge survives.
 
-## Phase 5: The Loop
+## Phase 5: The Valerion Loop
 20. **Iterate Recursively**: The `FastMCP` server (`mcp.py`) exposes these primitives, allowing external coding agents to trigger their own memories, rank their own utility, and promote their own contexts autonomously.
-21. **Orchestrate Convergence into NGS**: The final outcome. Chaotic multi-tool development is centralized into a singular, owned, indestructible local memory engine.
+21. **Orchestrate Convergence (Valerion)**: The final outcome. Chaotic multi-tool development is centralized into a singular, owned, indestructible local memory engine — **Valerion**.
+

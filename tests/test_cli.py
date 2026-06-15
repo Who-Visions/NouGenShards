@@ -14,7 +14,7 @@ class TestCLI(unittest.TestCase):
         args = MagicMock()
         with patch('sys.stdout', new=io.StringIO()) as fake_out:
             cli.cmd_init(args)
-            self.assertIn("Initializing the Metameric Memory Engine...", fake_out.getvalue())
+            self.assertIn("Initializing Valerion", fake_out.getvalue())
             self.assertIn("[IGNITION COMPLETE]", fake_out.getvalue())
             mock_init.assert_called_once()
 

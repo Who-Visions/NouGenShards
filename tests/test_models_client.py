@@ -261,3 +261,77 @@ def test_find_best_model_from_list():
 
     # Scenario 6: None if empty
     assert find_best_model_from_list([]) is None
+
+
+def test_openai_batch_embed(mock_urlopen):
+    """Test OpenAIClient.batch_embed."""
+    from nougen_shards.models_client import OpenAIClient
+    mock_response = MagicMock()
+    mock_data = json.dumps({
+        "data": [
+            {"index": 0, "embedding": [0.1, 0.2]},
+            {"index": 1, "embedding": [0.3, 0.4]}
+        ]
+    }).encode("utf-8")
+    mock_response.read.return_value = mock_data
+    mock_urlopen.return_value.__enter__.return_value = mock_response
+
+    client = OpenAIClient(api_key="test_key")
+    res = client.batch_embed("text-embedding-3-small", ["hello", "world"])
+    assert res == [[0.1, 0.2], [0.3, 0.4]]
+
+
+def test_gemini_batch_embed(mock_urlopen):
+    """Test GeminiClient.batch_embed."""
+    from nougen_shards.models_client import GeminiClient
+    mock_response = MagicMock()
+    mock_data = json.dumps({
+        "embeddings": [
+            {"values": [0.5, 0.6]},
+            {"values": [0.7, 0.8]}
+        ]
+    }).encode("utf-8")
+    mock_response.read.return_value = mock_data
+    mock_urlopen.return_value.__enter__.return_value = mock_response
+
+    client = GeminiClient(api_key="test_key")
+    res = client.batch_embed("text-embedding-004", ["hello", "world"])
+    assert res == [[0.5, 0.6], [0.7, 0.8]]
+
+
+def test_ollama_batch_embed(mock_urlopen):
+    """Test OllamaClient.batch_embed."""
+    mock_response = MagicMock()
+    mock_data = json.dumps({
+        "embeddings": [
+            [0.11, 0.12],
+            [0.13, 0.14]
+        ]
+    }).encode("utf-8")
+    mock_response.read.return_value = mock_data
+    mock_urlopen.return_value.__enter__.return_value = mock_response
+
+    client = OllamaClient()
+    res = client.batch_embed("nomic-embed-text", ["hello", "world"])
+    assert res == [[0.11, 0.12], [0.13, 0.14]]
+
+
+def test_ollama_batch_embed_fallback(mock_urlopen):
+    """Test OllamaClient.batch_embed falling back to sequential embed."""
+    # First call to /api/embed raises an error (e.g. 404 or connection refused)
+    # Subsequent calls to /api/embeddings succeed
+    mock_response1 = MagicMock()
+    mock_response1.read.return_value = json.dumps({"embedding": [0.15, 0.16]}).encode("utf-8")
+    
+    mock_response2 = MagicMock()
+    mock_response2.read.return_value = json.dumps({"embedding": [0.17, 0.18]}).encode("utf-8")
+
+    mock_urlopen.side_effect = [
+        urllib.error.URLError("Not Found"), # /api/embed
+        MagicMock(**{"__enter__.return_value": mock_response1}), # first /api/embeddings
+        MagicMock(**{"__enter__.return_value": mock_response2})  # second /api/embeddings
+    ]
+
+    client = OllamaClient()
+    res = client.batch_embed("nomic-embed-text", ["hello", "world"])
+    assert res == [[0.15, 0.16], [0.17, 0.18]]
