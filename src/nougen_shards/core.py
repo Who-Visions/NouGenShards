@@ -344,6 +344,15 @@ WEIGHT_SEMANTIC = 0.6
 WEIGHT_LIKELIHOOD = 0.7
 WEIGHT_PRIOR = 0.3
 
+# Stage-2 cross-encoder reranker (Tier-1 elevation). 2026 SOTA: a hybrid->rerank
+# two-stage pipeline lifts Recall@5 ~+17% / MRR ~+40% over RRF alone. Off by
+# default and lazy-loaded, so this is a no-op (zero new deps) until activated:
+#   NOUGEN_RERANK=1   pip install FlagEmbedding   (bge-reranker-v2-m3 ~2.27GB)
+RERANK_ENABLED = os.environ.get("NOUGEN_RERANK", "0") == "1"
+RERANK_MODEL = os.environ.get("NOUGEN_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+RERANK_CANDIDATES = int(os.environ.get("NOUGEN_RERANK_CANDIDATES", "60"))
+_RERANKER = None  # process-cached reranker handle
+
 def _process_fts_result(row, db_index, query_embedding):
     """Helper to score a single FTS result via the weighted relevance blend."""
     item = dict(row)
@@ -628,11 +637,51 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
     return merged
 
 
+def _get_reranker():
+    """Lazy-load and cache the cross-encoder reranker. Returns None if unavailable
+    so callers degrade gracefully to the RRF ordering (no hard dependency)."""
+    global _RERANKER
+    if _RERANKER is not None:
+        return _RERANKER
+    try:
+        from FlagEmbedding import FlagReranker  # pylint: disable=import-outside-toplevel
+        _RERANKER = FlagReranker(RERANK_MODEL, use_fp16=True)
+    except Exception:  # missing lib/model/VRAM — stay on RRF
+        _RERANKER = False
+    return _RERANKER
+
+
+def rerank(query: str, items: List[dict], top_k: int) -> List[dict]:
+    """Stage-2 cross-encoder reranking of RRF candidates.
+
+    Scores each (query, title+content) pair with all-to-all attention and returns
+    the top_k by that score. Any failure (no model, OOM) falls back to the input
+    order, so retrieval never breaks because the reranker is unavailable.
+    """
+    if not items:
+        return items[:top_k]
+    reranker = _get_reranker()
+    if not reranker:
+        return items[:top_k]
+    try:
+        pairs = [[query, f"{it.get('title','')}\n{it.get('content','')}"[:2048]] for it in items]
+        scores = reranker.compute_score(pairs, normalize=True)
+        if not isinstance(scores, list):
+            scores = [scores]
+        for it, sc in zip(items, scores):
+            it["rerank_score"] = float(sc)
+        ranked = sorted(items, key=lambda x: x.get("rerank_score", 0.0), reverse=True)
+        return ranked[:top_k]
+    except Exception:
+        return items[:top_k]
+
+
 def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None,
              domain_key: Optional[str] = None) -> list:
     """
     Advanced Retrieval (Module 21): Runs both keyword (FTS/LIKE) and vector (semantic)
     searches in parallel lanes and merges them using Reciprocal Rank Fusion (RRF).
+    When NOUGEN_RERANK=1, a cross-encoder reranks the top RRF candidates (Stage 2).
     """
     import concurrent.futures
 
@@ -666,6 +715,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     # Fallback to global if active_domain is not global and we found no matches
     if not all_results and domain_key != "global":
         all_results = run_parallel_retrieval("global")
+
+    # Stage 2: cross-encoder rerank the top RRF candidates (no-op unless enabled).
+    if RERANK_ENABLED:
+        return rerank(query, all_results[:RERANK_CANDIDATES], limit)
 
     return all_results[:limit]
 
