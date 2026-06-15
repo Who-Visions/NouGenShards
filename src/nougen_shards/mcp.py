@@ -63,15 +63,17 @@ def recall_memory(query: str, limit: int = 3) -> str:
     return compile_recall_packet(shards_list)
 
 @mcp.tool()
-def mark_utility(shard_id: int, worked: bool) -> str:
+def mark_utility(shard_id: int, worked: bool, db_index: Optional[int] = None) -> str:
     """
     Update the usefulness score of a shard based on its performance outcome.
-    
+
     Args:
         shard_id: The ID of the shard to update.
         worked: True if the shard's information was useful/correct, False if it was not.
+        db_index: Database index the shard lives in (the recall result's _db_index).
+            Omit to search the whole grid (ambiguous once shard ids collide across DBs).
     """
-    if mark_shard(shard_id, worked):
+    if mark_shard(shard_id, worked, db_index):
         return f"Utility for Shard #{shard_id} updated successfully."
     return f"Shard #{shard_id} not found."
 
