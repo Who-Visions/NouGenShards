@@ -294,3 +294,36 @@ def test_mark_shard_targets_specific_db(setup_test_env):
 
     assert shards.mark_shard(sid, worked=True, db_index=db) is True
     assert shards.retrieve("targeted")[0]["utility_score"] > before
+
+
+def test_rerank_reorders_by_cross_encoder(setup_test_env, monkeypatch):
+    """Stage-2 reranker must reorder candidates by the cross-encoder score."""
+    class FakeReranker:
+        def compute_score(self, pairs, normalize=True):
+            return [float(len(p[1])) for p in pairs]  # longer passage scores higher
+    monkeypatch.setattr(shards, "_get_reranker", lambda: FakeReranker())
+    items = [
+        {"id": 1, "title": "a", "content": "short"},
+        {"id": 2, "title": "b", "content": "a considerably longer passage body here"},
+    ]
+    out = shards.rerank("q", items, top_k=2)
+    assert out[0]["id"] == 2
+    assert out[0]["rerank_score"] >= out[1]["rerank_score"]
+
+
+def test_rerank_falls_back_without_model(setup_test_env, monkeypatch):
+    """No model/lib available -> degrade gracefully to the input (RRF) order."""
+    monkeypatch.setattr(shards, "_get_reranker", lambda: False)
+    items = [{"id": 1, "title": "a", "content": "x"}, {"id": 2, "title": "b", "content": "y"}]
+    out = shards.rerank("q", items, top_k=5)
+    assert [i["id"] for i in out] == [1, 2]
+
+
+def test_retrieve_invokes_reranker_when_enabled(setup_test_env, monkeypatch):
+    """retrieve() routes through the reranker only when NOUGEN_RERANK is on."""
+    shards.capture("TEST", "Rerank Probe", "alpha bravo charlie content")
+    called = {}
+    monkeypatch.setattr(shards, "RERANK_ENABLED", True)
+    monkeypatch.setattr(shards, "rerank", lambda q, items, k: (called.setdefault("hit", True), items[:k])[1])
+    shards.retrieve("alpha")
+    assert called.get("hit") is True
