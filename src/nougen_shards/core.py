@@ -370,7 +370,7 @@ def _process_fts_result(row, db_index, query_embedding):
             try:
                 emb_array = np.array(json.loads(item["embedding"].decode()), dtype=np.float32)
                 sem_score = float(np.dot(query_embedding, emb_array))
-            except:
+            except Exception:
                 sem_score = 0.0
 
     # Synthesize Coherent Likelihood (Module 9)
@@ -482,7 +482,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                             try:
                                 emb_array = np.array(json.loads(item["embedding"].decode()), dtype=np.float32)
                                 sem_score = float(np.dot(query_embedding, emb_array))
-                            except:
+                            except Exception:
                                 sem_score = 0.0
                     likelihood = sem_score if query_embedding is not None else 0.5
 
@@ -540,7 +540,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                     try:
                         emb_array = np.array(json.loads(item["embedding"].decode()), dtype=np.float32)
                         sem_score = float(np.dot(query_embedding, emb_array))
-                    except:
+                    except Exception:
                         sem_score = 0.0
 
                 decay = 1.0
