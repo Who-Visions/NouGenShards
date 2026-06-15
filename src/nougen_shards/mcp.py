@@ -1,4 +1,4 @@
-"""Model Context Protocol (MCP) server for NouGenShards."""
+"""Model Context Protocol (MCP) server for NouGenShards — Valerion Engine."""
 import json
 import sys
 from typing import Optional, List, Dict, Any

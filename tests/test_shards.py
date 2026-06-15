@@ -171,3 +171,94 @@ def test_domain_global_fallback(setup_test_env):
     assert len(res) >= 1
     assert res[0]["title"] == "Global Document"
 
+
+def test_vector_normalization(setup_test_env):
+    """Test that embeddings are normalized at write time and retrieve works correctly."""
+    import numpy as np
+    import json
+    unnormalized = [3.0, 4.0, 0.0]  # magnitude is 5.0
+    shards.capture("VEC", "Vector Norm", "Content Norm", embedding=unnormalized)
+    
+    # Retrieve it
+    res = shards.retrieve("Content Norm")[0]
+    db_index = res["_db_index"]
+    shard_id = res["id"]
+    
+    # Check stored embedding directly from database
+    conn = shards.get_connection(db_index)
+    try:
+        row = conn.execute("SELECT embedding FROM shards WHERE id = ?", (shard_id,)).fetchone()
+        raw_emb = row["embedding"]
+        if raw_emb.startswith(b'['):
+            emb_list = json.loads(raw_emb.decode())
+        else:
+            emb_list = np.frombuffer(raw_emb, dtype=np.float32).tolist()
+        # The stored embedding should be [0.6, 0.8, 0.0]
+        assert len(emb_list) == 3
+        assert abs(emb_list[0] - 0.6) < 1e-6
+        assert abs(emb_list[1] - 0.8) < 1e-6
+        assert abs(emb_list[2] - 0.0) < 1e-6
+        
+        # Verify L2 norm is 1.0
+        norm = np.linalg.norm(emb_list)
+        assert abs(norm - 1.0) < 1e-6
+    finally:
+        conn.close()
+
+
+def test_vector_retrieve_independent_of_fts(setup_test_env):
+    """Test that _vector_retrieve retrieves matches strictly on embedding cosine similarity."""
+    # Shard 1: semantic match for query embedding, no keyword overlap
+    shards.capture("TEST", "Apple", "Red sweet fruit.", embedding=[1.0, 0.0, 0.0], domain_key="global")
+    # Shard 2: no semantic match, no keyword overlap
+    shards.capture("TEST", "Orange", "Citrus orange fruit.", embedding=[0.0, 1.0, 0.0], domain_key="global")
+    
+    # Query for something unrelated but pass embedding close to Apple
+    res = shards._vector_retrieve(query_embedding=[0.9, 0.1, 0.0], limit=5, domain_key="global")
+    assert len(res) >= 1
+    assert res[0]["title"] == "Apple"
+
+
+def test_reciprocal_rank_fusion(setup_test_env):
+    """Test the reciprocal_rank_fusion helper."""
+    list1 = [
+        {"id": 1, "_db_index": 1, "title": "Doc A", "final_score": 0.9},
+        {"id": 2, "_db_index": 1, "title": "Doc B", "final_score": 0.8},
+    ]
+    list2 = [
+        {"id": 2, "_db_index": 1, "title": "Doc B", "final_score": 0.95},
+        {"id": 3, "_db_index": 1, "title": "Doc C", "final_score": 0.7},
+    ]
+    
+    merged = shards.reciprocal_rank_fusion([list1, list2], k=60)
+    
+    # Doc B is ranked 2nd in list1 (rank 2) and 1st in list2 (rank 1)
+    # Score for B: 1/(60+2) + 1/(60+1) = 1/62 + 1/61 = 0.016129 + 0.016393 = 0.032522
+    # Doc A is ranked 1st in list1 (rank 1), not in list2. Score: 1/61 = 0.016393
+    # Doc C is ranked 2nd in list2 (rank 2), not in list1. Score: 1/62 = 0.016129
+    # So ranking should be B, A, C
+    assert len(merged) == 3
+    assert merged[0]["title"] == "Doc B"
+    assert merged[1]["title"] == "Doc A"
+    assert merged[2]["title"] == "Doc C"
+    
+    # Check that scores are set as final_score
+    assert abs(merged[0]["final_score"] - (1.0/62 + 1.0/61)) < 1e-6
+
+
+def test_retrieve_parallel_rrf_boost(setup_test_env):
+    """Test that parallel retrieve boosts documents present in both lanes."""
+    # Shard matching keyword only
+    shards.capture("TEST", "Banana", "Yellow tropical fruit.", embedding=[0.0, 1.0, 0.0], domain_key="global")
+    # Shard matching both keyword and embedding
+    shards.capture("TEST", "Pineapple", "Tropical sweet fruit.", embedding=[1.0, 0.0, 0.0], domain_key="global")
+    
+    # Retrieve with query "Tropical" and query_embedding close to Pineapple
+    results = shards.retrieve("Tropical", query_embedding=[0.95, 0.05, 0.0])
+    
+    # Pineapple should be ranked higher than Banana because Pineapple matches FTS and matches embedding,
+    # whereas Banana only matches FTS/LIKE or has a lower semantic score.
+    assert len(results) >= 2
+    assert results[0]["title"] == "Pineapple"
+
+

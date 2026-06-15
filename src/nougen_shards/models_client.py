@@ -50,6 +50,10 @@ class LLMClient(ABC):
     def embed(self, model: str, text: str) -> list:
         """Generate vector embeddings for text."""
 
+    @abstractmethod
+    def batch_embed(self, model: str, texts: List[str]) -> List[list]:
+        """Generate vector embeddings for a batch of texts."""
+
 
 class LocalLLMClient(LLMClient, ABC):
     """Abstract base class for local LLM clients."""
@@ -123,6 +127,34 @@ class OpenAIClient(LLMClient):
         except Exception: # pylint: disable=broad-except
             return []
 
+    def batch_embed(self, model: str, texts: List[str]) -> List[list]:
+        if not self.api_key or not texts:
+            return [[] for _ in texts]
+        payload = {"model": model, "input": texts}
+        req = urllib.request.Request(
+            f"{self.base_url}/embeddings",
+            data=json.dumps(payload).encode(),
+            method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Bearer {self.api_key or ''}")
+        try:
+            with urllib.request.urlopen(req) as res:
+                resp_data = json.loads(res.read().decode())
+                data = resp_data.get("data", [])
+                sorted_data = sorted(data, key=lambda x: x.get("index", 0))
+                embeddings = [item.get("embedding", []) for item in sorted_data]
+                if len(embeddings) == len(texts):
+                    return embeddings
+                result = [[] for _ in texts]
+                for item in data:
+                    idx = item.get("index")
+                    if idx is not None and 0 <= idx < len(texts):
+                        result[idx] = item.get("embedding", [])
+                return result
+        except Exception: # pylint: disable=broad-except
+            return [[] for _ in texts]
+
 
 class AnthropicClient(LLMClient):
     """Client for Anthropic (Claude)."""
@@ -183,6 +215,9 @@ class AnthropicClient(LLMClient):
 
     def embed(self, model: str, text: str) -> list:
         return []
+
+    def batch_embed(self, model: str, texts: List[str]) -> List[list]:
+        return [[] for _ in texts]
 
 
 class GeminiClient(LLMClient):
@@ -259,6 +294,30 @@ class GeminiClient(LLMClient):
         except Exception: # pylint: disable=broad-except
             return []
 
+    def batch_embed(self, model: str, texts: List[str]) -> List[list]:
+        if not self.api_key or not texts:
+            return [[] for _ in texts]
+        url = f"{self.base_url}/{model}:batchEmbedContents?key={self.api_key}"
+        model_ref = model if model.startswith("models/") else f"models/{model}"
+        requests_list = [{"model": model_ref, "content": {"parts": [{"text": t}]}} for t in texts]
+        payload = {"requests": requests_list}
+        req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST")
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req) as res:
+                resp_data = json.loads(res.read().decode())
+                embeddings_data = resp_data.get("embeddings", [])
+                embeddings = [emb.get("values", []) for emb in embeddings_data]
+                if len(embeddings) == len(texts):
+                    return embeddings
+                result = [[] for _ in texts]
+                for idx, emb in enumerate(embeddings):
+                    if idx < len(texts):
+                        result[idx] = emb
+                return result
+        except Exception: # pylint: disable=broad-except
+            return [self.embed(model, text) for text in texts]
+
 
 class HuggingFaceClient(LLMClient):
     """Client for Hugging Face Inference API."""
@@ -315,6 +374,9 @@ class HuggingFaceClient(LLMClient):
 
     def embed(self, model: str, text: str) -> list:
         return []
+
+    def batch_embed(self, model: str, texts: List[str]) -> List[list]:
+        return [[] for _ in texts]
 
 
 class OpenRouterClient(OpenAIClient):
@@ -520,6 +582,9 @@ class WhoVisionsCloudClient(LLMClient):
         # Future: implement remote embedding gateway
         return []
 
+    def batch_embed(self, model: str, texts: List[str]) -> List[list]:
+        return [[] for _ in texts]
+
 
 def find_best_model_from_list(models: List[str]) -> Optional[ModelBudgetConfig]:
     """Helper to select the best available model, preferring custom models over defaults."""
@@ -662,6 +727,30 @@ class OllamaClient(LocalLLMClient):
         except Exception: # pylint: disable=broad-except
             return []
 
+    def batch_embed(self, model: str, texts: List[str]) -> List[list]:
+        if not texts:
+            return []
+        payload = {"model": model, "input": texts}
+        req = urllib.request.Request(
+            f"{self.base_url}/api/embed",
+            data=json.dumps(payload).encode(),
+            method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req) as res:
+                resp_data = json.loads(res.read().decode())
+                embeddings = resp_data.get("embeddings", [])
+                if len(embeddings) == len(texts):
+                    return embeddings
+                result = [[] for _ in texts]
+                for idx, emb in enumerate(embeddings):
+                    if idx < len(texts):
+                        result[idx] = emb
+                return result
+        except Exception: # pylint: disable=broad-except
+            return [self.embed(model, text) for text in texts]
+
     def find_best_edge_model(self) -> str:
         return find_best_model_from_list(self.list_models())
 
@@ -746,6 +835,9 @@ class LMStudioClient(LocalLLMClient):
 
     def embed(self, model: str, text: str) -> list:
         return []
+
+    def batch_embed(self, model: str, texts: List[str]) -> List[list]:
+        return [[] for _ in texts]
 
     def find_best_edge_model(self) -> str:
         return find_best_model_from_list(self.list_models())

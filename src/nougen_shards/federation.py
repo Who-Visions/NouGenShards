@@ -28,9 +28,8 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     if cloud_configs:
         cloud_results = query_cloud_shards(query, cloud_configs, limit=limit)
 
-    # 5. Merge and re-rank via weighted relevance blend
+    # 5. Merge and re-rank via Reciprocal Rank Fusion (RRF)
     # (Module 21: Orchestrate Convergence)
-    combined = local_results + external_results + cloud_results
-    combined.sort(key=lambda x: x.get("final_score", 0), reverse=True)
+    combined = core.reciprocal_rank_fusion([local_results, external_results, cloud_results], k=60)
 
     return combined[:limit]

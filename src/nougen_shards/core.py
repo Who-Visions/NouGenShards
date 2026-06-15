@@ -1,7 +1,7 @@
 """
-NouGenShards: Advanced Memory-Core Substrate.
+Valerion Core — NouGenShards Memory Substrate.
 Logic: SQLite + FTS5 + BM25 + Trigram (n-gram) + Vector Embeddings + Weighted Relevance Reranking.
-Architecture: weighted multi-signal relevance blend (BM25 + semantic + usefulness prior).
+Architecture: Valerion 21-step cognitive loop. Weighted multi-signal relevance blend (BM25 + semantic + usefulness prior).
 """
 # pylint: disable=duplicate-code
 import hashlib
@@ -12,6 +12,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
+
+import numpy as np
 
 # Configuration (Module 10: Integrate Constraints)
 MAX_DB_SIZE = 1 * 1024 * 1024 * 1024  # 1GB Safety Limit per DB
@@ -238,12 +240,7 @@ def cosine_similarity(vec1: list, vec2: list) -> float:
     """Measures semantic alignment (Module 7: Transpose Patterns)."""
     if not vec1 or not vec2 or len(vec1) != len(vec2):
         return 0.0
-    dot_product = sum(a * b for a, b in zip(vec1, vec2))
-    mag1 = math.sqrt(sum(a * a for a in vec1))
-    mag2 = math.sqrt(sum(b * b for b in vec2))
-    if not mag1 or not mag2:
-        return 0.0
-    return dot_product / (mag1 * mag2)
+    return float(np.dot(vec1, vec2))
 
 
 def resolve_domain_from_path(target_path: Optional[str] = None) -> str:
@@ -299,7 +296,14 @@ def capture(event_type: str, title: str, content: str,
         target_idx = get_write_index(fhash)
         init_db(target_idx)
 
-        emb_blob = sqlite3.Binary(json.dumps(embedding).encode()) if embedding else None
+        emb_blob = None
+        if embedding:
+            arr = np.array(embedding, dtype=np.float32)
+            norm = np.linalg.norm(arr)
+            if norm > 0:
+                arr = arr / norm
+            emb_blob = sqlite3.Binary(arr.tobytes())
+
         tags_str = json.dumps(tags or [])
         timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -349,8 +353,18 @@ def _process_fts_result(row, db_index, query_embedding):
 
     # 2. Likelihood Part B: Semantic (The Latent Score)
     sem_score = 0.0
-    if query_embedding and item["embedding"]:
-        sem_score = cosine_similarity(query_embedding, json.loads(item["embedding"].decode()))
+    if query_embedding is not None and item["embedding"]:
+        try:
+            if item["embedding"].startswith(b'['):
+                raise ValueError("Legacy JSON embedding detected")
+            emb_array = np.frombuffer(item["embedding"], dtype=np.float32)
+            sem_score = float(np.dot(query_embedding, emb_array))
+        except Exception:
+            try:
+                emb_array = np.array(json.loads(item["embedding"].decode()), dtype=np.float32)
+                sem_score = float(np.dot(query_embedding, emb_array))
+            except:
+                sem_score = 0.0
 
     # Synthesize Coherent Likelihood (Module 9)
     likelihood = (norm_bm25 * WEIGHT_BM25) + (sem_score * WEIGHT_SEMANTIC)
@@ -405,91 +419,247 @@ def _build_fts_match_query(query: str) -> Optional[str]:
     return " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
 
 
+def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[List[float]] = None,
+                      domain_key: str = "global") -> list:
+    """Scans for keyword matches using FTS5 (with LIKE fallback)."""
+    from . import history # pylint: disable=import-outside-toplevel
+
+    results = []
+    for i in range(1, MAX_DB_COUNT + 1):
+        if not get_db_path(i).exists():
+            continue
+        conn = get_connection(i)
+        try:
+            fts_worked = False
+            fts_query = _build_fts_match_query(query)
+            if fts_query is not None:
+                try:
+                    cursor = conn.execute("""
+                        SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                               s.embedding, s.tags, s.domain_key, bm25(shards_fts) as bm25_score
+                        FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
+                        WHERE s.domain_key = ? AND shards_fts MATCH ?
+                        ORDER BY bm25_score ASC LIMIT ?
+                    """, (domain_key, fts_query, limit))
+                    res = cursor.fetchall()
+                    if res:
+                        for row in res:
+                            history.log_event(row["id"], i, "ACCESSED")
+                            results.append(_process_fts_result(row, i, query_embedding))
+                        fts_worked = True
+                except sqlite3.OperationalError:
+                    pass
+
+            if not fts_worked:
+                history.log_event(0, i, "SEARCH_FALLBACK", metadata={"query": query})
+                
+                like_query = f"%{query}%"
+                cursor = conn.execute("""
+                    SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
+                    FROM shards
+                    WHERE domain_key = ? AND (title LIKE ? OR content LIKE ?)
+                    ORDER BY utility_score DESC LIMIT ?
+                """, (domain_key, like_query, like_query, limit))
+                for row in cursor:
+                    item = dict(row)
+                    item["_db_index"] = i
+                    history.log_event(item["id"], i, "ACCESSED")
+                    sem_score = 0.0
+                    if query_embedding is not None and item["embedding"]:
+                        try:
+                            if item["embedding"].startswith(b'['):
+                                raise ValueError("Legacy JSON embedding")
+                            emb_array = np.frombuffer(item["embedding"], dtype=np.float32)
+                            sem_score = float(np.dot(query_embedding, emb_array))
+                        except Exception:
+                            try:
+                                emb_array = np.array(json.loads(item["embedding"].decode()), dtype=np.float32)
+                                sem_score = float(np.dot(query_embedding, emb_array))
+                            except:
+                                sem_score = 0.0
+                    likelihood = sem_score if query_embedding is not None else 0.5
+
+                    decay = 1.0
+                    ts_str = item.get("timestamp")
+                    if ts_str:
+                        try:
+                            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                            age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+                            decay = max(0.1, 0.5 ** (age_days / 30.0))
+                        except Exception:
+                            pass
+
+                    decayed_utility = item["utility_score"] * decay
+                    item["final_score"] = (likelihood * 0.5) + (decayed_utility * 0.5)
+                    results.append(item)
+        finally:
+            conn.close()
+
+    results.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+    return results[:limit]
+
+
+def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
+                     domain_key: str = "global") -> list:
+    """Scans for semantic vector matches independent of FTS."""
+    if query_embedding is None:
+        return []
+
+    from . import history # pylint: disable=import-outside-toplevel
+
+    results = []
+    for i in range(1, MAX_DB_COUNT + 1):
+        if not get_db_path(i).exists():
+            continue
+        conn = get_connection(i)
+        try:
+            cursor = conn.execute("""
+                SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
+                FROM shards
+                WHERE domain_key = ? AND embedding IS NOT NULL
+            """, (domain_key,))
+            for row in cursor:
+                item = dict(row)
+                item["_db_index"] = i
+                
+                try:
+                    if item["embedding"].startswith(b'['):
+                        raise ValueError("Legacy JSON embedding")
+                    emb_array = np.frombuffer(item["embedding"], dtype=np.float32)
+                    sem_score = float(np.dot(query_embedding, emb_array))
+                except Exception:
+                    try:
+                        emb_array = np.array(json.loads(item["embedding"].decode()), dtype=np.float32)
+                        sem_score = float(np.dot(query_embedding, emb_array))
+                    except:
+                        sem_score = 0.0
+
+                decay = 1.0
+                ts_str = item.get("timestamp")
+                if ts_str:
+                    try:
+                        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+                        decay = max(0.1, 0.5 ** (age_days / 30.0))
+                    except Exception:
+                        pass
+
+                decayed_utility = item["utility_score"] * decay
+                item["final_score"] = (sem_score * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
+                results.append(item)
+        finally:
+            conn.close()
+
+    results.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+    top_results = results[:limit]
+    
+    for item in top_results:
+        history.log_event(item["id"], item["_db_index"], "ACCESSED")
+        
+    return top_results
+
+
+def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[dict]:
+    """
+    Module 8 / 21: Reciprocal Rank Fusion (RRF) to merge multiple ranked lists.
+    """
+    rrf_scores = {}  # key -> float
+    item_map = {}    # key -> dict
+    
+    def get_rrf_key(item: dict) -> str:
+        h = item.get("file_hash")
+        if h:
+            return f"hash_{h}"
+        item_id = item.get("id")
+        db_idx = item.get("_db_index")
+        if item_id is not None and db_idx is not None:
+            return f"id_{db_idx}_{item_id}"
+        title = item.get("title", "")
+        content = item.get("content", "")
+        val = f"{title}|||{content}"
+        return hashlib.sha256(val.encode("utf-8", errors="ignore")).hexdigest()
+
+    for rank_list in result_lists:
+        if not rank_list:
+            continue
+        for rank_idx, item in enumerate(rank_list):
+            key = get_rrf_key(item)
+            rank = rank_idx + 1
+            score = 1.0 / (k + rank)
+            rrf_scores[key] = rrf_scores.get(key, 0.0) + score
+            
+            if key not in item_map:
+                item_map[key] = item.copy()
+            else:
+                for key_name, val in item.items():
+                    if item_map[key].get(key_name) is None and val is not None:
+                        item_map[key][key_name] = val
+
+    merged = []
+    for key, item in item_map.items():
+        consensus_score = rrf_scores[key]
+        decay = 1.0
+        ts_str = item.get("timestamp")
+        if ts_str:
+            try:
+                dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+                decay = max(0.1, 0.5 ** (age_days / 30.0))
+            except Exception:
+                pass
+        decayed_utility = item.get("utility_score", 1.0) * decay
+        item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3))
+        merged.append(item)
+
+    merged.sort(key=lambda x: x["final_score"], reverse=True)
+    return merged
+
+
 def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None,
              domain_key: Optional[str] = None) -> list:
     """
-    Advanced Retrieval (Module 21): weighted blend of BM25 (Adjacency) and
-    Semantic (Latent) signals with the shard's usefulness prior.
+    Advanced Retrieval (Module 21): Runs both keyword (FTS/LIKE) and vector (semantic)
+    searches in parallel lanes and merges them using Reciprocal Rank Fusion (RRF).
     """
+    import concurrent.futures
+
     if not domain_key:
         domain_key = resolve_domain_from_path()
         
-    from . import history # pylint: disable=import-outside-toplevel
+    if query_embedding is not None:
+        arr = np.array(query_embedding, dtype=np.float32)
+        norm = np.linalg.norm(arr)
+        if norm > 0:
+            query_embedding = arr / norm
 
-    
-    def run_retrieval(active_domain: str) -> list:
-        results = []
-        for i in range(1, MAX_DB_COUNT + 1):
-            if not get_db_path(i).exists():
-                continue
-            conn = get_connection(i)
-            try:
-                fts_worked = False
-                fts_query = _build_fts_match_query(query)
-                if fts_query is not None:
-                    try:
-                        cursor = conn.execute("""
-                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
-                                   s.embedding, s.tags, s.domain_key, bm25(shards_fts) as bm25_score
-                            FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
-                            WHERE s.domain_key = ? AND shards_fts MATCH ?
-                            ORDER BY bm25_score ASC LIMIT 20
-                        """, (active_domain, fts_query))
-                        res = cursor.fetchall()
-                        if res:
-                            for row in res:
-                                history.log_event(row["id"], i, "ACCESSED")
-                                results.append(_process_fts_result(row, i, query_embedding))
-                            fts_worked = True
-                    except sqlite3.OperationalError:
-                        pass
+    candidate_limit = max(limit * 2, 20)
 
-                if not fts_worked:
-                    history.log_event(0, i, "SEARCH_FALLBACK", metadata={"query": query})
-                    
-                    like_query = f"%{query}%"
-                    cursor = conn.execute("""
-                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
-                        FROM shards
-                        WHERE domain_key = ? AND (title LIKE ? OR content LIKE ?)
-                        ORDER BY utility_score DESC LIMIT 20
-                    """, (active_domain, like_query, like_query))
-                    for row in cursor:
-                        item = dict(row)
-                        item["_db_index"] = i
-                        history.log_event(item["id"], i, "ACCESSED")
-                        sem_score = 0.0
-                        if query_embedding and item["embedding"]:
-                            sem_score = cosine_similarity(
-                                query_embedding, json.loads(item["embedding"].decode()))
-                        likelihood = sem_score if query_embedding else 0.5
+    def run_parallel_retrieval(active_domain: str) -> list:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_keyword = executor.submit(
+                _keyword_retrieve, query, candidate_limit, query_embedding, active_domain
+            )
+            future_vector = executor.submit(
+                _vector_retrieve, query_embedding, candidate_limit, active_domain
+            )
+            
+            keyword_results = future_keyword.result()
+            vector_results = future_vector.result()
+            
+        return reciprocal_rank_fusion([keyword_results, vector_results], k=60)
 
-                        decay = 1.0
-                        ts_str = item.get("timestamp")
-                        if ts_str:
-                            try:
-                                dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                                if dt.tzinfo is None:
-                                    dt = dt.replace(tzinfo=timezone.utc)
-                                age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                                decay = max(0.1, 0.5 ** (age_days / 30.0))
-                            except Exception:
-                                pass
-
-                        decayed_utility = item["utility_score"] * decay
-                        item["final_score"] = (likelihood * 0.5) + (decayed_utility * 0.5)
-                        results.append(item)
-            finally:
-                conn.close()
-        return results
-
-    all_results = run_retrieval(domain_key)
+    all_results = run_parallel_retrieval(domain_key)
     
     # Fallback to global if active_domain is not global and we found no matches
     if not all_results and domain_key != "global":
-        all_results = run_retrieval("global")
+        all_results = run_parallel_retrieval("global")
 
-    all_results.sort(key=lambda x: x["final_score"], reverse=True)
     return all_results[:limit]
 
 

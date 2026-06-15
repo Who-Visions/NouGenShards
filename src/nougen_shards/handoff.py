@@ -39,6 +39,7 @@ def _make_console() -> Console:
 AGENT_FOLDERS = {
     "gemini": "gemini handoffs",
     "claude": "claude handoffs",
+    "claude-cli": "claude cli handoffs",
     "codex": "codex handoffs",
     "ollama": "ollama handoffs",
     "openrouter": "openrouter handoffs",
@@ -329,7 +330,15 @@ def detect_current_agent() -> str:
         return explicit.strip().lower()
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         return "gemini"
-    if os.environ.get("CLAUDE_CODE") or os.environ.get("ANTHROPIC_API_KEY"):
+    # Claude Code CLI is its own lane ("claude-cli"), distinct from the
+    # API/Antigravity "claude" lane, so CLI handoffs are sourced correctly.
+    if (
+        os.environ.get("CLAUDECODE")
+        or os.environ.get("CLAUDE_CODE")
+        or os.environ.get("CLAUDE_CODE_ENTRYPOINT")
+    ):
+        return "claude-cli"
+    if os.environ.get("ANTHROPIC_API_KEY"):
         return "claude"
     active_brain = get_active_brain_dir()
     if active_brain and "antigravity" in str(active_brain).lower():
@@ -783,12 +792,114 @@ def acknowledge_handoff(
     return target_path
 
 
+def compute_live_status(data: dict, git_info: dict | None = None) -> str:
+    """Pure function: derive the live status for a handoff record.
+
+    Rules (evaluated in order):
+    1. Human-set terminal/in-flight states are respected as-is:
+       acknowledged, in_progress, blocked, complete.
+    2. If stored status is "open" (or missing) AND tasks are 100% done
+       AND the git tree is clean  →  "stale-complete".
+    3. Otherwise mirror the stored status.
+
+    Never mutates files or DB.
+    """
+    stored = (data.get("status") or "open").lower()
+
+    # Human-set states that should not be auto-overridden
+    if stored in {"acknowledged", "in_progress", "blocked", "complete"}:
+        return stored
+
+    # Check whether every task is done
+    tasks = data.get("tasks") or {}
+    all_done = False
+
+    # Compact form: {"summary": "Semantic Anchor: N/N tasks completed.", ...}
+    summary = tasks.get("summary", "")
+    if summary:
+        import re as _re
+        m = _re.search(r"(\d+)/(\d+)\s+tasks? completed", summary, _re.IGNORECASE)
+        if m and m.group(1) == m.group(2) and int(m.group(2)) > 0:
+            all_done = True
+        # Also accept explicit completed-marker patterns
+        if not all_done and "all tasks completed" in summary.lower():
+            all_done = True
+    else:
+        # Full task lists
+        completed = tasks.get("completed", [])
+        in_progress = tasks.get("in_progress", [])
+        pending = tasks.get("pending", [])
+        total = len(completed) + len(in_progress) + len(pending)
+        if total > 0 and len(completed) == total:
+            all_done = True
+
+    if not all_done:
+        return stored
+
+    # Check git cleanliness
+    effective_git = git_info if git_info is not None else (data.get("git") or {})
+    changes = effective_git.get("changes", [])
+    if changes:
+        return stored  # dirty tree — not stale-complete
+
+    return "stale-complete"
+
+
+def reconcile_handoffs(
+    agent: Optional[str] = None, write: bool = False
+) -> dict:
+    """Compute live status across all handoffs.
+
+    Returns counts: total, open, in_progress, blocked, stale_complete, actionable.
+    When write=True, persists resolved status to JSON + DB for stale-complete
+    handoffs only (all other stored statuses are left untouched).
+    Default write=False — mutation-gated.
+    """
+    counts: dict = {
+        "total": 0,
+        "open": 0,
+        "in_progress": 0,
+        "blocked": 0,
+        "acknowledged": 0,
+        "complete": 0,
+        "stale_complete": 0,
+        "actionable": 0,
+    }
+    live_git = get_git_status()
+
+    for path in get_handoff_files(agent):
+        data = _read_handoff(path)
+        if not data:
+            continue
+        counts["total"] += 1
+        stored = (data.get("status") or "open").lower()
+        live = compute_live_status(data, live_git)
+
+        # Map hyphenated live status to underscore bucket key
+        bucket = live.replace("-", "_") if live.replace("-", "_") in counts else "open"
+        counts[bucket] = counts.get(bucket, 0) + 1
+        if live in {"open", "in_progress", "blocked"}:
+            counts["actionable"] += 1
+
+        if write and live == "stale-complete" and stored != "stale-complete":
+            data["status"] = "stale-complete"
+            try:
+                _atomic_write_json(path, data)
+                _sync_handoff_to_db(path, data)
+            except Exception:
+                pass  # resilience: skip individual failures
+
+    return counts
+
+
 def list_handoffs(agent: Optional[str] = None):
     console = _make_console()
     files = get_handoff_files(agent)
     if not files:
         console.print("[yellow]No handoff records found.[/yellow]")
         return
+
+    live_git = get_git_status()
 
     table = Table(title="🤖 Agent Handoff History")
     table.add_column("Timestamp", style="cyan", no_wrap=True)
@@ -803,21 +914,31 @@ def list_handoffs(agent: Optional[str] = None):
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
             t = data["tasks"]
-            total = len(t["completed"]) + len(t["in_progress"]) + len(t["pending"])
-            pct = f"{len(t['completed'])}/{total}" if total > 0 else "0/0"
+            total = len(t.get("completed", [])) + len(t.get("in_progress", [])) + len(t.get("pending", []))
+            pct = f"{len(t.get('completed', []))}/{total}" if total > 0 else "0/0"
+            # For compact tasks (summary string), show raw_count if present
+            if "summary" in t and total == 0:
+                raw = t.get("raw_count", "?")
+                pct = f"?/{raw}"
             dt = datetime.fromisoformat(data["timestamp"]).strftime("%Y-%m-%d %H:%M")
             agent_name = data.get("agent", "generic").upper()
-            if data.get("status") == "acknowledged":
+            stored = (data.get("status") or "open").lower()
+            live = compute_live_status(data, live_git)
+            # Build display string, show arrow when live differs from stored
+            suffix = f" →{live}" if live != stored else ""
+            if live == "acknowledged":
                 ack_by = (data.get("acknowledged_by") or "?").upper()
                 status_disp = f"[green]✅ {ack_by}[/green]"
-            elif data.get("status") == "in_progress":
-                status_disp = "[cyan]in_progress[/cyan]"
-            elif data.get("status") == "complete":
-                status_disp = "[green]complete[/green]"
-            elif data.get("status") == "blocked":
-                status_disp = "[red]blocked[/red]"
+            elif live == "in_progress":
+                status_disp = f"[cyan]in_progress{suffix}[/cyan]"
+            elif live == "complete":
+                status_disp = f"[green]complete{suffix}[/green]"
+            elif live == "blocked":
+                status_disp = f"[red]blocked{suffix}[/red]"
+            elif live == "stale-complete":
+                status_disp = f"[dim green]stale-complete ({stored}→stale-complete)[/dim green]"
             else:
-                status_disp = "[yellow]🟡 open[/yellow]"
+                status_disp = f"[yellow]🟡 open{suffix}[/yellow]"
             table.add_row(dt, agent_name, data["git"]["branch"], data["goal"], pct, status_disp)
         except Exception:
             pass
@@ -841,23 +962,32 @@ def show_latest_handoff(agent: Optional[str] = None):
         tasks = data["tasks"]
         agent_name = data.get("agent", "generic").upper()
 
+        stored = (data.get("status") or "open").lower()
+        live = compute_live_status(data, git_info)
+        live_marker = f" [dim](live: {live})[/dim]" if live != stored else ""
+
         # Acknowledgement status (the read-back state)
-        if data.get("status") == "acknowledged":
+        if live == "acknowledged":
             ack_line = (
                 f"[bold green]Status:[/bold green] ✅ acknowledged by "
                 f"{(data.get('acknowledged_by') or '?').upper()} "
-                f"at {data.get('acknowledged_at', '?')}\n"
+                f"at {data.get('acknowledged_at', '?')}{live_marker}\n"
             )
-        elif data.get("status") in {"in_progress", "blocked", "complete"}:
+        elif live == "stale-complete":
+            ack_line = (
+                f"[bold green]Status:[/bold green] [dim green]stale-complete[/dim green] "
+                f"(stored: {stored} → live: stale-complete)\n"
+            )
+        elif live in {"in_progress", "blocked", "complete"}:
             orchestration = data.get("orchestration") or {}
             checkpoints = orchestration.get("checkpoints") or []
             ack_line = (
-                f"[bold green]Status:[/bold green] {data.get('status')}\n"
+                f"[bold green]Status:[/bold green] {live}{live_marker}\n"
                 f"[bold cyan]Run ID:[/bold cyan] {orchestration.get('run_id', '?')}\n"
                 f"[bold cyan]Checkpoints:[/bold cyan] {len(checkpoints)}\n"
             )
         else:
-            ack_line = "[bold yellow]Status:[/bold yellow] 🟡 OPEN — run `nougen handoff ack` to claim it\n"
+            ack_line = f"[bold yellow]Status:[/bold yellow] 🟡 OPEN{live_marker} — run `nougen handoff ack` to claim it\n"
 
         # Format handoff details into rich panels
         summary = (
@@ -921,3 +1051,35 @@ def show_latest_handoff(agent: Optional[str] = None):
 
     except Exception as e:
         console.print(f"[red]Error loading handoff details: {e}[/red]")
+
+
+def watch_handoffs(
+    agent: Optional[str] = None,
+    interval: float = 5.0,
+    write: bool = False,
+) -> None:
+    """Opt-in live watcher: re-runs reconcile every `interval` seconds and
+    prints a rich table of live status counts.  Never auto-starts on import.
+    Pass write=True to persist stale-complete resolutions each cycle.
+    Exit cleanly with Ctrl+C.
+    """
+    import time
+
+    console = _make_console()
+    console.print(
+        f"[bold cyan]Watching handoffs[/bold cyan] "
+        f"(agent={agent or 'all'}, interval={interval}s, write={write}). "
+        "Press Ctrl+C to stop."
+    )
+    try:
+        while True:
+            counts = reconcile_handoffs(agent=agent, write=write)
+            table = Table(title="Handoff Live Status")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Count", style="yellow", justify="right")
+            for key, val in counts.items():
+                table.add_row(key, str(val))
+            console.print(table)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print("[bold yellow]Watcher stopped.[/bold yellow]")

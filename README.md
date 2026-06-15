@@ -97,7 +97,7 @@ graph TD
 - **Federated Intelligence**: Search across your local shards, your production SQL databases, and remote cloud nodes — results merged and re-ranked into one set. (Sources are queried in sequence today; concurrency is on the roadmap.)
 - **Parametric Dreams** *(experimental)*: The engine consolidates knowledge via time-based utility decay and exports distilled SFT datasets (TMEM) for fast-weight LoRA updates. Dataset export is real; the weight-update step is simulated scaffolding today.
 - **Production Ready**: Built-in OpenRouter routing with automatic fallback and response healing.
-- **[Deep Architecture →](docs/architecture.md)**: The full 21-step Metameric Memory Engine blueprint.
+- **[Deep Architecture → Valerion Engine](docs/architecture.md)**: The full 21-step Metameric Memory Engine blueprint.
 
 ---
 
