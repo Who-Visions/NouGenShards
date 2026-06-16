@@ -204,6 +204,27 @@ async fn memory_stats(period: String) -> Result<String, String> {
   engine_json(&raw)
 }
 
+#[tauri::command]
+fn minimize_window(window: tauri::Window) {
+  let _ = window.minimize();
+}
+
+#[tauri::command]
+fn toggle_maximize_window(window: tauri::Window) {
+  if let Ok(maximized) = window.is_maximized() {
+    if maximized {
+      let _ = window.unmaximize();
+    } else {
+      let _ = window.maximize();
+    }
+  }
+}
+
+#[tauri::command]
+fn close_window(window: tauri::Window) {
+  let _ = window.close();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let result = tauri::Builder::default()
@@ -220,7 +241,10 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       search_shards,
       engine_status,
-      memory_stats
+      memory_stats,
+      minimize_window,
+      toggle_maximize_window,
+      close_window
     ])
     .run(tauri::generate_context!());
 
