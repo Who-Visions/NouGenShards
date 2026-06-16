@@ -136,6 +136,31 @@ def init_db(index: int = 1):
     except sqlite3.OperationalError:
         pass
 
+    # Add consolidated column if missing
+    try:
+        cursor.execute("ALTER TABLE shards ADD COLUMN consolidated INTEGER DEFAULT 0;")
+    except sqlite3.OperationalError:
+        pass
+
+    # Create semantic_knowledge table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS semantic_knowledge (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject TEXT NOT NULL,
+            predicate TEXT NOT NULL,
+            confidence_score REAL DEFAULT 1.0,
+            domain_key TEXT DEFAULT 'global',
+            updated_at TEXT NOT NULL,
+            UNIQUE(subject, predicate)
+        );
+    """)
+
+    # Create index for semantic domain lookup
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_semantic_domain_subject 
+        ON semantic_knowledge (domain_key, subject);
+    """)
+
     # Create composite index for domain-bound retrieval
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_shards_domain_utility 
@@ -971,4 +996,90 @@ def compile_recall_packet(shards: list) -> str:
     # "Anghkooey" — "remember" (FROM). Spoken only when recall succeeds:
     # the engine's acknowledgment that a past life was actually surfaced.
     output.append("Anghkooey — NouGenShards remembers.")
+    return "\n".join(output)
+
+
+def retrieve_semantic_rules(query: str, limit: int = 5, domain_key: str = "global") -> List[dict]:
+    """Retrieve top matching semantic rules using simple keyword containment matching."""
+    words = [w.strip().lower() for w in query.split() if len(w.strip()) > 2]
+    if not words:
+        # Default to loading general rules if query is too generic or short
+        words = ["rule", "system", "architecture"]
+    
+    rules = []
+    for i in range(1, MAX_DB_COUNT + 1):
+        if not get_db_path(i).exists():
+            continue
+        conn = get_connection(i)
+        try:
+            for word in words[:3]:
+                cursor = conn.execute("""
+                    SELECT id, subject, predicate, confidence_score, domain_key, updated_at, ? as _db_index
+                    FROM semantic_knowledge
+                    WHERE (domain_key = ? OR domain_key = 'global')
+                      AND (subject LIKE ? OR predicate LIKE ?)
+                    ORDER BY confidence_score DESC
+                    LIMIT ?
+                """, (i, domain_key, f"%{word}%", f"%{word}%", limit))
+                for row in cursor:
+                    rules.append(dict(row))
+        except sqlite3.OperationalError:
+            pass
+        finally:
+            conn.close()
+            
+    # Deduplicate
+    seen = set()
+    unique_rules = []
+    for r in rules:
+        key = (r["subject"].lower(), r["predicate"].lower())
+        if key not in seen:
+            seen.add(key)
+            unique_rules.append(r)
+    
+    unique_rules.sort(key=lambda x: x["confidence_score"], reverse=True)
+    return unique_rules[:limit]
+
+
+def retrieve_dual_system(query: str, limit_semantic: int = 5, limit_episodic: int = 3,
+                         domain_key: Optional[str] = None) -> dict:
+    """Run dual-system query retrieving both semantic rules and episodic logs."""
+    if not domain_key:
+        domain_key = resolve_domain_from_path()
+        
+    semantic_rules = retrieve_semantic_rules(query, limit=limit_semantic, domain_key=domain_key)
+    episodic_shards = retrieve(query, limit=limit_episodic, domain_key=domain_key)
+    
+    return {
+        "semantic_rules": semantic_rules,
+        "episodic_shards": episodic_shards
+    }
+
+
+def compile_recall_packet_dual(result: dict) -> str:
+    """Compile both semantic invariants and episodic memories into a unified context packet."""
+    semantic_rules = result.get("semantic_rules", [])
+    episodic_shards = result.get("episodic_shards", [])
+    
+    if not semantic_rules and not episodic_shards:
+        return "<!-- NO RELEVANT MEMORY RECALLED -->"
+        
+    output = ["=== NOUGENSHARDS DUAL-SYSTEM RECALL PACKET ==="]
+    
+    if semantic_rules:
+        output.append("\n-- SYSTEM 2: SEMANTIC INVARIANTS (GLOBAL RULES) --")
+        for r in semantic_rules:
+            db_tag = f" (db {r['_db_index']})" if r.get('_db_index') else ""
+            output.append(f"* [{r['subject']}] {r['predicate']} [Confidence: {r['confidence_score']:.1f}]{db_tag}")
+            
+    if episodic_shards:
+        output.append("\n-- SYSTEM 1: EPISODIC STORAGE (RECENT CONTEXT) --")
+        for s in episodic_shards:
+            db_idx = s.get("_db_index")
+            db_tag = f" (db {db_idx})" if db_idx is not None else ""
+            output.append(f"--- RECORD #{s['id']}{db_tag} [Score: {s.get('utility_score_tripartite', 0.0):.2f}] ---")
+            output.append(f"When: {format_shard_when(s.get('timestamp'))}")
+            output.append(f"Title: {s['title']}\n{s['content']}\n")
+            
+    output.append("\nAnghkooey — NouGenShards remembers.")
     return "\n".join(output)

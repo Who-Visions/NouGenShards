@@ -253,6 +253,21 @@ def cmd_add(args):
 
 def cmd_search(args):
     """Search for shards across local substrate and external DBs."""
+    domain_key = getattr(args, 'domain', None)
+    if domain_key is not None and type(domain_key).__name__ in ('MagicMock', 'Mock'):
+        domain_key = None
+
+    if getattr(args, 'dual', False):
+        # Dual-system memory retrieval
+        dual_results = core.retrieve_dual_system(args.query, domain_key=domain_key)
+        if getattr(args, 'json', False):
+            # Print serialized JSON
+            print(json.dumps(dual_results, indent=2))
+        else:
+            packet = core.compile_recall_packet_dual(dual_results)
+            print(packet)
+        return
+
     embedding = None
     if getattr(args, 'semantic', False):
         client = get_client(args.provider or "openai")
@@ -263,9 +278,6 @@ def cmd_search(args):
             embedding = client.embed(model, args.query)
 
     # Use Federation for unified search
-    domain_key = getattr(args, 'domain', None)
-    if domain_key is not None and type(domain_key).__name__ in ('MagicMock', 'Mock'):
-        domain_key = None
     results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding, domain_key=domain_key)
     if not results:
         if getattr(args, 'json', False) is True:
@@ -658,9 +670,22 @@ def cmd_dream(args):
         else:
             print("\n[Dream Sequence Complete]")
             print(f" - {summary['pruned']}")
-            print(f" - Extracted top {summary['shards_extracted']} high-utility shards.")
+            shards_extracted = summary.get('shards_extracted_sft', summary.get('shards_extracted', 0))
+            print(f" - Extracted top {shards_extracted} high-utility shards.")
             print(f" - Synthesized {summary['sft_pairs_generated']} invariants into SFT pairs.")
             print(f" - Burn-in dataset ready at: {summary['parametric_dataset_path']}")
+            
+            # Print dual-system consolidation details
+            if "dual_system_consolidation" in summary:
+                ds = summary["dual_system_consolidation"]
+                print("\n🧠 [Dual-System Semantic Consolidation]")
+                print(f" - Shards scanned: {ds.get('shards_scanned', 0)}")
+                print(f" - Shards consolidated: {ds.get('shards_consolidated', 0)}")
+                print(f" - New invariants extracted: {ds.get('new_invariants_extracted', 0)}")
+                if ds.get("rules"):
+                    print(" - Newly extracted rules:")
+                    for r in ds["rules"][:5]:
+                        print(f"   * [{r['subject']}] {r['predicate']}")
             print(f"\n{summary['status']}")
 
 
@@ -728,6 +753,7 @@ def get_parser():
     p_search.add_argument("--provider", help="Embedding provider")
     p_search.add_argument("--json", action="store_true", help="Machine-readable output")
     p_search.add_argument("--domain", help="Explicit domain boundary key filter override")
+    p_search.add_argument("--dual", action="store_true", help="Use dual-system memory recall (episodic + semantic rules)")
 
     p_chat = subparsers.add_parser("chat", help="Chat with memory")
     p_chat.add_argument("query", nargs="?")
