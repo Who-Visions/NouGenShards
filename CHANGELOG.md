@@ -2,6 +2,19 @@
 
 All notable changes to NouGenShards will be documented in this file.
 
+## [1.1.0] - 2026-06-15
+### Added
+- **Security**: DavOs Gatekeeper middleware to enforce Mutation Gates on destructive actions, schema modifications, and deployment changes.
+- **Optimization**: Reversed Compaction Hooks implementing Pointer Compaction for message history virtualization.
+- **Analytics**: Kronos Temporal Engine for dynamic utility decay, access velocity momentum, and bi-temporal profile tracking.
+- **Handoff**: Automated cross-agent session handoff registry and indexing database.
+- **Tauri HUD**: Standalone Python sidecar compilation and bundling pipeline.
+
+### Fixed
+- UI crash on Tauri Cortex HUD startup when database status is null or connecting.
+- JSONL parsing crash when processing complex list/dict payloads in conversation logs.
+- Missing `nougen brain` subparser registration in CLI argument parser.
+
 ## [1.0.0] - 2026-06-10
 ### Added
 - **Core**: Advanced Memory Substrate with SQLite, FTS5, and weighted relevance reranking.
