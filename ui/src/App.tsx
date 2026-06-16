@@ -106,6 +106,31 @@ export default function App() {
   const [period, setPeriod] = useState('week');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fileMenuOpen, setFileMenuOpen] = useState(false);
+
+  const toggleFileMenu = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setFileMenuOpen((o) => !o);
+  }, []);
+
+  useEffect(() => {
+    if (!fileMenuOpen) return;
+    const close = () => setFileMenuOpen(false);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [fileMenuOpen]);
+
+  const handleMinimize = useCallback(() => {
+    tauriInvoke?.('minimize_window');
+  }, []);
+
+  const handleMaximize = useCallback(() => {
+    tauriInvoke?.('toggle_maximize_window');
+  }, []);
+
+  const handleClose = useCallback(() => {
+    tauriInvoke?.('close_window');
+  }, []);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -115,6 +140,37 @@ export default function App() {
     } catch (e) {
       setError(String(e));
     }
+  }, []);
+
+  const handleRefresh = useCallback(() => {
+    setFileMenuOpen(false);
+    refreshStatus();
+  }, [refreshStatus]);
+
+  const handleScan = useCallback(() => {
+    setFileMenuOpen(false);
+    setTab('substrate');
+    refreshStatus();
+  }, [refreshStatus]);
+
+  const handleImport = useCallback(() => {
+    setFileMenuOpen(false);
+    setTab('stats');
+  }, []);
+
+  const handleExit = useCallback(() => {
+    tauriInvoke?.('close_window');
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'q') {
+        e.preventDefault();
+        tauriInvoke?.('close_window');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   useEffect(() => {
@@ -168,7 +224,52 @@ export default function App() {
   );
 
   return (
-    <div className="hud">
+    <div className="app-container">
+      <div className="titlebar" data-tauri-drag-region>
+        <div className="titlebar-left">
+          <div className="menu-item">
+            <button
+              className={`menu-btn ${fileMenuOpen ? 'active' : ''}`}
+              onClick={toggleFileMenu}
+            >
+              File
+            </button>
+            {fileMenuOpen && (
+              <div className="dropdown-content" onClick={(e) => e.stopPropagation()}>
+                <button onClick={handleRefresh}>
+                  <span>Refresh Substrate</span>
+                </button>
+                <button onClick={handleScan}>
+                  <span>Scan Workspace</span>
+                </button>
+                <button onClick={handleImport}>
+                  <span>Import History</span>
+                </button>
+                <div className="divider" />
+                <button onClick={handleExit} className="danger-item">
+                  <span>Exit</span>
+                  <span className="shortcut">Ctrl+Q</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="titlebar-center" data-tauri-drag-region>
+          NouGenShards Cortex HUD
+        </div>
+        <div className="titlebar-right">
+          <button className="titlebar-btn minimize" onClick={handleMinimize} title="Minimize">
+            <svg width="10" height="1" viewBox="0 0 10 1" fill="none"><path d="M0 0.5H10" stroke="currentColor" strokeWidth="1"/></svg>
+          </button>
+          <button className="titlebar-btn maximize" onClick={handleMaximize} title="Maximize">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" strokeWidth="1"/></svg>
+          </button>
+          <button className="titlebar-btn close" onClick={handleClose} title="Close">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M0.5 0.5L9.5 9.5M9.5 0.5L0.5 9.5" stroke="currentColor" strokeWidth="1"/></svg>
+          </button>
+        </div>
+      </div>
+      <div className="hud">
       <header className="hud-header">
         <div className="brand">
           <span className="brand-mark">◈</span>
@@ -299,6 +400,7 @@ export default function App() {
       <footer className="hud-footer">
         local-first · encrypted vault · Who Visions LLC
       </footer>
+    </div>
     </div>
   );
 }
