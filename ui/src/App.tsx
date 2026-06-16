@@ -251,7 +251,7 @@ export default function App() {
         <section className="panel">
           <div className="substrate-grid">
             {Array.from({ length: 9 }, (_, i) => i + 1).map((idx) => {
-              const db = status?.databases.find((d) => d.index === idx);
+              const db = status?.databases?.find((d) => d.index === idx);
               const pct = db ? Math.min(100, (db.size_mb / 1024) * 100) : 0;
               return (
                 <div key={idx} className={db ? 'cell live' : 'cell'}>

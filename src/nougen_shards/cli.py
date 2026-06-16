@@ -830,6 +830,15 @@ def get_parser():
     p_dashboard = subparsers.add_parser("dashboard", help="Launch visual Cortex HUD")
     p_dashboard.add_argument("--port", type=int, default=4444, help="Port to run on")
 
+    p_brain = subparsers.add_parser("brain", help="Universal AI Memory Forensic Engine")
+    p_brain.add_argument("action", choices=["scan", "import"])
+    p_brain.add_argument("--project", help="Target project path to scan/import")
+    p_brain.add_argument("--unknown", action="store_true", help="Include unknown files/folders")
+    p_brain.add_argument("--source", help="Filter by specific source")
+    p_brain.add_argument("--no-redact", action="store_true", help="Do not redact secrets")
+    p_brain.add_argument("--confirm", action="store_true", help="Confirm writing to database")
+    p_brain.add_argument("--json", action="store_true", help="Machine-readable output")
+
     p_handoff = subparsers.add_parser("handoff", help="Cross-agent session handoff notes")
     p_handoff.add_argument("action", choices=[
         "create", "read", "list", "ack", "start", "checkpoint", "complete",

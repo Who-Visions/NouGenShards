@@ -12,7 +12,9 @@ def _safe_read(path: Path) -> str:
     except Exception:
         return ""
 
-def _hash(content: str) -> str:
+def _hash(content) -> str:
+    if not isinstance(content, str):
+        content = str(content)
     return hashlib.md5(content.encode('utf-8', errors='ignore')).hexdigest()
 
 def _timestamp() -> str:
@@ -56,6 +58,10 @@ def parse_jsonl(path: Path, tool: str, is_project: bool) -> List[NormalizedRecor
             data = json.loads(line)
             role = data.get("role", "system")
             text = data.get("content", str(data))
+            if isinstance(text, (list, dict)):
+                text = json.dumps(text, ensure_ascii=False)
+            elif not isinstance(text, str):
+                text = str(text)
             records.append(NormalizedRecord(
                 source_tool=tool,
                 source_kind="jsonl_event",
