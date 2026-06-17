@@ -111,13 +111,12 @@ class TestGatekeeper(unittest.TestCase):
         self.assertIn("[gatekeeper] Blocked by DavOs Gatekeeper", res)
         self.assertIn("Gate: schema_change", res)
 
-    @patch('urllib.request.urlopen')
-    def test_run_agent_allowed(self, mock_urlopen):
+    @patch('nougen_shards.models_client.OllamaClient.chat')
+    @patch('nougen_shards.models_client.OllamaClient.is_alive')
+    def test_run_agent_allowed(self, mock_is_alive, mock_chat):
         """Test run_agent processes normally and doesn't get blocked with allowed prompts."""
-        # Mock successful Ollama response
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'{"response": "Mocked Ollama Response"}'
-        mock_urlopen.return_value.__enter__.return_value = mock_response
+        mock_is_alive.return_value = True
+        mock_chat.return_value = "Mocked Ollama Response"
 
         res = run_agent("Remember", "Explain the concept of memory shards.")
         self.assertEqual(res, "Mocked Ollama Response")

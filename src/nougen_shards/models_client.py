@@ -592,7 +592,11 @@ def find_best_model_from_list(models: List[str]) -> Optional[ModelBudgetConfig]:
         return None
 
     # 1. First tier: Known custom system models (tight context, low temp)
-    custom_system_tags = ["dav1d:e2b", "rhea-noir:e2b", "sol-ai:e2b"]
+    custom_system_tags = [
+        "dav1d:e2b", "rhea-noir:e2b", "sol-ai:e2b", "griot:e2b",
+        "gemma4-aggressive:e2b", "gemma4-aggressive:e4b", "rhea-noir:e4b",
+        "kaedra:e4b", "iris-ai:e4b", "sol-ai:e4b", "davos:latest", "janitor:latest"
+    ]
     for tag in custom_system_tags:
         for model in models:
             model_lower = model.lower()

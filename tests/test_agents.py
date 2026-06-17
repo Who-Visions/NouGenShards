@@ -2,7 +2,7 @@
 from nougen_shards import agents
 
 
-EXPECTED_ROSTER = {"Sharder", "Remember", "Kronos", "DavOs", "Sol-Ai", "NouGen"}
+EXPECTED_ROSTER = {"Sharder", "Remember", "Kronos", "DavOs", "Sol-Ai", "NouGen", "Griot", "Rhea", "Kaedra", "Iris"}
 
 
 def test_roster_names():

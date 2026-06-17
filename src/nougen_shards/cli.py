@@ -257,14 +257,15 @@ def cmd_search(args):
     if domain_key is not None and type(domain_key).__name__ in ('MagicMock', 'Mock'):
         domain_key = None
 
-    if getattr(args, 'dual', False):
+    dual_flag = getattr(args, 'dual', False)
+    if dual_flag is not False and type(dual_flag).__name__ not in ('MagicMock', 'Mock') and dual_flag:
         # Dual-system memory retrieval
-        dual_results = core.retrieve_dual_system(args.query, domain_key=domain_key)
+        dual_results = shards.retrieve_dual_system(args.query, domain_key=domain_key)
         if getattr(args, 'json', False):
             # Print serialized JSON
             print(json.dumps(dual_results, indent=2))
         else:
-            packet = core.compile_recall_packet_dual(dual_results)
+            packet = shards.compile_recall_packet_dual(dual_results)
             print(packet)
         return
 

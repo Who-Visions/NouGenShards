@@ -9,14 +9,17 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 # Configuration
-HISTORY_DIR = Path.home() / ".nougen" / "shards"
-DB_PATH = HISTORY_DIR / "history.db"
+def get_history_db_path() -> Path:
+    """Gets the path to the history database dynamically, matching core.GLOBAL_DIR."""
+    from . import core
+    core.GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
+    return core.GLOBAL_DIR / "history.db"
 
 
 def get_history_connection():
     """Establishes a connection to the history substrate with WAL enabled."""
-    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
+    db_path = get_history_db_path()
+    conn = sqlite3.connect(str(db_path), timeout=10.0)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.row_factory = sqlite3.Row
     return conn
@@ -53,7 +56,7 @@ def log_event(shard_id: int, db_index: int, event_type: str,
               old_score: Optional[float] = None, new_score: Optional[float] = None, metadata: Optional[dict] = None):
     """Writes a historical event to the substrate."""
     # Lazy init to prevent side-effects on import
-    if not DB_PATH.exists():
+    if not get_history_db_path().exists():
         init_history_db()
 
     timestamp = datetime.utcnow().isoformat() + "Z"
