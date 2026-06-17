@@ -69,6 +69,10 @@ list_backup_tables.py
 tmp_dump.py
 tmp_dump_global.py
 tools/read_vault_shards.py
+load_secrets.py
+count_shards.py
+dream_all.py
+fast_ingest.py
 
 # One-time / version-numbered migration scripts — history belongs in git, not
 # in filenames. Local-only.
@@ -79,6 +83,8 @@ incremental_migration_v2.py
 migrate_memories.py
 verify_swap.py
 fix_types.py
+check_unsharded.py
+shard_vault_files.py
 
 # Fleet / orchestration tooling — internal, not part of the public package
 # (banned from the user-facing tree by the project constitution).

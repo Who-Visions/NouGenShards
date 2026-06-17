@@ -314,6 +314,11 @@ def calculate_contrastive_perplexity(content: str) -> float:
     except Exception:
         fallback_score = 0.5
 
+    # Check if we are running in a test environment to prevent local LLM/OpenRouter calls
+    import sys
+    if "pytest" in sys.modules or os.environ.get("PYTEST_CURRENT_TEST"):
+        return fallback_score
+
     # Try local Ollama first
     try:
         from .models_client import get_best_available_client

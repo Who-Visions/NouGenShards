@@ -202,6 +202,25 @@ nougen handoff list
 
 ---
 
+## 🤖 Fleet Agent Roster
+
+NouGenShards features a 10-agent roster (personas layered over the memory engine). These agents route through local models by default (providing $0 cloud cost execution) but support automatic fail-soft to OpenRouter Cloud or Who Visions Cloud (Ollama Cloud) depending on key availability:
+
+- **Sharder**: Ingestion (Data Capture & Indexing) — Binds to `dav1d:e2b`.
+- **Remember**: Recall (Memory Retrieval & Verification) — Binds to `sol-ai:e4b`.
+- **Kronos**: Time (Temporal Grounding & Decay) — Binds to `gemma2:2b`.
+- **DavOs**: Operations (Oversight & Gatekeeper) — Binds to `DavOs:latest`.
+- **Sol-Ai**: Broad Reasoning & Illumination — Binds to `sol-ai:e4b`.
+- **NouGen**: Orchestrator (Core Orchestration & Branding) — Binds to `gemma4:12b`.
+- **Griot**: Rules (Semantic Synthesis & Consolidation) — Binds to `griot:e2b`.
+- **Rhea**: Security (System Hardening & Audit) — Binds to `rhea-noir:e2b`.
+- **Kaedra**: Pedagogy (Tensor Mathematics & Training) — Binds to `kaedra:e4b`.
+- **Iris**: Airspace (Web Research & Browser Actuation) — Binds to `iris-ai:e4b`.
+
+These personas run locally or seamlessly fall back to cloud providers depending on key configuration, offering hybrid processing.
+
+---
+
 ## ☁️ Cloud & Hybrid Modes
 
 NouGenShards supports three ways to use cloud intelligence:

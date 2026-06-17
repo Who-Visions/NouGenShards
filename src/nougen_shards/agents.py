@@ -107,6 +107,53 @@ ROSTER = {
         default_model="gemma4:12b",
         engine_functions=[],
     ),
+    "Griot": AgentSpec(
+        name="Griot",
+        role="Rules (Semantic Synthesis & Consolidation)",
+        motto="Griot speaks from the vault.",
+        system_prompt=(
+            "You are Griot, the rules compiler and semantic synthesist. Your "
+            "job is to analyze interaction logs and consolidate raw episodic "
+            "shards into permanent, verified architectural invariants and "
+            "rules of the system, optimizing cognitive storage efficiency."),
+        default_model="griot:e2b",
+        engine_functions=["consolidate_episodic_data"],
+    ),
+    "Rhea": AgentSpec(
+        name="Rhea",
+        role="Security (System Hardening & Audit)",
+        motto="Guard the gates, harden the fabric.",
+        system_prompt=(
+            "You are Rhea, the security and system hardening auditor. You "
+            "scan system states, check script injections, check URL homographs, "
+            "and audit execution logs for structural integrity and compliance "
+            "with safety constraints."),
+        default_model="rhea-noir:e2b",
+        engine_functions=["check_mutation_gate"],
+    ),
+    "Kaedra": AgentSpec(
+        name="Kaedra",
+        role="Pedagogy (Tensor Mathematics & Training)",
+        motto="Learn without abstractions.",
+        system_prompt=(
+            "You are Kaedra, the pedagogical trainer. You teach and evaluate "
+            "deep learning concepts and raw PyTorch tensor mathematics from "
+            "scratch, ensuring mathematical fidelity without reliance on high-level "
+            "framework abstractions."),
+        default_model="kaedra:e4b",
+        engine_functions=[],
+    ),
+    "Iris": AgentSpec(
+        name="Iris",
+        role="Airspace (Web Research & Browser Actuation)",
+        motto="Observe and navigate the web.",
+        system_prompt=(
+            "You are Iris, the web researcher and browser specialist. You navigate "
+            "the external web sandbox, perform live literature searches, query APIs, "
+            "and compile reference documentation into structured knowledge."),
+        default_model="iris-ai:e4b",
+        engine_functions=[],
+    ),
 }
 
 
@@ -130,10 +177,9 @@ def list_roster() -> str:
 def run_agent(name: str, prompt: str, model: Optional[str] = None,
               timeout: int = 300, num_ctx: int = 4096) -> str:
     """
-    Run a prompt through a roster agent on the local Ollama fleet ($0 run).
-
-    Fail-soft: returns a diagnostic string rather than raising, so callers
-    can escalate to cloud per the constitution instead of crashing.
+    Run a prompt through a roster agent.
+    Tries local Ollama first (local-first). If local run fails, falls back
+    to OpenRouter Cloud or Who Visions Cloud (Ollama Cloud) depending on key availability.
     """
     res = check_mutation_gate(prompt)
     if not res.get("allowed", True):
@@ -142,18 +188,54 @@ def run_agent(name: str, prompt: str, model: Optional[str] = None,
     spec = get_agent(name)
     if spec is None:
         return f"[roster] No agent named '{name}'. Roster: {', '.join(ROSTER)}."
-    body = json.dumps({
-        "model": model or spec.default_model,
-        "system": spec.system_prompt,
-        "prompt": prompt,
-        "stream": False,
-        "options": {"num_ctx": num_ctx},
-    }).encode()
-    req = urllib.request.Request(
-        OLLAMA_URL, body, {"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())["response"]
-    except Exception as exc:  # noqa: BLE001 — escalation signal, not crash
-        return (f"[{spec.name}] local run failed "
-                f"({type(exc).__name__}: {exc}). Escalate per constitution.")
+
+    target_model = model or spec.default_model
+
+    # 1. Local-First: Try local Ollama
+    from nougen_shards.models_client import OllamaClient
+    local_client = OllamaClient()
+    if local_client.is_alive():
+        try:
+            return local_client.chat(target_model, [
+                {"role": "system", "content": spec.system_prompt},
+                {"role": "user", "content": prompt}
+            ])
+        except Exception:
+            pass
+
+    # 2. Cloud Fallback: Try OpenRouter Cloud
+    from nougen_shards.models_client import OpenRouterClient
+    or_client = OpenRouterClient()
+    if or_client.is_alive():
+        try:
+            or_model = "google/gemma-3-27b-it:free"
+            if "claude" in target_model.lower():
+                or_model = "anthropic/claude-3.5-sonnet"
+            elif "gemma-4" in target_model.lower() or "31b" in target_model.lower():
+                or_model = "google/gemma-4-31b-it:free"
+            
+            res_dict = or_client.chat_with_fallback(
+                model=or_model,
+                messages=[
+                    {"role": "system", "content": spec.system_prompt},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            if res_dict.get("content") and not res_dict["content"].startswith("Error:"):
+                return res_dict["content"]
+        except Exception:
+            pass
+
+    # 3. Cloud Fallback: Try Who Visions Cloud (Ollama Cloud gateway)
+    from nougen_shards.models_client import WhoVisionsCloudClient
+    cloud_client = WhoVisionsCloudClient()
+    if cloud_client.is_alive():
+        try:
+            return cloud_client.chat(target_model, [
+                {"role": "system", "content": spec.system_prompt},
+                {"role": "user", "content": prompt}
+            ])
+        except Exception:
+            pass
+
+    return f"[{spec.name}] local and cloud runs failed. Escalate per constitution."
