@@ -33,4 +33,10 @@ add "CHANGE: security batch - evolution.evolve_skill skill-path traversal saniti
 add "DECISION/PRINCIPLE: Prefer dynamic routes over hardcoded everywhere. Added OpenRouterClient.preferred_free_model() resolving a single model from the live free roster (get_free_models). Replaced ALL hardcoded free-model literals at call sites: agents.py cloud fallback, core.py density scorer, openrouter_mcp_client run_query (py+ts). get_free_models short-circuits to seed when no API key (fast + offline-safe). No call site hardcodes a model string anymore." \
     "decision,principle,dynamic-routing,openrouter,refactor"
 
+add "CHANGE: robustness batch - timestamps tz-aware single-Z (history/graph utcnow()->now(timezone.utc); nougen_context +00:00Z fixed). Resource leaks fixed: sql.py engine.dispose() finally; nougen_context try/finally; cloud.py reads conf inside try (KeyError no longer aborts sweep). models_client _HTTP_TIMEOUT=120 on all cloud urlopen; find_best_edge_model annotation Optional[ModelBudgetConfig]. Commit fa61727." \
+    "change,robustness,leaks,timestamps,timeouts"
+
+add "CHANGE: Stood up CI (.github/workflows/ci.yml), the audit's biggest gap. Python + TypeScript jobs. First run failed (TS job: node 20 lacks ** glob support); fixed by pinning node 22 + shell-expanded glob. CI now GREEN on both jobs (run 0ef7344). Commits 770b59c, 0ef7344." \
+    "change,ci,devops,testing,lesson"
+
 echo "Replayed 5 session shards into your vault. Verify: $NOUGEN search \"free models retraction\""
