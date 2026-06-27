@@ -112,3 +112,15 @@ def test_no_timeout_less_urlopen_in_source():
 ])
 def test_cloud_url_guard(url, safe):
     assert cloud._is_safe_cloud_url(url) is safe
+
+
+def test_cloud_url_guard_resolves_hostnames(monkeypatch):
+    import socket
+    # A hostname that resolves to the cloud-metadata IP must be rejected even
+    # though it is not an IP literal (DNS-based SSRF bypass).
+    def fake_getaddrinfo(host, port, *a, **k):
+        ip = "169.254.169.254" if host == "metadata.evil" else "93.184.216.34"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port))]
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    assert cloud._is_safe_cloud_url("https://metadata.evil/") is False
+    assert cloud._is_safe_cloud_url("https://safe.example/") is True

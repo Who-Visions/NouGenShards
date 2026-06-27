@@ -3,6 +3,7 @@ import ipaddress
 import json
 import logging
 import os
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -23,6 +24,13 @@ def _is_safe_cloud_url(url: str) -> bool:
     - Refuses plaintext http to non-loopback hosts (would send X-NGS-Token in
       cleartext); override knowingly with NGS_ALLOW_INSECURE_CLOUD=1.
 
+    For hostnames (not IP literals) the name is resolved and EVERY resolved
+    address is checked, so a name like `metadata.google.internal` or an
+    attacker DNS record pointing at 169.254.169.254 is rejected. (This is not
+    full DNS-rebinding protection — that needs pinning the validated IP through
+    to the request; a follow-up. A name that does not resolve here is allowed,
+    matching the prior behavior, since the request itself will fail.)
+
     Note: private LAN ranges (10/8, 192.168/16) are intentionally allowed since
     self-hosted nodes legitimately live there; do not feed this fully untrusted
     URLs without an additional egress allowlist.
@@ -35,17 +43,25 @@ def _is_safe_cloud_url(url: str) -> bool:
         return False
     host = parsed.hostname.lower()
 
-    ip = None
+    # Candidate IPs: the literal itself, or every DNS-resolved address.
+    candidates = []
     try:
-        ip = ipaddress.ip_address(host)
+        candidates.append(ipaddress.ip_address(host))
     except ValueError:
-        pass
-    if ip is not None and (ip.is_link_local or ip.is_multicast
-                           or ip.is_reserved or ip.is_unspecified):
-        return False
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            for info in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP):
+                candidates.append(ipaddress.ip_address(info[4][0]))
+        except (socket.gaierror, ValueError, OSError):
+            candidates = []  # unresolvable: allow (request will fail anyway)
+
+    for ip in candidates:
+        if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            return False
 
     if parsed.scheme == "http":
-        loopback = host in ("localhost", "127.0.0.1", "::1") or (ip is not None and ip.is_loopback)
+        loopback = (host in ("localhost", "127.0.0.1", "::1")
+                    or any(ip.is_loopback for ip in candidates))
         if not loopback and os.environ.get("NGS_ALLOW_INSECURE_CLOUD") != "1":
             return False
     return True

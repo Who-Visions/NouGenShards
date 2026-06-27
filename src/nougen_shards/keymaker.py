@@ -210,6 +210,10 @@ def ingest_service_account(json_data: str):
                 f_out.write(payload)
         else:
             fd = os.open(str(target_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            # O_CREAT's mode only applies to a NEW inode; O_TRUNC on a pre-existing
+            # (possibly 0644) file keeps the old perms. fchmod enforces 0600 on
+            # re-ingest/rotation so existing vaults are repaired, not left readable.
+            os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f_out:
                 f_out.write(payload)
 
@@ -344,6 +348,22 @@ def migrate_to_encrypted() -> int:
                     continue
                 conn.execute("UPDATE secrets SET secret_value = ? WHERE secret_key = ?",
                              (protected, key))
+                migrated += 1
+
+        # Also migrate legacy plaintext external-DB URIs (they embed user:pass).
+        # The external_dbs table predates URI encryption, so existing rows hold
+        # raw connection strings that this otherwise leaves untouched.
+        try:
+            ext_rows = conn.execute("SELECT id, uri FROM external_dbs").fetchall()
+        except sqlite3.Error:
+            ext_rows = []
+        for row_id, uri in ext_rows:
+            if not _is_encrypted(uri):
+                protected_uri = _protect(str(uri))
+                if not _is_encrypted(protected_uri):
+                    continue  # plaintext escape-hatch active
+                conn.execute("UPDATE external_dbs SET uri = ? WHERE id = ?",
+                             (protected_uri, row_id))
                 migrated += 1
         conn.commit()
     finally:
