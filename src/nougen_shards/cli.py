@@ -575,12 +575,21 @@ def cmd_node(args):
         for i in range(1, shards.MAX_DB_COUNT + 1):
             if not shards.get_db_path(i).exists(): continue
             conn = shards.get_connection(i)
-            rows = conn.execute("SELECT * FROM shards").fetchall()
-            for r in rows:
-                d = dict(r)
-                if d.get("embedding"): d["embedding"] = json.loads(d["embedding"].decode())
-                all_shards.append(d)
-            conn.close()
+            try:
+                rows = conn.execute("SELECT * FROM shards").fetchall()
+                for r in rows:
+                    d = dict(r)
+                    emb = d.get("embedding")
+                    if emb:
+                        try:
+                            raw = emb.decode() if isinstance(emb, (bytes, bytearray)) else emb
+                            d["embedding"] = json.loads(raw)
+                        except (AttributeError, ValueError, TypeError) as e:
+                            print(f"[!] Skipping bad embedding on shard #{d.get('id')}: {e}")
+                            d["embedding"] = None
+                    all_shards.append(d)
+            finally:
+                conn.close()
         
         print(f"[*] Pushing {len(all_shards)} shards to {args.url}...")
         res = push_to_cloud(all_shards, args.url, args.token)
@@ -599,13 +608,26 @@ def cmd_node(args):
         print(f"[*] Pulled {len(remote_shards)} shards. Ingesting locally...")
         count = 0
         for s in remote_shards:
-            success = shards.capture(
-                s.get("event_type", "SYNC"),
-                s.get("title", "Synced Shard"),
-                s.get("content", ""),
-                json.loads(s.get("tags", "[]")) if isinstance(s.get("tags"), str) else s.get("tags"),
-                embedding=s.get("embedding")
-            )
+            raw_tags = s.get("tags")
+            if isinstance(raw_tags, str):
+                try:
+                    tags = json.loads(raw_tags or "[]")
+                except (ValueError, TypeError) as e:
+                    print(f"[!] Skipping bad tags on shard '{s.get('title')}': {e}")
+                    tags = []
+            else:
+                tags = raw_tags
+            try:
+                success = shards.capture(
+                    s.get("event_type", "SYNC"),
+                    s.get("title", "Synced Shard"),
+                    s.get("content", ""),
+                    tags,
+                    embedding=s.get("embedding")
+                )
+            except Exception as e:
+                print(f"[!] Failed to ingest shard '{s.get('title')}': {e}")
+                continue
             if success: count += 1
         print(f"✅ Ingestion complete. {count} new shards added.")
 

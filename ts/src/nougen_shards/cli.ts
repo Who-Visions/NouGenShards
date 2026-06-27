@@ -658,13 +658,23 @@ async function cmd_node(args: Args): Promise<void> {
     for (let i = 1; i <= shards.MAX_DB_COUNT; i++) {
       if (!existsSync(shards.get_db_path(i))) continue;
       const conn = shards.get_connection(i);
-      const rows = conn.prepare("SELECT * FROM shards").all() as Record<string, any>[];
-      for (const r of rows) {
-        const d: Record<string, any> = { ...r };
-        if (d.embedding) d.embedding = JSON.parse(Buffer.from(d.embedding).toString());
-        all_shards.push(d);
+      try {
+        const rows = conn.prepare("SELECT * FROM shards").all() as Record<string, any>[];
+        for (const r of rows) {
+          const d: Record<string, any> = { ...r };
+          if (d.embedding) {
+            try {
+              d.embedding = JSON.parse(Buffer.from(d.embedding).toString());
+            } catch (e) {
+              console.log(`[!] Skipping bad embedding on shard #${d.id}: ${e}`);
+              d.embedding = null;
+            }
+          }
+          all_shards.push(d);
+        }
+      } finally {
+        conn.close();
       }
-      conn.close();
     }
 
     console.log(`[*] Pushing ${all_shards.length} shards to ${args.url}...`);
@@ -685,13 +695,30 @@ async function cmd_node(args: Args): Promise<void> {
     console.log(`[*] Pulled ${remote_shards.length} shards. Ingesting locally...`);
     let count = 0;
     for (const s of remote_shards) {
-      const success = shards.capture(
-        s.event_type ?? "SYNC",
-        s.title ?? "Synced Shard",
-        s.content ?? "",
-        typeof s.tags === "string" ? JSON.parse(s.tags || "[]") : s.tags,
-        s.embedding,
-      );
+      let tags: any;
+      if (typeof s.tags === "string") {
+        try {
+          tags = JSON.parse(s.tags || "[]");
+        } catch (e) {
+          console.log(`[!] Skipping bad tags on shard '${s.title}': ${e}`);
+          tags = [];
+        }
+      } else {
+        tags = s.tags;
+      }
+      let success = false;
+      try {
+        success = shards.capture(
+          s.event_type ?? "SYNC",
+          s.title ?? "Synced Shard",
+          s.content ?? "",
+          tags,
+          s.embedding,
+        );
+      } catch (e) {
+        console.log(`[!] Failed to ingest shard '${s.title}': ${e}`);
+        continue;
+      }
       if (success) count += 1;
     }
     console.log(`✅ Ingestion complete. ${count} new shards added.`);

@@ -437,22 +437,27 @@ export function mark_shard(shard_id: number, worked: boolean): boolean {
       continue;
     }
     const conn = get_connection(i);
-    const row = conn.prepare("SELECT id, utility_score FROM shards WHERE id = ?").get(shard_id) as
-      | Shard
-      | undefined;
-    if (row) {
-      const old_score = row.utility_score as number;
+    let old_score: number;
+    let new_score: number;
+    try {
+      const row = conn.prepare("SELECT id, utility_score FROM shards WHERE id = ?").get(shard_id) as
+        | Shard
+        | undefined;
+      if (!row) {
+        continue;
+      }
+      old_score = row.utility_score as number;
       const val = worked ? 1.0 : -0.5;
-      const new_score = old_score + val;
+      new_score = old_score + val;
       conn.prepare("UPDATE shards SET utility_score = ? WHERE id = ?").run(new_score, shard_id);
+    } finally {
       conn.close();
-
-      // Log UTILITY_CHANGE event
-      history.log_event(shard_id, i, "UTILITY_CHANGE", old_score, new_score);
-
-      return true;
     }
-    conn.close();
+
+    // Log UTILITY_CHANGE event
+    history.log_event(shard_id, i, "UTILITY_CHANGE", old_score, new_score);
+
+    return true;
   }
   return false;
 }
