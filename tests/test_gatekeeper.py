@@ -52,6 +52,28 @@ class TestGatekeeper(unittest.TestCase):
             self.assertEqual(res["gate"], "destructive_cleanup")
             self.assertIn("Destructive cleanups", res["reason"])
 
+    def test_direct_checks_blocked_obfuscated_destructive(self):
+        """Regression: whitespace/case-obfuscated destructive commands are caught."""
+        # Collapsed whitespace + mixed case should normalize and still block.
+        commands = [
+            "RM   -RF /var/data",          # extra spaces + uppercase
+            "rm\t-rf\t/tmp/x",             # tab-separated
+            "shutil.rmtree('/data')",      # python recursive delete
+            "os.unlink('/etc/passwd')",    # python unlink
+            "dd if=/dev/zero of=/dev/sda", # raw disk overwrite
+            ":(){ :|:& };:",               # forkbomb
+        ]
+        for cmd in commands:
+            res = check_mutation_gate(cmd)
+            self.assertFalse(res["allowed"], f"expected block for: {cmd!r}")
+            self.assertEqual(res["gate"], "destructive_cleanup")
+
+    def test_direct_checks_blocked_obfuscated_deployment(self):
+        """Regression: tab/space-obfuscated git push is caught after normalization."""
+        res = check_mutation_gate("git\tpush   --force origin main")
+        self.assertFalse(res["allowed"])
+        self.assertEqual(res["gate"], "deployment_target_change")
+
     def test_direct_checks_blocked_dry_run_false(self):
         """Test check_mutation_gate blocks actions with dry_run=False."""
         res = check_mutation_gate("safe query", {"dry_run": False})

@@ -4,6 +4,7 @@ Architecture: FastAPI + Persistent Storage (/data) + Token Auth + Multi-tab Grad
 """
 import os
 import sys
+import hmac
 import json
 import sqlite3
 from typing import List, Optional
@@ -35,7 +36,8 @@ NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN")
 def verify_token(x_ngs_token: str = Header(None)):
     if not NODE_TOKEN:
         raise HTTPException(status_code=503, detail="Node write-auth not configured.")
-    if x_ngs_token != NODE_TOKEN:
+    # Constant-time comparison to avoid leaking the token via timing.
+    if not x_ngs_token or not hmac.compare_digest(str(x_ngs_token), str(NODE_TOKEN)):
         raise HTTPException(status_code=401, detail="Invalid node token.")
     return x_ngs_token
 

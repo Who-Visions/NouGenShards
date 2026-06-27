@@ -198,12 +198,16 @@ async def run_query(query: str):
         {"role": "user", "content": query}
     ]
 
-    print("\n[*] Sending request to OpenRouter (gemma-31b)...")
+    # Resolve a free model dynamically from the live roster — never hardcoded.
+    from nougen_shards.models_client import OpenRouterClient
+    free_model = OpenRouterClient().preferred_free_model()
+
+    print(f"\n[*] Sending request to OpenRouter ({free_model})...")
     try:
         # 1. First model call with tools passed
         response = call_openrouter(
             messages=messages,
-            model="google/gemma-4-31b-it:free",
+            model=free_model,
             tools=openai_tools if openai_tools else None,
             return_raw_message=True
         )
@@ -241,7 +245,7 @@ async def run_query(query: str):
             # 2. Complete loop and get final textual response
             final_response = call_openrouter(
                 messages=messages,
-                model="google/gemma-4-31b-it:free"
+                model=free_model
             )
             print(f"\n[Final Response]:\n{final_response}")
         else:

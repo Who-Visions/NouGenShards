@@ -344,13 +344,15 @@ def calculate_contrastive_perplexity(content: str) -> float:
     # Try OpenRouter free model
     try:
         from openrouter_guard import call_openrouter
+        from .models_client import OpenRouterClient
         prompt = (
             "Analyze the following text and estimate its information density / contrastive perplexity score "
             "between 0.0 (generic filler, boilerplate, highly redundant) and 1.0 (extremely dense, novel, high surprisal). "
             "Provide ONLY the float number in your response, nothing else.\n\n"
             f"Text: {content[:1000]}"
         )
-        res_str = call_openrouter(prompt=prompt, model="google/gemma-3-27b-it:free", temperature=0.1)
+        # Resolve the free model dynamically from the live roster — never hardcoded.
+        res_str = call_openrouter(prompt=prompt, model=OpenRouterClient().preferred_free_model(), temperature=0.1)
         import re
         match = re.search(r"\d+\.\d+", res_str)
         if match:
@@ -916,26 +918,29 @@ def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
     shard; without it we fall back to the first id match across the grid, which is
     ambiguous once ids collide and can update the wrong shard.
     """
-    indices = [db_index] if db_index else range(1, MAX_DB_COUNT + 1)
+    indices = [db_index] if db_index is not None else range(1, MAX_DB_COUNT + 1)
     for i in indices:
         if not get_db_path(i).exists():
             continue
         conn = get_connection(i)
-        row = conn.execute("SELECT id, utility_score FROM shards WHERE id = ?", (shard_id,)).fetchone()
-        if row:
-            old_score = row["utility_score"]
-            val = 1.0 if worked else -0.5
-            new_score = old_score + val
-            conn.execute("UPDATE shards SET utility_score = ? WHERE id = ?", (new_score, shard_id))
-            conn.commit()
+        try:
+            row = conn.execute("SELECT id, utility_score FROM shards WHERE id = ?", (shard_id,)).fetchone()
+            if row:
+                old_score = row["utility_score"]
+                val = 1.0 if worked else -0.5
+                new_score = old_score + val
+                conn.execute("UPDATE shards SET utility_score = ? WHERE id = ?", (new_score, shard_id))
+                conn.commit()
+            else:
+                continue
+        finally:
             conn.close()
 
-            # Log UTILITY_CHANGE event
-            from . import history # pylint: disable=import-outside-toplevel
-            history.log_event(shard_id, i, "UTILITY_CHANGE", old_score=old_score, new_score=new_score)
+        # Log UTILITY_CHANGE event
+        from . import history # pylint: disable=import-outside-toplevel
+        history.log_event(shard_id, i, "UTILITY_CHANGE", old_score=old_score, new_score=new_score)
 
-            return True
-        conn.close()
+        return True
     return False
 
 

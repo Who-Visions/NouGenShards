@@ -5,12 +5,16 @@ import urllib.request
 import urllib.error
 import sys
 import os
+import time
 from typing import Optional, List, Dict
 from dataclasses import dataclass, asdict
 
 from . import keymaker
 from . import router
 from . import structured
+
+# Hard cap on any cloud HTTP call so a stalled provider can't hang the process.
+_HTTP_TIMEOUT = 120
 
 
 @dataclass
@@ -86,7 +90,7 @@ class OpenAIClient(LLMClient):
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.api_key or ''}")
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     return resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -121,7 +125,7 @@ class OpenAIClient(LLMClient):
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.api_key or ''}")
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
                 return resp_data.get("data", [{}])[0].get("embedding", [])
         except Exception: # pylint: disable=broad-except
@@ -139,7 +143,7 @@ class OpenAIClient(LLMClient):
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.api_key or ''}")
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
                 data = resp_data.get("data", [])
                 sorted_data = sorted(data, key=lambda x: x.get("index", 0))
@@ -189,7 +193,7 @@ class AnthropicClient(LLMClient):
         req.add_header("x-api-key", self.api_key or "")
         req.add_header("anthropic-version", "2023-06-01")
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     return resp_data.get("content", [{}])[0].get("text", "")
@@ -248,7 +252,7 @@ class GeminiClient(LLMClient):
         )
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     return resp_data.get("candidates", [{}])[0].get(
@@ -288,7 +292,7 @@ class GeminiClient(LLMClient):
         req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST")
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
                 return resp_data.get("embedding", {}).get("values", [])
         except Exception: # pylint: disable=broad-except
@@ -304,7 +308,7 @@ class GeminiClient(LLMClient):
         req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST")
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
                 embeddings_data = resp_data.get("embeddings", [])
                 embeddings = [emb.get("values", []) for emb in embeddings_data]
@@ -347,7 +351,7 @@ class HuggingFaceClient(LLMClient):
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.api_key or ''}")
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 if not stream:
                     result = json.loads(res.read().decode())
                     if isinstance(result, list):
@@ -379,14 +383,86 @@ class HuggingFaceClient(LLMClient):
         return [[] for _ in texts]
 
 
+# Confirmed-free OpenRouter model IDs. Used ONLY as an offline seed when live
+# discovery (get_free_models) cannot reach the OpenRouter API. The live roster is
+# the source of truth and returns the FULL set of free models at runtime.
+FREE_MODEL_SEED = [
+    "nousresearch/hermes-3-llama-3.1-405b:free",
+    "google/gemma-4-31b-it:free",
+    "google/gemma-3-27b-it:free",
+]
+_FREE_MODELS_CACHE: Dict[str, object] = {"ts": 0.0, "models": []}
+_FREE_MODELS_TTL = 3600  # seconds
+
+
 class OpenRouterClient(OpenAIClient):
     """Client for OpenRouter (Unified API)."""
     def __init__(self, api_key: Optional[str] = None):
         super().__init__(api_key=api_key or keymaker.get_secret("OPENROUTER_API_KEY"))
         self.base_url = "https://openrouter.ai/api/v1"
 
+    def get_free_models(self, refresh: bool = False) -> list:
+        """Discover the FULL set of free OpenRouter models live from the API.
+
+        Filters the catalogue to every model that is actually free (``:free``
+        suffix or zero prompt+completion pricing). Results are cached for
+        ``_FREE_MODELS_TTL`` seconds. Falls back to ``FREE_MODEL_SEED`` only when
+        the API is unreachable (e.g. offline) so the roster is never empty.
+        """
+        # Without a key we cannot query the live catalogue; return the offline seed.
+        if not self.api_key:
+            return list(FREE_MODEL_SEED)
+
+        now = time.time()
+        cached = _FREE_MODELS_CACHE.get("models") or []
+        if not refresh and cached and (now - float(_FREE_MODELS_CACHE.get("ts", 0.0))) < _FREE_MODELS_TTL:
+            return list(cached)
+
+        def _is_zero(val) -> bool:
+            try:
+                return float(val) == 0.0
+            except (TypeError, ValueError):
+                return False
+
+        try:
+            req = urllib.request.Request(f"{self.base_url}/models", method="GET")
+            if self.api_key:
+                req.add_header("Authorization", f"Bearer {self.api_key}")
+            req.add_header("HTTP-Referer", "https://whovisions.com")
+            req.add_header("X-OpenRouter-Title", "NouGenShards")
+            with urllib.request.urlopen(req, timeout=15) as res:
+                data = json.loads(res.read().decode())
+            free = []
+            for model in data.get("data", []):
+                mid = model.get("id", "")
+                if not mid:
+                    continue
+                pricing = model.get("pricing", {}) or {}
+                if mid.endswith(":free") or (_is_zero(pricing.get("prompt")) and _is_zero(pricing.get("completion"))):
+                    free.append(mid)
+            if free:
+                _FREE_MODELS_CACHE["models"] = free
+                _FREE_MODELS_CACHE["ts"] = now
+                return list(free)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return list(FREE_MODEL_SEED)
+
+    def preferred_free_model(self, preference: Optional[str] = None) -> str:
+        """Resolve a single free model DYNAMICALLY from the live roster. Prefer
+        the first roster entry matching ``preference`` (substring), else the top
+        of the live roster; only falls back to the seed when discovery is empty.
+        No call site should hardcode a model string — call this instead."""
+        roster = self.get_free_models()
+        if preference:
+            for mid in roster:
+                if preference.lower() in mid.lower():
+                    return mid
+        return roster[0] if roster else FREE_MODEL_SEED[0]
+
     def list_models(self) -> list:
-        return ["google/gemma-3-27b-it:free", "anthropic/claude-3.5-sonnet"]
+        # The roster IS the full live set of free OpenRouter models.
+        return self.get_free_models()
 
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:
@@ -402,7 +478,7 @@ class OpenRouterClient(OpenAIClient):
         req.add_header("HTTP-Referer", "https://whovisions.com")
         req.add_header("X-OpenRouter-Title", "NouGenShards")
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     return resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -423,11 +499,9 @@ class OpenRouterClient(OpenAIClient):
             "model": model,
             "messages": messages,
             "stream": stream,
-            "models": fallback_models or [
-                "anthropic/claude-3.5-sonnet",
-                "google/gemini-2.0-flash-001",
-                "deepseek/deepseek-chat"
-            ]
+            # Default to the FULL live free roster so fallback routes across every
+            # free model OpenRouter offers, not a curated handful.
+            "models": fallback_models if fallback_models is not None else self.get_free_models()
         }
 
         if session_id:
@@ -449,7 +523,7 @@ class OpenRouterClient(OpenAIClient):
         req.add_header("X-OpenRouter-Title", "NouGenShards")
 
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     choice = resp_data.get("choices", [{}])[0]
@@ -504,7 +578,7 @@ class OpenRouterClient(OpenAIClient):
         req.add_header("X-OpenRouter-Title", "NouGenShards")
 
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
                 content = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
@@ -572,7 +646,7 @@ class WhoVisionsCloudClient(LLMClient):
         req.add_header("X-NGS-Token", self.user_token or "")
         
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
                 return resp_data.get("content", "")
         except Exception as exc:
@@ -702,7 +776,7 @@ class OllamaClient(LocalLLMClient):
         )
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     return resp_data.get("message", {}).get("content", "")
@@ -726,7 +800,7 @@ class OllamaClient(LocalLLMClient):
         )
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 return json.loads(res.read().decode()).get("embedding", [])
         except Exception: # pylint: disable=broad-except
             return []
@@ -742,7 +816,7 @@ class OllamaClient(LocalLLMClient):
         )
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
                 embeddings = resp_data.get("embeddings", [])
                 if len(embeddings) == len(texts):
@@ -755,7 +829,7 @@ class OllamaClient(LocalLLMClient):
         except Exception: # pylint: disable=broad-except
             return [self.embed(model, text) for text in texts]
 
-    def find_best_edge_model(self) -> str:
+    def find_best_edge_model(self) -> Optional[ModelBudgetConfig]:
         return find_best_model_from_list(self.list_models())
 
     def pull_model(self, model_name: str):
@@ -765,7 +839,7 @@ class OllamaClient(LocalLLMClient):
         req = urllib.request.Request(url, data=payload, method="POST")
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req) as response:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as response:
                 for line in response:
                     if line:
                         chunk = json.loads(line.decode("utf-8"))
@@ -814,7 +888,7 @@ class LMStudioClient(LocalLLMClient):
         )
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     return resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -843,7 +917,7 @@ class LMStudioClient(LocalLLMClient):
     def batch_embed(self, model: str, texts: List[str]) -> List[list]:
         return [[] for _ in texts]
 
-    def find_best_edge_model(self) -> str:
+    def find_best_edge_model(self) -> Optional[ModelBudgetConfig]:
         return find_best_model_from_list(self.list_models())
 
 
