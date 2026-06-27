@@ -42,34 +42,50 @@ def _is_safe_cloud_url(url: str) -> bool:
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         return False
     host = parsed.hostname.lower()
+    # A malformed port (e.g. ':bad', ':999999') makes parsed.port raise
+    # ValueError. This guard is called outside push/pull's network-error try,
+    # so reject rather than crash the caller.
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
 
-    # Loopback by name is safe on any scheme; short-circuit before DNS so the
-    # result is deterministic and doesn't depend on how the runtime resolves
-    # `localhost` (some resolvers return scoped/IPv6 forms).
-    if host in ("localhost", "127.0.0.1", "::1") or host.endswith(".localhost"):
+    # Is the host an IP literal?
+    host_ip = None
+    try:
+        host_ip = ipaddress.ip_address(host)
+    except ValueError:
+        pass
+
+    # Explicit loopback — a literal loopback IP the operator typed, or a known
+    # loopback name — is the ONLY sanctioned loopback target, allowed on any
+    # scheme. Short-circuit before DNS so the result is deterministic.
+    if (host_ip is not None and host_ip.is_loopback) \
+            or host in ("localhost",) or host.endswith(".localhost"):
         return True
 
     # Candidate IPs: the literal itself, or every DNS-resolved address.
-    candidates = []
-    try:
-        candidates.append(ipaddress.ip_address(host))
-    except ValueError:
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    candidates = [host_ip] if host_ip is not None else []
+    if host_ip is None:
         try:
-            for info in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP):
+            for info in socket.getaddrinfo(host, port or (443 if parsed.scheme == "https" else 80),
+                                           proto=socket.IPPROTO_TCP):
                 candidates.append(ipaddress.ip_address(info[4][0]))
         except (socket.gaierror, ValueError, OSError):
             candidates = []  # unresolvable: allow (request will fail anyway)
 
+    # Reject internal/dangerous targets. is_loopback is included here: only the
+    # explicit literal/name above may target loopback, so a NON-local hostname
+    # that resolves to 127.0.0.1/::1 is a DNS alias to a loopback-only service
+    # and is rejected (would otherwise leak X-NGS-Token to it).
     for ip in candidates:
-        if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+        if (ip.is_link_local or ip.is_multicast or ip.is_reserved
+                or ip.is_unspecified or ip.is_loopback):
             return False
 
-    if parsed.scheme == "http":
-        loopback = (host in ("localhost", "127.0.0.1", "::1")
-                    or any(ip.is_loopback for ip in candidates))
-        if not loopback and os.environ.get("NGS_ALLOW_INSECURE_CLOUD") != "1":
-            return False
+    # Plaintext http to a non-loopback host would send X-NGS-Token in the clear.
+    if parsed.scheme == "http" and os.environ.get("NGS_ALLOW_INSECURE_CLOUD") != "1":
+        return False
     return True
 
 
