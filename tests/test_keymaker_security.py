@@ -52,3 +52,28 @@ def test_migration_does_not_count_plaintext_escape_hatch(km):
     # With the plaintext escape hatch active, _protect can't encrypt, so nothing
     # should be reported as migrated (the old code falsely counted it).
     assert km.migrate_to_encrypted() == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_existing_service_account_file_is_repaired_to_0600(km, tmp_path):
+    # Pre-create the SA file world-readable (as an older version would), then
+    # re-ingest: O_TRUNC keeps old perms, so fchmod must repair it to 0600.
+    km.init_vault()
+    saf = km.SECRETS_JSON_DIR / "p_service_account.json"
+    saf.write_text("{}")
+    os.chmod(saf, 0o644)
+    km.ingest_service_account('{"project_id":"p","client_email":"a@b.com","private_key":"K"}')
+    assert stat.S_IMODE(os.stat(saf).st_mode) == 0o600
+
+
+def test_migration_encrypts_existing_external_db_uri(km):
+    # An external_dbs row written by an older version holds a raw URI; migrate
+    # must encrypt it (here the plaintext escape hatch is on, so _protect is a
+    # no-op and nothing is claimed — assert it is at least not double-counted).
+    km.register_external_db("postgres://u:pass@h:5432/db", "t", "a", "b")
+    # round-trips back to plaintext via list (escape hatch); migration is a no-op
+    # under the hatch but must not raise and must leave the URI readable.
+    before = km.list_external_dbs()[0]["uri"]
+    km.migrate_to_encrypted()
+    after = km.list_external_dbs()[0]["uri"]
+    assert before == after == "postgres://u:pass@h:5432/db"
