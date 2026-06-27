@@ -77,3 +77,14 @@ def test_migration_encrypts_existing_external_db_uri(km):
     km.migrate_to_encrypted()
     after = km.list_external_dbs()[0]["uri"]
     assert before == after == "postgres://u:pass@h:5432/db"
+
+
+def test_list_external_dbs_skips_row_when_keyring_missing(km, monkeypatch):
+    # If _unprotect raises ImportError (keyring backend absent) the row must be
+    # skipped, not crash list_external_dbs (federated_retrieve calls it pre-try).
+    km.register_external_db("postgres://u:p@h/d", "t", "a", "b")
+    import nougen_shards.keymaker as keymaker
+    def boom(_):
+        raise ImportError("No module named 'keyring'")
+    monkeypatch.setattr(keymaker, "_unprotect", boom)
+    assert km.list_external_dbs() == []  # skipped, no exception

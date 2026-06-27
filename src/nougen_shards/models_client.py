@@ -688,8 +688,14 @@ def find_best_model_from_list(models: List[str]) -> Optional[ModelBudgetConfig]:
     official_prefixes = (
         "gemma", "llama", "qwen", "mistral", "phi", "deepseek", "codellama", "mixtral"
     )
+    # Embedding-only families are not chat-capable; find_best_edge_model feeds
+    # cmd_chat, so returning one here would break /api/chat even when a real chat
+    # model is installed. Skip them so a later tier picks the chat model.
+    embed_markers = ("embed", "bge-", "minilm", "gte-", "e5-")
     for model in models:
         base_name = os.path.basename(model.replace("\\", "/")).lower()
+        if any(mk in base_name for mk in embed_markers):
+            continue
         if not any(base_name.startswith(p) for p in official_prefixes):
             # Dynamic context detection for user finetunes (capped at 8K for safety)
             n_ctx = 4096
