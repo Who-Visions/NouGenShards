@@ -194,4 +194,7 @@ app = gr.mount_gradio_app(app, cortex_hud, path="/")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=4444)
+    # Bind loopback by default; HF Spaces / explicit deploys set NGS_HOST=0.0.0.0.
+    host = os.environ.get("NGS_HOST", "0.0.0.0" if os.environ.get("SPACE_ID") else "127.0.0.1")
+    port = int(os.environ.get("NGS_PORT", "4444"))
+    uvicorn.run(app, host=host, port=port)
