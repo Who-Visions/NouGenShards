@@ -377,7 +377,8 @@ def cmd_stats(args):
 def cmd_ctx(args):
     """Handles NouGenContext commands."""
     if args.action == "init":
-        nougen_context.init_context_db()
+        # Explicit user 'init' intends a fresh session, so opt into the wipe.
+        nougen_context.init_context_db(clean_slate=True)
         print("✅ Session initialized.")
     elif args.action == "execute":
         from .gatekeeper import check_mutation_gate

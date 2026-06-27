@@ -252,7 +252,15 @@ export function capture(
   tags: string[] | null = null,
   embedding: number[] | null = null,
 ): boolean {
-  const fhash = createHash("md5").update(content, "utf-8").digest("hex");
+  // Clean the content for O(1) dedup hashing to exclude injected recall packets
+  // or static context — must match the Python substrate so the two engines
+  // dedup identically against the shared hash index.
+  let clean_content = content;
+  const _packet_marker = "=== NOUGENSHARDS RECALL PACKET";
+  if (content.includes(_packet_marker)) {
+    clean_content = content.split(_packet_marker)[0].trim();
+  }
+  const fhash = createHash("md5").update(clean_content, "utf-8").digest("hex");
 
   // Global Deduplication (Module 12): one indexed lookup in the central
   // hash index — O(1) — instead of scanning all 9 cluster databases.
@@ -310,7 +318,11 @@ function _process_fts_result(row: Shard, db_index: number, query_embedding: numb
   const item: Shard = { ...row };
   item._db_index = db_index;
   // 1. Likelihood Part A: BM25 (The Adjacency Score)
-  const norm_bm25 = 1.0 / (1.0 + Math.abs(item.bm25_score));
+  // FTS5 bm25() is negative where more-negative == stronger match. abs() folded
+  // strong and weak matches together and inverted the signal; map through a
+  // logistic instead (monotonically decreasing, bounded in (0,1)), matching the
+  // Python substrate. Exponent clamped against the rare positive score.
+  const norm_bm25 = 1.0 / (1.0 + Math.exp(Math.max(-60.0, Math.min(60.0, item.bm25_score))));
 
   // 2. Likelihood Part B: Semantic (The Latent Score)
   let sem_score = 0.0;
