@@ -43,6 +43,12 @@ def _is_safe_cloud_url(url: str) -> bool:
         return False
     host = parsed.hostname.lower()
 
+    # Loopback by name is safe on any scheme; short-circuit before DNS so the
+    # result is deterministic and doesn't depend on how the runtime resolves
+    # `localhost` (some resolvers return scoped/IPv6 forms).
+    if host in ("localhost", "127.0.0.1", "::1") or host.endswith(".localhost"):
+        return True
+
     # Candidate IPs: the literal itself, or every DNS-resolved address.
     candidates = []
     try:
