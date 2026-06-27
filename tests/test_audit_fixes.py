@@ -143,3 +143,11 @@ def test_cloud_url_guard_rejects_malformed_port_without_raising(url):
     # parsed.port raises ValueError on a bad port; the guard must return False,
     # not crash the caller (it runs outside push/pull's network-error try).
     assert cloud._is_safe_cloud_url(url) is False
+
+
+def test_find_best_model_skips_embedding_only():
+    # find_best_edge_model feeds the default chat model; an embedding model must
+    # not be chosen over an installed chat model.
+    from nougen_shards.models_client import find_best_model_from_list
+    cfg = find_best_model_from_list(["gemma4:12b", "nomic-embed-text:latest"])
+    assert cfg.model_name == "gemma4:12b"

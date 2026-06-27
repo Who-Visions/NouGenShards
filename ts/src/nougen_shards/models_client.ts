@@ -748,8 +748,15 @@ export function find_best_model_from_list(models: string[]): string {
 
   // 2. Any other user-created custom/finetuned model (not an official vendor prefix).
   const official_prefixes = ["gemma", "llama", "qwen", "mistral", "phi", "deepseek", "codellama", "mixtral"];
+  // Embedding-only families are not chat-capable; find_best_edge_model feeds the
+  // default chat model, so returning one would break /api/chat. Skip them so a
+  // later tier picks the chat model.
+  const embed_markers = ["embed", "bge-", "minilm", "gte-", "e5-"];
   for (const model of models) {
     const base = (model.replace(/\\/g, "/").split("/").pop() ?? "").toLowerCase();
+    if (embed_markers.some((mk) => base.includes(mk))) {
+      continue;
+    }
     if (!official_prefixes.some((p) => base.startsWith(p))) {
       return model;
     }

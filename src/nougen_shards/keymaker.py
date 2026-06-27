@@ -262,8 +262,12 @@ def list_external_dbs() -> list:
             d = dict(r)
             try:
                 d["uri"] = _unprotect(d["uri"])  # legacy plaintext passes through
-            except OSError:
-                continue  # unreadable creds: skip rather than expose/crash the sweep
+            except (OSError, ImportError):
+                # OSError: keyring entry missing. ImportError/ModuleNotFoundError:
+                # keyring backend not installed in this env though the URI was
+                # keyring-encrypted elsewhere. Skip the row rather than abort the
+                # federation sweep (federated_retrieve calls this before its try).
+                continue
             result.append(d)
         return result
     except sqlite3.Error:
