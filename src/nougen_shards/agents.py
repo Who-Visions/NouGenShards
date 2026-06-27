@@ -211,7 +211,7 @@ def run_agent(name: str, prompt: str, model: Optional[str] = None,
             # Route across the FULL live free roster — every free OpenRouter model,
             # not a hand-picked subset. OpenRouter fails over across the list.
             free_roster = or_client.get_free_models()
-            primary = free_roster[0] if free_roster else "google/gemma-3-27b-it:free"
+            primary = or_client.preferred_free_model()
             res_dict = or_client.chat_with_fallback(
                 model=primary,
                 messages=[

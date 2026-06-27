@@ -13,6 +13,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import * as keymaker from "./keymaker.js";
+import { OpenRouterClient } from "./models_client.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -257,12 +258,15 @@ export async function run_query(query: string): Promise<void> {
 
   const messages: any[] = [{ role: "user", content: query }];
 
-  console.log("\n[*] Sending request to OpenRouter (gemma-31b)...");
+  // Resolve a free model dynamically from the live roster — never hardcoded.
+  const free_model = await new OpenRouterClient().preferred_free_model();
+
+  console.log(`\n[*] Sending request to OpenRouter (${free_model})...`);
   try {
     // 1. First model call with tools passed
     const response = await call_openrouter({
       messages,
-      model: "google/gemma-4-31b-it:free",
+      model: free_model,
       tools: openai_tools.length ? openai_tools : null,
       return_raw_message: true,
     });
@@ -304,7 +308,7 @@ export async function run_query(query: string): Promise<void> {
       // 2. Complete loop and get final textual response
       const final_response = await call_openrouter({
         messages,
-        model: "google/gemma-4-31b-it:free",
+        model: free_model,
       });
       console.log(`\n[Final Response]:\n${final_response}`);
     } else {

@@ -406,6 +406,10 @@ class OpenRouterClient(OpenAIClient):
         ``_FREE_MODELS_TTL`` seconds. Falls back to ``FREE_MODEL_SEED`` only when
         the API is unreachable (e.g. offline) so the roster is never empty.
         """
+        # Without a key we cannot query the live catalogue; return the offline seed.
+        if not self.api_key:
+            return list(FREE_MODEL_SEED)
+
         now = time.time()
         cached = _FREE_MODELS_CACHE.get("models") or []
         if not refresh and cached and (now - float(_FREE_MODELS_CACHE.get("ts", 0.0))) < _FREE_MODELS_TTL:
@@ -440,6 +444,18 @@ class OpenRouterClient(OpenAIClient):
         except Exception:  # pylint: disable=broad-except
             pass
         return list(FREE_MODEL_SEED)
+
+    def preferred_free_model(self, preference: Optional[str] = None) -> str:
+        """Resolve a single free model DYNAMICALLY from the live roster. Prefer
+        the first roster entry matching ``preference`` (substring), else the top
+        of the live roster; only falls back to the seed when discovery is empty.
+        No call site should hardcode a model string — call this instead."""
+        roster = self.get_free_models()
+        if preference:
+            for mid in roster:
+                if preference.lower() in mid.lower():
+                    return mid
+        return roster[0] if roster else FREE_MODEL_SEED[0]
 
     def list_models(self) -> list:
         # The roster IS the full live set of free OpenRouter models.

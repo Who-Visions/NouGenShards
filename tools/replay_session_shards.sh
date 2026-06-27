@@ -30,4 +30,7 @@ add "CHANGE: billing.py was non-functional (estimated_cost never stored, monthly
 add "CHANGE: security batch - evolution.evolve_skill skill-path traversal sanitized and bounded to skills/; dream.py guards non-dict LLM invariants (was crashing wake()); app.py verify_token uses hmac.compare_digest. py+ts + regression test. Commit 14a4ab1." \
     "change,security,evolution,dream,auth"
 
+add "DECISION/PRINCIPLE: Prefer dynamic routes over hardcoded everywhere. Added OpenRouterClient.preferred_free_model() resolving a single model from the live free roster (get_free_models). Replaced ALL hardcoded free-model literals at call sites: agents.py cloud fallback, core.py density scorer, openrouter_mcp_client run_query (py+ts). get_free_models short-circuits to seed when no API key (fast + offline-safe). No call site hardcodes a model string anymore." \
+    "decision,principle,dynamic-routing,openrouter,refactor"
+
 echo "Replayed 5 session shards into your vault. Verify: $NOUGEN search \"free models retraction\""
