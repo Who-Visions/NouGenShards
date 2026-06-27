@@ -328,16 +328,18 @@ def detect_current_agent() -> str:
     explicit = os.environ.get("NOUGEN_AGENT")
     if explicit:
         return explicit.strip().lower()
-    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-        return "gemini"
     # Claude Code CLI is its own lane ("claude-cli"), distinct from the
-    # API/Antigravity "claude" lane, so CLI handoffs are sourced correctly.
+    # API/Antigravity "claude" lane. The CLI sets an explicit marker, a stronger
+    # signal than a stray GEMINI/GOOGLE key exported in the same shell — so check
+    # it BEFORE generic API-key detection or CLI handoffs misroute.
     if (
         os.environ.get("CLAUDECODE")
         or os.environ.get("CLAUDE_CODE")
         or os.environ.get("CLAUDE_CODE_ENTRYPOINT")
     ):
         return "claude-cli"
+    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+        return "gemini"
     if os.environ.get("ANTHROPIC_API_KEY"):
         return "claude"
     active_brain = get_active_brain_dir()

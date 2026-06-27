@@ -23,15 +23,16 @@ FILES_TO_HARDEN = [
 ]
 
 def run_command(cmd, env=None):
-    print(f"[*] Running: {cmd}")
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, env=env)
+    # cmd is an argv list run with shell=False — no shell parsing, no injection surface.
+    print(f"[*] Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd, shell=False, capture_output=True, text=True, env=env)
     return result
 
 def verify_system():
     print("--- [VERIFY] System Integrity ---")
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{ROOT};{SRC.parent};{env.get('PYTHONPATH', '')}"
-    res = run_command(f"python -m pytest {TESTS}", env=env)
+    res = run_command([sys.executable, "-m", "pytest", str(TESTS)], env=env)
     print(res.stdout)
     if res.returncode != 0:
         print(f"[!] TEST FAILURE:\n{res.stderr}")
@@ -41,7 +42,7 @@ def pylint_harden(file_path):
     print(f"--- [HARDEN] Pylint: {file_path} ---")
     # Using a simple check; a full 10/10 requires iterative fixes which usually
     # require LLM reasoning per line. Here we just report.
-    res = run_command(f"python -m pylint {file_path}")
+    res = run_command([sys.executable, "-m", "pylint", str(file_path)])
     print(res.stdout)
     return res.returncode == 0
 

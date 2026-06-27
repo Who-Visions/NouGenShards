@@ -5,14 +5,31 @@ import logging
 import re
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError, ArgumentError
 
 logger = logging.getLogger(__name__)
+
+# Only real network database backends are allowed. This blocks create_engine
+# from being pointed at sqlite:///arbitrary files or other local/SSRF schemes
+# via an attacker-influenced external-DB config.
+_ALLOWED_DB_BACKENDS = {
+    "postgresql", "mysql", "mariadb", "mssql", "oracle", "cockroachdb",
+}
 
 
 def is_valid_identifier(ident: str) -> bool:
     """Strict regex for safe SQL identifiers."""
     return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", ident))
+
+
+def is_allowed_db_uri(uri: str) -> bool:
+    """Allow only known network DB drivers; reject file-based/local schemes."""
+    try:
+        backend = make_url(uri).get_backend_name()
+    except (ArgumentError, ValueError, AttributeError):
+        return False
+    return backend in _ALLOWED_DB_BACKENDS
 
 
 def _stable_hash(value) -> str:
@@ -40,6 +57,12 @@ def query_external_dbs(query: str, db_configs: list, limit: int = 3) -> list:
 
             # Patch 16.E: Validate identifiers (Module 10: Constraints)
             if not all(is_valid_identifier(x) for x in [table, title_col, content_col]):
+                continue
+
+            # Reject non-network DB URIs (sqlite/file/etc.) before connecting.
+            if not is_allowed_db_uri(conf['uri']):
+                logger.warning("external DB skipped (conf %s): disallowed URI scheme",
+                               conf.get('id', '?'))
                 continue
 
             # Module 10: Integrate Constraints (Timeout & Connection Pooling)

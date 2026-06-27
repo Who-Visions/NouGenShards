@@ -244,13 +244,14 @@ class GeminiClient(LLMClient):
             role = "user" if msg["role"] in ["user", "system"] else "model"
             contents.append({"role": role, "parts": [{"text": msg["content"]}]})
         endpoint = "streamGenerateContent" if stream else "generateContent"
-        url = f"{self.base_url}/{model}:{endpoint}?key={self.api_key}"
+        url = f"{self.base_url}/{model}:{endpoint}"
         req = urllib.request.Request(
             url,
             data=json.dumps({"contents": contents}).encode(),
             method="POST"
         )
         req.add_header("Content-Type", "application/json")
+        req.add_header("x-goog-api-key", self.api_key or "")
         try:
             with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 if not stream:
@@ -287,10 +288,11 @@ class GeminiClient(LLMClient):
     def embed(self, model: str, text: str) -> list:
         if not self.api_key:
             return []
-        url = f"{self.base_url}/{model}:embedContent?key={self.api_key}"
+        url = f"{self.base_url}/{model}:embedContent"
         payload = {"content": {"parts": [{"text": text}]}}
         req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST")
         req.add_header("Content-Type", "application/json")
+        req.add_header("x-goog-api-key", self.api_key or "")
         try:
             with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
@@ -301,12 +303,13 @@ class GeminiClient(LLMClient):
     def batch_embed(self, model: str, texts: List[str]) -> List[list]:
         if not self.api_key or not texts:
             return [[] for _ in texts]
-        url = f"{self.base_url}/{model}:batchEmbedContents?key={self.api_key}"
+        url = f"{self.base_url}/{model}:batchEmbedContents"
         model_ref = model if model.startswith("models/") else f"models/{model}"
         requests_list = [{"model": model_ref, "content": {"parts": [{"text": t}]}} for t in texts]
         payload = {"requests": requests_list}
         req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST")
         req.add_header("Content-Type", "application/json")
+        req.add_header("x-goog-api-key", self.api_key or "")
         try:
             with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
@@ -685,8 +688,14 @@ def find_best_model_from_list(models: List[str]) -> Optional[ModelBudgetConfig]:
     official_prefixes = (
         "gemma", "llama", "qwen", "mistral", "phi", "deepseek", "codellama", "mixtral"
     )
+    # Embedding-only families are not chat-capable; find_best_edge_model feeds
+    # cmd_chat, so returning one here would break /api/chat even when a real chat
+    # model is installed. Skip them so a later tier picks the chat model.
+    embed_markers = ("embed", "bge-", "minilm", "gte-", "e5-")
     for model in models:
         base_name = os.path.basename(model.replace("\\", "/")).lower()
+        if any(mk in base_name for mk in embed_markers):
+            continue
         if not any(base_name.startswith(p) for p in official_prefixes):
             # Dynamic context detection for user finetunes (capped at 8K for safety)
             n_ctx = 4096
