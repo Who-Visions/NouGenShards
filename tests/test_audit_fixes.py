@@ -186,3 +186,14 @@ def test_cloud_request_pins_validated_ip(monkeypatch):
     with cloud._pin_dns("node.example", "203.0.113.7"):
         assert [x[4][0] for x in socket.getaddrinfo("node.example", 443)] == ["203.0.113.7"]
     assert socket.getaddrinfo is real  # restored on exit
+
+
+def test_open_cloud_refuses_hostname_when_pin_fails(monkeypatch):
+    import socket, urllib.request, urllib.error
+    # Hostname that resolves ONLY to metadata -> _pinned_ip_for returns None.
+    # _open_cloud must refuse (raise) instead of re-resolving the hostname unpinned.
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda h, p, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", p))])
+    req = urllib.request.Request("https://evil.host/x")
+    with pytest.raises(urllib.error.URLError):
+        cloud._open_cloud(req, "https://evil.host/x", 5.0)
