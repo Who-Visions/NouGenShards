@@ -108,6 +108,19 @@ def main():
                         console.print(f"  [red]Failed to parse legacy embedding for Shard #{shard_id}: {e}[/red]")
                         
             if updates:
+                # Back up this node before the in-place rewrite. Use SQLite's
+                # backup API for a consistent snapshot, so a failed/partial
+                # migration (or a wrong legacy-detection) is recoverable.
+                backup_path = db_path.with_name(db_path.name + ".premigrate.bak")
+                try:
+                    with sqlite3.connect(str(backup_path)) as bck:
+                        conn.backup(bck)
+                    console.print(f"  -> Backup written: [dim]{backup_path.name}[/dim]")
+                except Exception as e:
+                    console.print(f"  [red]Backup failed for Node #{idx}; skipping migration: {e}[/red]")
+                    conn.close()
+                    continue
+
                 console.print(f"  -> Migrating {len(updates)} legacy embeddings on Node #{idx}...")
                 conn.executemany("UPDATE shards SET embedding = ? WHERE id = ?", updates)
                 conn.commit()

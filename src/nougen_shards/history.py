@@ -4,6 +4,7 @@ Tracks machine experience evolution across multiple horizons.
 """
 import sqlite3
 import json
+import sys
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -70,8 +71,9 @@ def log_event(shard_id: int, db_index: int, event_type: str,
         """, (shard_id, db_index, event_type, old_score, new_score, timestamp, meta_json))
         conn.commit()
     except sqlite3.Error as exc:
-        # Module 10: Graceful Degradation (Log failure but don't crash main memory)
-        print(f"[Warning] Failed to log history event: {exc}")
+        # Module 10: Graceful Degradation (Log failure but don't crash main memory).
+        # Write to stderr: a stray stdout line corrupts the MCP stdio JSON-RPC stream.
+        print(f"[Warning] Failed to log history event: {exc}", file=sys.stderr)
     finally:
         conn.close()
 

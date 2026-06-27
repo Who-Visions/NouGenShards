@@ -47,8 +47,17 @@ def main():
     vault_dir = get_vault_dir()
     os.environ["NOUGEN_VAULT_DIR"] = str(vault_dir)
     
+    # Destructive deletes are opt-in. Without --confirm/--yes this is a dry run
+    # that only reports what WOULD be removed.
+    apply_changes = ("--confirm" in sys.argv) or ("--yes" in sys.argv)
+
     console.print("\n[bold cyan]🧹 Metameric Deep Sweep — NouGenShards[/bold cyan]")
-    console.print(f"Sweeping database nodes in: [yellow]{vault_dir}[/yellow]\n")
+    console.print(f"Sweeping database nodes in: [yellow]{vault_dir}[/yellow]")
+    if not apply_changes:
+        console.print("[bold yellow]DRY RUN[/bold yellow] — no shards will be deleted. "
+                      "Pass [bold]--confirm[/bold] to apply.\n")
+    else:
+        console.print("[bold red]--confirm set: deletions WILL be applied.[/bold red]\n")
     
     table = Table(title="Substrate Sweep Diagnostic")
     table.add_column("Node", style="cyan")
@@ -75,6 +84,11 @@ def main():
             cursor.execute("SELECT id, file_hash, utility_score, timestamp FROM shards")
             for row in cursor:
                 fhash = row["file_hash"]
+                # A NULL/empty hash is NOT a dedup key. Bucketing them together
+                # would make every hash-less shard look like a duplicate and
+                # delete all but one — catastrophic data loss. Skip them.
+                if not fhash:
+                    continue
                 if fhash not in global_hashes:
                     global_hashes[fhash] = []
                 global_hashes[fhash].append((i, row["id"], row["utility_score"], row["timestamp"]))
@@ -90,9 +104,12 @@ def main():
             occurrences.sort(key=lambda x: (x[2], x[3] or ""), reverse=True)
             # The first one is the winner
             winner = occurrences[0]
-            # Delete the losers
+            # Delete the losers (only when --confirm; otherwise count would-remove)
             for loser in occurrences[1:]:
                 db_index, shard_id, _, _ = loser
+                if not apply_changes:
+                    duplicates_resolved += 1  # dry-run: would remove
+                    continue
                 try:
                     conn = sqlite3.connect(str(vault_dir / f"nougen_shards_{db_index}.db"))
                     conn.execute("DELETE FROM shards WHERE id = ?", (shard_id,))
@@ -103,7 +120,8 @@ def main():
                     console.print(f"[red]Failed to delete duplicate shard {shard_id} from Node #{db_index}: {e}[/red]")
                     
     if duplicates_found > 0:
-        console.print(f"[green]Duplicates Resolved: Removed {duplicates_resolved} redundant shards across {duplicates_found} conflicts.[/green]\n")
+        verb = "Removed" if apply_changes else "Would remove"
+        console.print(f"[green]Duplicates: {verb} {duplicates_resolved} redundant shards across {duplicates_found} conflicts.[/green]\n")
     else:
         console.print("[green]Deduplication: No redundant shards detected (100% clean).[/green]\n")
 

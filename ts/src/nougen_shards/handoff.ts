@@ -46,6 +46,7 @@ export const HANDOFF_DIR = process.env.NOUGEN_HANDOFF_DIR ?? path.join(PROJECT_R
 export const AGENT_FOLDERS: Record<string, string> = {
   gemini: "gemini handoffs",
   claude: "claude handoffs",
+  "claude-cli": "claude cli handoffs",
   codex: "codex handoffs",
   ollama: "ollama handoffs",
   openrouter: "openrouter handoffs",
@@ -373,10 +374,17 @@ export function detect_current_agent(): string {
   if (explicit) {
     return explicit.trim().toLowerCase();
   }
+  // Claude Code CLI is its own lane ("claude-cli"), distinct from the
+  // API/Antigravity "claude" lane. The CLI sets an explicit marker, which is a
+  // stronger signal than a stray GEMINI/GOOGLE key exported in the same shell —
+  // so check it BEFORE generic API-key detection or CLI handoffs misroute.
+  if (process.env.CLAUDECODE || process.env.CLAUDE_CODE || process.env.CLAUDE_CODE_ENTRYPOINT) {
+    return "claude-cli";
+  }
   if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
     return "gemini";
   }
-  if (process.env.CLAUDE_CODE || process.env.ANTHROPIC_API_KEY) {
+  if (process.env.ANTHROPIC_API_KEY) {
     return "claude";
   }
   const active_brain = get_active_brain_dir();
