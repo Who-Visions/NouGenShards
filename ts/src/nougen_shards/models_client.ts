@@ -394,14 +394,69 @@ export class HuggingFaceClient extends LLMClient {
 }
 
 /** Client for OpenRouter (Unified API). */
+// Confirmed-free OpenRouter model IDs. Used ONLY as an offline seed when live
+// discovery (get_free_models) cannot reach the OpenRouter API. The live roster is
+// the source of truth and returns the FULL set of free models at runtime.
+export const FREE_MODEL_SEED: string[] = [
+  "nousresearch/hermes-3-llama-3.1-405b:free",
+  "google/gemma-4-31b-it:free",
+  "google/gemma-3-27b-it:free",
+];
+const _FREE_MODELS_CACHE: { ts: number; models: string[] } = { ts: 0, models: [] };
+const _FREE_MODELS_TTL = 3600 * 1000; // ms
+
 export class OpenRouterClient extends OpenAIClient {
   constructor(api_key: string | null = null) {
     super(api_key ?? keymaker.get_secret("OPENROUTER_API_KEY"));
     this.base_url = "https://openrouter.ai/api/v1";
   }
 
+  /**
+   * Discover the FULL set of free OpenRouter models live from the API. Filters
+   * the catalogue to every model that is actually free (`:free` suffix or zero
+   * prompt+completion pricing), cached for `_FREE_MODELS_TTL`. Falls back to
+   * `FREE_MODEL_SEED` only when the API is unreachable so the roster is never empty.
+   */
+  async get_free_models(refresh = false): Promise<string[]> {
+    const now = Date.now();
+    if (!refresh && _FREE_MODELS_CACHE.models.length && now - _FREE_MODELS_CACHE.ts < _FREE_MODELS_TTL) {
+      return [..._FREE_MODELS_CACHE.models];
+    }
+    const isZero = (v: any): boolean => {
+      const n = typeof v === "number" ? v : parseFloat(v);
+      return !Number.isNaN(n) && n === 0;
+    };
+    try {
+      const headers: Record<string, string> = {
+        "HTTP-Referer": "https://whovisions.com",
+        "X-OpenRouter-Title": "NouGenShards",
+      };
+      if (this.api_key) headers.Authorization = `Bearer ${this.api_key}`;
+      const res = await fetch(`${this.base_url}/models`, { method: "GET", headers });
+      const data: any = await res.json();
+      const free: string[] = [];
+      for (const model of data?.data ?? []) {
+        const mid: string = model?.id ?? "";
+        if (!mid) continue;
+        const pricing = model?.pricing ?? {};
+        if (mid.endsWith(":free") || (isZero(pricing.prompt) && isZero(pricing.completion))) {
+          free.push(mid);
+        }
+      }
+      if (free.length) {
+        _FREE_MODELS_CACHE.models = free;
+        _FREE_MODELS_CACHE.ts = now;
+        return [...free];
+      }
+    } catch {
+      /* fall through to offline seed */
+    }
+    return [...FREE_MODEL_SEED];
+  }
+
   override async list_models(): Promise<string[]> {
-    return ["google/gemma-3-27b-it:free", "anthropic/claude-3.5-sonnet"];
+    // The roster IS the full live set of free OpenRouter models.
+    return this.get_free_models();
   }
 
   override async chat(model: string, messages: ChatMessage[], stream = false): Promise<string> {
@@ -447,12 +502,9 @@ export class OpenRouterClient extends OpenAIClient {
       model,
       messages,
       stream,
-      models:
-        fallback_models ?? [
-          "anthropic/claude-3.5-sonnet",
-          "google/gemini-2.0-flash-001",
-          "deepseek/deepseek-chat",
-        ],
+      // Default to the FULL live free roster so fallback routes across every
+      // free model OpenRouter offers, not a curated handful.
+      models: fallback_models ?? (await this.get_free_models()),
     };
 
     if (session_id) {

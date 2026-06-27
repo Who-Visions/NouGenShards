@@ -208,18 +208,17 @@ def run_agent(name: str, prompt: str, model: Optional[str] = None,
     or_client = OpenRouterClient()
     if or_client.is_alive():
         try:
-            or_model = "google/gemma-3-27b-it:free"
-            if "claude" in target_model.lower():
-                or_model = "anthropic/claude-3.5-sonnet"
-            elif "gemma-4" in target_model.lower() or "31b" in target_model.lower():
-                or_model = "google/gemma-4-31b-it:free"
-            
+            # Route across the FULL live free roster — every free OpenRouter model,
+            # not a hand-picked subset. OpenRouter fails over across the list.
+            free_roster = or_client.get_free_models()
+            primary = free_roster[0] if free_roster else "google/gemma-3-27b-it:free"
             res_dict = or_client.chat_with_fallback(
-                model=or_model,
+                model=primary,
                 messages=[
                     {"role": "system", "content": spec.system_prompt},
                     {"role": "user", "content": prompt}
-                ]
+                ],
+                fallback_models=free_roster
             )
             if res_dict.get("content") and not res_dict["content"].startswith("Error:"):
                 return res_dict["content"]
