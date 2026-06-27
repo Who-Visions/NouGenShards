@@ -344,13 +344,15 @@ def calculate_contrastive_perplexity(content: str) -> float:
     # Try OpenRouter free model
     try:
         from openrouter_guard import call_openrouter
+        from .models_client import OpenRouterClient
         prompt = (
             "Analyze the following text and estimate its information density / contrastive perplexity score "
             "between 0.0 (generic filler, boilerplate, highly redundant) and 1.0 (extremely dense, novel, high surprisal). "
             "Provide ONLY the float number in your response, nothing else.\n\n"
             f"Text: {content[:1000]}"
         )
-        res_str = call_openrouter(prompt=prompt, model="google/gemma-3-27b-it:free", temperature=0.1)
+        # Resolve the free model dynamically from the live roster — never hardcoded.
+        res_str = call_openrouter(prompt=prompt, model=OpenRouterClient().preferred_free_model(), temperature=0.1)
         import re
         match = re.search(r"\d+\.\d+", res_str)
         if match:

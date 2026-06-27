@@ -418,6 +418,10 @@ export class OpenRouterClient extends OpenAIClient {
    * `FREE_MODEL_SEED` only when the API is unreachable so the roster is never empty.
    */
   async get_free_models(refresh = false): Promise<string[]> {
+    // Without a key we cannot query the live catalogue; return the offline seed.
+    if (!this.api_key) {
+      return [...FREE_MODEL_SEED];
+    }
     const now = Date.now();
     if (!refresh && _FREE_MODELS_CACHE.models.length && now - _FREE_MODELS_CACHE.ts < _FREE_MODELS_TTL) {
       return [..._FREE_MODELS_CACHE.models];
@@ -452,6 +456,22 @@ export class OpenRouterClient extends OpenAIClient {
       /* fall through to offline seed */
     }
     return [...FREE_MODEL_SEED];
+  }
+
+  /**
+   * Resolve a single free model DYNAMICALLY from the live roster. Prefer the
+   * first roster entry matching `preference` (substring), else the top of the
+   * live roster; only falls back to the seed when discovery is empty. No call
+   * site should hardcode a model string — call this instead.
+   */
+  async preferred_free_model(preference: string | null = null): Promise<string> {
+    const roster = await this.get_free_models();
+    if (preference) {
+      for (const mid of roster) {
+        if (mid.toLowerCase().includes(preference.toLowerCase())) return mid;
+      }
+    }
+    return roster[0] ?? FREE_MODEL_SEED[0];
   }
 
   override async list_models(): Promise<string[]> {
