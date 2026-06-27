@@ -102,8 +102,21 @@ export class EvolutionEngine {
 
     if (verified) {
       // 5. Deploy
-      const skill_id = instruction.toLowerCase().replace(/ /g, "_");
-      const skill_path = path.join(core.GLOBAL_DIR, "skills", `${skill_id}.md`);
+      // Sanitize the instruction into a safe slug: strip path separators and any
+      // char outside [a-z0-9_-] so a crafted instruction (e.g. "../etc/x") can't
+      // traverse outside the skills/ directory.
+      const skill_id =
+        instruction
+          .toLowerCase()
+          .trim()
+          .replace(/[^a-z0-9_-]+/g, "_")
+          .replace(/^_+|_+$/g, "") || "skill";
+      const skill_dir = path.resolve(path.join(core.GLOBAL_DIR, "skills"));
+      const skill_path = path.resolve(path.join(skill_dir, `${skill_id}.md`));
+      // Defense in depth: refuse anything that resolves outside skills/.
+      if (skill_path !== path.join(skill_dir, `${skill_id}.md`) || !skill_path.startsWith(skill_dir + path.sep)) {
+        throw new Error(`Unsafe skill path rejected: ${skill_id}`);
+      }
       mkdirSync(path.dirname(skill_path), { recursive: true });
       writeFileSync(skill_path, skill_content, { encoding: "utf-8" });
 

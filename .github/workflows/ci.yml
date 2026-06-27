@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, "claude/**"]
+  pull_request:
+
+jobs:
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy sqlalchemy pydantic mcp rich pytest pytest-asyncio
+      - name: Run pytest
+        run: PYTHONPATH=src python -m pytest tests -q
+
+  typescript:
+    name: TypeScript tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        run: npm install
+      - name: Build
+        run: npm run build
+      - name: Test
+        # Shell-expanded single-level glob (test files are flat in dist/test/),
+        # avoiding node's version-dependent "**" glob support.
+        run: node --test dist/test/*.test.js

@@ -22,16 +22,33 @@ export async function federated_retrieve(
   const external_configs = keymaker.list_external_dbs();
   const cloud_configs = keymaker.list_cloud_nodes();
 
-  // 3. Query External DBs if configured
+  // 3. Query External DBs if configured.
+  // Remote sources must never abort federation: a throwing external/cloud
+  // source is logged and skipped so local_results always survive.
+  // (Module 10: Graceful Degradation)
   let external_results: Shard[] = [];
   if (external_configs.length) {
-    external_results = query_external_dbs(query, external_configs, limit);
+    try {
+      external_results = query_external_dbs(query, external_configs, limit);
+    } catch (exc) {
+      console.warn(
+        `[federation] external DBs skipped (federation continues): ${String(exc)}`,
+      );
+      external_results = [];
+    }
   }
 
   // 4. Query Cloud Nodes if configured
   let cloud_results: Shard[] = [];
   if (cloud_configs.length) {
-    cloud_results = await query_cloud_shards(query, cloud_configs, limit);
+    try {
+      cloud_results = await query_cloud_shards(query, cloud_configs, limit);
+    } catch (exc) {
+      console.warn(
+        `[federation] cloud nodes skipped (federation continues): ${String(exc)}`,
+      );
+      cloud_results = [];
+    }
   }
 
   // 5. Merge and re-rank via weighted relevance blend

@@ -48,17 +48,20 @@ def run_import(project_path: Optional[str] = None, include_unknown: bool = False
             result.records_parsed += 1
             
             content = rec.content
+            title_text = rec.title
             if redact:
                 redacted = redact_content(content)
-                if redacted != content:
+                redacted_title = redact_content(title_text)
+                if redacted != content or redacted_title != title_text:
                     result.secrets_redacted += 1
                     content = redacted
-                    
+                    title_text = redacted_title
+
             tags = ["brain_scan", f"tool:{rec.source_tool}", f"kind:{rec.source_kind}"]
-            
+
             success = shards.capture(
                 event_type="IMPORT",
-                title=f"[{rec.source_tool.upper()}] {rec.title}",
+                title=f"[{rec.source_tool.upper()}] {title_text}",
                 content=content,
                 tags=tags
             )

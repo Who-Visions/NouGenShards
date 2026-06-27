@@ -60,6 +60,20 @@ test("test_redact_content", () => {
   assert.ok(redacted.includes("Here is my key:"));
 });
 
+test("test_redact_db_url_without_path", () => {
+  // Regression: a DB URL with no trailing /db must still redact the password.
+  const redacted = redact_content("conn = postgres://admin:s3cr3tP@ss@db.internal:5432");
+  assert.ok(!redacted.includes("s3cr3tP"));
+  assert.ok(redacted.includes("<REDACTED_DB_URL>"));
+});
+
+test("test_redact_sk_proj_key", () => {
+  // Regression: newer sk-proj-/sk-svcacct- keys contain - and _.
+  const redacted = redact_content("OPENAI=sk-proj-abc_DEF-ghi0123456789jklmnopqrstuv");
+  assert.ok(!redacted.includes("sk-proj-abc"));
+  assert.ok(redacted.includes("<REDACTED_OPENAI_KEY>"));
+});
+
 test("test_is_safe_dir", () => {
   // _is_safe_dir is module-private in scanner.ts (not exported), exactly as in
   // Python where it's an underscore helper. Its one consumer is scan_environment,

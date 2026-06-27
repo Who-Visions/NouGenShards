@@ -81,30 +81,34 @@ def init_context_db(clean_slate: bool = True):
 
 def log_event(event_type: str, content: str, metadata: Optional[dict] = None):
     """Logs an event into the session context."""
-    timestamp = datetime.now(timezone.utc).isoformat() + "Z"
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     metadata_str = json.dumps(metadata or {})
     conn = get_context_connection()
-    conn.execute(
-        "INSERT INTO ctx_events (timestamp, type, content, metadata) VALUES (?, ?, ?, ?)",
-        (timestamp, event_type, content, metadata_str)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "INSERT INTO ctx_events (timestamp, type, content, metadata) VALUES (?, ?, ?, ?)",
+            (timestamp, event_type, content, metadata_str)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 def search_context(query: str, limit: int = 5):
     """Searches session context using BM25."""
     conn = get_context_connection()
-    cursor = conn.execute("""
-        SELECT e.id, e.timestamp, e.type, e.content, e.metadata
-        FROM ctx_events e
-        JOIN ctx_events_fts f ON e.id = f.rowid
-        WHERE ctx_events_fts MATCH ?
-        ORDER BY bm25(ctx_events_fts) ASC
-        LIMIT ?
-    """, (query, limit))
-    results = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return results
+    try:
+        cursor = conn.execute("""
+            SELECT e.id, e.timestamp, e.type, e.content, e.metadata
+            FROM ctx_events e
+            JOIN ctx_events_fts f ON e.id = f.rowid
+            WHERE ctx_events_fts MATCH ?
+            ORDER BY bm25(ctx_events_fts) ASC
+            LIMIT ?
+        """, (query, limit))
+        results = [dict(row) for row in cursor.fetchall()]
+        return results
+    finally:
+        conn.close()
 
 def get_event(event_id: int):
     """Retrieves a specific event from the context by ID."""
@@ -117,14 +121,16 @@ def get_event(event_id: int):
 
 def store_sandbox(handle: str, data: str, summary: str = ""):
     """Stores large tool output in the sandbox."""
-    timestamp = datetime.now(timezone.utc).isoformat() + "Z"
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     conn = get_context_connection()
-    conn.execute(
-        "INSERT OR REPLACE INTO ctx_sandbox (handle, timestamp, data, summary) VALUES (?, ?, ?, ?)",
-        (handle, timestamp, data, summary)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO ctx_sandbox (handle, timestamp, data, summary) VALUES (?, ?, ?, ?)",
+            (handle, timestamp, data, summary)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 def fetch_sandbox(handle: str):
     """Retrieves data from the sandbox by handle."""
