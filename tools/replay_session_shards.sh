@@ -40,3 +40,12 @@ add "CHANGE: Stood up CI (.github/workflows/ci.yml), the audit's biggest gap. Py
     "change,ci,devops,testing,lesson"
 
 echo "Replayed 5 session shards into your vault. Verify: $NOUGEN search \"free models retraction\""
+
+add "FLEET FIX (gatekeeper): hardened check_mutation_gate (py + new ts mirror) vs obfuscation - lowercase + whitespace-collapse before matching; expanded denylist (shutil.rmtree, os.remove/unlink, rm --recursive/--force, del /, format, mkfs, dd if=, raw >/dev/sd* writes, forkbomb, git reset --hard, chmod -R 777). Defense-in-depth speed-bump, NOT a security boundary. Commit fdc2b4c." \
+    "gatekeeper,security,defense-in-depth,fleet"
+
+add "FLEET FIX (federation): federated_retrieve wraps each remote lane in try/except so a failing external DB/cloud node degrades to empty (logged), local results+ordering preserved. py+ts + test_federation. Commit fdc2b4c." \
+    "federation,resilience,fleet"
+
+add "FLEET FIX (cli + core): node push/pull conn try/finally + json.loads guards; core.mark_shard try/finally + db_index 'is not None'. py+ts. Commit fdc2b4c." \
+    "cli,core,resource-leak,fleet"
