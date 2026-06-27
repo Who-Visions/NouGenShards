@@ -186,6 +186,11 @@ def consolidate_episodic_data(limit: int = 10) -> Dict[str, Any]:
             try:
                 timestamp = datetime.datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                 for inv in invariants:
+                    # The LLM extraction can return non-dict elements; skip them
+                    # rather than letting AttributeError escape the sqlite handler
+                    # and abort the whole consolidation cycle.
+                    if not isinstance(inv, dict):
+                        continue
                     sub = inv.get("subject")
                     pred = inv.get("predicate")
                     if not sub or not pred:

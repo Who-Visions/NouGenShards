@@ -10,6 +10,7 @@ this as production self-evolution.
 """
 
 import json
+import re
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 from . import core
@@ -87,8 +88,15 @@ class EvolutionEngine:
         
         if verified:
             # 5. Deploy
-            skill_id = instruction.lower().replace(" ", "_")
-            skill_path = core.GLOBAL_DIR / "skills" / f"{skill_id}.md"
+            # Sanitize the instruction into a safe slug: strip path separators and
+            # any char outside [a-z0-9_-] so a crafted instruction (e.g. "../etc/x")
+            # can't traverse outside the skills/ directory.
+            skill_id = re.sub(r"[^a-z0-9_-]+", "_", instruction.lower().strip()).strip("_") or "skill"
+            skill_dir = (core.GLOBAL_DIR / "skills").resolve()
+            skill_path = (skill_dir / f"{skill_id}.md").resolve()
+            # Defense in depth: refuse anything that resolves outside skills/.
+            if skill_dir not in skill_path.parents:
+                raise ValueError(f"Unsafe skill path rejected: {skill_id}")
             skill_path.parent.mkdir(parents=True, exist_ok=True)
             with open(skill_path, "w", encoding="utf-8") as f:
                 f.write(skill_content)
