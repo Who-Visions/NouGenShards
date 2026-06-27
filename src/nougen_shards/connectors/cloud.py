@@ -1,4 +1,5 @@
 """Cloud Connector for remote NouGenShards instances."""
+import contextlib
 import ipaddress
 import json
 import logging
@@ -26,10 +27,10 @@ def _is_safe_cloud_url(url: str) -> bool:
 
     For hostnames (not IP literals) the name is resolved and EVERY resolved
     address is checked, so a name like `metadata.google.internal` or an
-    attacker DNS record pointing at 169.254.169.254 is rejected. (This is not
-    full DNS-rebinding protection — that needs pinning the validated IP through
-    to the request; a follow-up. A name that does not resolve here is allowed,
-    matching the prior behavior, since the request itself will fail.)
+    attacker DNS record pointing at 169.254.169.254 is rejected. The validated
+    address is then pinned through to the request (see _open_cloud / _pin_dns),
+    so a second resolution can't rebind to an internal target. A name that does
+    not resolve here is allowed, matching prior behavior (the request fails).
 
     Note: private LAN ranges (10/8, 192.168/16) are intentionally allowed since
     self-hosted nodes legitimately live there; do not feed this fully untrusted
@@ -89,6 +90,83 @@ def _is_safe_cloud_url(url: str) -> bool:
     return True
 
 
+def _pinned_ip_for(url: str):
+    """Return the single validated IP to pin a request to (defeating DNS
+    rebinding between validation and connect), or None when pinning does not
+    apply: IP-literal hosts (no DNS to rebind), loopback names, or unresolvable
+    hosts. Only addresses that pass the same safety checks as _is_safe_cloud_url
+    are returned, so a host whose records are all internal yields None."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except (ValueError, AttributeError):
+        return None
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return None
+    host = parsed.hostname.lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    try:
+        ipaddress.ip_address(host)
+        return None  # IP literal: urllib connects to it directly, nothing to rebind
+    except ValueError:
+        pass
+    if host in ("localhost",) or host.endswith(".localhost"):
+        return None
+    try:
+        infos = socket.getaddrinfo(host, port or (443 if parsed.scheme == "https" else 80),
+                                   proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, OSError):
+        return None
+    for info in infos:
+        try:
+            ipobj = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if not (ipobj.is_link_local or ipobj.is_multicast or ipobj.is_reserved
+                or ipobj.is_unspecified or ipobj.is_loopback):
+            return info[4][0]  # first safe resolved address -> pin to it
+    return None
+
+
+@contextlib.contextmanager
+def _pin_dns(host: str, ip: str):
+    """Force getaddrinfo(host) to return only `ip` for the duration of a request,
+    so urllib connects to the pre-validated address instead of re-resolving (DNS
+    rebinding TOCTOU). TLS still uses `host` for SNI/cert verification. Note:
+    getaddrinfo is process-global; the connector sweeps are sequential, so this
+    is safe here but is not thread-safe."""
+    real_getaddrinfo = socket.getaddrinfo
+    family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+
+    def pinned(h, port, *args, **kwargs):
+        if isinstance(h, str) and h.lower() == host:
+            sockaddr = (ip, port) if family == socket.AF_INET else (ip, port, 0, 0)
+            return [(family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr)]
+        return real_getaddrinfo(h, port, *args, **kwargs)
+
+    socket.getaddrinfo = pinned
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = real_getaddrinfo
+
+
+def _open_cloud(req, url: str, timeout: float) -> bytes:
+    """urlopen that pins a hostname target to its pre-validated IP, so the
+    connection cannot rebind to an internal address after _is_safe_cloud_url
+    accepted it. Returns the response body bytes."""
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    pin = _pinned_ip_for(url)
+    if pin and host:
+        with _pin_dns(host, pin):
+            with urllib.request.urlopen(req, timeout=timeout) as res:
+                return res.read()
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        return res.read()
+
+
 def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
     """
     Queries remote NouGenShards nodes and maps results to standard format.
@@ -114,23 +192,22 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
             )
             req.add_header("Content-Type", "application/json")
 
-            with urllib.request.urlopen(req, timeout=5.0) as res:
-                remote_data = json.loads(res.read().decode())
-                if isinstance(remote_data, list):
-                    for r in remote_data:
-                        # Normalize to local shard shape
-                        results.append({
-                            "id": f"cloud_{conf['id']}_{r.get('id')}",
-                            "event_type": f"CLOUD_{r.get('event_type', 'SHARD')}",
-                            "title": r.get('title', 'Untitled Cloud Shard'),
-                            "content": r.get('content', ''),
-                            "tags": r.get('tags', '[]'),
-                            "utility_score": r.get('utility_score', 1.0),
-                            "access_count": r.get('access_count', 0),
-                            "file_hash": r.get('file_hash', ''),
-                            "final_score": r.get('final_score', 0.45),
-                            "_db_index": f"cloud_{name}"
-                        })
+            remote_data = json.loads(_open_cloud(req, url, 5.0).decode())
+            if isinstance(remote_data, list):
+                for r in remote_data:
+                    # Normalize to local shard shape
+                    results.append({
+                        "id": f"cloud_{conf['id']}_{r.get('id')}",
+                        "event_type": f"CLOUD_{r.get('event_type', 'SHARD')}",
+                        "title": r.get('title', 'Untitled Cloud Shard'),
+                        "content": r.get('content', ''),
+                        "tags": r.get('tags', '[]'),
+                        "utility_score": r.get('utility_score', 1.0),
+                        "access_count": r.get('access_count', 0),
+                        "file_hash": r.get('file_hash', ''),
+                        "final_score": r.get('final_score', 0.45),
+                        "_db_index": f"cloud_{name}"
+                    })
         except _NET_ERRORS as exc:
             # Resilient (one unreachable node must not kill federation) but no
             # longer silent. (Module 10: Graceful Degradation)
@@ -156,8 +233,7 @@ def push_to_cloud(shards: list, cloud_url: str, token: str) -> dict:
         req.add_header("Content-Type", "application/json")
         req.add_header("X-NGS-Token", token)
 
-        with urllib.request.urlopen(req, timeout=10.0) as res:
-            return json.loads(res.read().decode())
+        return json.loads(_open_cloud(req, url, 10.0).decode())
     except _NET_ERRORS as exc:
         return {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
 
@@ -172,8 +248,7 @@ def pull_from_cloud(cloud_url: str, token: str) -> list:
         req = urllib.request.Request(f"{url}/sync/pull", method="GET")
         req.add_header("X-NGS-Token", token)
 
-        with urllib.request.urlopen(req, timeout=10.0) as res:
-            return json.loads(res.read().decode())
+        return json.loads(_open_cloud(req, url, 10.0).decode())
     except _NET_ERRORS as exc:
         # No longer silent — a failed pull is logged, then degrades to empty.
         logger.warning("cloud pull failed: %s: %s", type(exc).__name__, exc)
