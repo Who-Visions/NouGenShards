@@ -1,7 +1,10 @@
 """Cloud Connector for remote NouGenShards instances."""
+import ipaddress
 import json
 import logging
+import os
 import urllib.error
+import urllib.parse
 import urllib.request
 
 logger = logging.getLogger(__name__)
@@ -9,6 +12,43 @@ logger = logging.getLogger(__name__)
 # Network/parse failures that should degrade gracefully, not crash federation.
 _NET_ERRORS = (urllib.error.URLError, json.JSONDecodeError, KeyError,
                ValueError, TimeoutError, OSError)
+
+
+def _is_safe_cloud_url(url: str) -> bool:
+    """Guard cloud node URLs against SSRF and token leakage.
+
+    - Rejects non-http(s) schemes (file://, gopher://, ...).
+    - Blocks link-local/metadata (169.254.169.254), multicast, reserved and
+      unspecified IP literals on any scheme — the classic cloud-metadata SSRF.
+    - Refuses plaintext http to non-loopback hosts (would send X-NGS-Token in
+      cleartext); override knowingly with NGS_ALLOW_INSECURE_CLOUD=1.
+
+    Note: private LAN ranges (10/8, 192.168/16) are intentionally allowed since
+    self-hosted nodes legitimately live there; do not feed this fully untrusted
+    URLs without an additional egress allowlist.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except (ValueError, AttributeError):
+        return False
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    host = parsed.hostname.lower()
+
+    ip = None
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    if ip is not None and (ip.is_link_local or ip.is_multicast
+                           or ip.is_reserved or ip.is_unspecified):
+        return False
+
+    if parsed.scheme == "http":
+        loopback = host in ("localhost", "127.0.0.1", "::1") or (ip is not None and ip.is_loopback)
+        if not loopback and os.environ.get("NGS_ALLOW_INSECURE_CLOUD") != "1":
+            return False
+    return True
 
 
 def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
@@ -24,6 +64,9 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
             # instead of aborting the whole federation sweep.
             url = conf['url'].rstrip('/')
             name = conf['name']
+            if not _is_safe_cloud_url(url):
+                logger.warning("cloud node skipped (%s): unsafe/insecure URL rejected", name)
+                continue
             # POST /search
             payload = {"query": query, "limit": limit}
             req = urllib.request.Request(
@@ -63,6 +106,8 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
 def push_to_cloud(shards: list, cloud_url: str, token: str) -> dict:
     """Pushes a list of shards to a remote cloud node."""
     url = cloud_url.rstrip('/')
+    if not _is_safe_cloud_url(url):
+        return {"status": "error", "message": "unsafe/insecure cloud URL rejected"}
     payload = {"shards": shards}
     try:
         req = urllib.request.Request(
@@ -82,6 +127,9 @@ def push_to_cloud(shards: list, cloud_url: str, token: str) -> dict:
 def pull_from_cloud(cloud_url: str, token: str) -> list:
     """Pulls all shards from a remote cloud node."""
     url = cloud_url.rstrip('/')
+    if not _is_safe_cloud_url(url):
+        logger.warning("cloud pull skipped: unsafe/insecure URL rejected")
+        return []
     try:
         req = urllib.request.Request(f"{url}/sync/pull", method="GET")
         req.add_header("X-NGS-Token", token)

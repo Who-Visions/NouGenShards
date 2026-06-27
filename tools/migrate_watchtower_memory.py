@@ -14,18 +14,19 @@ os.environ["NOUGEN_VAULT_DIR"] = str(active_vault_dir)
 
 import nougen_shards.core as shards
 
-# Target directories to scan
-target_dirs = [
-    Path(r"C:\Users\super\Watchtower\memory"),
-    Path(r"C:\Users\super\Watchtower\Who-tester"),
-    Path(r"C:\Users\super\Watchtower\Things the agent forget"),
-    Path(r"C:\Users\super\Watchtower\gemini_cookbook"),
-    Path(r"C:\Users\super\Watchtower\unk_trader_mobile"),
-    Path(r"C:\Users\super\Watchtower\NouGen\NouGenAiAntigravityMonitor")
-]
+# Watchtower root is configurable (WATCHTOWER_ROOT env, default ~/Watchtower) —
+# no hardcoded author path in a public repo.
+watchtower_root = Path(os.environ.get("WATCHTOWER_ROOT", str(Path.home() / "Watchtower")))
 
-# Watchtower root path for calculating relative titles
-watchtower_root = Path(r"C:\Users\super\Watchtower")
+# Target directories to scan (derived from the configurable root)
+target_dirs = [
+    watchtower_root / "memory",
+    watchtower_root / "Who-tester",
+    watchtower_root / "Things the agent forget",
+    watchtower_root / "gemini_cookbook",
+    watchtower_root / "unk_trader_mobile",
+    watchtower_root / "NouGen" / "NouGenAiAntigravityMonitor",
+]
 
 # Ignore lists (skip standard template/scaffold directories to keep memory core clean)
 ignore_dirs = {
@@ -109,7 +110,7 @@ for target in target_dirs:
             code_exts = {".py", ".sh", ".bat", ".ps1", ".json", ".toml", ".lock", ".yaml", ".yml", ".ts", ".tsx", ".js", ".jsx", ".css", ".dart"}
             event_type = "CODE" if ext in code_exts else "DOCUMENT"
             
-            # Title is the path relative to C:\Users\super\Watchtower
+            # Title is the path relative to the watchtower_root
             try:
                 title = str(file_path.relative_to(watchtower_root)).replace("\\", "/")
             except ValueError:

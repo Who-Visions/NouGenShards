@@ -6,6 +6,7 @@ import os
 import sys
 import hmac
 import json
+import hmac
 import sqlite3
 from typing import List, Optional
 from datetime import datetime, timezone
@@ -64,7 +65,7 @@ def get_substrate_map():
                 conn = core.get_connection(i)
                 shards_count = conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
                 conn.close()
-            except: pass
+            except Exception: pass
         
         status = "🟢 ACTIVE" if i == active_idx else "⚪ READY"
         if size > 900: status = "🔴 FULL"
@@ -190,8 +191,26 @@ with gr.Blocks(title="NouGenShards Cortex HUD", theme=gr.themes.Soft()) as corte
             )
 
 
-app = gr.mount_gradio_app(app, cortex_hud, path="/")
+# The Cortex HUD exposes search, recon, substrate maps and full vault transcript
+# dumps — none of it behind the write-token. When the node is reachable beyond
+# loopback the UI MUST require a login: set NGS_HUD_USER / NGS_HUD_PASSWORD.
+_hud_user = os.environ.get("NGS_HUD_USER")
+_hud_pass = os.environ.get("NGS_HUD_PASSWORD")
+_hud_auth = (_hud_user, _hud_pass) if _hud_user and _hud_pass else None
+
+app = gr.mount_gradio_app(app, cortex_hud, path="/", auth=_hud_auth)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=4444)
+    # Bind to loopback by default so the (intentionally unauthenticated) read /
+    # recon / transcript UI is not silently exposed to the network. Opt into a
+    # public bind explicitly via NGS_BIND_HOST=0.0.0.0, or on HF Spaces, which
+    # requires 0.0.0.0 and supplies its own access control.
+    default_host = "0.0.0.0" if os.environ.get("SPACE_ID") else "127.0.0.1"
+    host = os.environ.get("NGS_BIND_HOST", default_host)
+    port = int(os.environ.get("NGS_PORT", "4444"))
+    if host not in ("127.0.0.1", "localhost", "::1") and not _hud_auth:
+        print("[WARN] Cortex HUD bound to a non-loopback host without "
+              "NGS_HUD_USER/NGS_HUD_PASSWORD — search/recon/transcript "
+              "endpoints are unauthenticated and network-exposed.")
+    uvicorn.run(app, host=host, port=port)

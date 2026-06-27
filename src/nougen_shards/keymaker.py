@@ -102,6 +102,13 @@ def init_vault():
     """Initializes the vault database schema."""
     VAULT_DIR.mkdir(parents=True, exist_ok=True)
     SECRETS_JSON_DIR.mkdir(parents=True, exist_ok=True)
+    # Restrict the vault to the owner on POSIX (Windows relies on per-file ACLs).
+    if os.name != "nt":
+        for d in (VAULT_DIR, SECRETS_JSON_DIR):
+            try:
+                os.chmod(d, 0o700)
+            except OSError:
+                pass
 
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -187,11 +194,24 @@ def ingest_service_account(json_data: str):
         project_id = data.get("project_id", "unknown_project")
         client_email = data.get("client_email", "unknown_email")
 
+        # Ensure the (owner-only) vault dirs exist before writing the key file.
+        init_vault()
+
         file_name = f"{project_id}_service_account.json"
         target_path = SECRETS_JSON_DIR / file_name
 
-        with open(target_path, "w", encoding="utf-8") as f_out:
-            json.dump(data, f_out, indent=2)
+        # This file holds the SA private key. On POSIX create it owner-only from
+        # the start (O_CREAT|0o600) so there is no window where it is world/group
+        # readable before perms are applied; on Windows the icacls lock below
+        # restricts it (default-deny inheritance + grant current user).
+        payload = json.dumps(data, indent=2)
+        if os.name == "nt":
+            with open(target_path, "w", encoding="utf-8") as f_out:
+                f_out.write(payload)
+        else:
+            fd = os.open(str(target_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f_out:
+                f_out.write(payload)
 
         # Lock file ACL to the current user only (constitution 0.2 rule 3)
         if os.name == "nt":
@@ -215,10 +235,12 @@ def register_external_db(uri: str, table_name: str, title_col: str, content_col:
     init_vault()
     conn = sqlite3.connect(str(DB_PATH))
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    # The URI usually embeds DB credentials (user:pass@host) — protect it at
+    # rest like any other secret instead of storing the connection string raw.
     conn.execute('''
         INSERT INTO external_dbs (uri, table_name, title_col, content_col, last_connected)
         VALUES (?, ?, ?, ?, ?)
-    ''', (uri, table_name, title_col, content_col, timestamp))
+    ''', (_protect(uri), table_name, title_col, content_col, timestamp))
     conn.commit()
     conn.close()
 
@@ -231,7 +253,15 @@ def list_external_dbs() -> list:
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute("SELECT * FROM external_dbs").fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["uri"] = _unprotect(d["uri"])  # legacy plaintext passes through
+            except OSError:
+                continue  # unreadable creds: skip rather than expose/crash the sweep
+            result.append(d)
+        return result
     except sqlite3.Error:
         return []
     finally:
@@ -307,8 +337,13 @@ def migrate_to_encrypted() -> int:
         rows = conn.execute("SELECT secret_key, secret_value FROM secrets").fetchall()
         for key, stored in rows:
             if not _is_encrypted(stored):
+                protected = _protect(str(stored), key)
+                # Don't claim a migration if the plaintext escape-hatch is active
+                # (_protect returned the value unchanged) — it's still plaintext.
+                if not _is_encrypted(protected):
+                    continue
                 conn.execute("UPDATE secrets SET secret_value = ? WHERE secret_key = ?",
-                             (_protect(str(stored), key), key))
+                             (protected, key))
                 migrated += 1
         conn.commit()
     finally:

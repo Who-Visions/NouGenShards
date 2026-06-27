@@ -11,6 +11,20 @@ import * as keymaker from "./keymaker.js";
 import * as router from "./router.js";
 import * as structured from "./structured.js";
 
+// Default network timeout (ms) for every model HTTP call: a hung connection
+// would otherwise block forever. Mirrors the Python DEFAULT_TIMEOUT. Override
+// via NGS_HTTP_TIMEOUT (seconds).
+const DEFAULT_TIMEOUT_MS = (() => {
+  const v = Number(process.env.NGS_HTTP_TIMEOUT);
+  return Number.isFinite(v) && v > 0 ? v * 1000 : 60000;
+})();
+
+/** fetch() with a default timeout; preserves an explicit per-call signal
+ * (so the short is_alive/list_models probes keep their own shorter timeout). */
+async function tfetch(input: any, init: any = {}): Promise<Response> {
+  return fetch(input, { ...init, signal: init.signal ?? AbortSignal.timeout(DEFAULT_TIMEOUT_MS) });
+}
+
 export interface ChatMessage {
   role: string;
   content: string;
@@ -90,7 +104,7 @@ export class OpenAIClient extends LLMClient {
     }
     const payload = { model, messages, stream };
     try {
-      const res = await fetch(`${this.base_url}/chat/completions`, {
+      const res = await tfetch(`${this.base_url}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -132,7 +146,7 @@ export class OpenAIClient extends LLMClient {
     }
     const payload = { model, input: text };
     try {
-      const res = await fetch(`${this.base_url}/embeddings`, {
+      const res = await tfetch(`${this.base_url}/embeddings`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -181,7 +195,7 @@ export class AnthropicClient extends LLMClient {
       stream,
     };
     try {
-      const res = await fetch(`${this.base_url}/messages`, {
+      const res = await tfetch(`${this.base_url}/messages`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -254,11 +268,13 @@ export class GeminiClient extends LLMClient {
       contents.push({ role, parts: [{ text: msg.content }] });
     }
     const endpoint = stream ? "streamGenerateContent" : "generateContent";
-    const url = `${this.base_url}/${model}:${endpoint}?key=${this.api_key}`;
+    // Key via header, not the URL query string (which leaks into proxy/access
+    // logs and exception text). Mirrors the Python x-goog-api-key fix.
+    const url = `${this.base_url}/${model}:${endpoint}`;
     try {
-      const res = await fetch(url, {
+      const res = await tfetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": this.api_key ?? "" },
         body: JSON.stringify({ contents }),
       });
       if (!stream) {
@@ -303,12 +319,12 @@ export class GeminiClient extends LLMClient {
     if (!this.api_key) {
       return [];
     }
-    const url = `${this.base_url}/${model}:embedContent?key=${this.api_key}`;
+    const url = `${this.base_url}/${model}:embedContent`;
     const payload = { content: { parts: [{ text }] } };
     try {
-      const res = await fetch(url, {
+      const res = await tfetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": this.api_key ?? "" },
         body: JSON.stringify(payload),
       });
       const resp_data: any = await res.json();
@@ -349,7 +365,7 @@ export class HuggingFaceClient extends LLMClient {
     prompt += "ASSISTANT: ";
     const payload = { inputs: prompt, parameters: { max_new_tokens: 1024 }, stream };
     try {
-      const res = await fetch(`${this.base_url}/${model}`, {
+      const res = await tfetch(`${this.base_url}/${model}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -485,7 +501,7 @@ export class OpenRouterClient extends OpenAIClient {
     }
     const payload = { model, messages, stream };
     try {
-      const res = await fetch(`${this.base_url}/chat/completions`, {
+      const res = await tfetch(`${this.base_url}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -539,7 +555,7 @@ export class OpenRouterClient extends OpenAIClient {
     }
 
     try {
-      const res = await fetch(`${this.base_url}/chat/completions`, {
+      const res = await tfetch(`${this.base_url}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -603,7 +619,7 @@ export class OpenRouterClient extends OpenAIClient {
     }
 
     try {
-      const res = await fetch(`${this.base_url}/chat/completions`, {
+      const res = await tfetch(`${this.base_url}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -681,7 +697,7 @@ export class WhoVisionsCloudClient extends LLMClient {
 
     const payload = { model, messages, stream };
     try {
-      const res = await fetch(`${this.node_url ? this.node_url.replace(/\/+$/, "") : ""}/cloud/chat`, {
+      const res = await tfetch(`${this.node_url ? this.node_url.replace(/\/+$/, "") : ""}/cloud/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -702,6 +718,67 @@ export class WhoVisionsCloudClient extends LLMClient {
   }
 }
 
+/**
+ * Select the best available local model, preferring custom/finetuned models over
+ * official base models. Mirrors the 4-tier logic of Python find_best_model_from_list
+ * (returns the model name; the Python ModelBudgetConfig n_ctx tuning is not yet ported).
+ */
+export function find_best_model_from_list(models: string[]): string {
+  if (!models.length) {
+    return "";
+  }
+  const has = (model: string, tag: string): boolean => {
+    const ml = model.toLowerCase();
+    return ml.startsWith(tag) || ml.includes(`/${tag}`) || ml.includes(`\\${tag}`);
+  };
+
+  // 1. Known custom system models.
+  const custom_system_tags = [
+    "dav1d:e2b", "rhea-noir:e2b", "sol-ai:e2b", "griot:e2b",
+    "gemma4-aggressive:e2b", "gemma4-aggressive:e4b", "rhea-noir:e4b",
+    "kaedra:e4b", "iris-ai:e4b", "sol-ai:e4b", "davos:latest", "janitor:latest",
+  ];
+  for (const tag of custom_system_tags) {
+    for (const model of models) {
+      if (has(model, tag)) {
+        return model;
+      }
+    }
+  }
+
+  // 2. Any other user-created custom/finetuned model (not an official vendor prefix).
+  const official_prefixes = ["gemma", "llama", "qwen", "mistral", "phi", "deepseek", "codellama", "mixtral"];
+  for (const model of models) {
+    const base = (model.replace(/\\/g, "/").split("/").pop() ?? "").toLowerCase();
+    if (!official_prefixes.some((p) => base.startsWith(p))) {
+      return model;
+    }
+  }
+
+  // 3. Official Gemma 4 QAT/edge/workstation defaults.
+  const gemma4_tags = [
+    "gemma4:e4b", "gemma4:e4b-it-qat", "gemma4:12b", "gemma4:12b-it-qat",
+    "gemma4:e2b", "gemma4:e2b-it-qat", "gemma4:latest",
+  ];
+  for (const tag of gemma4_tags) {
+    for (const model of models) {
+      if (has(model, tag)) {
+        return model;
+      }
+    }
+  }
+
+  // 4. Generic fallback to any Gemma family, else the first available model.
+  for (const prefix of ["gemma4:", "gemma:"]) {
+    for (const model of models) {
+      if (model.toLowerCase().startsWith(prefix) || model.toLowerCase().includes(prefix)) {
+        return model;
+      }
+    }
+  }
+  return models[0];
+}
+
 /** Client for local Ollama instance. */
 export class OllamaClient extends LocalLLMClient {
   base_url: string;
@@ -714,7 +791,7 @@ export class OllamaClient extends LocalLLMClient {
   async is_alive(): Promise<boolean> {
     try {
       const ctl = AbortSignal.timeout(1000);
-      const res = await fetch(`${this.base_url}/api/version`, { signal: ctl });
+      const res = await tfetch(`${this.base_url}/api/version`, { signal: ctl });
       return res.status === 200;
     } catch {
       return false;
@@ -723,7 +800,7 @@ export class OllamaClient extends LocalLLMClient {
 
   async list_models(): Promise<string[]> {
     try {
-      const res = await fetch(`${this.base_url}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      const res = await tfetch(`${this.base_url}/api/tags`, { signal: AbortSignal.timeout(3000) });
       const data: any = await res.json();
       return (data?.models ?? []).map((m: any) => m.name);
     } catch {
@@ -734,7 +811,7 @@ export class OllamaClient extends LocalLLMClient {
   async chat(model: string, messages: ChatMessage[], stream = false): Promise<string> {
     const payload = { model, messages, stream };
     try {
-      const res = await fetch(`${this.base_url}/api/chat`, {
+      const res = await tfetch(`${this.base_url}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -762,7 +839,7 @@ export class OllamaClient extends LocalLLMClient {
   async embed(model: string, text: string): Promise<number[]> {
     const payload = { model, prompt: text };
     try {
-      const res = await fetch(`${this.base_url}/api/embeddings`, {
+      const res = await tfetch(`${this.base_url}/api/embeddings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -775,15 +852,7 @@ export class OllamaClient extends LocalLLMClient {
   }
 
   async find_best_edge_model(): Promise<string> {
-    const models = await this.list_models();
-    for (const prefix of ["dav1d:e2b", "rhea-noir:e2b", "sol-ai:e2b"]) {
-      for (const model of models) {
-        if (model.startsWith(prefix)) {
-          return model;
-        }
-      }
-    }
-    return models.length > 0 ? models[0] : "";
+    return find_best_model_from_list(await this.list_models());
   }
 
   /** Ollama-specific: pull model. */
@@ -791,7 +860,7 @@ export class OllamaClient extends LocalLLMClient {
     const url = `${this.base_url}/api/pull`;
     const payload = JSON.stringify({ model: model_name, stream: true });
     try {
-      const res = await fetch(url, {
+      const res = await tfetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: payload,
@@ -830,7 +899,7 @@ export class LMStudioClient extends LocalLLMClient {
 
   async is_alive(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.base_url}/models`, { signal: AbortSignal.timeout(1000) });
+      const res = await tfetch(`${this.base_url}/models`, { signal: AbortSignal.timeout(1000) });
       return res.status === 200;
     } catch {
       return false;
@@ -839,7 +908,7 @@ export class LMStudioClient extends LocalLLMClient {
 
   async list_models(): Promise<string[]> {
     try {
-      const res = await fetch(`${this.base_url}/models`, { signal: AbortSignal.timeout(3000) });
+      const res = await tfetch(`${this.base_url}/models`, { signal: AbortSignal.timeout(3000) });
       const data: any = await res.json();
       return (data?.data ?? []).map((m: any) => m.id);
     } catch {
@@ -850,7 +919,7 @@ export class LMStudioClient extends LocalLLMClient {
   async chat(model: string, messages: ChatMessage[], stream = false): Promise<string> {
     const payload = { model, messages, stream };
     try {
-      const res = await fetch(`${this.base_url}/chat/completions`, {
+      const res = await tfetch(`${this.base_url}/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -888,8 +957,7 @@ export class LMStudioClient extends LocalLLMClient {
   }
 
   async find_best_edge_model(): Promise<string> {
-    const models = await this.list_models();
-    return models.length > 0 ? models[0] : "";
+    return find_best_model_from_list(await this.list_models());
   }
 }
 
