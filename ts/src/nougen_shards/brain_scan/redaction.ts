@@ -12,7 +12,8 @@ export const SECRET_PATTERNS: [RegExp, string][] = [
   // Specific Providers (MUST be before generic to match specific tags)
   [/sk-ant-[a-zA-Z0-9_-]{20,}/g, "<REDACTED_ANTHROPIC_KEY>"],
   [/sk-or-v1-[a-zA-Z0-9_-]{20,}/g, "<REDACTED_OPENROUTER_KEY>"],
-  [/sk-[a-zA-Z0-9]{20,}/g, "<REDACTED_OPENAI_KEY>"],
+  // Covers sk-..., sk-proj-..., sk-svcacct-... (newer keys contain - and _)
+  [/sk-[a-zA-Z0-9_-]{20,}/g, "<REDACTED_OPENAI_KEY>"],
   [/hf_[a-zA-Z0-9_-]{20,}/g, "<REDACTED_HF_KEY>"],
   [/gh[pousr]_[A-Za-z0-9]{20,}/g, "<REDACTED_GITHUB_TOKEN>"],
   [/github_pat_[A-Za-z0-9_]{20,}/g, "<REDACTED_GITHUB_TOKEN>"],
@@ -25,15 +26,15 @@ export const SECRET_PATTERNS: [RegExp, string][] = [
     "<REDACTED_PRIVATE_KEY>",
   ],
 
-  // Database URLs
-  [/(postgres|mysql|sqlite|mongodb):\/\/[^:]+:[^@]+@[^/]+\/[^\s"']+/g, "<REDACTED_DB_URL>"],
+  // Database URLs (credentials present; path/db name is optional)
+  [/(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^:\s/]+:[^@\s]+@[^\s"'/]+(?:\/[^\s"']*)?/g, "<REDACTED_DB_URL>"],
 
   // JWTs
   [/eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, "<REDACTED_JWT>"],
 
   // General API Keys / Tokens (Python inline (?i) -> JS `i` flag on whole pattern)
   [
-    /(?:api_key|apikey|secret|token|password|auth|credential|access_key|key)[\s:=]+['"]?([A-Za-z0-9_-]{16,})['"]?/gi,
+    /(?:api_key|apikey|secret|token|password|auth|credential|access_key|key)[\s:=]+['"]?([A-Za-z0-9_\-./+=~]{16,})['"]?/gi,
     "<REDACTED_SECRET>",
   ],
 ];

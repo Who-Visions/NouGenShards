@@ -38,6 +38,20 @@ def test_redact_content():
     assert "<REDACTED_JWT>" in redacted
     assert "Here is my key:" in redacted
 
+def test_redact_db_url_without_path():
+    # Regression: a DB URL with no trailing /db must still redact the password.
+    content = "conn = postgres://admin:s3cr3tP@ss@db.internal:5432"
+    redacted = redact_content(content)
+    assert "s3cr3tP" not in redacted
+    assert "<REDACTED_DB_URL>" in redacted
+
+def test_redact_sk_proj_key():
+    # Regression: newer sk-proj-/sk-svcacct- keys contain - and _.
+    content = "OPENAI=sk-proj-abc_DEF-ghi0123456789jklmnopqrstuv"
+    redacted = redact_content(content)
+    assert "sk-proj-abc" not in redacted
+    assert "<REDACTED_OPENAI_KEY>" in redacted
+
 def test_is_safe_dir():
     assert _is_safe_dir(Path("/home/user/.claude")) is True
     assert _is_safe_dir(Path("/home/user/.ssh")) is False
