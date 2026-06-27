@@ -18,10 +18,12 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
     results = []
 
     for conf in cloud_configs:
-        url = conf['url'].rstrip('/')
-        name = conf['name']
-
+        name = conf.get('name', '?')
         try:
+            # Read config inside the try so a malformed row skips this node
+            # instead of aborting the whole federation sweep.
+            url = conf['url'].rstrip('/')
+            name = conf['name']
             # POST /search
             payload = {"query": query, "limit": limit}
             req = urllib.request.Request(
