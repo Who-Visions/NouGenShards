@@ -11,8 +11,22 @@ so it can't cross the cloud↔local boundary. The branch is our shared channel �
 - **You (local):** anything needing the real vault, `.gemini/.claude/.codex/.agents`
   scan, Ollama/OpenRouter routing, VRAM watch. The sandbox literally can't reach those.
 
+## 🔁 RECONCILED with PR #5 (main)
+The parallel audit merged to `main` as **PR #5** and overlapped ~16 files. This
+branch was **rebased onto the new main** — now `main + 1 commit`, 0 behind.
+Duplicate work dropped; only fixes **main still lacks** remain (30 files,
++961/−123). Where main already had an equivalent fix, this branch took main's.
+
+**What this branch uniquely adds on top of main (merge to close these gaps):**
+- 🔐 keymaker secret-at-rest (perms/encrypted URIs); scanner symlink+credential
+  guards; cloud/sql **SSRF** allowlists; redaction **superset** (main leaks ASIA /
+  +driver DB URLs / truncated PEM and breaks JSON on nougen tokens — verified);
+  Gemini key → header; structured bool; core jitter-removal + density_score.
+- 🛟 tools data-loss guards (NULL-hash delete, backup-before-VACUUM), author-path
+  removal, shell=False; ts hooks/compaction, handoff claude-cli lane, find_best_model.
+
 ## 🔴 Active Incidents
-- None. Branch is green: **226 Python + 117 TS tests pass** (2 TS files unrunnable
+- None. Branch is green: **237 Python + 132 TS tests pass** (2 TS files unrunnable
   in cloud — missing `@modelcontextprotocol/sdk` — not a failure of our code).
 
 ## 🟡 Ongoing Investigations
