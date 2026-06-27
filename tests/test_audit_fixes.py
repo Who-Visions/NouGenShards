@@ -171,3 +171,18 @@ def test_detect_agent_prefers_claude_cli_over_stray_gemini_key(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "x")
     monkeypatch.delenv("NOUGEN_AGENT", raising=False)
     assert handoff.detect_current_agent() == "claude-cli"
+
+
+def test_cloud_request_pins_validated_ip(monkeypatch):
+    import socket
+    # _pinned_ip_for returns the validated resolved IP for a hostname (to pin),
+    # and _pin_dns forces getaddrinfo to that IP for the duration of the request.
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda h, p, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p))])
+    assert cloud._pinned_ip_for("https://node.example") == "93.184.216.34"
+    assert cloud._pinned_ip_for("https://1.2.3.4") is None        # IP literal: no pin
+    assert cloud._pinned_ip_for("http://localhost:4444") is None  # loopback name: no pin
+    real = socket.getaddrinfo
+    with cloud._pin_dns("node.example", "203.0.113.7"):
+        assert [x[4][0] for x in socket.getaddrinfo("node.example", 443)] == ["203.0.113.7"]
+    assert socket.getaddrinfo is real  # restored on exit
