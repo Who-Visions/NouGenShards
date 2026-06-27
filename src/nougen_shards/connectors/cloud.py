@@ -156,15 +156,36 @@ def _pin_dns(host: str, ip: str):
 def _open_cloud(req, url: str, timeout: float) -> bytes:
     """urlopen that pins a hostname target to its pre-validated IP, so the
     connection cannot rebind to an internal address after _is_safe_cloud_url
-    accepted it. Returns the response body bytes."""
+    accepted it. Returns the response body bytes.
+
+    IP literals and loopback names cannot rebind, so they go direct. For a real
+    hostname a validated pin is REQUIRED: if _pinned_ip_for returns None (the
+    name now resolves only to internal/unresolvable addresses), we refuse to send
+    the request unpinned rather than fall back to a second, unchecked resolution.
+    """
     host = (urllib.parse.urlparse(url).hostname or "").lower()
+
+    needs_pin = True
+    try:
+        ipaddress.ip_address(host)
+        needs_pin = False  # IP literal: nothing to rebind
+    except ValueError:
+        if host in ("localhost",) or host.endswith(".localhost"):
+            needs_pin = False  # loopback by name: intended local target
+
+    if not needs_pin:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return res.read()
+
     pin = _pinned_ip_for(url)
-    if pin and host:
-        with _pin_dns(host, pin):
-            with urllib.request.urlopen(req, timeout=timeout) as res:
-                return res.read()
-    with urllib.request.urlopen(req, timeout=timeout) as res:
-        return res.read()
+    if not pin:
+        # Hostname with no safe validated address (rebind to internal / now
+        # unresolvable). Refuse rather than re-resolve unpinned. Caught by the
+        # callers' _NET_ERRORS handling.
+        raise urllib.error.URLError("cloud host failed DNS pinning; refusing unpinned request")
+    with _pin_dns(host, pin):
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return res.read()
 
 
 def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
