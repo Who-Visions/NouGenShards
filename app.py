@@ -6,7 +6,6 @@ import os
 import sys
 import hmac
 import json
-import hmac
 import sqlite3
 from typing import List, Optional
 from datetime import datetime, timezone
@@ -203,11 +202,10 @@ app = gr.mount_gradio_app(app, cortex_hud, path="/", auth=_hud_auth)
 if __name__ == "__main__":
     import uvicorn
     # Bind to loopback by default so the (intentionally unauthenticated) read /
-    # recon / transcript UI is not silently exposed to the network. Opt into a
-    # public bind explicitly via NGS_BIND_HOST=0.0.0.0, or on HF Spaces, which
-    # requires 0.0.0.0 and supplies its own access control.
+    # recon / transcript UI is not silently exposed. HF Spaces / explicit deploys
+    # set NGS_HOST=0.0.0.0; warn if bound non-loopback without HUD auth.
     default_host = "0.0.0.0" if os.environ.get("SPACE_ID") else "127.0.0.1"
-    host = os.environ.get("NGS_BIND_HOST", default_host)
+    host = os.environ.get("NGS_HOST", default_host)
     port = int(os.environ.get("NGS_PORT", "4444"))
     if host not in ("127.0.0.1", "localhost", "::1") and not _hud_auth:
         print("[WARN] Cortex HUD bound to a non-loopback host without "
