@@ -565,13 +565,16 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
             fts_query = _build_fts_match_query(query)
             if fts_query is not None:
                 try:
-                    cursor = conn.execute("""
+                    # domain_key None/"*" => search ALL domains (whole brain), not one bucket.
+                    dom_clause = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
+                    dom_params = () if domain_key in (None, "*") else (domain_key,)
+                    cursor = conn.execute(f"""
                         SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
                                s.embedding, s.tags, s.domain_key, bm25(shards_fts) as bm25_score
                         FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
-                        WHERE s.domain_key = ? AND shards_fts MATCH ?
+                        WHERE {dom_clause}shards_fts MATCH ?
                         ORDER BY bm25_score ASC LIMIT ?
-                    """, (domain_key, fts_query, limit))
+                    """, (*dom_params, fts_query, limit))
                     res = cursor.fetchall()
                     if res:
                         for row in res:
@@ -585,12 +588,14 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 history.log_event(0, i, "SEARCH_FALLBACK", metadata={"query": query})
                 
                 like_query = f"%{query}%"
-                cursor = conn.execute("""
+                dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
+                dom_params = () if domain_key in (None, "*") else (domain_key,)
+                cursor = conn.execute(f"""
                     SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
                     FROM shards
-                    WHERE domain_key = ? AND (title LIKE ? OR content LIKE ?)
+                    WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
                     ORDER BY utility_score DESC LIMIT ?
-                """, (domain_key, like_query, like_query, limit))
+                """, (*dom_params, like_query, like_query, limit))
                 for row in cursor:
                     item = dict(row)
                     item["_db_index"] = i
@@ -646,11 +651,13 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             continue
         conn = get_connection(i)
         try:
-            cursor = conn.execute("""
+            dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
+            dom_params = () if domain_key in (None, "*") else (domain_key,)
+            cursor = conn.execute(f"""
                 SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
                 FROM shards
-                WHERE domain_key = ? AND embedding IS NOT NULL
-            """, (domain_key,))
+                WHERE {dom_clause}embedding IS NOT NULL
+            """, dom_params)
             for row in cursor:
                 item = dict(row)
                 item["_db_index"] = i
@@ -832,9 +839,11 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
 
     all_results = run_parallel_retrieval(domain_key)
     
-    # Fallback to global if active_domain is not global and we found no matches
-    if not all_results and domain_key != "global":
-        all_results = run_parallel_retrieval("global")
+    # Fallback: if the domain-scoped pass found nothing, sweep the ENTIRE brain
+    # (all domain_keys). Without this, recall stays siloed to one bucket
+    # (e.g. 'global' = <2% of shards) and misses the other 47k+ shards.
+    if not all_results and domain_key != "*":
+        all_results = run_parallel_retrieval("*")
 
     # Stage 2: cross-encoder rerank the top RRF candidates (no-op unless enabled).
     if RERANK_ENABLED:
