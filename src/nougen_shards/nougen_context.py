@@ -107,7 +107,9 @@ def search_context(query: str, limit: int = 5):
     """Searches session context using BM25.
 
     Raw user input can contain FTS5 operators/quotes that raise OperationalError;
-    fall back to a LIKE scan (search_events) instead of hard-failing the search.
+    fall back to a LIKE scan instead of hard-failing the search. The fallback uses
+    the SAME projection (id/timestamp/type/content/metadata) as the FTS path so
+    callers see a stable schema either way.
     """
     conn = get_context_connection()
     try:
@@ -121,7 +123,15 @@ def search_context(query: str, limit: int = 5):
         """, (query, limit))
         return [dict(row) for row in cursor.fetchall()]
     except sqlite3.OperationalError:
-        return search_events(query, limit)
+        pattern = f"%{query}%"
+        cursor = conn.execute("""
+            SELECT id, timestamp, type, content, metadata
+            FROM ctx_events
+            WHERE content LIKE ? OR type LIKE ? OR metadata LIKE ?
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+        """, (pattern, pattern, pattern, limit))
+        return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
 

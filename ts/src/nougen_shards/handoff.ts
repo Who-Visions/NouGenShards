@@ -374,13 +374,15 @@ export function detect_current_agent(): string {
   if (explicit) {
     return explicit.trim().toLowerCase();
   }
-  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
-    return "gemini";
-  }
   // Claude Code CLI is its own lane ("claude-cli"), distinct from the
-  // API/Antigravity "claude" lane, so CLI handoffs are sourced correctly.
+  // API/Antigravity "claude" lane. The CLI sets an explicit marker, which is a
+  // stronger signal than a stray GEMINI/GOOGLE key exported in the same shell —
+  // so check it BEFORE generic API-key detection or CLI handoffs misroute.
   if (process.env.CLAUDECODE || process.env.CLAUDE_CODE || process.env.CLAUDE_CODE_ENTRYPOINT) {
     return "claude-cli";
+  }
+  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
+    return "gemini";
   }
   if (process.env.ANTHROPIC_API_KEY) {
     return "claude";
