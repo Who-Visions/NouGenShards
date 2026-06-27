@@ -39,8 +39,6 @@ add "CHANGE: robustness batch - timestamps tz-aware single-Z (history/graph utcn
 add "CHANGE: Stood up CI (.github/workflows/ci.yml), the audit's biggest gap. Python + TypeScript jobs. First run failed (TS job: node 20 lacks ** glob support); fixed by pinning node 22 + shell-expanded glob. CI now GREEN on both jobs (run 0ef7344). Commits 770b59c, 0ef7344." \
     "change,ci,devops,testing,lesson"
 
-echo "Replayed 5 session shards into your vault. Verify: $NOUGEN search \"free models retraction\""
-
 add "FLEET FIX (gatekeeper): hardened check_mutation_gate (py + new ts mirror) vs obfuscation - lowercase + whitespace-collapse before matching; expanded denylist (shutil.rmtree, os.remove/unlink, rm --recursive/--force, del /, format, mkfs, dd if=, raw >/dev/sd* writes, forkbomb, git reset --hard, chmod -R 777). Defense-in-depth speed-bump, NOT a security boundary. Commit fdc2b4c." \
     "gatekeeper,security,defense-in-depth,fleet"
 
@@ -49,3 +47,5 @@ add "FLEET FIX (federation): federated_retrieve wraps each remote lane in try/ex
 
 add "FLEET FIX (cli + core): node push/pull conn try/finally + json.loads guards; core.mark_shard try/finally + db_index 'is not None'. py+ts. Commit fdc2b4c." \
     "cli,core,resource-leak,fleet"
+
+echo "Replayed 12 session shards into your vault. Verify: $NOUGEN search \"free models retraction\""
