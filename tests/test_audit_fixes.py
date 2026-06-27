@@ -124,3 +124,22 @@ def test_cloud_url_guard_resolves_hostnames(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
     assert cloud._is_safe_cloud_url("https://metadata.evil/") is False
     assert cloud._is_safe_cloud_url("https://safe.example/") is True
+
+
+def test_cloud_url_guard_rejects_loopback_dns_alias(monkeypatch):
+    import socket
+    # A non-local hostname that resolves to loopback is a DNS alias to a
+    # loopback-only service — must be rejected (would leak X-NGS-Token).
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda h, p, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", p))])
+    assert cloud._is_safe_cloud_url("http://evil.example:8080") is False
+    # explicit loopback literal/name still allowed
+    assert cloud._is_safe_cloud_url("http://127.0.0.1:4444") is True
+    assert cloud._is_safe_cloud_url("http://localhost:4444") is True
+
+
+@pytest.mark.parametrize("url", ["https://host:bad", "https://host:999999"])
+def test_cloud_url_guard_rejects_malformed_port_without_raising(url):
+    # parsed.port raises ValueError on a bad port; the guard must return False,
+    # not crash the caller (it runs outside push/pull's network-error try).
+    assert cloud._is_safe_cloud_url(url) is False
