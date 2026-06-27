@@ -151,3 +151,23 @@ def test_find_best_model_skips_embedding_only():
     from nougen_shards.models_client import find_best_model_from_list
     cfg = find_best_model_from_list(["gemma4:12b", "nomic-embed-text:latest"])
     assert cfg.model_name == "gemma4:12b"
+
+
+def test_search_context_fallback_keeps_fts_schema(tmp_path, monkeypatch):
+    # An FTS-breaking query ('c++') must fall back to LIKE but return the SAME
+    # keys as the FTS path (type/content, not event_type/description).
+    monkeypatch.setattr(nougen_context, "SESSION_DB_PATH", str(tmp_path / "session.db"))
+    nougen_context.init_context_db(clean_slate=True)
+    nougen_context.log_event("EDIT", "working on c++ parser")
+    rows = nougen_context.search_context("c++")
+    assert rows
+    assert {"id", "timestamp", "type", "content", "metadata"}.issubset(rows[0].keys())
+    assert "event_type" not in rows[0] and "description" not in rows[0]
+
+
+def test_detect_agent_prefers_claude_cli_over_stray_gemini_key(monkeypatch):
+    from nougen_shards import handoff
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.delenv("NOUGEN_AGENT", raising=False)
+    assert handoff.detect_current_agent() == "claude-cli"
