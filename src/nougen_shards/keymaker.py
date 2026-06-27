@@ -262,11 +262,12 @@ def list_external_dbs() -> list:
             d = dict(r)
             try:
                 d["uri"] = _unprotect(d["uri"])  # legacy plaintext passes through
-            except (OSError, ImportError):
-                # OSError: keyring entry missing. ImportError/ModuleNotFoundError:
-                # keyring backend not installed in this env though the URI was
-                # keyring-encrypted elsewhere. Skip the row rather than abort the
-                # federation sweep (federated_retrieve calls this before its try).
+            except Exception:  # pylint: disable=broad-except
+                # Any failure to decrypt ONE row (keyring entry missing -> OSError,
+                # backend not installed -> ImportError, no backend available ->
+                # keyring.errors.NoKeyringError, etc.) must skip that row, never
+                # abort the federation sweep (federated_retrieve calls this before
+                # its graceful-degradation try). Intentionally broad.
                 continue
             result.append(d)
         return result
