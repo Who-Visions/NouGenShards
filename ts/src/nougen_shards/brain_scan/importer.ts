@@ -61,11 +61,14 @@ export function run_import(
       result.records_parsed += 1;
 
       let content = rec.content;
+      let title_text = rec.title;
       if (redact) {
         const redacted = redact_content(content);
-        if (redacted !== content) {
+        const redacted_title = redact_content(title_text);
+        if (redacted !== content || redacted_title !== title_text) {
           result.secrets_redacted += 1;
           content = redacted;
+          title_text = redacted_title;
         }
       }
 
@@ -73,7 +76,7 @@ export function run_import(
 
       const success = shards.capture(
         "IMPORT",
-        `[${rec.source_tool.toUpperCase()}] ${rec.title}`,
+        `[${rec.source_tool.toUpperCase()}] ${title_text}`,
         content,
         tags,
       );
