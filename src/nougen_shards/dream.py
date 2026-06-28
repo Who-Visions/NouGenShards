@@ -96,6 +96,9 @@ def wake() -> Dict[str, Any]:
     # 3. Perform relational semantic consolidation
     consolidation_results = consolidate_episodic_data(limit=10)
 
+    # 4. Self-heal semantic memory: decay stale confidence, reconcile contradictions.
+    healing_results = griot.get_default_griot().heal()
+
     # Surface the new adversarial-verification fields from the consolidation pass.
     verified = bool(consolidation_results.get("verified", False))
     rejected_count = len(consolidation_results.get("rejected") or [])
@@ -116,8 +119,11 @@ def wake() -> Dict[str, Any]:
         "invariants_rejected": rejected_count,
         "invariants_conflicted": conflicts_count,
         "verification_summary": verification_summary,
+        "self_healing": healing_results,
         "status": (
-            "Decay applied, SFT dataset exported, and adversarially-verified "
-            "dual-system semantic consolidation completed. " + verification_summary
+            "Decay applied, SFT dataset exported, adversarially-verified "
+            "dual-system semantic consolidation completed, and semantic memory "
+            "self-healed (confidence decay + contradiction reconciliation). "
+            + verification_summary
         ),
     }
