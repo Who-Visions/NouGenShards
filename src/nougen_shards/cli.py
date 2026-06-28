@@ -910,8 +910,8 @@ def get_parser():
 
     p_griot = subparsers.add_parser("griot", help="Griot agent (vault-grounded chat & consolidation)")
     p_griot.add_argument("action", nargs="?", default="chat",
-                         choices=["chat", "consolidate", "rules", "ask", "tools"],
-                         help="chat | consolidate | rules | ask | tools (default: chat)")
+                         choices=["chat", "consolidate", "rules", "ask", "tools", "conflicts"],
+                         help="chat | consolidate | rules | ask | tools | conflicts (default: chat)")
     p_griot.add_argument("rest", nargs="*",
                          help="chat: query | rules: [subject] | ask: <agent> <message...>")
     p_griot.add_argument("--limit", type=int, default=10,
@@ -1015,6 +1015,30 @@ def cmd_griot(args):
             print(" - Rules:")
             for r in rules:
                 print(f"   [{r.get('subject')}] {r.get('predicate')}")
+
+        # Adversarial verification report
+        verified = result.get("verified", False)
+        print(f" - Verification: {'active' if verified else 'inactive'}")
+        rejected = result.get("rejected") or []
+        print(f" - Rejected invariants: {len(rejected)}")
+        for rej in rejected:
+            print(f"   [{rej.get('subject')}] {rej.get('predicate')} — {rej.get('reason')}")
+        conflicts = result.get("conflicts") or []
+        print(f" - Conflicts: {len(conflicts)}")
+        for c in conflicts:
+            print(f"   [{c.get('subject')}] {c.get('candidate')} vs {c.get('existing')}")
+
+    elif action == "conflicts":
+        groups = g.find_conflicts()
+        if not groups:
+            print("✅ No contradictions found in the rule base.")
+            return
+        print(f"⚠️ Found {len(groups)} conflicting rule group(s):")
+        for grp in groups:
+            print(f"\n[{grp.get('subject')}]")
+            for r in grp.get("rules") or []:
+                print(f"   [{r.get('subject')}] {r.get('predicate')} "
+                      f"(confidence {float(r.get('confidence_score', 0.0)):.1f})")
 
     elif action == "rules":
         subject = rest[0] if rest else None
