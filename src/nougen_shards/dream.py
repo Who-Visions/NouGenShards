@@ -95,7 +95,16 @@ def wake() -> Dict[str, Any]:
     
     # 3. Perform relational semantic consolidation
     consolidation_results = consolidate_episodic_data(limit=10)
-    
+
+    # Surface the new adversarial-verification fields from the consolidation pass.
+    verified = bool(consolidation_results.get("verified", False))
+    rejected_count = len(consolidation_results.get("rejected") or [])
+    conflicts_count = len(consolidation_results.get("conflicts") or [])
+    verification_summary = (
+        f"Adversarial verification {'active' if verified else 'inactive'}: "
+        f"{rejected_count} invariant(s) rejected, {conflicts_count} conflict(s) detected."
+    )
+
     return {
         "experimental": True,
         "pruned": "Applied 0.95x utility decay to all shards.",
@@ -103,5 +112,12 @@ def wake() -> Dict[str, Any]:
         "sft_pairs_generated": len(sft_pairs),
         "parametric_dataset_path": dataset_path,
         "dual_system_consolidation": consolidation_results,
-        "status": "Decay applied, SFT dataset exported, and dual-system semantic consolidation completed."
+        "consolidation_verified": verified,
+        "invariants_rejected": rejected_count,
+        "invariants_conflicted": conflicts_count,
+        "verification_summary": verification_summary,
+        "status": (
+            "Decay applied, SFT dataset exported, and adversarially-verified "
+            "dual-system semantic consolidation completed. " + verification_summary
+        ),
     }

@@ -227,14 +227,29 @@ These personas run locally or seamlessly fall back to cloud providers depending 
 
 Griot is also a full conversational agent: it holds vault-grounded conversations, exposes a runtime tool registry for dynamic function calling, and is reachable by name over the agent-to-agent (A2A) bus.
 
+### Verified consolidation
+
+Consolidation is **verification-gated**: each extracted invariant is adversarially judged (LLM-as-judge) against its source shard before it is written to permanent semantic memory. The verifier **defaults to reject on uncertainty** — the guiding principle is that *an unsupported rule in permanent memory is worse than a missing one*, which is why every write is gated. When no model is reachable, verification is automatically a no-op (offline can't refute), so behavior stays deterministic in tests and on cold boxes.
+
+`consolidate()` now returns three extra fields alongside its counts and `rules`:
+
+- `verified` — bool, whether the adversarial verifier was active for this run.
+- `rejected` — invariants that failed verification, each with a `reason`.
+- `conflicts` — candidates that contradict an existing rule with the same subject.
+
+**Contradiction detection.** `Griot.find_conflicts()` audits semantic memory for the same subject carrying conflicting predicates. It is exposed as the dynamic tool `find_conflicts` and the CLI command `nougen griot conflicts`.
+
 ### CLI
 
 ```bash
 # Hold a vault-grounded conversation
 nougen griot chat "What rules do we have about JWT auth?"
 
-# Run the REM consolidation loop (episodic → semantic)
+# Run the verification-gated consolidation loop (episodic → semantic)
 nougen griot consolidate --limit 10
+
+# Audit semantic memory for contradictions (same subject, conflicting rules)
+nougen griot conflicts
 
 # List compiled semantic invariants, optionally filtered by subject
 nougen griot rules --subject "auth"
@@ -258,7 +273,7 @@ reply = griot.get_default_griot().chat("Summarize our rules on caching")
 result = a2a.ask("NouGen", "Griot", "consolidate the vault", intent=a2a.CONSOLIDATE)
 ```
 
-During chat, the model emits JSON actions — `{"tool": <name>, "args": {...}}` to call a tool, or `{"answer": "..."}` to respond. Built-in tools are `recall`, `list_rules`, `consolidate`, `ask_peer`, and `capture`.
+During chat, the model emits JSON actions — `{"tool": <name>, "args": {...}}` to call a tool, or `{"answer": "..."}` to respond. Built-in tools are `recall`, `list_rules`, `consolidate`, `ask_peer`, `capture`, and `find_conflicts`.
 
 ### Dynamic tool registration
 

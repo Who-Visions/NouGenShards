@@ -60,7 +60,22 @@ EXTRACTION_PROMPT = (
     "  }\n"
     "]\n"
     "Do not output any introductory or conversational text, output raw JSON ONLY. If no rules or facts are present, output an empty array [].\n\n"
-    "Input Content: {content}"
+    "Input Content: [[CONTENT]]"
+)
+
+# Adversarial verifier: a candidate invariant is committed to permanent memory
+# ONLY if it survives this judge. Default-to-reject on uncertainty — an
+# unsupported rule in semantic memory is worse than a missing one.
+VERIFICATION_PROMPT = (
+    "You are a STRICT invariant verifier guarding a permanent knowledge base.\n"
+    "Decide whether the candidate rule is DIRECTLY supported by the source "
+    "content AND is a durable architectural truth (not ephemeral chatter, "
+    "speculation, or a one-off event).\n"
+    "Respond with raw JSON ONLY: {\"verdict\": \"accept\" | \"reject\", \"reason\": \"<short>\"}\n"
+    "Reject if the rule is unsupported, speculative, time-bound, or merely "
+    "conversational. When in doubt, reject.\n\n"
+    "SOURCE CONTENT:\n[[CONTENT]]\n\n"
+    "CANDIDATE RULE:\n  subject: [[SUBJECT]]\n  predicate: [[PREDICATE]]"
 )
 
 
@@ -234,7 +249,7 @@ class Griot:
             if not model:
                 return self.fallback_parse(content)
 
-            prompt = EXTRACTION_PROMPT.format(content=content)
+            prompt = EXTRACTION_PROMPT.replace("[[CONTENT]]", content)
             response_text = client.chat(model, [{"role": "user", "content": prompt}])
             return self._parse_invariant_json(response_text, content)
         except Exception:
@@ -258,44 +273,162 @@ class Griot:
     # -- Stage 2: consolidation (persist) ------------------------------
 
     def consolidate(self, limit: int = 10,
-                    extractor: Optional[Callable[[str], List[Dict[str, str]]]] = None
+                    extractor: Optional[Callable[[str], List[Dict[str, str]]]] = None,
+                    verify: bool = True
                     ) -> Dict[str, Any]:
-        """Offline consolidation loop (REM sleep).
+        """Verification-gated consolidation loop (REM sleep).
 
         Scans every federated DB for shards with ``utility_score >= 1.0`` and
-        ``consolidated = 0``, extracts invariants, upserts them into
-        ``semantic_knowledge`` (bumping confidence on conflict), and marks the
-        source shards consolidated.
+        ``consolidated = 0``, extracts invariants, **adversarially verifies each
+        one against its source** before commit, flags contradictions with rules
+        already in memory, upserts the survivors into ``semantic_knowledge``
+        (bumping confidence on conflict), and marks the source shards
+        consolidated.
 
         Args:
             limit: max unconsolidated shards to pull per database.
             extractor: invariant extractor to use. Defaults to
                 :meth:`extract_invariants`; injectable for tests and for the
                 Dream cycle's monkeypatch contract.
+            verify: run the adversarial verifier. Automatically a no-op when no
+                model is reachable (offline can't refute → nothing is blocked),
+                preserving deterministic behavior in tests and on cold boxes.
         """
         extract = extractor or self.extract_invariants
         unconsolidated = self._fetch_unconsolidated(limit)
+        verifier_active = verify and self._verifier_available()
 
         new_invariants_count = 0
         consolidated_shards_count = 0
         extracted_rules: List[Dict[str, str]] = []
+        rejected: List[Dict[str, str]] = []
+        conflicts: List[Dict[str, str]] = []
 
         for shard in unconsolidated:
             invariants = extract(shard["content"])
             if not invariants:
                 continue
-            persisted = self._persist_invariants(shard, invariants)
-            if persisted:
-                extracted_rules.extend(persisted)
-                new_invariants_count += len(persisted)
-                consolidated_shards_count += 1
+
+            survivors: List[Dict[str, str]] = []
+            for inv in invariants:
+                if not isinstance(inv, dict):
+                    continue
+                sub = (inv.get("subject") or "").strip()
+                pred = (inv.get("predicate") or "").strip()
+                if not sub or not pred:
+                    continue
+
+                if verifier_active:
+                    verdict = self.verify_invariant(shard["content"],
+                                                    {"subject": sub, "predicate": pred})
+                    if verdict.get("verdict") != "accept":
+                        rejected.append({"subject": sub, "predicate": pred,
+                                         "reason": verdict.get("reason", "")})
+                        continue
+
+                existing = self._detect_conflict(sub, pred, shard["_db_index"])
+                if existing:
+                    conflicts.append({"subject": sub, "candidate": pred,
+                                      "existing": existing["predicate"]})
+                survivors.append({"subject": sub, "predicate": pred})
+
+            if survivors:
+                persisted = self._persist_invariants(shard, survivors)
+                if persisted:
+                    extracted_rules.extend(persisted)
+                    new_invariants_count += len(persisted)
+                    consolidated_shards_count += 1
 
         return {
             "shards_scanned": len(unconsolidated),
             "shards_consolidated": consolidated_shards_count,
             "new_invariants_extracted": new_invariants_count,
             "rules": extracted_rules,
+            "rejected": rejected,
+            "conflicts": conflicts,
+            "verified": verifier_active,
         }
+
+    # -- Adversarial verification & contradiction detection ------------
+
+    def _verifier_available(self) -> bool:
+        """True if a model is reachable to run the adversarial verifier."""
+        client, model = self._resolve_chat_model()
+        return client is not None and bool(model)
+
+    def verify_invariant(self, source_content: str,
+                         invariant: Dict[str, str]) -> Dict[str, str]:
+        """Adversarially judge whether an invariant is supported and durable.
+
+        Returns ``{"verdict": "accept"|"reject", "reason": ...}``. Accepts with
+        reason ``verification_unavailable`` if no model is reachable (can't
+        refute without one); otherwise defaults to reject on an unclear verdict.
+        """
+        prompt = (VERIFICATION_PROMPT
+                  .replace("[[CONTENT]]", str(source_content)[:2000])
+                  .replace("[[SUBJECT]]", invariant.get("subject", ""))
+                  .replace("[[PREDICATE]]", invariant.get("predicate", "")))
+        raw = self._complete([{"role": "user", "content": prompt}])
+        if raw is None:
+            return {"verdict": "accept", "reason": "verification_unavailable"}
+        return self._parse_verdict(raw)
+
+    @staticmethod
+    def _parse_verdict(raw: str) -> Dict[str, str]:
+        """Parse a verifier response; default to reject when ambiguous."""
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            try:
+                obj = json.loads(match.group(0))
+                if isinstance(obj, dict) and obj.get("verdict") in ("accept", "reject"):
+                    return {"verdict": obj["verdict"],
+                            "reason": str(obj.get("reason", ""))}
+            except (json.JSONDecodeError, ValueError):
+                pass
+        # Heuristic fallback: only accept on a clear positive with no rejection.
+        low = raw.lower()
+        if "accept" in low and "reject" not in low:
+            return {"verdict": "accept", "reason": "heuristic"}
+        return {"verdict": "reject", "reason": "unparseable_or_negative"}
+
+    @staticmethod
+    def _detect_conflict(subject: str, predicate: str,
+                         db_index: int) -> Optional[Dict[str, Any]]:
+        """Find an existing rule with the same subject but a different predicate."""
+        conn = core.get_connection(db_index)
+        try:
+            cursor = conn.execute(
+                "SELECT subject, predicate FROM semantic_knowledge "
+                "WHERE LOWER(subject) = LOWER(?) AND LOWER(predicate) != LOWER(?) LIMIT 1",
+                (subject, predicate))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.OperationalError:
+            return None
+        finally:
+            conn.close()
+
+    @staticmethod
+    def find_conflicts(limit: int = 200) -> List[Dict[str, Any]]:
+        """Audit semantic memory for contradictions: same subject, ≥2 predicates."""
+        by_subject: Dict[str, List[Dict[str, Any]]] = {}
+        for i in range(1, core.MAX_DB_COUNT + 1):
+            if not core.get_db_path(i).exists():
+                continue
+            conn = core.get_connection(i)
+            try:
+                cursor = conn.execute(
+                    "SELECT subject, predicate, confidence_score "
+                    "FROM semantic_knowledge LIMIT ?", (limit,))
+                for r in cursor:
+                    by_subject.setdefault(r["subject"].lower(), []).append(dict(r))
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+        return [{"subject": rows[0]["subject"], "rules": rows}
+                for rows in by_subject.values()
+                if len({x["predicate"] for x in rows}) > 1]
 
     @staticmethod
     def _fetch_unconsolidated(limit: int) -> List[Dict[str, Any]]:
@@ -439,6 +572,9 @@ class Griot:
             description="Capture a new episodic shard into the vault.",
             parameters={"title": {"type": "string", "required": True},
                         "content": {"type": "string", "required": True}})
+        self.tools.register(
+            "find_conflicts", lambda: self.find_conflicts(),
+            description="Audit semantic memory for contradictions (same subject, conflicting rules).")
 
     # -- Conversation --------------------------------------------------
 
