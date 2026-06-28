@@ -308,6 +308,20 @@ reply = griot.get_default_griot().chat("Summarize our rules on caching", reflect
 nougen griot eval
 ```
 
+### Self-healing memory
+
+Semantic memory **maintains itself** — no model required. Two forces keep the rule base honest over time:
+
+- **Confidence decay (use-it-or-lose-it).** `Griot.decay_confidence(factor=0.98, prune_below=None)` erodes every rule's confidence. Rules reinforced by re-consolidation (which bumps confidence `+0.1`) resist the decay; stale, un-reinforced rules fade. Pruning rules that fall under a floor is the one destructive option — **off by default**.
+- **Contradiction auto-reconciliation.** `Griot.reconcile_conflicts(penalty=0.5)` resolves the contradictions `find_conflicts` surfaces: for each subject carrying conflicting predicates, the **highest-confidence rule wins** and the competitors are demoted (`confidence × penalty`). A *clear* winner is required — exact ties are left untouched (genuinely ambiguous; that needs a human).
+
+`Griot.heal()` runs both in order (decay → reconcile) and returns a combined report. It is wired into the autonomous **Dream cycle** (`dream.wake()`), so memory self-heals on every REM pass, and is exposed as the dynamic tool `heal` and the CLI:
+
+```bash
+# Decay stale confidence and auto-reconcile contradictions
+nougen griot heal
+```
+
 ---
 
 ## ☁️ Cloud & Hybrid Modes

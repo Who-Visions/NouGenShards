@@ -911,8 +911,8 @@ def get_parser():
 
     p_griot = subparsers.add_parser("griot", help="Griot agent (vault-grounded chat & consolidation)")
     p_griot.add_argument("action", nargs="?", default="chat",
-                         choices=["chat", "consolidate", "rules", "ask", "tools", "conflicts", "eval"],
-                         help="chat | consolidate | rules | ask | tools | conflicts | eval (default: chat)")
+                         choices=["chat", "consolidate", "rules", "ask", "tools", "conflicts", "eval", "heal"],
+                         help="chat | consolidate | rules | ask | tools | conflicts | eval | heal (default: chat)")
     p_griot.add_argument("rest", nargs="*",
                          help="chat: query | rules: [subject] | ask: <agent> <message...>")
     p_griot.add_argument("--limit", type=int, default=10,
@@ -1070,6 +1070,20 @@ def cmd_griot(args):
 
     elif action == "tools":
         print(g.tools.catalog())
+
+    elif action == "heal":
+        res = g.heal()
+        decay = res["decay"]
+        recon = res["reconciliation"]
+        print(f"🩹 Self-heal complete.")
+        print(f"  Decay: {decay['decayed']} rule(s) decayed (x{decay['factor']}), "
+              f"{decay['pruned']} pruned.")
+        print(f"  Reconcile: {recon['groups_reconciled']}/{recon['groups_found']} "
+              f"contradiction group(s) resolved.")
+        for entry in recon["reconciled"]:
+            print(f"   [{entry['subject']}] winner: {entry['winner']}")
+            for d in entry["demoted"]:
+                print(f"      demoted: {d['predicate']} -> {d['confidence']}")
 
 
 def cmd_handoff(args):

@@ -441,6 +441,110 @@ class Griot:
                 for rows in by_subject.values()
                 if len({x["predicate"] for x in rows}) > 1]
 
+    # -- Self-healing memory: calibration, decay, reconciliation -------
+
+    @staticmethod
+    def decay_confidence(factor: float = 0.98,
+                         prune_below: Optional[float] = None) -> Dict[str, Any]:
+        """Erode confidence of un-reinforced invariants (use-it-or-lose-it).
+
+        Multiplies every rule's confidence by ``factor``. Rules reinforced by
+        re-consolidation (which bumps confidence +0.1) resist this; stale ones
+        fade. If ``prune_below`` is set, rules that fall under it are deleted —
+        the one destructive option, off by default.
+        """
+        decayed = 0
+        pruned = 0
+        for i in range(1, core.MAX_DB_COUNT + 1):
+            if not core.get_db_path(i).exists():
+                continue
+            conn = core.get_connection(i)
+            try:
+                cur = conn.execute(
+                    "UPDATE semantic_knowledge SET confidence_score = confidence_score * ?",
+                    (factor,))
+                decayed += max(cur.rowcount, 0)
+                if prune_below is not None:
+                    cur2 = conn.execute(
+                        "DELETE FROM semantic_knowledge WHERE confidence_score < ?",
+                        (prune_below,))
+                    pruned += max(cur2.rowcount, 0)
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+        return {"decayed": decayed, "pruned": pruned, "factor": factor}
+
+    @staticmethod
+    def _set_confidence(subject: str, predicate: str, value: float,
+                        prune_below: Optional[float] = None) -> None:
+        """Set (or prune) one rule's confidence across the federated cluster."""
+        timestamp = datetime.datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        for i in range(1, core.MAX_DB_COUNT + 1):
+            if not core.get_db_path(i).exists():
+                continue
+            conn = core.get_connection(i)
+            try:
+                if prune_below is not None and value < prune_below:
+                    conn.execute(
+                        "DELETE FROM semantic_knowledge "
+                        "WHERE LOWER(subject) = LOWER(?) AND predicate = ?",
+                        (subject, predicate))
+                else:
+                    conn.execute(
+                        "UPDATE semantic_knowledge SET confidence_score = ?, updated_at = ? "
+                        "WHERE LOWER(subject) = LOWER(?) AND predicate = ?",
+                        (value, timestamp, subject, predicate))
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+
+    @classmethod
+    def reconcile_conflicts(cls, penalty: float = 0.5,
+                            prune_below: Optional[float] = None) -> Dict[str, Any]:
+        """Auto-resolve contradictions by confidence.
+
+        For each subject carrying conflicting predicates, the highest-confidence
+        rule wins and the competitors are demoted (``confidence * penalty``).
+        A clear winner is required — exact ties at the top are left untouched
+        (genuinely ambiguous; that needs a human). Optionally prunes demoted
+        rules that fall under ``prune_below``.
+        """
+        reconciled: List[Dict[str, Any]] = []
+        groups = cls.find_conflicts()
+        for group in groups:
+            rules = sorted(group["rules"],
+                           key=lambda r: r.get("confidence_score", 0.0), reverse=True)
+            if len(rules) < 2:
+                continue
+            winner, runner_up = rules[0], rules[1]
+            if winner.get("confidence_score", 0.0) == runner_up.get("confidence_score", 0.0):
+                continue  # ambiguous tie — do not auto-resolve
+            demoted = []
+            for loser in rules[1:]:
+                new_conf = loser.get("confidence_score", 0.0) * penalty
+                cls._set_confidence(group["subject"], loser["predicate"],
+                                    new_conf, prune_below)
+                demoted.append({"predicate": loser["predicate"],
+                                "confidence": round(new_conf, 4)})
+            reconciled.append({"subject": group["subject"],
+                               "winner": winner["predicate"],
+                               "demoted": demoted})
+        return {"groups_found": len(groups),
+                "groups_reconciled": len(reconciled),
+                "reconciled": reconciled}
+
+    def heal(self, decay_factor: float = 0.98, penalty: float = 0.5,
+             prune_below: Optional[float] = None) -> Dict[str, Any]:
+        """Full self-healing pass: decay stale confidence, then reconcile
+        contradictions. The memory maintains itself — no model required."""
+        decay = self.decay_confidence(decay_factor, prune_below=prune_below)
+        recon = self.reconcile_conflicts(penalty=penalty, prune_below=prune_below)
+        return {"decay": decay, "reconciliation": recon}
+
     @staticmethod
     def _fetch_unconsolidated(limit: int) -> List[Dict[str, Any]]:
         """Pull high-utility, unconsolidated shards across the federated cluster."""
@@ -586,6 +690,9 @@ class Griot:
         self.tools.register(
             "find_conflicts", lambda: self.find_conflicts(),
             description="Audit semantic memory for contradictions (same subject, conflicting rules).")
+        self.tools.register(
+            "heal", lambda: self.heal(),
+            description="Self-heal semantic memory: decay stale confidence and reconcile contradictions.")
 
     # -- Conversation --------------------------------------------------
 
