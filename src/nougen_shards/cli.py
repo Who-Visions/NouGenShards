@@ -23,6 +23,7 @@ from .brain_scan import scan_environment, run_import, print_scan_report, print_i
 from . import dream
 from . import evolution
 from . import griot
+from . import griot_eval
 
 VERSION = "1.1.0"
 
@@ -910,8 +911,8 @@ def get_parser():
 
     p_griot = subparsers.add_parser("griot", help="Griot agent (vault-grounded chat & consolidation)")
     p_griot.add_argument("action", nargs="?", default="chat",
-                         choices=["chat", "consolidate", "rules", "ask", "tools", "conflicts"],
-                         help="chat | consolidate | rules | ask | tools | conflicts (default: chat)")
+                         choices=["chat", "consolidate", "rules", "ask", "tools", "conflicts", "eval"],
+                         help="chat | consolidate | rules | ask | tools | conflicts | eval (default: chat)")
     p_griot.add_argument("rest", nargs="*",
                          help="chat: query | rules: [subject] | ask: <agent> <message...>")
     p_griot.add_argument("--limit", type=int, default=10,
@@ -985,7 +986,7 @@ def _run_griot_repl(g):
             line = input("\n[You]: ").strip()
             if not line or line.lower() in ("exit", "quit"):
                 break
-            print(f"\n[Griot]: {g.chat(line)}")
+            print(f"\n[Griot]: {g.chat(line, reflect=True)}")
         except KeyboardInterrupt:
             break
 
@@ -999,9 +1000,19 @@ def cmd_griot(args):
     if action == "chat":
         query = " ".join(rest).strip()
         if query:
-            print(g.chat(query))
+            print(g.chat(query, reflect=True))
         else:
             _run_griot_repl(g)
+
+    elif action == "eval":
+        result = griot_eval.run_all(verbose=True)
+        for e in result.get("evals", []):
+            status = "PASS" if e.get("passed") else "FAIL"
+            print(f"{e.get('name')}: {e.get('score'):.2f} (threshold {e.get('threshold'):.2f}) {status}")
+        overall = "PASS" if result.get("passed") else "FAIL"
+        print(f"Overall: {overall}")
+        if not result.get("passed"):
+            sys.exit(1)
 
     elif action == "consolidate":
         limit = getattr(args, "limit", 10)
