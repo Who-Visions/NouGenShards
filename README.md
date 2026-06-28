@@ -221,6 +221,62 @@ These personas run locally or seamlessly fall back to cloud providers depending 
 
 ---
 
+## 🛡️ Griot — the Vault Keeper
+
+**Griot** is NouGenShards' semantic-synthesis agent — the System-2 half of the dual-system memory. Named for both the West-African oral historian and Wakanda's GRIOT keeper-AI, it speaks only from the vault and carries the roster's Haitian Kreyòl lineage in its voice (e.g. *"Anghkooey"* — remember). Its lane is **compression of experience into truth**: it scans high-utility, unconsolidated shards and compiles them into permanent `{subject, predicate}` invariants in `semantic_knowledge`. It binds to the local `griot:e2b` model, with a deterministic regex fallback parser so the consolidation cycle never stalls on a missing GPU.
+
+Griot is also a full conversational agent: it holds vault-grounded conversations, exposes a runtime tool registry for dynamic function calling, and is reachable by name over the agent-to-agent (A2A) bus.
+
+### CLI
+
+```bash
+# Hold a vault-grounded conversation
+nougen griot chat "What rules do we have about JWT auth?"
+
+# Run the REM consolidation loop (episodic → semantic)
+nougen griot consolidate --limit 10
+
+# List compiled semantic invariants, optionally filtered by subject
+nougen griot rules --subject "auth"
+
+# Reach another roster agent over A2A
+nougen griot ask Remember "what did we learn about the N+1 fix?"
+
+# Inspect Griot's live tool registry
+nougen griot tools
+```
+
+### Python
+
+```python
+from nougen_shards import griot, a2a
+
+# Vault-grounded chat with dynamic function calling
+reply = griot.get_default_griot().chat("Summarize our rules on caching")
+
+# Talk to Griot over the A2A bus with an explicit intent
+result = a2a.ask("NouGen", "Griot", "consolidate the vault", intent=a2a.CONSOLIDATE)
+```
+
+During chat, the model emits JSON actions — `{"tool": <name>, "args": {...}}` to call a tool, or `{"answer": "..."}` to respond. Built-in tools are `recall`, `list_rules`, `consolidate`, `ask_peer`, and `capture`.
+
+### Dynamic tool registration
+
+Griot's capabilities are not fixed at construction. Register a closure on `griot.tools` at runtime and it becomes immediately invocable inside the chat loop:
+
+```python
+g = griot.get_default_griot()
+g.tools.register(
+    "today",
+    lambda: "2026-06-28",
+    description="Return today's date.",
+)
+```
+
+A2A intents Griot understands are `chat` (default), `recall`, and `consolidate`.
+
+---
+
 ## ☁️ Cloud & Hybrid Modes
 
 NouGenShards supports three ways to use cloud intelligence:

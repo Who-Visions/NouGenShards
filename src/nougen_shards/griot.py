@@ -23,13 +23,30 @@ import json
 import re
 import sqlite3
 import datetime
+from dataclasses import dataclass, field
 from datetime import timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from . import core
+from . import a2a
 
 # Default local Ollama model backing this agent (matches ROSTER["Griot"]).
 GRIOT_MODEL = "griot:e2b"
+
+# Conversational identity. Griot speaks only from the vault, and carries the
+# roster's Kreyol lineage (Sol-Ai = Soleil; "Anghkooey" = remember) in its
+# voice — fluent enough to trace a logistical root word back through its line.
+GRIOT_PERSONA = (
+    "You are Griot, NouGen's keeper of the vault — the rules compiler and "
+    "semantic synthesist, in the tradition of the West-African oral historian "
+    "and Wakanda's GRIOT. You speak from the vault: every claim is grounded in "
+    "recalled memory, never invented, and you say when the vault is silent. You "
+    "are deeply fluent in Haitian Kreyol and love its etymology — you can trace "
+    "logistical and root words back through their lineage, and you weave a "
+    "Kreyol phrase in naturally when it sharpens meaning (e.g. 'Anghkooey' — "
+    "remember). Be precise, cite the rules you rely on, and keep faith with the "
+    "memory you keep."
+)
 
 # Extraction prompt: compile raw episodic content into strict JSON invariants.
 EXTRACTION_PROMPT = (
@@ -47,18 +64,90 @@ EXTRACTION_PROMPT = (
 )
 
 
+@dataclass
+class Tool:
+    """A dynamically-callable function exposed to Griot's reasoning loop."""
+    name: str
+    func: Callable[..., Any]
+    description: str = ""
+    parameters: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    def signature(self) -> str:
+        if not self.parameters:
+            return f"{self.name}()"
+        parts = []
+        for pname, meta in self.parameters.items():
+            opt = "" if meta.get("required") else "?"
+            parts.append(f"{pname}{opt}: {meta.get('type', 'any')}")
+        return f"{self.name}({', '.join(parts)})"
+
+
+class ToolRegistry:
+    """A live registry of callable tools — the spine of dynamic function calling.
+
+    Tools can be added or removed at runtime, so Griot's capabilities are not
+    fixed at construction: register a closure, an A2A bridge, or a one-off
+    helper and it becomes immediately invocable from the chat loop.
+    """
+
+    def __init__(self):
+        self._tools: Dict[str, Tool] = {}
+
+    def register(self, name: str, func: Optional[Callable] = None, *,
+                 description: str = "",
+                 parameters: Optional[Dict[str, Dict[str, Any]]] = None):
+        """Register a tool. Usable directly or as a decorator."""
+        def _do(fn: Callable) -> Callable:
+            self._tools[name] = Tool(
+                name=name,
+                func=fn,
+                description=description or (fn.__doc__ or "").strip(),
+                parameters=parameters or {},
+            )
+            return fn
+        return _do if func is None else _do(func)
+
+    def unregister(self, name: str) -> None:
+        self._tools.pop(name, None)
+
+    def get(self, name: str) -> Optional[Tool]:
+        return self._tools.get(name)
+
+    def names(self) -> List[str]:
+        return sorted(self._tools)
+
+    def specs(self) -> List[Dict[str, str]]:
+        return [{"name": t.name, "signature": t.signature(),
+                 "description": t.description} for t in self._tools.values()]
+
+    def catalog(self) -> str:
+        """Human/LLM-readable tool listing for the system prompt."""
+        return "\n".join(f"- {t.signature()} — {t.description}"
+                         for t in self._tools.values()) or "(no tools registered)"
+
+    def call(self, name: str, /, **kwargs: Any) -> Any:
+        # `name` is positional-only so a tool may itself take a `name` argument.
+        tool = self._tools.get(name)
+        if tool is None:
+            raise KeyError(f"unknown tool: {name}")
+        return tool.func(**kwargs)
+
+
 class Griot:
-    """The semantic synthesis engine.
+    """The semantic synthesis engine and conversational agent.
 
     Wraps the three stages of consolidation — extract, parse, persist — behind
-    one object so callers can swap the model, inject a fake extractor for
-    tests, or reuse a warmed Ollama client across a whole Dream cycle.
+    one object, and layers on a full agent surface: vault-grounded chat, a
+    dynamic tool registry (function calling), and an A2A handler so the rest of
+    the roster can reach Griot by name.
     """
 
     def __init__(self, model: Optional[str] = None, client: Any = None):
         self.model = model or GRIOT_MODEL
         # Optional pre-built OllamaClient (lets the Dream cycle reuse one).
         self._client = client
+        self.tools = ToolRegistry()
+        self._register_builtin_tools()
 
     # -- Stage 0: model resolution -------------------------------------
 
@@ -275,9 +364,207 @@ class Griot:
             conn.close()
 
 
+    # -- Vault grounding -----------------------------------------------
+
+    def recall(self, query: str) -> str:
+        """Return a dual-system recall packet (semantic rules + episodic shards)."""
+        results = core.retrieve_dual_system(query)
+        return core.compile_recall_packet_dual(results)
+
+    @staticmethod
+    def list_rules(subject: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+        """List compiled semantic invariants, optionally filtered by subject."""
+        rows: List[Dict[str, Any]] = []
+        for i in range(1, core.MAX_DB_COUNT + 1):
+            if not core.get_db_path(i).exists():
+                continue
+            conn = core.get_connection(i)
+            try:
+                if subject:
+                    cursor = conn.execute(
+                        "SELECT subject, predicate, confidence_score FROM semantic_knowledge "
+                        "WHERE subject LIKE ? ORDER BY confidence_score DESC LIMIT ?",
+                        (f"%{subject}%", limit))
+                else:
+                    cursor = conn.execute(
+                        "SELECT subject, predicate, confidence_score FROM semantic_knowledge "
+                        "ORDER BY confidence_score DESC LIMIT ?", (limit,))
+                rows.extend(dict(r) for r in cursor)
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+        rows.sort(key=lambda r: r.get("confidence_score", 0.0), reverse=True)
+        return rows[:limit]
+
+    # -- A2A: talk to the rest of the roster ---------------------------
+
+    def ask_peer(self, agent: str, question: str) -> str:
+        """Send a question to another roster agent over the A2A bus."""
+        return a2a.ask("Griot", agent, question)
+
+    def handle_a2a(self, message: "a2a.A2AMessage") -> "a2a.A2AMessage":
+        """Inbound A2A handler — routes by intent (chat / recall / consolidate)."""
+        intent = (message.intent or a2a.CHAT).lower()
+        if intent == a2a.CONSOLIDATE:
+            return message.reply(json.dumps(self.consolidate()), sender="Griot")
+        if intent == a2a.RECALL:
+            return message.reply(self.recall(message.content), sender="Griot")
+        return message.reply(self.chat(message.content), sender="Griot")
+
+    # -- Dynamic function calling --------------------------------------
+
+    def _register_builtin_tools(self) -> None:
+        """Wire Griot's standing capabilities into the tool registry."""
+        self.tools.register(
+            "recall", lambda query: self.recall(query),
+            description="Recall semantic rules and episodic shards from the vault for a query.",
+            parameters={"query": {"type": "string", "required": True}})
+        self.tools.register(
+            "list_rules", lambda subject=None: self.list_rules(subject),
+            description="List compiled semantic invariants, optionally filtered by subject.",
+            parameters={"subject": {"type": "string", "required": False}})
+        self.tools.register(
+            "consolidate", lambda limit=10: self.consolidate(int(limit)),
+            description="Run the REM consolidation loop over unconsolidated high-utility shards.",
+            parameters={"limit": {"type": "integer", "required": False}})
+        self.tools.register(
+            "ask_peer", lambda agent, question: self.ask_peer(agent, question),
+            description="Ask another NouGen roster agent a question over A2A.",
+            parameters={"agent": {"type": "string", "required": True},
+                        "question": {"type": "string", "required": True}})
+        self.tools.register(
+            "capture", lambda title, content: str(core.capture(
+                event_type="GRIOT_CHAT", title=title, content=content)),
+            description="Capture a new episodic shard into the vault.",
+            parameters={"title": {"type": "string", "required": True},
+                        "content": {"type": "string", "required": True}})
+
+    # -- Conversation --------------------------------------------------
+
+    def _resolve_chat_model(self):
+        """(client, model) for chat, or (None, None) if no local model is up."""
+        client = self._resolve_client()
+        if client is None:
+            return None, None
+        return client, self._resolve_model(client)
+
+    def _complete(self, messages: List[Dict[str, str]]) -> Optional[str]:
+        """Single completion across the local-first → cloud fallback chain."""
+        client, model = self._resolve_chat_model()
+        if client is not None and model:
+            try:
+                return client.chat(model, messages)
+            except Exception:
+                pass
+        # Cloud fallback: OpenRouter free roster.
+        try:
+            from .models_client import OpenRouterClient
+            orc = OpenRouterClient()
+            if orc.is_alive():
+                res = orc.chat_with_fallback(
+                    model=orc.preferred_free_model(), messages=messages,
+                    fallback_models=orc.get_free_models())
+                content = res.get("content")
+                if content and not content.startswith("Error:"):
+                    return content
+        except Exception:
+            pass
+        # Cloud fallback: Who Visions (Ollama Cloud gateway).
+        try:
+            from .models_client import WhoVisionsCloudClient
+            wvc = WhoVisionsCloudClient()
+            if wvc.is_alive():
+                return wvc.chat(self.model, messages)
+        except Exception:
+            pass
+        return None
+
+    def _build_chat_system(self, context: str) -> str:
+        return (
+            f"{GRIOT_PERSONA}\n\n"
+            "You can call tools. To call one, respond with EXACTLY one JSON object:\n"
+            '  {"tool": "<name>", "args": {<arguments>}}\n'
+            "When ready to answer the user, respond with EXACTLY one JSON object:\n"
+            '  {"answer": "<your final answer>"}\n'
+            "Respond with JSON only — no prose outside the object.\n\n"
+            f"AVAILABLE TOOLS:\n{self.tools.catalog()}\n\n"
+            f"RECALLED VAULT CONTEXT:\n{context}"
+        )
+
+    @staticmethod
+    def _parse_action(raw: str) -> Optional[Dict[str, Any]]:
+        """Extract a {tool|answer} action object from a model response."""
+        for candidate in (re.search(r"\{.*\}", raw, re.DOTALL), None):
+            text = candidate.group(0) if candidate else raw.strip()
+            try:
+                obj = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(obj, dict) and ("tool" in obj or "answer" in obj):
+                return obj
+        return None
+
+    def _offline_answer(self, context: str) -> str:
+        """Deterministic reply when no model is reachable — raw vault truth."""
+        if context.strip().startswith("<!--"):
+            return ("[Griot offline] Pa gen okenn memwa — the vault has nothing "
+                    "on that yet, and no model is reachable to reason further.")
+        return ("[Griot offline — speaking straight from vault recall]\n" + context)
+
+    def chat(self, message: str, history: Optional[List[Dict[str, str]]] = None,
+             max_steps: int = 4) -> str:
+        """Hold a vault-grounded conversation with dynamic function calling.
+
+        Recalls relevant memory, then runs a tool-use loop: the model may call
+        registered tools (recall, list_rules, consolidate, ask_peer, capture, or
+        anything added at runtime) before delivering a final answer. Degrades to
+        a deterministic vault-recall reply when no model is reachable.
+        """
+        context = self.recall(message)
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": self._build_chat_system(context)}
+        ]
+        messages.extend(history or [])
+        messages.append({"role": "user", "content": message})
+
+        for _ in range(max(1, max_steps)):
+            raw = self._complete(messages)
+            if raw is None:
+                return self._offline_answer(context)
+            action = self._parse_action(raw)
+            if action is None:
+                return raw.strip()
+            if "answer" in action:
+                return str(action["answer"])
+            name = action.get("tool", "")
+            args = action.get("args") or {}
+            try:
+                observation = self.tools.call(name, **args)
+            except Exception as exc:
+                observation = f"[tool error] {exc}"
+            messages.append({"role": "assistant", "content": raw})
+            messages.append({"role": "user",
+                             "content": f"TOOL_RESULT {name}: {observation}"})
+
+        # Out of steps — force a plain-text close.
+        messages.append({"role": "user",
+                         "content": "Give your final answer now as plain text."})
+        final = self._complete(messages)
+        return final.strip() if final else self._offline_answer(context)
+
+
 # -- Module-level convenience (default singleton) -----------------------
 # A shared default Griot so callers and the Dream cycle don't rebuild state.
 _DEFAULT_GRIOT = Griot()
+
+# Make Griot reachable by name on the A2A bus from import time.
+a2a.register_handler("Griot", _DEFAULT_GRIOT.handle_a2a)
+
+
+def get_default_griot() -> Griot:
+    """Return the shared default Griot instance."""
+    return _DEFAULT_GRIOT
 
 
 def fallback_rule_parser(content: str) -> List[Dict[str, str]]:
