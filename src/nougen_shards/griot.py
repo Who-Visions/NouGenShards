@@ -78,6 +78,17 @@ VERIFICATION_PROMPT = (
     "CANDIDATE RULE:\n  subject: [[SUBJECT]]\n  predicate: [[PREDICATE]]"
 )
 
+# Reflexion: before answering, Griot critiques its own draft against the
+# recalled vault context and self-corrects anything ungrounded or invented.
+REFLECTION_PROMPT = (
+    "You are reviewing your OWN draft answer for fidelity to the vault.\n"
+    "Check every claim in the DRAFT against the RECALLED CONTEXT. Remove or "
+    "correct anything not supported by it; keep the Kreyol voice. If the draft "
+    "is already faithful, return it unchanged.\n"
+    "Respond with raw JSON ONLY: {\"ok\": true|false, \"answer\": \"<final answer>\"}\n\n"
+    "RECALLED CONTEXT:\n[[CONTEXT]]\n\nDRAFT ANSWER:\n[[DRAFT]]"
+)
+
 
 @dataclass
 class Tool:
@@ -648,14 +659,43 @@ class Griot:
                     "on that yet, and no model is reachable to reason further.")
         return ("[Griot offline — speaking straight from vault recall]\n" + context)
 
+    def _reflect(self, draft: str, context: str) -> str:
+        """Reflexion pass: critique the draft against recall, return the fix.
+
+        No-op (returns the draft) when no model is reachable or the critique is
+        unparseable — reflection can only improve, never degrade, the answer.
+        """
+        prompt = (REFLECTION_PROMPT
+                  .replace("[[CONTEXT]]", str(context)[:2000])
+                  .replace("[[DRAFT]]", str(draft)))
+        raw = self._complete([{"role": "user", "content": prompt}])
+        if raw is None:
+            return draft
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            try:
+                obj = json.loads(match.group(0))
+                answer = obj.get("answer")
+                if isinstance(answer, str) and answer.strip():
+                    return answer.strip()
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return draft
+
     def chat(self, message: str, history: Optional[List[Dict[str, str]]] = None,
-             max_steps: int = 4) -> str:
+             max_steps: int = 4, reflect: bool = False) -> str:
         """Hold a vault-grounded conversation with dynamic function calling.
 
         Recalls relevant memory, then runs a tool-use loop: the model may call
-        registered tools (recall, list_rules, consolidate, ask_peer, capture, or
-        anything added at runtime) before delivering a final answer. Degrades to
-        a deterministic vault-recall reply when no model is reachable.
+        registered tools (recall, list_rules, consolidate, ask_peer, capture,
+        find_conflicts, or anything added at runtime) before delivering a final
+        answer. Degrades to a deterministic vault-recall reply when no model is
+        reachable.
+
+        Args:
+            reflect: run a Reflexion self-critique pass over the draft answer,
+                correcting anything ungrounded before returning. Off by default;
+                the CLI enables it. Automatically a no-op offline.
         """
         context = self.recall(message)
         messages: List[Dict[str, str]] = [
@@ -664,15 +704,18 @@ class Griot:
         messages.extend(history or [])
         messages.append({"role": "user", "content": message})
 
+        def finalize(answer: str) -> str:
+            return self._reflect(answer, context) if reflect else answer
+
         for _ in range(max(1, max_steps)):
             raw = self._complete(messages)
             if raw is None:
                 return self._offline_answer(context)
             action = self._parse_action(raw)
             if action is None:
-                return raw.strip()
+                return finalize(raw.strip())
             if "answer" in action:
-                return str(action["answer"])
+                return finalize(str(action["answer"]))
             name = action.get("tool", "")
             args = action.get("args") or {}
             try:
@@ -687,7 +730,7 @@ class Griot:
         messages.append({"role": "user",
                          "content": "Give your final answer now as plain text."})
         final = self._complete(messages)
-        return final.strip() if final else self._offline_answer(context)
+        return finalize(final.strip()) if final else self._offline_answer(context)
 
 
 # -- Module-level convenience (default singleton) -----------------------

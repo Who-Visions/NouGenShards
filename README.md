@@ -290,6 +290,24 @@ g.tools.register(
 
 A2A intents Griot understands are `chat` (default), `recall`, and `consolidate`.
 
+### Reflexion & evals
+
+**Reflexion self-critique.** `Griot.chat(message, reflect=True)` runs a self-critique pass over its draft answer: Griot reviews its own reply against the recalled vault context, corrects anything ungrounded or invented, and keeps its Kreyòl voice. It is **off by default in the API** but the `nougen griot chat` CLI enables it. Like verification, it is automatically a no-op when no model is reachable — reflection can only *improve*, never degrade, the answer.
+
+```python
+from nougen_shards import griot
+
+# Vault-grounded chat with a Reflexion self-critique pass
+reply = griot.get_default_griot().chat("Summarize our rules on caching", reflect=True)
+```
+
+**Eval harness.** `nougen_shards.griot_eval` is a deterministic, **model-free** regression suite — it runs in CI without Ollama or any cloud key. It scores three axes: invariant-extraction precision/recall (mean F1 of the fallback parser vs a golden set), verifier-output classification accuracy (`_parse_verdict`, default-to-reject on garbage), and a groundedness proxy. `griot_eval.run_all()` returns an overall pass/fail, and the CLI prints the scores and **exits nonzero on failure** (CI-usable). The principle: *every future change to Griot is measured, not vibed.*
+
+```bash
+# Run the deterministic, model-free eval suite (nonzero exit on failure)
+nougen griot eval
+```
+
 ---
 
 ## ☁️ Cloud & Hybrid Modes
