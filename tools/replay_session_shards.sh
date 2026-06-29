@@ -2,7 +2,7 @@
 # Replay the deep-dive-atom-audit session experiences into YOUR local NouGen vault.
 #
 # WHY: this session ran in a remote cloud container whose .vault is ephemeral and
-# is NOT your real vault (C:\Users\super\Watchtower\vault). The MCP could not boot
+# is NOT your real vault (~/Watchtower/vault). The MCP could not boot
 # here because .mcp.json pins it to Windows paths. Run this on your machine to
 # capture the session's high-utility experiences into your real brain.
 #
