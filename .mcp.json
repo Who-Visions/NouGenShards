@@ -1,11 +1,11 @@
 {
   "mcpServers": {
     "nougen-shards": {
-      "command": "%USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/.venv/Scripts/python.exe",
+      "command": "python",
       "args": ["-m", "nougen_shards.mcp"],
       "env": {
-        "PYTHONPATH": "%USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/src",
-        "NOUGEN_VAULT_DIR": "%USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/.vault"
+        "PYTHONPATH": "${NOUGEN_REPO}/src",
+        "NOUGEN_VAULT_DIR": "${NOUGEN_VAULT_DIR}"
       }
     },
     "ollama": {
@@ -17,7 +17,7 @@
     },
     "nougen-fleet-registry": {
       "command": "python",
-      "args": ["%USERPROFILE%/Watchtower/local_search_mcp.py"]
+      "args": ["${NOUGEN_FLEET_REGISTRY_SCRIPT}"]
     },
     "sequentialthinking": {
       "type": "http",
