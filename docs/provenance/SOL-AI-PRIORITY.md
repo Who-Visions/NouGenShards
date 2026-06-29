@@ -116,9 +116,34 @@ verifiable — do on the operator machine, preserve outputs):
    Format-List *` showing CreationTime), save alongside the hashes.
 3. Export the FTS shard rows that mention Sol-Ai (with their `ts` columns) to a
    file; hash that file.
-4. Timestamp-anchor the hashes externally (e.g. OpenTimestamps, or commit the
-   hash list to this repo so GitHub stamps it server-side).
+4. Timestamp-anchor the hashes externally (OpenTimestamps — see §4.1) and/or
+   commit the hash list to this repo so GitHub stamps it server-side.
 5. Capture screenshots of the file properties and the FTS query results.
+
+### 4.1 OpenTimestamps anchor (Bitcoin-backed, un-backdatable)
+
+`CreationTime` metadata is mutable, so the strongest independent anchor is an
+OpenTimestamps proof: it commits a file's SHA-256 into the Bitcoin blockchain,
+which cannot be backdated. This proves a file existed *no later than* the
+anchored block — it does **not** prove April authorship by itself, but combined
+with the §3 git history and the §4 metadata it forms a tamper-evident floor.
+
+```bash
+pip install opentimestamps-client            # one-time
+
+# Bundle the evidence so a single proof covers everything at once.
+sha256sum "Sol-Ai/sol.py" "Sol-Ai/sol_avatar.txt" "Sol-Ai/SOL.md" \
+          sol-ai_fts_rows.txt > sol-ai_evidence.sha256
+
+# Stamp it (creates sol-ai_evidence.sha256.ots; upgrade after ~a few hours).
+ots stamp sol-ai_evidence.sha256
+ots upgrade sol-ai_evidence.sha256.ots      # run later, once confirmed on-chain
+ots verify  sol-ai_evidence.sha256.ots      # reports the Bitcoin block + time
+```
+
+Commit both `sol-ai_evidence.sha256` and its `.ots` proof to this directory.
+Anyone can then re-run `ots verify` to confirm the evidence hashes were
+anchored on-chain at the stated time, independent of any filesystem metadata.
 
 ---
 
