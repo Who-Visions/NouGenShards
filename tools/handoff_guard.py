@@ -21,7 +21,7 @@ all failures are swallowed so a hook can never wedge the session.
 import sys, os, json, glob, time, subprocess, datetime
 from pathlib import Path
 
-REPO = Path(os.environ.get("NOUGEN_REPO", r"C:/Users/super/Watchtower/NouGen/NouGenShards-push-main"))
+REPO = Path(os.environ.get("NOUGEN_REPO", str(Path(__file__).resolve().parent.parent)))
 HANDOFF_DIR = Path(os.environ.get("NOUGEN_HANDOFF_DIR", str(REPO / ".handoffs")))
 SESS_DIR = HANDOFF_DIR / ".sessions"
 AGENT = os.environ.get("NOUGEN_AGENT", "claude-cli")
