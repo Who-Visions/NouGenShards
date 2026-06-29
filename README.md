@@ -221,6 +221,109 @@ These personas run locally or seamlessly fall back to cloud providers depending 
 
 ---
 
+## 🛡️ Griot — the Vault Keeper
+
+**Griot** is NouGenShards' semantic-synthesis agent — the System-2 half of the dual-system memory. Named for both the West-African oral historian and Wakanda's GRIOT keeper-AI, it speaks only from the vault and carries the roster's Haitian Kreyòl lineage in its voice (e.g. *"Anghkooey"* — remember). Its lane is **compression of experience into truth**: it scans high-utility, unconsolidated shards and compiles them into permanent `{subject, predicate}` invariants in `semantic_knowledge`. It binds to the local `griot:e2b` model, with a deterministic regex fallback parser so the consolidation cycle never stalls on a missing GPU.
+
+Griot is also a full conversational agent: it holds vault-grounded conversations, exposes a runtime tool registry for dynamic function calling, and is reachable by name over the agent-to-agent (A2A) bus.
+
+### Verified consolidation
+
+Consolidation is **verification-gated**: each extracted invariant is adversarially judged (LLM-as-judge) against its source shard before it is written to permanent semantic memory. The verifier **defaults to reject on uncertainty** — the guiding principle is that *an unsupported rule in permanent memory is worse than a missing one*, which is why every write is gated. When no model is reachable, verification is automatically a no-op (offline can't refute), so behavior stays deterministic in tests and on cold boxes.
+
+`consolidate()` now returns three extra fields alongside its counts and `rules`:
+
+- `verified` — bool, whether the adversarial verifier was active for this run.
+- `rejected` — invariants that failed verification, each with a `reason`.
+- `conflicts` — candidates that contradict an existing rule with the same subject.
+
+**Contradiction detection.** `Griot.find_conflicts()` audits semantic memory for the same subject carrying conflicting predicates. It is exposed as the dynamic tool `find_conflicts` and the CLI command `nougen griot conflicts`.
+
+### CLI
+
+```bash
+# Hold a vault-grounded conversation
+nougen griot chat "What rules do we have about JWT auth?"
+
+# Run the verification-gated consolidation loop (episodic → semantic)
+nougen griot consolidate --limit 10
+
+# Audit semantic memory for contradictions (same subject, conflicting rules)
+nougen griot conflicts
+
+# List compiled semantic invariants, optionally filtered by subject
+nougen griot rules --subject "auth"
+
+# Reach another roster agent over A2A
+nougen griot ask Remember "what did we learn about the N+1 fix?"
+
+# Inspect Griot's live tool registry
+nougen griot tools
+```
+
+### Python
+
+```python
+from nougen_shards import griot, a2a
+
+# Vault-grounded chat with dynamic function calling
+reply = griot.get_default_griot().chat("Summarize our rules on caching")
+
+# Talk to Griot over the A2A bus with an explicit intent
+result = a2a.ask("NouGen", "Griot", "consolidate the vault", intent=a2a.CONSOLIDATE)
+```
+
+During chat, the model emits JSON actions — `{"tool": <name>, "args": {...}}` to call a tool, or `{"answer": "..."}` to respond. Built-in tools are `recall`, `list_rules`, `consolidate`, `ask_peer`, `capture`, and `find_conflicts`.
+
+### Dynamic tool registration
+
+Griot's capabilities are not fixed at construction. Register a closure on `griot.tools` at runtime and it becomes immediately invocable inside the chat loop:
+
+```python
+g = griot.get_default_griot()
+g.tools.register(
+    "today",
+    lambda: "2026-06-28",
+    description="Return today's date.",
+)
+```
+
+A2A intents Griot understands are `chat` (default), `recall`, and `consolidate`.
+
+### Reflexion & evals
+
+**Reflexion self-critique.** `Griot.chat(message, reflect=True)` runs a self-critique pass over its draft answer: Griot reviews its own reply against the recalled vault context, corrects anything ungrounded or invented, and keeps its Kreyòl voice. It is **off by default in the API** but the `nougen griot chat` CLI enables it. Like verification, it is automatically a no-op when no model is reachable — reflection can only *improve*, never degrade, the answer.
+
+```python
+from nougen_shards import griot
+
+# Vault-grounded chat with a Reflexion self-critique pass
+reply = griot.get_default_griot().chat("Summarize our rules on caching", reflect=True)
+```
+
+**Eval harness.** `nougen_shards.griot_eval` is a deterministic, **model-free** regression suite — it runs in CI without Ollama or any cloud key. It scores three axes: invariant-extraction precision/recall (mean F1 of the fallback parser vs a golden set), verifier-output classification accuracy (`_parse_verdict`, default-to-reject on garbage), and a groundedness proxy. `griot_eval.run_all()` returns an overall pass/fail, and the CLI prints the scores and **exits nonzero on failure** (CI-usable). The principle: *every future change to Griot is measured, not vibed.*
+
+```bash
+# Run the deterministic, model-free eval suite (nonzero exit on failure)
+nougen griot eval
+```
+
+### Self-healing memory
+
+Semantic memory **maintains itself** — no model required. Two forces keep the rule base honest over time:
+
+- **Confidence decay (use-it-or-lose-it).** `Griot.decay_confidence(factor=0.98, prune_below=None)` erodes every rule's confidence. Rules reinforced by re-consolidation (which bumps confidence `+0.1`) resist the decay; stale, un-reinforced rules fade. Pruning rules that fall under a floor is the one destructive option — **off by default**.
+- **Contradiction auto-reconciliation.** `Griot.reconcile_conflicts(penalty=0.5)` resolves the contradictions `find_conflicts` surfaces: for each subject carrying conflicting predicates, the **highest-confidence rule wins** and the competitors are demoted (`confidence × penalty`). A *clear* winner is required — exact ties are left untouched (genuinely ambiguous; that needs a human).
+
+`Griot.heal()` runs both in order (decay → reconcile) and returns a combined report. It is wired into the autonomous **Dream cycle** (`dream.wake()`), so memory self-heals on every REM pass, and is exposed as the dynamic tool `heal` and the CLI:
+
+```bash
+# Decay stale confidence and auto-reconcile contradictions
+nougen griot heal
+```
+
+---
+
 ## ☁️ Cloud & Hybrid Modes
 
 NouGenShards supports three ways to use cloud intelligence:

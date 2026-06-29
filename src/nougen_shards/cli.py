@@ -22,6 +22,8 @@ from .connectors.cloud import push_to_cloud, pull_from_cloud
 from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
 from . import dream
 from . import evolution
+from . import griot
+from . import griot_eval
 
 VERSION = "1.1.0"
 
@@ -907,6 +909,15 @@ def get_parser():
     p_handoff.add_argument("--interval", type=float, default=5.0,
                            help="(watch) Poll interval in seconds (default: 5.0)")
 
+    p_griot = subparsers.add_parser("griot", help="Griot agent (vault-grounded chat & consolidation)")
+    p_griot.add_argument("action", nargs="?", default="chat",
+                         choices=["chat", "consolidate", "rules", "ask", "tools", "conflicts", "eval", "heal"],
+                         help="chat | consolidate | rules | ask | tools | conflicts | eval | heal (default: chat)")
+    p_griot.add_argument("rest", nargs="*",
+                         help="chat: query | rules: [subject] | ask: <agent> <message...>")
+    p_griot.add_argument("--limit", type=int, default=10,
+                         help="(consolidate) max shards to scan (default: 10)")
+
     return parser
 
 
@@ -967,6 +978,114 @@ def cmd_doctor(args):
         }
         print(json.dumps(report, indent=2))
 
+def _run_griot_repl(g):
+    """Minimal interactive REPL for the Griot agent."""
+    print("Entering interactive chat with the Griot (vault-grounded). Empty line, 'exit', or 'quit' to leave.")
+    while True:
+        try:
+            line = input("\n[You]: ").strip()
+            if not line or line.lower() in ("exit", "quit"):
+                break
+            print(f"\n[Griot]: {g.chat(line, reflect=True)}")
+        except KeyboardInterrupt:
+            break
+
+
+def cmd_griot(args):
+    """Griot agent: vault-grounded chat, consolidation, rules, peer A2A, tools."""
+    g = griot.get_default_griot()
+    action = getattr(args, "action", "chat") or "chat"
+    rest = list(getattr(args, "rest", []) or [])
+
+    if action == "chat":
+        query = " ".join(rest).strip()
+        if query:
+            print(g.chat(query, reflect=True))
+        else:
+            _run_griot_repl(g)
+
+    elif action == "eval":
+        result = griot_eval.run_all(verbose=True)
+        for e in result.get("evals", []):
+            status = "PASS" if e.get("passed") else "FAIL"
+            print(f"{e.get('name')}: {e.get('score'):.2f} (threshold {e.get('threshold'):.2f}) {status}")
+        overall = "PASS" if result.get("passed") else "FAIL"
+        print(f"Overall: {overall}")
+        if not result.get("passed"):
+            sys.exit(1)
+
+    elif action == "consolidate":
+        limit = getattr(args, "limit", 10)
+        result = g.consolidate(limit=limit)
+        print("🧠 Griot Consolidation")
+        print(f" - Shards scanned: {result.get('shards_scanned', 0)}")
+        print(f" - Shards consolidated: {result.get('shards_consolidated', 0)}")
+        print(f" - New invariants extracted: {result.get('new_invariants_extracted', 0)}")
+        rules = result.get("rules") or []
+        if rules:
+            print(" - Rules:")
+            for r in rules:
+                print(f"   [{r.get('subject')}] {r.get('predicate')}")
+
+        # Adversarial verification report
+        verified = result.get("verified", False)
+        print(f" - Verification: {'active' if verified else 'inactive'}")
+        rejected = result.get("rejected") or []
+        print(f" - Rejected invariants: {len(rejected)}")
+        for rej in rejected:
+            print(f"   [{rej.get('subject')}] {rej.get('predicate')} — {rej.get('reason')}")
+        conflicts = result.get("conflicts") or []
+        print(f" - Conflicts: {len(conflicts)}")
+        for c in conflicts:
+            print(f"   [{c.get('subject')}] {c.get('candidate')} vs {c.get('existing')}")
+
+    elif action == "conflicts":
+        groups = g.find_conflicts()
+        if not groups:
+            print("✅ No contradictions found in the rule base.")
+            return
+        print(f"⚠️ Found {len(groups)} conflicting rule group(s):")
+        for grp in groups:
+            print(f"\n[{grp.get('subject')}]")
+            for r in grp.get("rules") or []:
+                print(f"   [{r.get('subject')}] {r.get('predicate')} "
+                      f"(confidence {float(r.get('confidence_score', 0.0)):.1f})")
+
+    elif action == "rules":
+        subject = rest[0] if rest else None
+        rules = g.list_rules(subject)
+        if not rules:
+            print("No invariant rules found yet. Run 'nougen griot consolidate' to extract some.")
+            return
+        for r in rules:
+            print(f"[{r.get('subject')}] {r.get('predicate')} (confidence {float(r.get('confidence_score', 0.0)):.1f})")
+
+    elif action == "ask":
+        if len(rest) < 2:
+            print("Error: Usage: nougen griot ask <agent> <message...>")
+            return
+        peer = rest[0]
+        message = " ".join(rest[1:])
+        print(g.ask_peer(peer, message))
+
+    elif action == "tools":
+        print(g.tools.catalog())
+
+    elif action == "heal":
+        res = g.heal()
+        decay = res["decay"]
+        recon = res["reconciliation"]
+        print(f"🩹 Self-heal complete.")
+        print(f"  Decay: {decay['decayed']} rule(s) decayed (x{decay['factor']}), "
+              f"{decay['pruned']} pruned.")
+        print(f"  Reconcile: {recon['groups_reconciled']}/{recon['groups_found']} "
+              f"contradiction group(s) resolved.")
+        for entry in recon["reconciled"]:
+            print(f"   [{entry['subject']}] winner: {entry['winner']}")
+            for d in entry["demoted"]:
+                print(f"      demoted: {d['predicate']} -> {d['confidence']}")
+
+
 def cmd_handoff(args):
     """Executes agent handoff subcommands."""
     from . import handoff
@@ -1025,7 +1144,7 @@ def main():
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
-        "dashboard": cmd_dashboard, "handoff": cmd_handoff
+        "dashboard": cmd_dashboard, "handoff": cmd_handoff, "griot": cmd_griot
     }
     if args.command in cmds:
         cmds[args.command](args)
