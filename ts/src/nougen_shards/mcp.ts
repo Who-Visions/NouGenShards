@@ -96,14 +96,17 @@ mcp.registerTool(
       "Args:",
       "    shard_id: The ID of the shard to update.",
       "    worked: True if the shard's information was useful/correct, False if it was not.",
+      "    db_index: Database index the shard lives in (the recall result's _db_index).",
+      "        Omit to search the whole grid (ambiguous once shard ids collide across DBs).",
     ].join("\n"),
     inputSchema: {
       shard_id: z.number().int(),
       worked: z.boolean(),
+      db_index: z.number().int().optional(),
     },
   },
-  async ({ shard_id, worked }) => {
-    if (mark_shard(shard_id, worked)) {
+  async ({ shard_id, worked, db_index }) => {
+    if (mark_shard(shard_id, worked, db_index)) {
       return _text(`Utility for Shard #${shard_id} updated successfully.`);
     }
     return _text(`Shard #${shard_id} not found.`);
@@ -268,7 +271,7 @@ mcp.registerTool(
       return _text(`Error: Context event #${event_id} not found.`);
     }
 
-    const final_tags = tags ?? [];
+    const final_tags = [...(tags ?? [])];
     if (!final_tags.includes("promoted")) {
       final_tags.push("promoted");
     }
@@ -296,13 +299,15 @@ mcp.registerTool(
       "",
       "Args:",
       "    code: The script source code to execute.",
+      "    language: Runtime to use — 'python' (default), 'javascript', or 'typescript'.",
     ].join("\n"),
     inputSchema: {
       code: z.string(),
+      language: z.string().default("python"),
     },
   },
-  async ({ code }) => {
-    return _text(nougen_sandbox.execute_sandboxed(code));
+  async ({ code, language }) => {
+    return _text(nougen_sandbox.execute_sandboxed(code, language));
   },
 );
 
