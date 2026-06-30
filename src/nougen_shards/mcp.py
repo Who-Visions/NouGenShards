@@ -179,7 +179,7 @@ def promote_context_to_shard(event_id: int, tags: Optional[List[str]] = None) ->
     if not event:
         return f"Error: Context event #{event_id} not found."
     
-    final_tags = tags or []
+    final_tags = list(tags or [])
     if "promoted" not in final_tags:
         final_tags.append("promoted")
         
@@ -196,14 +196,15 @@ def promote_context_to_shard(event_id: int, tags: Optional[List[str]] = None) ->
 # --- Execution Layer (Sandbox) ---
 
 @mcp.tool()
-def execute_sandboxed_code(code: str) -> str:
+def execute_sandboxed_code(code: str, language: str = "python") -> str:
     """
     Execute Python or Node.js code in a sandboxed environment.
-    
+
     Args:
         code: The script source code to execute.
+        language: Runtime to use — 'python' (default), 'javascript', or 'typescript'.
     """
-    return nougen_sandbox.execute_sandboxed(code)
+    return nougen_sandbox.execute_sandboxed(code, language=language)
 
 # --- Brain Recon Layer ---
 
