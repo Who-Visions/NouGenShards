@@ -17,17 +17,19 @@ classifiers = [
     "Powered by :: NouGenAi (Who Visions LLC)",
 ]
 dependencies = [
-    "mcp",
-    "fastapi",
-    "uvicorn",
-    "sqlalchemy",
-    "gradio",
-    "tqdm",
-    "rich",
-    "colorama",
-    "openai",
-    "google-generativeai",
-    "pydantic",
+    # Lower bounds pin the major versions the code targets, keeping `pip install .`
+    # reproducible without over-constraining patch/minor upgrades. See CHANGELOG.
+    "mcp>=1.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "sqlalchemy>=2.0",       # connectors/sql.py uses the 2.0 API (make_url, text)
+    "gradio>=4.0",
+    "tqdm>=4.66",
+    "rich>=13.0",
+    "colorama>=0.4.6",
+    "openai>=1.0",           # embeddings provider (text-embedding-3-small)
+    "pydantic>=2.0",         # app.py models; mcp also requires pydantic v2
+    "numpy>=1.24",           # imported in core.py; previously undeclared (broke `pip install .`)
 ]
 
 [project.urls]
