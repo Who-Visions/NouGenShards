@@ -54,3 +54,23 @@ def test_openrouter_chat_with_fallback(mock_get_secret, mock_urlopen):
     assert body["model"] == "openrouter/auto"
     assert "models" in body
     assert len(body["models"]) > 0
+
+
+@patch('urllib.request.urlopen')
+@patch('nougen_shards.keymaker.get_secret', return_value="fake-key")
+def test_lane_calls_are_timeout_bounded(mock_get_secret, mock_urlopen):
+    """Hardening: every network lane call must pass a finite timeout so a
+    hung/unreachable upstream fails over instead of blocking the router."""
+    from nougen_shards.models_client import DEFAULT_HTTP_TIMEOUT
+
+    mock_res = MagicMock()
+    mock_res.read.return_value = b'{"choices": [{"message": {"content": "ok"}}], "model": "m"}'
+    mock_res.__enter__.return_value = mock_res
+    mock_urlopen.return_value = mock_res
+
+    client = OpenRouterClient()
+    client.chat_with_fallback("openrouter/auto", [{"role": "user", "content": "Hi"}])
+
+    _args, kwargs = mock_urlopen.call_args
+    assert kwargs.get("timeout") == DEFAULT_HTTP_TIMEOUT
+    assert DEFAULT_HTTP_TIMEOUT and DEFAULT_HTTP_TIMEOUT > 0

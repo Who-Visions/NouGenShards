@@ -5,7 +5,7 @@
       "args": ["-m", "nougen_shards.mcp"],
       "env": {
         "PYTHONPATH": "%USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/src",
-        "NOUGEN_VAULT_DIR": "%USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/.vault"
+        "NOUGEN_VAULT_DIR": "%USERPROFILE%/Watchtower/vault"
       }
     },
     "ollama": {

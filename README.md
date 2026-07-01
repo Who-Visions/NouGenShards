@@ -239,6 +239,20 @@ This repository is the public client: the CLI, the local memory engine, bring-yo
 
 ---
 
+## 🏷️ Casing & Naming Standards
+
+To standardize casing across the different layers of the project:
+
+| Context | Name / Pattern |
+|---|---|
+| GitHub Repository | [Who-Visions/NouGenShards](https://github.com/Who-Visions/NouGenShards) |
+| Python Package / Import | `nougen_shards` |
+| Python CLI Command | `nougen` or `nougenshards` |
+| MCP CLI Command | `nougen-mcp` |
+| NPM Package | `nougen-shards` |
+
+---
+
 ## 🥇 Standards
 
 - ✅ 100% pass rate on 190+ unit tests.

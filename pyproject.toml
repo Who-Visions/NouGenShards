@@ -32,11 +32,16 @@ dependencies = [
 
 [project.urls]
 "Homepage" = "https://whovisions.com"
-"Bug Tracker" = "https://github.com/whovisions/nougen/issues"
+"Bug Tracker" = "https://github.com/Who-Visions/NouGenShards/issues"
 
 [project.scripts]
 nougen = "nougen_shards.cli:main"
 nougen-mcp = "nougen_shards.mcp:main"
+nougenshards = "nougen_shards.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

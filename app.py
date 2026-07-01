@@ -5,6 +5,7 @@ Architecture: FastAPI + Persistent Storage (/data) + Token Auth + Multi-tab Grad
 import os
 import sys
 import json
+import hmac
 import sqlite3
 from typing import List, Optional
 from datetime import datetime, timezone
@@ -35,7 +36,7 @@ NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN")
 def verify_token(x_ngs_token: str = Header(None)):
     if not NODE_TOKEN:
         raise HTTPException(status_code=503, detail="Node write-auth not configured.")
-    if x_ngs_token != NODE_TOKEN:
+    if not x_ngs_token or not hmac.compare_digest(str(x_ngs_token), str(NODE_TOKEN)):
         raise HTTPException(status_code=401, detail="Invalid node token.")
     return x_ngs_token
 
@@ -192,4 +193,7 @@ app = gr.mount_gradio_app(app, cortex_hud, path="/")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=4444)
+    # Bind loopback by default; HF Spaces / explicit deploys set NGS_HOST=0.0.0.0.
+    host = os.environ.get("NGS_HOST", "0.0.0.0" if os.environ.get("SPACE_ID") else "127.0.0.1")
+    port = int(os.environ.get("NGS_PORT", "4444"))
+    uvicorn.run(app, host=host, port=port)
