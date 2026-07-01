@@ -240,14 +240,25 @@ class GeminiClient(LLMClient):
         if not self.api_key:
             return "Error: Google Key missing."
         contents = []
+        system_instruction = None
         for msg in messages:
-            role = "user" if msg["role"] in ["user", "system"] else "model"
+            if msg["role"] == "system":
+                # Gemini rejects consecutive user turns; route system text
+                # through system_instruction instead of a user content part.
+                if system_instruction is None:
+                    system_instruction = {"parts": []}
+                system_instruction["parts"].append({"text": msg["content"]})
+                continue
+            role = "user" if msg["role"] == "user" else "model"
             contents.append({"role": role, "parts": [{"text": msg["content"]}]})
         endpoint = "streamGenerateContent" if stream else "generateContent"
         url = f"{self.base_url}/{model}:{endpoint}"
+        body = {"contents": contents}
+        if system_instruction is not None:
+            body["system_instruction"] = system_instruction
         req = urllib.request.Request(
             url,
-            data=json.dumps({"contents": contents}).encode(),
+            data=json.dumps(body).encode(),
             method="POST"
         )
         req.add_header("Content-Type", "application/json")
@@ -604,8 +615,8 @@ class OpenRouterClient(OpenAIClient):
 
     def _extract_usage_metadata(self, response_json: dict) -> dict:
         """Normalizes OpenRouter usage data including cached tokens."""
-        usage = response_json.get("usage", {})
-        details = usage.get("prompt_tokens_details", {})
+        usage = response_json.get("usage") or {}
+        details = usage.get("prompt_tokens_details") or {}
         return {
             "prompt_tokens": usage.get("prompt_tokens", 0),
             "completion_tokens": usage.get("completion_tokens", 0),
@@ -739,8 +750,14 @@ def find_best_model_from_list(models: List[str]) -> Optional[ModelBudgetConfig]:
                     temperature=0.7
                 )
                 
-    # Default fallback to first available model
-    model = models[0]
+    # Default fallback to first available non-embedding model. Embedding-only
+    # models are not chat-capable, so skip them here too (mirrors tier 2).
+    model = next(
+        (m for m in models
+         if not any(mk in os.path.basename(m.replace("\\", "/")).lower()
+                    for mk in embed_markers)),
+        models[0]
+    )
     base_name = os.path.basename(model.replace("\\", "/")).lower()
     n_ctx = 4096
     if "-8k" in base_name or "8k" in base_name:

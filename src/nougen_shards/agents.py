@@ -196,10 +196,14 @@ def run_agent(name: str, prompt: str, model: Optional[str] = None,
     local_client = OllamaClient()
     if local_client.is_alive():
         try:
-            return local_client.chat(target_model, [
+            local_result = local_client.chat(target_model, [
                 {"role": "system", "content": spec.system_prompt},
                 {"role": "user", "content": prompt}
             ])
+            # OllamaClient.chat() returns "Error: ..." on failure instead of
+            # raising, so treat that as a miss and fall through to cloud.
+            if not local_result.startswith("Error:"):
+                return local_result
         except Exception:
             pass
 
