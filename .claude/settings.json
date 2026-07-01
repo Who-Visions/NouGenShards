@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"%USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/tools/handoff_guard.py\" --mode sessionstart",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"%USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/tools/handoff_guard.py\" --mode stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"%USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/tools/handoff_guard.py\" --mode sessionend",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}
