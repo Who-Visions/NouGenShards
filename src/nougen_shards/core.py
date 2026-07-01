@@ -685,9 +685,11 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     # regardless of raw score - the lanes' score scales are not comparable
     # (trigram-FTS bm25 magnitudes are tiny, so a weighted exact score can sit
     # below a strong fuzzy similarity). Encode the intent structurally instead
-    # of calibrating constants against each other.
+    # of calibrating constants against each other. Then break true ties by
+    # (_db_index, id) so identical queries never reorder run-to-run.
     results.sort(key=lambda x: (1 if x.get("_fuzzy") else 0,
                                 -x.get("final_score", 0.0),
+                                x.get("_db_index", 0),
                                 x.get("id", 0)))
     return results[:limit]
 
@@ -737,7 +739,9 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
         finally:
             conn.close()
 
-    results.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+    # Deterministic order: score DESC, then (_db_index, id) ASC to pin true ties
+    # so identical queries never reorder run-to-run (SQLite tie order is arbitrary).
+    results.sort(key=lambda x: (-x.get("final_score", 0.0), x.get("_db_index", 0), x.get("id", 0)))
     top_results = results[:limit]
     
     for item in top_results:
@@ -791,7 +795,7 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
         item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3))
         merged.append(item)
 
-    merged.sort(key=lambda x: x["final_score"], reverse=True)
+    merged.sort(key=lambda x: (-x["final_score"], x.get("_db_index", 0), x.get("id", 0)))
     return merged
 
 
@@ -914,8 +918,9 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         item["utility_score_tripartite"] = u_shard
         scored_results.append(item)
     
-    # Sort candidates by the tripartite score
-    scored_results.sort(key=lambda x: x["utility_score_tripartite"], reverse=True)
+    # Sort candidates by the tripartite score (ties pinned by _db_index, id for determinism)
+    scored_results.sort(
+        key=lambda x: (-x["utility_score_tripartite"], x.get("_db_index", 0), x.get("id", 0)))
     
     # Dynamic Thresholding / Drop bottom 50% if we have many candidates
     if scored_results:
