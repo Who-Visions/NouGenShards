@@ -16,6 +16,12 @@ export interface ImportResult {
   files_scanned: number;
   records_parsed: number;
   shards_created: number;
+  // NOTE (limitation): counts every record core.capture reported as "not newly
+  // created". capture returns false for a real dedup hit AND the stale-index
+  // repair path (hash already stored elsewhere), with no in-band signal to tell
+  // them apart — both mean the content already exists. A false return is not
+  // distinguishable from a duplicate here without changing capture's bool
+  // contract; genuine write failures throw rather than returning false.
   duplicates_skipped: number;
   secrets_redacted: number;
 }
@@ -84,6 +90,9 @@ export function run_import(
       if (success) {
         result.shards_created += 1;
       } else {
+        // false == "already stored" (dedup hit or stale-index repair). See
+        // ImportResult.duplicates_skipped for why this cannot be separated from
+        // a write failure without a broad core refactor.
         result.duplicates_skipped += 1;
       }
     }

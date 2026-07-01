@@ -60,21 +60,41 @@ def _hash_for(shard_id: int, db_index: int) -> Optional[str]:
 
 def _shard_for_hash(file_hash: str) -> Optional[Dict]:
     """Resolve a file_hash back to its shard dict by scanning the cluster."""
+    return _shards_for_hashes([file_hash]).get(file_hash)
+
+
+def _shards_for_hashes(file_hashes: List[str]) -> Dict[str, Dict]:
+    """Resolve many file_hashes to shard dicts with one query per DB (lowest db_index wins).
+
+    Avoids the per-hash cluster rescan: a single pass over the (up to) 9 DBs
+    resolves every requested hash, so callers pay at most one connection per DB
+    instead of one per (hash, DB) pair.
+    """
+    remaining = list(dict.fromkeys(file_hashes))  # de-dup, preserve order
+    resolved: Dict[str, Dict] = {}
     for i in range(1, core.MAX_DB_COUNT + 1):
+        if not remaining:
+            break
         if not core.get_db_path(i).exists():
             continue
         conn = core.get_connection(i)
         try:
-            row = conn.execute("SELECT * FROM shards WHERE file_hash = ?", (file_hash,)).fetchone()
-            if row:
+            placeholders = ",".join("?" * len(remaining))
+            rows = conn.execute(
+                f"SELECT * FROM shards WHERE file_hash IN ({placeholders})", remaining
+            ).fetchall()
+            for row in rows:
                 item = dict(row)
-                item["_db_index"] = i
-                return item
+                fhash = item["file_hash"]
+                if fhash not in resolved:  # first (lowest-index) DB wins
+                    item["_db_index"] = i
+                    resolved[fhash] = item
+            remaining = [h for h in remaining if h not in resolved]
         except sqlite3.OperationalError:
             pass
         finally:
             conn.close()
-    return None
+    return resolved
 
 
 def link_shards(src_id: int, dst_id: int, relation: str = "relates",
@@ -132,15 +152,19 @@ def related_shards(shard_id: int, db_index: int = 1, relation: Optional[str] = N
     finally:
         conn.close()
 
+    ordered = [(r, "out") for r in out_rows] + [(r, "in") for r in in_rows]
+    hash_map = _shards_for_hashes([row["nhash"] for row, _ in ordered])
+
     neighbours: List[Dict] = []
     seen = set()
-    for row, direction in [(r, "out") for r in out_rows] + [(r, "in") for r in in_rows]:
+    for row, direction in ordered:
         key = (row["nhash"], row["relation"], direction)
         if key in seen:
             continue
         seen.add(key)
-        shard = _shard_for_hash(row["nhash"])
+        shard = hash_map.get(row["nhash"])
         if shard:
+            shard = dict(shard)  # copy: same hash may recur with a different relation/direction
             shard["relation"] = row["relation"]
             shard["direction"] = direction
             neighbours.append(shard)
