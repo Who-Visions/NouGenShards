@@ -325,7 +325,25 @@ def calculate_contrastive_perplexity(content: str) -> float:
         client = get_best_available_client()
         if client and client.is_alive():
             models = client.list_models()
-            best_model = "gemma2:2b" if "gemma2:2b" in models else (models[0] if models else None)
+            # Local-player preference: custom NouGen fine-tunes (Sol-Ai is the designated
+            # Player) outrank generic gemma4, which is only the floor — never below it.
+            # Override with NOUGEN_DENSITY_MODEL. Within a family, largest tag wins on sort.
+            override = os.environ.get("NOUGEN_DENSITY_MODEL")
+            if override and override in models:
+                best_model = override
+            else:
+                # FREE is highest priority: free cloud tags (e.g. gemma4:31b-cloud) cost $0
+                # and are the most capable, so they win first; then custom NouGen fine-tunes
+                # (Sol-Ai is the Player); then local gemma4 floor — never below it.
+                _cloud = sorted((m for m in models if "cloud" in m.lower()), reverse=True)
+                _pref_order = ["sol-ai", "iris-ai", "dav1d", "griot",
+                               "kaedra", "rhea-noir", "davos", "gemma4"]
+                best_model = (
+                    _cloud[0] if _cloud
+                    else next((m for pref in _pref_order
+                               for m in sorted(models, reverse=True)
+                               if m.lower().startswith(pref)),
+                              (models[0] if models else None)))
             if best_model:
                 prompt = (
                     "Analyze the following text and estimate its information density / contrastive perplexity score "
@@ -563,13 +581,16 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
             fts_query = _build_fts_match_query(query)
             if fts_query is not None:
                 try:
-                    cursor = conn.execute("""
+                    # domain_key None/"*" => search ALL domains (whole brain), not one bucket.
+                    dom_clause = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
+                    dom_params = () if domain_key in (None, "*") else (domain_key,)
+                    cursor = conn.execute(f"""
                         SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
                                s.embedding, s.tags, s.domain_key, bm25(shards_fts) as bm25_score
                         FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
-                        WHERE s.domain_key = ? AND shards_fts MATCH ?
+                        WHERE {dom_clause}shards_fts MATCH ?
                         ORDER BY bm25_score ASC LIMIT ?
-                    """, (domain_key, fts_query, limit))
+                    """, (*dom_params, fts_query, limit))
                     res = cursor.fetchall()
                     if res:
                         for row in res:
@@ -583,12 +604,14 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 history.log_event(0, i, "SEARCH_FALLBACK", metadata={"query": query})
                 
                 like_query = f"%{query}%"
-                cursor = conn.execute("""
+                dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
+                dom_params = () if domain_key in (None, "*") else (domain_key,)
+                cursor = conn.execute(f"""
                     SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
                     FROM shards
-                    WHERE domain_key = ? AND (title LIKE ? OR content LIKE ?)
+                    WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
                     ORDER BY utility_score DESC LIMIT ?
-                """, (domain_key, like_query, like_query, limit))
+                """, (*dom_params, like_query, like_query, limit))
                 for row in cursor:
                     item = dict(row)
                     item["_db_index"] = i
@@ -630,11 +653,86 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     return results[:limit]
 
 
+def _vector_retrieve_ann(query_embedding: List[float], limit: int = 20,
+                         domain_key: str = "global"):
+    """ANN fast-path for _vector_retrieve (opt-in via NOUGEN_ANN=1).
+
+    Uses the unified HNSW index to fetch candidate (db, id) pairs sub-linearly,
+    then re-scores them with the SAME dot + temporal-decay + utility blend as the
+    linear scan, so RRF fusion downstream is unchanged. Returns None if the index
+    is unavailable -> the caller falls back to the verified linear scan.
+    """
+    from . import ann_index, history  # pylint: disable=import-outside-toplevel
+    # Wide candidate pool: final ranking blends cosine with utility+recency, which
+    # can promote items outside the pure-cosine top-k, so over-fetch to keep parity
+    # with the full linear scan. Still tiny vs scanning all 47k rows.
+    candidates = ann_index.query(query_embedding, top_n=max(limit * 50, 500))
+    if candidates is None:
+        return None  # no index -> signal fallback
+
+    q = np.asarray(query_embedding, dtype=np.float32)
+    by_db: dict = {}
+    for db_idx, sid in candidates:
+        by_db.setdefault(db_idx, []).append(sid)
+
+    results = []
+    for db_idx, ids in by_db.items():
+        if not get_db_path(db_idx).exists():
+            continue
+        conn = get_connection(db_idx)
+        try:
+            placeholders = ",".join("?" * len(ids))
+            dom_clause = "" if domain_key in (None, "*") else "AND domain_key = ? "
+            params = list(ids) + ([] if domain_key in (None, "*") else [domain_key])
+            cursor = conn.execute(f"""
+                SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
+                FROM shards
+                WHERE id IN ({placeholders}) {dom_clause}AND embedding IS NOT NULL
+            """, params)
+            for row in cursor:
+                item = dict(row)
+                item["_db_index"] = db_idx
+                try:
+                    emb_array = np.frombuffer(item["embedding"], dtype=np.float32)
+                    sem_score = float(np.dot(q, emb_array))
+                except Exception:
+                    sem_score = 0.0
+                decay = 1.0
+                ts_str = item.get("timestamp")
+                if ts_str:
+                    try:
+                        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+                        decay = max(0.1, 0.5 ** (age_days / 30.0))
+                    except Exception:
+                        pass
+                decayed_utility = item["utility_score"] * decay
+                item["final_score"] = (sem_score * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
+                results.append(item)
+        finally:
+            conn.close()
+
+    results.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+    top_results = results[:limit]
+    for item in top_results:
+        history.log_event(item["id"], item["_db_index"], "ACCESSED")
+    return top_results
+
+
 def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                      domain_key: str = "global") -> list:
     """Scans for semantic vector matches independent of FTS."""
     if query_embedding is None:
         return []
+
+    # ANN fast-path (opt-in). Falls back to the linear scan below if the index
+    # is missing/stale/unreadable, so correctness never depends on the index.
+    if os.environ.get("NOUGEN_ANN") == "1":
+        ann_results = _vector_retrieve_ann(query_embedding, limit, domain_key)
+        if ann_results is not None:
+            return ann_results
 
     from . import history # pylint: disable=import-outside-toplevel
 
@@ -644,11 +742,13 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             continue
         conn = get_connection(i)
         try:
-            cursor = conn.execute("""
+            dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
+            dom_params = () if domain_key in (None, "*") else (domain_key,)
+            cursor = conn.execute(f"""
                 SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
                 FROM shards
-                WHERE domain_key = ? AND embedding IS NOT NULL
-            """, (domain_key,))
+                WHERE {dom_clause}embedding IS NOT NULL
+            """, dom_params)
             for row in cursor:
                 item = dict(row)
                 item["_db_index"] = i
@@ -830,9 +930,11 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
 
     all_results = run_parallel_retrieval(domain_key)
     
-    # Fallback to global if active_domain is not global and we found no matches
-    if not all_results and domain_key != "global":
-        all_results = run_parallel_retrieval("global")
+    # Fallback: if the domain-scoped pass found nothing, sweep the ENTIRE brain
+    # (all domain_keys). Without this, recall stays siloed to one bucket
+    # (e.g. 'global' = <2% of shards) and misses the other 47k+ shards.
+    if not all_results and domain_key != "*":
+        all_results = run_parallel_retrieval("*")
 
     # Stage 2: cross-encoder rerank the top RRF candidates (no-op unless enabled).
     if RERANK_ENABLED:

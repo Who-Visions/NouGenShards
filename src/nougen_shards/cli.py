@@ -18,6 +18,7 @@ from . import federation
 from . import history
 from . import router
 from . import structured
+from . import hooks
 from .connectors.cloud import push_to_cloud, pull_from_cloud
 from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
 from . import dream
@@ -632,11 +633,49 @@ def cmd_connect(args):
 
 
 def cmd_hook(args):
-    """Install auto-capture hooks into the user's shell."""
-    if args.action == "install":
-        print("✅ Auto-capture hook installed into your shell.")
+    """Manage local hook adapters."""
+    if args.action in {"codex-anchor", "anchor"}:
+        print(hooks.get_latest_anchor(limit=args.limit, max_chars=args.max_chars))
+    elif args.action == "space-anchor":
+        print(hooks.get_space_orchestration_anchor(
+            limit=args.limit,
+            max_chars=args.max_chars,
+            space_id=getattr(args, "space", None),
+            token_key=getattr(args, "token_key", None),
+        ))
+    elif args.action == "space-logs":
+        from . import space_orchestration
+
+        snapshot = space_orchestration.fetch_log_snapshot(
+            kind=getattr(args, "log_kind", "run"),
+            space_id=getattr(args, "space", None),
+            token_key=getattr(args, "token_key", None),
+        )
+        if getattr(args, "json", False):
+            print(json.dumps(snapshot, indent=2))
+            return
+        print(
+            f"HF Space {snapshot.get('kind')} logs: {snapshot.get('status')} "
+            f"({snapshot.get('url')})"
+        )
+        if snapshot.get("status") == "ok":
+            print(snapshot.get("body", ""))
+        else:
+            print(snapshot.get("error", "Unknown error"))
+    elif args.action == "install":
+        agent = (args.agent or "codex").lower()
+        if agent != "codex":
+            print("Error: only the local Codex hook adapter is implemented.")
+            return
+        target_dir = hooks.install_local_codex_hook(
+            output_dir=args.output_dir,
+            limit=args.limit,
+            max_chars=args.max_chars,
+        )
+        print(f"✅ Local Codex hook artifacts written to {target_dir}")
+        print("No shell profile or global runtime config was modified.")
     else:
-        print("Usage: nougen hook install")
+        print("Usage: nougen hook codex-anchor | space-anchor | space-logs | install --agent codex")
 
 
 def cmd_ingest(args):
@@ -821,7 +860,18 @@ def get_parser():
     p_connect.add_argument("--mcp", action="store_true")
 
     p_hook = subparsers.add_parser("hook", help="Auto-capture")
-    p_hook.add_argument("action")
+    p_hook.add_argument(
+        "action",
+        choices=["install", "uninstall", "codex-anchor", "anchor", "space-anchor", "space-logs"],
+    )
+    p_hook.add_argument("--agent", default="codex")
+    p_hook.add_argument("--limit", type=int, default=5)
+    p_hook.add_argument("--max-chars", type=int, default=8000)
+    p_hook.add_argument("--output-dir")
+    p_hook.add_argument("--space", default=None, help="Hugging Face Space id, owner/name")
+    p_hook.add_argument("--token-key", default=None, help="Keymaker token alias to use")
+    p_hook.add_argument("--log-kind", choices=["run", "build"], default="run")
+    p_hook.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_ingest = subparsers.add_parser("ingest", help="Ingest file")
     p_ingest.add_argument("file")
@@ -866,6 +916,15 @@ def get_parser():
     p_brain.add_argument("--confirm", action="store_true", help="Confirm writing to database")
     p_brain.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    p_index = subparsers.add_parser("index", help="ANN index / embedding backfill / schema migration")
+    p_index.add_argument("action", choices=["ann-build", "embed-backfill", "schema-migrate"])
+    p_index.add_argument("--vault", default=os.environ.get("NOUGEN_VAULT_DIR"), help="Vault directory override")
+    p_index.add_argument("--model", default=os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text"), help="Ollama embedding model (embed-backfill)")
+    p_index.add_argument("--batch", type=int, default=64, help="Batch size (embed-backfill)")
+    p_index.add_argument("--execute", action="store_true", help="Apply writes (embed-backfill / schema-migrate); default is dry-run")
+    p_index.add_argument("--no-backup", action="store_true", help="Skip .bak backup before schema-migrate")
+    p_index.add_argument("--json", action="store_true", help="Machine-readable output")
+
     p_handoff = subparsers.add_parser("handoff", help="Cross-agent session handoff notes")
     p_handoff.add_argument("action", choices=[
         "create", "read", "list", "ack", "start", "checkpoint", "complete",
@@ -887,6 +946,33 @@ def get_parser():
     return parser
 
 
+
+
+def cmd_index(args):
+    """ANN index build / embedding backfill / schema migration. Delegates to each
+    module's own argparse entrypoint so behavior matches `python -m nougen_shards.<mod>`."""
+    if args.action == "ann-build":
+        from . import ann_index
+        report = ann_index.build(vault=args.vault)
+        print(json.dumps(report, indent=2, default=str))
+        return
+    if args.action == "embed-backfill":
+        from . import embedding_backfill
+        argv = ["--model", args.model, "--batch", str(args.batch)]
+        if args.vault:
+            argv += ["--vault", args.vault]
+        if args.execute:
+            argv.append("--execute")
+        raise SystemExit(embedding_backfill._main(argv))
+    from . import schema  # schema-migrate
+    argv = []
+    if args.vault:
+        argv += ["--vault", args.vault]
+    if args.execute:
+        argv.append("--execute")
+    if args.no_backup:
+        argv.append("--no-backup")
+    raise SystemExit(schema._main(argv))
 
 
 def cmd_doctor(args):
@@ -1002,7 +1088,7 @@ def main():
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
-        "dashboard": cmd_dashboard, "handoff": cmd_handoff
+        "dashboard": cmd_dashboard, "handoff": cmd_handoff, "index": cmd_index
     }
     if args.command in cmds:
         cmds[args.command](args)

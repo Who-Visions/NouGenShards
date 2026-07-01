@@ -34,6 +34,16 @@ Stop and ask before mutating system state (installs, deletes, registry/config ou
 We use `NouGenShards-pull-clone` to test public release candidate pulls and compare their behavior/integrity against the live prototype database state (`C:\Users\super\Watchtower\vault`), enabling a gradual, validated migration of prototype features to the public-facing application.
 
 
+## Cross-Provider Handoff Contract
+Claude, Gemini, and Codex share the same durable handoff registry in `.handoffs/`.
+- Claude uses `NOUGEN_AGENT=claude` or `claude-cli`.
+- Gemini uses `NOUGEN_AGENT=gemini`.
+- OpenAI/Codex uses `NOUGEN_AGENT=codex` and reads `AGENTS.md`.
+- All providers must run the same loop: read latest handoff before planning, ack when taking over, create a handoff before ending substantive work, then rebuild the handoff DB.
+
+## NouGen Context Mode Cache Gate
+Target cache health is **90%+ cache-read share**. Before broad scans, synthesis, or debugging, recall compact context first (`nougen-shards`, `ctx search`, or handoff read), then open only exact files/ranges needed. Do not replay raw transcripts, full handoff bodies, full token reports, or large logs into chat. If cache health drops below 85% or input spikes, stop broad exploration and create a compact handoff/context anchor.
+
 ## Automated Session Handoff Rule (CRITICAL)
 - **Mandatory Final Action**: Before concluding a session or handing back control to the user (at the final step of a task or before ending your turn), the agent MUST automatically generate or update the structured on-call handoff notes in the `.handoffs` registry.
 - **Execution Command**: Run `.\nougen.bat handoff create -a <agent_name> -g "<current_goal>" -m "<structured_summary_message>"` in the active `NouGenShards-push-main` workspace directory, then run `.\nougen.bat handoff rebuild-db` to index it.
@@ -54,6 +64,4 @@ We use `NouGenShards-pull-clone` to test public release candidate pulls and comp
   ## 📅 Upcoming Events
   - <Maintenance windows, releases, stress tests; otherwise 'None'>
   ```
-
-
 
