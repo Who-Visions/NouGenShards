@@ -8,10 +8,9 @@ import sqlite3
 import re
 import datetime
 from datetime import timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 from . import core
-from . import history
 
 
 def fetch_high_utility_shards(limit: int = 50) -> List[Dict[str, Any]]:

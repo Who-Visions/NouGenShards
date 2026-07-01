@@ -5,7 +5,6 @@ known credential files are skipped, and an unreadable file does not abort the
 scan (stat() is guarded).
 """
 import os
-from pathlib import Path
 
 import pytest
 

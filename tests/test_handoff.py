@@ -51,8 +51,6 @@ def test_handoff_creation(setup_handoff_env):
     assert row == ("gemini", "open", data["goal"])
 
 def test_handoff_creation_generic(setup_handoff_env):
-    temp_path = setup_handoff_env
-    
     # Create handoff with no agent, falls back to detect_current_agent
     json_path = handoff.create_handoff(message="Testing default fallback", agent="generic")
     assert json_path is not None

@@ -23,7 +23,7 @@ import sqlite3
 import shutil
 import glob
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from typing import Callable, List
 
 # Bump this when adding a migration. Stored per-DB in PRAGMA user_version.
 TARGET_SCHEMA_VERSION = 1
