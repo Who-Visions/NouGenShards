@@ -486,6 +486,12 @@ RERANK_MODEL = os.environ.get("NOUGEN_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 RERANK_CANDIDATES = int(os.environ.get("NOUGEN_RERANK_CANDIDATES", "60"))
 _RERANKER = None  # process-cached reranker handle
 
+# Stage-3 MMR diversification. Near-duplicate shards (same fix captured across
+# sessions, re-ingested docs) survive capture-time dedup because their hashes
+# differ, then crowd the whole top-k with one story. MMR trades a little
+# relevance for coverage: NOUGEN_MMR_LAMBDA=1.0 disables (pure relevance).
+MMR_LAMBDA = float(os.environ.get("NOUGEN_MMR_LAMBDA", "0.75"))
+
 def _process_fts_result(row, db_index, query_embedding):
     """Helper to score a single FTS result via the weighted relevance blend."""
     item = dict(row)
@@ -891,6 +897,61 @@ def rerank(query: str, items: List[dict], top_k: int) -> List[dict]:
         return items[:top_k]
 
 
+def _item_unit_embedding(item: dict) -> Optional[np.ndarray]:
+    """Decode a shard's stored embedding to a unit vector; None if absent/legacy-JSON."""
+    raw = item.get("embedding")
+    if not raw or not isinstance(raw, (bytes, bytearray)):
+        return None
+    try:
+        if bytes(raw).startswith(b'['):
+            return None
+        vec = np.frombuffer(raw, dtype=np.float32)
+        norm = np.linalg.norm(vec)
+        return vec / norm if norm > 0 else None
+    except Exception:
+        return None
+
+
+def mmr_diversify(items: List[dict], limit: int, lambda_: float = MMR_LAMBDA) -> List[dict]:
+    """
+    Maximal Marginal Relevance over scored candidates: greedily pick the item
+    with the best blend of relevance (utility_score_tripartite) and novelty
+    (1 - max cosine similarity to anything already picked).
+
+    Items without embeddings contribute zero similarity, so they compete on
+    relevance alone and a vault with no embeddings degrades to the input order.
+    """
+    if lambda_ >= 1.0 or len(items) <= 1:
+        return items[:limit]
+
+    embs = [_item_unit_embedding(it) for it in items]
+    # Relevance normalized to [0,1] so it shares a scale with cosine similarity.
+    rels = [it.get("utility_score_tripartite", 0.0) for it in items]
+    max_rel = max(rels) if rels else 1.0
+    if max_rel > 0:
+        rels = [r / max_rel for r in rels]
+
+    selected: List[int] = [0]  # top candidate always survives
+    remaining = list(range(1, len(items)))
+    while remaining and len(selected) < limit:
+        best_idx, best_score = remaining[0], -np.inf
+        for idx in remaining:
+            max_sim = 0.0
+            if embs[idx] is not None:
+                for sel in selected:
+                    if embs[sel] is not None:
+                        sim = float(np.dot(embs[idx], embs[sel]))
+                        if sim > max_sim:
+                            max_sim = sim
+            score = lambda_ * rels[idx] - (1.0 - lambda_) * max_sim
+            if score > best_score:
+                best_idx, best_score = idx, score
+        selected.append(best_idx)
+        remaining.remove(best_idx)
+
+    return [items[i] for i in selected]
+
+
 def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None,
              domain_key: Optional[str] = None) -> list:
     """
@@ -997,8 +1058,11 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     else:
         surviving = []
         
+    # Stage 3: MMR diversification so near-duplicates don't crowd the packet
+    diversified = mmr_diversify(surviving, limit)
+
     # Lost in the Middle Mitigation (interleave)
-    reordered = lost_in_the_middle_reorder(surviving[:limit])
+    reordered = lost_in_the_middle_reorder(diversified[:limit])
     return reordered
 
 
