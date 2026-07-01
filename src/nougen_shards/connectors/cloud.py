@@ -230,6 +230,11 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
             remote_data = json.loads(_open_cloud(req, url, 5.0).decode())
             if isinstance(remote_data, list):
                 for r in remote_data:
+                    # A node may return a JSON list of non-objects (e.g. [1,2,3]);
+                    # skip those rather than letting r.get() raise AttributeError
+                    # (not in _NET_ERRORS) and abort the whole federation sweep.
+                    if not isinstance(r, dict):
+                        continue
                     # Normalize to local shard shape
                     results.append({
                         "id": f"cloud_{conf['id']}_{r.get('id')}",

@@ -39,10 +39,12 @@ class TemporalNexusShard:
     def parse_payload_anchors(self, raw_text: str) -> None:
         """Layer 2 & 3: Extract semantic temporal expressions inside document text."""
         # Look for typical arXiv date formats or standard ISO dates within text
+        # Groups are non-capturing so re.findall returns the full match string
+        # rather than group tuples (which corrupted extracted_anchors).
         arxiv_patterns = [
             r"arXiv:\d{4}\.\d{4,5}",
-            r"v\d+\s+\[([0-9a-zA-Z\s,]+)\]",
-            r"(19|20)\d{2}[-\/.](0[1-9]|1[012])[-\/.](0[1-9]|[12][0-9]|3[01])"
+            r"v\d+\s+\[(?:[0-9a-zA-Z\s,]+)\]",
+            r"(?:19|20)\d{2}[-\/.](?:0[1-9]|1[012])[-\/.](?:0[1-9]|[12][0-9]|3[01])"
         ]
         
         found_anchors = []
@@ -56,9 +58,14 @@ class TemporalNexusShard:
         # Try to guess real valid_time from text (fallback to modification epoch if none found)
         year_match = re.search(r"\b(19|20)\d{2}\b", raw_text)
         if year_match:
-            # Anchor to January 1st of the discovered publication year
-            dt = datetime(year=int(year_match.group(0)), month=1, day=1)
-            self.bitemporal_dimensions['valid_time_start'] = dt.timestamp()
+            # Anchor to January 1st of the discovered publication year.
+            # Pre-1970 years raise OSError/OverflowError from timestamp() on
+            # some platforms (e.g. Windows); skip rather than crash parsing.
+            try:
+                dt = datetime(year=int(year_match.group(0)), month=1, day=1)
+                self.bitemporal_dimensions['valid_time_start'] = dt.timestamp()
+            except (OSError, OverflowError, ValueError):
+                pass
 
     def register_access_event(self) -> None:
         """Tracks access actions to continually calculate velocity and momentum."""

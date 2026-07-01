@@ -179,7 +179,8 @@ def cmd_chat(args):
             model_config = client.find_best_edge_model()
             model = model_config.model_name if model_config else None
         else:
-            model = client.list_models()[0]
+            available = client.list_models()
+            model = available[0] if available else None
 
     if not model:
         print("Error: No model found.")
@@ -232,11 +233,12 @@ def cmd_add(args):
 
     embedding = None
     if getattr(args, 'embed', False):
-        client = get_client(args.provider or "openai")
+        prov = args.provider or "openai"
+        client = get_client(prov)
         if client and client.is_alive():
-            model = "text-embedding-3-small" if args.provider == "openai" \
+            model = "text-embedding-3-small" if prov == "openai" \
                 else "models/text-embedding-004"
-            print(f"[*] Generating embeddings via {args.provider or 'openai'}...")
+            print(f"[*] Generating embeddings via {prov}...")
             embedding = client.embed(model, content)
 
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
@@ -270,11 +272,12 @@ def cmd_search(args):
 
     embedding = None
     if getattr(args, 'semantic', False):
-        client = get_client(args.provider or "openai")
+        prov = args.provider or "openai"
+        client = get_client(prov)
         if client and client.is_alive():
-            model = "text-embedding-3-small" if args.provider == "openai" \
+            model = "text-embedding-3-small" if prov == "openai" \
                 else "models/text-embedding-004"
-            print(f"[*] Generating query embedding via {args.provider or 'openai'}...")
+            print(f"[*] Generating query embedding via {prov}...")
             embedding = client.embed(model, args.query)
 
     # Use Federation for unified search
@@ -319,10 +322,10 @@ def cmd_status(args):
         path = shards.get_db_path(i)
         if not path.exists():
             continue
+        conn = None
         try:
             conn = shards.get_connection(i)
             count = conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
-            conn.close()
             size_mb = path.stat().st_size / (1024 * 1024)
             db_stats.append({
                 "index": i,
@@ -333,6 +336,9 @@ def cmd_status(args):
             total_count += count
         except (sqlite3.Error, OSError):
             pass
+        finally:
+            if conn is not None:
+                conn.close()
 
     if getattr(args, 'json', False) is True:
         print(json.dumps({"databases": db_stats, "total_shards": total_count}))
@@ -413,7 +419,12 @@ def cmd_ctx(args):
         if not args.input:
             print("Error: Usage: nougen ctx get <event_id>")
             return
-        event = nougen_context.get_event(int(args.input))
+        try:
+            event_id = int(args.input)
+        except (ValueError, TypeError):
+            print("Error: Usage: nougen ctx get <event_id> (event_id must be an integer)")
+            return 1
+        event = nougen_context.get_event(event_id)
         if not event:
             print(f"Error: Context event #{args.input} not found.")
             return
@@ -422,7 +433,12 @@ def cmd_ctx(args):
         if not args.input:
             print("Error: Usage: nougen ctx promote <event_id> [--tags <tags>]")
             return
-        event = nougen_context.get_event(int(args.input))
+        try:
+            event_id = int(args.input)
+        except (ValueError, TypeError):
+            print("Error: Usage: nougen ctx promote <event_id> [--tags <tags>] (event_id must be an integer)")
+            return 1
+        event = nougen_context.get_event(event_id)
         if not event:
             print(f"Error: Context event #{args.input} not found.")
             return
@@ -470,7 +486,7 @@ def cmd_router(args):
             print(res.get("content"))
             if "usage" in res:
                 u = res["usage"]
-                print(f"\nUsage: {u['total_tokens']} tokens ({u['cached_tokens']} cached)")
+                print(f"\nUsage: {u.get('total_tokens', 0)} tokens ({u.get('cached_tokens', 0)} cached)")
 
     elif args.action == "json":
         if not args.schema:
