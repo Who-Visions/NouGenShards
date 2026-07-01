@@ -633,9 +633,9 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
         finally:
             conn.close()
 
-    # Deterministic order: score DESC, then (_db_index, id) ASC to pin true ties
-    # so identical queries never reorder run-to-run (SQLite tie order is arbitrary).
-    results.sort(key=lambda x: (-x.get("final_score", 0.0), x.get("_db_index", 0), x.get("id", 0)))
+    # Deterministic order: score DESC (rounded so sub-epsilon temporal-decay
+    # jitter doesn't reorder near-ties run-to-run), then (_db_index, id) ASC.
+    results.sort(key=lambda x: (-round(x.get("final_score", 0.0), 6), x.get("_db_index", 0), x.get("id", 0)))
     return results[:limit]
 
 
@@ -694,9 +694,9 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
         finally:
             conn.close()
 
-    # Deterministic order: score DESC, then (_db_index, id) ASC to pin true ties
-    # so identical queries never reorder run-to-run (SQLite tie order is arbitrary).
-    results.sort(key=lambda x: (-x.get("final_score", 0.0), x.get("_db_index", 0), x.get("id", 0)))
+    # Deterministic order: score DESC (rounded so sub-epsilon temporal-decay
+    # jitter doesn't reorder near-ties run-to-run), then (_db_index, id) ASC.
+    results.sort(key=lambda x: (-round(x.get("final_score", 0.0), 6), x.get("_db_index", 0), x.get("id", 0)))
     top_results = results[:limit]
     
     for item in top_results:
@@ -759,7 +759,7 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
         item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3))
         merged.append(item)
 
-    merged.sort(key=lambda x: (-x["final_score"], x.get("_db_index", 0), x.get("id", 0)))
+    merged.sort(key=lambda x: (-round(x["final_score"], 6), x.get("_db_index", 0), x.get("id", 0)))
     return merged
 
 
@@ -891,9 +891,11 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         item["utility_score_tripartite"] = u_shard
         scored_results.append(item)
     
-    # Sort candidates by the tripartite score (ties pinned by _db_index, id for determinism)
+    # Sort candidates by the tripartite score. Round the score so sub-epsilon
+    # temporal-decay jitter can't reorder near-ties run-to-run; exact ties then
+    # break deterministically by (_db_index, id).
     scored_results.sort(
-        key=lambda x: (-x["utility_score_tripartite"], x.get("_db_index", 0), x.get("id", 0)))
+        key=lambda x: (-round(x["utility_score_tripartite"], 6), x.get("_db_index", 0), x.get("id", 0)))
     
     # Dynamic Thresholding / Drop bottom 50% if we have many candidates
     if scored_results:
