@@ -95,8 +95,9 @@ def main():
     # Determine absolute output path
     output_path = Path(args.output)
     if not output_path.is_absolute():
-        # Write to watchtower root if possible, otherwise locally
-        wt_root = os.environ.get("WATCHTOWER_ROOT") or r"C:\Users\super\Watchtower"
+        # Write to watchtower root if possible, otherwise locally. Default is
+        # ~/Watchtower (no hardcoded author path); override with WATCHTOWER_ROOT.
+        wt_root = os.environ.get("WATCHTOWER_ROOT") or str(Path.home() / "Watchtower")
         if os.path.exists(wt_root):
             output_path = Path(wt_root) / args.output
         else:

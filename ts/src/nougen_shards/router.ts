@@ -3,6 +3,7 @@
  * Handles model fallback, session sticky routing, and prompt caching.
  */
 import { createHash } from "node:crypto";
+import { pre_tool_use_hook } from "./hooks.js";
 
 export interface ChatMessage {
   role: string;
@@ -63,7 +64,8 @@ export function build_cache_friendly_messages(
   // 2. Append Task-Specific Messages
   messages.push(...task_messages);
 
-  return messages;
+  // 3. Apply Reversed Hooks for Pointer Compaction (Play 2) — parity with router.py
+  return pre_tool_use_hook(messages);
 }
 
 /**

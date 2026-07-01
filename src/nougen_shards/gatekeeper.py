@@ -14,9 +14,17 @@ def check_mutation_gate(command: str, parameters: dict = None) -> dict:
         
     Returns:
         dict: {"allowed": bool, "reason": str, "gate": str}
+
+    NOTE: This is a defense-in-depth speed-bump, NOT a security boundary.
+    It is a best-effort denylist meant to catch obvious destructive commands
+    and slow down accidents; it can be trivially bypassed by obfuscation
+    (encoding, indirection, aliases, etc.) and must never be relied upon as
+    the sole protection against malicious input.
     """
-    cmd_lower = command.lower().strip()
-    
+    # Normalize before matching so trivial whitespace/case obfuscation
+    # (e.g. "rm   -rf", "git\tpush", "RM -RF") is still caught.
+    cmd_lower = re.sub(r"\s+", " ", command.lower()).strip()
+
     # 1. Database Schema or Index Alteration Gate
     schema_patterns = [
         r"\balter\s+table\b",
@@ -32,13 +40,27 @@ def check_mutation_gate(command: str, parameters: dict = None) -> dict:
                 "reason": "Database schema or index modifications are restricted to GM approval.",
                 "gate": "schema_change"
             }
-            
+
     # 2. Destructive Cleanup Gate
     destructive_patterns = [
-        r"\brm\s+-[rf]+\b",
+        # Filesystem destruction (shell)
+        r"\brm\s+-[rf]+\b",                 # rm -rf / rm -fr / rm -r / rm -f
+        r"\brm\s+--recursive\b",
+        r"\brm\s+--force\b",
+        r"\bdel\s+/",                       # Windows: del /s /q
+        r"\bformat\s",                      # Windows: format c:
+        r"\bmkfs\b",                        # make filesystem (wipes device)
+        r"\bdd\s+if=",                      # raw disk overwrite
+        r"\btruncate\b",                    # truncate file / SQL TRUNCATE
+        r">\s*/dev/sd[a-z]",                # overwrite raw block device
+        r":\(\)\s*\{",                      # forkbomb :(){ :|:& };:
+        # Filesystem destruction (Python)
+        r"\bshutil\.rmtree\b",
+        r"\bos\.remove\b",
+        r"\bos\.unlink\b",
+        # Destructive SQL
         r"\bdelete\s+from\b",
         r"\bdrop\s+database\b",
-        r"\btruncate\b",
     ]
     for pattern in destructive_patterns:
         if re.search(pattern, cmd_lower):
@@ -74,10 +96,12 @@ def check_mutation_gate(command: str, parameters: dict = None) -> dict:
 
     # 5. Deployment & Registry Gate
     deploy_patterns = [
-        r"\bgit\s+push\b",
+        r"\bgit\s+push\b",                  # covers `git push --force` / `git push -f`
+        r"\bgit\s+reset\s+--hard\b",
         r"\bnpm\s+publish\b",
         r"\bdeploy\b",
         r"\bregister-node\b",
+        r"\bchmod\s+-r\s+777\b",            # recursive world-writable perms
     ]
     for pattern in deploy_patterns:
         if re.search(pattern, cmd_lower):

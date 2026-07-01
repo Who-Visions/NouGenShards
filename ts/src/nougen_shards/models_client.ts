@@ -11,6 +11,20 @@ import * as keymaker from "./keymaker.js";
 import * as router from "./router.js";
 import * as structured from "./structured.js";
 
+// Default network timeout (ms) for every model HTTP call: a hung connection
+// would otherwise block forever. Mirrors the Python DEFAULT_TIMEOUT. Override
+// via NGS_HTTP_TIMEOUT (seconds).
+const DEFAULT_TIMEOUT_MS = (() => {
+  const v = Number(process.env.NGS_HTTP_TIMEOUT);
+  return Number.isFinite(v) && v > 0 ? v * 1000 : 60000;
+})();
+
+/** fetch() with a default timeout; preserves an explicit per-call signal
+ * (so the short is_alive/list_models probes keep their own shorter timeout). */
+async function tfetch(input: any, init: any = {}): Promise<Response> {
+  return fetch(input, { ...init, signal: init.signal ?? AbortSignal.timeout(DEFAULT_TIMEOUT_MS) });
+}
+
 export interface ChatMessage {
   role: string;
   content: string;
@@ -90,7 +104,7 @@ export class OpenAIClient extends LLMClient {
     }
     const payload = { model, messages, stream };
     try {
-      const res = await fetch(`${this.base_url}/chat/completions`, {
+      const res = await tfetch(`${this.base_url}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -132,7 +146,7 @@ export class OpenAIClient extends LLMClient {
     }
     const payload = { model, input: text };
     try {
-      const res = await fetch(`${this.base_url}/embeddings`, {
+      const res = await tfetch(`${this.base_url}/embeddings`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -181,7 +195,7 @@ export class AnthropicClient extends LLMClient {
       stream,
     };
     try {
-      const res = await fetch(`${this.base_url}/messages`, {
+      const res = await tfetch(`${this.base_url}/messages`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -254,11 +268,13 @@ export class GeminiClient extends LLMClient {
       contents.push({ role, parts: [{ text: msg.content }] });
     }
     const endpoint = stream ? "streamGenerateContent" : "generateContent";
-    const url = `${this.base_url}/${model}:${endpoint}?key=${this.api_key}`;
+    // Key via header, not the URL query string (which leaks into proxy/access
+    // logs and exception text). Mirrors the Python x-goog-api-key fix.
+    const url = `${this.base_url}/${model}:${endpoint}`;
     try {
-      const res = await fetch(url, {
+      const res = await tfetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": this.api_key ?? "" },
         body: JSON.stringify({ contents }),
       });
       if (!stream) {
@@ -303,12 +319,12 @@ export class GeminiClient extends LLMClient {
     if (!this.api_key) {
       return [];
     }
-    const url = `${this.base_url}/${model}:embedContent?key=${this.api_key}`;
+    const url = `${this.base_url}/${model}:embedContent`;
     const payload = { content: { parts: [{ text }] } };
     try {
-      const res = await fetch(url, {
+      const res = await tfetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": this.api_key ?? "" },
         body: JSON.stringify(payload),
       });
       const resp_data: any = await res.json();
@@ -349,7 +365,7 @@ export class HuggingFaceClient extends LLMClient {
     prompt += "ASSISTANT: ";
     const payload = { inputs: prompt, parameters: { max_new_tokens: 1024 }, stream };
     try {
-      const res = await fetch(`${this.base_url}/${model}`, {
+      const res = await tfetch(`${this.base_url}/${model}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -394,14 +410,89 @@ export class HuggingFaceClient extends LLMClient {
 }
 
 /** Client for OpenRouter (Unified API). */
+// Confirmed-free OpenRouter model IDs. Used ONLY as an offline seed when live
+// discovery (get_free_models) cannot reach the OpenRouter API. The live roster is
+// the source of truth and returns the FULL set of free models at runtime.
+export const FREE_MODEL_SEED: string[] = [
+  "nousresearch/hermes-3-llama-3.1-405b:free",
+  "google/gemma-4-31b-it:free",
+  "google/gemma-3-27b-it:free",
+];
+const _FREE_MODELS_CACHE: { ts: number; models: string[] } = { ts: 0, models: [] };
+const _FREE_MODELS_TTL = 3600 * 1000; // ms
+
 export class OpenRouterClient extends OpenAIClient {
   constructor(api_key: string | null = null) {
     super(api_key ?? keymaker.get_secret("OPENROUTER_API_KEY"));
     this.base_url = "https://openrouter.ai/api/v1";
   }
 
+  /**
+   * Discover the FULL set of free OpenRouter models live from the API. Filters
+   * the catalogue to every model that is actually free (`:free` suffix or zero
+   * prompt+completion pricing), cached for `_FREE_MODELS_TTL`. Falls back to
+   * `FREE_MODEL_SEED` only when the API is unreachable so the roster is never empty.
+   */
+  async get_free_models(refresh = false): Promise<string[]> {
+    // Without a key we cannot query the live catalogue; return the offline seed.
+    if (!this.api_key) {
+      return [...FREE_MODEL_SEED];
+    }
+    const now = Date.now();
+    if (!refresh && _FREE_MODELS_CACHE.models.length && now - _FREE_MODELS_CACHE.ts < _FREE_MODELS_TTL) {
+      return [..._FREE_MODELS_CACHE.models];
+    }
+    const isZero = (v: any): boolean => {
+      const n = typeof v === "number" ? v : parseFloat(v);
+      return !Number.isNaN(n) && n === 0;
+    };
+    try {
+      const headers: Record<string, string> = {
+        "HTTP-Referer": "https://whovisions.com",
+        "X-OpenRouter-Title": "NouGenShards",
+      };
+      if (this.api_key) headers.Authorization = `Bearer ${this.api_key}`;
+      const res = await fetch(`${this.base_url}/models`, { method: "GET", headers });
+      const data: any = await res.json();
+      const free: string[] = [];
+      for (const model of data?.data ?? []) {
+        const mid: string = model?.id ?? "";
+        if (!mid) continue;
+        const pricing = model?.pricing ?? {};
+        if (mid.endsWith(":free") || (isZero(pricing.prompt) && isZero(pricing.completion))) {
+          free.push(mid);
+        }
+      }
+      if (free.length) {
+        _FREE_MODELS_CACHE.models = free;
+        _FREE_MODELS_CACHE.ts = now;
+        return [...free];
+      }
+    } catch {
+      /* fall through to offline seed */
+    }
+    return [...FREE_MODEL_SEED];
+  }
+
+  /**
+   * Resolve a single free model DYNAMICALLY from the live roster. Prefer the
+   * first roster entry matching `preference` (substring), else the top of the
+   * live roster; only falls back to the seed when discovery is empty. No call
+   * site should hardcode a model string — call this instead.
+   */
+  async preferred_free_model(preference: string | null = null): Promise<string> {
+    const roster = await this.get_free_models();
+    if (preference) {
+      for (const mid of roster) {
+        if (mid.toLowerCase().includes(preference.toLowerCase())) return mid;
+      }
+    }
+    return roster[0] ?? FREE_MODEL_SEED[0];
+  }
+
   override async list_models(): Promise<string[]> {
-    return ["google/gemma-3-27b-it:free", "anthropic/claude-3.5-sonnet"];
+    // The roster IS the full live set of free OpenRouter models.
+    return this.get_free_models();
   }
 
   override async chat(model: string, messages: ChatMessage[], stream = false): Promise<string> {
@@ -410,7 +501,7 @@ export class OpenRouterClient extends OpenAIClient {
     }
     const payload = { model, messages, stream };
     try {
-      const res = await fetch(`${this.base_url}/chat/completions`, {
+      const res = await tfetch(`${this.base_url}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -447,12 +538,9 @@ export class OpenRouterClient extends OpenAIClient {
       model,
       messages,
       stream,
-      models:
-        fallback_models ?? [
-          "anthropic/claude-3.5-sonnet",
-          "google/gemini-2.0-flash-001",
-          "deepseek/deepseek-chat",
-        ],
+      // Default to the FULL live free roster so fallback routes across every
+      // free model OpenRouter offers, not a curated handful.
+      models: fallback_models ?? (await this.get_free_models()),
     };
 
     if (session_id) {
@@ -467,7 +555,7 @@ export class OpenRouterClient extends OpenAIClient {
     }
 
     try {
-      const res = await fetch(`${this.base_url}/chat/completions`, {
+      const res = await tfetch(`${this.base_url}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -531,7 +619,7 @@ export class OpenRouterClient extends OpenAIClient {
     }
 
     try {
-      const res = await fetch(`${this.base_url}/chat/completions`, {
+      const res = await tfetch(`${this.base_url}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -609,7 +697,7 @@ export class WhoVisionsCloudClient extends LLMClient {
 
     const payload = { model, messages, stream };
     try {
-      const res = await fetch(`${this.node_url ? this.node_url.replace(/\/+$/, "") : ""}/cloud/chat`, {
+      const res = await tfetch(`${this.node_url ? this.node_url.replace(/\/+$/, "") : ""}/cloud/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -630,6 +718,74 @@ export class WhoVisionsCloudClient extends LLMClient {
   }
 }
 
+/**
+ * Select the best available local model, preferring custom/finetuned models over
+ * official base models. Mirrors the 4-tier logic of Python find_best_model_from_list
+ * (returns the model name; the Python ModelBudgetConfig n_ctx tuning is not yet ported).
+ */
+export function find_best_model_from_list(models: string[]): string {
+  if (!models.length) {
+    return "";
+  }
+  const has = (model: string, tag: string): boolean => {
+    const ml = model.toLowerCase();
+    return ml.startsWith(tag) || ml.includes(`/${tag}`) || ml.includes(`\\${tag}`);
+  };
+
+  // 1. Known custom system models.
+  const custom_system_tags = [
+    "dav1d:e2b", "rhea-noir:e2b", "sol-ai:e2b", "griot:e2b",
+    "gemma4-aggressive:e2b", "gemma4-aggressive:e4b", "rhea-noir:e4b",
+    "kaedra:e4b", "iris-ai:e4b", "sol-ai:e4b", "davos:latest", "janitor:latest",
+  ];
+  for (const tag of custom_system_tags) {
+    for (const model of models) {
+      if (has(model, tag)) {
+        return model;
+      }
+    }
+  }
+
+  // 2. Any other user-created custom/finetuned model (not an official vendor prefix).
+  const official_prefixes = ["gemma", "llama", "qwen", "mistral", "phi", "deepseek", "codellama", "mixtral"];
+  // Embedding-only families are not chat-capable; find_best_edge_model feeds the
+  // default chat model, so returning one would break /api/chat. Skip them so a
+  // later tier picks the chat model.
+  const embed_markers = ["embed", "bge-", "minilm", "gte-", "e5-"];
+  for (const model of models) {
+    const base = (model.replace(/\\/g, "/").split("/").pop() ?? "").toLowerCase();
+    if (embed_markers.some((mk) => base.includes(mk))) {
+      continue;
+    }
+    if (!official_prefixes.some((p) => base.startsWith(p))) {
+      return model;
+    }
+  }
+
+  // 3. Official Gemma 4 QAT/edge/workstation defaults.
+  const gemma4_tags = [
+    "gemma4:e4b", "gemma4:e4b-it-qat", "gemma4:12b", "gemma4:12b-it-qat",
+    "gemma4:e2b", "gemma4:e2b-it-qat", "gemma4:latest",
+  ];
+  for (const tag of gemma4_tags) {
+    for (const model of models) {
+      if (has(model, tag)) {
+        return model;
+      }
+    }
+  }
+
+  // 4. Generic fallback to any Gemma family, else the first available model.
+  for (const prefix of ["gemma4:", "gemma:"]) {
+    for (const model of models) {
+      if (model.toLowerCase().startsWith(prefix) || model.toLowerCase().includes(prefix)) {
+        return model;
+      }
+    }
+  }
+  return models[0];
+}
+
 /** Client for local Ollama instance. */
 export class OllamaClient extends LocalLLMClient {
   base_url: string;
@@ -642,7 +798,7 @@ export class OllamaClient extends LocalLLMClient {
   async is_alive(): Promise<boolean> {
     try {
       const ctl = AbortSignal.timeout(1000);
-      const res = await fetch(`${this.base_url}/api/version`, { signal: ctl });
+      const res = await tfetch(`${this.base_url}/api/version`, { signal: ctl });
       return res.status === 200;
     } catch {
       return false;
@@ -651,7 +807,7 @@ export class OllamaClient extends LocalLLMClient {
 
   async list_models(): Promise<string[]> {
     try {
-      const res = await fetch(`${this.base_url}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      const res = await tfetch(`${this.base_url}/api/tags`, { signal: AbortSignal.timeout(3000) });
       const data: any = await res.json();
       return (data?.models ?? []).map((m: any) => m.name);
     } catch {
@@ -662,7 +818,7 @@ export class OllamaClient extends LocalLLMClient {
   async chat(model: string, messages: ChatMessage[], stream = false): Promise<string> {
     const payload = { model, messages, stream };
     try {
-      const res = await fetch(`${this.base_url}/api/chat`, {
+      const res = await tfetch(`${this.base_url}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -690,7 +846,7 @@ export class OllamaClient extends LocalLLMClient {
   async embed(model: string, text: string): Promise<number[]> {
     const payload = { model, prompt: text };
     try {
-      const res = await fetch(`${this.base_url}/api/embeddings`, {
+      const res = await tfetch(`${this.base_url}/api/embeddings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -703,15 +859,7 @@ export class OllamaClient extends LocalLLMClient {
   }
 
   async find_best_edge_model(): Promise<string> {
-    const models = await this.list_models();
-    for (const prefix of ["dav1d:e2b", "rhea-noir:e2b", "sol-ai:e2b"]) {
-      for (const model of models) {
-        if (model.startsWith(prefix)) {
-          return model;
-        }
-      }
-    }
-    return models.length > 0 ? models[0] : "";
+    return find_best_model_from_list(await this.list_models());
   }
 
   /** Ollama-specific: pull model. */
@@ -719,7 +867,7 @@ export class OllamaClient extends LocalLLMClient {
     const url = `${this.base_url}/api/pull`;
     const payload = JSON.stringify({ model: model_name, stream: true });
     try {
-      const res = await fetch(url, {
+      const res = await tfetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: payload,
@@ -758,7 +906,7 @@ export class LMStudioClient extends LocalLLMClient {
 
   async is_alive(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.base_url}/models`, { signal: AbortSignal.timeout(1000) });
+      const res = await tfetch(`${this.base_url}/models`, { signal: AbortSignal.timeout(1000) });
       return res.status === 200;
     } catch {
       return false;
@@ -767,7 +915,7 @@ export class LMStudioClient extends LocalLLMClient {
 
   async list_models(): Promise<string[]> {
     try {
-      const res = await fetch(`${this.base_url}/models`, { signal: AbortSignal.timeout(3000) });
+      const res = await tfetch(`${this.base_url}/models`, { signal: AbortSignal.timeout(3000) });
       const data: any = await res.json();
       return (data?.data ?? []).map((m: any) => m.id);
     } catch {
@@ -778,7 +926,7 @@ export class LMStudioClient extends LocalLLMClient {
   async chat(model: string, messages: ChatMessage[], stream = false): Promise<string> {
     const payload = { model, messages, stream };
     try {
-      const res = await fetch(`${this.base_url}/chat/completions`, {
+      const res = await tfetch(`${this.base_url}/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -816,8 +964,7 @@ export class LMStudioClient extends LocalLLMClient {
   }
 
   async find_best_edge_model(): Promise<string> {
-    const models = await this.list_models();
-    return models.length > 0 ? models[0] : "";
+    return find_best_model_from_list(await this.list_models());
   }
 }
 

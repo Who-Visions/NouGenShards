@@ -63,9 +63,10 @@ def validate_against_schema(data: Dict[str, Any], schema: Dict[str, Any]) -> Tup
             expected_type = properties[field].get("type")
             if expected_type == "string" and not isinstance(val, str):
                 errors.append(f"Field '{field}' expected string, got {type(val).__name__}")
-            elif expected_type == "number" and not isinstance(val, (int, float)):
+            elif expected_type == "number" and (isinstance(val, bool) or not isinstance(val, (int, float))):
+                # bool is a subclass of int; reject it so True/False don't pass as numbers.
                 errors.append(f"Field '{field}' expected number, got {type(val).__name__}")
-            elif expected_type == "integer" and not isinstance(val, int):
+            elif expected_type == "integer" and (isinstance(val, bool) or not isinstance(val, int)):
                 errors.append(f"Field '{field}' expected integer, got {type(val).__name__}")
             elif expected_type == "boolean" and not isinstance(val, bool):
                 errors.append(f"Field '{field}' expected boolean, got {type(val).__name__}")

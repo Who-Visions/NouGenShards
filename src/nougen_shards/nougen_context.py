@@ -8,6 +8,12 @@ from typing import Optional
 NOUGEN_CONTEXT_DIR = Path.home() / ".nougen" / "context"
 SESSION_DB_PATH = str(NOUGEN_CONTEXT_DIR / "session.db")
 
+def _utc_now_iso() -> str:
+    """UTC timestamp as '...Z'. Note: isoformat() on a tz-aware UTC datetime
+    already yields '...+00:00'; appending 'Z' produced the invalid '...+00:00Z'
+    that broke downstream fromisoformat() parsing."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
 def get_context_connection():
     """Establishes an SQLite connection for the session context with WAL enabled."""
     Path(SESSION_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
@@ -16,8 +22,12 @@ def get_context_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-def init_context_db(clean_slate: bool = True):
-    """Initializes the ephemeral session database schema."""
+def init_context_db(clean_slate: bool = False):
+    """Initializes the ephemeral session database schema.
+
+    clean_slate defaults to False: wiping session.db is destructive and must be
+    an explicit opt-in, so an implicit init never destroys live session state.
+    """
     if clean_slate and Path(SESSION_DB_PATH).exists():
         # Clean-slate rule: wipe session.db unless continuing
         try:
@@ -81,30 +91,49 @@ def init_context_db(clean_slate: bool = True):
 
 def log_event(event_type: str, content: str, metadata: Optional[dict] = None):
     """Logs an event into the session context."""
-    timestamp = datetime.now(timezone.utc).isoformat() + "Z"
+    timestamp = _utc_now_iso()
     metadata_str = json.dumps(metadata or {})
     conn = get_context_connection()
-    conn.execute(
-        "INSERT INTO ctx_events (timestamp, type, content, metadata) VALUES (?, ?, ?, ?)",
-        (timestamp, event_type, content, metadata_str)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "INSERT INTO ctx_events (timestamp, type, content, metadata) VALUES (?, ?, ?, ?)",
+            (timestamp, event_type, content, metadata_str)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 def search_context(query: str, limit: int = 5):
-    """Searches session context using BM25."""
+    """Searches session context using BM25.
+
+    Raw user input can contain FTS5 operators/quotes that raise OperationalError;
+    fall back to a LIKE scan instead of hard-failing the search. The fallback uses
+    the SAME projection (id/timestamp/type/content/metadata) as the FTS path so
+    callers see a stable schema either way.
+    """
     conn = get_context_connection()
-    cursor = conn.execute("""
-        SELECT e.id, e.timestamp, e.type, e.content, e.metadata
-        FROM ctx_events e
-        JOIN ctx_events_fts f ON e.id = f.rowid
-        WHERE ctx_events_fts MATCH ?
-        ORDER BY bm25(ctx_events_fts) ASC
-        LIMIT ?
-    """, (query, limit))
-    results = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return results
+    try:
+        cursor = conn.execute("""
+            SELECT e.id, e.timestamp, e.type, e.content, e.metadata
+            FROM ctx_events e
+            JOIN ctx_events_fts f ON e.id = f.rowid
+            WHERE ctx_events_fts MATCH ?
+            ORDER BY bm25(ctx_events_fts) ASC
+            LIMIT ?
+        """, (query, limit))
+        return [dict(row) for row in cursor.fetchall()]
+    except sqlite3.OperationalError:
+        pattern = f"%{query}%"
+        cursor = conn.execute("""
+            SELECT id, timestamp, type, content, metadata
+            FROM ctx_events
+            WHERE content LIKE ? OR type LIKE ? OR metadata LIKE ?
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+        """, (pattern, pattern, pattern, limit))
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
 
 def get_event(event_id: int):
     """Retrieves a specific event from the context by ID."""
@@ -117,21 +146,25 @@ def get_event(event_id: int):
 
 def store_sandbox(handle: str, data: str, summary: str = ""):
     """Stores large tool output in the sandbox."""
-    timestamp = datetime.now(timezone.utc).isoformat() + "Z"
+    timestamp = _utc_now_iso()
     conn = get_context_connection()
-    conn.execute(
-        "INSERT OR REPLACE INTO ctx_sandbox (handle, timestamp, data, summary) VALUES (?, ?, ?, ?)",
-        (handle, timestamp, data, summary)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO ctx_sandbox (handle, timestamp, data, summary) VALUES (?, ?, ?, ?)",
+            (handle, timestamp, data, summary)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 def fetch_sandbox(handle: str):
     """Retrieves data from the sandbox by handle."""
     conn = get_context_connection()
-    row = conn.execute("SELECT data FROM ctx_sandbox WHERE handle = ?", (handle,)).fetchone()
-    conn.close()
-    return row["data"] if row else None
+    try:
+        row = conn.execute("SELECT data FROM ctx_sandbox WHERE handle = ?", (handle,)).fetchone()
+        return row["data"] if row else None
+    finally:
+        conn.close()
 
 def search_events(query: str, limit: int = 5) -> list:
     """Searches context events by content, event type, or metadata."""
