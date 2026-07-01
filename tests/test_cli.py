@@ -2,7 +2,10 @@
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
 import io
+import sqlite3
 import sys
+import tempfile
+from pathlib import Path
 import nougen_shards.cli as cli
 
 class TestCLI(unittest.TestCase):
@@ -105,6 +108,119 @@ class TestCLI(unittest.TestCase):
         with patch('sys.stdout', new=io.StringIO()) as fake_out:
             cli.cmd_config(args)
             self.assertIn("✅ Configuration updated", fake_out.getvalue())
+
+    def test_cmd_hook_codex_anchor_reads_handoff_db(self):
+        """Test Codex anchor hook emits compact state from handoffs.db."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            handoff_dir = root / ".handoffs"
+            handoff_dir.mkdir()
+            db_path = handoff_dir / "handoffs.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE handoff_records (
+                    handoff_id TEXT PRIMARY KEY,
+                    agent TEXT,
+                    status TEXT,
+                    goal TEXT,
+                    message TEXT,
+                    branch TEXT,
+                    path TEXT,
+                    created_at TEXT,
+                    acknowledged_by TEXT,
+                    acknowledged_at TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO handoff_records (
+                    handoff_id, agent, status, goal, message, branch, path,
+                    created_at, acknowledged_by, acknowledged_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "20260616_231648_main",
+                    "codex",
+                    "open",
+                    "Standardize seamless triple-provider handoffs",
+                    "Compact anchor source " + ("LONGMSG-" * 120),
+                    "main",
+                    "handoff.json",
+                    "2026-06-16T23:16:48",
+                    None,
+                    None,
+                    "2026-06-16T23:16:48",
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            args = MagicMock()
+            args.action = "codex-anchor"
+            args.limit = 5
+            args.max_chars = 4000
+
+            with patch("nougen_shards.hooks._default_repo_root", return_value=root):
+                with patch('sys.stdout', new=io.StringIO()) as fake_out:
+                    cli.cmd_hook(args)
+                    output = fake_out.getvalue()
+
+            self.assertIn("[NOUGEN_CONTEXT_ANCHOR]", output)
+            self.assertIn("Cache SLO: target >=90%", output)
+            self.assertIn("20260616_231648_main", output)
+            self.assertIn("Standardize seamless triple-provider handoffs", output)
+            self.assertIn("Compact anchor source", output)
+            self.assertIn("...", output)
+            self.assertNotIn("LONGMSG-" * 80, output)
+
+    def test_cmd_hook_install_writes_local_codex_artifacts(self):
+        """Test local Codex hook install avoids profile/global mutation."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / ".nougen-hooks"
+            args = MagicMock()
+            args.action = "install"
+            args.agent = "codex"
+            args.output_dir = str(output_dir)
+            args.limit = 5
+            args.max_chars = 4000
+
+            with patch("nougen_shards.hooks._default_repo_root", return_value=root):
+                with patch('sys.stdout', new=io.StringIO()) as fake_out:
+                    cli.cmd_hook(args)
+                    output = fake_out.getvalue()
+
+            self.assertTrue((output_dir / "codex-preflight-anchor.md").exists())
+            self.assertTrue((output_dir / "hf-space-orchestration-anchor.md").exists())
+            self.assertTrue((output_dir / "codex-anchor.ps1").exists())
+            self.assertTrue((output_dir / "codex-anchor.cmd").exists())
+            self.assertIn("No shell profile or global runtime config was modified", output)
+
+    @patch('nougen_shards.cli.hooks.get_space_orchestration_anchor')
+    def test_cmd_hook_space_anchor(self, mock_space_anchor):
+        """Test HF Space orchestration hook emits additive anchor."""
+        mock_space_anchor.return_value = "[HF_SPACE_ORCHESTRATION]\nMode: additive control-plane"
+        args = MagicMock()
+        args.action = "space-anchor"
+        args.limit = 5
+        args.max_chars = 4000
+        args.space = "WhoVisions/nga_hgf_Space"
+        args.token_key = "Yuki_HGF_key"
+
+        with patch('sys.stdout', new=io.StringIO()) as fake_out:
+            cli.cmd_hook(args)
+            output = fake_out.getvalue()
+
+        self.assertIn("[HF_SPACE_ORCHESTRATION]", output)
+        mock_space_anchor.assert_called_once_with(
+            limit=5,
+            max_chars=4000,
+            space_id="WhoVisions/nga_hgf_Space",
+            token_key="Yuki_HGF_key",
+        )
 
     @patch('nougen_shards.cli.shards.capture')
     @patch('pathlib.Path.exists', return_value=True)

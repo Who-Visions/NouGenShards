@@ -32,6 +32,38 @@ The acknowledgement is the "read-back" / forcing function: it makes the transfer
 of responsibility unambiguous, so you can always tell whether a handoff was
 actually picked up or just left hanging.
 
+## Provider lanes
+
+Claude, Gemini, and OpenAI/Codex are first-class provider lanes over the same
+handoff protocol. The lane is just the `NOUGEN_AGENT` value plus its storage
+folder:
+
+| Provider | `NOUGEN_AGENT` | Folder |
+|---|---|---|
+| Claude | `claude` or `claude-cli` | `claude handoffs/` or `claude cli handoffs/` |
+| Gemini | `gemini` | `gemini handoffs/` |
+| OpenAI/Codex | `codex` | `codex handoffs/` |
+
+Each provider should read at startup, ack when it takes responsibility, create a
+handoff before ending substantive work, and rebuild the SQLite index. On Windows
+Codex sessions where `python` is not on PATH, use `.venv\Scripts\python.exe`
+with `PYTHONPATH=src`.
+
+## Context/cache discipline
+
+Provider handoffs are also cache anchors. The target cache-read share for
+repeated work is 90%+. Before broad scans or synthesis, agents should read the
+latest handoff, search compact context (`ctx search`, `search --dual --json`, or
+MCP recall), and open only exact files/ranges needed. If cache health drops below
+85% or input spikes, stop broad exploration and write a compact handoff/context
+note before continuing. `src/nougen_shards/hooks.py` exposes a semantic-anchor
+compaction hook for runtimes that can load provider hooks; installing shell or
+global hooks is mutation-gated.
+On Windows hosts that block PowerShell scripts, use the repo-local
+`.nougen-hooks\codex-anchor.cmd` wrapper or run
+`.venv\Scripts\python.exe -m nougen_shards.cli hook codex-anchor` with
+`PYTHONPATH=src`.
+
 ## Orchestration boundary
 
 The same file also acts as a lightweight orchestration boundary. It does not

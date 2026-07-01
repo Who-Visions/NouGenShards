@@ -29,6 +29,7 @@ ts/audit_results.json
 venv/
 transcript.log
 .handoffs/
+.nougen-hooks/
 .vault/
 pending_shards/
 

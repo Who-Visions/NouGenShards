@@ -66,7 +66,7 @@ ROSTER = {
             "moment and presenting age relative to now. You apply utility "
             "decay so stale memories lose dominance, and you flag any memory "
             "whose timestamp cannot be trusted."),
-        default_model="gemma2:2b",
+        default_model="sol-ai:e4b",
         engine_functions=["format_shard_when", "decay_utility_scores"],
     ),
     "DavOs": AgentSpec(
@@ -104,7 +104,7 @@ ROSTER = {
             "for capture, Remember for recall, Kronos for time, DavOs for "
             "gates, Sol-Ai for broad sight. You carry the brand: the answer "
             "you hand back is composed, grounded in the vault, and yours."),
-        default_model="gemma4:12b",
+        default_model="gemma4:31b-cloud",
         engine_functions=[],
     ),
     "Griot": AgentSpec(

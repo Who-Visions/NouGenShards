@@ -1,10 +1,17 @@
-"""
-Reversed Hooks Lane for NouGenShards.
+"""Reversed Hooks Lane for NouGenShards.
+
 Intercepts and compacts message history into high-signal Semantic Anchors.
+Also exposes a Codex-friendly preflight anchor that can be printed by the CLI
+without mutating shell profiles or global runtime config.
 """
+import os
 import re
-import json
-from typing import List, Dict, Any
+import sqlite3
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Union
+
+
+DEFAULT_ANCHOR_MAX_CHARS = 8000
 
 def extract_invariants(messages: List[Dict[str, Any]]) -> str:
     """
@@ -71,3 +78,158 @@ def pre_tool_use_hook(message_payload: List[Dict[str, Any]]) -> List[Dict[str, A
     Intercepts the history buffer before serialization.
     """
     return inject_semantic_anchors(message_payload)
+
+
+def _clip(text: object, limit: int = 900) -> str:
+    value = "" if text is None else str(text).strip()
+    value = re.sub(r"\s+", " ", value)
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _default_repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _handoff_db_path(repo_root: Optional[Path] = None) -> Path:
+    if os.environ.get("NOUGEN_HANDOFF_DIR"):
+        return Path(os.environ["NOUGEN_HANDOFF_DIR"]) / "handoffs.db"
+    root = repo_root or _default_repo_root()
+    return root / ".handoffs" / "handoffs.db"
+
+
+def _fetch_handoff_rows(limit: int = 5, repo_root: Optional[Path] = None) -> List[Dict[str, Any]]:
+    db_path = _handoff_db_path(repo_root)
+    if not db_path.exists():
+        return []
+
+    conn = None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT handoff_id, agent, status, goal, message, branch, path,
+                   created_at, acknowledged_by, acknowledged_at, updated_at
+            FROM handoff_records
+            ORDER BY COALESCE(updated_at, created_at) DESC
+            LIMIT ?
+            """,
+            (max(1, limit),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except (sqlite3.Error, OSError):
+        return []
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def get_latest_anchor(
+    limit: int = 5,
+    max_chars: int = DEFAULT_ANCHOR_MAX_CHARS,
+    repo_root: Optional[Union[str, Path]] = None,
+) -> str:
+    """Return a compact Codex preflight anchor from the local handoff index.
+
+    The output is intentionally stable and small so provider sessions can pin a
+    hot prefix instead of replaying raw handoff JSON, transcripts, or logs.
+    """
+    root = Path(repo_root) if repo_root else _default_repo_root()
+    rows = _fetch_handoff_rows(limit=limit, repo_root=root)
+
+    lines = [
+        "[NOUGEN_CONTEXT_ANCHOR]",
+        "Role: Coach, not Player. Use compact recall before broad scans.",
+        "Cache SLO: target >=90% cache-read share; stop and compact below 85%.",
+        "Protocol: handoff read -> ack on takeover -> work -> create handoff -> rebuild-db.",
+        "Safety: do not replay raw transcripts, full handoffs, full token reports, or large logs.",
+        f"Source: { _handoff_db_path(root) }",
+    ]
+
+    if not rows:
+        lines.append("Latest handoffs: none indexed. Run handoff rebuild-db if records exist.")
+    else:
+        lines.append("Latest handoffs:")
+        for row in rows:
+            ack = row.get("acknowledged_by") or "unclaimed"
+            lines.append(
+                "- "
+                f"id={_clip(row.get('handoff_id'), 120)}; "
+                f"agent={_clip(row.get('agent'), 40)}; "
+                f"status={_clip(row.get('status'), 40)}; "
+                f"ack={_clip(ack, 40)}; "
+                f"branch={_clip(row.get('branch'), 80)}; "
+                f"goal={_clip(row.get('goal'), 220)}; "
+                f"note={_clip(row.get('message'), 420)}"
+            )
+
+    anchor = "\n".join(lines).strip()
+    if len(anchor) > max_chars:
+        anchor = anchor[: max(0, max_chars - 28)].rstrip() + "\n[ANCHOR_TRUNCATED]"
+    return anchor
+
+
+def get_space_orchestration_anchor(
+    limit: int = 5,
+    max_chars: int = DEFAULT_ANCHOR_MAX_CHARS,
+    space_id: Optional[str] = None,
+    token_key: Optional[str] = None,
+) -> str:
+    """Return the HF Space overlay anchor without replacing local handoffs."""
+    from . import space_orchestration
+
+    return space_orchestration.get_space_orchestration_anchor(
+        limit=limit,
+        max_chars=max_chars,
+        space_id=space_id,
+        token_key=token_key,
+    )
+
+
+def install_local_codex_hook(
+    output_dir: Optional[Union[str, Path]] = None,
+    limit: int = 5,
+    max_chars: int = DEFAULT_ANCHOR_MAX_CHARS,
+) -> Path:
+    """Write local hook artifacts for Codex without touching global profiles."""
+    root = _default_repo_root()
+    target_dir = Path(output_dir) if output_dir else root / ".nougen-hooks"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    anchor_path = target_dir / "codex-preflight-anchor.md"
+    space_anchor_path = target_dir / "hf-space-orchestration-anchor.md"
+    script_path = target_dir / "codex-anchor.ps1"
+    cmd_path = target_dir / "codex-anchor.cmd"
+    anchor_path.write_text(
+        get_latest_anchor(limit=limit, max_chars=max_chars, repo_root=root) + "\n",
+        encoding="utf-8",
+    )
+    space_anchor_path.write_text(
+        get_space_orchestration_anchor(limit=limit, max_chars=max_chars) + "\n",
+        encoding="utf-8",
+    )
+    script_path.write_text(
+        "\n".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                f"$env:PYTHONPATH = '{root / 'src'}'",
+                f"& '{root / '.venv' / 'Scripts' / 'python.exe'}' -m nougen_shards.cli hook codex-anchor",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    cmd_path.write_text(
+        "\n".join(
+            [
+                "@echo off",
+                f"set \"PYTHONPATH={root / 'src'}\"",
+                f"\"{root / '.venv' / 'Scripts' / 'python.exe'}\" -m nougen_shards.cli hook codex-anchor",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return target_dir

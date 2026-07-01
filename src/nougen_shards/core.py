@@ -325,7 +325,25 @@ def calculate_contrastive_perplexity(content: str) -> float:
         client = get_best_available_client()
         if client and client.is_alive():
             models = client.list_models()
-            best_model = "gemma2:2b" if "gemma2:2b" in models else (models[0] if models else None)
+            # Local-player preference: custom NouGen fine-tunes (Sol-Ai is the designated
+            # Player) outrank generic gemma4, which is only the floor — never below it.
+            # Override with NOUGEN_DENSITY_MODEL. Within a family, largest tag wins on sort.
+            override = os.environ.get("NOUGEN_DENSITY_MODEL")
+            if override and override in models:
+                best_model = override
+            else:
+                # FREE is highest priority: free cloud tags (e.g. gemma4:31b-cloud) cost $0
+                # and are the most capable, so they win first; then custom NouGen fine-tunes
+                # (Sol-Ai is the Player); then local gemma4 floor — never below it.
+                _cloud = sorted((m for m in models if "cloud" in m.lower()), reverse=True)
+                _pref_order = ["sol-ai", "iris-ai", "dav1d", "griot",
+                               "kaedra", "rhea-noir", "davos", "gemma4"]
+                best_model = (
+                    _cloud[0] if _cloud
+                    else next((m for pref in _pref_order
+                               for m in sorted(models, reverse=True)
+                               if m.lower().startswith(pref)),
+                              (models[0] if models else None)))
             if best_model:
                 prompt = (
                     "Analyze the following text and estimate its information density / contrastive perplexity score "
@@ -467,6 +485,12 @@ RERANK_ENABLED = os.environ.get("NOUGEN_RERANK", "0") == "1"
 RERANK_MODEL = os.environ.get("NOUGEN_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 RERANK_CANDIDATES = int(os.environ.get("NOUGEN_RERANK_CANDIDATES", "60"))
 _RERANKER = None  # process-cached reranker handle
+
+# Stage-3 MMR diversification. Near-duplicate shards (same fix captured across
+# sessions, re-ingested docs) survive capture-time dedup because their hashes
+# differ, then crowd the whole top-k with one story. MMR trades a little
+# relevance for coverage: NOUGEN_MMR_LAMBDA=1.0 disables (pure relevance).
+MMR_LAMBDA = float(os.environ.get("NOUGEN_MMR_LAMBDA", "0.75"))
 
 def _process_fts_result(row, db_index, query_embedding):
     """Helper to score a single FTS result via the weighted relevance blend."""
@@ -637,11 +661,86 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     return results[:limit]
 
 
+def _vector_retrieve_ann(query_embedding: List[float], limit: int = 20,
+                         domain_key: str = "global"):
+    """ANN fast-path for _vector_retrieve (opt-in via NOUGEN_ANN=1).
+
+    Uses the unified HNSW index to fetch candidate (db, id) pairs sub-linearly,
+    then re-scores them with the SAME dot + temporal-decay + utility blend as the
+    linear scan, so RRF fusion downstream is unchanged. Returns None if the index
+    is unavailable -> the caller falls back to the verified linear scan.
+    """
+    from . import ann_index, history  # pylint: disable=import-outside-toplevel
+    # Wide candidate pool: final ranking blends cosine with utility+recency, which
+    # can promote items outside the pure-cosine top-k, so over-fetch to keep parity
+    # with the full linear scan. Still tiny vs scanning all 47k rows.
+    candidates = ann_index.query(query_embedding, top_n=max(limit * 50, 500))
+    if candidates is None:
+        return None  # no index -> signal fallback
+
+    q = np.asarray(query_embedding, dtype=np.float32)
+    by_db: dict = {}
+    for db_idx, sid in candidates:
+        by_db.setdefault(db_idx, []).append(sid)
+
+    results = []
+    for db_idx, ids in by_db.items():
+        if not get_db_path(db_idx).exists():
+            continue
+        conn = get_connection(db_idx)
+        try:
+            placeholders = ",".join("?" * len(ids))
+            dom_clause = "" if domain_key in (None, "*") else "AND domain_key = ? "
+            params = list(ids) + ([] if domain_key in (None, "*") else [domain_key])
+            cursor = conn.execute(f"""
+                SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
+                FROM shards
+                WHERE id IN ({placeholders}) {dom_clause}AND embedding IS NOT NULL
+            """, params)
+            for row in cursor:
+                item = dict(row)
+                item["_db_index"] = db_idx
+                try:
+                    emb_array = np.frombuffer(item["embedding"], dtype=np.float32)
+                    sem_score = float(np.dot(q, emb_array))
+                except Exception:
+                    sem_score = 0.0
+                decay = 1.0
+                ts_str = item.get("timestamp")
+                if ts_str:
+                    try:
+                        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+                        decay = max(0.1, 0.5 ** (age_days / 30.0))
+                    except Exception:
+                        pass
+                decayed_utility = item["utility_score"] * decay
+                item["final_score"] = (sem_score * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
+                results.append(item)
+        finally:
+            conn.close()
+
+    results.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+    top_results = results[:limit]
+    for item in top_results:
+        history.log_event(item["id"], item["_db_index"], "ACCESSED")
+    return top_results
+
+
 def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                      domain_key: str = "global") -> list:
     """Scans for semantic vector matches independent of FTS."""
     if query_embedding is None:
         return []
+
+    # ANN fast-path (opt-in). Falls back to the linear scan below if the index
+    # is missing/stale/unreadable, so correctness never depends on the index.
+    if os.environ.get("NOUGEN_ANN") == "1":
+        ann_results = _vector_retrieve_ann(query_embedding, limit, domain_key)
+        if ann_results is not None:
+            return ann_results
 
     from . import history # pylint: disable=import-outside-toplevel
 
@@ -798,6 +897,61 @@ def rerank(query: str, items: List[dict], top_k: int) -> List[dict]:
         return items[:top_k]
 
 
+def _item_unit_embedding(item: dict) -> Optional[np.ndarray]:
+    """Decode a shard's stored embedding to a unit vector; None if absent/legacy-JSON."""
+    raw = item.get("embedding")
+    if not raw or not isinstance(raw, (bytes, bytearray)):
+        return None
+    try:
+        if bytes(raw).startswith(b'['):
+            return None
+        vec = np.frombuffer(raw, dtype=np.float32)
+        norm = np.linalg.norm(vec)
+        return vec / norm if norm > 0 else None
+    except Exception:
+        return None
+
+
+def mmr_diversify(items: List[dict], limit: int, lambda_: float = MMR_LAMBDA) -> List[dict]:
+    """
+    Maximal Marginal Relevance over scored candidates: greedily pick the item
+    with the best blend of relevance (utility_score_tripartite) and novelty
+    (1 - max cosine similarity to anything already picked).
+
+    Items without embeddings contribute zero similarity, so they compete on
+    relevance alone and a vault with no embeddings degrades to the input order.
+    """
+    if lambda_ >= 1.0 or len(items) <= 1:
+        return items[:limit]
+
+    embs = [_item_unit_embedding(it) for it in items]
+    # Relevance normalized to [0,1] so it shares a scale with cosine similarity.
+    rels = [it.get("utility_score_tripartite", 0.0) for it in items]
+    max_rel = max(rels) if rels else 1.0
+    if max_rel > 0:
+        rels = [r / max_rel for r in rels]
+
+    selected: List[int] = [0]  # top candidate always survives
+    remaining = list(range(1, len(items)))
+    while remaining and len(selected) < limit:
+        best_idx, best_score = remaining[0], -np.inf
+        for idx in remaining:
+            max_sim = 0.0
+            if embs[idx] is not None:
+                for sel in selected:
+                    if embs[sel] is not None:
+                        sim = float(np.dot(embs[idx], embs[sel]))
+                        if sim > max_sim:
+                            max_sim = sim
+            score = lambda_ * rels[idx] - (1.0 - lambda_) * max_sim
+            if score > best_score:
+                best_idx, best_score = idx, score
+        selected.append(best_idx)
+        remaining.remove(best_idx)
+
+    return [items[i] for i in selected]
+
+
 def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None,
              domain_key: Optional[str] = None) -> list:
     """
@@ -904,8 +1058,11 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     else:
         surviving = []
         
+    # Stage 3: MMR diversification so near-duplicates don't crowd the packet
+    diversified = mmr_diversify(surviving, limit)
+
     # Lost in the Middle Mitigation (interleave)
-    reordered = lost_in_the_middle_reorder(surviving[:limit])
+    reordered = lost_in_the_middle_reorder(diversified[:limit])
     return reordered
 
 

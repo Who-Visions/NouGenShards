@@ -109,7 +109,7 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
     failed = 0
     try:
         has_ver = _has_col(conn, "shards", "schema_version")
-        conn.execute("PRAGMA busy_timeout=15000;")
+        conn.execute("PRAGMA busy_timeout=30000;")
         rows = conn.execute(
             "SELECT id, title, content FROM shards WHERE embedding IS NULL"
         ).fetchall()
@@ -144,13 +144,27 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
     return {"db": os.path.basename(db), "embedded": done, "failed": failed}
 
 
-def _flush(conn, batch, has_ver):
-    conn.execute("BEGIN")
-    if has_ver:
-        conn.executemany("UPDATE shards SET embedding=?, schema_version=1 WHERE id=?", batch)
-    else:
-        conn.executemany("UPDATE shards SET embedding=? WHERE id=?", batch)
-    conn.execute("COMMIT")
+def _flush(conn, batch, has_ver, retries=15):
+    # Vault DBs are shared with the live MCP; retry on transient lock contention.
+    sql = ("UPDATE shards SET embedding=?, schema_version=1 WHERE id=?" if has_ver
+           else "UPDATE shards SET embedding=? WHERE id=?")
+    for attempt in range(retries):
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.executemany(sql, batch)
+            conn.execute("COMMIT")
+            return
+        except sqlite3.OperationalError as e:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            if "locked" in str(e).lower() and attempt < retries - 1:
+                sleep_time = 2 * (1.5 ** attempt)
+                print(f"[*] Database locked, retrying in {sleep_time:.1f}s (attempt {attempt+1}/{retries})...")
+                time.sleep(sleep_time)
+                continue
+            raise
 
 
 def _main(argv=None):
@@ -175,10 +189,13 @@ def _main(argv=None):
     tot_t = sum(t for _, t in pend.values())
     print(f"pending (embedding IS NULL): {tot_p}/{tot_t} shards across {len(pend)} DBs")
     for db in _vault_dbs(args.vault):
-        res = backfill_db(db, args.model, execute=args.execute, batch=args.batch)
-        print(" ", res)
-        if res.get("error"):
-            print("\nABORT:", res["error"]); return 2
+        try:
+            res = backfill_db(db, args.model, execute=args.execute, batch=args.batch)
+            print(" ", res)
+            if res.get("error"):
+                print("\nABORT:", res["error"]); return 2
+        except Exception as e:
+            print(f"  [ERROR] Database {os.path.basename(db)} failed: {e}")
     return 0
 
 

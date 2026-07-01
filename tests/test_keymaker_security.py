@@ -42,15 +42,17 @@ def test_external_db_uri_round_trips(km):
     assert dbs and dbs[0]["uri"] == "postgres://u:pass@host:5432/db"
 
 
-def test_migration_does_not_count_plaintext_escape_hatch(km):
+def test_migration_does_not_count_plaintext_escape_hatch(km, monkeypatch):
     km.init_vault()
     conn = sqlite3.connect(str(km.DB_PATH))
     conn.execute("INSERT OR REPLACE INTO secrets (secret_key, secret_value, last_rotated)"
                  " VALUES ('LEG','plainvalue','t')")
     conn.commit()
     conn.close()
-    # With the plaintext escape hatch active, _protect can't encrypt, so nothing
-    # should be reported as migrated (the old code falsely counted it).
+    # Simulate the escape hatch where _protect cannot encrypt and returns the
+    # value unchanged (on Windows DPAPI always encrypts, so force the no-op):
+    # nothing should be reported as migrated (the old code falsely counted it).
+    monkeypatch.setattr(km, "_protect", lambda value, key=None: value)
     assert km.migrate_to_encrypted() == 0
 
 

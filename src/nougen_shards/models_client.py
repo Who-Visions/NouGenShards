@@ -13,8 +13,12 @@ from . import keymaker
 from . import router
 from . import structured
 
-# Hard cap on any cloud HTTP call so a stalled provider can't hang the process.
-_HTTP_TIMEOUT = 120
+# Hardening: bound every network lane call so a hung or unreachable upstream
+# fails over instead of blocking the router indefinitely (Opposing Defense:
+# 502/503/stalled sockets). Values are socket read timeouts in seconds.
+DEFAULT_HTTP_TIMEOUT = 120
+MODEL_PULL_TIMEOUT = 600  # model pulls stream progress; generous but finite bound
+_HTTP_TIMEOUT = DEFAULT_HTTP_TIMEOUT  # back-compat alias
 
 
 @dataclass
@@ -76,7 +80,7 @@ class OpenAIClient(LLMClient):
         return bool(self.api_key)
 
     def list_models(self) -> list:
-        return ["gpt-4o", "gpt-4o-mini"]
+        return ["gpt-4o", "gpt-4o-mini", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
 
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:
@@ -90,7 +94,7 @@ class OpenAIClient(LLMClient):
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.api_key or ''}")
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     return resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -125,7 +129,7 @@ class OpenAIClient(LLMClient):
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.api_key or ''}")
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
                 return resp_data.get("data", [{}])[0].get("embedding", [])
         except Exception: # pylint: disable=broad-except
@@ -143,7 +147,7 @@ class OpenAIClient(LLMClient):
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.api_key or ''}")
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
                 data = resp_data.get("data", [])
                 sorted_data = sorted(data, key=lambda x: x.get("index", 0))
@@ -193,7 +197,7 @@ class AnthropicClient(LLMClient):
         req.add_header("x-api-key", self.api_key or "")
         req.add_header("anthropic-version", "2023-06-01")
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     return resp_data.get("content", [{}])[0].get("text", "")
@@ -253,7 +257,7 @@ class GeminiClient(LLMClient):
         req.add_header("Content-Type", "application/json")
         req.add_header("x-goog-api-key", self.api_key or "")
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     return resp_data.get("candidates", [{}])[0].get(
@@ -294,7 +298,7 @@ class GeminiClient(LLMClient):
         req.add_header("Content-Type", "application/json")
         req.add_header("x-goog-api-key", self.api_key or "")
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
                 return resp_data.get("embedding", {}).get("values", [])
         except Exception: # pylint: disable=broad-except
@@ -311,7 +315,7 @@ class GeminiClient(LLMClient):
         req.add_header("Content-Type", "application/json")
         req.add_header("x-goog-api-key", self.api_key or "")
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
                 embeddings_data = resp_data.get("embeddings", [])
                 embeddings = [emb.get("values", []) for emb in embeddings_data]
@@ -354,7 +358,7 @@ class HuggingFaceClient(LLMClient):
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.api_key or ''}")
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 if not stream:
                     result = json.loads(res.read().decode())
                     if isinstance(result, list):
@@ -481,7 +485,7 @@ class OpenRouterClient(OpenAIClient):
         req.add_header("HTTP-Referer", "https://whovisions.com")
         req.add_header("X-OpenRouter-Title", "NouGenShards")
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     return resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -526,7 +530,7 @@ class OpenRouterClient(OpenAIClient):
         req.add_header("X-OpenRouter-Title", "NouGenShards")
 
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     choice = resp_data.get("choices", [{}])[0]
@@ -581,7 +585,7 @@ class OpenRouterClient(OpenAIClient):
         req.add_header("X-OpenRouter-Title", "NouGenShards")
 
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
                 content = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
@@ -649,7 +653,7 @@ class WhoVisionsCloudClient(LLMClient):
         req.add_header("X-NGS-Token", self.user_token or "")
         
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
                 return resp_data.get("content", "")
         except Exception as exc:
@@ -785,7 +789,7 @@ class OllamaClient(LocalLLMClient):
         )
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     return resp_data.get("message", {}).get("content", "")
@@ -809,7 +813,7 @@ class OllamaClient(LocalLLMClient):
         )
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 return json.loads(res.read().decode()).get("embedding", [])
         except Exception: # pylint: disable=broad-except
             return []
@@ -825,7 +829,7 @@ class OllamaClient(LocalLLMClient):
         )
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
                 embeddings = resp_data.get("embeddings", [])
                 if len(embeddings) == len(texts):
@@ -848,7 +852,7 @@ class OllamaClient(LocalLLMClient):
         req = urllib.request.Request(url, data=payload, method="POST")
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as response:
+            with urllib.request.urlopen(req, timeout=MODEL_PULL_TIMEOUT) as response:
                 for line in response:
                     if line:
                         chunk = json.loads(line.decode("utf-8"))
@@ -897,7 +901,7 @@ class LMStudioClient(LocalLLMClient):
         )
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+            with urllib.request.urlopen(req, timeout=DEFAULT_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     return resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
