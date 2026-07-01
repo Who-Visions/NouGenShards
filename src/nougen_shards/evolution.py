@@ -9,6 +9,7 @@ retrieval (Exa / deep research) and real test generation later. Do not present
 this as production self-evolution.
 """
 
+import hashlib
 import json
 import re
 from typing import List, Dict, Optional, Any
@@ -91,7 +92,12 @@ class EvolutionEngine:
             # Sanitize the instruction into a safe slug: strip path separators and
             # any char outside [a-z0-9_-] so a crafted instruction (e.g. "../etc/x")
             # can't traverse outside the skills/ directory.
-            skill_id = re.sub(r"[^a-z0-9_-]+", "_", instruction.lower().strip()).strip("_") or "skill"
+            slug = re.sub(r"[^a-z0-9_-]+", "_", instruction.lower().strip()).strip("_") or "skill"
+            # Append a short stable hash of the raw instruction so two distinct
+            # instructions that collapse to the same slug (e.g. "a/b" and "a b")
+            # don't overwrite each other's skill file / shard.
+            digest = hashlib.sha256(instruction.encode("utf-8")).hexdigest()[:8]
+            skill_id = f"{slug}-{digest}"
             skill_dir = (core.GLOBAL_DIR / "skills").resolve()
             skill_path = (skill_dir / f"{skill_id}.md").resolve()
             # Defense in depth: refuse anything that resolves outside skills/.
