@@ -52,6 +52,54 @@ export const SECRET_PATTERNS: [RegExp, string][] = [
   ],
 ];
 
+// --- Entropy-based fallback for BARE (unlabeled) high-entropy secrets --------
+// The labeled SECRET_PATTERNS only fire when a value follows a keyword. A
+// standalone credential with no label (e.g. a 40-char API key on its own)
+// slips past them all. This pass catches long, high-entropy, mixed-charset
+// tokens while sparing ordinary long words (all-lowercase) and lowercase
+// content hashes (hex, letters+digits only) to keep false positives low.
+const ENTROPY_MIN_LEN = 32; // long enough to skip normal identifiers/words
+const ENTROPY_THRESHOLD = 4.0; // bits/char; random base64 ~6, hex ~4, prose <3.5
+const HIGH_ENTROPY_CANDIDATE = new RegExp(`[A-Za-z0-9+/=_-]{${ENTROPY_MIN_LEN},}`, "g");
+
+function shannon_entropy(s: string): number {
+  const counts: Record<string, number> = {};
+  for (const ch of s) {
+    counts[ch] = (counts[ch] ?? 0) + 1;
+  }
+  const n = s.length;
+  let h = 0;
+  for (const c of Object.values(counts)) {
+    const p = c / n;
+    h -= p * Math.log2(p);
+  }
+  return h;
+}
+
+function looks_like_secret(token: string): boolean {
+  const has_lower = /[a-z]/.test(token);
+  const has_upper = /[A-Z]/.test(token);
+  const has_digit = /[0-9]/.test(token);
+  const has_special = /[+/=]/.test(token);
+  // Must mix letters and digits (rules out prose and pure numbers).
+  if (!(has_digit && (has_lower || has_upper))) {
+    return false;
+  }
+  // Require charset diversity: three letter/digit classes, or base64 symbol
+  // chars alongside digits. Spares all-lowercase words and lowercase hex hashes.
+  const classes = Number(has_lower) + Number(has_upper) + Number(has_digit);
+  if (!(classes >= 3 || (has_special && has_digit))) {
+    return false;
+  }
+  return shannon_entropy(token) >= ENTROPY_THRESHOLD;
+}
+
+function redact_high_entropy(content: string): string {
+  return content.replace(HIGH_ENTROPY_CANDIDATE, (tok) =>
+    looks_like_secret(tok) ? "<REDACTED_SECRET>" : tok,
+  );
+}
+
 /** Scans and redacts known secret patterns from content. */
 export function redact_content(content: string): string {
   if (!content) {
@@ -62,5 +110,8 @@ export function redact_content(content: string): string {
   for (const [pattern, replacement] of SECRET_PATTERNS) {
     redacted = redacted.replace(pattern, replacement);
   }
+  // Fallback pass LAST so labeled patterns take precedence and their
+  // <REDACTED_*> placeholders are left untouched (no digits / too short).
+  redacted = redact_high_entropy(redacted);
   return redacted;
 }
