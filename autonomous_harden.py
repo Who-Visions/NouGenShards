@@ -7,7 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path("NouGenShards")
+# Anchor to this file's directory (the repo root) so paths resolve no matter
+# where the script is invoked from. A prior relative Path("NouGenShards") pointed
+# at a nonexistent nested dir, making every check a silent no-op.
+ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src" / "nougen_shards"
 TESTS = ROOT / "tests"
 
@@ -31,7 +34,7 @@ def run_command(cmd, env=None):
 def verify_system():
     print("--- [VERIFY] System Integrity ---")
     env = os.environ.copy()
-    env["PYTHONPATH"] = f"{ROOT};{SRC.parent};{env.get('PYTHONPATH', '')}"
+    env["PYTHONPATH"] = os.pathsep.join([str(SRC.parent), env.get("PYTHONPATH", "")])
     res = run_command([sys.executable, "-m", "pytest", str(TESTS)], env=env)
     print(res.stdout)
     if res.returncode != 0:
@@ -47,27 +50,28 @@ def pylint_harden(file_path):
     return res.returncode == 0
 
 def main():
-    print("[*] NOUGENSHARDS AUTONOMOUS HARDENING IGNITED")
-    
-    # Cycle 1: Verification
+    print("[*] NOUGENSHARDS AUTONOMOUS HARDENING")
+
+    ok = True
+
+    # Cycle 1: Verification — the test suite must pass.
     if verify_system():
         print("[+] Baseline verified.")
     else:
-        print("[-] Baseline compromised. Initiating repair...")
-    
-    # Cycle 2: Pylint Hardening
+        print("[-] Baseline test suite FAILED.")
+        ok = False
+
+    # Cycle 2: Pylint reporting per file.
     for f in FILES_TO_HARDEN:
-        pylint_harden(f)
+        if not pylint_harden(f):
+            ok = False
 
-    # Cycle 3: Feature Finalization
-    print("--- [FEATURE] Shard History Windowing ---")
-    # (Simulated task completion log)
-    print("[100/800] Event logging substrate: LIVE")
-    print("[300/800] Windowed aggregation (24h-1Y): LIVE")
-    print("[500/800] Bayesian drift detection: LIVE")
-    print("[800/800] Executive CLI Reporting: LIVE")
-
-    print("\n[-] SYSTEM HARDENING COMPLETE. VERIFICATION SUCCESSFUL.")
+    # Honest exit status: only report success when every check actually passed.
+    if ok:
+        print("\n[+] SYSTEM HARDENING COMPLETE. All checks passed.")
+        return 0
+    print("\n[!] SYSTEM HARDENING INCOMPLETE. One or more checks failed above.")
+    return 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

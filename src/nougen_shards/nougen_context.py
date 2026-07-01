@@ -67,6 +67,17 @@ def init_context_db(clean_slate: bool = False):
             INSERT INTO ctx_events_fts(rowid, content) VALUES (new.id, new.content);
         END;
     """)
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS ctx_events_ad AFTER DELETE ON ctx_events BEGIN
+            INSERT INTO ctx_events_fts(ctx_events_fts, rowid, content) VALUES ('delete', old.id, old.content);
+        END;
+    """)
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS ctx_events_au AFTER UPDATE ON ctx_events BEGIN
+            INSERT INTO ctx_events_fts(ctx_events_fts, rowid, content) VALUES ('delete', old.id, old.content);
+            INSERT INTO ctx_events_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+    """)
 
     # ctx_sandbox: large raw outputs keyed by handle
     cursor.execute("""

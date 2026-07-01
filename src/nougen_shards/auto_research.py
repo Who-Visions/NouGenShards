@@ -75,12 +75,12 @@ def parse_entry(entry, ns: dict) -> dict:
     id_elem = entry.find('atom:id', ns)
     pub_elem = entry.find('atom:published', ns)
 
-    title = title_elem.text.strip().replace("\n", " ") if title_elem is not None else "Untitled"
+    title = (title_elem.text or "").strip().replace("\n", " ") if title_elem is not None else "Untitled"
     if summary_elem is not None:
-        summary = summary_elem.text.strip().replace("\n", " ")
+        summary = (summary_elem.text or "").strip().replace("\n", " ")
     else:
         summary = "No abstract."
-    paper_id = id_elem.text.split('/abs/')[-1] if id_elem is not None else "0000.0000"
+    paper_id = (id_elem.text or "").split('/abs/')[-1] if id_elem is not None else "0000.0000"
     published = pub_elem.text if pub_elem is not None else ""
 
     return {

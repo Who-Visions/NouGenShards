@@ -40,9 +40,13 @@ def _load_pricing() -> dict:
 
 def _price_for(model: str) -> tuple:
     m = (model or "").lower()
-    for key, price in _load_pricing().items():
+    pricing = _load_pricing()
+    # Match the most specific (longest) key first so a broad key that happens to
+    # be inserted earlier can't shadow a more specific one (dict order isn't a
+    # correctness guarantee for pricing).
+    for key in sorted(pricing, key=len, reverse=True):
         if key in m:
-            return price
+            return pricing[key]
     return (0.0, 0.0)
 
 
@@ -123,7 +127,11 @@ def check_subscription(token: str) -> dict:
 
         # Roll over the monthly counter when the billing period changes.
         used = row["used_this_month"]
+        status = row["status"]
         if _period_key(row["last_reset"]) != _period_key(_now_iso()):
+            # New billing period: reset the monthly counter. `status` is only ever
+            # 'active'/'inactive' in storage ('over_limit' is a computed response,
+            # never persisted), so there is no stored block to clear here.
             conn.execute(
                 "UPDATE subscriptions SET used_this_month = 0, last_reset = ? WHERE user_token = ?",
                 (_now_iso(), token),
@@ -131,8 +139,8 @@ def check_subscription(token: str) -> dict:
             conn.commit()
             used = 0
 
-        if row["status"] != "active":
-            return {"status": row["status"], "message": "Subscription is not active."}
+        if status != "active":
+            return {"status": status, "message": "Subscription is not active."}
 
         if used >= row["monthly_limit"]:
             return {"status": "over_limit", "message": "Monthly token limit reached."}

@@ -1,5 +1,6 @@
 """Model Context Protocol (MCP) server for NouGenShards — Valerion Engine."""
 import json
+import sqlite3
 import sys
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -145,29 +146,37 @@ def search_context(query: str, limit: int = 5) -> str:
         query: The search term to match against recent context events.
         limit: Max number of events to return.
     """
-    events = nougen_context.get_event(int(query)) if query.isdigit() else None
-    if not events:
-        # Fallback to search if it's not an ID, but we only expose get_event right now 
-        # in nougen_context unless we use raw SQL. We can just use the DB directly here.
+    results = []
+    seen_ids = set()
+
+    # When the query looks like an id, surface the exact-id match as a bonus hit —
+    # but still run the content search below so numeric tokens (e.g. "404", "2024")
+    # remain searchable as content rather than being swallowed by an id lookup.
+    if query.isdigit():
+        event = nougen_context.get_event(int(query))
+        if event:
+            results.append(f"[{event['timestamp']}] #{event['id']} {event['type']}: {event['content']}")
+            seen_ids.add(event["id"])
+
+    try:
         conn = nougen_context.get_context_connection()
         try:
             cursor = conn.execute(
-                "SELECT id, type, content, timestamp FROM ctx_events WHERE content LIKE ? ORDER BY timestamp DESC LIMIT ?", 
+                "SELECT id, type, content, timestamp FROM ctx_events WHERE content LIKE ? ORDER BY timestamp DESC LIMIT ?",
                 (f"%{query}%", limit)
             )
-            rows = cursor.fetchall()
-            if not rows:
-                return "No context events found."
-            output = ["--- CONTEXT SEARCH RESULTS ---"]
-            for r in rows:
-                output.append(f"[{r['timestamp']}] #{r['id']} {r['type']}: {r['content']}")
-            return "\n".join(output)
+            for r in cursor.fetchall():
+                if r["id"] in seen_ids:
+                    continue
+                results.append(f"[{r['timestamp']}] #{r['id']} {r['type']}: {r['content']}")
         finally:
             conn.close()
-    
-    if events:
-        return f"[{events['timestamp']}] #{events['id']} {events['type']}: {events['content']}"
-    return "No context events found."
+    except sqlite3.Error as exc:
+        return f"Error: context search failed: {exc}"
+
+    if not results:
+        return "No context events found."
+    return "\n".join(["--- CONTEXT SEARCH RESULTS ---"] + results)
 
 @mcp.tool()
 def promote_context_to_shard(event_id: int, tags: Optional[List[str]] = None) -> str:
@@ -182,7 +191,7 @@ def promote_context_to_shard(event_id: int, tags: Optional[List[str]] = None) ->
     if not event:
         return f"Error: Context event #{event_id} not found."
     
-    final_tags = tags or []
+    final_tags = list(tags or [])
     if "promoted" not in final_tags:
         final_tags.append("promoted")
         
@@ -199,14 +208,15 @@ def promote_context_to_shard(event_id: int, tags: Optional[List[str]] = None) ->
 # --- Execution Layer (Sandbox) ---
 
 @mcp.tool()
-def execute_sandboxed_code(code: str) -> str:
+def execute_sandboxed_code(code: str, language: str = "python") -> str:
     """
     Execute Python or Node.js code in a sandboxed environment.
-    
+
     Args:
         code: The script source code to execute.
+        language: Runtime to use — 'python' (default), 'javascript', or 'typescript'.
     """
-    return nougen_sandbox.execute_sandboxed(code)
+    return nougen_sandbox.execute_sandboxed(code, language=language)
 
 # --- Brain Recon Layer ---
 

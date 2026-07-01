@@ -36,11 +36,18 @@ SECRET_PATTERNS = [
     (re.compile(r'(?i)(?:api[_-]?key|secret|token|password|passwd|pwd|auth|credential|access[_-]?key|client[_-]?secret|private[_-]?key|bearer|session[_-]?token|\bpat\b|\bkey\b)[\s:=]+[\'"]?([A-Za-z0-9_\-+/=.~]{16,})[\'"]?'), "<REDACTED_SECRET>")
 ]
 
+
 def redact_content(content: str) -> str:
-    """Scans and redacts known secret patterns from content."""
+    """Scans and redacts known secret patterns from content.
+
+    Best-effort: this only redacts labeled/provider-specific secrets. Bare,
+    unlabeled high-entropy tokens are NOT redacted — an entropy heuristic was
+    tried and removed because it destroyed ordinary content (long CamelCase
+    identifiers, base64 payloads) with too many false positives.
+    """
     if not content:
         return content
-        
+
     redacted = content
     for pattern, replacement in SECRET_PATTERNS:
         redacted = pattern.sub(replacement, redacted)

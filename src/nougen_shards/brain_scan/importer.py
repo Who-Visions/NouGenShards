@@ -12,6 +12,14 @@ class ImportResult:
     files_scanned: int
     records_parsed: int
     shards_created: int
+    # NOTE (limitation): counts every record that core.capture reported as
+    # "not newly created". core.capture returns False for a real dedup hit
+    # AND for the IntegrityError repair path (hash already indexed elsewhere),
+    # with no in-band signal to tell them apart — both mean the content is
+    # already stored, so labelling them "duplicates" is accurate. A False
+    # return is NOT distinguishable from a duplicate here without changing
+    # core.capture's bool contract across the codebase; genuine write failures
+    # raise instead of returning False, so they are not silently folded in.
     duplicates_skipped: int
     secrets_redacted: int
 
@@ -69,6 +77,9 @@ def run_import(project_path: Optional[str] = None, include_unknown: bool = False
             if success:
                 result.shards_created += 1
             else:
+                # False == "already stored" (dedup hit or stale-index repair).
+                # See ImportResult.duplicates_skipped for why these cannot be
+                # separated from a write failure without a broad core refactor.
                 result.duplicates_skipped += 1
                 
     return result
