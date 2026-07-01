@@ -5,10 +5,9 @@ import pytest
 from pathlib import Path
 from nougen_shards.brain_scan.classifiers import classify_file, detect_tool
 from nougen_shards.brain_scan.redaction import redact_content
-from nougen_shards.brain_scan.parsers import parse_universal, _hash
+from nougen_shards.brain_scan.parsers import parse_universal
 from nougen_shards.brain_scan.scanner import _is_safe_dir
 from nougen_shards.brain_scan.importer import run_import
-import json
 import nougen_shards.brain_scan.scanner as scanner
 
 @pytest.fixture(autouse=True)

@@ -28,7 +28,7 @@ def check_ollama_alive() -> bool:
     except Exception:
         return False
 
-from typing import List, Optional, Dict, Any
+from typing import Optional
 
 def get_best_model() -> Optional[str]:
     """Retrieve the best available local LLM model."""

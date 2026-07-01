@@ -42,3 +42,9 @@ nougen-mcp = "nougen_shards.mcp:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+# Makes `python -m pytest` work from the repo root without the manual
+# PYTHONPATH=src prefix (pytest>=7 injects these onto sys.path itself).
+pythonpath = ["src"]
+testpaths = ["tests"]

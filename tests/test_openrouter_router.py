@@ -1,7 +1,6 @@
 """
 Unit tests for OpenRouter production router.
 """
-import pytest
 from unittest.mock import MagicMock, patch
 from nougen_shards.router import RouterConfig, build_cache_friendly_messages, make_session_id
 from nougen_shards.models_client import OpenRouterClient

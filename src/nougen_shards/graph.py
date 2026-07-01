@@ -14,7 +14,7 @@ results carry it as `_db_index`).
 """
 import sqlite3
 from datetime import datetime, timezone
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 
 from . import core
 

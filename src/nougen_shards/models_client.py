@@ -7,10 +7,9 @@ import sys
 import os
 import time
 from typing import Optional, List, Dict
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 
 from . import keymaker
-from . import router
 from . import structured
 
 # Hard cap on any cloud HTTP call so a stalled provider can't hang the process.

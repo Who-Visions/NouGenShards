@@ -1,0 +1,14 @@
+[lint]
+# Correctness-focused: pyflakes (F) + pycodestyle errors (E) with carve-outs.
+ignore = [
+    # Intentional setup-before-import patterns: openrouter_mcp_client.py and
+    # router.py inject the Watchtower vault path into sys.path before
+    # importing openrouter_guard; mcp.py configures the environment before
+    # importing modules that read it at import time.
+    "E402",
+    # Established codebase style: compact one-line statements
+    # (`if x: return`) and grouped imports. Style, not correctness.
+    "E701",
+    "E702",
+    "E401",
+]

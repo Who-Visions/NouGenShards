@@ -1,8 +1,5 @@
 """Model Context Protocol (MCP) server for NouGenShards — Valerion Engine."""
-import json
-import sys
-from typing import Optional, List, Dict, Any
-from pathlib import Path
+from typing import Optional, List
 
 # Fallback wrapper for mcp dependency if missing
 class MockFastMCP:
@@ -16,7 +13,7 @@ try:
 except ImportError:
     FastMCP = MockFastMCP # type: ignore
 
-from .core import capture, retrieve, mark_shard, compile_recall_packet
+from .core import capture, mark_shard, compile_recall_packet
 from . import nougen_context
 from . import nougen_sandbox
 from . import evolution

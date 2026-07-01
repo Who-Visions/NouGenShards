@@ -26,18 +26,17 @@ pip install -e .
 ```
 
 ## 🧪 Testing
-We maintain a 100% pass rate requirement. Before submitting a PR, run the full suite:
+We maintain a 100% pass rate requirement. Before submitting a PR, run the full suite
+(no PYTHONPATH setup needed — pytest picks up `src/` from `pyproject.toml`):
 ```bash
-# Add src to PYTHONPATH
-$env:PYTHONPATH = ".;src;$env:PYTHONPATH"
-python -m pytest
+python -m pytest tests
 ```
 
 ## 📐 Standards
 - **Clean Code**: Follow PEP 8 and "Clean Code" principles.
 - **Type Hints**: All new functions should have Python type hints.
 - **Docstrings**: Provide Google-style docstrings for modules and public functions.
-- **Pylint**: Aim for a 10/10 score. Run `pylint src/nougen_shards`.
+- **Lint**: `ruff check src tests` must pass (enforced in CI; config in `ruff.toml`).
 
 ## 🚀 Pull Request Process
 1. Create a feature branch.

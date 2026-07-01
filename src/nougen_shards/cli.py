@@ -17,7 +17,6 @@ from . import nougen_sandbox
 from . import federation
 from . import history
 from . import router
-from . import structured
 from .connectors.cloud import push_to_cloud, pull_from_cloud
 from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
 from . import dream
@@ -439,7 +438,7 @@ def cmd_ctx(args):
         if success:
             print(f"✅ Context event #{event['id']} promoted to durable memory.")
         else:
-            print(f"ℹ️ Shard already exists.")
+            print("ℹ️ Shard already exists.")
 
 
 def cmd_router(args):
@@ -571,7 +570,7 @@ def cmd_node(args):
             print("Error: --token <token> is required for push.")
             return
         
-        print(f"[*] Extracting shards for push...")
+        print("[*] Extracting shards for push...")
         all_shards = []
         for i in range(1, shards.MAX_DB_COUNT + 1):
             if not shards.get_db_path(i).exists(): continue
@@ -728,7 +727,7 @@ def cmd_evolve(args):
                 print("\n[Evolution Cycle Complete]")
                 print(f" - Skill ID: {summary['skill_id']}")
                 print(f" - Grounding: {summary['grounding_source']}")
-                print(f" - Status: Verified in Sandbox.")
+                print(" - Status: Verified in Sandbox.")
                 print(f" - Path: {summary['path']}")
             else:
                 print(f"\n[Evolution Failed]: {summary.get('error')}")
@@ -951,7 +950,7 @@ def cmd_doctor(args):
     # 4. Check Valerion Engine Modules
     print("\n[Valerion Cognitive Engines]")
     try:
-        from . import dream, evolution
+        from . import dream, evolution  # noqa: F401 - imported to probe availability for `nougen doctor`
         print(" ✅ Dream State (TMEM): Ready")
         print(" ✅ Evolution Engine (OpenSkill): Ready")
     except ImportError as e:
