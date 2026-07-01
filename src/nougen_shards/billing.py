@@ -129,18 +129,15 @@ def check_subscription(token: str) -> dict:
         used = row["used_this_month"]
         status = row["status"]
         if _period_key(row["last_reset"]) != _period_key(_now_iso()):
-            # Clear an over_limit block on rollover (quota is reset), but do not
-            # reactivate a genuinely inactive/cancelled subscription.
+            # New billing period: reset the monthly counter. `status` is only ever
+            # 'active'/'inactive' in storage ('over_limit' is a computed response,
+            # never persisted), so there is no stored block to clear here.
             conn.execute(
-                "UPDATE subscriptions SET used_this_month = 0, last_reset = ?, "
-                "status = CASE WHEN status = 'over_limit' THEN 'active' ELSE status END "
-                "WHERE user_token = ?",
+                "UPDATE subscriptions SET used_this_month = 0, last_reset = ? WHERE user_token = ?",
                 (_now_iso(), token),
             )
             conn.commit()
             used = 0
-            if status == "over_limit":
-                status = "active"
 
         if status != "active":
             return {"status": status, "message": "Subscription is not active."}
