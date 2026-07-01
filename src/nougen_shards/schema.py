@@ -155,7 +155,12 @@ def apply_db(path: str, backup: bool = True) -> DbPlan:
         conn.execute(f"PRAGMA user_version = {TARGET_SCHEMA_VERSION}")
         conn.execute("COMMIT")
     except Exception:
-        conn.execute("ROLLBACK")
+        # Close the sqlite handle BEFORE restoring the backup file: copying over
+        # an open db can corrupt/lock it (notably on Windows).
+        try:
+            conn.execute("ROLLBACK")
+        finally:
+            conn.close()
         if backup:
             shutil.copy2(path + ".bak", path)  # restore
         raise
