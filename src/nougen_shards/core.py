@@ -1036,9 +1036,17 @@ def compile_recall_packet(shards: list) -> str:
         # 9-DB grid (mark_utility / link_shards / recall_related take db_index).
         db_idx = s.get("_db_index")
         db_tag = f" (db {db_idx})" if db_idx is not None else ""
-        output.append(f"--- RECORD #{s['id']}{db_tag} [Score: {s['final_score']:.2f}] ---")
+        # Federated results come from external DBs and remote cloud nodes whose
+        # records may be missing fields; degrade gracefully instead of crashing
+        # the whole recall on one malformed shard.
+        shard_id = s.get("id", "?")
+        try:
+            score = f"{float(s['final_score']):.2f}" if s.get("final_score") is not None else "n/a"
+        except (TypeError, ValueError):
+            score = "n/a"
+        output.append(f"--- RECORD #{shard_id}{db_tag} [Score: {score}] ---")
         output.append(f"When: {format_shard_when(s.get('timestamp'))}")
-        output.append(f"Title: {s['title']}\n{s['content']}\n")
+        output.append(f"Title: {s.get('title', '(untitled)')}\n{s.get('content', '')}\n")
     # "Anghkooey" — "remember" (FROM). Spoken only when recall succeeds:
     # the engine's acknowledgment that a past life was actually surfaced.
     output.append("Anghkooey — NouGenShards remembers.")

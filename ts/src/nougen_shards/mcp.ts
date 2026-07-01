@@ -219,10 +219,21 @@ mcp.registerTool(
     },
   },
   async ({ query, limit }) => {
-    const events = /^\d+$/.test(query) ? nougen_context.get_event(parseInt(query, 10)) : null;
-    if (!events) {
-      // Fallback to search if it's not an ID, but we only expose get_event right now
-      // in nougen_context unless we use raw SQL. We can just use the DB directly here.
+    const results: string[] = [];
+    const seen_ids = new Set<unknown>();
+
+    // When the query looks like an id, surface the exact-id match as a bonus hit —
+    // but still run the content search below so numeric tokens (e.g. "404", "2024")
+    // remain searchable as content rather than being swallowed by an id lookup.
+    if (/^\d+$/.test(query)) {
+      const event = nougen_context.get_event(parseInt(query, 10));
+      if (event) {
+        results.push(`[${event.timestamp}] #${event.id} ${event.type}: ${event.content}`);
+        seen_ids.add(event.id);
+      }
+    }
+
+    try {
       const conn = nougen_context.get_context_connection();
       try {
         const rows = conn
@@ -230,23 +241,23 @@ mcp.registerTool(
             "SELECT id, type, content, timestamp FROM ctx_events WHERE content LIKE ? ORDER BY timestamp DESC LIMIT ?",
           )
           .all(`%${query}%`, limit) as Record<string, any>[];
-        if (!rows.length) {
-          return _text("No context events found.");
-        }
-        const output = ["--- CONTEXT SEARCH RESULTS ---"];
         for (const r of rows) {
-          output.push(`[${r.timestamp}] #${r.id} ${r.type}: ${r.content}`);
+          if (seen_ids.has(r.id)) {
+            continue;
+          }
+          results.push(`[${r.timestamp}] #${r.id} ${r.type}: ${r.content}`);
         }
-        return _text(output.join("\n"));
       } finally {
         conn.close();
       }
+    } catch (exc) {
+      return _text(`Error: context search failed: ${exc instanceof Error ? exc.message : exc}`);
     }
 
-    if (events) {
-      return _text(`[${events.timestamp}] #${events.id} ${events.type}: ${events.content}`);
+    if (!results.length) {
+      return _text("No context events found.");
     }
-    return _text("No context events found.");
+    return _text(["--- CONTEXT SEARCH RESULTS ---", ...results].join("\n"));
   },
 );
 
