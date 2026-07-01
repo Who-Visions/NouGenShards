@@ -56,15 +56,20 @@ def init_history_db():
 def log_event(shard_id: int, db_index: int, event_type: str,
               old_score: Optional[float] = None, new_score: Optional[float] = None, metadata: Optional[dict] = None):
     """Writes a historical event to the substrate."""
-    # Lazy init to prevent side-effects on import
-    if not get_history_db_path().exists():
-        init_history_db()
-
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     meta_json = json.dumps(metadata or {})
 
-    conn = get_history_connection()
+    # The ENTIRE body degrades gracefully: telemetry must never raise into
+    # callers. The lazy init and connection open used to sit outside the try,
+    # so concurrent retrieval lanes racing init/commit could leak an
+    # sqlite3.OperationalError into _keyword_retrieve's FTS block, where it
+    # was misread as "FTS unavailable" and scrambled retrieval ordering.
+    conn = None
     try:
+        # Lazy init to prevent side-effects on import
+        if not get_history_db_path().exists():
+            init_history_db()
+        conn = get_history_connection()
         conn.execute("""
             INSERT INTO shard_events (shard_id, db_index, event_type, old_score, new_score, timestamp, metadata)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -75,7 +80,8 @@ def log_event(shard_id: int, db_index: int, event_type: str,
         # Write to stderr: a stray stdout line corrupts the MCP stdio JSON-RPC stream.
         print(f"[Warning] Failed to log history event: {exc}", file=sys.stderr)
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 class HistoryEngine:
