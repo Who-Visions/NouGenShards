@@ -271,10 +271,12 @@ def test_bm25_stronger_match_scores_higher(setup_test_env):
     a stronger keyword hit outranks a weaker one. A prior abs()-based normalization
     folded both onto the same magnitude and inverted the ranking.
     """
+    from datetime import datetime, timezone
     base = {"id": 1, "_db_index": 1, "title": "t", "content": "c",
             "embedding": None, "timestamp": None, "utility_score": 1.0}
-    strong = shards._process_fts_result({**base, "bm25_score": -8.0}, 1, None)
-    weak = shards._process_fts_result({**base, "bm25_score": -0.5}, 1, None)
+    now = datetime.now(timezone.utc)
+    strong = shards._process_fts_result({**base, "bm25_score": -8.0}, 1, None, now)
+    weak = shards._process_fts_result({**base, "bm25_score": -0.5}, 1, None, now)
     assert strong["final_score"] > weak["final_score"]
 
 

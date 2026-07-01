@@ -468,7 +468,29 @@ RERANK_MODEL = os.environ.get("NOUGEN_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 RERANK_CANDIDATES = int(os.environ.get("NOUGEN_RERANK_CANDIDATES", "60"))
 _RERANKER = None  # process-cached reranker handle
 
-def _process_fts_result(row, db_index, query_embedding):
+def _temporal_decay(ts_str: Optional[str], now: datetime) -> float:
+    """Half-life decay (30 days) of a shard timestamp against a fixed reference
+    clock, floored at 0.1.
+
+    `now` MUST be captured once per ranking pass and shared by every item in
+    that pass. Calling datetime.now() per item made ranking sensitive to I/O
+    stalls mid-scan: a slow history write between scoring two items aged the
+    later one by the stall duration, nondeterministically flipping the order
+    of shards captured milliseconds apart (flaky on fast CI runners).
+    """
+    if not ts_str:
+        return 1.0
+    try:
+        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age_days = (now - dt).total_seconds() / 86400.0
+        return max(0.1, 0.5 ** (age_days / 30.0))
+    except Exception:
+        return 1.0
+
+
+def _process_fts_result(row, db_index, query_embedding, now: datetime):
     """Helper to score a single FTS result via the weighted relevance blend."""
     item = dict(row)
     item["_db_index"] = db_index
@@ -501,19 +523,7 @@ def _process_fts_result(row, db_index, query_embedding):
     likelihood = (norm_bm25 * WEIGHT_BM25) + (sem_score * WEIGHT_SEMANTIC)
 
     # 3. Temporal decay factor (half-life of 30 days) to prevent stale successful sessions from dominating results
-    decay = 1.0
-    ts_str = item.get("timestamp")
-    if ts_str:
-        try:
-            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-            decay = max(0.1, 0.5 ** (age_days / 30.0))
-        except Exception:
-            pass
-
-    decayed_utility = item["utility_score"] * decay
+    decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), now)
 
     # 4. Final relevance: a weighted blend of the likelihood signal and the decayed utility score
     item["final_score"] = (likelihood * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
@@ -555,6 +565,8 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     """Scans for keyword matches using FTS5 (with LIKE fallback)."""
     from . import history # pylint: disable=import-outside-toplevel
 
+    # One reference clock for the whole scan (see _temporal_decay).
+    query_now = datetime.now(timezone.utc)
     results = []
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists():
@@ -564,6 +576,12 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
             fts_worked = False
             fts_query = _build_fts_match_query(query)
             if fts_query is not None:
+                # The try guards ONLY the SQL: sqlite3.OperationalError here
+                # means "FTS unavailable, use the LIKE fallback". Row processing
+                # happens outside it so an unrelated error can't leave partially
+                # appended FTS rows in `results` and then double-append the same
+                # shards via the fallback (which scrambled retrieval ordering).
+                res = None
                 try:
                     # domain_key None/"*" => search ALL domains (whole brain), not one bucket.
                     dom_clause = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
@@ -573,16 +591,16 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                                s.embedding, s.tags, s.domain_key, s.density_score, bm25(shards_fts) as bm25_score
                         FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
                         WHERE {dom_clause}shards_fts MATCH ?
-                        ORDER BY bm25_score ASC LIMIT ?
+                        ORDER BY bm25_score ASC, s.id ASC LIMIT ?
                     """, (*dom_params, fts_query, limit))
                     res = cursor.fetchall()
-                    if res:
-                        for row in res:
-                            history.log_event(row["id"], i, "ACCESSED")
-                            results.append(_process_fts_result(row, i, query_embedding))
-                        fts_worked = True
                 except sqlite3.OperationalError:
-                    pass
+                    res = None
+                if res:
+                    for row in res:
+                        history.log_event(row["id"], i, "ACCESSED")
+                        results.append(_process_fts_result(row, i, query_embedding, query_now))
+                    fts_worked = True
 
             if not fts_worked:
                 history.log_event(0, i, "SEARCH_FALLBACK", metadata={"query": query})
@@ -594,7 +612,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
                     FROM shards
                     WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
-                    ORDER BY utility_score DESC LIMIT ?
+                    ORDER BY utility_score DESC, id ASC LIMIT ?
                 """, (*dom_params, like_query, like_query, limit))
                 for row in cursor:
                     item = dict(row)
@@ -615,19 +633,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                                 sem_score = 0.0
                     likelihood = sem_score if query_embedding is not None else 0.5
 
-                    decay = 1.0
-                    ts_str = item.get("timestamp")
-                    if ts_str:
-                        try:
-                            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                            if dt.tzinfo is None:
-                                dt = dt.replace(tzinfo=timezone.utc)
-                            age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                            decay = max(0.1, 0.5 ** (age_days / 30.0))
-                        except Exception:
-                            pass
-
-                    decayed_utility = item["utility_score"] * decay
+                    decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), query_now)
                     item["final_score"] = (likelihood * 0.5) + (decayed_utility * 0.5)
                     results.append(item)
         finally:
@@ -645,6 +651,8 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
 
     from . import history # pylint: disable=import-outside-toplevel
 
+    # One reference clock for the whole scan (see _temporal_decay).
+    query_now = datetime.now(timezone.utc)
     results = []
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists():
@@ -674,19 +682,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                     except Exception:
                         sem_score = 0.0
 
-                decay = 1.0
-                ts_str = item.get("timestamp")
-                if ts_str:
-                    try:
-                        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                        if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=timezone.utc)
-                        age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                        decay = max(0.1, 0.5 ** (age_days / 30.0))
-                    except Exception:
-                        pass
-
-                decayed_utility = item["utility_score"] * decay
+                decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), query_now)
                 item["final_score"] = (sem_score * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
                 results.append(item)
         finally:
@@ -738,20 +734,11 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
                         item_map[key][key_name] = val
 
     merged = []
+    # One reference clock for the whole merge (see _temporal_decay).
+    merge_now = datetime.now(timezone.utc)
     for key, item in item_map.items():
         consensus_score = rrf_scores[key]
-        decay = 1.0
-        ts_str = item.get("timestamp")
-        if ts_str:
-            try:
-                dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                decay = max(0.1, 0.5 ** (age_days / 30.0))
-            except Exception:
-                pass
-        decayed_utility = item.get("utility_score", 1.0) * decay
+        decayed_utility = item.get("utility_score", 1.0) * _temporal_decay(item.get("timestamp"), merge_now)
         item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3))
         merged.append(item)
 
@@ -862,25 +849,16 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     min_rel = min(raw_relevances) if raw_relevances else 0.0
     rel_span = max_rel - min_rel
 
+    # One reference clock for the whole scoring pass (see _temporal_decay).
+    score_now = datetime.now(timezone.utc)
     for item in all_results:
         raw_rel = item.get("rerank_score", item.get("final_score", 0.5))
         if rel_span > 0:
             relevance = 0.1 + 0.9 * ((raw_rel - min_rel) / rel_span)
         else:
             relevance = 1.0 if raw_rel > 0 else 0.5
-            
-        decay = 1.0
-        ts_str = item.get("timestamp")
-        if ts_str:
-            try:
-                dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                decay = max(0.1, 0.5 ** (age_days / 30.0))
-            except Exception:
-                pass
-        
+
+        decay = _temporal_decay(item.get("timestamp"), score_now)
         density = item.get("density_score", 1.0)
 
         u_shard = (1.0 * relevance) * decay * density
@@ -1037,7 +1015,7 @@ def retrieve_semantic_rules(query: str, limit: int = 5, domain_key: str = "globa
                     FROM semantic_knowledge
                     WHERE (domain_key = ? OR domain_key = 'global')
                       AND (subject LIKE ? OR predicate LIKE ?)
-                    ORDER BY confidence_score DESC
+                    ORDER BY confidence_score DESC, id ASC
                     LIMIT ?
                 """, (i, domain_key, f"%{word}%", f"%{word}%", limit))
                 for row in cursor:
