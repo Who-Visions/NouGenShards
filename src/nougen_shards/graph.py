@@ -13,7 +13,7 @@ which database the id lives in (default 1, the common single-DB case; recall
 results carry it as `_db_index`).
 """
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
 
 from . import core
@@ -91,7 +91,7 @@ def link_shards(src_id: int, dst_id: int, relation: str = "relates",
         return False
 
     init_graph_db()
-    timestamp = datetime.utcnow().isoformat() + "Z"
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     conn = get_graph_connection()
     try:
         written = conn.execute(

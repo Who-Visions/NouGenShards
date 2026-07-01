@@ -4,8 +4,9 @@ Tracks machine experience evolution across multiple horizons.
 """
 import sqlite3
 import json
+import sys
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 # Configuration
@@ -59,7 +60,7 @@ def log_event(shard_id: int, db_index: int, event_type: str,
     if not get_history_db_path().exists():
         init_history_db()
 
-    timestamp = datetime.utcnow().isoformat() + "Z"
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     meta_json = json.dumps(metadata or {})
 
     conn = get_history_connection()
@@ -70,8 +71,9 @@ def log_event(shard_id: int, db_index: int, event_type: str,
         """, (shard_id, db_index, event_type, old_score, new_score, timestamp, meta_json))
         conn.commit()
     except sqlite3.Error as exc:
-        # Module 10: Graceful Degradation (Log failure but don't crash main memory)
-        print(f"[Warning] Failed to log history event: {exc}")
+        # Module 10: Graceful Degradation (Log failure but don't crash main memory).
+        # Write to stderr: a stray stdout line corrupts the MCP stdio JSON-RPC stream.
+        print(f"[Warning] Failed to log history event: {exc}", file=sys.stderr)
     finally:
         conn.close()
 
@@ -95,7 +97,7 @@ class HistoryEngine:
     def get_growth_rate(period: str = "week"):
         """Calculates memory growth in the specified window."""
         delta = HistoryEngine.get_period_delta(period)
-        cutoff = (datetime.utcnow() - delta).isoformat() + "Z"
+        cutoff = (datetime.now(timezone.utc) - delta).isoformat().replace("+00:00", "Z")
 
         conn = get_history_connection()
         try:
@@ -115,7 +117,7 @@ class HistoryEngine:
     def get_utility_delta(period: str = "week"):
         """Measures the net change in usefulness across the fabric."""
         delta = HistoryEngine.get_period_delta(period)
-        cutoff = (datetime.utcnow() - delta).isoformat() + "Z"
+        cutoff = (datetime.now(timezone.utc) - delta).isoformat().replace("+00:00", "Z")
 
         conn = get_history_connection()
         try:
@@ -136,7 +138,7 @@ class HistoryEngine:
     def get_top_shards(period: str = "week", limit: int = 5):
         """Identifies top shards by utility growth in the period."""
         delta = HistoryEngine.get_period_delta(period)
-        cutoff = (datetime.utcnow() - delta).isoformat() + "Z"
+        cutoff = (datetime.now(timezone.utc) - delta).isoformat().replace("+00:00", "Z")
         
         conn = get_history_connection()
         try:
@@ -183,7 +185,7 @@ class HistoryEngine:
 
         """Generates a simple ASCII timeline of memory growth."""
         delta = HistoryEngine.get_period_delta(period)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         steps = 10
         step_delta = delta / steps
 
@@ -191,8 +193,8 @@ class HistoryEngine:
         conn = get_history_connection()
         try:
             for i in range(steps):
-                start = (now - delta + (i * step_delta)).isoformat() + "Z"
-                end = (now - delta + ((i + 1) * step_delta)).isoformat() + "Z"
+                start = (now - delta + (i * step_delta)).isoformat().replace("+00:00", "Z")
+                end = (now - delta + ((i + 1) * step_delta)).isoformat().replace("+00:00", "Z")
                 count = conn.execute(
                     "SELECT COUNT(*) FROM shard_events WHERE event_type = 'CREATED' AND timestamp >= ? AND timestamp < ?",
                     (start, end)

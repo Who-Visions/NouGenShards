@@ -7,15 +7,24 @@ first, falls back to gemma4-aggressive:e4b per phase. Output assembles into
 a single markdown draft for the NouGenSite blog.
 """
 import json
+import os
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 OLLAMA = "http://127.0.0.1:11434/api/generate"
 MODELS = ["gemma4:12b", "gemma4-aggressive:e4b"]
-OUT = r"%USERPROFILE%\Watchtower\NouGen\NouGenSite\app\blog\metameric-engine-longform.md"
+# Output path is configurable (no hardcoded author path in a public repo).
+# METAMERIC_LONGFORM_OUT overrides directly; otherwise derive from WATCHTOWER_ROOT
+# (default: ~/Watchtower).
+_WT_ROOT = Path(os.environ.get("WATCHTOWER_ROOT", str(Path.home() / "Watchtower")))
+OUT = os.environ.get(
+    "METAMERIC_LONGFORM_OUT",
+    str(_WT_ROOT / "NouGen" / "NouGenSite" / "app" / "blog" / "metameric-engine-longform.md"),
+)
 
 PHASES = [
     ("Phase 1: The Reconnaissance (Discovery & Parsing)",

@@ -362,13 +362,15 @@ def calculate_contrastive_perplexity(content: str) -> float:
     # Try OpenRouter free model
     try:
         from openrouter_guard import call_openrouter
+        from .models_client import OpenRouterClient
         prompt = (
             "Analyze the following text and estimate its information density / contrastive perplexity score "
             "between 0.0 (generic filler, boilerplate, highly redundant) and 1.0 (extremely dense, novel, high surprisal). "
             "Provide ONLY the float number in your response, nothing else.\n\n"
             f"Text: {content[:1000]}"
         )
-        res_str = call_openrouter(prompt=prompt, model="google/gemma-3-27b-it:free", temperature=0.1)
+        # Resolve the free model dynamically from the live roster — never hardcoded.
+        res_str = call_openrouter(prompt=prompt, model=OpenRouterClient().preferred_free_model(), temperature=0.1)
         import re
         match = re.search(r"\d+\.\d+", res_str)
         if match:
@@ -586,7 +588,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     dom_params = () if domain_key in (None, "*") else (domain_key,)
                     cursor = conn.execute(f"""
                         SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
-                               s.embedding, s.tags, s.domain_key, bm25(shards_fts) as bm25_score
+                               s.embedding, s.tags, s.domain_key, s.density_score, bm25(shards_fts) as bm25_score
                         FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
                         WHERE {dom_clause}shards_fts MATCH ?
                         ORDER BY bm25_score ASC LIMIT ?
@@ -607,7 +609,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
                 dom_params = () if domain_key in (None, "*") else (domain_key,)
                 cursor = conn.execute(f"""
-                    SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
+                    SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
                     FROM shards
                     WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
                     ORDER BY utility_score DESC LIMIT ?
@@ -941,8 +943,9 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         all_results = rerank(query, all_results[:RERANK_CANDIDATES], len(all_results))
 
     # Tripartite Utility Score & Eviction policy
-    # Formula: U = (w_r * relevance) * (e^(-lambda * delta_t)) * density_score + epsilon
-    import random
+    # Formula: U = (w_r * relevance) * (e^(-lambda * delta_t)) * density_score
+    # (No random epsilon: jitter made identical queries return different rankings
+    # run-to-run. Python's sort is stable, so true ties keep a deterministic order.)
     scored_results = []
     
     # Normalize relevance scores to a consistent [0.1, 1.0] scale to prevent scale mismatch
@@ -972,9 +975,8 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
                 pass
         
         density = item.get("density_score", 1.0)
-        epsilon = random.uniform(0.0, 0.02)
-        
-        u_shard = (1.0 * relevance) * decay * density + epsilon
+
+        u_shard = (1.0 * relevance) * decay * density
         item["utility_score_tripartite"] = u_shard
         scored_results.append(item)
     
@@ -1018,26 +1020,29 @@ def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
     shard; without it we fall back to the first id match across the grid, which is
     ambiguous once ids collide and can update the wrong shard.
     """
-    indices = [db_index] if db_index else range(1, MAX_DB_COUNT + 1)
+    indices = [db_index] if db_index is not None else range(1, MAX_DB_COUNT + 1)
     for i in indices:
         if not get_db_path(i).exists():
             continue
         conn = get_connection(i)
-        row = conn.execute("SELECT id, utility_score FROM shards WHERE id = ?", (shard_id,)).fetchone()
-        if row:
-            old_score = row["utility_score"]
-            val = 1.0 if worked else -0.5
-            new_score = old_score + val
-            conn.execute("UPDATE shards SET utility_score = ? WHERE id = ?", (new_score, shard_id))
-            conn.commit()
+        try:
+            row = conn.execute("SELECT id, utility_score FROM shards WHERE id = ?", (shard_id,)).fetchone()
+            if row:
+                old_score = row["utility_score"]
+                val = 1.0 if worked else -0.5
+                new_score = old_score + val
+                conn.execute("UPDATE shards SET utility_score = ? WHERE id = ?", (new_score, shard_id))
+                conn.commit()
+            else:
+                continue
+        finally:
             conn.close()
 
-            # Log UTILITY_CHANGE event
-            from . import history # pylint: disable=import-outside-toplevel
-            history.log_event(shard_id, i, "UTILITY_CHANGE", old_score=old_score, new_score=new_score)
+        # Log UTILITY_CHANGE event
+        from . import history # pylint: disable=import-outside-toplevel
+        history.log_event(shard_id, i, "UTILITY_CHANGE", old_score=old_score, new_score=new_score)
 
-            return True
-        conn.close()
+        return True
     return False
 
 
