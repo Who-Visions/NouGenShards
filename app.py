@@ -6,6 +6,7 @@ import os
 import sys
 import hmac
 import json
+import contextlib
 from typing import List, Optional
 from fastapi import FastAPI, Header, HTTPException, Depends
 from pydantic import BaseModel
@@ -24,11 +25,83 @@ if os.environ.get("SPACE_ID"):
 from nougen_shards import core, history
 from nougen_shards.brain_scan import scan_environment
 
-app = FastAPI(title="NouGenShards Node")
+NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN")
+
+
+# --- Remote MCP server (mobile / Claude-app connector) ---
+# Streamable-HTTP MCP endpoint mounted at /mcp so remote MCP clients (the
+# Claude mobile/web app's custom connectors, MCP inspector, other agents) can
+# use the node's memory directly. Deliberately exposes ONLY the memory tools:
+# execute_sandboxed_code and brain scan/import stay stdio-local - remote code
+# execution and container-filesystem recon do not belong on a network surface.
+from mcp.server.fastmcp import FastMCP  # noqa: E402
+from mcp.server.transport_security import TransportSecuritySettings  # noqa: E402
+
+node_mcp = FastMCP(
+    "NouGenShards",
+    instructions=(
+        "Persistent memory node. Use recall_memory before reasoning from "
+        "scratch and capture_experience to store durable learnings."
+    ),
+    # Stateless JSON mode: every request is self-contained, which suits a
+    # Space that may cold-start between calls.
+    stateless_http=True,
+    json_response=True,
+    streamable_http_path="/",
+    # DNS-rebinding protection is a defense for loopback-bound servers whose
+    # only gate is network locality; this endpoint is explicitly token-gated
+    # (see _TokenGatedMCP) and served from a public host whose Host header
+    # varies (hf.space, custom domains), so host allow-listing would only
+    # break legitimate clients without adding security.
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+)
+
+
+@node_mcp.tool()
+def recall_memory(query: str, limit: int = 5) -> list:
+    """Search the memory substrate. Returns ranked shards (fuzzy recall
+    included when exact matching misses)."""
+    results = core.retrieve(query, limit=max(1, min(limit, 20)))
+    return [{k: v for k, v in r.items() if not isinstance(v, (bytes, bytearray))}
+            for r in results]
+
+
+@node_mcp.tool()
+def capture_experience(title: str, content: str, event_type: str = "KNOWLEDGE",
+                       tags: list[str] | None = None) -> dict:
+    """Store a unit of experience as a shard (deduplicated by content)."""
+    ok = core.capture(event_type, title, content, tags=tags)
+    return {"captured": bool(ok)}
+
+
+@node_mcp.tool()
+def mark_utility(shard_id: int, worked: bool, db_index: int | None = None) -> dict:
+    """Feed back whether a recalled shard was useful; adjusts its ranking prior."""
+    core.mark_shard(shard_id, worked=worked, db_index=db_index)
+    return {"marked": shard_id, "worked": worked}
+
+
+@node_mcp.tool()
+def node_status() -> dict:
+    """Node health: shard count and storage mode."""
+    return {"status": "ignited",
+            "total_shards": _total_shards(),
+            "storage": os.environ.get("NOUGEN_HOME", "default")}
+
+
+_mcp_asgi = node_mcp.streamable_http_app()
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app):
+    # The streamable-HTTP session manager needs a running task group.
+    async with node_mcp.session_manager.run():
+        yield
+
+
+app = FastAPI(title="NouGenShards Node", lifespan=_lifespan)
 
 # --- Security ---
-
-NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN")
 
 def verify_token(x_ngs_token: str = Header(None)):
     if not NODE_TOKEN:
@@ -340,6 +413,47 @@ with gr.Blocks(title="NouGenShards Cortex HUD", theme=gr.themes.Soft()) as corte
 _hud_user = os.environ.get("NGS_HUD_USER")
 _hud_pass = os.environ.get("NGS_HUD_PASSWORD")
 _hud_auth = (_hud_user, _hud_pass) if _hud_user and _hud_pass else None
+
+
+class _TokenGatedMCP:
+    """ASGI gate for the /mcp mount: same deny-by-default semantics as
+    verify_token (503 unconfigured, 401 mismatch), but accepts the token as
+    either the X-NGS-Token header or a ?token= query parameter - the Claude
+    app's custom connectors cannot attach arbitrary headers, so the query
+    form is the mobile path. NODE_TOKEN is read at call time so tests (and
+    runtime reconfiguration) can swap it without re-importing the module."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            if not NODE_TOKEN:
+                await self._reject(send, 503, "Node write-auth not configured.")
+                return
+            headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                       for k, v in scope.get("headers", [])}
+            supplied = headers.get("x-ngs-token")
+            if not supplied:
+                from urllib.parse import parse_qs
+                qs = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+                supplied = (qs.get("token") or [None])[0]
+            if not supplied or not hmac.compare_digest(str(supplied), str(NODE_TOKEN)):
+                await self._reject(send, 401, "Invalid node token.")
+                return
+        await self.inner(scope, receive, send)
+
+    @staticmethod
+    async def _reject(send, status, detail):
+        body = json.dumps({"detail": detail}).encode("utf-8")
+        await send({"type": "http.response.start", "status": status,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
+# Mount BEFORE the Gradio catch-all at "/" so /mcp is routed to the MCP app.
+app.mount("/mcp", _TokenGatedMCP(_mcp_asgi))
 
 app = gr.mount_gradio_app(app, cortex_hud, path="/", auth=_hud_auth)
 
