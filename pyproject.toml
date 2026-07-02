@@ -46,5 +46,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 # Makes `python -m pytest` work from the repo root without the manual
 # PYTHONPATH=src prefix (pytest>=7 injects these onto sys.path itself).
-pythonpath = ["src"]
+# "." lets tests import the root-level app.py (the Space node).
+pythonpath = ["src", "."]
 testpaths = ["tests"]

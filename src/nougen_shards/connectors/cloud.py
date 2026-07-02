@@ -90,6 +90,19 @@ def _is_safe_cloud_url(url: str) -> bool:
     return True
 
 
+def _apply_edge_auth(req) -> None:
+    """Authenticate at the HOSTING platform's edge, in addition to the node's
+    own X-NGS-Token. Private HF Spaces reject all traffic before it reaches
+    the app unless the request carries an HF bearer token - so this is what
+    lets `nougen node push/pull` and federation reach a node that hasn't been
+    made public yet. Reads NGS_HF_TOKEN (preferred) or HUGGINGFACE_API_KEY;
+    no-op when neither is set, harmless for public nodes. The https-only rule
+    in _is_safe_cloud_url covers this header too."""
+    token = os.environ.get("NGS_HF_TOKEN") or os.environ.get("HUGGINGFACE_API_KEY")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+
+
 def _pinned_ip_for(url: str):
     """Return the single validated IP to pin a request to (defeating DNS
     rebinding between validation and connect), or None when pinning does not
@@ -212,6 +225,7 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
                 method="POST"
             )
             req.add_header("Content-Type", "application/json")
+            _apply_edge_auth(req)
 
             remote_data = json.loads(_open_cloud(req, url, 5.0).decode())
             if isinstance(remote_data, list):
@@ -253,6 +267,7 @@ def push_to_cloud(shards: list, cloud_url: str, token: str) -> dict:
         )
         req.add_header("Content-Type", "application/json")
         req.add_header("X-NGS-Token", token)
+        _apply_edge_auth(req)
 
         return json.loads(_open_cloud(req, url, 10.0).decode())
     except _NET_ERRORS as exc:
@@ -268,6 +283,7 @@ def pull_from_cloud(cloud_url: str, token: str) -> list:
     try:
         req = urllib.request.Request(f"{url}/sync/pull", method="GET")
         req.add_header("X-NGS-Token", token)
+        _apply_edge_auth(req)
 
         return json.loads(_open_cloud(req, url, 10.0).decode())
     except _NET_ERRORS as exc:

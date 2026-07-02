@@ -53,6 +53,9 @@ jobs:
           *.icns filter=lfs diff=lfs merge=lfs -text
           *.webp filter=lfs diff=lfs merge=lfs -text
           EOF
+          # Bake the source sha into the snapshot; /health reports it, and the
+          # verify step below waits for it - proving the NEW build booted.
+          echo "${GITHUB_SHA}" > .deploy_sha
           # Re-stage the whole tree so the LFS attributes apply to the images.
           # -f: the .gitattributes append above makes it differ from the index,
           # which plain `git rm --cached` refuses to drop.
@@ -62,3 +65,31 @@ jobs:
           # Force-push is the HF-documented pattern: the Space mirror's history
           # is owned entirely by this repo.
           git push --force "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}" HEAD:main
+      - name: Verify deployed node boots
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.NOUGENSHARDS_HGF_KEY3 }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+          # Optional override if the auto-derived subdomain ever mismatches.
+          HF_SPACE_HOST: ${{ vars.HF_SPACE_HOST }}
+        run: |
+          if [ -z "$HF_TOKEN" ] || [ -z "$HF_SPACE" ]; then
+            echo "Secrets not configured - nothing was deployed, skipping verification."
+            exit 0
+          fi
+          # owner/Name -> owner-name (HF Space subdomain convention).
+          HOST="${HF_SPACE_HOST:-$(echo "$HF_SPACE" | tr '[:upper:]' '[:lower:]' | tr '/_.' '---')}"
+          URL="https://${HOST}.hf.space/health"
+          echo "Waiting for ${URL} to report deploy_sha ${GITHUB_SHA} (Docker rebuild takes a few minutes)..."
+          # The bearer token authenticates us at HF's edge, so this works while
+          # the Space is PRIVATE - every deploy is verified before going public.
+          for i in $(seq 1 60); do
+            body=$(curl -sS -m 15 -H "Authorization: Bearer ${HF_TOKEN}" "$URL" 2>/dev/null || true)
+            if echo "$body" | grep -q "${GITHUB_SHA}"; then
+              echo "Node is up on the new build:"
+              echo "$body"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Node did not report the new deploy sha within 10 minutes. Last response: ${body:-<none>}"
+          exit 1
