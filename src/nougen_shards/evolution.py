@@ -9,9 +9,8 @@ retrieval (Exa / deep research) and real test generation later. Do not present
 this as production self-evolution.
 """
 
-import json
 import re
-from typing import List, Dict, Optional, Any
+from typing import Dict, Optional, Any
 from pathlib import Path
 from . import core
 from . import nougen_sandbox
@@ -79,7 +78,7 @@ class EvolutionEngine:
         
         # 3. Refine (Simulated)
         if self.verbose:
-            print(f"[*] Evolution: Refining skill against virtual verifier...")
+            print("[*] Evolution: Refining skill against virtual verifier...")
         skill_content = f"# SKILL: {instruction}\n\n## Grounding\n{grounding}\n\n## Implementation\nFollow the verified invariants."
         
         # 4. Verify (trusted: this runs the engine's own generated stub, not user input)

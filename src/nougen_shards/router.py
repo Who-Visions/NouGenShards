@@ -3,7 +3,7 @@ OpenRouter Production Router for NouGenShards.
 Handles model fallback, session sticky routing, and prompt caching.
 """
 from dataclasses import dataclass, field
-from typing import List, Optional, Any
+from typing import List, Optional
 import hashlib
 
 @dataclass

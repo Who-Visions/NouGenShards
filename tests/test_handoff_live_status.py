@@ -10,15 +10,12 @@ Proves:
 """
 
 import json
-import os
-import tempfile
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 # Import the public surface under test
-from nougen_shards.handoff import compute_live_status, reconcile_handoffs, HANDOFF_DIR
+from nougen_shards.handoff import compute_live_status, reconcile_handoffs
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +130,6 @@ class TestReconcileHandoffsNoMutation:
         data = _handoff("open", _full_tasks(3, 0))
         hfile.write_text(json.dumps(data), encoding="utf-8")
 
-        original_mtime = hfile.stat().st_mtime
         original_content = hfile.read_text(encoding="utf-8")
 
         # Patch HANDOFF_DIR so the function finds our temp file

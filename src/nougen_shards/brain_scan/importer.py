@@ -1,7 +1,5 @@
-import json
 from dataclasses import dataclass
-from typing import List, Dict, Optional
-from .candidate import CandidateFile
+from typing import Optional
 from .scanner import scan_environment
 from .parsers import parse_universal
 from .redaction import redact_content

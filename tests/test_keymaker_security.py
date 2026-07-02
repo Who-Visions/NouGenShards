@@ -7,7 +7,6 @@ import importlib
 import os
 import sqlite3
 import stat
-import sys
 
 import pytest
 

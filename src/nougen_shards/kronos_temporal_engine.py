@@ -3,7 +3,7 @@ import re
 import math
 import time
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 class TemporalNexusShard:
     def __init__(self, file_path: str, base_utility: float = 1.0):

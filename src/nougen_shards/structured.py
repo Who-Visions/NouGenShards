@@ -4,7 +4,7 @@ Handles local JSON validation and repair.
 """
 import json
 import re
-from typing import Any, Tuple, List, Optional, Dict
+from typing import Any, Tuple, List, Dict
 
 def parse_json_content(content: str) -> Dict[str, Any]:
     """
