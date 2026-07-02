@@ -4,6 +4,13 @@ All notable changes to NouGenShards will be documented in this file.
 
 ## [Unreleased]
 ### Added
+- **Node**: Remote MCP endpoint (streamable HTTP) at `/mcp` on the Space node,
+  so the Claude mobile/web app can attach the node as a custom connector and
+  any MCP client can use the memory over the network. Exposes only the memory
+  surface (`recall_memory`, `capture_experience`, `mark_utility`,
+  `node_status`); code execution and brain scan remain stdio-local. Gated by
+  `NGS_NODE_TOKEN` (header or `?token=` query param for connector
+  compatibility), deny-by-default like the REST API.
 - **Recall**: Fuzzy retrieval lane grounded in `docs/theory/n-gram-topologies.md`
   (§8.2): fastText-style character trigrams with boundary markers, gated by the
   Szymkiewicz–Simpson overlap coefficient. Bridges typos and morphological
