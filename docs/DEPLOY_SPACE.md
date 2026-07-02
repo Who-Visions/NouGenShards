@@ -22,7 +22,7 @@ encrypted store's web UI.** Nothing else ever sees the value. Specifically:
    Use a **fine-grained** token scoped to *write* on the single target Space,
    not a global write token. Copy it.
 2. **GitHub secret** — in this repo: *Settings → Secrets and variables →
-   Actions → New repository secret*, name `HF_TOKEN`, paste, save. The value
+   Actions → New repository secret*, name `NOUGENSHARDS_HGF_KEY3`, paste, save. The value
    enters GitHub's encrypted store (sealed-box) and is never displayable again.
 3. **GitHub variable** — same page, *Variables* tab: `HF_SPACE` = your Space
    id, e.g. `who-visions/nougenshards` (not secret; it's public anyway).
@@ -39,7 +39,7 @@ manually) and the node deploys. Point your CLI at it via `.env`:
 
 ## Why the pipeline itself can't leak
 
-- The workflow reads `HF_TOKEN` only from the encrypted secret store; Actions
+- The workflow reads `NOUGENSHARDS_HGF_KEY3` only from the encrypted secret store; Actions
   masks it in every log line, and the job skips (rather than errors) when the
   secret is absent, so nothing sensitive appears in failed-run output.
 - `persist-credentials: false` keeps the workflow's GitHub token out of
@@ -51,6 +51,6 @@ manually) and the node deploys. Point your CLI at it via `.env`:
 
 ## Rotation
 
-Revoke and re-issue the HF token from huggingface.co, update the `HF_TOKEN`
+Revoke and re-issue the HF token from huggingface.co, update the `NOUGENSHARDS_HGF_KEY3`
 repo secret, done — nothing in the repo changes. Same for `NGS_NODE_TOKEN`
 (update the Space secret + your keymaker entry together).
