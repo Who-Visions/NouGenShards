@@ -22,6 +22,9 @@ jobs:
         with:
           # Full history: HF rejects shallow pushes.
           fetch-depth: 0
+          # Don't leave the GITHUB_TOKEN in .git/config; this job pushes with
+          # its own credential and needs no further GitHub auth.
+          persist-credentials: false
       - name: Push to Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
