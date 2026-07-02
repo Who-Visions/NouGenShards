@@ -25,7 +25,7 @@ encrypted store's web UI.** Nothing else ever sees the value. Specifically:
    Actions → New repository secret*, name `NOUGENSHARDS_HGF_KEY3`, paste, save. The value
    enters GitHub's encrypted store (sealed-box) and is never displayable again.
 3. **GitHub variable** — same page, *Variables* tab: `HF_SPACE` = your Space
-   id, e.g. `who-visions/nougenshards` (not secret; it's public anyway).
+   id, e.g. `nougenai/NouGenShards` (not secret; it's public anyway).
 4. **Space write-auth** — in the Space: *Settings → Variables and secrets →
    New secret*, name `NGS_NODE_TOKEN`. Generate the value locally with
    `openssl rand -hex 32` (or let your password manager generate it) and store

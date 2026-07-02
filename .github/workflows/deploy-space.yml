@@ -7,7 +7,7 @@ name: Sync to Hugging Face Space
 # One-time setup (repo Settings):
 #   - Secret  HF_TOKEN (or NOUGENSHARDS_HGF_KEY3): a Hugging Face token with write access
 #     to the Space (fine-grained, scoped to that one repo)
-#   - Variable HF_SPACE: the Space id, e.g. "who-visions/nougenshards"
+#   - Variable HF_SPACE: the Space id, e.g. "nougenai/NouGenShards"
 # Until both are configured the job skips gracefully.
 
 on:
