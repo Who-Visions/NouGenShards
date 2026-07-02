@@ -21,12 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Full history: HF rejects shallow pushes.
-          fetch-depth: 0
           # Don't leave the GITHUB_TOKEN in .git/config; this job pushes with
           # its own credential and needs no further GitHub auth.
           persist-credentials: false
-      - name: Push to Space
+      - name: Push snapshot to Space
         env:
           # Either secret name works; HF_TOKEN wins if both are set.
           HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.NOUGENSHARDS_HGF_KEY3 }}
@@ -36,6 +34,31 @@ jobs:
             echo "HF token secret (HF_TOKEN or NOUGENSHARDS_HGF_KEY3) and/or HF_SPACE variable not set - skipping Space sync."
             exit 0
           fi
+          # HF's pre-receive hook scans EVERY object in the pushed history and
+          # rejects binary blobs that are not stored via Git LFS - so pushing
+          # the real history fails on old commits containing docs/images/*.png
+          # even when the tip is fine. The Space doesn't need history: build a
+          # single orphan snapshot commit of the current tree with all image
+          # binaries tracked as LFS, and force-push only that.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git lfs install --local
+          git checkout --orphan hf-deploy
+          cat >> .gitattributes <<'EOF'
+          *.png filter=lfs diff=lfs merge=lfs -text
+          *.jpg filter=lfs diff=lfs merge=lfs -text
+          *.jpeg filter=lfs diff=lfs merge=lfs -text
+          *.gif filter=lfs diff=lfs merge=lfs -text
+          *.ico filter=lfs diff=lfs merge=lfs -text
+          *.icns filter=lfs diff=lfs merge=lfs -text
+          *.webp filter=lfs diff=lfs merge=lfs -text
+          EOF
+          # Re-stage the whole tree so the LFS attributes apply to the images.
+          # -f: the .gitattributes append above makes it differ from the index,
+          # which plain `git rm --cached` refuses to drop.
+          git rm -r --cached -q -f .
+          git add -A
+          git commit -qm "Space deploy: snapshot of ${GITHUB_SHA}"
           # Force-push is the HF-documented pattern: the Space mirror's history
           # is owned entirely by this repo.
           git push --force "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}" HEAD:main
