@@ -3,7 +3,6 @@ Verification script for NouGenShards HistoryEngine.
 """
 from nougen_shards import capture, retrieve, mark_shard, HistoryEngine
 import json
-import time
 import tempfile
 import pytest
 from pathlib import Path

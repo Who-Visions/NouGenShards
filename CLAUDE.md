@@ -22,7 +22,7 @@ Claude is the **coach**: plan, route, verify. Local resources are the **players*
 Stop and ask before mutating system state (installs, deletes, registry/config outside this project), per the Watchtower constitution.
 
 ## Project layout & Migration Flow
-- `NouGenShards/` — Primary workspace where we build, code, and run development cycles for the public GitHub repository (public-facing user app). Run tests with `PYTHONPATH=src python -m pytest tests`.
+- `NouGenShards/` — Primary workspace where we build, code, and run development cycles for the public GitHub repository (public-facing user app). Run tests with `python -m pytest tests` (pytest picks up `src/` via pyproject config; the old `PYTHONPATH=src` prefix is no longer needed).
 - `NouGenShards/.handoffs/` — Directory where coding agents hand off progress and coordinate work (create/read/ack handoffs).
 - `NouGenShards-pull-clone/` — Clean clone of the public repository used to pull and test the GitHub public build against the prototype.
 - `NouGenSite/` — website

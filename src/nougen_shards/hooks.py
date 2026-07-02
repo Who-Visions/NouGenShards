@@ -3,7 +3,6 @@ Reversed Hooks Lane for NouGenShards.
 Intercepts and compacts message history into high-signal Semantic Anchors.
 """
 import re
-import json
 from typing import List, Dict, Any
 
 def extract_invariants(messages: List[Dict[str, Any]]) -> str:

@@ -1,7 +1,6 @@
 """
 Unit tests for structured output parsing and validation.
 """
-import pytest
 from nougen_shards.structured import parse_json_content, validate_against_schema
 
 from typing import Dict, Any

@@ -5,7 +5,6 @@ import pytest
 from nougen_shards.models_client import (
     OpenAIClient, AnthropicClient, GeminiClient, HuggingFaceClient
 )
-from nougen_shards import keymaker
 
 @pytest.fixture
 def mock_urlopen():

@@ -2,6 +2,24 @@
 
 All notable changes to NouGenShards will be documented in this file.
 
+## [Unreleased]
+### Fixed
+- **Packaging**: Declared the previously-missing `numpy` dependency in `pyproject.toml`.
+  `numpy` is imported in `src/nougen_shards/core.py` but was never declared, so a clean
+  `pip install .` produced an installable package that crashed on first import of `core`.
+  CI had been masking this by installing `numpy` manually. (Reproducibility / correctness.)
+
+### Changed
+- **Dependencies**: Added conservative lower-bound version pins to all runtime
+  dependencies (e.g. `pydantic>=2.0`, `sqlalchemy>=2.0`, `openai>=1.0`). The codebase
+  targets these majors; the floors prevent `pip` from resolving API-incompatible older
+  majors while still allowing minor/patch upgrades. No behavior change (264 tests pass).
+
+### Removed
+- **Dependencies**: Dropped the unused, deprecated `google-generativeai` package from
+  `pyproject.toml`. It was never imported anywhere in the repository (Gemini access uses
+  raw HTTP in `models_client.py`), so it was pure install-size and supply-chain overhead.
+
 ## [1.1.0] - 2026-06-15
 ### Added
 - **Security**: DavOs Gatekeeper middleware to enforce Mutation Gates on destructive actions, schema modifications, and deployment changes.

@@ -2,7 +2,6 @@
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
 import io
-import sys
 import nougen_shards.cli as cli
 
 class TestCLI(unittest.TestCase):

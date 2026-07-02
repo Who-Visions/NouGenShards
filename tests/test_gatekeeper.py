@@ -1,8 +1,7 @@
 """Tests for the DavOs Gatekeeper middleware and its integrations."""
 import unittest
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import patch, MagicMock
 import io
-import sys
 
 from nougen_shards.gatekeeper import check_mutation_gate
 from nougen_shards.nougen_sandbox import execute_sandboxed

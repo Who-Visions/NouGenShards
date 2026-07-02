@@ -3,11 +3,8 @@ Verification tests for the Dual-System Memory Architecture.
 """
 
 import tempfile
-import sqlite3
 import pytest
 from pathlib import Path
-from typing import List, Dict, Any
-from nougen_shards import capture, retrieve, dream
 import nougen_shards.core as core
 import nougen_shards.dream as dream_mod
 

@@ -11,7 +11,7 @@
     "dev": "vite",
     "build": "vite build",
     "tauri": "tauri",
-    "test": "python -m pytest"
+    "test": "python -m pytest tests"
   },
   "repository": {
     "type": "git",
