@@ -6,10 +6,7 @@ import os
 import sys
 import hmac
 import json
-import sqlite3
 from typing import List, Optional
-from datetime import datetime, timezone
-from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Depends
 from pydantic import BaseModel
 import gradio as gr
@@ -47,7 +44,103 @@ def verify_token(x_ngs_token: str = Header(None)):
 def health():
     return {"status": "ignited", "storage": os.environ.get("NOUGEN_HOME", "default")}
 
-# (API logic remains same as before for search/capture/sync/cloud_chat)
+
+# --- API models ---
+
+class SearchRequest(BaseModel):
+    query: str
+    limit: int = 5
+
+
+class CaptureRequest(BaseModel):
+    event_type: str = "KNOWLEDGE"
+    title: str
+    content: str
+    tags: Optional[List[str]] = None
+
+
+class SyncPushRequest(BaseModel):
+    shards: List[dict]
+
+
+def _json_safe(item: dict) -> dict:
+    """Drop non-JSON-serializable fields (raw embedding bytes) from a shard row."""
+    return {k: v for k, v in item.items() if not isinstance(v, (bytes, bytearray))}
+
+
+# Every data endpoint requires X-NGS-Token (verify_token 503s until
+# NGS_NODE_TOKEN is configured, so the node is deny-by-default). This is what
+# makes it safe to run the Space public: reads and writes are both gated;
+# only /health and the separately-authed HUD are reachable without the token.
+
+@app.post("/search")
+def search(req: SearchRequest, _token: str = Depends(verify_token)):
+    """Memory recall for cloud callers (mirrors the connector's POST /search)."""
+    results = core.retrieve(req.query, limit=max(1, min(req.limit, 50)))
+    return [_json_safe(r) for r in results]
+
+
+@app.post("/capture")
+def capture_shard(req: CaptureRequest, _token: str = Depends(verify_token)):
+    """Single-shard capture for user agents."""
+    ok = core.capture(req.event_type, req.title, req.content, tags=req.tags)
+    return {"status": "ok", "captured": bool(ok)}
+
+
+@app.post("/sync/push")
+def sync_push(req: SyncPushRequest, _token: str = Depends(verify_token)):
+    """Bulk ingest (contract of connectors.cloud.push_to_cloud)."""
+    count = 0
+    skipped = 0
+    for s in req.shards:
+        title, content = s.get("title"), s.get("content")
+        if not title or not content:
+            skipped += 1
+            continue
+        tags = s.get("tags")
+        if isinstance(tags, str):
+            try:
+                tags = json.loads(tags)
+            except ValueError:
+                tags = None
+        emb = s.get("embedding")
+        if emb is not None and not isinstance(emb, list):
+            emb = None
+        ok = core.capture(
+            s.get("event_type") or "KNOWLEDGE", title, content,
+            tags=tags, embedding=emb,
+            domain_key=s.get("domain_key"),
+            density_score=s.get("density_score"),
+        )
+        if ok:
+            count += 1
+        else:
+            skipped += 1  # capture() dedups; an already-known shard is a skip
+    return {"status": "ok", "count": count, "skipped": skipped}
+
+
+@app.get("/sync/pull")
+def sync_pull(_token: str = Depends(verify_token)):
+    """Full export (contract of connectors.cloud.pull_from_cloud)."""
+    all_shards = []
+    for i in range(1, core.MAX_DB_COUNT + 1):
+        if not core.get_db_path(i).exists():
+            continue
+        conn = core.get_connection(i)
+        try:
+            for r in conn.execute("SELECT * FROM shards").fetchall():
+                d = dict(r)
+                emb = d.get("embedding")
+                if emb:
+                    try:
+                        raw = emb.decode() if isinstance(emb, (bytes, bytearray)) else emb
+                        d["embedding"] = json.loads(raw)
+                    except (AttributeError, ValueError, TypeError, UnicodeDecodeError):
+                        d["embedding"] = None
+                all_shards.append(d)
+        finally:
+            conn.close()
+    return all_shards
 
 # --- Cortex HUD UI Logic ---
 
