@@ -13,10 +13,14 @@ ENV HOME=/home/user \
 
 WORKDIR /app
 
-# Install the package from pyproject (pulls fastapi, uvicorn, gradio, mcp, ...).
+# Install exact pinned dependencies from the compiled lockfile first (fully
+# reproducible builds - regenerate with `uv pip compile --universal
+# pyproject.toml -o requirements.txt`), then the package itself without
+# re-resolving.
 COPY --chown=user:user . /app
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir .
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --no-deps .
 
 # app.py writes persistent state to /data when SPACE_ID is set. Provision a
 # writable /data so the node still boots if HF persistent storage is off.

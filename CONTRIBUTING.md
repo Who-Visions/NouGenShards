@@ -25,6 +25,13 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+Deployments (Docker/Space, CI) install from the compiled lockfile instead for
+fully reproducible builds. If you change dependencies in `pyproject.toml`,
+regenerate it:
+```bash
+uv pip compile --universal pyproject.toml -o requirements.txt
+```
+
 ## 🧪 Testing
 We maintain a 100% pass rate requirement. Before submitting a PR, run the full suite
 (no PYTHONPATH setup needed — pytest picks up `src/` from `pyproject.toml`):
