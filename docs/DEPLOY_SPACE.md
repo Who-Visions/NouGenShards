@@ -62,6 +62,47 @@ it to be public.
      -H "Content-Type: application/json" -d '{"query":"test"}'
    ```
 
+## Mobile: talk to your memory from the Claude app (remote MCP)
+
+The node serves a **remote MCP endpoint** (streamable HTTP) at
+`https://<owner>-<name>.hf.space/mcp` exposing `recall_memory`,
+`capture_experience`, `mark_utility` and `node_status` — and nothing else
+(code execution and brain scan stay stdio-local, off the network surface).
+
+It is gated by the same `NGS_NODE_TOKEN` as the REST API, deny-by-default
+(503 when the secret is unset, 401 on mismatch). Two ways to present it:
+
+- Header: `X-NGS-Token: <token>` — for CLI/agents/MCP inspector.
+- Query param: `?token=<token>` — for the Claude app's custom connectors,
+  which can't attach custom headers.
+
+**Claude app setup** (Settings → Connectors → Add custom connector):
+
+```
+https://<owner>-<name>.hf.space/mcp?token=<your NGS_NODE_TOKEN>
+```
+
+Then on mobile or web, enable the connector in a chat and Claude can recall
+and capture against this node directly.
+
+Timing note: connectors can't send the HF bearer, so this only works **after
+the Space is public** (or on a paid private Space with a custom domain). While
+still private you can verify the endpoint end to end with curl by adding the
+bearer:
+
+```bash
+curl -X POST "https://<owner>-<name>.hf.space/mcp?token=$NGS_CLOUD_TOKEN" \
+  -H "Authorization: Bearer $NGS_HF_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+The query-param form does put the token in URLs (and therefore potentially in
+proxy logs), which is the accepted trade-off for connector compatibility —
+prefer the header everywhere a client supports it, and rotate
+`NGS_NODE_TOKEN` if a URL ever leaks.
+
 ## Why the pipeline itself can't leak
 
 - The workflow reads `NOUGENSHARDS_HGF_KEY3` only from the encrypted secret store; Actions
