@@ -37,6 +37,31 @@ Then merge to `main` (or run the *Sync to Hugging Face Space* workflow
 manually) and the node deploys. Point your CLI at it via `.env`:
 `NGS_CLOUD_URL=https://<space-subdomain>.hf.space` + `NGS_CLOUD_TOKEN`.
 
+## Verifying privately before going public
+
+Keep the Space **private** until every check passes; nothing below requires
+it to be public.
+
+1. **Automatic**: every deploy run now ends with a *Verify deployed node
+   boots* step - it authenticates through HF's edge with the deploy token and
+   polls `/health` until the new build reports its own commit sha. A green
+   workflow means the new container actually booted.
+2. **Browser**: open `https://<owner>-<name>.hf.space/health` while logged in
+   to Hugging Face. It's a launch-readiness report:
+   `public_ready: true` + an empty `warnings` list = safe to flip public.
+   (`node_token_configured`, `hud_auth_configured`, `persistent_storage`,
+   `total_shards`, `deploy_sha` are all shown; no secret values.)
+3. **CLI / API against the private Space**: set `NGS_HF_TOKEN` (or reuse
+   `HUGGINGFACE_API_KEY`) in your local environment - the cloud connector
+   sends it as a bearer at HF's edge alongside the node's `X-NGS-Token`, so
+   `nougen node push/pull` and `POST /search` work before the flip:
+   ```bash
+   curl -X POST https://<owner>-<name>.hf.space/search \
+     -H "Authorization: Bearer $NGS_HF_TOKEN" \
+     -H "X-NGS-Token: $NGS_CLOUD_TOKEN" \
+     -H "Content-Type: application/json" -d '{"query":"test"}'
+   ```
+
 ## Why the pipeline itself can't leak
 
 - The workflow reads `NOUGENSHARDS_HGF_KEY3` only from the encrypted secret store; Actions

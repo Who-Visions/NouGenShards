@@ -40,9 +40,60 @@ def verify_token(x_ngs_token: str = Header(None)):
 
 # --- API Endpoints ---
 
+def _total_shards() -> int:
+    total = 0
+    for i in range(1, core.MAX_DB_COUNT + 1):
+        p = core.get_db_path(i)
+        if not p.exists():
+            continue
+        try:
+            conn = core.get_connection(i)
+            total += conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
+            conn.close()
+        except Exception:
+            pass
+    return total
+
+
 @app.get("/health")
 def health():
-    return {"status": "ignited", "storage": os.environ.get("NOUGEN_HOME", "default")}
+    """Launch-readiness report. Contains no secret values - only whether each
+    gate is configured - so it is safe to serve unauthenticated and doubles as
+    the go/no-go check before flipping the Space public."""
+    deploy_sha = None
+    try:
+        with open(".deploy_sha", encoding="utf-8") as f:
+            deploy_sha = f.read().strip() or None
+    except OSError:
+        pass
+
+    node_token_ok = bool(NODE_TOKEN)
+    hud_auth_ok = bool(os.environ.get("NGS_HUD_USER") and os.environ.get("NGS_HUD_PASSWORD"))
+    # On HF, enabling persistent storage mounts /data as its own filesystem;
+    # without it /data is just a directory inside the ephemeral container.
+    persistent = os.path.isdir("/data") and os.path.ismount("/data")
+
+    warnings = []
+    if not node_token_ok:
+        warnings.append("NGS_NODE_TOKEN not set: data API returns 503 (deny-by-default)")
+    if not hud_auth_ok:
+        warnings.append("NGS_HUD_USER/NGS_HUD_PASSWORD not set: HUD would be open to anyone on a public Space")
+    if not persistent:
+        warnings.append("persistent storage not detected: memories are wiped on every restart/deploy")
+
+    return {
+        "status": "ignited",
+        "deploy_sha": deploy_sha,
+        "storage": os.environ.get("NOUGEN_HOME", "default"),
+        "persistent_storage": persistent,
+        "node_token_configured": node_token_ok,
+        "hud_auth_configured": hud_auth_ok,
+        "total_shards": _total_shards(),
+        # Auth gates are the hard requirement for a public flip; storage is a
+        # durability concern surfaced via warnings.
+        "public_ready": node_token_ok and hud_auth_ok,
+        "warnings": warnings,
+    }
 
 
 # --- API models ---
