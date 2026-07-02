@@ -3,7 +3,7 @@
 # Serves the token-auth node API and the mounted Cortex HUD on port 7860.
 # python:3.10 is at end-of-life (final security release Oct 2026 cycle);
 # 3.12 is supported through Oct 2028 and matches the CI matrix ceiling.
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # HF Spaces run the container as a non-root user (uid 1000).
 RUN useradd -m -u 1000 user
