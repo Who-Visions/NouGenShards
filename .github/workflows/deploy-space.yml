@@ -1,0 +1,36 @@
+name: Sync to Hugging Face Space
+
+# Mirrors main to the Hugging Face Space so the production node (app.py +
+# Dockerfile, README front-matter already declares sdk:docker/app_port:7860)
+# redeploys on every merge.
+#
+# One-time setup (repo Settings):
+#   - Secret  HF_TOKEN: a Hugging Face token with write access to the Space
+#   - Variable HF_SPACE: the Space id, e.g. "who-visions/nougenshards"
+# Until both are configured the job skips gracefully.
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: HF rejects shallow pushes.
+          fetch-depth: 0
+      - name: Push to Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        run: |
+          if [ -z "$HF_TOKEN" ] || [ -z "$HF_SPACE" ]; then
+            echo "HF_TOKEN secret and/or HF_SPACE variable not set - skipping Space sync."
+            exit 0
+          fi
+          # Force-push is the HF-documented pattern: the Space mirror's history
+          # is owned entirely by this repo.
+          git push --force "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}" HEAD:main
