@@ -3,6 +3,14 @@
 All notable changes to NouGenShards will be documented in this file.
 
 ## [Unreleased]
+### Added
+- **Recall**: Fuzzy retrieval lane grounded in `docs/theory/n-gram-topologies.md`
+  (§8.2): fastText-style character trigrams with boundary markers, gated by the
+  Szymkiewicz–Simpson overlap coefficient. Bridges typos and morphological
+  variants ("automaton" → "automation") that exact-token FTS, substring LIKE,
+  and trigram-FTS all miss. Fires only when the exact lanes return nothing, and
+  exact hits always outrank fuzzy hits via explicit lane tiering.
+
 ### Fixed
 - **Packaging**: Declared the previously-missing `numpy` dependency in `pyproject.toml`.
   `numpy` is imported in `src/nougen_shards/core.py` but was never declared, so a clean

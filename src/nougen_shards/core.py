@@ -303,8 +303,14 @@ def calculate_contrastive_perplexity(content: str) -> float:
     """Estimates information density / contrastive perplexity using local Ollama or OpenRouter."""
     if not content:
         return 1.0
-    
-    # Heuristic compression-based fallback: ratio of gzip size to raw size
+
+    # Heuristic compression-based fallback: ratio of gzip size to raw size.
+    # (A Lidstone bigram SELF-perplexity per docs/theory/n-gram-topologies.md
+    # §9 was evaluated and rejected here: without a reference corpus to fit,
+    # self-perplexity is degenerate - both boilerplate AND short novel text
+    # have near-deterministic self-transitions and score ~1. The doc's metric
+    # needs a fitted reference model; revisit if a vault-wide corpus model is
+    # ever built.)
     import zlib
     try:
         compressed_len = len(zlib.compress(content.encode('utf-8')))
@@ -563,7 +569,7 @@ def _build_fts_match_query(query: str) -> Optional[str]:
 def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[List[float]] = None,
                       domain_key: str = "global") -> list:
     """Scans for keyword matches using FTS5 (with LIKE fallback)."""
-    from . import history # pylint: disable=import-outside-toplevel
+    from . import history, ngram  # pylint: disable=import-outside-toplevel
 
     # One reference clock for the whole scan (see _temporal_decay).
     query_now = datetime.now(timezone.utc)
@@ -574,6 +580,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
         conn = get_connection(i)
         try:
             fts_worked = False
+            db_hits = 0
             fts_query = _build_fts_match_query(query)
             if fts_query is not None:
                 # The try guards ONLY the SQL: sqlite3.OperationalError here
@@ -636,10 +643,52 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), query_now)
                     item["final_score"] = (likelihood * 0.5) + (decayed_utility * 0.5)
                     results.append(item)
+                    db_hits += 1
+
+            # Fuzzy lane (docs/theory/n-gram-topologies.md §8.2): when BOTH
+            # exact lanes miss for this DB, retry with fastText-style character
+            # trigram Dice similarity. Substring matchers (LIKE, trigram FTS)
+            # can't bridge typos or morphological variants ("automaton" vs
+            # "automation"); set similarity can. Runs only on the miss path, so
+            # exact matches never pay for it, and fuzzy likelihood is scaled by
+            # the Dice score (< exact's 0.5) so exact hits always outrank it.
+            if not fts_worked and db_hits == 0:
+                q_grams = ngram.char_ngrams(query)
+                if q_grams:
+                    dom_params = () if domain_key in (None, "*") else (domain_key,)
+                    where = "WHERE domain_key = ?" if dom_params else ""
+                    cursor = conn.execute(f"""
+                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        FROM shards {where}
+                        ORDER BY id ASC
+                    """, dom_params)
+                    fuzzy = []
+                    for row in cursor:
+                        item = dict(row)
+                        probe = f"{item.get('title') or ''} {(item.get('content') or '')[:256]}"
+                        sim = ngram.overlap_coefficient(q_grams, ngram.char_ngrams(probe))
+                        if sim < ngram.FUZZY_MIN_OVERLAP:
+                            continue
+                        item["_db_index"] = i
+                        item["_fuzzy"] = True
+                        decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), query_now)
+                        item["final_score"] = (sim * 0.5) + (decayed_utility * 0.5) * sim
+                        fuzzy.append(item)
+                    fuzzy.sort(key=lambda x: (-x["final_score"], x["id"]))
+                    for item in fuzzy[:limit]:
+                        history.log_event(item["id"], i, "ACCESSED")
+                        results.append(item)
         finally:
             conn.close()
 
-    results.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+    # Tiered ordering: every exact hit (FTS/LIKE) outranks every fuzzy hit,
+    # regardless of raw score - the lanes' score scales are not comparable
+    # (trigram-FTS bm25 magnitudes are tiny, so a weighted exact score can sit
+    # below a strong fuzzy similarity). Encode the intent structurally instead
+    # of calibrating constants against each other.
+    results.sort(key=lambda x: (1 if x.get("_fuzzy") else 0,
+                                -x.get("final_score", 0.0),
+                                x.get("id", 0)))
     return results[:limit]
 
 
