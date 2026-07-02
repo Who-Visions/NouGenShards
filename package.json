@@ -30,7 +30,7 @@
   "author": "Who Visions LLC",
   "license": "SEE LICENSE IN LICENSE.md",
   "dependencies": {
-    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/api": "^2.11.1",
     "cross-spawn": "^7.0.6"
   },
   "devDependencies": {
