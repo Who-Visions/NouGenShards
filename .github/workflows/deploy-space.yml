@@ -5,7 +5,7 @@ name: Sync to Hugging Face Space
 # redeploys on every merge.
 #
 # One-time setup (repo Settings):
-#   - Secret  NOUGENSHARDS_HGF_KEY3: a Hugging Face token with write access
+#   - Secret  HF_TOKEN (or NOUGENSHARDS_HGF_KEY3): a Hugging Face token with write access
 #     to the Space (fine-grained, scoped to that one repo)
 #   - Variable HF_SPACE: the Space id, e.g. "who-visions/nougenshards"
 # Until both are configured the job skips gracefully.
@@ -28,11 +28,12 @@ jobs:
           persist-credentials: false
       - name: Push to Space
         env:
-          HF_TOKEN: ${{ secrets.NOUGENSHARDS_HGF_KEY3 }}
+          # Either secret name works; HF_TOKEN wins if both are set.
+          HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.NOUGENSHARDS_HGF_KEY3 }}
           HF_SPACE: ${{ vars.HF_SPACE }}
         run: |
           if [ -z "$HF_TOKEN" ] || [ -z "$HF_SPACE" ]; then
-            echo "NOUGENSHARDS_HGF_KEY3 secret and/or HF_SPACE variable not set - skipping Space sync."
+            echo "HF token secret (HF_TOKEN or NOUGENSHARDS_HGF_KEY3) and/or HF_SPACE variable not set - skipping Space sync."
             exit 0
           fi
           # Force-push is the HF-documented pattern: the Space mirror's history
