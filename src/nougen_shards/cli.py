@@ -966,6 +966,34 @@ def get_parser():
     p_handoff.add_argument("--interval", type=float, default=5.0,
                            help="(watch) Poll interval in seconds (default: 5.0)")
 
+    p_queue = subparsers.add_parser(
+        "queue", help="Open Engine task queue: ticket-level cross-agent work"
+    )
+    p_queue.add_argument("action", choices=[
+        "add", "list", "claim", "block", "answer", "done", "cancel",
+        "show", "smoke",
+    ], help="add | list | claim | block | answer | done | cancel | show | smoke")
+    p_queue.add_argument("--title", "-t", default=None, help="(add) Ticket title")
+    p_queue.add_argument("--message", "-m", default="",
+                         help="(add) Instructions / (cancel) reason")
+    p_queue.add_argument("--owner", "-o", default=None,
+                         help="Owner agent lane (claude-cli, gemini, codex, ollama, openrouter)")
+    p_queue.add_argument("--agent", "-a", default=None,
+                         help="Acting agent (defaults to NOUGEN_AGENT / auto-detect)")
+    p_queue.add_argument("--id", dest="task_id", default=None, help="Target task id")
+    p_queue.add_argument("--sources", default="", help="(add) Background/context that matters")
+    p_queue.add_argument("--allowed", default="", help="(add) What the agent may do")
+    p_queue.add_argument("--stop", default="", help="(add) Where the agent must stop")
+    p_queue.add_argument("--dod", default="", help="(add) Definition of done")
+    p_queue.add_argument("--question", default="", help="(block) Exact blocking question")
+    p_queue.add_argument("--answer", default="", help="(answer) Answer to the blocking question")
+    p_queue.add_argument("--did", default="", help="(done) Receipt: what was done")
+    p_queue.add_argument("--not-done", dest="not_done", default="",
+                         help="(done) Receipt: what was NOT done")
+    p_queue.add_argument("--evidence", default="", help="(done) Receipt: proof it got done")
+    p_queue.add_argument("--status", dest="task_status", default=None,
+                         help="(list) Filter by status (todo|working|needs_input|done|cancelled)")
+
     return parser
 
 
@@ -1092,6 +1120,83 @@ def cmd_handoff(args):
             write=getattr(args, "write", False),
         )
 
+def cmd_queue(args):
+    """Executes Open Engine task-queue subcommands."""
+    from . import taskqueue
+
+    if args.action == "add":
+        if not args.title:
+            print("A ticket needs a --title.")
+            sys.exit(1)
+        task_id = taskqueue.add_task(
+            title=args.title,
+            instructions=args.message,
+            owner=args.owner,
+            created_by=args.agent,
+            sources=args.sources,
+            allowed_actions=args.allowed,
+            stop_conditions=args.stop,
+            definition_of_done=args.dod,
+        )
+        print(f"Task created: {task_id}")
+    elif args.action == "list":
+        taskqueue.render_task_list(args.owner, args.task_status)
+    elif args.action == "claim":
+        task = taskqueue.claim_task(args.task_id, agent=args.agent)
+        if task:
+            print(f"Claimed: {task['task_id']} — {task['title']}")
+            taskqueue.render_task(task["task_id"])
+        else:
+            print("Nothing claimable (empty lane, or another agent won the claim).")
+            sys.exit(1)
+    elif args.action == "block":
+        if not args.task_id or not args.question:
+            print("block needs --id and --question (the exact blocking question).")
+            sys.exit(1)
+        ok = taskqueue.block_task(args.task_id, args.question, agent=args.agent)
+        print("Parked in needs_input." if ok else "Could not block (task must be 'working').")
+        if not ok:
+            sys.exit(1)
+    elif args.action == "answer":
+        if not args.task_id or not args.answer:
+            print("answer needs --id and --answer.")
+            sys.exit(1)
+        ok = taskqueue.answer_task(args.task_id, args.answer, agent=args.agent)
+        print("Answered; task re-entered todo." if ok else "Could not answer (task must be 'needs_input').")
+        if not ok:
+            sys.exit(1)
+    elif args.action == "done":
+        if not args.task_id or not args.did:
+            print("done needs --id and --did (the receipt is mandatory).")
+            sys.exit(1)
+        ok = taskqueue.complete_task(
+            args.task_id,
+            receipt_done=args.did,
+            receipt_evidence=args.evidence,
+            receipt_not_done=args.not_done,
+            agent=args.agent,
+        )
+        print("Done with receipt." if ok else "Could not complete (task must be 'working').")
+        if not ok:
+            sys.exit(1)
+    elif args.action == "cancel":
+        if not args.task_id:
+            print("cancel needs --id.")
+            sys.exit(1)
+        ok = taskqueue.cancel_task(args.task_id, reason=args.message, agent=args.agent)
+        print("Cancelled." if ok else "Could not cancel (already terminal?).")
+        if not ok:
+            sys.exit(1)
+    elif args.action == "show":
+        if not args.task_id:
+            print("show needs --id.")
+            sys.exit(1)
+        taskqueue.render_task(args.task_id)
+    elif args.action == "smoke":
+        if not taskqueue.smoke_test(agent=args.agent):
+            sys.exit(1)
+
+
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
@@ -1111,7 +1216,8 @@ def main():
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
-        "dashboard": cmd_dashboard, "handoff": cmd_handoff, "index": cmd_index
+        "dashboard": cmd_dashboard, "handoff": cmd_handoff, "index": cmd_index,
+        "queue": cmd_queue,
     }
     if args.command in cmds:
         cmds[args.command](args)

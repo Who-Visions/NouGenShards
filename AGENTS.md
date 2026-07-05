@@ -75,3 +75,14 @@ Summary message sections:
 
 ## Safety
 Do not mutate database schemas, vaults, registry state, global packages, credentials, or system config without Dave's explicit approval. Keep replies concise and reference paths instead of dumping files.
+
+## Task Queue (Open Engine lane)
+Ticket-level delegation between provider lanes, mid-session — session handoffs stay mandatory, the queue is for individual work items:
+- `nougen queue add -t "<title>" -m "<instructions>" -o <owner_lane> --sources "<context>" --stop "<stop conditions>" --dod "<definition of done>"` — write a self-contained ticket for another lane.
+- `nougen queue claim [-a <agent>]` — atomically claim the oldest eligible ticket (claim lock: one winner). Also `--id <task_id>` for a specific ticket.
+- `nougen queue block --id <task_id> --question "<exact blocking question>"` — on ambiguity, do NOT guess: park in `needs_input` with the precise decision needed.
+- `nougen queue answer --id <task_id> --answer "<answer>"` — answer on the ticket; it re-enters `todo` with the answer attached.
+- `nougen queue done --id <task_id> --did "<what was done>" --evidence "<proof>" [--not-done "<what was not>"]` — receipts are mandatory; a task cannot land without one.
+- `nougen queue list` / `show --id <task_id>` / `smoke` — inspect lanes; smoke test creates, claims, and completes "Say hello from the queue".
+
+Status lanes: `todo -> working -> needs_input -> done` (or `cancelled`). Before planning, each agent should check its lane: `nougen queue list -o <my_lane> --status todo`.
