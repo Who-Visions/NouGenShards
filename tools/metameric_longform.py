@@ -45,8 +45,8 @@ PHASES = [
 ]
 
 CONTEXT = (
-    "NouGenShards is a local-first memory engine for AI agents built by"
-    "Dav3 (Who Visions LLC / NouGenAi): SQLite shard storage across a 9-DB "
+    "NouGenShards is a local-first memory engine for AI agents built by "
+    "Who Visions LLC (NouGenAi): SQLite shard storage across a 9-DB "
     "cluster, FTS5/BM25 plus vector retrieval fused by Bayesian scoring, "
     "utility feedback (mark_utility), temporal grounding (every recalled "
     "memory carries local wall-clock time and relative age), a graph mesh "

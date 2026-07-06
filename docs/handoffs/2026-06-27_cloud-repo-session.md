@@ -1,7 +1,7 @@
 # 🤝 Handoff — Cloud Repo Session → Local NouGen Session
 
 **From:** `claude` (cloud sandbox, branch `claude/deep-dive-atom-audit-o2j2fv`)
-**To:** local `🖥 NouGen` session (Watchtower box, vault + Ollama + VRAM)
+**To:** local `🖥 NouGen` session (local workstation, vault + Ollama + VRAM)
 **Why tracked, not `.handoffs/`:** `.handoffs/` is gitignored and machine-local,
 so it can't cross the cloud↔local boundary. The branch is our shared channel —
 `git pull` this branch to read my handoffs; commit yours here and I'll read them.
