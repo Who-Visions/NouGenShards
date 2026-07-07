@@ -75,7 +75,13 @@ regression.
 **Invariant:** ingest gate rejects/flags low-signal content (density_score
 threshold + extension/shape denylist); bulk importers must classify before
 capture.
-**Status:** ⬜ enforce in `capture()` bulk paths + one-time junk sweep.
+**Status:** ✅ structural blob gate in `core.capture()` — `_looks_like_blob`
+rejects base64/hex/minified dumps (longest whitespace-free run > `NOUGEN_JUNK_MAX_TOKEN`
+that is ≥ `NOUGEN_JUNK_ALPHABET_RATIO` base64/hex charset); same skip contract
+as dedup. Opt-in density floor (`NOUGEN_MIN_DENSITY`, default 0.0 = off) for
+stricter filtering. All thresholds env-discovered. `tests/test_ingest_junk_gate.py`
+(4 tests); war-game `wargames/ingest-junk-gate.md`. ⬜ one-time read-only audit
+of existing blob-shaped shards before any live-vault purge (GM sign-off).
 
 ## 8. Credentials live in the Keymaker, never in shards
 **Failure observed:** key events were neither sharded (amnesia) nor vaulted

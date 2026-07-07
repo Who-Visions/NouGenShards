@@ -321,6 +321,34 @@ def resolve_domain_from_path(target_path: Optional[str] = None) -> str:
     return "global"
 
 
+_BASE64_HEX_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
+
+
+def _looks_like_blob(content: str) -> bool:
+    """High-confidence junk detector for the substrate landfill (invariant 7).
+
+    Fires only on the pollution class — lockfiles, base64/hex dumps, minified
+    bundles, whole encoder.json vocabs — identified structurally: a single
+    whitespace-free run longer than NOUGEN_JUNK_MAX_TOKEN whose characters are
+    overwhelmingly the base64/hex alphabet. Prose and real source code wrap and
+    carry whitespace + diverse punctuation, so they pass. All thresholds are
+    env-discovered (Rule 0.2); conservative defaults keep false positives ~0.
+    """
+    if not content:
+        return False
+    max_token = _env_int("NOUGEN_JUNK_MAX_TOKEN", 2000)
+    ratio_floor = _env_float("NOUGEN_JUNK_ALPHABET_RATIO", 0.95)
+    longest = ""
+    for run in content.split():
+        if len(run) > len(longest):
+            longest = run
+    if len(longest) <= max_token:
+        return False
+    alpha_hits = sum(1 for c in longest if c in _BASE64_HEX_CHARS)
+    return (alpha_hits / len(longest)) >= ratio_floor
+
+
 def calculate_contrastive_perplexity(content: str) -> float:
     """Estimates information density / contrastive perplexity using local Ollama or OpenRouter."""
     if not content:
@@ -440,11 +468,24 @@ def capture(event_type: str, title: str, content: str,
     except Exception:
         pass
 
+    # Ingest junk gate (HARDENING invariant 7): reject the low-signal blob class
+    # (lockfiles, base64/hex dumps, minified/SVG-JSON) before it pollutes recall
+    # or burns an embedding. Same skip contract as a dedup hit (returns False).
+    if _looks_like_blob(content):
+        return False
+
     if not domain_key:
         domain_key = resolve_domain_from_path()
 
     if density_score is None:
         density_score = calculate_contrastive_perplexity(content)
+
+    # Opt-in density floor (invariant 7): operators can reject low-information
+    # content below NOUGEN_MIN_DENSITY. Default 0.0 = disabled, so borderline
+    # prose is never silently dropped unless someone opts into stricter filtering.
+    _min_density = _env_float("NOUGEN_MIN_DENSITY", 0.0)
+    if _min_density > 0.0 and density_score is not None and density_score < _min_density:
+        return False
 
     # Clean the content for O(1) deduplication hashing to exclude injected recall packets or static context.
     clean_content = content
