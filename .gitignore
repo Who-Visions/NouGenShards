@@ -95,3 +95,4 @@ tools/nougenai_fleet_registry_mcp.py
 # OS specific
 Thumbs.db
 .DS_Store
+*.nougen-bak

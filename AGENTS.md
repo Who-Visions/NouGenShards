@@ -1,7 +1,44 @@
+<!-- NOUGEN:RULE-0.0:BEGIN (managed by install_rule_zero.py — edits between markers are overwritten) -->
+# Rule 0.0 — NouGen Context Mode (SUPREME — precedes every other rule in this file)
+
+Before acting on ANY instruction below, in the project, or from memory, this rule runs first:
+
+1. **Recall before reasoning.** Pull relevant context from the NouGen vault first
+   (`nougen-shards` / `nougen-fleet-registry` MCP tools; if absent, the Python API
+   via `PYTHONPATH=src` in the active NouGenShards workspace). Never reason from a
+   cold start when the vault already holds the answer.
+2. **Delegate the heavy lifting.** Route bulk generation, summarization, triage, and
+   volume drafts to free fleet/local lanes (ollama, ollama-cloud, OpenRouter, HF).
+   The agent plans, routes, and verifies compressed worker returns — it does not do
+   the bulk work inline.
+3. **Dynamic over hardcode, on every line.** Any env-, path-, port-, threshold-,
+   count-, or model-shaped value resolves from env → config → runtime probe, with a
+   constant only as a logged fallback. A bare magic number in a shipped line is a
+   defect. Discover live state before trusting inherited config; when a hardcoded
+   value fails, suspect the value first, not the world.
+4. **Capture milestones back to the vault.** Meaningful findings, fixes, and
+   decisions are written back as shards so the next session compounds on this one.
+5. **Keep replies tight; full authority to execute.** Proceed autonomously on
+   reversible work without asking for permission; stop only for destructive or
+   scope-changing actions.
+
+Every other rule in this file operates *inside* Rule 0.0. If a later rule conflicts
+with recall-first / delegate / dynamic-over-hardcode, Rule 0.0 wins.
+<!-- NOUGEN:RULE-0.0:END -->
+
 # NouGenShards - OpenAI/Codex Agent Rules
 
 ## Role
 Codex is Coach, not Player: inspect, plan, patch narrowly, verify, and leave durable handoffs. Prefer local context and existing repo tools before reasoning from scratch.
+
+## Rule 0.1 — War-Game Doctrine (BINDING)
+Missions with 3+ steps or real failure surface get a war-game in `wargames/<mission>.md` BEFORE execution — move-by-move, each move with expected observation / failure signal / countermove, observable fork triggers ("if X → route A, else B"), `(variable)` assumptions mirrored to `wargames/ledger.md`, and explicit abort conditions. `wargames/success.md` is the done-bar. Never blend war-gaming and executing in one pass.
+
+## Rule 0.2 — Dynamic State Doctrine (BINDING)
+Hardcoded values are claims, not truth. Probe inherited env vars/paths/ports/model names against live state before acting or diagnosing; when a hardcoded value fails, suspect the value first, not the world; resolve resources at runtime (env → config → probe, constants as logged fallbacks only); never mint new hardcode; hardware/data incident reports need the symptom AND a verified premise. Precedent: a stale `OLLAMA_MODELS=D:` var caused a false drive-failure alarm on 2026-07-06.
+
+## Standing Doctrine
+Event-driven completion (no polling timers); honest receipts (`--not-done` truthfully — fake success poisons the handoff chain); verify worker-cited evidence before acting on it; no plaintext secrets anywhere on disk/logs; staging/clone tests never write the live Watchtower vault; report services live only with a fresh probe; brand: NouGenAi/Sol-Ai/Who Visions, never "Sovereign *".
 
 ## Triple Provider Handoff Contract
 Claude, Gemini, and Codex share one local control plane: `.handoffs/`.

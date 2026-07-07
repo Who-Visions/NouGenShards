@@ -16,8 +16,30 @@ from typing import List, Optional
 import numpy as np
 
 # Configuration (Module 10: Integrate Constraints)
-MAX_DB_SIZE = 1 * 1024 * 1024 * 1024  # 1GB Safety Limit per DB
-MAX_DB_COUNT = 9
+# Rule 0.2 line-level mandate: environment-shaped values resolve from env with a
+# logged constant as fallback only, never a bare inline literal.
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+
+# Per-DB byte ceiling and cluster count: overridable for constrained hosts or
+# larger grids without editing code.
+MAX_DB_SIZE = _env_int("NOUGEN_MAX_DB_SIZE", 1 * 1024 * 1024 * 1024)  # default 1GB
+MAX_DB_COUNT = _env_int("NOUGEN_MAX_DB_COUNT", 9)
+# SQLite busy timeout (s); embed clamp + timeout for the at-ingest embedder.
+DB_TIMEOUT = _env_float("NOUGEN_DB_TIMEOUT", 10.0)
+EMBED_MAX_CHARS = _env_int("NOUGEN_EMBED_MAX_CHARS", 8000)
+EMBED_TIMEOUT = _env_int("NOUGEN_EMBED_TIMEOUT", 10)
 
 _vault_dir = os.environ.get("NOUGEN_VAULT_DIR")
 if not _vault_dir:
@@ -79,7 +101,7 @@ def get_active_db_index() -> int:
 def get_connection(index: int):
     """Establishes an SQLite connection with WAL enabled (Module 19: Stabilize Reasoning)."""
     path = get_db_path(index)
-    conn = sqlite3.connect(str(path), timeout=10.0)
+    conn = sqlite3.connect(str(path), timeout=DB_TIMEOUT)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.row_factory = sqlite3.Row
     return conn
@@ -234,7 +256,7 @@ def _get_dedup_connection():
     databases per capture. The per-DB UNIQUE(file_hash) constraint remains
     the authority; this index is a router/cache in front of it.
     """
-    conn = sqlite3.connect(str(get_dedup_path()), timeout=10.0)
+    conn = sqlite3.connect(str(get_dedup_path()), timeout=DB_TIMEOUT)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS hashes (
@@ -454,9 +476,9 @@ def capture(event_type: str, title: str, content: str,
             try:
                 from .embedding_backfill import embed as _embed
                 embedding = _embed(
-                    clean_content[:8000],
+                    clean_content[:EMBED_MAX_CHARS],
                     os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text"),
-                    timeout=10)
+                    timeout=EMBED_TIMEOUT)
             except Exception:
                 embedding = None
 
@@ -1210,7 +1232,7 @@ def format_shard_when(timestamp: Optional[str]) -> str:
 # encoder.json vocab) can run to megabytes; a packet must stay readable by a
 # small executor model. The truncation marker preserves the exact handle
 # (id + db_index) so callers can re-query the full body when needed.
-RECALL_SNIPPET_CHARS = 1500
+RECALL_SNIPPET_CHARS = _env_int("NOUGEN_RECALL_SNIPPET_CHARS", 1500)
 
 
 def lane_health() -> dict:
@@ -1252,10 +1274,7 @@ def _empty_recall_notice() -> str:
     # Threshold is discovered from env, not hardcoded (Rule 0.2). Default 50%:
     # below half-embedded, semantic recall is unreliable enough that an empty
     # result cannot be trusted as a true "no match".
-    try:
-        min_cov = float(os.environ.get("NOUGEN_MIN_COVERAGE_PCT", "50"))
-    except ValueError:
-        min_cov = 50.0
+    min_cov = _env_float("NOUGEN_MIN_COVERAGE_PCT", 50.0)
     warn = " DEGRADED SEMANTIC LANE — absence unverified" if cov < min_cov else ""
     return (f"<!-- NO RELEVANT MEMORY RECALLED "
             f"(vault: {h['total_shards']} shards, {cov}% embedded{warn}) -->")

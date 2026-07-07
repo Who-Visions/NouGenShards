@@ -37,35 +37,83 @@ def _resolve_vault_dir():
     return Path.home() / ".nougen" / "shards"
 
 
-def _newest_age_hours(patterns):
-    """Age in hours of the newest file matching any pattern; None if no files."""
-    newest = None
+# Env-discovered knobs (Rule 0.2 — no bare inline literals). The floor is a
+# safety net so a lane that has only ever produced one artifact still has a
+# sane bound; the factor scales the derived threshold above a lane's normal gap.
+def _env_float(name, default):
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+
+FLOOR_HOURS = _env_float("NOUGEN_LANE_FLOOR_HOURS", 48.0)
+STALE_FACTOR = _env_float("NOUGEN_LANE_STALE_FACTOR", 3.0)
+CADENCE_SAMPLE = _env_int("NOUGEN_LANE_CADENCE_SAMPLE", 20)
+
+
+def _mtimes(patterns):
+    """Sorted (desc) modification times of all files matching any pattern."""
+    times = []
     for pat in patterns:
         for f in glob.iglob(pat):
             try:
-                mt = os.path.getmtime(f)
+                times.append(os.path.getmtime(f))
             except OSError:
                 continue
-            if newest is None or mt > newest:
-                newest = mt
-    if newest is None:
+    times.sort(reverse=True)
+    return times
+
+
+def _median(xs):
+    if not xs:
         return None
-    return (datetime.datetime.now().timestamp() - newest) / 3600.0
+    s = sorted(xs)
+    n = len(s)
+    mid = n // 2
+    return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2.0
+
+
+def _derive_threshold_hours(times):
+    """Algorithmic stale threshold: derived from the lane's OWN cadence rather
+    than a fixed constant. Uses the median inter-arrival gap of the most recent
+    CADENCE_SAMPLE artifacts, scaled by STALE_FACTOR, floored at FLOOR_HOURS.
+    A lane that normally emits hourly is flagged in ~STALE_FACTOR hours; a
+    weekly lane gets a proportionally longer leash. Too few samples → floor."""
+    if len(times) < 3:
+        return FLOOR_HOURS
+    recent = times[:CADENCE_SAMPLE]
+    gaps = [(recent[i] - recent[i + 1]) / 3600.0 for i in range(len(recent) - 1)]
+    gaps = [g for g in gaps if g > 0]
+    med = _median(gaps)
+    if not med:
+        return FLOOR_HOURS
+    return max(FLOOR_HOURS, STALE_FACTOR * med)
 
 
 def check_lanes():
     vault = _resolve_vault_dir()
     handoffs = Path(os.environ.get("NOUGEN_HANDOFF_DIR", str(REPO / ".handoffs")))
-    # (lane, glob patterns, stale threshold in hours)
+    # (lane, glob patterns) — thresholds are derived per lane, not hardcoded.
     lanes = [
         ("arxiv", [str(vault / "arxiv_cs_AI_*.md"),
-                   str(vault / "intelligence_shard_arxiv_*.md")], 48),
-        ("vault-intel", [str(vault / "intelligence_shard_*.md")], 48),
-        ("handoffs", [str(handoffs / "handoff_*.md")], 72),
+                   str(vault / "intelligence_shard_arxiv_*.md")]),
+        ("vault-intel", [str(vault / "intelligence_shard_*.md")]),
+        ("handoffs", [str(handoffs / "handoff_*.md")]),
     ]
+    now = datetime.datetime.now().timestamp()
     results = []
-    for name, patterns, threshold in lanes:
-        age = _newest_age_hours(patterns)
+    for name, patterns in lanes:
+        times = _mtimes(patterns)
+        age = None if not times else (now - times[0]) / 3600.0
+        threshold = _derive_threshold_hours(times)
         if age is None:
             status = "EMPTY"
         elif age > threshold:
@@ -75,7 +123,8 @@ def check_lanes():
         results.append({
             "lane": name,
             "newest_age_hours": None if age is None else round(age, 1),
-            "threshold_hours": threshold,
+            "threshold_hours": round(threshold, 1),
+            "cadence_samples": len(times),
             "status": status,
         })
     return results
