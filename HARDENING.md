@@ -40,8 +40,16 @@ lane sat dead for 19 days). ⬜ wire `lane_freshness.py --json` into
 semantic index was 100% dead — a broken sensor reporting absence as fact.
 **Invariant:** recall responses carry lane health (embedding coverage %, FTS
 reachable). Agents must not assert absence from a degraded lane.
-**Status:** ⬜ add health metadata to `recall_memory` / `federated_retrieve`
-returns.
+**Status:** ✅ `core.lane_health()` reports total shards + embedding coverage %
+across the DB grid; both empty-recall paths (`compile_recall_packet`,
+`compile_recall_packet_dual`) now emit that coverage instead of a bare marker,
+flagging "DEGRADED SEMANTIC LANE — absence unverified" below the
+`NOUGEN_MIN_COVERAGE_PCT` threshold (default 50, env-discovered per Rule 0.2).
+Regression suite `tests/test_lane_health.py`. ⬜ surface the same metadata in
+`federated_retrieve` cross-node returns.
+**Known flaky:** `tests/test_graph.py::test_related_relation_filter` leaks/depends
+on global DB state under `pytest-randomly` order (passes isolated + with fixed
+order); pre-existing, unrelated to this invariant.
 
 ## 5. Multi-term queries must not silently AND
 **Failure observed:** FTS returned 0 for "huggingface nougenai token" but

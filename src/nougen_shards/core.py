@@ -1213,10 +1213,58 @@ def format_shard_when(timestamp: Optional[str]) -> str:
 RECALL_SNIPPET_CHARS = 1500
 
 
+def lane_health() -> dict:
+    """Recall-lane health for the substrate (HARDENING invariant 4).
+
+    Returns total shard count and embedding coverage % across the DB grid, so
+    callers never assert "no match" from a degraded semantic lane (a dead
+    embedding index once returned empty recall while 27k shards sat unembedded).
+    Cheap: two COUNT(*) per existing DB. Best-effort — any error yields
+    {"ok": False} rather than raising into a recall path.
+    """
+    try:
+        total = 0
+        embedded = 0
+        for i in range(1, MAX_DB_COUNT + 1):
+            if not get_db_path(i).exists():
+                continue
+            conn = get_connection(i)
+            try:
+                total += conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
+                embedded += conn.execute(
+                    "SELECT COUNT(*) FROM shards WHERE embedding IS NOT NULL").fetchone()[0]
+            finally:
+                conn.close()
+        coverage = (embedded / total * 100.0) if total else 0.0
+        return {"ok": True, "total_shards": total, "embedding_coverage_pct": round(coverage, 1)}
+    except Exception:
+        return {"ok": False}
+
+
+def _empty_recall_notice() -> str:
+    """Empty-recall marker annotated with lane health so absence isn't mistaken
+    for a healthy 'no match' when the semantic lane is degraded (invariant 4)."""
+    h = lane_health()
+    if not h.get("ok"):
+        return ("<!-- NO RELEVANT MEMORY RECALLED (lane health unknown — "
+                "treat absence as unverified) -->")
+    cov = h["embedding_coverage_pct"]
+    # Threshold is discovered from env, not hardcoded (Rule 0.2). Default 50%:
+    # below half-embedded, semantic recall is unreliable enough that an empty
+    # result cannot be trusted as a true "no match".
+    try:
+        min_cov = float(os.environ.get("NOUGEN_MIN_COVERAGE_PCT", "50"))
+    except ValueError:
+        min_cov = 50.0
+    warn = " DEGRADED SEMANTIC LANE — absence unverified" if cov < min_cov else ""
+    return (f"<!-- NO RELEVANT MEMORY RECALLED "
+            f"(vault: {h['total_shards']} shards, {cov}% embedded{warn}) -->")
+
+
 def compile_recall_packet(shards: list) -> str:
     """Synthesis of retrieved experience into a coherent context packet (Module 18)."""
     if not shards:
-        return "<!-- NO RELEVANT MEMORY RECALLED -->"
+        return _empty_recall_notice()
     output = ["=== NOUGENSHARDS RECALL PACKET [BAYESIAN SYNTHESIS] ==="]
     for s in shards:
         # Surface the source DB so callers can target this exact shard in the
@@ -1302,7 +1350,7 @@ def compile_recall_packet_dual(result: dict) -> str:
     episodic_shards = result.get("episodic_shards", [])
     
     if not semantic_rules and not episodic_shards:
-        return "<!-- NO RELEVANT MEMORY RECALLED -->"
+        return _empty_recall_notice()
         
     output = ["=== NOUGENSHARDS DUAL-SYSTEM RECALL PACKET ==="]
     
