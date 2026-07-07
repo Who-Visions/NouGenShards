@@ -25,7 +25,7 @@
 
 ## Move 4 — Integrity gate against the live vault
 - **Action**: READ-ONLY checks: shard count (expect 9,972+), dedup index in sync, FTS5 query returns.
-- **Expect**: counts match pre-move values; zero writes to `C:\Users\super\Watchtower\vault` from clone tests.
+- **Expect**: counts match pre-move values; zero writes to the live Watchtower vault (`NOUGEN_VAULT_DIR`) from clone tests.
 - **Failure signal**: any count drift or write to the live vault.
 - **Countermove**: ABORT (see below) — this is the one non-negotiable.
 

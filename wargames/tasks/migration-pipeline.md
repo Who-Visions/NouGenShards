@@ -10,7 +10,7 @@ Execute a gradual, validated migration of prototype features from the live Memor
 To transition validated prototype capabilities into the public release cycle while maintaining the integrity of the live Memory Vault and ensuring stability for the end-user experience.
 
 ## Known constraints
-*   **Source State:** Memory Vault located at `C:/Users/super/Watchtower/vault`.
+*   **Source State:** Memory Vault at the live Watchtower vault path (resolve via `NOUGEN_VAULT_DIR` / `~/.nougen/config.json`).
 *   **Data Volume:** 9,972 shards distributed across 9 SQLite databases.
 *   **Technical Stack:** FTS5 and embeddings are active.
 *   **Testing Protocol:** All candidates must be validated in `NouGenShards-pull-clone` prior to graduation.

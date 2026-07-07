@@ -47,7 +47,7 @@ regression suite `tests/test_fts_or_fallback.py` (4 tests, incl. AND-preferred
 and bm25 coverage-ordering guards). War-game: `wargames/fts-or-fallback.md`.
 
 ## 6. No machine paths in code
-**Failure observed:** hardcoded `C:\Users\super\...` in scanner + hook meant
+**Failure observed:** hardcoded machine-specific user paths in scanner + hook meant
 public users would write junk dirs; scripts break on any other machine.
 **Invariant:** resolution chain only: `NOUGEN_VAULT_DIR` env →
 `~/.nougen/config.json` → repo-local `.vault` → `~/.nougen/shards`.
