@@ -95,3 +95,17 @@ private-key shapes), so every write path (MCP `capture_experience`, hooks, fleet
 is covered, not just bulk import. Regression suite `tests/test_capture_secret_guard.py`;
 war-game `wargames/capture-secret-guard.md`. ⬜ backfill sweep to redact any
 pre-guard shards already in the substrate.
+
+## 9. Stored embeddings are not plaintext (CANDIDATE — dream-surfaced 2026-07-07)
+**Failure model (not yet observed here):** dense embeddings invert back to their
+source text with high fidelity (arXiv 2606.26373). Invariant 8 redacts the *text*
+field at capture, but the `embedding` BLOB is stored raw — so a leaked
+`nougen_shards_*.db` could reconstruct redacted/sensitive content from its vectors.
+Document-side embedding protection is empirical obfuscation, not a cryptographic
+primitive (known-plaintext Procrustes recovers a rotation from ~retained-dim pairs).
+**Invariant:** a leaked vault must not trivially invert to its source text.
+**Status:** ⬜ war-game first (`wargames/embedding-inversion.md`, TODO). Candidate
+mitigation: SVD-truncate + owner-held orthogonal rotation of stored vectors,
+env-gated (`NOUGEN_EMBED_ROTATION`), applied symmetrically on read/write so cosine
+ranking is preserved. Must not regress retrieval determinism or the tests. Connects
+to invariant 8 (secret-guard) and the "not a black box" sovereignty thesis.
