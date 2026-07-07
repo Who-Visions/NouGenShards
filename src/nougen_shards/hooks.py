@@ -113,7 +113,7 @@ def _fetch_handoff_rows(limit: int = 5, repo_root: Optional[Path] = None) -> Lis
             SELECT handoff_id, agent, status, goal, message, branch, path,
                    created_at, acknowledged_by, acknowledged_at, updated_at
             FROM handoff_records
-            ORDER BY COALESCE(updated_at, created_at) DESC
+            ORDER BY created_at DESC, handoff_id DESC
             LIMIT ?
             """,
             (max(1, limit),),

@@ -21,10 +21,71 @@ all failures are swallowed so a hook can never wedge the session.
 import sys, os, json, glob, time, subprocess, datetime
 from pathlib import Path
 
-REPO = Path(os.environ.get("NOUGEN_REPO", r"C:/Users/super/Watchtower/NouGen/NouGenShards-push-main"))
+# The guard lives in <repo>/tools/, so the repo root is derivable — no
+# machine-specific default needed.
+REPO = Path(os.environ.get("NOUGEN_REPO", str(Path(__file__).resolve().parents[1])))
 HANDOFF_DIR = Path(os.environ.get("NOUGEN_HANDOFF_DIR", str(REPO / ".handoffs")))
 SESS_DIR = HANDOFF_DIR / ".sessions"
 AGENT = os.environ.get("NOUGEN_AGENT", "claude-cli")
+def _resolve_vault_dir():
+    """Portable vault resolution — nothing machine-specific in code:
+    NOUGEN_VAULT_DIR env -> ~/.nougen/config.json {"vault_dir": ...} ->
+    repo-local .vault -> per-user default (mirrors nougen_shards.core)."""
+    env = os.environ.get("NOUGEN_VAULT_DIR")
+    if env:
+        return Path(env)
+    try:
+        cfg = json.loads((Path.home() / ".nougen" / "config.json").read_text(encoding="utf-8"))
+        if cfg.get("vault_dir"):
+            return Path(cfg["vault_dir"])
+    except Exception:
+        pass
+    local = REPO / ".vault"
+    if local.is_dir():
+        return local
+    return Path.home() / ".nougen" / "shards"
+
+
+VAULT_DIR = _resolve_vault_dir()
+
+
+def _write_vault_shard(sid, agent, branch, status, log, handoff_excerpt):
+    """Auto-capture a session intelligence shard into the Watchtower vault.
+
+    The vault's distillation lane went stale when its manual sync stopped
+    running; this makes vault capture structural, same as the handoff stub.
+    Swallows every exception — a hook must never wedge the session.
+    """
+    try:
+        import re
+        sid8 = str(sid)[:8]
+        existing = glob.glob(str(VAULT_DIR / "intelligence_shard_*.md"))
+        # Dedupe per session: filenames embed sid8.
+        if any(f"_session_{sid8}_" in os.path.basename(f) for f in existing):
+            return
+        max_id = 0  # dynamic: next id is always max(existing)+1, any vault
+        pat = re.compile(r"intelligence_shard_(\d+)_")
+        for f in existing:
+            m = pat.search(os.path.basename(f))
+            if m:
+                max_id = max(max_id, int(m.group(1)))
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        excerpt = (handoff_excerpt or "")[:1200]
+        body = (f"# 🌑 SESSION_INTEL {max_id + 1}: Auto Session Capture\n\n"
+                f"**Agent:** {agent}\n"
+                f"**Session ID:** `{sid}`\n"
+                f"**Branch:** `{branch}`\n"
+                f"**Captured:** {ts}\n\n"
+                f"## 📜 System Ledger\n\n"
+                f"### Recent Commits\n```\n{log or '(none)'}\n```\n\n"
+                f"### Uncommitted Changes\n```\n{status or '(clean)'}\n```\n\n"
+                f"## 🛤️ Latest Handoff Excerpt\n{excerpt}\n\n"
+                f"> Auto-captured by handoff_guard vault lane.\n")
+        VAULT_DIR.mkdir(parents=True, exist_ok=True)
+        name = f"intelligence_shard_{max_id + 1}_auto_session_{sid8}_{ts}.md"
+        (VAULT_DIR / name).write_text(body, encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _arg(name, default=None):
@@ -107,13 +168,16 @@ def main():
         return
 
     if mode == "sessionend":
+        branch = _git("branch", "--show-current") or "unknown"
+        status = _git("status", "--short") or "(clean)"
+        log = _git("log", "--oneline", "-3")
+        # Vault capture is unconditional: the probe's "last memory" must
+        # reflect every working session, not just ones missing a handoff.
+        _write_vault_shard(sid, AGENT, branch, status, log, _newest_text(1200))
         if fresh:
             _cleanup(marker)
             return
         # Auto-write a stub so the session is never traceless.
-        branch = _git("branch", "--show-current") or "unknown"
-        status = _git("status", "--short") or "(clean)"
-        log = _git("log", "--oneline", "-3")
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         body = (f"# 🤝 Agent Handoff (AUTO): {branch} @ {ts}\n\n"
                 f"**Agent**: `{AGENT}` (auto-stub — agent ended without writing one)\n"

@@ -76,3 +76,25 @@ Target cache health is **90%+ cache-read share**. Before broad scans, synthesis,
   - <Maintenance windows, releases, stress tests; otherwise 'None'>
   ```
 
+
+## Model Scorecard & Effort Doctrine
+**Glossary** — *intelligence*: hardest problem the model handles unsupervised. *taste*: UI/UX, code quality, API design, copy. *cost*: real marginal cost given subs and free lanes.
+
+| Lane | Cost | Intelligence | Taste | Use for |
+|---|---|---|---|---|
+| fable-5 (sub until ~Jul 8, then API) | high | 10 | 10 | war-games, architecture, design direction, hardest reviews |
+| opus-4.8 | mid | 8 | 9 | daily driver when Fable is out of reach |
+| codex / gpt-5.5 (codex CLI, generous sub) | ~free | 9 | 4 | bulk mechanical work, log digging, giant docs, computer use, independent review |
+| gemini (CLI) | low | 7 | 6 | frontend scaffolds, second opinions |
+| gemma4:31b-cloud + local e-models (ollama) | 0 | 5-6 | 4 | volume drafts, summarization, triage, distillation |
+| haiku | — | — | — | never |
+
+**Effort ceiling: HIGH.** Reasoning effort applies per tool call, not per run — xhigh/max/ultra overthink each step into overdone code at higher cost. Low-high all sustain long runs. Default high.
+
+**Escalation policy**: these are defaults, not limits — standing permission to escalate without asking. Judge the output, not the price tag; escalating costs less than shipping mediocre work. Use cheap lanes to gather info and try things, then move the work up.
+
+**Time-to-fix signal**: <3 min = simple, file it. ~15 min = review with attention. 1 hr+ = architecture smell — investigate the design before merging.
+
+**Staging/prod gate**: agent lanes may merge to staging freely; production deploys are always human-in-the-loop.
+
+**Cross-CLI shell-out**: skills `codex-review`, `gemini-review`, `fleet-draft` (~/.claude/skills) shell out to rival lanes. Prompt them simply (they are not Claude); reviewers must say clearly when they find nothing and name what they inspected.

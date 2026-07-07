@@ -429,6 +429,21 @@ def capture(event_type: str, title: str, content: str,
         target_idx = get_write_index(fhash)
         init_db(target_idx)
 
+        if embedding is None:
+            # Embed at ingest so shards are born recallable — NULL embeddings
+            # killed the semantic lane once (27k-shard backfill); never again.
+            # Best-effort: a down/absent embed model degrades to keyword-only
+            # recall for this shard (backfill sweeps it later), never blocks
+            # capture.
+            try:
+                from .embedding_backfill import embed as _embed
+                embedding = _embed(
+                    clean_content[:8000],
+                    os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text"),
+                    timeout=10)
+            except Exception:
+                embedding = None
+
         emb_blob = None
         if embedding:
             arr = np.array(embedding, dtype=np.float32)
@@ -544,7 +559,7 @@ def _process_fts_result(row, db_index, query_embedding):
     return item
 
 
-def _build_fts_match_query(query: str) -> Optional[str]:
+def _build_fts_match_query(query: str, joiner: str = " ") -> Optional[str]:
     """
     Build a safe FTS5 MATCH expression from arbitrary user input.
 
@@ -555,6 +570,11 @@ def _build_fts_match_query(query: str) -> Optional[str]:
     search silently degrades to a LIKE substring scan. Tokens shorter than 3 chars
     are dropped because the trigram tokenizer cannot index them. Returns None when
     nothing matchable remains (caller then uses the LIKE fallback).
+
+    `joiner` controls the operator between phrases: the default single space is
+    FTS5 implicit AND; callers pass '" OR "' with surrounding spaces via the
+    ranked-OR retry so conversational queries where terms never co-occur still
+    match (bm25 ranks fuller-coverage rows first).
     """
     tokens = [t for t in query.split() if len(t) >= 3]
     if not tokens:
@@ -571,7 +591,7 @@ def _build_fts_match_query(query: str) -> Optional[str]:
     if filtered_tokens:
         tokens = filtered_tokens
 
-    return " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
+    return joiner.join('"' + t.replace('"', '""') + '"' for t in tokens)
 
 
 def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[List[float]] = None,
@@ -586,8 +606,21 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
         conn = get_connection(i)
         try:
             fts_worked = False
+            # Two-pass MATCH: implicit AND first (precision), then the same
+            # safe-quoted tokens joined with OR (recall). Multi-term
+            # conversational queries used to die here — "huggingface nougenai
+            # token" returned 0 rows on AND semantics while "huggingface"
+            # alone matched thousands, and the LIKE fallback (`%whole query%`)
+            # is stricter still. bm25 ranking keeps fuller-coverage rows first
+            # on the OR pass. (HARDENING invariant 5)
+            match_attempts = []
             fts_query = _build_fts_match_query(query)
             if fts_query is not None:
+                match_attempts.append(fts_query)
+                or_query = _build_fts_match_query(query, joiner=" OR ")
+                if or_query and or_query != fts_query:
+                    match_attempts.append(or_query)
+            for match_expr in match_attempts:
                 try:
                     # domain_key None/"*" => search ALL domains (whole brain), not one bucket.
                     dom_clause = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
@@ -598,15 +631,16 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
                         WHERE {dom_clause}shards_fts MATCH ?
                         ORDER BY bm25_score ASC LIMIT ?
-                    """, (*dom_params, fts_query, limit))
+                    """, (*dom_params, match_expr, limit))
                     res = cursor.fetchall()
                     if res:
                         for row in res:
                             history.log_event(row["id"], i, "ACCESSED")
                             results.append(_process_fts_result(row, i, query_embedding))
                         fts_worked = True
+                        break
                 except sqlite3.OperationalError:
-                    pass
+                    break
 
             if not fts_worked:
                 history.log_event(0, i, "SEARCH_FALLBACK", metadata={"query": query})
@@ -1156,6 +1190,13 @@ def format_shard_when(timestamp: Optional[str]) -> str:
     return f"{local.strftime('%Y-%m-%d %I:%M %p %Z').strip()} ({rel})"
 
 
+# Per-record body cap for recall packets. Whole-file CODE_SHARDs (e.g. a raw
+# encoder.json vocab) can run to megabytes; a packet must stay readable by a
+# small executor model. The truncation marker preserves the exact handle
+# (id + db_index) so callers can re-query the full body when needed.
+RECALL_SNIPPET_CHARS = 1500
+
+
 def compile_recall_packet(shards: list) -> str:
     """Synthesis of retrieved experience into a coherent context packet (Module 18)."""
     if not shards:
@@ -1168,7 +1209,14 @@ def compile_recall_packet(shards: list) -> str:
         db_tag = f" (db {db_idx})" if db_idx is not None else ""
         output.append(f"--- RECORD #{s['id']}{db_tag} [Score: {s['final_score']:.2f}] ---")
         output.append(f"When: {format_shard_when(s.get('timestamp'))}")
-        output.append(f"Title: {s['title']}\n{s['content']}\n")
+        content = s["content"] or ""
+        if len(content) > RECALL_SNIPPET_CHARS:
+            omitted = len(content) - RECALL_SNIPPET_CHARS
+            content = (
+                content[:RECALL_SNIPPET_CHARS]
+                + f"\n[... truncated {omitted:,} chars — full body: shard_get(shard_id={s['id']}, db_index={db_idx}) ...]"
+            )
+        output.append(f"Title: {s['title']}\n{content}\n")
     # "Anghkooey" — "remember" (FROM). Spoken only when recall succeeds:
     # the engine's acknowledgment that a past life was actually surfaced.
     output.append("Anghkooey — NouGenShards remembers.")
