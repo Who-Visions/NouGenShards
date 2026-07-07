@@ -402,6 +402,22 @@ def capture(event_type: str, title: str, content: str,
             tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
             domain_key: Optional[str] = None, density_score: Optional[float] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants)."""
+    # Structural secret guard (HARDENING invariant 8): redact known credential
+    # shapes from title/content/tags before anything is hashed, embedded, or
+    # written. Shards may hold key names + fingerprints, never plaintext values
+    # (Atibon/Keymaker doctrine). Redacting before the dedup hash means the
+    # shard identity is the clean text and the hash never encodes a secret.
+    # Best-effort: the redactor is stdlib-re only, but a failure must never
+    # block capture.
+    try:
+        from .brain_scan.redaction import redact_content as _redact
+        title = _redact(title)
+        content = _redact(content)
+        if tags:
+            tags = [_redact(t) for t in tags]
+    except Exception:
+        pass
+
     if not domain_key:
         domain_key = resolve_domain_from_path()
 

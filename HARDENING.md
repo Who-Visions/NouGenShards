@@ -56,8 +56,10 @@ and bm25 coverage-ordering guards). War-game: `wargames/fts-or-fallback.md`.
 public users would write junk dirs; scripts break on any other machine.
 **Invariant:** resolution chain only: `NOUGEN_VAULT_DIR` env →
 `~/.nougen/config.json` → repo-local `.vault` → `~/.nougen/shards`.
-**Status:** ✅ handoff_guard, arxiv scanner. ⬜ repo-wide audit for remaining
-literals.
+**Status:** ✅ handoff_guard, arxiv scanner, lane_freshness. ✅ repo-wide code
+audit (2026-07-06): no machine-specific path literals remain in `src/` or
+`tools/` outside resolution fallbacks. ⬜ periodic re-audit in CI to prevent
+regression.
 
 ## 7. The substrate is not a landfill
 **Failure observed:** lockfiles, base64 blobs, and SVG JSON sharded as
@@ -72,5 +74,10 @@ capture.
 (until asked) — and shards must never hold the fix (plaintext secrets).
 **Invariant:** secret values → DPAPI vault (`agent_secrets.db`) + fingerprint
 ledger only. Shards may reference key *names* and fingerprints, never values.
-**Status:** ✅ doctrine + Atibon flow. ⬜ pre-capture regex guard (`hf_...`,
-`sk-...`, `AIza...`) that redacts before any shard write.
+**Status:** ✅ doctrine + Atibon flow. ✅ structural pre-capture guard —
+`core.capture()` runs `brain_scan.redaction.redact_content` over title/content/
+tags before hashing, embedding, or writing (redacts `hf_`/`sk-`/`AIza`/JWT/DB-URL/
+private-key shapes), so every write path (MCP `capture_experience`, hooks, fleet)
+is covered, not just bulk import. Regression suite `tests/test_capture_secret_guard.py`;
+war-game `wargames/capture-secret-guard.md`. ⬜ backfill sweep to redact any
+pre-guard shards already in the substrate.
