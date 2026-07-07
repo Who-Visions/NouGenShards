@@ -27,8 +27,13 @@ shard, never blocks capture. Backfill sweeps stragglers.
 Jun 18 — both failed silently for weeks.
 **Invariant:** every ingestion lane exposes last-success age; the startup probe
 reports any lane stale > 48h as a warning, not silence.
-**Status:** ⬜ add lane-freshness check to `sol_hi_probe.ps1` / `mesh_health`
-(vault newest-shard age, arxiv newest-shard age, handoff newest age).
+**Status:** ✅ `tools/lane_freshness.py` — stdlib-only sensor (never raises,
+exits 0, ASCII output) reporting newest-artifact age for arxiv / vault-intel /
+handoff lanes with per-lane thresholds; `--json` for probes. ✅ daily 8 AM
+scheduled task runs the arxiv RSS scan + freshness report with 30-day API
+backfill as the recovery path (2026-07-06: backfilled 4,645 papers after the
+lane sat dead for 19 days). ⬜ wire `lane_freshness.py --json` into
+`sol_hi_probe.ps1` / `mesh_health` for session-start visibility.
 
 ## 4. Empty result ≠ healthy "no match"
 **Failure observed:** recall lanes answered "no relevant shards" while the
