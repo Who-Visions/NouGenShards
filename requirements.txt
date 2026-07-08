@@ -211,7 +211,7 @@ typer==0.25.1
     #   gradio
     #   hf-gradio
     #   huggingface-hub
-typing-extensions==4.15.0
+typing-extensions==4.16.0
     # via
     #   anyio
     #   fastapi
