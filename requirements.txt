@@ -46,7 +46,7 @@ fastapi==0.139.0
     # via
     #   nougen-shards (pyproject.toml)
     #   gradio
-filelock==3.29.4
+filelock==3.29.7
     # via huggingface-hub
 fsspec==2026.6.0
     # via
