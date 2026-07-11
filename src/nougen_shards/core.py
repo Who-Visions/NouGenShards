@@ -38,6 +38,9 @@ MAX_DB_SIZE = _env_int("NOUGEN_MAX_DB_SIZE", 1 * 1024 * 1024 * 1024)  # default 
 MAX_DB_COUNT = _env_int("NOUGEN_MAX_DB_COUNT", 9)
 # SQLite busy timeout (s); embed clamp + timeout for the at-ingest embedder.
 DB_TIMEOUT = _env_float("NOUGEN_DB_TIMEOUT", 10.0)
+# Recency half-life for recall scoring. 30d rots month-old doctrine shards to
+# the floor while fresh high-volume domains (arXiv) score ~1.0 and swamp recall.
+RECALL_DECAY_HALFLIFE_DAYS = _env_float("NOUGEN_RECALL_DECAY_HALFLIFE_DAYS", 30.0)
 EMBED_MAX_CHARS = _env_int("NOUGEN_EMBED_MAX_CHARS", 8000)
 EMBED_TIMEOUT = _env_int("NOUGEN_EMBED_TIMEOUT", 10)
 
@@ -627,7 +630,7 @@ def _process_fts_result(row, db_index, query_embedding):
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-            decay = max(0.1, 0.5 ** (age_days / 30.0))
+            decay = max(0.1, 0.5 ** (age_days / RECALL_DECAY_HALFLIFE_DAYS))
         except Exception:
             pass
 
@@ -760,7 +763,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                             if dt.tzinfo is None:
                                 dt = dt.replace(tzinfo=timezone.utc)
                             age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                            decay = max(0.1, 0.5 ** (age_days / 30.0))
+                            decay = max(0.1, 0.5 ** (age_days / RECALL_DECAY_HALFLIFE_DAYS))
                         except Exception:
                             pass
 
@@ -826,7 +829,7 @@ def _vector_retrieve_ann(query_embedding: List[float], limit: int = 20,
                         if dt.tzinfo is None:
                             dt = dt.replace(tzinfo=timezone.utc)
                         age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                        decay = max(0.1, 0.5 ** (age_days / 30.0))
+                        decay = max(0.1, 0.5 ** (age_days / RECALL_DECAY_HALFLIFE_DAYS))
                     except Exception:
                         pass
                 decayed_utility = item["utility_score"] * decay
@@ -894,7 +897,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                         if dt.tzinfo is None:
                             dt = dt.replace(tzinfo=timezone.utc)
                         age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                        decay = max(0.1, 0.5 ** (age_days / 30.0))
+                        decay = max(0.1, 0.5 ** (age_days / RECALL_DECAY_HALFLIFE_DAYS))
                     except Exception:
                         pass
 
@@ -960,7 +963,7 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
                 age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                decay = max(0.1, 0.5 ** (age_days / 30.0))
+                decay = max(0.1, 0.5 ** (age_days / RECALL_DECAY_HALFLIFE_DAYS))
             except Exception:
                 pass
         decayed_utility = item.get("utility_score", 1.0) * decay
@@ -1088,7 +1091,9 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         if norm > 0:
             query_embedding = arr / norm
 
-    candidate_limit = max(limit * 2, 20)
+    # Pool size env-tunable (Rule 0.2): too small a pool lets high-volume domains
+    # (e.g. 6.6K arXiv shards) crowd out sparse operational shards before fusion.
+    candidate_limit = max(limit * 2, int(os.environ.get("NOUGEN_RECALL_CANDIDATES", "20")))
 
     def run_parallel_retrieval(active_domain: str) -> list:
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -1144,7 +1149,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
                 age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                decay = max(0.1, 0.5 ** (age_days / 30.0))
+                decay = max(0.1, 0.5 ** (age_days / RECALL_DECAY_HALFLIFE_DAYS))
             except Exception:
                 pass
         
