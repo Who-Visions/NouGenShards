@@ -103,8 +103,11 @@ def check_lanes():
     handoffs = Path(os.environ.get("NOUGEN_HANDOFF_DIR", str(REPO / ".handoffs")))
     # (lane, glob patterns) — thresholds are derived per lane, not hardcoded.
     lanes = [
-        ("arxiv", [str(vault / "arxiv_cs_AI_*.md"),
-                   str(vault / "intelligence_shard_arxiv_*.md")]),
+        # One lane per artifact type: a combined glob takes the newest across
+        # both, so one artifact flowing masks the other dying (the daily-doc
+        # lane died 2026-07-06 unnoticed for 5 days behind flowing shards).
+        ("arxiv-daily-docs", [str(vault / "arxiv_cs_AI_*.md")]),
+        ("arxiv-shards", [str(vault / "intelligence_shard_arxiv_*.md")]),
         ("vault-intel", [str(vault / "intelligence_shard_*.md")]),
         ("handoffs", [str(handoffs / "handoff_*.md"),
                       str(handoffs / "**" / "handoff_*.md")]),
