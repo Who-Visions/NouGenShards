@@ -63,7 +63,7 @@ def _mtimes(patterns):
     """Sorted (desc) modification times of all files matching any pattern."""
     times = []
     for pat in patterns:
-        for f in glob.iglob(pat):
+        for f in glob.iglob(pat, recursive=True):
             try:
                 times.append(os.path.getmtime(f))
             except OSError:
@@ -106,7 +106,8 @@ def check_lanes():
         ("arxiv", [str(vault / "arxiv_cs_AI_*.md"),
                    str(vault / "intelligence_shard_arxiv_*.md")]),
         ("vault-intel", [str(vault / "intelligence_shard_*.md")]),
-        ("handoffs", [str(handoffs / "handoff_*.md")]),
+        ("handoffs", [str(handoffs / "handoff_*.md"),
+                      str(handoffs / "**" / "handoff_*.md")]),
     ]
     now = datetime.datetime.now().timestamp()
     results = []
