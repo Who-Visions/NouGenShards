@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 
 @dataclass
 class NormalizedRecord:
@@ -24,5 +24,5 @@ class CandidateFile:
     path: Path
     tool: str
     is_project_context: bool
-    score_tier: str  # "high", "medium", "low"
+    score_tier: Literal["high", "medium", "low"]
     size_mb: float

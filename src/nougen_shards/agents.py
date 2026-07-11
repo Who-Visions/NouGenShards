@@ -10,7 +10,6 @@ Names carry meaning: Sol-Ai is Soleil — "sun" in Kreyol. Anghkooey means
 "remember". NouGen is the orchestrator because the core is namable in itself.
 """
 import json
-import urllib.request
 from dataclasses import dataclass, field
 from typing import List, Optional
 from nougen_shards.gatekeeper import check_mutation_gate

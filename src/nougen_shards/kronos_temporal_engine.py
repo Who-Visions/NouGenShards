@@ -27,6 +27,10 @@ class TemporalNexusShard:
             raise FileNotFoundError(f"Target substrate file not found: {self.file_path}")
              
         stat = os.stat(self.file_path)
+        # st_birthtime exists on macOS/BSD; Windows' st_ctime is creation time
+        # (our primary Stadium platform), so this fallback is accurate there.
+        # On Linux, st_ctime is metadata-change time, not creation — 'btime'
+        # would be approximate on that platform only.
         self.physical_dimensions['btime'] = getattr(stat, 'st_birthtime', stat.st_ctime)
         self.physical_dimensions['mtime'] = stat.st_mtime
         self.physical_dimensions['ctime'] = stat.st_ctime

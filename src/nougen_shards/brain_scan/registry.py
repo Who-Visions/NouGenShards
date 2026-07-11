@@ -1,12 +1,13 @@
 from pathlib import Path
+from typing import List
 
 # Known source adapters / tools
-KNOWN_TOOLS = [
+KNOWN_TOOLS: List[str] = [
     "gemini", "claude", "codex", "cursor", "continue", "copilot",
     "openhands", "mem0", "ollama", "qwen", "roo", "vscode", "github"
 ]
 
-GLOBAL_ROOTS = [
+GLOBAL_ROOTS: List[Path] = [
     Path.home(),
     Path.home() / ".claude",
     Path.home() / ".codex",

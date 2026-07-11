@@ -71,12 +71,20 @@ def check_mutation_gate(command: str, parameters: dict = None) -> dict:
             }
 
     # 3. Dry-run False Gate
-    if parameters and parameters.get("dry_run") is False:
-        return {
-            "allowed": False,
-            "reason": "Actions with dry_run=False require GM approval.",
-            "gate": "dry_run_false"
-        }
+    # Fail-closed: any parameters dict that doesn't clearly assert dry_run is
+    # truthy is treated as a write attempt. `is False` alone missed dry_run="false"
+    # / dry_run=0 from JSON/CLI callers, silently letting write-mode bypass the gate.
+    if parameters and "dry_run" in parameters:
+        dry_run = parameters.get("dry_run")
+        is_truthy_dry_run = dry_run is True or (
+            isinstance(dry_run, str) and dry_run.strip().lower() in ("true", "1", "yes", "on")
+        )
+        if not is_truthy_dry_run:
+            return {
+                "allowed": False,
+                "reason": "Actions with dry_run=False require GM approval.",
+                "gate": "dry_run_false"
+            }
 
     # 4. Paid / Billing / Quota Gate
     billing_patterns = [

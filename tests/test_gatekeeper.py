@@ -81,6 +81,14 @@ class TestGatekeeper(unittest.TestCase):
         self.assertEqual(res["gate"], "dry_run_false")
         self.assertIn("GM approval", res["reason"])
 
+    def test_direct_checks_blocked_dry_run_falsy_non_bool(self):
+        """Non-bool falsy dry_run values (string/int from JSON/CLI callers)
+        must still trip the gate — fail closed, not just on exact `is False`."""
+        for value in ("false", "False", 0, "0", "no"):
+            res = check_mutation_gate("safe query", {"dry_run": value})
+            self.assertFalse(res["allowed"], f"dry_run={value!r} should be blocked")
+            self.assertEqual(res["gate"], "dry_run_false")
+
     def test_direct_checks_blocked_billing(self):
         """Test check_mutation_gate blocks billing and budget modifications."""
         commands = [
