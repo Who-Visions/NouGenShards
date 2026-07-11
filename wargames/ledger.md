@@ -6,4 +6,4 @@
 - `(fable_credit_budget)` — usage-credit ceiling for post-Jul-7 single-move Fable escalations. Until set: escalate only on explicit GM call.
 
 ## Resolved
-- (none yet)
+- `(backfill_depth)` [arxiv-evolution] — GM ordered backfill 2026-07-11 ("start with backfilling arxiv"). Executed: Jul 7-10 gap filled (409 daily docs + shard parity) via tools/arxiv_gap_backfill.py; daily-doc lane made unconditional in the arxiv-daily-scan scheduled task. The 6,604-shard *digest* backlog remains forward-only per Stadium physics.
