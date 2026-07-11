@@ -41,6 +41,8 @@ DB_TIMEOUT = _env_float("NOUGEN_DB_TIMEOUT", 10.0)
 # Recency half-life for recall scoring. 30d rots month-old doctrine shards to
 # the floor while fresh high-volume domains (arXiv) score ~1.0 and swamp recall.
 RECALL_DECAY_HALFLIFE_DAYS = _env_float("NOUGEN_RECALL_DECAY_HALFLIFE_DAYS", 30.0)
+ARXIV_RECALL_WEIGHT = _env_float("NOUGEN_RECALL_ARXIV_WEIGHT", 1.0)
+RECALL_LANE_CHAMPIONS = _env_int("NOUGEN_RECALL_LANE_CHAMPIONS", 0)
 EMBED_MAX_CHARS = _env_int("NOUGEN_EMBED_MAX_CHARS", 8000)
 EMBED_TIMEOUT = _env_int("NOUGEN_EMBED_TIMEOUT", 10)
 
@@ -569,10 +571,18 @@ def capture(event_type: str, title: str, content: str,
 
 
 # Relevance blend weights (Module 20)
-WEIGHT_BM25 = 0.4
-WEIGHT_SEMANTIC = 0.6
-WEIGHT_LIKELIHOOD = 0.7
-WEIGHT_PRIOR = 0.3
+WEIGHT_BM25 = _env_float("NOUGEN_RECALL_WEIGHT_BM25", 0.4)
+WEIGHT_SEMANTIC = _env_float("NOUGEN_RECALL_WEIGHT_SEMANTIC", 0.6)
+WEIGHT_LIKELIHOOD = _env_float("NOUGEN_RECALL_WEIGHT_LIKELIHOOD", 0.7)
+WEIGHT_PRIOR = _env_float("NOUGEN_RECALL_WEIGHT_PRIOR", 0.3)
+
+
+def _squash_utility(u: float) -> float:
+    """Map unbounded utility (grows via ACCESSED feedback, observed up to ~4.3)
+    into [0,1) so the prior can never drown the bounded semantic likelihood —
+    unbounded priors made incumbents win over perfect semantic matches
+    (rich-get-richer, diagnosed 2026-07-11 via the recall probe)."""
+    return u / (1.0 + u) if u > 0 else 0.0
 
 # Stage-2 cross-encoder reranker (Tier-1 elevation). 2026 SOTA: a hybrid->rerank
 # two-stage pipeline lifts Recall@5 ~+17% / MRR ~+40% over RRF alone. Off by
@@ -637,7 +647,7 @@ def _process_fts_result(row, db_index, query_embedding):
     decayed_utility = item["utility_score"] * decay
 
     # 4. Final relevance: a weighted blend of the likelihood signal and the decayed utility score
-    item["final_score"] = (likelihood * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
+    item["final_score"] = (likelihood * WEIGHT_LIKELIHOOD) + (_squash_utility(decayed_utility) * WEIGHT_PRIOR)
     return item
 
 
@@ -833,7 +843,7 @@ def _vector_retrieve_ann(query_embedding: List[float], limit: int = 20,
                     except Exception:
                         pass
                 decayed_utility = item["utility_score"] * decay
-                item["final_score"] = (sem_score * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
+                item["final_score"] = (sem_score * WEIGHT_LIKELIHOOD) + (_squash_utility(decayed_utility) * WEIGHT_PRIOR)
                 results.append(item)
         finally:
             conn.close()
@@ -881,13 +891,19 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                     if item["embedding"].startswith(b'['):
                         raise ValueError("Legacy JSON embedding")
                     emb_array = np.frombuffer(item["embedding"], dtype=np.float32)
-                    sem_score = float(np.dot(query_embedding, emb_array))
                 except Exception:
                     try:
                         emb_array = np.array(json.loads(item["embedding"].decode()), dtype=np.float32)
-                        sem_score = float(np.dot(query_embedding, emb_array))
                     except Exception:
-                        sem_score = 0.0
+                        emb_array = None
+                if emb_array is None:
+                    sem_score = 0.0
+                else:
+                    # True cosine: stored embeddings are not guaranteed unit-norm,
+                    # and an unnormalized dot silently rescales the likelihood
+                    # term against the utility prior (diagnosed 2026-07-11).
+                    e_norm = float(np.linalg.norm(emb_array))
+                    sem_score = float(np.dot(query_embedding, emb_array)) / e_norm if e_norm > 0 else 0.0
 
                 decay = 1.0
                 ts_str = item.get("timestamp")
@@ -902,7 +918,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                         pass
 
                 decayed_utility = item["utility_score"] * decay
-                item["final_score"] = (sem_score * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
+                item["final_score"] = (sem_score * WEIGHT_LIKELIHOOD) + (_squash_utility(decayed_utility) * WEIGHT_PRIOR)
                 results.append(item)
         finally:
             conn.close()
@@ -1095,7 +1111,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     # (e.g. 6.6K arXiv shards) crowd out sparse operational shards before fusion.
     candidate_limit = max(limit * 2, int(os.environ.get("NOUGEN_RECALL_CANDIDATES", "20")))
 
-    def run_parallel_retrieval(active_domain: str) -> list:
+    def run_parallel_retrieval(active_domain: str):
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_keyword = executor.submit(
                 _keyword_retrieve, query, candidate_limit, query_embedding, active_domain
@@ -1103,19 +1119,20 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             future_vector = executor.submit(
                 _vector_retrieve, query_embedding, candidate_limit, active_domain
             )
-            
+
             keyword_results = future_keyword.result()
             vector_results = future_vector.result()
-            
-        return reciprocal_rank_fusion([keyword_results, vector_results], k=60)
 
-    all_results = run_parallel_retrieval(domain_key)
-    
+        fused = reciprocal_rank_fusion([keyword_results, vector_results], k=60)
+        return fused, keyword_results, vector_results
+
+    all_results, kw_lane, vec_lane = run_parallel_retrieval(domain_key)
+
     # Fallback: if the domain-scoped pass found nothing, sweep the ENTIRE brain
     # (all domain_keys). Without this, recall stays siloed to one bucket
     # (e.g. 'global' = <2% of shards) and misses the other 47k+ shards.
     if not all_results and domain_key != "*":
-        all_results = run_parallel_retrieval("*")
+        all_results, kw_lane, vec_lane = run_parallel_retrieval("*")
 
     # Stage 2: cross-encoder rerank the top RRF candidates (no-op unless enabled).
     if RERANK_ENABLED:
@@ -1156,6 +1173,11 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         density = item.get("density_score", 1.0)
 
         u_shard = (1.0 * relevance) * decay * density
+        # High-volume domain damper (Rule 0.2, default-neutral): ~6.6K sharp
+        # single-topic arXiv abstracts outrank sparse operational doctrine on
+        # paraphrase queries. Set NOUGEN_RECALL_ARXIV_WEIGHT<1 to rebalance.
+        if ARXIV_RECALL_WEIGHT != 1.0 and "arxiv" in (item.get("title") or "").lower():
+            u_shard *= ARXIV_RECALL_WEIGHT
         item["utility_score_tripartite"] = u_shard
         scored_results.append(item)
     
@@ -1178,6 +1200,23 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         
     # Stage 3: MMR diversification so near-duplicates don't crowd the packet
     diversified = mmr_diversify(surviving, limit)
+
+    # Lane champions (Rule 0.2, default-neutral): RRF rewards cross-lane
+    # consensus, so a vector-#1 that never ranks in the keyword lane (typical
+    # for doctrine matched by meaning, not words) gets crowded out by mid-rank
+    # items appearing in both lanes. Guarantee each lane's top-N a seat.
+    if RECALL_LANE_CHAMPIONS > 0:
+        def _ckey(it):
+            return (it.get("id"), (it.get("title") or "")[:80])
+        present = {_ckey(it) for it in diversified}
+        champs = []
+        for lane in (kw_lane, vec_lane):
+            for it in lane[:RECALL_LANE_CHAMPIONS]:
+                if _ckey(it) not in present:
+                    champs.append(it)
+                    present.add(_ckey(it))
+        if champs:
+            diversified = champs + diversified
 
     # Lost in the Middle Mitigation (interleave)
     reordered = lost_in_the_middle_reorder(diversified[:limit])
