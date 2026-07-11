@@ -57,6 +57,7 @@ Target cache health is **90%+ cache-read share** for repeated work.
 - Prefer compact context cards over raw transcripts, full handoff bodies, full token reports, or whole-file dumps.
 - Open exact files and line ranges only; preserve evidence as paths, event IDs, commands, and error codes.
 - If cache health drops below 85% or input spikes, stop exploration, write a compact handoff/context note, then continue from that anchor.
+- **Hard cap (incident 2026-06-29)**: a single Codex session replayed ~190K input tokens per call, 20+ calls in 6 minutes (11.8M fresh input in one day, 48% cache share). When session context approaches ~100K tokens, STOP — write the anchor note and start a fresh session from it. Never keep iterating inside a maxed context.
 - Hook surface: `src/nougen_shards/hooks.py` provides semantic-anchor compaction via `pre_tool_use_hook`. Installing shell/global hooks remains mutation-gated.
 - Local preflight wrapper: `.nougen-hooks\codex-anchor.cmd`. Use it when PowerShell execution policy blocks `.nougen-hooks\codex-anchor.ps1`.
 
