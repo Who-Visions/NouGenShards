@@ -80,6 +80,7 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
 
     # 5. Merge and re-rank via Reciprocal Rank Fusion (RRF)
     # (Module 21: Orchestrate Convergence)
-    combined = core.reciprocal_rank_fusion([local_results, external_results, cloud_results], k=60)
+    rrf_k = int(os.environ.get("NOUGEN_RRF_K", "60"))
+    combined = core.reciprocal_rank_fusion([local_results, external_results, cloud_results], k=rrf_k)
 
     return combined[:limit]

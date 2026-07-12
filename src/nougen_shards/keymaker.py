@@ -158,8 +158,8 @@ def _export_to_csv():
                 except OSError:
                     fp = "unreadable"
                 writer.writerow([row_id, key, fp, _is_encrypted(stored), rotated])
-    except sqlite3.Error:
-        pass
+    except sqlite3.Error as e:
+        print(f"[keymaker] CSV audit ledger export failed: {e}")
     finally:
         conn.close()
 

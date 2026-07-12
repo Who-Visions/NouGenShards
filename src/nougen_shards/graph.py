@@ -70,8 +70,8 @@ def _shard_for_hash(file_hash: str) -> Optional[Dict]:
                 item = dict(row)
                 item["_db_index"] = i
                 return item
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as e:
+            print(f"[graph] hash lookup failed on DB {i}: {e}")
         finally:
             conn.close()
     return None
