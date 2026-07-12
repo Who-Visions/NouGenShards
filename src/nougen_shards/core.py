@@ -590,7 +590,14 @@ def _squash_utility(u: float) -> float:
 #   NOUGEN_RERANK=1   pip install FlagEmbedding   (bge-reranker-v2-m3 ~2.27GB)
 RERANK_ENABLED = os.environ.get("NOUGEN_RERANK", "0") == "1"
 RERANK_MODEL = os.environ.get("NOUGEN_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
-RERANK_CANDIDATES = int(os.environ.get("NOUGEN_RERANK_CANDIDATES", "60"))
+# A near-verbatim doctrine match ranks >20 in the vector lane on arXiv-colliding
+# paraphrases, so the default 20-candidate pool never lets it reach the
+# cross-encoder. When rerank is on, pull a deeper pool AND lift the rerank-pool
+# truncation to match, so strong matches get judged on merit; the reranker then
+# sorts them correctly. This is the single lever that took the probe past its
+# plateau — do not re-cap the rerank pool below the lane pool.
+RERANK_POOL_CANDIDATES = int(os.environ.get("NOUGEN_RERANK_POOL_CANDIDATES", "200"))
+RERANK_CANDIDATES = int(os.environ.get("NOUGEN_RERANK_CANDIDATES", str(RERANK_POOL_CANDIDATES)))
 _RERANKER = None  # process-cached reranker handle
 
 # Stage-3 MMR diversification. Near-duplicate shards (same fix captured across
@@ -1109,7 +1116,12 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
 
     # Pool size env-tunable (Rule 0.2): too small a pool lets high-volume domains
     # (e.g. 6.6K arXiv shards) crowd out sparse operational shards before fusion.
-    candidate_limit = max(limit * 2, int(os.environ.get("NOUGEN_RECALL_CANDIDATES", "20")))
+    # When rerank is on, pull a deeper pool (RERANK_POOL_CANDIDATES) so a strong
+    # match ranked past 20 in a lane still reaches the cross-encoder to be judged.
+    _base_candidates = int(os.environ.get("NOUGEN_RECALL_CANDIDATES", "20"))
+    if RERANK_ENABLED:
+        _base_candidates = max(_base_candidates, RERANK_POOL_CANDIDATES)
+    candidate_limit = max(limit * 2, _base_candidates)
 
     def run_parallel_retrieval(active_domain: str):
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:

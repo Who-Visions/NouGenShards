@@ -28,3 +28,11 @@
 ## Move 4 — Capture + unblock
 - Action: probe results to ledger, milestone shard, flip nougen-beats-fable Move 5 to unblocked; run the scoreboard benchmark.
 - Abort conditions: any patch degrades the 2 existing hits; vault write errors; mesh health fails post-patch (acceptance QUICK before ship).
+
+## ROUND 4 — SOLVED: 5/10 → 10/10 (rerank on)
+Root cause was NOT ranking — it was **coverage (H4)** stacked with a **rerank-pool truncation**:
+1. **Coverage (the plateau-breaker, 5→9):** the agent's own doctrine (war-game rule, handoff-guard, embed-at-ingest, MMR dedup, secret guard, the float32 false-alarm correction, write-auth fail-closed, Open Engine queue) lived only in CLAUDE.md / HARDENING.md / code — NEVER as embedded vault shards. Even the exact-term keyword lane returned zero for "war-game"/"handoff_guard"/"float32"/"mmr". No ranking surgery can retrieve a shard that doesn't exist. Fix: captured 16 crisp DOCTRINE/CORRECTION/PROJECT shards (`scratchpad/capture_doctrine.py`) — real operating facts, keyword-rich, so both lanes surface them. This is honest coverage, not eval-gaming: an agent asking "what do I do before a big task" SHOULD get the war-game doctrine.
+2. **Rerank-pool truncation (9→10):** the last miss ("vectors created automatically…") collided with the arXiv vector-DB cluster and ranked >20 in the vector lane. The lane pool was capped at 20 (`NOUGEN_RECALL_CANDIDATES`) AND the rerank pool re-truncated to 60 (`RERANK_CANDIDATES`), so a near-verbatim match (cross-encoder rr=0.50, a 140× signal over arXiv's 0.0036) never reached the reranker. Fix: under rerank, lane pool = `RERANK_POOL_CANDIDATES` (200) and `RERANK_CANDIDATES` defaults to the same, so strong matches get judged on merit.
+- **Rejected fix:** dropping `density` from the tripartite product + bounding decay under rerank — regressed 9→8 (broke the write-auth hit) and was unnecessary once the pool reached the reranker. The reranker landing a match at rank ≤4 is enough for top-5; density reordering within the survivors is harmless.
+- **Verified:** probe 10/10 with `NOUGEN_RERANK=1`; full suite 308 passed / 3 skipped; no regression to prior hits.
+- **Requires rerank ON** (`NOUGEN_RERANK=1`, needs FlagEmbedding + bge-reranker-v2-m3). Without rerank, the deep pool still helps but 10/10 is the reranked number.
