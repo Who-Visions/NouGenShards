@@ -1134,9 +1134,23 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     if not all_results and domain_key != "*":
         all_results, kw_lane, vec_lane = run_parallel_retrieval("*")
 
+    def _champ_key(it):
+        return (it.get("id"), (it.get("title") or "")[:80])
+
     # Stage 2: cross-encoder rerank the top RRF candidates (no-op unless enabled).
     if RERANK_ENABLED:
-        all_results = rerank(query, all_results[:RERANK_CANDIDATES], len(all_results))
+        pool = all_results[:RERANK_CANDIDATES]
+        # Feed lane champions INTO the reranker instead of force-seating them
+        # later: RRF consensus bias buries single-lane semantic winners, but the
+        # cross-encoder can judge them on merit once they reach the pool.
+        if RECALL_LANE_CHAMPIONS > 0:
+            present = {_champ_key(it) for it in pool}
+            for lane in (kw_lane, vec_lane):
+                for it in lane[:RECALL_LANE_CHAMPIONS]:
+                    if _champ_key(it) not in present:
+                        pool.append(it)
+                        present.add(_champ_key(it))
+        all_results = rerank(query, pool, len(all_results))
 
     # Tripartite Utility Score & Eviction policy
     # Formula: U = (w_r * relevance) * (e^(-lambda * delta_t)) * density_score
@@ -1204,17 +1218,17 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     # Lane champions (Rule 0.2, default-neutral): RRF rewards cross-lane
     # consensus, so a vector-#1 that never ranks in the keyword lane (typical
     # for doctrine matched by meaning, not words) gets crowded out by mid-rank
-    # items appearing in both lanes. Guarantee each lane's top-N a seat.
-    if RECALL_LANE_CHAMPIONS > 0:
-        def _ckey(it):
-            return (it.get("id"), (it.get("title") or "")[:80])
-        present = {_ckey(it) for it in diversified}
+    # items appearing in both lanes. Without a reranker to judge on merit,
+    # guarantee each lane's top-N a forced seat. (When RERANK_ENABLED,
+    # champions were already fed into the rerank pool above instead.)
+    if RECALL_LANE_CHAMPIONS > 0 and not RERANK_ENABLED:
+        present = {_champ_key(it) for it in diversified}
         champs = []
         for lane in (kw_lane, vec_lane):
             for it in lane[:RECALL_LANE_CHAMPIONS]:
-                if _ckey(it) not in present:
+                if _champ_key(it) not in present:
                     champs.append(it)
-                    present.add(_ckey(it))
+                    present.add(_champ_key(it))
         if champs:
             diversified = champs + diversified
 
