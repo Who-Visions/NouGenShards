@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -64,7 +64,7 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         raise
 
 
-def _read_handoff(path: Path) -> Optional[Dict]:
+def _read_handoff(path: Path) -> Optional[Dict[str, Any]]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
@@ -88,7 +88,7 @@ def _find_handoff(
     agent: Optional[str] = None,
     handoff_id: Optional[str] = None,
     statuses: Optional[set] = None,
-) -> tuple[Optional[Path], Optional[Dict]]:
+) -> tuple[Optional[Path], Optional[Dict[str, Any]]]:
     """Find a target handoff by id, or the newest handoff matching statuses."""
     for path in get_handoff_files(agent):
         data = _read_handoff(path)
@@ -272,7 +272,7 @@ def _handoff_context_metadata(path: Path, data: Dict, **extra: object) -> Dict:
     return metadata
 
 
-def _log_context_event(event_type: str, content: str, metadata: Optional[Dict] = None) -> None:
+def _log_context_event(event_type: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
     """Mirror handoff state into NouGenContext without making handoffs depend on it."""
     try:
         from . import nougen_context

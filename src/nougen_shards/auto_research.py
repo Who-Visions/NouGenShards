@@ -4,12 +4,14 @@ Autonomous arXiv research daemon.
 Fetches papers and indexes them as memory shards.
 """
 
+import os
 import sys
 import json
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 import socket
+from typing import List, Optional, Dict, Any
 from .core import capture
 
 # UTF-8 terminal protection
@@ -27,8 +29,6 @@ def check_ollama_alive() -> bool:
         return True
     except Exception:
         return False
-
-from typing import List, Optional, Dict, Any
 
 def get_best_model() -> Optional[str]:
     """Retrieve the best available local LLM model."""
@@ -186,7 +186,7 @@ def main():
     for q in search_queries:
         found = search_arxiv(q, max_results=2)
         papers.extend(found)
-        if len(papers) >= 3:
+        if len(papers) >= int(os.environ.get("NOUGEN_ARXIV_MAX_PAPERS", "3")):
             break
 
     if not papers:

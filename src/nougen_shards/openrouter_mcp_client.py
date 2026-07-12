@@ -160,7 +160,9 @@ class MultiMCPBridge:
             return f"Error: Tool '{name}' not found in registered fleet."
 
         server_name, _ = self.tools_map[name]
-        session = self.sessions[server_name]
+        session = self.sessions.get(server_name)
+        if session is None:
+            return f"Error: Session for server '{server_name}' is not established."
 
         print(f"[*] Dispatching execution to '{server_name}': {name}({arguments})")
         try:

@@ -157,7 +157,7 @@ def store_sandbox(handle: str, data: str, summary: str = ""):
     finally:
         conn.close()
 
-def fetch_sandbox(handle: str):
+def fetch_sandbox(handle: str) -> Optional[str]:
     """Retrieves data from the sandbox by handle."""
     conn = get_context_connection()
     try:

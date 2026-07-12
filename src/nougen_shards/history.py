@@ -114,7 +114,7 @@ class HistoryEngine:
             conn.close()
 
     @staticmethod
-    def get_utility_delta(period: str = "week"):
+    def get_utility_delta(period: str = "week") -> float:
         """Measures the net change in usefulness across the fabric."""
         delta = HistoryEngine.get_period_delta(period)
         cutoff = (datetime.now(timezone.utc) - delta).isoformat().replace("+00:00", "Z")

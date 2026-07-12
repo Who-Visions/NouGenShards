@@ -23,7 +23,7 @@ class RouterConfig:
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     stream: bool = False
-    extra_body: dict = field(default_factory=dict)
+    extra_body: dict[str, Any] = field(default_factory=dict)
 
 from .hooks import pre_tool_use_hook
 

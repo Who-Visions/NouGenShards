@@ -188,7 +188,7 @@ def _open_cloud(req, url: str, timeout: float) -> bytes:
             return res.read()
 
 
-def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
+def query_cloud_shards(query: str, cloud_configs: list[dict], limit: int = 3) -> list:
     """
     Queries remote NouGenShards nodes and maps results to standard format.
     """

@@ -11,7 +11,7 @@ import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from . import keymaker
 
@@ -82,7 +82,7 @@ def resolve_hf_credential(token_key: Optional[str] = None) -> SpaceCredential:
 
 
 def build_log_request(kind: str = "run", space_id: Optional[str] = None,
-                      token_key: Optional[str] = None) -> Dict[str, object]:
+                      token_key: Optional[str] = None) -> Dict[str, Any]:
     """Build redacted request metadata for Space log access."""
     credential = resolve_hf_credential(token_key)
     return {
@@ -103,7 +103,7 @@ def _redact_token(text: str, credential: SpaceCredential) -> str:
 
 def fetch_log_snapshot(kind: str = "run", space_id: Optional[str] = None,
                        token_key: Optional[str] = None, max_bytes: int = 65536,
-                       timeout: float = 10.0) -> Dict[str, object]:
+                       timeout: float = 10.0) -> Dict[str, Any]:
     """Fetch a bounded snapshot from the Space SSE log endpoint."""
     credential = resolve_hf_credential(token_key)
     req = urllib.request.Request(space_log_url(kind, space_id), method="GET")
