@@ -443,8 +443,13 @@ export function get_shard_by_id(shard_id: number, db_index: number): Shard | nul
 }
 
 /** Updates the usefulness prior (utility_score) from outcome evidence (helpful / not). */
-export function mark_shard(shard_id: number, worked: boolean): boolean {
-  for (let i = 1; i <= MAX_DB_COUNT; i++) {
+export function mark_shard(shard_id: number, worked: boolean, db_index?: number): boolean {
+  // Shard ids are per-DB AUTOINCREMENT, so the same id exists in several of the
+  // cluster DBs. Pass db_index (a recall result's _db_index) to target the exact
+  // shard; without it we fall back to the first id match across the grid.
+  const indices =
+    db_index != null ? [db_index] : Array.from({ length: MAX_DB_COUNT }, (_, k) => k + 1);
+  for (const i of indices) {
     if (!existsSync(get_db_path(i))) {
       continue;
     }

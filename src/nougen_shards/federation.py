@@ -15,7 +15,14 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     Polls local Shard substrate, external DBs, and remote cloud nodes.
     """
     # 1. Get Local Shards (weighted relevance blend)
-    local_results = core.retrieve(query, limit=limit, query_embedding=query_embedding, domain_key=domain_key)
+    # Guard the local lane too: a raising local retrieve must degrade to []
+    # so federation still returns whatever remote lanes provide.
+    try:
+        local_results = core.retrieve(query, limit=limit, query_embedding=query_embedding, domain_key=domain_key)
+    except Exception as exc:  # noqa: BLE001 - degrade, don't crash federation
+        logger.warning("local retrieve skipped (federation continues): %s: %s",
+                       type(exc).__name__, exc)
+        local_results = []
 
     # 2. Get Configs from Keymaker
     external_configs = keymaker.list_external_dbs()

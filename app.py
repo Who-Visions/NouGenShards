@@ -454,19 +454,29 @@ class _TokenGatedMCP:
 
 # Mount BEFORE the Gradio catch-all at "/" so /mcp is routed to the MCP app.
 app.mount("/mcp", _TokenGatedMCP(_mcp_asgi))
+# Resolve the bind host the same way __main__ does, at import time, so the
+# fail-closed guard below also protects ASGI servers that import `app` directly
+# (uvicorn app:app, gunicorn, HF Spaces) where the __main__ block never runs.
+_default_host = "0.0.0.0" if os.environ.get("SPACE_ID") else "127.0.0.1"
+_bind_host = os.environ.get("NGS_HOST", _default_host)
+_network_exposed = _bind_host not in ("127.0.0.1", "localhost", "::1")
+
+# Fail closed: never mount the unauthenticated vault HUD (search / recon /
+# transcript dumps) on a network-reachable host. Require HUD credentials or a
+# loopback bind instead of silently exposing the whole memory vault.
+if _network_exposed and not _hud_auth:
+    raise RuntimeError(
+        f"Cortex HUD is network-exposed (NGS_HOST={_bind_host}) but "
+        "NGS_HUD_USER/NGS_HUD_PASSWORD are not set. Refusing to mount the "
+        "unauthenticated vault UI. Set both env vars, or bind to loopback "
+        "(NGS_HOST=127.0.0.1)."
+    )
 
 app = gr.mount_gradio_app(app, cortex_hud, path="/", auth=_hud_auth)
 
 if __name__ == "__main__":
     import uvicorn
-    # Bind to loopback by default so the (intentionally unauthenticated) read /
-    # recon / transcript UI is not silently exposed. HF Spaces / explicit deploys
-    # set NGS_HOST=0.0.0.0; warn if bound non-loopback without HUD auth.
-    default_host = "0.0.0.0" if os.environ.get("SPACE_ID") else "127.0.0.1"
-    host = os.environ.get("NGS_HOST", default_host)
+    # Host/auth already validated at import (fail-closed guard above): by here we
+    # are either on loopback or have HUD auth configured.
     port = int(os.environ.get("NGS_PORT", "4444"))
-    if host not in ("127.0.0.1", "localhost", "::1") and not _hud_auth:
-        print("[WARN] Cortex HUD bound to a non-loopback host without "
-              "NGS_HUD_USER/NGS_HUD_PASSWORD — search/recon/transcript "
-              "endpoints are unauthenticated and network-exposed.")
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=_bind_host, port=port)

@@ -78,9 +78,23 @@ def query_external_dbs(query: str, db_configs: list, limit: int = 3) -> list:
                         params[f"kw{i}"] = f"%{kw}%"
 
                     where_sql = " OR ".join(where_clauses)
+                    # LIMIT is not valid on every allowed backend: mssql uses
+                    # SELECT TOP, oracle (12c+) uses FETCH FIRST. Build the row
+                    # cap dialect-aware. Identifiers are still validated above and
+                    # the cap is a bound param, so no injection surface is added.
+                    backend = make_url(conf['uri']).get_backend_name()
+                    select_top = ""
+                    limit_clause = ""
+                    if backend == "mssql":
+                        select_top = "TOP (:limit) "
+                    elif backend == "oracle":
+                        limit_clause = " FETCH FIRST :limit ROWS ONLY"
+                    else:
+                        limit_clause = " LIMIT :limit"
                     sql_text = text(
-                        f"SELECT {title_col} AS title, {content_col} AS content "
-                        f"FROM {table} WHERE {where_sql} LIMIT :limit")
+                        f"SELECT {select_top}{title_col} AS title, "
+                        f"{content_col} AS content "
+                        f"FROM {table} WHERE {where_sql}{limit_clause}")
                     params['limit'] = limit
 
                     res = conn.execute(sql_text, params)

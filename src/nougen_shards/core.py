@@ -684,10 +684,12 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     # Tiered ordering: every exact hit (FTS/LIKE) outranks every fuzzy hit,
     # regardless of raw score - the lanes' score scales are not comparable
     # (trigram-FTS bm25 magnitudes are tiny, so a weighted exact score can sit
-    # below a strong fuzzy similarity). Encode the intent structurally instead
-    # of calibrating constants against each other.
+    # below a strong fuzzy similarity). Score is rounded so sub-epsilon
+    # temporal-decay jitter can't reorder near-ties; then (_db_index, id) ASC
+    # pins true ties so identical queries never reorder run-to-run.
     results.sort(key=lambda x: (1 if x.get("_fuzzy") else 0,
-                                -x.get("final_score", 0.0),
+                                -round(x.get("final_score", 0.0), 6),
+                                x.get("_db_index", 0),
                                 x.get("id", 0)))
     return results[:limit]
 
@@ -737,7 +739,9 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
         finally:
             conn.close()
 
-    results.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+    # Deterministic order: score DESC (rounded so sub-epsilon temporal-decay
+    # jitter doesn't reorder near-ties run-to-run), then (_db_index, id) ASC.
+    results.sort(key=lambda x: (-round(x.get("final_score", 0.0), 6), x.get("_db_index", 0), x.get("id", 0)))
     top_results = results[:limit]
     
     for item in top_results:
@@ -791,7 +795,7 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
         item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3))
         merged.append(item)
 
-    merged.sort(key=lambda x: x["final_score"], reverse=True)
+    merged.sort(key=lambda x: (-round(x["final_score"], 6), x.get("_db_index", 0), x.get("id", 0)))
     return merged
 
 
@@ -914,8 +918,11 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         item["utility_score_tripartite"] = u_shard
         scored_results.append(item)
     
-    # Sort candidates by the tripartite score
-    scored_results.sort(key=lambda x: x["utility_score_tripartite"], reverse=True)
+    # Sort candidates by the tripartite score. Round the score so sub-epsilon
+    # temporal-decay jitter can't reorder near-ties run-to-run; exact ties then
+    # break deterministically by (_db_index, id).
+    scored_results.sort(
+        key=lambda x: (-round(x["utility_score_tripartite"], 6), x.get("_db_index", 0), x.get("id", 0)))
     
     # Dynamic Thresholding / Drop bottom 50% if we have many candidates
     if scored_results:
@@ -1036,9 +1043,17 @@ def compile_recall_packet(shards: list) -> str:
         # 9-DB grid (mark_utility / link_shards / recall_related take db_index).
         db_idx = s.get("_db_index")
         db_tag = f" (db {db_idx})" if db_idx is not None else ""
-        output.append(f"--- RECORD #{s['id']}{db_tag} [Score: {s['final_score']:.2f}] ---")
+        # Federated results come from external DBs and remote cloud nodes whose
+        # records may be missing fields; degrade gracefully instead of crashing
+        # the whole recall on one malformed shard.
+        shard_id = s.get("id", "?")
+        try:
+            score = f"{float(s['final_score']):.2f}" if s.get("final_score") is not None else "n/a"
+        except (TypeError, ValueError):
+            score = "n/a"
+        output.append(f"--- RECORD #{shard_id}{db_tag} [Score: {score}] ---")
         output.append(f"When: {format_shard_when(s.get('timestamp'))}")
-        output.append(f"Title: {s['title']}\n{s['content']}\n")
+        output.append(f"Title: {s.get('title', '(untitled)')}\n{s.get('content', '')}\n")
     # "Anghkooey" — "remember" (FROM). Spoken only when recall succeeds:
     # the engine's acknowledgment that a past life was actually surfaced.
     output.append("Anghkooey — NouGenShards remembers.")

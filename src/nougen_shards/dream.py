@@ -184,6 +184,7 @@ def consolidate_episodic_data(limit: int = 10) -> Dict[str, Any]:
             conn = core.get_connection(db_idx)
             try:
                 timestamp = datetime.datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                shard_invariants_inserted = 0
                 for inv in invariants:
                     # The LLM extraction can return non-dict elements; skip them
                     # rather than letting AttributeError escape the sqlite handler
@@ -194,7 +195,11 @@ def consolidate_episodic_data(limit: int = 10) -> Dict[str, Any]:
                     pred = inv.get("predicate")
                     if not sub or not pred:
                         continue
-                    
+                    # subject/predicate must be strings; a list/dict value would
+                    # raise AttributeError on .strip() and escape the sqlite handler.
+                    if not isinstance(sub, str) or not isinstance(pred, str):
+                        continue
+
                     conn.execute("""
                         INSERT INTO semantic_knowledge (subject, predicate, domain_key, updated_at)
                         VALUES (?, ?, ?, ?)
@@ -204,11 +209,15 @@ def consolidate_episodic_data(limit: int = 10) -> Dict[str, Any]:
                     """, (sub.strip(), pred.strip(), shard.get("domain_key", "global"), timestamp))
                     extracted_rules.append({"subject": sub.strip(), "predicate": pred.strip()})
                     new_invariants_count += 1
-                
-                # Mark shard as consolidated
-                conn.execute("UPDATE shards SET consolidated = 1 WHERE id = ?", (shard["id"],))
-                conn.commit()
-                consolidated_shards_count += 1
+                    shard_invariants_inserted += 1
+
+                # Only mark consolidated / count the shard when at least one
+                # invariant was actually inserted; a bare dict or all-skipped
+                # payload must not falsely retire the shard.
+                if shard_invariants_inserted:
+                    conn.execute("UPDATE shards SET consolidated = 1 WHERE id = ?", (shard["id"],))
+                    conn.commit()
+                    consolidated_shards_count += 1
             except sqlite3.Error as exc:
                 print(f"[Warning] Failed to save semantic invariant: {exc}")
             finally:
