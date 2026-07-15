@@ -461,18 +461,21 @@ _default_host = "0.0.0.0" if os.environ.get("SPACE_ID") else "127.0.0.1"
 _bind_host = os.environ.get("NGS_HOST", _default_host)
 _network_exposed = _bind_host not in ("127.0.0.1", "localhost", "::1")
 
-# Fail closed: never mount the unauthenticated vault HUD (search / recon /
-# transcript dumps) on a network-reachable host. Require HUD credentials or a
-# loopback bind instead of silently exposing the whole memory vault.
-if _network_exposed and not _hud_auth:
-    raise RuntimeError(
-        f"Cortex HUD is network-exposed (NGS_HOST={_bind_host}) but "
-        "NGS_HUD_USER/NGS_HUD_PASSWORD are not set. Refusing to mount the "
-        "unauthenticated vault UI. Set both env vars, or bind to loopback "
-        "(NGS_HOST=127.0.0.1)."
+# Fail closed on the HUD WITHOUT taking the process down. On a network-reachable
+# host with no HUD credentials, skip mounting the unauthenticated vault UI (search
+# / recon / transcript dumps) but keep the FastAPI app serving — the token-gated
+# /mcp endpoint and REST API stay up. Raising here would abort `uvicorn app:app`
+# and take /mcp down along with the HUD.
+if _hud_auth or not _network_exposed:
+    app = gr.mount_gradio_app(app, cortex_hud, path="/", auth=_hud_auth)
+else:
+    print(
+        "[WARN] Cortex HUD not mounted: host is network-exposed "
+        f"(NGS_HOST={_bind_host}) and NGS_HUD_USER/NGS_HUD_PASSWORD are unset. "
+        "The /mcp endpoint and REST API remain available; set both env vars to "
+        "serve the vault UI.",
+        file=sys.stderr,
     )
-
-app = gr.mount_gradio_app(app, cortex_hud, path="/", auth=_hud_auth)
 
 if __name__ == "__main__":
     import uvicorn
