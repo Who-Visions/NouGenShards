@@ -103,6 +103,25 @@ proxy logs), which is the accepted trade-off for connector compatibility —
 prefer the header everywhere a client supports it, and rotate
 `NGS_NODE_TOKEN` if a URL ever leaks.
 
+## Cortex HUD access (the vault UI at `/`)
+
+The Gradio **Cortex HUD** — search, recon, substrate maps, and full vault
+transcript dumps — is served at `/` and is **not** behind the node write-token.
+On a network-reachable deploy (a Space, or any `NGS_HOST=0.0.0.0` bind) it is
+therefore **fail-closed: not mounted at all unless you configure a login.**
+
+- Set **both** `NGS_HUD_USER` and `NGS_HUD_PASSWORD` (Space *Settings →
+  Variables and secrets → New secret*) to serve the HUD with basic-auth.
+- Leave them unset and the HUD is simply withheld on an exposed host — the
+  token-gated `/mcp` endpoint and the REST API (`/health`, `/search`,
+  `/capture`, …) **still boot and serve normally.** The node never crashes over
+  a missing HUD login; it just doesn't expose the unauthenticated vault UI.
+- Loopback binds (`NGS_HOST=127.0.0.1`, the local-dev default) mount the HUD
+  without a login for convenience.
+
+`hud_auth_configured` in the `/health` readiness report tells you which mode a
+running node is in.
+
 ## Why the pipeline itself can't leak
 
 - The workflow reads `NOUGENSHARDS_HGF_KEY3` only from the encrypted secret store; Actions
