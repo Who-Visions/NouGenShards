@@ -199,3 +199,33 @@ def test_atomic_write_produces_valid_json(setup_handoff_env):
     assert data["handoff_id"]
     leftovers = list(p.parent.glob("*.tmp"))
     assert leftovers == []
+
+
+def test_escaped_newlines_are_restored():
+    # Agents escape newlines to survive cmd.exe; the note must still render as sections.
+    # r"" keeps these as literal backslash-n, which is what the mangled input looks like.
+    mangled = r"## Active Incidents\n- None\n\n## Recent Changes\n- patched"
+    restored = handoff.normalize_handoff_message(mangled)
+    assert "\\n" not in restored
+    assert restored.count("\n") == 4
+
+
+def test_clean_multiline_note_is_left_alone():
+    clean = "## Active Incidents\n- None\n\n## Recent Changes\n- total $3,922.07"
+    assert handoff.normalize_handoff_message(clean) == clean
+
+
+def test_multiline_message_survives_create_handoff(setup_handoff_env):
+    # Regression: cmd.exe truncated templated notes to their first heading, so a
+    # ~2600-char handoff landed as 19 chars. Every section must survive the writer.
+    note = (
+        "## Active Incidents\n- None\n\n"
+        "## Ongoing Investigations\n- none\n\n"
+        "## Recent Changes\n- claim total $3,922.07\n\n"
+        "## Known Issues and Workarounds\n- None\n\n"
+        "## Upcoming Events\n- None\n"
+    )
+    p = handoff.create_handoff(message=note, agent="claude-cli")
+    stored = json.loads(p.read_text(encoding="utf-8"))["message"]
+    assert stored.count("## ") == 5
+    assert "$3,922.07" in stored

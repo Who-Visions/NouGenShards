@@ -86,7 +86,8 @@ Target cache health is **90%+ cache-read share**. Before broad scans, synthesis,
 
 ## Automated Session Handoff Rule (CRITICAL)
 - **Mandatory Final Action**: Before concluding a session or handing back control to the user (at the final step of a task or before ending your turn), the agent MUST automatically generate or update the structured on-call handoff notes in the `.handoffs` registry.
-- **Execution Command**: Run `.\nougen.bat handoff create -a <agent_name> -g "<current_goal>" -m "<structured_summary_message>"` in the active `NouGenShards-push-main` workspace directory, then run `.\nougen.bat handoff rebuild-db` to index it.
+- **Execution Command**: Write the structured message to a UTF-8 file, then run `.\nougen.bat handoff create -a <agent_name> -g "<current_goal>" -M <path_to_message_file>` in the active `NouGenShards-push-main` workspace directory, followed by `.\nougen.bat handoff rebuild-db` to index it.
+- **Never pass a multi-line note via `-m`.** cmd.exe ends an argument at the first newline, so a templated note silently lands as its first heading only (measured: a 2,600-char note wrote 19 chars). POSIX double-quoting separately eats `$3`/`$4` inside currency. `-M/--message-file` is the only path that survives both; the writer warns when it detects either kind of mangling.
 - **Handoff Message Template**:
   ```markdown
   ## 🔴 Active Incidents

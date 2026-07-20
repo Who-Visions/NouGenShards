@@ -954,6 +954,10 @@ def get_parser():
         "rebuild-db", "reconcile", "watch",
     ], help="create | read | list | ack | start | checkpoint | complete | rebuild-db | reconcile | watch")
     p_handoff.add_argument("--message", "-m", default="", help="Handoff note or acknowledgement message")
+    p_handoff.add_argument("--message-file", "-M", dest="message_file", default=None,
+                           help="Read the note from a UTF-8 file. Required for multi-line "
+                                "notes: cmd.exe ends an argument at the first newline, so "
+                                "-m silently truncates a templated note to its first heading.")
     p_handoff.add_argument("--agent", "-a", default=None,
                            help="Agent type (gemini, claude, codex, ollama, openrouter)")
     p_handoff.add_argument("--goal", "-g", default=None, help="The active goal/objective for this handoff")
@@ -1084,6 +1088,17 @@ def cmd_doctor(args):
 def cmd_handoff(args):
     """Executes agent handoff subcommands."""
     from . import handoff
+
+    # --message-file wins over -m: it is the only path that survives cmd.exe, which
+    # ends an argument at the first newline. Applies to every action that takes a note.
+    message_file = getattr(args, "message_file", None)
+    if message_file:
+        try:
+            args.message = Path(message_file).read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"Error reading --message-file {message_file}: {e}", file=sys.stderr)
+            return 1
+
     if args.action == "create":
         handoff.create_handoff(args.message, args.agent, goal=getattr(args, "goal", None))
     elif args.action == "read":

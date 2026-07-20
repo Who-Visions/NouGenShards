@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import sqlite3
@@ -420,10 +421,56 @@ def get_git_status() -> Dict:
     return status
 
 
+# Shell layers between an agent and this writer mangle multi-line notes in two ways:
+# cmd.exe ends an argument at the first newline (a templated note lands as its first
+# heading only), and POSIX double-quoting expands $3/$4 inside currency, silently
+# deleting digits. Neither is recoverable downstream, so detect at the door.
+_ESCAPED_NEWLINE_RE = re.compile(r"\\n")
+_EATEN_CURRENCY_RE = re.compile(r"(?<![\d$]),\d{3}\.\d{2}\b")
+_TEMPLATE_HEADING_RE = re.compile(r"^#{1,3}\s+\S")
+
+
+def normalize_handoff_message(message: str, console: Optional[Console] = None) -> str:
+    """Repair escaped newlines and warn on shell-mangled handoff notes.
+
+    Returns the repaired message. Warnings are advisory: a mangled note is still
+    written, because a degraded handoff beats a lost one.
+    """
+    if not message:
+        return message
+    console = console or _make_console()
+
+    # Agents escape newlines to survive cmd.exe; restore them so the note renders.
+    if "\n" not in message and _ESCAPED_NEWLINE_RE.search(message):
+        message = _ESCAPED_NEWLINE_RE.sub("\n", message).replace("\\t", "\t")
+        console.print(
+            "[yellow]handoff: restored escaped newlines in note "
+            "(pass --message-file to avoid the shell layer).[/yellow]"
+        )
+
+    lines = [ln for ln in message.splitlines() if ln.strip()]
+    if len(lines) == 1 and _TEMPLATE_HEADING_RE.match(lines[0]):
+        console.print(
+            f"[red]handoff: note looks TRUNCATED — only the heading {lines[0]!r} survived. "
+            "cmd.exe ends an argument at the first newline; use "
+            "--message-file <path> for multi-line notes.[/red]"
+        )
+
+    if _EATEN_CURRENCY_RE.search(message):
+        console.print(
+            "[red]handoff: note contains a currency amount missing its leading digits "
+            "(e.g. ',922.07') — a shell ate $N as a capture group. Verify against the "
+            "source document before trusting these figures.[/red]"
+        )
+
+    return message
+
+
 def create_handoff(
     message: str = "", agent: Optional[str] = None, goal: Optional[str] = None, compact: bool = True
 ) -> Optional[Path]:
     console = _make_console()
+    message = normalize_handoff_message(message, console)
     HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
 
     if not agent:

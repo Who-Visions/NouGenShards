@@ -95,7 +95,13 @@ Before ending a substantive task:
 ```powershell
 $env:PYTHONPATH='C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\src'
 $env:NOUGEN_AGENT='codex'
-& 'C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\.venv\Scripts\python.exe' -m nougen_shards.cli handoff create -a codex -g "<current_goal>" -m "<structured_summary_message>"
+# Write the note to a file first. Passing it inline via -m corrupts it: PowerShell
+# expands $3/$4 inside currency to nothing (turning $3,922.07 into ,922.07), and a
+# multi-line note through cmd.exe is cut at the first newline.
+Set-Content -Path "$env:TEMP\handoff_note.md" -Encoding utf8 -Value @'
+<structured_summary_message>
+'@
+& 'C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\.venv\Scripts\python.exe' -m nougen_shards.cli handoff create -a codex -g "<current_goal>" -M "$env:TEMP\handoff_note.md"
 & 'C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\.venv\Scripts\python.exe' -m nougen_shards.cli handoff rebuild-db
 ```
 
