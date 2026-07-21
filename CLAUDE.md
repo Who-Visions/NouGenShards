@@ -115,7 +115,7 @@ Target cache health is **90%+ cache-read share**. Before broad scans, synthesis,
 
 | Lane | Cost | Intelligence | Taste | Use for |
 |---|---|---|---|---|
-| fable-5 (sub until ~Jul 8, then API) | high | 10 | 10 | war-games, architecture, design direction, hardest reviews |
+| fable-5 (sub, cutover date TBD — vendor keeps sliding it, don't anchor on any announced date) | high | 10 | 10 | war-games, architecture, design direction, hardest reviews |
 | opus-4.8 | mid | 8 | 9 | daily driver when Fable is out of reach |
 | codex / gpt-5.5 (codex CLI, generous sub) | ~free | 9 | 4 | bulk mechanical work, log digging, giant docs, computer use, independent review |
 | gemini (CLI) | low | 7 | 6 | frontend scaffolds, second opinions |
