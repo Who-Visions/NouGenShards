@@ -36,7 +36,7 @@ Precedent: 2026-07-06 — stale `OLLAMA_MODELS=D:` env var produced a false "ext
 Claude is the **coach**: plan, route, verify. Local resources are the **players**: they do the heavy lifting.
 
 ## Token discipline
-- **Workers hold the big context; Coach holds the conclusions.** Delegate bulk *inspection* (large files, logs, listings, photo sets, web pages), not just generation. Every token Coach reads inline is cached once at write rate, then re-read at cache rate on every later turn — cost = context size × turns. A worker pays that tax once and discards it. (Evidence 2026-07-20: $7 output vs $114 cache-read + $61 cache-write in one day — the leak is held context, not generated text.)
+- **Workers hold the big context; Coach holds the conclusions.** Delegate bulk *inspection* (large files, logs, listings, photo sets, web pages), not just generation. Every token Coach reads inline is cached once at write rate, then re-read at cache rate on every later turn — cost = context size × turns. A worker pays that tax once and discards it.
 - **Vault recall discipline**: `shard_search`/descriptions first; pull full shard bodies (`shard_get`) only when the summary is insufficient.
 - **Handoff-and-reset beats paying rent.** Once Coach context is fat with dead exploration, create a compact handoff and start fresh rather than re-reading it for hundreds more turns.
 - Keep every reply **under ~500 tokens** unless the user explicitly asks for depth.

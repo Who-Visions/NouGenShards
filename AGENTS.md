@@ -53,7 +53,7 @@ All providers follow the same loop: `handoff read` at startup, `handoff ack` on 
 
 ## NouGen Context Mode Cache Gate
 Target cache health is **90%+ cache-read share** for repeated work.
-- **Workers hold the big context; Coach holds the conclusions.** Delegate bulk *inspection* (large files, logs, listings, web pages), not just generation — every token the coordinating session reads inline is cached at write rate then re-read at cache rate every later turn (cost = context size × turns); a worker pays that tax once and discards it. (Evidence 2026-07-20: $7 output vs $114 cache-read + $61 cache-write in one day.)
+- **Workers hold the big context; Coach holds the conclusions.** Delegate bulk *inspection* (large files, logs, listings, web pages), not just generation — every token the coordinating session reads inline is cached at write rate then re-read at cache rate every later turn (cost = context size × turns); a worker pays that tax once and discards it.
 - Vault recall: search results/descriptions first; pull full shard bodies only when the summary is insufficient.
 - Before broad scans or synthesis, use handoff read plus `ctx search`, `search --dual --json`, or `nougen-shards` MCP recall.
 - Prefer compact context cards over raw transcripts, full handoff bodies, full token reports, or whole-file dumps.
