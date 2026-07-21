@@ -9,6 +9,7 @@ import json
 import contextlib
 from typing import List, Optional
 from fastapi import FastAPI, Header, HTTPException, Depends
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import gradio as gr
 import subprocess
@@ -466,14 +467,38 @@ _network_exposed = _bind_host not in ("127.0.0.1", "localhost", "::1")
 # / recon / transcript dumps) but keep the FastAPI app serving — the token-gated
 # /mcp endpoint and REST API stay up. Raising here would abort `uvicorn app:app`
 # and take /mcp down along with the HUD.
+def _register_hud_placeholder(fastapi_app):
+    """Root landing page for when the HUD is fail-closed. Serves node status
+    pointers only — no vault data — so a browser hit on the Space explains
+    itself instead of returning FastAPI's bare 404."""
+
+    @fastapi_app.get("/", include_in_schema=False, response_class=HTMLResponse)
+    def hud_locked():
+        return (
+            "<!doctype html><html><head><title>NouGenShards Node</title></head>"
+            "<body style='font-family:system-ui;max-width:40rem;margin:4rem auto;"
+            "line-height:1.5'>"
+            "<h1>🪩 NouGenShards Node — ignited</h1>"
+            "<p>The node is running, but the Cortex HUD is <b>locked</b> "
+            "(fail-closed): this host is network-exposed and no HUD login is "
+            "configured.</p>"
+            "<p>To serve the HUD, set <code>NGS_HUD_USER</code> and "
+            "<code>NGS_HUD_PASSWORD</code> in the Space secrets and restart.</p>"
+            "<p>Available now: <a href='/health'>/health</a> (readiness report) "
+            "and the token-gated <code>/mcp</code> + REST API.</p>"
+            "</body></html>"
+        )
+
+
 if _hud_auth or not _network_exposed:
     app = gr.mount_gradio_app(app, cortex_hud, path="/", auth=_hud_auth)
 else:
+    _register_hud_placeholder(app)
     print(
         "[WARN] Cortex HUD not mounted: host is network-exposed "
         f"(NGS_HOST={_bind_host}) and NGS_HUD_USER/NGS_HUD_PASSWORD are unset. "
         "The /mcp endpoint and REST API remain available; set both env vars to "
-        "serve the vault UI.",
+        "serve the vault UI. Root serves a locked-HUD status page.",
         file=sys.stderr,
     )
 

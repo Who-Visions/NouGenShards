@@ -68,6 +68,20 @@ def test_deny_by_default_when_unconfigured(client, monkeypatch):
     assert client.post("/search", json={"query": "x"}, headers=AUTH).status_code == 503
 
 
+def test_hud_placeholder_serves_root_when_hud_locked():
+    # On a network-exposed host with no HUD creds, app.py registers this
+    # placeholder instead of mounting Gradio — root must explain itself
+    # (200 + pointers) rather than fall through to a bare 404.
+    from fastapi import FastAPI
+    locked_app = FastAPI()
+    node._register_hud_placeholder(locked_app)
+    r = TestClient(locked_app).get("/")
+    assert r.status_code == 200
+    assert "NouGenShards" in r.text
+    assert "/health" in r.text
+    assert "NGS_HUD_USER" in r.text
+
+
 def test_capture_search_roundtrip(client):
     r = client.post("/capture", json={
         "title": "Cloud automation shard",
