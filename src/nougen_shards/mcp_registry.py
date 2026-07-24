@@ -94,26 +94,114 @@ def _err(exc: BaseException, **extra: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
+def _store_label(path: Path) -> str:
+    """Readable store name; a dotted dir ('.vault') takes its parent's name."""
+    if path.name.startswith(".") and path.parent.name:
+        return path.parent.name
+    return path.name or str(path)
+
+
+def primary_label() -> str:
+    """Primary store label. Uses federation's if this build has it (capability
+    probe, not an assumption) — older builds fall back to a derived name."""
+    fn = getattr(federation, "primary_store_label", None)
+    if callable(fn):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("primary_store_label failed, deriving: %s", exc)
+    return os.environ.get("NOUGEN_PRIMARY_STORE_LABEL") or _store_label(Path(core.GLOBAL_DIR))
+
+
+def _secondary_stores() -> List[tuple]:
+    """Secondary vaults via federation when available, else parse the env var."""
+    fn = getattr(federation, "secondary_stores", None)
+    if callable(fn):
+        try:
+            return list(fn())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("secondary_stores failed, parsing env: %s", exc)
+    raw = os.environ.get("NOUGEN_SECONDARY_VAULT_DIRS", "").strip()
+    if not raw:
+        return []
+    sep = os.environ.get("NOUGEN_SECONDARY_VAULT_SEP") or os.pathsep
+    out = []
+    for entry in raw.split(sep):
+        entry = entry.strip().strip('"').strip("'")
+        if not entry:
+            continue
+        label = None
+        head, found, tail = entry.partition("=")
+        if found and tail.strip() and not any(c in head for c in "\\/:"):
+            label, entry = head.strip(), tail.strip()
+        p = Path(os.path.expandvars(os.path.expanduser(entry)))
+        out.append((label or _store_label(p), p))
+    return out
+
+
 def _stores() -> List[Dict[str, Any]]:
     """Probe the live store layout instead of trusting configured paths."""
     out: List[Dict[str, Any]] = []
     try:
         primary = Path(core.GLOBAL_DIR)
-        out.append({
-            "label": federation.primary_store_label(),
-            "path": str(primary),
-            "role": "primary",
-            "exists": primary.is_dir(),
-        })
+        out.append({"label": primary_label(), "path": str(primary),
+                    "role": "primary", "exists": primary.is_dir()})
     except Exception as exc:  # noqa: BLE001 - a probe must never abort a tool
         logger.warning("primary store probe failed: %s", exc)
     try:
-        for label, path in federation.secondary_stores():
+        for label, path in _secondary_stores():
             out.append({"label": label, "path": str(path), "role": "secondary",
                         "exists": Path(path).is_dir()})
     except Exception as exc:  # noqa: BLE001
         logger.warning("secondary store probe failed: %s", exc)
     return out
+
+
+def _lane_health() -> Dict[str, Any]:
+    """Shard counts + embedding coverage. Uses core.lane_health where the build
+    provides it; otherwise counts directly so this never hard-fails."""
+    fn = getattr(core, "lane_health", None)
+    if callable(fn):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("core.lane_health failed, counting directly: %s", exc)
+    try:
+        total = embedded = 0
+        max_db = getattr(core, "MAX_DB_COUNT", 1)
+        for i in range(1, int(max_db) + 1):
+            if not core.get_db_path(i).exists():
+                continue
+            conn = core.get_connection(i)
+            try:
+                total += conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
+                embedded += conn.execute(
+                    "SELECT COUNT(*) FROM shards WHERE embedding IS NOT NULL").fetchone()[0]
+            finally:
+                conn.close()
+        return {"ok": True, "total_shards": total,
+                "embedding_coverage_pct": round((embedded / total * 100.0) if total else 0.0, 1)}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+
+
+_DB_READY: set = set()
+
+
+def _ensure_db(index: Optional[int] = None) -> int:
+    """Create the vault schema on first touch so a fresh clone works unattended."""
+    if index is None:
+        try:
+            index = core.get_active_db_index()
+        except Exception:  # noqa: BLE001
+            index = 1
+    if index not in _DB_READY:
+        try:
+            core.init_db(index)
+        except Exception as exc:  # noqa: BLE001 - report via the tool, not a crash
+            logger.warning("init_db(%s) failed: %s", index, exc)
+        _DB_READY.add(index)
+    return index
 
 
 def _shard_dir() -> Path:
@@ -214,6 +302,7 @@ def shard_search(query: str, limit: int = DEFAULT_LIMIT) -> str:
         limit: Maximum shards to return.
     """
     try:
+        _ensure_db()
         hits = federation.federated_retrieve(query, limit=_clamp(limit)) or []
         return _ok({
             "query": query,
@@ -244,6 +333,7 @@ def shard_related(query: str, limit: int = 5) -> str:
         limit: Maximum related shards to consider.
     """
     try:
+        _ensure_db()
         hits = federation.federated_retrieve(query, limit=_clamp(limit)) or []
         return _ok({"query": query, "count": len(hits),
                     "packet": core.compile_recall_packet(hits)})
@@ -260,6 +350,7 @@ def shard_get(shard_id: int, db_index: int = 1) -> str:
         db_index: Which database in the local grid holds it (default 1).
     """
     try:
+        _ensure_db(int(db_index))
         shard = core.get_shard_by_id(int(shard_id), int(db_index))
         if not shard:
             return _ok({"found": False, "shard_id": shard_id, "db_index": db_index})
@@ -272,7 +363,8 @@ def shard_get(shard_id: int, db_index: int = 1) -> str:
 def shard_stats() -> str:
     """Report vault health: store layout, shard counts, embedding coverage."""
     try:
-        health = core.lane_health()
+        _ensure_db()
+        health = _lane_health()
         return _ok({
             "server": SERVER_NAME,
             "stores": _stores(),
@@ -291,7 +383,7 @@ def shard_schema() -> str:
     """Return the shard table schema and the store map for this vault."""
     try:
         tables: Dict[str, List[str]] = {}
-        conn = core.get_connection(core.get_active_db_index())
+        conn = core.get_connection(_ensure_db())
         try:
             names = [r[0] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
@@ -316,7 +408,7 @@ def recent_shards(limit: int = 5) -> str:
     limit = _clamp(limit)
     try:
         rows: List[Dict[str, Any]] = []
-        conn = core.get_connection(core.get_active_db_index())
+        conn = core.get_connection(_ensure_db())
         try:
             cur = conn.execute(
                 "SELECT id, event_type, title, tags, timestamp FROM shards "
@@ -342,7 +434,7 @@ def recent_shards(limit: int = 5) -> str:
             for mtime, p in sorted(found, reverse=True)[:limit]:
                 files.append({"path": str(p), "name": p.name, "mtime": mtime})
 
-        return _ok({"store": federation.primary_store_label(),
+        return _ok({"store": primary_label(),
                     "shards": rows, "markdown": files})
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
@@ -360,11 +452,12 @@ def write_memory(title: str, content: str, tags: str = "",
         event_type: Category, e.g. KNOWLEDGE / DECISION / ERROR.
     """
     try:
+        _ensure_db()
         tag_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
         created = core.capture(event_type, title, content, tag_list)
         return _ok({"written": bool(created),
                     "detail": "shard captured" if created else "duplicate shard, not rewritten",
-                    "store": federation.primary_store_label(), "title": title})
+                    "store": primary_label(), "title": title})
     except Exception as exc:  # noqa: BLE001
         return _err(exc, title=title)
 
