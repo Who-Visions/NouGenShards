@@ -15,9 +15,15 @@ CSV/TSV columns (header row, case-insensitive; extra columns ignored):
 Vault naming: <PROVIDER>_KEY_<ACCOUNT_NORMALISED>  (mirrors existing OLLAMA_KEY_* rows).
 A per-provider default <PROVIDER>_API_KEY is set to the FIRST key seen for that provider.
 
+Vault location is resolved dynamically and never hardcoded here: NOUGEN_VAULT_DIR
+if you set it, otherwise whatever your normal nougen configuration resolves to.
+
 Usage:
-    set NOUGEN_VAULT_DIR=C:\\Users\\super\\Watchtower\\NouGen\\.nougen_vault   (optional)
-    python tools/ingest_provider_keys.py path\\to\\keys.csv
+    # optional - point at a specific vault directory
+    export NOUGEN_VAULT_DIR=/path/to/your/vault     # POSIX
+    set NOUGEN_VAULT_DIR=X:\\path\\to\\your\\vault    # Windows cmd
+
+    python tools/ingest_provider_keys.py path/to/keys.csv
 """
 import csv
 import hashlib

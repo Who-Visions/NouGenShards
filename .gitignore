@@ -91,6 +91,13 @@ shard_vault_files.py
 tools/fleet_test.py
 tools/nougenai_fleet_registry_mcp.py
 
+# Owner-workflow scripts kept locally, not part of the public package:
+# metameric_longform.py generates marketing copy for the maintainer's own site
+# and replay_session_shards.sh replays one specific past session into the
+# maintainer's own vault. Neither does anything useful in a fresh clone.
+tools/metameric_longform.py
+tools/replay_session_shards.sh
+
 # OS specific
 Thumbs.db
 .DS_Store
