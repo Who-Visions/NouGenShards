@@ -14,6 +14,16 @@
         "OLLAMA_HOST": "http://127.0.0.1:11434"
       }
     },
+    "nougen-fleet-registry": {
+      "command": "python",
+      "args": ["-m", "nougen_shards.mcp_registry"],
+      "env": {
+        "PYTHONPATH": "src",
+        "NOUGEN_VAULT_DIR": "${NOUGEN_VAULT_DIR:-.vault}",
+        "NOUGEN_SECONDARY_VAULT_DIRS": "${NOUGEN_SECONDARY_VAULT_DIRS:-}",
+        "NOUGEN_REGISTRY_EXT": "${NOUGEN_REGISTRY_EXT:-}"
+      }
+    },
     "sequentialthinking": {
       "type": "http",
       "url": "https://remote.mcpservers.org/sequentialthinking/mcp"
