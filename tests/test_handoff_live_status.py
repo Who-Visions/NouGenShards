@@ -151,6 +151,45 @@ class TestReconcileHandoffsNoMutation:
         assert counts["stale_complete"] >= 1
         assert counts["actionable"] == 0  # stale-complete is not actionable
 
+    def test_default_write_flag_is_non_mutating(self, tmp_path):
+        """reconcile_handoffs() with NO arguments must not write.
+
+        The explicit write=False path is covered above, but the DEFAULT is the
+        one that ships: every caller that omits the flag (the CLI without
+        --write, any library consumer) relies on it. Flipping the default to
+        True is a silent mutation gate bypass, so it gets its own test that
+        never mentions the flag.
+        """
+        hdir = tmp_path / ".handoffs"
+        hdir.mkdir()
+        hfile = hdir / "handoff_20250614_140000_main.json"
+        # Fully-done tasks + clean tree => live status resolves to stale-complete,
+        # which is exactly the case write=True would persist. If the default were
+        # True, this file would be rewritten.
+        data = _handoff("open", _full_tasks(3, 0))
+        hfile.write_text(json.dumps(data), encoding="utf-8")
+
+        original_content = hfile.read_text(encoding="utf-8")
+        original_files = sorted(p.name for p in hdir.iterdir())
+
+        with patch("nougen_shards.handoff.HANDOFF_DIR", hdir), \
+             patch("nougen_shards.handoff.get_git_status",
+                   return_value={"branch": "main", "changes": [], "commits": []}):
+            counts = reconcile_handoffs()  # no arguments — the shipped default
+
+        assert hfile.read_text(encoding="utf-8") == original_content, \
+            "reconcile_handoffs() must default to non-mutating (write=False)"
+        assert json.loads(hfile.read_text(encoding="utf-8"))["status"] == "open", \
+            "the stored status must be untouched by a default reconcile"
+        assert sorted(p.name for p in hdir.iterdir()) == original_files, \
+            "a default reconcile must not create or remove files"
+
+        # It still had to do the work — a no-op reconcile would also pass the
+        # mutation assertions above, so pin the computed counts too.
+        assert counts["total"] == 1
+        assert counts["stale_complete"] == 1
+        assert counts["actionable"] == 0
+
     def test_write_true_updates_file(self, tmp_path):
         """reconcile_handoffs(write=True) DOES persist resolved status."""
         hdir = tmp_path / ".handoffs"

@@ -59,3 +59,38 @@ def test_single_token_query_unchanged():
     shards.capture("KNOWLEDGE", "Solo", "watchtower stands alone.")
     res = shards.retrieve("watchtower", limit=3)
     assert res and res[0]["title"] == "Solo"
+
+
+def test_short_acronym_query_is_answered_only_by_the_like_fallback():
+    """The LIKE branch was untested: gutting it changed no test result, because
+    every other case here is already satisfied by the FTS AND or OR pass.
+
+    This case cannot be: the FTS5 trigram tokenizer cannot index tokens shorter
+    than 3 characters, so _build_fts_match_query() returns None for a two-letter
+    acronym query and _keyword_retrieve() never issues a MATCH at all. Short
+    acronyms are ordinary operator vocabulary ("HF", "AI", "S3", "ML"), so the
+    substring scan is the only lane that can answer them — losing it silently
+    would make a whole query class unrecallable.
+    """
+    shards.capture("KNOWLEDGE", "Acronym note",
+                   "The HF lane holds the rotated credential.")
+
+    # Precondition: there is no FTS expression for this query, so a hit can only
+    # have come from the LIKE substring scan.
+    assert shards._build_fts_match_query("hf") is None
+    assert shards._build_fts_match_query("hf", joiner=" OR ") is None
+
+    res = shards.retrieve("hf", limit=3)
+    assert res, "short-acronym query died: the LIKE fallback never ran"
+    assert res[0]["title"] == "Acronym note"
+
+
+def test_like_fallback_still_honours_domain_scope():
+    """The fallback is a lane, not an escape hatch: it must not leak other
+    domains into a domain-scoped query."""
+    shards.capture("KNOWLEDGE", "Alpha acronym", "the HF lane, domain alpha.",
+                   domain_key="Domain/Alpha")
+    shards.capture("KNOWLEDGE", "Beta acronym", "the HF lane, domain beta.",
+                   domain_key="Domain/Beta")
+    hits = shards._keyword_retrieve("hf", 20, None, "Domain/Alpha")
+    assert [h["title"] for h in hits] == ["Alpha acronym"]

@@ -59,6 +59,57 @@ def _vram_used_mib() -> Optional[int]:
         return None
 
 
+# Name fragments that identify an embedding-capable model in an ollama tag list.
+# Configurable because the roster changes faster than this file does.
+EMBED_MODEL_HINTS = [
+    h.strip().lower() for h in os.environ.get(
+        "NOUGEN_EMBED_MODEL_HINTS", "embed;embedding;bge;gte;minilm;e5").split(";")
+    if h.strip()
+]
+# Logged fallback ONLY — never the source of truth (Rule 0.2).
+FALLBACK_EMBED_MODEL = "nomic-embed-text"
+_RESOLVED_EMBED_MODEL: Optional[str] = None
+
+
+def list_models(timeout: int = 5) -> List[str]:
+    """Live ollama roster via /api/tags. Empty list when unreachable."""
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_HOST}/api/tags", timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+    except Exception:
+        return []
+
+
+def resolve_embed_model(explicit: Optional[str] = None, timeout: int = 5) -> str:
+    """Discover the embedding model at runtime instead of trusting a constant.
+
+    Resolution order (Rule 0.2 — probe before you trust):
+      1. explicit argument / NOUGEN_EMBED_MODEL, but only honoured as-is; if the
+         pinned tag is absent from the live roster we still return it so the
+         operator's intent is never silently overridden — the miss surfaces as
+         an embed failure, which is now observable.
+      2. live /api/tags probe, first tag matching an embed hint (exact tag,
+         including its ':latest' suffix — a name that does not exist on the host
+         is the classic stale-hardcode failure).
+      3. FALLBACK_EMBED_MODEL constant, as a logged fallback.
+    Cached per process; pass explicit= to bypass the cache.
+    """
+    global _RESOLVED_EMBED_MODEL
+    pinned = explicit or os.environ.get("NOUGEN_EMBED_MODEL")
+    if pinned:
+        return pinned
+    if _RESOLVED_EMBED_MODEL:
+        return _RESOLVED_EMBED_MODEL
+    for name in list_models(timeout=timeout):
+        low = name.lower()
+        if any(h in low for h in EMBED_MODEL_HINTS):
+            _RESOLVED_EMBED_MODEL = name
+            return name
+    _RESOLVED_EMBED_MODEL = FALLBACK_EMBED_MODEL
+    return FALLBACK_EMBED_MODEL
+
+
 def embed(text: str, model: str, timeout: int = 60) -> Optional[List[float]]:
     """Single embedding via ollama /api/embed. Returns None on failure."""
     body = json.dumps({"model": model, "input": text}).encode("utf-8")
@@ -90,16 +141,51 @@ def _vault_dbs(vault_dir: str) -> List[str]:
     return sorted(glob.glob(os.path.join(vault_dir, "nougen_shards_*.db")))
 
 
-def count_pending(vault_dir: str) -> dict:
+def backfill_exclude_globs() -> List[str]:
+    """Title globs this backfill must NOT embed.
+
+    Defaults to the SAME canonical backlog globs the ingest and drift lanes use
+    (core.DEFAULT_BACKLOG_GLOBS), so "forward-only backlog" means one thing
+    across the codebase instead of three. The arXiv backlog is ~18k files on a
+    single 8GB-VRAM GPU: embedding it is a deliberate, separately-authorised
+    campaign, never a side effect of a repair sweep.
+    """
+    raw = os.environ.get("NOUGEN_EMBED_BACKFILL_EXCLUDE_GLOBS")
+    if raw is None:
+        try:
+            from .core import DEFAULT_BACKLOG_GLOBS as raw  # canonical source
+        except Exception:
+            raw = "arxiv_*.md;intelligence_shard_arxiv_*.md"  # logged fallback
+    return [g.strip() for g in str(raw).split(";") if g.strip()]
+
+
+def _scope_sql(globs: List[str]) -> tuple:
+    """(where_fragment, params) excluding titles matching any backlog glob."""
+    if not globs:
+        return "", []
+    return " AND " + " AND ".join(["title NOT GLOB ?"] * len(globs)), list(globs)
+
+
+def count_pending(vault_dir: str, respect_scope: bool = True) -> dict:
+    """Per-DB (in_scope_pending, total). Also reports what scope excluded."""
     out = {}
+    globs = backfill_exclude_globs() if respect_scope else []
+    clause, params = _scope_sql(globs)
     for db in _vault_dbs(vault_dir):
         conn = sqlite3.connect(db)
         try:
             total = conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
-            pending = conn.execute("SELECT COUNT(*) FROM shards WHERE embedding IS NULL").fetchone()[0]
+            all_pending = conn.execute(
+                "SELECT COUNT(*) FROM shards WHERE embedding IS NULL").fetchone()[0]
+            pending = conn.execute(
+                "SELECT COUNT(*) FROM shards WHERE embedding IS NULL" + clause,
+                params).fetchone()[0]
             out[os.path.basename(db)] = (pending, total)
+            out.setdefault("_skipped_out_of_scope", 0)
+            out["_skipped_out_of_scope"] += all_pending - pending
         finally:
             conn.close()
+    out["_exclude_globs"] = globs
     return out
 
 
@@ -110,16 +196,20 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
     try:
         has_ver = _has_col(conn, "shards", "schema_version")
         conn.execute("PRAGMA busy_timeout=30000;")
+        clause, params = _scope_sql(backfill_exclude_globs())
         rows = conn.execute(
-            "SELECT id, title, content FROM shards WHERE embedding IS NULL"
-        ).fetchall()
+            "SELECT id, title, content FROM shards WHERE embedding IS NULL" + clause,
+            params).fetchall()
+        skipped = conn.execute(
+            "SELECT COUNT(*) FROM shards WHERE embedding IS NULL").fetchone()[0] - len(rows)
         if probe and rows:
             # Smoke-test one embedding before committing to the whole DB.
             test = embed((rows[0][1] or "") + "\n" + (rows[0][2] or "")[:512], model)
             if not test:
                 return {"db": os.path.basename(db), "error": "embed endpoint unavailable (start ollama with --embeddings + valid model)"}
         if not execute:
-            return {"db": os.path.basename(db), "pending": len(rows), "would_write": True}
+            return {"db": os.path.basename(db), "pending": len(rows),
+                    "skipped_out_of_scope": skipped, "would_write": True}
 
         pending_batch = []
         for rid, title, content in rows:
@@ -141,7 +231,8 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
             done += len(pending_batch)
     finally:
         conn.close()
-    return {"db": os.path.basename(db), "embedded": done, "failed": failed}
+    return {"db": os.path.basename(db), "embedded": done, "failed": failed,
+            "skipped_out_of_scope": skipped}
 
 
 def _flush(conn, batch, has_ver, retries=15):
@@ -175,7 +266,9 @@ def _main(argv=None):
         pass
     ap = argparse.ArgumentParser(description="Backfill shard embeddings via local ollama (revives semantic recall).")
     ap.add_argument("--vault", default=os.environ.get("NOUGEN_VAULT_DIR"))
-    ap.add_argument("--model", default=os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text"))
+    # No hardcoded default (Rule 0.2): unset means "ask the live /api/tags
+    # roster at run time", which also pins the exact tag instead of a bare name.
+    ap.add_argument("--model", default=None)
     ap.add_argument("--execute", action="store_true")
     ap.add_argument("--batch", type=int, default=64)
     args = ap.parse_args(argv)
@@ -183,14 +276,22 @@ def _main(argv=None):
         ap.error("--vault or NOUGEN_VAULT_DIR required")
 
     mode = "EXECUTE" if args.execute else "DRY-RUN"
-    print(f"=== embedding backfill [{mode}] model={args.model} vault={args.vault} ===")
+    model = resolve_embed_model(args.model)
+    print(f"=== embedding backfill [{mode}] model={model} vault={args.vault} ===")
     pend = count_pending(args.vault)
-    tot_p = sum(p for p, _ in pend.values())
-    tot_t = sum(t for _, t in pend.values())
-    print(f"pending (embedding IS NULL): {tot_p}/{tot_t} shards across {len(pend)} DBs")
+    # count_pending() also returns scope metadata under underscore-prefixed keys
+    # ('_skipped_out_of_scope', '_exclude_globs'); only the per-DB entries are
+    # (pending, total) pairs, so the totals must not sweep the whole dict.
+    per_db = {k: v for k, v in pend.items() if not k.startswith("_")}
+    tot_p = sum(p for p, _ in per_db.values())
+    tot_t = sum(t for _, t in per_db.values())
+    print(f"pending (embedding IS NULL, in scope): {tot_p}/{tot_t} shards "
+          f"across {len(per_db)} DBs")
+    print(f"deliberately out of scope (forward-only backlog "
+          f"{pend.get('_exclude_globs')}): {pend.get('_skipped_out_of_scope', 0)}")
     for db in _vault_dbs(args.vault):
         try:
-            res = backfill_db(db, args.model, execute=args.execute, batch=args.batch)
+            res = backfill_db(db, model, execute=args.execute, batch=args.batch)
             print(" ", res)
             if res.get("error"):
                 print("\nABORT:", res["error"]); return 2

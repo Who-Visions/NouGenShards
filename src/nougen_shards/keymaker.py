@@ -91,6 +91,175 @@ def _fingerprint(value: str) -> str:
     """Non-reversible audit fingerprint of a secret (first 12 hex of SHA-256)."""
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
+
+# --------------------------------------------------------------------------
+# Filesystem hardening: owner-only vault dirs, secrets DB and SA key files.
+#
+# Service-account JSONs hold `private_key` in PLAINTEXT on disk; the ACL is
+# their only protection, not defence-in-depth. Every failure here is therefore
+# fatal and loud -- silently continuing leaves credentials at inherited perms.
+# Rule 0.2: the owning account resolves env -> OS API -> probe, never hardcode.
+# --------------------------------------------------------------------------
+
+class VaultProtectionError(RuntimeError):
+    """Owner-only protection could not be applied to a vault path."""
+
+
+# Ordered env overrides; NOUGEN_ACL_USER lets an operator name the account
+# explicitly (service contexts where USERNAME is not the intended owner).
+_ACL_USER_ENV_VARS = ("NOUGEN_ACL_USER", "USERNAME", "USER", "LOGNAME")
+# Directories are hardened once per process; files are always re-applied so a
+# recreated (freshly inheriting) file is never left on a stale cache entry.
+_HARDENED_DIRS: set = set()
+
+
+def _log(message: str) -> None:
+    print(f"[keymaker] {message}")
+
+
+def _windows_user_from_api() -> str:
+    """Current account via advapi32!GetUserNameW -- independent of the env block."""
+    size = ctypes.wintypes.DWORD(0)
+    ctypes.windll.advapi32.GetUserNameW(None, ctypes.byref(size))
+    buf = ctypes.create_unicode_buffer(size.value or 257)
+    size = ctypes.wintypes.DWORD(len(buf))
+    if not ctypes.windll.advapi32.GetUserNameW(buf, ctypes.byref(size)):
+        raise OSError("GetUserNameW failed")
+    return buf.value.strip()
+
+
+def _resolve_acl_user() -> str:
+    """
+    Resolve the account that must own the vault: env -> OS API -> shell probe.
+
+    Raises VaultProtectionError if no identity can be established. An unknown
+    owner means the ACL cannot be applied, and skipping it (the old behaviour
+    when USERNAME was empty) leaves SA private keys readable by anyone the
+    inherited profile ACL allows.
+    """
+    for var in _ACL_USER_ENV_VARS:
+        val = os.environ.get(var, "").strip()
+        if val:
+            return val
+
+    if os.name == "nt":
+        try:
+            val = _windows_user_from_api()
+            if val:
+                _log(f"ACL user resolved via GetUserNameW (env vars empty): {val}")
+                return val
+        except (OSError, AttributeError, ValueError) as exc:
+            _log(f"GetUserNameW probe failed: {exc}")
+
+    try:
+        import getpass  # pylint: disable=import-outside-toplevel
+        val = (getpass.getuser() or "").strip()
+        if val:
+            _log(f"ACL user resolved via getpass.getuser(): {val}")
+            return val
+    except Exception as exc:  # pylint: disable=broad-except
+        # getpass raises ImportError/KeyError/OSError depending on platform.
+        _log(f"getpass.getuser() probe failed: {exc}")
+
+    try:
+        import subprocess  # pylint: disable=import-outside-toplevel
+        proc = subprocess.run(["whoami"], capture_output=True, text=True,
+                              timeout=15, check=True)
+        val = (proc.stdout or "").strip().splitlines()
+        if val and val[0].strip():
+            _log(f"ACL user resolved via 'whoami' probe: {val[0].strip()}")
+            return val[0].strip()
+    except Exception as exc:  # pylint: disable=broad-except
+        _log(f"'whoami' probe failed: {exc}")
+
+    raise VaultProtectionError(
+        "Cannot resolve the current user, so owner-only permissions cannot be "
+        "applied to the credential vault. Refusing to leave secrets at "
+        "inherited permissions -- set NOUGEN_ACL_USER to the owning account.")
+
+
+def _icacls_principals(target: str) -> list:
+    """Principals holding an explicit ACE on `target`, per `icacls` output."""
+    import subprocess  # pylint: disable=import-outside-toplevel
+    proc = subprocess.run(["icacls", target], capture_output=True, text=True,
+                          check=False, timeout=30)
+    principals = []
+    for line in (proc.stdout or "").splitlines():
+        if ":(" not in line:
+            continue
+        head = line.split(":(")[0]
+        if head.startswith(target):
+            head = head[len(target):]
+        head = head.strip()
+        if head:
+            principals.append(head)
+    return principals
+
+
+def _same_principal(a: str, b: str) -> bool:
+    """Compare account names ignoring case and DOMAIN\\ / MACHINE\\ qualifiers."""
+    return a.split("\\")[-1].strip().lower() == b.split("\\")[-1].strip().lower()
+
+
+def _harden_path(path, is_dir: bool = False) -> None:
+    """
+    Restrict `path` to the current user only. POSIX: 0700/0600. Windows:
+    icacls with inheritance stripped and a single grant to the resolved user.
+
+    Raises VaultProtectionError on any failure -- never returns having skipped.
+    """
+    target = str(path)
+    if is_dir and target in _HARDENED_DIRS:
+        return
+
+    if os.name != "nt":
+        try:
+            os.chmod(target, 0o700 if is_dir else 0o600)
+        except OSError as exc:
+            raise VaultProtectionError(f"chmod failed for {target}: {exc}") from exc
+        if is_dir:
+            _HARDENED_DIRS.add(target)
+        return
+
+    import subprocess  # pylint: disable=import-outside-toplevel
+    user = _resolve_acl_user()
+    # (OI)(CI) so new children inherit the owner-only grant; files take plain F.
+    grant = f"{user}:(OI)(CI)(F)" if is_dir else f"{user}:(F)"
+    try:
+        proc = subprocess.run(
+            ["icacls", target, "/inheritance:r", "/grant:r", grant],
+            capture_output=True, text=True, check=False, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise VaultProtectionError(f"icacls could not run for {target}: {exc}") from exc
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise VaultProtectionError(
+            f"icacls failed to lock {target} to {user} "
+            f"(rc={proc.returncode}): {detail}")
+
+    # /inheritance:r strips INHERITED ACEs and /grant:r only replaces the named
+    # user's grant -- any pre-existing EXPLICIT ACE for another principal (e.g.
+    # a BUILTIN\Users grant on a restored or copied key file) survives both.
+    # Strip the survivors so the DACL really is owner-only, then verify.
+    for principal in _icacls_principals(target):
+        if _same_principal(principal, user):
+            continue
+        _log(f"Removing foreign ACE {principal} from {target}")
+        subprocess.run(["icacls", target, "/remove:g", principal],
+                       capture_output=True, text=True, check=False, timeout=30)
+        subprocess.run(["icacls", target, "/remove:d", principal],
+                       capture_output=True, text=True, check=False, timeout=30)
+
+    survivors = [p for p in _icacls_principals(target) if not _same_principal(p, user)]
+    if survivors:
+        raise VaultProtectionError(
+            f"{target} is still accessible to {survivors} after hardening; "
+            f"refusing to treat it as owner-only.")
+
+    if is_dir:
+        _HARDENED_DIRS.add(target)
+
+
 # Portable Vault Resolution
 VAULT_DIR = Path(os.getenv("NOUGEN_VAULT_DIR", ".nougen_vault"))
 DB_PATH = VAULT_DIR / "shards_secrets.db"
@@ -102,13 +271,11 @@ def init_vault():
     """Initializes the vault database schema."""
     VAULT_DIR.mkdir(parents=True, exist_ok=True)
     SECRETS_JSON_DIR.mkdir(parents=True, exist_ok=True)
-    # Restrict the vault to the owner on POSIX (Windows relies on per-file ACLs).
-    if os.name != "nt":
-        for d in (VAULT_DIR, SECRETS_JSON_DIR):
-            try:
-                os.chmod(d, 0o700)
-            except OSError:
-                pass
+    # Restrict the vault to the owner on BOTH platforms: POSIX modes, Windows
+    # ACLs (inheritance stripped + current user only). Windows was previously
+    # skipped entirely, so the vault inherited whatever the profile allowed.
+    for d in (VAULT_DIR, SECRETS_JSON_DIR):
+        _harden_path(d, is_dir=True)
 
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -140,6 +307,11 @@ def init_vault():
     ''')
     conn.commit()
     conn.close()
+    # The secrets DB holds every ingested credential (DPAPI/keyring-wrapped, but
+    # still the whole keyring surface) and previously got no chmod and no ACL on
+    # any platform -- it simply inherited the profile's permissions. Lock it to
+    # the owner like the SA JSONs, after close() so no WAL/journal handle is open.
+    _harden_path(DB_PATH)
 
 
 def _export_to_csv():
@@ -217,14 +389,21 @@ def ingest_service_account(json_data: str):
             with os.fdopen(fd, "w", encoding="utf-8") as f_out:
                 f_out.write(payload)
 
-        # Lock file ACL to the current user only (constitution 0.2 rule 3)
-        if os.name == "nt":
-            import subprocess  # pylint: disable=import-outside-toplevel
-            user = os.environ.get("USERNAME", "")
-            if user:
-                subprocess.run(
-                    ["icacls", str(target_path), "/inheritance:r", "/grant:r", f"{user}:F"],
-                    capture_output=True, check=False, timeout=10)
+        # Lock the file to the current user only (constitution 0.2 rule 3).
+        # This file contains `private_key` in PLAINTEXT, so the ACL/mode is its
+        # ONLY protection. Previously this depended on a non-empty USERNAME and
+        # used check=False, so an empty env var or a failing icacls silently
+        # left the key at inherited permissions. Now it fails loudly, and the
+        # unprotected copy we just wrote is removed before the error surfaces.
+        try:
+            _harden_path(target_path)
+        except VaultProtectionError:
+            try:
+                os.remove(target_path)
+                _log(f"Removed unprotected service-account file {target_path}")
+            except OSError as cleanup_exc:
+                _log(f"WARNING: could not remove unprotected {target_path}: {cleanup_exc}")
+            raise
 
         # Store metadata in DB
         ingest_secret(f"GCP_SA_{project_id.upper()}", client_email)

@@ -215,17 +215,107 @@ def test_clean_multiline_note_is_left_alone():
     assert handoff.normalize_handoff_message(clean) == clean
 
 
+# ---------------------------------------------------------------------------
+# normalize_handoff_message detectors.
+#
+# The normalizer never rejects a note (a degraded handoff beats a lost one), so
+# its warnings ARE its behaviour: delete a detector and the writer silently
+# accepts a mangled note. Each detector therefore needs a positive case AND the
+# clean-note negative case — a warning that always fires carries no signal.
+# ---------------------------------------------------------------------------
+
+CLEAN_TEMPLATED_NOTE = (
+    "## Active Incidents\n- None\n\n"
+    "## Ongoing Investigations\n- none\n\n"
+    "## Recent Changes\n- claim total $3,922.07\n\n"
+    "## Known Issues and Workarounds\n- None\n\n"
+    "## Upcoming Events\n- None\n"
+)
+
+
+def _normalize_capturing_warnings(message):
+    """Run the normalizer against a captured console; return (result, output)."""
+    import io as _io
+
+    from rich.console import Console
+
+    buffer = _io.StringIO()
+    # Wide, no-wrap console: rich would otherwise hyphenate the warning words
+    # the assertions look for.
+    console = Console(file=buffer, width=400, force_terminal=False, no_color=True)
+    result = handoff.normalize_handoff_message(message, console)
+    return result, buffer.getvalue()
+
+
+def test_truncated_note_triggers_truncation_warning():
+    # Exactly what cmd.exe leaves behind: the first heading and nothing else.
+    truncated = "## Active Incidents"
+    result, output = _normalize_capturing_warnings(truncated)
+    assert "TRUNCATED" in output
+    assert "message-file" in output
+    # Advisory only: the degraded note is still returned, not dropped.
+    assert result == truncated
+
+
+def test_truncated_note_warning_fires_for_each_heading_depth():
+    for heading in ("# Active Incidents", "## Recent Changes", "### Upcoming Events"):
+        _, output = _normalize_capturing_warnings(heading)
+        assert "TRUNCATED" in output, f"no truncation warning for {heading!r}"
+
+
+def test_eaten_currency_triggers_currency_warning():
+    # A shell expanded $3 as a capture group, deleting the leading digit.
+    mangled = (
+        "## Recent Changes\n"
+        "- reconciled claim total ,922.07 across 14 line items\n"
+        "\n## Upcoming Events\n- None\n"
+    )
+    result, output = _normalize_capturing_warnings(mangled)
+    assert "currency" in output
+    assert ",922.07" in output
+    assert result == mangled
+
+
+def test_clean_note_triggers_no_warnings():
+    # The negative case is the point: a detector that fires on healthy input is
+    # noise, and would let both positive cases above pass for the wrong reason.
+    result, output = _normalize_capturing_warnings(CLEAN_TEMPLATED_NOTE)
+    assert result == CLEAN_TEMPLATED_NOTE
+    assert output.strip() == "", f"clean note must produce no warning, got: {output!r}"
+    assert "TRUNCATED" not in output
+    assert "currency" not in output
+
+
+def test_intact_currency_is_not_flagged_as_eaten():
+    # "$3,922.07" keeps its leading digit; only a bare ",922.07" is damage.
+    _, output = _normalize_capturing_warnings(
+        "## Recent Changes\n- claim total $3,922.07\n- second line keeps this multi-line\n"
+    )
+    assert "currency" not in output
+
+
 def test_multiline_message_survives_create_handoff(setup_handoff_env):
     # Regression: cmd.exe truncated templated notes to their first heading, so a
-    # ~2600-char handoff landed as 19 chars. Every section must survive the writer.
-    note = (
-        "## Active Incidents\n- None\n\n"
-        "## Ongoing Investigations\n- none\n\n"
-        "## Recent Changes\n- claim total $3,922.07\n\n"
-        "## Known Issues and Workarounds\n- None\n\n"
-        "## Upcoming Events\n- None\n"
-    )
-    p = handoff.create_handoff(message=note, agent="claude-cli")
+    # ~2600-char handoff landed as 19 chars. Agents worked around it by escaping
+    # the newlines, which means create_handoff must run the normalizer for the
+    # sections to come back — a no-op normalizer leaves one 130-char line.
+    escaped = CLEAN_TEMPLATED_NOTE.replace("\n", "\\n")
+    assert "\n" not in escaped, "guard: the mangled input must be single-line"
+
+    p = handoff.create_handoff(message=escaped, agent="claude-cli")
     stored = json.loads(p.read_text(encoding="utf-8"))["message"]
+
+    # The normalizer must have run inside create_handoff, not just at the door.
+    assert "\\n" not in stored
+    assert stored == CLEAN_TEMPLATED_NOTE
     assert stored.count("## ") == 5
+    assert stored.count("\n") == CLEAN_TEMPLATED_NOTE.count("\n")
     assert "$3,922.07" in stored
+
+
+def test_clean_multiline_message_survives_create_handoff_verbatim(setup_handoff_env):
+    # Companion to the above: a note that arrives already intact (the -M path)
+    # must reach disk byte-for-byte, with no normalizer side effects.
+    p = handoff.create_handoff(message=CLEAN_TEMPLATED_NOTE, agent="claude-cli")
+    stored = json.loads(p.read_text(encoding="utf-8"))["message"]
+    assert stored == CLEAN_TEMPLATED_NOTE

@@ -20,6 +20,37 @@ DEFAULT_HTTP_TIMEOUT = 120
 MODEL_PULL_TIMEOUT = 600  # model pulls stream progress; generous but finite bound
 _HTTP_TIMEOUT = DEFAULT_HTTP_TIMEOUT  # back-compat alias
 
+# --- Model roster discovery (Rule 0.2: probe, don't assume) -------------------
+# Vendor model IDs drift constantly, so a static roster rots into wrong routing
+# decisions while still looking authoritative. Resolution order is
+# env -> cache -> live probe -> logged fallback. Every tunable below resolves
+# from the environment with the constant as a logged default, never a magic
+# number baked into a call site.
+OPENAI_MODEL_SEED = [
+    "gpt-4o", "gpt-4o-mini", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+]
+MODEL_ROSTER_TTL_ENV = "NOUGEN_MODEL_ROSTER_TTL"
+DEFAULT_MODEL_ROSTER_TTL = 3600  # seconds
+MODEL_ROSTER_TIMEOUT_ENV = "NOUGEN_MODEL_ROSTER_TIMEOUT"
+DEFAULT_MODEL_ROSTER_TIMEOUT = 10  # seconds; keep the common path non-blocking
+# Cached per base_url so OpenAI-compatible subclasses never cross-contaminate.
+_MODEL_ROSTER_CACHE: Dict[str, Dict[str, object]] = {}
+
+
+def _env_number(name: str, default: float) -> float:
+    """Resolve an environment-shaped numeric knob, falling back audibly."""
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        print(
+            f"[Warning] {name}={raw!r} is not numeric; using default {default}.",
+            file=sys.stderr,
+        )
+        return default
+
 
 @dataclass
 class ModelBudgetConfig:
@@ -72,6 +103,11 @@ class LocalLLMClient(LLMClient, ABC):
 
 class OpenAIClient(LLMClient):
     """Client for OpenAI (ChatGPT)."""
+
+    # Subclasses on OpenAI-compatible endpoints override these two.
+    MODEL_SEED = OPENAI_MODEL_SEED
+    MODELS_ENV_VAR = "NOUGEN_OPENAI_MODELS"
+
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or keymaker.get_secret("OPENAI_API_KEY")
         self.base_url = "https://api.openai.com/v1"
@@ -79,8 +115,54 @@ class OpenAIClient(LLMClient):
     def is_alive(self) -> bool:
         return bool(self.api_key)
 
-    def list_models(self) -> list:
-        return ["gpt-4o", "gpt-4o-mini", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+    def list_models(self, refresh: bool = False) -> list:
+        """Discover the live model roster from ``GET {base_url}/models``.
+
+        Rule 0.2: the vendor endpoint is the source of truth. ``MODEL_SEED`` is
+        retained only as a fallback and its use is always logged, so a stale
+        roster can never masquerade as a live one. An explicit
+        ``MODELS_ENV_VAR`` override wins over both (env -> cache -> probe ->
+        logged fallback).
+        """
+        override = os.environ.get(self.MODELS_ENV_VAR, "").strip()
+        if override:
+            pinned = [m.strip() for m in override.split(",") if m.strip()]
+            if pinned:
+                return pinned
+
+        if not self.api_key:
+            return self._fallback_roster("no API key configured")
+
+        now = time.time()
+        cached = _MODEL_ROSTER_CACHE.get(self.base_url)
+        ttl = _env_number(MODEL_ROSTER_TTL_ENV, DEFAULT_MODEL_ROSTER_TTL)
+        if not refresh and cached and (now - float(cached.get("ts", 0.0))) < ttl:
+            return list(cached.get("models") or [])
+
+        try:
+            req = urllib.request.Request(f"{self.base_url}/models", method="GET")
+            req.add_header("Authorization", f"Bearer {self.api_key}")
+            timeout = _env_number(MODEL_ROSTER_TIMEOUT_ENV, DEFAULT_MODEL_ROSTER_TIMEOUT)
+            with urllib.request.urlopen(req, timeout=timeout) as res:
+                data = json.loads(res.read().decode())
+            models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+            if models:
+                _MODEL_ROSTER_CACHE[self.base_url] = {"ts": now, "models": models}
+                return list(models)
+            reason = "live roster returned no model IDs"
+        except Exception as exc:  # pylint: disable=broad-except
+            reason = f"{type(exc).__name__}: {exc}"
+        return self._fallback_roster(reason)
+
+    def _fallback_roster(self, reason: str) -> list:
+        """Return the static seed, loudly. Never silently pass off stale IDs."""
+        print(
+            f"[Warning] Live model discovery failed for {self.base_url} "
+            f"({reason}); falling back to static roster: "
+            f"{', '.join(self.MODEL_SEED)}",
+            file=sys.stderr,
+        )
+        return list(self.MODEL_SEED)
 
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:

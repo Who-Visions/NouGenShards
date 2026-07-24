@@ -17,22 +17,14 @@ def get_history_db_path() -> Path:
     return core.GLOBAL_DIR / "history.db"
 
 
-def get_history_connection():
-    """Establishes a connection to the history substrate with WAL enabled."""
-    db_path = get_history_db_path()
-    conn = sqlite3.connect(str(db_path), timeout=10.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_history_db():
-    """Initializes the shard_events table and optimized indexes."""
-    conn = get_history_connection()
-    cursor = conn.cursor()
-
-    # Module 3: Deep Grep Latent Structure (Tracking evolution)
-    cursor.execute("""
+# The history substrate's schema, declared once. Both the readiness probe and
+# the creation path read this mapping, so "what must exist" has exactly one
+# source of truth and there is no second init path to drift out of sync.
+# Module 3: Deep Grep Latent Structure (tracking evolution).
+# Module 10: Integrate Constraints (performance indexes).
+HISTORY_SCHEMA = {
+    "shard_events": (
+        """
         CREATE TABLE IF NOT EXISTS shard_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             shard_id INTEGER NOT NULL,
@@ -43,23 +35,82 @@ def init_history_db():
             timestamp TEXT NOT NULL,
             metadata JSON
         );
-    """)
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_history_timestamp ON shard_events(timestamp);",
+        "CREATE INDEX IF NOT EXISTS idx_history_shard ON shard_events(shard_id, db_index);",
+    ),
+}
+REQUIRED_TABLES = tuple(HISTORY_SCHEMA)
 
-    # Module 10: Integrate Constraints (Performance Indexes)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_history_timestamp ON shard_events(timestamp);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_history_shard ON shard_events(shard_id, db_index);")
 
-    conn.commit()
+def _ensure_history_schema(conn) -> None:
+    """Idempotently guarantee every required table exists on ``conn``.
+
+    Gate on SCHEMA, never on file existence. ``history.db`` is materialized by
+    the first *connection* to it — a HistoryEngine read, or the attribution
+    writer that shares the same file — so ``path.exists()`` becomes true long
+    before ``shard_events`` does. Existence-gating the init therefore silently
+    and permanently disabled event logging in any environment where a read
+    preceded the first write. This runs on every connection instead, so read and
+    write entry points alike leave the substrate usable.
+    """
+    try:
+        placeholders = ",".join("?" for _ in REQUIRED_TABLES)
+        present = {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                f"AND name IN ({placeholders})",
+                REQUIRED_TABLES,
+            )
+        }
+        missing = [name for name in REQUIRED_TABLES if name not in present]
+        if not missing:
+            return
+        for name in missing:
+            for statement in HISTORY_SCHEMA[name]:
+                conn.execute(statement)
+        conn.commit()
+    except sqlite3.Error as exc:
+        # Module 10: Graceful Degradation. A substrate we cannot provision must
+        # not crash main memory; the caller's own error handling reports the
+        # downstream failure. Write to stderr: a stray stdout line corrupts the
+        # MCP stdio JSON-RPC stream.
+        print(f"[Warning] Failed to ensure history schema: {exc}", file=sys.stderr)
+
+
+def get_history_connection():
+    """Establishes a connection to the history substrate with WAL enabled.
+
+    This is the single authoritative entry point: every read and every write in
+    this module goes through it, and it guarantees the schema before handing the
+    connection back.
+    """
+    db_path = get_history_db_path()
+    conn = sqlite3.connect(str(db_path), timeout=10.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.row_factory = sqlite3.Row
+    _ensure_history_schema(conn)
+    return conn
+
+
+def init_history_db():
+    """Materializes the history substrate (tables + optimized indexes).
+
+    Kept as the public/eager entry point, but it owns no DDL of its own: it
+    delegates to the same choke point every other caller uses so there is
+    exactly one initialization path.
+    """
+    conn = get_history_connection()
     conn.close()
 
 
 def log_event(shard_id: int, db_index: int, event_type: str,
               old_score: Optional[float] = None, new_score: Optional[float] = None, metadata: Optional[dict] = None):
     """Writes a historical event to the substrate."""
-    # Lazy init to prevent side-effects on import
-    if not get_history_db_path().exists():
-        init_history_db()
-
+    # Init is lazy (no side-effects on import) and lives in
+    # get_history_connection below, which gates on schema rather than on file
+    # existence — an existence gate here dropped every write that followed a
+    # read, because the read had already created an empty history.db.
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     meta_json = json.dumps(metadata or {})
 

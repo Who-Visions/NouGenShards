@@ -6,7 +6,13 @@ import sys
 import json
 
 sys.path.insert(0, "./src")
-os.environ.setdefault("NOUGEN_VAULT_DIR", "C:/Users/super/Watchtower/vault")
+os.environ.setdefault(
+    "NOUGEN_VAULT_DIR",
+    os.path.join(
+        os.environ.get("WATCHTOWER_ROOT") or os.path.expanduser("~/Watchtower"),
+        "vault",
+    ),
+)
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from nougen_shards.federation import federated_retrieve

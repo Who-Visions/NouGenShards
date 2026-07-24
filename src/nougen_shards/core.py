@@ -9,11 +9,18 @@ import json
 import math
 import os
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
+
+# Ranking-policy modules. Both are leaf modules (provenance imports nothing from
+# the package; attribution defers its history import into function bodies), so
+# importing them here cannot create a cycle.
+from . import attribution
+from . import provenance
 
 # Configuration (Module 10: Integrate Constraints)
 # Rule 0.2 line-level mandate: environment-shaped values resolve from env with a
@@ -45,17 +52,120 @@ ARXIV_RECALL_WEIGHT = _env_float("NOUGEN_RECALL_ARXIV_WEIGHT", 1.0)
 RECALL_LANE_CHAMPIONS = _env_int("NOUGEN_RECALL_LANE_CHAMPIONS", 0)
 EMBED_MAX_CHARS = _env_int("NOUGEN_EMBED_MAX_CHARS", 8000)
 EMBED_TIMEOUT = _env_int("NOUGEN_EMBED_TIMEOUT", 10)
+# Marker tag for a shard written without a vector. FTS insertion is enforced
+# structurally (triggers), but embedding CANNOT be — it needs a reachable embed
+# model — so the miss is recorded rather than silent: tagged here, counted by
+# tools/vault_drift_detector.py, swept by embedding_backfill.
+EMBED_PENDING_TAG = os.environ.get("NOUGEN_EMBED_PENDING_TAG", "embedding:pending")
 
-_vault_dir = os.environ.get("NOUGEN_VAULT_DIR")
-if not _vault_dir:
+# Vault location resolves env -> user config -> cwd-local -> home fallback
+# (Rule 0.2). The config tier matters for long-lived hosts (the MCP server) that
+# are launched by a supervisor whose environment nobody audits: without it, a
+# stale or absent NOUGEN_VAULT_DIR silently points recall at an empty store and
+# every miss looks like a healthy no-match. VAULT_SOURCE records which tier won
+# so callers can report provenance instead of guessing.
+NOUGEN_CONFIG_PATH = Path(
+    os.environ.get("NOUGEN_CONFIG", str(Path.home() / ".nougen" / "config.json"))
+)
+
+
+def _config_vault_dir() -> Optional[str]:
+    """Read vault_dir out of the user config, or None if unusable."""
+    try:
+        with open(NOUGEN_CONFIG_PATH, "r", encoding="utf-8") as handle:
+            value = json.load(handle).get("vault_dir")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return str(value) if value else None
+
+
+def _resolve_vault_dir() -> tuple[str, str]:
+    """Returns (vault_dir, source_tier)."""
+    env_dir = os.environ.get("NOUGEN_VAULT_DIR")
+    if env_dir:
+        return env_dir, "env:NOUGEN_VAULT_DIR"
+    config_dir = _config_vault_dir()
+    if config_dir:
+        return config_dir, f"config:{NOUGEN_CONFIG_PATH}"
     local_vault = Path(".vault")
     if local_vault.exists() and local_vault.is_dir():
-        _vault_dir = str(local_vault)
-    else:
-        _vault_dir = str(Path.home() / ".nougen" / "shards")
+        return str(local_vault), "cwd:.vault"
+    return str(Path.home() / ".nougen" / "shards"), "fallback:~/.nougen/shards"
+
+
+_vault_dir, VAULT_SOURCE = _resolve_vault_dir()
 
 GLOBAL_DIR = Path(_vault_dir)
 
+
+def vault_report() -> dict:
+    """Resolved vault provenance + population, for surfacing on every recall.
+
+    HARDENING invariant 4: an empty result is not a healthy no-match. Any recall
+    lane that can return nothing must also say which store it looked in and how
+    populated that store is, so a misrouted vault can never fail silently.
+    """
+    dbs = sorted(GLOBAL_DIR.glob("nougen_shards_*.db")) if GLOBAL_DIR.exists() else []
+    total = 0
+    for db in dbs:
+        try:
+            with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=DB_TIMEOUT) as conn:
+                total += conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
+        except sqlite3.Error:
+            continue
+    return {
+        "vault_dir": str(GLOBAL_DIR),
+        "source": VAULT_SOURCE,
+        "exists": GLOBAL_DIR.exists(),
+        "db_count": len(dbs),
+        "shard_count": total,
+    }
+
+# ---------------------------------------------------------------------------
+# Canonical ingest-scope globs (single source of truth).
+#
+# The ingester (shard_vault_files.py) and the drift detector
+# (tools/vault_drift_detector.py) MUST agree on what is out of scope. When they
+# disagree, every file the ingester refuses but the detector still counts shows
+# up as UNEXPECTED drift on every run, forever -- a cry-wolf alarm no operator
+# can clear. Both tools resolve these names instead of restating the literals,
+# so the invariant holds structurally:
+#
+#     ingest_exclude  ==  drift_exclude  UNION  drift_backlog
+#
+# Two distinct families, distinct semantics:
+#
+# NOISE  -- never memory, at all. Editor/tooling artifacts. The ingester skips
+#   them and the drift detector drops them from its accounting entirely
+#   (files_excluded), because they are not a backlog waiting to be drained.
+#   `User/History` is VS Code's local-history store: autosave snapshots of files
+#   already tracked elsewhere. Ingesting them floods recall with near-duplicate
+#   revisions of the same source file, roughly one shard per autosave snapshot.
+#   Matched by fnmatch against both the
+#   basename and the vault-relative POSIX path, and fnmatch's `*` spans "/", so
+#   the prefix form below covers the whole subtree at any depth.
+#
+# BACKLOG -- legitimately memory, deliberately deferred. The ingester skips
+#   them under a forward-only policy when embedding capacity is the bottleneck,
+#   but the detector classifies them as EXPECTED-missing
+#   rather than ignoring them, so the backlog stays visible and countable.
+#
+# Env overrides (NOUGEN_SHARD_EXCLUDE_GLOBS / NOUGEN_DRIFT_EXCLUDE_GLOBS /
+# NOUGEN_DRIFT_BACKLOG_GLOBS) still win; these are the logged fallbacks that
+# make the safe behaviour hold with no env var set.
+# ---------------------------------------------------------------------------
+DEFAULT_NOISE_EXCLUDE_GLOBS = "User/History/*"
+DEFAULT_BACKLOG_GLOBS = "arxiv_*.md;intelligence_shard_arxiv_*.md"
+DEFAULT_INGEST_EXCLUDE_GLOBS = ";".join(
+    (DEFAULT_NOISE_EXCLUDE_GLOBS, DEFAULT_BACKLOG_GLOBS)
+)
+
+# Read-only guard for federated reads of SIBLING vaults (see federation.py).
+# When set, no schema work (init_db) and no journal-mode change may touch the
+# store currently under GLOBAL_DIR — a secondary store is read in place and is
+# never migrated, upgraded, or merged. Toggled only via
+# federation.read_only_vault(); it is never persisted.
+VAULT_READONLY = False
 
 
 def get_db_path(index: int) -> Path:
@@ -107,12 +217,24 @@ def get_connection(index: int):
     """Establishes an SQLite connection with WAL enabled (Module 19: Stabilize Reasoning)."""
     path = get_db_path(index)
     conn = sqlite3.connect(str(path), timeout=DB_TIMEOUT)
-    conn.execute("PRAGMA journal_mode=WAL;")
+    # Never rewrite a foreign vault's journal mode while federating a read.
+    if not VAULT_READONLY:
+        conn.execute("PRAGMA journal_mode=WAL;")
     conn.row_factory = sqlite3.Row
     return conn
 
 
 _INITIALIZED_DBS = set()
+
+# init_db() is a check-then-act on _INITIALIZED_DBS followed by a
+# DROP TRIGGER / CREATE TRIGGER pair. Without a lock, concurrent capture()
+# threads all pass the membership check, then interleave: thread A's CREATE
+# lands between thread B's DROP and CREATE, and B dies with
+# "trigger shards_ai already exists".
+# It is rare per file and certain at scale: any multi-threaded ingest run will
+# hit it eventually, and a handful of failures is enough to pin the drift alarm
+# permanently red.
+_INIT_LOCK = threading.Lock()
 
 
 def init_db(index: int = 1):
@@ -123,9 +245,182 @@ def init_db(index: int = 1):
     initialized once per process. Keyed by vault dir because tests and tools
     repoint NOUGEN_VAULT_DIR/GLOBAL_DIR mid-process.
     """
+    if VAULT_READONLY:
+        # Federated read of a sibling store: schema is whatever that store has.
+        return
     key = (str(GLOBAL_DIR), index)
     if key in _INITIALIZED_DBS:
         return
+    with _INIT_LOCK:
+        # Double-checked: another thread may have finished while we waited.
+        if key in _INITIALIZED_DBS:
+            return
+        _init_db_locked(index, key)
+
+
+# The canonical FTS sync triggers — ONE definition, used both to install them
+# and to decide whether an install is even needed.
+#
+# The index must stay coherent on every write, not just inserts: without the
+# delete/update triggers, edited or removed shards leave stale rows that keep
+# matching searches. External-content FTS5 needs the special 'delete' command
+# rows to retract a row before re-indexing it.
+_FTS_TRIGGER_SQL = {
+    "shards_ai": (
+        "CREATE TRIGGER shards_ai AFTER INSERT ON shards BEGIN "
+        "INSERT INTO shards_fts(rowid, title, content) "
+        "VALUES (new.id, new.title, new.content); END"
+    ),
+    "shards_ad": (
+        "CREATE TRIGGER shards_ad AFTER DELETE ON shards BEGIN "
+        "INSERT INTO shards_fts(shards_fts, rowid, title, content) "
+        "VALUES ('delete', old.id, old.title, old.content); END"
+    ),
+    "shards_au": (
+        "CREATE TRIGGER shards_au AFTER UPDATE ON shards BEGIN "
+        "INSERT INTO shards_fts(shards_fts, rowid, title, content) "
+        "VALUES ('delete', old.id, old.title, old.content); "
+        "INSERT INTO shards_fts(rowid, title, content) "
+        "VALUES (new.id, new.title, new.content); END"
+    ),
+}
+
+
+def _norm_sql(sql: str) -> str:
+    """Whitespace-insensitive comparison key for a stored trigger definition."""
+    return " ".join((sql or "").split()).rstrip(";").strip()
+
+
+def fts_triggers_current(conn) -> bool:
+    """True when this DB already carries exactly the canonical FTS triggers."""
+    rows = conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name IN "
+        "('shards_ai', 'shards_ad', 'shards_au')"
+    ).fetchall()
+    have = {r[0]: _norm_sql(r[1]) for r in rows}
+    return have == {n: _norm_sql(s) for n, s in _FTS_TRIGGER_SQL.items()}
+
+
+def count_unindexed(conn) -> int:
+    """Rows in `shards` that the FTS index does not actually contain.
+
+    Read via the fts5 `_docsize` shadow table, which is the ONLY honest measure:
+    `SELECT count(*) FROM shards_fts` on an external-content table is answered
+    from the CONTENT table, so it always equals the row count and can never
+    reveal a gap. Every "row count == FTS count, we're in sync" report built on
+    that query is vacuous — which is exactly how this class of drift hides.
+    Returns -1 when the shadow table is unavailable (schema older/other shape).
+    """
+    try:
+        return int(conn.execute(
+            "SELECT count(*) FROM shards s WHERE NOT EXISTS "
+            "(SELECT 1 FROM shards_fts_docsize d WHERE d.id = s.id)"
+        ).fetchone()[0])
+    except sqlite3.Error:
+        return -1
+
+
+def _reindex_missing_rows(conn) -> int:
+    """Re-index every row the FTS index is missing. Caller holds the write lock."""
+    missing = count_unindexed(conn)
+    if missing < 0:
+        # No shadow table to diff against: fall back to the full FTS5 rebuild.
+        conn.execute("INSERT INTO shards_fts(shards_fts) VALUES('rebuild')")
+        return -1
+    if missing:
+        conn.execute(
+            "INSERT INTO shards_fts(rowid, title, content) "
+            "SELECT s.id, s.title, s.content FROM shards s WHERE NOT EXISTS "
+            "(SELECT 1 FROM shards_fts_docsize d WHERE d.id = s.id)"
+        )
+    return missing
+
+
+def _ensure_fts_triggers(conn) -> bool:
+    """Install the FTS sync triggers without ever leaving them uninstalled.
+
+    ROOT CAUSE this replaces (measured and reproduced): the previous
+    implementation ran `DROP TRIGGER IF EXISTS` x3 followed by `CREATE TRIGGER`
+    x3 as bare statements on every DB init. Python's sqlite3 executes DDL in
+    AUTOCOMMIT — `conn.in_transaction` is False after the DROP — so each drop
+    committed instantly and every other process saw a triggerless `shards`
+    table until the CREATE landed. Any concurrent INSERT in that interval wrote
+    a row that nothing ever indexed: present in `shards`, returned by
+    recent_shards and by retrieve(), permanently invisible to keyword search.
+    Every new process re-opened the window, so the more writers ran
+    concurrently, the more rows silently fell out of the index.
+
+    Two properties close the class, not just the instance:
+
+      1. NO-OP ON THE COMMON PATH. If the triggers already match the canonical
+         definitions, this changes nothing and therefore opens no window at all.
+         Init stops being a periodic hazard.
+      2. ATOMIC ON THE CHANGE PATH. When they genuinely must be rewritten, the
+         drop + create + repair happen inside one BEGIN IMMEDIATE transaction,
+         so concurrent writers block on the write lock instead of slipping
+         through it, and any row orphaned by an earlier unguarded window is
+         re-indexed before that lock is released.
+
+    Consequence: FTS insertion is not something a write path can decide to skip.
+    It is a property of the table, held by triggers that are never absent, so
+    core.capture(), the fleet-registry MCP writer and the ingest CLI all index
+    identically whether or not they know the index exists.
+    """
+    if fts_triggers_current(conn):
+        return False
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for name in _FTS_TRIGGER_SQL:
+            conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+        for sql in _FTS_TRIGGER_SQL.values():
+            conn.execute(sql)
+        _reindex_missing_rows(conn)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    return True
+
+
+def repair_fts_index(db_index: Optional[int] = None) -> dict:
+    """Public repair choke point: make every shard on disk searchable again.
+
+    Prefer this over hand-written SQL — it holds the write lock while it works
+    and uses the same canonical trigger definitions as init. Returns
+    {db_index: rows_reindexed}; a -1 means that DB needed a full FTS5 rebuild.
+    """
+    out: dict = {}
+    indices = [db_index] if db_index is not None else range(1, MAX_DB_COUNT + 1)
+    for i in indices:
+        if not get_db_path(i).exists():
+            continue
+        conn = get_connection(i)
+        try:
+            # Measure the gap BEFORE repairing anything. _ensure_fts_triggers()
+            # re-indexes orphans itself when it has to rewrite the triggers, so
+            # reading the count afterwards reports 0 for work this call just did
+            # and makes a real repair look like a no-op to the caller.
+            missing_before = count_unindexed(conn)
+            _ensure_fts_triggers(conn)
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                reindexed = _reindex_missing_rows(conn)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            # -1 (no shadow table -> full rebuild) propagates from whichever
+            # step observed it; otherwise the honest total is the pre-repair gap.
+            out[i] = reindexed if missing_before < 0 else missing_before
+        finally:
+            conn.close()
+    return out
+
+
+def _init_db_locked(index: int, key) -> None:
+    """Schema creation for one (vault, index) pair. Callers hold _INIT_LOCK."""
     conn = get_connection(index)
     cursor = conn.cursor()
 
@@ -216,36 +511,63 @@ def init_db(index: int = 1):
             );
         """)
 
-    # Sync triggers (Module 18: Reconstruct Coherence).
-    # The FTS index must stay coherent on every write, not just inserts. Without
-    # the delete/update triggers, edited or removed shards leave stale rows that
-    # keep matching searches. External-content FTS5 needs the special 'delete'
-    # command rows to retract a row before re-indexing it.
-    cursor.execute("DROP TRIGGER IF EXISTS shards_ai")
-    cursor.execute("DROP TRIGGER IF EXISTS shards_ad")
-    cursor.execute("DROP TRIGGER IF EXISTS shards_au")
-    cursor.execute("""
-        CREATE TRIGGER shards_ai AFTER INSERT ON shards BEGIN
-            INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
-        END;
-    """)
-    cursor.execute("""
-        CREATE TRIGGER shards_ad AFTER DELETE ON shards BEGIN
-            INSERT INTO shards_fts(shards_fts, rowid, title, content)
-            VALUES ('delete', old.id, old.title, old.content);
-        END;
-    """)
-    cursor.execute("""
-        CREATE TRIGGER shards_au AFTER UPDATE ON shards BEGIN
-            INSERT INTO shards_fts(shards_fts, rowid, title, content)
-            VALUES ('delete', old.id, old.title, old.content);
-            INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
-        END;
-    """)
+    # Sync triggers (Module 18: Reconstruct Coherence). Installed via
+    # _ensure_fts_triggers so that installing them can never itself open a
+    # window in which a concurrent write bypasses the index — see that
+    # function for the root cause this replaces.
+    conn.commit()
+    _ensure_fts_triggers(conn)
 
     conn.commit()
     conn.close()
     _INITIALIZED_DBS.add(key)
+
+
+RECALL_PACKET_MARKER = "=== NOUGENSHARDS RECALL PACKET"
+
+
+def canonical_content(content: str) -> str:
+    """THE one content normalization: redact secrets, then strip recall packets.
+
+    Extracted 2026-07-24 because capture() needed the *same* normalized text for
+    two purposes — the dedup hash and the ingest embedding — and reaching into
+    compute_dedup_hash()'s locals for it (`clean_content`) raised NameError on
+    every capture, silently swallowed. One function, two callers, no divergence:
+    if the identity rule changes, what gets embedded changes with it.
+    """
+    try:
+        from .brain_scan.redaction import redact_content as _redact
+        content = _redact(content)
+    except Exception:
+        pass
+    if RECALL_PACKET_MARKER in content:
+        return content.split(RECALL_PACKET_MARKER)[0].strip()
+    return content
+
+
+def compute_dedup_hash(content: str) -> str:
+    """Canonical shard identity used by the dedup index.
+
+    THE one definition. capture() uses it, and so must any external tool that
+    asks "is this file already sharded?" (ingesters, drift detectors). The order
+    is load-bearing:
+
+      1. redact secrets  - capture() redacts before hashing so a shard's identity
+         is its clean text and the hash never encodes a plaintext credential
+         (Atibon/Keymaker doctrine). redact_content is idempotent, so calling
+         this on already-redacted content is safe.
+      2. strip recall packet - injected recall packets are context, not identity.
+      3. md5 of the result.
+
+    Why this function exists (2026-07-24): shard_vault_files.py and the drift
+    detector hashed RAW file content while capture() hashed REDACTED content.
+    Any vault file containing a credential-shaped string therefore hashed
+    differently on the two sides: it was re-captured on every ingest run and
+    reported as permanent, uncloseable drift. Reimplementing the hash is how
+    that bug happened; import this instead.
+    """
+    return hashlib.md5(
+        canonical_content(content).encode("utf-8", errors="ignore")).hexdigest()
 
 
 def get_dedup_path():
@@ -492,12 +814,10 @@ def capture(event_type: str, title: str, content: str,
     if _min_density > 0.0 and density_score is not None and density_score < _min_density:
         return False
 
-    # Clean the content for O(1) deduplication hashing to exclude injected recall packets or static context.
-    clean_content = content
-    if "=== NOUGENSHARDS RECALL PACKET" in content:
-        clean_content = content.split("=== NOUGENSHARDS RECALL PACKET")[0].strip()
-
-    fhash = hashlib.md5(clean_content.encode("utf-8", errors="ignore")).hexdigest()
+    # Canonical shard identity. Delegated to compute_dedup_hash() so external
+    # tools (ingesters, drift detectors) can compute the SAME identity instead of
+    # reimplementing it and silently diverging.
+    fhash = compute_dedup_hash(content)
 
     # Global Deduplication (Module 12): one indexed lookup in the central
     # hash index — O(1) — instead of scanning all 9 cluster databases.
@@ -520,12 +840,31 @@ def capture(event_type: str, title: str, content: str,
             # recall for this shard (backfill sweeps it later), never blocks
             # capture.
             try:
-                from .embedding_backfill import embed as _embed
-                embedding = _embed(
-                    clean_content[:EMBED_MAX_CHARS],
-                    os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text"),
+                from . import embedding_backfill as _eb
+                # Model discovered from the live /api/tags roster, never a
+                # hardcoded tag (Rule 0.2): a stale model name is silent here,
+                # it just yields a keyword-only shard.
+                #
+                # Embed the SAME normalized text the dedup hash is computed
+                # from — via canonical_content(), not a private local of
+                # compute_dedup_hash(). Reaching for that local is exactly the
+                # NameError that made capture() embed nothing at all.
+                #
+                # Resolved through the module object (not `from ... import
+                # embed`) so a monkeypatch on embedding_backfill.embed is
+                # actually observed here — a test that patches a name capture()
+                # never consults proves nothing.
+                embedding = _eb.embed(
+                    canonical_content(content)[:EMBED_MAX_CHARS],
+                    _eb.resolve_embed_model(timeout=EMBED_TIMEOUT),
                     timeout=EMBED_TIMEOUT)
-            except Exception:
+            except (ImportError, OSError):
+                # ONLY "the embedder is unreachable/absent" degrades quietly:
+                # ImportError (optional module missing), OSError (socket,
+                # timeout, urllib URLError/HTTPError — all OSError subclasses).
+                # A broad `except Exception` here is what hid the NameError for
+                # a full day: NameError/AttributeError/TypeError are programming
+                # bugs, not outages, and MUST propagate loudly.
                 embedding = None
 
         emb_blob = None
@@ -536,7 +875,28 @@ def capture(event_type: str, title: str, content: str,
                 arr = arr / norm
             emb_blob = sqlite3.Binary(arr.tobytes())
 
-        tags_str = json.dumps(tags or [])
+        # Derive the provenance tier AT INGEST and stamp it as an explicit
+        # `provenance:<tier>` tag, which classify() reads at precedence 2.
+        #
+        # Why a tag and not a new column: a mature grid spans several database
+        # files that other lanes read concurrently. An ALTER on the shards table
+        # would need a full backup of all of it to be safe, for a value the
+        # classifier can already compute from fields that are ALREADY stored.
+        # New rows therefore carry the tier explicitly, and pre-existing rows
+        # are classified lazily at rank time — no re-index, no backfill,
+        # no schema mutation of live memory.
+        tag_list = list(tags or [])
+        # An unembedded shard is invisible to the vector lane. That is allowed
+        # (ollama may be down) but it is never allowed to be SILENT: record it
+        # on the row so the gap is observable and sweepable.
+        if emb_blob is None and EMBED_PENDING_TAG not in tag_list:
+            tag_list.append(EMBED_PENDING_TAG)
+        if provenance.ENABLED and not any(
+                str(t).lower().startswith("provenance:") for t in tag_list):
+            tag_list.append("provenance:" + provenance.classify({
+                "title": title, "content": content, "tags": tag_list,
+                "event_type": event_type}))
+        tags_str = json.dumps(tag_list)
         timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         conn = get_connection(target_idx)
@@ -565,6 +925,16 @@ def capture(event_type: str, title: str, content: str,
             "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
             (fhash, target_idx))
         dconn.commit()
+
+        # Cue-anchored delivery lane (additive, opt-in): derive trigger
+        # conditions for the new shard so the harness can inject it later
+        # without the agent having to remember to recall. No-op unless
+        # NOUGEN_TRIGGERS_AUTODERIVE=1, and it can never fail a capture.
+        try:
+            from . import triggers as _triggers  # pylint: disable=import-outside-toplevel
+            _triggers.on_capture(fhash, title, content)
+        except Exception:
+            pass
         return True
     finally:
         dconn.close()
@@ -575,6 +945,16 @@ WEIGHT_BM25 = _env_float("NOUGEN_RECALL_WEIGHT_BM25", 0.4)
 WEIGHT_SEMANTIC = _env_float("NOUGEN_RECALL_WEIGHT_SEMANTIC", 0.6)
 WEIGHT_LIKELIHOOD = _env_float("NOUGEN_RECALL_WEIGHT_LIKELIHOOD", 0.7)
 WEIGHT_PRIOR = _env_float("NOUGEN_RECALL_WEIGHT_PRIOR", 0.3)
+# LIKE-fallback lane has no BM25 term, so it carries its own likelihood/prior
+# split rather than borrowing the FTS one (Rule 0.2: no bare literal in a
+# shipped ranking line).
+WEIGHT_LIKE_LIKELIHOOD = _env_float("NOUGEN_RECALL_WEIGHT_LIKE_LIKELIHOOD", 0.5)
+WEIGHT_LIKE_PRIOR = _env_float("NOUGEN_RECALL_WEIGHT_LIKE_PRIOR", 0.5)
+# RRF consensus is modulated by the prior as score * (base + prior * span).
+# This is the exact term that let an inflated arXiv prior beat an exact-match
+# first-party hit across stores, so it is now named and tunable.
+RRF_PRIOR_BASE = _env_float("NOUGEN_RRF_PRIOR_BASE", 0.7)
+RRF_PRIOR_SPAN = _env_float("NOUGEN_RRF_PRIOR_SPAN", 0.3)
 
 
 def _squash_utility(u: float) -> float:
@@ -583,6 +963,32 @@ def _squash_utility(u: float) -> float:
     unbounded priors made incumbents win over perfect semantic matches
     (rich-get-richer, diagnosed 2026-07-11 via the recall probe)."""
     return u / (1.0 + u) if u > 0 else 0.0
+
+
+def _effective_prior(item: dict, decay: float = 1.0) -> float:
+    """The single chokepoint every ranking lane uses for the utility prior.
+
+    Two corrections are applied here and NOWHERE else, so no lane can drift:
+
+      1. `attribution.observed_prior` -- if a caller has actually declared this
+         shard as used/cited, that observed contribution replaces the stored
+         prior (AttriMem, arXiv 2607.21106). No usage recorded == unchanged.
+      2. `provenance.adjust_prior` -- tier weight and cap, so a third-party
+         (arXiv/RSS) shard cannot outrank a first-party shard on the prior
+         alone (arXiv 2607.20891).
+
+    The likelihood terms (BM25 / semantic / RRF consensus) are untouched by
+    design: that is what keeps research queries able to surface arXiv shards on
+    merit. Only the *prior* is de-privileged.
+    """
+    try:
+        prior = float(item.get("utility_score", 1.0) or 0.0)
+    except (TypeError, ValueError):
+        prior = 1.0
+    prior = attribution.observed_prior(item, prior)
+    prior = provenance.adjust_prior(item, prior)
+    return prior * decay
+
 
 # Stage-2 cross-encoder reranker (Tier-1 elevation). 2026 SOTA: a hybrid->rerank
 # two-stage pipeline lifts Recall@5 ~+17% / MRR ~+40% over RRF alone. Off by
@@ -606,7 +1012,59 @@ _RERANKER = None  # process-cached reranker handle
 # relevance for coverage: NOUGEN_MMR_LAMBDA=1.0 disables (pure relevance).
 MMR_LAMBDA = float(os.environ.get("NOUGEN_MMR_LAMBDA", "0.75"))
 
-def _process_fts_result(row, db_index, query_embedding):
+def _now_utc() -> datetime:
+    """One reference instant for a whole ranking pass. See _temporal_decay."""
+    return datetime.now(timezone.utc)
+
+
+def _temporal_decay(ts_str, now: Optional[datetime] = None) -> float:
+    """Recency decay for one candidate, measured against a SINGLE reference
+    instant supplied by the caller.
+
+    Every ranking lane used to inline this and call datetime.now() PER ROW, so a
+    shard's score depended on when in the scan loop it happened to be processed.
+    That is real ranking nondeterminism, not a rounding artefact: over the
+    default 30-day half-life the microseconds between two rows move a score by
+    ~1e-12, which is larger than the gap between shards captured a second apart.
+    Measured 2026-07-24 on six near-identical shards -- consecutive retrieve()
+    calls on an unchanged vault returned three different orderings (id order
+    drifted in ~3 of 40 runs), because whichever row the loop reached first was
+    scored against an earlier `now` and won.
+
+    Sampling once per pass makes decay a pure function of the stored timestamp.
+    Candidates that remain exactly equal are then separated by the stable
+    (_db_index, id) tiebreak on each lane's sort, so the order is total.
+    """
+    if not ts_str:
+        return 1.0
+    if now is None:
+        now = _now_utc()
+    try:
+        dt = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age_days = (now - dt).total_seconds() / 86400.0
+        return max(0.1, 0.5 ** (age_days / RECALL_DECAY_HALFLIFE_DAYS))
+    except Exception:
+        return 1.0
+
+
+def _rank_key(item: dict, score_field: str = "final_score"):
+    """Total order for ranked candidates: score desc, then a STABLE identity.
+
+    Relying on Python's stable sort alone only preserves *insertion* order, and
+    insertion order here is 'whichever DB the scan reached first' — fine until
+    two candidates tie, at which point the ranking is decided by scan order
+    rather than by anything about the shards. (_db_index, id) is the shard's
+    durable identity in the grid, so equal-scoring shards always rank the same
+    way, in this process and the next.
+    """
+    return (-float(item.get(score_field, 0.0) or 0.0),
+            int(item.get("_db_index", 0) or 0),
+            int(item.get("id", 0) or 0))
+
+
+def _process_fts_result(row, db_index, query_embedding, now: Optional[datetime] = None):
     """Helper to score a single FTS result via the weighted relevance blend."""
     item = dict(row)
     item["_db_index"] = db_index
@@ -639,19 +1097,9 @@ def _process_fts_result(row, db_index, query_embedding):
     likelihood = (norm_bm25 * WEIGHT_BM25) + (sem_score * WEIGHT_SEMANTIC)
 
     # 3. Temporal decay factor (half-life of 30 days) to prevent stale successful sessions from dominating results
-    decay = 1.0
-    ts_str = item.get("timestamp")
-    if ts_str:
-        try:
-            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-            decay = max(0.1, 0.5 ** (age_days / RECALL_DECAY_HALFLIFE_DAYS))
-        except Exception:
-            pass
+    decay = _temporal_decay(item.get("timestamp"), now)
 
-    decayed_utility = item["utility_score"] * decay
+    decayed_utility = _effective_prior(item, decay)
 
     # 4. Final relevance: a weighted blend of the likelihood signal and the decayed utility score
     item["final_score"] = (likelihood * WEIGHT_LIKELIHOOD) + (_squash_utility(decayed_utility) * WEIGHT_PRIOR)
@@ -694,10 +1142,14 @@ def _build_fts_match_query(query: str, joiner: str = " ") -> Optional[str]:
 
 
 def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[List[float]] = None,
-                      domain_key: str = "global") -> list:
+                      domain_key: str = "global", now: Optional[datetime] = None) -> list:
     """Scans for keyword matches using FTS5 (with LIKE fallback)."""
     from . import history # pylint: disable=import-outside-toplevel
 
+    # ONE reference instant for every candidate this pass scores. Sampling the
+    # clock per row made a shard's decay depend on its position in the scan.
+    if now is None:
+        now = _now_utc()
     results = []
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists():
@@ -735,7 +1187,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     if res:
                         for row in res:
                             history.log_event(row["id"], i, "ACCESSED")
-                            results.append(_process_fts_result(row, i, query_embedding))
+                            results.append(_process_fts_result(row, i, query_embedding, now))
                         fts_worked = True
                         break
                 except sqlite3.OperationalError:
@@ -772,30 +1224,21 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                                 sem_score = 0.0
                     likelihood = sem_score if query_embedding is not None else 0.5
 
-                    decay = 1.0
-                    ts_str = item.get("timestamp")
-                    if ts_str:
-                        try:
-                            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                            if dt.tzinfo is None:
-                                dt = dt.replace(tzinfo=timezone.utc)
-                            age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                            decay = max(0.1, 0.5 ** (age_days / RECALL_DECAY_HALFLIFE_DAYS))
-                        except Exception:
-                            pass
+                    decay = _temporal_decay(item.get("timestamp"), now)
 
-                    decayed_utility = item["utility_score"] * decay
-                    item["final_score"] = (likelihood * 0.5) + (decayed_utility * 0.5)
+                    decayed_utility = _effective_prior(item, decay)
+                    item["final_score"] = ((likelihood * WEIGHT_LIKE_LIKELIHOOD)
+                                           + (decayed_utility * WEIGHT_LIKE_PRIOR))
                     results.append(item)
         finally:
             conn.close()
 
-    results.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+    results.sort(key=_rank_key)
     return results[:limit]
 
 
 def _vector_retrieve_ann(query_embedding: List[float], limit: int = 20,
-                         domain_key: str = "global"):
+                         domain_key: str = "global", now: Optional[datetime] = None):
     """ANN fast-path for _vector_retrieve (opt-in via NOUGEN_ANN=1).
 
     Uses the unified HNSW index to fetch candidate (db, id) pairs sub-linearly,
@@ -804,6 +1247,8 @@ def _vector_retrieve_ann(query_embedding: List[float], limit: int = 20,
     is unavailable -> the caller falls back to the verified linear scan.
     """
     from . import ann_index, history  # pylint: disable=import-outside-toplevel
+    if now is None:
+        now = _now_utc()
     # Wide candidate pool: final ranking blends cosine with utility+recency, which
     # can promote items outside the pure-cosine top-k, so over-fetch to keep parity
     # with the full linear scan. Still tiny vs scanning all 47k rows.
@@ -838,24 +1283,14 @@ def _vector_retrieve_ann(query_embedding: List[float], limit: int = 20,
                     sem_score = float(np.dot(q, emb_array))
                 except Exception:
                     sem_score = 0.0
-                decay = 1.0
-                ts_str = item.get("timestamp")
-                if ts_str:
-                    try:
-                        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                        if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=timezone.utc)
-                        age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                        decay = max(0.1, 0.5 ** (age_days / RECALL_DECAY_HALFLIFE_DAYS))
-                    except Exception:
-                        pass
-                decayed_utility = item["utility_score"] * decay
+                decay = _temporal_decay(item.get("timestamp"), now)
+                decayed_utility = _effective_prior(item, decay)
                 item["final_score"] = (sem_score * WEIGHT_LIKELIHOOD) + (_squash_utility(decayed_utility) * WEIGHT_PRIOR)
                 results.append(item)
         finally:
             conn.close()
 
-    results.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+    results.sort(key=_rank_key)
     top_results = results[:limit]
     for item in top_results:
         history.log_event(item["id"], item["_db_index"], "ACCESSED")
@@ -863,15 +1298,20 @@ def _vector_retrieve_ann(query_embedding: List[float], limit: int = 20,
 
 
 def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
-                     domain_key: str = "global") -> list:
+                     domain_key: str = "global", now: Optional[datetime] = None) -> list:
     """Scans for semantic vector matches independent of FTS."""
     if query_embedding is None:
         return []
 
+    # ONE reference instant for every candidate this pass scores (see
+    # _temporal_decay): per-row clock sampling reordered equal-scoring shards.
+    if now is None:
+        now = _now_utc()
+
     # ANN fast-path (opt-in). Falls back to the linear scan below if the index
     # is missing/stale/unreadable, so correctness never depends on the index.
     if os.environ.get("NOUGEN_ANN") == "1":
-        ann_results = _vector_retrieve_ann(query_embedding, limit, domain_key)
+        ann_results = _vector_retrieve_ann(query_embedding, limit, domain_key, now)
         if ann_results is not None:
             return ann_results
 
@@ -912,25 +1352,15 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                     e_norm = float(np.linalg.norm(emb_array))
                     sem_score = float(np.dot(query_embedding, emb_array)) / e_norm if e_norm > 0 else 0.0
 
-                decay = 1.0
-                ts_str = item.get("timestamp")
-                if ts_str:
-                    try:
-                        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                        if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=timezone.utc)
-                        age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                        decay = max(0.1, 0.5 ** (age_days / RECALL_DECAY_HALFLIFE_DAYS))
-                    except Exception:
-                        pass
+                decay = _temporal_decay(item.get("timestamp"), now)
 
-                decayed_utility = item["utility_score"] * decay
+                decayed_utility = _effective_prior(item, decay)
                 item["final_score"] = (sem_score * WEIGHT_LIKELIHOOD) + (_squash_utility(decayed_utility) * WEIGHT_PRIOR)
                 results.append(item)
         finally:
             conn.close()
 
-    results.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+    results.sort(key=_rank_key)
     top_results = results[:limit]
     
     for item in top_results:
@@ -939,10 +1369,13 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     return top_results
 
 
-def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[dict]:
+def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
+                           now: Optional[datetime] = None) -> List[dict]:
     """
     Module 8 / 21: Reciprocal Rank Fusion (RRF) to merge multiple ranked lists.
     """
+    if now is None:
+        now = _now_utc()
     rrf_scores = {}  # key -> float
     item_map = {}    # key -> dict
     
@@ -978,19 +1411,13 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
     merged = []
     for key, item in item_map.items():
         consensus_score = rrf_scores[key]
-        decay = 1.0
-        ts_str = item.get("timestamp")
-        if ts_str:
-            try:
-                dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                decay = max(0.1, 0.5 ** (age_days / RECALL_DECAY_HALFLIFE_DAYS))
-            except Exception:
-                pass
-        decayed_utility = item.get("utility_score", 1.0) * decay
-        item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3))
+        decay = _temporal_decay(item.get("timestamp"), now)
+        # THE cross-store tiebreak. RRF consensus is modulated by the prior, so
+        # before the provenance transform an inflated bulk-ingest utility (4.29
+        # vs a curated 0.9) multiplied a third-party shard past an exact-match
+        # first-party hit. _effective_prior applies the tier weight + cap here.
+        decayed_utility = _effective_prior(item, decay)
+        item["final_score"] = consensus_score * (RRF_PRIOR_BASE + (decayed_utility * RRF_PRIOR_SPAN))
         merged.append(item)
 
     merged.sort(key=lambda x: x["final_score"], reverse=True)
@@ -1100,6 +1527,13 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     """
     import concurrent.futures
 
+    # ONE reference instant for this entire retrieval, threaded through both
+    # lanes, the fusion and the tripartite score. Every candidate is therefore
+    # aged against the same clock reading instead of against whenever the scan
+    # loop happened to reach it -- the cause of the run-to-run id-order drift
+    # measured on 2026-07-24 (see _temporal_decay).
+    now = _now_utc()
+
     # Ensure all existing shard databases are schema-upgraded to the current version before querying
     for i in range(1, MAX_DB_COUNT + 1):
         if get_db_path(i).exists():
@@ -1126,25 +1560,37 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     def run_parallel_retrieval(active_domain: str):
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_keyword = executor.submit(
-                _keyword_retrieve, query, candidate_limit, query_embedding, active_domain
+                _keyword_retrieve, query, candidate_limit, query_embedding, active_domain, now
             )
             future_vector = executor.submit(
-                _vector_retrieve, query_embedding, candidate_limit, active_domain
+                _vector_retrieve, query_embedding, candidate_limit, active_domain, now
             )
 
             keyword_results = future_keyword.result()
             vector_results = future_vector.result()
 
-        fused = reciprocal_rank_fusion([keyword_results, vector_results], k=60)
+        fused = reciprocal_rank_fusion([keyword_results, vector_results], k=60, now=now)
         return fused, keyword_results, vector_results
 
     all_results, kw_lane, vec_lane = run_parallel_retrieval(domain_key)
 
-    # Fallback: if the domain-scoped pass found nothing, sweep the ENTIRE brain
-    # (all domain_keys). Without this, recall stays siloed to one bucket
-    # (e.g. 'global' = <2% of shards) and misses the other 47k+ shards.
-    if not all_results and domain_key != "*":
-        all_results, kw_lane, vec_lane = run_parallel_retrieval("*")
+    # Fallback: sweep the ENTIRE brain (all domain_keys) when the domain-scoped
+    # pass produced no LEXICAL evidence.
+    #
+    # Gating this on `not all_results` was effectively dead code: the vector
+    # lane almost always returns in-domain neighbours, so all_results was
+    # non-empty even when the keyword lane found nothing — and any shard whose
+    # domain_key differs from the cwd-derived domain became unreachable on an
+    # exact-term match. Measured 2026-07-24: query "OvisOCR2" under cwd domain
+    # 'NouGen/NouGenShards-push-main' returned keyword=0 / vector=20, so the
+    # sweep never fired and the exact-title shard (domain_key 'Watchtower')
+    # was never surfaced; the whole-brain pass ranks it #1.
+    # NOUGEN_RECALL_GLOBAL_FALLBACK: keyword (default) | empty (legacy) | off
+    if domain_key != "*":
+        mode = os.environ.get("NOUGEN_RECALL_GLOBAL_FALLBACK", "keyword").strip().lower()
+        should_sweep = (not kw_lane) if mode == "keyword" else (not all_results)
+        if mode != "off" and should_sweep:
+            all_results, kw_lane, vec_lane = run_parallel_retrieval("*")
 
     def _champ_key(it):
         return (it.get("id"), (it.get("title") or "")[:80])
@@ -1184,17 +1630,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         else:
             relevance = 1.0 if raw_rel > 0 else 0.5
             
-        decay = 1.0
-        ts_str = item.get("timestamp")
-        if ts_str:
-            try:
-                dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
-                decay = max(0.1, 0.5 ** (age_days / RECALL_DECAY_HALFLIFE_DAYS))
-            except Exception:
-                pass
+        decay = _temporal_decay(item.get("timestamp"), now)
         
         density = item.get("density_score", 1.0)
 
@@ -1208,7 +1644,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         scored_results.append(item)
     
     # Sort candidates by the tripartite score
-    scored_results.sort(key=lambda x: x["utility_score_tripartite"], reverse=True)
+    scored_results.sort(key=lambda x: _rank_key(x, "utility_score_tripartite"))
     
     # Dynamic Thresholding / Drop bottom 50% if we have many candidates
     if scored_results:
@@ -1246,7 +1682,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
 
     # Lost in the Middle Mitigation (interleave)
     reordered = lost_in_the_middle_reorder(diversified[:limit])
-    return reordered
+    # Carry the authority tag through to the caller. arXiv 2607.20891's finding
+    # is that verification at retrieval time does NOT survive a long-horizon
+    # workflow, so the tier has to travel with the shard, not be checked once.
+    return provenance.annotate(reordered)
 
 
 def get_shard_by_id(shard_id: int, db_index: int):
@@ -1288,6 +1727,18 @@ def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
         # Log UTILITY_CHANGE event
         from . import history # pylint: disable=import-outside-toplevel
         history.log_event(shard_id, i, "UTILITY_CHANGE", old_score=old_score, new_score=new_score)
+
+        # A mark_utility call is the one place today where a caller states, on
+        # the record, that a specific shard mattered — so it doubles as a real
+        # attribution observation (AttriMem, arXiv 2607.21106). Recorded through
+        # the same non-blocking queue rather than a parallel mechanism.
+        # NOTE: retrieval-time ACCESSED events are deliberately NOT recorded
+        # here; those encode rank, not usage, and feeding them back would
+        # fabricate a contribution signal.
+        attribution.record_usage(
+            [(shard_id, i)], contribution=val,
+            source=attribution.SOURCE_MARK_UTILITY,
+            metadata={"worked": bool(worked)})
 
         return True
     return False
@@ -1401,6 +1852,12 @@ def compile_recall_packet(shards: list) -> str:
         # 9-DB grid (mark_utility / link_shards / recall_related take db_index).
         db_idx = s.get("_db_index")
         db_tag = f" (db {db_idx})" if db_idx is not None else ""
+        # Federated recall spans several stores; name the one this hit came from
+        # so the caller can tell curated vault shards from imported transcripts.
+        store = s.get("_store")
+        if store:
+            role = "primary" if s.get("_store_primary") else "secondary"
+            db_tag += f" [store: {store}/{role}]"
         output.append(f"--- RECORD #{s['id']}{db_tag} [Score: {s['final_score']:.2f}] ---")
         output.append(f"When: {format_shard_when(s.get('timestamp'))}")
         content = s["content"] or ""

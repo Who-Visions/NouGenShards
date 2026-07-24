@@ -7,6 +7,11 @@ LOCAL = [{"id": "local_1", "title": "Local Shard", "final_score": 0.9}]
 
 def _patch_local(monkeypatch):
     """Stub local retrieval + keymaker so both remote lanes are exercised."""
+    # Hermetic: a developer machine with NOUGEN_SECONDARY_VAULT_DIRS set adds a
+    # real sibling-vault lane, and the stubbed retrieve() below answers for that
+    # lane too -- so local_1 comes back once per configured store and the exact
+    # result assertion turns into a function of the ambient environment.
+    monkeypatch.delenv("NOUGEN_SECONDARY_VAULT_DIRS", raising=False)
     monkeypatch.setattr(federation.core, "retrieve", lambda *a, **k: list(LOCAL))
     monkeypatch.setattr(
         federation.core,

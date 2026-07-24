@@ -10,7 +10,13 @@ import sys
 import json
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-os.environ.setdefault("NOUGEN_VAULT_DIR", r"C:/Users/super/Watchtower/vault")
+os.environ.setdefault(
+    "NOUGEN_VAULT_DIR",
+    os.path.join(
+        os.environ.get("WATCHTOWER_ROOT") or os.path.expanduser("~/Watchtower"),
+        "vault",
+    ),
+)
 
 from nougen_shards.core import capture, GLOBAL_DIR
 

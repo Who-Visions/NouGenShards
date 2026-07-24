@@ -163,13 +163,79 @@ def test_domain_isolation_capture_and_retrieve(setup_test_env):
 
 
 def test_domain_global_fallback(setup_test_env):
-    """Test fallback to global domain if no domain-specific matches exist."""
-    shards.capture("TEST", "Global Document", "This content lives globally.", domain_key="global")
+    """The whole-brain sweep must fire on an empty KEYWORD lane, not an empty
+    fused result set.
 
-    # Retrieve targeting an empty domain - should fall back to global
-    res = shards.retrieve("globally", domain_key="NonExistentDomain")
-    assert len(res) >= 1
+    This is the repo's most expensive regression guard: gating the sweep on
+    `not all_results` is dead code (the vector lane almost always returns
+    in-domain neighbours, so all_results is non-empty even when the keyword lane
+    found nothing), and it cost 12 days of unreachable shards before anyone
+    noticed. The old fixture here could not tell the two gates apart: it seeded
+    ONE shard, with no embedding, and queried with no query_embedding, so the
+    vector lane was empty too and `not all_results` happened to be true.
+
+    So the fixture is built to distinguish them:
+      * an in-domain shard that is embedded but does NOT contain the query term
+        -> the vector lane returns it, all_results is non-empty
+      * an out-of-domain shard that is the ONLY lexical match
+        -> only a whole-brain sweep can ever surface it
+    Under the dead `not all_results` gate the sweep never fires and this fails.
+    """
+    query = "zzglobaluniqueterm"
+
+    # In-domain neighbour: embedded, but lexically irrelevant to the query.
+    shards.capture("TEST", "In Domain Neighbour",
+                   "unrelated in-domain filler about lens calibration.",
+                   domain_key="Domain/Alpha", embedding=[1.0, 0.0, 0.0])
+    # The answer, filed under a DIFFERENT domain than the caller's.
+    shards.capture("TEST", "Global Document",
+                   f"This content lives globally under {query}.",
+                   domain_key="Domain/Beta", embedding=[0.0, 1.0, 0.0])
+
+    q_emb = [0.0, 1.0, 0.0]
+
+    # Preconditions -- assert the fixture actually has teeth, so this test can
+    # never silently rot back into the single-shard version that proved nothing.
+    assert shards._vector_retrieve(q_emb, 20, "Domain/Alpha"), \
+        "vector lane must be NON-empty in-domain, else the dead gate also passes"
+    assert not shards._keyword_retrieve(query, 20, q_emb, "Domain/Alpha"), \
+        "keyword lane must be empty in-domain, else no sweep is needed at all"
+
+    res = shards.retrieve(query, domain_key="Domain/Alpha", query_embedding=q_emb)
+
+    titles = [r["title"] for r in res]
+    assert "Global Document" in titles, (
+        "whole-brain sweep never fired: an exact-term match in another domain "
+        f"stayed unreachable (got {titles})")
     assert res[0]["title"] == "Global Document"
+
+
+def test_domain_global_fallback_can_be_disabled(setup_test_env):
+    """NOUGEN_RECALL_GLOBAL_FALLBACK=off keeps the sweep from crossing domains.
+
+    Pinned so the gate stays a real switch: if the 'keyword' default were ever
+    reintroduced as an unconditional sweep, domain isolation would quietly die.
+    """
+    import os
+    query = "zzglobaluniqueterm"
+    shards.capture("TEST", "In Domain Neighbour",
+                   "unrelated in-domain filler about lens calibration.",
+                   domain_key="Domain/Alpha", embedding=[1.0, 0.0, 0.0])
+    shards.capture("TEST", "Global Document",
+                   f"This content lives globally under {query}.",
+                   domain_key="Domain/Beta", embedding=[0.0, 1.0, 0.0])
+
+    prev = os.environ.get("NOUGEN_RECALL_GLOBAL_FALLBACK")
+    os.environ["NOUGEN_RECALL_GLOBAL_FALLBACK"] = "off"
+    try:
+        res = shards.retrieve(query, domain_key="Domain/Alpha",
+                              query_embedding=[0.0, 1.0, 0.0])
+    finally:
+        if prev is None:
+            os.environ.pop("NOUGEN_RECALL_GLOBAL_FALLBACK", None)
+        else:
+            os.environ["NOUGEN_RECALL_GLOBAL_FALLBACK"] = prev
+    assert "Global Document" not in [r["title"] for r in res]
 
 
 def test_vector_normalization(setup_test_env):

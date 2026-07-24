@@ -26,6 +26,24 @@ from . import evolution
 
 VERSION = "1.1.0"
 
+# --- Exit-code contract -----------------------------------------------------
+# Handlers return None or EXIT_OK on success and a non-zero code on failure;
+# main() propagates whatever they return to the process exit status. Keep the
+# vocabulary this small and named (Rule 0.2: no bare magic numbers on the wire)
+# — hooks, CI steps and this repo's scheduled tasks branch on it.
+#
+#   EXIT_OK      the command did what it was asked to do. This includes honest
+#                empty results: "no shards found", "no triggers", "0 nodes
+#                linked" are successful answers, not failures.
+#   EXIT_FAILURE the command ran and the operation failed, or a diagnostic
+#                found a problem it is supposed to report.
+#   EXIT_USAGE   the invocation itself was wrong (missing/unknown arguments or
+#                subcommand). Matches argparse's own convention and main()'s
+#                unknown-command path.
+EXIT_OK = 0
+EXIT_FAILURE = 1
+EXIT_USAGE = 2
+
 
 
 # UTF-8 Console protection for Windows
@@ -39,13 +57,18 @@ if sys.platform == "win32":
         pass
 
 def cmd_brain(args):
-    """Universal AI Memory Forensic Engine."""
+    """Universal AI Memory Forensic Engine.
+
+    Subcommand dispatcher: each branch returns its own code. Finding zero
+    candidates is a successful scan (nothing to recover), not a failure.
+    """
     if args.action == "scan":
         candidates = scan_environment(
-            project_path=str(getattr(args, 'project')) if getattr(args, 'project', None) else None, 
+            project_path=str(getattr(args, 'project')) if getattr(args, 'project', None) else None,
             include_unknown=getattr(args, 'unknown', False)
         )
         print_scan_report(candidates, as_json=getattr(args, 'json', False))
+        return EXIT_OK
     elif args.action == "import":
         result = run_import(
             project_path=str(getattr(args, 'project')) if getattr(args, 'project', None) else None,
@@ -55,6 +78,13 @@ def cmd_brain(args):
             confirm=getattr(args, 'confirm', False)
         )
         print_import_report(result, dry_run=not getattr(args, 'confirm', False), as_json=getattr(args, 'json', False))
+        # run_import returns an ImportResult with no in-band error channel:
+        # parse/capture problems raise, which main() already surfaces non-zero.
+        # A 0-shard import is a legitimate "nothing new to recover" result.
+        return EXIT_OK
+
+    print(f"Error: unknown brain action '{getattr(args, 'action', None)}'.")
+    return EXIT_USAGE
 
 def get_client(provider: str):
     """Helper to get a client by provider name."""
@@ -82,11 +112,15 @@ def get_client(provider: str):
 
 
 def cmd_auth(args):
-    """Manages authentication and API keys."""
+    """Manages authentication and API keys.
+
+    A credential write that fails must never look like it landed: the next run
+    would silently fall back to an unauthenticated lane.
+    """
     if args.action == "set-key":
         if not args.provider or not args.input:
             print("Error: Usage: nougen auth set-key <provider> <key>")
-            return
+            return EXIT_USAGE
 
         key_map = {
             "openai": "OPENAI_API_KEY",
@@ -102,16 +136,30 @@ def cmd_auth(args):
         provider = args.provider.lower()
         if provider not in key_map:
             print(f"Error: Unknown provider '{args.provider}'.")
-            return
+            return EXIT_USAGE
 
-        keymaker.ingest_secret(key_map[provider], args.input)
+        secret_key = key_map[provider]
+        try:
+            keymaker.ingest_secret(secret_key, args.input)
+        except Exception as exc:  # pylint: disable=broad-except
+            # sqlite errors, vault-hardening refusals, DPAPI failures — any of
+            # them means the key is NOT stored. Never print the ✅ in that case.
+            print(f"Error: could not save the {provider} key to the vault: {exc}",
+                  file=sys.stderr)
+            return EXIT_FAILURE
+        # Read-back: a write nobody verified is a claim, not a fact.
+        if secret_key not in keymaker.list_providers():
+            print(f"Error: {provider} key did not survive read-back from the vault.",
+                  file=sys.stderr)
+            return EXIT_FAILURE
         print(f"✅ API key for {provider} saved to vault.")
+        return EXIT_OK
 
     elif args.action == "list":
         keys = keymaker.list_providers()
         if getattr(args, 'json', False) is True:
             print(json.dumps(keys))
-            return
+            return EXIT_OK
         print("🔐 Connected Services:")
         providers = {
             "OPENAI_API_KEY": "OpenAI (BYOK)",
@@ -127,13 +175,25 @@ def cmd_auth(args):
                 print(f" ✅ {display}")
                 found = True
         if not found:
+            # An empty list is a correct answer, not a failure: NouGenShards is
+            # local-first and "no cloud services connected" is a valid state.
             print(" No cloud services connected.")
+        return EXIT_OK
+
+    print(f"Error: unknown auth action '{getattr(args, 'action', None)}'.")
+    return EXIT_USAGE
 
 
 def cmd_init(_args):
     """Bootstrap the local shard layer."""
     print("🪩 Initializing Valerion — The Metameric Memory Engine...")
-    shards.init_db(index=1)
+    try:
+        shards.init_db(index=1)
+    except (OSError, sqlite3.Error) as exc:
+        # An unwritable/inaccessible vault dir is the realistic failure here, and
+        # every "Next Play" printed below is a lie if the substrate never landed.
+        print(f"❌ Could not create the database substrate: {exc}", file=sys.stderr)
+        return EXIT_FAILURE
     print("✅ Created local-first database substrate.")
     print("\n[IGNITION COMPLETE]")
     print(" NouGenShards is now active. Your machine has memory.")
@@ -142,6 +202,7 @@ def cmd_init(_args):
     print(" 2. nougen dashboard          (Launch the visual Cortex HUD)")
     print(" 3. nougen auth set-key OR    (Connect to the cloud)")
     print(" 4. nougen add \"first shard\" (Start capturing manually)")
+    return EXIT_OK
 
 
 def _run_interactive_chat(model, provider, client):
@@ -173,7 +234,7 @@ def cmd_chat(args):
     client = get_client(prov_name)
     if not client or not client.is_alive():
         print(f"Error: {prov_name} is not configured.")
-        return
+        return EXIT_FAILURE
 
     model = args.model
     if not model:
@@ -185,7 +246,7 @@ def cmd_chat(args):
 
     if not model:
         print("Error: No model found.")
-        return
+        return EXIT_FAILURE
 
     if not args.query:
         _run_interactive_chat(model, prov_name, client)
@@ -196,6 +257,7 @@ def cmd_chat(args):
         print(f"[*] Querying {model}...")
         resp = client.chat(model, msgs, stream=False)
         print(f"\n[Response]:\n{resp}")
+    return EXIT_OK
 
 
 def cmd_models(args):
@@ -253,7 +315,13 @@ def cmd_add(args):
 
 
 def cmd_search(args):
-    """Search for shards across local substrate and external DBs."""
+    """Search for shards across local substrate and external DBs.
+
+    Exit-code note: a search that matches nothing is a SUCCESSFUL search. "No
+    shards found" is an answer, and scripting `nougen search` into an `if` must
+    not treat an empty vault as a broken one. The only non-zero paths here would
+    be genuine retrieval faults, which raise and are surfaced by main().
+    """
     domain_key = getattr(args, 'domain', None)
     if domain_key is not None and type(domain_key).__name__ in ('MagicMock', 'Mock'):
         domain_key = None
@@ -268,7 +336,7 @@ def cmd_search(args):
         else:
             packet = shards.compile_recall_packet_dual(dual_results)
             print(packet)
-        return
+        return EXIT_OK
 
     embedding = None
     if getattr(args, 'semantic', False):
@@ -286,7 +354,7 @@ def cmd_search(args):
             print("[]")
         else:
             print("No shards found.")
-        return
+        return EXIT_OK
 
     if getattr(args, 'json', False) is True:
         # Convert binary embeddings to lists for JSON serialization
@@ -294,7 +362,7 @@ def cmd_search(args):
             if 'embedding' in res and isinstance(res['embedding'], bytes):
                 res['embedding'] = json.loads(res['embedding'].decode())
         print(json.dumps(results))
-        return
+        return EXIT_OK
 
     print(f"🔍 Found {len(results)} records across the fabric (Ranked by Relevance):\n")
     for res in results:
@@ -302,21 +370,32 @@ def cmd_search(args):
                  f"Prior: {res['utility_score']} | Source: {res['_db_index']}"
         print(header)
         print(f"Title: {res['title']}\n{res['content'].strip()}\n" + "-" * 40)
+    return EXIT_OK
 
 
 def cmd_mark(args):
     """Close the outcome loop (usefulness update)."""
     if shards.mark_shard(args.id, worked=args.worked, db_index=args.db):
         print(f"✅ Shard #{args.id} updated. Usefulness prior adjusted.")
-    else:
-        print(f"Error finding shard #{args.id}.")
+        return EXIT_OK
+    # The shard the caller named does not exist, so the update it asked for did
+    # not happen. That is a failure, not an empty result.
+    print(f"Error finding shard #{args.id}.")
+    return EXIT_FAILURE
 
 
 def cmd_status(args):
-    """Check the status of the Multi-DB cluster."""
+    """Check the status of the Multi-DB cluster.
+
+    A cluster with zero databases is reported, not failed — that is a valid
+    pre-`init` state. But a database file that EXISTS and cannot be read is an
+    outage: the totals printed below are silently short by that DB's contents,
+    which is exactly the shape of failure this command is watched for.
+    """
     active = shards.get_active_db_index()
     db_stats = []
     total_count = 0
+    unreadable = []
     for i in range(1, shards.MAX_DB_COUNT + 1):
         path = shards.get_db_path(i)
         if not path.exists():
@@ -333,22 +412,36 @@ def cmd_status(args):
                 "is_active": i == active
             })
             total_count += count
-        except (sqlite3.Error, OSError):
-            pass
+        except (sqlite3.Error, OSError) as exc:
+            unreadable.append(f"DB #{i} ({path}): {exc}")
 
     if getattr(args, 'json', False) is True:
-        print(json.dumps({"databases": db_stats, "total_shards": total_count}))
-        return
+        print(json.dumps({
+            "databases": db_stats,
+            "total_shards": total_count,
+            "unreadable": unreadable,
+        }))
+    else:
+        print("📊 NouGenShards Substrate Status:")
+        for db in db_stats:
+            status = " (ACTIVE)" if db['is_active'] else ""
+            print(f" - DB #{db['index']}: {db['shards']} shards | {db['size_mb']:.2f} MB / 1024 MB{status}")
+        print(f"\nTotal records in memory: {total_count}")
 
-    print("📊 NouGenShards Substrate Status:")
-    for db in db_stats:
-        status = " (ACTIVE)" if db['is_active'] else ""
-        print(f" - DB #{db['index']}: {db['shards']} shards | {db['size_mb']:.2f} MB / 1024 MB{status}")
-    print(f"\nTotal records in memory: {total_count}")
+    if unreadable:
+        for line in unreadable:
+            print(f"Error: unreadable database — {line}", file=sys.stderr)
+        return EXIT_FAILURE
+    return EXIT_OK
 
 
 def cmd_stats(args):
-    """Reports memory growth and utility trends across horizons."""
+    """Reports memory growth and utility trends across horizons.
+
+    Exit-code note: zero growth over the window is a real, successful answer.
+    There is no in-band error channel here — a broken history store raises, and
+    main() turns that into a non-zero status on its own.
+    """
     period = args.period or "week"
     engine = history.HistoryEngine()
 
@@ -362,7 +455,7 @@ def cmd_stats(args):
             "growth": growth,
             "utility_delta": utility
         }))
-        return
+        return EXIT_OK
 
     print(f"📈 NouGenShards History ({period})")
     print(timeline)
@@ -373,14 +466,20 @@ def cmd_stats(args):
     if growth['total_shards'] > 0:
         rate = (growth['new_shards'] / growth['total_shards']) * 100
         print(f" - Acceleration Rate:   {rate:.1f}% expansion")
+    return EXIT_OK
 
 
 def cmd_ctx(args):
-    """Handles NouGenContext commands."""
+    """Handles NouGenContext commands.
+
+    Subcommand dispatcher: every branch returns its own code and cmd_ctx returns
+    it unchanged — no branch may swallow a subhandler's failure.
+    """
     if args.action == "init":
         # Explicit user 'init' intends a fresh session, so opt into the wipe.
         nougen_context.init_context_db(clean_slate=True)
         print("✅ Session initialized.")
+        return EXIT_OK
     elif args.action == "execute":
         from .gatekeeper import check_mutation_gate
         res = check_mutation_gate(args.input)
@@ -392,43 +491,51 @@ def cmd_ctx(args):
                 if ans in ["y", "yes"]:
                     print("🔓 Gate override approved by GM.")
                     print(nougen_sandbox.execute_sandboxed(args.input, bypass_gatekeeper=True))
-                else:
-                    print("🚫 Action aborted.")
-            else:
+                    return EXIT_OK
                 print("🚫 Action aborted.")
-        else:
-            print(nougen_sandbox.execute_sandboxed(args.input))
+                return EXIT_FAILURE
+            # Non-interactive: the gate blocked the run and nothing executed.
+            # A caller that pipes this into a script must see the abort.
+            print("🚫 Action aborted.")
+            return EXIT_FAILURE
+        print(nougen_sandbox.execute_sandboxed(args.input))
+        return EXIT_OK
     elif args.action == "search":
         if not args.input:
             print("Error: Usage: nougen ctx search <query> [--limit <n>]")
-            return
+            return EXIT_USAGE
         results = nougen_context.search_events(args.input, limit=args.limit)
         if not results:
+            # An empty search result is a successful search.
             print("No context events found.")
-            return
+            return EXIT_OK
         for event in results:
             print(
                 f"#{event['id']} {event['timestamp']} "
                 f"{event['event_type']}: {event['description']}"
             )
+        return EXIT_OK
     elif args.action == "get":
         if not args.input:
             print("Error: Usage: nougen ctx get <event_id>")
-            return
+            return EXIT_USAGE
         event = nougen_context.get_event(int(args.input))
         if not event:
+            # A specific event was named and it is not there: a lookup failure,
+            # unlike an open-ended search that matched nothing.
             print(f"Error: Context event #{args.input} not found.")
-            return
+            return EXIT_FAILURE
         print(json.dumps(event, indent=2))
+        return EXIT_OK
     elif args.action == "promote":
         if not args.input:
             print("Error: Usage: nougen ctx promote <event_id> [--tags <tags>]")
-            return
+            return EXIT_USAGE
         event = nougen_context.get_event(int(args.input))
         if not event:
             print(f"Error: Context event #{args.input} not found.")
-            return
-        
+            return EXIT_FAILURE
+
         tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
         tags.append("promoted")
         success = shards.capture(
@@ -440,15 +547,28 @@ def cmd_ctx(args):
         if success:
             print(f"✅ Context event #{event['id']} promoted to durable memory.")
         else:
+            # Dedup hit: the content is already durable, which is the state the
+            # caller asked for. Idempotent success, matching `nougen add`.
             print(f"ℹ️ Shard already exists.")
+        return EXIT_OK
+
+    print(f"Error: unknown ctx action '{args.action}'.")
+    return EXIT_USAGE
 
 
 def cmd_router(args):
-    """Handles OpenRouter production routing commands."""
+    """Handles OpenRouter production routing commands.
+
+    Subcommand dispatcher: every branch returns its own code and this function
+    returns it — nothing here swallows a subhandler's failure. Note that the
+    missing-key guard below fails `router doctor` too, which is correct: a
+    routing doctor that reports "no key" and then exits 0 tells a scheduled
+    task that routing is fine.
+    """
     client = OpenRouterClient()
     if not client.is_alive():
         print("Error: OpenRouter key not found in vault. Use: nougen auth set-key openrouter <key>")
-        return
+        return EXIT_FAILURE
 
     if args.action == "chat":
         # Cache-friendly messages
@@ -473,18 +593,21 @@ def cmd_router(args):
             if "usage" in res:
                 u = res["usage"]
                 print(f"\nUsage: {u['total_tokens']} tokens ({u['cached_tokens']} cached)")
+        # A router response carrying an error key means every model in the
+        # fallback chain failed; the printed text is the error, not an answer.
+        return EXIT_FAILURE if isinstance(res, dict) and res.get("error") else EXIT_OK
 
     elif args.action == "json":
         if not args.schema:
             print("Error: --schema path/to/schema.json is required.")
-            return
-        
+            return EXIT_USAGE
+
         try:
             with open(args.schema, "r") as f:
                 schema = json.load(f)
         except Exception as e:
             print(f"Error loading schema: {e}")
-            return
+            return EXIT_FAILURE
 
         messages = [{"role": "user", "content": args.input}]
         res = client.structured_chat(
@@ -507,6 +630,11 @@ def cmd_router(args):
                 print(json.dumps(res["data"], indent=2))  # type: ignore
                 if not res["valid"]:
                     print(f"⚠️ Schema Errors: {res['errors']}")  # type: ignore
+        # Same verdict in both render modes: an error, or output that failed the
+        # caller's own schema, is a failed structured call.
+        if "error" in res or not res.get("valid"):
+            return EXIT_FAILURE
+        return EXIT_OK
 
     elif args.action == "doctor":
         diag = {
@@ -521,57 +649,91 @@ def cmd_router(args):
             print("🏥 OpenRouter Routing Doctor:")
             for k, v in diag.items():
                 print(f" - {k}: {v}")
+        # Belt and braces: the guard at the top already fails a keyless run, but
+        # the doctor's verdict must come from the diagnosis it just printed.
+        return EXIT_OK if diag["openrouter_key"] else EXIT_FAILURE
+
+    else:
+        print(f"Error: unknown router action '{args.action}'.")
+        return EXIT_USAGE
 
 
 def cmd_db(args):
-    """Manages external database connections."""
+    """Manages external database connections.
+
+    Subcommand dispatcher: each branch returns its own code. A link that did not
+    persist must not report success — the next federated search would quietly
+    query one source fewer.
+    """
     if args.action == "link":
         if not args.uri or not args.table:
             print("Error: Usage: nougen db link <uri> --table <name> --title <col> --content <col>")
-            return
-        keymaker.register_external_db(args.uri, args.table, args.title, args.content)
+            return EXIT_USAGE
+        try:
+            keymaker.register_external_db(args.uri, args.table, args.title, args.content)
+        except Exception as exc:  # pylint: disable=broad-except
+            print(f"Error: could not link external DB '{args.table}': {exc}", file=sys.stderr)
+            return EXIT_FAILURE
         print(f"✅ External DB linked: {args.table}")
+        return EXIT_OK
     elif args.action == "list":
         dbs = keymaker.list_external_dbs()
         if getattr(args, 'json', False) is True:
             print(json.dumps(dbs))
-            return
+            return EXIT_OK
         if not dbs:
+            # Zero linked databases is a legitimate state, not a failure.
             print(" No external databases linked.")
-            return
+            return EXIT_OK
         print("📊 Linked External Databases:")
         for d in dbs:
             print(f" - #{d['id']}: {d['uri'][:30]}... | Table: {d['table_name']}")
+        return EXIT_OK
+
+    print(f"Error: unknown db action '{args.action}'.")
+    return EXIT_USAGE
 
 
 def cmd_node(args):
-    """Manages remote NouGenShards cloud nodes."""
+    """Manages remote NouGenShards cloud nodes.
+
+    Subcommand dispatcher: each branch returns its own code. Sync is the sharp
+    edge here — a push or pull that half-failed and exited 0 reads as "backup
+    succeeded" to any scheduled task watching it.
+    """
     if args.action == "link":
         if not args.url:
             print("Error: Usage: nougen node link <url> [--name <name>]")
-            return
+            return EXIT_USAGE
         name = args.name or f"node_{abs(hash(args.url)) % 1000}"
-        keymaker.register_cloud_node(args.url, name)
+        try:
+            keymaker.register_cloud_node(args.url, name)
+        except Exception as exc:  # pylint: disable=broad-except
+            print(f"Error: could not link node '{name}': {exc}", file=sys.stderr)
+            return EXIT_FAILURE
         print(f"[*] Remote node linked: {name} ({args.url})")
+        return EXIT_OK
     elif args.action == "list":
         nodes = keymaker.list_cloud_nodes()
         if getattr(args, 'json', False) is True:
             print(json.dumps(nodes))
-            return
+            return EXIT_OK
         if not nodes:
+            # Zero linked nodes is a legitimate state, not a failure.
             print(" No remote nodes linked.")
-            return
+            return EXIT_OK
         print("[*] Linked Remote Nodes:")
         for n in nodes:
             print(f" - #{n['id']}: {n['name']} | URL: {n['url']}")
+        return EXIT_OK
     elif args.action == "push":
         if not args.url:
             print("Error: Usage: nougen node push <url> --token <token>")
-            return
+            return EXIT_USAGE
         if not args.token:
             print("Error: --token <token> is required for push.")
-            return
-        
+            return EXIT_USAGE
+
         print(f"[*] Extracting shards for push...")
         all_shards = []
         for i in range(1, shards.MAX_DB_COUNT + 1):
@@ -596,19 +758,27 @@ def cmd_node(args):
         print(f"[*] Pushing {len(all_shards)} shards to {args.url}...")
         res = push_to_cloud(all_shards, args.url, args.token)
         print(f"✅ Sync result: {res.get('status')} (Count: {res.get('count')})")
-        
+        # push_to_cloud reports transport/URL rejection in-band as
+        # {"status": "error"} — that line above prints "✅ Sync result: error".
+        if res.get("status") == "error":
+            print(f"Error: push failed — {res.get('message', 'unknown error')}",
+                  file=sys.stderr)
+            return EXIT_FAILURE
+        return EXIT_OK
+
     elif args.action == "pull":
         if not args.url:
             print("Error: Usage: nougen node pull <url> --token <token>")
-            return
+            return EXIT_USAGE
         if not args.token:
             print("Error: --token <token> is required for pull.")
-            return
-        
+            return EXIT_USAGE
+
         print(f"[*] Pulling shards from {args.url}...")
         remote_shards = pull_from_cloud(args.url, args.token)
         print(f"[*] Pulled {len(remote_shards)} shards. Ingesting locally...")
         count = 0
+        ingest_failures = 0
         for s in remote_shards:
             raw_tags = s.get("tags")
             if isinstance(raw_tags, str):
@@ -629,17 +799,124 @@ def cmd_node(args):
                 )
             except Exception as e:
                 print(f"[!] Failed to ingest shard '{s.get('title')}': {e}")
+                ingest_failures += 1
                 continue
             if success: count += 1
         print(f"✅ Ingestion complete. {count} new shards added.")
+        # Dropping shards on the floor during a sync is data loss, however
+        # cheerful the summary line above looks. `count == 0` on its own is NOT
+        # a failure: an already-synced or empty remote legitimately adds nothing.
+        if ingest_failures:
+            print(f"Error: {ingest_failures} shard(s) failed to ingest during pull.",
+                  file=sys.stderr)
+            return EXIT_FAILURE
+        return EXIT_OK
+
+    print(f"Error: unknown node action '{args.action}'.")
+    return EXIT_USAGE
+
+
+class ConfigError(Exception):
+    """Raised when the user config cannot be read or written safely."""
+
+
+def config_path() -> Path:
+    """Resolve the user config file: env -> core's resolved path -> logged fallback.
+
+    Rule 0.2: nothing here is a bare constant. This deliberately reuses the SAME
+    file core._config_vault_dir() and tools/arxiv_*.py already read
+    (~/.nougen/config.json, overridable with NOUGEN_CONFIG) — a second config
+    store would be a worse defect than having none.
+    """
+    env_path = os.environ.get("NOUGEN_CONFIG")
+    if env_path:
+        return Path(env_path)
+    core_path = getattr(shards, "NOUGEN_CONFIG_PATH", None)
+    if core_path:
+        return Path(core_path)
+    fallback = Path.home() / ".nougen" / "config.json"
+    print(f"[config] NOUGEN_CONFIG unset and core path unavailable; "
+          f"falling back to {fallback}", file=sys.stderr)
+    return fallback
+
+
+def load_config(path: Path) -> dict:
+    """Return the config dict. Missing file -> {}. Corrupt file -> ConfigError.
+
+    A corrupt file must NOT degrade to {}: merging into {} would silently erase
+    every existing key on the next write.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ConfigError(f"cannot read {path}: {exc}") from exc
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise ConfigError(
+            f"{path} is not valid JSON ({exc}); refusing to overwrite it"
+        ) from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path} does not contain a JSON object; refusing to overwrite it")
+    return data
+
+
+def save_config(path: Path, config: dict) -> Path | None:
+    """Merge-safe atomic write. Backs the existing file up once, returns backup path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup = None
+    if path.exists():
+        backup = path.with_suffix(path.suffix + ".bak")
+        if not backup.exists():
+            backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+    return backup
 
 
 def cmd_config(args):
-    """Update CLI or database configuration."""
-    if args.action == "set" and args.key and args.value:
-        print(f"✅ Configuration updated: {args.key} = {args.value}")
-    else:
-        print("Usage: nougen config set <key> <value>")
+    """Read/write persisted CLI configuration. Returns 0 on success, 1 on failure."""
+    action = getattr(args, "action", None)
+    key = getattr(args, "key", None)
+    value = getattr(args, "value", None)
+
+    if action == "set" and key and value:
+        path = config_path()
+        try:
+            config = load_config(path)
+            config[key] = value
+            backup = save_config(path, config)
+            # Never report success on an unverified write: read it back.
+            if load_config(path).get(key) != value:
+                raise ConfigError(f"{key} did not survive read-back from {path}")
+        except (ConfigError, OSError) as exc:
+            print(f"❌ Configuration NOT updated: {exc}", file=sys.stderr)
+            return 1
+        print(f"✅ Configuration updated: {key} = {value} -> {path}")
+        if backup:
+            print(f"   (previous config backed up to {backup})")
+        return 0
+
+    if action == "get" and key:
+        path = config_path()
+        try:
+            config = load_config(path)
+        except (ConfigError, OSError) as exc:
+            print(f"❌ Cannot read configuration: {exc}", file=sys.stderr)
+            return 1
+        if key not in config:
+            print(f"Error: no value set for '{key}' in {path}", file=sys.stderr)
+            return 1
+        print(config[key])
+        return 0
+
+    print("Usage: nougen config set <key> <value> | nougen config get <key>")
+    return 1
 
 
 def cmd_connect(args):
@@ -649,16 +926,24 @@ def cmd_connect(args):
         ans = input("Add NouGenShards to your MCP config? [Y/n] ")
         if ans.lower() not in ['n', 'no']:
             print("✅ Wires connected. NouGenShards is now an active MCP memory tool.")
-        else:
-            print("Cancelled.")
-    else:
-        print("Usage: nougen connect --mcp")
+            return EXIT_OK
+        # Declining is a deliberate choice, but the connection the caller asked
+        # for did not happen — a wrapper script must not read this as connected.
+        print("Cancelled.")
+        return EXIT_FAILURE
+    print("Usage: nougen connect --mcp")
+    return EXIT_USAGE
 
 
 def cmd_hook(args):
-    """Manage local hook adapters."""
+    """Manage local hook adapters.
+
+    Subcommand dispatcher: each branch returns its own code and cmd_hook returns
+    it unchanged.
+    """
     if args.action in {"codex-anchor", "anchor"}:
         print(hooks.get_latest_anchor(limit=args.limit, max_chars=args.max_chars))
+        return EXIT_OK
     elif args.action == "space-anchor":
         print(hooks.get_space_orchestration_anchor(
             limit=args.limit,
@@ -666,6 +951,7 @@ def cmd_hook(args):
             space_id=getattr(args, "space", None),
             token_key=getattr(args, "token_key", None),
         ))
+        return EXIT_OK
     elif args.action == "space-logs":
         from . import space_orchestration
 
@@ -674,22 +960,26 @@ def cmd_hook(args):
             space_id=getattr(args, "space", None),
             token_key=getattr(args, "token_key", None),
         )
+        # Same verdict in both render modes: a non-"ok" snapshot means the logs
+        # could not be fetched, whether or not --json was asked for.
+        log_ok = snapshot.get("status") == "ok"
         if getattr(args, "json", False):
             print(json.dumps(snapshot, indent=2))
-            return
+            return EXIT_OK if log_ok else EXIT_FAILURE
         print(
             f"HF Space {snapshot.get('kind')} logs: {snapshot.get('status')} "
             f"({snapshot.get('url')})"
         )
-        if snapshot.get("status") == "ok":
+        if log_ok:
             print(snapshot.get("body", ""))
-        else:
-            print(snapshot.get("error", "Unknown error"))
+            return EXIT_OK
+        print(snapshot.get("error", "Unknown error"))
+        return EXIT_FAILURE
     elif args.action == "install":
         agent = (args.agent or "codex").lower()
         if agent != "codex":
             print("Error: only the local Codex hook adapter is implemented.")
-            return
+            return EXIT_USAGE
         target_dir = hooks.install_local_codex_hook(
             output_dir=args.output_dir,
             limit=args.limit,
@@ -697,8 +987,10 @@ def cmd_hook(args):
         )
         print(f"✅ Local Codex hook artifacts written to {target_dir}")
         print("No shell profile or global runtime config was modified.")
-    else:
-        print("Usage: nougen hook codex-anchor | space-anchor | space-logs | install --agent codex")
+        return EXIT_OK
+
+    print("Usage: nougen hook codex-anchor | space-anchor | space-logs | install --agent codex")
+    return EXIT_USAGE
 
 
 def cmd_ingest(args):
@@ -719,7 +1011,12 @@ def cmd_ingest(args):
         shards.capture("INGEST", path.name, content, ["ingested", "docs"], domain_key=domain_key)
         print("✅ Ingestion complete.")
     except (OSError, sqlite3.Error) as exc:
+        # The missing-file guard above already sys.exit(1)s, but this branch —
+        # an unreadable file or a write that failed — printed "Failed:" and
+        # still exited 0. Same class of hole, same fix.
         print(f"Failed: {exc}")
+        return EXIT_FAILURE
+    return EXIT_OK
 
 
 def cmd_dream(args):
@@ -750,15 +1047,19 @@ def cmd_dream(args):
                     for r in ds["rules"][:5]:
                         print(f"   * [{r['subject']}] {r['predicate']}")
             print(f"\n{summary['status']}")
+        return EXIT_OK
+
+    print(f"Error: unknown dream action '{args.action}'.")
+    return EXIT_USAGE
 
 
 def cmd_evolve(args):
-    """Universal Open-World Skill Evolution (OpenSkill)."""
+    """NouGenSkills — Universal Open-World Skill Evolution."""
     if args.action == "run":
         is_json = getattr(args, 'json', False)
         if not is_json:
-            print("[EXPERIMENTAL: OpenSkill acquisition + verification are simulated stubs]")
-            print(f"[*] Evolution: Initiating OpenSkill cycle for '{args.instruction}'...")
+            print("[EXPERIMENTAL: NouGenSkills acquisition + verification are simulated stubs]")
+            print(f"[*] Evolution: Initiating NouGenSkills cycle for '{args.instruction}'...")
         summary = evolution.run_autonomous_evolution(args.instruction, verbose=not is_json)
         if is_json:
             print(json.dumps(summary, indent=2))
@@ -771,6 +1072,12 @@ def cmd_evolve(args):
                 print(f" - Path: {summary['path']}")
             else:
                 print(f"\n[Evolution Failed]: {summary.get('error')}")
+        # Unverified means the skill was not acquired: "[Evolution Failed]" must
+        # not exit 0, in either render mode.
+        return EXIT_OK if summary.get("verified") else EXIT_FAILURE
+
+    print(f"Error: unknown evolve action '{args.action}'.")
+    return EXIT_USAGE
 
 
 def cmd_dashboard(args):
@@ -785,16 +1092,98 @@ def cmd_dashboard(args):
         dashboard_app = app.app
     except ImportError:
         print("Error: Dashboard module (app.py) not found in path.")
-        return
+        return EXIT_FAILURE
 
     print(f"🚀 Igniting Cortex HUD on http://127.0.0.1:{args.port}...")
     uvicorn.run(dashboard_app, host="127.0.0.1", port=args.port)
+    # Reached only after the server shuts down cleanly.
+    return EXIT_OK
+
+
+def cmd_power(args):
+    """Host power surface: CPU ceiling control and host-death correlation."""
+    from . import host_power
+
+    action = getattr(args, "action", None) or "status"
+
+    if action == "status":
+        state = host_power.status()
+        if not state.get("supported"):
+            print(f"host power control unavailable — {state.get('reason')}")
+            return EXIT_FAILURE
+        print(f"scheme:  {state['scheme_guid']}")
+        print(f"ceiling: {state['ceiling_pct']}%   floor: {state['floor_pct']}%")
+        if state.get("floor_pct") == 100:
+            # A pinned floor is a finding to report, not a command failure.
+            print("  NOTE: floor is pinned at 100% — the CPU never downclocks, even idle.")
+        return EXIT_OK
+
+    if action == "set":
+        try:
+            after = host_power.set_cpu_range(args.ceiling, args.floor)
+        except host_power.PowerUnsupported as exc:
+            print(f"could not apply: {exc}")
+            return EXIT_FAILURE
+        print(f"applied — ceiling: {after.get('ceiling_pct')}%  floor: {after.get('floor_pct')}%")
+        return EXIT_OK
+
+    if action == "shutdowns":
+        found = host_power.shutdown_events(args.days)
+        if not found.get("queried"):
+            print(f"query failed — {found.get('reason')}")
+            return EXIT_FAILURE
+        events = found["events"]
+        print(f"{len(events)} unexpected shutdown(s) in {found['lookback_days']}d")
+        for event in events[:20]:
+            cause = "unexplained rail loss" if event["unexplained_rail_loss"] else (
+                "bugcheck" if event["bugcheck"] else
+                "power button" if event["button"] else
+                "thermal" if event["thermal"] else f"id={event['event_id']}")
+            print(f"  {event['utc']}  {cause}")
+        # Finding shutdowns is the command working, not failing: this is a
+        # report, and a host that died last night still answers correctly.
+        return EXIT_OK
+
+    if action == "correlate":
+        print(host_power.format_correlation(
+            host_power.correlate(args.days, args.window)))
+        return EXIT_OK
+
+    if action == "boot":
+        report = host_power.boot_report()
+        if not report.get("supported"):
+            print(f"boot report unavailable — {report.get('reason')}")
+            return EXIT_FAILURE
+        uptime = report.get("uptime_s")
+        print(f"booted:  {report['boot_utc']}")
+        if uptime is not None:
+            print(f"uptime:  {uptime // 3600}h {(uptime % 3600) // 60}m")
+        if report["previous_shutdown_clean"]:
+            print("previous shutdown: clean")
+        else:
+            death = report["previous_death"]
+            cause = "unexplained rail loss" if death["unexplained_rail_loss"] else "see flags"
+            # An unclean previous shutdown is a reported fact, not a failure of
+            # this command to produce the report.
+            print(f"previous shutdown: UNCLEAN at {death['utc']} ({cause})")
+        return EXIT_OK
+
+    if action == "record-boot":
+        result = host_power.record_boot(dry_run=args.dry_run)
+        if result.get("dry_run"):
+            print(f"would capture: {result['title']}")
+            return EXIT_OK
+        if result.get("recorded"):
+            print(f"captured: {result['title']}")
+            return EXIT_OK
+        print(f"nothing captured — {result.get('reason')}")
+        # "previous shutdown was clean" (result["clean"]) is the happy path:
+        # there was no host death to record. Anything else — an unsupported
+        # host, an unreadable event log — is a real failure to capture.
+        return EXIT_OK if result.get("clean") else EXIT_FAILURE
 
 
 def get_parser():
-
-
-
     """Create the CLI parser."""
     parser = argparse.ArgumentParser(prog="nougen", description="NouGenShards CLI — Powered by Valerion")
     parser.add_argument("--version", action="version", version=f"NouGenShards v{VERSION} (Valerion Engine)")
@@ -874,10 +1263,28 @@ def get_parser():
 
     p_router_sub.add_parser("doctor", help="Check routing health")
 
+    p_power = subparsers.add_parser("power", help="Host power surface (Windows)")
+    p_power_sub = p_power.add_subparsers(dest="action")
+    p_power_sub.add_parser("status", help="Show active scheme, CPU ceiling and floor")
+    p_power_set = p_power_sub.add_parser("set", help="Set AC CPU ceiling/floor")
+    p_power_set.add_argument("ceiling", type=int, help="Max processor state %%")
+    p_power_set.add_argument("--floor", type=int, default=None, help="Min processor state %%")
+    p_power_down = p_power_sub.add_parser("shutdowns", help="List unexpected host shutdowns")
+    p_power_down.add_argument("--days", type=int, default=None, help="Lookback window")
+    p_power_corr = p_power_sub.add_parser(
+        "correlate", help="Join host deaths against vault activity preceding them")
+    p_power_corr.add_argument("--days", type=int, default=None, help="Lookback window")
+    p_power_corr.add_argument("--window", type=int, default=None,
+                              help="Minutes before each death to inspect")
+    p_power_sub.add_parser("boot", help="This boot, and whether the last shutdown was clean")
+    p_power_boot = p_power_sub.add_parser(
+        "record-boot", help="Capture a shard if the previous shutdown was unclean (idempotent)")
+    p_power_boot.add_argument("--dry-run", action="store_true", help="Report without capturing")
+
     p_config = subparsers.add_parser("config", help="Configuration")
-    p_config.add_argument("action", choices=["set"])
+    p_config.add_argument("action", choices=["set", "get"])
     p_config.add_argument("key")
-    p_config.add_argument("value")
+    p_config.add_argument("value", nargs="?", default=None)
 
     p_connect = subparsers.add_parser("connect", help="Connect agent")
     p_connect.add_argument("--mcp", action="store_true")
@@ -922,7 +1329,7 @@ def get_parser():
     p_dream.add_argument("action", choices=["wake"])
     p_dream.add_argument("--json", action="store_true", help="Machine-readable output")
 
-    p_evolve = subparsers.add_parser("evolve", help="Universal Open-World Skill Evolution (OpenSkill)")
+    p_evolve = subparsers.add_parser("evolve", help="NouGenSkills — Universal Open-World Skill Evolution")
     p_evolve.add_argument("action", choices=["run"])
     p_evolve.add_argument("instruction", help="The task instruction to evolve a skill for")
     p_evolve.add_argument("--json", action="store_true", help="Machine-readable output")
@@ -970,6 +1377,31 @@ def get_parser():
     p_handoff.add_argument("--interval", type=float, default=5.0,
                            help="(watch) Poll interval in seconds (default: 5.0)")
 
+    p_trigger = subparsers.add_parser(
+        "trigger", help="Cue-anchored delivery: attach trigger conditions to shards")
+    p_trigger.add_argument("action", choices=[
+        "add", "list", "rm", "derive", "preview", "status",
+    ], help="add | list | rm | derive | preview | status")
+    p_trigger.add_argument("--shard", "-s", dest="shard_ref", default=None,
+                           help="Shard ref: hash:<file_hash> | db:<index>:<id> | file:<name>")
+    p_trigger.add_argument("--type", "-t", dest="trigger_type", default=None,
+                           help="path | symbol | semantic | event | temporal")
+    p_trigger.add_argument("--pattern", "-p", default=None,
+                           help="Glob (path), identifier (symbol), comma terms (semantic), "
+                                "event name(s), or an age window like 'age<=7d' (temporal)")
+    p_trigger.add_argument("--weight", type=float, default=None,
+                           help="Per-trigger weight multiplier (default 1.0)")
+    p_trigger.add_argument("--note", default=None, help="Why this trigger exists")
+    p_trigger.add_argument("--id", dest="trigger_id", type=int, default=None,
+                           help="Trigger id (rm)")
+    p_trigger.add_argument("--event", default="", help="(preview) Lifecycle event name")
+    p_trigger.add_argument("--paths", default="", help="(preview) Comma-separated touched paths")
+    p_trigger.add_argument("--symbols", default="", help="(preview) Comma-separated symbols")
+    p_trigger.add_argument("--text", default="", help="(preview) Free text / prompt")
+    p_trigger.add_argument("--apply", action="store_true",
+                           help="(derive) Persist the proposal; default is dry-run")
+    p_trigger.add_argument("--json", action="store_true", help="Machine-readable output")
+
     p_queue = subparsers.add_parser(
         "queue", help="Open Engine task queue: ticket-level cross-agent work"
     )
@@ -1003,14 +1435,34 @@ def get_parser():
 
 
 
+# ann_index.build() reports its outcome in-band; these are the statuses that
+# mean "the build did its job". Kept next to the reader, not inlined as a magic
+# string in a comparison (Rule 0.2).
+_ANN_BUILD_OK_STATUSES = frozenset(
+    s.strip() for s in os.environ.get("NOUGEN_ANN_OK_STATUSES", "ok,empty").split(",") if s.strip()
+)
+
+
 def cmd_index(args):
     """ANN index build / embedding backfill / schema migration. Delegates to each
-    module's own argparse entrypoint so behavior matches `python -m nougen_shards.<mod>`."""
+    module's own argparse entrypoint so behavior matches `python -m nougen_shards.<mod>`.
+
+    The embed-backfill and schema-migrate branches already propagate correctly
+    via `raise SystemExit(mod._main(argv))`; ann-build was the branch that
+    printed a failed report and exited 0.
+    """
     if args.action == "ann-build":
         from . import ann_index
         report = ann_index.build(vault=args.vault)
         print(json.dumps(report, indent=2, default=str))
-        return
+        # "empty" is a successful build of a vault that has no embeddings yet —
+        # recall falls back to the linear scan, which is a working path, not an
+        # outage. Any other non-"ok" status means the index was not written.
+        if report.get("status") not in _ANN_BUILD_OK_STATUSES:
+            print(f"Error: ANN index build failed — status={report.get('status')!r}",
+                  file=sys.stderr)
+            return EXIT_FAILURE
+        return EXIT_OK
     if args.action == "embed-backfill":
         from . import embedding_backfill
         argv = ["--model", args.model, "--batch", str(args.batch)]
@@ -1031,9 +1483,27 @@ def cmd_index(args):
 
 
 def cmd_doctor(args):
-    """Verifies installation, database health, and service connectivity (Valerion Engine)."""
+    """Verifies installation, database health, and service connectivity (Valerion Engine).
+
+    Exit code is the whole point of a doctor: a health check that always exits 0
+    cannot report a bad diagnosis, so every caller that branches on it is
+    silently disarmed. Returns EXIT_FAILURE when a diagnosis is bad.
+
+    What counts as bad (and what deliberately does not):
+      * no shard database at all -> FAILURE. The engine has nowhere to remember.
+      * a cognitive engine module fails to import -> FAILURE. Broken install.
+      * no secrets vault yet -> NOT a failure. keymaker.DB_PATH is created lazily
+        on the first `auth set-key`, and it resolves relative to the CWD unless
+        NOUGEN_VAULT_DIR is set, so gating the exit code on it would make a
+        clean local-only install (and any run from another directory) look
+        broken. Reported, not fatal.
+      * a provider showing ❌ -> NOT a failure. NouGenShards is local-first;
+        a user with zero BYOK keys is a healthy install, and a red row here
+        means "not configured", not "outage".
+    """
     print("👨‍⚕️ NouGenShards Doctor (Valerion): Running diagnostics...")
-    
+    problems = []
+
     # 1. Check Substrate
     print("\n[Substrate]")
     active = shards.get_active_db_index()
@@ -1046,6 +1516,7 @@ def cmd_doctor(args):
             found_db = True
     if not found_db:
         print(" ❌ No database shards found. Run 'nougen init' to bootstrap.")
+        problems.append("no shard database found")
 
     # 2. Check Vault
     print("\n[Vault]")
@@ -1071,9 +1542,10 @@ def cmd_doctor(args):
     try:
         from . import dream, evolution
         print(" ✅ Dream State (TMEM): Ready")
-        print(" ✅ Evolution Engine (OpenSkill): Ready")
+        print(" ✅ Evolution Engine (NouGenSkills): Ready")
     except ImportError as e:
         print(f" ❌ Engine Modules missing: {e}")
+        problems.append(f"engine modules missing: {e}")
 
     if getattr(args, 'json', False):
         import json
@@ -1081,9 +1553,17 @@ def cmd_doctor(args):
         report = {
             "substrate": {"active_index": active, "found": found_db},
             "vault": {"path": str(vault_path.absolute()), "providers": keymaker.list_providers()},
-            "connectivity": p_status
+            "connectivity": p_status,
+            "healthy": not problems,
+            "problems": problems,
         }
         print(json.dumps(report, indent=2))
+
+    if problems:
+        print(f"\n❌ Diagnosis: {len(problems)} problem(s) — " + "; ".join(problems),
+              file=sys.stderr)
+        return EXIT_FAILURE
+    return EXIT_OK
 
 def cmd_handoff(args):
     """Executes agent handoff subcommands."""
@@ -1212,6 +1692,104 @@ def cmd_queue(args):
             sys.exit(1)
 
 
+def cmd_trigger(args):
+    """Author and inspect cue-anchored trigger conditions.
+
+    This is the "without hand-editing files" path: triggers live in a sidecar
+    DB, so attaching one never rewrites a shard and never touches the cluster.
+    """
+    from . import triggers  # pylint: disable=import-outside-toplevel
+
+    action = args.action
+    if action == "status":
+        info = {
+            "enabled": triggers.enabled(),
+            "autoderive": triggers.autoderive_enabled(),
+            "pretooluse": triggers.pretooluse_enabled(),
+            "db": str(triggers.db_path()),
+            "log": str(triggers.log_path()),
+            "budget_tokens": triggers.budget_tokens(),
+            "max_shards": triggers.max_shards(),
+            "triggers": triggers.count_triggers(),
+        }
+        print(json.dumps(info, indent=2) if args.json else
+              "\n".join(f"{k:>15}: {v}" for k, v in info.items()))
+        return
+
+    if action == "add":
+        if not (args.shard_ref and args.trigger_type and args.pattern):
+            print("❌ add requires --shard, --type and --pattern")
+            return
+        try:
+            tid = triggers.add_trigger(args.shard_ref, args.trigger_type, args.pattern,
+                                       weight=args.weight, note=args.note)
+        except triggers.TriggerError as exc:
+            print(f"❌ {exc}")
+            return
+        print(f"✅ trigger #{tid}: {args.trigger_type}:{args.pattern} -> {args.shard_ref}")
+        return
+
+    if action == "list":
+        rows = triggers.list_triggers(args.shard_ref, args.trigger_type)
+        if args.json:
+            print(json.dumps(rows, indent=2))
+            return
+        if not rows:
+            print("(no triggers)")
+            return
+        for r in rows:
+            print(f"#{r['id']:<5} {r['trigger_type']:<9} {r['pattern']:<40} "
+                  f"w={r['weight']:<5} [{r['source']}] {r['shard_ref']}")
+        return
+
+    if action == "rm":
+        if args.trigger_id is None:
+            print("❌ rm requires --id")
+            return
+        print("🗑️ removed" if triggers.remove_trigger(args.trigger_id) else "❌ no such trigger")
+        return
+
+    if action == "derive":
+        if not args.shard_ref:
+            print("❌ derive requires --shard")
+            return
+        shard = triggers.resolve_shard(args.shard_ref)
+        if shard is None:
+            print(f"❌ could not resolve {args.shard_ref}")
+            return
+        proposed = triggers.derive_triggers(shard.get("title", ""), shard.get("content", ""))
+        if not proposed:
+            print("🤏 nothing derived (auto-derivation is deliberately conservative)")
+            return
+        for ttype, pat in proposed:
+            if args.apply:
+                triggers.add_trigger(args.shard_ref, ttype, pat, source="auto")
+            print(f"{'✅ attached' if args.apply else '🔎 would attach'}  {ttype}:{pat}")
+        if not args.apply:
+            print("(dry-run — pass --apply to persist)")
+        return
+
+    if action == "preview":
+        def _split(v):
+            return tuple(x.strip() for x in (v or "").split(",") if x.strip())
+        ctx = triggers.TriggerContext(
+            event=args.event, cwd=os.getcwd(), paths=_split(args.paths),
+            symbols=_split(args.symbols), text=args.text)
+        sel = triggers.select(ctx)
+        if args.json:
+            print(json.dumps({
+                "candidates": sel.candidates, "tokens": sel.tokens,
+                "truncated": sel.truncated,
+                "injected": [{"ref": m.shard_ref, "score": m.score, "cues": m.reasons,
+                              "title": m.title} for m in sel.injected]}, indent=2))
+            return
+        print(f"candidates={sel.candidates} injected={len(sel.injected)} "
+              f"tokens={sel.tokens}/{triggers.budget_tokens()} truncated={sel.truncated}")
+        text = triggers.render(ctx, sel)
+        print(text if text else "(nothing would be injected)")
+        return
+
+
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
@@ -1232,12 +1810,18 @@ def main():
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "index": cmd_index,
-        "queue": cmd_queue,
+        "queue": cmd_queue, "trigger": cmd_trigger, "power": cmd_power,
     }
     if args.command in cmds:
-        cmds[args.command](args)
+        # Handler exit-code contract: return None (or 0) on success, a non-zero
+        # int on failure. main() MUST propagate it — hooks, CI steps and the
+        # scheduled tasks in this repo branch on %ERRORLEVEL%/$?, so swallowing
+        # a handler's failure code silently disarms every one of them.
+        rc = cmds[args.command](args)
+        sys.exit(0 if rc is None else int(rc))
     else:
         parser.print_help()
+        sys.exit(2)
 
 
 if __name__ == "__main__":

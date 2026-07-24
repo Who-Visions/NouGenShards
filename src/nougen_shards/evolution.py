@@ -1,10 +1,10 @@
 """
-Open-World Evolution Engine (OpenSkill Implementation).
+NouGenSkills — Open-World Evolution Engine.
 Bootstraps skills and verification signals from open-world resources.
 
 EXPERIMENTAL / PREVIEW: the knowledge-acquisition and virtual-verification stages
 below are currently simulated stubs, not a live open-world research + verification
-loop. The scaffolding mirrors the OpenSkill design so it can be wired to real
+loop. The scaffolding mirrors the NouGenSkills design so it can be wired to real
 retrieval (Exa / deep research) and real test generation later. Do not present
 this as production self-evolution.
 """
@@ -19,7 +19,7 @@ from .models_client import get_best_available_client
 
 class EvolutionEngine:
     """
-    Implements the OpenSkill framework for autonomous skill construction.
+    Implements the NouGenSkills framework for autonomous skill construction.
     """
     def __init__(self, workspace_path: Optional[Path] = None, verbose: bool = True):
         self.workspace = workspace_path or core.GLOBAL_DIR / "evolution_sandbox"
@@ -69,7 +69,7 @@ class EvolutionEngine:
 
     def evolve_skill(self, instruction: str) -> Dict[str, Any]:
         """
-        The core OpenSkill loop: Acquire -> Refine -> Verify -> Deploy.
+        The core NouGenSkills loop: Acquire -> Refine -> Verify -> Deploy.
         """
         # 1. Acquire
         grounding = self.acquire_knowledge(instruction)
@@ -106,7 +106,7 @@ class EvolutionEngine:
                 event_type="SKILL_EVOLVED",
                 title=f"Evolved Skill: {instruction}",
                 content=skill_content,
-                tags=["evolution", "openskill", "verified"]
+                tags=["evolution", "nougenskills", "verified"]
             )
             
             return {

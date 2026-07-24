@@ -10,6 +10,9 @@ __pycache__/
 # Local configuration
 mcp.config.json
 .env
+# Machine-local store paths for federated recall — never ships (see .mcp.json,
+# which keeps only ${VAR:-<repo-relative default>} placeholders).
+.nougen.local.env
 secrets/
 .mcp-locks/
 
@@ -133,6 +136,15 @@ tools/metameric_*.py
 tools/migrate_watchtower_memory*.py
 tools/replay_session_*.sh
 
+# Repo-guard private config. The identity list names exactly the personal data
+# the guard searches for - committing it would leak what it protects.
+# Canonical copy lives OUTSIDE this repo (../repo-guard/config/).
+identity.local.json
+*.local.json
+repo-guard/
+.repoguard/
+transcripts/
+
 # Local measurement/run artifacts: these capture private vault contents and
 # agent performance runs. Not part of the shipped product.
 audit-runs/
@@ -147,3 +159,8 @@ shards.db-shm
 
 # Local-only guard helper: contains absolute private workspace paths.
 tools/scan_guard.py
+
+# Mutation-testing backups and coverage artifacts — never ship.
+*.mutbak
+*.secmutbak
+.coverage

@@ -16,7 +16,8 @@ try:
 except ImportError:
     FastMCP = MockFastMCP # type: ignore
 
-from .core import capture, retrieve, mark_shard, compile_recall_packet
+from .core import capture, retrieve, mark_shard, compile_recall_packet, vault_report
+from . import attribution
 from . import nougen_context
 from . import nougen_sandbox
 from . import evolution
@@ -47,6 +48,16 @@ def capture_experience(event_type: str, title: str, content: str, tags: Optional
     success = capture(event_type, title, content, tags)
     return "Shard captured successfully." if success else "Shard already exists."
 
+def _vault_provenance_line() -> str:
+    """One-line statement of which store recall actually read."""
+    report = vault_report()
+    return (
+        f"[vault] {report['vault_dir']} (via {report['source']}) — "
+        f"{report['db_count']} shard DBs, {report['shard_count']} shards"
+        + ("" if report["exists"] else " — DIRECTORY DOES NOT EXIST")
+    )
+
+
 @mcp.tool()
 def recall_memory(query: str, limit: int = 3) -> str:
     """
@@ -58,9 +69,15 @@ def recall_memory(query: str, limit: int = 3) -> str:
         limit: Max number of results to return.
     """
     shards_list = federated_retrieve(query, limit=limit)
+    provenance = _vault_provenance_line()
     if not shards_list:
-        return "No relevant shards found in the memory substrate."
-    return compile_recall_packet(shards_list)
+        return (
+            "No relevant shards found in the memory substrate.\n"
+            f"{provenance}\n"
+            "If this store is not the vault you expected, recall was pointed at the "
+            "wrong substrate — an empty result here is not proof of absence."
+        )
+    return f"{compile_recall_packet(shards_list)}\n\n{provenance}"
 
 @mcp.tool()
 def mark_utility(shard_id: int, worked: bool, db_index: Optional[int] = None) -> str:
@@ -76,6 +93,35 @@ def mark_utility(shard_id: int, worked: bool, db_index: Optional[int] = None) ->
     if mark_shard(shard_id, worked, db_index):
         return f"Utility for Shard #{shard_id} updated successfully."
     return f"Shard #{shard_id} not found."
+
+
+@mcp.tool()
+def mark_attribution(shard_ids: List[int], db_index: Optional[str] = None,
+                     query: Optional[str] = None, session_id: Optional[str] = None,
+                     contribution: float = 1.0) -> str:
+    """
+    Record which recalled shards you ACTUALLY used or cited in your answer.
+
+    This is attribution, not an outcome verdict: mark_utility says "this shard
+    was good", this says "this shard contributed". Nothing infers it for you --
+    retrieval rank is not usage, so if you do not call this, no attribution is
+    recorded. Cheap and non-blocking; safe to call on every answer.
+
+    Args:
+        shard_ids: Ids of the shards that genuinely informed the response.
+        db_index: Database index the shards came from (a recall result's
+            _db_index; may be a "store:index" string from federated recall).
+        query: The query the shards were recalled for, for later analysis.
+        session_id: Optional grouping key for one task/conversation.
+        contribution: Credit per shard (default 1.0). Use a smaller value for
+            partial or background contribution.
+    """
+    refs = [(sid, db_index if db_index is not None else "unknown") for sid in shard_ids]
+    n = attribution.record_usage(refs, query=query, session_id=session_id,
+                                 contribution=contribution)
+    if not n:
+        return "No attribution recorded (logging disabled or no resolvable shard ids)."
+    return f"Recorded attribution for {n} shard(s)."
 
 # --- Graph Memory (Latent Mesh) ---
 
@@ -310,7 +356,7 @@ def get_memory_stats(period: str = "week") -> str:
         
     return "\n".join(output)
 
-# --- Evolution Layer (OpenSkill) ---
+# --- Evolution Layer (NouGenSkills) ---
 
 @mcp.tool()
 def evolve_skill(instruction: str) -> str:
