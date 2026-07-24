@@ -351,8 +351,29 @@ def check_current_transcript():
     return "⚪ No transcript generated yet. Click 'Generate Transcript' below.", None, ""
 
 
+# The transcript generator shells out to a vault-reader script that is NOT part
+# of the published package: it is an internal inspector carrying development-vault
+# assumptions (a Watchtower-rooted dev database, a 9-DB cluster layout), so it is
+# deliberately gitignored rather than shipped. A clean clone therefore does not
+# have it, and the button must say so plainly instead of surfacing a raw
+# FileNotFoundError from subprocess. Path is overridable so an operator who does
+# have a reader can point at it.
+VAULT_READER_SCRIPT = os.environ.get(
+    "NGS_VAULT_READER",
+    os.path.join(os.getcwd(), "tools", "read_vault_shards.py"),
+)
+VAULT_READER_MISSING_MSG = (
+    "⚪ Transcript generation unavailable in this build.\n\n"
+    "It requires the optional vault-reader script (`{path}`), which is not part of "
+    "the published package. Set `NGS_VAULT_READER` to a reader script to enable "
+    "this button. Search, History and Recon are unaffected."
+)
+
+
 def generate_transcript():
-    script_path = os.path.join(os.getcwd(), "tools", "read_vault_shards.py")
+    script_path = VAULT_READER_SCRIPT
+    if not os.path.isfile(script_path):
+        return VAULT_READER_MISSING_MSG.format(path=script_path), None, ""
     res = subprocess.run([sys.executable, script_path, "--cluster"], capture_output=True, text=True, encoding="utf-8")
     if res.returncode == 0:
         return check_current_transcript()

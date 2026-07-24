@@ -259,9 +259,26 @@ export function check_current_transcript(): [string, string | null, string] {
   return ["⚪ No transcript generated yet. Click 'Generate Transcript' below.", null, ""];
 }
 
+/**
+ * The vault-reader script is an optional, unpublished internal inspector (it
+ * assumes a development vault layout), so it is gitignored rather than shipped.
+ * A clean clone will not have it; the path is overridable for operators who do.
+ */
+export const VAULT_READER_SCRIPT =
+  process.env.NGS_VAULT_READER ?? path.join(process.cwd(), "tools", "read_vault_shards.py");
+
+export const vaultReaderMissingMessage = (scriptPath: string): string =>
+  `⚪ Transcript generation unavailable in this build.\n\n` +
+  `It requires the optional vault-reader script (\`${scriptPath}\`), which is not part of ` +
+  `the published package. Set \`NGS_VAULT_READER\` to a reader script to enable this ` +
+  `button. Search, History and Recon are unaffected.`;
+
 /** Generate a transcript via the vault reader tool. (mirror generate_transcript) */
 export function generate_transcript(): [string, string | null, string] {
-  const script_path = path.join(process.cwd(), "tools", "read_vault_shards.py");
+  const script_path = VAULT_READER_SCRIPT;
+  if (!existsSync(script_path)) {
+    return [vaultReaderMissingMessage(script_path), null, ""];
+  }
   const res = spawnSync("python", [script_path, "--cluster"], { encoding: "utf-8" });
   if (res.status === 0) {
     return check_current_transcript();
