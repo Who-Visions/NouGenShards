@@ -24,6 +24,13 @@ if os.environ.get("SPACE_ID"):
 
 from nougen_shards import core, history
 from nougen_shards.brain_scan import scan_environment
+from nougen_shards.exposure import (
+    detect_exposure,
+    log_exposure_decision,
+    resolve_blocked_paths,
+    resolve_bind_host,
+    should_mount_hud,
+)
 
 NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN")
 
@@ -454,32 +461,54 @@ class _TokenGatedMCP:
 
 # Mount BEFORE the Gradio catch-all at "/" so /mcp is routed to the MCP app.
 app.mount("/mcp", _TokenGatedMCP(_mcp_asgi))
-# Resolve the bind host the same way __main__ does, at import time, so the
-# fail-closed guard below also protects ASGI servers that import `app` directly
-# (uvicorn app:app, gunicorn, HF Spaces) where the __main__ block never runs.
-_default_host = "0.0.0.0" if os.environ.get("SPACE_ID") else "127.0.0.1"
-_bind_host = os.environ.get("NGS_HOST", _default_host)
-_network_exposed = _bind_host not in ("127.0.0.1", "localhost", "::1")
+# Decide exposure at import time, so the fail-closed guard below also protects
+# ASGI servers that import `app` directly (uvicorn app:app, gunicorn, HF Spaces)
+# where the __main__ block never runs.
+#
+# This is derived from what actually determines reachability -- the real bind
+# host probed off the server command line, plus hosting-platform indicators --
+# NOT from NGS_HOST. NGS_HOST never controlled the bind under the shipped
+# `uvicorn app:app --host 0.0.0.0`, so setting it to 127.0.0.1 used to make the
+# node believe it was loopback-only and mount the unauthenticated vault HUD on a
+# public domain. That guard failed OPEN; this one fails closed on ambiguity.
+# See src/nougen_shards/exposure.py and tests/test_exposure_guard.py.
+_exposure = detect_exposure()
+_blocked_paths = resolve_blocked_paths()
 
 # Fail closed on the HUD WITHOUT taking the process down. On a network-reachable
 # host with no HUD credentials, skip mounting the unauthenticated vault UI (search
 # / recon / transcript dumps) but keep the FastAPI app serving — the token-gated
 # /mcp endpoint and REST API stay up. Raising here would abort `uvicorn app:app`
 # and take /mcp down along with the HUD.
-if _hud_auth or not _network_exposed:
-    app = gr.mount_gradio_app(app, cortex_hud, path="/", auth=_hud_auth)
+_mount_hud = should_mount_hud(_exposure, _hud_auth)
+if _mount_hud:
+    # blocked_paths is defence in depth: even with the HUD up (authenticated, or
+    # genuinely local), Gradio's static file router must never be able to serve
+    # the persistent data mount or the vault directory.
+    app = gr.mount_gradio_app(
+        app,
+        cortex_hud,
+        path="/",
+        auth=_hud_auth,
+        blocked_paths=list(_blocked_paths),
+    )
 else:
     print(
-        "[WARN] Cortex HUD not mounted: host is network-exposed "
-        f"(NGS_HOST={_bind_host}) and NGS_HUD_USER/NGS_HUD_PASSWORD are unset. "
-        "The /mcp endpoint and REST API remain available; set both env vars to "
-        "serve the vault UI.",
+        "[WARN] Cortex HUD not mounted: this node is network-exposed and "
+        "NGS_HUD_USER/NGS_HUD_PASSWORD are unset. The /mcp endpoint and REST API "
+        "remain available; set both env vars to serve the vault UI.",
         file=sys.stderr,
     )
 
+log_exposure_decision(_exposure, _mount_hud, _blocked_paths)
+
 if __name__ == "__main__":
     import uvicorn
-    # Host/auth already validated at import (fail-closed guard above): by here we
-    # are either on loopback or have HUD auth configured.
+    # Auth/exposure already decided at import (fail-closed guard above).
+    # The bind host is resolved by the same probe the guard uses, so the value
+    # we hand uvicorn is the value the guard reasoned about -- no second source
+    # of truth, and no env var that can move one without moving the other.
+    _run_host, _run_host_source = resolve_bind_host()
     port = int(os.environ.get("NGS_PORT", "4444"))
-    uvicorn.run(app, host=_bind_host, port=port)
+    print(f"[NGS] binding {_run_host}:{port} (host via {_run_host_source})", file=sys.stderr)
+    uvicorn.run(app, host=_run_host, port=port)
