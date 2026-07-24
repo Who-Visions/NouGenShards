@@ -192,6 +192,18 @@ def test_agent_env_override(setup_handoff_env, monkeypatch):
     assert handoff.detect_current_agent() == "codex"
 
 
+def test_claude_cli_marker_beats_google_key(setup_handoff_env, monkeypatch):
+    # A Google key exported in the same shell must not steal the Claude CLI's
+    # lane: the explicit CLI marker is the stronger signal and is checked first.
+    # Cross-agent handoff attribution is contractual, so misrouting here
+    # corrupts the registry rather than merely mislabelling one record.
+    monkeypatch.delenv("NOUGEN_AGENT", raising=False)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    assert handoff.detect_current_agent() == "claude-cli"
+
+
 def test_atomic_write_produces_valid_json(setup_handoff_env):
     p = handoff.create_handoff(message="integrity", agent="ollama")
     # Must be complete, parseable JSON — no truncation, no leftover temp files
