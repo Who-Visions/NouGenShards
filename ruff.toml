@@ -1,5 +1,12 @@
 [lint]
 # Correctness-focused: pyflakes (F) + pycodestyle errors (E) with carve-outs.
+# `select` is stated explicitly rather than inherited from ruff's built-in
+# defaults: those defaults are not part of ruff's stability guarantee and do
+# change between releases, which silently turns a green lint red on an
+# unrelated commit. Pinning the rule set here keeps the gate meaningful and
+# keeps the steps that run after Lint (the app.py import check, pytest) from
+# being skipped because of a linter upgrade nobody asked for.
+select = ["E4", "E7", "E9", "F"]
 ignore = [
     # Intentional setup-before-import patterns: openrouter_mcp_client.py and
     # router.py inject the Watchtower vault path into sys.path before

@@ -35,6 +35,12 @@ jobs:
         # unpinned, locally-uninstalled dependency and a broken import (or a
         # broken exposure guard) passed a fully green suite. Importing it here
         # exercises the real mount path, including the fail-closed HUD guard.
+        # Importing is deliberately the whole check - no server is started.
+        env:
+          # Gradio phones home to api.gradio.app / huggingface.co on import.
+          # Turning that off keeps the step fast and stops a third-party
+          # outage from failing a build that has nothing to do with it.
+          GRADIO_ANALYTICS_ENABLED: "False"
         run: python -c "import app; print('app.py imported OK')"
       - name: Run pytest
         # pythonpath is set in pyproject [tool.pytest.ini_options]; no manual
