@@ -29,6 +29,13 @@ jobs:
           pip install -e . pytest pytest-asyncio ruff
       - name: Lint
         run: ruff check src tests
+      - name: Import-test app.py (Space node)
+        # The Space entrypoint has no unit tests that import it, so for a long
+        # time nothing in CI ever executed its module body: gradio was an
+        # unpinned, locally-uninstalled dependency and a broken import (or a
+        # broken exposure guard) passed a fully green suite. Importing it here
+        # exercises the real mount path, including the fail-closed HUD guard.
+        run: python -c "import app; print('app.py imported OK')"
       - name: Run pytest
         # pythonpath is set in pyproject [tool.pytest.ini_options]; no manual
         # PYTHONPATH prefix needed.
