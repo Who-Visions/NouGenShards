@@ -234,7 +234,7 @@ typing-inspection==0.4.2
     #   pydantic-settings
 tzdata==2026.2 ; sys_platform == 'emscripten' or sys_platform == 'win32'
     # via pandas
-uvicorn==0.49.0
+uvicorn==0.50.2
     # via
     #   nougen-shards (pyproject.toml)
     #   gradio
