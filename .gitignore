@@ -94,3 +94,12 @@ tools/nougenai_fleet_registry_mcp.py
 # OS specific
 Thumbs.db
 .DS_Store
+
+# Private agent operating docs — local-only, never shipped.
+# These encode the maintainer's own agent roles, machine paths, fleet inventory
+# and routing/cost policy. They are load-bearing for local development but have
+# no value to anyone installing this package, so they stay on disk and out of
+# the repo. (Note: brain_scan treats "CLAUDE.md"/"GEMINI.md" as generic project
+# filenames it may scan in a *user's* project — that is unrelated to these.)
+/CLAUDE.md
+/GEMINI.md

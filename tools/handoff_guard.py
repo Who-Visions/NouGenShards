@@ -21,7 +21,29 @@ all failures are swallowed so a hook can never wedge the session.
 import sys, os, json, glob, time, subprocess, datetime
 from pathlib import Path
 
-REPO = Path(os.environ.get("NOUGEN_REPO", r"C:/Users/super/Watchtower/NouGen/NouGenShards-push-main"))
+def _resolve_repo():
+    """Locate the repo root: env -> probe -> logged fallback (Rule 0.2).
+
+    No machine-specific path is embedded. This file ships at ``<repo>/tools/``,
+    so the root is discovered from its own location, which makes the guard work
+    unchanged in any clone, git worktree, container or CI checkout.
+    """
+    env = os.environ.get("NOUGEN_REPO")
+    if env:
+        return Path(env)
+    here = Path(__file__).resolve()
+    for cand in here.parents:
+        if (cand / ".git").exists():  # .git is a dir in a clone, a file in a worktree
+            return cand
+    fallback = Path(os.environ.get("WATCHTOWER_ROOT") or Path.home() / "Watchtower")
+    sys.stderr.write(
+        f"[handoff_guard] repo root not discovered from {here}; "
+        f"falling back to {fallback} (set NOUGEN_REPO to override)\n"
+    )
+    return fallback
+
+
+REPO = _resolve_repo()
 HANDOFF_DIR = Path(os.environ.get("NOUGEN_HANDOFF_DIR", str(REPO / ".handoffs")))
 SESS_DIR = HANDOFF_DIR / ".sessions"
 AGENT = os.environ.get("NOUGEN_AGENT", "claude-cli")
