@@ -96,3 +96,39 @@ tools/nougenai_fleet_registry_mcp.py
 Thumbs.db
 .DS_Store
 *.nougen-bak
+
+# ---------------------------------------------------------------------------
+# Internal operator surface — kept on disk, never shipped to the public repo.
+# These drive the maintainer's local agent workflow (hooks, doctrine, missions)
+# and have zero value to someone who clones NouGenShards. Untracked via
+# `git rm --cached`, so every local tool keeps reading them exactly as before.
+# ---------------------------------------------------------------------------
+
+# Private chain of command / agent doctrine
+CLAUDE.md
+GEMINI.md
+AGENTS.md
+HARDENING.md
+
+# Separate private project — not part of NouGenShards
+SOL_AI_PROVENANCE.md
+
+# Internal orchestration playbook + session transcripts
+docs/metamer-orchestration-playbook.md
+docs/handoffs/
+
+# Internal ops: war-games, drills, incident log
+wargames/
+drills/
+
+# Local agent harness config (settings.json + settings.local.json)
+.claude/
+
+# Owner-workflow tools that read a Memory Vault strangers do not have
+tools/arxiv_*.py
+tools/atomize_*.py
+tools/capture_doctrine*.py
+tools/dream_deep*.py
+tools/metameric_*.py
+tools/migrate_watchtower_memory*.py
+tools/replay_session_*.sh
