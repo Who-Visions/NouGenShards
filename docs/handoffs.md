@@ -78,6 +78,29 @@ nougen ctx search "handoff"
 nougen ctx get 12
 ```
 
+### Multi-line notes: use `--message-file`, never `--message`
+
+`--message/-m` is only safe for a single short line. Anything longer goes in a
+UTF-8 file passed with `--message-file/-M`, which reads the note off disk and
+bypasses the shell entirely:
+
+```bash
+# Write the structured note first, then hand the CLI the path
+nougen handoff create --goal "Wire the Tauri sidecar" --message-file ./note.md
+```
+
+Two shell behaviours corrupt inline notes, silently and in opposite ways:
+
+- **cmd.exe ends an argument at the first newline**, so a templated multi-section
+  note lands as its first heading only (measured: a 2,600-character note wrote 19
+  characters).
+- **POSIX/PowerShell double-quoting expands `$3`/`$4` inside currency**, eating the
+  leading digits (`$3,922.07` becomes `,922.07`).
+
+`-M` survives both. When `-m` is used anyway, the writer still records the note —
+degraded beats lost — and warns on single-heading truncation and digit-eaten
+currency so the damage is visible instead of silent.
+
 `create` auto-detects the agent and, under Gemini Antigravity, auto-fills the
 goal and task checklist from the active session. Outside that environment, pass
 `--goal` yourself (see overrides below to wire your own task tracking).
