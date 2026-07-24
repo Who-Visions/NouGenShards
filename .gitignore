@@ -132,3 +132,18 @@ tools/dream_deep*.py
 tools/metameric_*.py
 tools/migrate_watchtower_memory*.py
 tools/replay_session_*.sh
+
+# Local measurement/run artifacts: these capture private vault contents and
+# agent performance runs. Not part of the shipped product.
+audit-runs/
+drill-runs/
+.handoffs_msg_*.md
+
+# SQLite journal sidecars - transient, and can contain vault data.
+shards.db-wal
+shards.db-shm
+*.db-wal
+*.db-shm
+
+# Local-only guard helper: contains absolute private workspace paths.
+tools/scan_guard.py
