@@ -210,7 +210,7 @@ NouGenShards features a 10-agent roster (personas layered over the memory engine
 - **Remember**: Recall (Memory Retrieval & Verification) — Binds to `sol-ai:e4b`.
 - **Kronos**: Time (Temporal Grounding & Decay) — Binds to `gemma2:2b`.
 - **DavOs**: Operations (Oversight & Gatekeeper) — Binds to `DavOs:latest`.
-- **Sol-Ai**: Broad Reasoning & Illumination — Binds to `sol-ai:e4b`.
+- **Sol-Ai**: Broad Reasoning & Illumination — Binds to `sol-ai:e4b`. *(Who Visions trademark, in use since April 2026 — [prior-use record](./docs/provenance/SOL-AI-PRIORITY.md).)*
 - **NouGen**: Orchestrator (Core Orchestration & Branding) — Binds to `gemma4:12b`.
 - **Griot**: Rules (Semantic Synthesis & Consolidation) — Binds to `griot:e2b`.
 - **Rhea**: Security (System Hardening & Audit) — Binds to `rhea-noir:e2b`.
