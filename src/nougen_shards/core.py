@@ -299,6 +299,27 @@ def resolve_domain_from_path(target_path: Optional[str] = None) -> str:
     return "global"
 
 
+def compression_density(content: str) -> float:
+    """Local, offline density estimate: gzip ratio as a proxy for surprisal.
+
+    Exposed separately from `calculate_contrastive_perplexity` so bulk callers
+    can opt out of the per-item LLM round trip. Scoring an import of six
+    figures of records through a model is not viable — each unreachable
+    provider costs a connection timeout, and even a live local model would
+    serialize the whole ingest behind inference.
+    """
+    if not content:
+        return 1.0
+    import zlib
+    try:
+        compressed_len = len(zlib.compress(content.encode('utf-8')))
+        raw_len = len(content.encode('utf-8'))
+        compression_ratio = compressed_len / max(1, raw_len)
+        return float(min(1.0, max(0.1, compression_ratio * 1.5)))
+    except Exception:
+        return 0.5
+
+
 def calculate_contrastive_perplexity(content: str) -> float:
     """Estimates information density / contrastive perplexity using local Ollama or OpenRouter."""
     if not content:
@@ -311,14 +332,7 @@ def calculate_contrastive_perplexity(content: str) -> float:
     # have near-deterministic self-transitions and score ~1. The doc's metric
     # needs a fitted reference model; revisit if a vault-wide corpus model is
     # ever built.)
-    import zlib
-    try:
-        compressed_len = len(zlib.compress(content.encode('utf-8')))
-        raw_len = len(content.encode('utf-8'))
-        compression_ratio = compressed_len / max(1, raw_len)
-        fallback_score = float(min(1.0, max(0.1, compression_ratio * 1.5)))
-    except Exception:
-        fallback_score = 0.5
+    fallback_score = compression_density(content)
 
     # Check if we are running in a test environment to prevent local LLM/OpenRouter calls
     import sys
