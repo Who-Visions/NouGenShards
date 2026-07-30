@@ -186,7 +186,7 @@ def cmd_auth(args):
 
 def cmd_init(_args):
     """Bootstrap the local shard layer."""
-    print("🪩 Initializing Valerion — The Metameric Memory Engine...")
+    print("🪩 Initializing Valerion — The Memory Engine...")
     try:
         shards.init_db(index=1)
     except (OSError, sqlite3.Error) as exc:
@@ -1020,7 +1020,7 @@ def cmd_ingest(args):
 
 
 def cmd_dream(args):
-    """Executes the Dream cycle (Autonomous Metameric Evolution)."""
+    """Executes the Dream cycle (Autonomous Memory Evolution)."""
     if args.action == "wake":
         if not getattr(args, 'json', False):
             print("🌌 Entering the Dream State...  [EXPERIMENTAL: exports an SFT dataset; no live weight update]")
@@ -1325,7 +1325,7 @@ def get_parser():
     p_doctor = subparsers.add_parser("doctor", help="Check system health")
     p_doctor.add_argument("--json", action="store_true", help="Machine-readable output")
 
-    p_dream = subparsers.add_parser("dream", help="Autonomous Metameric Evolution (TMEM)")
+    p_dream = subparsers.add_parser("dream", help="Autonomous Memory Evolution (TMEM)")
     p_dream.add_argument("action", choices=["wake"])
     p_dream.add_argument("--json", action="store_true", help="Machine-readable output")
 

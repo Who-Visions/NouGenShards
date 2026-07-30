@@ -490,7 +490,7 @@ def _init_db_locked(index: int, key) -> None:
     """)
 
 
-    # FTS5 with Trigram for fuzzy recall (Module 1: Metamers)
+    # FTS5 with Trigram for fuzzy recall (Module 1: Convergent Traces)
     try:
         cursor.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS shards_fts USING fts5(

@@ -1,5 +1,5 @@
 """
-The Dream State (Autonomous Metameric Evolution).
+The Dream State (Autonomous Memory Evolution).
 Implementation of TMEM and offline dual-system semantic consolidation.
 """
 

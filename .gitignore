@@ -117,7 +117,7 @@ HARDENING.md
 SOL_AI_PROVENANCE.md
 
 # Internal orchestration playbook + session transcripts
-docs/metamer-orchestration-playbook.md
+docs/valerion-orchestration-playbook.md
 docs/handoffs/
 
 # Internal ops: war-games, drills, incident log
@@ -132,7 +132,7 @@ tools/arxiv_*.py
 tools/atomize_*.py
 tools/capture_doctrine*.py
 tools/dream_deep*.py
-tools/metameric_*.py
+tools/valerion_*.py
 tools/migrate_watchtower_memory*.py
 tools/replay_session_*.sh
 

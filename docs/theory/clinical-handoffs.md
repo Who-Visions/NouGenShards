@@ -1,6 +1,6 @@
 # CLINICAL CONVERGENCE: NURSING HANDOFFS IN MULTI-AGENT STATE TRANSITIONS
 
-## A Theoretical Refactoring of Chapter 34 (Friesen, White, & Byers) into the Metameric Memory Engine
+## A Theoretical Refactoring of Chapter 34 (Friesen, White, & Byers) into the Valerion Memory Engine
 
 ---
 

@@ -1,6 +1,6 @@
 """NouGenShards: Persistent local memory for coding agents.
 
-Engine: Valerion — The Metameric Memory Engine (21-step cognitive architecture).
+Engine: Valerion — The Memory Engine (21-step cognitive architecture).
 """
 from .core import capture, retrieve, mark_shard, compile_recall_packet
 from .federation import federated_retrieve
