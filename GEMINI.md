@@ -81,11 +81,11 @@ Stop and ask the GM (Dave) for approval before:
 - `NouGenShards-pull-clone/` — Hooked as the active main memory substrate (`nougen-shards` MCP server), running with its isolated databases stored under `NouGenShards-pull-clone/.vault`.
 - `NouGenSite/` — Website and TUI assets
 - `conductor/`, `src/` — Orchestration and integration code
-- `C:\Users\super\Watchtower\vault` — Prototype Memory Vault. The database containing the legacy/prototype memory shards feeding the agent's brain (to be slowly merged, not brute-forced).
-- `C:\Users\super\Watchtower\token_tracker.py` — Token tracker script aggregating Claude Code and Antigravity token usage.
+- Prototype Memory Vault — private database of legacy/prototype memory shards, kept outside this repo; resolved at runtime via `NOUGEN_VAULT_DIR` (to be slowly merged, not brute-forced).
+- `token_tracker.py` — private token tracker script (outside this repo) aggregating Claude Code and Antigravity token usage.
 
 ### Migration Pipeline:
-We use `NouGenShards-pull-clone` as our active memory server, ensuring that we test the public release candidate builds against our operational memory needs. The prototype data stored at `C:\Users\super\Watchtower\vault` will be gradually and safely migrated into the active `.vault` index.
+We use `NouGenShards-pull-clone` as our active memory server, ensuring that we test the public release candidate builds against our operational memory needs. The prototype data stored in the private vault (`NOUGEN_VAULT_DIR`) will be gradually and safely migrated into the active `.vault` index.
 
 
 ## Automated Session Handoff Rule (CRITICAL)
