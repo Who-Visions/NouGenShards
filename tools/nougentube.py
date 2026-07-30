@@ -8,13 +8,25 @@ into the vault via nougen_shards.core.capture (hash-dedup, secret-guard, provena
 Dry-run by default (fetch + markdown only); pass --confirm to write shards.
 Markdown files on disk double as the refetch cache: an existing file is skipped.
 
+Single-video fast path: --video <url> skips channel resolution entirely — one
+authenticated yt-dlp session fetches metadata + subtitles together (browser-cookie
+lane survives networks where youtube-transcript-api is IP-blocked), with the
+transcript API as fallback. Markdown cache and vault sharding are shared with
+channel mode.
+
 Config (env -> arg -> fallback, per Dynamic State Doctrine):
-  NOUGEN_YT_SEED      seed video or channel URL
-  NOUGEN_YT_DAYS      lookback window in days (default 30)
-  NOUGEN_YT_OUT       transcript output dir (default <repo>/transcripts/youtube)
-  NOUGEN_YT_MAX       hard cap on videos per run (default 200)
+  NOUGEN_YT_SEED            seed video or channel URL
+  NOUGEN_YT_VIDEO           single video URL (same as --video)
+  NOUGEN_YT_DAYS            lookback window in days (default 30)
+  NOUGEN_YT_OUT             transcript output dir (default <repo>/transcripts/youtube)
+  NOUGEN_YT_MAX             hard cap on videos per run (default 200)
+  NOUGEN_YT_COOKIE_BROWSER  browser whose cookies authenticate yt-dlp (default chrome, "" disables)
+  NOUGEN_YT_COOKIES_FILE    Netscape cookies.txt export; preferred over browser extraction
+  NOUGEN_YT_JS_RUNTIME      JS runtime for PO tokens (default: probe PATH for deno, then node)
+  NOUGEN_YT_SUB_LANGS       yt-dlp subtitle language selector (default en.*,-live_chat)
 
 Run with: PYTHONPATH=src python tools/nougentube.py --seed <url> [--confirm]
+      or: PYTHONPATH=src python tools/nougentube.py --video <url> [--confirm]
 """
 from __future__ import annotations
 
@@ -35,6 +47,34 @@ DEFAULT_DAYS = int(os.environ.get("NOUGEN_YT_DAYS", "30"))
 DEFAULT_MAX = int(os.environ.get("NOUGEN_YT_MAX", "200"))
 FETCH_SLEEP = float(os.environ.get("NOUGEN_YT_SLEEP", "8"))  # seconds between transcript fetches (429 guard)
 EVENT_TYPE = os.environ.get("NOUGEN_YT_EVENT_TYPE", "YOUTUBE_TRANSCRIPT")
+COOKIE_BROWSER = os.environ.get("NOUGEN_YT_COOKIE_BROWSER", "chrome")  # "" disables the cookie lane
+COOKIES_FILE = os.environ.get("NOUGEN_YT_COOKIES_FILE", "")  # Netscape cookies.txt export; beats browser extraction
+SUB_LANGS = os.environ.get("NOUGEN_YT_SUB_LANGS", "en.*,-live_chat")
+
+_VIDEO_ID_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/live/|/embed/)([\w-]{11})")
+
+
+def _js_runtime_args() -> list[str]:
+    """YouTube 429s caption URLs from clients that can't mint PO tokens; a JS runtime
+    fixes that. Probe PATH per Dynamic State Doctrine (env override -> deno -> node)."""
+    import shutil
+    runtime = os.environ.get("NOUGEN_YT_JS_RUNTIME", "")
+    if not runtime:
+        runtime = next((r for r in ("deno", "node") if shutil.which(r)), "")
+    return ["--js-runtimes", runtime] if runtime else []
+
+
+def _cookie_args() -> list[str]:
+    """Best available auth lane: an exported cookies.txt always wins (browser DB
+    extraction is dead on modern Windows Chrome/Edge — app-bound encryption)."""
+    if COOKIES_FILE and Path(COOKIES_FILE).exists():
+        return ["--cookies", COOKIES_FILE]
+    return ["--cookies-from-browser", COOKIE_BROWSER] if COOKIE_BROWSER else []
+
+
+def _video_id_from_url(url: str) -> str:
+    m = _VIDEO_ID_RE.search(url)
+    return m.group(1) if m else ""
 
 
 def _run_ytdlp(args: list[str], timeout: int = 1800) -> str:
@@ -113,9 +153,10 @@ def _fetch_via_ytdlp_subs(video_id: str) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         try:
             _run_ytdlp([
+                *_cookie_args(), *_js_runtime_args(),
                 "--skip-download", "--write-auto-subs", "--write-subs",
                 "--sleep-requests", "3", "--retries", "3", "--retry-sleep", "30",
-                "--sub-langs", "en.*,-live_chat", "--sub-format", "vtt/srt",
+                "--sub-langs", SUB_LANGS, "--sub-format", "vtt/srt",
                 "-o", str(Path(tmp) / "%(id)s"),
                 f"https://www.youtube.com/watch?v={video_id}",
             ], timeout=300)
@@ -129,7 +170,7 @@ def _fetch_via_ytdlp_subs(video_id: str) -> str:
     return ""
 
 
-def fetch_transcript(video_id: str) -> str:
+def _fetch_via_transcript_api(video_id: str) -> str:
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
         try:
@@ -139,12 +180,71 @@ def fetch_transcript(video_id: str) -> str:
         except AttributeError:
             data = YouTubeTranscriptApi.get_transcript(video_id)  # legacy API
             parts = [d.get("text", "") for d in data]
-        text = re.sub(r"\s+", " ", " ".join(p for p in parts if p)).strip()
-        if text:
-            return text
-    except Exception as exc:  # noqa: BLE001 — fall through to the yt-dlp lane
-        print(f"  transcript-api miss for {video_id}: {type(exc).__name__}, trying yt-dlp subs")
-    return _fetch_via_ytdlp_subs(video_id)
+        return re.sub(r"\s+", " ", " ".join(p for p in parts if p)).strip()
+    except Exception as exc:  # noqa: BLE001 — caller decides the next lane
+        print(f"  transcript-api miss for {video_id}: {type(exc).__name__}")
+        return ""
+
+
+def fetch_transcript(video_id: str) -> str:
+    text = _fetch_via_transcript_api(video_id)
+    return text or _fetch_via_ytdlp_subs(video_id)
+
+
+def fetch_single_video(url: str) -> tuple[dict, str, str]:
+    """--video fast path: one yt-dlp session pulls metadata + subtitles together,
+    authenticated via browser cookies when available (that lane survives networks
+    where the transcript API is IP-blocked). Returns (video, channel_name, transcript);
+    transcript falls back to youtube-transcript-api, inverting the channel-sweep order."""
+    import tempfile
+    lanes = [("auth", _cookie_args()), ("anonymous", [])]
+    if not _cookie_args():
+        lanes = lanes[1:]
+    info, transcript = None, ""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        base = [
+            *_js_runtime_args(),
+            "--skip-download", "--no-playlist", "--no-warnings",
+            "--write-auto-subs", "--write-subs", "--write-info-json",
+            "--ignore-no-formats-error", "--ignore-errors",
+            "--sub-langs", SUB_LANGS, "--sub-format", "vtt/srt",
+            "--retries", "2",
+            "-o", str(tmp_path / "%(id)s"), url,
+        ]
+        # Success is judged by artifacts on disk, not exit codes — yt-dlp exits 0 on
+        # some failures (cookie DB copy) and non-0 on some successes (window edge).
+        for lane, lane_args in lanes:
+            try:
+                _run_ytdlp([*lane_args, *base], timeout=180)
+            except Exception as exc:  # noqa: BLE001 — try the next lane
+                print(f"  {lane} lane error: {str(exc)[:120]}")
+            if info is None:
+                infos = sorted(tmp_path.glob("*.info.json"))
+                if infos:
+                    info = json.loads(infos[0].read_text(encoding="utf-8", errors="replace"))
+            if any(not p.name.endswith(".json") for p in tmp_path.iterdir()):
+                break  # got subtitle files; stop burning lanes
+            print(f"  {lane} lane: no subtitles")
+        if info is None:
+            raise RuntimeError(f"yt-dlp returned no metadata for {url}")
+        video = {
+            "id": info.get("id") or _video_id_from_url(url) or "unknown",
+            "title": info.get("title") or info.get("id") or url,
+            "url": info.get("webpage_url") or url,
+            "upload_date": info.get("upload_date") or "",
+        }
+        channel_name = info.get("channel") or info.get("uploader") or "unknown-channel"
+        for sub in sorted(tmp_path.glob(f"{video['id']}*")):
+            if sub.name.endswith(".json"):
+                continue
+            transcript = _parse_vtt(sub.read_text(encoding="utf-8", errors="replace"))
+            if transcript:
+                break
+    if not transcript:
+        print("  no yt-dlp subs, falling back to youtube-transcript-api")
+        transcript = _fetch_via_transcript_api(video["id"])
+    return video, channel_name, transcript
 
 
 def markdown_path(out_dir: Path, video: dict) -> Path:
@@ -175,14 +275,57 @@ def shard(channel_name: str, video: dict, transcript: str, extra_tags: list[str]
     return core.capture(EVENT_TYPE, title, content, tags=tags)
 
 
+def run_single(args: argparse.Namespace, extra_tags: list[str]) -> None:
+    """URL -> transcript -> markdown -> shard, no channel enumeration. Cache-first:
+    an existing markdown for this video id skips the network entirely."""
+    vid = _video_id_from_url(args.video)
+    cached = sorted(args.out.glob(f"*_{vid}_*.md")) if vid else []
+    if cached:
+        body = cached[0].read_text(encoding="utf-8")
+        title_m = re.search(r"^# (.+)$", body, re.MULTILINE)
+        chan_m = re.search(r"\*\*Channel\*\*: (.+)", body)
+        date_m = re.search(r"\*\*Uploaded\*\*: (.+)", body)
+        upload_date = (date_m.group(1).strip() if date_m else "")
+        video = {
+            "id": vid,
+            "title": title_m.group(1).strip() if title_m else vid,
+            "url": f"https://www.youtube.com/watch?v={vid}",
+            "upload_date": "" if upload_date == "undated" else upload_date,
+        }
+        channel_name = chan_m.group(1).strip() if chan_m else "unknown-channel"
+        transcript = body.split("## Transcript", 1)[-1].strip()
+        print(f"cache hit: {cached[0].name}")
+    else:
+        video, channel_name, transcript = fetch_single_video(args.video)
+        if not transcript:
+            print(f"no transcript available for {args.video}")
+            sys.exit(2)
+        path = markdown_path(args.out, video)
+        write_markdown(path, channel_name, video, transcript)
+        print(f"markdown: {path.name}")
+    print(f"[{channel_name}] {video['title']} — {len(transcript)} chars")
+    if not args.confirm:
+        print("DRY-RUN complete: pass --confirm to write the shard")
+        return
+    if shard(channel_name, video, transcript, extra_tags):
+        print("WRITE complete: shard captured")
+    else:
+        print("WRITE complete: dedup skip (shard already in vault)")
+
+
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):  # Windows cp1252 console chokes on exotic channel names
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", default=os.environ.get("NOUGEN_YT_SEED"))
+    parser.add_argument("--video", default=os.environ.get("NOUGEN_YT_VIDEO"),
+                        help="Single video URL: fast path straight to transcript + shard, no channel sweep.")
     parser.add_argument("--days", type=int, default=DEFAULT_DAYS)
     parser.add_argument("--max", type=int, default=DEFAULT_MAX)
+    parser.add_argument("--max-new", type=int, default=int(os.environ.get("NOUGEN_YT_MAX_NEW", "0")),
+                        help="Stop fetching after this many NEW transcripts this run (0 = unlimited). "
+                             "Cached files and misses don't consume budget. Drip-backfill throttle.")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--confirm", action="store_true", help="Actually write shards to the vault.")
     parser.add_argument("--tags", default=os.environ.get("NOUGEN_YT_EXTRA_TAGS", ""),
@@ -190,8 +333,11 @@ def main() -> None:
     args = parser.parse_args()
     extra_tags = [t.strip() for t in args.tags.split(",") if t.strip()]
 
+    if args.video:
+        run_single(args, extra_tags)
+        return
     if not args.seed:
-        parser.error("no seed: pass --seed or set NOUGEN_YT_SEED")
+        parser.error("no target: pass --video/--seed or set NOUGEN_YT_VIDEO/NOUGEN_YT_SEED")
 
     channel = resolve_channel(args.seed)
     print(f"channel: {channel['channel_name']} ({channel['channel_id']})")
@@ -199,6 +345,10 @@ def main() -> None:
     print(f"{len(videos)} videos in last {args.days} days (cap {args.max})")
 
     stats = {"sharded": 0, "dedup_skipped": 0, "cached": 0, "no_transcript": 0, "dry_run": 0}
+    breaker_limit = int(os.environ.get("NOUGEN_YT_BREAKER", "3"))  # consecutive misses -> stop digging (extends the IP flag)
+    consecutive_misses = 0
+    circuit_open = False
+    new_fetches = 0
     for i, video in enumerate(videos, 1):
         print(f"[{i}/{len(videos)}] {video['upload_date']} {video['title'][:70]}")
         path = markdown_path(args.out, video)
@@ -206,9 +356,21 @@ def main() -> None:
             transcript = ""
             stats["cached"] += 1
         else:
+            if args.max_new and new_fetches >= args.max_new:
+                continue  # new-fetch budget spent; cached items above still shard, uncached wait for tomorrow's drip
             import time
             time.sleep(FETCH_SLEEP)
             transcript = fetch_transcript(video["id"])
+            if transcript:
+                consecutive_misses = 0
+                new_fetches += 1
+            else:
+                consecutive_misses += 1
+                if consecutive_misses >= breaker_limit:
+                    circuit_open = True
+                    print(f"circuit OPEN after {breaker_limit} consecutive misses — stopping sweep to protect the IP")
+                    stats["no_transcript"] += 1
+                    break
             if not transcript:
                 stats["no_transcript"] += 1
                 continue
@@ -225,8 +387,11 @@ def main() -> None:
             stats["dedup_skipped"] += 1
 
     mode = "WRITE" if args.confirm else "DRY-RUN"
+    print(f"NEW_FETCHES: {new_fetches}")  # machine-readable budget marker for batch drip accounting
     print(f"\n{mode} complete: {json.dumps(stats)}")
     print(f"transcripts dir: {args.out}")
+    if circuit_open:
+        sys.exit(3)  # signal callers: rate-limited, cool down before resuming
 
 
 if __name__ == "__main__":
