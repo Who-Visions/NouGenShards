@@ -8,10 +8,12 @@ into the vault via nougen_shards.core.capture (hash-dedup, secret-guard, provena
 Dry-run by default (fetch + markdown only); pass --confirm to write shards.
 Markdown files on disk double as the refetch cache: an existing file is skipped.
 
-Single-video fast path: --video <url> skips channel resolution entirely — one
-authenticated yt-dlp session fetches metadata + subtitles together (browser-cookie
-lane survives networks where youtube-transcript-api is IP-blocked), with the
-transcript API as fallback. Markdown cache and vault sharding are shared with
+Single-video fast path: --video <url> skips channel resolution entirely. Primary
+lane is Vertex video ingestion — Gemini reads the YouTube URL server-side (fileData
+fileUri), immune to local caption 429s and dead browser-cookie extraction; it
+returns a DISTILLATE, not a verbatim transcript (proven 2026-07-29: 8/8 videos,
+30-114s each). yt-dlp supplies metadata, and its subtitle lanes plus the transcript
+API remain as content fallbacks. Markdown cache and vault sharding are shared with
 channel mode.
 
 Config (env -> arg -> fallback, per Dynamic State Doctrine):
@@ -23,6 +25,11 @@ Config (env -> arg -> fallback, per Dynamic State Doctrine):
   NOUGEN_YT_COOKIE_BROWSER  browser whose cookies authenticate yt-dlp (default chrome, "" disables)
   NOUGEN_YT_COOKIES_FILE    Netscape cookies.txt export; preferred over browser extraction
   NOUGEN_YT_JS_RUNTIME      JS runtime for PO tokens (default: probe PATH for deno, then node)
+  NOUGEN_YT_VERTEX          "1" (default) enables the Vertex video-ingestion primary lane
+  NOUGEN_YT_DISTILL_MODEL   Vertex model for video distillation (default gemini-3.6-flash)
+  NOUGEN_VERTEX_PROJECT     GCP project (default: gcloud config get-value project)
+  NOUGEN_VERTEX_LOCATION    Vertex location (default global)
+  NOUGEN_YT_DISTILL_PROMPT  override the distillation prompt
   NOUGEN_YT_SUB_LANGS       yt-dlp subtitle language selector (default en.*,-live_chat)
 
 Run with: PYTHONPATH=src python tools/nougentube.py --seed <url> [--confirm]
@@ -52,6 +59,49 @@ COOKIES_FILE = os.environ.get("NOUGEN_YT_COOKIES_FILE", "")  # Netscape cookies.
 SUB_LANGS = os.environ.get("NOUGEN_YT_SUB_LANGS", "en.*,-live_chat")
 
 _VIDEO_ID_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/live/|/embed/)([\w-]{11})")
+
+
+def _gcloud(*a: str) -> str:
+    proc = subprocess.run(["gcloud", *a], capture_output=True, text=True, shell=True)  # gcloud is a .cmd on Windows
+    return (proc.stdout or "").strip()
+
+
+def _fetch_via_vertex(url: str) -> str:
+    """Primary --video lane: Gemini ingests the YouTube URL server-side, so the fetch
+    never touches this network's flagged caption endpoints. Output is a distillate.
+    Access token is minted per call and lives only in the request header."""
+    if os.environ.get("NOUGEN_YT_VERTEX", "1") != "1":
+        return ""
+    import urllib.request
+    model = os.environ.get("NOUGEN_YT_DISTILL_MODEL", "gemini-3.6-flash")
+    location = os.environ.get("NOUGEN_VERTEX_LOCATION", "global")
+    timeout = int(os.environ.get("NOUGEN_YT_VERTEX_TIMEOUT", "600"))
+    prompt = os.environ.get(
+        "NOUGEN_YT_DISTILL_PROMPT",
+        "Distill this video for an AI-operations practitioner in under 250 words: "
+        "video title and channel if identifiable, the main claims, every concrete "
+        "number or benchmark mentioned, tool/model names, and what is actionable. "
+        "Plain prose, no headers, no hype.")
+    project = os.environ.get("NOUGEN_VERTEX_PROJECT") or _gcloud("config", "get-value", "project")
+    token = _gcloud("auth", "print-access-token") if project else ""
+    if not (project and token):
+        print("  vertex lane unavailable (no gcloud project/token)")
+        return ""
+    payload = {"contents": [{"role": "user", "parts": [
+        {"fileData": {"fileUri": url, "mimeType": "video/mp4"}},
+        {"text": prompt}]}]}
+    req = urllib.request.Request(
+        f"https://aiplatform.googleapis.com/v1/projects/{project}/locations/{location}"
+        f"/publishers/google/models/{model}:generateContent",
+        data=json.dumps(payload).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = json.load(r)
+        return "".join(p.get("text", "") for p in body["candidates"][0]["content"]["parts"]).strip()
+    except Exception as exc:  # noqa: BLE001 — fall through to the subtitle lanes
+        print(f"  vertex lane miss: {type(exc).__name__}: {str(exc)[:120]}")
+        return ""
 
 
 def _js_runtime_args() -> list[str]:
@@ -191,27 +241,31 @@ def fetch_transcript(video_id: str) -> str:
     return text or _fetch_via_ytdlp_subs(video_id)
 
 
-def fetch_single_video(url: str) -> tuple[dict, str, str]:
-    """--video fast path: one yt-dlp session pulls metadata + subtitles together,
-    authenticated via browser cookies when available (that lane survives networks
-    where the transcript API is IP-blocked). Returns (video, channel_name, transcript);
-    transcript falls back to youtube-transcript-api, inverting the channel-sweep order."""
+def fetch_single_video(url: str) -> tuple[dict, str, str, str]:
+    """--video fast path: Vertex distillate first (server-side ingestion dodges this
+    network's caption 429s), yt-dlp for metadata — plus subtitles only when Vertex
+    misses — then the transcript API. Returns (video, channel_name, content, kind)
+    where kind is 'distillate' or 'transcript'."""
     import tempfile
+    content = _fetch_via_vertex(url)
+    kind = "distillate" if content else "transcript"
+    need_subs = not content
     lanes = [("auth", _cookie_args()), ("anonymous", [])]
-    if not _cookie_args():
-        lanes = lanes[1:]
-    info, transcript = None, ""
+    if not _cookie_args() or not need_subs:
+        lanes = lanes[1:]  # metadata alone doesn't need the auth lane
+    info = None
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         base = [
             *_js_runtime_args(),
             "--skip-download", "--no-playlist", "--no-warnings",
-            "--write-auto-subs", "--write-subs", "--write-info-json",
-            "--ignore-no-formats-error", "--ignore-errors",
-            "--sub-langs", SUB_LANGS, "--sub-format", "vtt/srt",
+            "--write-info-json", "--ignore-no-formats-error", "--ignore-errors",
             "--retries", "2",
             "-o", str(tmp_path / "%(id)s"), url,
         ]
+        if need_subs:
+            base += ["--write-auto-subs", "--write-subs",
+                     "--sub-langs", SUB_LANGS, "--sub-format", "vtt/srt"]
         # Success is judged by artifacts on disk, not exit codes — yt-dlp exits 0 on
         # some failures (cookie DB copy) and non-0 on some successes (window edge).
         for lane, lane_args in lanes:
@@ -223,28 +277,35 @@ def fetch_single_video(url: str) -> tuple[dict, str, str]:
                 infos = sorted(tmp_path.glob("*.info.json"))
                 if infos:
                     info = json.loads(infos[0].read_text(encoding="utf-8", errors="replace"))
-            if any(not p.name.endswith(".json") for p in tmp_path.iterdir()):
+            if not need_subs:
+                if info:
+                    break
+            elif any(not p.name.endswith(".json") for p in tmp_path.iterdir()):
                 break  # got subtitle files; stop burning lanes
-            print(f"  {lane} lane: no subtitles")
-        if info is None:
+            else:
+                print(f"  {lane} lane: no subtitles")
+        if info is None and not content:
             raise RuntimeError(f"yt-dlp returned no metadata for {url}")
+        info = info or {}  # distillate without metadata still ships, under the bare video id
+        vid = info.get("id") or _video_id_from_url(url) or "unknown"
         video = {
-            "id": info.get("id") or _video_id_from_url(url) or "unknown",
-            "title": info.get("title") or info.get("id") or url,
+            "id": vid,
+            "title": info.get("title") or vid,
             "url": info.get("webpage_url") or url,
             "upload_date": info.get("upload_date") or "",
         }
         channel_name = info.get("channel") or info.get("uploader") or "unknown-channel"
-        for sub in sorted(tmp_path.glob(f"{video['id']}*")):
-            if sub.name.endswith(".json"):
-                continue
-            transcript = _parse_vtt(sub.read_text(encoding="utf-8", errors="replace"))
-            if transcript:
-                break
-    if not transcript:
+        if need_subs:
+            for sub in sorted(tmp_path.glob(f"{video['id']}*")):
+                if sub.name.endswith(".json"):
+                    continue
+                content = _parse_vtt(sub.read_text(encoding="utf-8", errors="replace"))
+                if content:
+                    break
+    if not content:
         print("  no yt-dlp subs, falling back to youtube-transcript-api")
-        transcript = _fetch_via_transcript_api(video["id"])
-    return video, channel_name, transcript
+        content = _fetch_via_transcript_api(video["id"])
+    return video, channel_name, content, kind
 
 
 def markdown_path(out_dir: Path, video: dict) -> Path:
@@ -252,13 +313,17 @@ def markdown_path(out_dir: Path, video: dict) -> Path:
     return out_dir / f"{video.get('upload_date') or 'undated'}_{video['id']}_{safe_title}.md"
 
 
-def write_markdown(path: Path, channel_name: str, video: dict, transcript: str) -> None:
+def write_markdown(path: Path, channel_name: str, video: dict, transcript: str,
+                   kind: str = "transcript") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Section header stays "## Transcript" for every kind — it's the cache-reload
+    # split marker; the Kind line records what the content actually is.
     path.write_text(
         f"# {video['title']}\n\n"
         f"- **Channel**: {channel_name}\n"
         f"- **URL**: {video['url']}\n"
         f"- **Uploaded**: {video.get('upload_date') or 'undated'}\n"
+        f"- **Kind**: {kind}\n"
         f"- **Fetched**: {datetime.now(timezone.utc).isoformat()}\n\n"
         f"## Transcript\n\n{transcript}\n",
         encoding="utf-8",
@@ -285,6 +350,7 @@ def run_single(args: argparse.Namespace, extra_tags: list[str]) -> None:
         title_m = re.search(r"^# (.+)$", body, re.MULTILINE)
         chan_m = re.search(r"\*\*Channel\*\*: (.+)", body)
         date_m = re.search(r"\*\*Uploaded\*\*: (.+)", body)
+        kind_m = re.search(r"\*\*Kind\*\*: (.+)", body)
         upload_date = (date_m.group(1).strip() if date_m else "")
         video = {
             "id": vid,
@@ -293,17 +359,20 @@ def run_single(args: argparse.Namespace, extra_tags: list[str]) -> None:
             "upload_date": "" if upload_date == "undated" else upload_date,
         }
         channel_name = chan_m.group(1).strip() if chan_m else "unknown-channel"
+        kind = kind_m.group(1).strip() if kind_m else "transcript"
         transcript = body.split("## Transcript", 1)[-1].strip()
         print(f"cache hit: {cached[0].name}")
     else:
-        video, channel_name, transcript = fetch_single_video(args.video)
+        video, channel_name, transcript, kind = fetch_single_video(args.video)
         if not transcript:
             print(f"no transcript available for {args.video}")
             sys.exit(2)
         path = markdown_path(args.out, video)
-        write_markdown(path, channel_name, video, transcript)
+        write_markdown(path, channel_name, video, transcript, kind)
         print(f"markdown: {path.name}")
-    print(f"[{channel_name}] {video['title']} — {len(transcript)} chars")
+    print(f"[{channel_name}] {video['title']} — {len(transcript)} chars ({kind})")
+    if kind != "transcript":
+        extra_tags = [*extra_tags, kind]
     if not args.confirm:
         print("DRY-RUN complete: pass --confirm to write the shard")
         return
