@@ -27,11 +27,11 @@ Stop and ask before mutating system state (installs, deletes, registry/config ou
 - `NouGenShards-pull-clone/` — Clean clone of the public repository used to pull and test the GitHub public build against the prototype.
 - `NouGenSite/` — website
 - `conductor/`, `src/` — orchestration code
-- `C:\Users\super\Watchtower\vault` — Memory Vault. The live database containing the prototype memory shards feeding the agent's brain.
+- Memory Vault — private prototype shard database, kept outside this repo; resolved at runtime via `NOUGEN_VAULT_DIR` (never committed).
 
 
 ### Migration Pipeline:
-We use `NouGenShards-pull-clone` to test public release candidate pulls and compare their behavior/integrity against the live prototype database state (`C:\Users\super\Watchtower\vault`), enabling a gradual, validated migration of prototype features to the public-facing application.
+We use `NouGenShards-pull-clone` to test public release candidate pulls and compare their behavior/integrity against the live prototype database state (private vault, `NOUGEN_VAULT_DIR`), enabling a gradual, validated migration of prototype features to the public-facing application.
 
 
 ## Automated Session Handoff Rule (CRITICAL)
