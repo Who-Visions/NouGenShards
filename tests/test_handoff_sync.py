@@ -155,6 +155,21 @@ def test_ack_travels_back_to_the_originating_machine(monkeypatch, fleet):
     assert data["acknowledged_on"]["host"] == "who-mac-mini"
 
 
+def test_env_remote_is_written_into_the_repo(monkeypatch, fleet):
+    """NOUGEN_HANDOFF_REMOTE must configure git, not just be reported back."""
+    directory = _become(monkeypatch, fleet, "who-pc", "bbbb2222")
+    monkeypatch.setenv("NOUGEN_HANDOFF_REMOTE", fleet["remote"])
+    handoff.create_handoff(goal="env remote", agent="codex")
+
+    report = handoff_sync.sync()
+    assert report["pushed"] is True, report["errors"]
+    configured = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=str(directory), capture_output=True, text=True,
+    ).stdout.strip()
+    assert configured == fleet["remote"]
+
+
 def test_sync_without_remote_reports_instead_of_failing(monkeypatch, fleet):
     _become(monkeypatch, fleet, "who-pc", "bbbb2222")
     handoff.create_handoff(goal="no remote", agent="codex")

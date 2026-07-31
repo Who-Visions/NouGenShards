@@ -16,6 +16,7 @@ newly-arrived remote records. That is what lets the Mac react to work the PC
 finished while it was asleep.
 """
 
+import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -67,8 +68,6 @@ def _git(args: List[str], cwd: Path, timeout: int = 60) -> Tuple[int, str, str]:
 
 def get_remote(handoff_dir: Optional[Path] = None) -> Optional[str]:
     """Configured sync remote: NOUGEN_HANDOFF_REMOTE, else the repo's own origin."""
-    import os
-
     explicit = (os.environ.get("NOUGEN_HANDOFF_REMOTE") or "").strip()
     if explicit:
         return explicit
@@ -111,6 +110,9 @@ def init_sync(
 
     write_sync_ignore(directory, share_triggers)
 
+    # An env-configured remote has to be written into the repo, not just
+    # reported: every fetch and push below addresses it by name.
+    remote = remote or (os.environ.get("NOUGEN_HANDOFF_REMOTE") or "").strip() or None
     if remote:
         code, _, _ = _git(["remote", "get-url", REMOTE_NAME], directory)
         action = "set-url" if code == 0 else "add"
