@@ -11,6 +11,8 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 
+from . import machine
+
 # Handoff notes live in <repo>/.handoffs by default. Override with NOUGEN_HANDOFF_DIR
 # so the system works regardless of where it is installed or invoked from.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -127,6 +129,18 @@ def _get_db_connection():
     return conn
 
 
+def _add_missing_columns(conn, table: str, columns: Dict[str, str]) -> None:
+    """Add columns to an existing table, skipping the ones already there.
+
+    Machine columns landed after databases existed in the wild; ALTER TABLE is
+    cheap and lets an older index gain the fleet fields without a rebuild.
+    """
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, decl in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
 def init_handoff_db() -> None:
     """Initialize the local handoff/orchestration index."""
     conn = _get_db_connection()
@@ -148,7 +162,10 @@ def init_handoff_db() -> None:
                 completed_by TEXT,
                 completed_at TEXT,
                 updated_at TEXT NOT NULL,
-                data_json TEXT NOT NULL
+                data_json TEXT NOT NULL,
+                host TEXT,
+                machine_id TEXT,
+                platform TEXT
             )
         """)
         conn.execute("""
@@ -160,9 +177,34 @@ def init_handoff_db() -> None:
                 agent TEXT,
                 state TEXT NOT NULL,
                 message TEXT,
+                host TEXT,
+                machine_id TEXT,
                 FOREIGN KEY (handoff_id) REFERENCES handoff_records(handoff_id)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS handoff_trigger_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                handoff_id TEXT,
+                trigger_id TEXT NOT NULL,
+                event TEXT NOT NULL,
+                command TEXT,
+                timestamp TEXT,
+                host TEXT,
+                machine_id TEXT,
+                origin TEXT,
+                status TEXT,
+                exit_code INTEGER,
+                stdout TEXT,
+                stderr TEXT
+            )
+        """)
+        _add_missing_columns(conn, "handoff_records", {
+            "host": "TEXT", "machine_id": "TEXT", "platform": "TEXT",
+        })
+        _add_missing_columns(conn, "handoff_checkpoints", {
+            "host": "TEXT", "machine_id": "TEXT",
+        })
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_handoff_records_status "
             "ON handoff_records(status)"
@@ -172,12 +214,91 @@ def init_handoff_db() -> None:
             "ON handoff_records(agent)"
         )
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_handoff_records_machine "
+            "ON handoff_records(machine_id)"
+        )
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_handoff_checkpoints_handoff "
             "ON handoff_checkpoints(handoff_id, checkpoint_index)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_handoff_trigger_runs_handoff "
+            "ON handoff_trigger_runs(handoff_id, timestamp)"
         )
         conn.commit()
     finally:
         conn.close()
+
+
+def _record_trigger_run(record: Dict) -> bool:
+    """Persist one trigger execution so a remote fire is auditable after the fact."""
+    try:
+        init_handoff_db()
+        conn = _get_db_connection()
+        try:
+            conn.execute("""
+                INSERT INTO handoff_trigger_runs (
+                    handoff_id, trigger_id, event, command, timestamp,
+                    host, machine_id, origin, status, exit_code, stdout, stderr
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                record.get("handoff_id"),
+                record.get("trigger_id"),
+                record.get("event"),
+                record.get("command"),
+                record.get("timestamp"),
+                record.get("host"),
+                record.get("machine_id"),
+                record.get("origin"),
+                record.get("status"),
+                record.get("exit_code"),
+                record.get("stdout"),
+                record.get("stderr"),
+            ))
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except (OSError, sqlite3.Error):
+        return False
+
+
+def get_trigger_runs(limit: int = 20, trigger_id: Optional[str] = None) -> List[Dict]:
+    """Most recent trigger executions, newest first."""
+    try:
+        init_handoff_db()
+        conn = _get_db_connection()
+        try:
+            if trigger_id:
+                rows = conn.execute(
+                    "SELECT * FROM handoff_trigger_runs WHERE trigger_id = ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (trigger_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM handoff_trigger_runs ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error):
+        return []
+
+
+def _fire_triggers(event: str, data: Dict, path: Path) -> List[Dict]:
+    """Hand a state change to the trigger engine.
+
+    Wrapped so trigger failures can never take down a handoff write — the note
+    is the durable artifact, the automation is best-effort.
+    """
+    try:
+        from . import handoff_triggers
+
+        return handoff_triggers.fire(event, data, path)
+    except Exception:
+        return []
 
 
 def _sync_handoff_to_db(path: Path, data: Dict) -> bool:
@@ -190,13 +311,15 @@ def _sync_handoff_to_db(path: Path, data: Dict) -> bool:
         checkpoints = orchestration.get("checkpoints") or []
         now = datetime.now().isoformat()
         handoff_id = data.get("handoff_id") or path.stem
+        record_machine = machine.record_machine(data)
         try:
             conn.execute("""
                 INSERT INTO handoff_records (
                     handoff_id, path, markdown_path, agent, status, goal, message,
                     branch, session_id, created_at, acknowledged_by, acknowledged_at,
-                    completed_by, completed_at, updated_at, data_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    completed_by, completed_at, updated_at, data_json,
+                    host, machine_id, platform
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(handoff_id) DO UPDATE SET
                     path=excluded.path,
                     markdown_path=excluded.markdown_path,
@@ -212,7 +335,10 @@ def _sync_handoff_to_db(path: Path, data: Dict) -> bool:
                     completed_by=excluded.completed_by,
                     completed_at=excluded.completed_at,
                     updated_at=excluded.updated_at,
-                    data_json=excluded.data_json
+                    data_json=excluded.data_json,
+                    host=excluded.host,
+                    machine_id=excluded.machine_id,
+                    platform=excluded.platform
             """, (
                 handoff_id,
                 str(path),
@@ -230,6 +356,9 @@ def _sync_handoff_to_db(path: Path, data: Dict) -> bool:
                 data.get("completed_at"),
                 now,
                 json.dumps(data, sort_keys=True),
+                record_machine.get("host"),
+                record_machine.get("machine_id"),
+                record_machine.get("platform"),
             ))
             conn.execute(
                 "DELETE FROM handoff_checkpoints WHERE handoff_id = ?",
@@ -238,8 +367,9 @@ def _sync_handoff_to_db(path: Path, data: Dict) -> bool:
             for index, checkpoint in enumerate(checkpoints):
                 conn.execute("""
                     INSERT INTO handoff_checkpoints (
-                        handoff_id, checkpoint_index, timestamp, agent, state, message
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        handoff_id, checkpoint_index, timestamp, agent, state, message,
+                        host, machine_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     handoff_id,
                     index,
@@ -247,6 +377,8 @@ def _sync_handoff_to_db(path: Path, data: Dict) -> bool:
                     checkpoint.get("agent"),
                     checkpoint.get("state") or "unknown",
                     checkpoint.get("message"),
+                    checkpoint.get("host"),
+                    checkpoint.get("machine_id"),
                 ))
             conn.commit()
         finally:
@@ -259,6 +391,7 @@ def _sync_handoff_to_db(path: Path, data: Dict) -> bool:
 def _handoff_context_metadata(path: Path, data: Dict, **extra: object) -> Dict:
     """Build compact NouGenContext metadata without storing the full handoff."""
     git_info = data.get("git") or {}
+    record_machine = machine.record_machine(data)
     metadata = {
         "handoff_id": data.get("handoff_id") or path.stem,
         "path": str(path),
@@ -267,6 +400,9 @@ def _handoff_context_metadata(path: Path, data: Dict, **extra: object) -> Dict:
         "goal": data.get("goal"),
         "branch": git_info.get("branch"),
         "handoff_db_path": str(get_handoff_db_path()),
+        "host": record_machine.get("host"),
+        "machine_id": record_machine.get("machine_id"),
+        "origin": machine.record_origin(data),
     }
     metadata.update({key: value for key, value in extra.items() if value is not None})
     return metadata
@@ -469,8 +605,18 @@ def create_handoff(
             summary_note += f" ACTIVE: {', '.join(tasks['in_progress'][:3])}"
         compact_tasks = {"summary": summary_note, "raw_count": total_count}
 
+    # The machine stamp is part of the identity of the record, not decoration:
+    # two boxes working the same branch produce the same timestamp+branch id, so
+    # the host is folded into the id (and the filename) to keep records from
+    # colliding once handoffs are synced between computers.
+    identity = machine.machine_identity(repo_root=PROJECT_ROOT)
+    host_slug = "".join(
+        c if c.isalnum() or c in "-_" else "-" for c in identity["host"]
+    ).strip("-") or "host"
+    record_slug = f"{timestamp}_{host_slug}_{branch}"
+
     handoff_data = {
-        "handoff_id": f"{timestamp}_{branch}",
+        "handoff_id": record_slug,
         "timestamp": datetime.now().isoformat(),
         "goal": goal,
         "message": message,
@@ -478,13 +624,14 @@ def create_handoff(
         "tasks": compact_tasks if compact else tasks,
         "session_id": brain_dir.name if brain_dir else "unknown",
         "agent": agent.lower(),
+        "machine": identity,
         "status": "open",
         "acknowledged_by": None,
         "acknowledged_at": None,
     }
 
     # Save JSON file (atomic: temp + replace prevents truncated records)
-    json_path = target_folder / f"handoff_{timestamp}_{branch}.json"
+    json_path = target_folder / f"handoff_{record_slug}.json"
     try:
         _atomic_write_json(json_path, handoff_data)
     except Exception as e:
@@ -492,11 +639,15 @@ def create_handoff(
         return None
 
     # Save Markdown file
-    md_path = target_folder / f"handoff_{timestamp}_{branch}.md"
+    md_path = target_folder / f"handoff_{record_slug}.md"
     try:
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(f"# 🤝 Agent Handoff: {branch} @ {timestamp}\n\n")
             f.write(f"**Agent**: `{agent.upper()}`\n")
+            f.write(
+                f"**Machine**: `{identity['host']}` "
+                f"({identity['os']} / {identity['arch']}, id `{identity['machine_id']}`)\n"
+            )
             f.write(f"**Goal**: {goal}\n")
             if message:
                 f.write(f"**Notes**: {message}\n")
@@ -551,10 +702,29 @@ def create_handoff(
         ),
         _handoff_context_metadata(json_path, handoff_data, db_synced=db_synced),
     )
-    console.print(f"[bold green]🤝 Handoff created successfully for {agent.upper()}![/bold green]")
+    fired = _fire_triggers("created", handoff_data, json_path)
+    console.print(
+        f"[bold green]🤝 Handoff created successfully for {agent.upper()} "
+        f"on {identity['host']}![/bold green]"
+    )
     console.print(f"- Metadata: [yellow]{json_path}[/yellow]")
     console.print(f"- Summary: [yellow]{md_path}[/yellow]")
+    _print_trigger_results(console, fired)
     return json_path
+
+
+def _print_trigger_results(console: Console, fired: List[Dict]) -> None:
+    """Surface trigger activity inline — silent automation is unreviewable."""
+    for record in fired:
+        status = record.get("status")
+        colour = {
+            "ok": "green", "background": "cyan", "dry-run": "yellow",
+        }.get(status, "red")
+        exit_code = record.get("exit_code")
+        detail = "" if exit_code in (None, 0) else f" (exit {exit_code})"
+        console.print(
+            f"[{colour}]⚡ trigger {record.get('trigger_id')} → {status}{detail}[/{colour}]"
+        )
 
 
 def get_handoff_files(agent: Optional[str] = None) -> List[Path]:
@@ -601,14 +771,18 @@ def start_orchestration(
         if message:
             data["acknowledgement_note"] = message
 
+    stamp = machine.machine_stamp()
     orchestration = _ensure_orchestration(data, receiver, timestamp)
+    orchestration.setdefault("started_on", stamp)
     orchestration["checkpoints"].append({
         "timestamp": timestamp,
         "agent": receiver,
         "state": "started",
         "message": message,
+        **stamp,
     })
     data["status"] = "in_progress"
+    data["acknowledged_on"] = stamp
     _atomic_write_json(target_path, data)
     db_synced = _sync_handoff_to_db(target_path, data)
     _log_context_event(
@@ -627,14 +801,18 @@ def start_orchestration(
     )
     _append_markdown(target_path, "Orchestration Started", [
         f"By: `{receiver.upper()}`",
+        f"On: `{stamp['host']}`",
         f"At: {timestamp}",
         f"Run ID: `{orchestration['run_id']}`",
         f"Note: {message or 'started'}",
     ])
+    fired = _fire_triggers("started", data, target_path)
     console.print(
         f"[bold green]Orchestration started for "
-        f"{data.get('handoff_id', target_path.stem)} by {receiver.upper()}.[/bold green]"
+        f"{data.get('handoff_id', target_path.stem)} by {receiver.upper()} "
+        f"on {stamp['host']}.[/bold green]"
     )
+    _print_trigger_results(console, fired)
     return target_path
 
 
@@ -657,20 +835,24 @@ def checkpoint_orchestration(
 
     receiver = (os.environ.get("NOUGEN_AGENT") or detect_current_agent()).lower()
     timestamp = datetime.now().isoformat()
+    stamp = machine.machine_stamp()
     orchestration = _ensure_orchestration(data, receiver, timestamp)
     orchestration["checkpoints"].append({
         "timestamp": timestamp,
         "agent": receiver,
         "state": state,
         "message": message,
+        **stamp,
     })
     data["status"] = state
     if state == "complete":
         data["completed_by"] = receiver
         data["completed_at"] = timestamp
+        data["completed_on"] = stamp
     elif state == "blocked":
         data["blocked_by"] = receiver
         data["blocked_at"] = timestamp
+        data["blocked_on"] = stamp
 
     _atomic_write_json(target_path, data)
     db_synced = _sync_handoff_to_db(target_path, data)
@@ -696,14 +878,19 @@ def checkpoint_orchestration(
     )
     _append_markdown(target_path, "Orchestration Checkpoint", [
         f"By: `{receiver.upper()}`",
+        f"On: `{stamp['host']}`",
         f"At: {timestamp}",
         f"State: `{state}`",
         f"Note: {message or state}",
     ])
+    event = {"complete": "completed", "blocked": "blocked"}.get(state, "checkpoint")
+    fired = _fire_triggers(event, data, target_path)
     console.print(
         f"[bold green]Checkpoint recorded for "
-        f"{data.get('handoff_id', target_path.stem)} as {state}.[/bold green]"
+        f"{data.get('handoff_id', target_path.stem)} as {state} "
+        f"on {stamp['host']}.[/bold green]"
     )
+    _print_trigger_results(console, fired)
     return target_path
 
 
@@ -753,11 +940,13 @@ def acknowledge_handoff(
         return None
 
     receiver = (os.environ.get("NOUGEN_AGENT") or detect_current_agent()).lower()
+    stamp = machine.machine_stamp()
     try:
         data = json.loads(target_path.read_text(encoding="utf-8"))
         data["status"] = "acknowledged"
         data["acknowledged_by"] = receiver
         data["acknowledged_at"] = datetime.now().isoformat()
+        data["acknowledged_on"] = stamp
         if message:
             data["acknowledgement_note"] = message
         _atomic_write_json(target_path, data)
@@ -781,16 +970,19 @@ def acknowledge_handoff(
             with open(md_path, "a", encoding="utf-8") as f:
                 f.write("\n## ✅ Acknowledged\n")
                 f.write(f"- **By**: `{receiver.upper()}`\n")
+                f.write(f"- **On**: `{stamp['host']}`\n")
                 f.write(f"- **At**: {data['acknowledged_at']}\n")
                 if message:
                     f.write(f"- **Note**: {message}\n")
         except Exception:
             pass
 
+    fired = _fire_triggers("acknowledged", data, target_path)
     console.print(
         f"[bold green]✅ Handoff {data.get('handoff_id', target_path.stem)} "
-        f"acknowledged by {receiver.upper()}.[/bold green]"
+        f"acknowledged by {receiver.upper()} on {stamp['host']}.[/bold green]"
     )
+    _print_trigger_results(console, fired)
     return target_path
 
 
@@ -906,6 +1098,7 @@ def list_handoffs(agent: Optional[str] = None):
     table = Table(title="🤖 Agent Handoff History")
     table.add_column("Timestamp", style="cyan", no_wrap=True)
     table.add_column("Agent", style="blue")
+    table.add_column("Machine", style="blue")
     table.add_column("Branch", style="magenta")
     table.add_column("Active Goal", style="green")
     table.add_column("Tasks", style="yellow", justify="right")
@@ -941,7 +1134,18 @@ def list_handoffs(agent: Optional[str] = None):
                 status_disp = f"[dim green]stale-complete ({stored}→stale-complete)[/dim green]"
             else:
                 status_disp = f"[yellow]🟡 open{suffix}[/yellow]"
-            table.add_row(dt, agent_name, data["git"]["branch"], data["goal"], pct, status_disp)
+            record_host = machine.record_machine(data).get("host") or "unknown"
+            # A remote record describes a tree that does not exist here — mark it
+            # so nobody reads the branch/dirty-file list as local truth.
+            host_disp = (
+                record_host
+                if machine.is_local_record(data)
+                else f"[magenta]{record_host} ⇢[/magenta]"
+            )
+            table.add_row(
+                dt, agent_name, host_disp, data["git"]["branch"],
+                data["goal"], pct, status_disp,
+            )
         except Exception:
             pass
 
@@ -991,10 +1195,26 @@ def show_latest_handoff(agent: Optional[str] = None):
         else:
             ack_line = f"[bold yellow]Status:[/bold yellow] 🟡 OPEN{live_marker} — run `nougen handoff ack` to claim it\n"
 
+        # Where it was written matters as much as who wrote it: the branch and
+        # uncommitted files below only exist on that machine.
+        record_host = machine.record_machine(data)
+        origin = machine.record_origin(data)
+        machine_line = (
+            f"[bold cyan]Machine:[/bold cyan] {record_host.get('host', 'unknown')}"
+            f" ({record_host.get('os', 'unknown OS')})"
+        )
+        if origin == "remote":
+            machine_line += (
+                f" [magenta]⇢ REMOTE — written elsewhere, "
+                f"you are on {machine.host_label()}[/magenta]"
+            )
+        machine_line += "\n"
+
         # Format handoff details into rich panels
         summary = (
             f"[bold cyan]Timestamp:[/bold cyan] {data['timestamp']}\n"
             f"[bold cyan]Agent:[/bold cyan] {agent_name}\n"
+            f"{machine_line}"
             f"[bold cyan]Goal:[/bold cyan] {data['goal']}\n"
             f"[bold cyan]Session ID:[/bold cyan] {data['session_id']}\n"
             f"[bold cyan]Notes:[/bold cyan] {data.get('message', 'None')}\n"
@@ -1057,6 +1277,85 @@ def show_latest_handoff(agent: Optional[str] = None):
 
     except Exception as e:
         console.print(f"[red]Error loading handoff details: {e}[/red]")
+
+
+def list_machines(agent: Optional[str] = None) -> List[Dict]:
+    """Summarize every computer that has written a handoff here.
+
+    This is the fleet roster: which boxes participate, when each was last seen,
+    and which agents run on them. Derived from the records themselves so it
+    cannot drift out of sync with reality.
+    """
+    seen: Dict[str, Dict] = {}
+    for path in get_handoff_files(agent):
+        data = _read_handoff(path)
+        if not data:
+            continue
+        record_host = machine.record_machine(data)
+        machine_key = record_host.get("machine_id") or "unknown"
+        # Keyed on the full identity, not the id alone: a relabelled box is a
+        # distinct participant and must not be merged into one row.
+        key = f"{machine_key}@{record_host.get('host', 'unknown')}"
+        entry = seen.setdefault(key, {
+            "machine_id": machine_key,
+            "host": record_host.get("host", "unknown"),
+            "os": record_host.get("os", "unknown"),
+            "arch": record_host.get("arch", "unknown"),
+            "is_self": machine.is_local_record(data),
+            "agents": set(),
+            "handoffs": 0,
+            "last_seen": data.get("timestamp"),
+            "open": 0,
+        })
+        entry["handoffs"] += 1
+        if data.get("agent"):
+            entry["agents"].add(data["agent"])
+        if (data.get("status") or "open") in OPEN_STATUSES:
+            entry["open"] += 1
+        stamp = data.get("timestamp") or ""
+        if stamp > (entry["last_seen"] or ""):
+            entry["last_seen"] = stamp
+
+    machines = []
+    for entry in seen.values():
+        entry["agents"] = sorted(entry["agents"])
+        machines.append(entry)
+    return sorted(machines, key=lambda m: m.get("last_seen") or "", reverse=True)
+
+
+def show_machines(agent: Optional[str] = None) -> None:
+    console = _make_console()
+    machines = list_machines(agent)
+    identity = machine.machine_identity(repo_root=PROJECT_ROOT)
+    console.print(
+        f"[bold cyan]This machine:[/bold cyan] {identity['host']} "
+        f"({identity['os']} / {identity['arch']}) id [yellow]{identity['machine_id']}[/yellow]"
+    )
+    if not machines:
+        console.print("[yellow]No handoff records yet — no fleet to report.[/yellow]")
+        return
+
+    table = Table(title="🖥️ Fleet — machines seen in handoffs")
+    table.add_column("Machine", style="cyan")
+    table.add_column("ID", style="dim")
+    table.add_column("OS", style="blue")
+    table.add_column("Agents", style="green")
+    table.add_column("Handoffs", style="yellow", justify="right")
+    table.add_column("Open", style="yellow", justify="right")
+    table.add_column("Last seen", style="magenta")
+    for entry in machines:
+        label = entry["host"] + (" [dim](this box)[/dim]" if entry["is_self"] else "")
+        last = (entry.get("last_seen") or "")[:16].replace("T", " ")
+        table.add_row(
+            label,
+            entry["machine_id"],
+            entry["os"],
+            ", ".join(a.upper() for a in entry["agents"]) or "-",
+            str(entry["handoffs"]),
+            str(entry["open"]),
+            last,
+        )
+    console.print(table)
 
 
 def watch_handoffs(
