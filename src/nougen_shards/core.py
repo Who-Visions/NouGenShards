@@ -967,6 +967,42 @@ def get_shard_by_id(shard_id: int, db_index: int):
     finally:
         conn.close()
 
+def locate_shard(shard_id: int) -> List[int]:
+    """Returns every cluster DB index holding a shard with this id.
+
+    Ids are per-DB AUTOINCREMENT, so an id is only unique together with its
+    database. A caller that wants to mutate a shard must resolve the ambiguity
+    before writing, not after — see mark_shard's db_index parameter.
+    """
+    found = []
+    for i in range(1, MAX_DB_COUNT + 1):
+        if not get_db_path(i).exists():
+            continue
+        conn = get_connection(i)
+        try:
+            if conn.execute("SELECT 1 FROM shards WHERE id = ?", (shard_id,)).fetchone():
+                found.append(i)
+        except sqlite3.Error:
+            continue
+        finally:
+            conn.close()
+    return found
+
+
+def get_shard_title(shard_id: int, db_index: int) -> Optional[str]:
+    """Title of one shard, for disambiguating an id that spans several DBs."""
+    if not get_db_path(db_index).exists():
+        return None
+    conn = get_connection(db_index)
+    try:
+        row = conn.execute("SELECT title FROM shards WHERE id = ?", (shard_id,)).fetchone()
+        return row["title"] if row else None
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
 def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
     """Updates the usefulness prior (utility_score) from outcome evidence (helpful / not).
 
