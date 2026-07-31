@@ -156,7 +156,19 @@ def test_list_machines_builds_the_fleet_roster(monkeypatch):
     _as_machine(monkeypatch, "who-pc", "bbbb2222")
     handoff.create_handoff(message="pc work", agent="gemini")
 
-    roster = {m["host"]: m for m in handoff.list_machines()}
+    # A bulk import of unstamped records from another box must not be counted
+    # as this machine's own work.
+    imported = handoff.HANDOFF_DIR / "handoff_imported.json"
+    imported.write_text(
+        json.dumps({"handoff_id": "imported", "agent": "gemini", "timestamp": "2026-01-01T00:00:00",
+                    "git": {"branch": "main"}, "tasks": {}, "status": "open"}),
+        encoding="utf-8",
+    )
+    unattributed = [m for m in handoff.list_machines() if not m["attributed"]]
+    assert len(unattributed) == 1
+    assert unattributed[0]["is_self"] is False
+
+    roster = {m["host"]: m for m in handoff.list_machines() if m["attributed"]}
     assert set(roster) == {"who-mac-mini", "who-pc"}
     assert roster["who-pc"]["is_self"] is True
     assert roster["who-mac-mini"]["is_self"] is False

@@ -155,6 +155,58 @@ def test_ack_travels_back_to_the_originating_machine(monkeypatch, fleet):
     assert data["acknowledged_on"]["host"] == "who-mac-mini"
 
 
+def test_empty_registry_never_reports_a_push(monkeypatch, fleet):
+    """The failure blade1tb hit: pushed=True having published nothing."""
+    _become(monkeypatch, fleet, "who-pc", "bbbb2222")
+    report = handoff_sync.sync(remote=fleet["remote"])
+    assert report["pushed"] is False
+    assert any("empty registry" in e for e in report["errors"])
+
+
+def test_joining_machine_can_still_receive_on_an_empty_registry(monkeypatch, fleet):
+    """Onboarding must keep working — a new box starts with nothing."""
+    _become(monkeypatch, fleet, "who-pc", "bbbb2222")
+    handoff.create_handoff(goal="seed the remote", agent="codex")
+    handoff_sync.sync(remote=fleet["remote"])
+
+    _become(monkeypatch, fleet, "newcomer", "cccc3333")
+    report = handoff_sync.sync(remote=fleet["remote"])
+    assert report["arrived"], report["errors"]
+    assert report["pushed"] is True, report["errors"]
+
+
+def test_sync_refuses_when_another_checkout_holds_the_records(monkeypatch, fleet, tmp_path):
+    """Module-derived HANDOFF_DIR vs the checkout you are standing in."""
+    directory = _become(monkeypatch, fleet, "who-pc", "bbbb2222")
+    monkeypatch.delenv("NOUGEN_HANDOFF_DIR", raising=False)
+
+    # A second checkout, holding the records the operator actually means.
+    other = tmp_path / "real-clone"
+    (other / ".handoffs" / "claude cli handoffs").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(other)], capture_output=True, check=True)
+    (other / ".handoffs" / "claude cli handoffs" / "handoff_x.json").write_text("{}")
+
+    monkeypatch.chdir(other)
+    monkeypatch.setattr(handoff, "PROJECT_ROOT", directory)
+    report = handoff_sync.sync(remote=fleet["remote"])
+    assert report["pushed"] is False
+    assert any("Registry mismatch" in e for e in report["errors"])
+
+
+def test_explicit_handoff_dir_is_always_honoured(monkeypatch, fleet, tmp_path):
+    """An operator who names the registry is not second-guessed."""
+    directory = _become(monkeypatch, fleet, "who-pc", "bbbb2222")
+    other = tmp_path / "real-clone"
+    (other / ".handoffs").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(other)], capture_output=True, check=True)
+    (other / ".handoffs" / "handoff_x.json").write_text("{}")
+
+    monkeypatch.chdir(other)
+    monkeypatch.setattr(handoff, "PROJECT_ROOT", directory)
+    monkeypatch.setenv("NOUGEN_HANDOFF_DIR", str(directory))
+    assert handoff.registry_conflict() is None
+
+
 def test_env_remote_is_written_into_the_repo(monkeypatch, fleet):
     """NOUGEN_HANDOFF_REMOTE must configure git, not just be reported back."""
     directory = _become(monkeypatch, fleet, "who-pc", "bbbb2222")

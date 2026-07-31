@@ -116,6 +116,58 @@ def _ensure_orchestration(data: Dict, receiver: str, timestamp: str) -> Dict:
     return orchestration
 
 
+def get_cwd_repo_root() -> Optional[Path]:
+    """The git root of the directory the command was actually run from."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return Path(result.stdout.strip())
+
+
+def registry_conflict() -> Optional[str]:
+    """Describe a registry the operator probably meant instead of this one.
+
+    HANDOFF_DIR is derived from where the *module* lives, not where the command
+    was run. Running the CLI from a worktree or a second clone therefore points
+    it at that copy's `.handoffs` — which is usually empty — while the records
+    the operator cares about sit in the checkout they are standing in. Syncing
+    the empty one reports success and publishes nothing, which is worse than an
+    error, so callers use this to refuse instead.
+
+    An explicit NOUGEN_HANDOFF_DIR is always honoured: the operator has said
+    which registry they mean.
+    """
+    if os.environ.get("NOUGEN_HANDOFF_DIR"):
+        return None
+    cwd_root = get_cwd_repo_root()
+    if not cwd_root:
+        return None
+    try:
+        if cwd_root.resolve() == PROJECT_ROOT.resolve():
+            return None
+    except OSError:
+        return None
+    candidate = cwd_root / ".handoffs"
+    if not candidate.exists():
+        return None
+    if not any(candidate.rglob("handoff_*.json")):
+        return None
+    return (
+        f"Registry mismatch: this CLI resolves handoffs to {HANDOFF_DIR}, but "
+        f"the checkout you are in has records at {candidate}. Set "
+        f"NOUGEN_HANDOFF_DIR to the one you mean."
+    )
+
+
 def get_handoff_db_path() -> Path:
     """Return the local SQLite index path for handoff records."""
     return HANDOFF_DIR / HANDOFF_DB_NAME
@@ -1293,6 +1345,11 @@ def list_machines(agent: Optional[str] = None) -> List[Dict]:
             continue
         record_host = machine.record_machine(data)
         machine_key = record_host.get("machine_id") or "unknown"
+        # Attribution follows the host name, not the id: fleet tooling that
+        # stamps only a name still names a machine. A record with neither is
+        # genuinely unattributed once records travel — claiming it as this
+        # box's own would let a bulk import from elsewhere read as local work.
+        identified = (record_host.get("host") or "unknown") != "unknown"
         # Keyed on the full identity, not the id alone: a relabelled box is a
         # distinct participant and must not be merged into one row.
         key = f"{machine_key}@{record_host.get('host', 'unknown')}"
@@ -1301,7 +1358,8 @@ def list_machines(agent: Optional[str] = None) -> List[Dict]:
             "host": record_host.get("host", "unknown"),
             "os": record_host.get("os", "unknown"),
             "arch": record_host.get("arch", "unknown"),
-            "is_self": machine.is_local_record(data),
+            "is_self": identified and machine.is_local_record(data),
+            "attributed": identified,
             "agents": set(),
             "handoffs": 0,
             "last_seen": data.get("timestamp"),
@@ -1344,7 +1402,12 @@ def show_machines(agent: Optional[str] = None) -> None:
     table.add_column("Open", style="yellow", justify="right")
     table.add_column("Last seen", style="magenta")
     for entry in machines:
-        label = entry["host"] + (" [dim](this box)[/dim]" if entry["is_self"] else "")
+        if not entry.get("attributed", True):
+            label = "[dim]unattributed (pre-identity)[/dim]"
+        else:
+            label = entry["host"] + (
+                " [dim](this box)[/dim]" if entry["is_self"] else ""
+            )
         last = (entry.get("last_seen") or "")[:16].replace("T", " ")
         table.add_row(
             label,

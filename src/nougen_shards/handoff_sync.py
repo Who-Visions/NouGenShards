@@ -181,6 +181,17 @@ def sync(
         "errors": [],
     }
 
+    # Publishing the wrong registry succeeds silently — it commits nothing,
+    # pushes nothing, and reports pushed=True. Refuse both ways it happens.
+    conflict = handoff.registry_conflict()
+    if conflict:
+        report["errors"].append(conflict)
+        return report
+    # An empty registry is legitimate on a machine joining the fleet — that is
+    # how a new box receives its first records. It is only suspect if nothing
+    # arrives either, which means this is the wrong directory.
+    had_records = bool(handoff.get_handoff_files())
+
     setup = init_sync(remote, directory, share_triggers)
     if setup.get("error"):
         report["errors"].append(setup["error"])
@@ -247,6 +258,13 @@ def sync(
             report["fired"] = _replay_arrivals(known_ids)
 
     if push:
+        if not had_records and not report["arrived"]:
+            report["errors"].append(
+                f"No handoff records in {directory}, and none arrived — refusing "
+                "to report a push of an empty registry. If your records live in "
+                "another checkout, set NOUGEN_HANDOFF_DIR to it."
+            )
+            return report
         # Nothing has ever been committed here — there is no HEAD to publish.
         code, _, _ = _git(["rev-parse", "--verify", "HEAD"], directory)
         if code != 0:
