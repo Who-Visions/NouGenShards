@@ -116,7 +116,7 @@ def _ensure_orchestration(data: Dict, receiver: str, timestamp: str) -> Dict:
     return orchestration
 
 
-def get_cwd_repo_root() -> Optional[Path]:
+def get_cwd_repo_root() -> Path | None:
     """The git root of the directory the command was actually run from."""
     try:
         result = subprocess.run(
@@ -133,7 +133,7 @@ def get_cwd_repo_root() -> Optional[Path]:
     return Path(result.stdout.strip())
 
 
-def registry_conflict() -> Optional[str]:
+def registry_conflict() -> str | None:
     """Describe a registry the operator probably meant instead of this one.
 
     HANDOFF_DIR is derived from where the *module* lives, not where the command
@@ -181,7 +181,7 @@ def _get_db_connection():
     return conn
 
 
-def _add_missing_columns(conn, table: str, columns: Dict[str, str]) -> None:
+def _add_missing_columns(conn, table: str, columns: dict[str, str]) -> None:
     """Add columns to an existing table, skipping the ones already there.
 
     Machine columns landed after databases existed in the wild; ALTER TABLE is
@@ -282,7 +282,7 @@ def init_handoff_db() -> None:
         conn.close()
 
 
-def _record_trigger_run(record: Dict) -> bool:
+def _record_trigger_run(record: dict) -> bool:
     """Persist one trigger execution so a remote fire is auditable after the fact."""
     try:
         init_handoff_db()
@@ -315,7 +315,7 @@ def _record_trigger_run(record: Dict) -> bool:
         return False
 
 
-def get_trigger_runs(limit: int = 20, trigger_id: Optional[str] = None) -> List[Dict]:
+def get_trigger_runs(limit: int = 20, trigger_id: str | None = None) -> list[dict]:
     """Most recent trigger executions, newest first."""
     try:
         init_handoff_db()
@@ -339,7 +339,7 @@ def get_trigger_runs(limit: int = 20, trigger_id: Optional[str] = None) -> List[
         return []
 
 
-def _fire_triggers(event: str, data: Dict, path: Path) -> List[Dict]:
+def _fire_triggers(event: str, data: dict, path: Path) -> list[dict]:
     """Hand a state change to the trigger engine.
 
     Wrapped so trigger failures can never take down a handoff write — the note
@@ -349,7 +349,7 @@ def _fire_triggers(event: str, data: Dict, path: Path) -> List[Dict]:
         from . import handoff_triggers
 
         return handoff_triggers.fire(event, data, path)
-    except Exception:
+    except Exception:  # noqa: BLE001 - the note is the durable artifact; no trigger failure may cost it
         return []
 
 
@@ -765,7 +765,7 @@ def create_handoff(
     return json_path
 
 
-def _print_trigger_results(console: Console, fired: List[Dict]) -> None:
+def _print_trigger_results(console: Console, fired: list[dict]) -> None:
     """Surface trigger activity inline — silent automation is unreviewable."""
     for record in fired:
         status = record.get("status")
@@ -1331,14 +1331,14 @@ def show_latest_handoff(agent: Optional[str] = None):
         console.print(f"[red]Error loading handoff details: {e}[/red]")
 
 
-def list_machines(agent: Optional[str] = None) -> List[Dict]:
+def list_machines(agent: str | None = None) -> list[dict]:
     """Summarize every computer that has written a handoff here.
 
     This is the fleet roster: which boxes participate, when each was last seen,
     and which agents run on them. Derived from the records themselves so it
     cannot drift out of sync with reality.
     """
-    seen: Dict[str, Dict] = {}
+    seen: dict[str, dict] = {}
     for path in get_handoff_files(agent):
         data = _read_handoff(path)
         if not data:
@@ -1381,7 +1381,7 @@ def list_machines(agent: Optional[str] = None) -> List[Dict]:
     return sorted(machines, key=lambda m: m.get("last_seen") or "", reverse=True)
 
 
-def show_machines(agent: Optional[str] = None) -> None:
+def show_machines(agent: str | None = None) -> None:
     console = _make_console()
     machines = list_machines(agent)
     identity = machine.machine_identity(repo_root=PROJECT_ROOT)

@@ -17,10 +17,10 @@ finished while it was asleep.
 """
 
 import os
+import sqlite3
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 from . import machine
 
@@ -49,7 +49,7 @@ def _handoff_module():
     return handoff
 
 
-def _git(args: List[str], cwd: Path, timeout: int = 60) -> Tuple[int, str, str]:
+def _git(args: list[str], cwd: Path, timeout: int = 60) -> tuple[int, str, str]:
     """Run one git command. Bounded, never raises."""
     try:
         proc = subprocess.run(
@@ -58,6 +58,7 @@ def _git(args: List[str], cwd: Path, timeout: int = 60) -> Tuple[int, str, str]:
             capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
         )
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
     except FileNotFoundError:
@@ -66,7 +67,7 @@ def _git(args: List[str], cwd: Path, timeout: int = 60) -> Tuple[int, str, str]:
         return 124, "", f"git {' '.join(args)} timed out"
 
 
-def get_remote(handoff_dir: Optional[Path] = None) -> Optional[str]:
+def get_remote(handoff_dir: Path | None = None) -> str | None:
     """Configured sync remote: NOUGEN_HANDOFF_REMOTE, else the repo's own origin."""
     explicit = (os.environ.get("NOUGEN_HANDOFF_REMOTE") or "").strip()
     if explicit:
@@ -92,14 +93,14 @@ def write_sync_ignore(handoff_dir: Path, share_triggers: bool = False) -> None:
 
 
 def init_sync(
-    remote: Optional[str] = None,
-    handoff_dir: Optional[Path] = None,
+    remote: str | None = None,
+    handoff_dir: Path | None = None,
     share_triggers: bool = False,
-) -> Dict:
+) -> dict:
     """Make the handoff directory a git repo pointed at a remote."""
     directory = handoff_dir or _handoff_module().HANDOFF_DIR
     directory.mkdir(parents=True, exist_ok=True)
-    result: Dict = {"dir": str(directory), "created": False, "remote": None}
+    result: dict = {"dir": str(directory), "created": False, "remote": None}
 
     if not (directory / ".git").exists():
         code, _, err = _git(["init", "-b", SYNC_BRANCH], directory)
@@ -137,15 +138,17 @@ def _known_handoff_ids() -> set:
                 ids.add(row["handoff_id"])
         finally:
             conn.close()
-    except Exception:
+    except (OSError, sqlite3.Error):
+        # A missing or locked index just means nothing is known yet; the
+        # arrival comparison degrades to "everything is new", never to a crash.
         pass
     return ids
 
 
-def _replay_arrivals(known_ids: set) -> List[Dict]:
+def _replay_arrivals(known_ids: set) -> list[dict]:
     """Fire `created` triggers for records that just arrived from another box."""
     handoff = _handoff_module()
-    fired: List[Dict] = []
+    fired: list[dict] = []
     for path in handoff.get_handoff_files():
         data = handoff._read_handoff(path)
         if not data:
@@ -161,16 +164,16 @@ def _replay_arrivals(known_ids: set) -> List[Dict]:
 
 
 def sync(
-    remote: Optional[str] = None,
+    remote: str | None = None,
     push: bool = True,
     pull: bool = True,
     share_triggers: bool = False,
     replay: bool = True,
-) -> Dict:
+) -> dict:
     """Commit local handoffs, exchange them with the remote, react to arrivals."""
     handoff = _handoff_module()
     directory = handoff.HANDOFF_DIR
-    report: Dict = {
+    report: dict = {
         "dir": str(directory),
         "host": machine.host_label(),
         "committed": False,
@@ -202,7 +205,7 @@ def sync(
     _git(["add", "-A"], directory)
     code, out, _ = _git(["status", "--porcelain"], directory)
     if out:
-        stamp = datetime.now().isoformat(timespec="seconds")
+        stamp = datetime.now().isoformat(timespec="seconds")  # noqa: DTZ005 - matches the naive stamps on handoff records
         code, _, err = _git(
             [
                 "-c", f"user.name=nougen-{machine.host_label()}",

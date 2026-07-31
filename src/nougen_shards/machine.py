@@ -18,10 +18,9 @@ import platform
 import socket
 import sys
 from functools import lru_cache
-from typing import Dict, Optional
 
 
-def _env(name: str) -> Optional[str]:
+def _env(name: str) -> str | None:
     value = (os.environ.get(name) or "").strip()
     return value or None
 
@@ -82,9 +81,9 @@ def machine_id() -> str:
     return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:12]
 
 
-def machine_identity(repo_root: Optional[object] = None) -> Dict[str, str]:
+def machine_identity(repo_root: object | None = None) -> dict[str, str]:
     """Return the identity block stamped onto handoff records and checkpoints."""
-    identity: Dict[str, str] = {
+    identity: dict[str, str] = {
         "machine_id": machine_id(),
         "host": host_label(),
         "hostname": hostname(),
@@ -96,19 +95,21 @@ def machine_identity(repo_root: Optional[object] = None) -> Dict[str, str]:
     if not _private_mode():
         try:
             identity["user"] = getpass.getuser()
-        except Exception:
+        except (OSError, KeyError):
+            # No passwd entry or no controlling terminal: the name is a nicety,
+            # not something worth failing a handoff over.
             pass
         if repo_root is not None:
             identity["repo_root"] = str(repo_root)
     return identity
 
 
-def machine_stamp() -> Dict[str, str]:
+def machine_stamp() -> dict[str, str]:
     """Compact stamp for per-event records (checkpoints, acks, trigger runs)."""
     return {"host": host_label(), "machine_id": machine_id()}
 
 
-def record_machine(data: Optional[Dict]) -> Dict[str, str]:
+def record_machine(data: dict | None) -> dict[str, str]:
     """Extract the identity block from a handoff record, tolerating old records.
 
     Handoffs written before machine stamping exist on disk and must keep
@@ -127,7 +128,7 @@ def record_machine(data: Optional[Dict]) -> Dict[str, str]:
     return {"host": "unknown", "machine_id": "unknown"}
 
 
-def is_local_record(data: Optional[Dict]) -> bool:
+def is_local_record(data: dict | None) -> bool:
     """True when the record was written by the computer running right now.
 
     Both halves of the identity have to agree. The id alone is not enough: two
@@ -149,12 +150,11 @@ def is_local_record(data: Optional[Dict]) -> bool:
         return True
     if recorded_id != machine_id():
         return False
-    recorded_host = machine.get("host")
     if recorded_host and recorded_host != "unknown":
         return recorded_host == host_label()
     return True
 
 
-def record_origin(data: Optional[Dict]) -> str:
+def record_origin(data: dict | None) -> str:
     """'local' or 'remote', the axis triggers match on."""
     return "local" if is_local_record(data) else "remote"

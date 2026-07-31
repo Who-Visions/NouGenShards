@@ -21,7 +21,6 @@ import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
 
 from . import machine
 
@@ -61,7 +60,7 @@ def trigger_mode() -> str:
     return "on"
 
 
-def load_triggers() -> List[Dict]:
+def load_triggers() -> list[dict]:
     path = get_trigger_file()
     if not path.exists():
         return []
@@ -73,7 +72,7 @@ def load_triggers() -> List[Dict]:
     return [t for t in (triggers or []) if isinstance(t, dict)]
 
 
-def save_triggers(triggers: List[Dict]) -> Path:
+def save_triggers(triggers: list[dict]) -> Path:
     path = get_trigger_file()
     _handoff_module()._atomic_write_json(path, {"version": 1, "triggers": triggers})
     return path
@@ -82,18 +81,18 @@ def save_triggers(triggers: List[Dict]) -> Path:
 def add_trigger(
     trigger_id: str,
     run: str,
-    events: Optional[List[str]] = None,
+    events: list[str] | None = None,
     origin: str = "any",
-    agent: Optional[str] = None,
-    host: Optional[str] = None,
-    branch: Optional[str] = None,
-    goal_contains: Optional[str] = None,
-    on_machine: Optional[str] = None,
+    agent: str | None = None,
+    host: str | None = None,
+    branch: str | None = None,
+    goal_contains: str | None = None,
+    on_machine: str | None = None,
     background: bool = False,
     timeout: int = DEFAULT_TIMEOUT,
     description: str = "",
     enabled: bool = True,
-) -> Dict:
+) -> dict:
     """Register (or replace) a trigger. Replacing by id keeps the file idempotent."""
     events = [e.strip().lower() for e in (events or ["created"]) if e.strip()]
     unknown = [e for e in events if e not in TRIGGER_EVENTS]
@@ -153,7 +152,7 @@ def set_trigger_enabled(trigger_id: str, enabled: bool) -> bool:
     return found
 
 
-def matches(trigger: Dict, event: str, data: Dict) -> bool:
+def matches(trigger: dict, event: str, data: dict) -> bool:
     """Decide whether one rule applies to one handoff event."""
     if not trigger.get("enabled", True):
         return False
@@ -187,13 +186,13 @@ def matches(trigger: Dict, event: str, data: Dict) -> bool:
         return False
 
     needle = match.get("goal_contains")
-    if needle and needle.lower() not in (data.get("goal") or "").lower():
+    if needle and needle.lower() not in (data.get("goal") or "").lower():  # noqa: SIM103 - one guard clause per filter reads better than a negated return
         return False
 
     return True
 
 
-def build_env(event: str, data: Dict, path: Path) -> Dict[str, str]:
+def build_env(event: str, data: dict, path: Path) -> dict[str, str]:
     """The contract a trigger command sees.
 
     Everything a remote-work script needs (which handoff, from which box, on
@@ -220,15 +219,15 @@ def build_env(event: str, data: Dict, path: Path) -> Dict[str, str]:
     return env
 
 
-def _tail(text: Optional[str]) -> str:
+def _tail(text: str | None) -> str:
     if not text:
         return ""
     return text[-_OUTPUT_TAIL:]
 
 
-def _execute(trigger: Dict, event: str, data: Dict, path: Path, mode: str) -> Dict:
+def _execute(trigger: dict, event: str, data: dict, path: Path, mode: str) -> dict:
     """Run one trigger. Never raises — a broken rule must not lose a handoff."""
-    started = datetime.now().isoformat()
+    started = datetime.now().isoformat()  # noqa: DTZ005 - matches the naive stamps on handoff records
     run_record = {
         "trigger_id": trigger.get("id"),
         "handoff_id": data.get("handoff_id") or path.stem,
@@ -270,6 +269,7 @@ def _execute(trigger: Dict, event: str, data: Dict, path: Path, mode: str) -> Di
                 capture_output=True,
                 text=True,
                 timeout=int(trigger.get("timeout") or DEFAULT_TIMEOUT),
+                check=False,
             )
             run_record["exit_code"] = completed.returncode
             run_record["stdout"] = _tail(completed.stdout)
@@ -277,23 +277,23 @@ def _execute(trigger: Dict, event: str, data: Dict, path: Path, mode: str) -> Di
             run_record["status"] = "ok" if completed.returncode == 0 else "failed"
     except subprocess.TimeoutExpired:
         run_record["status"] = "timeout"
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:  # noqa: BLE001 - a trigger may fail any way at all; the handoff must survive it
         run_record["status"] = "error"
         run_record["stderr"] = str(exc)[-_OUTPUT_TAIL:]
     return run_record
 
 
-def fire(event: str, data: Dict, path: Path) -> List[Dict]:
+def fire(event: str, data: dict, path: Path) -> list[dict]:
     """Evaluate every rule against one handoff event and run the matches."""
     mode = trigger_mode()
     if mode == "off":
         return []
-    results: List[Dict] = []
+    results: list[dict] = []
     for trigger in load_triggers():
         try:
             if not matches(trigger, event, data):
                 continue
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - one malformed rule must not stop the others
             continue
         record = _execute(trigger, event, data, path, mode)
         results.append(record)
@@ -301,5 +301,5 @@ def fire(event: str, data: Dict, path: Path) -> List[Dict]:
     return results
 
 
-def recent_runs(limit: int = 20, trigger_id: Optional[str] = None) -> List[Dict]:
+def recent_runs(limit: int = 20, trigger_id: str | None = None) -> list[dict]:
     return _handoff_module().get_trigger_runs(limit=limit, trigger_id=trigger_id)

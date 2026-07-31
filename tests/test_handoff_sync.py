@@ -11,14 +11,20 @@ from pathlib import Path
 
 import pytest
 
-from nougen_shards import handoff, handoff_sync, handoff_triggers, machine, nougen_context
+from nougen_shards import (
+    handoff,
+    handoff_sync,
+    handoff_triggers,
+    machine,
+    nougen_context,
+)
 
 
 def _git_available() -> bool:
     try:
-        subprocess.run(["git", "--version"], capture_output=True, timeout=10)
+        subprocess.run(["git", "--version"], capture_output=True, timeout=10, check=False)
         return True
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return False
 
 
@@ -217,7 +223,7 @@ def test_env_remote_is_written_into_the_repo(monkeypatch, fleet):
     assert report["pushed"] is True, report["errors"]
     configured = subprocess.run(
         ["git", "remote", "get-url", "origin"],
-        cwd=str(directory), capture_output=True, text=True,
+        cwd=str(directory), capture_output=True, text=True, check=False,
     ).stdout.strip()
     assert configured == fleet["remote"]
 
@@ -236,7 +242,8 @@ def test_index_and_registry_stay_local(monkeypatch, fleet):
     handoff.create_handoff(goal="ignore check", agent="codex")
     handoff_sync.sync(remote=fleet["remote"])
     tracked = subprocess.run(
-        ["git", "ls-files"], cwd=str(directory), capture_output=True, text=True
+        ["git", "ls-files"], cwd=str(directory), capture_output=True, text=True,
+        check=False,
     ).stdout.splitlines()
     assert "handoffs.db" not in tracked
     assert "triggers.json" not in tracked
