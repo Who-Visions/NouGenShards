@@ -88,6 +88,20 @@ def test_pre_machine_records_still_read(monkeypatch):
     assert machine.record_origin(legacy) == "local"
 
 
+def test_bare_string_machine_field_is_read_as_a_host(monkeypatch):
+    """Other fleet tooling stamps `"machine": "whoart"` — keep the name."""
+    _as_machine(monkeypatch, "phoebus", "aaaa1111")
+    record = {"handoff_id": "x", "agent": "claude-cli", "machine": "whoart"}
+    assert machine.record_machine(record)["host"] == "whoart"
+    assert machine.record_machine(record)["machine_id"] == "unknown"
+    # A named host is enough to place it elsewhere — otherwise remote-origin
+    # triggers would never fire for records from that tooling.
+    assert machine.record_origin(record) == "remote"
+    assert machine.record_origin({**record, "machine": "phoebus"}) == "local"
+    # A record with no machine field at all predates stamping: still local.
+    assert machine.record_origin({"handoff_id": "old"}) == "local"
+
+
 def test_ack_records_the_acknowledging_machine(monkeypatch):
     _as_machine(monkeypatch, "who-mac-mini", "aaaa1111")
     path = handoff.create_handoff(message="hand over", agent="claude-cli")

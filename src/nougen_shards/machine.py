@@ -118,6 +118,12 @@ def record_machine(data: Optional[Dict]) -> Dict[str, str]:
     machine = (data or {}).get("machine")
     if isinstance(machine, dict):
         return machine
+    # Other tooling in the fleet stamps the machine as a bare host string.
+    # That is unambiguous — take it as the host rather than discarding a name
+    # the writer clearly meant, and leave the id unknown so identity
+    # comparisons stay conservative.
+    if isinstance(machine, str) and machine.strip():
+        return {"host": machine.strip(), "machine_id": "unknown"}
     return {"host": "unknown", "machine_id": "unknown"}
 
 
@@ -133,7 +139,13 @@ def is_local_record(data: Optional[Dict]) -> bool:
     """
     machine = record_machine(data)
     recorded_id = machine.get("machine_id")
+    recorded_host = machine.get("host")
     if not recorded_id or recorded_id == "unknown":
+        # No id to compare. A named host is still an answer — records from
+        # tooling that stamps only the name must not pass as locally written,
+        # or remote-origin triggers would never fire for them.
+        if recorded_host and recorded_host != "unknown":
+            return recorded_host == host_label()
         return True
     if recorded_id != machine_id():
         return False
