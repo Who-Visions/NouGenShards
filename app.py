@@ -22,7 +22,7 @@ if os.environ.get("SPACE_ID"):
     os.environ["NOUGEN_HOME"] = "/data"
     os.environ["NOUGEN_VAULT_DIR"] = "/data/.vault"
 
-from nougen_shards import core, history
+from nougen_shards import bind_probe, core, history
 from nougen_shards.brain_scan import scan_environment
 
 NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN")
@@ -457,9 +457,9 @@ app.mount("/mcp", _TokenGatedMCP(_mcp_asgi))
 # Resolve the bind host the same way __main__ does, at import time, so the
 # fail-closed guard below also protects ASGI servers that import `app` directly
 # (uvicorn app:app, gunicorn, HF Spaces) where the __main__ block never runs.
-_default_host = "0.0.0.0" if os.environ.get("SPACE_ID") else "127.0.0.1"
-_bind_host = os.environ.get("NGS_HOST", _default_host)
-_network_exposed = _bind_host not in ("127.0.0.1", "localhost", "::1")
+_on_platform = bind_probe.on_managed_platform()
+_bind_host = bind_probe.normalize_host(bind_probe.probed_bind_host()) or "127.0.0.1"
+_network_exposed = bind_probe.is_network_exposed()
 
 # Fail closed on the HUD WITHOUT taking the process down. On a network-reachable
 # host with no HUD credentials, skip mounting the unauthenticated vault UI (search
@@ -471,7 +471,8 @@ if _hud_auth or not _network_exposed:
 else:
     print(
         "[WARN] Cortex HUD not mounted: host is network-exposed "
-        f"(NGS_HOST={_bind_host}) and NGS_HUD_USER/NGS_HUD_PASSWORD are unset. "
+        f"(bind={_bind_host}, managed_platform={_on_platform}) and "
+        "NGS_HUD_USER/NGS_HUD_PASSWORD are unset. "
         "The /mcp endpoint and REST API remain available; set both env vars to "
         "serve the vault UI.",
         file=sys.stderr,
