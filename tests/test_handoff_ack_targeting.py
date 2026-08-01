@@ -122,3 +122,102 @@ def test_reported_version_matches_the_packaged_one():
 
     assert nougen_shards.__version__ == declared
     assert cli.VERSION == declared, "the CLI must not carry its own copy"
+
+
+# --- machine identity: one box, two names ---------------------------------
+
+def test_a_record_from_this_box_under_another_name_is_not_remote(monkeypatch):
+    """The bug: a record written on this Mac sixty seconds earlier was
+    announced as 'REMOTE — written elsewhere' because NOUGEN_MACHINE was set in
+    the writing shell and not the reading one."""
+    from nougen_shards import machine as M
+
+    record = {"machine": {"machine_id": M.machine_id(), "host": "phoebus"}}
+    monkeypatch.setattr(M, "host_label", lambda: "KushBoyGroups-Mac-mini")
+
+    assert M.is_local_record(record) is True
+    assert M.record_origin(record) == "local"
+
+
+def test_the_alias_is_still_surfaced_as_a_warning(monkeypatch):
+    """Not remote, but not silent either — one box counted twice is how a
+    fleet total quietly doubles."""
+    from nougen_shards import machine as M
+
+    record = {"machine": {"machine_id": M.machine_id(), "host": "phoebus"}}
+    monkeypatch.setattr(M, "host_label", lambda: "KushBoyGroups-Mac-mini")
+
+    warning = M.record_alias_warning(record)
+    assert warning and "phoebus" in warning and "NOUGEN_MACHINE" in warning
+
+
+def test_a_genuinely_foreign_record_is_still_remote():
+    from nougen_shards import machine as M
+
+    record = {"machine": {"machine_id": "ffffffffffff", "host": "blade1tb"}}
+    assert M.is_local_record(record) is False
+    assert M.record_origin(record) == "remote"
+    assert M.record_alias_warning(record) is None
+
+
+def test_matching_name_and_id_produces_no_warning():
+    from nougen_shards import machine as M
+
+    record = {"machine": {"machine_id": M.machine_id(), "host": M.host_label()}}
+    assert M.record_alias_warning(record) is None
+
+
+# --- ack: not your own ----------------------------------------------------
+
+def test_bare_ack_refuses_to_claim_your_own_handoff(registry, monkeypatch):
+    """An ack is a read-back — it tells the fleet someone ELSE picked the work
+    up. Self-acking leaves a state indistinguishable from a real claim."""
+    from nougen_shards import machine as M
+
+    monkeypatch.setenv("NOUGEN_AGENT", "claude-cli")
+    _write(registry, "mine", "2026-08-01T00:10:00", agent="claude-cli",
+           machine={"machine_id": M.machine_id(), "host": M.host_label()})
+
+    assert H.acknowledge_handoff() is None
+    assert json.loads((registry / "handoff_mine.json").read_text())["status"] == "open"
+
+
+def test_explicit_id_can_still_ack_your_own(registry, monkeypatch):
+    from nougen_shards import machine as M
+
+    monkeypatch.setenv("NOUGEN_AGENT", "claude-cli")
+    _write(registry, "mine", "2026-08-01T00:10:00", agent="claude-cli",
+           machine={"machine_id": M.machine_id(), "host": M.host_label()})
+
+    assert H.acknowledge_handoff(handoff_id="mine") is not None
+
+
+def test_another_agents_handoff_is_still_claimed_by_a_bare_ack(registry, monkeypatch):
+    """The common case must not regress: picking up someone else's leg."""
+    from nougen_shards import machine as M
+
+    monkeypatch.setenv("NOUGEN_AGENT", "claude-cli")
+    _write(registry, "theirs", "2026-08-01T00:10:00", agent="gemini",
+           machine={"machine_id": M.machine_id(), "host": M.host_label()})
+
+    assert H.acknowledge_handoff() is not None
+    assert json.loads((registry / "handoff_theirs.json").read_text())["status"] == "acknowledged"
+
+
+def test_same_agent_on_a_different_machine_is_still_claimable(registry, monkeypatch):
+    """Two boxes both running claude-cli are different participants."""
+    monkeypatch.setenv("NOUGEN_AGENT", "claude-cli")
+    _write(registry, "remote", "2026-08-01T00:10:00", agent="claude-cli",
+           machine={"machine_id": "ffffffffffff", "host": "blade1tb"})
+
+    assert H.acknowledge_handoff() is not None
+
+
+def test_an_unstamped_handoff_is_claimable_even_from_the_same_agent(registry, monkeypatch):
+    """Records predating machine stamping carry nothing to compare. Refusing on
+    a guess would make every one of them unclaimable by an agent of the same
+    name — refuse when we know, not when we cannot tell."""
+    monkeypatch.setenv("NOUGEN_AGENT", "claude-cli")
+    _write(registry, "ancient", "2026-01-01T00:00:00", agent="claude-cli")
+
+    assert H.acknowledge_handoff() is not None

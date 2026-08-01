@@ -148,11 +148,47 @@ def is_local_record(data: dict | None) -> bool:
         if recorded_host and recorded_host != "unknown":
             return recorded_host == host_label()
         return True
+    # The id settles it. A differing label on a matching id means one computer
+    # answering to two names, which is an aliasing problem — not evidence the
+    # record came from somewhere else.
+    #
+    # The label used to override the id here, and the result was a record
+    # written on this Mac sixty seconds earlier being announced as "REMOTE —
+    # written elsewhere, you are on KushBoyGroups-Mac-mini". It was written on
+    # KushBoyGroups-Mac-mini. NOUGEN_MACHINE=phoebus had been set in the writing
+    # shell and not the reading one, so two names for one box read as two boxes.
+    #
+    # That mattered beyond the display: remote-origin triggers fired for this
+    # machine's own records, and an operator reading "written elsewhere" has no
+    # reason to doubt it. Aliasing is still worth surfacing — see
+    # record_alias_warning — but it is a warning, not a location.
+    return recorded_id == machine_id()
+
+
+def record_alias_warning(data: dict | None) -> str | None:
+    """Flag one computer answering to two names. None when there is nothing odd.
+
+    Fires when a record's machine_id matches this box but its host label does
+    not: same hardware, different name. `who-mac-mini`, `phoebus` and
+    `kushboygroups-mac-mini-local` have all meant this Mac, and a fleet that
+    treats them as three participants counts one box three times.
+    """
+    machine = record_machine(data)
+    recorded_id = machine.get("machine_id")
+    recorded_host = machine.get("host")
+    if not recorded_id or recorded_id == "unknown":
+        return None
     if recorded_id != machine_id():
-        return False
-    if recorded_host and recorded_host != "unknown":
-        return recorded_host == host_label()
-    return True
+        return None
+    if not recorded_host or recorded_host == "unknown":
+        return None
+    if recorded_host == host_label():
+        return None
+    return (
+        f"written on this computer under the name '{recorded_host}', "
+        f"which is currently answering to '{host_label()}'. "
+        f"Set NOUGEN_MACHINE={recorded_host} to keep one identity."
+    )
 
 
 def record_origin(data: dict | None) -> str:

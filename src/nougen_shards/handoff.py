@@ -1038,6 +1038,39 @@ def acknowledge_handoff(
             console.print("[yellow]All handoffs are already acknowledged.[/yellow]")
         return None
 
+    # An acknowledgement is a read-back: it tells the fleet someone OTHER than
+    # the author has picked the work up. Acking your own record asserts that
+    # about yourself, and the state it leaves behind is indistinguishable from
+    # a real claim — the next machine to look sees a handoff that has been
+    # taken, and moves on.
+    #
+    # Caught by doing it: reading a leg back to check it had synced, running a
+    # bare `ack` to test the targeting fix, and silently claiming the message
+    # that had just been written for another box. Refusing costs a flag when
+    # someone genuinely means it; not refusing costs a handoff nobody delivers.
+    if not handoff_id:
+        candidate = _read_handoff(target_path) or {}
+        author = (candidate.get("agent") or "").lower()
+        receiver_now = (os.environ.get("NOUGEN_AGENT") or detect_current_agent()).lower()
+        # Positive proof only: the record must carry an id equal to this box's.
+        # is_local_record() treats an unstamped record as local — the right
+        # default for triggers, wrong here, because it would make every
+        # pre-stamping handoff written by an agent of the same name unclaimable.
+        # Refuse when we know, not when we cannot tell.
+        recorded_id = machine.record_machine(candidate).get("machine_id")
+        same_box = bool(recorded_id) and recorded_id == machine.machine_id()
+        if author and author == receiver_now and same_box:
+            console.print(
+                f"[yellow]The newest open handoff was written by this agent on "
+                f"this machine ({author} @ {machine.host_label()}).[/yellow]"
+            )
+            console.print(
+                "[dim]Acknowledging your own handoff would mark it claimed for "
+                "everyone else. If you mean it, name it:[/dim]\n"
+                f"    nougen handoff ack --id {candidate.get('handoff_id', '<id>')}"
+            )
+            return None
+
     receiver = (os.environ.get("NOUGEN_AGENT") or detect_current_agent()).lower()
     stamp = machine.machine_stamp()
     try:
@@ -1307,6 +1340,13 @@ def show_latest_handoff(agent: Optional[str] = None):
                 f" [magenta]⇢ REMOTE — written elsewhere, "
                 f"you are on {machine.host_label()}[/magenta]"
             )
+        else:
+            # Same box under another name. Worth saying — one computer counted
+            # as two is how a fleet total quietly doubles — but it is not a
+            # claim about where the record came from.
+            alias = machine.record_alias_warning(data)
+            if alias:
+                machine_line += f" [yellow]⇢ {alias}[/yellow]"
         machine_line += "\n"
 
         # Format handoff details into rich panels
