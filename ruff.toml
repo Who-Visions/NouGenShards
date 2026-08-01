@@ -1,5 +1,19 @@
 [lint]
 # Correctness-focused: pyflakes (F) + pycodestyle errors (E) with carve-outs.
+#
+# `select` is stated explicitly rather than left to ruff's defaults. CI installs
+# ruff unpinned, so relying on the default rule set meant the enforced ruleset
+# could change under us without a commit: a tool-side default shift lit up 476
+# findings (pyupgrade, isort, pylint, refurb, bugbear, simplify) across code
+# nobody had touched, and main went red on its own. The carve-outs below only
+# ever made sense against E+F, so this makes the config match its documented
+# intent and pins the contract to the repo instead of the tool version.
+#
+# This is ruff's own documented default set — the behaviour the repo was
+# already relying on — now written down. Note it is E4/E7/E9, NOT bare "E":
+# bare "E" pulls in E5, whose E501 line-length rule fires 433 times here and is
+# style, not correctness.
+select = ["E4", "E7", "E9", "F"]
 ignore = [
     # Intentional setup-before-import patterns: openrouter_mcp_client.py and
     # router.py inject the Watchtower vault path into sys.path before

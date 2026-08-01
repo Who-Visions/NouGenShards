@@ -107,8 +107,13 @@ prefer the header everywhere a client supports it, and rotate
 
 The Gradio **Cortex HUD** — search, recon, substrate maps, and full vault
 transcript dumps — is served at `/` and is **not** behind the node write-token.
-On a network-reachable deploy (a Space, or any `NGS_HOST=0.0.0.0` bind) it is
-therefore **fail-closed: not mounted at all unless you configure a login.**
+On a network-reachable deploy it is therefore **fail-closed: not mounted at all
+unless you configure a login.**
+
+Reachability is derived from the **actual bind** — the `--host`/`--bind` the
+server was started with, then `UVICORN_HOST` — plus any hosting-platform marker
+(`SPACE_ID`, `K_SERVICE`, `FLY_APP_NAME`, …). A Space is always treated as
+reachable. Anything not provably loopback is treated as reachable.
 
 - Set **both** `NGS_HUD_USER` and `NGS_HUD_PASSWORD` (Space *Settings →
   Variables and secrets → New secret*) to serve the HUD with basic-auth.
@@ -116,8 +121,13 @@ therefore **fail-closed: not mounted at all unless you configure a login.**
   token-gated `/mcp` endpoint and the REST API (`/health`, `/search`,
   `/capture`, …) **still boot and serve normally.** The node never crashes over
   a missing HUD login; it just doesn't expose the unauthenticated vault UI.
-- Loopback binds (`NGS_HOST=127.0.0.1`, the local-dev default) mount the HUD
-  without a login for convenience.
+- A genuine loopback bind (`--host 127.0.0.1`, the local-dev default, with no
+  platform marker set) mounts the HUD without a login for convenience.
+- `NGS_HOST` is **advisory only** and cannot unlock the HUD on a reachable
+  host. It does not control the bind — the shipped `CMD` is
+  `uvicorn app:app --host 0.0.0.0` — so setting `NGS_HOST=127.0.0.1` on a Space
+  changes nothing about who can reach the port, and is ignored for this
+  decision.
 
 `hud_auth_configured` in the `/health` readiness report tells you which mode a
 running node is in.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nougen_shards"
-version = "1.1.0"
+version = "1.2.0"
 authors = [
   { name="Who Visions LLC", email="contact@whovisions.com" },
 ]
@@ -19,7 +19,13 @@ classifiers = [
 dependencies = [
     # Lower bounds pin the major versions the code targets, keeping `pip install .`
     # reproducible without over-constraining patch/minor upgrades. See CHANGELOG.
-    "mcp>=1.0",
+    # Upper bound is load-bearing, not caution: mcp 2.0.0 moved
+    # `mcp.server.fastmcp`, which app.py and nougen_shards/mcp.py both import.
+    # Unbounded, a fresh install resolves to 2.x and the node fails at import —
+    # CI went red on it with no commit behind the change, and the next Space
+    # rebuild would have shipped a container that cannot boot. Migrating to the
+    # 2.x API is deliberate work, not something a `pip install` should decide.
+    "mcp>=1.0,<2.0",
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "sqlalchemy>=2.0",       # connectors/sql.py uses the 2.0 API (make_url, text)
