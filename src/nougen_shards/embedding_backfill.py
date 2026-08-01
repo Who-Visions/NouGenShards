@@ -258,6 +258,144 @@ def _flush(conn, batch, has_ver, retries=15):
             raise
 
 
+def pending_tag() -> str:
+    """The marker capture() stamps on a shard it could not embed.
+
+    Resolved env -> core -> logged constant (Rule 0.2) so this repair lane and
+    the ingest lane can never disagree about what "pending" is spelled as.
+    """
+    raw = os.environ.get("NOUGEN_EMBED_PENDING_TAG")
+    if raw:
+        return raw
+    try:
+        from .core import EMBED_PENDING_TAG as raw  # canonical source
+        return raw
+    except Exception:
+        return "embedding:pending"  # logged fallback ONLY
+
+
+def _ingest_parity_text(title: str, content: str) -> str:
+    """The SAME text capture() embeds: canonical_content(content), truncated.
+
+    NOT title+content like the bulk sweep — a repair of rows the ingest lane
+    dropped must reproduce the ingest recipe, or the repaired vector lands in a
+    different place in the space than an identical shard captured today.
+    """
+    try:
+        from .core import canonical_content, EMBED_MAX_CHARS
+        return canonical_content(content or "")[:EMBED_MAX_CHARS]
+    except Exception:
+        cap = int(os.environ.get("NOUGEN_EMBED_MAX_CHARS", "8000"))
+        return ((title or "") + "\n" + (content or ""))[:cap]
+
+
+def _unit_blob(vec: List[float]):
+    """float32 BLOB, L2-normalized — byte-identical to what capture() stores."""
+    import numpy as np
+    arr = np.asarray(vec, dtype=np.float32)
+    norm = float(np.linalg.norm(arr))
+    if norm > 0:
+        arr = arr / norm
+    return sqlite3.Binary(arr.tobytes())
+
+
+def _is_healthy_vector(blob, expected_dim: Optional[int] = None) -> bool:
+    """True when an existing embedding is already what capture() would write."""
+    if not blob:
+        return False
+    try:
+        import numpy as np
+        arr = np.frombuffer(blob, dtype=np.float32)
+    except Exception:
+        return False
+    if arr.size == 0 or (expected_dim and arr.size != expected_dim):
+        return False
+    tol = float(os.environ.get("NOUGEN_EMBED_NORM_TOL", "1e-3"))
+    import numpy as np
+    return abs(float(np.linalg.norm(arr)) - 1.0) <= tol
+
+
+def _write_row(conn, blob, tags_json: str, rid: int, retries: int = 15) -> None:
+    """Embedding + tags for ONE row, atomically. Touches no other column —
+    content/title/timestamp/file_hash are never in this UPDATE."""
+    for attempt in range(retries):
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if blob is None:
+                conn.execute("UPDATE shards SET tags=? WHERE id=?", (tags_json, rid))
+            else:
+                conn.execute("UPDATE shards SET embedding=?, tags=? WHERE id=?",
+                             (blob, tags_json, rid))
+            conn.execute("COMMIT")
+            return
+        except sqlite3.OperationalError as e:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            if "locked" in str(e).lower() and attempt < retries - 1:
+                time.sleep(2 * (1.5 ** attempt))
+                continue
+            raise
+
+
+def backfill_pending_tagged(vault_dir: str, model: Optional[str] = None,
+                            execute: bool = False, timeout: int = 60) -> List[dict]:
+    """Repair ONLY the rows capture() marked `embedding:pending`.
+
+    Deliberately scoped by the marker, never by `embedding IS NULL`: the NULL
+    population also contains the forward-only arXiv backlog, which is a
+    separately-authorised GPU campaign (see backfill_exclude_globs). A row is
+    touched here only because the ingest lane admitted it failed on that row.
+
+    On success the marker is cleared. On ANY failure the marker stays, so the
+    row remains visible to the drift detector instead of going quietly dark.
+    """
+    tag = pending_tag()
+    model = resolve_embed_model(model)
+    results: List[dict] = []
+    for db in _vault_dbs(vault_dir):
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("PRAGMA busy_timeout=30000;")
+            rows = conn.execute(
+                "SELECT id, title, content, tags, embedding FROM shards WHERE tags LIKE ?",
+                (f"%{tag}%",)).fetchall()
+            for rid, title, content, tags_raw, blob in rows:
+                try:
+                    tag_list = json.loads(tags_raw) if tags_raw else []
+                except Exception:
+                    tag_list = []
+                if tag not in tag_list:
+                    continue  # LIKE is a prefilter; membership is the real test
+                rec = {"db": os.path.basename(db), "id": rid, "action": None}
+                if content is None or not str(content).strip():
+                    rec["action"] = "skipped_no_content"  # never fabricate a vector
+                    results.append(rec)
+                    continue
+                if _is_healthy_vector(blob):
+                    rec.update(action="tag_only_already_embedded")
+                else:
+                    vec = embed(_ingest_parity_text(title, content), model, timeout=timeout)
+                    if not vec:
+                        rec["action"] = "failed_embed_tag_retained"
+                        results.append(rec)
+                        continue
+                    rec.update(action="embedded", dim=len(vec))
+                    blob = _unit_blob(vec)
+                if not execute:
+                    rec["action"] = "dry_run_" + rec["action"]
+                    results.append(rec)
+                    continue
+                remaining = json.dumps([t for t in tag_list if t != tag])
+                _write_row(conn, None if rec["action"] == "tag_only_already_embedded" else blob,
+                           remaining, rid)
+                results.append(rec)
+        finally:
+            conn.close()
+    return results
+
+
 def _main(argv=None):
     import argparse, sys
     try:

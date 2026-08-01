@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -955,6 +956,36 @@ WEIGHT_LIKE_PRIOR = _env_float("NOUGEN_RECALL_WEIGHT_LIKE_PRIOR", 0.5)
 # first-party hit across stores, so it is now named and tunable.
 RRF_PRIOR_BASE = _env_float("NOUGEN_RRF_PRIOR_BASE", 0.7)
 RRF_PRIOR_SPAN = _env_float("NOUGEN_RRF_PRIOR_SPAN", 0.3)
+# Default recall scope. `domain_key` is derived from the CURRENT WORKING
+# DIRECTORY, so defaulting recall to it silently partitioned the vault into
+# cwd-shaped buckets: measured 2026-07-28, nougen_shards_4.db held 8,922 shards
+# under 'NouGen/NouGenShards-push-main', 4 under 'Watchtower/NouGen' and exactly
+# ONE under 'global' -- a shard captured from one directory was invisible to a
+# recall run from another. The vault only compounds if recall spans it, so the
+# default is now whole-brain and the local domain becomes a ranking BOOST
+# instead of a hard filter. Set NOUGEN_RECALL_SCOPE=domain to restore the old
+# partitioned behaviour.
+RECALL_SCOPE = os.environ.get("NOUGEN_RECALL_SCOPE", "all").strip().lower()
+DOMAIN_AFFINITY_BOOST = _env_float("NOUGEN_RECALL_DOMAIN_BOOST", 1.15)
+# Usage evidence. `access_count` is a RAW LIFETIME COUNT and is deliberately
+# never decayed: how often a shard was surfaced is a fact, not a recency signal,
+# and `utility_score` already carries decay (decay_utility_scores) -- decaying
+# both would double-count recency.
+#
+# It is recorded but does NOT feed ranking by default, and that default is load
+# bearing. `_record_access` increments on every retrieval, so scoring off it
+# makes retrieval self-reinforcing: the same query run twice returns different
+# scores (caught by test_retrieve_ranking_is_deterministic, measured drift 0.26)
+# and frequently-surfaced shards climb purely for having been surfaced -- the
+# rich-get-richer failure `_squash_utility` exists to stop. Being *returned* by a
+# search is not evidence of usefulness; being *used* is, and that already flows
+# through `attribution.observed_prior` via mark_shard(). Set
+# NOUGEN_RECALL_WEIGHT_ACCESS>0 to opt in, accepting non-determinism.
+WEIGHT_ACCESS = _env_float("NOUGEN_RECALL_WEIGHT_ACCESS", 0.0)
+# Query-term coverage boost. Applied as (1 + span * coverage) so a shard
+# containing every query term outranks one that matched a single term through
+# the OR-retry. Set to 0 to disable.
+COVERAGE_BOOST_SPAN = _env_float("NOUGEN_RECALL_COVERAGE_BOOST", 0.6)
 
 
 def _squash_utility(u: float) -> float:
@@ -963,6 +994,58 @@ def _squash_utility(u: float) -> float:
     unbounded priors made incumbents win over perfect semantic matches
     (rich-get-richer, diagnosed 2026-07-11 via the recall probe)."""
     return u / (1.0 + u) if u > 0 else 0.0
+
+
+def _saturate_access(count) -> float:
+    """Log-saturate a raw lifetime `access_count` into a bounded contribution.
+
+    log1p keeps the first few uses informative (0->0, 1->0.69, 10->2.4) while
+    flattening the tail, so a shard that has been returned hundreds of times
+    cannot ride usage alone past an exact match it has never competed with.
+    """
+    try:
+        n = float(count or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return math.log1p(n) if n > 0 else 0.0
+
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _term_coverage(item: dict, query_tokens: frozenset) -> float:
+    """Fraction of the query's distinct terms that actually appear in the shard.
+
+    The OR-retry that keeps multi-term queries alive (HARDENING invariant 5)
+    also admits shards matching a SINGLE term, and nothing downstream
+    distinguished those from a shard matching every term: measured 2026-07-28,
+    a one-term hit outranked an exact three-term match on "arxiv scanner hang".
+    BM25 does not close this gap across lanes because RRF fuses ranks, not
+    scores. Coverage restores the signal -- prefix matching so a stemmed index
+    ("hang" vs "hangs") still counts.
+    """
+    if not query_tokens:
+        return 0.0
+    haystack = f"{item.get('title') or ''} {item.get('content') or ''}".lower()
+    words = frozenset(_TOKEN_RE.findall(haystack))
+    hits = 0
+    for term in query_tokens:
+        if term in words or any(w.startswith(term) or term.startswith(w)
+                                for w in words if abs(len(w) - len(term)) <= 3):
+            hits += 1
+    return hits / len(query_tokens)
+
+
+def _domain_affinity(item: dict, local_domain: Optional[str]) -> float:
+    """Multiplier rewarding shards captured in the caller's own domain.
+
+    Replaces the old hard `domain_key = ?` filter: local context still wins ties,
+    but a shard from another directory is now merely ranked lower rather than
+    made invisible.
+    """
+    if not local_domain:
+        return 1.0
+    return DOMAIN_AFFINITY_BOOST if item.get("domain_key") == local_domain else 1.0
 
 
 def _effective_prior(item: dict, decay: float = 1.0) -> float:
@@ -987,6 +1070,7 @@ def _effective_prior(item: dict, decay: float = 1.0) -> float:
         prior = 1.0
     prior = attribution.observed_prior(item, prior)
     prior = provenance.adjust_prior(item, prior)
+    prior += WEIGHT_ACCESS * _saturate_access(item.get("access_count"))
     return prior * decay
 
 
@@ -1141,6 +1225,32 @@ def _build_fts_match_query(query: str, joiner: str = " ") -> Optional[str]:
     return joiner.join('"' + t.replace('"', '""') + '"' for t in tokens)
 
 
+def _fts_lanes(conn) -> List[str]:
+    """FTS tables to try, best-relevance first.
+
+    ``shards_fts`` is tokenized with trigram, so it matches 3-character
+    substrings: MATCH 'hang' also hits *change*/*exchange*, and bm25 over
+    trigrams barely encodes term relevance. ``shards_fts_porter`` (built by
+    ``tools/fts_porter_backfill.py``) is word-tokenized and stemmed, so it is
+    preferred when present. Probed per-connection rather than assumed -- a
+    store that never got the backfill degrades silently to trigram (Rule 0.2).
+    """
+    lanes = []
+    try:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+            "('shards_fts_porter','shards_fts')"
+        ).fetchall()
+        present = {r[0] for r in rows}
+    except sqlite3.OperationalError:
+        return ["shards_fts"]
+    if "shards_fts_porter" in present:
+        lanes.append("shards_fts_porter")
+    if "shards_fts" in present:
+        lanes.append("shards_fts")
+    return lanes or ["shards_fts"]
+
+
 def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[List[float]] = None,
                       domain_key: str = "global", now: Optional[datetime] = None) -> list:
     """Scans for keyword matches using FTS5 (with LIKE fallback)."""
@@ -1171,26 +1281,32 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 or_query = _build_fts_match_query(query, joiner=" OR ")
                 if or_query and or_query != fts_query:
                     match_attempts.append(or_query)
-            for match_expr in match_attempts:
-                try:
-                    # domain_key None/"*" => search ALL domains (whole brain), not one bucket.
-                    dom_clause = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
-                    dom_params = () if domain_key in (None, "*") else (domain_key,)
-                    cursor = conn.execute(f"""
-                        SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
-                               s.embedding, s.tags, s.domain_key, s.density_score, bm25(shards_fts) as bm25_score
-                        FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
-                        WHERE {dom_clause}shards_fts MATCH ?
-                        ORDER BY bm25_score ASC LIMIT ?
-                    """, (*dom_params, match_expr, limit))
-                    res = cursor.fetchall()
-                    if res:
-                        for row in res:
-                            history.log_event(row["id"], i, "ACCESSED")
-                            results.append(_process_fts_result(row, i, query_embedding, now))
-                        fts_worked = True
+            # Stemmed lane first, trigram second. Each lane runs the full
+            # AND-then-OR ladder before the next lane is tried, so a precise
+            # word match always beats a substring match from the older index.
+            for lane in _fts_lanes(conn):
+                for match_expr in match_attempts:
+                    try:
+                        # domain_key None/"*" => search ALL domains (whole brain), not one bucket.
+                        dom_clause = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
+                        dom_params = () if domain_key in (None, "*") else (domain_key,)
+                        cursor = conn.execute(f"""
+                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score, s.access_count,
+                                   s.embedding, s.tags, s.domain_key, s.density_score, bm25({lane}) as bm25_score
+                            FROM shards s JOIN {lane} ON s.id = {lane}.rowid
+                            WHERE {dom_clause}{lane} MATCH ?
+                            ORDER BY bm25_score ASC LIMIT ?
+                        """, (*dom_params, match_expr, limit))
+                        res = cursor.fetchall()
+                        if res:
+                            for row in res:
+                                history.log_event(row["id"], i, "ACCESSED")
+                                results.append(_process_fts_result(row, i, query_embedding, now))
+                            fts_worked = True
+                            break
+                    except sqlite3.OperationalError:
                         break
-                except sqlite3.OperationalError:
+                if fts_worked:
                     break
 
             if not fts_worked:
@@ -1200,7 +1316,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
                 dom_params = () if domain_key in (None, "*") else (domain_key,)
                 cursor = conn.execute(f"""
-                    SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                    SELECT id, timestamp, title, content, utility_score, access_count, embedding, tags, domain_key, density_score
                     FROM shards
                     WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
                     ORDER BY utility_score DESC LIMIT ?
@@ -1271,7 +1387,7 @@ def _vector_retrieve_ann(query_embedding: List[float], limit: int = 20,
             dom_clause = "" if domain_key in (None, "*") else "AND domain_key = ? "
             params = list(ids) + ([] if domain_key in (None, "*") else [domain_key])
             cursor = conn.execute(f"""
-                SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
+                SELECT id, timestamp, title, content, utility_score, access_count, embedding, tags, domain_key
                 FROM shards
                 WHERE id IN ({placeholders}) {dom_clause}AND embedding IS NOT NULL
             """, params)
@@ -1326,7 +1442,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
             dom_params = () if domain_key in (None, "*") else (domain_key,)
             cursor = conn.execute(f"""
-                SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
+                SELECT id, timestamp, title, content, utility_score, access_count, embedding, tags, domain_key
                 FROM shards
                 WHERE {dom_clause}embedding IS NOT NULL
             """, dom_params)
@@ -1518,6 +1634,41 @@ def mmr_diversify(items: List[dict], limit: int, lambda_: float = MMR_LAMBDA) ->
     return [items[i] for i in selected]
 
 
+def _record_access(items: list) -> None:
+    """Bump ``access_count`` for shards this retrieval actually returned.
+
+    The column has existed since the first schema but nothing ever wrote it, so
+    every one of the 80,797 in-scope shards sat at 0 and usage could not inform
+    ranking. Grouped by database so a multi-hit result costs one transaction per
+    store rather than one per row.
+
+    Best-effort by contract: several MCP servers hold these files open, and a
+    locked bookkeeping write must never take down a recall that already
+    succeeded. Deliberately NOT consumed by the ranking formula yet -- whether
+    the signal should decay is an open question for the GM (see
+    ``wargames/recall-elevation.md``); until then it only accumulates.
+    """
+    if not items:
+        return
+    by_db: dict = {}
+    for item in items:
+        db_index, shard_id = item.get("_db_index"), item.get("id")
+        if db_index and shard_id:
+            by_db.setdefault(db_index, []).append(shard_id)
+    for db_index, ids in by_db.items():
+        try:
+            conn = get_connection(db_index)
+            try:
+                conn.execute(
+                    "UPDATE shards SET access_count = COALESCE(access_count, 0) + 1 "
+                    f"WHERE id IN ({','.join('?' * len(ids))})", ids)
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            continue  # bookkeeping never breaks retrieval
+
+
 def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None,
              domain_key: Optional[str] = None) -> list:
     """
@@ -1539,9 +1690,15 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         if get_db_path(i).exists():
             init_db(i)
 
+    # The caller's own domain is always resolved -- but it is used to BOOST
+    # rather than to filter, unless NOUGEN_RECALL_SCOPE=domain restores the old
+    # partitioned behaviour. An explicit domain_key argument still wins.
+    local_domain = resolve_domain_from_path()
     if not domain_key:
-        domain_key = resolve_domain_from_path()
-        
+        domain_key = local_domain if RECALL_SCOPE == "domain" else "*"
+    query_tokens = frozenset(t for t in _TOKEN_RE.findall((query or "").lower())
+                             if len(t) > 2)
+
     if query_embedding is not None:
         arr = np.array(query_embedding, dtype=np.float32)
         norm = np.linalg.norm(arr)
@@ -1640,6 +1797,11 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         # paraphrase queries. Set NOUGEN_RECALL_ARXIV_WEIGHT<1 to rebalance.
         if ARXIV_RECALL_WEIGHT != 1.0 and "arxiv" in (item.get("title") or "").lower():
             u_shard *= ARXIV_RECALL_WEIGHT
+        # Domain affinity as a boost, not a filter: the caller's own directory
+        # ranks first without the rest of the vault going invisible.
+        u_shard *= _domain_affinity(item, local_domain)
+        if COVERAGE_BOOST_SPAN:
+            u_shard *= 1.0 + COVERAGE_BOOST_SPAN * _term_coverage(item, query_tokens)
         item["utility_score_tripartite"] = u_shard
         scored_results.append(item)
     
@@ -1685,6 +1847,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     # Carry the authority tag through to the caller. arXiv 2607.20891's finding
     # is that verification at retrieval time does NOT survive a long-horizon
     # workflow, so the tier has to travel with the shard, not be checked once.
+    _record_access(reordered)
     return provenance.annotate(reordered)
 
 

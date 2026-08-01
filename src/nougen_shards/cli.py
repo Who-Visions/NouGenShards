@@ -23,6 +23,8 @@ from .connectors.cloud import push_to_cloud, pull_from_cloud
 from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
 from . import dream
 from . import evolution
+from . import theme
+from .theme import styled_print as print  # noqa: A001 — paints glyph-led output
 
 VERSION = "1.1.0"
 
@@ -1182,6 +1184,12 @@ def cmd_power(args):
         # host, an unreadable event log — is a real failure to capture.
         return EXIT_OK if result.get("clean") else EXIT_FAILURE
 
+    # Unreachable today (the parser's choices and the "status" default cover
+    # every value), but a new subcommand added without a branch here must fail
+    # loudly rather than fall off the end and exit 0.
+    print(f"Error: unknown power action '{action}'.")
+    return EXIT_USAGE
+
 
 def get_parser():
     """Create the CLI parser."""
@@ -1714,60 +1722,68 @@ def cmd_trigger(args):
         }
         print(json.dumps(info, indent=2) if args.json else
               "\n".join(f"{k:>15}: {v}" for k, v in info.items()))
-        return
+        return EXIT_OK
 
     if action == "add":
         if not (args.shard_ref and args.trigger_type and args.pattern):
             print("❌ add requires --shard, --type and --pattern")
-            return
+            return EXIT_USAGE
         try:
             tid = triggers.add_trigger(args.shard_ref, args.trigger_type, args.pattern,
                                        weight=args.weight, note=args.note)
         except triggers.TriggerError as exc:
             print(f"❌ {exc}")
-            return
+            return EXIT_FAILURE
         print(f"✅ trigger #{tid}: {args.trigger_type}:{args.pattern} -> {args.shard_ref}")
-        return
+        return EXIT_OK
 
     if action == "list":
         rows = triggers.list_triggers(args.shard_ref, args.trigger_type)
         if args.json:
             print(json.dumps(rows, indent=2))
-            return
+            return EXIT_OK
         if not rows:
+            # An empty listing is a correct answer about an empty trigger set.
             print("(no triggers)")
-            return
+            return EXIT_OK
         for r in rows:
             print(f"#{r['id']:<5} {r['trigger_type']:<9} {r['pattern']:<40} "
                   f"w={r['weight']:<5} [{r['source']}] {r['shard_ref']}")
-        return
+        return EXIT_OK
 
     if action == "rm":
         if args.trigger_id is None:
             print("❌ rm requires --id")
-            return
-        print("🗑️ removed" if triggers.remove_trigger(args.trigger_id) else "❌ no such trigger")
-        return
+            return EXIT_USAGE
+        # A named trigger that is not there was not removed: the mutation the
+        # caller asked for did not happen.
+        if triggers.remove_trigger(args.trigger_id):
+            print("🗑️ removed")
+            return EXIT_OK
+        print("❌ no such trigger")
+        return EXIT_FAILURE
 
     if action == "derive":
         if not args.shard_ref:
             print("❌ derive requires --shard")
-            return
+            return EXIT_USAGE
         shard = triggers.resolve_shard(args.shard_ref)
         if shard is None:
             print(f"❌ could not resolve {args.shard_ref}")
-            return
+            return EXIT_FAILURE
         proposed = triggers.derive_triggers(shard.get("title", ""), shard.get("content", ""))
         if not proposed:
+            # Deriving nothing is the documented conservative behaviour, not a
+            # fault — the shard simply had no confident cues.
             print("🤏 nothing derived (auto-derivation is deliberately conservative)")
-            return
+            return EXIT_OK
         for ttype, pat in proposed:
             if args.apply:
                 triggers.add_trigger(args.shard_ref, ttype, pat, source="auto")
             print(f"{'✅ attached' if args.apply else '🔎 would attach'}  {ttype}:{pat}")
         if not args.apply:
             print("(dry-run — pass --apply to persist)")
-        return
+        return EXIT_OK
 
     if action == "preview":
         def _split(v):
@@ -1782,22 +1798,27 @@ def cmd_trigger(args):
                 "truncated": sel.truncated,
                 "injected": [{"ref": m.shard_ref, "score": m.score, "cues": m.reasons,
                               "title": m.title} for m in sel.injected]}, indent=2))
-            return
+            return EXIT_OK
         print(f"candidates={sel.candidates} injected={len(sel.injected)} "
               f"tokens={sel.tokens}/{triggers.budget_tokens()} truncated={sel.truncated}")
         text = triggers.render(ctx, sel)
+        # Injecting nothing is a valid preview of a context that matched no cue.
         print(text if text else "(nothing would be injected)")
-        return
+        return EXIT_OK
+
+    print(f"Error: unknown trigger action '{action}'.")
+    return EXIT_USAGE
 
 
 def main():
     """Execution entry point."""
+    theme.enable_windows_ansi()
     if len(sys.argv) == 1:
         print("🪩 NouGenShards CLI")
-        print("┌┐╷┌─┐╷ ╷┌─╴┌─╴┌┐╷┌─┐╷ ╷┌─┐┌─┐╶┬┐┌─┐")
-        print("│└┤│ ││ ││╶┐├╴ │└┤└─┐├─┤├─┤├┬┘ ││└─┐")
-        print("╵ ╵└─┘└─┘└─┘└─╴╵ ╵└─┘╵ ╵╵ ╵╵└╴╶┴┘└─┘")
-        print(f"  ⚡ Valerion Engine · v{VERSION}")
+        print(theme.accent("┌┐╷┌─┐╷ ╷┌─╴┌─╴┌┐╷┌─┐╷ ╷┌─┐┌─┐╶┬┐┌─┐"))
+        print(theme.accent("│└┤│ ││ ││╶┐├╴ │└┤└─┐├─┤├─┤├┬┘ ││└─┐"))
+        print(theme.accent("╵ ╵└─┘└─┘└─┘└─╴╵ ╵└─┘╵ ╵╵ ╵╵└╴╶┴┘└─┘"))
+        print(theme.info(f"  ⚡ Valerion Engine · v{VERSION}"))
         print()
         get_parser().print_help()
         sys.exit(0)

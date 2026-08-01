@@ -35,6 +35,19 @@ def _run_cli(argv, env=None):
     )
 
 
+def _isolated_env(vault_dir, extra=None):
+    """Env pinned to a throwaway vault so no test can read or write the real one.
+
+    NOUGEN_VAULT_DIR drives BOTH stores the CLI touches: the shard cluster
+    (core.GLOBAL_DIR) and the secrets vault (keymaker.VAULT_DIR). Pinning it is
+    what makes "no database", "no OpenRouter key" reproducible failure states
+    instead of whatever the developer's machine happens to have.
+    """
+    overrides = {"NOUGEN_VAULT_DIR": str(vault_dir)}
+    overrides.update(extra or {})
+    return _cli_env(overrides)
+
+
 class TestCLIExitCodes(unittest.TestCase):
     """main() must propagate handler return codes to the process exit status."""
 
@@ -64,6 +77,320 @@ class TestCLIExitCodes(unittest.TestCase):
             env = _cli_env({"NOUGEN_CONFIG": str(cfg)})
             result = _run_cli(["config", "set", "ok_key", "ok_value"], env)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class TestDoctorExitCode(unittest.TestCase):
+    """`doctor` is a diagnostic: it MUST be able to report a bad diagnosis.
+
+    A health check wired into a scheduled task or a pre-push hook that always
+    exits 0 is worse than no health check — it actively certifies a broken
+    install as healthy.
+    """
+
+    def test_doctor_exits_non_zero_when_substrate_is_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            result = _run_cli(["doctor"], _isolated_env(vault))
+        self.assertNotEqual(
+            result.returncode, 0,
+            "doctor diagnosed a vault with no shard database and still exited 0 "
+            f"(stdout={result.stdout!r})"
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("No database shards found", result.stdout)
+        self.assertIn("Diagnosis", result.stderr)
+
+    def test_doctor_exits_zero_on_a_healthy_substrate(self):
+        """And it must not cry wolf: a freshly initialised vault is healthy.
+
+        No BYOK provider keys and no secrets vault yet is the NORMAL state of a
+        local-first install, so those red rows must not turn into a failure.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            env = _isolated_env(vault)
+            init = _run_cli(["init"], env)
+            self.assertEqual(init.returncode, 0, init.stderr)
+            result = _run_cli(["doctor"], env)
+        self.assertEqual(
+            result.returncode, 0,
+            f"doctor failed a healthy freshly-initialised vault "
+            f"(stdout={result.stdout!r} stderr={result.stderr!r})"
+        )
+
+    def test_doctor_json_report_carries_the_same_verdict(self):
+        """--json must not be a way to lose the verdict."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            result = _run_cli(["doctor", "--json"], _isolated_env(vault))
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('"healthy": false', result.stdout)
+
+
+class TestRouterExitCode(unittest.TestCase):
+    """`router doctor` is the same class of hole as `doctor`."""
+
+    def test_router_doctor_exits_non_zero_without_a_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            result = _run_cli(["router", "doctor"], _isolated_env(vault))
+        self.assertNotEqual(
+            result.returncode, 0,
+            "router doctor reported a missing OpenRouter key and exited 0 "
+            f"(stdout={result.stdout!r})"
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("OpenRouter key not found", result.stdout)
+
+    def test_router_doctor_exits_zero_when_routing_is_configured(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            env = _isolated_env(vault)
+            stored = _run_cli(["auth", "set-key", "openrouter", "sk-test-not-a-real-key"], env)
+            self.assertEqual(stored.returncode, 0, stored.stderr)
+            result = _run_cli(["router", "doctor"], env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("openrouter_key: True", result.stdout)
+
+    def test_router_without_a_subcommand_is_a_usage_error(self):
+        """The dispatcher must not silently succeed on an unrouted invocation."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            env = _isolated_env(vault)
+            _run_cli(["auth", "set-key", "openrouter", "sk-test-not-a-real-key"], env)
+            result = _run_cli(["router"], env)
+        self.assertEqual(result.returncode, 2, result.stdout)
+
+
+class TestAuthExitCode(unittest.TestCase):
+    """A credential write that failed must never look like it landed."""
+
+    def test_unknown_provider_exits_non_zero(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            result = _run_cli(
+                ["auth", "set-key", "not-a-provider", "sk-test-not-a-real-key"],
+                _isolated_env(vault),
+            )
+        self.assertNotEqual(
+            result.returncode, 0,
+            f"auth accepted an unknown provider and exited 0 (stdout={result.stdout!r})"
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Unknown provider", result.stdout)
+        self.assertNotIn("saved to vault", result.stdout)
+
+    def test_storing_and_listing_a_key_exits_zero(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            env = _isolated_env(vault)
+            stored = _run_cli(["auth", "set-key", "openrouter", "sk-test-not-a-real-key"], env)
+            listed = _run_cli(["auth", "list"], env)
+        self.assertEqual(stored.returncode, 0, stored.stderr)
+        self.assertIn("saved to vault", stored.stdout)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+
+    def test_listing_an_empty_vault_is_success_not_failure(self):
+        """Zero connected services is a correct answer, not an error."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            result = _run_cli(["auth", "list"], _isolated_env(vault))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("No cloud services connected", result.stdout)
+
+
+class TestDbExitCode(unittest.TestCase):
+    """A link that did not persist must not report success: federated search
+    would then quietly query one source fewer."""
+
+    def test_link_without_a_table_exits_non_zero(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            result = _run_cli(["db", "link"], _isolated_env(vault))
+        self.assertNotEqual(
+            result.returncode, 0,
+            f"incomplete `db link` exited 0 (stdout={result.stdout!r})"
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn("✅", result.stdout)
+
+    def test_link_and_list_exit_zero(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            env = _isolated_env(vault)
+            linked = _run_cli(
+                ["db", "link", "sqlite:///" + str(Path(temp_dir) / "ext.db"),
+                 "--table", "notes"],
+                env,
+            )
+            listed = _run_cli(["db", "list"], env)
+        self.assertEqual(linked.returncode, 0, linked.stderr)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertIn("notes", listed.stdout)
+
+    def test_listing_with_nothing_linked_is_success(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            result = _run_cli(["db", "list"], _isolated_env(vault))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class TestNodeExitCode(unittest.TestCase):
+    """Sync is the sharp edge: a push that never left the machine used to print
+    '✅ Sync result: error' and exit 0, which reads as 'backup succeeded'."""
+
+    def test_push_to_a_rejected_url_exits_non_zero(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            # An insecure URL is refused by the cloud connector, which reports
+            # the refusal in-band as {"status": "error"} — no network needed.
+            result = _run_cli(
+                ["node", "push", "http://insecure.invalid", "--token", "t"],
+                _isolated_env(vault),
+            )
+        self.assertNotEqual(
+            result.returncode, 0,
+            f"a rejected push exited 0 (stdout={result.stdout!r})"
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("push failed", result.stderr)
+
+    def test_push_without_a_token_exits_non_zero(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            result = _run_cli(["node", "push", "https://node.invalid"], _isolated_env(vault))
+        self.assertEqual(result.returncode, 2, result.stdout)
+
+    def test_link_and_list_exit_zero(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            env = _isolated_env(vault)
+            linked = _run_cli(["node", "link", "https://node.invalid", "--name", "n1"], env)
+            listed = _run_cli(["node", "list"], env)
+        self.assertEqual(linked.returncode, 0, linked.stderr)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertIn("n1", listed.stdout)
+
+
+class TestIndexExitCode(unittest.TestCase):
+    """Index maintenance runs unattended; a build that did not write an index
+    must not tell the scheduler it did."""
+
+    def test_ann_build_with_a_non_ok_status_exits_non_zero(self):
+        """The status->exit-code rule itself.
+
+        NOUGEN_ANN_OK_STATUSES is the documented knob for which in-band build
+        statuses count as done (Rule 0.2). Narrowing it to "ok" makes the empty
+        build that this vault produces a non-ok status, which is the condition
+        cmd_index must turn into a failure.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            result = _run_cli(
+                ["index", "ann-build"],
+                _isolated_env(vault, {"NOUGEN_ANN_OK_STATUSES": "ok"}),
+            )
+        self.assertNotEqual(
+            result.returncode, 0,
+            f"a build that wrote no index exited 0 (stdout={result.stdout!r})"
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ANN index build failed", result.stderr)
+
+    def test_schema_migrate_propagates_the_delegated_failure(self):
+        """cmd_index hands schema-migrate to schema._main; its refusal to run
+        without a vault must reach the process exit status."""
+        env = _cli_env()
+        env.pop("NOUGEN_VAULT_DIR", None)
+        result = _run_cli(["index", "schema-migrate"], env)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+
+    def test_ann_build_on_an_empty_vault_exits_zero(self):
+        """A vault with no embeddings yet is not a failed build: recall falls
+        back to the linear scan, which works."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = Path(temp_dir) / "vault"
+            vault.mkdir()
+            result = _run_cli(["index", "ann-build"], _isolated_env(vault))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class TestRemainingHandlerExitCodes(unittest.TestCase):
+    """Coverage for the non-prioritised handlers reachable without a network,
+    an LLM, a TTY or a long-running server."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.vault = Path(self._tmp.name) / "vault"
+        self.vault.mkdir()
+        self.env = _isolated_env(self.vault)
+        init = _run_cli(["init"], self.env)
+        self.assertEqual(init.returncode, 0, init.stderr)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_mark_missing_shard_exits_non_zero(self):
+        result = _run_cli(["mark", "999999", "--worked"], self.env)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("Error finding shard", result.stdout)
+
+    def test_ctx_get_missing_event_exits_non_zero(self):
+        result = _run_cli(["ctx", "get", "999999"], self.env)
+        self.assertEqual(result.returncode, 1, result.stdout)
+
+    def test_ctx_search_without_a_query_is_a_usage_error(self):
+        result = _run_cli(["ctx", "search"], self.env)
+        self.assertEqual(result.returncode, 2, result.stdout)
+
+    def test_trigger_rm_of_a_missing_trigger_exits_non_zero(self):
+        result = _run_cli(["trigger", "rm", "--id", "999999"], self.env)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("no such trigger", result.stdout)
+
+    def test_trigger_status_exits_zero(self):
+        result = _run_cli(["trigger", "status"], self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_connect_without_mcp_is_a_usage_error(self):
+        result = _run_cli(["connect"], self.env)
+        self.assertEqual(result.returncode, 2, result.stdout)
+
+    def test_hook_without_an_action_is_a_usage_error(self):
+        result = _run_cli(["hook"], self.env)
+        self.assertEqual(result.returncode, 2, result.stdout)
+
+    def test_ingest_of_an_unreadable_path_exits_non_zero(self):
+        missing = Path(self._tmp.name) / "nope.md"
+        result = _run_cli(["ingest", str(missing)], self.env)
+        self.assertEqual(result.returncode, 1, result.stdout)
+
+    def test_search_with_no_matches_is_success(self):
+        """The most important non-failure: an empty vault is not a broken one."""
+        result = _run_cli(["search", "nothing-will-ever-match-this-xyzzy"], self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_status_and_stats_exit_zero(self):
+        for argv in (["status"], ["stats"]):
+            with self.subTest(argv=argv):
+                result = _run_cli(argv, self.env)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class TestCLI(unittest.TestCase):

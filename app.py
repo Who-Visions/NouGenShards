@@ -27,6 +27,12 @@ if os.environ.get("SPACE_ID"):
 
 from nougen_shards import core, history
 from nougen_shards.brain_scan import scan_environment
+from nougen_shards.exposure import (
+    detect_exposure,
+    log_exposure_decision,
+    resolve_blocked_paths,
+    should_mount_hud,
+)
 
 app = FastAPI(title="NouGenShards Node")
 
@@ -198,18 +204,38 @@ _hud_user = os.environ.get("NGS_HUD_USER")
 _hud_pass = os.environ.get("NGS_HUD_PASSWORD")
 _hud_auth = (_hud_user, _hud_pass) if _hud_user and _hud_pass else None
 
-app = gr.mount_gradio_app(app, cortex_hud, path="/", auth=_hud_auth)
+# Exposure is resolved at IMPORT time, not in __main__, so the guard also
+# protects ASGI servers that import `app` directly (`uvicorn app:app`,
+# gunicorn, hosted Spaces) where the __main__ block never runs. The decision is
+# probed from what actually binds the socket — the server command line — rather
+# than from NGS_HOST, which the shipped `uvicorn --host 0.0.0.0` CMD ignores.
+_exposure = detect_exposure()
+_network_exposed = _exposure.exposed
+_bind_host = _exposure.bind_host
+
+# Defence in depth: keep the persistent data mount and the vault off Gradio's
+# static file router, so even a mounted HUD cannot serve the vault.
+_hud_blocked_paths = list(resolve_blocked_paths())
+
+# Fail closed WITHOUT taking the process down: on a network-reachable host with
+# no HUD credentials, skip mounting the unauthenticated vault UI (search /
+# recon / transcript dumps) but keep FastAPI serving, so the token-gated REST
+# API stays up. Raising here would abort `uvicorn app:app` entirely.
+_hud_mounted = should_mount_hud(_exposure, _hud_auth)
+if _hud_mounted:
+    app = gr.mount_gradio_app(
+        app,
+        cortex_hud,
+        path="/",
+        auth=_hud_auth,
+        blocked_paths=_hud_blocked_paths,
+    )
+
+# State plainly, at startup, why the node ruled the way it did.
+log_exposure_decision(_exposure, _hud_mounted, _hud_blocked_paths)
 
 if __name__ == "__main__":
     import uvicorn
-    # Bind to loopback by default so the (intentionally unauthenticated) read /
-    # recon / transcript UI is not silently exposed. HF Spaces / explicit deploys
-    # set NGS_HOST=0.0.0.0; warn if bound non-loopback without HUD auth.
-    default_host = "0.0.0.0" if os.environ.get("SPACE_ID") else "127.0.0.1"
-    host = os.environ.get("NGS_HOST", default_host)
+    # Host/auth already settled at import by the fail-closed guard above.
     port = int(os.environ.get("NGS_PORT", "4444"))
-    if host not in ("127.0.0.1", "localhost", "::1") and not _hud_auth:
-        print("[WARN] Cortex HUD bound to a non-loopback host without "
-              "NGS_HUD_USER/NGS_HUD_PASSWORD — search/recon/transcript "
-              "endpoints are unauthenticated and network-exposed.")
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=_bind_host, port=port)

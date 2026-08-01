@@ -58,6 +58,14 @@ FLOOR_HOURS = _env_float("NOUGEN_LANE_FLOOR_HOURS", 48.0)
 STALE_FACTOR = _env_float("NOUGEN_LANE_STALE_FACTOR", 3.0)
 CADENCE_SAMPLE = _env_int("NOUGEN_LANE_CADENCE_SAMPLE", 20)
 
+# Must resolve from the SAME env vars the writers use (arxiv_gap_backfill.py,
+# arxiv_rss_scanner.py). Overriding a writer's prefix while this monitor kept a
+# literal would blind the monitor: it would glob a prefix nobody writes anymore
+# and report the lane EMPTY forever while ingestion was healthy.
+ARXIV_DOC_PREFIX = os.environ.get("NOUGEN_ARXIV_DOC_PREFIX", "arxiv_cs_AI_")
+ARXIV_SHARD_PREFIX = os.environ.get("NOUGEN_ARXIV_SHARD_PREFIX",
+                                    "intelligence_shard_arxiv_")
+
 
 def _mtimes(patterns):
     """Sorted (desc) modification times of all files matching any pattern."""
@@ -106,8 +114,8 @@ def check_lanes():
         # One lane per artifact type: a combined glob takes the newest across
         # both, so one artifact flowing masks the other dying (the daily-doc
         # lane died 2026-07-06 unnoticed for 5 days behind flowing shards).
-        ("arxiv-daily-docs", [str(vault / "arxiv_cs_AI_*.md")]),
-        ("arxiv-shards", [str(vault / "intelligence_shard_arxiv_*.md")]),
+        ("arxiv-daily-docs", [str(vault / f"{ARXIV_DOC_PREFIX}*.md")]),
+        ("arxiv-shards", [str(vault / f"{ARXIV_SHARD_PREFIX}*.md")]),
         ("vault-intel", [str(vault / "intelligence_shard_*.md")]),
         ("handoffs", [str(handoffs / "handoff_*.md"),
                       str(handoffs / "**" / "handoff_*.md")]),
