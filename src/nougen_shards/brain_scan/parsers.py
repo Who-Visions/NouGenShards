@@ -1,9 +1,10 @@
 import json
 import hashlib
 from pathlib import Path
-from typing import List
+from typing import Iterator, List
 from datetime import datetime, timezone
 from .candidate import NormalizedRecord
+from .registry import SQLITE_EXTS
 
 def _safe_read(path: Path) -> str:
     try:
@@ -101,7 +102,27 @@ def parse_markdown(path: Path, tool: str, is_project: bool) -> List[NormalizedRe
         content_hash=_hash(content[:10000])
     )]
 
+def iter_records(path: Path, tool: str, is_project: bool,
+                 allow_generic: bool = True) -> Iterator[NormalizedRecord]:
+    """Streams records from any supported source.
+
+    Databases are yielded lazily: a single file index can hold six figures of
+    rows, which must not be materialized as one list.
+    """
+    if path.suffix.lower() in SQLITE_EXTS:
+        from .sqlite_sources import iter_records as _iter_sqlite  # pylint: disable=import-outside-toplevel
+        yield from _iter_sqlite(path, tool, is_project, allow_generic)
+        return
+    yield from parse_universal(path, tool, is_project)
+
+
 def parse_universal(path: Path, tool: str, is_project: bool) -> List[NormalizedRecord]:
+    # A SQLite file has no text representation — reading it as text produced a
+    # shard containing the raw file header. Route it to the schema-aware reader.
+    if path.suffix.lower() in SQLITE_EXTS:
+        from .sqlite_sources import iter_records as _iter_sqlite  # pylint: disable=import-outside-toplevel
+        return list(_iter_sqlite(path, tool, is_project))
+
     if path.suffix == ".json":
         return parse_json(path, tool, is_project)
     elif path.suffix in [".jsonl"]:

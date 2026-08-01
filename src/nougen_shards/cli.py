@@ -302,15 +302,42 @@ def cmd_search(args):
         header = f"[{res['id']}] Final Score: {res['final_score']:.2f} | " \
                  f"Prior: {res['utility_score']} | Source: {res['_db_index']}"
         print(header)
-        print(f"Title: {res['title']}\n{res['content'].strip()}\n" + "-" * 40)
+        print(f"Title: {res['title']}\n{res['content'].strip()}")
+        # An id alone does not identify a shard (ids are per-DB), so print the
+        # command with --db already filled in — otherwise closing the outcome
+        # loop requires knowing that "Source:" is what --db wants.
+        print(f"  ↳ helpful? nougen mark {res['id']} --worked --db {res['_db_index']}")
+        print("-" * 40)
 
 
 def cmd_mark(args):
     """Close the outcome loop (usefulness update)."""
-    if shards.mark_shard(args.id, worked=args.worked, db_index=args.db):
-        print(f"✅ Shard #{args.id} updated. Usefulness prior adjusted.")
+    db_index = args.db
+    if db_index is None:
+        # Ids are per-DB AUTOINCREMENT, so the same id usually exists in several
+        # cluster DBs. Guessing silently trains the prior on an unrelated shard
+        # and still reports success, which corrupts the exact signal this command
+        # exists to build. Refuse instead, and show the caller how to disambiguate.
+        candidates = shards.locate_shard(args.id)
+        if not candidates:
+            print(f"Error finding shard #{args.id}.")
+            return
+        if len(candidates) > 1:
+            print(f"⚠️  Shard #{args.id} is ambiguous — it exists in {len(candidates)} databases.")
+            print("   Ids are per-database, so an id alone does not identify a shard.")
+            print("   Re-run with the 'Source:' value from your search result:\n")
+            for i in candidates:
+                title = shards.get_shard_title(args.id, i) or "(untitled)"
+                flag = "--worked" if args.worked else ""
+                print(f"     nougen mark {args.id} {flag} --db {i}".rstrip())
+                print(f"         └─ {title[:70]}")
+            return
+        db_index = candidates[0]
+
+    if shards.mark_shard(args.id, worked=args.worked, db_index=db_index):
+        print(f"✅ Shard #{args.id} (db {db_index}) updated. Usefulness prior adjusted.")
     else:
-        print(f"Error finding shard #{args.id}.")
+        print(f"Error finding shard #{args.id} in db {db_index}.")
 
 
 def cmd_status(args):

@@ -299,6 +299,27 @@ def resolve_domain_from_path(target_path: Optional[str] = None) -> str:
     return "global"
 
 
+def compression_density(content: str) -> float:
+    """Local, offline density estimate: gzip ratio as a proxy for surprisal.
+
+    Exposed separately from `calculate_contrastive_perplexity` so bulk callers
+    can opt out of the per-item LLM round trip. Scoring an import of six
+    figures of records through a model is not viable — each unreachable
+    provider costs a connection timeout, and even a live local model would
+    serialize the whole ingest behind inference.
+    """
+    if not content:
+        return 1.0
+    import zlib
+    try:
+        compressed_len = len(zlib.compress(content.encode('utf-8')))
+        raw_len = len(content.encode('utf-8'))
+        compression_ratio = compressed_len / max(1, raw_len)
+        return float(min(1.0, max(0.1, compression_ratio * 1.5)))
+    except Exception:
+        return 0.5
+
+
 def calculate_contrastive_perplexity(content: str) -> float:
     """Estimates information density / contrastive perplexity using local Ollama or OpenRouter."""
     if not content:
@@ -311,14 +332,7 @@ def calculate_contrastive_perplexity(content: str) -> float:
     # have near-deterministic self-transitions and score ~1. The doc's metric
     # needs a fitted reference model; revisit if a vault-wide corpus model is
     # ever built.)
-    import zlib
-    try:
-        compressed_len = len(zlib.compress(content.encode('utf-8')))
-        raw_len = len(content.encode('utf-8'))
-        compression_ratio = compressed_len / max(1, raw_len)
-        fallback_score = float(min(1.0, max(0.1, compression_ratio * 1.5)))
-    except Exception:
-        fallback_score = 0.5
+    fallback_score = compression_density(content)
 
     # Check if we are running in a test environment to prevent local LLM/OpenRouter calls
     import sys
@@ -952,6 +966,42 @@ def get_shard_by_id(shard_id: int, db_index: int):
         return dict(row) if row else None
     finally:
         conn.close()
+
+def locate_shard(shard_id: int) -> List[int]:
+    """Returns every cluster DB index holding a shard with this id.
+
+    Ids are per-DB AUTOINCREMENT, so an id is only unique together with its
+    database. A caller that wants to mutate a shard must resolve the ambiguity
+    before writing, not after — see mark_shard's db_index parameter.
+    """
+    found = []
+    for i in range(1, MAX_DB_COUNT + 1):
+        if not get_db_path(i).exists():
+            continue
+        conn = get_connection(i)
+        try:
+            if conn.execute("SELECT 1 FROM shards WHERE id = ?", (shard_id,)).fetchone():
+                found.append(i)
+        except sqlite3.Error:
+            continue
+        finally:
+            conn.close()
+    return found
+
+
+def get_shard_title(shard_id: int, db_index: int) -> Optional[str]:
+    """Title of one shard, for disambiguating an id that spans several DBs."""
+    if not get_db_path(db_index).exists():
+        return None
+    conn = get_connection(db_index)
+    try:
+        row = conn.execute("SELECT title FROM shards WHERE id = ?", (shard_id,)).fetchone()
+        return row["title"] if row else None
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
 
 def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
     """Updates the usefulness prior (utility_score) from outcome evidence (helpful / not).
