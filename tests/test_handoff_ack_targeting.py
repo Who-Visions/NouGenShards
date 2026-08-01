@@ -110,15 +110,25 @@ def test_all_acknowledged_is_not_reported_as_a_conflict(registry):
 
 def test_reported_version_matches_the_packaged_one():
     """The v1.2.0 release bumped pyproject and left two hardcoded copies at
-    1.1.0, so `nougen --version` under-reported by two releases."""
-    import tomllib
+    1.1.0, so `nougen --version` under-reported by two releases.
+
+    pyproject is read with a regex rather than tomllib: this repo supports
+    3.10, where tomllib does not exist, and a version-agreement test that only
+    runs on some interpreters is not a guarantee. The `version = "..."` line
+    under [project] is a fixed shape — a full TOML parser buys nothing here.
+    """
     import pathlib
+    import re
 
     import nougen_shards
     from nougen_shards import cli
 
     root = pathlib.Path(nougen_shards.__file__).resolve().parents[2]
-    declared = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+    text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    project = text.split("[project]", 1)[1]
+    match = re.search(r'^version\s*=\s*"([^"]+)"', project, re.MULTILINE)
+    assert match, "no version found under [project] in pyproject.toml"
+    declared = match.group(1)
 
     assert nougen_shards.__version__ == declared
     assert cli.VERSION == declared, "the CLI must not carry its own copy"
