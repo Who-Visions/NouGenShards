@@ -22,7 +22,7 @@ from .brain_scan import scan_environment, run_import, print_scan_report, print_i
 from . import dream
 from . import evolution
 
-VERSION = "1.1.0"
+from nougen_shards import __version__ as VERSION  # single source: pyproject
 
 
 

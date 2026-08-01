@@ -796,11 +796,30 @@ def get_handoff_files(agent: Optional[str] = None) -> List[Path]:
             if subdir.exists():
                 files.extend(subdir.glob("handoff_*.json"))
 
-    return sorted(
-        files,
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    return sorted(files, key=_handoff_sort_key, reverse=True)
+
+
+def _handoff_sort_key(path: Path) -> tuple:
+    """Order records by when they were WRITTEN, not when the file was touched.
+
+    File mtimes describe this clone, not the fleet. A fresh clone stamps every
+    record with the checkout time, `handoff sync` restamps whatever it pulled,
+    and any write — an ack, a checkpoint — jumps that record to the front. So
+    the "latest handoff" could change without a single new handoff existing,
+    and two machines running `handoff read` against the same registry could
+    legitimately disagree about which record is newest.
+
+    The record's own timestamp is the same on every machine. mtime stays as the
+    tiebreaker for records that predate the field or carry an unparseable one,
+    so ordering degrades rather than raising.
+    """
+    data = _read_handoff(path)
+    stamp = str((data or {}).get("timestamp") or "")
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return (stamp, mtime)
 
 
 def start_orchestration(
@@ -971,6 +990,7 @@ def acknowledge_handoff(
         return None
 
     target_path: Optional[Path] = None
+    skipped: list = []
     for p in files:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
@@ -983,6 +1003,33 @@ def acknowledge_handoff(
         elif data.get("status", "open") == "open":
             target_path = p
             break
+        elif not skipped:
+            # The newest record is spoken for. Remember who has it — the reason
+            # matters more than the fact when explaining what happened next.
+            skipped.append(data)
+
+    # Refuse to silently claim something other than what `handoff read` just
+    # showed. `read` displays the newest record; a bare `ack` walks past it to
+    # the newest still-OPEN one. When another agent claims a record between
+    # those two commands — seconds, with several agents on one registry — the
+    # operator sees a success line naming a handoff they never looked at, and
+    # the only clue is an id they have no reason to be reading closely.
+    # Stopping costs one `--id` flag. Guessing costs a wrongly-claimed record
+    # on a registry the whole fleet trusts.
+    if target_path is not None and skipped and not handoff_id:
+        holder = skipped[0]
+        console.print(
+            f"[yellow]The most recent handoff is already acknowledged by "
+            f"{(holder.get('acknowledged_by') or '?').upper()} at "
+            f"{holder.get('acknowledged_at', '?')}.[/yellow]"
+        )
+        console.print(
+            f"[dim]Not claiming a different one on your behalf. To take the "
+            f"next open handoff:[/dim]\n"
+            f"    nougen handoff ack --id "
+            f"{_read_handoff(target_path).get('handoff_id', '<id>')}"
+        )
+        return None
 
     if target_path is None:
         if handoff_id:
