@@ -1,0 +1,40 @@
+#!/bin/sh
+# Refuse a commit that touches files another machine has actively claimed.
+#
+# `relay claim take` announces work before it starts, and it only helps if
+# every lane runs it. Four duplications in two days say that asking people to
+# remember does not work, so the question gets asked at the one moment every
+# lane passes through regardless of harness or editor: the commit.
+#
+# Blocks only on ANOTHER machine's claim. A missing claim of your own is a
+# warning, because blocking there would fire on every unclaimed typo fix and
+# teach the fleet to reach for --no-verify, which disarms the real case too.
+# Opt in per repo with: git config nougen.requireClaim true
+#
+# Fails OPEN. If relay is not installed, or the network is down, or anything
+# else goes wrong, the commit proceeds — a guard that can wedge a repo gets
+# uninstalled, and an uninstalled guard is worse than none because everyone
+# believes it is running.
+
+# The `relay` console script is not guaranteed. On whoart, pip could not write
+# C:\Python311\Scripts\relay.exe at all, while `python -m nougen_relay.cli`
+# worked from every directory — so a hook that only knows the script name is a
+# hook that silently does nothing on a box where the protocol is installed and
+# working. Try the script, fall back to the module, give up quietly.
+if command -v relay >/dev/null 2>&1; then
+    RELAY="relay"
+elif command -v python >/dev/null 2>&1 && python -c "import nougen_relay" >/dev/null 2>&1; then
+    RELAY="python -m nougen_relay.cli"
+elif command -v python3 >/dev/null 2>&1 && python3 -c "import nougen_relay" >/dev/null 2>&1; then
+    RELAY="python3 -m nougen_relay.cli"
+else
+    exit 0
+fi
+
+$RELAY guard --staged --quiet
+STATUS=$?
+
+# 3 is "someone else has claimed this". Anything else — including relay itself
+# erroring — is not a reason to stop a commit.
+[ "$STATUS" = "3" ] && exit 1
+exit 0

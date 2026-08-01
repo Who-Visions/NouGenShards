@@ -1,0 +1,124 @@
+#!/bin/sh
+# Stamp every commit with the machine and agent that authored it.
+#
+# With several machines and several agent lanes pushing to one repo, the git
+# author field answers "which human account" and nothing else. These trailers
+# answer "which computer, which lane" — the questions you actually ask when
+# two histories collide.
+#
+# Enable per clone (hooks are not themselves tracked into .git/hooks):
+#     git config core.hooksPath hooks
+#
+# Identity resolves the same way core.resolve_agent() does, INCLUDING git
+# config. It did not, once: `relay init --agent` stored the lane in git config
+# and printed "survives new shells", and this hook — reading only the env —
+# refused the very next commit as unknown-agent. Two resolvers, one question,
+# different answers.
+# git interpret-trailers is idempotent, so amends and rebases do not stack
+# duplicate lines.
+#
+# Two rules, and the first one matters more:
+#
+# 1. AN EXISTING TRAILER IS NEVER OVERWRITTEN. This hook re-runs on every
+#    commit a rebase or cherry-pick replays, with the REPLAYING machine's
+#    environment. Measured 2026-07-31: `git rebase origin/main` on blade
+#    rewrote a commit stamped `phoebus` / `claude-cli` into `blade1tb` /
+#    `unknown-agent` — one command silently reattributed another machine's work
+#    and lost the lane. The trailer records who WROTE the commit, so the env is
+#    only ever used to fill a blank.
+#
+# 2. A NEW commit is refused if it would enter history misidentified — unset
+#    lane, or a machine name this repo has never seen. Never during a replay:
+#    aborting a ten-commit rebase halfway is worse than a wrong trailer, and
+#    rule 1 has already kept the replayed identity correct.
+
+MSG_FILE="$1"
+SOURCE="$2"
+
+# Leave merges, squashes and explicit -m reuse alone: their messages are not
+# ours to annotate.
+case "$SOURCE" in
+    merge|squash) exit 0 ;;
+esac
+
+if [ -n "$NOUGEN_MACHINE" ]; then
+    # Passed through untouched, exactly as core.resolve_machine() does it: a
+    # dotted name someone typed is their word on what this box is called.
+    MACHINE="$NOUGEN_MACHINE"
+else
+    MACHINE=$(git config --get nougen.machine 2>/dev/null)
+    if [ -z "$MACHINE" ]; then
+        # A PROBED hostname can carry a suffix the network handed out rather
+        # than a name anyone chose. Only known local-network ones are stripped.
+        # POSIX `case`, not sed: `\|` alternation is a GNU extension, and BSD
+        # sed (macOS) matches it literally — green on Windows, red on a Mac,
+        # for a fix about names.
+        MACHINE=$(hostname 2>/dev/null)
+        case "$MACHINE" in
+            *.local|*.lan|*.home|*.internal|*.localdomain) MACHINE="${MACHINE%.*}" ;;
+        esac
+    fi
+fi
+[ -z "$MACHINE" ] && MACHINE="unknown-machine"
+
+AGENT="$NOUGEN_AGENT"
+[ -z "$AGENT" ] && AGENT=$(git config --get nougen.agent 2>/dev/null)
+[ -z "$AGENT" ] && AGENT="unknown-agent"
+
+# Lowercase and slugify to match the handoff filenames, so a grep for a machine
+# finds both its commits and its handoffs.
+MACHINE=$(printf '%s' "$MACHINE" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/-*$//')
+AGENT=$(printf '%s' "$AGENT" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/-*$//')
+
+# --- rule 1: keep what is already there ----------------------------------
+existing() {
+    git interpret-trailers --parse "$MSG_FILE" 2>/dev/null | sed -n "s/^$1: *//p" | tail -1
+}
+OLD_MACHINE=$(existing Machine)
+OLD_AGENT=$(existing Agent)
+[ -n "$OLD_MACHINE" ] && [ "$OLD_MACHINE" != "unknown-machine" ] && MACHINE="$OLD_MACHINE"
+[ -n "$OLD_AGENT" ] && [ "$OLD_AGENT" != "unknown-agent" ] && AGENT="$OLD_AGENT"
+
+# --- rule 2: refuse a misidentified NEW commit ---------------------------
+GIT_DIR_PATH=$(git rev-parse --git-dir 2>/dev/null) || GIT_DIR_PATH=".git"
+REPLAYING=""
+for marker in rebase-merge rebase-apply CHERRY_PICK_HEAD MERGE_HEAD REVERT_HEAD; do
+    [ -e "$GIT_DIR_PATH/$marker" ] && REPLAYING="1"
+done
+
+# One deliberate override, because a guard that cannot be passed is a guard
+# people uninstall. NOUGEN_IDENTITY_OK=1 is also how a genuinely new box
+# introduces itself the first time.
+if [ -z "$REPLAYING" ] && [ "$NOUGEN_IDENTITY_OK" != "1" ]; then
+    if [ "$AGENT" = "unknown-agent" ]; then
+        echo "✋ refusing to commit as 'unknown-agent'." >&2
+        echo "   Nothing on this machine knows which lane is driving, so an" >&2
+        echo "   unset lane is permanent once the commit lands." >&2
+        echo "" >&2
+        echo "   relay init --agent <your-lane>        # stored per clone, survives shells" >&2
+        echo "   NOUGEN_IDENTITY_OK=1 git commit ...   # or override, deliberately" >&2
+        exit 1
+    fi
+
+    ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT="."
+    DIR="$ROOT/${NOUGEN_GIT_HANDOFF_DIR:-.handoffs}"
+    KNOWN=$(ls "$DIR" 2>/dev/null | sed -n 's/^[^_]*__\([^_]*\)__.*/\1/p' | sort -u)
+    if [ -n "$KNOWN" ] && ! printf '%s\n' "$KNOWN" | grep -qx "$MACHINE"; then
+        echo "✋ '$MACHINE' has never written a record in this repo." >&2
+        echo "   Machines already here: $(printf '%s ' $KNOWN)" >&2
+        echo "" >&2
+        echo "   If your hostname is not what the fleet calls this box, name it:" >&2
+        echo "     relay init --agent <lane> --machine <the-name-the-fleet-uses>" >&2
+        echo "   If this box really is new, introduce it once:" >&2
+        echo "     NOUGEN_IDENTITY_OK=1 git commit ..." >&2
+        exit 1
+    fi
+fi
+
+git interpret-trailers --in-place \
+    --if-exists replace \
+    --trailer "Machine: $MACHINE" \
+    --trailer "Agent: $AGENT" \
+    "$MSG_FILE"
+
+exit 0
