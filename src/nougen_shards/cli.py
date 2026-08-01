@@ -907,8 +907,13 @@ def get_parser():
     p_handoff = subparsers.add_parser("handoff", help="Cross-agent session handoff notes")
     p_handoff.add_argument("action", choices=[
         "create", "read", "list", "ack", "start", "checkpoint", "complete",
-        "rebuild-db", "reconcile", "watch",
-    ], help="create | read | list | ack | start | checkpoint | complete | rebuild-db | reconcile | watch")
+        "rebuild-db", "reconcile", "watch", "machines", "sync", "sync-init",
+        "triggers", "trigger-add", "trigger-rm", "trigger-enable",
+        "trigger-disable", "trigger-test", "trigger-runs",
+    ], help=("create | read | list | ack | start | checkpoint | complete | "
+             "rebuild-db | reconcile | watch | machines | sync | sync-init | "
+             "triggers | trigger-add | trigger-rm | trigger-enable | "
+             "trigger-disable | trigger-test | trigger-runs"))
     p_handoff.add_argument("--message", "-m", default="", help="Handoff note or acknowledgement message")
     p_handoff.add_argument("--agent", "-a", default=None,
                            help="Agent type (gemini, claude, codex, ollama, openrouter)")
@@ -921,6 +926,44 @@ def get_parser():
                            help="(reconcile/watch) Persist resolved stale-complete status to disk")
     p_handoff.add_argument("--interval", type=float, default=5.0,
                            help="(watch) Poll interval in seconds (default: 5.0)")
+    p_handoff.add_argument("--trigger-id", dest="trigger_id", default=None,
+                           help="(trigger-*) Trigger name")
+    p_handoff.add_argument("--run", dest="run_cmd", default=None,
+                           help="(trigger-add) Shell command to execute when the rule matches")
+    p_handoff.add_argument("--on", dest="on_events", default="created",
+                           help=("(trigger-add) Comma-separated events: created, "
+                                 "acknowledged, started, checkpoint, blocked, completed"))
+    p_handoff.add_argument("--origin", choices=["any", "local", "remote"], default="any",
+                           help="(trigger-add) Fire only for handoffs from this origin")
+    p_handoff.add_argument("--match-host", dest="match_host", default=None,
+                           help="(trigger-add) Only handoffs written by this machine (host or id)")
+    p_handoff.add_argument("--match-branch", dest="match_branch", default=None,
+                           help="(trigger-add) Only handoffs on this git branch")
+    p_handoff.add_argument("--match-goal", dest="match_goal", default=None,
+                           help="(trigger-add) Only handoffs whose goal contains this text")
+    p_handoff.add_argument("--on-machine", dest="on_machine", default=None,
+                           help="(trigger-add) Only run the rule on this machine (host or id)")
+    p_handoff.add_argument("--background", action="store_true", default=False,
+                           help="(trigger-add) Detach the command instead of waiting for it")
+    p_handoff.add_argument("--timeout", type=int, default=60,
+                           help="(trigger-add) Seconds to wait for a foreground command")
+    p_handoff.add_argument("--desc", dest="trigger_desc", default="",
+                           help="(trigger-add) Human description of what the rule is for")
+    p_handoff.add_argument("--event", dest="test_event", default="created",
+                           help="(trigger-test) Event to simulate against the target handoff")
+    p_handoff.add_argument("--limit", type=int, default=20,
+                           help="(trigger-runs) How many past trigger runs to show")
+    p_handoff.add_argument("--remote", default=None,
+                           help="(sync/sync-init) Git remote holding the shared handoff records")
+    p_handoff.add_argument("--no-push", dest="no_push", action="store_true", default=False,
+                           help="(sync) Receive only — do not publish local records")
+    p_handoff.add_argument("--no-pull", dest="no_pull", action="store_true", default=False,
+                           help="(sync) Publish only — do not fetch remote records")
+    p_handoff.add_argument("--no-replay", dest="no_replay", action="store_true", default=False,
+                           help="(sync) Do not fire triggers for newly arrived records")
+    p_handoff.add_argument("--share-triggers", dest="share_triggers", action="store_true",
+                           default=False,
+                           help="(sync) Also sync triggers.json — it is executable config, opt in knowingly")
 
     return parser
 
@@ -1020,6 +1063,167 @@ def cmd_handoff(args):
             interval=getattr(args, "interval", 5.0),
             write=getattr(args, "write", False),
         )
+    elif args.action == "machines":
+        handoff.show_machines(getattr(args, "agent", None))
+    elif args.action in {"sync", "sync-init"}:
+        cmd_handoff_sync(args)
+    elif args.action.startswith("trigger"):
+        cmd_handoff_triggers(args, handoff)
+
+
+def cmd_handoff_sync(args):
+    """Exchange handoff records with the other computers in the fleet."""
+    from . import handoff_sync
+
+    if args.action == "sync-init":
+        result = handoff_sync.init_sync(
+            remote=args.remote, share_triggers=args.share_triggers
+        )
+        if result.get("error"):
+            print(f"Sync setup failed: {result['error']}")
+            return
+        print(f"Handoff sync repo: {result['dir']}")
+        print(f"Remote: {result.get('remote') or 'none configured'}")
+        if not result.get("remote"):
+            print("Set one with: nougen handoff sync-init --remote <git url>")
+        return
+
+    report = handoff_sync.sync(
+        remote=args.remote,
+        push=not args.no_push,
+        pull=not args.no_pull,
+        share_triggers=args.share_triggers,
+        replay=not args.no_replay,
+    )
+    print(f"Sync from {report['host']} → {report.get('remote') or 'no remote'}")
+    print(
+        f"  committed={report['committed']} pulled={report['pulled']} "
+        f"pushed={report['pushed']}"
+    )
+    for handoff_id in report["arrived"]:
+        print(f"  ← arrived: {handoff_id}")
+    for record in report["fired"]:
+        print(f"  ⚡ {record['trigger_id']} → {record['status']}")
+    for error in report["errors"]:
+        print(f"  ! {error}")
+
+
+def cmd_handoff_triggers(args, handoff):
+    """Trigger subcommands — the automation layer on top of handoff state."""
+    from . import handoff_triggers, machine
+
+    action = args.action
+    if action == "triggers":
+        triggers = handoff_triggers.load_triggers()
+        mode = handoff_triggers.trigger_mode()
+        print(f"Machine: {machine.host_label()} ({machine.machine_id()})")
+        print(f"Trigger mode: {mode}  [NOUGEN_TRIGGERS=off|dry to change]")
+        print(f"Registry: {handoff_triggers.get_trigger_file()}")
+        if not triggers:
+            print("No triggers registered. Add one with 'handoff trigger-add'.")
+            return
+        for t in triggers:
+            match = t.get("match") or {}
+            state = "enabled" if t.get("enabled", True) else "disabled"
+            scope = t.get("on_machine") or "any machine"
+            filters = ", ".join(
+                f"{k}={v}" for k, v in match.items() if v and v != "any"
+            ) or "no filters"
+            print(
+                f"\n• {t.get('id')} [{state}] on {scope}\n"
+                f"  events: {', '.join(t.get('events') or [])}\n"
+                f"  match : {filters}\n"
+                f"  run   : {t.get('run')}"
+                + ("  (background)" if t.get("background") else "")
+            )
+            if t.get("description"):
+                print(f"  note  : {t['description']}")
+        return
+
+    if action == "trigger-add":
+        if not args.trigger_id or not args.run_cmd:
+            print("trigger-add needs --trigger-id and --run.")
+            return
+        try:
+            trigger = handoff_triggers.add_trigger(
+                trigger_id=args.trigger_id,
+                run=args.run_cmd,
+                events=[e.strip() for e in (args.on_events or "").split(",") if e.strip()],
+                origin=args.origin,
+                agent=args.agent,
+                host=args.match_host,
+                branch=args.match_branch,
+                goal_contains=args.match_goal,
+                on_machine=args.on_machine,
+                background=args.background,
+                timeout=args.timeout,
+                description=args.trigger_desc,
+            )
+        except ValueError as exc:
+            print(f"Invalid trigger: {exc}")
+            return
+        print(f"Registered trigger '{trigger['id']}' → {handoff_triggers.get_trigger_file()}")
+        return
+
+    if action == "trigger-rm":
+        if not args.trigger_id:
+            print("trigger-rm needs --trigger-id.")
+            return
+        removed = handoff_triggers.remove_trigger(args.trigger_id)
+        print("Removed." if removed else f"No trigger '{args.trigger_id}'.")
+        return
+
+    if action in {"trigger-enable", "trigger-disable"}:
+        if not args.trigger_id:
+            print(f"{action} needs --trigger-id.")
+            return
+        enabled = action == "trigger-enable"
+        found = handoff_triggers.set_trigger_enabled(args.trigger_id, enabled)
+        print(
+            f"Trigger '{args.trigger_id}' {'enabled' if enabled else 'disabled'}."
+            if found else f"No trigger '{args.trigger_id}'."
+        )
+        return
+
+    if action == "trigger-test":
+        # Dry run against a real record: shows which rules would fire without
+        # executing anything, so a rule can be proven before it is trusted.
+        path, data = handoff._find_handoff(
+            args.agent, getattr(args, "handoff_id", None), None
+        )
+        if not path or not data:
+            print("No handoff record found to test against.")
+            return
+        os.environ["NOUGEN_TRIGGERS"] = "dry"
+        try:
+            fired = handoff_triggers.fire(args.test_event, data, path)
+        finally:
+            os.environ.pop("NOUGEN_TRIGGERS", None)
+        print(
+            f"Handoff {data.get('handoff_id')} "
+            f"(origin={machine.record_origin(data)}, event={args.test_event})"
+        )
+        if not fired:
+            print("No triggers would fire.")
+        for record in fired:
+            print(f"  would run [{record['trigger_id']}]: {record['command']}")
+        return
+
+    if action == "trigger-runs":
+        runs = handoff.get_trigger_runs(limit=args.limit, trigger_id=args.trigger_id)
+        if not runs:
+            print("No trigger runs recorded.")
+            return
+        for run in runs:
+            print(
+                f"{(run.get('timestamp') or '')[:19]}  {run.get('trigger_id')}  "
+                f"{run.get('event')}  {run.get('status')}  "
+                f"exit={run.get('exit_code')}  on={run.get('host')}  "
+                f"handoff={run.get('handoff_id')}"
+            )
+            if run.get("stderr"):
+                print(f"    stderr: {run['stderr'].strip()[:200]}")
+        return
 
 def main():
     """Execution entry point."""
