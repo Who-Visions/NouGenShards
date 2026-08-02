@@ -796,11 +796,30 @@ def get_handoff_files(agent: Optional[str] = None) -> List[Path]:
             if subdir.exists():
                 files.extend(subdir.glob("handoff_*.json"))
 
-    return sorted(
-        files,
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    return sorted(files, key=_handoff_sort_key, reverse=True)
+
+
+def _handoff_sort_key(path: Path) -> tuple:
+    """Order records by when they were WRITTEN, not when the file was touched.
+
+    File mtimes describe this clone, not the fleet. A fresh clone stamps every
+    record with the checkout time, `handoff sync` restamps whatever it pulled,
+    and any write — an ack, a checkpoint — jumps that record to the front. So
+    the "latest handoff" could change without a single new handoff existing,
+    and two machines running `handoff read` against the same registry could
+    legitimately disagree about which record is newest.
+
+    The record's own timestamp is the same on every machine. mtime stays as the
+    tiebreaker for records that predate the field or carry an unparseable one,
+    so ordering degrades rather than raising.
+    """
+    data = _read_handoff(path)
+    stamp = str((data or {}).get("timestamp") or "")
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return (stamp, mtime)
 
 
 def start_orchestration(
@@ -971,6 +990,7 @@ def acknowledge_handoff(
         return None
 
     target_path: Optional[Path] = None
+    skipped: list = []
     for p in files:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
@@ -983,6 +1003,33 @@ def acknowledge_handoff(
         elif data.get("status", "open") == "open":
             target_path = p
             break
+        elif not skipped:
+            # The newest record is spoken for. Remember who has it — the reason
+            # matters more than the fact when explaining what happened next.
+            skipped.append(data)
+
+    # Refuse to silently claim something other than what `handoff read` just
+    # showed. `read` displays the newest record; a bare `ack` walks past it to
+    # the newest still-OPEN one. When another agent claims a record between
+    # those two commands — seconds, with several agents on one registry — the
+    # operator sees a success line naming a handoff they never looked at, and
+    # the only clue is an id they have no reason to be reading closely.
+    # Stopping costs one `--id` flag. Guessing costs a wrongly-claimed record
+    # on a registry the whole fleet trusts.
+    if target_path is not None and skipped and not handoff_id:
+        holder = skipped[0]
+        console.print(
+            f"[yellow]The most recent handoff is already acknowledged by "
+            f"{(holder.get('acknowledged_by') or '?').upper()} at "
+            f"{holder.get('acknowledged_at', '?')}.[/yellow]"
+        )
+        console.print(
+            f"[dim]Not claiming a different one on your behalf. To take the "
+            f"next open handoff:[/dim]\n"
+            f"    nougen handoff ack --id "
+            f"{_read_handoff(target_path).get('handoff_id', '<id>')}"
+        )
+        return None
 
     if target_path is None:
         if handoff_id:
@@ -990,6 +1037,39 @@ def acknowledge_handoff(
         else:
             console.print("[yellow]All handoffs are already acknowledged.[/yellow]")
         return None
+
+    # An acknowledgement is a read-back: it tells the fleet someone OTHER than
+    # the author has picked the work up. Acking your own record asserts that
+    # about yourself, and the state it leaves behind is indistinguishable from
+    # a real claim — the next machine to look sees a handoff that has been
+    # taken, and moves on.
+    #
+    # Caught by doing it: reading a leg back to check it had synced, running a
+    # bare `ack` to test the targeting fix, and silently claiming the message
+    # that had just been written for another box. Refusing costs a flag when
+    # someone genuinely means it; not refusing costs a handoff nobody delivers.
+    if not handoff_id:
+        candidate = _read_handoff(target_path) or {}
+        author = (candidate.get("agent") or "").lower()
+        receiver_now = (os.environ.get("NOUGEN_AGENT") or detect_current_agent()).lower()
+        # Positive proof only: the record must carry an id equal to this box's.
+        # is_local_record() treats an unstamped record as local — the right
+        # default for triggers, wrong here, because it would make every
+        # pre-stamping handoff written by an agent of the same name unclaimable.
+        # Refuse when we know, not when we cannot tell.
+        recorded_id = machine.record_machine(candidate).get("machine_id")
+        same_box = bool(recorded_id) and recorded_id == machine.machine_id()
+        if author and author == receiver_now and same_box:
+            console.print(
+                f"[yellow]The newest open handoff was written by this agent on "
+                f"this machine ({author} @ {machine.host_label()}).[/yellow]"
+            )
+            console.print(
+                "[dim]Acknowledging your own handoff would mark it claimed for "
+                "everyone else. If you mean it, name it:[/dim]\n"
+                f"    nougen handoff ack --id {candidate.get('handoff_id', '<id>')}"
+            )
+            return None
 
     receiver = (os.environ.get("NOUGEN_AGENT") or detect_current_agent()).lower()
     stamp = machine.machine_stamp()
@@ -1260,6 +1340,13 @@ def show_latest_handoff(agent: Optional[str] = None):
                 f" [magenta]⇢ REMOTE — written elsewhere, "
                 f"you are on {machine.host_label()}[/magenta]"
             )
+        else:
+            # Same box under another name. Worth saying — one computer counted
+            # as two is how a fleet total quietly doubles — but it is not a
+            # claim about where the record came from.
+            alias = machine.record_alias_warning(data)
+            if alias:
+                machine_line += f" [yellow]⇢ {alias}[/yellow]"
         machine_line += "\n"
 
         # Format handoff details into rich panels
