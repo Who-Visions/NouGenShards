@@ -320,6 +320,23 @@ def compression_density(content: str) -> float:
         return 0.5
 
 
+def _llm_scoring_enabled() -> bool:
+    """Whether to spend a model call scoring density. Off unless asked.
+
+    A named function rather than an inline check because the test-environment
+    guard used to be inline, which made the opt-in path impossible to exercise:
+    "pytest" is always in sys.modules under a test run, so the function
+    returned the fallback before reaching anything worth testing. A guard that
+    makes its own feature untestable is a guard nobody can verify.
+    """
+    import sys
+    if "pytest" in sys.modules or os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    return (os.environ.get("NOUGEN_DENSITY_LLM") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def calculate_contrastive_perplexity(content: str) -> float:
     """Estimates information density / contrastive perplexity using local Ollama or OpenRouter."""
     if not content:
@@ -334,10 +351,58 @@ def calculate_contrastive_perplexity(content: str) -> float:
     # ever built.)
     fallback_score = compression_density(content)
 
-    # Check if we are running in a test environment to prevent local LLM/OpenRouter calls
-    import sys
-    if "pytest" in sys.modules or os.environ.get("PYTEST_CURRENT_TEST"):
+    if not _llm_scoring_enabled():
         return fallback_score
+
+    # LLM scoring is OPT-IN, because it was costing 48 seconds per capture.
+    #
+    # Measured on this box: the SQLite write is 0.03s and compression_density
+    # above is 0.0000s; the whole 48s was one local Ollama inference to produce
+    # a single float. Nine shards took six minutes of wall time for nine local
+    # writes, and it never failed — it just waited, which is why nobody caught
+    # it. A memory system that takes a minute to remember something does not
+    # get used at the moment it matters.
+    #
+    # Nothing is lost by defaulting off. The fallback already fires on every
+    # box without Ollama running, so the vault ALREADY holds a mix of
+    # LLM-derived and gzip-derived scores depending on which machine happened
+    # to capture — the metric was never comparable across records. Deterministic
+    # and instant everywhere is strictly better than slow and inconsistent.
+    #
+    # Set NOUGEN_DENSITY_LLM=1 to restore model scoring; it is then bounded by
+    # NOUGEN_DENSITY_TIMEOUT seconds (default 5) so it can degrade rather than
+    # hang. The bound is enforced by running the scorer on a daemon thread and
+    # abandoning it — no chat() in models_client takes a timeout argument, so a
+    # deadline checked only between attempts would gate whether a call STARTS
+    # while doing nothing about one already in flight. That version was written
+    # first and measured at 48s with the budget set to 3.
+    try:
+        _budget = float(os.environ.get("NOUGEN_DENSITY_TIMEOUT") or 5.0)
+    except ValueError:
+        _budget = 5.0
+
+    import threading
+    _result: list = []
+
+    def _score() -> None:
+        try:
+            _result.append(_llm_density(content))
+        except Exception:
+            pass
+
+    _worker = threading.Thread(target=_score, daemon=True)
+    _worker.start()
+    _worker.join(_budget)
+    return _result[0] if _result else fallback_score
+
+
+def _llm_density(content: str) -> Optional[float]:
+    """Ask a model for a density score. Returns None if no provider answers.
+
+    Split out of calculate_contrastive_perplexity so the caller can abandon it
+    on a deadline: it runs on a daemon thread, and a thread that outlives its
+    budget is dropped rather than waited on.
+    """
 
     # Try local Ollama first
     try:
@@ -380,7 +445,8 @@ def calculate_contrastive_perplexity(content: str) -> float:
     except Exception:
         pass
 
-    return fallback_score
+    # No provider answered; the caller substitutes its own fallback.
+    return None
 
 
 def lost_in_the_middle_reorder(shards: list) -> list:
