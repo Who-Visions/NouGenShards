@@ -28,7 +28,13 @@ ts/audit_results.json
 .venv/
 venv/
 transcript.log
-.handoffs/
+# .handoffs/ is the relay registry, and records ARE the payload — a registry
+# nobody else can read is not a registry. Ignored here since June, which is why
+# 130+ legs written in this repo never reached another machine.
+# The pre-relay records keep their old naming and stay local; anything written
+# by `relay` (<UTC>__<machine>__<agent>) is shared.
+.handoffs/handoff_*
+.handoffs/gemini handoffs/
 .vault/
 pending_shards/
 
@@ -85,6 +91,7 @@ verify_swap.py
 fix_types.py
 check_unsharded.py
 shard_vault_files.py
+tools/migrate_prototype_persistence.py
 
 # Fleet / orchestration tooling — internal, not part of the public package
 # (banned from the user-facing tree by the project constitution).
