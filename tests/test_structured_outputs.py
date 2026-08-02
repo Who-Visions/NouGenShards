@@ -26,7 +26,7 @@ def test_validate_against_schema_success():
         },
         "required": ["name"]
     }
-    data: Dict[str, Any] = {"name": "Dave", "age": 30}
+    data: Dict[str, Any] = {"name": "Ada", "age": 30}
     valid, errors = validate_against_schema(data, schema)
     assert valid is True
     assert len(errors) == 0

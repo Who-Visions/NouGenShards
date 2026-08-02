@@ -23,7 +23,7 @@ test("validate_against_schema_success", () => {
     properties: { name: { type: "string" }, age: { type: "integer" } },
     required: ["name"],
   };
-  const [valid, errors] = validate_against_schema({ name: "Dave", age: 30 }, schema);
+  const [valid, errors] = validate_against_schema({ name: "Ada", age: 30 }, schema);
   assert.equal(valid, true);
   assert.equal(errors.length, 0);
 });
