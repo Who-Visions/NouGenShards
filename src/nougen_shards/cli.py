@@ -105,6 +105,20 @@ def cmd_auth(args):
         keymaker.ingest_secret(key_map[provider], args.input)
         print(f"✅ API key for {provider} saved to vault.")
 
+    elif args.action == "check":
+        from . import auth_check
+        keys = keymaker.list_providers()
+        secrets = {}
+        for k in keys:
+            v = keymaker.get_secret(k)
+            if v:
+                secrets[k] = v
+        results = auth_check.check_all(secrets, timeout=getattr(args, "timeout", 10.0))
+        print(auth_check.format_report(results, as_json=getattr(args, "json", False)))
+        # Exit non-zero only for keys the provider actively REJECTED, so this
+        # can gate a deploy. An unreachable provider must not fail a build.
+        return 1 if any(r.actionable for r in results) else 0
+
     elif args.action == "list":
         keys = keymaker.list_providers()
         if getattr(args, 'json', False) is True:
@@ -827,10 +841,12 @@ def get_parser():
     p_chat.add_argument("--provider")
 
     p_auth = subparsers.add_parser("auth", help="Manage keys")
-    p_auth.add_argument("action", choices=["set-key", "list"])
+    p_auth.add_argument("action", choices=["set-key", "list", "check"])
     p_auth.add_argument("provider", nargs="?")
     p_auth.add_argument("input", nargs="?")
     p_auth.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_auth.add_argument("--timeout", type=float, default=10.0,
+                        help="Per-provider probe timeout in seconds (auth check)")
 
     p_mark = subparsers.add_parser("mark", help="Update utility")
     p_mark.add_argument("id", type=int)
