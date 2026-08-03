@@ -1,0 +1,35 @@
+{
+  "handoff_id": "20260803_081832_vm_claude_optimistic-feynman-clnf2s",
+  "timestamp": "2026-08-03T08:18:32.809939",
+  "goal": "Scheduled commit review across NouGen repos",
+  "message": "## Recent Changes\n- NouGenBuilds (claude/blissful-bell-clnf2s): Omar Rodriguez inspector email drafted/rewritten to ~110 words; claimant of record confirmed as Monna Belizaire (Learn with Mrs B LLC); project timeline corrected (closing 06-10, work start ~06-15/06-20); Zelle/BoA ledger enumerated to 29 records; hauler and cleaning vendor identified; relay registry adopted (32dd4cc).\n- NouGenShards (claude/optimistic-feynman-clnf2s): auth-check feature merged (each provider's stored key gets verified live, PR #72); density-scoring perf opt-in merged (PR #71); relay registry fix landed (7c3b148) \u2014 .handoffs/ un-ignored except legacy handoff_* naming and gemini handoffs/, so new claude/codex records now share via git instead of staying machine-local.\n\n## Status\nNo blockers. This is a scheduled automated commit-review pass, not new development work \u2014 no code changes made in this run beyond this handoff record.",
+  "git": {
+    "branch": "claude/optimistic-feynman-clnf2s",
+    "changes": [],
+    "commits": [
+      "6302e21 Merge pull request #72 from Who-Visions/feat/auth-check",
+      "3fd22ab test(surface): allowlist the auth-check fixtures, and say why they look real",
+      "4789a69 feat(auth): ask each provider whether a stored key still works"
+    ]
+  },
+  "tasks": {
+    "summary": "Semantic Anchor: 0/0 tasks completed.",
+    "raw_count": 0
+  },
+  "session_id": "unknown",
+  "agent": "claude",
+  "machine": {
+    "machine_id": "dc36839f52e6",
+    "host": "vm",
+    "hostname": "vm",
+    "platform": "linux",
+    "os": "Linux 6.18.5",
+    "arch": "x86_64",
+    "python": "3.11.15",
+    "user": "root",
+    "repo_root": "/home/user/NouGenShards"
+  },
+  "status": "open",
+  "acknowledged_by": null,
+  "acknowledged_at": null
+}
