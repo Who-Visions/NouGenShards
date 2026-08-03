@@ -97,6 +97,10 @@ ALLOWED = {
         "same fixtures, TypeScript side",
     "tests/test_audit_fixes.py":
         "asserts the redactor catches these shapes",
+    "tests/test_auth_check.py":
+        "fixtures must LOOK like real keys — the tests assert a credential "
+        "never reaches a Result or a report, which only proves anything if "
+        "the value has a credential's shape",
     "docs/AUDIT_DEEP_DIVE.md":
         "prose describing the patterns the redactor looks for",
     "tests/test_published_surface.py":
@@ -105,6 +109,13 @@ ALLOWED = {
 
 
 def _tracked_files() -> list[str]:
+    """Tracked files only.
+
+    Note the consequence: a NEW file is invisible to this guard until it is
+    staged, so a fresh test fixture can pass locally and fail in CI. That is
+    the correct trade — scanning untracked scratch files would make the guard
+    unusable — but run it after `git add`, not before.
+    """
     out = subprocess.run(["git", "ls-files"], cwd=REPO,
                          capture_output=True, text=True, check=False)
     return [f for f in out.stdout.splitlines()
