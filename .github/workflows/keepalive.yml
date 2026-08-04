@@ -1,0 +1,25 @@
+name: Space keep-alive
+
+# Free-tier HF Spaces sleep after prolonged inactivity. A periodic health ping
+# keeps the NouGenShards relay node answering 24/7.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping relay /health
+        run: |
+          for attempt in 1 2 3; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
+              https://nougenai-nougenshards.hf.space/health) && \
+              [ "$code" = "200" ] && echo "healthy" && exit 0
+            echo "attempt $attempt got HTTP $code; space may be waking"
+            sleep 45
+          done
+          echo "relay did not answer after 3 attempts" >&2
+          exit 1
