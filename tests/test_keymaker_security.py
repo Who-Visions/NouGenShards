@@ -13,11 +13,17 @@ import pytest
 
 @pytest.fixture
 def km(tmp_path, monkeypatch):
-    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(tmp_path / "vault"))
+    # NOUGEN_SECRETS_DIR, not NOUGEN_VAULT_DIR: the latter points at the shard
+    # substrate and no longer redirects the credential vault. Isolating on the
+    # correct variable is what keeps these tests off the real ~/.nougen/vault.
+    monkeypatch.setenv("NOUGEN_SECRETS_DIR", str(tmp_path / "vault"))
     monkeypatch.setenv("NOUGEN_ALLOW_PLAINTEXT_VAULT", "1")
     import nougen_shards.keymaker as keymaker
     importlib.reload(keymaker)
     yield keymaker
+    # Restore module state so a stale tmp path can't leak into later tests.
+    monkeypatch.undo()
+    importlib.reload(keymaker)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")

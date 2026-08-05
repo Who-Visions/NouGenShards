@@ -1030,15 +1030,16 @@ def cmd_doctor(args):
     if not found_db:
         print(" ❌ No database shards found. Run 'nougen init' to bootstrap.")
 
-    # 2. Check Vault
-    print("\n[Vault]")
+    # 2. Check Credential Vault (API keys — not the shard substrate above)
+    print("\n[Credential Vault]")
     vault_path = keymaker.DB_PATH
     if vault_path.exists():
-        print(f" ✅ Vault: {vault_path.absolute()}")
+        print(f" ✅ Vault: {vault_path}")
         providers = keymaker.list_providers()
         print(f" ✅ Connected Providers: {', '.join(providers) if providers else 'None'}")
     else:
-        print(" ❌ Vault not found.")
+        print(f" ⚠️ No credential vault at {vault_path}")
+        print("    Only local providers are available. Run 'nougen auth' to store keys.")
 
     # 3. Check Providers
     print("\n[Service Connectivity]")

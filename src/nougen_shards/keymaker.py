@@ -92,7 +92,26 @@ def _fingerprint(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 # Portable Vault Resolution
-VAULT_DIR = Path(os.getenv("NOUGEN_VAULT_DIR", ".nougen_vault"))
+#
+# The secrets vault is deliberately NOT NOUGEN_VAULT_DIR: that variable points at
+# the shard substrate, so honoring it here wrote credentials into the shard
+# directory. It also must resolve to an absolute path — a bare relative default
+# made the vault follow the working directory, so keys stored from the repo root
+# were invisible anywhere else and stray vault dirs accumulated wherever the CLI
+# happened to run.
+def _resolve_secrets_dir() -> Path:
+    """Absolute location of the credential vault, independent of the CWD."""
+    explicit = os.getenv("NOUGEN_SECRETS_DIR")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    # Honor an existing project-local vault so upgrades don't orphan stored keys.
+    local_vault = Path(".nougen_vault")
+    if local_vault.is_dir():
+        return local_vault.resolve()
+    return Path.home() / ".nougen" / "vault"
+
+
+VAULT_DIR = _resolve_secrets_dir()
 DB_PATH = VAULT_DIR / "shards_secrets.db"
 CSV_PATH = VAULT_DIR / "shards_secrets.csv"
 SECRETS_JSON_DIR = VAULT_DIR / "service_accounts"
