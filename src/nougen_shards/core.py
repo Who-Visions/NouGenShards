@@ -465,6 +465,19 @@ def _init_db_locked(index: int, key) -> None:
     except sqlite3.OperationalError:
         pass
 
+    # Sensitivity classification (schema v2): 'normal' bodies stay plaintext,
+    # 'private'/'secret' bodies are AES-GCM encrypted by private_vault before
+    # they are written. enc=1 marks a row whose content column is ciphertext.
+    try:
+        cursor.execute("ALTER TABLE shards ADD COLUMN sensitivity TEXT DEFAULT 'normal';")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE shards ADD COLUMN enc INTEGER DEFAULT 0;")
+    except sqlite3.OperationalError:
+        pass
+
     # Create semantic_knowledge table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS semantic_knowledge (
@@ -778,8 +791,19 @@ def lost_in_the_middle_reorder(shards: list) -> list:
 
 def capture(event_type: str, title: str, content: str,
             tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
-            domain_key: Optional[str] = None, density_score: Optional[float] = None) -> bool:
-    """Saves a unit of experience (Module 5: Extract Invariants)."""
+            domain_key: Optional[str] = None, density_score: Optional[float] = None,
+            sensitivity: Optional[str] = None) -> bool:
+    """Saves a unit of experience (Module 5: Extract Invariants).
+
+    `sensitivity` is 'normal' (default, plaintext — the existing corpus),
+    'private', or 'secret'. Private and secret bodies are AES-256-GCM encrypted
+    by private_vault before they reach SQLite, so the personal-scope material
+    (finances, health, identity documents) is not readable from the DB file.
+    Titles and tags stay plaintext: they are the only handle recall has on an
+    encrypted shard, so keep identifying detail out of them.
+    """
+    from . import private_vault as _pv  # pylint: disable=import-outside-toplevel
+    sensitivity = _pv.normalize_sensitivity(sensitivity)
     # Structural secret guard (HARDENING invariant 8): redact known credential
     # shapes from title/content/tags before anything is hashed, embedded, or
     # written. Shards may hold key names + fingerprints, never plaintext values
@@ -900,12 +924,24 @@ def capture(event_type: str, title: str, content: str,
         tags_str = json.dumps(tag_list)
         timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
+        # Encrypt LAST, immediately before the write: the dedup hash, the blob
+        # gate, the redactor and the embedder all need the real text, and the
+        # AFTER INSERT trigger that feeds shards_fts reads new.content — so
+        # encrypting here is also what keeps the plaintext body out of the
+        # full-text index. Private shards are therefore findable by title and
+        # tag, not by body text. That tradeoff is the point.
+        stored_content = content
+        enc_flag = 0
+        if _pv.should_encrypt(sensitivity):
+            stored_content = _pv.encrypt_text(content)
+            enc_flag = 1
+
         conn = get_connection(target_idx)
         try:
             cursor = conn.execute("""
-                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (timestamp, event_type, title, content, tags_str, fhash, emb_blob, domain_key, density_score))
+                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag))
             conn.commit()
 
             # Log CREATED event
@@ -1150,7 +1186,7 @@ def _rank_key(item: dict, score_field: str = "final_score"):
 
 def _process_fts_result(row, db_index, query_embedding, now: Optional[datetime] = None):
     """Helper to score a single FTS result via the weighted relevance blend."""
-    item = dict(row)
+    item = hydrate(dict(row))
     item["_db_index"] = db_index
     # 1. Likelihood Part A: BM25 (The Adjacency Score)
     # FTS5 bm25() returns negative values where *more negative == stronger match*
@@ -1322,7 +1358,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     ORDER BY utility_score DESC LIMIT ?
                 """, (*dom_params, like_query, like_query, limit))
                 for row in cursor:
-                    item = dict(row)
+                    item = hydrate(dict(row))
                     item["_db_index"] = i
                     history.log_event(item["id"], i, "ACCESSED")
                     sem_score = 0.0
@@ -1392,7 +1428,7 @@ def _vector_retrieve_ann(query_embedding: List[float], limit: int = 20,
                 WHERE id IN ({placeholders}) {dom_clause}AND embedding IS NOT NULL
             """, params)
             for row in cursor:
-                item = dict(row)
+                item = hydrate(dict(row))
                 item["_db_index"] = db_idx
                 try:
                     emb_array = np.frombuffer(item["embedding"], dtype=np.float32)
@@ -1447,7 +1483,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                 WHERE {dom_clause}embedding IS NOT NULL
             """, dom_params)
             for row in cursor:
-                item = dict(row)
+                item = hydrate(dict(row))
                 item["_db_index"] = i
                 
                 try:
@@ -1851,13 +1887,36 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     return provenance.annotate(reordered)
 
 
+def hydrate(item: Optional[dict]) -> Optional[dict]:
+    """Decrypt an encrypted shard body on the way out of the DB.
+
+    Applied at every row->dict boundary so callers never have to know whether a
+    shard was stored private. Plaintext passes straight through, which keeps a
+    mixed corpus working. If the key is unavailable (wrong Windows profile, no
+    recovery key set) the row is returned with a placeholder body rather than
+    raising: one unreadable shard must not take down a whole recall.
+    """
+    if not item:
+        return item
+    body = item.get("content")
+    if not isinstance(body, str):
+        return item
+    try:
+        from . import private_vault as _pv  # pylint: disable=import-outside-toplevel
+        if _pv.is_encrypted(body):
+            item["content"] = _pv.decrypt_text(body)
+    except Exception as exc:  # key missing or tampered ciphertext
+        item["content"] = f"[encrypted shard — unavailable: {type(exc).__name__}]"
+    return item
+
+
 def get_shard_by_id(shard_id: int, db_index: int):
     """Retrieves a specific shard by ID from a specific DB index."""
     if not get_db_path(db_index).exists(): return None
     conn = get_connection(db_index)
     try:
         row = conn.execute("SELECT * FROM shards WHERE id = ?", (shard_id,)).fetchone()
-        return dict(row) if row else None
+        return hydrate(dict(row)) if row else None
     finally:
         conn.close()
 
