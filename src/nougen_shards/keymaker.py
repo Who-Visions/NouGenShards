@@ -260,8 +260,80 @@ def _harden_path(path, is_dir: bool = False) -> None:
         _HARDENED_DIRS.add(target)
 
 
-# Portable Vault Resolution
-VAULT_DIR = Path(os.getenv("NOUGEN_VAULT_DIR", ".nougen_vault"))
+# --- Secrets vault resolution -----------------------------------------------
+#
+# This used to be `Path(os.getenv("NOUGEN_VAULT_DIR", ".nougen_vault"))`, which
+# had two defects that split a single logical vault into several real ones:
+#
+#   1. `.nougen_vault` is CWD-RELATIVE. The store moved with the working
+#      directory, so a secret ingested from one directory was invisible from
+#      another -- get_secret returned None and callers concluded the credential
+#      was never ingested.
+#   2. NOUGEN_VAULT_DIR is the MEMORY vault (the shard cluster). Sharing it
+#      pointed the secrets DB at a directory holding 40+ shard databases and
+#      hundreds of MB. init_vault() then tried to icacls that whole tree, which
+#      timed out at 30s and made vault init fail outright.
+#
+# Measured on this deployment: secrets were split across `.nougen_vault` and the
+# memory vault, with one key stranded alone in the latter.
+#
+# Resolution is DETERMINISTIC -- exactly two possibilities, neither of which
+# depends on where the process happens to be running:
+#   1. NOUGEN_SECRETS_VAULT_DIR   -- explicit, wins outright
+#   2. ~/.nougen/secrets          -- stable, user-anchored default
+#
+# Searching for a nearby `.nougen_vault` was tried and rejected: walking up from
+# CWD is the same CWD-sensitivity in a longer form, and on this deployment it
+# resolved to a different store depending on which checkout was current.
+# Legacy stores are surfaced by find_legacy_stores() so drift is reported and
+# migrated rather than silently followed.
+#
+# NOUGEN_VAULT_DIR is deliberately NOT consulted: the memory vault and the
+# secrets vault are different things with different threat models.
+ENV_SECRETS_VAULT = "NOUGEN_SECRETS_VAULT_DIR"
+_LEGACY_VAULT_DIRNAME = ".nougen_vault"
+DB_FILENAME = "shards_secrets.db"
+
+
+def resolve_secrets_vault_dir() -> Path:
+    explicit = os.getenv(ENV_SECRETS_VAULT, "").strip()
+    if explicit:
+        return Path(explicit)
+    return Path.home() / ".nougen" / "secrets"
+
+
+def find_legacy_stores(roots=None) -> list:
+    """Secret stores sitting outside the canonical vault, newest-first.
+
+    Fragmentation is the failure mode this guards: a CWD-relative default spread
+    one logical vault across several real ones, and `get_secret` returning None
+    reads exactly like "never ingested". Reporting beats guessing which is real.
+    """
+    canonical = resolve_secrets_vault_dir().resolve()
+    if roots is None:
+        home = Path.home()
+        roots = [home / "Watchtower", home]
+    seen, found = set(), []
+    for root in roots:
+        try:
+            candidates = list(Path(root).glob(f"*/{_LEGACY_VAULT_DIRNAME}/{DB_FILENAME}"))
+            candidates += list(Path(root).glob(f"*/*/{_LEGACY_VAULT_DIRNAME}/{DB_FILENAME}"))
+            candidates += list(Path(root).glob(f"*/{DB_FILENAME}"))
+        except OSError:
+            continue
+        for path in candidates:
+            try:
+                resolved = path.resolve()
+            except OSError:
+                continue
+            if resolved in seen or resolved.parent == canonical:
+                continue
+            seen.add(resolved)
+            found.append(resolved)
+    return sorted(found)
+
+
+VAULT_DIR = resolve_secrets_vault_dir()
 DB_PATH = VAULT_DIR / "shards_secrets.db"
 CSV_PATH = VAULT_DIR / "shards_secrets.csv"
 SECRETS_JSON_DIR = VAULT_DIR / "service_accounts"

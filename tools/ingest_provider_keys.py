@@ -16,8 +16,12 @@ Vault naming: <PROVIDER>_KEY_<ACCOUNT_NORMALISED>  (mirrors existing OLLAMA_KEY_
 A per-provider default <PROVIDER>_API_KEY is set to the FIRST key seen for that provider.
 
 Usage:
-    set NOUGEN_VAULT_DIR=%USERPROFILE%\\.nougen_vault   (optional)
+    set NOUGEN_SECRETS_VAULT_DIR=...   (optional; defaults to %USERPROFILE%\\.nougen\\secrets)
     python tools/ingest_provider_keys.py path\\to\\keys.csv
+
+NOUGEN_VAULT_DIR does NOT affect the secrets vault -- that variable points at the
+memory vault (the shard cluster). Aiming secrets at it is what previously split
+one logical vault into several real ones.
 """
 import csv
 import hashlib

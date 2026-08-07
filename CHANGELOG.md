@@ -3,6 +3,30 @@
 All notable changes to NouGenShards will be documented in this file.
 
 ## [1.2.0] - 2026-08-07
+### Fixed
+- **Keymaker secrets vault resolved to more than one place.** `VAULT_DIR` was
+  `Path(os.getenv("NOUGEN_VAULT_DIR", ".nougen_vault"))`, which failed two ways at once:
+  `.nougen_vault` is **CWD-relative**, so the store moved with the working directory; and
+  `NOUGEN_VAULT_DIR` is the *memory* vault, so honouring it aimed the secrets DB at a directory
+  of 40+ shard databases and made `init_vault()`'s `icacls` call time out at 30s, failing vault
+  init outright. Measured on a live deployment: 44 secrets spread across **four** stores, with
+  `get_secret()` returning `None` in a way that reads as "never ingested" rather than "wrong
+  file". Resolution is now deterministic — `NOUGEN_SECRETS_VAULT_DIR`, else `~/.nougen/secrets`
+  — and never consults `NOUGEN_VAULT_DIR`. Walking up from CWD to find a nearby `.nougen_vault`
+  was tried and rejected: it is the same CWD-sensitivity in a longer form.
+- **Vault fragmentation is now reported, not followed**: `keymaker.find_legacy_stores()` lists
+  secret stores outside the canonical vault so drift is surfaced and migrated deliberately.
+- `tests/test_keymaker_vault_resolution.py` — 9 tests pinning deterministic resolution, CWD
+  independence, memory-vault-env isolation, and drift detection.
+- **Tests were never isolated from the real secrets vault** — the CWD-relative default was doing
+  it by accident. Making resolution deterministic exposed five tests that then read the operator's
+  live vault (`doctor` found real API keys; "empty vault" assertions met 41 real secrets). New
+  `tests/conftest.py` gives every test its own empty secrets vault, so no test can read, mutate,
+  or leak real credentials.
+- The TypeScript port (`ts/src/nougen_shards/keymaker.ts`) carried the identical CWD-relative
+  and memory-vault-collision defect; it now mirrors the Python resolution.
+- `tools/ingest_provider_keys.py` no longer advertises `NOUGEN_VAULT_DIR` for secrets.
+
 ### Added
 - **Private Vault** (`nougen_shards.private_vault`): encryption at rest for personal-scope
   content. Envelope scheme — AES-256-GCM per value under a single 32-byte vault data key,
