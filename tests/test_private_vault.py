@@ -18,7 +18,6 @@ These tests pin the properties that make that safe:
   5. file encryption never deletes an original it could not verify.
 """
 import base64
-import os
 import sqlite3
 import tempfile
 from pathlib import Path

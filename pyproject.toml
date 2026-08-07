@@ -36,6 +36,11 @@ dependencies = [
     "openai>=1.0",           # embeddings provider (text-embedding-3-small)
     "pydantic>=2.0",         # app.py models; mcp also requires pydantic v2
     "numpy>=1.24",           # imported in core.py; previously undeclared (broke `pip install .`)
+    # AES-256-GCM for private_vault. Hard requirement, not optional: capture()
+    # imports private_vault unconditionally to normalise `sensitivity`, so an
+    # undeclared cryptography breaks every write, not just encrypted ones.
+    # 42.0 is the floor for the AESGCM aead API this uses.
+    "cryptography>=42.0",
 ]
 
 [project.urls]

@@ -14,10 +14,6 @@ Before this was fixed, `VAULT_DIR` was `Path(os.getenv("NOUGEN_VAULT_DIR",
 These tests pin the fix: two possible answers, neither influenced by CWD or by
 the memory-vault variable.
 """
-import os
-
-import pytest
-
 from nougen_shards import keymaker
 
 
