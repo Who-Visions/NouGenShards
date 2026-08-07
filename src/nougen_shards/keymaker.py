@@ -92,8 +92,68 @@ def _fingerprint(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 # Portable Vault Resolution
-VAULT_DIR = Path(os.getenv("NOUGEN_VAULT_DIR", ".nougen_vault"))
-DB_PATH = VAULT_DIR / "shards_secrets.db"
+# This was `Path(os.getenv("NOUGEN_VAULT_DIR", ".nougen_vault"))`, which had two
+# defects that split one logical vault into several real ones:
+#
+#   1. `.nougen_vault` is CWD-RELATIVE. The store moved with the working
+#      directory, so a secret ingested from one directory was invisible from
+#      another -- get_secret returned None and callers concluded the credential
+#      had never been ingested.
+#   2. NOUGEN_VAULT_DIR is the MEMORY vault (the shard cluster). Sharing it
+#      pointed the secrets DB at a directory holding 40+ shard databases, and
+#      init_vault() then tried to icacls that whole tree, which timed out at 30s
+#      and made vault init fail outright.
+#
+# Measured on a live deployment: 44 secrets across four stores, one stranded alone.
+#
+# Resolution is DETERMINISTIC -- explicit env, else a user-anchored default.
+# Searching upward from CWD for a nearby `.nougen_vault` was implemented and
+# rejected: it is the same CWD-sensitivity in a longer form. Legacy stores are
+# surfaced by find_legacy_stores() so drift is migrated deliberately.
+ENV_SECRETS_VAULT = "NOUGEN_SECRETS_VAULT_DIR"
+_LEGACY_VAULT_DIRNAME = ".nougen_vault"
+DB_FILENAME = "shards_secrets.db"
+
+
+def resolve_secrets_vault_dir() -> Path:
+    explicit = os.getenv(ENV_SECRETS_VAULT, "").strip()
+    if explicit:
+        return Path(explicit)
+    return Path.home() / ".nougen" / "secrets"
+
+
+def find_legacy_stores(roots=None) -> list:
+    """Secret stores outside the canonical vault, so fragmentation is reported.
+
+    `get_secret` returning None reads exactly like "never ingested" rather than
+    "you are pointed at the wrong file", which is why this is worth surfacing.
+    """
+    canonical = resolve_secrets_vault_dir().resolve()
+    if roots is None:
+        home = Path.home()
+        roots = [home / "Watchtower", home]
+    seen, found = set(), []
+    for root in roots:
+        try:
+            candidates = list(Path(root).glob(f"*/{_LEGACY_VAULT_DIRNAME}/{DB_FILENAME}"))
+            candidates += list(Path(root).glob(f"*/*/{_LEGACY_VAULT_DIRNAME}/{DB_FILENAME}"))
+            candidates += list(Path(root).glob(f"*/{DB_FILENAME}"))
+        except OSError:
+            continue
+        for path in candidates:
+            try:
+                resolved = path.resolve()
+            except OSError:
+                continue
+            if resolved in seen or resolved.parent == canonical:
+                continue
+            seen.add(resolved)
+            found.append(resolved)
+    return sorted(found)
+
+
+VAULT_DIR = resolve_secrets_vault_dir()
+DB_PATH = VAULT_DIR / DB_FILENAME
 CSV_PATH = VAULT_DIR / "shards_secrets.csv"
 SECRETS_JSON_DIR = VAULT_DIR / "service_accounts"
 

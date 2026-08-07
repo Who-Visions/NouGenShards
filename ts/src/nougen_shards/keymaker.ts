@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { homedir } from "node:os";
 import { createDatabase } from "./_db.js";
 
 // Marker prefix for values encrypted at rest via Windows DPAPI (user-bound).
@@ -80,9 +81,27 @@ function _fingerprint(value: string): string {
   return createHash("sha256").update(value, "utf-8").digest("hex").slice(0, 12);
 }
 
-// Portable Vault Resolution
-export const VAULT_DIR = process.env.NOUGEN_VAULT_DIR ?? ".nougen_vault";
-export const DB_PATH = path.join(VAULT_DIR, "shards_secrets.db");
+// --- Secrets vault resolution ---------------------------------------------
+//
+// Kept in lockstep with the Python keymaker. This was
+// `process.env.NOUGEN_VAULT_DIR ?? ".nougen_vault"`, which had two defects:
+// `.nougen_vault` is CWD-relative (the store moved with the working directory,
+// fragmenting one logical vault into several real ones), and NOUGEN_VAULT_DIR is
+// the MEMORY vault, so honouring it aimed the secrets DB at the shard cluster.
+//
+// Deterministic: explicit env, else a user-anchored default. NOUGEN_VAULT_DIR is
+// deliberately not consulted.
+export const ENV_SECRETS_VAULT = "NOUGEN_SECRETS_VAULT_DIR";
+export const DB_FILENAME = "shards_secrets.db";
+
+export function resolve_secrets_vault_dir(): string {
+  const explicit = (process.env[ENV_SECRETS_VAULT] ?? "").trim();
+  if (explicit) return explicit;
+  return path.join(homedir(), ".nougen", "secrets");
+}
+
+export const VAULT_DIR = resolve_secrets_vault_dir();
+export const DB_PATH = path.join(VAULT_DIR, DB_FILENAME);
 export const CSV_PATH = path.join(VAULT_DIR, "shards_secrets.csv");
 export const SECRETS_JSON_DIR = path.join(VAULT_DIR, "service_accounts");
 
