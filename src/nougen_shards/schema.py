@@ -26,7 +26,10 @@ from dataclasses import dataclass, field
 from typing import Callable, List
 
 # Bump this when adding a migration. Stored per-DB in PRAGMA user_version.
-TARGET_SCHEMA_VERSION = 1
+TARGET_SCHEMA_VERSION = 2
+
+# Indexes skipped because a DB lacks their columns. Reported, not hidden.
+SKIPPED_INDEXES: List[str] = []
 
 
 # --- introspection helpers (idempotent, no exceptions for control flow) ---
@@ -90,6 +93,26 @@ _SHARD_INDEXES = [
 ]
 
 
+def _create_indexes(conn, specs, path: str = "") -> List[str]:
+    """Create indexes, skipping any whose columns this DB does not have.
+
+    The vault is heterogeneous: brain_scan's per-domain `*_vault.db` files carry a
+    shards table without `utility_score`, so an unconditional CREATE INDEX aborts
+    the whole migration for them. A missing column is a reason to skip one index,
+    not to leave the DB a schema version behind. Skips are returned, never
+    swallowed -- the caller reports them.
+    """
+    skipped = []
+    for name, ddl in specs:
+        try:
+            conn.execute(ddl)
+        except sqlite3.OperationalError as exc:
+            if "no such column" not in str(exc):
+                raise
+            skipped.append(f"{os.path.basename(path) or 'db'}:{name} ({exc})")
+    return skipped
+
+
 def _plan_v1(conn) -> List[str]:
     ops: List[str] = []
     if not _table_exists(conn, "shards"):
@@ -107,12 +130,45 @@ def _apply_v1(conn) -> None:
     for col, ddl in _SHARD_COLUMNS:
         if col not in have:
             conn.execute(f"ALTER TABLE shards ADD COLUMN {col} {ddl}")
-    for _name, ddl in _SHARD_INDEXES:
-        conn.execute(ddl)
+    SKIPPED_INDEXES.extend(_create_indexes(conn, _SHARD_INDEXES))
+
+
+# v2 -- sensitivity classification, so personal-scope shards (finances, health,
+# identity documents) can be encrypted at rest by private_vault instead of sitting
+# in the DB as plaintext. Existing rows default to 'normal'/unencrypted, so the
+# migration is a pure widening: nothing already stored changes meaning.
+_SHARD_COLUMNS_V2 = [
+    ("sensitivity", "TEXT DEFAULT 'normal'"),
+    ("enc", "INTEGER DEFAULT 0"),  # 1 = content column holds ngenc1 ciphertext
+]
+
+_SHARD_INDEXES_V2 = [
+    ("idx_shards_sensitivity", "CREATE INDEX IF NOT EXISTS idx_shards_sensitivity ON shards (sensitivity)"),
+]
+
+
+def _plan_v2(conn) -> List[str]:
+    if not _table_exists(conn, "shards"):
+        return ["CREATE TABLE shards (full base schema)"]
+    ops = _ensure_columns(conn, "shards", _SHARD_COLUMNS_V2)
+    have_idx = _indexes(conn, "shards")
+    for name, _ddl in _SHARD_INDEXES_V2:
+        if name not in have_idx:
+            ops.append(f"CREATE INDEX {name}")
+    return ops
+
+
+def _apply_v2(conn) -> None:
+    have = _columns(conn, "shards")
+    for col, ddl in _SHARD_COLUMNS_V2:
+        if col not in have:
+            conn.execute(f"ALTER TABLE shards ADD COLUMN {col} {ddl}")
+    SKIPPED_INDEXES.extend(_create_indexes(conn, _SHARD_INDEXES_V2))
 
 
 MIGRATIONS: List[Migration] = [
     Migration(1, "baseline-columns-indexes-versioning", _plan_v1, _apply_v1),
+    Migration(2, "sensitivity-classification-for-encrypted-shards", _plan_v2, _apply_v2),
 ]
 
 
@@ -169,8 +225,32 @@ def apply_db(path: str, backup: bool = True) -> DbPlan:
     return plan_db(path)  # re-read to confirm
 
 
+# A live vault holds more than the numbered cluster: brain_scan ingestion creates
+# per-domain `*_vault.db` files with the same shards table. Migrating only
+# `nougen_shards_*.db` left those a schema version behind, which is invisible right
+# up until a write carrying a newer column hits one and fails. Discover by shape
+# (does it have a shards table?), not by filename convention.
+ENV_DB_GLOBS = "NOUGEN_SCHEMA_DB_GLOBS"
+_DEFAULT_DB_GLOBS = ("nougen_shards_*.db", "*_vault.db")
+
+
 def _vault_dbs(vault_dir: str) -> List[str]:
-    return sorted(glob.glob(os.path.join(vault_dir, "nougen_shards_*.db")))
+    patterns = os.environ.get(ENV_DB_GLOBS)
+    globs = [p for p in patterns.split(os.pathsep) if p] if patterns else list(_DEFAULT_DB_GLOBS)
+    found = set()
+    for pattern in globs:
+        found.update(glob.glob(os.path.join(vault_dir, pattern)))
+    out = []
+    for path in sorted(found):
+        conn = sqlite3.connect(path)
+        try:
+            if _table_exists(conn, "shards"):
+                out.append(path)
+        except sqlite3.DatabaseError:
+            continue
+        finally:
+            conn.close()
+    return out
 
 
 def plan_vault(vault_dir: str) -> List[DbPlan]:
@@ -210,6 +290,10 @@ def _main(argv=None):
                 print(f"   - {op}")
         else:
             print(f"{name}: v{p.from_version} (current, no changes)")
+    if SKIPPED_INDEXES:
+        print(f"\n{len(SKIPPED_INDEXES)} index(es) skipped - that DB lacks the column:")
+        for note in SKIPPED_INDEXES:
+            print(f"   - {note}")
     if not args.execute and total_pending:
         print(f"\n{total_pending} pending ops across {len(plans)} DBs. Re-run with --execute to apply (each DB backed up to .bak).")
     return 0
