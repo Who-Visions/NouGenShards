@@ -844,8 +844,10 @@ def find_best_model_from_list(models: List[str]) -> Optional[ModelBudgetConfig]:
 
 class OllamaClient(LocalLLMClient):
     """Client for local Ollama instance."""
-    def __init__(self, base_url: str = "http://127.0.0.1:11434"):
-        self.base_url = base_url
+    def __init__(self, base_url: str | None = None):
+        # env -> sanitized (OLLAMA_HOST may be a bind address) -> logged fallback
+        from .ollama_host import resolve_ollama_url, sanitize_ollama_url
+        self.base_url = sanitize_ollama_url(base_url) if base_url else resolve_ollama_url()
 
     def is_alive(self) -> bool:
         try:

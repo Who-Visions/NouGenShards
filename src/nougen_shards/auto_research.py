@@ -20,11 +20,20 @@ if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
 
 def check_ollama_alive() -> bool:
-    """Check if the local Ollama instance is alive."""
+    """Check if the configured Ollama instance is alive.
+
+    Host/port come from the sanitized client URL, never from a raw OLLAMA_HOST
+    (which is a bind address and may read 0.0.0.0).
+    """
+    from urllib.parse import urlsplit
+
+    from .ollama_host import DEFAULT_OLLAMA_PORT, resolve_ollama_url
+
     try:
+        parts = urlsplit(resolve_ollama_url())
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.5)
-        s.connect(("127.0.0.1", 11434))
+        s.settimeout(float(os.environ.get("NOUGEN_OLLAMA_PROBE_TIMEOUT", "0.5")))
+        s.connect((parts.hostname or "127.0.0.1", parts.port or DEFAULT_OLLAMA_PORT))
         s.close()
         return True
     except Exception:
@@ -36,7 +45,8 @@ def get_best_model() -> Optional[str]:
         return None
     try:
         from .models_client import find_best_model_from_list
-        req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
+        from .ollama_host import api as _ollama_api
+        req = urllib.request.Request(_ollama_api("/api/tags"), method="GET")
         with urllib.request.urlopen(req, timeout=3) as r:
             if r.getcode() == 200:
                 data = json.loads(r.read().decode("utf-8"))
@@ -56,8 +66,9 @@ def query_local_llm(model: str, prompt: str) -> str:
             "stream": False
         }
         body = json.dumps(payload).encode("utf-8")
+        from .ollama_host import api as _ollama_api
         req = urllib.request.Request(
-            "http://127.0.0.1:11434/api/generate", data=body, method="POST"
+            _ollama_api("/api/generate"), data=body, method="POST"
         )
         req.add_header("Content-Type", "application/json")
         with urllib.request.urlopen(req, timeout=90) as r:

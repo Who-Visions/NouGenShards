@@ -13,8 +13,10 @@ import json
 from dataclasses import dataclass, field
 from typing import List, Optional
 from nougen_shards.gatekeeper import check_mutation_gate
+from nougen_shards.ollama_host import api as _ollama_api
 
-OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+# Resolved at import from env (sanitized -- OLLAMA_HOST may be a bind address).
+OLLAMA_URL = _ollama_api("/api/generate")
 
 
 @dataclass(frozen=True)

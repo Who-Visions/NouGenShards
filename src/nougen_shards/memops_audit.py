@@ -313,23 +313,15 @@ def _normalize_ollama_host(raw: str) -> str:
     """Make an inherited OLLAMA_HOST dialable (Rule 0.2: never trust inherited env).
 
     Measured on this host: OLLAMA_HOST=0.0.0.0 -- a *bind* address with no scheme
-    and no port. urllib rejects it outright ("unknown url type"), which silently
-    looked like "ollama is down". Normalise instead of assuming.
+    and no port, which urllib rejects in a way that looks like "ollama is down".
+    The canonical sanitizer lives in :mod:`nougen_shards.ollama_host`; this wrapper
+    only keeps the audit lane's own port override.
     """
-    host = (raw or "").strip()
-    default_port = str(_env_int("NOUGEN_AUDIT_OLLAMA_PORT", 11434))
-    if not host:
-        return f"http://127.0.0.1:{default_port}"
-    if "://" not in host:
-        host = "http://" + host
-    scheme, _, rest = host.partition("://")
-    hostpart, sep, port = rest.partition(":")
-    # 0.0.0.0 / :: are listen addresses; you cannot connect to them portably.
-    if hostpart in ("0.0.0.0", "::", "[::]", ""):
-        hostpart = "127.0.0.1"
-    if not sep or not port.strip("/"):
-        port = default_port
-    normalized = f"{scheme}://{hostpart}:{port.rstrip('/')}"
+    from .ollama_host import sanitize_ollama_url
+
+    normalized = sanitize_ollama_url(
+        raw, port=_env_int("NOUGEN_AUDIT_OLLAMA_PORT", 11434)
+    )
     if normalized != (raw or "").strip():
         logger.info("normalized ollama host %r -> %r", raw, normalized)
     return normalized

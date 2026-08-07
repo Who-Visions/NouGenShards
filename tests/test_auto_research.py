@@ -29,13 +29,40 @@ def mock_capture():
         yield mock
 
 
-def test_check_ollama_alive_success():
-    """Test ollama alive check success."""
+def test_check_ollama_alive_success(monkeypatch):
+    """Test ollama alive check success.
+
+    The probe target is resolved from env, so the test pins it rather than
+    assuming a port -- the operator's OLLAMA_HOST differs per shell on this box.
+    """
+    monkeypatch.setenv("OLLAMA_HOST", "127.0.0.1:11434")
+    monkeypatch.delenv("NOUGEN_OLLAMA_URL", raising=False)
+    monkeypatch.delenv("NOUGEN_OLLAMA_HOST", raising=False)
     with patch("socket.socket") as mock_sock:
         mock_instance = MagicMock()
         mock_sock.return_value = mock_instance
         assert auto_research.check_ollama_alive() is True
         mock_instance.connect.assert_called_once_with(("127.0.0.1", 11434))
+
+
+def test_check_ollama_alive_follows_env(monkeypatch):
+    """Rule 0.2: the probe dials the configured lane, and a wildcard bind
+    (OLLAMA_HOST=0.0.0.0) is sanitized to loopback instead of raising."""
+    monkeypatch.delenv("NOUGEN_OLLAMA_URL", raising=False)
+    monkeypatch.delenv("NOUGEN_OLLAMA_HOST", raising=False)
+    monkeypatch.setenv("OLLAMA_HOST", "0.0.0.0")
+    with patch("socket.socket") as mock_sock:
+        mock_instance = MagicMock()
+        mock_sock.return_value = mock_instance
+        assert auto_research.check_ollama_alive() is True
+        mock_instance.connect.assert_called_once_with(("127.0.0.1", 11434))
+
+    monkeypatch.setenv("OLLAMA_HOST", "127.0.0.1:11436")
+    with patch("socket.socket") as mock_sock:
+        mock_instance = MagicMock()
+        mock_sock.return_value = mock_instance
+        assert auto_research.check_ollama_alive() is True
+        mock_instance.connect.assert_called_once_with(("127.0.0.1", 11436))
 
 
 def test_check_ollama_alive_failure():

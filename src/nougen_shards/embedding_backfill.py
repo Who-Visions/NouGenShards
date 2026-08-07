@@ -31,17 +31,7 @@ import sqlite3
 import urllib.request
 from typing import List, Optional
 
-def _normalize_host(h: str) -> str:
-    """ollama client target. Handles missing scheme/port and 0.0.0.0 bind addr."""
-    from urllib.parse import urlparse
-    h = (h or "").strip() or "http://127.0.0.1:11434"
-    if "://" not in h:
-        h = "http://" + h
-    h = h.replace("0.0.0.0", "127.0.0.1")  # bind-all is not a connectable target
-    if not urlparse(h).port:
-        h = h.rstrip("/") + ":11434"
-    return h.rstrip("/")
-
+from .ollama_host import sanitize_ollama_url as _normalize_host  # noqa: E402
 
 OLLAMA_HOST = _normalize_host(os.environ.get("OLLAMA_HOST"))
 VRAM_CEILING_MIB = int(os.environ.get("NOUGEN_VRAM_CEILING", "6800"))  # pause above this
