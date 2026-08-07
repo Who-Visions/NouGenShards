@@ -31,9 +31,14 @@ TOKENIZER_CANDIDATES = (
 
 DEFAULT_SCOPE_GLOB = "nougen_shards_*.db"
 
+# Directory NAME (never a rooted path) of the workspace under $HOME that
+# conventionally holds the vault. Joined onto the runtime `Path.home()` so the
+# last-resort branch works for any operator instead of one machine's layout.
+FALLBACK_WORKSPACE_DIR_NAME = "Watchtower"
+
 
 def resolve_vault_dir() -> Path:
-    """env -> ~/.nougen/config.json -> legacy default, first hit wins."""
+    """env -> ~/.nougen/config.json -> home-relative default, first hit wins."""
     env = os.environ.get("NOUGEN_VAULT_DIR")
     if env:
         return Path(env)
@@ -45,7 +50,9 @@ def resolve_vault_dir() -> Path:
                 return Path(value)
         except (OSError, ValueError):
             pass
-    return Path(r"C:\Users\super\Watchtower\vault")
+    workspace = (os.environ.get("NOUGEN_WORKSPACE_DIR_NAME")
+                 or FALLBACK_WORKSPACE_DIR_NAME)
+    return Path.home() / workspace / "vault"
 
 
 def resolve_scope_glob() -> str:

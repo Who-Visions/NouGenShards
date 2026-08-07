@@ -994,9 +994,10 @@ RRF_PRIOR_BASE = _env_float("NOUGEN_RRF_PRIOR_BASE", 0.7)
 RRF_PRIOR_SPAN = _env_float("NOUGEN_RRF_PRIOR_SPAN", 0.3)
 # Default recall scope. `domain_key` is derived from the CURRENT WORKING
 # DIRECTORY, so defaulting recall to it silently partitioned the vault into
-# cwd-shaped buckets: measured 2026-07-28, nougen_shards_4.db held 8,922 shards
-# under 'NouGen/NouGenShards-push-main', 4 under 'Watchtower/NouGen' and exactly
-# ONE under 'global' -- a shard captured from one directory was invisible to a
+# cwd-shaped buckets. Observed on a live deployment, the skew was total: one
+# store held thousands of shards under the domain of the repo it was usually
+# driven from, a handful under a sibling checkout, and a single lonely row
+# under 'global' -- a shard captured from one directory was invisible to a
 # recall run from another. The vault only compounds if recall spans it, so the
 # default is now whole-brain and the local domain becomes a ranking BOOST
 # instead of a hard filter. Set NOUGEN_RECALL_SCOPE=domain to restore the old
@@ -1674,8 +1675,10 @@ def _record_access(items: list) -> None:
     """Bump ``access_count`` for shards this retrieval actually returned.
 
     The column has existed since the first schema but nothing ever wrote it, so
-    every one of the 80,797 in-scope shards sat at 0 and usage could not inform
-    ranking. Grouped by database so a multi-hit result costs one transaction per
+    on a live deployment every single in-scope shard -- tens of thousands of
+    them -- sat at zero, and usage could not inform ranking. That is the whole
+    reason this function exists.
+    Grouped by database so a multi-hit result costs one transaction per
     store rather than one per row.
 
     Best-effort by contract: several MCP servers hold these files open, and a

@@ -68,7 +68,7 @@ def test_path_trigger_fires_on_touched_file():
     triggers.add_trigger(ref, "path", "src/nougen_shards/core.py")
     ctx = triggers.TriggerContext(
         event="pre_tool_use",
-        paths=["C:/Users/dev/repo/src/nougen_shards/core.py"])
+        paths=["D:/checkouts/repo/src/nougen_shards/core.py"])
     out = triggers.evaluate(ctx)
     assert _refs(out) == [ref]
     assert out[0].reasons == ["path:src/nougen_shards/core.py"]

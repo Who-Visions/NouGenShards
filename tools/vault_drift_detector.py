@@ -81,6 +81,11 @@ EXIT_INDEX = 4
 # candidates, not by hardcoding one operator's drive layout.
 # --------------------------------------------------------------------------
 FALLBACK_DEDUP_DB_NAME = "dedup_index.db"
+# Name of the workspace directory under $HOME that conventionally holds the
+# vault. Only a directory NAME, never a rooted path: the candidate is joined
+# onto the runtime `Path.home()` so the ladder works for any operator.
+# Override with NOUGEN_WORKSPACE_DIR_NAME.
+FALLBACK_WORKSPACE_DIR_NAME = "Watchtower"
 FALLBACK_INCLUDE_GLOBS = "**/*.md"
 # Editor/tooling noise that is never memory and never a backlog: VS Code's
 # local-history store (`vault/User/History/**`) is autosave snapshots of files
@@ -166,7 +171,9 @@ def resolve_vault_dir(cli_value: str | None) -> Path | None:
     """Discover the vault at runtime instead of asserting where it lives.
 
     Order: --vault-dir -> NOUGEN_VAULT_DIR -> %WATCHTOWER_ROOT%/vault ->
-    ~/Watchtower/vault -> ~/.nougen/shards -> ./.vault
+    ~/<workspace>/vault -> ~/.nougen/shards -> ./.vault
+    where <workspace> is NOUGEN_WORKSPACE_DIR_NAME (default
+    FALLBACK_WORKSPACE_DIR_NAME).
     A candidate only wins if it exists AND carries a dedup index, so we can
     never silently measure drift against an empty or wrong store.
     """
@@ -180,7 +187,9 @@ def resolve_vault_dir(cli_value: str | None) -> Path | None:
     if wt_root:
         candidates.append(("WATCHTOWER_ROOT/vault", Path(wt_root) / "vault"))
     home = Path.home()
-    candidates.append(("~/Watchtower/vault", home / "Watchtower" / "vault"))
+    workspace = (os.environ.get("NOUGEN_WORKSPACE_DIR_NAME")
+                 or FALLBACK_WORKSPACE_DIR_NAME)
+    candidates.append((f"~/{workspace}/vault", home / workspace / "vault"))
     candidates.append(("~/.nougen/shards", home / ".nougen" / "shards"))
     candidates.append(("./.vault", Path.cwd() / ".vault"))
 

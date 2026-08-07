@@ -238,8 +238,8 @@ def test_stale_value_silent_without_time_ordering(cfg):
 
 def test_wrong_binding_fires_on_identifier_bound_to_two_entities(cfg):
     dirty = [
-        shard(1, "node inventory", "Mercury Station reachable at 10.0.0.136 today."),
-        shard(2, "node inventory two", "Stadium answers on 10.0.0.136 as well."),
+        shard(1, "node inventory", "Falcon Relay reachable at 10.0.0.136 today."),
+        shard(2, "node inventory two", "Osprey Beacon answers on 10.0.0.136 as well."),
     ]
     found = [f for f in ma.detect_wrong_bindings(dirty, cfg)
              if f.subclass == "identifier_ipv4"]
@@ -250,8 +250,8 @@ def test_wrong_binding_fires_on_identifier_bound_to_two_entities(cfg):
 
 def test_wrong_binding_silent_when_identifier_has_one_owner(cfg):
     clean = [
-        shard(1, "node inventory", "Mercury Station reachable at 10.0.0.136 today."),
-        shard(2, "node inventory two", "Mercury Station answers on 10.0.0.136 as well."),
+        shard(1, "node inventory", "Falcon Relay reachable at 10.0.0.136 today."),
+        shard(2, "node inventory two", "Falcon Relay answers on 10.0.0.136 as well."),
     ]
     assert [f for f in ma.detect_wrong_bindings(clean, cfg)
             if f.failure_class == "wrong_binding"] == []
