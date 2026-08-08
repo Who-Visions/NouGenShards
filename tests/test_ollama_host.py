@@ -2,9 +2,14 @@
 
 import pytest
 
+from nougen_shards import ollama_host
 from nougen_shards.ollama_host import (
     DEFAULT_OLLAMA_PORT,
     api,
+    autostart_enabled,
+    candidate_ports,
+    discover_ollama_url,
+    ensure_ollama_url,
     resolve_ollama_url,
     sanitize_ollama_url,
 )
@@ -67,3 +72,68 @@ def test_api_join_is_single_slashed():
     base = "http://127.0.0.1:11434"
     assert api("/api/tags", base=base) == f"{base}/api/tags"
     assert api("api/tags", base=base) == f"{base}/api/tags"
+
+
+# --- live-port discovery + cold-start (dream lane, 2026-08-07) -------------------
+
+def test_candidate_ports_are_env_resolvable(monkeypatch):
+    monkeypatch.setenv("NOUGEN_OLLAMA_PORTS", "11500, 11501 ;11500")
+    assert candidate_ports() == (11500, 11501)
+
+
+def test_candidate_ports_lead_with_env_port_then_constants(monkeypatch):
+    monkeypatch.delenv("NOUGEN_OLLAMA_PORTS", raising=False)
+    monkeypatch.setenv("NOUGEN_OLLAMA_PORT", "11436")
+    ports = candidate_ports()
+    assert ports[0] == 11436
+    assert DEFAULT_OLLAMA_PORT in ports
+
+
+def test_discovery_finds_the_live_port_when_default_is_dead(monkeypatch):
+    """The 2026-08-07 case: 11434 answered nothing, the daemon was on 11436."""
+    monkeypatch.delenv("NOUGEN_OLLAMA_PORTS", raising=False)
+    monkeypatch.delenv("NOUGEN_OLLAMA_PORT", raising=False)
+    monkeypatch.setenv("OLLAMA_HOST", "0.0.0.0")  # portless bind -> pins 11434 without probing
+    monkeypatch.setattr(ollama_host, "probe_url",
+                        lambda url, timeout=None: url == "http://127.0.0.1:11436")
+    assert discover_ollama_url() == "http://127.0.0.1:11436"
+
+
+def test_discovery_returns_none_when_nothing_answers(monkeypatch):
+    monkeypatch.setattr(ollama_host, "probe_url", lambda url, timeout=None: False)
+    assert discover_ollama_url() is None
+
+
+@pytest.mark.parametrize("raw,expected", [("0", False), ("false", False), ("off", False),
+                                          ("1", True), ("yes", True), (None, True)])
+def test_autostart_is_env_gated(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("NOUGEN_OLLAMA_AUTOSTART", raising=False)
+    else:
+        monkeypatch.setenv("NOUGEN_OLLAMA_AUTOSTART", raw)
+    assert autostart_enabled() is expected
+
+
+def test_ensure_does_not_spawn_when_daemon_already_live(monkeypatch):
+    monkeypatch.setattr(ollama_host, "discover_ollama_url",
+                        lambda **kw: "http://127.0.0.1:11436")
+    monkeypatch.setattr(ollama_host.subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("must not ignite a live daemon"))
+    assert ensure_ollama_url() == "http://127.0.0.1:11436"
+
+
+def test_ensure_ignites_cold_daemon_then_returns_live_url(monkeypatch):
+    spawned = []
+    results = iter([None, "http://127.0.0.1:11436"])
+    monkeypatch.setattr(ollama_host, "discover_ollama_url", lambda **kw: next(results, None))
+    monkeypatch.setattr(ollama_host.subprocess, "Popen", lambda *a, **k: spawned.append(a[0]))
+    monkeypatch.setattr(ollama_host.time, "sleep", lambda s: None)
+    assert ensure_ollama_url(wait_s=10) == "http://127.0.0.1:11436"
+    assert spawned and spawned[0][1] == "serve"
+
+
+def test_ensure_degrades_instead_of_pretending(monkeypatch):
+    """A genuinely dead lane returns None -- callers degrade honestly."""
+    monkeypatch.setattr(ollama_host, "discover_ollama_url", lambda **kw: None)
+    monkeypatch.setattr(ollama_host, "autostart_enabled", lambda: False)
+    assert ensure_ollama_url() is None
