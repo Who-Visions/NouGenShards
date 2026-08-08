@@ -20,6 +20,7 @@ These tests pin the properties that make that safe:
 import base64
 import os
 import sqlite3
+import stat
 import tempfile
 from pathlib import Path
 
@@ -79,6 +80,21 @@ def test_plaintext_passes_through_both_ways():
 def test_encrypt_is_idempotent():
     once = pv.encrypt_text("statement")
     assert pv.encrypt_text(once) == once
+
+
+def test_marker_prefix_alone_does_not_bypass_encryption():
+    """A crafted string starting with the wire marker must not skip encryption.
+
+    `is_encrypted` recognizes the `ngenc1:` prefix, but content is not
+    guaranteed free of it -- a document, web page, or prompt-injected
+    instruction captured as a shard body could start with that literal
+    string. If `encrypt_text` trusted the prefix alone, that text would be
+    written verbatim (unencrypted) while the row is still flagged `enc=1`.
+    """
+    forged = pv.ENC_PREFIX + base64.b64encode(b"not-real-ciphertext-but-looks-like-it").decode()
+    out = pv.encrypt_text(forged)
+    assert out != forged, "forged marker must not bypass encryption"
+    assert pv.decrypt_text(out) == forged, "the forged string is now the real plaintext payload"
 
 
 def test_wrong_key_cannot_decrypt():
@@ -254,6 +270,27 @@ def test_key_generation_always_writes_a_recovery_file(tmp_path, monkeypatch):
     recovery = Path(pv.recovery_path())
     assert recovery.exists(), "a key must never exist without a recovery path"
     assert pv.ENV_KEY in recovery.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_recovery_key_and_key_file_are_created_owner_only(tmp_path, monkeypatch):
+    """Regression: the recovery key and wrapped data key hold (or unlock) the
+    material that decrypts every private/secret shard. They must never be
+    briefly world/group-readable between creation and a later chmod -- this
+    pins that `_write_owner_only` creates them at 0600 from the first byte.
+    """
+    monkeypatch.delenv(pv.ENV_KEY, raising=False)
+    monkeypatch.setenv(pv.ENV_KEY_FILE, str(tmp_path / "vault" / "private_key.bin"))
+    monkeypatch.setenv(pv.ENV_KEY_SEARCH_PATH, str(tmp_path / "vault"))
+    pv.reset_key_cache()
+    try:
+        pv.load_key(create=True)
+    except pv.PrivateVaultError:
+        pytest.skip("no DPAPI or OS keyring available on this lane")
+    key_file = Path(pv.key_path())
+    recovery = Path(pv.recovery_path())
+    assert stat.S_IMODE(os.stat(key_file).st_mode) == 0o600
+    assert stat.S_IMODE(os.stat(recovery).st_mode) == 0o600
 
 
 def test_bad_env_key_is_rejected_loudly(monkeypatch):

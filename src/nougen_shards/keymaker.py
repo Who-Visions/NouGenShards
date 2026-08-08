@@ -158,6 +158,29 @@ CSV_PATH = VAULT_DIR / "shards_secrets.csv"
 SECRETS_JSON_DIR = VAULT_DIR / "service_accounts"
 
 
+def _harden_path(path) -> None:
+    """Restrict an already-written file to the current user only.
+
+    Same lock `ingest_service_account` applies inline for the service-account
+    JSON: POSIX gets an owner-only chmod (also repairs a pre-existing file left
+    world/group-readable by an earlier write, e.g. before this function
+    existed); Windows gets an explicit ACL reset via icacls, since chmod is a
+    no-op there. Callers that can create the file fresh should still open it
+    with a restrictive mode (O_CREAT, 0o600) themselves on POSIX -- this call
+    alone cannot close the window between create and chmod.
+    """
+    path = str(path)
+    if os.name == "nt":
+        import subprocess  # pylint: disable=import-outside-toplevel
+        user = os.environ.get("USERNAME", "")
+        if user:
+            subprocess.run(
+                ["icacls", path, "/inheritance:r", "/grant:r", f"{user}:F"],
+                capture_output=True, check=False, timeout=10)
+    else:
+        os.chmod(path, 0o600)
+
+
 def init_vault():
     """Initializes the vault database schema."""
     VAULT_DIR.mkdir(parents=True, exist_ok=True)

@@ -147,6 +147,25 @@ def _candidate_key_paths() -> list:
     return out
 
 
+def _write_owner_only(path: str, text: str) -> None:
+    """Create/overwrite `path` with content no other local account can read.
+
+    On POSIX this opens with O_CREAT and mode 0o600 up front, so the file is
+    never briefly world/group-readable between creation and a later chmod --
+    the same no-window guarantee `keymaker.ingest_service_account` applies to
+    the service-account JSON. Windows has no file-mode bits; the caller's
+    `_harden_path` icacls lock is what actually restricts it there, so a plain
+    write is fine on that platform.
+    """
+    if os.name == "nt":
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
 def _write_recovery_key(raw: bytes) -> str:
     """Write the offline recovery copy. Fails closed â€” no recovery file, no key."""
     path = recovery_path()
@@ -163,8 +182,7 @@ def _write_recovery_key(raw: bytes) -> str:
     )
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(body)
+        _write_owner_only(path, body)
     except OSError as exc:
         raise PrivateVaultError(
             f"refusing to generate a data key: recovery file {path} is unwritable ({exc}). "
@@ -196,8 +214,7 @@ def _generate_key() -> bytes:
             f"Set {ENV_KEY} explicitly to run without DPAPI or an OS keyring."
         ) from exc
 
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(stored)
+    _write_owner_only(path, stored)
     try:
         from .keymaker import _harden_path  # type: ignore
         _harden_path(path)
@@ -273,12 +290,27 @@ def is_encrypted(value) -> bool:
 
 
 def encrypt_text(plaintext: str, key: Optional[bytes] = None) -> str:
-    """Encrypt a string to the ngenc1 wire format. Idempotent on encrypted input."""
+    """Encrypt a string to the ngenc1 wire format. Idempotent on encrypted input.
+
+    "Already encrypted" is verified, not assumed from the prefix: `is_encrypted`
+    only recognizes the wire marker, and content is not guaranteed to be
+    attacker-free (title/body text captured from documents, web pages, or
+    prompt-injected instructions could start with the literal `ngenc1:`
+    marker). Trusting the prefix alone would store that text verbatim while
+    `capture()` still flags the row `enc=1` -- ciphertext that was never
+    encrypted. A real ciphertext must decrypt under this vault's key; anything
+    that merely looks like one falls through and gets encrypted for real.
+    """
     if plaintext is None:
         return plaintext
-    if is_encrypted(plaintext):
-        return plaintext
     raw = key if key is not None else load_key()
+    if is_encrypted(plaintext):
+        try:
+            decrypt_text(plaintext, key=raw)
+        except Exception:
+            pass  # looks like our marker but isn't real ciphertext under this key
+        else:
+            return plaintext
     nonce = secrets.token_bytes(_NONCE_BYTES)
     blob = _aesgcm(raw).encrypt(nonce, plaintext.encode("utf-8"), _AAD)
     return ENC_PREFIX + base64.b64encode(nonce + blob).decode("ascii")

@@ -65,6 +65,22 @@ def test_existing_service_account_file_is_repaired_to_0600(km, tmp_path):
     assert stat.S_IMODE(os.stat(saf).st_mode) == 0o600
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_harden_path_exists_and_locks_a_file_to_owner_only(km, tmp_path):
+    """Regression: private_vault.py calls `keymaker._harden_path`, which did
+    not exist -- every call raised ImportError, was silently swallowed by a
+    bare `except Exception: pass`, and RECOVERY_KEY.txt / private_key.bin were
+    left at the process umask (commonly world/group-readable) instead of
+    owner-only. This pins that the function exists and actually restricts the
+    file, including repairing one that was already left too permissive.
+    """
+    target = tmp_path / "private_key.bin"
+    target.write_text("wrapped-key-material")
+    os.chmod(target, 0o644)
+    km._harden_path(str(target))
+    assert stat.S_IMODE(os.stat(target).st_mode) == 0o600
+
+
 def test_migration_encrypts_existing_external_db_uri(km):
     # An external_dbs row written by an older version holds a raw URI; migrate
     # must encrypt it (here the plaintext escape hatch is on, so _protect is a

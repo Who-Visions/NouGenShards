@@ -29,6 +29,22 @@ All notable changes to NouGenShards will be documented in this file.
 - 32 tests across `tests/test_private_vault.py` and `tests/test_keymaker_vault_resolution.py`.
 
 ### Fixed
+- **Security review of the private vault caught two HIGH-severity bugs before this shipped.**
+  `private_vault._write_recovery_key`/`_generate_key` called `keymaker._harden_path` to lock
+  `RECOVERY_KEY.txt` and `private_key.bin` to the current user -- but that function did not exist,
+  so every call raised `ImportError`, was swallowed by a bare `except Exception: pass`, and both
+  files were left at the process umask (commonly world/group-readable) instead of owner-only.
+  `_harden_path` now exists in `keymaker.py` (chmod 0600 on POSIX, an `icacls` ACL reset on
+  Windows), and both files are created via a new `_write_owner_only` helper that opens with
+  `O_CREAT`+0600 up front on POSIX, closing the window entirely rather than chmod-ing after the
+  fact. Separately, `private_vault.encrypt_text`'s "already encrypted" check trusted the `ngenc1:`
+  wire-format prefix alone: content captured from an untrusted source (a document, a web page, a
+  prompt-injected instruction) that happened to start with that literal string would be stored
+  verbatim -- unencrypted, in the DB file and the FTS index -- while `enc=1` still claimed it was
+  protected. `encrypt_text` now verifies a "pre-encrypted" input actually decrypts under the
+  vault's key before trusting it; anything that merely looks like ciphertext falls through and is
+  encrypted for real. Both fixes have regression tests (`tests/test_private_vault.py`,
+  `tests/test_keymaker_security.py`); full suite still green (437 passed, 4 skipped).
 - **The Keymaker secrets vault resolved to more than one place.** `VAULT_DIR` was
   `Path(os.getenv("NOUGEN_VAULT_DIR", ".nougen_vault"))`: `.nougen_vault` is CWD-relative, so the
   store moved with the working directory, and `NOUGEN_VAULT_DIR` is the *memory* vault, so
