@@ -1013,6 +1013,30 @@ def get_parser():
 
 
 
+def keymaker_vault_report() -> list:
+    """Doctor lines for the Keymaker secrets vault.
+
+    This is NOT the shard substrate — a bare "[Vault] ❌ not found" printed
+    next to nine healthy shard DBs read as a contradiction, and got reported
+    as one (phoebus, 2026-08-04). A box with no stored secrets is a normal
+    configuration, so the absence is information, not a failure.
+    """
+    vault_path = keymaker.DB_PATH
+    if vault_path.exists():
+        providers = keymaker.list_providers()
+        return [
+            f" ✅ Keymaker vault: {vault_path.absolute()}",
+            f" ✅ Connected Providers: {', '.join(providers) if providers else 'None'}",
+        ]
+    return [
+        f" ℹ️ No keymaker vault at {vault_path.absolute()} — this box has",
+        "    no stored provider secrets. The shard substrate above is a",
+        "    separate store and is unaffected. Create the vault with",
+        f"    'nougen auth set-key <provider>', or point {keymaker.ENV_SECRETS_VAULT}",
+        "    at an existing one.",
+    ]
+
+
 def cmd_doctor(args):
     """Verifies installation, database health, and service connectivity (Valerion Engine)."""
     print("👨‍⚕️ NouGenShards Doctor (Valerion): Running diagnostics...")
@@ -1030,15 +1054,10 @@ def cmd_doctor(args):
     if not found_db:
         print(" ❌ No database shards found. Run 'nougen init' to bootstrap.")
 
-    # 2. Check Vault
-    print("\n[Vault]")
-    vault_path = keymaker.DB_PATH
-    if vault_path.exists():
-        print(f" ✅ Vault: {vault_path.absolute()}")
-        providers = keymaker.list_providers()
-        print(f" ✅ Connected Providers: {', '.join(providers) if providers else 'None'}")
-    else:
-        print(" ❌ Vault not found.")
+    # 2. Check the Keymaker secrets vault.
+    print("\n[Keymaker Vault]")
+    for line in keymaker_vault_report():
+        print(line)
 
     # 3. Check Providers
     print("\n[Service Connectivity]")
@@ -1063,7 +1082,9 @@ def cmd_doctor(args):
         print("\n[JSON Output]")
         report = {
             "substrate": {"active_index": active, "found": found_db},
-            "vault": {"path": str(vault_path.absolute()), "providers": keymaker.list_providers()},
+            "vault": {"path": str(keymaker.DB_PATH.absolute()),
+                      "exists": keymaker.DB_PATH.exists(),
+                      "providers": keymaker.list_providers() if keymaker.DB_PATH.exists() else []},
             "connectivity": p_status
         }
         print(json.dumps(report, indent=2))
