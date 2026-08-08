@@ -1082,7 +1082,7 @@ def cmd_doctor(args):
         print("\n[JSON Output]")
         report = {
             "substrate": {"active_index": active, "found": found_db},
-            "vault": {"path": str(vault_path.absolute()), "providers": keymaker.list_providers()},
+            "vault": {"path": str(keymaker.DB_PATH.absolute()), "providers": keymaker.list_providers()},
             "connectivity": p_status
         }
         print(json.dumps(report, indent=2))

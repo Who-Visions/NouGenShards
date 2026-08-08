@@ -6,8 +6,6 @@ shard databases. Read as the memory vault, that is a contradiction, and it was
 reported as one (phoebus, 2026-08-04: "vault path check still unresolved").
 A box with no stored secrets is a normal configuration, not a failure.
 """
-from pathlib import Path
-
 from nougen_shards import cli, keymaker
 
 
