@@ -8,6 +8,7 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -201,11 +202,24 @@ def _open_cloud(req, url: str, timeout: float) -> bytes:
             return res.read()
 
 
-def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
+def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3,
+                       node_token: Optional[str] = None) -> list:
     """
     Queries remote NouGenShards nodes and maps results to standard format.
+
+    The node's /search endpoint authenticates with the same X-NGS-Token that
+    push/pull use (the token lives in the keymaker `secrets` table, not on the
+    per-node config row). Without it every federated read is a 401 and the relay
+    silently contributes nothing. `node_token` is fetched lazily from keymaker
+    when not supplied so existing callers keep working; a missing token degrades
+    to an unauthenticated request (public nodes) rather than crashing.
     """
     results = []
+
+    if node_token is None:
+        with contextlib.suppress(Exception):  # keymaker optional: degrade, don't crash
+            from .. import keymaker
+            node_token = keymaker.get_secret("NGS_NODE_TOKEN")
 
     for conf in cloud_configs:
         name = conf.get('name', '?')
@@ -225,6 +239,8 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3) -> list:
                 method="POST"
             )
             req.add_header("Content-Type", "application/json")
+            if node_token:
+                req.add_header("X-NGS-Token", node_token)
             _apply_edge_auth(req)
 
             remote_data = json.loads(_open_cloud(req, url, 5.0).decode())

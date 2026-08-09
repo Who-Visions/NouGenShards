@@ -80,6 +80,26 @@ def test_capture_search_roundtrip(client):
     assert any(h.get("title") == "Cloud automation shard" for h in r.json())
 
 
+def test_search_degrades_instead_of_500(client, monkeypatch):
+    """A crash in the full retrieval stack must not 500 the endpoint - federated
+    callers read any non-200 as 'node down' and drop the relay. It must fall back
+    to keyword-only, and to [] if that fails too."""
+    def boom(*a, **k):
+        raise RuntimeError("vector lane exploded")
+
+    # Full retrieve blows up; keyword fallback still answers -> 200, not 500.
+    monkeypatch.setattr(core, "retrieve", boom)
+    r = client.post("/search", json={"query": "anything", "limit": 3}, headers=AUTH)
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
+
+    # Both lanes blow up -> still 200 with an empty list, never an exception.
+    monkeypatch.setattr(core, "_keyword_retrieve", boom)
+    r = client.post("/search", json={"query": "anything", "limit": 3}, headers=AUTH)
+    assert r.status_code == 200
+    assert r.json() == []
+
+
 def test_pull_and_dedup_aware_push(client):
     client.post("/capture", json={"title": "Seed", "content": "Seed content for pull."},
                 headers=AUTH)

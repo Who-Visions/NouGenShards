@@ -6,8 +6,11 @@ import os
 import sys
 import hmac
 import json
+import logging
 import contextlib
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 from fastapi import FastAPI, Header, HTTPException, Depends
 from pydantic import BaseModel
 import gradio as gr
@@ -199,8 +202,24 @@ def _json_safe(item: dict) -> dict:
 
 @app.post("/search")
 def search(req: SearchRequest, _token: str = Depends(verify_token)):
-    """Memory recall for cloud callers (mirrors the connector's POST /search)."""
-    results = core.retrieve(req.query, limit=max(1, min(req.limit, 50)))
+    """Memory recall for cloud callers (mirrors the connector's POST /search).
+
+    A crash in the full retrieval stack (vector lane, rerank, a bad shard row on
+    this node's data) must not 500 the endpoint: federated callers treat any
+    non-200 as "node down" and lose the relay entirely. So a failing full
+    retrieve degrades to a keyword-only sweep, and a total failure returns an
+    empty list rather than an exception.
+    """
+    limit = max(1, min(req.limit, 50))
+    try:
+        results = core.retrieve(req.query, limit=limit)
+    except Exception:
+        logger.exception("search: full retrieve failed, falling back to keyword-only")
+        try:
+            results = core._keyword_retrieve(req.query, limit, None, "*")
+        except Exception:
+            logger.exception("search: keyword fallback also failed; returning []")
+            results = []
     return [_json_safe(r) for r in results]
 
 
