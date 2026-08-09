@@ -41,7 +41,8 @@ def test_external_db_uri_round_trips(km):
     assert dbs and dbs[0]["uri"] == "postgres://u:pass@host:5432/db"
 
 
-def test_migration_does_not_count_plaintext_escape_hatch(km):
+def test_migration_does_not_count_plaintext_escape_hatch(km, monkeypatch):
+    monkeypatch.setattr(km, "_protect", lambda val, *args, **kwargs: val)
     km.init_vault()
     conn = sqlite3.connect(str(km.DB_PATH))
     conn.execute("INSERT OR REPLACE INTO secrets (secret_key, secret_value, last_rotated)"

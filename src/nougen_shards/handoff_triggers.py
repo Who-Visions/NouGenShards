@@ -248,10 +248,20 @@ def _execute(trigger: dict, event: str, data: dict, path: Path, mode: str) -> di
 
     cwd = trigger.get("cwd") or str(_handoff_module().PROJECT_ROOT)
     env = build_env(event, data, path)
+    run_cmd = trigger["run"]
+    if os.name == "nt":
+        import re
+        def repl(match):
+            var_name = match.group(1) or match.group(2)
+            return env.get(var_name, match.group(0))
+        run_cmd = re.sub(r'\$\{([A-Za-z0-9_]+)\}|\$([A-Za-z0-9_]+)', repl, run_cmd)
+        # Strip quotes around echoed strings because cmd.exe echo prints quotes literally
+        run_cmd = re.sub(r'\b(echo)\s+"([^"]*)"', r'\1 \2', run_cmd, flags=re.IGNORECASE)
+
     try:
         if trigger.get("background"):
             subprocess.Popen(
-                trigger["run"],
+                run_cmd,
                 shell=True,
                 cwd=cwd,
                 env=env,
@@ -262,7 +272,7 @@ def _execute(trigger: dict, event: str, data: dict, path: Path, mode: str) -> di
             run_record["status"] = "background"
         else:
             completed = subprocess.run(
-                trigger["run"],
+                run_cmd,
                 shell=True,
                 cwd=cwd,
                 env=env,
