@@ -102,7 +102,38 @@ async def _lifespan(_app):
         yield
 
 
-app = FastAPI(title="NouGenShards Node", lifespan=_lifespan)
+# Resolve the bind host once, at import time, so every fail-closed guard below
+# (interactive API docs here, the Cortex HUD further down) protects ASGI servers
+# that import `app` directly - uvicorn app:app, gunicorn, HF Spaces - where the
+# __main__ block never runs.
+_on_platform = bind_probe.on_managed_platform()
+_bind_host = bind_probe.normalize_host(bind_probe.probed_bind_host()) or "127.0.0.1"
+_network_exposed = bind_probe.is_network_exposed()
+
+# Fail closed on the interactive API docs for the same reason as the HUD: /docs,
+# /redoc and /openapi.json publish the entire surface - /search, /capture,
+# /sync/push and the full-vault /sync/pull export - to anyone who asks. The data
+# behind them is token-gated, but handing an unauthenticated caller the map is
+# free reconnaissance. On a network-reachable host they are withheld unless the
+# operator opts in with NGS_DOCS_PUBLIC=1; on loopback they stay on, because a
+# local node is exactly where you want them while developing.
+_docs_public = os.environ.get("NGS_DOCS_PUBLIC", "").strip().lower() in ("1", "true", "yes", "on")
+_serve_docs = _docs_public or not _network_exposed
+
+app = FastAPI(
+    title="NouGenShards Node",
+    lifespan=_lifespan,
+    docs_url="/docs" if _serve_docs else None,
+    redoc_url="/redoc" if _serve_docs else None,
+    openapi_url="/openapi.json" if _serve_docs else None,
+)
+if not _serve_docs:
+    print(
+        "[WARN] Interactive API docs not mounted: host is network-exposed "
+        f"(bind={_bind_host}, managed_platform={_on_platform}). "
+        "Set NGS_DOCS_PUBLIC=1 to publish /docs, /redoc and /openapi.json anyway.",
+        file=sys.stderr,
+    )
 
 # --- Security ---
 
@@ -156,6 +187,12 @@ def health():
         warnings.append("NGS_HUD_USER/NGS_HUD_PASSWORD not set: HUD would be open to anyone on a public Space")
     if not persistent:
         warnings.append("persistent storage not detected: memories are wiped on every restart/deploy")
+    if _serve_docs and _network_exposed:
+        warnings.append(
+            "NGS_DOCS_PUBLIC is set on a network-exposed host: /docs, /redoc and "
+            "/openapi.json publish the full API map (incl. the /sync/pull export) "
+            "to unauthenticated callers"
+        )
 
     return {
         "status": "ignited",
@@ -164,6 +201,7 @@ def health():
         "persistent_storage": persistent,
         "node_token_configured": node_token_ok,
         "hud_auth_configured": hud_auth_ok,
+        "api_docs_public": _serve_docs and _network_exposed,
         "total_shards": _total_shards(),
         # Auth gates are the hard requirement for a public flip; storage is a
         # durability concern surfaced via warnings.
@@ -473,12 +511,9 @@ class _TokenGatedMCP:
 
 # Mount BEFORE the Gradio catch-all at "/" so /mcp is routed to the MCP app.
 app.mount("/mcp", _TokenGatedMCP(_mcp_asgi))
-# Resolve the bind host the same way __main__ does, at import time, so the
-# fail-closed guard below also protects ASGI servers that import `app` directly
-# (uvicorn app:app, gunicorn, HF Spaces) where the __main__ block never runs.
-_on_platform = bind_probe.on_managed_platform()
-_bind_host = bind_probe.normalize_host(bind_probe.probed_bind_host()) or "127.0.0.1"
-_network_exposed = bind_probe.is_network_exposed()
+# _on_platform / _bind_host / _network_exposed are resolved once at import time,
+# up beside the FastAPI() constructor - the docs guard needs them before `app`
+# exists, and one probe keeps both guards agreeing on what "exposed" means.
 
 # Fail closed on the HUD WITHOUT taking the process down. On a network-reachable
 # host with no HUD credentials, skip mounting the unauthenticated vault UI (search
