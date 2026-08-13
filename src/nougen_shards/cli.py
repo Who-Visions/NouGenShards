@@ -958,6 +958,10 @@ def get_parser():
              "triggers | trigger-add | trigger-rm | trigger-enable | "
              "trigger-disable | trigger-test | trigger-runs"))
     p_handoff.add_argument("--message", "-m", default="", help="Handoff note or acknowledgement message")
+    p_handoff.add_argument("--message-file", "-M", dest="message_file", default=None,
+                           help=("Read the note from a file instead of the command line. Required for "
+                                 "multi-line notes: cmd.exe cuts -m at the first newline and PowerShell "
+                                 "eats $3/$4 inside currency."))
     p_handoff.add_argument("--agent", "-a", default=None,
                            help="Agent type (gemini, claude, codex, ollama, openrouter)")
     p_handoff.add_argument("--goal", "-g", default=None, help="The active goal/objective for this handoff")
@@ -1089,9 +1093,45 @@ def cmd_doctor(args):
         }
         print(json.dumps(report, indent=2))
 
+def _resolve_handoff_message(args):
+    """Resolves --message-file into args.message, and warns on shell-mangled -m notes.
+
+    A multi-line note cannot survive the command line on Windows: cmd.exe ends the
+    argument at the first newline and PowerShell expands $3/$4 inside currency to
+    nothing. --message-file is the only path that is safe for both.
+    """
+    path_arg = getattr(args, "message_file", None)
+    if path_arg:
+        if getattr(args, "message", ""):
+            print("[!] Both --message and --message-file given; using --message-file.")
+        path = Path(os.path.expandvars(str(path_arg))).expanduser()
+        if not path.is_file():
+            print(f"[X] --message-file not found: {path}")
+            return False
+        encoding = os.environ.get("NOUGEN_HANDOFF_ENCODING", "utf-8")
+        try:
+            args.message = path.read_text(encoding=encoding)
+        except UnicodeDecodeError:
+            # Common on notes written by PowerShell's default Set-Content.
+            args.message = path.read_text(encoding="utf-8-sig", errors="replace")
+            print(f"[!] {path.name} was not valid {encoding}; re-read as utf-8-sig with replacements.")
+        if not args.message.strip():
+            print(f"[X] --message-file is empty: {path}")
+            return False
+        return True
+
+    message = getattr(args, "message", "") or ""
+    if message.lstrip().startswith("#") and "\n" not in message:
+        print("[!] Note looks truncated: it starts with a heading and has no newline. "
+              "cmd.exe cuts -m at the first newline — use -M/--message-file instead.")
+    return True
+
+
 def cmd_handoff(args):
     """Executes agent handoff subcommands."""
     from . import handoff
+    if not _resolve_handoff_message(args):
+        return
     if args.action == "create":
         handoff.create_handoff(args.message, args.agent, goal=getattr(args, "goal", None))
     elif args.action == "read":
