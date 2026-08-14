@@ -3,13 +3,19 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Databases
+# Databases (-wal/-shm are sidecars that `*.db` does not match)
 *.db
+*.db-wal
+*.db-shm
 *.sqlite3
 
 # Local configuration
 mcp.config.json
 .env
+# `.env` does not match dotted-prefix variants like `.nougen.local.env`.
+*.local.env
+.nougen-hooks/
+.claude/
 secrets/
 .mcp-locks/
 
@@ -23,6 +29,9 @@ service_accounts/
 # Fleet test reports / ad-hoc audit output
 tools/reports/
 ts/audit_results.json
+audit-runs/
+drill-runs/
+drills/
 
 # Virtual environments & session logs
 .venv/
@@ -35,6 +44,17 @@ transcript.log
 # by `relay` (<UTC>__<machine>__<agent>) is shared.
 .handoffs/handoff_*
 .handoffs/gemini handoffs/
+# `.handoffs/handoff_*` only anchors at the top level, so the pre-relay per-agent
+# subdirectories were untracked-but-not-ignored: one `git add -A` would have
+# published spend figures, incident notes and machine paths to a public remote.
+.handoffs/**/handoff_*
+.handoffs/*handoffs/
+.handoffs/.sessions/
+.handoffs/queue/
+.handoffs/_*.md
+.handoffs/audit_*
+.handoffs/fleet_audit_*.md
+.handoffs_msg_*.md
 .vault/
 pending_shards/
 
@@ -110,3 +130,8 @@ Thumbs.db
 # filenames it may scan in a *user's* project — that is unrelated to these.)
 /CLAUDE.md
 /GEMINI.md
+/AGENTS.md
+# Campaign retrospective — narrates real token volumes and dollar figures for the
+# maintainer's own accounts. Same reason as above: load-bearing locally, ops data
+# to a stranger.
+docs/valerion-orchestration-playbook.md
