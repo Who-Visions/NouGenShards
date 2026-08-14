@@ -763,10 +763,17 @@ export function find_best_model_from_list(models: string[]): string {
   }
 
   // 3. Official Gemma 4 QAT/edge/workstation defaults.
-  const gemma4_tags = [
-    "gemma4:e4b", "gemma4:e4b-it-qat", "gemma4:12b", "gemma4:12b-it-qat",
-    "gemma4:e2b", "gemma4:e2b-it-qat", "gemma4:latest",
-  ];
+  // Mirrors the Python find_best_model_from_list preference order. Cloud leads:
+  // before this was ordered, 31b-cloud fell through to tier 4 and lost to 12b.
+  const gemma4_tags = (
+    process.env.NOUGEN_GEMMA4_PREFERENCE ??
+    "gemma4:31b-cloud,gemma4:e4b,gemma4:e4b-it-qat," +
+      "gemma4:12b,gemma4:12b-it-qat," +
+      "gemma4:e2b,gemma4:e2b-it-qat,gemma4:latest"
+  )
+    .split(",")
+    .map((m) => m.trim())
+    .filter(Boolean);
   for (const tag of gemma4_tags) {
     for (const model of models) {
       if (has(model, tag)) {

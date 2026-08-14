@@ -15,8 +15,14 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-OLLAMA = "http://127.0.0.1:11434/api/generate"
-MODELS = ["gemma4:12b", "gemma4-aggressive:e4b"]
+OLLAMA = os.environ.get(
+    "NOUGEN_OLLAMA_HOST", "http://127.0.0.1:11434"
+).rstrip("/") + "/api/generate"
+# Ordered preference, env-overridable. Stadium runs one model at a time on an
+# 8GB VRAM ceiling, so these stay local-sized.
+MODELS = [m.strip() for m in os.environ.get(
+    "NOUGEN_LONGFORM_MODELS", "gemma4:e4b,gemma4-aggressive:e4b,gemma4:e2b"
+).split(",") if m.strip()]
 # Output path is configurable (no hardcoded author path in a public repo).
 # METAMERIC_LONGFORM_OUT overrides directly; otherwise derive from WATCHTOWER_ROOT
 # (default: ~/Watchtower).
@@ -45,8 +51,8 @@ PHASES = [
 ]
 
 CONTEXT = (
-    "NouGenShards is a local-first memory engine for AI agents built by "
-    "Who Visions LLC / NouGenAi: SQLite shard storage across a 9-DB "
+    "NouGenShards is a local-first memory engine for AI agents built by Dave "
+    "the maintainer (Who Visions LLC / NouGenAi): SQLite shard storage across a 9-DB "
     "cluster, FTS5/BM25 plus vector retrieval fused by Bayesian scoring, "
     "utility feedback (mark_utility), temporal grounding (every recalled "
     "memory carries local wall-clock time and relative age), a graph mesh "

@@ -208,10 +208,10 @@ NouGenShards features a 10-agent roster (personas layered over the memory engine
 
 - **Sharder**: Ingestion (Data Capture & Indexing) — Binds to `dav1d:e2b`.
 - **Remember**: Recall (Memory Retrieval & Verification) — Binds to `sol-ai:e4b`.
-- **Kronos**: Time (Temporal Grounding & Decay) — Binds to `gemma2:2b`.
+- **Kronos**: Time (Temporal Grounding & Decay) — Binds to `gemma4:e2b`.
 - **DavOs**: Operations (Oversight & Gatekeeper) — Binds to `DavOs:latest`.
 - **Sol-Ai**: Broad Reasoning & Illumination — Binds to `sol-ai:e4b`.
-- **NouGen**: Orchestrator (Core Orchestration & Branding) — Binds to `gemma4:12b`.
+- **NouGen**: Orchestrator (Core Orchestration & Branding) — Binds to `gemma4:31b-cloud`.
 - **Griot**: Rules (Semantic Synthesis & Consolidation) — Binds to `griot:e2b`.
 - **Rhea**: Security (System Hardening & Audit) — Binds to `rhea-noir:e2b`.
 - **Kaedra**: Pedagogy (Tensor Mathematics & Training) — Binds to `kaedra:e4b`.

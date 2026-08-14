@@ -147,8 +147,24 @@ def test_find_best_model_skips_embedding_only():
     # find_best_edge_model feeds the default chat model; an embedding model must
     # not be chosen over an installed chat model.
     from nougen_shards.models_client import find_best_model_from_list
-    cfg = find_best_model_from_list(["gemma4:12b", "nomic-embed-text:latest"])
-    assert cfg.model_name == "gemma4:12b"
+    cfg = find_best_model_from_list(["gemma4:e4b", "nomic-embed-text:latest"])
+    assert cfg.model_name == "gemma4:e4b"
+
+
+def test_cloud_precedes_12b_in_selection():
+    # 12b is reserved for explicit deep local reasoning -- it must never win
+    # auto-selection while a cloud tag is installed. This regressed once: 31b-cloud
+    # had no tier-3 entry and fell through to the generic prefix match, so 12b won.
+    from nougen_shards.models_client import find_best_model_from_list
+    assert find_best_model_from_list(
+        ["gemma4:12b", "gemma4:31b-cloud"]
+    ).model_name == "gemma4:31b-cloud"
+    # Order in the input list must not change the outcome.
+    assert find_best_model_from_list(
+        ["gemma4:31b-cloud", "gemma4:12b"]
+    ).model_name == "gemma4:31b-cloud"
+    # 12b remains usable when it is genuinely the only thing installed.
+    assert find_best_model_from_list(["gemma4:12b"]).model_name == "gemma4:12b"
 
 
 def test_search_context_fallback_keeps_fts_schema(tmp_path, monkeypatch):

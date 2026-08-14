@@ -423,7 +423,19 @@ def _llm_density(content: str) -> Optional[float]:
         client = get_best_available_client()
         if client and client.is_alive():
             models = client.list_models()
-            best_model = "gemma2:2b" if "gemma2:2b" in models else (models[0] if models else None)
+            # Preference order is configuration, not a constant: take the first
+            # preferred tag the daemon actually reports, else whatever it has.
+            preferred = [
+                m.strip()
+                for m in os.getenv(
+                    "NOUGEN_DENSITY_MODELS", "gemma4:e2b,gemma4:e4b,gemma4:31b-cloud"
+                ).split(",")
+                if m.strip()
+            ]
+            best_model = next(
+                (p for p in preferred if p in models),
+                models[0] if models else None,
+            )
             if best_model:
                 prompt = (
                     "Analyze the following text and estimate its information density / contrastive perplexity score "
@@ -690,6 +702,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     # One reference clock for the whole scan (see _temporal_decay).
     query_now = datetime.now(timezone.utc)
     results = []
+    missed_dbs = []  # DBs where both exact lanes missed; fed to the fuzzy pass below
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists():
             continue
@@ -761,41 +774,85 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     results.append(item)
                     db_hits += 1
 
-            # Fuzzy lane (docs/theory/n-gram-topologies.md §8.2): when BOTH
-            # exact lanes miss for this DB, retry with fastText-style character
-            # trigram Dice similarity. Substring matchers (LIKE, trigram FTS)
-            # can't bridge typos or morphological variants ("automaton" vs
-            # "automation"); set similarity can. Runs only on the miss path, so
-            # exact matches never pay for it, and fuzzy likelihood is scaled by
-            # the Dice score (< exact's 0.5) so exact hits always outrank it.
+            # Fuzzy lane is DEFERRED, not run here: note the miss and move on.
+            # See the second pass below for why.
             if not fts_worked and db_hits == 0:
-                q_grams = ngram.char_ngrams(query)
-                if q_grams:
-                    dom_params = () if domain_key in (None, "*") else (domain_key,)
-                    where = "WHERE domain_key = ?" if dom_params else ""
+                missed_dbs.append(i)
+        finally:
+            conn.close()
+
+    # Fuzzy lane (docs/theory/n-gram-topologies.md §8.2): for DBs where BOTH
+    # exact lanes missed, retry with fastText-style character trigram Dice
+    # similarity. Substring matchers (LIKE, trigram FTS) can't bridge typos or
+    # morphological variants ("automaton" vs "automation"); set similarity can.
+    # Fuzzy likelihood is scaled by the Dice score (< exact's 0.5) so exact hits
+    # always outrank it.
+    #
+    # This runs AFTER every DB has been scanned, and only when the exact lanes
+    # came up short, because the final sort tiers every exact hit above every
+    # fuzzy hit and then truncates to `limit`. Once `limit` exact hits exist,
+    # each fuzzy hit is computed and then discarded by that truncation — the
+    # output is bit-identical either way.
+    #
+    # It was previously inline, per DB, on the per-DB miss path. That reasoned
+    # about a miss as if it were rare, but a query is only ever "exact" in the
+    # DBs that happen to hold its shards: a term living in 1 of 9 DBs sent the
+    # other 8 into an unbounded `SELECT ... FROM shards` (no LIMIT), hydrating
+    # and n-gramming ~134k rows in Python. That was 40s of a 50s federated
+    # /search — spent, then thrown away, on every query that matched anything.
+    if len(results) < limit and missed_dbs:
+        q_grams = ngram.char_ngrams(query)
+        if q_grams:
+            dom_params = () if domain_key in (None, "*") else (domain_key,)
+            where = "WHERE domain_key = ?" if dom_params else ""
+            for i in missed_dbs:
+                conn = get_connection(i)
+                try:
+                    # Score against a cheap projection: the similarity probe only
+                    # ever reads title + the first 256 chars of content, so there
+                    # is no reason to pull full content and embedding blobs for
+                    # every row. Survivors are re-fetched in full below.
                     cursor = conn.execute(f"""
-                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        SELECT id, substr(content, 1, 256) AS probe_content, title
                         FROM shards {where}
                         ORDER BY id ASC
                     """, dom_params)
-                    fuzzy = []
+                    scored = []
                     for row in cursor:
-                        item = hydrate(dict(row))
-                        probe = f"{item.get('title') or ''} {(item.get('content') or '')[:256]}"
+                        probe = f"{row['title'] or ''} {row['probe_content'] or ''}"
                         sim = ngram.overlap_coefficient(q_grams, ngram.char_ngrams(probe))
-                        if sim < ngram.FUZZY_MIN_OVERLAP:
-                            continue
+                        if sim >= ngram.FUZZY_MIN_OVERLAP:
+                            scored.append((sim, row["id"]))
+                    if not scored:
+                        continue
+                    # Rank on (sim, id) exactly as the old code did before its
+                    # own [:limit], so the same rows survive; only then pay for
+                    # the full rows.
+                    scored.sort(key=lambda t: (-t[0], t[1]))
+                    keep = scored[:limit]
+                    sim_by_id = {rid: sim for sim, rid in keep}
+                    placeholders = ",".join("?" * len(keep))
+                    full = conn.execute(f"""
+                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        FROM shards WHERE id IN ({placeholders})
+                    """, tuple(rid for _, rid in keep)).fetchall()
+                    fuzzy = []
+                    for row in full:
+                        item = hydrate(dict(row))
+                        sim = sim_by_id[item["id"]]
                         item["_db_index"] = i
                         item["_fuzzy"] = True
                         decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), query_now)
                         item["final_score"] = (sim * 0.5) + (decayed_utility * 0.5) * sim
                         fuzzy.append(item)
+                    # `IN (...)` does not preserve order; restore the ranking the
+                    # old inline sort produced before appending.
                     fuzzy.sort(key=lambda x: (-x["final_score"], x["id"]))
-                    for item in fuzzy[:limit]:
+                    for item in fuzzy:
                         history.log_event(item["id"], i, "ACCESSED")
                         results.append(item)
-        finally:
-            conn.close()
+                finally:
+                    conn.close()
 
     # Tiered ordering: every exact hit (FTS/LIKE) outranks every fuzzy hit,
     # regardless of raw score - the lanes' score scales are not comparable

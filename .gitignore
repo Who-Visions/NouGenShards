@@ -135,3 +135,11 @@ Thumbs.db
 # maintainer's own accounts. Same reason as above: load-bearing locally, ops data
 # to a stranger.
 docs/valerion-orchestration-playbook.md
+
+# Internal ops surface -- never ships to the public repo (origin: GitHub,
+# hf: HuggingFace Space). War-games carry cost/billing analysis and unresolved
+# GM decisions; transcripts and dreams are working notes, not product.
+wargames/
+transcripts/
+dreams/
+*.blade-local-*

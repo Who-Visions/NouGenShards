@@ -9,11 +9,76 @@ retrieve from the vault, not from how it talks.
 Names carry meaning: Sol-Ai is Soleil — "sun" in Kreyol. Anghkooey means
 "remember". NouGen is the orchestrator because the core is namable in itself.
 """
+import logging
+import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 from nougen_shards.gatekeeper import check_mutation_gate
 
-OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+logger = logging.getLogger(__name__)
+
+
+def _env(name: str) -> Optional[str]:
+    val = os.getenv(name)
+    return val.strip() if val and val.strip() else None
+
+
+def _dialable_host(raw: Optional[str]) -> Optional[str]:
+    """Normalize a host string to a URL a client can actually connect to.
+
+    OLLAMA_HOST is a *bind* address on the server side, so it is routinely set
+    to a wildcard like 0.0.0.0 or ::. Those are not dialable -- connecting to
+    them fails (WSAEADDRNOTAVAIL) -- so a wildcard is rejected here rather than
+    silently becoming a broken client URL.
+    """
+    if not raw:
+        return None
+    host = raw.strip()
+    if "://" not in host:
+        host = "http://" + host
+    bare = host.split("://", 1)[1].split("/", 1)[0]
+    if bare.startswith("["):
+        # Bracketed IPv6, optionally with :port -- e.g. [::]:11434
+        hostname = bare[1:].split("]", 1)[0]
+    elif bare.count(":") > 1:
+        # Bare IPv6 with no brackets: every colon belongs to the address.
+        hostname = bare
+    else:
+        hostname = bare.rsplit(":", 1)[0] if ":" in bare else bare
+    if hostname.strip().lower() in ("0.0.0.0", "::", "0:0:0:0:0:0:0:0", "*", ""):
+        return None
+    return host.rstrip("/")
+
+
+# Host is discovered, not assumed: the daemon does not always live on 11434.
+# NOUGEN_OLLAMA_HOST is checked first because it is unambiguously a client URL.
+OLLAMA_HOST = (
+    _dialable_host(_env("NOUGEN_OLLAMA_HOST"))
+    or _dialable_host(_env("OLLAMA_HOST"))
+    or "http://127.0.0.1:11434"
+)
+OLLAMA_URL = OLLAMA_HOST + "/api/generate"
+
+# Roster-wide default, overridable per agent. The literal is a logged fallback,
+# not the source of truth -- resolve env first so a machine with a different
+# fleet does not need a code change.
+DEFAULT_AGENT_MODEL = _env("NOUGEN_DEFAULT_MODEL") or "gemma4:31b-cloud"
+
+
+def _agent_model(agent: str, fallback: Optional[str] = None) -> str:
+    """Resolve an agent's model: per-agent env -> roster default -> fallback.
+
+    NOUGEN_AGENT_MODEL_<AGENT> wins (agent name upper-cased, '-' -> '_'), then
+    NOUGEN_DEFAULT_MODEL via DEFAULT_AGENT_MODEL, then the caller's fallback.
+    """
+    key = "NOUGEN_AGENT_MODEL_" + agent.upper().replace("-", "_")
+    override = _env(key)
+    if override:
+        return override
+    if fallback:
+        return fallback
+    logger.debug("agent %s falling back to roster default %s", agent, DEFAULT_AGENT_MODEL)
+    return DEFAULT_AGENT_MODEL
 
 
 @dataclass(frozen=True)
@@ -64,7 +129,9 @@ ROSTER = {
             "moment and presenting age relative to now. You apply utility "
             "decay so stale memories lose dominance, and you flag any memory "
             "whose timestamp cannot be trusted."),
-        default_model="gemma2:2b",
+        # Small-and-local is the right call for timestamp/decay math -- but on a
+        # current generation, and overridable via NOUGEN_AGENT_MODEL_KRONOS.
+        default_model=_agent_model("Kronos", "gemma4:e2b"),
         engine_functions=["format_shard_when", "decay_utility_scores"],
     ),
     "DavOs": AgentSpec(
@@ -102,7 +169,7 @@ ROSTER = {
             "for capture, Remember for recall, Kronos for time, DavOs for "
             "gates, Sol-Ai for broad sight. You carry the brand: the answer "
             "you hand back is composed, grounded in the vault, and yours."),
-        default_model="gemma4:12b",
+        default_model=_agent_model("NouGen"),
         engine_functions=[],
     ),
     "Griot": AgentSpec(
