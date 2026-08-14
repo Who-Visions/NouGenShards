@@ -325,3 +325,37 @@ test("parse_task_md parses checklist states", async () => {
   const missing = handoff.parse_task_md(path.join(dir, "nope.md"));
   assert.deepEqual(missing, { completed: [], in_progress: [], pending: [] });
 });
+
+test("agy lane: folder routing + CLI marker beats stray gemini key", async () => {
+  cleanHandoffDir();
+
+  let json_path: string | null = null;
+  await captureStdout(() => {
+    json_path = handoff.create_handoff("Antigravity lane", "agy", "G");
+  });
+  assert.notEqual(json_path, null);
+  assert.equal(path.dirname(json_path!), path.join(HANDOFF_DIR, handoff.AGENT_FOLDERS["agy"]));
+  const data = JSON.parse(readFileSync(json_path!, "utf-8"));
+  assert.equal(data.agent, "agy");
+
+  // agy sessions typically export GEMINI_API_KEY too — the CLI marker must win,
+  // or Antigravity handoffs misroute into the gemini lane.
+  const saved: Record<string, string | undefined> = {};
+  for (const v of [
+    "NOUGEN_AGENT", "CLAUDECODE", "CLAUDE_CODE", "CLAUDE_CODE_ENTRYPOINT",
+    "GEMINI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY", "ANTIGRAVITY_CLI",
+  ]) {
+    saved[v] = process.env[v];
+    delete process.env[v];
+  }
+  process.env.ANTIGRAVITY_CLI = "1";
+  process.env.GEMINI_API_KEY = "stray-key";
+  try {
+    assert.equal(handoff.detect_current_agent(), "agy");
+  } finally {
+    for (const [v, val] of Object.entries(saved)) {
+      if (val === undefined) delete process.env[v];
+      else process.env[v] = val;
+    }
+  }
+});

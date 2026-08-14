@@ -48,6 +48,7 @@ export const AGENT_FOLDERS: Record<string, string> = {
   claude: "claude handoffs",
   "claude-cli": "claude cli handoffs",
   codex: "codex handoffs",
+  agy: "agy handoffs",
   ollama: "ollama handoffs",
   openrouter: "openrouter handoffs",
 };
@@ -380,6 +381,12 @@ export function detect_current_agent(): string {
   // so check it BEFORE generic API-key detection or CLI handoffs misroute.
   if (process.env.CLAUDECODE || process.env.CLAUDE_CODE || process.env.CLAUDE_CODE_ENTRYPOINT) {
     return "claude-cli";
+  }
+  // The Antigravity CLI ("agy") is its own lane. Its sessions usually export
+  // GEMINI_API_KEY as well, so the CLI marker must be checked before the
+  // generic key or agy handoffs misroute into the gemini lane.
+  if (process.env.ANTIGRAVITY_CLI || process.env.AGY_CLI) {
+    return "agy";
   }
   if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
     return "gemini";

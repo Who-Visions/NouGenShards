@@ -1,7 +1,7 @@
 # Cross-Agent Handoffs
 
 NouGenShards lets one coding agent leave a structured note for the next one. If
-you bounce between Claude, Gemini, Codex, and local models on the same project,
+you bounce between Claude, Gemini, Codex, Antigravity, and local models on the same project,
 a handoff captures *where you left off* — the goal, the git state, the open
 tasks, and a free-text note — so the next agent doesn't start cold or redo work.
 
@@ -307,7 +307,7 @@ The system is portable — nothing is hardcoded to one machine or one agent:
 
 | Variable | Effect |
 |---|---|
-| `NOUGEN_AGENT` | Forces the agent name for detection (e.g. `claude`, `codex`). Wins over auto-detection. |
+| `NOUGEN_AGENT` | Forces the agent name for detection (e.g. `claude`, `codex`, `agy`). Wins over auto-detection. |
 | `NOUGEN_HANDOFF_DIR` | Where handoffs are stored. Defaults to `<repo>/.handoffs`. |
 | `NOUGEN_HANDOFF_TASKS_DIR` | Directory holding `task.md` / `implementation_plan.md` for goal + checklist auto-fill. Defaults to the Gemini Antigravity brain layout; point it anywhere to use your own task tracking. |
 | `NOUGEN_MACHINE` | Stable human name for this computer. Defaults to the short hostname. |
@@ -315,6 +315,35 @@ The system is portable — nothing is hardcoded to one machine or one agent:
 | `NOUGEN_MACHINE_PRIVATE` | `1` omits the local account name and checkout path from records. |
 | `NOUGEN_TRIGGERS` | `off` disables trigger execution on this machine; `dry` records matches without running them. |
 | `NOUGEN_HANDOFF_REMOTE` | Git remote the handoff directory syncs with. |
+
+## Antigravity CLI (`agy`) lane
+
+Google's Antigravity CLI joins the registry as the `agy` lane. Detection: set
+`NOUGEN_AGENT=agy` (always reliable), or the `ANTIGRAVITY_CLI` / `AGY_CLI` env
+markers route automatically — checked before the `GEMINI_API_KEY` fallback so
+an agy session with a Gemini key doesn't misroute into the `gemini` lane.
+Handoffs land in `.handoffs/agy handoffs/`.
+
+An Antigravity agent can also plug into the shard substrate directly: the SDK
+(`pip install google-antigravity`) speaks MCP natively, and agy reads MCP
+server config from `~/.gemini/antigravity-cli/settings.json`. Wire it to this
+repo's server to give agy sessions `recall_memory` / `capture_experience` /
+`mark_utility`:
+
+```json
+{
+  "mcpServers": {
+    "nougen-shards": {
+      "command": "python",
+      "args": ["-m", "nougen_shards.mcp"]
+    }
+  }
+}
+```
+
+The loop is the same contract every provider runs: read the latest handoff
+before planning, ack when taking over, create a handoff before ending
+substantive work, then rebuild the handoff DB.
 
 ## Reliability notes
 

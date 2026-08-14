@@ -197,3 +197,26 @@ def test_atomic_write_produces_valid_json(setup_handoff_env):
     assert data["handoff_id"]
     leftovers = list(p.parent.glob("*.tmp"))
     assert leftovers == []
+
+
+def test_agy_lane_folder_routing(setup_handoff_env):
+    # Antigravity CLI ("agy") is its own lane with its own handoff folder.
+    temp_path = setup_handoff_env
+    json_path = handoff.create_handoff(message="Antigravity lane", agent="agy")
+    assert json_path is not None
+    assert json_path.parent == temp_path / handoff.AGENT_FOLDERS["agy"]
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["agent"] == "agy"
+
+
+def test_detect_agy_cli_marker_beats_stray_gemini_key(setup_handoff_env, monkeypatch):
+    # agy sessions typically export GEMINI_API_KEY too — the CLI marker must win,
+    # or Antigravity handoffs misroute into the gemini lane.
+    for var in (
+        "NOUGEN_AGENT", "CLAUDECODE", "CLAUDE_CODE", "CLAUDE_CODE_ENTRYPOINT",
+        "GEMINI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("ANTIGRAVITY_CLI", "1")
+    monkeypatch.setenv("GEMINI_API_KEY", "stray-key")
+    assert handoff.detect_current_agent() == "agy"

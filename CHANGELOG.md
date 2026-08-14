@@ -4,6 +4,11 @@ All notable changes to NouGenShards will be documented in this file.
 
 ## [Unreleased]
 ### Added
+- **Antigravity CLI (`agy`) handoff lane**: `agy` joins `AGENT_FOLDERS` in both the Python and
+  TypeScript ports, routing to `.handoffs/agy handoffs/`. `detect_current_agent` recognizes the
+  `ANTIGRAVITY_CLI` / `AGY_CLI` env markers — checked before the `GEMINI_API_KEY` fallback, since
+  agy sessions typically export a Gemini key and would otherwise misroute into the `gemini` lane.
+  `docs/handoffs.md` documents the lane plus MCP wiring for `~/.gemini/antigravity-cli/settings.json`.
 - **Private Vault** (`nougen_shards.private_vault`): encryption at rest for personal-scope
   content. AES-256-GCM per value under one 32-byte vault data key, the key itself DPAPI-wrapped
   through the Keymaker. Wire format `ngenc1:<b64(nonce||ct||tag)>`, with the format version bound

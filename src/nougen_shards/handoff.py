@@ -43,6 +43,7 @@ AGENT_FOLDERS = {
     "claude": "claude handoffs",
     "claude-cli": "claude cli handoffs",
     "codex": "codex handoffs",
+    "agy": "agy handoffs",
     "ollama": "ollama handoffs",
     "openrouter": "openrouter handoffs",
 }
@@ -526,6 +527,11 @@ def detect_current_agent() -> str:
         or os.environ.get("CLAUDE_CODE_ENTRYPOINT")
     ):
         return "claude-cli"
+    # The Antigravity CLI ("agy") is its own lane. Its sessions usually export
+    # GEMINI_API_KEY as well, so the CLI marker must be checked before the
+    # generic key or agy handoffs misroute into the gemini lane.
+    if os.environ.get("ANTIGRAVITY_CLI") or os.environ.get("AGY_CLI"):
+        return "agy"
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         return "gemini"
     if os.environ.get("ANTHROPIC_API_KEY"):
