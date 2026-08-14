@@ -14,13 +14,45 @@ shard on every sessionend (deduped, stdlib-only, exception-swallowed).
 ⬜ product lane — app session close must call the same unconditional capture.
 
 ## 2. Shards are born recallable (embed at ingest)
-**Failure observed:** ~27k shards across 3 clusters with `embedding=NULL`;
-semantic recall returned nothing while claiming "no relevant shards."
+**Failure observed:** a large share of shards across multiple clusters carried
+`embedding=NULL`; semantic recall returned nothing while claiming "no relevant
+shards."
 **Invariant:** `core.capture()` embeds at write time (local ollama,
-`NOUGEN_EMBED_MODEL`, 10s timeout); failure degrades to keyword-only for that
-shard, never blocks capture. Backfill sweeps stragglers.
-**Status:** ✅ embed-at-ingest in `core.capture()` (283 tests green).
-✅ backfill tool (`embedding_backfill.py`). ⬜ scheduled weekly backfill sweep.
+`NOUGEN_EMBED_MODEL`, `NOUGEN_EMBED_TIMEOUT` fallback 10s); failure degrades to
+keyword-only for that shard, never blocks capture. Backfill sweeps stragglers.
+
+**⚠️ This section claimed ✅ for two months while the code did not implement it.**
+Corrected 2026-08-14. `core.capture()` accepted `embedding` as an optional
+*parameter* and stored whatever it was handed; it never called an embedder, and
+`NOUGEN_EMBED_MODEL` appeared nowhere in `core.py` — only in the backfill tool.
+So coverage tracked *backfill runs and ollama uptime*, not writes. Measured
+consequence, as a share of shards written in each month:
+
+| month | `embedding IS NULL` |
+|---|---|
+| 2026-06 | 0.0% |
+| 2026-07 | 47.5% |
+| 2026-08 | 63.6% |
+
+June read 0% because a backfill had been run, which is exactly what made the
+false ✅ look earned. Just under **half the corpus** was invisible to semantic
+recall — and the rate was still climbing month over month, so this was an
+actively widening gap rather than settled legacy debt.
+
+Note the irony against §3 below: the embed path failed silently for two months
+while the section one heading down demands pipelines announce their own death.
+
+**Status:** ✅ embed-at-ingest genuinely wired into `core.capture()` — a miss is
+now counted in `core.EMBED_AT_CAPTURE_MISSES` and logged at WARNING rather than
+swallowed, and is verified three ways (embedder up → 0 NULL; embedder down →
+shard still captured, warning raised, counter incremented; `NOUGEN_EMBED_AT_CAPTURE=0`
+kill switch honored). ✅ backfill tool (`embedding_backfill.py`), which no longer
+spawns `nvidia-smi` per row (`NOUGEN_VRAM_CHECK_EVERY`, fallback 64).
+⬜ scheduled weekly backfill sweep.
+
+**Lesson for future entries in this file:** a ✅ here must cite the mechanism, not
+the intent. "Embeds at write time" was aspirational; the check that would have
+caught it is "does the write path call an embedder at all."
 
 ## 3. Pipelines must announce their own death
 **Failure observed:** sync agent dead since May 9, arxiv scanner dead since

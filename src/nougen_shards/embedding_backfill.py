@@ -45,6 +45,7 @@ def _normalize_host(h: str) -> str:
 
 OLLAMA_HOST = _normalize_host(os.environ.get("OLLAMA_HOST"))
 VRAM_CEILING_MIB = int(os.environ.get("NOUGEN_VRAM_CEILING", "6800"))  # pause above this
+VRAM_CHECK_EVERY = int(os.environ.get("NOUGEN_VRAM_CHECK_EVERY", "64"))  # rows between probes
 
 
 def _vram_used_mib() -> Optional[int]:
@@ -77,6 +78,33 @@ def embed(text: str, model: str, timeout: int = 60) -> Optional[List[float]]:
         return None
 
 
+def embed_many(texts: List[str], model: str, timeout: int = 180) -> Optional[List[List[float]]]:
+    """Embed a list of texts in ONE ollama call.
+
+    /api/embed accepts an array for `input` and returns one vector per item, so a
+    per-text round-trip is pure overhead. Measured on this vault: one-at-a-time
+    ran ~1 embed/sec (~18h for 70k shards) because HTTP round-trip and request
+    scheduling dominated the ~10-30ms of actual compute.
+
+    Returns None on failure so the caller can fall back to per-text embedding
+    rather than dropping the whole batch.
+    """
+    body = json.dumps({"model": model, "input": texts}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{OLLAMA_HOST}/api/embed", data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        vecs = data.get("embeddings")
+        if not vecs or len(vecs) != len(texts):
+            return None
+        return vecs
+    except Exception:
+        return None
+
+
 def _pack(vec: List[float]) -> bytes:
     """float32 little-endian BLOB — matches np.frombuffer(dtype=np.float32)."""
     return struct.pack(f"<{len(vec)}f", *vec)
@@ -103,7 +131,8 @@ def count_pending(vault_dir: str) -> dict:
     return out
 
 
-def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool = True) -> dict:
+def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool = True,
+                progress: bool = True) -> dict:
     conn = sqlite3.connect(db)
     done = 0
     failed = 0
@@ -121,24 +150,41 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
         if not execute:
             return {"db": os.path.basename(db), "pending": len(rows), "would_write": True}
 
-        pending_batch = []
-        for rid, title, content in rows:
-            used = _vram_used_mib()
-            if used is not None and used > VRAM_CEILING_MIB:
-                time.sleep(3)  # GPU hot — let it cool before continuing
-            text = ((title or "") + "\n" + (content or ""))[:4000]
-            vec = embed(text, model)
-            if not vec:
-                failed += 1
-                continue
-            pending_batch.append((sqlite3.Binary(_pack(vec)), rid))
-            if len(pending_batch) >= batch:
+        # VRAM is polled per batch, not per row: nvidia-smi is a subprocess spawn
+        # (~50-100ms), and at one spawn per shard the probe costs more wall-clock
+        # than the embedding it guards. Interval is env-tunable.
+        for start in range(0, len(rows), batch):
+            chunk = rows[start:start + batch]
+            if (start // max(batch, 1)) % max(VRAM_CHECK_EVERY // max(batch, 1), 1) == 0:
+                used = _vram_used_mib()
+                if used is not None and used > VRAM_CEILING_MIB:
+                    time.sleep(3)  # GPU hot — let it cool before continuing
+
+            texts = [((t or "") + "\n" + (c or ""))[:4000] for _, t, c in chunk]
+            vecs = embed_many(texts, model)
+
+            pending_batch = []
+            if vecs is None:
+                # Batch endpoint failed (oversized payload, transient error) --
+                # fall back per text so one bad row cannot drop the whole chunk.
+                for (rid, title, content), text in zip(chunk, texts):
+                    vec = embed(text, model)
+                    if not vec:
+                        failed += 1
+                        continue
+                    pending_batch.append((sqlite3.Binary(_pack(vec)), rid))
+            else:
+                for (rid, _t, _c), vec in zip(chunk, vecs):
+                    if not vec:
+                        failed += 1
+                        continue
+                    pending_batch.append((sqlite3.Binary(_pack(vec)), rid))
+
+            if pending_batch:
                 _flush(conn, pending_batch, has_ver)
                 done += len(pending_batch)
-                pending_batch = []
-        if pending_batch:
-            _flush(conn, pending_batch, has_ver)
-            done += len(pending_batch)
+            if progress and done and (start // max(batch, 1)) % 20 == 0:
+                print(f"    {os.path.basename(db)}: {done}/{len(rows)} embedded, {failed} failed", flush=True)
     finally:
         conn.close()
     return {"db": os.path.basename(db), "embedded": done, "failed": failed}

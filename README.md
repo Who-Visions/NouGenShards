@@ -241,7 +241,7 @@ This repository is the public client: the CLI, the local memory engine, bring-yo
 
 ## 🥇 Standards
 
-- ✅ 100% pass rate on 190+ unit tests.
+- ✅ 100% pass rate on 460+ unit tests.
 - 💻 Hardened for Windows, macOS, and Linux.
 
 ## 📜 Notice

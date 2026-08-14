@@ -24,12 +24,18 @@ MODELS = [m.strip() for m in os.environ.get(
     "NOUGEN_LONGFORM_MODELS", "gemma4:e4b,gemma4-aggressive:e4b,gemma4:e2b"
 ).split(",") if m.strip()]
 # Output path is configurable (no hardcoded author path in a public repo).
-# METAMERIC_LONGFORM_OUT overrides directly; otherwise derive from WATCHTOWER_ROOT
+# VALERION_LONGFORM_OUT overrides directly; otherwise derive from WATCHTOWER_ROOT
 # (default: ~/Watchtower).
+#
+# "Metameric" was agent drift: the memory architecture is named VALERION. The old
+# METAMERIC_LONGFORM_OUT name is still read as a fallback so an existing shell or
+# scheduled job does not silently start writing somewhere new -- but it is
+# deprecated and should not be used in anything written from here on.
 _WT_ROOT = Path(os.environ.get("WATCHTOWER_ROOT", str(Path.home() / "Watchtower")))
-OUT = os.environ.get(
-    "METAMERIC_LONGFORM_OUT",
-    str(_WT_ROOT / "NouGen" / "NouGenSite" / "app" / "blog" / "metameric-engine-longform.md"),
+OUT = (
+    os.environ.get("VALERION_LONGFORM_OUT")
+    or os.environ.get("METAMERIC_LONGFORM_OUT")
+    or str(_WT_ROOT / "NouGen" / "NouGenSite" / "app" / "blog" / "valerion-engine-longform.md")
 )
 
 PHASES = [

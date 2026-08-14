@@ -12,6 +12,15 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+#: Per-request timeouts, in seconds. A federated read is on the caller's latency
+#: budget, so it stays short; sync is bulk and gets longer. These were inline
+#: literals, which made a slow-but-healthy node indistinguishable from a dead one
+#: with no way to tune it: query_cloud_shards swallows the timeout, logs "cloud
+#: node skipped", and returns nothing, so a node a hair over the limit silently
+#: contributes zero to every federated recall.
+SEARCH_TIMEOUT_S = float(os.environ.get("NGS_CLOUD_SEARCH_TIMEOUT", "5.0"))
+SYNC_TIMEOUT_S = float(os.environ.get("NGS_CLOUD_SYNC_TIMEOUT", "10.0"))
+
 # Network/parse failures that should degrade gracefully, not crash federation.
 _NET_ERRORS = (urllib.error.URLError, json.JSONDecodeError, KeyError,
                ValueError, TimeoutError, OSError)
@@ -243,7 +252,7 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3,
                 req.add_header("X-NGS-Token", node_token)
             _apply_edge_auth(req)
 
-            remote_data = json.loads(_open_cloud(req, url, 5.0).decode())
+            remote_data = json.loads(_open_cloud(req, url, SEARCH_TIMEOUT_S).decode())
             if isinstance(remote_data, list):
                 for r in remote_data:
                     # A node may return a JSON list of non-objects (e.g. [1,2,3]);
@@ -290,7 +299,7 @@ def push_to_cloud(shards: list, cloud_url: str, token: str) -> dict:
         req.add_header("X-NGS-Token", token)
         _apply_edge_auth(req)
 
-        return json.loads(_open_cloud(req, url, 10.0).decode())
+        return json.loads(_open_cloud(req, url, SYNC_TIMEOUT_S).decode())
     except _NET_ERRORS as exc:
         return {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
 
@@ -306,7 +315,7 @@ def pull_from_cloud(cloud_url: str, token: str) -> list:
         req.add_header("X-NGS-Token", token)
         _apply_edge_auth(req)
 
-        return json.loads(_open_cloud(req, url, 10.0).decode())
+        return json.loads(_open_cloud(req, url, SYNC_TIMEOUT_S).decode())
     except _NET_ERRORS as exc:
         # No longer silent — a failed pull is logged, then degrades to empty.
         logger.warning("cloud pull failed: %s: %s", type(exc).__name__, exc)

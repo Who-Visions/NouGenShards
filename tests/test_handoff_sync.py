@@ -162,7 +162,7 @@ def test_ack_travels_back_to_the_originating_machine(monkeypatch, fleet):
 
 
 def test_empty_registry_never_reports_a_push(monkeypatch, fleet):
-    """The failure blade1tb hit: pushed=True having published nothing."""
+    """The failure the primary node hit: pushed=True having published nothing."""
     _become(monkeypatch, fleet, "who-pc", "bbbb2222")
     report = handoff_sync.sync(remote=fleet["remote"])
     assert report["pushed"] is False

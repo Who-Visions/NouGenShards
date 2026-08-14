@@ -27,3 +27,19 @@ def isolated_secrets_vault(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(keymaker, "SECRETS_JSON_DIR", vault / "service_accounts",
                         raising=False)
     yield vault
+
+
+@pytest.fixture(autouse=True)
+def no_network_embed_at_capture(monkeypatch):
+    """Keep `capture()` hermetic.
+
+    `core.capture()` now embeds at write time (see HARDENING.md section 2), which
+    is correct in production and wrong in a unit test: it turns every capture into
+    a live ollama round-trip, so the suite becomes slow, network-dependent, and
+    non-deterministic depending on whether a daemon happens to be up.
+
+    Default it off for tests. A test that is specifically about embed-at-capture
+    opts back in with `monkeypatch.setenv("NOUGEN_EMBED_AT_CAPTURE", "1")` and
+    stubs the embedder, which is what the tests in test_audit_fixes.py do.
+    """
+    monkeypatch.setenv("NOUGEN_EMBED_AT_CAPTURE", "0")

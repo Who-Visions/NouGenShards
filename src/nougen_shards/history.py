@@ -53,6 +53,35 @@ def init_history_db():
     conn.close()
 
 
+def _count_shard_rows() -> Optional[int]:
+    """Actual shard rows across the cluster, or None if the grid can't be read.
+
+    Kept here rather than imported from core to avoid a circular import: core
+    already imports history to log capture events.
+    """
+    try:
+        from .core import MAX_DB_COUNT, get_db_path  # pylint: disable=import-outside-toplevel
+    except Exception:  # pylint: disable=broad-except
+        return None
+    total = 0
+    seen_any = False
+    for i in range(1, MAX_DB_COUNT + 1):
+        path = get_db_path(i)
+        if not path.exists():
+            continue
+        conn = None
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+            total += conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
+            seen_any = True
+        except (sqlite3.Error, OSError):
+            continue
+        finally:
+            if conn is not None:
+                conn.close()
+    return total if seen_any else None
+
+
 def log_event(shard_id: int, db_index: int, event_type: str,
               old_score: Optional[float] = None, new_score: Optional[float] = None, metadata: Optional[dict] = None):
     """Writes a historical event to the substrate."""
@@ -112,7 +141,17 @@ class HistoryEngine:
                 (cutoff,)
             ).fetchone()[0]
 
-            total = conn.execute("SELECT COUNT(*) FROM shard_events WHERE event_type = 'CREATED'").fetchone()[0]
+            # total_shards must be a REAL row count, not a count of CREATED events.
+            # The event log only sees writes that went through history.log_event, so
+            # bulk-ingest and repair paths that write rows directly never register.
+            # The event log undercounts by construction, and the result was being
+            # surfaced to the user as "Total Memory Size" -- a label that promises
+            # a row count. Prefer the real thing.
+            total = _count_shard_rows()
+            if total is None:  # grid unreadable -- fall back to the event proxy
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM shard_events WHERE event_type = 'CREATED'"
+                ).fetchone()[0]
             return {"period": period, "new_shards": count, "total_shards": total}
         except sqlite3.Error:
             return {"period": period, "new_shards": 0, "total_shards": 0}

@@ -6,6 +6,7 @@ Architecture: Valerion 21-step cognitive loop. Weighted multi-signal relevance b
 # pylint: disable=duplicate-code
 import hashlib
 import json
+import logging
 import math
 import os
 import sqlite3
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # Configuration (Module 10: Integrate Constraints)
 MAX_DB_SIZE = 1 * 1024 * 1024 * 1024  # 1GB Safety Limit per DB
@@ -491,6 +494,50 @@ def lost_in_the_middle_reorder(shards: list) -> list:
     return reordered
 
 
+#: Count of shards written without an embedding since process start. Read by
+#: tooling that wants to assert the "born recallable" invariant actually held.
+EMBED_AT_CAPTURE_MISSES = 0
+
+
+def _embed_at_capture_enabled() -> bool:
+    return os.environ.get("NOUGEN_EMBED_AT_CAPTURE", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+def _embed_for_capture(title: str, content: str) -> Optional[List[float]]:
+    """Embed at write time so a shard is recallable the moment it exists.
+
+    This closes the gap that let ~46% of the vault accumulate embedding=NULL:
+    embedding only ever happened if a caller passed a vector in or if the
+    backfill tool was run later, so coverage tracked ollama's uptime rather than
+    anything about the shards. A miss here is NON-FATAL -- losing the shard
+    would be worse than losing its vector -- but it is counted and logged rather
+    than swallowed, because silent degradation is what hid this for two months.
+    """
+    global EMBED_AT_CAPTURE_MISSES  # pylint: disable=global-statement
+    model = os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text")
+    try:
+        timeout = int(os.environ.get("NOUGEN_EMBED_TIMEOUT", "10"))
+    except ValueError:
+        timeout = 10
+    try:
+        from .embedding_backfill import embed as _embed  # local import: optional dep path
+        vec = _embed(((title or "") + "\n" + (content or ""))[:4000], model, timeout=timeout)
+    except Exception as exc:  # pylint: disable=broad-except
+        vec = None
+        logger.debug("embed-at-capture raised: %s", exc)
+    if not vec:
+        EMBED_AT_CAPTURE_MISSES += 1
+        logger.warning(
+            "shard written WITHOUT embedding (model=%s, miss #%d) -- semantic recall "
+            "will not see it until backfill runs; is ollama up?",
+            model, EMBED_AT_CAPTURE_MISSES,
+        )
+        return None
+    return vec
+
+
 def capture(event_type: str, title: str, content: str,
             tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
             domain_key: Optional[str] = None, density_score: Optional[float] = None,
@@ -532,6 +579,10 @@ def capture(event_type: str, title: str, content: str,
 
         target_idx = get_write_index(fhash)
         init_db(target_idx)
+
+        # Born recallable: if the caller did not supply a vector, make one now.
+        if embedding is None and _embed_at_capture_enabled():
+            embedding = _embed_for_capture(title, content)
 
         emb_blob = None
         if embedding:
@@ -601,6 +652,32 @@ RERANK_ENABLED = os.environ.get("NOUGEN_RERANK", "0") == "1"
 RERANK_MODEL = os.environ.get("NOUGEN_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 RERANK_CANDIDATES = int(os.environ.get("NOUGEN_RERANK_CANDIDATES", "60"))
 _RERANKER = None  # process-cached reranker handle
+
+#: Per-DB ceiling on rows the fuzzy lane will n-gram (see _keyword_retrieve).
+#: The lane has no index to lean on — it scores rows in Python — so on a large
+#: vault its cost is the whole vault, per query, per retrieval pass. The bound
+#: takes the highest-utility rows first, which is the same ordering the LIKE
+#: lane already prefers. Raise it to trade latency for fuzzy recall; set 0 for
+#: the old unbounded behavior.
+FUZZY_MAX_ROWS = int(os.environ.get("NOUGEN_FUZZY_MAX_ROWS", "4000")) or (1 << 62)
+
+#: When the fuzzy lane is allowed to run at all.
+#:   "empty"       - only when the exact lanes found NOTHING anywhere (default)
+#:   "underfilled" - whenever the exact lanes returned fewer than `limit`
+#: "underfilled" is what the lane did originally. On a small vault the two agree,
+#: because a query with few shards to find usually finds none. On a large one they
+#: diverge hard: most queries return *some* exact hits but nowhere near `limit`
+#: (candidate_limit is 20), so "underfilled" fired on nearly every query and paid
+#: a Python n-gram sweep to produce rows the exact/fuzzy tiering then dropped.
+#: "empty" targets what the lane is actually for — a query whose spelling missed.
+FUZZY_TRIGGER = os.environ.get("NOUGEN_FUZZY_TRIGGER", "empty").strip().lower()
+
+
+def _fuzzy_should_run(results: list, limit: int) -> bool:
+    """Whether the deferred fuzzy lane runs, per FUZZY_TRIGGER."""
+    if FUZZY_TRIGGER == "underfilled":
+        return len(results) < limit
+    return not results
 
 def _temporal_decay(ts_str: Optional[str], now: datetime) -> float:
     """Half-life decay (30 days) of a shard timestamp against a fixed reference
@@ -800,7 +877,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     # other 8 into an unbounded `SELECT ... FROM shards` (no LIMIT), hydrating
     # and n-gramming ~134k rows in Python. That was 40s of a 50s federated
     # /search — spent, then thrown away, on every query that matched anything.
-    if len(results) < limit and missed_dbs:
+    if _fuzzy_should_run(results, limit) and missed_dbs:
         q_grams = ngram.char_ngrams(query)
         if q_grams:
             dom_params = () if domain_key in (None, "*") else (domain_key,)
@@ -815,14 +892,24 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     cursor = conn.execute(f"""
                         SELECT id, substr(content, 1, 256) AS probe_content, title
                         FROM shards {where}
-                        ORDER BY id ASC
-                    """, dom_params)
+                        ORDER BY utility_score DESC, id ASC
+                        LIMIT ?
+                    """, (*dom_params, FUZZY_MAX_ROWS))
                     scored = []
+                    scanned = 0
                     for row in cursor:
+                        scanned += 1
                         probe = f"{row['title'] or ''} {row['probe_content'] or ''}"
                         sim = ngram.overlap_coefficient(q_grams, ngram.char_ngrams(probe))
                         if sim >= ngram.FUZZY_MIN_OVERLAP:
                             scored.append((sim, row["id"]))
+                    # No silent caps: say so when the bound actually bit, so a
+                    # thin fuzzy result is never mistaken for "nothing similar".
+                    if scanned >= FUZZY_MAX_ROWS:
+                        logger.info(
+                            "fuzzy lane capped on db%d: scanned %d of its shards "
+                            "(highest utility_score first); raise NOUGEN_FUZZY_MAX_ROWS to widen",
+                            i, scanned)
                     if not scored:
                         continue
                     # Rank on (sim, id) exactly as the old code did before its

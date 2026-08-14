@@ -211,3 +211,60 @@ def test_open_cloud_refuses_hostname_when_pin_fails(monkeypatch):
     req = urllib.request.Request("https://evil.host/x")
     with pytest.raises(urllib.error.URLError):
         cloud._open_cloud(req, "https://evil.host/x", 5.0)
+
+
+def test_capture_embeds_at_write_time(tmp_path, monkeypatch):
+    # HARDENING.md section 2 claimed "core.capture() embeds at write time" for two
+    # months while capture() only *accepted* an embedding parameter and never called
+    # an embedder. Coverage therefore tracked backfill runs, not writes, and just
+    # under half the vault ended up invisible to semantic recall.
+    # This asserts the mechanism, not the intent.
+    from nougen_shards import core
+    monkeypatch.setenv("NOUGEN_EMBED_AT_CAPTURE", "1")  # conftest defaults it off
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(core, "GLOBAL_DIR", tmp_path)
+
+    calls = {"n": 0}
+
+    def fake_embed(text, model, timeout=10):
+        calls["n"] += 1
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr("nougen_shards.embedding_backfill.embed", fake_embed)
+    assert core.capture("test", "born recallable", "body text", ["t"]) is True
+    assert calls["n"] == 1, "capture() must call the embedder when given no vector"
+
+    import sqlite3, glob
+    nulls = 0
+    for db in glob.glob(str(tmp_path / "nougen_shards_*.db")):
+        conn = sqlite3.connect(db)
+        nulls += conn.execute(
+            "SELECT COUNT(*) FROM shards WHERE embedding IS NULL"
+        ).fetchone()[0]
+        conn.close()
+    assert nulls == 0, "a shard written with the embedder up must not land NULL"
+
+
+def test_capture_embed_failure_is_loud_but_not_fatal(tmp_path, monkeypatch):
+    # The failure mode that hid this: embed errors were never surfaced. A miss must
+    # increment a counter (and log) while still persisting the shard -- losing the
+    # shard would be worse than losing its vector.
+    from nougen_shards import core
+    monkeypatch.setenv("NOUGEN_EMBED_AT_CAPTURE", "1")  # conftest defaults it off
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(core, "GLOBAL_DIR", tmp_path)
+    monkeypatch.setattr(
+        "nougen_shards.embedding_backfill.embed",
+        lambda text, model, timeout=10: None,
+    )
+    before = core.EMBED_AT_CAPTURE_MISSES
+    assert core.capture("test", "embedder down", "body text", ["t"]) is True
+    assert core.EMBED_AT_CAPTURE_MISSES == before + 1, "a miss must be counted, not swallowed"
+
+
+def test_embed_at_capture_kill_switch(monkeypatch):
+    from nougen_shards import core
+    monkeypatch.setenv("NOUGEN_EMBED_AT_CAPTURE", "0")
+    assert core._embed_at_capture_enabled() is False
+    monkeypatch.setenv("NOUGEN_EMBED_AT_CAPTURE", "1")
+    assert core._embed_at_capture_enabled() is True
