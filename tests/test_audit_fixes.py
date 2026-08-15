@@ -268,3 +268,40 @@ def test_embed_at_capture_kill_switch(monkeypatch):
     assert core._embed_at_capture_enabled() is False
     monkeypatch.setenv("NOUGEN_EMBED_AT_CAPTURE", "1")
     assert core._embed_at_capture_enabled() is True
+
+
+def test_bulk_ingest_excluded_from_recall_by_default(monkeypatch):
+    # The vault holds two populations that were never separated: agent memory
+    # (doctrine/corrections/decisions) and a bulk research ingest. Measured
+    # 2026-08-14 the ingest population was ~92% of rows, so undifferentiated
+    # semantic search almost always returned a paper -- correctly by similarity,
+    # uselessly in practice. Recall must exclude it unless asked.
+    from nougen_shards import core
+    frag, params = core._ingest_filter_sql("s", include_research=False)
+    assert "NOT IN" in frag and frag.endswith(" AND ")
+    assert set(params) == {"IMPORT", "INGEST"}
+    # Opting in must remove the predicate entirely, not invert it.
+    assert core._ingest_filter_sql("s", include_research=True) == ("", ())
+
+
+def test_bulk_ingest_types_are_configurable_and_case_insensitive(monkeypatch):
+    # event_type was never normalized ('milestone' and 'MILESTONE' both occur),
+    # so the comparison folds case; and the policy is env config, not a constant.
+    from nougen_shards import core
+    monkeypatch.setenv("NOUGEN_RECALL_EXCLUDE_EVENT_TYPES", "import, Ingest ,YOUTUBE_TRANSCRIPT")
+    assert core.bulk_ingest_event_types() == ["IMPORT", "INGEST", "YOUTUBE_TRANSCRIPT"]
+    frag, params = core._ingest_filter_sql("s")
+    assert frag.startswith("UPPER(s.event_type) NOT IN (")
+    assert len(params) == 3
+    # An empty list disables the filter rather than producing an empty NOT IN ().
+    monkeypatch.setenv("NOUGEN_RECALL_EXCLUDE_EVENT_TYPES", "")
+    assert core.bulk_ingest_event_types() == []
+    assert core._ingest_filter_sql("s") == ("", ())
+
+
+def test_retrieve_accepts_include_research():
+    import inspect
+    from nougen_shards import core
+    for fn in (core.retrieve, core._keyword_retrieve, core._vector_retrieve):
+        assert "include_research" in inspect.signature(fn).parameters, fn.__name__
+    assert inspect.signature(core.retrieve).parameters["include_research"].default is False

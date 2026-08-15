@@ -771,8 +771,40 @@ def _build_fts_match_query(query: str) -> Optional[str]:
     return " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
 
 
+def bulk_ingest_event_types() -> List[str]:
+    """Event types treated as bulk research corpus rather than agent memory.
+
+    The vault holds two populations that were never separated: agent memory
+    (doctrine, corrections, decisions, milestones) and a bulk research ingest
+    (arXiv papers and similar). Measured 2026-08-14, the ingest population was
+    ~92% of all rows, so an undifferentiated semantic search almost always
+    returned a paper -- correctly, by similarity, and uselessly. A query about
+    which port the model server listens on matched papers about audio models
+    "listening".
+
+    `domain_key` cannot separate them: it records the working directory capture
+    ran in, so papers ingested from a repo carry the same domain as that repo's
+    doctrine. `event_type` does separate them, and is compared case-insensitively
+    because the column was never normalized ('milestone' and 'MILESTONE' both
+    occur).
+    """
+    raw = os.environ.get("NOUGEN_RECALL_EXCLUDE_EVENT_TYPES", "IMPORT,INGEST")
+    return [t.strip().upper() for t in raw.split(",") if t.strip()]
+
+
+def _ingest_filter_sql(alias: str = "s", include_research: bool = False):
+    """-> (sql_fragment, params). Fragment ends with ' AND ' or is empty."""
+    if include_research:
+        return "", ()
+    excluded = bulk_ingest_event_types()
+    if not excluded:
+        return "", ()
+    marks = ",".join("?" for _ in excluded)
+    return f"UPPER({alias}.event_type) NOT IN ({marks}) AND ", tuple(excluded)
+
+
 def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[List[float]] = None,
-                      domain_key: str = "global") -> list:
+                      domain_key: str = "global", include_research: bool = False) -> list:
     """Scans for keyword matches using FTS5 (with LIKE fallback)."""
     from . import history, ngram  # pylint: disable=import-outside-toplevel
 
@@ -799,13 +831,14 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     # domain_key None/"*" => search ALL domains (whole brain), not one bucket.
                     dom_clause = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
                     dom_params = () if domain_key in (None, "*") else (domain_key,)
+                    ing_clause, ing_params = _ingest_filter_sql("s", include_research)
                     cursor = conn.execute(f"""
                         SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
                                s.embedding, s.tags, s.domain_key, s.density_score, bm25(shards_fts) as bm25_score
                         FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
-                        WHERE {dom_clause}shards_fts MATCH ?
+                        WHERE {dom_clause}{ing_clause}shards_fts MATCH ?
                         ORDER BY bm25_score ASC, s.id ASC LIMIT ?
-                    """, (*dom_params, fts_query, limit))
+                    """, (*dom_params, *ing_params, fts_query, limit))
                     res = cursor.fetchall()
                 except sqlite3.OperationalError:
                     res = None
@@ -881,7 +914,17 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
         q_grams = ngram.char_ngrams(query)
         if q_grams:
             dom_params = () if domain_key in (None, "*") else (domain_key,)
-            where = "WHERE domain_key = ?" if dom_params else ""
+            ing_clause, ing_params = _ingest_filter_sql("shards", include_research)
+            # Fragment ends in " AND ", so strip it when it is the only predicate.
+            if dom_params and ing_clause:
+                where = "WHERE domain_key = ? AND " + ing_clause[:-5]
+            elif dom_params:
+                where = "WHERE domain_key = ?"
+            elif ing_clause:
+                where = "WHERE " + ing_clause[:-5]
+            else:
+                where = ""
+            dom_params = (*dom_params, *ing_params)
             for i in missed_dbs:
                 conn = get_connection(i)
                 try:
@@ -955,7 +998,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
 
 
 def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
-                     domain_key: str = "global") -> list:
+                     domain_key: str = "global", include_research: bool = False) -> list:
     """Scans for semantic vector matches independent of FTS."""
     if query_embedding is None:
         return []
@@ -972,6 +1015,9 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
         try:
             dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
             dom_params = () if domain_key in (None, "*") else (domain_key,)
+            ing_clause, ing_params = _ingest_filter_sql("shards", include_research)
+            dom_clause = dom_clause + ing_clause
+            dom_params = (*dom_params, *ing_params)
             cursor = conn.execute(f"""
                 SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
                 FROM shards
@@ -1099,7 +1145,7 @@ def rerank(query: str, items: List[dict], top_k: int) -> List[dict]:
 
 
 def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None,
-             domain_key: Optional[str] = None) -> list:
+             domain_key: Optional[str] = None, include_research: bool = False) -> list:
     """
     Advanced Retrieval (Module 21): Runs both keyword (FTS/LIKE) and vector (semantic)
     searches in parallel lanes and merges them using Reciprocal Rank Fusion (RRF).
@@ -1126,10 +1172,12 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     def run_parallel_retrieval(active_domain: str) -> list:
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_keyword = executor.submit(
-                _keyword_retrieve, query, candidate_limit, query_embedding, active_domain
+                _keyword_retrieve, query, candidate_limit, query_embedding, active_domain,
+                include_research
             )
             future_vector = executor.submit(
-                _vector_retrieve, query_embedding, candidate_limit, active_domain
+                _vector_retrieve, query_embedding, candidate_limit, active_domain,
+                include_research
             )
             
             keyword_results = future_keyword.result()
