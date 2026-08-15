@@ -11,7 +11,8 @@ import contextlib
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
-from fastapi import FastAPI, Header, HTTPException, Depends
+from fastapi import FastAPI, Header, HTTPException, Depends, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 import gradio as gr
 import subprocess
@@ -475,10 +476,12 @@ _hud_auth = (_hud_user, _hud_pass) if _hud_user and _hud_pass else None
 class _TokenGatedMCP:
     """ASGI gate for the /mcp mount: same deny-by-default semantics as
     verify_token (503 unconfigured, 401 mismatch), but accepts the token as
-    either the X-NGS-Token header or a ?token= query parameter - the Claude
-    app's custom connectors cannot attach arbitrary headers, so the query
-    form is the mobile path. NODE_TOKEN is read at call time so tests (and
-    runtime reconfiguration) can swap it without re-importing the module."""
+    the X-NGS-Token header, an Authorization: Bearer header, or a ?token=
+    query parameter - the Claude app's custom connectors cannot attach
+    arbitrary headers, so the query form is the mobile path, while the
+    nougen-fleet-mcp Worker proxies with Bearer. NODE_TOKEN is read at call
+    time so tests (and runtime reconfiguration) can swap it without
+    re-importing the module."""
 
     def __init__(self, inner):
         self.inner = inner
@@ -491,6 +494,13 @@ class _TokenGatedMCP:
             headers = {k.decode("latin-1").lower(): v.decode("latin-1")
                        for k, v in scope.get("headers", [])}
             supplied = headers.get("x-ngs-token")
+            if not supplied:
+                # nougen-fleet-mcp proxies every shard call with a Bearer
+                # header; without this branch the Worker gets a flat 401 and
+                # reports the gateway as misconfigured rather than unreachable.
+                auth = headers.get("authorization", "")
+                if auth[:7].lower() == "bearer ":
+                    supplied = auth[7:].strip()
             if not supplied:
                 from urllib.parse import parse_qs
                 qs = parse_qs(scope.get("query_string", b"").decode("latin-1"))
@@ -507,6 +517,20 @@ class _TokenGatedMCP:
                     "headers": [(b"content-type", b"application/json"),
                                 (b"content-length", str(len(body)).encode())]})
         await send({"type": "http.response.body", "body": body})
+
+
+# Bare /mcp (no trailing slash) would otherwise fall through to the Gradio
+# catch-all and 404. nougen-fleet-mcp builds its endpoint as
+# `SHARD_GATEWAY_URL.replace(/\/$/, "") + "/mcp"`, so it ALWAYS calls the
+# slashless form and no gateway-url setting can work around it. 307 keeps the
+# method and body intact, which a 301/302 would not for these JSON-RPC POSTs.
+@app.post("/mcp")
+@app.get("/mcp")
+def _mcp_slash_redirect(request: Request):
+    target = "/mcp/"
+    if request.url.query:
+        target += "?" + request.url.query
+    return RedirectResponse(target, status_code=307)
 
 
 # Mount BEFORE the Gradio catch-all at "/" so /mcp is routed to the MCP app.
