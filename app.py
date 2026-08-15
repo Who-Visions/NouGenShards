@@ -94,6 +94,89 @@ def node_status() -> dict:
             "storage": os.environ.get("NOUGEN_HOME", "default")}
 
 
+def _window_search(query: str = "", since: Optional[str] = None,
+                   until: Optional[str] = None, limit: int = 10) -> list:
+    """Retrieve inside a time window, newest first.
+
+    core.retrieve() ranks purely on content relevance -- there is no timestamp
+    filter and no sort-by-date, so asking it for "March 2026" only matches
+    shards whose TEXT contains those tokens and buries them under whatever is
+    densest today. For an archive meant to be a witness, being unable to ask
+    "what was I working on then" is a real gap, not a phrasing problem.
+
+    Filtering happens in SQL, before scoring, so a sparse era still returns its
+    shards instead of losing them to a relevance cut computed over the whole
+    grid. Timestamps are ISO-8601 (2026-08-09T15:27:40.728875Z), which sorts
+    and compares lexicographically -- so a bare date like "2026-03" or
+    "2026-03-14" works as a bound with no parsing.
+    """
+    where, params = [], []
+    if since:
+        where.append("timestamp >= ?")
+        params.append(since)
+    if until:
+        # Inclusive: "2026-03" should cover all of March, and "2026-03-14"
+        # the whole day, so pad the bound to the end of whatever precision
+        # the caller gave rather than cutting at midnight.
+        params.append(until + "￿")
+        where.append("timestamp <= ?")
+
+    q = (query or "").strip()
+    rows = []
+    for i in range(1, core.MAX_DB_COUNT + 1):
+        if not core.get_db_path(i).exists():
+            continue
+        try:
+            conn = core.get_connection(i)
+        except Exception:
+            continue
+        try:
+            clauses = list(where)
+            args = list(params)
+            if q:
+                # Trigram FTS: match on the phrase, quoted so punctuation in the
+                # query cannot be read as FTS operator syntax.
+                clauses.append("id IN (SELECT rowid FROM shards_fts WHERE shards_fts MATCH ?)")
+                args.append('"' + q.replace('"', '""') + '"')
+            sql = ("SELECT id, timestamp, event_type, title, content, tags, utility_score "
+                   "FROM shards")
+            if clauses:
+                sql += " WHERE " + " AND ".join(clauses)
+            sql += " ORDER BY timestamp DESC LIMIT ?"
+            args.append(limit)
+            for r in conn.execute(sql, args):
+                rows.append({"id": r[0], "timestamp": r[1], "event_type": r[2],
+                             "title": r[3], "content": r[4], "tags": r[5],
+                             "utility_score": r[6], "_db_index": i})
+        except Exception:
+            # A malformed FTS query or a bad shard row on one DB must not sink
+            # the whole sweep -- the other eight still have answers.
+            continue
+        finally:
+            conn.close()
+
+    rows.sort(key=lambda x: x["timestamp"], reverse=True)
+    return rows[:limit]
+
+
+@node_mcp.tool()
+def recall_window(query: str = "", since: str | None = None,
+                  until: str | None = None, limit: int = 10) -> list:
+    """Browse the vault by ERA, newest first -- the date-filtered counterpart to
+    recall_memory.
+
+    recall_memory ranks on content relevance only, so "what was I doing in
+    March 2026" returns whatever mentions those words, topped by today's
+    densest writes. This filters on the timestamp first.
+
+    since/until are ISO prefixes and both are inclusive: since="2026-03",
+    until="2026-03" is all of March; until="2026-03-14" covers that whole day.
+    query is optional -- omit it to page an era, supply it to search within one.
+    """
+    return _window_search(query=query, since=since, until=until,
+                          limit=max(1, min(limit, 50)))
+
+
 def _resolve_shard(shard_id: int, db_index: Optional[int] = None,
                    expect_title: Optional[str] = None) -> tuple:
     """Pin a shard id to exactly one cluster DB, or refuse.
