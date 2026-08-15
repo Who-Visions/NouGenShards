@@ -211,10 +211,17 @@ def substrate_coverage() -> dict:
             m += 1
             if m == 13:
                 y, m = y + 1, 1
+    # Two ways an answer can be partial, and they need different responses.
+    # A gap in `empty_months` means this node never captured that era. A grid
+    # that is not fully mounted means it cannot read what it did capture, and
+    # `total_shards` above is then a count of the readable part only. Reporting
+    # the span without the mount state would let the second masquerade as the
+    # first: a month reads as empty either way.
     return {"total_shards": total,
             "span": {"earliest": lo, "latest": hi},
             "months": dict(sorted(per_month.items())),
             "empty_months": gaps,
+            "grid": _substrate_coverage(),
             "vault": str(core.GLOBAL_DIR)}
 
 
