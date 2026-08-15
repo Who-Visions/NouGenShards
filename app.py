@@ -160,6 +160,62 @@ def _window_search(query: str = "", since: Optional[str] = None,
 
 
 @node_mcp.tool()
+def substrate_coverage() -> dict:
+    """What this node actually holds, so a recall MISS can be told apart from a
+    PARTIAL MOUNT.
+
+    Without this, an empty recall is ambiguous in the worst way: it reads as
+    "that memory does not exist" when it may mean "this node never held that
+    era". Measured on outpost 2026-08-15: March 2026 returned nothing, and the
+    honest answer was a capture gap between two live months -- not a missing
+    memory, and not a retrieval failure.
+
+    Returns the span, the total, and a per-month count so a caller can see the
+    holes rather than infer them."""
+    from collections import Counter
+    per_month = Counter()
+    lo, hi, total = None, None, 0
+    for i in range(1, core.MAX_DB_COUNT + 1):
+        if not core.get_db_path(i).exists():
+            continue
+        try:
+            conn = core.get_connection(i)
+        except Exception:
+            continue
+        try:
+            for (ts,) in conn.execute("SELECT timestamp FROM shards WHERE timestamp IS NOT NULL"):
+                ts = str(ts)
+                per_month[ts[:7]] += 1
+                total += 1
+                if lo is None or ts < lo:
+                    lo = ts
+                if hi is None or ts > hi:
+                    hi = ts
+        except Exception:
+            continue
+        finally:
+            conn.close()
+
+    months = sorted(per_month)
+    gaps = []
+    if months:
+        y, m = map(int, months[0].split("-"))
+        ey, em = map(int, months[-1].split("-"))
+        while (y, m) <= (ey, em):
+            key = f"{y:04d}-{m:02d}"
+            if key not in per_month:
+                gaps.append(key)
+            m += 1
+            if m == 13:
+                y, m = y + 1, 1
+    return {"total_shards": total,
+            "span": {"earliest": lo, "latest": hi},
+            "months": dict(sorted(per_month.items())),
+            "empty_months": gaps,
+            "vault": str(core.GLOBAL_DIR)}
+
+
+@node_mcp.tool()
 def recall_window(query: str = "", since: str | None = None,
                   until: str | None = None, limit: int = 10) -> list:
     """Browse the vault by ERA, newest first -- the date-filtered counterpart to
