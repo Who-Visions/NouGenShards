@@ -6,7 +6,7 @@ import sqlite3
 import os
 import json
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # Configuration for the Node
 NOUGEN_HOME = Path(os.environ.get("NOUGEN_HOME", Path.home() / ".nougen"))
@@ -26,8 +26,48 @@ _DEFAULT_PRICING = {
 }
 
 
-def _load_pricing() -> dict:
+# Vendor pricing tables imported from official docs (see
+# tools/import_gemini_pricing.py). Directory is overridable so an operator can
+# point at their own maintained copy instead of the shipped snapshot.
+def _pricing_dir() -> Path:
+    override = os.environ.get("NOUGEN_PRICING_DIR")
+    if override:
+        return Path(override).expanduser()
+    return Path(__file__).resolve().parents[2] / "data" / "pricing"
+
+
+def _resolve_scheduled(entry: dict, on_date: str) -> tuple:
+    """Pick the price in force on `on_date`, honouring published future changes.
+
+    Vendors publish dated increases ahead of time. Applying the newest entry
+    unconditionally would over-bill today; ignoring it would under-bill after
+    the effective date. Take the latest schedule entry that has arrived.
+    """
+    inp = float(entry.get("input", 0.0))
+    out = float(entry.get("output", 0.0))
+    for when in sorted(entry.get("schedule", {})):
+        if when <= on_date:
+            step = entry["schedule"][when]
+            inp = float(step.get("input", inp))
+            out = float(step.get("output", out))
+    return (inp, out)
+
+
+def _load_pricing(on_date: str | None = None) -> dict:
+    on_date = on_date or datetime.now(timezone.utc).date().isoformat()
     pricing = dict(_DEFAULT_PRICING)
+
+    pdir = _pricing_dir()
+    if pdir.is_dir():
+        for path in sorted(pdir.glob("*.json")):
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8"))
+                for key, entry in (doc.get("models") or {}).items():
+                    pricing[key.lower()] = _resolve_scheduled(entry, on_date)
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                # A malformed table must not take the meter down; defaults stand.
+                continue
+
     raw = os.environ.get("NOUGEN_PRICING_JSON")
     if raw:
         try:
@@ -74,6 +114,102 @@ def _now_iso() -> str:
 def _period_key(iso_ts: str) -> str:
     """'YYYY-MM' billing period from an ISO timestamp ('' if unparseable)."""
     return iso_ts[:7] if iso_ts else ""
+
+# Window sizes for usage_summary(), in days. 'all' means no lower bound.
+# Operator-overridable so a node can define its own reporting horizons.
+_DEFAULT_WINDOWS = {"24h": 1, "week": 7, "month": 30, "quarter": 91, "year": 365, "all": None}
+
+
+def _load_windows() -> dict:
+    windows = dict(_DEFAULT_WINDOWS)
+    raw = os.environ.get("NOUGEN_USAGE_WINDOWS_JSON")
+    if raw:
+        try:
+            for key, days in json.loads(raw).items():
+                windows[str(key)] = None if days is None else int(days)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    return windows
+
+
+def usage_summary(period: str = "week") -> dict:
+    """Aggregate the local usage_logs ledger into a telemetry snapshot.
+
+    Everything here is measured from rows this node actually wrote — token
+    counts, cache hits and the cost estimate all come from usage_logs. The
+    cost is a shadow bill (list-price estimate), never an invoice.
+    """
+    windows = _load_windows()
+    if period not in windows:
+        period = "week"
+    days = windows[period]
+
+    empty = {
+        "period": period,
+        "invocations": 0,
+        "total_tokens": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cached_tokens": 0,
+        "cache_hit_rate": 0.0,
+        "estimated_cost": 0.0,
+        "free_share": 0.0,
+        "by_model": [],
+        "ledger_present": BILLING_DB.exists(),
+    }
+    if not BILLING_DB.exists():
+        return empty
+
+    if days is None:
+        where, params = "", ()
+    else:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        where = "WHERE timestamp >= ?"
+        params = (cutoff.isoformat().replace("+00:00", "Z"),)
+
+    conn = sqlite3.connect(str(BILLING_DB))
+    try:
+        row = conn.execute(f"""
+            SELECT COUNT(*), COALESCE(SUM(total_tokens), 0),
+                   COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+                   COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(estimated_cost), 0.0)
+            FROM usage_logs {where}
+        """, params).fetchone()
+        by_model = conn.execute(f"""
+            SELECT provider, model, COUNT(*), COALESCE(SUM(total_tokens), 0),
+                   COALESCE(SUM(estimated_cost), 0.0)
+            FROM usage_logs {where}
+            GROUP BY provider, model
+            ORDER BY SUM(total_tokens) DESC
+        """, params).fetchall()
+    except sqlite3.Error:
+        return empty
+    finally:
+        conn.close()
+
+    calls, total, prompt, completion, cached, cost = row
+    models = [
+        {"provider": p, "model": m, "invocations": c, "total_tokens": t, "estimated_cost": round(x, 6)}
+        for p, m, c, t, x in by_model
+    ]
+    # Free share = tokens that cost nothing (local/":free" lanes) over all tokens.
+    free_tokens = sum(m["total_tokens"] for m in models if m["estimated_cost"] <= 0)
+
+    return {
+        "period": period,
+        "invocations": calls,
+        "total_tokens": total,
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "cached_tokens": cached,
+        # Cache reads are measured against prompt tokens: only input can be cached.
+        "cache_hit_rate": round((cached / prompt) * 100, 1) if prompt else 0.0,
+        "estimated_cost": round(cost, 6),
+        "free_share": round((free_tokens / total) * 100, 1) if total else 0.0,
+        "by_model": models,
+        "ledger_present": True,
+    }
+
 
 def init_billing():
     """Initializes the billing and usage substrate."""

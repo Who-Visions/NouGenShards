@@ -1,0 +1,49 @@
+{
+  "google": {
+    "url": "https://ai.google.dev/gemini-api/docs/pricing",
+    "shape": "sections",
+    "tier": "Standard",
+    "unit": "USD per 1M tokens"
+  },
+  "anthropic": {
+    "url": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "shape": "matrix",
+    "unit": "USD per 1M tokens",
+    "columns": {
+      "input": "Base Input Tokens",
+      "output": "Output Tokens",
+      "cache_read": "Cache Hits & Refreshes",
+      "cache_write_5m": "5m Cache Writes",
+      "cache_write_1h": "1h Cache Writes"
+    }
+  },
+  "openai": {
+    "url": "https://developers.openai.com/api/docs/pricing",
+    "shape": "matrix",
+    "tier": "Standard",
+    "unit": "USD per 1M tokens",
+    "columns": {
+      "input": "Input",
+      "output": "Output",
+      "cache_read": "Cached input",
+      "cache_write_5m": "Cache writes"
+    },
+    "enabled": false,
+    "note": "Page renders the same models at 4 service tiers (Standard/Batch/Priority/Flex) with identical headings; tier attribution is not yet reliable and the parse also picks up non-model rows. Re-enable once the tier anchor is verified against the page."
+  },
+  "openrouter": {
+    "url": "https://openrouter.ai/api/v1/models",
+    "shape": "json_api",
+    "unit": "USD per 1M tokens",
+    "items_key": "data",
+    "id_key": "id",
+    "pricing_key": "pricing",
+    "scale": 1000000,
+    "fields": {
+      "input": "prompt",
+      "output": "completion",
+      "cache_read": "input_cache_read",
+      "cache_write_5m": "input_cache_write"
+    }
+  }
+}

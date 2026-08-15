@@ -540,3 +540,204 @@ button.ghost:hover,
   background: var(--danger);
   color: #fff;
 }
+
+/* --- Partition filter (Search) --------------------------------------- */
+.filter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.partition-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.result-count {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Active partition marker on the substrate grid */
+.cell.active {
+  border-color: var(--accent);
+}
+
+.cell-active {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+/* --- Tiles (Tracker + Stats) ----------------------------------------- */
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.tile-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.tile-value {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.tile-value.accent { color: var(--accent); }
+.tile-value.warn { color: var(--danger); }
+
+.tile-sub {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* --- Per-model ledger (Tracker) -------------------------------------- */
+.ledger {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.ledger-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 12px;
+  align-items: baseline;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.ledger-row:last-child { border-bottom: none; }
+
+.ledger-model {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.ledger-model > :last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ledger-provider {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.ledger-tokens, .ledger-calls {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.ledger-cost {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  min-width: 60px;
+}
+
+.ledger-cost.free { color: var(--accent); }
+
+/* --- Relay feed ------------------------------------------------------- */
+.relay-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.relay-card {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.relay-card.in_progress { border-left-color: var(--accent-2); }
+.relay-card.acknowledged { border-left-color: var(--accent); }
+
+.relay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.relay-agent {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--accent-2);
+}
+
+.relay-status {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.relay-status.acknowledged { color: var(--accent); }
+.relay-status.in_progress { color: var(--accent-2); }
+
+.relay-goal {
+  font-size: 13px;
+  line-height: 1.45;
+  margin-bottom: 8px;
+}
+
+.relay-meta {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* --- Raw payload disclosure ------------------------------------------ */
+.raw-json summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 6px 0;
+}

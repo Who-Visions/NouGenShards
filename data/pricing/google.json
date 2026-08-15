@@ -1,0 +1,147 @@
+{
+  "imported_at": "2026-08-15T17:14:25-04:00",
+  "models": {
+    "gemini-2.0-flash": {
+      "display_name": "Gemini 2.0 Flash",
+      "input": 0.1,
+      "output": 0.4
+    },
+    "gemini-2.0-flash-lite": {
+      "display_name": "Gemini 2.0 Flash-Lite",
+      "input": 0.075,
+      "output": 0.3
+    },
+    "gemini-2.5-flash": {
+      "display_name": "Gemini 2.5 Flash",
+      "input": 0.3,
+      "output": 2.5
+    },
+    "gemini-2.5-flash-image": {
+      "display_name": "Gemini 2.5 Flash Image (Nano Banana) \ud83c\udf4c",
+      "input": 0.3,
+      "output": 0.039
+    },
+    "gemini-2.5-flash-lite": {
+      "display_name": "Gemini 2.5 Flash-Lite",
+      "input": 0.1,
+      "output": 0.4
+    },
+    "gemini-2.5-flash-lite-preview": {
+      "display_name": "Gemini 2.5 Flash-Lite Preview",
+      "input": 0.1,
+      "output": 0.4
+    },
+    "gemini-2.5-flash-preview-tts": {
+      "display_name": "Gemini 2.5 Flash Preview TTS",
+      "input": 0.5,
+      "output": 10.0
+    },
+    "gemini-2.5-pro": {
+      "display_name": "Gemini 2.5 Pro",
+      "input": 1.25,
+      "output": 10.0
+    },
+    "gemini-2.5-pro-preview-tts": {
+      "display_name": "Gemini 2.5 Pro Preview TTS",
+      "input": 1.0,
+      "output": 20.0
+    },
+    "gemini-3-flash-preview": {
+      "display_name": "Gemini 3 Flash Preview",
+      "input": 0.5,
+      "output": 3.0
+    },
+    "gemini-3-pro-image": {
+      "display_name": "Gemini 3 Pro Image (Nano Banana Pro) \ud83c\udf4c",
+      "input": 2.0,
+      "output": 12.0
+    },
+    "gemini-3.1-flash-image": {
+      "display_name": "Gemini 3.1 Flash Image (Nano Banana 2) \ud83c\udf4c",
+      "input": 0.5,
+      "output": 3.0
+    },
+    "gemini-3.1-flash-lite": {
+      "display_name": "Gemini 3.1 Flash-Lite",
+      "input": 0.25,
+      "output": 1.5
+    },
+    "gemini-3.1-flash-lite-image": {
+      "display_name": "Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite) \ud83c\udf4c",
+      "input": 0.25,
+      "output": 1.5
+    },
+    "gemini-3.1-flash-tts-preview": {
+      "display_name": "Gemini 3.1 Flash TTS Preview",
+      "input": 1.0,
+      "output": 20.0
+    },
+    "gemini-3.1-pro-preview": {
+      "display_name": "Gemini 3.1 Pro Preview",
+      "input": 2.0,
+      "output": 12.0
+    },
+    "gemini-3.5-flash": {
+      "display_name": "Gemini 3.5 Flash",
+      "input": 1.5,
+      "output": 9.0
+    },
+    "gemini-3.5-flash-lite": {
+      "display_name": "Gemini 3.5 Flash-Lite",
+      "input": 0.3,
+      "output": 2.5
+    },
+    "gemini-3.5-live-translate": {
+      "display_name": "Gemini 3.5 Live Translate",
+      "input": 3.5,
+      "output": 21.0
+    },
+    "gemini-3.6-flash": {
+      "display_name": "Gemini 3.6 Flash",
+      "input": 0.75,
+      "output": 3.75,
+      "schedule": {
+        "2027-01-01": {
+          "input": 1.5,
+          "output": 7.5
+        }
+      }
+    },
+    "gemini-3.7-flash": {
+      "display_name": "Gemini 3.7 Flash",
+      "input": 0.75,
+      "output": 3.75,
+      "schedule": {
+        "2027-01-01": {
+          "input": 1.5,
+          "output": 7.5
+        }
+      }
+    },
+    "gemini-omni-flash-preview": {
+      "display_name": "Gemini Omni Flash Preview",
+      "input": 1.5,
+      "output": 9.0
+    },
+    "gemini-robotics-er-1.6-preview": {
+      "display_name": "Gemini Robotics ER 1.6 Preview",
+      "input": 1.0,
+      "output": 5.0
+    },
+    "gemini-robotics-er-2-preview": {
+      "display_name": "Gemini Robotics ER 2 Preview",
+      "input": 2.0,
+      "output": 10.0
+    },
+    "gemini-robotics-er-2-streaming-preview": {
+      "display_name": "Gemini Robotics ER 2 Streaming Preview",
+      "input": 2.0,
+      "output": 10.0
+    }
+  },
+  "provider": "google",
+  "shape": "sections",
+  "source": "https://ai.google.dev/gemini-api/docs/pricing",
+  "tier": "Standard",
+  "unit": "USD per 1M tokens"
+}

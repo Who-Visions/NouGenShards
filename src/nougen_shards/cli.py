@@ -382,7 +382,12 @@ def cmd_status(args):
                 conn.close()
 
     if getattr(args, 'json', False) is True:
-        print(json.dumps({"databases": db_stats, "total_shards": total_count}))
+        print(json.dumps({
+            "databases": db_stats,
+            "total_shards": total_count,
+            "max_db_count": shards.MAX_DB_COUNT,
+            "active_db": active,
+        }))
         return
 
     print("📊 NouGenShards Substrate Status:")
@@ -418,6 +423,31 @@ def cmd_stats(args):
     if growth['total_shards'] > 0:
         rate = (growth['new_shards'] / growth['total_shards']) * 100
         print(f" - Acceleration Rate:   {rate:.1f}% expansion")
+
+
+def cmd_usage(args):
+    """Reports token telemetry from the local usage ledger."""
+    from . import billing
+
+    period = getattr(args, "period", None) or "week"
+    summary = billing.usage_summary(period)
+
+    if getattr(args, 'json', False) is True:
+        print(json.dumps(summary))
+        return
+
+    if not summary["ledger_present"]:
+        print("No usage ledger yet. Route a request through `nougen router` to start metering.")
+        return
+
+    print(f"🎟️  NouGenShards Token Telemetry ({summary['period']})")
+    print(f" - Invocations:      {summary['invocations']:,}")
+    print(f" - Blended tokens:   {summary['total_tokens']:,}")
+    print(f" - Cache read rate:  {summary['cache_hit_rate']:.1f}%")
+    print(f" - Free-lane share:  {summary['free_share']:.1f}%")
+    print(f" - Shadow cost:      ${summary['estimated_cost']:.2f} (list-price estimate, not an invoice)")
+    for m in summary["by_model"][:10]:
+        print(f"   · {m['provider']}/{m['model']}: {m['total_tokens']:,} tok, ${m['estimated_cost']:.2f}")
 
 
 def cmd_ctx(args):
@@ -857,6 +887,11 @@ def get_parser():
     p_status = subparsers.add_parser("status", help="Show cluster health")
     p_status.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    p_usage = subparsers.add_parser("usage", help="Token telemetry from the local usage ledger")
+    p_usage.add_argument("--period", default=None,
+                         help="Reporting window (24h | week | month | quarter | year | all)")
+    p_usage.add_argument("--json", action="store_true", help="Machine-readable output")
+
     p_stats = subparsers.add_parser("stats", help="Historical analytics")
     p_stats.add_argument("--period", choices=["24h", "week", "month", "quarter", "year"],
                          default="week")
@@ -957,6 +992,8 @@ def get_parser():
              "rebuild-db | reconcile | watch | machines | sync | sync-init | "
              "triggers | trigger-add | trigger-rm | trigger-enable | "
              "trigger-disable | trigger-test | trigger-runs"))
+    p_handoff.add_argument("--json", action="store_true",
+                           help="(list) Machine-readable relay feed")
     p_handoff.add_argument("--message", "-m", default="", help="Handoff note or acknowledgement message")
     p_handoff.add_argument("--message-file", "-M", dest="message_file", default=None,
                            help=("Read the note from a file instead of the command line. Required for "
@@ -1137,7 +1174,10 @@ def cmd_handoff(args):
     elif args.action == "read":
         handoff.show_latest_handoff(args.agent)
     elif args.action == "list":
-        handoff.list_handoffs(args.agent)
+        if getattr(args, "json", False) is True:
+            print(json.dumps(handoff.handoff_feed(args.agent, getattr(args, "limit", 25))))
+        else:
+            handoff.list_handoffs(args.agent)
     elif args.action == "ack":
         handoff.acknowledge_handoff(args.agent, args.message, getattr(args, "handoff_id", None))
     elif args.action == "start":
@@ -1348,7 +1388,7 @@ def main():
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
-        "dashboard": cmd_dashboard, "handoff": cmd_handoff
+        "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage
     }
     if args.command in cmds:
         cmds[args.command](args)

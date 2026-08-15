@@ -205,6 +205,25 @@ async fn memory_stats(period: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn token_usage(period: String) -> Result<String, String> {
+  // 'all' is valid here but not for stats, so this list is deliberately its own.
+  let allowed = ["24h", "week", "month", "quarter", "year", "all"];
+  let period = if allowed.contains(&period.as_str()) {
+    period
+  } else {
+    "week".to_string()
+  };
+  let raw = run_engine(&["usage", "--period", &period, "--json"])?;
+  engine_json(&raw)
+}
+
+#[tauri::command]
+async fn relay_feed() -> Result<String, String> {
+  let raw = run_engine(&["handoff", "list", "--json"])?;
+  engine_json(&raw)
+}
+
+#[tauri::command]
 fn minimize_window(window: tauri::Window) {
   let _ = window.minimize();
 }
@@ -242,6 +261,8 @@ pub fn run() {
       search_shards,
       engine_status,
       memory_stats,
+      token_usage,
+      relay_feed,
       minimize_window,
       toggle_maximize_window,
       close_window

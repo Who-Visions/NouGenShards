@@ -1218,6 +1218,43 @@ def reconcile_handoffs(
     return counts
 
 
+def handoff_feed(agent: Optional[str] = None, limit: int = 25) -> List[Dict]:
+    """Structured relay feed — the same records `list_handoffs` prints, as data.
+
+    Used by the HUD's Relay panel. Returns newest-first, already resolved to
+    live status so the caller doesn't need git context of its own.
+    """
+    files = get_handoff_files(agent)
+    if not files:
+        return []
+
+    live_git = get_git_status()
+    feed: List[Dict] = []
+    for p in files[:max(0, limit)]:
+        data = _read_handoff(p)
+        if not data:
+            continue
+        tasks = data.get("tasks", {}) or {}
+        done = len(tasks.get("completed", []) or [])
+        total = done + len(tasks.get("in_progress", []) or []) + len(tasks.get("pending", []) or [])
+        stored = (data.get("status") or "open").lower()
+        feed.append({
+            "id": data.get("id") or p.stem,
+            "timestamp": data.get("timestamp", ""),
+            "agent": data.get("agent", "generic"),
+            "machine": (data.get("machine") or {}).get("host") if isinstance(data.get("machine"), dict)
+                       else data.get("machine", ""),
+            "branch": (data.get("git") or {}).get("branch", "") if isinstance(data.get("git"), dict) else "",
+            "goal": data.get("goal", ""),
+            "tasks_done": done,
+            "tasks_total": total,
+            "status": stored,
+            "live_status": compute_live_status(data, live_git),
+            "acknowledged_by": data.get("acknowledged_by") or "",
+        })
+    return feed
+
+
 def list_handoffs(agent: Optional[str] = None):
     console = _make_console()
     files = get_handoff_files(agent)
