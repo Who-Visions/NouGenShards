@@ -34,6 +34,14 @@ if not defined PY_CMD (
     if not errorlevel 1 set "PY_CMD=python"
 )
 
+:: Last resort before giving up: a project-local venv. Covers the common
+:: case of a checkout whose only interpreter is the one `uv sync` made.
+if not defined PY_CMD (
+    if exist "%~dp0.venv\Scripts\python.exe" (
+        set "PY_CMD=%~dp0.venv\Scripts\python.exe"
+    )
+)
+
 if not defined PY_CMD (
     echo [^^!] ERROR: Python 3.9+ was not found.
     echo     Install it from https://python.org and check
