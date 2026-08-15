@@ -419,8 +419,64 @@ def vault_list() -> list:
 _mcp_asgi = node_mcp.streamable_http_app()
 
 
+def _seed_upstreams() -> list:
+    """Register read-through upstreams from the environment at boot.
+
+    ``federated_retrieve`` already fans out to remote nodes, but it reads its
+    peers from the keymaker ``cloud_nodes`` table. On a host with ephemeral
+    storage that row does not survive a restart, so a node that was linked by
+    hand silently stops federating after the next deploy and answers from
+    whatever local shards it happens to have. Seeding from env makes the link
+    a property of the deployment rather than of the disk.
+
+    ``NGS_UPSTREAM_URL`` takes one URL or several separated by commas. Names
+    come from ``NGS_UPSTREAM_NAME`` positionally, else from the host.
+    """
+    raw = os.environ.get("NGS_UPSTREAM_URL", "").strip()
+    if not raw:
+        return []
+
+    urls = [u.strip() for u in raw.split(",") if u.strip()]
+    names = [n.strip() for n in os.environ.get("NGS_UPSTREAM_NAME", "").split(",") if n.strip()]
+
+    seeded = []
+    for i, url in enumerate(urls):
+        if i < len(names):
+            name = names[i]
+        else:
+            try:
+                from urllib.parse import urlparse
+                name = urlparse(url).hostname or f"upstream-{i + 1}"
+            except Exception:
+                name = f"upstream-{i + 1}"
+        try:
+            from nougen_shards import keymaker
+            keymaker.register_cloud_node(url, name)
+            seeded.append({"name": name, "url": url})
+            logging.info("read-through upstream registered: %s -> %s", name, url)
+        except Exception as exc:
+            # Never block startup on a peer. A node that cannot reach its
+            # upstream still serves what it has; it just says so in /health.
+            logging.warning("could not register upstream %s (%s): %s", name, url, exc)
+    return seeded
+
+
+def _registered_upstreams() -> list:
+    """Read-through peers this node will fan out to, without their secrets."""
+    try:
+        from nougen_shards import keymaker
+        return [
+            {"name": row["name"], "url": row["url"]}
+            for row in keymaker.list_cloud_nodes()
+        ]
+    except Exception as exc:
+        logging.warning("could not list upstreams: %s", exc)
+        return []
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
+    _seed_upstreams()
     # The streamable-HTTP session manager needs a running task group.
     async with node_mcp.session_manager.run():
         yield
@@ -503,6 +559,7 @@ def _substrate_coverage() -> dict:
         shards += count
 
     complete = len(mounted) == expected
+    upstreams = _registered_upstreams()
     return {
         "complete": complete,
         "databases_expected": expected,
@@ -510,8 +567,15 @@ def _substrate_coverage() -> dict:
         "databases_missing": missing,
         "databases_errored": errored,
         "shards": shards,
-        # Recall answers can only be trusted across the part that is mounted.
-        "recall_trustworthy": complete,
+        # With read-through configured, local shards are a cache in front of
+        # the upstream rather than the whole corpus, so an incomplete local
+        # grid stops being the only way an answer can be partial.
+        "read_through": bool(upstreams),
+        "upstreams": upstreams,
+        # Recall answers can only be trusted across the part that is mounted -
+        # unless an upstream is carrying the corpus, in which case a thin local
+        # grid is expected rather than a fault.
+        "recall_trustworthy": complete or bool(upstreams),
         "detail": mounted,
     }
 
@@ -558,13 +622,19 @@ def health():
         )
 
     coverage = _substrate_coverage()
-    if not coverage["complete"]:
+    if not coverage["complete"] and not coverage["read_through"]:
         warnings.append(
             f"substrate incomplete: {coverage['databases_mounted']} of "
             f"{coverage['databases_expected']} databases mounted "
             f"(missing {coverage['databases_missing']}, "
             f"errored {[e['index'] for e in coverage['databases_errored']]}) - "
             "an empty recall result cannot be distinguished from an unread shard"
+        )
+    if not persistent and not coverage["read_through"]:
+        warnings.append(
+            "no read-through upstream configured on ephemeral storage: this node "
+            "is the only home for what it holds, and holds it until the next deploy. "
+            "Set NGS_UPSTREAM_URL to federate against a durable node instead"
         )
 
     return {

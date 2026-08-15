@@ -1,23 +1,30 @@
 """Substrate coverage: a partial mount must not read as an empty result."""
 import ast
+import logging
+import os
 import sqlite3
 
 import pytest
 
 import nougen_shards.core as core
+import nougen_shards.keymaker as keymaker
 
 
 def _load_coverage():
-    """Pull _substrate_coverage out of app.py without importing it.
+    """Pull the coverage helpers out of app.py without importing it.
 
     app.py imports gradio at module scope, which is not a test dependency.
+    _substrate_coverage calls _registered_upstreams, so both are loaded into
+    one namespace and resolve against each other.
     """
     src = open("app.py", encoding="utf-8").read()
-    fn = next(n for n in ast.parse(src).body
-              if isinstance(n, ast.FunctionDef) and n.name == "_substrate_coverage")
-    ns = {"core": core}
-    mod = ast.Module(body=[fn], type_ignores=[])
-    exec(compile(ast.fix_missing_locations(mod), "app.py", "exec"), ns)
+    tree = ast.parse(src)
+    ns = {"core": core, "os": os, "logging": logging}
+    for name in ("_registered_upstreams", "_substrate_coverage"):
+        fn = next(n for n in tree.body
+                  if isinstance(n, ast.FunctionDef) and n.name == name)
+        mod = ast.Module(body=[fn], type_ignores=[])
+        exec(compile(ast.fix_missing_locations(mod), "app.py", "exec"), ns)
     return ns["_substrate_coverage"]
 
 
@@ -31,7 +38,9 @@ def _make_db(path, rows):
 
 @pytest.fixture
 def coverage(tmp_path, monkeypatch):
+    """A grid with no read-through upstream, so coverage reflects local mounts."""
     monkeypatch.setattr(core, "GLOBAL_DIR", tmp_path)
+    monkeypatch.setattr(keymaker, "DB_PATH", tmp_path / "agent_secrets.db")
     return _load_coverage(), tmp_path
 
 
@@ -92,3 +101,24 @@ def test_empty_vault_is_incomplete_rather_than_zero(coverage):
     assert c["complete"] is False
     assert c["recall_trustworthy"] is False
     assert c["databases_missing"] == list(range(1, core.MAX_DB_COUNT + 1))
+
+
+def test_read_through_is_false_without_an_upstream(coverage):
+    cover, vault = coverage
+    for i in range(1, core.MAX_DB_COUNT + 1):
+        _make_db(vault / f"nougen_shards_{i}.db", 1)
+    c = cover()
+    assert c["read_through"] is False
+    assert c["upstreams"] == []
+
+
+def test_an_upstream_makes_a_thin_local_grid_expected_not_a_fault(coverage):
+    """With read-through, local shards are a cache, so 'incomplete' is normal."""
+    cover, vault = coverage
+    _make_db(vault / "nougen_shards_1.db", 3)
+    keymaker.register_cloud_node("https://blade.example", "blade")
+    c = cover()
+    assert c["complete"] is False          # locally it really is partial
+    assert c["read_through"] is True
+    assert c["recall_trustworthy"] is True  # the corpus lives upstream
+    assert [u["name"] for u in c["upstreams"]] == ["blade"]
