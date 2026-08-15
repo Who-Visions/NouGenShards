@@ -7,6 +7,8 @@ import sys
 import hmac
 import json
 import logging
+import hashlib
+import datetime
 import contextlib
 from typing import List, Optional
 
@@ -90,6 +92,186 @@ def node_status() -> dict:
     return {"status": "ignited",
             "total_shards": _total_shards(),
             "storage": os.environ.get("NOUGEN_HOME", "default")}
+
+
+def _resolve_shard(shard_id: int, db_index: Optional[int] = None,
+                   expect_title: Optional[str] = None) -> tuple:
+    """Pin a shard id to exactly one cluster DB, or refuse.
+
+    Shard ids are per-DB AUTOINCREMENT, so id 2416 exists in several of the 9
+    DBs at once. Every mutation here keys on an id, and acting on "the first
+    match" would silently mutate a different shard than the caller meant --
+    tolerable for a utility nudge, unacceptable for a retraction or a delete.
+
+    Returns (db_index, title). Raises ValueError naming the candidates when the
+    id is ambiguous, so the caller disambiguates instead of gambling.
+    """
+    hits = []
+    indices = [db_index] if db_index is not None else range(1, core.MAX_DB_COUNT + 1)
+    for i in indices:
+        if not core.get_db_path(i).exists():
+            continue
+        conn = core.get_connection(i)
+        try:
+            row = conn.execute("SELECT title FROM shards WHERE id = ?", (shard_id,)).fetchone()
+        finally:
+            conn.close()
+        if row:
+            hits.append((i, row[0]))
+
+    if not hits:
+        raise ValueError(f"no shard with id {shard_id}"
+                         + (f" in db {db_index}" if db_index is not None else " in any cluster DB"))
+
+    if expect_title:
+        exact = [h for h in hits if h[1] == expect_title]
+        if not exact:
+            found = "; ".join(f"db{i}: {t[:60]!r}" for i, t in hits)
+            raise ValueError(
+                f"title mismatch for id {shard_id} -- refusing to touch a shard the "
+                f"caller has not seen. Expected {expect_title[:60]!r}; found {found}")
+        hits = exact
+
+    if len(hits) > 1:
+        found = "; ".join(f"db{i}: {t[:50]!r}" for i, t in hits)
+        raise ValueError(
+            f"id {shard_id} is ambiguous across cluster DBs ({found}). "
+            f"Pass db_index (recall results carry _db_index) to name the one you mean.")
+
+    return hits[0]
+
+
+@node_mcp.tool()
+def shard_amend(shard_id: int, note: str, db_index: int | None = None,
+                confirm_title: str | None = None) -> dict:
+    """Append a dated note to an existing shard, preserving everything already
+    there. The append-only way to correct or extend a shard: history is never
+    rewritten, it grows. Use for living dossiers and for correcting a shard that
+    later turned out to be partly wrong.
+
+    PASS confirm_title. Recall is fuzzy and can hand back a neighbouring
+    shard's id; amending the wrong shard writes your note into someone else's
+    record. Supplying the expected title makes that a refusal."""
+    idx, title = _resolve_shard(shard_id, db_index, expect_title=confirm_title)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    conn = core.get_connection(idx)
+    try:
+        row = conn.execute("SELECT content FROM shards WHERE id = ?", (shard_id,)).fetchone()
+        merged = f"{row[0]}\n\n--- UPDATE {stamp} ---\n{note}"
+        conn.execute("UPDATE shards SET content = ? WHERE id = ?", (merged, shard_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"amended": shard_id, "db_index": idx, "title": title, "added_chars": len(note)}
+
+
+@node_mcp.tool()
+def shard_retract(shard_id: int, reason: str, db_index: int | None = None,
+                  confirm_title: str | None = None) -> dict:
+    """Retract a shard WITHOUT erasing it: prefix its title [RETRACTED], append
+    the reason, tag it `retracted`, and floor its utility so outcome-weighted
+    recall stops surfacing it.
+
+    Preferred over shard_forget. The row survives, so the grid still records
+    that this was once believed and why it stopped being true -- which is the
+    whole point of a witness. Reach for forget only when the content must not
+    exist (a secret pasted in by mistake).
+
+    PASS confirm_title. Recall is fuzzy: a query can return a plausible
+    neighbour rather than the shard you meant, and the id alone will not tell
+    you. This was not theoretical -- on 2026-08-15 a self-test recalled by
+    title, got a *different* shard's id back, and retracted real content.
+    Supplying the title you believe you are acting on turns that into a refusal
+    instead of damage."""
+    idx, title = _resolve_shard(shard_id, db_index, expect_title=confirm_title)
+    if title.startswith("[RETRACTED]"):
+        return {"retracted": shard_id, "db_index": idx, "already": True, "title": title}
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    conn = core.get_connection(idx)
+    try:
+        row = conn.execute("SELECT content, tags FROM shards WHERE id = ?", (shard_id,)).fetchone()
+        try:
+            tags = json.loads(row[1]) if row[1] else []
+            if not isinstance(tags, list):
+                tags = []
+        except Exception:
+            tags = []
+        if "retracted" not in tags:
+            tags.append("retracted")
+        conn.execute(
+            "UPDATE shards SET title = ?, content = ?, tags = ?, utility_score = ? WHERE id = ?",
+            (f"[RETRACTED] {title}",
+             f"{row[0]}\n\n--- RETRACTED {stamp} ---\n{reason}",
+             json.dumps(tags), 0.0, shard_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"retracted": shard_id, "db_index": idx, "title": f"[RETRACTED] {title}"}
+
+
+@node_mcp.tool()
+def shard_forget(shard_id: int, confirm_title: str, db_index: int | None = None) -> dict:
+    """PERMANENTLY delete a shard. Irreversible -- there is no undo and no
+    tombstone; the row and its FTS index entry are gone.
+
+    confirm_title must match the shard's current title exactly. That is not
+    ceremony: ids repeat across the 9 cluster DBs, so an id alone can name a
+    shard the caller has never seen. Requiring the title proves the caller is
+    looking at the thing they are deleting.
+
+    Prefer shard_retract. Use this only when the content must not exist."""
+    idx, title = _resolve_shard(shard_id, db_index, expect_title=confirm_title)
+    conn = core.get_connection(idx)
+    try:
+        # The shards_ad trigger keeps shards_fts in sync on delete.
+        conn.execute("DELETE FROM shards WHERE id = ?", (shard_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"forgotten": shard_id, "db_index": idx, "title": title, "recoverable": False}
+
+
+@node_mcp.tool()
+def vault_put(key: str, value: str) -> dict:
+    """Write a secret into the keymaker vault. WRITE-ONLY BY DESIGN.
+
+    There is deliberately no vault_get on this node. Reading secrets over a
+    network surface would put every provider key behind one bearer token; a
+    remote lane can rotate a credential but can never exfiltrate one.
+
+    Returns a SHA-256 fingerprint (first 12 hex) so the caller can prove the
+    stored value matches what they intended without the value being echoed."""
+    from nougen_shards import keymaker
+    keymaker.init_vault()
+    keymaker.ingest_secret(key, value)
+    stored = keymaker.get_secret(key)
+    return {"key": key,
+            "stored": stored == value,
+            "fingerprint": hashlib.sha256(value.encode()).hexdigest()[:12],
+            "vault": str(keymaker.DB_PATH)}
+
+
+@node_mcp.tool()
+def vault_list() -> list:
+    """Secret NAMES and fingerprints in the vault -- never values.
+
+    Enough to answer "is this credential present, and is it the one I think?"
+    (compare fingerprints) without the vault becoming readable."""
+    from nougen_shards import keymaker
+    out = []
+    if not keymaker.DB_PATH.exists():
+        return out
+    import sqlite3 as _sq
+    conn = _sq.connect(str(keymaker.DB_PATH))
+    try:
+        rows = conn.execute("SELECT secret_key, last_rotated FROM secrets ORDER BY secret_key").fetchall()
+    finally:
+        conn.close()
+    for name, rotated in rows:
+        val = keymaker.get_secret(name)
+        out.append({"key": name, "last_rotated": rotated,
+                    "fingerprint": hashlib.sha256(val.encode()).hexdigest()[:12] if val else None})
+    return out
 
 
 _mcp_asgi = node_mcp.streamable_http_app()
