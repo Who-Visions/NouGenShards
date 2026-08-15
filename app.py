@@ -28,6 +28,7 @@ if os.environ.get("SPACE_ID"):
     os.environ["NOUGEN_VAULT_DIR"] = "/data/.vault"
 
 from nougen_shards import bind_probe, core, history
+from nougen_shards.federation import federated_retrieve
 from nougen_shards.brain_scan import scan_environment
 
 NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN")
@@ -66,7 +67,9 @@ node_mcp = FastMCP(
 def recall_memory(query: str, limit: int = 5) -> list:
     """Search the memory substrate. Returns ranked shards (fuzzy recall
     included when exact matching misses)."""
-    results = core.retrieve(query, limit=max(1, min(limit, 20)))
+    # Federated for the same reason as POST /search below: a remote MCP client
+    # should not get a narrower corpus than the local CLI.
+    results = federated_retrieve(query, limit=max(1, min(limit, 20)))
     return [{k: v for k, v in r.items() if not isinstance(v, (bytes, bytearray))}
             for r in results]
 
@@ -468,19 +471,58 @@ def verify_token(x_ngs_token: str = Header(None)):
 
 # --- API Endpoints ---
 
-def _total_shards() -> int:
-    total = 0
-    for i in range(1, core.MAX_DB_COUNT + 1):
-        p = core.get_db_path(i)
-        if not p.exists():
+def _substrate_coverage() -> dict:
+    """Per-database mount state for the shard grid.
+
+    A caller that gets nothing back needs to know whether the substrate said
+    "no match" or "I could not read most of myself". Counting only the
+    databases that happen to open reports a number that looks authoritative
+    while hiding how much is absent, so every index is accounted for here as
+    exactly one of mounted, missing or errored.
+    """
+    expected = core.MAX_DB_COUNT
+    mounted, missing, errored, shards = [], [], [], 0
+
+    for i in range(1, expected + 1):
+        path = core.get_db_path(i)
+        if not path.exists():
+            missing.append(i)
             continue
         try:
             conn = core.get_connection(i)
-            total += conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
-            conn.close()
-        except Exception:
-            pass
-    return total
+            try:
+                count = conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
+            finally:
+                conn.close()
+        except Exception as exc:
+            # Reason, not just the fact - a locked database and a corrupt one
+            # need different responses.
+            errored.append({"index": i, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        mounted.append({"index": i, "shards": count})
+        shards += count
+
+    complete = len(mounted) == expected
+    return {
+        "complete": complete,
+        "databases_expected": expected,
+        "databases_mounted": len(mounted),
+        "databases_missing": missing,
+        "databases_errored": errored,
+        "shards": shards,
+        # Recall answers can only be trusted across the part that is mounted.
+        "recall_trustworthy": complete,
+        "detail": mounted,
+    }
+
+
+def _total_shards() -> int:
+    """Shard count across the mounted databases.
+
+    Kept for callers that only want the number; ``_substrate_coverage`` is the
+    one to read when the number needs to be interpreted.
+    """
+    return _substrate_coverage()["shards"]
 
 
 @app.get("/health")
@@ -515,6 +557,16 @@ def health():
             "to unauthenticated callers"
         )
 
+    coverage = _substrate_coverage()
+    if not coverage["complete"]:
+        warnings.append(
+            f"substrate incomplete: {coverage['databases_mounted']} of "
+            f"{coverage['databases_expected']} databases mounted "
+            f"(missing {coverage['databases_missing']}, "
+            f"errored {[e['index'] for e in coverage['databases_errored']]}) - "
+            "an empty recall result cannot be distinguished from an unread shard"
+        )
+
     return {
         "status": "ignited",
         "deploy_sha": deploy_sha,
@@ -523,7 +575,11 @@ def health():
         "node_token_configured": node_token_ok,
         "hud_auth_configured": hud_auth_ok,
         "api_docs_public": _serve_docs and _network_exposed,
-        "total_shards": _total_shards(),
+        "total_shards": coverage["shards"],
+        # A bare count says nothing about what it is a count OF. This says how
+        # much of the grid the number covers, so a caller can tell a real miss
+        # from a partial mount without a second request.
+        "substrate": coverage,
         # Auth gates are the hard requirement for a public flip; storage is a
         # durability concern surfaced via warnings.
         "public_ready": node_token_ok and hud_auth_ok,
@@ -571,7 +627,14 @@ def search(req: SearchRequest, _token: str = Depends(verify_token)):
     """
     limit = max(1, min(req.limit, 50))
     try:
-        results = core.retrieve(req.query, limit=limit)
+        # Federated, not core.retrieve: a remote caller must see the same corpus a
+        # local CLI caller does. core.retrieve reads only nougen_shards_1..9.db,
+        # so registered sibling vaults (where most of the long-tail material
+        # actually lives) were invisible over HTTP while `nougen recall` found
+        # them locally — the node answered "not found" about content it holds.
+        # federated_retrieve degrades every remote lane independently, so this
+        # cannot fail worse than the local-only path did.
+        results = federated_retrieve(req.query, limit=limit)
     except Exception:
         logger.exception("search: full retrieve failed, falling back to keyword-only")
         try:
