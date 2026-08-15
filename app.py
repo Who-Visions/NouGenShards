@@ -27,7 +27,7 @@ if os.environ.get("SPACE_ID"):
     os.environ["NOUGEN_HOME"] = "/data"
     os.environ["NOUGEN_VAULT_DIR"] = "/data/.vault"
 
-from nougen_shards import bind_probe, core, history
+from nougen_shards import bind_probe, core, history, mcp_oauth
 from nougen_shards.federation import federated_retrieve
 from nougen_shards.brain_scan import scan_environment
 
@@ -933,13 +933,32 @@ _hud_pass = os.environ.get("NGS_HUD_PASSWORD")
 _hud_auth = (_hud_user, _hud_pass) if _hud_user and _hud_pass else None
 
 
+def _scope_base_url(scope) -> str:
+    """Public origin for a raw ASGI scope, mirroring mcp_oauth.public_base_url.
+
+    The 401 is emitted below the FastAPI layer, so there is no Request object
+    to hand the shared helper; both paths must agree or the metadata URL in
+    WWW-Authenticate points somewhere the client cannot reach.
+    """
+    configured = os.environ.get("NGS_PUBLIC_URL")
+    if configured:
+        return configured.rstrip("/")
+    headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+               for k, v in scope.get("headers", [])}
+    proto = headers.get("x-forwarded-proto") or scope.get("scheme") or "https"
+    host = headers.get("x-forwarded-host") or headers.get("host") or ""
+    return f"{proto}://{host}" if host else ""
+
+
 class _TokenGatedMCP:
     """ASGI gate for the /mcp mount: same deny-by-default semantics as
     verify_token (503 unconfigured, 401 mismatch), but accepts the token as
-    either the X-NGS-Token header or a ?token= query parameter - the Claude
-    app's custom connectors cannot attach arbitrary headers, so the query
-    form is the mobile path. NODE_TOKEN is read at call time so tests (and
-    runtime reconfiguration) can swap it without re-importing the module."""
+    the X-NGS-Token header, an Authorization: Bearer header, or a ?token=
+    query parameter - the Claude app's custom connectors cannot attach
+    arbitrary headers, so the query form is the pre-baked-URL path while the
+    OAuth flow issues Bearer tokens. NODE_TOKEN is read at call time so tests
+    (and runtime reconfiguration) can swap it without re-importing the
+    module."""
 
     def __init__(self, inner):
         self.inner = inner
@@ -953,22 +972,47 @@ class _TokenGatedMCP:
                        for k, v in scope.get("headers", [])}
             supplied = headers.get("x-ngs-token")
             if not supplied:
+                # OAuth-issued tokens and the fleet Worker both arrive as
+                # Bearer; without this branch they get a flat 401 and the
+                # Connect flow completes only to fail on its first call.
+                auth = headers.get("authorization", "")
+                if auth[:7].lower() == "bearer ":
+                    supplied = auth[7:].strip()
+            if not supplied:
                 from urllib.parse import parse_qs
                 qs = parse_qs(scope.get("query_string", b"").decode("latin-1"))
                 supplied = (qs.get("token") or [None])[0]
-            if not supplied or not hmac.compare_digest(str(supplied), str(NODE_TOKEN)):
-                await self._reject(send, 401, "Invalid node token.")
+            shared_ok = bool(supplied) and hmac.compare_digest(str(supplied), str(NODE_TOKEN))
+            if not shared_ok and not (supplied and mcp_oauth.issued_token_valid(supplied)):
+                await self._reject(send, 401, "Invalid node token.",
+                                   scope=scope)
                 return
         await self.inner(scope, receive, send)
 
     @staticmethod
-    async def _reject(send, status, detail):
+    async def _reject(send, status, detail, scope=None):
         body = json.dumps({"detail": detail}).encode("utf-8")
+        headers = [(b"content-type", b"application/json"),
+                   (b"content-length", str(len(body)).encode())]
+        if status == 401 and scope is not None:
+            # RFC 9728 section 5.1. Without this pointer the client cannot
+            # discover the authorization server, falls back to probing
+            # /.well-known/oauth-authorization-server on its own, and reports
+            # "couldn't register with the sign-in service" when that 404s.
+            base = _scope_base_url(scope)
+            headers.append((
+                b"www-authenticate",
+                f'Bearer resource_metadata="{base}/.well-known/oauth-protected-resource"'
+                .encode("latin-1"),
+            ))
         await send({"type": "http.response.start", "status": status,
-                    "headers": [(b"content-type", b"application/json"),
-                                (b"content-length", str(len(body)).encode())]})
+                    "headers": headers})
         await send({"type": "http.response.body", "body": body})
 
+
+# Register the OAuth endpoints BEFORE the Gradio catch-all at "/", or the HUD
+# swallows /authorize, /token, /register and the discovery documents.
+mcp_oauth.install(app, node_token_getter=lambda: NODE_TOKEN)
 
 # Mount BEFORE the Gradio catch-all at "/" so /mcp is routed to the MCP app.
 app.mount("/mcp", _TokenGatedMCP(_mcp_asgi))
