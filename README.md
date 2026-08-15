@@ -237,6 +237,20 @@ See [Cloud Modes](./docs/cloud-modes.md) and [Licensing](./docs/licensing.md) fo
 
 This repository is the public client: the CLI, the local memory engine, bring-your-own-key adapters, AI Memory Recon, and the plugin interfaces. Some hosted and advanced features are not part of this repository.
 
+### 🎯 Skills
+
+`skills/` holds standing instructions the agent must follow for a kind of work. They are
+**not optional**: when a skill covers the task, it supersedes the model's own defaults.
+The MCP server hands its client the roster on connection, and `apply_skills(task)` returns
+every governing skill in full — one call, no list-then-load step.
+
+Shipping now: **`skills/design/`**, which authors and audits design systems as portable
+[`DESIGN.md`](skills/design/SKILL.md) packages, with a validator enforcing contrast,
+focus-visible, theme-scope and dual-canon gates. Start a new system from
+`skills/design/brands/_template/`.
+
+See [`skills/README.md`](skills/README.md) for the layout and how to write one.
+
 ---
 
 ## 🥇 Standards

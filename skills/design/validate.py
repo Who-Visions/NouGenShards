@@ -69,6 +69,10 @@ def threshold(key: str) -> float:
 
 _HEX = re.compile(r"#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b")
 
+# Marks a documented ratio as measured against a blended/overlaid color, which
+# by definition cannot be reproduced from two declared hexes.
+_BLEND = re.compile(r"\b\d+\s*%|opacity|alpha|rgba", re.IGNORECASE)
+
 
 def _srgb_to_linear(c: float) -> float:
     return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
@@ -309,9 +313,70 @@ def gate_contrast(pkg: Path) -> Gate:
     return Gate("contrast", PASSED, f"primary text pair {ratio:.2f} >= {body_floor}", evidence)
 
 
+def gate_claims(pkg: Path) -> Gate:
+    """Every contrast ratio quoted in DESIGN.md must be reproducible.
+
+    Written numbers rot silently: nobody re-derives a table by hand, so a
+    ratio that was estimated rather than computed ships as documentation and
+    is believed. This recomputes every pair the package actually contains and
+    checks each quoted figure against that set.
+    """
+    design = (pkg / "DESIGN.md").read_text(encoding="utf-8")
+    css = _read_css(pkg)
+
+    colors = {m.group(0).lower() for m in _HEX.finditer(css)}
+    # Expand 3-digit forms so #fff and #ffffff compare equal.
+    expanded = set()
+    for c in colors:
+        h = c.lstrip("#")
+        expanded.add("#" + ("".join(ch * 2 for ch in h) if len(h) == 3 else h))
+    if len(expanded) < 2:
+        return Gate("claims", CONFIRM, "not enough colors in tokens.css to check claims")
+
+    ordered = sorted(expanded)
+    achievable = {
+        round(contrast_ratio(a, b), 2)
+        for i, a in enumerate(ordered) for b in ordered[i + 1:]
+    }
+
+    # Only inspect the accessibility section; scales and durations elsewhere
+    # use the same decimal shape and are not contrast claims.
+    section = re.search(r"^##\s+Accessibility\b(.*?)(?=^##\s|\Z)",
+                        design, re.DOTALL | re.MULTILINE)
+    if not section:
+        return Gate("claims", CONFIRM, "no Accessibility section to check")
+
+    # A ratio measured against a blended color (an alpha overlay) is not
+    # reproducible from two declared hexes, and documenting one is legitimate.
+    # Skip lines that name the blend rather than calling the figure wrong.
+    quoted = set()
+    for line in section.group(1).splitlines():
+        if _BLEND.search(line):
+            continue
+        for found in re.findall(r"\b(\d{1,2}\.\d{2})\b", line):
+            if 1.0 <= float(found) <= 21.0:
+                quoted.add(float(found))
+    if not quoted:
+        return Gate("claims", CONFIRM, "no contrast ratios quoted to verify")
+
+    tolerance = 0.05
+    unmatched = sorted(
+        q for q in quoted
+        if not any(abs(q - a) <= tolerance for a in achievable)
+    )
+    if unmatched:
+        return Gate(
+            "claims", FAILED,
+            f"{len(unmatched)} quoted ratio(s) match no pair in tokens.css",
+            [f"{q:.2f} is not reproducible from any two declared colors" for q in unmatched],
+        )
+    return Gate("claims", PASSED, f"all {len(quoted)} quoted ratios reproduce from tokens.css")
+
+
 GATES = (
     gate_files, gate_manifest, gate_headings, gate_tokens,
     gate_parity, gate_focus, gate_motion, gate_themes, gate_contrast,
+    gate_claims,
 )
 
 _MARK = {PASSED: "PASS", FAILED: "FAIL", CONFIRM: "CONF"}

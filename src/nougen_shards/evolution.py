@@ -80,7 +80,19 @@ class EvolutionEngine:
         # 3. Refine (Simulated)
         if self.verbose:
             print("[*] Evolution: Refining skill against virtual verifier...")
-        skill_content = f"# SKILL: {instruction}\n\n## Grounding\n{grounding}\n\n## Implementation\nFollow the verified invariants."
+        # Frontmatter is not decoration: the skill registry reads `name` and
+        # `description` to decide which skills govern a task. A skill written
+        # without it is discoverable but never matches, so it never gets used.
+        summary = " ".join(instruction.split())
+        skill_content = (
+            "---\n"
+            f"name: {summary}\n"
+            f"description: {summary}\n"
+            "---\n\n"
+            f"# SKILL: {instruction}\n\n"
+            f"## Grounding\n{grounding}\n\n"
+            "## Implementation\nFollow the verified invariants."
+        )
         
         # 4. Verify (trusted: this runs the engine's own generated stub, not user input)
         result = nougen_sandbox.execute_sandboxed(virtual_task, language="python", trusted=True)
@@ -98,7 +110,10 @@ class EvolutionEngine:
             digest = hashlib.sha256(instruction.encode("utf-8")).hexdigest()[:8]
             skill_id = f"{slug}-{digest}"
             skill_dir = (core.GLOBAL_DIR / "skills").resolve()
-            skill_path = (skill_dir / f"{skill_id}.md").resolve()
+            # Write the canonical <name>/SKILL.md layout the registry discovers,
+            # not a flat file. The flat form was readable by nothing, which is
+            # why every previously evolved skill was invisible.
+            skill_path = (skill_dir / skill_id / "SKILL.md").resolve()
             # Defense in depth: refuse anything that resolves outside skills/.
             if skill_dir not in skill_path.parents:
                 raise ValueError(f"Unsafe skill path rejected: {skill_id}")

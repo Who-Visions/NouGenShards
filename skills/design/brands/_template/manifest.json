@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "od-design-system-project/v1",
+  "name": "_template",
+  "version": "0.1.0",
+  "description": "Neutral starting point. Copy this directory, rename it, and replace every value.",
+  "entry": {
+    "prose": "DESIGN.md",
+    "tokens": "tokens.css"
+  },
+  "surfaces": {
+    "ground": "--color-bg",
+    "ink": "--color-fg"
+  },
+  "themes": ["light", "dark"],
+  "provenance": {
+    "invented": "Every value here is a placeholder chosen to pass the gates while committing to nothing. Replace them all."
+  },
+  "openWork": [
+    "Replace the palette. These greys are deliberately characterless so that shipping them unchanged looks unfinished rather than looking like someone else's brand."
+  ]
+}

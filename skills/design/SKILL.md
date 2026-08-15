@@ -34,9 +34,16 @@ the package is portable to other tools rather than trapped in this repo.
   "schemaVersion": "od-design-system-project/v1",
   "name": "<slug>",
   "version": "1.0.0",
-  "description": "<one line>"
+  "description": "<one line>",
+  "entry": { "prose": "DESIGN.md", "tokens": "tokens.css" },
+  "surfaces": { "ground": "--your-bg-token", "ink": "--your-text-token" },
+  "themes": ["light", "dark"]
 }
 ```
+
+`surfaces` names the page background and primary text tokens. The contrast gate
+needs it because token naming is a brand decision - without it the gate falls
+back to guessing common names and gives up on anything named differently.
 
 `DESIGN.md` uses Stitch frontmatter (`version, name, description, colors, typography,
 rounded, spacing, components`) over an ordered body. **The body needs at least 7 `##`
@@ -138,12 +145,13 @@ When pointed at existing CSS rather than a blank page, extract before you invent
 
 ## Quality gates
 
-Run `python .agents/skills/design/validate.py <package-dir>`. It returns one of three
+Run `python skills/design/validate.py <package-dir>`. It returns one of three
 verdicts per gate — `passed`, `failed`, or `confirmation-required` — and exits non-zero
 only on `failed`, so ambiguous cases surface for a human instead of blocking.
 
-The validator and this document share one constant for the heading floor, so the two
-cannot drift apart.
+The floors quoted above are enforced as constants in `validate.py`. Nothing structural
+ties prose to code, so `tests/test_skills.py` asserts they still agree - change one and
+the suite fails.
 
 ## Installing into an agent harness
 

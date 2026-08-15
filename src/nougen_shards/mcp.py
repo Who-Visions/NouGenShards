@@ -4,8 +4,10 @@ from typing import Optional, List
 
 # Fallback wrapper for mcp dependency if missing
 class MockFastMCP:
-    def __init__(self, name: str, dependencies: Optional[list] = None):
+    def __init__(self, name: str, dependencies: Optional[list] = None,
+                 instructions: Optional[str] = None):
         self.name = name
+        self.instructions = instructions
     def tool(self): return lambda f: f
     def run(self): print("MCP not installed.")
 
@@ -18,16 +20,45 @@ from .core import capture, mark_shard, compile_recall_packet
 from . import nougen_context
 from . import nougen_sandbox
 from . import evolution
+from . import skills as skill_registry
 from .brain_scan import scan_environment, run_import
 
 from .history import HistoryEngine
 from .federation import federated_retrieve
 
+
+def _server_instructions() -> str:
+    """Standing instructions handed to every client at connection.
+
+    The roster travels with the handshake rather than waiting to be asked for,
+    so an agent knows the skills exist before it starts work. This is the
+    frictionless half of enforcement; ``apply_skills`` is the other half.
+    """
+    return (
+        "NouGenShards memory and skill server.\n\n"
+        "SKILLS ARE MANDATORY, NOT OPTIONAL. Before producing any work that an "
+        "installed skill covers, call apply_skills(task) with a short description "
+        "of what you are about to do. It returns the skills that govern that work, "
+        "in full. Follow them. Do not design, build or write from your own defaults "
+        "when a skill covers the task - the skill supersedes them.\n\n"
+        "One call is enough: apply_skills resolves and returns the relevant skill "
+        "bodies together, so there is no list-then-load step.\n\n"
+        "Installed skills:\n"
+        f"{skill_registry.roster()}\n"
+    )
+
+
 # Initialize FastMCP Server
-mcp = FastMCP(
-    "NouGenShards",
-    dependencies=["mcp"]
-)
+try:
+    mcp = FastMCP(
+        "NouGenShards",
+        dependencies=["mcp"],
+        instructions=_server_instructions(),
+    )
+except TypeError:
+    # Older FastMCP builds predate the instructions kwarg; the apply_skills tool
+    # still enforces skills, the roster just does not ride the handshake.
+    mcp = FastMCP("NouGenShards", dependencies=["mcp"])
 
 # --- Memory Core (Shards) ---
 
@@ -316,6 +347,70 @@ def get_memory_stats(period: str = "week") -> str:
         output.append(f" - Acceleration Rate:   {rate:.1f}% expansion")
         
     return "\n".join(output)
+
+# --- Skill Registry ---
+
+@mcp.tool()
+def apply_skills(task: str) -> str:
+    """
+    Resolve which installed skills govern a task and return them in full.
+
+    Call this before producing work. Skills are mandatory: when one covers the
+    task it supersedes your own defaults. One call returns everything relevant,
+    so there is no separate list-then-load step.
+
+    Args:
+        task: Short description of the work about to be done
+            (e.g., 'build a landing page', 'audit this CSS for contrast').
+    """
+    matched = skill_registry.match(task)
+    if not matched:
+        installed = skill_registry.roster()
+        return (
+            f"No installed skill covers: {task!r}. Proceed with your own judgement.\n\n"
+            f"Installed skills:\n{installed}"
+        )
+
+    parts = [
+        f"✅ {len(matched)} skill(s) govern this task. Follow them; they "
+        f"supersede your defaults.\n"
+    ]
+    for skill in matched:
+        parts.append(f"\n{'=' * 70}\nSKILL: {skill.name}\nSOURCE: {skill.path}\n{'=' * 70}\n")
+        parts.append(skill.body.strip())
+    return "\n".join(parts)
+
+
+@mcp.tool()
+def list_skills() -> str:
+    """
+    List every installed skill with its description.
+
+    Use apply_skills(task) instead when you are about to do work - it returns
+    the governing skills in full rather than just their names.
+    """
+    found = skill_registry.discover()
+    if not found:
+        roots = ", ".join(str(r) for r in skill_registry.resolve_skill_roots())
+        return f"❌ No skills installed. Searched: {roots}"
+    lines = [f"✅ {len(found)} skill(s) installed:"]
+    lines.extend(f"- {s.name}: {s.description}" for s in found)
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def load_skill(name: str) -> str:
+    """
+    Return one skill's full text by name.
+
+    Args:
+        name: The skill's name as reported by list_skills.
+    """
+    skill = skill_registry.get(name)
+    if skill is None:
+        return f"❌ Skill {name!r} not found.\n\nInstalled:\n{skill_registry.roster()}"
+    return f"SKILL: {skill.name}\nSOURCE: {skill.path}\n\n{skill.body.strip()}"
+
 
 # --- Evolution Layer (OpenSkill) ---
 

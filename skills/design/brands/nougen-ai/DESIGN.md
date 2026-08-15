@@ -147,7 +147,7 @@ something each component rediscovers.
 
 **Copper and terracotta are display colors, not text colors.** Both fail AA body on
 obsidian. Where the earth tones must carry running text, use `--color-copper-text`
-(6.09) and `--color-terracotta-text` (6.30), which hold the hue and clear the floor.
+(6.34) and `--color-terracotta-text` (6.34), which hold the hue and clear the floor.
 
 **Do not fade `stone` with opacity.** `stone` at 50% lands at 2.74 and fails both levels;
 it is currently used that way in navigation. Secondary text is already `--color-stone` at

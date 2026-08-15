@@ -1,0 +1,160 @@
+/* ============================================================================
+   TEMPLATE — copy this directory, rename it, replace every value.
+
+   The palette below is deliberately characterless. That is the point: shipping
+   it unchanged should look unfinished, rather than looking like it belongs to
+   somebody else. Do not start from one of the branded packages in this
+   directory - those carry a real organisation's identity.
+
+   Mark each token as you settle it:
+     [observed]  measured from real code
+     [inferred]  derived from usage
+     [invented]  authored here
+   ========================================================================== */
+
+:root {
+  /* -- Surfaces --------------------------------------------------------- */
+  --color-bg: #ffffff;
+  --color-bg-2: #f4f5f7;
+  --color-panel: #ffffff;
+  --color-line: #e3e5e9;
+
+  /* -- Ink -- both clear AA on --color-bg; keep it that way ------------- */
+  --color-fg: #1a1c20;        /* 17.06 on --color-bg */
+  --color-muted: #5a6070;     /*  6.28 on --color-bg */
+
+  /* -- Brand -- replace these first ------------------------------------- */
+  --color-brand: #3b5bdb;     /*  5.67 on --color-bg, as text  */
+  --color-brand-deep: #2f4bb8; /* 7.45 on --color-bg           */
+  --color-on-brand: #ffffff;  /*  5.67 on --color-brand, as a fill */
+
+  /* -- Semantic -- kept outside the brand hue so state never reads as
+     emphasis. Verify these again once the brand hue is chosen. ---------- */
+  --color-pass: #197741;
+  --color-warn: #8a5a00;
+  --color-fail: #c0322b;
+
+  /* -- Spacing ----------------------------------------------------------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* -- Radii ------------------------------------------------------------- */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-full: 9999px;
+
+  /* -- Type -------------------------------------------------------------- */
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-micro: 0.75rem;
+  --text-body: 1rem;
+  --text-lead: 1.125rem;
+  --text-h3: 1.375rem;
+  --text-h2: 1.75rem;
+  --text-h1: 2.25rem;
+  --weight-body: 400;
+  --weight-med: 500;
+  --weight-semi: 600;
+  --weight-bold: 700;
+  --tracking-tight: -0.01em;
+  --tracking-wide: 0.08em;
+  --leading-tight: 1.2;
+  --leading-body: 1.6;
+
+  /* -- Elevation --------------------------------------------------------- */
+  --elev-0: none;
+  --elev-1: 0 1px 2px rgba(20, 22, 28, .06);
+  --elev-2: 0 8px 24px -10px rgba(20, 22, 28, .14);
+  --elev-3: 0 18px 44px -14px rgba(20, 22, 28, .20);
+  --elev-ring: 0 0 0 1px var(--color-line);
+
+  /* -- Motion ------------------------------------------------------------ */
+  --ease-out: cubic-bezier(.2, .8, .2, 1);
+  --dur-fast: 0.15s;
+  --dur-base: 0.25s;
+
+  /* -- Focus -- built from the brand, never from the border token, which is
+     a hairline and invisible as an indicator. --------------------------- */
+  --focus-ring: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-brand);
+  --state-disabled-opacity: 0.45;
+
+  color-scheme: light;
+}
+
+/* Dark tokens redefine values only - never style a component in here. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-bg: #14161a;
+    --color-bg-2: #1b1e24;
+    --color-panel: #1f232a;
+    --color-line: #2e333c;
+    --color-fg: #eceef2;
+    --color-muted: #a2a9b8;
+    --color-brand: #8ea6ff;
+    --color-brand-deep: #6b86e8;
+    --color-on-brand: #14161a;
+    --color-pass: #4ade80;
+    --color-warn: #fbbf24;
+    --color-fail: #fb7185;
+    --elev-1: 0 1px 2px rgba(0, 0, 0, .4);
+    --elev-2: 0 8px 24px -10px rgba(0, 0, 0, .55);
+    --elev-3: 0 18px 44px -14px rgba(0, 0, 0, .65);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #14161a;
+  --color-bg-2: #1b1e24;
+  --color-panel: #1f232a;
+  --color-line: #2e333c;
+  --color-fg: #eceef2;
+  --color-muted: #a2a9b8;
+  --color-brand: #8ea6ff;
+  --color-brand-deep: #6b86e8;
+  --color-on-brand: #14161a;
+  --color-pass: #4ade80;
+  --color-warn: #fbbf24;
+  --color-fail: #fb7185;
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .4);
+  --elev-2: 0 8px 24px -10px rgba(0, 0, 0, .55);
+  --elev-3: 0 18px 44px -14px rgba(0, 0, 0, .65);
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+:where(button, a)[aria-disabled="true"],
+:where(button, input, select, textarea):disabled {
+  opacity: var(--state-disabled-opacity);
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
