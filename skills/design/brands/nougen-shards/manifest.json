@@ -1,13 +1,20 @@
 {
   "schemaVersion": "od-design-system-project/v1",
-  "name": "obsidian-violet",
+  "name": "nougen-shards",
   "version": "1.0.0",
   "description": "Dark-first violet-on-obsidian system for NouGen Shards. Dense, atmospheric, glow-based rather than shadow-based.",
   "entry": {
     "prose": "DESIGN.md",
     "tokens": "tokens.css"
   },
-  "themes": ["dark", "light"],
+  "surfaces": {
+    "ground": "--color-night",
+    "ink": "--color-ink"
+  },
+  "themes": [
+    "dark",
+    "light"
+  ],
   "provenance": {
     "observed": "Measured from shipped application CSS and component class usage.",
     "inferred": "Derived from class-usage frequency; corroborated where a literal constant in the source lands on a proposed step.",

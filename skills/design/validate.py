@@ -246,7 +246,7 @@ def gate_themes(pkg: Path) -> Gate:
             orphans,
         )
     if not scoped_props and "prefers-color-scheme" not in css:
-        return Gate("themes", CONFIRM, "single-theme package — deliberate commitment?")
+        return Gate("themes", CONFIRM, "single-theme package - deliberate commitment?")
     return Gate("themes", PASSED, "base :root carries the full palette")
 
 
@@ -260,15 +260,36 @@ def gate_contrast(pkg: Path) -> Gate:
         return Gate("contrast", CONFIRM, "no base :root to resolve pairs from")
     props = _parse_custom_properties(base.group(1))
 
-    def hexval(name: str) -> str | None:
+    def hexval(name: str | None) -> str | None:
+        if not name:
+            return None
         raw = props.get(name, "")
         m = _HEX.search(raw)
         return m.group(0) if m else None
 
-    ground = hexval("--color-night") or hexval("--color-bg") or hexval("--surface")
-    ink = hexval("--color-ink") or hexval("--color-fg") or hexval("--ink")
+    # Prefer an explicit declaration. Token naming is a brand decision, so
+    # guessing it by convention fails on any package that names things its
+    # own way - which is most of them.
+    declared: dict[str, str] = {}
+    try:
+        declared = json.loads(
+            (pkg / "manifest.json").read_text(encoding="utf-8")
+        ).get("surfaces", {}) or {}
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    ground = hexval(declared.get("ground"))
+    ink = hexval(declared.get("ink"))
+    if not ground:
+        ground = hexval("--color-night") or hexval("--color-bg") or hexval("--surface")
+    if not ink:
+        ink = hexval("--color-ink") or hexval("--color-fg") or hexval("--ink")
     if not ground or not ink:
-        return Gate("contrast", CONFIRM, "could not resolve a ground/ink pair by convention")
+        return Gate(
+            "contrast", CONFIRM,
+            'could not resolve a ground/ink pair - declare '
+            '"surfaces": {"ground": "--token", "ink": "--token"} in manifest.json',
+        )
 
     ratio = contrast_ratio(ink, ground)
     evidence = [f"ink {ink} on ground {ground} = {ratio:.2f}"]
@@ -314,31 +335,46 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args()
 
-    pkg = args.package
-    if not pkg.is_dir():
-        print(f"not a directory: {pkg}", file=sys.stderr)
+    root = args.package
+    if not root.is_dir():
+        print(f"not a directory: {root}", file=sys.stderr)
         return 2
 
-    results = run(pkg)
+    # Accept either one package, or a directory holding several - a project
+    # with more than one brand keeps a package per brand side by side.
+    if (root / "manifest.json").is_file():
+        packages = [root]
+    else:
+        packages = sorted(d for d in root.iterdir()
+                          if d.is_dir() and (d / "manifest.json").is_file())
+    if not packages:
+        print(f"no design package found in {root}", file=sys.stderr)
+        return 2
+
+    report = {pkg: run(pkg) for pkg in packages}
 
     if args.as_json:
         print(json.dumps(
-            [{"gate": g.name, "verdict": g.verdict, "detail": g.detail,
-              "evidence": g.evidence} for g in results],
+            {pkg.name: [{"gate": g.name, "verdict": g.verdict, "detail": g.detail,
+                         "evidence": g.evidence} for g in gates]
+             for pkg, gates in report.items()},
             indent=2,
         ))
     else:
-        print(f"\n  {pkg.name}\n")
-        for g in results:
-            print(f"  [{_MARK[g.verdict]}] {g.name:<10} {g.detail}")
-            for line in g.evidence:
-                print(f"         - {line}")
-        failed = sum(g.verdict == FAILED for g in results)
-        confirm = sum(g.verdict == CONFIRM for g in results)
-        print(f"\n  {len(results) - failed - confirm} passed, "
-              f"{failed} failed, {confirm} need confirmation\n")
+        for pkg, results in report.items():
+            print(f"\n  {pkg.name}\n")
+            for g in results:
+                print(f"  [{_MARK[g.verdict]}] {g.name:<10} {g.detail}")
+                for line in g.evidence:
+                    print(f"         - {line}")
+            failed = sum(g.verdict == FAILED for g in results)
+            confirm = sum(g.verdict == CONFIRM for g in results)
+            print(f"\n  {len(results) - failed - confirm} passed, "
+                  f"{failed} failed, {confirm} need confirmation")
+        print()
 
-    return 1 if any(g.verdict == FAILED for g in results) else 0
+    return 1 if any(g.verdict == FAILED
+                    for gates in report.values() for g in gates) else 0
 
 
 if __name__ == "__main__":

@@ -1,0 +1,168 @@
+/* ============================================================================
+   NouGen Ai — Gilded Obsidian
+   Warm, editorial, earth-toned. Deliberately unlike the neon violet of
+   nougen-shards; these are sibling brands, not variants of one system.
+
+   Provenance per group:
+     [observed]  measured from shipped CSS
+     [invented]  nothing in the source implied it; authored here
+
+   This brand is DARK ONLY by design. There is no light branch in the source
+   and none is proposed. Single-theme is a commitment here, not an omission.
+   ========================================================================== */
+
+:root {
+  /* -- Surfaces [observed] ------------------------------------------------- */
+  --color-obsidian: #111111;
+  --color-carbon: #1c1c1c;
+
+  /* -- Ink [observed] ------------------------------------------------------ */
+  --color-ivory: #f4f1ea;
+  --color-stone: #a6a29c;
+
+  /* -- Brand [observed] ---------------------------------------------------- */
+  --color-gold: #cfaf5a;
+  --color-copper: #8b5e34;
+
+  /* -- Accent [observed] --------------------------------------------------- */
+  --color-emerald: #2f8f79;
+  --color-terracotta: #c44e3a;
+
+  /* -- Fill ink [invented] -------------------------------------------------
+     White on gold computes to 2.11 and fails both AA levels - the worst pair
+     in the system. Obsidian on gold is 8.93. The shipped ::selection rule
+     already pairs gold with obsidian correctly; these tokens generalize that
+     to every fill so the right pairing is the default rather than an
+     accident. ------------------------------------------------------------ */
+  --color-on-gold: #111111;        /* 8.93 on gold  */
+  --color-on-copper: #ffffff;      /* 5.60 on copper */
+  --color-on-terracotta: #ffffff;  /* 4.67 on terracotta */
+  --color-on-emerald: #111111;      /* 4.79; white on emerald is 3.94 and fails */
+
+  /* -- Text-safe accents [invented] ----------------------------------------
+     copper (3.37) and terracotta (4.04) both fail AA body as text on
+     obsidian. These lightened steps clear 4.5 while holding the hue, for use
+     where the earth tones must carry running text. --------------------- */
+  --color-copper-text: #c08b52;     /* 6.34 on obsidian */
+  --color-terracotta-text: #dd7a66; /* 6.34 on obsidian */
+
+  /* -- Type [observed names / see note] ------------------------------------
+     DEFECT recorded: in the source these faces are named but never loaded -
+     no next/font, no @font-face, no stylesheet link anywhere in the app - so
+     both silently fall back to system UI and the display face does not
+     actually exist. A package that names a face must also load it. ------- */
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: Syne, Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+  /* -- Type scale [invented] — the source hardcodes sizes per class -------- */
+  --text-micro: 0.75rem;
+  --text-body: 1rem;
+  --text-lead: 1.125rem;
+  --text-h3: 1.5rem;
+  --text-h2: 2rem;
+  --text-h1: 2.75rem;
+  --text-display: 4rem;
+  --weight-body: 400;
+  --weight-med: 500;
+  --weight-semi: 600;
+  --weight-bold: 700;
+  --tracking-tight: -0.02em;
+  --tracking-wide: 0.1em;
+  --leading-tight: 1.15;
+  --leading-body: 1.6;              /* observed on body */
+
+  /* -- Spacing [invented] — no spacing tokens exist in the source ---------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* -- Radii [invented] ----------------------------------------------------- */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.875rem;
+  --radius-full: 9999px;
+
+  /* -- Elevation [invented] — warm shadow, not the violet glow of the
+     sibling brand. Earth tones want weight, not luminance. ---------------- */
+  --elev-0: none;
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .4);
+  --elev-2: 0 8px 24px -8px rgba(0, 0, 0, .55);
+  --elev-3: 0 18px 44px -12px rgba(0, 0, 0, .65);
+  --elev-ring: 0 0 0 1px rgba(244, 241, 234, .12);
+
+  /* -- Motion [observed durations] ----------------------------------------- */
+  --dur-fast: 0.2s;
+  --dur-base: 0.35s;
+  --marquee-dur: 30s;
+  --marquee-vertical-dur: 60s;
+  --slide-progress-dur: 6s;
+  --ease-out: cubic-bezier(.4, 0, .2, 1);
+
+  /* -- Focus [observed, kept] ----------------------------------------------
+     The source already focuses with a 2px gold outline. Gold on obsidian is
+     8.93, so this one is sound - promoted to a token and applied through a
+     zero-specificity rule so every control inherits it. ------------------ */
+  --focus-ring: 0 0 0 2px var(--color-obsidian), 0 0 0 4px var(--color-gold);
+  --state-disabled-opacity: 0.45;
+
+  /* -- Breakpoints [observed] ----------------------------------------------- */
+  --breakpoint-3xl: 120rem;
+  --breakpoint-4xl: 160rem;
+  --breakpoint-5xl: 240rem;
+  --breakpoint-8k: 480rem;
+
+  color-scheme: dark;
+}
+
+/* ============================================================================
+   Base. Everything reads through tokens; no literal colors below.
+   ========================================================================== */
+
+body {
+  background-color: var(--color-obsidian);
+  color: var(--color-ivory);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+}
+
+::selection {
+  background: var(--color-gold);
+  color: var(--color-on-gold);
+}
+
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+:where(button, a)[aria-disabled="true"],
+:where(button, input, select, textarea):disabled {
+  opacity: var(--state-disabled-opacity);
+  cursor: not-allowed;
+}
+
+/* DEFECT FIXED HERE: the source declares five keyframes (marquee,
+   marquee-vertical, slide-progress, scanline, shimmer) with no reduced-motion
+   gate at all, so every one runs unconditionally. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,160 @@
+/* ============================================================================
+   NouGen Builds — Navy & Signal
+   Light-first contractor system. Trust reads as navy, action reads as orange.
+
+   Provenance per group:
+     [observed]  measured from shipped CSS
+     [invented]  nothing in the source implied it; authored here
+
+   This brand is LIGHT ONLY by design. The dark passages in the source
+   (hero, cta band, footer) are inverted SECTIONS, not a dark theme.
+   ========================================================================== */
+
+:root {
+  /* -- Brand [observed] ---------------------------------------------------- */
+  --primary: #0e3a56;
+  --primary-dark: #072234;
+  --accent: #f28c38;
+  --accent-hover: #d77320;
+
+  /* -- Surfaces [observed] -------------------------------------------------- */
+  --bg-light: #eef4f7;
+  --bg-white: #ffffff;
+  --border-color: #e2e8f0;
+
+  /* -- Ink [observed --text-dark / invented --text-muted replacement] -------
+     The shipped --text-muted (#718096) computes to 4.02 on white and 3.62 on
+     the light ground, missing AA body everywhere it is used - section intros,
+     card copy, step copy, FAQ answers, notes. This darker step holds the same
+     cool grey character and clears the floor on both surfaces. ----------- */
+  --text-dark: #2d3748;
+  --text-muted: #596478;          /* 5.97 on white / 5.38 on bg-light */
+  --text-muted-legacy: #718096;   /* the shipped value - large text only */
+
+  /* -- Ink on fills [invented] ---------------------------------------------
+     THE headline defect: .btn-cta, the primary conversion control on a
+     lead-generation site, is white on --accent at 2.45 and fails both AA
+     levels. The source already contains the correct pattern - .storm-banner
+     puts --primary-dark on accent at 6.67. These tokens generalize the thing
+     the brand already gets right. ---------------------------------------- */
+  --on-primary: #ffffff;          /* 11.94 on primary      */
+  --on-primary-dark: #ffffff;     /* 16.31 on primary-dark */
+  --on-accent: #072234;           /*  6.67 on accent - NOT white */
+  --on-accent-hover: #072234;     /*  4.94 on accent-hover      */
+
+  /* -- Accent as text [invented] -------------------------------------------
+     Accent on any light surface fails hard (2.45 white / 2.20 light). It is
+     used as text in section labels, card links, breadcrumbs, the logo span,
+     nav hover and list bullets. This darkened step keeps the signal-orange
+     read and clears AA body on both light surfaces. ---------------------- */
+  --accent-text: #9a4a06;         /* 6.26 on white / 5.64 on bg-light */
+
+  /* -- Semantic [observed as raw hex in the source, tokenized here] --------- */
+  --color-error: #c53030;         /* 5.47 on white */
+  --color-success: #276749;       /* 6.51 on success ground */
+  --color-success-bg: #f0fff4;
+  --color-success-border: #9ae6b4;
+
+  /* -- Type [observed wiring] ----------------------------------------------
+     NOTE: the source variable is named --font-outfit but the face actually
+     loaded through next/font is Space Grotesk. Name kept for compatibility;
+     the mismatch is recorded rather than silently renamed. --------------- */
+  --font-inter: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-outfit: "Space Grotesk", Inter, ui-sans-serif, system-ui, sans-serif;
+
+  /* -- Type scale [invented] — the source hardcodes sizes per class --------- */
+  --text-micro: 0.8125rem;
+  --text-body: 1rem;
+  --text-lead: 1.125rem;
+  --text-h3: 1.375rem;
+  --text-h2: 1.875rem;
+  --text-h1: 2.5rem;
+  --weight-body: 400;
+  --weight-semi: 600;
+  --weight-bold: 700;
+  --leading-body: 1.6;
+  --tracking-tight: -0.01em;
+  --tracking-wide: 0.08em;
+
+  /* -- Spacing [invented] — no spacing scale exists in the source ----------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* -- Radii [observed] ----------------------------------------------------- */
+  --radius: 12px;
+  --radius-sm: 6px;
+
+  /* -- Elevation [observed] — tinted with the navy, not neutral grey -------- */
+  --shadow-card: 0 12px 24px rgba(14, 58, 86, .08);
+  --shadow-cta: 0 4px 6px rgba(242, 140, 56, .2);
+  --shadow-cta-hover: 0 6px 12px rgba(242, 140, 56, .3);
+
+  /* -- Motion [observed] ---------------------------------------------------- */
+  --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-base: 0.3s;
+  --lift-card: -4px;
+
+  /* -- Focus [invented] ----------------------------------------------------
+     Built from --primary, which clears 11.94 on both light surfaces. Never
+     from --border-color, which is a hairline and invisible as an indicator. */
+  --focus-ring: 0 0 0 2px var(--bg-white), 0 0 0 4px var(--primary);
+  --state-disabled-opacity: 0.45;
+
+  /* -- Layout [observed] ---------------------------------------------------- */
+  --max-width: 1100px;
+  --scroll-offset: 90px;
+
+  color-scheme: light;
+}
+
+/* ============================================================================
+   Base. Everything reads through tokens; no literal colors below.
+   ========================================================================== */
+
+body {
+  background-color: var(--bg-white);
+  color: var(--text-dark);
+  font-family: var(--font-inter);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-outfit);
+  letter-spacing: var(--tracking-tight);
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: var(--scroll-offset);
+}
+
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+:where(button, a)[aria-disabled="true"],
+:where(button, input, select, textarea):disabled {
+  opacity: var(--state-disabled-opacity);
+  cursor: not-allowed;
+}
+
+/* The source already gates reduced motion correctly - this preserves it. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

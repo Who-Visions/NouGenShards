@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "od-design-system-project/v1",
+  "name": "nougen-ai",
+  "version": "1.0.0",
+  "description": "Warm editorial dark system in obsidian and gold. Earth-toned, weight-based depth, display type carrying the personality.",
+  "entry": {
+    "prose": "DESIGN.md",
+    "tokens": "tokens.css"
+  },
+  "surfaces": {
+    "ground": "--color-obsidian",
+    "ink": "--color-ivory"
+  },
+  "themes": [
+    "dark"
+  ],
+  "provenance": {
+    "observed": "Surfaces, ink, brand and accent colors, font family names, animation durations, breakpoints, and the gold focus outline, all measured from shipped CSS.",
+    "invented": "Spacing, radii, type scale, weights, tracking, elevation, ink-on-fill tokens, and the text-safe copper and terracotta steps. The source declares none of these."
+  },
+  "openWork": [
+    "Neither named font is loaded. Syne and Inter appear in tokens but the application has no next/font import, no @font-face, and no stylesheet link, so both fall back to system UI and the display face does not exist at render time.",
+    "Dark-only by design. If a light context is ever needed it requires its own computed ramp; gold does not survive a light ground.",
+    "The scanline and shimmer keyframes are defined in the source but have no utility class bound to them."
+  ]
+}

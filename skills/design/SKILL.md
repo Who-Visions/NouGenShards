@@ -157,11 +157,34 @@ cp -r skills/design .agents/skills/design      # or .claude/skills/design
 
 Edit the tracked copy here, never the harness copy, or the two will drift.
 
-## Reference implementation
+## More than one brand
 
-`reference/` holds a complete conforming package. Read it to see what "done" looks like.
+An organization usually runs several brands, and they do not share a palette. Keep one
+package per brand, side by side:
 
-**It is a reference, not a default.** Its palette belongs to this project. Building for
-someone else means replacing `tokens.css` and the color section of `DESIGN.md` with
-theirs — the method, the floors, and the structure carry over; the hexes do not. Shipping
-another project in this project's brand is a failure, not a shortcut.
+```
+brands/
+  nougen-shards/   manifest.json  DESIGN.md  tokens.css
+  nougen-ai/       manifest.json  DESIGN.md  tokens.css
+  nougen-builds/   manifest.json  DESIGN.md  tokens.css
+```
+
+**Every asset declares which brand it serves.** Before designing anything, resolve the
+brand and load only that package. An asset that does not name its brand cannot be
+reviewed, because there is no single correct palette to review it against.
+
+Brands differ by more than hue. One may be dark-first and another light-first; they may
+use different display faces and different radii. Do not force them into a shared shape —
+what they share is the method and the floors in this file, not their values.
+
+Point the validator at the `brands/` directory to check every package at once, or at a
+single package directory to check one.
+
+## Reference implementations
+
+`brands/` holds complete conforming packages. Read one to see what "done" looks like.
+
+**They are references, not defaults.** Those palettes belong to these brands. Building
+for someone else means writing a new package with their values — the method, the floors,
+and the structure carry over; the hexes do not. Shipping someone else's project in one of
+these brands is a failure, not a shortcut.

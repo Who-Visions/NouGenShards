@@ -1,6 +1,6 @@
 ---
 version: 1.0.0
-name: obsidian-violet
+name: nougen-shards
 description: Dark-first violet-on-obsidian system for NouGen Shards. Dense, atmospheric, glow-based rather than shadow-based.
 colors:
   night: "#08060f"
