@@ -49,6 +49,13 @@
      read and clears AA body on both light surfaces. ---------------------- */
   --accent-text: #9a4a06;         /* 6.26 on white / 5.64 on bg-light */
 
+  /* -- Accent on a lightened dark surface [invented] -----------------------
+     The hero badge fills with a 15% accent tint over the navy hero, which
+     composites to #304652 - light enough that --accent lands at 4.04 and
+     misses the body floor. Same hue and saturation, raised lightness, so
+     the orange wash and the orange eyebrow both survive. ---------------- */
+  --accent-light: #f5a461;        /* 4.88 on the tinted badge / 5.49 on navy */
+
   /* -- Semantic [observed as raw hex in the source, tokenized here] --------- */
   --color-error: #c53030;         /* 5.47 on white */
   --color-success: #276749;       /* 6.51 on success ground */

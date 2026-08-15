@@ -15,12 +15,10 @@
     "light"
   ],
   "provenance": {
-    "observed": "Brand and surface colors, radii, the three tinted shadows, the shared transition, font wiring, max-width and scroll offset, all measured from shipped CSS.",
+    "observed": "Brand and surface colors, radii, the three tinted shadows, the shared transition, font wiring, max-width and scroll offset, all measured from shipped CSS. The --on-accent, --accent-text and --accent-light pairings are now shipped on the live site as well.",
     "invented": "Spacing ramp, type scale, weights, tracking, the focus ring, ink-on-fill tokens, the darkened accent-text step, and the darkened text-muted replacement."
   },
   "openWork": [
-    "The primary conversion control (.btn-cta) ships white on orange at 2.45 and fails both AA levels. --on-accent generalizes the fix the source already uses in .storm-banner.",
-    "The shipped --text-muted (#718096) misses AA body on both surfaces and covers most running prose on the site. Replaced here; original retained as --text-muted-legacy for large text.",
     "The variable --font-outfit loads Space Grotesk, not Outfit. Name kept for compatibility with existing markup.",
     "Light-only by design. The dark hero, CTA band and footer are inverted sections, not a dark theme."
   ]

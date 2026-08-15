@@ -136,33 +136,41 @@ Floor: body text ≥4.5:1, large text and UI components ≥3:1, computed.
 | success → success ground | 6.51 | AA |
 | error → white | 5.47 | AA |
 | accent → primary fill | 4.88 | AA |
-| text-muted → white | 4.02 | **fails body**, large only |
+| text-muted → white | 5.97 | AA — was 4.02, darkened |
 | accent-hover → white | 3.30 | **fails body**, large only |
-| text-muted → bg-light | 3.62 | **fails body**, large only |
-| accent → white | 2.45 | **fails both** |
-| **white → accent fill (`.btn-cta`)** | **2.45** | **fails both** |
-| accent → bg-light | 2.20 | **fails both** |
+| text-muted → bg-light | 5.38 | AA — was 3.62, darkened |
+| accent-text → white | 6.26 | AA — accent as text was 2.45 |
+| **on-accent → accent fill (`.btn-cta`)** | **6.67** | AA — was white at 2.45 |
+| accent-text → bg-light | 5.64 | AA — accent as text was 2.20 |
 
-Three rules follow, in order of how much they cost.
+Three rules follow, and all three are now shipped on the live site.
 
-**Orange fills carry navy ink, never white.** `.btn-cta` is the primary conversion control
-on a lead-generation site, and at 2.45 it fails every level — the single most expensive
-defect in any of these brands, because it sits on the path to a quote request. The source
-already contains the fix: `.storm-banner` puts `--primary-dark` on accent at 6.67. The
-`--on-accent` token generalizes that so the correct pairing is the default.
+**Orange fills carry navy ink, never white.** `.btn-cta` is the primary conversion
+control on a lead-generation site, and at 2.45 it failed every level — the most
+expensive defect in any of these brands, because it sat on the path to a quote request.
+The fix already existed in the same stylesheet: `.storm-banner` puts `--primary-dark` on
+accent at 6.67. `--on-accent` generalizes it. Both states now pass — 6.67 at rest, 4.94
+on hover.
 
-**Orange is not a text color on light ground.** It currently is one in section labels,
-card links, breadcrumbs, the logo span, nav hover and list bullets, all at 2.45 or 2.20.
-Use `--accent-text` (`#9a4a06`, 6.26 on white and 5.64 on `--bg-light`), which holds the
-signal-orange read and clears the floor. Accent as text is only sound on the dark
-sections, where it reaches 4.88 on navy.
+**Orange is not a text color on light ground.** It was one in section labels, card
+links, breadcrumbs, the logo span, nav hover and list bullets, all at 2.45 or 2.20.
+Those eight rules now use `--accent-text` (`#9a4a06`, 6.26 on white and 5.64 on
+`--bg-light`). Accent as text remains `--accent` on the navy sections, where it reaches
+4.88 and is correct.
 
-**Secondary text needs to be darker.** The shipped `--text-muted` (`#718096`) lands at
-4.02 and 3.62, missing AA body on both surfaces, and it is used for section intros, card
-copy, step copy, FAQ answers, notes and chips — most of the running prose on the site.
-`--text-muted` here is `#596478` (5.97 / 5.38). The original is retained as
-`--text-muted-legacy` for large text only.
+**Secondary text needed to be darker.** The old `--text-muted` (`#718096`) landed at
+4.02 and 3.62, missing AA body on both surfaces while carrying most of the running prose
+— 24 elements on white and 8 on the light ground. It is now `#596478` (5.97 / 5.38), and
+because it is never used on a dark surface the single token change was safe everywhere.
 
-**Open work:** this brand is light-only by design. The dark passages — hero, CTA band,
+**A tinted surface is not the surface it sits on.** `.hero-badge` fills with a 15%
+accent tint over the navy hero, compositing to `#304652`. That is light enough that
+`--accent` lands at 4.04 and misses the body floor, even though the section reads as
+dark. A stylesheet review clears this rule; only a measurement that composites alpha
+catches it. `--accent-light` (`#f5a461` — same hue, same saturation, raised lightness)
+holds the orange at 4.88 on the badge and 5.49 on plain navy.
+
+**Open work:** accent-hover as text on white is still 3.30 (large text only), and
+`--text-muted-legacy` is retained at 4.02 for large text. This brand is light-only by design. The dark passages — hero, CTA band,
 trust strip, footer — are inverted *sections*, not a dark theme, and should not be
 mistaken for one. A genuine dark mode would need its own computed ramp.
