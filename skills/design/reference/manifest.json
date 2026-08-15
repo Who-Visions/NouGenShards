@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "od-design-system-project/v1",
+  "name": "obsidian-violet",
+  "version": "1.0.0",
+  "description": "Dark-first violet-on-obsidian system for NouGen Shards. Dense, atmospheric, glow-based rather than shadow-based.",
+  "entry": {
+    "prose": "DESIGN.md",
+    "tokens": "tokens.css"
+  },
+  "themes": ["dark", "light"],
+  "provenance": {
+    "observed": "Measured from shipped application CSS and component class usage.",
+    "inferred": "Derived from class-usage frequency; corroborated where a literal constant in the source lands on a proposed step.",
+    "invented": "Authored here. The source was silent: tracking, leading, elevation tier 1, the focus ring, the compliant brand fill, the chart ramp, and the entire light theme."
+  },
+  "openWork": [
+    "Light-mode chart ramp: all eight dark series fall between 1.4:1 and 3.1:1 on the light ground and fail. Must be computed independently, not lightened.",
+    "Source application still forces a single color scheme; the light tokens have nowhere to land until its theme block is split."
+  ]
+}

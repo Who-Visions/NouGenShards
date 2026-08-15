@@ -1,0 +1,227 @@
+/* ============================================================================
+   NouGen Shards — Obsidian Violet
+   Reference token set for the `design` skill.
+
+   Provenance is marked per group:
+     [observed]  measured from shipped CSS
+     [inferred]  derived from actual class-usage frequency
+     [invented]  nothing in the source implied it; authored here
+
+   Dark-first: the bare :root block IS the dark palette, mirroring the
+   source system's forced color-scheme. Light overrides follow.
+   Replace the values below when building for another project — the
+   structure carries over, the hexes do not.
+   ========================================================================== */
+
+:root {
+  /* -- Surfaces & ink [observed] ------------------------------------------ */
+  --color-night: #08060f;
+  --color-night-2: #0c0a18;
+  --color-panel: #110c22;
+  --color-line: #221a3d;
+  --color-ink: #e9e5f6;
+  --color-muted: #a79fc4;
+
+  /* -- Brand ramp [observed] ---------------------------------------------- */
+  --color-brand: #a855f7;
+  --color-brand-deep: #7c3aed;
+  --color-brand-light: #c084fc;
+
+  /* -- Brand fill [invented] ----------------------------------------------
+     #a855f7 as a fill behind --color-ink computes to 3.20:1 and FAILS AA.
+     This darker step is the only compliant solid violet fill (5.6:1). ----- */
+  --color-brand-fill: #6d28d9;
+  --color-on-brand: #ffffff;
+
+  /* -- Semantic [invented] — deliberately outside the brand hue ----------- */
+  --color-pass: #34d399;
+  --color-warn: #fbbf24;
+  --color-fail: #fb7185;
+
+  /* -- Spacing [inferred] --------------------------------------------------
+     Source root is 11px, so 1rem = 11px, not 16px. Both shown.
+     Corroborated: the shipped grid utility uses 44px = --space-16. -------- */
+  --space-1: 0.25rem;   /*  2.75px */
+  --space-2: 0.5rem;    /*  5.5px  */
+  --space-3: 0.75rem;   /*  8.25px */
+  --space-4: 1rem;      /* 11px    */
+  --space-6: 1.5rem;    /* 16.5px  */
+  --space-8: 2rem;      /* 22px    */
+  --space-12: 3rem;     /* 33px    */
+  --space-16: 4rem;     /* 44px    */
+
+  /* -- Radii [inferred] ---------------------------------------------------- */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.5rem;
+  --radius-full: 9999px;
+
+  /* -- Type [inferred sizes / observed families & weights] ----------------- */
+  --font-sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-micro: 0.75rem;
+  --text-body: 0.875rem;
+  --text-lead: 1rem;
+  --text-h3: 1.25rem;
+  --text-h2: 1.875rem;
+  --text-h1: 2.25rem;
+  --text-display: 3rem;
+  --weight-body: 400;
+  --weight-med: 500;
+  --weight-semi: 600;
+  --weight-bold: 700;
+
+  /* -- Tracking & leading [invented] — source has zero of either ---------- */
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.08em;
+  --leading-tight: 1.15;
+  --leading-body: 1.6;
+  --leading-relaxed: 1.75;
+
+  /* -- Elevation [observed 2,3 / invented 1] -------------------------------
+     The signature is a 1px violet ring plus a long soft throw — glow, not
+     shade. Tier 1 extrapolates that formula downward. --------------------- */
+  --elev-0: none;
+  --elev-1: 0 0 0 1px rgba(168, 85, 247, .15), 0 8px 24px -12px rgba(124, 58, 237, .35);
+  --elev-2: 0 0 0 1px rgba(168, 85, 247, .25), 0 20px 60px -20px rgba(124, 58, 237, .55);
+  --elev-3: 0 0 0 1px rgba(168, 85, 247, .25), 0 24px 60px -24px rgba(124, 58, 237, .6);
+  --elev-ring: 0 0 0 1px var(--color-line);
+
+  /* -- Focus [invented] ----------------------------------------------------
+     Built from --color-brand-light (7.62:1), never from --color-line, which
+     sits at 1.23:1 and is invisible as an indicator. ---------------------- */
+  --focus-ring: 0 0 0 2px var(--color-night), 0 0 0 4px var(--color-brand-light);
+  --state-disabled-opacity: 0.45;
+  --state-active-scale: 0.98;
+
+  /* -- Motion [observed] --------------------------------------------------- */
+  --ease-out: cubic-bezier(.2, .8, .2, 1);
+  --dur-fast: 0.15s;
+  --dur-base: 0.25s;
+  --dur-slow: 0.4s;
+
+  /* -- Atmosphere [observed] — the ground is never flat black -------------- */
+  --body-wash:
+    radial-gradient(60rem 60rem at 50% -20%, rgba(124, 58, 237, .25), transparent 60%),
+    radial-gradient(40rem 40rem at 90% 10%, rgba(168, 85, 247, .12), transparent 60%);
+  --grid-ink: rgba(168, 85, 247, .06);
+  --grid-size: 44px;
+  --glass: linear-gradient(180deg, rgba(255, 255, 255, .04), rgba(255, 255, 255, .015));
+
+  /* -- Chart ramp [invented] — all ≥3:1 on --color-night -------------------
+     Hues spaced 80-100° apart, not evenly, because even spacing crowds the
+     violet/indigo/fuchsia band the brand ramp already occupies. Contrast
+     alternates high/low so adjacent series separate by lightness too. ----- */
+  --chart-1: #a855f7;  /*  5.09 violet  */
+  --chart-2: #22d3ee;  /* 11.14 cyan    */
+  --chart-3: #fbbf24;  /* 12.06 amber   */
+  --chart-4: #818cf8;  /*  6.75 indigo  */
+  --chart-5: #34d399;  /* 10.47 mint    */
+  --chart-6: #fb7185;  /*  7.48 rose    */
+  --chart-7: #a3e635;  /* 13.35 lime    */
+  --chart-8: #e879f9;  /*  8.18 fuchsia */
+
+  color-scheme: dark;
+}
+
+/* ============================================================================
+   Light twin [invented] — the source forces dark and has no light branch.
+   Inverts by ROTATION, not negation: dark's brand-deep becomes light's brand,
+   dark's brand becomes light's brand-light. The same three violets stay in
+   play, so gradient relationships survive the switch.
+
+   Redefine tokens only. Never style a component inside these blocks.
+   ========================================================================== */
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --color-night: #faf8ff;
+    --color-night-2: #f2eefb;
+    --color-panel: #ffffff;
+    --color-line: #e2dcf0;
+    --color-ink: #1a1230;        /* 16.99 on paper */
+    --color-muted: #5b5280;      /*  6.73 on paper */
+    --color-brand: #7c3aed;      /*  5.41 on paper */
+    --color-brand-deep: #5b21b6; /*  8.53 on paper */
+    --color-brand-light: #a855f7;/*  3.76 — large text and accents only */
+    --color-brand-fill: #6d28d9;
+    --color-pass: #047857;
+    --color-warn: #a16207;
+    --color-fail: #be123c;
+    --elev-1: 0 0 0 1px rgba(124, 58, 237, .08), 0 8px 24px -14px rgba(124, 58, 237, .16);
+    --elev-2: 0 0 0 1px rgba(124, 58, 237, .14), 0 20px 60px -24px rgba(124, 58, 237, .22);
+    --elev-3: 0 0 0 1px rgba(124, 58, 237, .18), 0 24px 60px -26px rgba(124, 58, 237, .26);
+    --body-wash:
+      radial-gradient(60rem 60rem at 50% -20%, rgba(124, 58, 237, .10), transparent 60%),
+      radial-gradient(40rem 40rem at 90% 10%, rgba(168, 85, 247, .06), transparent 60%);
+    --grid-ink: rgba(124, 58, 237, .07);
+    --glass: linear-gradient(180deg, rgba(255, 255, 255, .72), rgba(255, 255, 255, .42));
+    color-scheme: light;
+  }
+}
+
+:root[data-theme="light"] {
+  --color-night: #faf8ff;
+  --color-night-2: #f2eefb;
+  --color-panel: #ffffff;
+  --color-line: #e2dcf0;
+  --color-ink: #1a1230;
+  --color-muted: #5b5280;
+  --color-brand: #7c3aed;
+  --color-brand-deep: #5b21b6;
+  --color-brand-light: #a855f7;
+  --color-brand-fill: #6d28d9;
+  --color-pass: #047857;
+  --color-warn: #a16207;
+  --color-fail: #be123c;
+  --elev-1: 0 0 0 1px rgba(124, 58, 237, .08), 0 8px 24px -14px rgba(124, 58, 237, .16);
+  --elev-2: 0 0 0 1px rgba(124, 58, 237, .14), 0 20px 60px -24px rgba(124, 58, 237, .22);
+  --elev-3: 0 0 0 1px rgba(124, 58, 237, .18), 0 24px 60px -26px rgba(124, 58, 237, .26);
+  --body-wash:
+    radial-gradient(60rem 60rem at 50% -20%, rgba(124, 58, 237, .10), transparent 60%),
+    radial-gradient(40rem 40rem at 90% 10%, rgba(168, 85, 247, .06), transparent 60%);
+  --grid-ink: rgba(124, 58, 237, .07);
+  --glass: linear-gradient(180deg, rgba(255, 255, 255, .72), rgba(255, 255, 255, .42));
+  color-scheme: light;
+}
+
+/* NOTE: the chart ramp above is dark-only. Every one of the eight sits between
+   1.4:1 and 3.1:1 on #faf8ff and fails there. A light chart ramp is open work,
+   not an oversight — it must be computed, not derived by lightening. */
+
+/* ============================================================================
+   Base application. Everything reads through tokens; no literal colors below.
+   ========================================================================== */
+
+body {
+  background-color: var(--color-night);
+  background-image: var(--body-wash);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+:where(button, a)[aria-disabled="true"],
+:where(button, input, select, textarea):disabled {
+  opacity: var(--state-disabled-opacity);
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
