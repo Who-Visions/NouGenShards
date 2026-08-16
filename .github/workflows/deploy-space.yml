@@ -10,17 +10,32 @@ name: Sync to Hugging Face Space
 #   - Variable HF_SPACE: the Space id, e.g. "nougenai/NouGenShards"
 # Until both are configured the job skips gracefully.
 
+# Gated on CI: the sync fires when the CI workflow completes on main and only
+# proceeds if it passed. A red main used to keep deploying anyway — which is
+# how a privacy leak shipped for hours while the guard test that caught it
+# failed on every run. workflow_dispatch stays as the manual override.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main, master]
   workflow_dispatch:
 
 jobs:
   sync:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    env:
+      # workflow_run executes in default-branch context: github.sha is whatever
+      # main points at NOW, not the commit CI validated. Deploy the validated
+      # one. On manual dispatch head_sha is empty and github.sha is correct.
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           # Don't leave the GITHUB_TOKEN in .git/config; this job pushes with
           # its own credential and needs no further GitHub auth.
           persist-credentials: false
@@ -55,13 +70,13 @@ jobs:
           EOF
           # Bake the source sha into the snapshot; /health reports it, and the
           # verify step below waits for it - proving the NEW build booted.
-          echo "${GITHUB_SHA}" > .deploy_sha
+          echo "${DEPLOY_SHA}" > .deploy_sha
           # Re-stage the whole tree so the LFS attributes apply to the images.
           # -f: the .gitattributes append above makes it differ from the index,
           # which plain `git rm --cached` refuses to drop.
           git rm -r --cached -q -f .
           git add -A
-          git commit -qm "Space deploy: snapshot of ${GITHUB_SHA}"
+          git commit -qm "Space deploy: snapshot of ${DEPLOY_SHA}"
           # Force-push is the HF-documented pattern: the Space mirror's history
           # is owned entirely by this repo.
           git push --force "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}" HEAD:main
@@ -79,12 +94,12 @@ jobs:
           # owner/Name -> owner-name (HF Space subdomain convention).
           HOST="${HF_SPACE_HOST:-$(echo "$HF_SPACE" | tr '[:upper:]' '[:lower:]' | tr '/_.' '---')}"
           URL="https://${HOST}.hf.space/health"
-          echo "Waiting for ${URL} to report deploy_sha ${GITHUB_SHA} (Docker rebuild takes a few minutes)..."
+          echo "Waiting for ${URL} to report deploy_sha ${DEPLOY_SHA} (Docker rebuild takes a few minutes)..."
           # The bearer token authenticates us at HF's edge, so this works while
           # the Space is PRIVATE - every deploy is verified before going public.
           for i in $(seq 1 60); do
             body=$(curl -sS -m 15 -H "Authorization: Bearer ${HF_TOKEN}" "$URL" 2>/dev/null || true)
-            if echo "$body" | grep -q "${GITHUB_SHA}"; then
+            if echo "$body" | grep -q "${DEPLOY_SHA}"; then
               echo "Node is up on the new build:"
               echo "$body"
               exit 0
