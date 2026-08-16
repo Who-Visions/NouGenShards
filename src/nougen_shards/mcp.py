@@ -63,17 +63,22 @@ except TypeError:
 # --- Memory Core (Shards) ---
 
 @mcp.tool()
-def capture_experience(event_type: str, title: str, content: str, tags: Optional[List[str]] = None) -> str:
+def capture_experience(event_type: str, title: str, content: str, tags: Optional[List[str]] = None,
+                       original_timestamp: Optional[str] = None) -> str:
     """
     Store a unit of agent experience as a persistent shard.
-    
+
     Args:
         event_type: The category of the event (e.g., 'KNOWLEDGE', 'DECISION', 'ERROR').
         title: A brief, descriptive title for the memory.
         content: The full content or payload of the memory.
         tags: Optional list of tags for easier categorization.
+        original_timestamp: Optional ISO-8601 timestamp stamping migrated
+            content at its true era instead of capture time; invalid values
+            fall back to now.
     """
-    success = capture(event_type, title, content, tags)
+    success = capture(event_type, title, content, tags,
+                      original_timestamp=original_timestamp)
     return "Shard captured successfully." if success else "Shard already exists."
 
 @mcp.tool()

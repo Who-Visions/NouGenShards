@@ -76,9 +76,14 @@ def recall_memory(query: str, limit: int = 5) -> list:
 
 @node_mcp.tool()
 def capture_experience(title: str, content: str, event_type: str = "KNOWLEDGE",
-                       tags: list[str] | None = None) -> dict:
-    """Store a unit of experience as a shard (deduplicated by content)."""
-    ok = core.capture(event_type, title, content, tags=tags)
+                       tags: list[str] | None = None,
+                       original_timestamp: str | None = None) -> dict:
+    """Store a unit of experience as a shard (deduplicated by content).
+
+    `original_timestamp` (ISO-8601) stamps migrated content at its true era
+    instead of capture time; invalid values fall back to now."""
+    ok = core.capture(event_type, title, content, tags=tags,
+                      original_timestamp=original_timestamp)
     return {"captured": bool(ok)}
 
 
@@ -740,6 +745,7 @@ class CaptureRequest(BaseModel):
     title: str
     content: str
     tags: Optional[List[str]] = None
+    original_timestamp: Optional[str] = None
 
 
 class SyncPushRequest(BaseModel):
@@ -789,7 +795,8 @@ def search(req: SearchRequest, _token: str = Depends(verify_token)):
 @app.post("/capture")
 def capture_shard(req: CaptureRequest, _token: str = Depends(verify_token)):
     """Single-shard capture for user agents."""
-    ok = core.capture(req.event_type, req.title, req.content, tags=req.tags)
+    ok = core.capture(req.event_type, req.title, req.content, tags=req.tags,
+                      original_timestamp=req.original_timestamp)
     return {"status": "ok", "captured": bool(ok)}
 
 

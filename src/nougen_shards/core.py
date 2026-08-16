@@ -541,7 +541,8 @@ def _embed_for_capture(title: str, content: str) -> Optional[List[float]]:
 def capture(event_type: str, title: str, content: str,
             tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
             domain_key: Optional[str] = None, density_score: Optional[float] = None,
-            sensitivity: Optional[str] = None) -> bool:
+            sensitivity: Optional[str] = None,
+            original_timestamp: Optional[str] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants).
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
@@ -550,6 +551,11 @@ def capture(event_type: str, title: str, content: str,
     (finances, health, identity documents) is not readable from the DB file.
     Titles and tags stay plaintext: they are the only handle recall has on an
     encrypted shard, so keep identifying detail out of them.
+
+    `original_timestamp` (ISO-8601 string) stamps migrated content at its TRUE
+    era instead of migration time, so date-window queries and coverage
+    histograms reflect when the experience actually happened. An unparseable
+    value logs a warning and falls back to now -- it never crashes a write.
     """
     from . import private_vault as _pv  # pylint: disable=import-outside-toplevel
     sensitivity = _pv.normalize_sensitivity(sensitivity)
@@ -594,6 +600,20 @@ def capture(event_type: str, title: str, content: str,
 
         tags_str = json.dumps(tags or [])
         timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        if original_timestamp:
+            try:
+                # Validate; store the normalized ISO form so lexicographic
+                # date-prefix comparisons (the window contract) stay sound.
+                parsed = datetime.fromisoformat(
+                    str(original_timestamp).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                timestamp = parsed.astimezone(timezone.utc).isoformat().replace(
+                    "+00:00", "Z")
+            except (ValueError, TypeError):
+                logger.warning(
+                    "capture: unparseable original_timestamp %r; "
+                    "falling back to now", original_timestamp)
 
         # Encrypt LAST, immediately before the write: the dedup hash, the blob
         # gate, the redactor and the embedder all need the real text, and the
