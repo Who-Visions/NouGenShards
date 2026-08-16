@@ -27,6 +27,12 @@ def test_remember_speaks_anghkooey():
     assert agents.ROSTER["Remember"].motto == "Anghkooey."
 
 
+def test_iris_owns_assurance():
+    iris = agents.ROSTER["Iris"]
+    assert "assess_claim" in iris.engine_functions
+    assert "operator" in iris.system_prompt.lower()
+
+
 def test_list_roster_renders_all():
     depth_chart = agents.list_roster()
     for name in EXPECTED_ROSTER:

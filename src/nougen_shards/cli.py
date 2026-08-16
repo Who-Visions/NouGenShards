@@ -4,6 +4,7 @@ import sys
 import json
 import sqlite3
 import os
+import numpy as np
 from pathlib import Path
 from . import core as shards
 from . import keymaker
@@ -21,6 +22,7 @@ from .connectors.cloud import push_to_cloud, pull_from_cloud
 from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
 from . import dream
 from . import evolution
+from . import assurance
 
 from nougen_shards import __version__ as VERSION  # single source: pyproject
 
@@ -306,8 +308,8 @@ def cmd_search(args):
     if getattr(args, 'json', False) is True:
         # Convert binary embeddings to lists for JSON serialization
         for res in results:
-            if 'embedding' in res and isinstance(res['embedding'], bytes):
-                res['embedding'] = json.loads(res['embedding'].decode())
+            if 'embedding' in res:
+                res['embedding'] = _embedding_for_json(res['embedding'])
         print(json.dumps(results))
         return
 
@@ -322,6 +324,34 @@ def cmd_search(args):
         # loop requires knowing that "Source:" is what --db wants.
         print(f"  ↳ helpful? nougen mark {res['id']} --worked --db {res['_db_index']}")
         print("-" * 40)
+
+
+def _embedding_for_json(value):
+    """Serialize both legacy JSON embeddings and current float32 BLOBs."""
+    if not isinstance(value, (bytes, bytearray, memoryview)):
+        return value
+    blob = bytes(value)
+    if blob.lstrip().startswith(b"["):
+        try:
+            return json.loads(blob.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+    if len(blob) % np.dtype(np.float32).itemsize:
+        return None
+    return np.frombuffer(blob, dtype=np.float32).tolist()
+
+
+def cmd_assure(args):
+    """Route a non-mutating evidence assurance verdict through Iris."""
+    result = assurance.assess_claim(args.claim, evidence=args.evidence)
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2))
+        return
+    print(f"[{result['status']}] confidence={result['confidence']:.2f} via Iris")
+    print(result["rationale"])
+    for caveat in result["caveats"]:
+        print(f"Caveat: {caveat}")
+    print("Operator gate required: yes")
 
 
 def cmd_mark(args):
@@ -865,6 +895,12 @@ def get_parser():
     p_search.add_argument("--domain", help="Explicit domain boundary key filter override")
     p_search.add_argument("--dual", action="store_true", help="Use dual-system memory recall (episodic + semantic rules)")
 
+    p_assure = subparsers.add_parser("assure", help="Label a claim through Iris evidence assurance")
+    p_assure.add_argument("claim")
+    p_assure.add_argument("--evidence", action="append", default=[],
+                          help="Evidence item; repeat for multiple items")
+    p_assure.add_argument("--json", action="store_true", help="Machine-readable output")
+
     p_chat = subparsers.add_parser("chat", help="Chat with memory")
     p_chat.add_argument("query", nargs="?")
     p_chat.add_argument("--model")
@@ -1383,7 +1419,7 @@ def main():
     parser = get_parser()
     args = parser.parse_args()
     cmds = {
-        "init": cmd_init, "add": cmd_add, "search": cmd_search, "chat": cmd_chat,
+        "init": cmd_init, "add": cmd_add, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,

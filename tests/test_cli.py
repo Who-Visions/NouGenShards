@@ -2,6 +2,8 @@
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
 import io
+import json
+import numpy as np
 import nougen_shards.cli as cli
 
 class TestCLI(unittest.TestCase):
@@ -56,6 +58,39 @@ class TestCLI(unittest.TestCase):
             cli.cmd_search(args)
             self.assertIn("🔍 Found 1 records across the fabric", fake_out.getvalue())
             self.assertIn("Final Score: 0.85", fake_out.getvalue())
+
+    @patch('nougen_shards.cli.federation.federated_retrieve')
+    def test_cmd_search_json_serializes_float32_blob(self, mock_retrieve):
+        args = MagicMock()
+        args.query = "test"
+        args.semantic = False
+        args.dual = False
+        args.json = True
+        args.domain = None
+        vector = np.array([0.25, -1.5, 3.0], dtype=np.float32)
+        mock_retrieve.return_value = [{"id": 1, "embedding": vector.tobytes()}]
+
+        with patch('sys.stdout', new=io.StringIO()) as fake_out:
+            cli.cmd_search(args)
+
+        payload = json.loads(fake_out.getvalue())
+        self.assertEqual(payload[0]["embedding"], vector.tolist())
+
+    @patch('nougen_shards.cli.federation.federated_retrieve')
+    def test_cmd_search_json_supports_legacy_embedding(self, mock_retrieve):
+        args = MagicMock()
+        args.query = "test"
+        args.semantic = False
+        args.dual = False
+        args.json = True
+        args.domain = None
+        mock_retrieve.return_value = [{"id": 1, "embedding": b"[0.5, -0.5]"}]
+
+        with patch('sys.stdout', new=io.StringIO()) as fake_out:
+            cli.cmd_search(args)
+
+        payload = json.loads(fake_out.getvalue())
+        self.assertEqual(payload[0]["embedding"], [0.5, -0.5])
 
     @patch('nougen_shards.cli.shards.mark_shard')
     def test_cmd_mark(self, mock_mark):
