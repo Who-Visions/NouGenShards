@@ -162,6 +162,50 @@ def _window_search(query: str = "", since: Optional[str] = None,
     return rows[:limit]
 
 
+def _federated_coverage() -> dict | None:
+    """Registered federated read-through stores, so a recall MISS can be told
+    apart from NOT MOUNTED at the federation layer too (decision 16729).
+
+    Additive-only: consumers of substrate_coverage parse tolerantly, and this
+    section never replaces or renames an existing field. Env-gated via
+    NOUGEN_COVERAGE_FEDERATED (default on); returns None when disabled so the
+    section disappears entirely rather than lying with zeros. Every store is
+    opened read-only and degrades independently into `errored`.
+    """
+    if os.environ.get("NOUGEN_COVERAGE_FEDERATED", "1").strip().lower() in (
+            "0", "false", "off", "no"):
+        return None
+    import sqlite3
+    from pathlib import Path
+    from nougen_shards import keymaker
+    from nougen_shards.connectors.local_vault import _is_valid_identifier
+    try:
+        confs = keymaker.list_local_vaults()
+    except Exception:  # keymaker store unreadable ≠ coverage endpoint down
+        confs = []
+    names: list = []
+    errored: list = []
+    rows_total = 0
+    for conf in confs:
+        stem = Path(str(conf.get("path", ""))).stem or f"id_{conf.get('id')}"
+        table = conf.get("table_name", "")
+        try:
+            if not _is_valid_identifier(table):
+                raise ValueError("invalid table identifier")
+            conn = sqlite3.connect(
+                f"file:{conf['path']}?mode=ro", uri=True, timeout=5)
+            try:
+                n = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            finally:
+                conn.close()
+            names.append(stem)
+            rows_total += int(n)
+        except Exception:
+            errored.append(stem)
+    return {"stores": len(names), "names": names,
+            "rows_total": rows_total, "errored": errored}
+
+
 @node_mcp.tool()
 def substrate_coverage() -> dict:
     """What this node actually holds, so a recall MISS can be told apart from a
@@ -222,7 +266,10 @@ def substrate_coverage() -> dict:
             "months": dict(sorted(per_month.items())),
             "empty_months": gaps,
             "grid": _substrate_coverage(),
-            "vault": str(core.GLOBAL_DIR)}
+            "vault": str(core.GLOBAL_DIR),
+            # Federated read-through extent (decision 16729): "not found" must
+            # be distinguishable from "not mounted" at the federation layer.
+            "federated_stores": _federated_coverage()}
 
 
 @node_mcp.tool()
@@ -524,12 +571,29 @@ if not _serve_docs:
 
 # --- Security ---
 
+# A bare "Invalid node token." sent a real diagnosis down the wrong path: the
+# Claude connector UI reads a 401 on an MCP endpoint as "this server wants me to
+# sign in", tries OAuth dynamic client registration, finds no metadata to
+# register against, and reports a sign-in-service failure. The node has no OAuth
+# layer and does not need one — it wants a token — so the 401 says so, and names
+# the query form, because connectors cannot attach custom headers.
+#
+# Deliberately NOT accompanied by a `WWW-Authenticate: Bearer` header: that is
+# what tells a client to go looking for an authorization server, and there is
+# none here. Advertising one would restart the same broken hunt.
+_BAD_TOKEN_DETAIL = (
+    "Invalid or missing node token. Send it as the X-NGS-Token header, or "
+    "append ?token=<node token> to the URL — Claude connectors cannot set "
+    "custom headers, so the query form is the path for those."
+)
+
+
 def verify_token(x_ngs_token: str = Header(None)):
     if not NODE_TOKEN:
         raise HTTPException(status_code=503, detail="Node write-auth not configured.")
     # Constant-time comparison to avoid leaking the token via timing.
     if not x_ngs_token or not hmac.compare_digest(str(x_ngs_token), str(NODE_TOKEN)):
-        raise HTTPException(status_code=401, detail="Invalid node token.")
+        raise HTTPException(status_code=401, detail=_BAD_TOKEN_DETAIL)
     return x_ngs_token
 
 # --- API Endpoints ---
