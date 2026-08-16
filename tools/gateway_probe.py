@@ -16,8 +16,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-sys.path.insert(0, r"C:\Users\super\Outpost\NouGen\tools")
-sys.path.insert(0, r"C:\Users\super\Outpost\NouGen\src")
+# Resolve sibling dirs relative to this file - a hardcoded absolute path here
+# names the operator's disk layout on a public repo (test_published_surface
+# catches exactly this).
+from pathlib import Path
+_REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO / "tools"))
+sys.path.insert(0, str(_REPO / "src"))
 
 ORIGIN = "https://fleet.nougenai.com"
 REDIRECT = "http://localhost:8976/callback"

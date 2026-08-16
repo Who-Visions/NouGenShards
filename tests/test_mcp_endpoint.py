@@ -111,13 +111,23 @@ def test_mcp_initialize(client):
 
 
 def test_mcp_tool_surface_excludes_code_execution(client):
+    """The invariant is what must NOT be on the wire, not the exact roster.
+
+    An exact-set assertion here rotted twice in one day as legitimate memory
+    tools landed (substrate_coverage, recall_window, shard_amend/retract/
+    forget, vault_*). The security property is one-directional: the memory
+    core must be present, and the stdio-only tools - remote code execution
+    and container-filesystem recon - must never leak onto the network
+    surface, no matter what else is added.
+    """
     r = client.post("/mcp/", json=_rpc("tools/list"), headers=AUTH)
     assert r.status_code == 200
     names = {t["name"] for t in r.json()["result"]["tools"]}
-    assert names == {"recall_memory", "capture_experience",
-                     "mark_utility", "node_status"}
-    # The stdio-only tools must never leak onto the network surface.
-    assert "execute_sandboxed_code" not in names
+    assert {"recall_memory", "capture_experience",
+            "mark_utility", "node_status"} <= names
+    forbidden = {"execute_sandboxed_code", "run_brain_scan", "run_brain_import"}
+    leaked = forbidden & names
+    assert not leaked, f"stdio-only tools leaked onto the network surface: {leaked}"
     assert "run_brain_scan" not in names
 
 
