@@ -679,6 +679,56 @@ def _fuzzy_should_run(results: list, limit: int) -> bool:
         return len(results) < limit
     return not results
 
+
+#: Fallback multiplier applied to in-domain hits when the domain was resolved
+#: implicitly from the process CWD (see retrieve). >1 keeps local context first
+#: on ties without letting it mask cross-domain matches; 1.0 disables the bias.
+DEFAULT_DOMAIN_BOOST = 1.2
+
+#: Fallback bm25 magnitude that normalizes to 0.5 keyword strength. Chosen from
+#: the measured live-corpus span (weak single-token OR hits ~6-12, near-exact
+#: multi-term hits 20-90), so mid-strength matches land mid-scale instead of
+#: everything saturating at ~1.0.
+DEFAULT_BM25_HALF_SCORE = 20.0
+
+
+def _bm25_half_score() -> float:
+    """Resolve the bm25 half-strength scale: env first, logged fallback."""
+    raw = os.environ.get("NOUGEN_BM25_HALF_SCORE")
+    if raw:
+        try:
+            val = float(raw)
+            if val > 0:
+                return val
+            logger.warning("NOUGEN_BM25_HALF_SCORE=%r must be > 0; "
+                           "falling back to %s", raw, DEFAULT_BM25_HALF_SCORE)
+        except ValueError:
+            logger.warning("NOUGEN_BM25_HALF_SCORE=%r is not a number; "
+                           "falling back to %s", raw, DEFAULT_BM25_HALF_SCORE)
+    else:
+        logger.debug("NOUGEN_BM25_HALF_SCORE unset; using fallback %s",
+                     DEFAULT_BM25_HALF_SCORE)
+    return DEFAULT_BM25_HALF_SCORE
+
+
+def _domain_affinity_boost() -> float:
+    """Resolve the implicit-domain affinity boost: env first, logged fallback."""
+    raw = os.environ.get("NOUGEN_DOMAIN_BOOST")
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+            logger.warning("NOUGEN_DOMAIN_BOOST=%r must be > 0; "
+                           "falling back to %s", raw, DEFAULT_DOMAIN_BOOST)
+        except ValueError:
+            logger.warning("NOUGEN_DOMAIN_BOOST=%r is not a number; "
+                           "falling back to %s", raw, DEFAULT_DOMAIN_BOOST)
+    else:
+        logger.debug("NOUGEN_DOMAIN_BOOST unset; using fallback %s",
+                     DEFAULT_DOMAIN_BOOST)
+    return DEFAULT_DOMAIN_BOOST
+
 def _temporal_decay(ts_str: Optional[str], now: datetime) -> float:
     """Half-life decay (30 days) of a shard timestamp against a fixed reference
     clock, floored at 0.1.
@@ -709,11 +759,17 @@ def _process_fts_result(row, db_index, query_embedding, now: datetime):
     # FTS5 bm25() returns negative values where *more negative == stronger match*
     # (the query orders bm25_score ASC for exactly this reason). Taking abs() folds
     # strong and weak matches onto the same magnitude and inverts the signal — a
-    # strong hit (-8 -> 0.11) scored *below* a weak one (-0.5 -> 0.67). Map it
-    # through a logistic instead: monotonically decreasing in bm25 and bounded in
-    # (0, 1), so stronger matches contribute more. Exponent clamped against the
-    # rare positive score to avoid math.exp overflow.
-    norm_bm25 = 1.0 / (1.0 + math.exp(max(-60.0, min(60.0, item["bm25_score"]))))
+    # strong hit (-8 -> 0.11) scored *below* a weak one (-0.5 -> 0.67). A raw
+    # logistic 1/(1+e^bm25) fixed the inversion but saturates: measured corpus
+    # scores span roughly -6 (weak single-token) to -90 (near-exact multi-term),
+    # and the logistic maps ALL of them to ~1.0, so keyword strength contributed
+    # a constant and stale high-utility rows outranked near-exact fresh matches.
+    # Map through a rational saturation x/(x+half) instead: still monotonically
+    # increasing in match strength and bounded in [0, 1), but discriminating
+    # across the whole measured range. `half` is the bm25 magnitude that scores
+    # 0.5 (env NOUGEN_BM25_HALF_SCORE; fallback from the measured corpus span).
+    strength = max(0.0, -item["bm25_score"])
+    norm_bm25 = strength / (strength + _bm25_half_score())
 
     # 2. Likelihood Part B: Semantic (The Latent Score)
     sem_score = 0.0
@@ -730,8 +786,15 @@ def _process_fts_result(row, db_index, query_embedding, now: datetime):
             except Exception:
                 sem_score = 0.0
 
-    # Synthesize Coherent Likelihood (Module 9)
-    likelihood = (norm_bm25 * WEIGHT_BM25) + (sem_score * WEIGHT_SEMANTIC)
+    # Synthesize Coherent Likelihood (Module 9). When the caller supplied no
+    # query embedding the semantic lane is ABSENT, not zero-valued: weighting a
+    # missing sensor as 0 capped likelihood at WEIGHT_BM25 and let the decayed
+    # utility prior dominate every keyword-only retrieval. Renormalize over the
+    # signal that actually exists (broken-sensor absence, HARDENING inv. 4).
+    if query_embedding is None:
+        likelihood = norm_bm25
+    else:
+        likelihood = (norm_bm25 * WEIGHT_BM25) + (sem_score * WEIGHT_SEMANTIC)
 
     # 3. Temporal decay factor (half-life of 30 days) to prevent stale successful sessions from dominating results
     decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), now)
@@ -741,7 +804,7 @@ def _process_fts_result(row, db_index, query_embedding, now: datetime):
     return item
 
 
-def _build_fts_match_query(query: str) -> Optional[str]:
+def _build_fts_match_query(query: str, joiner: str = " ") -> Optional[str]:
     """
     Build a safe FTS5 MATCH expression from arbitrary user input.
 
@@ -752,6 +815,10 @@ def _build_fts_match_query(query: str) -> Optional[str]:
     search silently degrades to a LIKE substring scan. Tokens shorter than 3 chars
     are dropped because the trigram tokenizer cannot index them. Returns None when
     nothing matchable remains (caller then uses the LIKE fallback).
+
+    `joiner` sits BETWEEN the quoted tokens: the default " " keeps FTS5's
+    implicit-AND semantics; pass " OR " for the ranked-OR retry (tokens stay
+    quoted either way, so user text still cannot inject operators).
     """
     tokens = [t for t in query.split() if len(t) >= 3]
     if not tokens:
@@ -768,7 +835,7 @@ def _build_fts_match_query(query: str) -> Optional[str]:
     if filtered_tokens:
         tokens = filtered_tokens
 
-    return " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
+    return joiner.join('"' + t.replace('"', '""') + '"' for t in tokens)
 
 
 def bulk_ingest_event_types() -> List[str]:
@@ -821,31 +888,51 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
             db_hits = 0
             fts_query = _build_fts_match_query(query)
             if fts_query is not None:
+                # Attempt implicit-AND first, then a ranked-OR retry: FTS5's
+                # implicit AND starves conversational multi-term queries (one
+                # off-corpus token -> 0 rows), and the LIKE fallback below is
+                # stricter still (substring of the WHOLE query). The OR retry
+                # reuses the exact same safe-quoted tokens, and bm25 ranks
+                # best-covering rows first, so AND-quality hits keep their spot.
+                # Single-token queries produce an identical expression, so the
+                # retry is skipped.
+                attempts = [fts_query]
+                or_query = _build_fts_match_query(query, joiner=" OR ")
+                if or_query is not None and or_query != fts_query:
+                    attempts.append(or_query)
                 # The try guards ONLY the SQL: sqlite3.OperationalError here
                 # means "FTS unavailable, use the LIKE fallback". Row processing
                 # happens outside it so an unrelated error can't leave partially
                 # appended FTS rows in `results` and then double-append the same
                 # shards via the fallback (which scrambled retrieval ordering).
                 res = None
-                try:
-                    # domain_key None/"*" => search ALL domains (whole brain), not one bucket.
-                    dom_clause = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
-                    dom_params = () if domain_key in (None, "*") else (domain_key,)
-                    ing_clause, ing_params = _ingest_filter_sql("s", include_research)
-                    cursor = conn.execute(f"""
-                        SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
-                               s.embedding, s.tags, s.domain_key, s.density_score, bm25(shards_fts) as bm25_score
-                        FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
-                        WHERE {dom_clause}{ing_clause}shards_fts MATCH ?
-                        ORDER BY bm25_score ASC, s.id ASC LIMIT ?
-                    """, (*dom_params, *ing_params, fts_query, limit))
-                    res = cursor.fetchall()
-                except sqlite3.OperationalError:
-                    res = None
+                via_or_retry = False
+                for match_expr in attempts:
+                    try:
+                        # domain_key None/"*" => search ALL domains (whole brain), not one bucket.
+                        dom_clause = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
+                        dom_params = () if domain_key in (None, "*") else (domain_key,)
+                        ing_clause, ing_params = _ingest_filter_sql("s", include_research)
+                        cursor = conn.execute(f"""
+                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                                   s.embedding, s.tags, s.domain_key, s.density_score, bm25(shards_fts) as bm25_score
+                            FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
+                            WHERE {dom_clause}{ing_clause}shards_fts MATCH ?
+                            ORDER BY bm25_score ASC, s.id ASC LIMIT ?
+                        """, (*dom_params, *ing_params, match_expr, limit))
+                        res = cursor.fetchall()
+                    except sqlite3.OperationalError:
+                        res = None
+                    if res:
+                        via_or_retry = match_expr is not fts_query
+                        break
                 if res:
                     for row in res:
                         history.log_event(row["id"], i, "ACCESSED")
-                        results.append(_process_fts_result(row, i, query_embedding, query_now))
+                        item = _process_fts_result(row, i, query_embedding, query_now)
+                        if via_or_retry:
+                            item["_or_retry"] = True
+                        results.append(item)
                     fts_worked = True
 
             if not fts_worked:
@@ -984,14 +1071,27 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 finally:
                     conn.close()
 
-    # Tiered ordering: every exact hit (FTS/LIKE) outranks every fuzzy hit,
-    # regardless of raw score - the lanes' score scales are not comparable
-    # (trigram-FTS bm25 magnitudes are tiny, so a weighted exact score can sit
-    # below a strong fuzzy similarity). Score is rounded so sub-epsilon
-    # temporal-decay jitter can't reorder near-ties; then (_db_index, id) ASC
-    # pins true ties so identical queries never reorder run-to-run.
-    results.sort(key=lambda x: (1 if x.get("_fuzzy") else 0,
+    # Tiered ordering: every full-coverage hit (FTS implicit-AND / LIKE)
+    # outranks every OR-retry hit, which outranks every fuzzy hit, regardless
+    # of raw score - the lanes' score scales are not comparable (trigram-FTS
+    # bm25 magnitudes are tiny, so a weighted exact score can sit below a
+    # strong fuzzy similarity, and an OR hit covering one token must never
+    # displace an AND hit covering all of them). Score is rounded so
+    # sub-epsilon temporal-decay jitter can't reorder near-ties; bm25 (more
+    # negative == stronger, absent treated as weakest) breaks sub-round ties
+    # by match strength - on small corpora trigram bm25 is ~1e-6 and the
+    # rounding erases it, and falling straight to insertion order picked the
+    # wrong shard; then (_db_index, id) ASC pins true ties so identical
+    # queries never reorder run-to-run.
+    def _tier(x):
+        if x.get("_fuzzy"):
+            return 2
+        if x.get("_or_retry"):
+            return 1
+        return 0
+    results.sort(key=lambda x: (_tier(x),
                                 -round(x.get("final_score", 0.0), 6),
+                                x.get("bm25_score") or 0.0,
                                 x.get("_db_index", 0),
                                 x.get("id", 0)))
     return results[:limit]
@@ -1059,6 +1159,11 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
 def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[dict]:
     """
     Module 8 / 21: Reciprocal Rank Fusion (RRF) to merge multiple ranked lists.
+
+    Fuses by POSITION only: score = 1/(k+rank), summed across lists. Callers that
+    want match quality to influence the merge must hand their list in ranked
+    order — that is the supported lever, and it keeps this function's arithmetic
+    exactly as specified.
     """
     rrf_scores = {}  # key -> float
     item_map = {}    # key -> dict
@@ -1101,7 +1206,13 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
         item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3))
         merged.append(item)
 
-    merged.sort(key=lambda x: (-round(x["final_score"], 6), x.get("_db_index", 0), x.get("id", 0)))
+    # Tie-break fields are stringified: grid rows carry int _db_index/id while
+    # federated lanes (local vaults, cloud) carry strings ("vault_<stem>",
+    # "vault_x_<hash>"), and Python 3 refuses int<str — one tied score across
+    # lanes and the whole federated merge raised TypeError. The tie-break only
+    # needs determinism, not numeric order, so lexicographic is sufficient.
+    merged.sort(key=lambda x: (-round(x["final_score"], 6),
+                               str(x.get("_db_index", 0)), str(x.get("id", 0))))
     return merged
 
 
@@ -1158,6 +1269,13 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         if get_db_path(i).exists():
             init_db(i)
 
+    # An explicit domain_key is a caller's deliberate scope and stays exclusive
+    # (see test_domain_isolation_capture_and_retrieve). A domain resolved
+    # implicitly from the process CWD is an accident of where the reader happens
+    # to run, so it may only BOOST ranking, never GATE recall -- otherwise
+    # shards written under another CWD-domain stay permanently invisible
+    # whenever the scoped pass returns anything at all.
+    explicit_domain = bool(domain_key)
     if not domain_key:
         domain_key = resolve_domain_from_path()
         
@@ -1186,12 +1304,36 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         return reciprocal_rank_fusion([keyword_results, vector_results], k=60)
 
     all_results = run_parallel_retrieval(domain_key)
-    
-    # Fallback: if the domain-scoped pass found nothing, sweep the ENTIRE brain
-    # (all domain_keys). Without this, recall stays siloed to one bucket
-    # (e.g. 'global' = <2% of shards) and misses the other 47k+ shards.
-    if not all_results and domain_key != "*":
-        all_results = run_parallel_retrieval("*")
+
+    if domain_key != "*":
+        if explicit_domain:
+            # Fallback: if the deliberately-scoped pass found nothing, sweep the
+            # ENTIRE brain (all domain_keys). Without this, recall stays siloed
+            # to one bucket (e.g. 'global' = <2% of shards) and misses the rest.
+            if not all_results:
+                all_results = run_parallel_retrieval("*")
+        else:
+            # Implicit CWD-domain: scoped-plus-global fusion, not scoped-else-
+            # global. Always run the whole-brain pass and merge, multiplying
+            # scoped (in-domain) scores by a domain-affinity boost so local
+            # context still ranks first on ties but can no longer mask
+            # near-exact matches that live under another writer's CWD-domain.
+            whole_brain = run_parallel_retrieval("*")
+            boost = _domain_affinity_boost()
+            fused: dict = {}
+            for item in whole_brain:
+                fused[(item.get("_db_index", 0), item.get("id", 0))] = item
+            for item in all_results:
+                key = (item.get("_db_index", 0), item.get("id", 0))
+                boosted = item.get("final_score", 0.0) * boost
+                prior = fused.get(key)
+                if prior is None or boosted > prior.get("final_score", 0.0):
+                    item["final_score"] = boosted
+                    fused[key] = item
+            all_results = sorted(fused.values(),
+                                 key=lambda x: (-x.get("final_score", 0.0),
+                                                x.get("_db_index", 0),
+                                                x.get("id", 0)))
 
     # Stage 2: cross-encoder rerank the top RRF candidates (no-op unless enabled).
     if RERANK_ENABLED:

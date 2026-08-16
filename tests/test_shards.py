@@ -280,6 +280,25 @@ def test_bm25_stronger_match_scores_higher(setup_test_env):
     assert strong["final_score"] > weak["final_score"]
 
 
+def test_fresh_near_exact_outranks_stale_high_utility(setup_test_env):
+    """Regression (measured live 2026-08-16): a saturating bm25 normalization
+    mapped every real match (-6 .. -90) to ~1.0, and the absent semantic lane
+    was weighted as zero evidence, so an uncapped stale utility prior (4.29,
+    decayed) outranked a fresh near-exact keyword hit on every keyword-only
+    retrieval. Values below are the measured production pair."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    base = {"id": 1, "_db_index": 1, "title": "t", "content": "c",
+            "embedding": None}
+    fresh_near_exact = shards._process_fts_result(
+        {**base, "bm25_score": -84.0, "utility_score": 0.5,
+         "timestamp": now.isoformat()}, 1, None, now)
+    stale_high_utility = shards._process_fts_result(
+        {**base, "bm25_score": -6.0, "utility_score": 4.286875,
+         "timestamp": (now - timedelta(days=61)).isoformat()}, 1, None, now)
+    assert fresh_near_exact["final_score"] > stale_high_utility["final_score"]
+
+
 def test_mark_shard_targets_specific_db(setup_test_env):
     """Regression: shard ids are per-DB, so mark_shard must honor db_index.
 

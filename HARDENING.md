@@ -87,9 +87,13 @@ order); pre-existing, unrelated to this invariant.
 **Failure observed:** FTS returned 0 for "huggingface nougenai token" but
 thousands for "huggingface" — conversational queries die on AND semantics.
 **Invariant:** FTS falls back to ranked OR when the AND query returns empty.
-**Status:** ✅ two-pass MATCH in `_keyword_retrieve` (AND → ranked OR → LIKE);
-regression suite `tests/test_fts_or_fallback.py` (4 tests, incl. AND-preferred
-and bm25 coverage-ordering guards). War-game: `wargames/fts-or-fallback.md`.
+**Status:** ✅ executed 2026-08-16: two-pass MATCH in `_keyword_retrieve`
+(AND → ranked OR → LIKE), with OR-retry hits tiered BELOW full-coverage
+AND/LIKE hits so a one-token OR match can never displace an all-token match
+(the naive retry regressed 5 ranking tests on small corpora where trigram
+bm25 is ~1e-6 and rounds away). Regression suite
+`tests/test_fts_or_fallback.py` (single-token survival + bm25
+coverage-ordering). War-game: `wargames/fts-or-fallback.md`.
 
 ## 6. No machine paths in code
 **Failure observed:** hardcoded machine-specific user paths in scanner + hook meant
