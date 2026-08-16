@@ -11,7 +11,7 @@ Honours Rule 0.5 routing priority:
     5. Ollama Cloud routes      (heavy cloud fallback)
 
 Routes are read from the global MCP registry:
-    C:\\Users\\super\\.gemini\\antigravity-ide\\mcp_config.json
+    ~\\.gemini\\antigravity-ide\\mcp_config.json
 
 Usage
 -----
@@ -31,7 +31,7 @@ import json, os, sys, time, itertools, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request, urllib.error
 
-MCP_CONFIG = r"C:\Users\super\.gemini\antigravity-ide\mcp_config.json"
+MCP_CONFIG = os.path.expanduser(r"~\.gemini\antigravity-ide\mcp_config.json")
 
 # Rule 0.5 priority: lower number = tried first
 PRIORITY = [
@@ -41,6 +41,7 @@ PRIORITY = [
     ("lmstudio",     4),
     ("local",        4),
     ("ollama-cloud", 5),
+    ("vertex",       6),   # BILLED — opt-in only, see vertex_lane.py
 ]
 LOCAL_ROUTES = [
     {"name": "local-ollama-whoart", "url": "http://localhost:11434/v1",
@@ -78,7 +79,8 @@ def _rank(kind: str) -> int:
 
 
 class Fleet:
-    def __init__(self, config_path: str = MCP_CONFIG, include_local: bool = True):
+    def __init__(self, config_path: str = MCP_CONFIG, include_local: bool = True,
+                 include_vertex: bool | None = None):
         self.routes: list[dict] = []
         if os.path.exists(config_path):
             cfg = json.load(open(config_path, encoding="utf-8"))
@@ -98,6 +100,13 @@ class Fleet:
                 })
         if include_local:
             self.routes.extend(LOCAL_ROUTES)
+        # Vertex bills per token while every other lane is free tier or local
+        # GPU, so it never joins the fleet by accident.
+        if include_vertex is None:
+            include_vertex = os.environ.get("NOUGEN_VERTEX") == "1"
+        if include_vertex:
+            from vertex_lane import vertex_routes
+            self.routes.extend(vertex_routes())
         self.routes.sort(key=lambda r: (_rank(r["kind"]), r["name"]))
         self.healthy: list[dict] = []
         self._lock = threading.Lock()
@@ -132,6 +141,9 @@ class Fleet:
     # ---------- transport ----------
     def _call(self, route: dict, prompt: str, timeout: int = 120,
               max_tokens: int = 800, temperature: float = 0.0) -> str:
+        # Reasoning models spend a hidden budget before emitting content and
+        # return empty at HTTP 200 if starved. A route may declare its floor.
+        max_tokens = max(max_tokens, route.get("min_tokens", 0))
         body = json.dumps({
             "model": route["model"],
             "messages": [{"role": "user", "content": prompt}],
@@ -139,6 +151,10 @@ class Fleet:
             "temperature": temperature,
         }).encode()
         hdrs = {"Content-Type": "application/json", **route["headers"]}
+        # Vertex-style routes carry a short-lived token minted per call, not a
+        # static key baked into the registry.
+        if route.get("token_fn"):
+            hdrs["Authorization"] = f'Bearer {route["token_fn"]()}'
         req = urllib.request.Request(route["url"] + "/chat/completions", data=body, headers=hdrs)
         with urllib.request.urlopen(req, timeout=timeout) as r:
             j = json.load(r)
@@ -223,7 +239,8 @@ if __name__ == "__main__":
           f"{sum(1 for r in f.routes if r['kind']=='openrouter')} openrouter, "
           f"{sum(1 for r in f.routes if r['kind']=='arliai')} arliai, "
           f"{sum(1 for r in f.routes if r['kind'] in ('local','lmstudio'))} local, "
-          f"{sum(1 for r in f.routes if r['kind']=='ollama-cloud')} ollama-cloud)\n")
+          f"{sum(1 for r in f.routes if r['kind']=='ollama-cloud')} ollama-cloud, "
+          f"{sum(1 for r in f.routes if r['kind']=='vertex')} vertex)\n")
     if cmd == "probe":
         f.probe()
     elif cmd == "ask":

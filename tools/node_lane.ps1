@@ -4,7 +4,7 @@
   The node serves the REST API (/health, /search, /capture, /sync/*), the
   token-gated MCP endpoint at /mcp, and the Cortex HUD at /. It is independent
   of blade's lane: its own token, its own port, same local shard substrate at
-  C:\Users\super\.nougen\shards.
+  ~\.nougen\shards.
 
   The write token is never hardcoded - it is read at start time from the
   keymaker vault under NGS_NODE_TOKEN_OUTPOST.
@@ -29,10 +29,10 @@ $RunDir    = Join-Path $Root '.node'
 $PidFile   = Join-Path $RunDir 'node.pid'
 $OutLog    = Join-Path $RunDir 'node.out.log'
 $ErrLog    = Join-Path $RunDir 'node.err.log'
-$VaultDir  = 'C:\Users\super\.nougen\shards'   # shard substrate
+$VaultDir  = Join-Path $env:USERPROFILE '.nougen\shards'   # shard substrate
 # Secrets moved to their own vault upstream (~/.nougen/secrets). Pointing
 # keymaker at the shard cluster made init_vault icacls 40+ DBs and time out.
-$SecretsDir = 'C:\Users\super\.nougen\secrets'
+$SecretsDir = Join-Path $env:USERPROFILE '.nougen\secrets'
 $Port      = if ($env:NGS_PORT) { $env:NGS_PORT } else { '4444' }
 $BaseUrl   = "http://127.0.0.1:$Port"
 $SecretKey = 'NGS_NODE_TOKEN_OUTPOST'

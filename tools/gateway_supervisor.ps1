@@ -29,7 +29,7 @@ $ErrorActionPreference = 'Stop'
 $Root       = Split-Path -Parent $PSScriptRoot
 $Python     = Join-Path $Root '.venv\Scripts\python.exe'
 $NodeLane   = Join-Path $PSScriptRoot 'node_lane.ps1'
-$WorkerDir  = 'C:\Users\super\Outpost\nougen-fleet-mcp'
+$WorkerDir  = Join-Path (Split-Path -Parent $Root) 'nougen-fleet-mcp'
 $RunDir     = Join-Path $Root '.node'
 $Cloudflared = Join-Path $PSScriptRoot 'bin\cloudflared.exe'
 $TunnelLog  = Join-Path $RunDir 'tunnel.log'
@@ -37,8 +37,8 @@ $TunnelPid  = Join-Path $RunDir 'tunnel.pid'
 $StateFile  = Join-Path $RunDir 'gateway_url.txt'
 $Port       = if ($env:NGS_PORT) { $env:NGS_PORT } else { '4444' }
 $env:PYTHONPATH = Join-Path $Root 'src'
-$env:NOUGEN_VAULT_DIR = 'C:\Users\super\.nougen\shards'
-$env:NOUGEN_SECRETS_VAULT_DIR = 'C:\Users\super\.nougen\secrets'
+$env:NOUGEN_VAULT_DIR = Join-Path $env:USERPROFILE '.nougen\shards'
+$env:NOUGEN_SECRETS_VAULT_DIR = Join-Path $env:USERPROFILE '.nougen\secrets'
 
 function Log($m) { "{0}  {1}" -f (Get-Date -Format 'HH:mm:ss'), $m }
 

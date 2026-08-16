@@ -15,7 +15,27 @@ from . import machine
 
 # Handoff notes live in <repo>/.handoffs by default. Override with NOUGEN_HANDOFF_DIR
 # so the system works regardless of where it is installed or invoked from.
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _resolve_project_root() -> Path:
+    """Repo root. parent^3 is right for a src/ checkout, but an installed copy
+    lives under <venv>/Lib/site-packages, whose parent^3 is the venv's Lib —
+    a handoff registry there is invisible to every other agent. When the module
+    location is not a checkout, trust the repo the command was run from."""
+    module_root = Path(__file__).resolve().parent.parent.parent
+    if (module_root / "pyproject.toml").exists() or (module_root / ".git").exists():
+        return module_root
+    try:
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=5, check=False)
+        if r.returncode == 0 and r.stdout.strip():
+            return Path(r.stdout.strip())
+    except OSError:
+        pass
+    return module_root
+
+
+PROJECT_ROOT = _resolve_project_root()
 HANDOFF_DIR = Path(os.environ.get("NOUGEN_HANDOFF_DIR", PROJECT_ROOT / ".handoffs"))
 
 _CONSOLE_CONFIGURED = False
@@ -1575,3 +1595,175 @@ def watch_handoffs(
             time.sleep(interval)
     except KeyboardInterrupt:
         console.print("[bold yellow]Watcher stopped.[/bold yellow]")
+
+
+def push_handoff_to_space(agent: Optional[str] = None, handoff_id: Optional[str] = None):
+    """Pushes the target local handoff to the Hugging Face Space sync endpoint."""
+    console = _make_console()
+    if not agent:
+        agent = detect_current_agent()
+
+    target_path, data = _find_handoff(agent, handoff_id, None)
+    if not target_path or not data:
+        console.print("[red]Error: No handoff found to push.[/red]")
+        return
+
+    handoff_id = data.get("handoff_id") or target_path.stem
+
+    # Resolve Space URL
+    space_url = os.environ.get("HF_SPACE_URL", "https://whovisions-nga-hgf-space.hf.space").rstrip("/")
+
+    # Resolve Token
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_API_KEY")
+    if not token:
+        try:
+            from . import keymaker
+            token = keymaker.get_secret("HUGGINGFACE_API_KEY")
+        except Exception:
+            pass
+
+    if not token:
+        console.print("[red]Error: HUGGINGFACE_API_KEY not found in vault or environment.[/red]")
+        return
+
+    payload = {
+        "agent": agent,
+        "handoff_id": handoff_id,
+        "data": data
+    }
+
+    url = f"{space_url}/sync/push"
+    req_body = json.dumps(payload).encode("utf-8")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+    }
+
+    import urllib.request
+    from urllib.error import URLError, HTTPError
+
+    console.print(f"[*] Pushing handoff [yellow]{handoff_id}[/yellow] to [cyan]{url}[/cyan]...")
+
+    try:
+        req = urllib.request.Request(url, data=req_body, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            if body.get("status") == "ok":
+                console.print(f"[bold green]✅ Handoff synced to Space successfully![/bold green]")
+            else:
+                console.print(f"[red]Sync failed: {body}[/red]")
+    except HTTPError as e:
+        console.print(f"[red]HTTP Error {e.code}: {e.read().decode('utf-8', errors='ignore')}[/red]")
+    except URLError as e:
+        console.print(f"[red]Network Error: {e.reason}[/red]")
+    except Exception as e:
+        console.print(f"[red]Unexpected Error: {e}[/red]")
+
+
+def pull_handoff_from_space(agent: Optional[str] = None):
+    """Pulls the latest handoff from the Hugging Face Space sync endpoint and indexes it locally."""
+    console = _make_console()
+    if not agent:
+        agent = detect_current_agent()
+
+    # Resolve Space URL
+    space_url = os.environ.get("HF_SPACE_URL", "https://whovisions-nga-hgf-space.hf.space").rstrip("/")
+
+    # Resolve Token
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_API_KEY")
+    if not token:
+        try:
+            from . import keymaker
+            token = keymaker.get_secret("HUGGINGFACE_API_KEY")
+        except Exception:
+            pass
+
+    if not token:
+        console.print("[red]Error: HUGGINGFACE_API_KEY not found in vault or environment.[/red]")
+        return
+
+    url = f"{space_url}/sync/pull?agent={agent}"
+
+    headers = {
+        "Authorization": f"Bearer {token}"
+    }
+
+    import urllib.request
+    from urllib.error import URLError, HTTPError
+
+    console.print(f"[*] Pulling latest handoff for [yellow]{agent}[/yellow] from [cyan]{url}[/cyan]...")
+
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+            handoff_id = data.get("handoff_id")
+            if not handoff_id:
+                console.print("[red]Error: Invalid handoff data received.[/red]")
+                return
+
+            # Write handoff file locally
+            target_folder = HANDOFF_DIR
+            if agent.lower() in AGENT_FOLDERS:
+                target_folder = HANDOFF_DIR / AGENT_FOLDERS[agent.lower()]
+            target_folder.mkdir(parents=True, exist_ok=True)
+
+            json_path = target_folder / f"handoff_{handoff_id}.json"
+            _atomic_write_json(json_path, data)
+
+            # Reconstruct Sibling Markdown file
+            md_path = target_folder / f"handoff_{handoff_id}.md"
+            git_info = data.get("git", {})
+            tasks = data.get("tasks", {})
+            goal = data.get("goal", "No active goal.")
+            message = data.get("message", "")
+
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(f"# 🤝 Agent Handoff: {git_info.get('branch', 'unknown')} (Synced from Space)\n\n")
+                f.write(f"**Agent**: `{agent.upper()}`\n")
+                f.write(f"**Goal**: {goal}\n")
+                if message:
+                    f.write(f"**Notes**: {message}\n")
+                f.write(f"**Session ID**: `{data.get('session_id', 'unknown')}`\n\n")
+
+                f.write("## 📋 Checklist Status (Compact)\n")
+                if "summary" in tasks:
+                    f.write(f"- {tasks['summary']}\n")
+                else:
+                    completed = tasks.get("completed", [])
+                    in_progress = tasks.get("in_progress", [])
+                    pending = tasks.get("pending", [])
+                    total = len(completed) + len(in_progress) + len(pending)
+                    if total > 0:
+                        f.write(f"- **Progress**: {len(completed)} / {total} tasks completed\n")
+                    if in_progress:
+                        f.write("\n### ⏳ In Progress\n")
+                        for t in in_progress:
+                            f.write(f"- [ ] {t}\n")
+
+                f.write("\n## 🛠️ Repository Status\n")
+                f.write(f"- **Active Branch**: `{git_info.get('branch', 'unknown')}`\n")
+
+            # Rebuild handoff DB to index it
+            db_synced = _sync_handoff_to_db(json_path, data)
+            _log_context_event(
+                "HANDOFF_PULLED",
+                f"Handoff {handoff_id} pulled from Space and written to {json_path}.",
+                _handoff_context_metadata(json_path, data, db_synced=db_synced),
+            )
+
+            console.print(f"[bold green]✅ Handoff {handoff_id} pulled and indexed successfully![/bold green]")
+            console.print(f"- Metadata: [yellow]{json_path}[/yellow]")
+            console.print(f"- Summary: [yellow]{md_path}[/yellow]")
+
+    except HTTPError as e:
+        if e.code == 404:
+            console.print(f"[yellow]No handoffs found on Space for agent '{agent}'.[/yellow]")
+        else:
+            console.print(f"[red]HTTP Error {e.code}: {e.read().decode('utf-8', errors='ignore')}[/red]")
+    except URLError as e:
+        console.print(f"[red]Network Error: {e.reason}[/red]")
+    except Exception as e:
+        console.print(f"[red]Unexpected Error: {e}[/red]")
