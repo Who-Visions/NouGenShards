@@ -1650,7 +1650,7 @@ def push_handoff_to_space(agent: Optional[str] = None, handoff_id: Optional[str]
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = json.loads(resp.read().decode("utf-8"))
             if body.get("status") == "ok":
-                console.print(f"[bold green]✅ Handoff synced to Space successfully![/bold green]")
+                console.print("[bold green]✅ Handoff synced to Space successfully![/bold green]")
             else:
                 console.print(f"[red]Sync failed: {body}[/red]")
     except HTTPError as e:
