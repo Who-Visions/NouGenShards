@@ -49,11 +49,16 @@ def get_best_model() -> Optional[str]:
 
 def query_local_llm(model: str, prompt: str) -> str:
     """Send a query to the local LLM model."""
+    from .vram_gate import check_vram
+    v = check_vram(model)
+    if not v.ok:
+        return f"[VRAM GATE REFUSED: {v.reason}]"
     try:
         payload = {
             "model": model,
             "prompt": prompt,
-            "stream": False
+            "stream": False,
+            "keep_alive": 0
         }
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(

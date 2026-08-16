@@ -61,12 +61,14 @@ DANGER_ZONES = {
 SKIP_DIRS = {
     "node_modules", ".git", ".venv", "venv", "__pycache__", ".pytest_cache",
     ".cache", ".npm", ".pnpm-store", ".pnpm-cache", ".bun", ".m2", ".nuget",
-    ".gradle", ".docker", "dist", "build", "target", "out"
+    ".gradle", ".docker", "dist", "build", "target", "out",
+    "antigravity", "antigravity-backup", "antigravity-ide", "antigravity-browser-profile",
+    "extensions", "cacheddata", "cachedextensions", "bin", "locales", "packages", "usr", "lib"
 }
 
 SUPPORTED_EXTS = {
-    ".json", ".jsonl", ".zst", ".md", ".txt", ".log", ".toml", 
-    ".yaml", ".yml", ".sqlite", ".db"
+    ".json", ".jsonl", ".md", ".txt", ".log", ".toml", 
+    ".yaml", ".yml"
 }
 
 HIGH_SIGNAL_TERMS = {

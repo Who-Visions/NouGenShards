@@ -25,6 +25,14 @@
       "env": {
         "REF_API_KEY": "${REF_API_KEY}"
       }
+    },
+    "stitch": {
+      "type": "http",
+      "url": "https://stitch.googleapis.com/mcp",
+      "headers": {
+        "Accept": "application/json",
+        "X-Goog-Api-Key": "${STITCH_API_KEY}"
+      }
     }
   }
 }

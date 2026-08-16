@@ -800,8 +800,26 @@ class OllamaClient(LocalLLMClient):
         except Exception: # pylint: disable=broad-except
             return []
 
-    def chat(self, model: str, messages: list, stream: bool = False) -> str:
-        payload = {"model": model, "messages": messages, "stream": stream}
+    def chat(self, model: str, messages: list, stream: bool = False,
+             manual: bool = False) -> str:
+        # VRAM admission gate (operator rule 2026-08-08: EVERY local request
+        # checks VRAM first). Returning "Error: ..." makes run_agent fall
+        # through to the free cloud roster instead of spilling - spill crashed
+        # this box on 2026-08-08. keep_alive=0 so we never squat the card;
+        # IRIS (look.py) owns the resident vision slot by design.
+        # manual=True = operator explicitly asked for THIS model: gate clears
+        # the card and admits it even oversized (slow spill accepted).
+        from .vram_gate import check_vram
+        _v = check_vram(model, manual=manual)
+        if not _v.ok:
+            return f"Error: VRAM gate refused local run - {_v.reason}"
+        # keep_alive 0 ONLY for non-resident models: forcing it on the
+        # resident would evict IRIS's pinned model after every call.
+        payload = {"model": model, "messages": messages, "stream": stream,
+                   "options": {"num_predict": int(
+                       __import__("os").getenv("NOUGEN_NUM_PREDICT", "1400"))}}
+        if _v.reason != "already resident":
+            payload["keep_alive"] = 0
         req = urllib.request.Request(
             f"{self.base_url}/api/chat",
             data=json.dumps(payload).encode(),
@@ -812,7 +830,23 @@ class OllamaClient(LocalLLMClient):
             with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 if not stream:
                     resp_data = json.loads(res.read().decode())
-                    return resp_data.get("message", {}).get("content", "")
+                    _content = resp_data.get("message", {}).get("content", "")
+                    if not _content.strip():
+                        # EMPTY-OUTPUT GATE (2026-08-08): gemma E-series spend
+                        # budget on reasoning first — reverify once with a
+                        # doubled budget before reporting failure.
+                        payload["options"]["num_predict"] *= 2
+                        req2 = urllib.request.Request(
+                            f"{self.base_url}/api/chat",
+                            data=json.dumps(payload).encode(), method="POST")
+                        req2.add_header("Content-Type", "application/json")
+                        with urllib.request.urlopen(req2, timeout=_HTTP_TIMEOUT) as res2:
+                            _content = json.loads(res2.read().decode()).get(
+                                "message", {}).get("content", "")
+                        if not _content.strip():
+                            return ("Error: EMPTY_OUTPUT after reverify at "
+                                    f"num_predict={payload['options']['num_predict']}")
+                    return _content
                 full = ""
                 for line in res:
                     chunk = json.loads(line.decode())
@@ -913,6 +947,15 @@ class LMStudioClient(LocalLLMClient):
             return []
 
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
+        # VRAM admission gate (operator rule 2026-08-08: EVERY local request
+        # checks VRAM first). Returning "Error: ..." makes run_agent fall
+        # through to the free cloud roster instead of spilling - spill crashed
+        # this box on 2026-08-08. keep_alive=0 so we never squat the card;
+        # IRIS (look.py) owns the resident vision slot by design.
+        from .vram_gate import check_vram
+        _v = check_vram(model)
+        if not _v.ok:
+            return f"Error: VRAM gate refused local run - {_v.reason}"
         payload = {"model": model, "messages": messages, "stream": stream}
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",

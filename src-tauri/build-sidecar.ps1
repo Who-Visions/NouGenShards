@@ -19,11 +19,20 @@ if (-not (Test-Path $spec)) { throw "Spec not found: $spec" }
 # Make nougen_shards importable for PyInstaller's analysis pass.
 $env:PYTHONPATH = $src
 
-Write-Host "[sidecar] Building engine from $spec ..."
-python -m PyInstaller --noconfirm --clean `
+$py = Join-Path $repo ".venv\Scripts\python.exe"
+if (-not (Test-Path $py)) {
+    $py = "python"
+}
+
+Write-Host "[sidecar] Building engine from $spec using $py ..."
+& $py -m PyInstaller --noconfirm --clean `
     --distpath $bin `
     --workpath (Join-Path $bin "build") `
     $spec
+
+if ($LASTEXITCODE -ne 0) {
+    throw "[sidecar] PyInstaller build failed with exit code $LASTEXITCODE"
+}
 
 if (-not (Test-Path $target)) {
     throw "[sidecar] Build did not produce $target"

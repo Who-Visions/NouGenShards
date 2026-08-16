@@ -184,3 +184,21 @@ def edge_count() -> int:
         return 0
     finally:
         conn.close()
+
+
+def get_node_centrality(file_hash: str) -> int:
+    """Returns the total number of connections (degree centrality) for a given node hash."""
+    if not get_graph_db_path().exists():
+        return 0
+    conn = get_graph_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM shard_edges WHERE src_hash = ? OR dst_hash = ?",
+            (file_hash, file_hash)
+        ).fetchone()
+        return row[0] if row else 0
+    except sqlite3.Error:
+        return 0
+    finally:
+        conn.close()
+

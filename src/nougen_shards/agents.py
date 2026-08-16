@@ -261,10 +261,26 @@ def run_agent(name: str, prompt: str, model: Optional[str] = None,
     local_client = OllamaClient()
     if local_client.is_alive():
         try:
+            # An explicitly-passed model means the operator asked for THIS
+            # model by name - that is the manual opt-in lane: the gate clears
+            # the card and runs it even oversized (2026-08-08 operator rule).
+            _manual = model is not None
             local_result = local_client.chat(target_model, [
                 {"role": "system", "content": spec.system_prompt},
                 {"role": "user", "content": prompt}
-            ])
+            ], manual=_manual)
+            # If the VRAM gate refused the requested model, retry on the
+            # pinned RESIDENT (IRIS's model) — the persona rides it as a
+            # system prompt. One resident serves everything; we never load a
+            # second model onto this card (operator rule 2026-08-08).
+            if local_result.startswith("Error: VRAM gate refused"):
+                from nougen_shards.vram_gate import resident_model
+                _res = resident_model()
+                if _res and _res != target_model:
+                    local_result = local_client.chat(_res, [
+                        {"role": "system", "content": spec.system_prompt},
+                        {"role": "user", "content": prompt}
+                    ])
             # OllamaClient.chat() returns "Error: ..." on failure instead of
             # raising, so treat that as a miss and fall through to cloud.
             if not local_result.startswith("Error:"):

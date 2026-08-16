@@ -31,7 +31,8 @@
   "license": "SEE LICENSE IN LICENSE.md",
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
-    "cross-spawn": "^7.0.6"
+    "cross-spawn": "^7.0.6",
+    "heic-convert": "^2.1.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",

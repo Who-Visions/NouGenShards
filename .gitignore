@@ -54,6 +54,8 @@ transcript.log
 .handoffs/_*.md
 .handoffs/audit_*
 .handoffs/fleet_audit_*.md
+.handoffs/*-note.md
+.handoffs/tauri-ipc-sprint-note.md
 .handoffs_msg_*.md
 .vault/
 pending_shards/
@@ -153,3 +155,32 @@ canon/
 # Node runtime state and the vendored cloudflared binary (52 MB)
 .node/
 tools/bin/
+
+# Local-only media, scratch, and personal working records
+*.jpg
+*.jpeg
+*.png
+scratch/
+analysis/
+archive/
+assets/
+fleet/
+.handoffs/phone-chat-*
+tools/.anchor_cache.json
+tools/or_free_models.json
+tools/veilverse_*
+tools/dream_digest*.py
+tools/dream_extract.py
+tools/dream_handoffs.py
+tools/fleet_keymaker_probe.py
+tools/heic/
+tools/notion_mirror.py
+tools/nougenai_*.py
+tools/relay_push.py
+tools/run_list.py
+tools/shard_markdown.py
+tools/shard_outpost.py
+tools/update_mcp_*.py
+tools/vertex_image.py
+
+
