@@ -91,6 +91,22 @@ function Sync-Worker($url) {
         [System.IO.File]::WriteAllText($wf, $raw, (New-Object System.Text.UTF8Encoding $false))
         & npx --yes wrangler@latest deploy 2>&1 | Select-Object -Last 1 | ForEach-Object { Log $_ }
         Set-Content $StateFile $url -Encoding utf8
+
+        # Re-pointing the URL is not the same as the gateway working. /health is
+        # UNAUTHENTICATED, so shards_status reads green while every real call
+        # 401s -- that false green hid a drifted SHARD_GATEWAY_TOKEN for hours on
+        # 2026-08-15. Prove an AUTHENTICATED call succeeds, and if it does not,
+        # re-put the token from the vault (the usual cause) and say so loudly.
+        $probe = & $Python (Join-Path $PSScriptRoot 'gateway_probe.py') 2>&1 | Select-Object -Last 1
+        Log "post-deploy probe: $probe"
+        if ($probe -notmatch '^OK') {
+            Log "authenticated call FAILED after re-point - re-putting SHARD_GATEWAY_TOKEN from vault"
+            $tok = Get-NodeToken
+            $tok | & npx --yes wrangler@latest secret put SHARD_GATEWAY_TOKEN --name nougen-fleet-mcp 2>&1 |
+                Select-Object -Last 1 | ForEach-Object { Log $_ }
+            $probe2 = & $Python (Join-Path $PSScriptRoot 'gateway_probe.py') 2>&1 | Select-Object -Last 1
+            Log "probe after token re-put: $probe2"
+        }
     } finally { Pop-Location }
     return $true
 }
