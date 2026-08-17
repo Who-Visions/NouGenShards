@@ -51,6 +51,17 @@ tube = [
     "youtube-transcript-api>=0.6",
     "yt-dlp>=2024.1.1",
 ]
+# Test/lint toolchain. Declared here rather than only in ci.yml because the
+# workflow's inline `pip install` is invisible to anyone setting up locally:
+# without pytest-asyncio the 10 async tests in test_context_client.py and
+# test_openrouter_mcp_client.py fail with "async def functions are not
+# natively supported", which reads as broken code rather than a missing
+# plugin. A fresh clone should be able to reproduce CI with one command.
+test = [
+    "pytest>=7",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
 
 [project.urls]
 "Homepage" = "https://whovisions.com"

@@ -133,7 +133,7 @@ def main():
         except Exception as e:
             console.print(f"[red]Error during migration on Node #{idx}: {e}[/red]")
             
-    console.print(f"\n[bold green]Migration complete![/bold green]")
+    console.print("\n[bold green]Migration complete![/bold green]")
     console.print(f"Total Shards Scanned:  {total_scanned}")
     console.print(f"Total Shards Migrated: {total_migrated}")
 

@@ -42,7 +42,7 @@ CLI
     python vertex_lane.py             # show routes + live probe
 """
 from __future__ import annotations
-import json, os, subprocess, sys, threading, time
+import os, subprocess, sys, threading, time
 
 # Projects with billing enabled AND aiplatform reachable (checked 2026-08-15).
 # endless-duality-480201-t3 and project-049eaecf-3887-48a2-af5 both 403 on

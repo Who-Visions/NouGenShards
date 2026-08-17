@@ -64,7 +64,7 @@ def get_db_stats(db_path: Path):
             rows = row[0] or 0
             avg_utility = row[1] or 0.0
         conn.close()
-    except Exception as e:
+    except Exception:
         # DB might be locked or uninitialized
         pass
         
@@ -150,7 +150,10 @@ def main():
                 count = row[1] or 0
                 category_counts[cat] = category_counts.get(cat, 0) + count
             conn.close()
-        except:
+        except Exception:
+            # A node that will not open is skipped so the summary still covers
+            # the rest of the cluster. Bare `except` also swallowed
+            # KeyboardInterrupt, so Ctrl-C could not stop a sweep over 9 DBs.
             pass
             
     if category_counts:

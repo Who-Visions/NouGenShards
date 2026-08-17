@@ -26,9 +26,13 @@ jobs:
         # fails CI instead of being papered over by a manual install list.
         run: |
           python -m pip install --upgrade pip
-          pip install -e . pytest pytest-asyncio ruff
+          pip install -e ".[test]"
       - name: Lint
-        run: ruff check src tests
+        # tools/ is linted too. It was excluded, so 10 errors accumulated there
+        # unseen - including a bare `except` that swallowed KeyboardInterrupt.
+        # These scripts mutate the substrate (deep sweeps delete duplicate
+        # shards), so they are not throwaway.
+        run: ruff check src tests tools
       - name: Run pytest
         # pythonpath is set in pyproject [tool.pytest.ini_options]; no manual
         # PYTHONPATH prefix needed.

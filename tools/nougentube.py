@@ -86,8 +86,8 @@ MAX_SHARD_CHARS = _env("NOUGEN_TUBE_MAX_SHARD_CHARS", 30000, int)
 SPLIT_OVERLAP = _env("NOUGEN_TUBE_SPLIT_OVERLAP", 2000, int)
 EXTRACT_CHARS = _env("NOUGEN_TUBE_EXTRACT_CHARS", 2000, int)
 EVENT_TYPE = _env("NOUGEN_TUBE_EVENT_TYPE", "INGEST")
-LANGS = [l.strip() for l in
-         _env("NOUGEN_TUBE_LANGS", "en;en-US;en-GB").split(";") if l.strip()]
+LANGS = [lang.strip() for lang in
+         _env("NOUGEN_TUBE_LANGS", "en;en-US;en-GB").split(";") if lang.strip()]
 
 _VIDEO_ID_RE = re.compile(
     r"(?:youtu\.be/|youtube\.com/(?:watch\?(?:[^#]*&)?v=|shorts/|embed/|live/))"
