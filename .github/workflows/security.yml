@@ -44,7 +44,7 @@ jobs:
           # Publishing to the public dashboard only works from the default branch;
           # on a PR it errors. Score still computes + uploads to the Security tab.
           publish_results: ${{ github.event_name != 'pull_request' }}
-      - uses: github/codeql-action@d6317709a54fd87078d323eeb0e48ec331c8e621 # codeql v3 upload-sarif
+      - uses: github/codeql-action/upload-sarif@d6317709a54fd87078d323eeb0e48ec331c8e621 # v3
         with:
           sarif_file: results.sarif
 
@@ -64,11 +64,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: github/codeql-action@d6317709a54fd87078d323eeb0e48ec331c8e621 # init v3
+      - uses: github/codeql-action/init@d6317709a54fd87078d323eeb0e48ec331c8e621 # v3
         with:
           languages: ${{ matrix.language }}
           build-mode: none   # both langs are interpreted here; no compile step
-      - uses: github/codeql-action@d6317709a54fd87078d323eeb0e48ec331c8e621 # analyze v3
+      - uses: github/codeql-action/analyze@d6317709a54fd87078d323eeb0e48ec331c8e621 # v3
         with:
           category: "/language:${{ matrix.language }}"
 

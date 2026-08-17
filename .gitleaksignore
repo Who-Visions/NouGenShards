@@ -1,0 +1,21 @@
+# gitleaks allowlist — findings triaged 2026-08-17 (see vault: "Scoped the 12 git-history leaks").
+# Format: <commit>:<file>:<rule>:<line>. Allowlisting is the correct remediation
+# here, NOT git-history rewriting (destructive on a public repo).
+
+# --- Test fixtures: fake secrets baked into tests by design (8) ---
+7145f417c53c32aaa04c70b8291d4a4914af5efd:tests/test_cloud_integration.py:generic-api-key:14
+0d545905290aacb8ffcabe45b4988ae0d81ddb1b:tests/test_audit_fixes.py:aws-access-token:24
+8b3e8d6e71a59a089b70139fb82ba4a573e53b28:tests/test_audit_fixes.py:aws-access-token:24
+a125c8b24ca0973b2bdbd5325152e26a69ec0b38:tests/test_audit_fixes.py:aws-access-token:24
+764fe967183b7c7bf556836152681e2e40e5598d:ts/src/test/brain_scan.test.ts:jwt:54
+e855d1b1b94a5e9984b4f631ec0a8e3dabd6de3b:ts/src/test/brain_scan.test.ts:jwt:54
+1bbca10691c677c99d3c201897aa4939ed16254f:tests/test_brain_scan.py:jwt:33
+879db3d8a40df713b553cd7f1387106f0a051068:tests/test_brain_scan.py:jwt:33
+
+# --- Historical HF token in deploy-space.yml, 2026-07-02 (4). Since moved to
+# ${{ secrets.HF_TOKEN }}. Only in history; HF auto-invalidates leaked tokens.
+# GM to confirm dead; allowlisted to unblock CI, flagged for record. ---
+ccbb1c931644da0f200822818f34c3c4f9dc05ff:.github/workflows/deploy-space.yml:generic-api-key:70
+d8c751594720630a4cbbf9450462f2e05736fa4b:.github/workflows/deploy-space.yml:generic-api-key:70
+2fc97dab7f97f338d85f78365ad7cf7c2bb51ed2:.github/workflows/deploy-space.yml:generic-api-key:32
+5ec851bfc44f12a0f88c0611347beebe7938b15b:.github/workflows/deploy-space.yml:generic-api-key:32
