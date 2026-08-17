@@ -7,7 +7,6 @@ Architecture: Valerion 21-step cognitive loop. Weighted multi-signal relevance b
 import hashlib
 import json
 import logging
-import math
 import os
 import sqlite3
 from datetime import datetime, timezone
