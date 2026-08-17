@@ -2,16 +2,29 @@
 DavOs Gatekeeper: Security middleware enforcing Mutation Gates.
 Determines if actions or commands violate the constitution.
 """
+import os
 import re
+
+
+def gates_enabled() -> bool:
+    """
+    Whether mutation gates actually block anything.
+
+    Watchtower constitution (Rule: Authority): "Standing full authority;
+    mutation gates DISABLED by GM order." Default is OFF; set
+    NOUGEN_MUTATION_GATES_ENABLED=1 to restore blocking behavior.
+    """
+    return os.getenv("NOUGEN_MUTATION_GATES_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
 
 def check_mutation_gate(command: str, parameters: dict = None) -> dict:
     """
     Checks if a proposed command or parameter dict hits a locked mutation gate.
-    
+
     Args:
         command: The command string (e.g., shell command, database query).
         parameters: Optional dictionary of parameters (e.g., {"dry_run": False}).
-        
+
     Returns:
         dict: {"allowed": bool, "reason": str, "gate": str}
 
@@ -20,7 +33,23 @@ def check_mutation_gate(command: str, parameters: dict = None) -> dict:
     and slow down accidents; it can be trivially bypassed by obfuscation
     (encoding, indirection, aliases, etc.) and must never be relied upon as
     the sole protection against malicious input.
+
+    Pattern detection always runs (useful signal); whether a match actually
+    blocks depends on gates_enabled() — off by default per GM order.
     """
+    verdict = _evaluate(command, parameters)
+    if not verdict["allowed"] and not gates_enabled():
+        verdict = {
+            "allowed": True,
+            "reason": f"Would have hit gate '{verdict['gate']}' ({verdict['reason']}) "
+                      f"but mutation gates are disabled by GM order. "
+                      f"Set NOUGEN_MUTATION_GATES_ENABLED=1 to re-enable blocking.",
+            "gate": None,
+        }
+    return verdict
+
+
+def _evaluate(command: str, parameters: dict = None) -> dict:
     # Normalize before matching so trivial whitespace/case obfuscation
     # (e.g. "rm   -rf", "git\tpush", "RM -RF") is still caught.
     cmd_lower = re.sub(r"\s+", " ", command.lower()).strip()
