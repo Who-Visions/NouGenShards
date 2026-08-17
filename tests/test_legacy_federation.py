@@ -35,8 +35,8 @@ class TestRRFMixedLaneTieBreak:
 
     def test_merge_is_deterministic(self):
         lanes = [[_row(0.5, 1, 7)], [_row(0.5, "vault_x", "vault_x_1")]]
-        a = core.reciprocal_rank_fusion([list(l) for l in lanes], k=60)
-        b = core.reciprocal_rank_fusion([list(l) for l in lanes], k=60)
+        a = core.reciprocal_rank_fusion([list(lane) for lane in lanes], k=60)
+        b = core.reciprocal_rank_fusion([list(lane) for lane in lanes], k=60)
         assert [r["id"] for r in a] == [r["id"] for r in b]
 
 
