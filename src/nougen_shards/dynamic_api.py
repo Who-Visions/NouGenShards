@@ -2,11 +2,18 @@ import os
 import json
 import sqlite3
 import glob
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
-SHARDS_DIR = r"C:\Users\super\.nougen\shards"
-TOKEN_DB = r"C:\Users\super\Outpost\Yuki-Ai\persistence\antigravity_memory.db"
-TRACKER_DIR = r"C:\Users\super\Outpost\NouGenTracker_remote"
+_HOME = Path.home()
+SHARDS_DIR = os.environ.get("NOUGEN_VAULT_DIR", str(_HOME / ".nougen" / "shards"))
+TOKEN_DB = os.environ.get(
+    "NOUGEN_TOKEN_DB",
+    str(_HOME / "Outpost" / "Yuki-Ai" / "persistence" / "antigravity_memory.db"),
+)
+TRACKER_DIR = os.environ.get(
+    "NOUGEN_TRACKER_DIR", str(_HOME / "Outpost" / "NouGenTracker_remote")
+)
 DAILIES_DIR = os.path.join(TRACKER_DIR, "dailies")
 
 # Grounded Rates per 1M tokens

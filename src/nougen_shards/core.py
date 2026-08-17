@@ -431,7 +431,7 @@ def _llm_density(content: str) -> Optional[float]:
             preferred = [
                 m.strip()
                 for m in os.getenv(
-                    "NOUGEN_DENSITY_MODELS", "gemma4:e2b,gemma4:e4b,gemma4:31b-cloud"
+                    "NOUGEN_DENSITY_MODELS", "gemma4:e2b-qat,gemma4:e2b,gemma4:e4b,gemma4:31b-cloud"
                 ).split(",")
                 if m.strip()
             ]
@@ -552,6 +552,16 @@ def capture(event_type: str, title: str, content: str,
     encrypted shard, so keep identifying detail out of them.
     """
     from . import private_vault as _pv  # pylint: disable=import-outside-toplevel
+    from .brain_scan.redaction import redact_content  # pylint: disable=import-outside-toplevel
+
+    # A shard is a durable publication surface. Redact credential-shaped text
+    # before hashing, embedding, indexing, or encryption so neither SQLite nor
+    # an embedding blob preserves a recoverable copy of a leaked credential.
+    title = redact_content(str(title))
+    content = redact_content(str(content))
+    if tags:
+        tags = [redact_content(str(tag)) for tag in tags]
+
     sensitivity = _pv.normalize_sensitivity(sensitivity)
     if not domain_key:
         domain_key = resolve_domain_from_path()

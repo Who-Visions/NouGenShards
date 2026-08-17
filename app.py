@@ -796,6 +796,8 @@ def capture_shard(req: CaptureRequest, _token: str = Depends(verify_token)):
 @app.post("/sync/push")
 def sync_push(req: SyncPushRequest, _token: str = Depends(verify_token)):
     """Bulk ingest (contract of connectors.cloud.push_to_cloud)."""
+    from nougen_shards import private_vault
+
     count = 0
     skipped = 0
     for s in req.shards:
@@ -803,6 +805,14 @@ def sync_push(req: SyncPushRequest, _token: str = Depends(verify_token)):
         if not title or not content:
             skipped += 1
             continue
+        sensitivity = s.get("sensitivity") or "normal"
+        # /sync/pull transports encrypted-at-rest bodies as ngenc1 ciphertext.
+        # Replicas share the lane data key, so unwrap before capture() hashes,
+        # redacts, embeds and re-encrypts under the receiving machine's DPAPI
+        # wrapper. Treating ciphertext as ordinary text silently declassifies it
+        # and creates a duplicate whose hash no longer represents the plaintext.
+        if private_vault.should_encrypt(sensitivity) and private_vault.is_encrypted(content):
+            content = private_vault.decrypt_text(content)
         tags = s.get("tags")
         if isinstance(tags, str):
             try:
@@ -817,6 +827,7 @@ def sync_push(req: SyncPushRequest, _token: str = Depends(verify_token)):
             tags=tags, embedding=emb,
             domain_key=s.get("domain_key"),
             density_score=s.get("density_score"),
+            sensitivity=sensitivity,
         )
         if ok:
             count += 1
@@ -847,6 +858,22 @@ def sync_pull(_token: str = Depends(verify_token)):
         finally:
             conn.close()
     return all_shards
+
+
+@app.get("/sync/hashes")
+def sync_hashes(_token: str = Depends(verify_token)):
+    """Compact identity manifest for incremental replica synchronization."""
+    hashes = []
+    for i in range(1, core.MAX_DB_COUNT + 1):
+        if not core.get_db_path(i).exists():
+            continue
+        conn = core.get_connection(i)
+        try:
+            hashes.extend(row[0] for row in conn.execute(
+                "SELECT file_hash FROM shards WHERE file_hash IS NOT NULL"))
+        finally:
+            conn.close()
+    return {"count": len(hashes), "hashes": hashes}
 
 # --- Cortex HUD UI Logic ---
 

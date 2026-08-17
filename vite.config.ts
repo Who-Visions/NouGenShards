@@ -3,13 +3,14 @@ import react from '@vitejs/plugin-react';
 import { exec, execFile } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 
 // Vite API plugin that bridges browser requests directly to live dynamic Python CLI, SQLite databases, and handoff markdown files
 function liveNougenApiPlugin() {
-  const pythonPath = 'C:\\Python311\\python.exe';
+  const pythonPath = process.env.NOUGEN_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3');
   const projectRoot = path.resolve(__dirname);
-  const handoffsDir = path.resolve('C:\\Users\\super\\Outpost\\NouGenRelay\\.handoffs');
-  const tokenDbPath = path.resolve('C:\\Users\\super\\Outpost\\Yuki-Ai\\persistence\\antigravity_memory.db');
+  const handoffsDir = path.resolve(process.env.NOUGEN_HANDOFFS_DIR || path.join(os.homedir(), 'Outpost', 'NouGenRelay', '.handoffs'));
+  const tokenDbPath = path.resolve(process.env.NOUGEN_TOKEN_DB || path.join(os.homedir(), 'Outpost', 'Yuki-Ai', 'persistence', 'antigravity_memory.db'));
 
   const runPythonCli = (args: string[]): Promise<string> => {
     return new Promise((resolve, reject) => {

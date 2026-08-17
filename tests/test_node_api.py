@@ -120,3 +120,35 @@ def test_pull_and_dedup_aware_push(client):
     assert body["status"] == "ok"
     assert body["count"] == 1
     assert body["skipped"] == 2
+
+    r = client.get("/sync/hashes", headers=AUTH)
+    assert r.status_code == 200
+    manifest = r.json()
+    assert manifest["count"] == 2
+    assert len(manifest["hashes"]) == 2
+
+
+def test_hash_manifest_requires_auth(client):
+    assert client.get("/sync/hashes").status_code == 401
+
+
+def test_sync_push_preserves_private_sensitivity(client, monkeypatch):
+    from nougen_shards import private_vault
+
+    captured = {}
+    ciphertext = private_vault.encrypt_text("private replicated body")
+
+    def fake_capture(event_type, title, content, **kwargs):
+        captured.update(event_type=event_type, title=title, content=content, **kwargs)
+        return True
+
+    monkeypatch.setattr(core, "capture", fake_capture)
+    r = client.post("/sync/push", json={"shards": [{
+        "title": "Private replica",
+        "content": ciphertext,
+        "sensitivity": "private",
+    }]}, headers=AUTH)
+
+    assert r.status_code == 200
+    assert captured["content"] == "private replicated body"
+    assert captured["sensitivity"] == "private"

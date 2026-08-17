@@ -3,8 +3,8 @@ FTS5-indexed vault DB for registration on blade (register, don't bulk-copy —
 decision 16729). Blade's sweep reads through it; whoart's rows never enter the
 canonical grid.
 
-Re-run any time to refresh the snapshot (drops and rebuilds), then scp to
-blade:C:/Users/super/Watchtower/vault/ — registration survives refreshes
+Re-run any time to refresh the snapshot (drops and rebuilds), then copy it to
+the configured vault path on the reader node; registration survives refreshes
 because the path stays the same.
 
 Sensitivity fence: rows marked sensitive (sensitivity flag) or encrypted (enc)
@@ -14,9 +14,13 @@ a federated store on blade is readable by every owner surface.
 import glob
 import os
 import sqlite3
+from pathlib import Path
 
-SRC_GLOB = r"C:\Users\super\.nougen\shards\nougen_shards_*.db"
-OUT = r"C:\Users\super\.nougen\shards\whoart_grid_vault.db"
+_SHARDS = Path(os.environ.get(
+    "NOUGEN_VAULT_DIR", str(Path.home() / ".nougen" / "shards")
+))
+SRC_GLOB = str(_SHARDS / "nougen_shards_*.db")
+OUT = str(_SHARDS / "whoart_grid_vault.db")
 MAX_CONTENT = 100_000  # bound row size so one giant import can't bloat the vault
 
 if os.path.exists(OUT):

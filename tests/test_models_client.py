@@ -252,6 +252,12 @@ def test_find_best_model_from_list():
     assert config.model_name == "gemma4:e4b"
     assert config.n_ctx == 4096
 
+    # Scenario 4b: the fit-safe local QAT lane beats implicit cloud/heavy routes.
+    models = ["gemma4:31b-cloud", "gemma4:e4b", "gemma4:e2b-qat"]
+    config = find_best_model_from_list(models)
+    assert config is not None
+    assert config.model_name == "gemma4:e2b-qat"
+
     # Scenario 5: Fallback to first if all official
     models = ["llama3", "mistral"]
     config = find_best_model_from_list(models)

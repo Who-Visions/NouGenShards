@@ -21,7 +21,7 @@ OLLAMA = os.environ.get(
 # Ordered preference, env-overridable. Stadium runs one model at a time on an
 # 8GB VRAM ceiling, so these stay local-sized.
 MODELS = [m.strip() for m in os.environ.get(
-    "NOUGEN_LONGFORM_MODELS", "gemma4:e4b,gemma4-aggressive:e4b,gemma4:e2b"
+    "NOUGEN_LONGFORM_MODELS", "gemma4:e2b-qat,gemma4:e2b,gemma4:e4b,gemma4-aggressive:e4b"
 ).split(",") if m.strip()]
 # Output path is configurable (no hardcoded author path in a public repo).
 # VALERION_LONGFORM_OUT overrides directly; otherwise derive from WATCHTOWER_ROOT

@@ -4,6 +4,7 @@ Covers the secret-leak, validation, billing, context-timestamp and SSRF-guard
 fixes. Each test pins behavior that was previously wrong, so a regression is
 caught rather than silently reintroduced.
 """
+import hashlib
 import json
 
 import pytest
@@ -41,6 +42,28 @@ def test_nougen_token_redaction_keeps_json_valid():
 def test_truncated_private_key_is_redacted():
     clipped = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAA...cut"
     assert "REDACTED" in redact_content(clipped)
+
+
+def test_capture_redacts_secret_patterns_before_persistence(tmp_path, monkeypatch):
+    from nougen_shards import core
+
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(core, "GLOBAL_DIR", tmp_path)
+    core._INITIALIZED_DBS.clear()
+    secret = "sk-proj-" + "A" * 32
+
+    content = f"body {secret}"
+    assert core.capture("KNOWLEDGE", f"title {secret}", content, tags=[secret])
+    fhash = hashlib.md5(redact_content(content).encode()).hexdigest()
+    conn = core.get_connection(core.get_write_index(fhash))
+    try:
+        row = conn.execute("SELECT title, content, tags FROM shards").fetchone()
+    finally:
+        conn.close()
+
+    assert secret not in row["title"]
+    assert secret not in row["content"]
+    assert secret not in row["tags"]
 
 
 # --- structured validation (bool-as-number) ---------------------------------
@@ -165,6 +188,13 @@ def test_cloud_precedes_12b_in_selection():
     ).model_name == "gemma4:31b-cloud"
     # 12b remains usable when it is genuinely the only thing installed.
     assert find_best_model_from_list(["gemma4:12b"]).model_name == "gemma4:12b"
+
+
+def test_e2b_qat_precedes_implicit_heavy_routes():
+    from nougen_shards.models_client import find_best_model_from_list
+    assert find_best_model_from_list(
+        ["gemma4:e4b", "gemma4:31b-cloud", "gemma4:e2b-qat"]
+    ).model_name == "gemma4:e2b-qat"
 
 
 def test_search_context_fallback_keeps_fts_schema(tmp_path, monkeypatch):

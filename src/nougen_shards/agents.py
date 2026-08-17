@@ -62,7 +62,7 @@ OLLAMA_URL = OLLAMA_HOST + "/api/generate"
 # Roster-wide default, overridable per agent. The literal is a logged fallback,
 # not the source of truth -- resolve env first so a machine with a different
 # fleet does not need a code change.
-DEFAULT_AGENT_MODEL = _env("NOUGEN_DEFAULT_MODEL") or "gemma4:31b-cloud"
+DEFAULT_AGENT_MODEL = _env("NOUGEN_DEFAULT_MODEL") or "gemma4:e2b-qat"
 
 
 def _agent_model(agent: str, fallback: Optional[str] = None) -> str:
@@ -131,7 +131,7 @@ ROSTER = {
             "whose timestamp cannot be trusted."),
         # Small-and-local is the right call for timestamp/decay math -- but on a
         # current generation, and overridable via NOUGEN_AGENT_MODEL_KRONOS.
-        default_model=_agent_model("Kronos", "gemma4:e2b"),
+        default_model=_agent_model("Kronos", "gemma4:e2b-qat"),
         engine_functions=["format_shard_when", "decay_utility_scores"],
     ),
     "DavOs": AgentSpec(

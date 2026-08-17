@@ -47,7 +47,7 @@ const RICH_PREVIEW_SHARDS = [
   {
     id: 1142,
     title: 'Fleet Setup & Machine Roles',
-    content: 'Apollo (Razer Blade 2080 Super / Sol-Ai), Hyperion (ProArt PX13 / Yukiai / Antigravity), Phoebus (Mac Mini / Keadra).\n\nCanonical local persistence root is permanently anchored at C:\\Users\\super\\.nougen for zero-friction fleet memory recall.',
+    content: 'Apollo (Razer Blade 2080 Super / Sol-Ai), Hyperion (ProArt PX13 / Yukiai / Antigravity), Phoebus (Mac Mini / Keadra).\n\nCanonical local persistence lives under the operator profile in .nougen for zero-friction fleet memory recall.',
     final_score: 0.98,
     utility_score: 1.0,
     category: 'Architecture',
@@ -991,7 +991,7 @@ export default function App() {
                 <h2>Memory Storage (9 Database Partitions)</h2>
                 <p>
                   Saved securely on this computer at{' '}
-                  <code>C:\Users\super\.nougen\shards</code>. Automatically rolls to the next partition as storage expands.
+                  <code>%USERPROFILE%\.nougen\shards</code>. Automatically rolls to the next partition as storage expands.
                 </p>
               </div>
               <button className="primary-cyber-btn mini ripple-btn" onClick={refreshStatus}>
@@ -1410,7 +1410,7 @@ export default function App() {
         <div className="footer-dock-left">
           <div className="dock-item">
             <span className="dock-icon">💾</span>
-            <code className="dock-code">C:\Users\super\.nougen\shards</code>
+            <code className="dock-code">%USERPROFILE%\.nougen\shards</code>
             <span className="dock-tag">9 DBs</span>
           </div>
           <span className="dock-sep">·</span>

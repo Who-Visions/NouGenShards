@@ -722,17 +722,16 @@ def find_best_model_from_list(models: List[str]) -> Optional[ModelBudgetConfig]:
             )
             
     # 3. Third tier: Official Gemma 4 QAT/edge/workstation defaults.
-    # Order is preference, and it is configuration rather than a constant: the
-    # cloud tags lead because they outrun the local 12b by a wide margin. Before
-    # this was ordered explicitly, 31b-cloud fell through to tier 4 and lost to
-    # 12b on any box that had both installed.
+    # The small QAT route leads because it fits Who-Art's 6 GB card, stays local,
+    # and is the fleet's resident drafting/digest lane. Heavy cloud and local
+    # models remain available through explicit selection or env configuration.
     gemma4_tags = [
         m.strip()
         for m in os.getenv(
             "NOUGEN_GEMMA4_PREFERENCE",
+            "gemma4:e2b-qat,gemma4:e2b-it-qat,gemma4:e2b,"
             "gemma4:31b-cloud,gemma4:e4b,gemma4:e4b-it-qat,"
-            "gemma4:12b,gemma4:12b-it-qat,"
-            "gemma4:e2b,gemma4:e2b-it-qat,gemma4:latest",
+            "gemma4:12b,gemma4:12b-it-qat,gemma4:latest",
         ).split(",")
         if m.strip()
     ]

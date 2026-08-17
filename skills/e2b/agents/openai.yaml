@@ -1,0 +1,4 @@
+interface:
+  display_name: "E2B Local Drafting"
+  short_description: "Delegate bounded text work to local Ollama"
+  default_prompt: "Use $e2b to draft this locally, then review it for unsupported claims."

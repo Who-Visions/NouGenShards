@@ -42,7 +42,7 @@ def _resolve_model():
         with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=5) as r:
             models = [m["name"] for m in json.loads(r.read())["models"]]
         prefs = [m.strip() for m in os.environ.get(
-            "NOUGEN_MODEL_PREFS", "gemma4:31b-cloud,gemma4:e4b,gemma4:e2b"
+            "NOUGEN_MODEL_PREFS", "gemma4:e2b-qat,gemma4:e2b,gemma4:e4b,gemma4:31b-cloud"
         ).split(",") if m.strip()]
         for pref in prefs:
             if pref in models:
