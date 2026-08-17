@@ -1,0 +1,130 @@
+# Supply-chain security gates. Authored 2026-08-17 per wargames/elevate-security.md.
+#
+# Ordering is deliberate: the 2026 worm class (Shai-Hulud -> ChainDrop) steals OIDC
+# tokens from runner memory, so a valid signature can sit on malware. Runtime +
+# workflow hardening therefore ranks ABOVE attestation. This file is the defensive
+# tier; SBOM/provenance live on the publish path (see deploy-space.yml).
+#
+# Every third-party action is pinned to a full commit SHA (mutable tags are the
+# tj-actions attack vector). GITHUB_TOKEN is deny-by-default; each job grants only
+# the scope it needs. harden-runner audits runner egress on every job — that audit
+# is precisely what catches the OIDC-exfil pattern the worms use.
+
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "27 4 * * 1"   # weekly Monday 04:27 UTC — posture drift check
+  workflow_dispatch:
+
+permissions: {}            # deny-all at the top; jobs opt in below
+
+jobs:
+  scorecard:
+    name: OpenSSF Scorecard
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write   # SARIF -> Security tab
+      id-token: write          # publish score to the public dashboard
+    steps:
+      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+      - uses: github/codeql-action@c16c0f3f2812ec4bb3750a5ed64873fe2ce0fbef # codeql v3 upload-sarif
+        with:
+          sarif_file: results.sarif
+
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action@c16c0f3f2812ec4bb3750a5ed64873fe2ce0fbef # init v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none   # both langs are interpreted here; no compile step
+      - uses: github/codeql-action@c16c0f3f2812ec4bb3750a5ed64873fe2ce0fbef # analyze v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  secrets-history:
+    name: Secret scan (full history)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0          # gitleaks needs the whole history, not the tip
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+
+  dependencies:
+    name: Dependency + config scan (blocking)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: google/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+        with:
+          scan-args: |-
+            --recursive
+            --skip-git
+            ./
+      - name: Trivy filesystem scan (fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+  workflows:
+    name: Workflow injection scan (zizmor)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
