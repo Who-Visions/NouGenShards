@@ -13,7 +13,7 @@ import contextlib
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
-from fastapi import FastAPI, Header, HTTPException, Depends
+from fastapi import FastAPI, Header, HTTPException, Depends, Response
 from pydantic import BaseModel
 import gradio as gr
 import subprocess
@@ -733,6 +733,10 @@ def health():
 class SearchRequest(BaseModel):
     query: str
     limit: int = 5
+    # Inclusive ISO era bounds, same convention as _window_search/recall_window:
+    # a bare "2026-03" is a whole month, "2026-03-14" a whole day.
+    since: Optional[str] = None
+    until: Optional[str] = None
 
 
 class CaptureRequest(BaseModel):
@@ -751,13 +755,62 @@ def _json_safe(item: dict) -> dict:
     return {k: v for k, v in item.items() if not isinstance(v, (bytes, bytearray))}
 
 
+def _in_era(row: dict, since: Optional[str], until: Optional[str]) -> bool:
+    """Is this row provably inside the requested era?
+
+    Same lexicographic ISO comparison _window_search does in SQL, with the same
+    inclusive upper bound (pad with \\uffff so "2026-03" covers all of March).
+
+    A row whose timestamp is missing or empty is NOT in the era. Federated
+    vault lanes hand back rows with no timestamp at all, and those were the
+    ones leaking: an undated memory cannot be shown as evidence of what a
+    bounded question asked about. It is held back and counted, not silently
+    mixed in with dated results.
+    """
+    ts = row.get("timestamp") or ""
+    if not isinstance(ts, str) or not ts.strip():
+        return False
+    if since and ts < since:
+        return False
+    if until and ts > until + "￿":
+        return False
+    return True
+
+
+def _era_filter(rows: list, since: Optional[str], until: Optional[str]) -> tuple:
+    """Split rows into (kept, held_back_count) against inclusive era bounds."""
+    kept = [r for r in rows if _in_era(r, since, until)]
+    return kept, len(rows) - len(kept)
+
+
+def _row_key(row: dict):
+    """Identity of a shard across arms: same shard from the SQL sweep and the
+    federated sweep must merge, not double-count."""
+    return (row.get("_db_index"), row.get("source"), row.get("id"))
+
+
+def _merge_rows(*groups) -> list:
+    """Union rows from several arms, first occurrence wins, newest first."""
+    seen, merged = set(), []
+    for group in groups:
+        for row in group:
+            key = _row_key(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(row)
+    merged.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
+    return merged
+
+
 # Every data endpoint requires X-NGS-Token (verify_token 503s until
 # NGS_NODE_TOKEN is configured, so the node is deny-by-default). This is what
 # makes it safe to run the Space public: reads and writes are both gated;
 # only /health and the separately-authed HUD are reachable without the token.
 
 @app.post("/search")
-def search(req: SearchRequest, _token: str = Depends(verify_token)):
+def search(req: SearchRequest, response: Response,
+           _token: str = Depends(verify_token)):
     """Memory recall for cloud callers (mirrors the connector's POST /search).
 
     A crash in the full retrieval stack (vector lane, rerank, a bad shard row on
@@ -765,8 +818,22 @@ def search(req: SearchRequest, _token: str = Depends(verify_token)):
     non-200 as "node down" and lose the relay entirely. So a failing full
     retrieve degrades to a keyword-only sweep, and a total failure returns an
     empty list rather than an exception.
+
+    since/until bound the era. They are enforced on EVERY arm, not just the SQL
+    sweep: federated vault lanes rank on content alone and were returning
+    2026-08 rows (and undated rows) to callers asking about 2025-Q1 — the
+    connector's ask_griot inherited that leak and reported held_back=0 while
+    doing it. Bounded requests therefore also run the timestamp-filtered SQL
+    sweep and union the two, so a sparse era still returns its own shards
+    instead of losing them to a relevance cut computed over the whole grid.
+    Rows dropped for falling outside (or having no) era are counted in the
+    X-NouGen-Held-Back response header rather than vanishing unremarked.
     """
     limit = max(1, min(req.limit, 50))
+    bounded = bool(req.since or req.until)
+    # Over-fetch when bounded: filtering after ranking would otherwise starve
+    # the result set down to a handful of in-era rows.
+    fetch = min(limit * 5, 250) if bounded else limit
     try:
         # Federated, not core.retrieve: a remote caller must see the same corpus a
         # local CLI caller does. core.retrieve reads only nougen_shards_1..9.db,
@@ -775,15 +842,27 @@ def search(req: SearchRequest, _token: str = Depends(verify_token)):
         # them locally — the node answered "not found" about content it holds.
         # federated_retrieve degrades every remote lane independently, so this
         # cannot fail worse than the local-only path did.
-        results = federated_retrieve(req.query, limit=limit)
+        results = federated_retrieve(req.query, limit=fetch)
     except Exception:
         logger.exception("search: full retrieve failed, falling back to keyword-only")
         try:
-            results = core._keyword_retrieve(req.query, limit, None, "*")
+            results = core._keyword_retrieve(req.query, fetch, None, "*")
         except Exception:
             logger.exception("search: keyword fallback also failed; returning []")
             results = []
-    return [_json_safe(r) for r in results]
+
+    if bounded:
+        results, held_back = _era_filter(results, req.since, req.until)
+        try:
+            # SQL-side sweep: filters before scoring, so a quiet era keeps its
+            # shards. Degrade to the filtered federated rows if it raises.
+            results = _merge_rows(results,
+                                  _window_search(req.query, req.since, req.until, limit))
+        except Exception:
+            logger.exception("search: windowed sweep failed; era-filtered results only")
+        response.headers["X-NouGen-Held-Back"] = str(held_back)
+
+    return [_json_safe(r) for r in results[:limit]]
 
 
 @app.post("/capture")

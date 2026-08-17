@@ -152,3 +152,74 @@ def test_sync_push_preserves_private_sensitivity(client, monkeypatch):
     assert r.status_code == 200
     assert captured["content"] == "private replicated body"
     assert captured["sensitivity"] == "private"
+
+
+# --- era bounds on /search (relay leg 20260817T024250Z) ---------------------
+#
+# ask_griot gathers by calling this endpoint, so an unbounded /search made
+# `since`/`until` decorative: a question bounded to 2025-Q1 came back with
+# 2026-08 shards and undated vault rows, held_back=0. These pin every arm.
+
+
+def _bounded(client, monkeypatch, federated_rows, query="highway", **bounds):
+    """Run /search with the federated arm stubbed to a known, out-of-era set."""
+    monkeypatch.setattr(node, "federated_retrieve",
+                        lambda q, limit=5, **kw: list(federated_rows))
+    r = client.post("/search", json={"query": query, "limit": 10, **bounds},
+                    headers=AUTH)
+    assert r.status_code == 200
+    return r
+
+
+def test_search_drops_out_of_era_federated_rows(client, monkeypatch):
+    rows = [
+        {"id": 1, "timestamp": "2026-08-17T05:00:00Z", "title": "today"},
+        {"id": 2, "timestamp": "2025-02-11T09:00:00Z", "title": "in era"},
+    ]
+    r = _bounded(client, monkeypatch, rows, since="2025-01", until="2025-03")
+    assert [row["title"] for row in r.json()] == ["in era"]
+    assert r.headers["X-NouGen-Held-Back"] == "1"
+
+
+def test_search_holds_back_undated_vault_rows(client, monkeypatch):
+    # Vault lanes return rows with no timestamp ("era unknown" in the packet).
+    # Undated is not provably in-era, so it must not be shown as evidence.
+    rows = [
+        {"id": "vault_2_abc", "source": "vault_sol_memory_vault", "title": "undated"},
+        {"id": "vault_2_def", "source": "vault_sol_memory_vault",
+         "timestamp": "", "title": "empty ts"},
+    ]
+    r = _bounded(client, monkeypatch, rows, since="2025-01", until="2025-03")
+    assert r.json() == []
+    assert r.headers["X-NouGen-Held-Back"] == "2"
+
+
+def test_search_upper_bound_is_inclusive_to_month_end(client, monkeypatch):
+    rows = [
+        {"id": 1, "timestamp": "2025-03-31T23:59:59Z", "title": "last of march"},
+        {"id": 2, "timestamp": "2025-04-01T00:00:00Z", "title": "april"},
+    ]
+    r = _bounded(client, monkeypatch, rows, since="2025-01", until="2025-03")
+    assert [row["title"] for row in r.json()] == ["last of march"]
+
+
+def test_search_unbounded_is_unchanged(client, monkeypatch):
+    # No bounds -> no filtering, no held-back header: the ordinary recall path
+    # must keep behaving exactly as it did before era bounds existed.
+    rows = [{"id": 1, "timestamp": "2026-08-17T05:00:00Z", "title": "today"},
+            {"id": 2, "title": "undated"}]
+    r = _bounded(client, monkeypatch, rows)
+    assert len(r.json()) == 2
+    assert "X-NouGen-Held-Back" not in r.headers
+
+
+def test_search_bounded_still_returns_sparse_era_shards(client, monkeypatch):
+    # The SQL sweep is the reason a quiet era isn't lost to a relevance cut:
+    # federated ranking returns nothing usable, the windowed sweep still does.
+    captured = core.capture("KNOWLEDGE", "Quiet era shard", "highway work", tags=["t"])
+    assert captured
+    monkeypatch.setattr(node, "federated_retrieve", lambda q, limit=5, **kw: [])
+    r = client.post("/search", json={"query": "highway", "limit": 10,
+                                     "since": "2000-01"}, headers=AUTH)
+    assert r.status_code == 200
+    assert any(row["title"] == "Quiet era shard" for row in r.json())
