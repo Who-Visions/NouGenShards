@@ -50,6 +50,10 @@ one costs a moment's reading.
 - **`design/`** — author, audit and emit design systems as portable `DESIGN.md` packages.
   Includes a validator with quality gates and three reference brand packages. Start from
   `design/brands/_template/`, not from one of the branded packages.
+- **`e2b/`** — delegate summaries, distillations, classifications and first drafts to the
+  local `gemma4:e2b-qat` Ollama lane instead of doing them inline (Rule 0.7: player
+  drafts, coach reviews, GM decides). Carries the E-series call conventions and observed
+  failure modes.
 
 ## Writing one
 
