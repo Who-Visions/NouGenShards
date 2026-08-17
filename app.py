@@ -167,6 +167,35 @@ def _window_search(query: str = "", since: Optional[str] = None,
     return rows[:limit]
 
 
+def _health_cache_ttl() -> float:
+    """TTL for the expensive health/coverage aggregates. 0 disables caching.
+
+    /health must answer in well under a second even while a federated search is
+    hammering the disk (measured 2026-08-16: 7s under load). The aggregates it
+    reports move on capture cadence, not request cadence, so a short cache
+    changes nothing a caller can act on."""
+    return float(os.environ.get("NOUGEN_HEALTH_CACHE_S", "30"))
+
+
+#: (value, monotonic_ts) per aggregate. Stale-while-computing is acceptable:
+#: these are counts, not auth gates — the gates in /health are re-read live.
+_AGG_CACHE: dict = {}
+
+
+def _cached(key: str, compute):
+    ttl = _health_cache_ttl()
+    if ttl <= 0:
+        return compute()
+    import time as _time
+    hit = _AGG_CACHE.get(key)
+    now = _time.monotonic()
+    if hit is not None and now - hit[1] < ttl:
+        return hit[0]
+    value = compute()
+    _AGG_CACHE[key] = (value, now)
+    return value
+
+
 def _federated_coverage() -> dict | None:
     """Registered federated read-through stores, so a recall MISS can be told
     apart from NOT MOUNTED at the federation layer too (decision 16729).
@@ -270,11 +299,13 @@ def substrate_coverage() -> dict:
             "span": {"earliest": lo, "latest": hi},
             "months": dict(sorted(per_month.items())),
             "empty_months": gaps,
-            "grid": _substrate_coverage(),
+            "grid": _cached("substrate", _substrate_coverage),
             "vault": str(core.GLOBAL_DIR),
             # Federated read-through extent (decision 16729): "not found" must
             # be distinguishable from "not mounted" at the federation layer.
-            "federated_stores": _federated_coverage()}
+            # Cached: enumerating 40+ stores' row counts costs ~3.5s live
+            # (nougen_memories alone is 379k rows) and moves on capture cadence.
+            "federated_stores": _cached("federated", _federated_coverage)}
 
 
 @node_mcp.tool()
@@ -697,7 +728,7 @@ def health():
             "to unauthenticated callers"
         )
 
-    coverage = _substrate_coverage()
+    coverage = _cached("substrate", _substrate_coverage)
     if not coverage["complete"] and not coverage["read_through"]:
         warnings.append(
             f"substrate incomplete: {coverage['databases_mounted']} of "
@@ -773,6 +804,7 @@ def search(req: SearchRequest, _token: str = Depends(verify_token)):
     empty list rather than an exception.
     """
     limit = max(1, min(req.limit, 50))
+    sweep_report: dict = {}
     try:
         # Federated, not core.retrieve: a remote caller must see the same corpus a
         # local CLI caller does. core.retrieve reads only nougen_shards_1..9.db,
@@ -781,7 +813,7 @@ def search(req: SearchRequest, _token: str = Depends(verify_token)):
         # them locally — the node answered "not found" about content it holds.
         # federated_retrieve degrades every remote lane independently, so this
         # cannot fail worse than the local-only path did.
-        results = federated_retrieve(req.query, limit=limit)
+        results = federated_retrieve(req.query, limit=limit, sweep_report=sweep_report)
     except Exception:
         logger.exception("search: full retrieve failed, falling back to keyword-only")
         try:
@@ -789,7 +821,28 @@ def search(req: SearchRequest, _token: str = Depends(verify_token)):
         except Exception:
             logger.exception("search: keyword fallback also failed; returning []")
             results = []
-    return [_json_safe(r) for r in results]
+    payload = [_json_safe(r) for r in results]
+    # Coverage honesty: a store that errored or timed out mid-sweep is a hole in
+    # the corpus the caller must be able to see. Appended as a shard-shaped
+    # trailer (score 0, distinct event_type) so list-consuming clients keep
+    # parsing; absent entirely on a clean sweep, so the common path is unchanged.
+    if sweep_report.get("errored"):
+        payload.append({
+            "id": "federation_meta",
+            "event_type": "FEDERATION_STATUS",
+            "title": (f"federation: {len(sweep_report['errored'])} store(s) "
+                      "errored or timed out this sweep"),
+            "content": json.dumps({
+                "errored": sweep_report["errored"],
+                "stores_swept": sweep_report.get("stores_swept"),
+                "tier2": sweep_report.get("tier2"),
+                "tier2_deferred": sweep_report.get("tier2_deferred"),
+            }),
+            "tags": json.dumps(["federation_status"]),
+            "final_score": 0.0,
+            "_db_index": "federation_meta",
+        })
+    return payload
 
 
 @app.post("/capture")

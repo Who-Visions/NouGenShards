@@ -3,13 +3,15 @@ import logging
 from . import core
 from .connectors.sql import query_external_dbs
 from .connectors.cloud import query_cloud_shards
+from .connectors.local_vault import query_local_vaults
 from . import keymaker
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
 def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None,
-                       domain_key: Optional[str] = None) -> list:
+                       domain_key: Optional[str] = None,
+                       sweep_report: Optional[dict] = None) -> list:
     """
     Module 8: Combine Compatible Systems.
     Polls local Shard substrate, external DBs, and remote cloud nodes.
@@ -51,8 +53,28 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
                            type(exc).__name__, exc)
             cloud_results = []
 
+    # 4b. Query sibling SQLite vaults on this machine. Same degradation contract
+    # as every other remote source: a missing file or renamed table drops that
+    # vault, never the sweep.
+    vault_results = []
+    vault_configs = keymaker.list_local_vaults()
+    if vault_configs:
+        try:
+            vault_results = query_local_vaults(query, vault_configs, limit=limit,
+                                               sweep_report=sweep_report)
+        except Exception as exc:  # noqa: BLE001 - degrade, don't crash federation
+            logger.warning("local vaults skipped (federation continues): %s: %s",
+                           type(exc).__name__, exc)
+            vault_results = []
+
     # 5. Merge and re-rank via Reciprocal Rank Fusion (RRF)
     # (Module 21: Orchestrate Convergence)
-    combined = core.reciprocal_rank_fusion([local_results, external_results, cloud_results], k=60)
+    # Plain RRF is correct here as long as each lane arrives ranked best-first —
+    # RRF fuses by POSITION, so a lane that hands it unsorted rows squanders its
+    # slots. query_local_vaults sorts across all 36 vaults before returning for
+    # exactly this reason; that is what stops one arbitrary vault from owning the
+    # merged top-N, not any change to the fusion itself.
+    combined = core.reciprocal_rank_fusion(
+        [local_results, external_results, cloud_results, vault_results], k=60)
 
     return combined[:limit]
