@@ -6,6 +6,7 @@ import base64
 import ctypes
 import ctypes.wintypes
 import hashlib
+import logging
 import os
 import sqlite3
 import csv
@@ -14,8 +15,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 # Marker prefix for values encrypted at rest via Windows DPAPI (user-bound).
 _DPAPI_PREFIX = "dpapi1:"
+# A DPAPI blob opens with dwVersion=1 and the provider GUID
+# d08c9ddf-0115-11d1-8c7a-00c04fc297eb. Layers are detected by these bytes
+# rather than by the marker prefix, because only the OUTERMOST layer carries
+# the prefix -- see _unprotect.
+_DPAPI_MAGIC = bytes([0x01, 0x00, 0x00, 0x00, 0xD0, 0x8C, 0x9D, 0xDF])
+# Generous ceiling on re-protection depth; rows in the field measure 3.
+_DPAPI_MAX_LAYERS = int(os.getenv("NOUGEN_KEYMAKER_MAX_LAYERS", "8"))
 # Marker prefix for values stored in the OS keyring (macOS Keychain / Secret Service).
 _KEYRING_PREFIX = "keyring1:"
 _KEYRING_SERVICE = "nougenshards-vault"
@@ -72,11 +82,42 @@ def _protect(value: str, key: Optional[str] = None) -> str:
             "NOUGEN_ALLOW_PLAINTEXT_VAULT=1 to override (not recommended).") from None
 
 
+def _as_dpapi_blob(stored: str) -> Optional[bytes]:
+    """The raw blob if `stored` is base64 of a DPAPI blob, tagged or bare."""
+    payload = stored[len(_DPAPI_PREFIX):] if stored.startswith(_DPAPI_PREFIX) else stored
+    try:
+        raw = base64.b64decode(payload, validate=True)
+    except Exception:  # pylint: disable=broad-except
+        return None
+    return raw if raw[:8] == _DPAPI_MAGIC else None
+
+
 def _unprotect(stored: str) -> str:
-    """Decrypts a stored value; passes through legacy plaintext rows untouched."""
-    if stored.startswith(_DPAPI_PREFIX):
-        raw = base64.b64decode(stored[len(_DPAPI_PREFIX):])
-        return _dpapi_call("CryptUnprotectData", raw).decode("utf-8")
+    """Decrypts a stored value; passes through legacy plaintext rows untouched.
+
+    Peels EVERY DPAPI layer, not just one. A value that is re-protected -- by a
+    migration, a re-ingest, or a second pass of the ingest tool -- ends up
+    wrapped several times deep, and only the outermost layer keeps the
+    `dpapi1:` marker. Stopping when the marker disappears returns a base64
+    blob that looks like a secret and fails as one: measured 2026-08-15, rows
+    in `agent_secrets.db` needed three passes, and a one-pass read handed an
+    820-character ciphertext to a provider that answered 401. Layers are
+    therefore detected by blob magic, which does not depend on tagging.
+    """
+    if stored.startswith(_DPAPI_PREFIX) and _as_dpapi_blob(stored) is None:
+        # Tagged as protected but not a readable blob: fail loudly rather than
+        # hand the caller a marker string it would spend as a secret.
+        raise OSError("Value is tagged 'dpapi1:' but is not a valid DPAPI blob.")
+    if _as_dpapi_blob(stored) is not None:
+        current = stored
+        for _ in range(_DPAPI_MAX_LAYERS):
+            # Strip only for detection -- never mutate the value we return, in
+            # case a secret legitimately carries trailing whitespace.
+            raw = _as_dpapi_blob(current.strip())
+            if raw is None:
+                return current
+            current = _dpapi_call("CryptUnprotectData", raw).decode("utf-8")
+        return current
     if stored.startswith(_KEYRING_PREFIX):
         import keyring  # pylint: disable=import-outside-toplevel
         ref = stored[len(_KEYRING_PREFIX):]
@@ -150,6 +191,160 @@ def find_legacy_stores(roots=None) -> list:
             seen.add(resolved)
             found.append(resolved)
     return sorted(found)
+
+
+# Live Probe-Chain Discovery (Rule 0.2: probe, don't trust)
+# Deterministic resolution above says where the store SHOULD be; it cannot say
+# whether anything is actually there. Measured 2026-08-15: a moved vault left
+# the env var aimed at the old, EMPTY store, and get_secret's silent None read
+# exactly like "never ingested" -- three provider lanes were burned diagnosing
+# credentials that sat safely in another store the whole time. The probe chain
+# below checks every candidate LIVE (exists, opens read-only, holds >0 secrets
+# rows) so that "wrong store" and "never ingested" become distinguishable, and
+# a divergence fails loud instead of None.
+ENV_VAULT_PROBE = "NOUGEN_VAULT_PROBE"          # "0" disables discovery (tests)
+ENV_VAULT_DIVERGENCE = "NOUGEN_VAULT_DIVERGENCE"  # warn (default) | error | adopt
+_DIVERGENCE_MODES = ("warn", "error", "adopt")
+
+
+class VaultDivergenceError(RuntimeError):
+    """A requested key lives in a live store other than the active one."""
+
+
+def _probe_enabled() -> bool:
+    return os.getenv(ENV_VAULT_PROBE, "1").strip() != "0"
+
+
+def _divergence_mode() -> str:
+    mode = os.getenv(ENV_VAULT_DIVERGENCE, "warn").strip().lower() or "warn"
+    if mode not in _DIVERGENCE_MODES:
+        logger.warning("%s=%r is not one of %s; using 'warn'.",
+                       ENV_VAULT_DIVERGENCE, mode, "|".join(_DIVERGENCE_MODES))
+        mode = "warn"
+    return mode
+
+
+def _probe_store(db_path: Path) -> Optional[dict]:
+    """Live-probes one candidate store, strictly read-only.
+
+    A store is LIVE only if the file exists, opens as SQLite, and its
+    `secrets` table holds at least one row -- an initialized-but-empty store
+    is dead for discovery purposes, because falling back past it is exactly
+    what rescues the moved-vault scenario. Returns the probe evidence
+    (path, row count, newest rotation) or None.
+    """
+    try:
+        if not db_path.is_file():
+            return None
+        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            count, newest = conn.execute(
+                "SELECT COUNT(*), MAX(last_rotated) FROM secrets").fetchone()
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    if not count:
+        return None
+    return {"path": db_path.resolve(), "rows": int(count), "newest_rotation": newest}
+
+
+def candidate_stores() -> list:
+    """Every location this deployment might keep the secrets DB, in trust
+    order: explicit env, then the user-anchored convention, then legacy
+    strays surfaced by find_legacy_stores(). Deduplicated, order-preserving."""
+    ordered = []
+    explicit = os.getenv(ENV_SECRETS_VAULT, "").strip()
+    if explicit:
+        ordered.append(Path(explicit) / DB_FILENAME)
+    ordered.append(Path.home() / ".nougen" / "secrets" / DB_FILENAME)
+    ordered.extend(find_legacy_stores())
+    seen, out = set(), []
+    for path in ordered:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        out.append(path)
+    return out
+
+
+# One probe sweep per resolution context, so the filesystem walk in
+# find_legacy_stores runs once per process, not once per get_secret call.
+_PROBE_CACHE: dict = {}
+
+
+def resolve_secrets_store(refresh: bool = False) -> dict:
+    """Probes the candidate chain and returns the discovery evidence:
+
+        {"active": Path,          # the store reads are pinned to
+         "active_probe": dict|None,  # its probe result (None = dead/empty)
+         "live": [dict, ...],     # every live candidate, in trust order
+         "candidates": [Path, ...]}
+
+    The ACTIVE store is the env-configured one whenever the env var is set --
+    even if it probes dead -- because env intent matters: values are never
+    silently served from a store the operator did not point at (divergence
+    handling in get_secret decides what happens then). With no env var, the
+    first live candidate wins; with nothing live anywhere, the deterministic
+    default stands and the emptiness is logged loudly.
+    """
+    env_value = os.getenv(ENV_SECRETS_VAULT, "").strip()
+    cache_key = (env_value, str(Path.home()))
+    if not refresh and cache_key in _PROBE_CACHE:
+        return _PROBE_CACHE[cache_key]
+
+    candidates = candidate_stores()
+    live = [probe for probe in (_probe_store(c) for c in candidates) if probe]
+
+    if env_value:
+        active = Path(env_value) / DB_FILENAME
+    elif live:
+        active = live[0]["path"]
+    else:
+        active = resolve_secrets_vault_dir() / DB_FILENAME
+    try:
+        active_resolved = active.resolve()
+    except OSError:
+        active_resolved = active
+    active_probe = next((p for p in live if p["path"] == active_resolved), None)
+
+    # Log the choice exactly once per resolution context.
+    if active_probe is not None:
+        preferred = candidates[0] if candidates else active
+        if preferred.resolve() != active_probe["path"]:
+            logger.warning(
+                "Preferred secrets store %s is dead or empty; probe chain "
+                "selected live store %s (%d rows, newest rotation %s). "
+                "Set %s to make this explicit, or consolidate the vaults.",
+                preferred, active_probe["path"], active_probe["rows"],
+                active_probe["newest_rotation"], ENV_SECRETS_VAULT)
+        else:
+            logger.info("Keymaker secrets store: %s (%d rows, newest rotation %s)",
+                        active_probe["path"], active_probe["rows"],
+                        active_probe["newest_rotation"])
+    elif live:
+        logger.warning(
+            "%s points at a dead or empty secrets store (%s), but a live store "
+            "exists at %s (%d rows, newest rotation %s). Reads stay pinned to "
+            "the configured store; fix %s or consolidate the vaults. "
+            "(%s=warn|error|adopt governs per-key divergence.)",
+            ENV_SECRETS_VAULT if env_value else "Resolution", active.parent,
+            live[0]["path"], live[0]["rows"], live[0]["newest_rotation"],
+            ENV_SECRETS_VAULT, ENV_VAULT_DIVERGENCE)
+    else:
+        logger.warning(
+            "No live secrets store found anywhere. Probed: %s. A missing key "
+            "here means 'no store', not 'never ingested'.",
+            ", ".join(str(c) for c in candidates) or "(no candidates)")
+
+    result = {"active": active, "active_probe": active_probe,
+              "live": live, "candidates": candidates}
+    _PROBE_CACHE[cache_key] = result
+    return result
 
 
 VAULT_DIR = resolve_secrets_vault_dir()
@@ -294,6 +489,63 @@ def ingest_service_account(json_data: str):
         print(f"  [!] Error ingesting service account: {exc}")
 
 
+def register_local_vault(path: str, table_name: str, title_col: str, content_col: str):
+    """Register a local SQLite vault as a federated read source.
+
+    Deliberately NOT the external_dbs table. That path exists for *network*
+    databases and its connector rejects sqlite/file URIs on purpose, as an SSRF
+    guard — an attacker-influenced external-DB row must never be able to make the
+    process open a local file. Local vaults are a different trust class: operator
+    -chosen paths on this machine, read-only, no credentials in the connection
+    string. Keeping them in their own table means adding them never widens what
+    a compromised external_dbs row can reach.
+
+    The path is stored in the clear (unlike external URIs, it carries no
+    credentials) but is re-validated at query time, so moving or deleting a vault
+    degrades that source instead of breaking federation.
+    """
+    init_vault()
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS local_vaults (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE,
+            table_name TEXT NOT NULL,
+            title_col TEXT NOT NULL,
+            content_col TEXT NOT NULL,
+            registered_at TEXT
+        )
+    ''')
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    # Re-registering the same vault updates it rather than erroring, so the
+    # register step is safe to re-run after a schema change.
+    conn.execute('''
+        INSERT INTO local_vaults (path, table_name, title_col, content_col, registered_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(path) DO UPDATE SET
+            table_name=excluded.table_name,
+            title_col=excluded.title_col,
+            content_col=excluded.content_col,
+            registered_at=excluded.registered_at
+    ''', (str(path), table_name, title_col, content_col, timestamp))
+    conn.commit()
+    conn.close()
+
+
+def list_local_vaults() -> list:
+    """Registered local SQLite vaults. Missing table or DB means none."""
+    if not DB_PATH.exists():
+        return []
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM local_vaults").fetchall()]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
 def register_external_db(uri: str, table_name: str, title_col: str, content_col: str):
     """Registers a new external database connection."""
     init_vault()
@@ -365,20 +617,74 @@ def list_cloud_nodes() -> list:
         conn.close()
 
 
-def get_secret(key: str) -> Optional[str]:
-    """Retrieves a secret value from the DB by its key."""
-    if not DB_PATH.exists():
-        return None
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
+def _read_secret_row(db_path: Path, key: str) -> Optional[str]:
+    """Fetches one key from one store, strictly read-only; None on any failure."""
     try:
-        cursor.execute("SELECT secret_value FROM secrets WHERE secret_key = ?", (key,))
-        row = cursor.fetchone()
+        if not db_path.is_file():
+            return None
+        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT secret_value FROM secrets WHERE secret_key = ?",
+                (key,)).fetchone()
+        finally:
+            conn.close()
         return _unprotect(str(row[0])) if row else None
-    except (sqlite3.Error, OSError):
+    except (sqlite3.Error, OSError, ValueError):
         return None
-    finally:
-        conn.close()
+
+
+def get_secret(key: str) -> Optional[str]:
+    """Retrieves a secret value by key, via probe-chain discovery.
+
+    Reads are pinned to the ACTIVE store from resolve_secrets_store(). When
+    the key is absent there but PRESENT in another live store, the vaults
+    have diverged -- the answer is not a silent None (which reads exactly
+    like "never ingested") but whatever NOUGEN_VAULT_DIVERGENCE dictates:
+
+        warn  (default) -> log the divergence loudly, return None
+        error           -> raise VaultDivergenceError
+        adopt           -> return the value, READ-ONLY: nothing is ever
+                           written to any store by adoption
+
+    With NOUGEN_VAULT_PROBE=0 discovery is off and this reads exactly one
+    deterministic location (the hermetic-test mode).
+    """
+    if not _probe_enabled():
+        return _read_secret_row(DB_PATH, key)
+
+    resolution = resolve_secrets_store()
+    value = _read_secret_row(resolution["active"], key)
+    if value is not None:
+        return value
+
+    # Absent from the active store: check the other live candidates before
+    # concluding "never ingested" (the moved-vault trap, measured 2026-08-15).
+    try:
+        active_resolved = resolution["active"].resolve()
+    except OSError:
+        active_resolved = resolution["active"]
+    for other in resolution["live"]:
+        if other["path"] == active_resolved:
+            continue
+        found = _read_secret_row(other["path"], key)
+        if found is None:
+            continue
+        mode = _divergence_mode()
+        msg = (f"Secret '{key}' is absent from the active store "
+               f"({resolution['active']}) but exists in {other['path']} -- the "
+               f"vault stores have diverged. Set {ENV_SECRETS_VAULT} to the "
+               f"store that holds your secrets, or consolidate them. "
+               f"({ENV_VAULT_DIVERGENCE}=warn|error|adopt; current: {mode}.)")
+        if mode == "error":
+            raise VaultDivergenceError(msg)
+        if mode == "adopt":
+            logger.warning("%s Adopting the value READ-ONLY from %s for this "
+                           "call; no store is modified.", msg, other["path"])
+            return found
+        logger.warning(msg)
+        return None
+    return None
 
 
 def list_providers() -> list:

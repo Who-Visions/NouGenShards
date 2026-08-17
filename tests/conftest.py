@@ -26,6 +26,12 @@ def isolated_secrets_vault(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(keymaker, "CSV_PATH", vault / "shards_secrets.csv", raising=False)
     monkeypatch.setattr(keymaker, "SECRETS_JSON_DIR", vault / "service_accounts",
                         raising=False)
+    # Probe-chain discovery (resolve_secrets_store) deliberately looks BEYOND
+    # the configured store -- that is its job in production, and it is exactly
+    # what would carry a test past this isolation boundary into the operator's
+    # real vault. Force it off; tests that are ABOUT the probe chain re-enable
+    # it against a fabricated home (see test_vault_discovery.py).
+    monkeypatch.setenv(keymaker.ENV_VAULT_PROBE, "0")
     yield vault
 
 
