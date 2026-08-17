@@ -58,20 +58,13 @@ VOCAB = {
 
 
 def _resolve_vault_root():
-    env = os.environ.get("NOUGEN_VAULT_DIR")
-    if env:
-        return env
-    try:
-        with open(os.path.join(os.path.expanduser("~"), ".nougen", "config.json"), encoding="utf-8") as f:
-            vd = json.load(f).get("vault_dir")
-        if vd:
-            return vd
-    except Exception:
-        pass
-    return os.path.join(
-        os.environ.get("WATCHTOWER_ROOT") or os.path.expanduser("~/Watchtower"),
-        "vault",
-    )
+    """Delegated to the shared lane config so every tool in the lane resolves
+    the vault identically — including the NOUGEN_ARXIV_VAULT_DIR override."""
+    tools_dir = os.path.dirname(os.path.abspath(__file__))
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import arxiv_lane_config as _cfg
+    return _cfg.resolve_vault_root()[0]
 
 
 def _resolve_embed_model():
