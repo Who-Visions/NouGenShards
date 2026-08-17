@@ -198,6 +198,16 @@ def init_vault():
             last_connected TEXT NOT NULL
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS local_vaults (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL,
+            table_name TEXT NOT NULL,
+            title_col TEXT NOT NULL,
+            content_col TEXT NOT NULL,
+            last_connected TEXT NOT NULL
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -331,6 +341,35 @@ def list_external_dbs() -> list:
                 continue
             result.append(d)
         return result
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def register_local_vault(path: str, table_name: str = "shards",
+                         title_col: str = "title", content_col: str = "content"):
+    """Registers a local SQLite database for federated retrieval."""
+    init_vault()
+    conn = sqlite3.connect(str(DB_PATH))
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn.execute('''
+        INSERT INTO local_vaults (path, table_name, title_col, content_col, last_connected)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (path, table_name, title_col, content_col, timestamp))
+    conn.commit()
+    conn.close()
+
+
+def list_local_vaults() -> list:
+    """Returns all registered local vault database configurations."""
+    if not DB_PATH.exists():
+        return []
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT * FROM local_vaults").fetchall()
+        return [dict(r) for r in rows]
     except sqlite3.Error:
         return []
     finally:
