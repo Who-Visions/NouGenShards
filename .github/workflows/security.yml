@@ -68,7 +68,7 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: none   # both langs are interpreted here; no compile step
-      - uses: github/codeql-action/analyze@d6317709a54fd87078d323eeb0e48ec331c8e621 # v3
+      - uses: github/codeql-action/analyze@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3
         with:
           category: "/language:${{ matrix.language }}"
 
