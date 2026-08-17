@@ -21,6 +21,13 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+# This job pushes to Hugging Face with its own HF_TOKEN and needs no GitHub write
+# scope. Deny-by-default (wargames/elevate-security.md M1). workflow_run runs in a
+# privileged default-branch context handling a secret, so harden-runner's egress
+# audit here is high-value — it is exactly where OIDC/secret exfil would show.
+permissions:
+  contents: read
+
 jobs:
   sync:
     if: >-
@@ -33,7 +40,10 @@ jobs:
       # one. On manual dispatch head_sha is empty and github.sha is correct.
       DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           # Don't leave the GITHUB_TOKEN in .git/config; this job pushes with
