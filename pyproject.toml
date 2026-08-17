@@ -43,6 +43,15 @@ dependencies = [
     "cryptography>=42.0",
 ]
 
+[project.optional-dependencies]
+# NouGenTube lane (tools/nougentube.py): YouTube transcript ingestion.
+# Optional because the core substrate never touches YouTube; only the tube
+# tool lazy-imports these, and it degrades with a clear message when absent.
+tube = [
+    "youtube-transcript-api>=0.6",
+    "yt-dlp>=2024.1.1",
+]
+
 [project.urls]
 "Homepage" = "https://whovisions.com"
 "Bug Tracker" = "https://github.com/whovisions/nougen/issues"
