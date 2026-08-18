@@ -229,6 +229,17 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3,
         with contextlib.suppress(Exception):  # keymaker optional: degrade, don't crash
             from .. import keymaker
             node_token = keymaker.get_secret("NGS_NODE_TOKEN")
+        # Fall back to the environment. keymaker reads only from its on-disk
+        # store, and on a node with ephemeral storage (an HF Space with no
+        # volume mounted) that store is empty after every restart -- while
+        # NGS_NODE_TOKEN is still present in the environment, because that is
+        # what the node authenticates its own INBOUND requests with. Without
+        # this, such a node registers an upstream, sends every federated read
+        # unauthenticated, collects a 401, and reports an empty result that is
+        # indistinguishable from "the upstream has nothing" -- the exact silent
+        # degradation this function's docstring warns about.
+        if not node_token:
+            node_token = os.environ.get("NGS_NODE_TOKEN") or None
 
     for conf in cloud_configs:
         name = conf.get('name', '?')
