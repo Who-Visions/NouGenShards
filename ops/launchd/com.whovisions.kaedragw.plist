@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.whovisions.kaedragw</string>
+
+    <!-- Single entry point, same as the node: the wrapper loads KAEDRA_* from
+         the fleet .env because launchd starts us with an empty environment. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/kushboygroup/The Observatory/NouGen/nougenshards/bin/kaedra-gateway.sh</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <!-- Restart on crash, but not on a clean exit, so a deliberate stop
+             stays stopped. -->
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- A missing token exits 78 immediately; throttling keeps launchd from
+         respawning that in a tight loop. -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/kushboygroup/The Observatory/NouGen/nougenshards</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/kushboygroup/The Observatory/NouGen/nougenshards/logs/kaedra-gw.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kushboygroup/The Observatory/NouGen/nougenshards/logs/kaedra-gw.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
