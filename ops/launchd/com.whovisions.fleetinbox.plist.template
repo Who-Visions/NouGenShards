@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.whovisions.fleetinbox</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO__/.venv/bin/python</string>
+    <string>__REPO__/ops/fleet_inbox.py</string>
+  </array>
+
+  <!-- 60s. The relay is git-backed, so this is one ff-only pull per minute
+       against a small repo -- cheap enough to feel live, slow enough not to
+       hammer the remote. -->
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/fleet-inbox.out</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/fleet-inbox.err</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FLEET_ME</key>
+    <string>phoebus</string>
+    <key>FLEET_RELAY_DIR</key>
+    <string>__HOME__/The Observatory/NouGenRelay</string>
+    <key>FLEET_INBOX_LOG</key>
+    <string>__HOME__/fleet-inbox.log</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

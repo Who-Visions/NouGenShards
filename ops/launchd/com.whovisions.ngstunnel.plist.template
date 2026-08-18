@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.whovisions.ngstunnel</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/cloudflared</string>
+        <!-- Homebrew handles updates; a self-update would restart the tunnel
+             out from under launchd at an arbitrary moment. -->
+        <string>--no-autoupdate</string>
+        <string>--config</string>
+        <string>__HOME__/.cloudflared/config.yml</string>
+        <string>tunnel</string>
+        <string>run</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <!-- Don't bother running the tunnel with no network; launchd will
+             start it the moment connectivity returns. -->
+        <key>NetworkState</key>
+        <true/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>__REPO__/logs/ngs-tunnel.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/logs/ngs-tunnel.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
