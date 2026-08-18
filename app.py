@@ -916,6 +916,32 @@ def sync_pull(_token: str = Depends(verify_token)):
             conn.close()
     return all_shards
 
+# --- Rhea-Noir resident agent ---
+# NOTE: this block and rhea_noir.py must live in SOURCE, not only on the Space.
+# The Space is rebuilt by a "Space deploy: snapshot of <sha>" job that restores
+# from source, so anything applied only to the deployed artifact is deleted by
+# the next rebuild. That is what removed this route on 2026-08-18.
+import rhea_noir
+
+
+class AgentRequest(BaseModel):
+    prompt: str
+
+
+@app.post("/agent")
+def agent_ask(req: AgentRequest, _token: str = Depends(verify_token)):
+    """Ask Rhea-Noir. Free lane first; her reply names the brain that answered."""
+    return rhea_noir.ask(req.prompt)
+
+
+@node_mcp.tool()
+def ask_rhea(prompt: str) -> dict:
+    """Ask Rhea-Noir, the grid's resident agent. She recalls from the memory
+    grid, gathers provenance-marked history, reads the tracker and relay, and
+    captures shards worth keeping. Her reply names which brain answered."""
+    return rhea_noir.ask(prompt)
+
+
 # --- Cortex HUD UI Logic ---
 
 def get_substrate_map():
