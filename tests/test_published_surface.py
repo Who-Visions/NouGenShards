@@ -105,6 +105,11 @@ ALLOWED = {
         "prose describing the patterns the redactor looks for",
     "tests/test_published_surface.py":
         "this file: the patterns live here by definition",
+    "ops/launchd/com.whovisions.kaedragw.plist":
+        "launchd plists take literal absolute paths only — no $HOME or env "
+        "expansion in ProgramArguments/WorkingDirectory/StandardOutPath. "
+        "bin/kaedra-gateway.sh (the script this launches) self-locates "
+        "instead; this file is the one place that genuinely cannot.",
 }
 
 
