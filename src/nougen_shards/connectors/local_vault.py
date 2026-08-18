@@ -20,6 +20,7 @@ import concurrent.futures
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -137,6 +138,42 @@ def _noise_penalty(title: str) -> float:
     """How much to demote a generated/vendored path. 0.0 for authored content."""
     low = (title or "").lower().replace("\\", "/")
     return 0.40 if any(marker in low for marker in NOISE_MARKERS) else 0.0
+
+
+#: Rows past this many characters get their score demoted and their returned
+#: content capped. Root-caused 2026-08-18 (VeilVerse locations stress test): a
+#: `shards_search` for "locations" was swamped by one huge unrelated Three.js
+#: LOCAL_VAULT row — its raw term occurrence count alone put it on par with a
+#: compact, on-topic canon entry, and its full content then ate the recall
+#: packet's budget, pushing the actually-useful rows out before the caller saw
+#: them. Default set well above typical note/doc size so only genuine whole-file
+#: dumps are affected.
+OVERSIZE_CHARS = int(os.environ.get("NOUGEN_LOCAL_VAULT_OVERSIZE_CHARS", "8000"))
+
+#: How much of an oversized row's content survives into the result. The row
+#: still surfaces — nothing is dropped, same philosophy as _noise_penalty — it
+#: just can no longer consume the whole recall packet by itself.
+OVERSIZE_CONTENT_CAP = int(os.environ.get("NOUGEN_LOCAL_VAULT_OVERSIZE_CONTENT_CAP", "2000"))
+
+
+def _oversize_penalty(body_len: int) -> float:
+    """How much to demote a row purely for its raw size. 0.0 at or under
+    OVERSIZE_CHARS; grows with each doubling past it, capped so a genuinely
+    relevant oversized row can still surface, just not dominate on bulk alone."""
+    if body_len <= OVERSIZE_CHARS:
+        return 0.0
+    return min(0.35, 0.10 * math.log2(body_len / OVERSIZE_CHARS))
+
+
+def _cap_content(content: str, body_len: int) -> str:
+    """Truncate an oversized row's content so one huge match cannot fill the
+    entire recall packet; body_len is the length of the ORIGINAL content, not
+    the truncated one, so this stays keyed to the same threshold as the score
+    penalty above regardless of call order."""
+    if body_len <= OVERSIZE_CHARS:
+        return content
+    omitted = body_len - OVERSIZE_CONTENT_CAP
+    return f"{content[:OVERSIZE_CONTENT_CAP]}\n...[truncated, {omitted} more chars omitted]"
 
 
 def _allowed_roots() -> list[Path]:
@@ -355,15 +392,24 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
         results = []
         for row in rows:
             item = dict(row)
+            raw_content = item["content"] or ""
+            body_len = len(raw_content)
+            # Term density, not raw occurrence count: a huge file can rack up
+            # more raw hits than a short on-topic doc purely by having more
+            # text, which is what let an oversized row match the LIKE path's
+            # score cap on bulk alone. This mirrors the density the in-vault
+            # SQL already orders by (term_count * 1000.0 / (body_len + 1)), so
+            # the cross-vault score stops disagreeing with that ordering.
+            term_density = (item.get("term_count") or 0) * 1000.0 / (body_len + 1)
             results.append({
                 "id": f"vault_{vid}_{_stable_hash(item['title'])[:16]}",
                 "event_type": "LOCAL_VAULT",
                 "title": item["title"] or "Untitled",
-                "content": item["content"] or "",
+                "content": _cap_content(raw_content, body_len),
                 "tags": json.dumps(["local_vault", path.stem]),
                 "utility_score": 1.0,
                 "access_count": 0,
-                "file_hash": _stable_hash(item["content"]),
+                "file_hash": _stable_hash(raw_content),
                 "bm25_score": 0.0,
                 # Carry the in-vault ranking into the RRF merge. A flat score for
                 # every local row made the merge fall back to source order, so
@@ -378,8 +424,9 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
                     + (0.35 if item.get("title_hits") else 0.0)
                     + (min(0.20, 0.20 * (-(item["bm25_rank"]) / 10.0))
                        if item.get("bm25_rank") is not None
-                       else min(0.20, (item.get("term_count") or 0) / 50.0))
-                    - _noise_penalty(item["title"])),
+                       else min(0.20, term_density / 50.0))
+                    - _noise_penalty(item["title"])
+                    - _oversize_penalty(body_len)),
                     6),
                 "_db_index": f"vault_{path.stem}",
             })
