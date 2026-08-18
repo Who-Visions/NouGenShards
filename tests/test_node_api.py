@@ -170,3 +170,33 @@ def test_sync_pull_push_round_trip_keeps_era(client):
                    client.get("/sync/pull", headers=AUTH).json())
     assert all(d.startswith("2021-06-15") for d in dates), (
         f"round trip must preserve the era on both copies, got {dates}")
+
+
+def test_federated_read_token_falls_back_to_env(monkeypatch, tmp_path):
+    """A node with ephemeral storage must still authenticate its federated reads.
+
+    keymaker reads only from its on-disk store. On an HF Space with no volume
+    mounted, that store is empty after every restart -- but NGS_NODE_TOKEN is
+    still in the environment, because it is what the node authenticates its own
+    inbound requests with. Without the env fallback the node registers an
+    upstream, sends every federated read unauthenticated, takes a 401, and
+    returns an empty list that looks exactly like "the upstream has nothing".
+    """
+    from nougen_shards.connectors import cloud
+
+    sent = {}
+
+    # keymaker finds nothing — the wiped-store case.
+    # keymaker finds nothing — the wiped-store case.
+    import nougen_shards.keymaker as km
+    monkeypatch.setattr(km, "get_secret", lambda key: None)
+    monkeypatch.setenv("NGS_NODE_TOKEN", "env-token-value")
+    monkeypatch.setattr(cloud, "_open_cloud", lambda req, url, timeout: (
+        sent.__setitem__("token", req.get_header("X-ngs-token")) or b"[]"))
+
+    cloud.query_cloud_shards(
+        "anything", [{"name": "blade", "url": "https://blade.example.com"}], 3)
+
+    assert sent.get("token") == "env-token-value", (
+        "federated read must fall back to NGS_NODE_TOKEN from the environment "
+        "when the keymaker store is empty")
