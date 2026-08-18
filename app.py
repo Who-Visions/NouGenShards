@@ -877,6 +877,14 @@ def sync_push(req: SyncPushRequest, _token: str = Depends(verify_token)):
             tags=tags, embedding=emb,
             domain_key=s.get("domain_key"),
             density_score=s.get("density_score"),
+            # Bulk ingest must stamp a shard at its TRUE era, exactly as
+            # /capture does. Dropping this silently re-dated every pushed shard
+            # to ingest time -- and because capture() dedups on a content hash,
+            # a re-push with the right date is a no-op, so the original era was
+            # unrecoverable. `timestamp` is the fallback because /sync/pull
+            # exports rows under that key, which makes pull -> push round-trip
+            # era-preserving instead of flattening history to the migration date.
+            original_timestamp=s.get("original_timestamp") or s.get("timestamp"),
         )
         if ok:
             count += 1
