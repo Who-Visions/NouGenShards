@@ -40,6 +40,30 @@ def test_prepare_for_relay_skips_private_by_default():
     assert redacted == 0
 
 
+def test_remote_known_filter_uses_post_redaction_content_hash():
+    secret = "sk-proj-" + "A" * 32
+    rows = [{
+        "title": "legacy credential",
+        "content": f"token={secret}",
+        "file_hash": "legacy-pre-redaction-hash",
+        "sensitivity": "normal",
+    }]
+    prepared, _, redacted = relay_push.prepare_for_relay(rows)
+    safe_hash = relay_push.relay_content_hash(prepared[0]["content"])
+
+    filtered, safe_known = relay_push.filter_remote_known(prepared, {safe_hash})
+
+    assert redacted == 1
+    assert filtered == []
+    assert safe_known == 1
+
+
+def test_relay_content_hash_matches_capture_recall_packet_rule():
+    base = "durable body"
+    packet = base + "\n=== NOUGENSHARDS RECALL PACKET\ntransient context"
+    assert relay_push.relay_content_hash(packet) == relay_push.relay_content_hash(base)
+
+
 def test_decode_embedding_accepts_float32_blob():
     blob = np.asarray([0.25, -0.5, 1.0], dtype=np.float32).tobytes()
     assert relay_push._decode_embedding(blob) == [0.25, -0.5, 1.0]

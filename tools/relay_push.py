@@ -9,6 +9,7 @@ Usage:
     python tools/relay_push.py [--url URL] [--batch N] [--start N] [--dry-run]
 """
 import argparse
+import hashlib
 import itertools
 import json
 import sqlite3
@@ -136,6 +137,30 @@ def fetch_remote_hashes(url: str, token: str, timeout: float = 180.0) -> set[str
     return {str(value) for value in hashes}
 
 
+def relay_content_hash(content: str) -> str:
+    """Return the hash capture() will assign to transported content."""
+    clean_content = str(content or "")
+    if "=== NOUGENSHARDS RECALL PACKET" in clean_content:
+        clean_content = clean_content.split(
+            "=== NOUGENSHARDS RECALL PACKET", 1)[0].strip()
+    return hashlib.md5(clean_content.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def filter_remote_known(shards: list, known_hashes: set[str]) -> tuple[list, int]:
+    """Drop rows whose post-redaction identity already exists remotely.
+
+    Missing-only planning uses the source hash so it can avoid loading almost
+    every row. Legacy rows containing credential-shaped text acquire a new hash
+    after prepare_for_relay() redacts them, however. Check that safe identity
+    here so those rows do not get retried and remotely deduplicated forever.
+    """
+    filtered = [
+        shard for shard in shards
+        if relay_content_hash(shard.get("content") or "") not in known_hashes
+    ]
+    return filtered, len(shards) - len(filtered)
+
+
 def prepare_for_relay(shards: list, include_private: bool = False) -> tuple[list, int, int]:
     """Return a secret-redacted transport copy and publication counters.
 
@@ -215,6 +240,7 @@ def main():
           f"{args.start}:{end} in batches of {args.batch} to {args.url}", flush=True)
 
     pushed = skipped = failed = private_skipped = redacted = publishable = 0
+    safe_known = 0
     stream = itertools.islice(source, args.start, end)
     i = args.start
     while i < end:
@@ -226,6 +252,9 @@ def main():
             raw_batch, include_private=args.include_private)
         private_skipped += batch_private
         redacted += batch_redacted
+        if args.missing_only:
+            batch, batch_safe_known = filter_remote_known(batch, remote_hashes)
+            safe_known += batch_safe_known
         publishable += len(batch)
 
         if not args.dry_run and batch:
@@ -245,11 +274,11 @@ def main():
                       f"resume later with --start {i}", flush=True)
         i += consumed
         print(f"    {i}/{end}  (new: {pushed}, deduped/skipped: {skipped}, "
-              f"redacted: {redacted})", flush=True)
+              f"redacted: {redacted}, safe-known: {safe_known})", flush=True)
 
     mode = "DRY RUN" if args.dry_run else "OK"
     print(f"[{mode}] Done. publishable={publishable} private_skipped={private_skipped} "
-          f"remote_known={remote_known} redacted={redacted} new={pushed} "
+          f"remote_known={remote_known} safe_known={safe_known} redacted={redacted} new={pushed} "
           f"skipped={skipped} failed={failed}", flush=True)
 
 
