@@ -120,3 +120,53 @@ def test_pull_and_dedup_aware_push(client):
     assert body["status"] == "ok"
     assert body["count"] == 1
     assert body["skipped"] == 2
+
+
+def test_sync_push_preserves_original_timestamp(client):
+    """Bulk ingest must stamp a shard at its true era, like /capture does.
+
+    /sync/push forwarded event_type, tags, embedding, domain_key and
+    density_score to capture() but not original_timestamp, so every bulk-pushed
+    shard was re-dated to ingest time. The damage is permanent rather than
+    cosmetic: capture() dedups on a content hash, so a corrected re-push is a
+    silent no-op and the true era cannot be recovered. Verified against a live
+    node before the fix -- a shard sent stamped 2020-01-01 came back stamped
+    at push time.
+    """
+    r = client.post("/sync/push", json={"shards": [{
+        "title": "Era-true bulk shard",
+        "content": "Pushed in bulk, but it happened in 2020.",
+        "original_timestamp": "2020-01-01T00:00:00Z",
+    }]}, headers=AUTH)
+    assert r.status_code == 200
+    assert r.json()["count"] == 1
+
+    row = client.get("/sync/pull", headers=AUTH).json()[0]
+    assert row["timestamp"].startswith("2020-01-01"), (
+        f"bulk push must not re-date the shard to ingest time, got {row['timestamp']}")
+
+
+def test_sync_pull_push_round_trip_keeps_era(client):
+    """pull -> push must not flatten history to the migration date.
+
+    Exported rows carry their date under `timestamp`, not `original_timestamp`,
+    so a round trip through the export format is the realistic migration path
+    and the one most likely to silently re-date an entire vault.
+    """
+    client.post("/capture", json={
+        "title": "Old memory", "content": "Captured long ago.",
+        "original_timestamp": "2021-06-15T08:30:00Z",
+    }, headers=AUTH)
+    exported = client.get("/sync/pull", headers=AUTH).json()
+    assert exported[0]["timestamp"].startswith("2021-06-15")
+
+    # Same content dedups, so re-push a distinct body carrying the exported date.
+    replay = dict(exported[0])
+    replay["content"] = "Captured long ago, replayed to a sibling node."
+    r = client.post("/sync/push", json={"shards": [replay]}, headers=AUTH)
+    assert r.status_code == 200 and r.json()["count"] == 1
+
+    dates = sorted(row["timestamp"] for row in
+                   client.get("/sync/pull", headers=AUTH).json())
+    assert all(d.startswith("2021-06-15") for d in dates), (
+        f"round trip must preserve the era on both copies, got {dates}")
