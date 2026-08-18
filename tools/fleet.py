@@ -43,12 +43,26 @@ PRIORITY = [
     ("ollama-cloud", 5),
     ("vertex",       6),   # BILLED — opt-in only, see vertex_lane.py
 ]
+# Fleet boxes run on DHCP, so a literal address here is a route that works
+# until the next lease and then fails as "host down". mDNS names track the
+# lease; env vars let a caller override without editing code. The same stale
+# literal (10.0.0.87 / 192.168.1.16) is what broke blade's firewall rule and
+# its CLAUDE.md docs, so it is not a hypothetical failure mode.
+BLADE_HOST  = os.environ.get("NOUGEN_BLADE_HOST",  "blade1tb.local")
+# The route is NAMED for whoart, so it must ADDRESS whoart. Defaulting this
+# to localhost meant that whenever Fleet dispatched from any other box, the
+# "whoart" lane loaded a ~7GB gemma4 onto THAT machine instead. On phoebus
+# (16GB, CPU-only) that evicted the kaedracode:e2b the Kaedra gateway pins
+# with keep_alive=-1, so the pin looked broken while whoart's own ollama --
+# which actually holds gemma4:e2b-qat -- sat idle.
+WHOART_HOST = os.environ.get("NOUGEN_WHOART_HOST", "whoart.local")
+
 LOCAL_ROUTES = [
-    {"name": "local-ollama-whoart", "url": "http://localhost:11434/v1",
+    {"name": "local-ollama-whoart", "url": f"http://{WHOART_HOST}:11434/v1",
      "model": "gemma4:e2b-qat", "headers": {}, "kind": "local"},
-    {"name": "local-ollama-blade", "url": "http://10.0.0.87:11434/v1",
+    {"name": "local-ollama-blade", "url": f"http://{BLADE_HOST}:11434/v1",
      "model": "gemma4:e4b", "headers": {}, "kind": "local"},
-    {"name": "lmstudio-whoart", "url": "http://localhost:1234/v1",
+    {"name": "lmstudio-whoart", "url": f"http://{WHOART_HOST}:1234/v1",
      "model": "local-model", "headers": {}, "kind": "lmstudio"},
 ]
 
