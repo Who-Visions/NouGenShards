@@ -6,8 +6,11 @@
 # both launchd and any manual start.
 set -euo pipefail
 
-REPO="/Users/kushboygroup/The Observatory/NouGen/nougenshards"
-ENV_FILE="/Users/kushboygroup/The Observatory/.env"
+# Self-locate rather than hardcode the account name and disk layout: this
+# script lives at <repo>/bin/kaedra-gateway.sh, and the fleet .env is one
+# level above the repo, matching every other machine that clones this tree.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="$(cd "$REPO/../.." && pwd)/.env"
 
 # Read KAEDRA_* literally rather than sourcing — the fleet .env contains
 # unquoted paths with spaces that word-split and fail the whole file under
