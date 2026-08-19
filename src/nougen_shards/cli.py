@@ -23,6 +23,7 @@ from .brain_scan import scan_environment, run_import, print_scan_report, print_i
 from . import dream
 from . import evolution
 from . import assurance
+from . import tenants
 
 from nougen_shards import __version__ as VERSION  # single source: pyproject
 
@@ -868,6 +869,20 @@ def cmd_dashboard(args):
     uvicorn.run(dashboard_app, host="127.0.0.1", port=args.port)
 
 
+def cmd_tenant(args):
+    """Mint additional node credentials without persisting plaintext tokens."""
+    if args.action != "mint":
+        return
+    try:
+        token = tenants.mint_tenant(args.tenant_id, args.label)
+    except tenants.TenantRegistryError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return
+    print(f"Tenant: {args.tenant_id}")
+    print(f"Token: {token}")
+    print("Save this token now; it is stored only as a SHA-256 hash and cannot be shown again.")
+
+
 def get_parser():
 
 
@@ -993,6 +1008,11 @@ def get_parser():
     p_node.add_argument("--name", help="Friendly name for the node")
     p_node.add_argument("--token", help="Auth token for push/pull")
     p_node.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_tenant = subparsers.add_parser("tenant", help="Manage isolated node tenants")
+    p_tenant.add_argument("action", choices=["mint"])
+    p_tenant.add_argument("tenant_id", help="Lowercase tenant slug")
+    p_tenant.add_argument("--label", required=True, help="Human-readable tenant label")
 
     p_doctor = subparsers.add_parser("doctor", help="Check system health")
     p_doctor.add_argument("--json", action="store_true", help="Machine-readable output")
@@ -1424,7 +1444,8 @@ def main():
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
-        "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage
+        "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
+        "tenant": cmd_tenant
     }
     if args.command in cmds:
         cmds[args.command](args)

@@ -4,7 +4,6 @@ Architecture: FastAPI + Persistent Storage (/data) + Token Auth + Multi-tab Grad
 """
 import os
 import sys
-import hmac
 import json
 import logging
 import hashlib
@@ -27,7 +26,7 @@ if os.environ.get("SPACE_ID"):
     os.environ["NOUGEN_HOME"] = "/data"
     os.environ["NOUGEN_VAULT_DIR"] = "/data/.vault"
 
-from nougen_shards import bind_probe, core, history, mcp_oauth
+from nougen_shards import bind_probe, core, history, mcp_oauth, tenants
 from nougen_shards.agents import run_agent
 from nougen_shards.federation import federated_retrieve
 from nougen_shards.brain_scan import scan_environment
@@ -173,6 +172,8 @@ def _federated_coverage() -> dict | None:
     section disappears entirely rather than lying with zeros. Every store is
     opened read-only and degrades independently into `errored`.
     """
+    if core.active_tenant_id() != "owner":
+        return None
     if os.environ.get("NOUGEN_COVERAGE_FEDERATED", "1").strip().lower() in (
             "0", "false", "off", "no"):
         return None
@@ -267,7 +268,7 @@ def substrate_coverage() -> dict:
             "months": dict(sorted(per_month.items())),
             "empty_months": gaps,
             "grid": _substrate_coverage(),
-            "vault": str(core.GLOBAL_DIR),
+            "vault": str(core.active_vault_dir()),
             # Federated read-through extent (decision 16729): "not found" must
             # be distinguishable from "not mounted" at the federation layer.
             "federated_stores": _federated_coverage()}
@@ -438,6 +439,8 @@ def vault_put(key: str, value: str) -> dict:
 
     Returns a SHA-256 fingerprint (first 12 hex) so the caller can prove the
     stored value matches what they intended without the value being echoed."""
+    if core.active_tenant_id() != "owner":
+        raise PermissionError("the secrets vault is owner-only")
     from nougen_shards import keymaker
     keymaker.init_vault()
     keymaker.ingest_secret(key, value)
@@ -454,6 +457,8 @@ def vault_list() -> list:
 
     Enough to answer "is this credential present, and is it the one I think?"
     (compare fingerprints) without the vault becoming readable."""
+    if core.active_tenant_id() != "owner":
+        raise PermissionError("the secrets vault is owner-only")
     from nougen_shards import keymaker
     out = []
     if not keymaker.DB_PATH.exists():
@@ -518,6 +523,10 @@ def _seed_upstreams() -> list:
 
 def _registered_upstreams() -> list:
     """Read-through peers this node will fan out to, without their secrets."""
+    # Local import keeps this helper extractable by the focused AST tests.
+    from nougen_shards import core as active_core
+    if active_core.active_tenant_id() != "owner":
+        return []
     try:
         from nougen_shards import keymaker
         return [
@@ -589,13 +598,38 @@ _BAD_TOKEN_DETAIL = (
 )
 
 
-def verify_token(x_ngs_token: str = Header(None)):
-    if not NODE_TOKEN:
+def _credentials_configured() -> bool:
+    try:
+        return tenants.credentials_configured(NODE_TOKEN)
+    except tenants.TenantRegistryError as exc:
+        logger.error("tenant registry rejected: %s", exc)
+        raise HTTPException(status_code=503, detail="Tenant registry is invalid.") from exc
+
+
+def _resolve_tenant_credential(supplied: Optional[str]) -> Optional[tenants.Tenant]:
+    try:
+        return tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+    except tenants.TenantRegistryError as exc:
+        logger.error("tenant registry rejected: %s", exc)
+        raise HTTPException(status_code=503, detail="Tenant registry is invalid.") from exc
+
+
+def verify_token(x_ngs_token: str = Header(None)) -> tenants.Tenant:
+    if not _credentials_configured():
         raise HTTPException(status_code=503, detail="Node write-auth not configured.")
-    # Constant-time comparison to avoid leaking the token via timing.
-    if not x_ngs_token or not hmac.compare_digest(str(x_ngs_token), str(NODE_TOKEN)):
+    tenant = _resolve_tenant_credential(x_ngs_token)
+    if tenant is None:
         raise HTTPException(status_code=401, detail=_BAD_TOKEN_DETAIL)
-    return x_ngs_token
+    return tenant
+
+
+async def tenant_vault_context(tenant: tenants.Tenant = Depends(verify_token)):
+    """Hold the request's ContextVar binding through the complete handler."""
+    tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
+    try:
+        yield tenant
+    finally:
+        core.reset_active_vault(tokens)
 
 # --- API Endpoints ---
 
@@ -662,10 +696,8 @@ def _total_shards() -> int:
 
 
 @app.get("/health")
-def health():
-    """Launch-readiness report. Contains no secret values - only whether each
-    gate is configured - so it is safe to serve unauthenticated and doubles as
-    the go/no-go check before flipping the Space public."""
+def health(x_ngs_token: str = Header(None)):
+    """Generic readiness when open; tenant-local substrate detail when authed."""
     deploy_sha = None
     try:
         with open(".deploy_sha", encoding="utf-8") as f:
@@ -674,14 +706,16 @@ def health():
         pass
 
     node_token_ok = bool(NODE_TOKEN)
+    registry_configured = tenants.tenants_file().exists()
+    auth_configured = node_token_ok or registry_configured
     hud_auth_ok = bool(os.environ.get("NGS_HUD_USER") and os.environ.get("NGS_HUD_PASSWORD"))
     # On HF, enabling persistent storage mounts /data as its own filesystem;
     # without it /data is just a directory inside the ephemeral container.
     persistent = os.path.isdir("/data") and os.path.ismount("/data")
 
     warnings = []
-    if not node_token_ok:
-        warnings.append("NGS_NODE_TOKEN not set: data API returns 503 (deny-by-default)")
+    if not auth_configured:
+        warnings.append("No node credentials configured: data API returns 503 (deny-by-default)")
     if not hud_auth_ok:
         warnings.append("NGS_HUD_USER/NGS_HUD_PASSWORD not set: HUD would be open to anyone on a public Space")
     if not persistent:
@@ -693,7 +727,35 @@ def health():
             "to unauthenticated callers"
         )
 
-    coverage = _substrate_coverage()
+    result = {
+        "status": "ignited",
+        "deploy_sha": deploy_sha,
+        "storage": os.environ.get("NOUGEN_HOME", "default"),
+        "persistent_storage": persistent,
+        "node_token_configured": node_token_ok,
+        "tenant_registry_configured": registry_configured,
+        "hud_auth_configured": hud_auth_ok,
+        "api_docs_public": _serve_docs and _network_exposed,
+        "public_ready": auth_configured and hud_auth_ok,
+        "warnings": warnings,
+    }
+
+    # The unauthenticated view intentionally performs no vault reads and does
+    # not reveal shard counts, database names, or another tenant's path.
+    if not x_ngs_token:
+        return result
+
+    tenant = verify_token(x_ngs_token)
+    context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
+    try:
+        coverage = _substrate_coverage()
+    finally:
+        core.reset_active_vault(context_tokens)
+    result.update({
+        "tenant_id": tenant.tenant_id,
+        "total_shards": coverage["shards"],
+        "substrate": coverage,
+    })
     if not coverage["complete"] and not coverage["read_through"]:
         warnings.append(
             f"substrate incomplete: {coverage['databases_mounted']} of "
@@ -705,28 +767,9 @@ def health():
     if not persistent and not coverage["read_through"]:
         warnings.append(
             "no read-through upstream configured on ephemeral storage: this node "
-            "is the only home for what it holds, and holds it until the next deploy. "
-            "Set NGS_UPSTREAM_URL to federate against a durable node instead"
+            "is the only home for what it holds, and holds it until the next deploy"
         )
-
-    return {
-        "status": "ignited",
-        "deploy_sha": deploy_sha,
-        "storage": os.environ.get("NOUGEN_HOME", "default"),
-        "persistent_storage": persistent,
-        "node_token_configured": node_token_ok,
-        "hud_auth_configured": hud_auth_ok,
-        "api_docs_public": _serve_docs and _network_exposed,
-        "total_shards": coverage["shards"],
-        # A bare count says nothing about what it is a count OF. This says how
-        # much of the grid the number covers, so a caller can tell a real miss
-        # from a partial mount without a second request.
-        "substrate": coverage,
-        # Auth gates are the hard requirement for a public flip; storage is a
-        # durability concern surfaced via warnings.
-        "public_ready": node_token_ok and hud_auth_ok,
-        "warnings": warnings,
-    }
+    return result
 
 
 # --- API models ---
@@ -817,7 +860,7 @@ def _merge_rows(*groups) -> list:
 
 @app.post("/search")
 def search(req: SearchRequest, response: Response,
-           _token: str = Depends(verify_token)):
+           _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Memory recall for cloud callers (mirrors the connector's POST /search).
 
     A crash in the full retrieval stack (vector lane, rerank, a bad shard row on
@@ -873,14 +916,16 @@ def search(req: SearchRequest, response: Response,
 
 
 @app.post("/capture")
-def capture_shard(req: CaptureRequest, _token: str = Depends(verify_token)):
+def capture_shard(req: CaptureRequest,
+                  _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Single-shard capture for user agents."""
     ok = core.capture(req.event_type, req.title, req.content, tags=req.tags)
     return {"status": "ok", "captured": bool(ok)}
 
 
 @app.post("/agent")
-def dispatch_agent(req: AgentRequest, _token: str = Depends(verify_token)):
+def dispatch_agent(req: AgentRequest,
+                   _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Run a prompt through a named roster agent."""
     result = run_agent(req.name, req.prompt, model=req.model)
     if result.startswith("[roster] No agent named"):
@@ -891,7 +936,8 @@ def dispatch_agent(req: AgentRequest, _token: str = Depends(verify_token)):
 
 
 @app.post("/sync/push")
-def sync_push(req: SyncPushRequest, _token: str = Depends(verify_token)):
+def sync_push(req: SyncPushRequest,
+              _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Bulk ingest (contract of connectors.cloud.push_to_cloud)."""
     from nougen_shards import private_vault
 
@@ -934,7 +980,7 @@ def sync_push(req: SyncPushRequest, _token: str = Depends(verify_token)):
 
 
 @app.get("/sync/pull")
-def sync_pull(_token: str = Depends(verify_token)):
+def sync_pull(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Full export (contract of connectors.cloud.pull_from_cloud)."""
     all_shards = []
     for i in range(1, core.MAX_DB_COUNT + 1):
@@ -958,7 +1004,7 @@ def sync_pull(_token: str = Depends(verify_token)):
 
 
 @app.get("/sync/hashes")
-def sync_hashes(_token: str = Depends(verify_token)):
+def sync_hashes(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Compact identity manifest for incremental replica synchronization."""
     hashes = []
     for i in range(1, core.MAX_DB_COUNT + 1):
@@ -1144,16 +1190,21 @@ class _TokenGatedMCP:
     the X-NGS-Token header, an Authorization: Bearer header, or a ?token=
     query parameter - the Claude app's custom connectors cannot attach
     arbitrary headers, so the query form is the pre-baked-URL path while the
-    OAuth flow issues Bearer tokens. NODE_TOKEN is read at call time so tests
-    (and runtime reconfiguration) can swap it without re-importing the
-    module."""
+    OAuth flow issues tenant-bearing Bearer tokens. Credentials and the tenant
+    registry are read at call time so tests and runtime configuration changes
+    do not require re-importing the module."""
 
     def __init__(self, inner):
         self.inner = inner
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
-            if not NODE_TOKEN:
+            try:
+                configured = tenants.credentials_configured(NODE_TOKEN)
+            except tenants.TenantRegistryError:
+                await self._reject(send, 503, "Tenant registry is invalid.")
+                return
+            if not configured:
                 await self._reject(send, 503, "Node write-auth not configured.")
                 return
             headers = {k.decode("latin-1").lower(): v.decode("latin-1")
@@ -1170,11 +1221,27 @@ class _TokenGatedMCP:
                 from urllib.parse import parse_qs
                 qs = parse_qs(scope.get("query_string", b"").decode("latin-1"))
                 supplied = (qs.get("token") or [None])[0]
-            shared_ok = bool(supplied) and hmac.compare_digest(str(supplied), str(NODE_TOKEN))
-            if not shared_ok and not (supplied and mcp_oauth.issued_token_valid(supplied)):
+            tenant = None
+            if supplied:
+                try:
+                    tenant = tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+                    if tenant is None:
+                        issued_tenant_id = mcp_oauth.issued_token_tenant(supplied)
+                        if issued_tenant_id:
+                            tenant = tenants.tenant_by_id(issued_tenant_id, core.GLOBAL_DIR)
+                except tenants.TenantRegistryError:
+                    await self._reject(send, 503, "Tenant registry is invalid.")
+                    return
+            if tenant is None:
                 await self._reject(send, 401, "Invalid node token.",
                                    scope=scope)
                 return
+            context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
+            try:
+                await self.inner(scope, receive, send)
+            finally:
+                core.reset_active_vault(context_tokens)
+            return
         await self.inner(scope, receive, send)
 
     @staticmethod
@@ -1200,7 +1267,14 @@ class _TokenGatedMCP:
 
 # Register the OAuth endpoints BEFORE the Gradio catch-all at "/", or the HUD
 # swallows /authorize, /token, /register and the discovery documents.
-mcp_oauth.install(app, node_token_getter=lambda: NODE_TOKEN)
+mcp_oauth.install(
+    app,
+    node_token_getter=lambda: NODE_TOKEN,
+    tenant_resolver=lambda token: (
+        resolved.tenant_id if (resolved := _resolve_tenant_credential(token)) else None
+    ),
+    credentials_configured_getter=_credentials_configured,
+)
 
 # Mount BEFORE the Gradio catch-all at "/" so /mcp is routed to the MCP app.
 app.mount("/mcp", _TokenGatedMCP(_mcp_asgi))

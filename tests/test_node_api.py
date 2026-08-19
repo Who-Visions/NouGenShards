@@ -48,11 +48,17 @@ def test_health_is_open_and_reports_readiness(client):
     body = r.json()
     assert body["status"] == "ignited"
     assert body["node_token_configured"] is True
-    assert isinstance(body["total_shards"], int)
+    assert "total_shards" not in body
+    assert "substrate" not in body
     assert isinstance(body["warnings"], list)
     # HUD creds aren't set in tests -> not ready for a public flip.
     assert body["hud_auth_configured"] is False
     assert body["public_ready"] is False
+
+    authed = client.get("/health", headers=AUTH).json()
+    assert authed["tenant_id"] == "owner"
+    assert isinstance(authed["total_shards"], int)
+    assert isinstance(authed["substrate"], dict)
 
 
 def test_data_endpoints_deny_without_token(client):

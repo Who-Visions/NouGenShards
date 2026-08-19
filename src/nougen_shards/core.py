@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import sqlite3
+from contextvars import ContextVar, Token, copy_context
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -32,12 +33,53 @@ if not _vault_dir:
 
 GLOBAL_DIR = Path(_vault_dir)
 
+_ACTIVE_VAULT_DIR: ContextVar[Optional[Path]] = ContextVar(
+    "nougen_active_vault_dir", default=None)
+_ACTIVE_TENANT_ID: ContextVar[Optional[str]] = ContextVar(
+    "nougen_active_tenant_id", default=None)
+
+
+def active_vault_dir() -> Path:
+    """Request-local vault, falling back to the legacy process-wide vault."""
+    return _ACTIVE_VAULT_DIR.get() or GLOBAL_DIR
+
+
+def active_tenant_id() -> str:
+    """Request-local tenant; unset local/CLI work retains owner behaviour."""
+    return _ACTIVE_TENANT_ID.get() or "owner"
+
+
+def vault_context_is_set() -> bool:
+    return _ACTIVE_VAULT_DIR.get() is not None
+
+
+def bind_active_vault(vault_dir: Path, tenant_id: str) -> tuple[Token, Token]:
+    """Bind a tenant to the current context and return reset tokens."""
+    return (_ACTIVE_VAULT_DIR.set(Path(vault_dir)), _ACTIVE_TENANT_ID.set(tenant_id))
+
+
+def reset_active_vault(tokens: tuple[Token, Token]) -> None:
+    """Undo :func:`bind_active_vault` in the context that created it."""
+    vault_token, tenant_token = tokens
+    _ACTIVE_TENANT_ID.reset(tenant_token)
+    _ACTIVE_VAULT_DIR.reset(vault_token)
+
+
+def _ensure_active_vault_dir() -> Path:
+    vault = active_vault_dir()
+    vault.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if active_tenant_id() != "owner":
+        try:
+            vault.chmod(0o700)
+        except OSError:
+            pass
+    return vault
+
 
 
 def get_db_path(index: int) -> Path:
     """Returns the path for a specific database index (Module 11: Transform Architecture)."""
-    GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
-    return GLOBAL_DIR / f"nougen_shards_{index}.db"
+    return active_vault_dir() / f"nougen_shards_{index}.db"
 
 
 def is_db_full(index: int) -> bool:
@@ -99,7 +141,8 @@ def init_db(index: int = 1):
     initialized once per process. Keyed by vault dir because tests and tools
     repoint NOUGEN_VAULT_DIR/GLOBAL_DIR mid-process.
     """
-    key = (str(GLOBAL_DIR), index)
+    vault = _ensure_active_vault_dir()
+    key = (str(vault), index)
     if key in _INITIALIZED_DBS:
         return
     conn = get_connection(index)
@@ -239,8 +282,7 @@ def init_db(index: int = 1):
 
 def get_dedup_path():
     """Path to the central dedup index (Module 12: Refactor Complexity)."""
-    GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
-    return GLOBAL_DIR / "dedup_index.db"
+    return _ensure_active_vault_dir() / "dedup_index.db"
 
 
 def _get_dedup_connection():
@@ -1300,12 +1342,12 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     def run_parallel_retrieval(active_domain: str) -> list:
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_keyword = executor.submit(
-                _keyword_retrieve, query, candidate_limit, query_embedding, active_domain,
-                include_research
+                copy_context().run, _keyword_retrieve, query, candidate_limit,
+                query_embedding, active_domain, include_research
             )
             future_vector = executor.submit(
-                _vector_retrieve, query_embedding, candidate_limit, active_domain,
-                include_research
+                copy_context().run, _vector_retrieve, query_embedding,
+                candidate_limit, active_domain, include_research
             )
             
             keyword_results = future_keyword.result()

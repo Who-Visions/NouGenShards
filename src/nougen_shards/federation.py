@@ -24,9 +24,14 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
                        type(exc).__name__, exc)
         local_results = []
 
-    # 2. Get Configs from Keymaker
-    external_configs = keymaker.list_external_dbs()
-    cloud_configs = keymaker.list_cloud_nodes()
+    # Existing keymaker configuration belongs to the owner. A tenant must not
+    # inherit those read-through lanes and merge owner material into its recall.
+    if core.active_tenant_id() == "owner":
+        external_configs = keymaker.list_external_dbs()
+        cloud_configs = keymaker.list_cloud_nodes()
+    else:
+        external_configs = []
+        cloud_configs = []
 
     # 3. Query External DBs if configured.
     # Remote sources must never abort federation: a raising external/cloud

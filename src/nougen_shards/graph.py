@@ -1,8 +1,8 @@
 """
 Graph Memory: link shards (fixes, files, commands, decisions) into a latent mesh.
 
-Edges live in a dedicated graph.db inside the vault (honors NOUGEN_VAULT_DIR via
-core.GLOBAL_DIR), so a fix can point at the file it touched, a command at the
+Edges live in a dedicated graph.db inside the request-local active vault, so a
+fix can point at the file it touched, a command at the
 decision that prompted it, and recall can walk those links.
 
 Nodes are identified by file_hash, not by the per-DB autoincrement `id`: the
@@ -21,8 +21,9 @@ from . import core
 
 def get_graph_db_path():
     """Path to the graph edge store (alongside the shard cluster in the vault)."""
-    core.GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
-    return core.GLOBAL_DIR / "graph.db"
+    vault = core.active_vault_dir()
+    vault.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return vault / "graph.db"
 
 
 def get_graph_connection():
@@ -201,4 +202,3 @@ def get_node_centrality(file_hash: str) -> int:
         return 0
     finally:
         conn.close()
-

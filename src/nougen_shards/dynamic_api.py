@@ -4,9 +4,17 @@ import sqlite3
 import glob
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from . import core
 
 _HOME = Path.home()
 SHARDS_DIR = os.environ.get("NOUGEN_VAULT_DIR", str(_HOME / ".nougen" / "shards"))
+
+
+def _shards_dir() -> str:
+    """Resolve per call so a request ContextVar cannot be bypassed."""
+    if core.vault_context_is_set():
+        return str(core.active_vault_dir())
+    return SHARDS_DIR
 TOKEN_DB = os.environ.get(
     "NOUGEN_TOKEN_DB",
     str(_HOME / "Outpost" / "Yuki-Ai" / "persistence" / "antigravity_memory.db"),
@@ -183,7 +191,7 @@ def search_shards(query="", limit=40):
     results = []
     
     for db_idx in range(1, 10):
-        db_path = os.path.join(SHARDS_DIR, f"nougen_shards_{db_idx}.db")
+        db_path = os.path.join(_shards_dir(), f"nougen_shards_{db_idx}.db")
         if not os.path.exists(db_path):
             continue
         try:
@@ -263,7 +271,7 @@ def get_engine_status():
     total_shards = 0
     
     for db_idx in range(1, 10):
-        db_path = os.path.join(SHARDS_DIR, f"nougen_shards_{db_idx}.db")
+        db_path = os.path.join(_shards_dir(), f"nougen_shards_{db_idx}.db")
         size_mb = 0.0
         shards_count = 0
         if os.path.exists(db_path):
