@@ -1,0 +1,120 @@
+{
+  "_generated_by": "tools/snapshot_demo.py",
+  "_note": "Derived from a real engine run with text and exact figures removed. Regenerate rather than editing by hand.",
+  "_scrubbed": true,
+  "status": {
+    "databases": [
+      {
+        "index": 1,
+        "shards": 17000,
+        "size_mb": 350,
+        "is_active": false
+      },
+      {
+        "index": 2,
+        "shards": 17000,
+        "size_mb": 360,
+        "is_active": false
+      },
+      {
+        "index": 3,
+        "shards": 17000,
+        "size_mb": 360,
+        "is_active": false
+      },
+      {
+        "index": 4,
+        "shards": 17000,
+        "size_mb": 360,
+        "is_active": false
+      },
+      {
+        "index": 5,
+        "shards": 17000,
+        "size_mb": 360,
+        "is_active": false
+      },
+      {
+        "index": 6,
+        "shards": 17000,
+        "size_mb": 350,
+        "is_active": false
+      },
+      {
+        "index": 7,
+        "shards": 17000,
+        "size_mb": 360,
+        "is_active": false
+      },
+      {
+        "index": 8,
+        "shards": 17000,
+        "size_mb": 370,
+        "is_active": false
+      },
+      {
+        "index": 9,
+        "shards": 17000,
+        "size_mb": 380,
+        "is_active": true
+      }
+    ],
+    "total_shards": 150000,
+    "max_db_count": 9,
+    "active_db": 9
+  },
+  "usage": {
+    "period": "week",
+    "invocations": 0,
+    "total_tokens": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "cached_tokens": 0,
+    "cache_hit_rate": 0,
+    "estimated_cost": 0,
+    "free_share": 0,
+    "by_model": [],
+    "ledger_present": false
+  },
+  "relay": [
+    {
+      "id": "demo-1",
+      "timestamp": "2026-08-15T17:23:55.905667",
+      "agent": "claude cli",
+      "machine": "demo-node",
+      "branch": "main",
+      "goal": "Sample handoff 1 \u2014 your real registry appears here in the desktop shell",
+      "tasks_done": 0,
+      "tasks_total": 0,
+      "status": "open",
+      "live_status": "open",
+      "acknowledged_by": ""
+    },
+    {
+      "id": "demo-2",
+      "timestamp": "2026-08-15T14:56:52.679464",
+      "agent": "claude-cli",
+      "machine": "demo-node",
+      "branch": "main",
+      "goal": "Sample handoff 2 \u2014 your real registry appears here in the desktop shell",
+      "tasks_done": 0,
+      "tasks_total": 0,
+      "status": "open",
+      "live_status": "open",
+      "acknowledged_by": ""
+    },
+    {
+      "id": "demo-3",
+      "timestamp": "2026-08-15T14:48:14.534915",
+      "agent": "claude-cli",
+      "machine": "demo-node",
+      "branch": "main",
+      "goal": "Sample handoff 3 \u2014 your real registry appears here in the desktop shell",
+      "tasks_done": 0,
+      "tasks_total": 0,
+      "status": "open",
+      "live_status": "open",
+      "acknowledged_by": ""
+    }
+  ]
+}
