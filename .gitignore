@@ -184,3 +184,12 @@ tools/update_mcp_*.py
 tools/vertex_image.py
 
 
+
+# build artifacts + local backups (added 2026-08-19, pre-landing sweep)
+.fleet_worker.js
+.fleet_bindings_backup.json
+*.bak-2026*
+logs/
+
+# local handoff messages - working registry, never published (.gitkeep only)
+.handoffs/msg_*.md
