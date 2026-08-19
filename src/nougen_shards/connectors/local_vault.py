@@ -128,7 +128,7 @@ NOISE_MARKERS = tuple(
     m.strip().lower() for m in os.environ.get(
         "NOUGEN_LOCAL_VAULT_NOISE",
         ".next,node_modules,__pycache__,site-packages,dist/,build/,.git/,.venv,"
-        "vendor/,coverage/,.cache,package-lock.json,yarn.lock"
+        "vendor/,coverage/,.cache,package-lock.json,yarn.lock,_clones/"
     ).split(",") if m.strip()
 )
 
@@ -137,6 +137,53 @@ def _noise_penalty(title: str) -> float:
     """How much to demote a generated/vendored path. 0.0 for authored content."""
     low = (title or "").lower().replace("\\", "/")
     return 0.40 if any(marker in low for marker in NOISE_MARKERS) else 0.0
+
+
+def _int_env(name: str, fallback: int) -> int:
+    """Env-resolved integer with a logged fallback (Rule 0.2: no bare magic numbers)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return fallback
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning("%s=%r is not an integer, using %d", name, raw, fallback)
+        return fallback
+
+
+#: A federated row's `title` column is only a title by convention. Several legacy
+#: stores ingested whole source files with the FILE BODY in that column, so one
+#: hit could push tens of thousands of characters into a caller's context. These
+#: caps bound what a single row can cost; the full text stays in the vault and is
+#: still reachable by opening the row directly.
+def _max_title_chars() -> int:
+    return _int_env("NOUGEN_LOCAL_VAULT_MAX_TITLE_CHARS", 200)
+
+
+def _max_content_chars() -> int:
+    return _int_env("NOUGEN_LOCAL_VAULT_MAX_CONTENT_CHARS", 2000)
+
+
+def _clip(text: str, limit: int) -> str:
+    """Truncate visibly. Silent truncation reads as a complete value."""
+    if limit <= 0 or len(text) <= limit:
+        return text
+    return text[:limit] + f"... [+{len(text) - limit} chars truncated]"
+
+
+#: A title carrying newlines, or longer than a title plausibly is, is a content
+#: blob rather than a name -- the store-class signal that IS available without the
+#: unpopulated content_class field. Demoted like vendored paths, never dropped.
+#: chr(10)/chr(13) rather than escapes -- a newline in a title is the tell.
+_TITLE_BLOB_CHARS = (chr(10), chr(13))
+
+
+def _blob_penalty(title: str) -> float:
+    t = title or ""
+    if any(ch in t for ch in _TITLE_BLOB_CHARS) or len(t) > _int_env(
+            "NOUGEN_LOCAL_VAULT_BLOB_TITLE_CHARS", 300):
+        return 0.40
+    return 0.0
 
 
 def _allowed_roots() -> list[Path]:
@@ -355,15 +402,18 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
         results = []
         for row in rows:
             item = dict(row)
+            # Hash the ORIGINAL text so ids and dedup stay stable across cap changes.
+            raw_title = item["title"] or "Untitled"
+            raw_content = item["content"] or ""
             results.append({
                 "id": f"vault_{vid}_{_stable_hash(item['title'])[:16]}",
                 "event_type": "LOCAL_VAULT",
-                "title": item["title"] or "Untitled",
-                "content": item["content"] or "",
+                "title": _clip(raw_title, _max_title_chars()),
+                "content": _clip(raw_content, _max_content_chars()),
                 "tags": json.dumps(["local_vault", path.stem]),
                 "utility_score": 1.0,
                 "access_count": 0,
-                "file_hash": _stable_hash(item["content"]),
+                "file_hash": _stable_hash(raw_content),
                 "bm25_score": 0.0,
                 # Carry the in-vault ranking into the RRF merge. A flat score for
                 # every local row made the merge fall back to source order, so
@@ -379,7 +429,8 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
                     + (min(0.20, 0.20 * (-(item["bm25_rank"]) / 10.0))
                        if item.get("bm25_rank") is not None
                        else min(0.20, (item.get("term_count") or 0) / 50.0))
-                    - _noise_penalty(item["title"])),
+                    - _noise_penalty(raw_title)
+                    - _blob_penalty(raw_title)),
                     6),
                 "_db_index": f"vault_{path.stem}",
             })
@@ -455,4 +506,12 @@ def query_local_vaults(query: str, vault_configs: list, limit: int = 3,
         key = (item["file_hash"], item["title"])
         if key not in best or item["final_score"] > best[key]["final_score"]:
             best[key] = item
-    return sorted(best.values(), key=lambda x: -x["final_score"])
+    ranked = sorted(best.values(), key=lambda x: -x["final_score"])
+
+    # `limit` was only ever passed to each vault, so N registered vaults returned
+    # up to N*limit rows (measured: 85 rows for limit=6 across 45 vaults, 203KB).
+    # Federation caps after RRF, so this was waste rather than a leak -- but any
+    # direct caller wore the full payload. Keep a MULTIPLE of limit so RRF still
+    # has candidates to fuse; only rows that could never win are dropped.
+    factor = _int_env("NOUGEN_LOCAL_VAULT_CANDIDATE_FACTOR", 5)
+    return ranked[:max(limit, limit * factor)] if factor else ranked

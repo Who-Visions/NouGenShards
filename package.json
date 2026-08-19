@@ -11,7 +11,10 @@
     "dev": "vite",
     "build": "vite build",
     "tauri": "tauri",
-    "test": "python -m pytest tests"
+    "test": "python -m pytest tests",
+    "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
+    "tauri:build": "tauri build",
+    "sidecar": "pwsh src-tauri/build-sidecar.ps1"
   },
   "repository": {
     "type": "git",

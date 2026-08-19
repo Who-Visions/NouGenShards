@@ -657,11 +657,69 @@ def capture(event_type: str, title: str, content: str,
         dconn.close()
 
 
-# Relevance blend weights (Module 20)
-WEIGHT_BM25 = 0.4
-WEIGHT_SEMANTIC = 0.6
-WEIGHT_LIKELIHOOD = 0.7
-WEIGHT_PRIOR = 0.3
+# Relevance blend weights (Module 20).
+#: Resolved env -> logged fallback at import (Rule 0.2: no bare magic numbers in
+#: the combiner). Exposed so the ranking blend can be A/B'd against the retrieval
+#: canary without a code edit or a redeploy.
+DEFAULT_WEIGHT_BM25 = 0.4
+DEFAULT_WEIGHT_SEMANTIC = 0.6
+DEFAULT_WEIGHT_LIKELIHOOD = 0.7
+DEFAULT_WEIGHT_PRIOR = 0.3
+
+
+def _env_float(name: str, default: float, minimum: float = 0.0,
+               maximum: float = 1.0) -> float:
+    """Resolve a bounded float from env, logging any fallback.
+
+    Out-of-range and unparseable values fall back rather than raise: a bad env
+    var must not take retrieval down, but it must never pass silently either.
+    """
+    raw = os.environ.get(name)
+    if raw:
+        try:
+            val = float(raw)
+            if minimum <= val <= maximum:
+                return val
+            logger.warning("%s=%r outside [%s, %s]; falling back to %s",
+                           name, raw, minimum, maximum, default)
+        except ValueError:
+            logger.warning("%s=%r is not a number; falling back to %s",
+                           name, raw, default)
+    else:
+        logger.debug("%s unset; using fallback %s", name, default)
+    return default
+
+
+WEIGHT_BM25 = _env_float("NOUGEN_WEIGHT_BM25", DEFAULT_WEIGHT_BM25)
+WEIGHT_SEMANTIC = _env_float("NOUGEN_WEIGHT_SEMANTIC", DEFAULT_WEIGHT_SEMANTIC)
+WEIGHT_LIKELIHOOD = _env_float("NOUGEN_WEIGHT_LIKELIHOOD", DEFAULT_WEIGHT_LIKELIHOOD)
+WEIGHT_PRIOR = _env_float("NOUGEN_WEIGHT_PRIOR", DEFAULT_WEIGHT_PRIOR)
+
+#: RRF fusion parameters. Fusion is by POSITION, so a lane's rank-1 hit scores
+#: 1/(k+1) no matter how weakly it matched. On a federated grid that let a lane
+#: with no keyword index contribute its first row as a peer of a near-exact hit
+#: from the FTS lane (measured 2026-08-16/18: three Three.js "Fog" doc pages tied
+#: the planted canary at 1/61 on the token "fog"). `_match_strength`, stamped by
+#: the scoring lanes, damps that: full RRF credit for evidence, reduced credit
+#: for none. DEMOTE, never exclude -- the 925k legacy shards must stay reachable.
+DEFAULT_RRF_K = 60.0
+DEFAULT_RRF_BASE = 0.7           # floor of the utility multiplier
+DEFAULT_RRF_UTILITY = 0.3        # utility's share of that multiplier
+DEFAULT_UNSCORED_CREDIT = 0.5    # RRF credit for a hit carrying no match evidence
+DEFAULT_LIKE_STRENGTH = 0.35     # substring hit: match present but ungraded
+
+RRF_K = _env_float("NOUGEN_RRF_K", DEFAULT_RRF_K, minimum=1.0, maximum=10000.0)
+RRF_BASE = _env_float("NOUGEN_RRF_BASE", DEFAULT_RRF_BASE)
+RRF_UTILITY = _env_float("NOUGEN_RRF_UTILITY", DEFAULT_RRF_UTILITY)
+UNSCORED_CREDIT = _env_float("NOUGEN_UNSCORED_CREDIT", DEFAULT_UNSCORED_CREDIT)
+LIKE_STRENGTH = _env_float("NOUGEN_LIKE_MATCH_STRENGTH", DEFAULT_LIKE_STRENGTH)
+
+#: Characters of body shown per record in a header-only recall packet. Enough to
+#: decide whether a record is worth opening in full, not enough to pay for it.
+DEFAULT_RECALL_PREVIEW_CHARS = 160
+RECALL_PREVIEW_CHARS = int(
+    _env_float("NOUGEN_RECALL_PREVIEW_CHARS", float(DEFAULT_RECALL_PREVIEW_CHARS),
+               minimum=0.0, maximum=4000.0))
 
 # Stage-2 cross-encoder reranker (Tier-1 elevation). 2026 SOTA: a hybrid->rerank
 # two-stage pipeline lifts Recall@5 ~+17% / MRR ~+40% over RRF alone. Off by
@@ -820,6 +878,10 @@ def _process_fts_result(row, db_index, query_embedding, now: datetime):
 
     # 4. Final relevance: a weighted blend of the likelihood signal and the decayed utility score
     item["final_score"] = (likelihood * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
+    # 5. Carry the normalized match quality THROUGH the merge. reciprocal_rank_fusion
+    # overwrites final_score with a position-only score, so without this the whole
+    # bm25/semantic blend above is discarded the moment two lanes are fused.
+    item["_match_strength"] = max(0.0, min(1.0, likelihood))
     return item
 
 
@@ -983,10 +1045,15 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                                 sem_score = float(np.dot(query_embedding, emb_array))
                             except Exception:
                                 sem_score = 0.0
-                    likelihood = sem_score if query_embedding is not None else 0.5
+                    # A LIKE hit proves the query appears as a substring but grades
+                    # nothing -- there is no bm25 here. Treat it as weak-but-real
+                    # evidence (env NOUGEN_LIKE_MATCH_STRENGTH) rather than the flat
+                    # 0.5 that let ungraded hits outrank scored ones.
+                    likelihood = sem_score if query_embedding is not None else LIKE_STRENGTH
 
                     decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), query_now)
-                    item["final_score"] = (likelihood * 0.5) + (decayed_utility * 0.5)
+                    item["final_score"] = (likelihood * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
+                    item["_match_strength"] = max(0.0, min(1.0, likelihood))
                     results.append(item)
                     db_hits += 1
 
@@ -1175,15 +1242,31 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     return top_results
 
 
-def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[dict]:
+def reciprocal_rank_fusion(result_lists: List[List[dict]], k: Optional[float] = None) -> List[dict]:
     """
     Module 8 / 21: Reciprocal Rank Fusion (RRF) to merge multiple ranked lists.
 
-    Fuses by POSITION only: score = 1/(k+rank), summed across lists. Callers that
-    want match quality to influence the merge must hand their list in ranked
-    order — that is the supported lever, and it keeps this function's arithmetic
-    exactly as specified.
+    Fuses by position — score = 1/(k+rank), summed across lists — then damps each
+    contribution by the hit's own match strength.
+
+    Position-only fusion was the documented contract until 2026-08-18, when a
+    federated A/B showed why it cannot hold on this grid: every lane's rank-1 row
+    scores an identical 1/(k+1), so a store with no keyword index contributed its
+    first row as a peer of a near-exact FTS match. Measured on the planted canary
+    "seventeen lanterns in the Grand'Anse fog": three Three.js `Fog` doc pages,
+    each with bm25_score 0.0, tied the true hit at 1/61 purely on the token "fog".
+
+    So a lane's rank still sets the contribution, but a hit that carries no
+    relevance evidence gets a fraction of it (NOUGEN_UNSCORED_CREDIT). Lanes that
+    score their hits stamp `_match_strength` in [0, 1]; lanes that cannot (legacy
+    federated vaults with neither FTS nor embeddings) leave it absent and take the
+    unscored rate. This DEMOTES, it never excludes — the 925,762 legacy shards
+    stay reachable, which on this corpus matters more than precision.
+
+    `k` resolves from NOUGEN_RRF_K when not passed explicitly.
     """
+    if k is None:
+        k = RRF_K
     rrf_scores = {}  # key -> float
     item_map = {}    # key -> dict
     
@@ -1206,7 +1289,14 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
         for rank_idx, item in enumerate(rank_list):
             key = get_rrf_key(item)
             rank = rank_idx + 1
-            score = 1.0 / (k + rank)
+            # Evidence damping: absent `_match_strength` means the lane could not
+            # grade the match at all, not that the match was perfect.
+            strength = item.get("_match_strength")
+            if strength is None:
+                credit = UNSCORED_CREDIT
+            else:
+                credit = UNSCORED_CREDIT + ((1.0 - UNSCORED_CREDIT) * max(0.0, min(1.0, strength)))
+            score = (1.0 / (k + rank)) * credit
             rrf_scores[key] = rrf_scores.get(key, 0.0) + score
             
             if key not in item_map:
@@ -1222,7 +1312,7 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
     for key, item in item_map.items():
         consensus_score = rrf_scores[key]
         decayed_utility = item.get("utility_score", 1.0) * _temporal_decay(item.get("timestamp"), merge_now)
-        item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3))
+        item["final_score"] = consensus_score * (RRF_BASE + (decayed_utility * RRF_UTILITY))
         merged.append(item)
 
     # Tie-break fields are stringified: grid rows carry int _db_index/id while
@@ -1320,7 +1410,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             keyword_results = future_keyword.result()
             vector_results = future_vector.result()
             
-        return reciprocal_rank_fusion([keyword_results, vector_results], k=60)
+        return reciprocal_rank_fusion([keyword_results, vector_results])
 
     all_results = run_parallel_retrieval(domain_key)
 
@@ -1561,10 +1651,39 @@ def format_shard_when(timestamp: Optional[str]) -> str:
     return f"{local.strftime('%Y-%m-%d %I:%M %p %Z').strip()} ({rel})"
 
 
-def compile_recall_packet(shards: list) -> str:
-    """Synthesis of retrieved experience into a coherent context packet (Module 18)."""
+def compile_recall_packet(shards: list, headers_only: bool = False) -> str:
+    """Synthesis of retrieved experience into a coherent context packet (Module 18).
+
+    `headers_only` emits one line per record — id, db, score, age, title, and a
+    short preview — instead of the full body. Measured 2026-08-18: the same five
+    hits cost ~7.5k tokens as bodies and ~0.8k as headers. A caller whose actual
+    task is *choosing which record to open* should not be charged for all five
+    bodies to make that choice; it re-reads them on every later turn.
+    """
     if not shards:
         return "<!-- NO RELEVANT MEMORY RECALLED -->"
+    if headers_only:
+        out = [f"=== NOUGENSHARDS RECALL PACKET [HEADERS, {len(shards)} records] ==="]
+        for s in shards:
+            db_idx = s.get("_db_index")
+            db_tag = f" (db {db_idx})" if db_idx is not None else ""
+            try:
+                score = f"{float(s['final_score']):.4f}" if s.get("final_score") is not None else "n/a"
+            except (TypeError, ValueError):
+                score = "n/a"
+            title = str(s.get("title", "(untitled)")).replace("\n", " ").strip()
+            out.append(f"--- #{s.get('id', '?')}{db_tag} [{score}] {format_shard_when(s.get('timestamp'))}")
+            out.append(f"    {title}")
+            if RECALL_PREVIEW_CHARS > 0:
+                body = str(s.get("content", "")).replace("\n", " ").strip()
+                if body:
+                    clipped = body[:RECALL_PREVIEW_CHARS]
+                    tail = "..." if len(body) > RECALL_PREVIEW_CHARS else ""
+                    out.append(f"    > {clipped}{tail}")
+        out.append("")
+        out.append("Headers only. Re-call with full=True for the bodies you actually need.")
+        out.append("Anghkooey — NouGenShards remembers.")
+        return "\n".join(out)
     output = ["=== NOUGENSHARDS RECALL PACKET [BAYESIAN SYNTHESIS] ==="]
     for s in shards:
         # Surface the source DB so callers can target this exact shard in the

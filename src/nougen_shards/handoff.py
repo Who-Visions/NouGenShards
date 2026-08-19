@@ -4,7 +4,7 @@ import json
 import sqlite3
 import subprocess
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 from rich.console import Console
@@ -273,6 +273,12 @@ def init_handoff_db() -> None:
         """)
         _add_missing_columns(conn, "handoff_records", {
             "host": "TEXT", "machine_id": "TEXT", "platform": "TEXT",
+            # Facet columns: the sortable half of a leg. Additive so the 500+
+            # legs already in the wild gain them on the next rebuild-db.
+            "created_utc": "TEXT", "tz_offset": "TEXT", "topic": "TEXT",
+            "tags": "TEXT", "severity": "TEXT", "incidents_open": "INTEGER",
+            "supersedes": "TEXT", "files_touched_count": "INTEGER",
+            "message_chars": "INTEGER",
         })
         _add_missing_columns(conn, "handoff_checkpoints", {
             "host": "TEXT", "machine_id": "TEXT",
@@ -288,6 +294,20 @@ def init_handoff_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_handoff_records_machine "
             "ON handoff_records(machine_id)"
+        )
+        # Catching up is always a recency-first question, so index the UTC key
+        # rather than relying on the naive local 'created_at'.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_handoff_records_recency "
+            "ON handoff_records(created_utc DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_handoff_records_severity "
+            "ON handoff_records(severity, created_utc DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_handoff_records_topic "
+            "ON handoff_records(topic, created_utc DESC)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_handoff_checkpoints_handoff "
@@ -373,6 +393,178 @@ def _fire_triggers(event: str, data: dict, path: Path) -> list[dict]:
         return []
 
 
+# ---------------------------------------------------------------------------
+# Facets: the sortable/filterable half of a handoff record.
+#
+# A leg used to carry only identity (who/when/where) and prose. That made the
+# registry unsortable in the ways that actually matter when catching up: you
+# could not ask "which legs are still carrying an incident", "what else touched
+# this topic", or "which leg supersedes this one" without reading every body.
+# These fields are DERIVED at write time (and backfilled on rebuild-db) so the
+# index can answer those questions without opening a single markdown file.
+# ---------------------------------------------------------------------------
+
+_SECTION_KEYS = (
+    ("incidents", ("incident",)),
+    ("investigations", ("investigat",)),
+    ("changes", ("change",)),
+    ("issues", ("issue", "workaround")),
+    ("events", ("event", "upcoming")),
+)
+
+_EMPTY_MARKERS = ("none", "n/a", "nothing", "no active", "-")
+
+
+def _slugify(text, limit=48):
+    out = []
+    for ch in (text or "").lower():
+        out.append(ch if (ch.isalnum() or ch == "-") else "-")
+    slug = "".join(out)
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug.strip("-")[:limit] or "untitled"
+
+
+def parse_sections(message):
+    """Count real bullets per template section.
+
+    'Real' means a bullet that is not a placeholder: a section whose only
+    content is 'None' must count as ZERO, or every leg looks like it is
+    carrying an open incident forever. That false-positive is exactly what
+    makes a stale leg read as a live one.
+    """
+    counts = {name: 0 for name, _ in _SECTION_KEYS}
+    current = None
+    for raw in (message or "").splitlines():
+        line = raw.strip()
+        if line.startswith("##"):
+            head = line.lstrip("#").strip().lower()
+            current = None
+            for name, needles in _SECTION_KEYS:
+                if any(n in head for n in needles):
+                    current = name
+                    break
+            continue
+        if current and line.startswith(("-", "*")):
+            body = line.lstrip("-*").strip().lower()
+            body = body.strip("<>").strip()
+            if not body:
+                continue
+            if any(body.startswith(m) for m in _EMPTY_MARKERS):
+                continue
+            counts[current] += 1
+    return counts
+
+
+def derive_facets(message, git_info, goal, agent, host, prior_id=None):
+    now = datetime.now().astimezone()
+    sections = parse_sections(message)
+    changes = (git_info or {}).get("changes") or []
+    files = []
+    for entry in changes:
+        text = entry if isinstance(entry, str) else str(entry)
+        parts = text.split(None, 1)
+        files.append(parts[1].strip() if len(parts) > 1 else text.strip())
+    if sections["incidents"]:
+        severity = "incident"
+    elif sections["investigations"]:
+        severity = "active"
+    else:
+        severity = "clear"
+    tags = sorted({t for t in (
+        _slugify(agent or ""),
+        _slugify(host or ""),
+        _slugify((git_info or {}).get("branch") or ""),
+        severity,
+    ) if t and t != "untitled"})
+    return {
+        # Absolute, tz-aware, UTC. The pre-existing 'timestamp' field is naive
+        # local time, so sorting legs from two machines in different zones
+        # silently interleaves them wrong. This is the sort key.
+        "created_utc": now.astimezone(timezone.utc).isoformat(timespec="seconds"),
+        "tz_offset": now.strftime("%z"),
+        "topic": _slugify(goal),
+        "tags": tags,
+        "severity": severity,
+        "incidents_open": bool(sections["incidents"]),
+        "sections": sections,
+        "supersedes": prior_id,
+        "files_touched": files,
+        "files_touched_count": len(files),
+        "message_chars": len(message or ""),
+        "host": host,
+        "branch": (git_info or {}).get("branch"),
+    }
+
+
+def _prior_leg_id(folder, host, agent):
+    """Newest existing leg from the same host+agent - the one this continues."""
+    try:
+        candidates = []
+        for p in Path(folder).glob("handoff_*.json"):
+            try:
+                d = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            m = d.get("machine") or {}
+            if (m.get("host") == host) and ((d.get("agent") or "") == (agent or "").lower()):
+                candidates.append((d.get("created_utc") or d.get("timestamp") or "", d.get("handoff_id")))
+        candidates.sort()
+        return candidates[-1][1] if candidates else None
+    except Exception:
+        return None
+
+
+def _reconcile_path_rows(conn, path: Path, handoff_id: str) -> int:
+    """One file is one record. Drop rows that claim the same file under a
+    different id.
+
+    A leg forks when its stored handoff_id is rewritten (a redaction pass over
+    .handoffs turned a host into "<user>") while the filename keeps the old
+    spelling: the next sync inserts a second row for the same file and both
+    survive forever, one of them permanently stale. The file on disk is the
+    authority for its own identity, so any other row pointing at that file is
+    by definition a ghost.
+    """
+    try:
+        ghosts = [r["handoff_id"] for r in conn.execute(
+            "SELECT handoff_id FROM handoff_records WHERE (path = ? OR markdown_path = ?) "
+            "AND handoff_id != ?", (str(path), str(path.with_suffix(".md")), handoff_id))]
+        for ghost in ghosts:
+            conn.execute("DELETE FROM handoff_records WHERE handoff_id = ?", (ghost,))
+            conn.execute("DELETE FROM handoff_checkpoints WHERE handoff_id = ?", (ghost,))
+        return len(ghosts)
+    except Exception:
+        return 0
+
+
+def prune_orphan_records() -> int:
+    """Delete index rows whose JSON file is gone.
+
+    Without this the index only ever grows: a deleted or renamed leg leaves a
+    row that no rebuild can refresh, and it keeps answering queries with
+    whatever it last knew. An index that cannot forget is not an index of the
+    registry, it is a second registry that drifts from it.
+    """
+    init_handoff_db()
+    conn = _get_db_connection()
+    removed = 0
+    try:
+        for row in list(conn.execute("SELECT handoff_id, path FROM handoff_records")):
+            if not row["path"] or not Path(row["path"]).exists():
+                conn.execute("DELETE FROM handoff_records WHERE handoff_id = ?",
+                             (row["handoff_id"],))
+                conn.execute("DELETE FROM handoff_checkpoints WHERE handoff_id = ?",
+                             (row["handoff_id"],))
+                removed += 1
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return removed
+
+
 def _sync_handoff_to_db(path: Path, data: Dict) -> bool:
     """Mirror one handoff JSON record into SQLite for indexed orchestration."""
     try:
@@ -383,15 +575,51 @@ def _sync_handoff_to_db(path: Path, data: Dict) -> bool:
         checkpoints = orchestration.get("checkpoints") or []
         now = datetime.now().isoformat()
         handoff_id = data.get("handoff_id") or path.stem
+        # The id INSIDE the file wins over the filename. The filename is a
+        # human label and may legitimately differ (renamed, scrubbed, synced
+        # from a box that spells the host differently).
+        _reconcile_path_rows(conn, path, handoff_id)
         record_machine = machine.record_machine(data)
+        # Legacy legs predate facets. Derive them here rather than only at
+        # create time, so `handoff rebuild-db` backfills the whole registry
+        # instead of leaving old legs unsortable forever.
+        facets = {k: data.get(k) for k in (
+            "created_utc", "tz_offset", "topic", "tags", "severity",
+            "incidents_open", "supersedes", "files_touched_count",
+            "message_chars",
+        )}
+        if not facets.get("created_utc"):
+            derived = derive_facets(
+                data.get("message"), git_info, data.get("goal"),
+                data.get("agent"), record_machine.get("host"),
+                data.get("supersedes"),
+            )
+            # A backfilled leg must keep its ORIGINAL time, not today's: stamp
+            # created_utc from the stored local timestamp instead of now().
+            stamped = data.get("timestamp")
+            if stamped:
+                try:
+                    parsed = datetime.fromisoformat(stamped)
+                    if parsed.tzinfo is None:
+                        parsed = parsed.astimezone()
+                    derived["created_utc"] = parsed.astimezone(
+                        timezone.utc).isoformat(timespec="seconds")
+                except Exception:
+                    pass
+            facets = {k: derived.get(k) for k in facets}
+        facets["tags"] = json.dumps(facets.get("tags") or [])
+        facets["incidents_open"] = int(bool(facets.get("incidents_open")))
         try:
             conn.execute("""
                 INSERT INTO handoff_records (
                     handoff_id, path, markdown_path, agent, status, goal, message,
                     branch, session_id, created_at, acknowledged_by, acknowledged_at,
                     completed_by, completed_at, updated_at, data_json,
-                    host, machine_id, platform
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    host, machine_id, platform,
+                    created_utc, tz_offset, topic, tags, severity,
+                    incidents_open, supersedes, files_touched_count, message_chars
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(handoff_id) DO UPDATE SET
                     path=excluded.path,
                     markdown_path=excluded.markdown_path,
@@ -410,7 +638,16 @@ def _sync_handoff_to_db(path: Path, data: Dict) -> bool:
                     data_json=excluded.data_json,
                     host=excluded.host,
                     machine_id=excluded.machine_id,
-                    platform=excluded.platform
+                    platform=excluded.platform,
+                    created_utc=excluded.created_utc,
+                    tz_offset=excluded.tz_offset,
+                    topic=excluded.topic,
+                    tags=excluded.tags,
+                    severity=excluded.severity,
+                    incidents_open=excluded.incidents_open,
+                    supersedes=excluded.supersedes,
+                    files_touched_count=excluded.files_touched_count,
+                    message_chars=excluded.message_chars
             """, (
                 handoff_id,
                 str(path),
@@ -431,6 +668,15 @@ def _sync_handoff_to_db(path: Path, data: Dict) -> bool:
                 record_machine.get("host"),
                 record_machine.get("machine_id"),
                 record_machine.get("platform"),
+                facets.get("created_utc"),
+                facets.get("tz_offset"),
+                facets.get("topic"),
+                facets.get("tags"),
+                facets.get("severity"),
+                facets.get("incidents_open"),
+                facets.get("supersedes"),
+                facets.get("files_touched_count"),
+                facets.get("message_chars"),
             ))
             conn.execute(
                 "DELETE FROM handoff_checkpoints WHERE handoff_id = ?",
@@ -494,6 +740,7 @@ def _log_context_event(event_type: str, content: str, metadata: Optional[Dict] =
 def rebuild_handoff_db(agent: Optional[str] = None) -> int:
     """Rebuild the SQLite index from handoff JSON files."""
     init_handoff_db()
+    pruned = prune_orphan_records()
     count = 0
     for path in get_handoff_files(agent):
         data = _read_handoff(path)
@@ -505,6 +752,7 @@ def rebuild_handoff_db(agent: Optional[str] = None) -> int:
         {
             "agent_filter": agent,
             "count": count,
+            "pruned_orphans": pruned,
             "handoff_db_path": str(get_handoff_db_path()),
         },
     )
@@ -685,8 +933,24 @@ def create_handoff(
     host_slug = "".join(
         c if c.isalnum() or c in "-_" else "-" for c in identity["host"]
     ).strip("-") or "host"
-    record_slug = f"{timestamp}_{host_slug}_{branch}"
+    # IDENTITY vs LABEL.
+    #
+    # The id used to embed the human host ("KushBoyGroups-Mac-mini"). That put
+    # a username inside a primary key, and a redaction pass over .handoffs
+    # later rewrote it to the literal "<user>" INSIDE the JSON while the
+    # filename kept the original - so one leg indexed as two records that
+    # nothing could reconcile. An identifier that a scrubber has a reason to
+    # rewrite is not an identifier.
+    #
+    # So: the id is built from the machine_id, an opaque hash that is already
+    # non-identifying and that no redactor targets. The human host stays in the
+    # FILENAME and in the record body, where it is a label - free to be
+    # renamed, scrubbed, or translated without forking the record.
+    machine_slug = (identity.get("machine_id") or "unknown")[:12] or "unknown"
+    record_slug = f"{timestamp}_{machine_slug}_{branch}"
+    file_slug = f"{timestamp}_{host_slug}_{branch}"
 
+    prior_id = _prior_leg_id(target_folder, identity["host"], agent)
     handoff_data = {
         "handoff_id": record_slug,
         "timestamp": datetime.now().isoformat(),
@@ -701,9 +965,12 @@ def create_handoff(
         "acknowledged_by": None,
         "acknowledged_at": None,
     }
+    handoff_data.update(
+        derive_facets(message, git_info, goal, agent, identity["host"], prior_id)
+    )
 
     # Save JSON file (atomic: temp + replace prevents truncated records)
-    json_path = target_folder / f"handoff_{record_slug}.json"
+    json_path = target_folder / f"handoff_{file_slug}.json"
     try:
         _atomic_write_json(json_path, handoff_data)
     except Exception as e:
@@ -711,7 +978,7 @@ def create_handoff(
         return None
 
     # Save Markdown file
-    md_path = target_folder / f"handoff_{record_slug}.md"
+    md_path = target_folder / f"handoff_{file_slug}.md"
     try:
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(f"# 🤝 Agent Handoff: {branch} @ {timestamp}\n\n")

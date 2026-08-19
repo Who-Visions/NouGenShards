@@ -82,19 +82,25 @@ def capture_experience(event_type: str, title: str, content: str, tags: Optional
     return "Shard captured successfully." if success else "Shard already exists."
 
 @mcp.tool()
-def recall_memory(query: str, limit: int = 3) -> str:
+def recall_memory(query: str, limit: int = 3, full: bool = False) -> str:
     """
     Search for relevant history shards using the federated weighted-relevance retrieval engine.
     This searches local shards, external DBs, and remote cloud nodes.
-    
+
+    Returns HEADERS by default — id, db, score, age, title and a short preview per
+    hit — which is what you need to decide which shards matter. Re-call with
+    full=True once you know which ones you actually want to read.
+
     Args:
         query: The search term or context you are trying to match.
         limit: Max number of results to return.
+        full: Return complete shard bodies instead of headers. Costs roughly 10x
+            the tokens, and those tokens are re-read on every subsequent turn.
     """
     shards_list = federated_retrieve(query, limit=limit)
     if not shards_list:
         return "No relevant shards found in the memory substrate."
-    return compile_recall_packet(shards_list)
+    return compile_recall_packet(shards_list, headers_only=not full)
 
 @mcp.tool()
 def mark_utility(shard_id: int, worked: bool, db_index: Optional[int] = None) -> str:

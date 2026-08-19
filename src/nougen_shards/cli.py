@@ -304,10 +304,9 @@ def cmd_search(args):
         return
 
     if getattr(args, 'json', False) is True:
-        # Convert binary embeddings to lists for JSON serialization
         for res in results:
-            if 'embedding' in res and isinstance(res['embedding'], bytes):
-                res['embedding'] = json.loads(res['embedding'].decode())
+            if isinstance(res.get('embedding'), (bytes, bytearray)):
+                res['embedding'] = _embedding_to_list(res['embedding'])
         print(json.dumps(results))
         return
 
@@ -423,6 +422,30 @@ def cmd_stats(args):
     if growth['total_shards'] > 0:
         rate = (growth['new_shards'] / growth['total_shards']) * 100
         print(f" - Acceleration Rate:   {rate:.1f}% expansion")
+
+
+def _embedding_to_list(blob):
+    """Make a stored embedding JSON-serialisable, whichever format it is in.
+
+    Vectors are float32 BLOBs (see embedding_backfill), but older rows hold a
+    JSON array as UTF-8 text. Assuming either one crashes on the other: a
+    float32 blob is not valid UTF-8, and unpacking JSON text as floats yields
+    garbage. Try text first — it is self-validating — then fall back to the
+    binary layout, and drop the vector rather than fail the whole query.
+    """
+    try:
+        return json.loads(bytes(blob).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    try:
+        import array
+        vec = array.array("f")
+        vec.frombytes(bytes(blob)[: len(blob) // 4 * 4])
+        return vec.tolist()
+    except (ValueError, TypeError):
+        # A caller asked for search results, not vectors; an unreadable
+        # embedding must not take the response down with it.
+        return None
 
 
 def cmd_usage(args):

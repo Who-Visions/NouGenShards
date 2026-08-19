@@ -19,8 +19,14 @@ import gradio as gr
 import subprocess
 
 
-# Add src to path for absolute imports
-sys.path.append(os.path.join(os.getcwd(), 'src'))
+# Add src to path for absolute imports.
+# insert(0), NOT append: site-packages precedes an appended entry, so an older
+# installed nougen_shards silently wins over this checkout. Measured 2026-08-18 --
+# site-packages carried a 1.3.0 copy with no connectors/local_vault.py at all, so
+# a venv-launched server imported code predating the connector while the tree on
+# disk had it. Only the system-Python process worked, and only because no copy was
+# installed there. src is the source of truth for a server started from this repo.
+sys.path.insert(0, os.path.join(os.getcwd(), 'src'))
 
 # Override Storage for HF Persistence
 if os.environ.get("SPACE_ID"):
@@ -877,6 +883,10 @@ def sync_push(req: SyncPushRequest, _token: str = Depends(verify_token)):
             tags=tags, embedding=emb,
             domain_key=s.get("domain_key"),
             density_score=s.get("density_score"),
+            # PR #102: bulk ingest must stamp at TRUE era, like /capture does.
+            # capture() dedups on a content hash, so a wrongly-dated shard can
+            # never be corrected - the re-push is a silent no-op.
+            original_timestamp=s.get("original_timestamp") or s.get("timestamp"),
         )
         if ok:
             count += 1

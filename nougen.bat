@@ -108,6 +108,11 @@ set "EXITCODE=%ERRORLEVEL%"
 :: --- 6. Exit etiquette ---------------------------------------
 :: Keep the window open when double-clicked (no args) or when
 :: something failed, so errors are actually readable.
+:: NOUGEN_NO_PAUSE=1 opts out: a script, CI job, or agent has no
+:: keyboard, so a pause there is not a courtesy - it is a hang.
+:: (POSIX callers should use tools/nougen instead; it bypasses
+:: cmd's argument re-parsing, which mangles quoted arguments.)
+if defined NOUGEN_NO_PAUSE goto :finish
 if "%~1"=="" goto :finish_pause
 if not "%EXITCODE%"=="0" goto :finish_pause
 goto :finish
