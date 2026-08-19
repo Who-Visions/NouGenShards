@@ -47,6 +47,26 @@ def test_ollama_chat_no_stream(mock_urlopen):
     resp = client.chat("mdl", [{"role": "user", "content": "hi"}], stream=False)
     assert resp == "hello"
 
+def test_ollama_chat_recovers_thinking_after_empty_reverify(mock_urlopen):
+    """Reasoning tokens survive when both attempts exhaust before content."""
+    first = MagicMock()
+    first.__enter__.return_value.read.return_value = json.dumps({
+        "message": {"content": "", "thinking": "first-pass reasoning"},
+        "eval_count": 1400,
+    }).encode("utf-8")
+    retry = MagicMock()
+    retry.__enter__.return_value.read.return_value = json.dumps({
+        "message": {"content": "", "thinking": "reverified reasoning"},
+        "eval_count": 2800,
+    }).encode("utf-8")
+    mock_urlopen.side_effect = [first, retry]
+
+    client = OllamaClient()
+    resp = client.chat("mdl", [{"role": "user", "content": "hi"}], stream=False)
+
+    assert resp == "[recovered from reasoning]\nreverified reasoning"
+    assert mock_urlopen.call_count == 2
+
 def test_ollama_chat_stream(mock_urlopen):
     """Test OllamaClient.chat with streaming."""
     lines = [

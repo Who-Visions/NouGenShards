@@ -59,6 +59,7 @@ def test_data_endpoints_deny_without_token(client):
     assert client.post("/search", json={"query": "x"}).status_code == 401
     assert client.get("/sync/pull").status_code == 401
     assert client.post("/capture", json={"title": "t", "content": "c"}).status_code == 401
+    assert client.post("/agent", json={"name": "Rhea", "prompt": "audit"}).status_code == 401
     assert client.post("/search", json={"query": "x"},
                        headers={"X-NGS-Token": "wrong"}).status_code == 401
 
@@ -78,6 +79,42 @@ def test_capture_search_roundtrip(client):
     r = client.post("/search", json={"query": "automation", "limit": 5}, headers=AUTH)
     assert r.status_code == 200
     assert any(h.get("title") == "Cloud automation shard" for h in r.json())
+
+
+def test_agent_dispatches_and_returns_json(client, monkeypatch):
+    calls = []
+
+    def fake_run_agent(name, prompt, model=None):
+        calls.append((name, prompt, model))
+        return "Hardening review complete."
+
+    monkeypatch.setattr(node, "run_agent", fake_run_agent)
+    r = client.post("/agent", json={
+        "name": "Rhea Noir",
+        "prompt": "Review the boundary",
+        "model": "rhea-noir:e2b",
+    }, headers=AUTH)
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "status": "ok",
+        "name": "Rhea Noir",
+        "response": "Hardening review complete.",
+    }
+    assert calls == [("Rhea Noir", "Review the boundary", "rhea-noir:e2b")]
+
+
+@pytest.mark.parametrize(("agent_result", "status_code"), [
+    ("[roster] No agent named 'Ghost'. Roster: Rhea.", 404),
+    ("[gatekeeper] Blocked by DavOs Gatekeeper (Gate: test). Reason: denied", 403),
+])
+def test_agent_maps_roster_and_gatekeeper_failures(client, monkeypatch,
+                                                   agent_result, status_code):
+    monkeypatch.setattr(node, "run_agent", lambda *args, **kwargs: agent_result)
+    r = client.post("/agent", json={"name": "Rhea", "prompt": "audit"},
+                    headers=AUTH)
+    assert r.status_code == status_code
+    assert r.json()["detail"] == agent_result
 
 
 def test_search_degrades_instead_of_500(client, monkeypatch):

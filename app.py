@@ -28,6 +28,7 @@ if os.environ.get("SPACE_ID"):
     os.environ["NOUGEN_VAULT_DIR"] = "/data/.vault"
 
 from nougen_shards import bind_probe, core, history, mcp_oauth
+from nougen_shards.agents import run_agent
 from nougen_shards.federation import federated_retrieve
 from nougen_shards.brain_scan import scan_environment
 
@@ -746,6 +747,12 @@ class CaptureRequest(BaseModel):
     tags: Optional[List[str]] = None
 
 
+class AgentRequest(BaseModel):
+    name: str
+    prompt: str
+    model: Optional[str] = None
+
+
 class SyncPushRequest(BaseModel):
     shards: List[dict]
 
@@ -870,6 +877,17 @@ def capture_shard(req: CaptureRequest, _token: str = Depends(verify_token)):
     """Single-shard capture for user agents."""
     ok = core.capture(req.event_type, req.title, req.content, tags=req.tags)
     return {"status": "ok", "captured": bool(ok)}
+
+
+@app.post("/agent")
+def dispatch_agent(req: AgentRequest, _token: str = Depends(verify_token)):
+    """Run a prompt through a named roster agent."""
+    result = run_agent(req.name, req.prompt, model=req.model)
+    if result.startswith("[roster] No agent named"):
+        raise HTTPException(status_code=404, detail=result)
+    if result.startswith("[gatekeeper] Blocked"):
+        raise HTTPException(status_code=403, detail=result)
+    return {"status": "ok", "name": req.name, "response": result}
 
 
 @app.post("/sync/push")

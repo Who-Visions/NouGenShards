@@ -840,9 +840,26 @@ class OllamaClient(LocalLLMClient):
                             data=json.dumps(payload).encode(), method="POST")
                         req2.add_header("Content-Type", "application/json")
                         with urllib.request.urlopen(req2, timeout=_HTTP_TIMEOUT) as res2:
-                            _content = json.loads(res2.read().decode()).get(
-                                "message", {}).get("content", "")
+                            retry_data = json.loads(res2.read().decode())
+                            _content = retry_data.get("message", {}).get("content", "")
                         if not _content.strip():
+                            # Thinking-capable models can exhaust num_predict
+                            # before they reach message.content. Those tokens
+                            # are still generated output, so preserve them
+                            # after the normal doubled-budget reverify. Prefer
+                            # the retry (larger budget), then the original
+                            # response if the retry happened to return less.
+                            for candidate in (retry_data, resp_data):
+                                _thinking = candidate.get("message", {}).get(
+                                    "thinking", "")
+                                if isinstance(_thinking, str) and _thinking.strip():
+                                    return ("[recovered from reasoning]\n"
+                                            + _thinking)
+                                # Some compatible servers answer /api/chat
+                                # with the /api/generate response shape.
+                                _response = candidate.get("response", "")
+                                if isinstance(_response, str) and _response.strip():
+                                    return _response
                             return ("Error: EMPTY_OUTPUT after reverify at "
                                     f"num_predict={payload['options']['num_predict']}")
                     return _content

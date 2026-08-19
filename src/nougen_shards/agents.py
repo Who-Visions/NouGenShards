@@ -225,9 +225,13 @@ ROSTER = {
 
 
 def get_agent(name: str) -> Optional[AgentSpec]:
-    """Case-insensitive roster lookup."""
+    """Case- and separator-insensitive roster lookup, including known aliases."""
+    normalized = "".join(ch for ch in name.casefold() if ch.isalnum())
+    aliases = {"rheanoir": "rhea"}
+    normalized = aliases.get(normalized, normalized)
     for key, spec in ROSTER.items():
-        if key.lower() == name.lower():
+        roster_name = "".join(ch for ch in key.casefold() if ch.isalnum())
+        if roster_name == normalized:
             return spec
     return None
 

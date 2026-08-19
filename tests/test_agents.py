@@ -19,6 +19,8 @@ def test_specs_complete():
 def test_get_agent_case_insensitive():
     assert agents.get_agent("sol-ai").name == "Sol-Ai"
     assert agents.get_agent("NOUGEN").name == "NouGen"
+    assert agents.get_agent("Rhea Noir").name == "Rhea"
+    assert agents.get_agent("rhea-noir").name == "Rhea"
     assert agents.get_agent("ghost") is None
 
 
