@@ -47,9 +47,15 @@ def test_handoff_records_the_machine_that_wrote_it(monkeypatch):
     assert data["machine"]["machine_id"] == "aaaa1111"
     assert data["machine"]["platform"]
     assert data["machine"]["os"]
-    # The host is folded into the id so two boxes on the same branch and second
-    # cannot produce the same record.
-    assert "who-mac-mini" in data["handoff_id"]
+    # CONTRACT CHANGE (2026-08-18): the id is keyed on the machine_id, NOT the
+    # host. The host used to be folded in for uniqueness, but a hostname can
+    # carry a username, and a redaction pass over .handoffs rewrote a real one
+    # to "<user>" INSIDE the JSON - forking one leg into two index rows. The
+    # machine_id gives the same collision safety with nothing for a scrubber to
+    # rewrite. The human host stays on the FILENAME, where it is a label.
+    assert "aaaa1111" in data["handoff_id"]
+    assert "who-mac-mini" not in data["handoff_id"]
+    assert "who-mac-mini" in path.name
 
 
 def test_machine_columns_are_indexed_in_sqlite(monkeypatch):

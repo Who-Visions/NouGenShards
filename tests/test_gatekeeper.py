@@ -1,9 +1,10 @@
 """Tests for the DavOs Gatekeeper middleware and its integrations."""
+import os
 import unittest
 from unittest.mock import patch, MagicMock
 import io
 
-from nougen_shards.gatekeeper import check_mutation_gate
+from nougen_shards.gatekeeper import check_mutation_gate, gates_enabled
 from nougen_shards.nougen_sandbox import execute_sandboxed
 from nougen_shards.agents import run_agent
 from nougen_shards import cli
@@ -11,6 +12,17 @@ from nougen_shards import cli
 
 class TestGatekeeper(unittest.TestCase):
     """Test suite for DavOs Gatekeeper."""
+
+    def test_gates_enabled_toggle(self):
+        """Test gates_enabled() returns False by default and True when toggled."""
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(gates_enabled())
+        for val in ("1", "true", "yes", "on", "TRUE", "Yes"):
+            with patch.dict(os.environ, {"NOUGEN_MUTATION_GATES_ENABLED": val}):
+                self.assertTrue(gates_enabled())
+        for val in ("", "0", "false", "no", "off"):
+            with patch.dict(os.environ, {"NOUGEN_MUTATION_GATES_ENABLED": val}):
+                self.assertFalse(gates_enabled())
 
     def test_direct_checks_allowed(self):
         """Test check_mutation_gate with safe inputs."""
@@ -23,7 +35,7 @@ class TestGatekeeper(unittest.TestCase):
         self.assertTrue(res["allowed"])
 
     def test_direct_checks_blocked_schema(self):
-        """Test check_mutation_gate blocks schema modifications."""
+        """Test check_mutation_gate detects schema modifications (advisory default, blocking when enabled)."""
         commands = [
             "CREATE TABLE test (id int)",
             "ALTER TABLE shards ADD COLUMN x TEXT",
@@ -32,13 +44,22 @@ class TestGatekeeper(unittest.TestCase):
             "DROP INDEX idx_test",
         ]
         for cmd in commands:
+            # Default: allowed per GM order with advisory reason
             res = check_mutation_gate(cmd)
-            self.assertFalse(res["allowed"])
-            self.assertEqual(res["gate"], "schema_change")
-            self.assertIn("restricted to GM approval", res["reason"])
+            self.assertTrue(res["allowed"])
+            self.assertIsNone(res["gate"])
+            self.assertIn("Would have hit gate 'schema_change'", res["reason"])
+            self.assertIn("mutation gates are disabled by GM order", res["reason"])
+
+            # Opt-in: hard-blocked when NOUGEN_MUTATION_GATES_ENABLED=1
+            with patch.dict(os.environ, {"NOUGEN_MUTATION_GATES_ENABLED": "1"}):
+                res_blocked = check_mutation_gate(cmd)
+                self.assertFalse(res_blocked["allowed"])
+                self.assertEqual(res_blocked["gate"], "schema_change")
+                self.assertIn("restricted to GM approval", res_blocked["reason"])
 
     def test_direct_checks_blocked_destructive(self):
-        """Test check_mutation_gate blocks destructive cleanups."""
+        """Test check_mutation_gate detects destructive cleanups (advisory default, blocking when enabled)."""
         commands = [
             "DELETE FROM shards",
             "rm -rf /path/to/something",
@@ -46,14 +67,23 @@ class TestGatekeeper(unittest.TestCase):
             "TRUNCATE table",
         ]
         for cmd in commands:
+            # Default: allowed per GM order with advisory reason
             res = check_mutation_gate(cmd)
-            self.assertFalse(res["allowed"])
-            self.assertEqual(res["gate"], "destructive_cleanup")
-            self.assertIn("Destructive cleanups", res["reason"])
+            self.assertTrue(res["allowed"])
+            self.assertIsNone(res["gate"])
+            self.assertIn("Would have hit gate 'destructive_cleanup'", res["reason"])
+            self.assertIn("mutation gates are disabled by GM order", res["reason"])
+
+            # Opt-in: hard-blocked when NOUGEN_MUTATION_GATES_ENABLED=1
+            with patch.dict(os.environ, {"NOUGEN_MUTATION_GATES_ENABLED": "1"}):
+                res_blocked = check_mutation_gate(cmd)
+                self.assertFalse(res_blocked["allowed"])
+                self.assertEqual(res_blocked["gate"], "destructive_cleanup")
+                self.assertIn("Destructive cleanups", res_blocked["reason"])
 
     def test_direct_checks_blocked_obfuscated_destructive(self):
         """Regression: whitespace/case-obfuscated destructive commands are caught."""
-        # Collapsed whitespace + mixed case should normalize and still block.
+        # Collapsed whitespace + mixed case should normalize and detect gate.
         commands = [
             "RM   -RF /var/data",          # extra spaces + uppercase
             "rm\t-rf\t/tmp/x",             # tab-separated
@@ -63,38 +93,70 @@ class TestGatekeeper(unittest.TestCase):
             ":(){ :|:& };:",               # forkbomb
         ]
         for cmd in commands:
+            # Default: allowed per GM order with advisory reason
             res = check_mutation_gate(cmd)
-            self.assertFalse(res["allowed"], f"expected block for: {cmd!r}")
-            self.assertEqual(res["gate"], "destructive_cleanup")
+            self.assertTrue(res["allowed"], f"expected allowed (advisory) for: {cmd!r}")
+            self.assertIsNone(res["gate"])
+            self.assertIn("Would have hit gate 'destructive_cleanup'", res["reason"])
+
+            # Opt-in: hard-blocked when NOUGEN_MUTATION_GATES_ENABLED=1
+            with patch.dict(os.environ, {"NOUGEN_MUTATION_GATES_ENABLED": "1"}):
+                res_blocked = check_mutation_gate(cmd)
+                self.assertFalse(res_blocked["allowed"], f"expected block for: {cmd!r}")
+                self.assertEqual(res_blocked["gate"], "destructive_cleanup")
 
     def test_direct_checks_blocked_obfuscated_deployment(self):
         """Regression: tab/space-obfuscated git push is caught after normalization."""
+        # Default: allowed per GM order with advisory reason
         res = check_mutation_gate("git\tpush   --force origin main")
-        self.assertFalse(res["allowed"])
-        self.assertEqual(res["gate"], "deployment_target_change")
+        self.assertTrue(res["allowed"])
+        self.assertIsNone(res["gate"])
+        self.assertIn("Would have hit gate 'deployment_target_change'", res["reason"])
+
+        # Opt-in: hard-blocked when NOUGEN_MUTATION_GATES_ENABLED=1
+        with patch.dict(os.environ, {"NOUGEN_MUTATION_GATES_ENABLED": "1"}):
+            res_blocked = check_mutation_gate("git\tpush   --force origin main")
+            self.assertFalse(res_blocked["allowed"])
+            self.assertEqual(res_blocked["gate"], "deployment_target_change")
 
     def test_direct_checks_blocked_dry_run_false(self):
-        """Test check_mutation_gate blocks actions with dry_run=False."""
+        """Test check_mutation_gate detects actions with dry_run=False (advisory default, blocking when enabled)."""
+        # Default: allowed per GM order with advisory reason
         res = check_mutation_gate("safe query", {"dry_run": False})
-        self.assertFalse(res["allowed"])
-        self.assertEqual(res["gate"], "dry_run_false")
-        self.assertIn("GM approval", res["reason"])
+        self.assertTrue(res["allowed"])
+        self.assertIsNone(res["gate"])
+        self.assertIn("Would have hit gate 'dry_run_false'", res["reason"])
+
+        # Opt-in: hard-blocked when NOUGEN_MUTATION_GATES_ENABLED=1
+        with patch.dict(os.environ, {"NOUGEN_MUTATION_GATES_ENABLED": "1"}):
+            res_blocked = check_mutation_gate("safe query", {"dry_run": False})
+            self.assertFalse(res_blocked["allowed"])
+            self.assertEqual(res_blocked["gate"], "dry_run_false")
+            self.assertIn("GM approval", res_blocked["reason"])
 
     def test_direct_checks_blocked_billing(self):
-        """Test check_mutation_gate blocks billing and budget modifications."""
+        """Test check_mutation_gate detects billing and budget modifications."""
         commands = [
             "modify billing quota",
             "increase subscription budget",
             "change paid-tier limit",
         ]
         for cmd in commands:
+            # Default: allowed per GM order with advisory reason
             res = check_mutation_gate(cmd)
-            self.assertFalse(res["allowed"])
-            self.assertEqual(res["gate"], "billing_quota_paid_tier_change")
-            self.assertIn("paid-tier modifications", res["reason"])
+            self.assertTrue(res["allowed"])
+            self.assertIsNone(res["gate"])
+            self.assertIn("Would have hit gate 'billing_quota_paid_tier_change'", res["reason"])
+
+            # Opt-in: hard-blocked when NOUGEN_MUTATION_GATES_ENABLED=1
+            with patch.dict(os.environ, {"NOUGEN_MUTATION_GATES_ENABLED": "1"}):
+                res_blocked = check_mutation_gate(cmd)
+                self.assertFalse(res_blocked["allowed"])
+                self.assertEqual(res_blocked["gate"], "billing_quota_paid_tier_change")
+                self.assertIn("paid-tier modifications", res_blocked["reason"])
 
     def test_direct_checks_blocked_deployment(self):
-        """Test check_mutation_gate blocks deployment and node registration."""
+        """Test check_mutation_gate detects deployment and node registration."""
         commands = [
             "git push origin main",
             "npm publish --access public",
@@ -102,35 +164,59 @@ class TestGatekeeper(unittest.TestCase):
             "register-node http://localhost:8000",
         ]
         for cmd in commands:
+            # Default: allowed per GM order with advisory reason
             res = check_mutation_gate(cmd)
-            self.assertFalse(res["allowed"])
-            self.assertEqual(res["gate"], "deployment_target_change")
-            self.assertIn("Deployment actions", res["reason"])
+            self.assertTrue(res["allowed"])
+            self.assertIsNone(res["gate"])
+            self.assertIn("Would have hit gate 'deployment_target_change'", res["reason"])
+
+            # Opt-in: hard-blocked when NOUGEN_MUTATION_GATES_ENABLED=1
+            with patch.dict(os.environ, {"NOUGEN_MUTATION_GATES_ENABLED": "1"}):
+                res_blocked = check_mutation_gate(cmd)
+                self.assertFalse(res_blocked["allowed"])
+                self.assertEqual(res_blocked["gate"], "deployment_target_change")
+                self.assertIn("Deployment actions", res_blocked["reason"])
 
     @patch('nougen_shards.nougen_sandbox.sandbox_enabled', return_value=False)
     def test_execute_sandboxed_with_gatekeeper(self, _mock_sandbox):
         """Test execute_sandboxed behaves correctly with and without bypass_gatekeeper."""
-        # 1. Blocked query with bypass_gatekeeper=False (default) should return gatekeeper block message
+        # 1. By default (gates disabled by GM order), query passes gatekeeper and hits sandbox disabled check
         res = execute_sandboxed("CREATE TABLE foo (id INTEGER)", bypass_gatekeeper=False)
-        self.assertIn("blocked by DavOs Gatekeeper", res)
-        self.assertIn("Gate: schema_change", res)
-
-        # 2. Blocked query with bypass_gatekeeper=True should bypass gatekeeper (and hit the sandbox disabled check)
-        res = execute_sandboxed("CREATE TABLE foo (id INTEGER)", bypass_gatekeeper=True)
         self.assertNotIn("blocked by DavOs Gatekeeper", res)
         self.assertIn("Sandboxed code execution is disabled by default for safety", res)
 
-        # 3. Allowed query with bypass_gatekeeper=False (default) should bypass gatekeeper (and hit the sandbox disabled check)
-        res = execute_sandboxed("print('hello')", bypass_gatekeeper=False)
-        self.assertNotIn("blocked by DavOs Gatekeeper", res)
-        self.assertIn("Sandboxed code execution is disabled by default for safety", res)
+        # 2. When mutation gates are enabled, query with bypass_gatekeeper=False is blocked by gatekeeper
+        with patch.dict(os.environ, {"NOUGEN_MUTATION_GATES_ENABLED": "1"}):
+            res_blocked = execute_sandboxed("CREATE TABLE foo (id INTEGER)", bypass_gatekeeper=False)
+            self.assertIn("blocked by DavOs Gatekeeper", res_blocked)
+            self.assertIn("Gate: schema_change", res_blocked)
 
-    def test_run_agent_blocked(self):
-        """Test run_agent immediately blocks and returns a fail-soft message on blocked prompts."""
-        # Run agent with blocked prompt
+            # 3. Blocked query with bypass_gatekeeper=True should bypass gatekeeper (and hit the sandbox disabled check)
+            res_bypassed = execute_sandboxed("CREATE TABLE foo (id INTEGER)", bypass_gatekeeper=True)
+            self.assertNotIn("blocked by DavOs Gatekeeper", res_bypassed)
+            self.assertIn("Sandboxed code execution is disabled by default for safety", res_bypassed)
+
+        # 4. Safe query with bypass_gatekeeper=False should bypass gatekeeper (and hit the sandbox disabled check)
+        res_safe = execute_sandboxed("print('hello')", bypass_gatekeeper=False)
+        self.assertNotIn("blocked by DavOs Gatekeeper", res_safe)
+        self.assertIn("Sandboxed code execution is disabled by default for safety", res_safe)
+
+    @patch('nougen_shards.models_client.OllamaClient.chat')
+    @patch('nougen_shards.models_client.OllamaClient.is_alive')
+    def test_run_agent_blocked(self, mock_is_alive, mock_chat):
+        """Test run_agent allows prompt by default (GM order) and blocks when gates enabled."""
+        mock_is_alive.return_value = True
+        mock_chat.return_value = "Mocked Ollama Response"
+
+        # 1. Default: prompt mentioning mutation keyword is not blocked per GM order
         res = run_agent("Remember", "DROP TABLE history")
-        self.assertIn("[gatekeeper] Blocked by DavOs Gatekeeper", res)
-        self.assertIn("Gate: schema_change", res)
+        self.assertEqual(res, "Mocked Ollama Response")
+
+        # 2. When mutation gates are explicitly enabled, run_agent immediately blocks
+        with patch.dict(os.environ, {"NOUGEN_MUTATION_GATES_ENABLED": "1"}):
+            res_blocked = run_agent("Remember", "DROP TABLE history")
+            self.assertIn("[gatekeeper] Blocked by DavOs Gatekeeper", res_blocked)
+            self.assertIn("Gate: schema_change", res_blocked)
 
     @patch('nougen_shards.models_client.OllamaClient.chat')
     @patch('nougen_shards.models_client.OllamaClient.is_alive')
@@ -155,6 +241,20 @@ class TestGatekeeper(unittest.TestCase):
             self.assertEqual(fake_out.getvalue().strip(), "42")
             mock_execute.assert_called_once_with("print(42)")
 
+    @patch('nougen_shards.nougen_sandbox.execute_sandboxed')
+    def test_cli_cmd_ctx_execute_mutation_command_default_unblocked(self, mock_execute):
+        """Test cli execute action with mutation command runs directly when gates disabled (default)."""
+        args = MagicMock()
+        args.action = "execute"
+        args.input = "DELETE FROM shards"
+        mock_execute.return_value = "Deleted"
+
+        with patch('sys.stdout', new=io.StringIO()) as fake_out:
+            cli.cmd_ctx(args)
+            self.assertEqual(fake_out.getvalue().strip(), "Deleted")
+            mock_execute.assert_called_once_with("DELETE FROM shards")
+
+    @patch.dict(os.environ, {"NOUGEN_MUTATION_GATES_ENABLED": "1"})
     @patch('sys.stdin.isatty', return_value=True)
     @patch('builtins.input', return_value='y')
     @patch('nougen_shards.nougen_sandbox.execute_sandboxed')
@@ -174,6 +274,7 @@ class TestGatekeeper(unittest.TestCase):
             self.assertIn("Success simulated", output)
             mock_execute.assert_called_once_with("DELETE FROM shards", bypass_gatekeeper=True)
 
+    @patch.dict(os.environ, {"NOUGEN_MUTATION_GATES_ENABLED": "1"})
     @patch('sys.stdin.isatty', return_value=True)
     @patch('builtins.input', return_value='n')
     @patch('nougen_shards.nougen_sandbox.execute_sandboxed')
@@ -191,6 +292,7 @@ class TestGatekeeper(unittest.TestCase):
             self.assertIn("🚫 Action aborted.", output)
             mock_execute.assert_not_called()
 
+    @patch.dict(os.environ, {"NOUGEN_MUTATION_GATES_ENABLED": "1"})
     @patch('sys.stdin.isatty', return_value=False)
     @patch('nougen_shards.nougen_sandbox.execute_sandboxed')
     def test_cli_cmd_ctx_execute_blocked_non_interactive(self, mock_execute, _mock_tty):
@@ -210,3 +312,4 @@ class TestGatekeeper(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

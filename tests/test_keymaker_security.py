@@ -88,3 +88,39 @@ def test_list_external_dbs_skips_row_when_keyring_missing(km, monkeypatch):
         raise ImportError("No module named 'keyring'")
     monkeypatch.setattr(keymaker, "_unprotect", boom)
     assert km.list_external_dbs() == []  # skipped, no exception
+
+
+# --- multi-layer DPAPI peeling -------------------------------------------
+# A value re-protected by a migration or a second ingest pass ends up wrapped
+# several times, and only the OUTERMOST layer keeps the `dpapi1:` marker.
+# Reading one layer returns a base64 blob that looks like a secret and fails as
+# one (measured 2026-08-15: rows needed three passes; a one-pass read spent an
+# 820-char ciphertext as a bearer token and got 401 back).
+
+@pytest.mark.skipif(os.name != "nt", reason="DPAPI is Windows-only")
+@pytest.mark.parametrize("layers", [1, 2, 3])
+def test_unprotect_peels_every_dpapi_layer(km, layers):
+    import base64
+    secret = "sk-test-" + "z" * 49
+
+    # Wrap `layers` deep the way the store does: inner layers are bare base64,
+    # only the outermost carries the marker.
+    current = secret
+    for _ in range(layers):
+        blob = km._dpapi_call("CryptProtectData", current.encode("utf-8"))
+        current = base64.b64encode(blob).decode("ascii")
+    stored = km._DPAPI_PREFIX + current
+
+    assert km._unprotect(stored) == secret
+
+
+@pytest.mark.skipif(os.name != "nt", reason="DPAPI is Windows-only")
+def test_unprotect_rejects_marker_without_a_real_blob(km):
+    # Tagged but unreadable must fail loudly, never return the marker payload
+    # for the caller to spend as a secret.
+    with pytest.raises(OSError):
+        km._unprotect(km._DPAPI_PREFIX + "not-base64-at-all!!")
+
+
+def test_unprotect_passes_through_legacy_plaintext(km):
+    assert km._unprotect("plain-legacy-row") == "plain-legacy-row"

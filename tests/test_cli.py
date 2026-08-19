@@ -181,3 +181,35 @@ class TestCLI(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestEmbeddingSerialisation(unittest.TestCase):
+    """`search --json` must survive both embedding storage formats.
+
+    Vectors are float32 BLOBs, but older rows hold JSON text. Assuming either
+    format crashes on the other, which took the whole query down with it.
+    """
+
+    def test_float32_blob_round_trips(self):
+        import array
+        vec = array.array("f", [0.5, -0.25, 1.0])
+        self.assertEqual(cli._embedding_to_list(vec.tobytes()), [0.5, -0.25, 1.0])
+
+    def test_legacy_json_text_still_reads(self):
+        self.assertEqual(cli._embedding_to_list(b"[1.0, 2.0]"), [1.0, 2.0])
+
+    def test_non_utf8_blob_does_not_raise(self):
+        # The byte that crashed the real substrate: 0x99 is not valid UTF-8.
+        blob = bytes([0x00, 0x01, 0x99, 0x3F, 0x11, 0x22, 0x33, 0x44])
+        self.assertIsInstance(cli._embedding_to_list(blob), list)
+
+    def test_unreadable_embedding_returns_none_not_error(self):
+        self.assertIsNone(cli._embedding_to_list(None))
+
+    def test_results_serialise_to_json(self):
+        import array, json as _json
+        results = [{"id": 1, "title": "t", "embedding": array.array("f", [0.1]).tobytes()}]
+        for res in results:
+            if isinstance(res.get("embedding"), (bytes, bytearray)):
+                res["embedding"] = cli._embedding_to_list(res["embedding"])
+        self.assertIn('"embedding"', _json.dumps(results))

@@ -242,8 +242,44 @@ def test_reciprocal_rank_fusion(setup_test_env):
     assert merged[1]["title"] == "Doc A"
     assert merged[2]["title"] == "Doc C"
     
-    # Check that scores are set as final_score
-    assert abs(merged[0]["final_score"] - (1.0/62 + 1.0/61)) < 1e-6
+    # Scores land in final_score. Every item here is UNGRADED (no _match_strength),
+    # so each contribution is damped by the same UNSCORED_CREDIT -- relative order
+    # is untouched, magnitudes are uniformly scaled.
+    expected = (1.0/62 + 1.0/61) * shards.UNSCORED_CREDIT
+    assert abs(merged[0]["final_score"] - expected) < 1e-6
+
+
+def test_rrf_demotes_ungraded_hits(setup_test_env):
+    """A lane that cannot grade its match must not tie one that can.
+
+    Regression for the 2026-08-18 federated A/B: three Three.js `Fog` doc pages
+    with bm25_score 0.0 tied the planted canary at 1/61, because position-only
+    fusion gives every lane's rank-1 row the same credit.
+    """
+    graded = [{"id": 1, "_db_index": 1, "title": "Graded", "_match_strength": 0.9,
+               "utility_score": 1.0}]
+    ungraded = [{"id": 2, "_db_index": "vault_x", "title": "Ungraded",
+                 "utility_score": 1.0}]
+
+    merged = shards.reciprocal_rank_fusion([graded, ungraded])
+    by_title = {m["title"]: m["final_score"] for m in merged}
+
+    # Demoted, NOT excluded -- legacy federated stays reachable.
+    assert len(merged) == 2
+    assert merged[0]["title"] == "Graded"
+    assert by_title["Graded"] > by_title["Ungraded"]
+
+    # Both sat at rank 1, so position alone would have tied them exactly.
+    assert by_title["Ungraded"] > 0.0
+
+
+def test_rrf_k_resolves_from_env(setup_test_env, monkeypatch):
+    """RRF k is configurable rather than a bare 60 (Rule 0.2)."""
+    lst = [{"id": 1, "_db_index": 1, "title": "A", "_match_strength": 1.0,
+            "utility_score": 1.0}]
+    tight = shards.reciprocal_rank_fusion([lst], k=1)[0]["final_score"]
+    loose = shards.reciprocal_rank_fusion([lst], k=600)[0]["final_score"]
+    assert tight > loose
 
 
 def test_retrieve_parallel_rrf_boost(setup_test_env):
