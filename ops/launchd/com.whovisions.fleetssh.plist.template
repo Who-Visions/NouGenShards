@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>FLEET_SSH_HOSTS</key>
+		<string>blade phoebus whoart mondy</string>
+	</dict>
+	<key>Label</key>
+	<string>com.whovisions.fleetssh</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>__REPO__/ops/fleet-ssh-keepalive.sh</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/.ssh/fleet-lane.err</string>
+	<key>StandardOutPath</key>
+	<string>__HOME__/.ssh/fleet-lane.out</string>
+	<key>StartInterval</key>
+	<integer>180</integer>
+</dict>
+</plist>

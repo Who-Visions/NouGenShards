@@ -1,26 +1,33 @@
-"""Build whoart's federation snapshot: merge the local 9-DB shard grid into one
-FTS5-indexed vault DB for registration on blade (register, don't bulk-copy —
-decision 16729). Blade's sweep reads through it; whoart's rows never enter the
+"""Build a machine's federation snapshot: merge its local 9-DB shard grid into
+one FTS5-indexed vault DB for registration on the canonical node's keymaker
+(register, don't bulk-copy — decision 16729). The canonical node's federation
+sweep reads through the snapshot; the source machine's rows never enter the
 canonical grid.
 
-Re-run any time to refresh the snapshot (drops and rebuilds), then copy it to
-the configured vault path on the reader node; registration survives refreshes
-because the path stays the same.
+Re-run any time to refresh the snapshot (drops and rebuilds), then ship it to
+the canonical node's vault directory — registration keys on the path, so a
+refresh to the same path survives without re-registering.
 
-Sensitivity fence: rows marked sensitive (sensitivity flag) or encrypted (enc)
-are EXCLUDED — the exposure policy says journal/personal stays owner-lane, and
-a federated store on blade is readable by every owner surface.
+Sensitivity fence: only rows with sensitivity 'normal' (a TEXT column, not a
+flag) and enc=0 are exported — the exposure policy keeps journal/personal rows
+on their home machine, and a federated store is readable by every owner
+surface.
+
+Config (env-first, logged fallbacks per the lane conventions):
+  NOUGEN_VAULT_DIR    source grid directory   (default ~/.nougen/shards)
+  NOUGEN_SNAPSHOT_OUT output snapshot path    (default <vault>/<host>_grid_vault.db)
 """
 import glob
 import os
+import platform
 import sqlite3
-from pathlib import Path
 
-_SHARDS = Path(os.environ.get(
-    "NOUGEN_VAULT_DIR", str(Path.home() / ".nougen" / "shards")
-))
-SRC_GLOB = str(_SHARDS / "nougen_shards_*.db")
-OUT = str(_SHARDS / "whoart_grid_vault.db")
+VAULT_DIR = os.environ.get("NOUGEN_VAULT_DIR") or os.path.join(
+    os.path.expanduser("~"), ".nougen", "shards")
+SRC_GLOB = os.path.join(VAULT_DIR, "nougen_shards_*.db")
+HOST = platform.node().lower() or "local"
+OUT = os.environ.get("NOUGEN_SNAPSHOT_OUT") or os.path.join(
+    VAULT_DIR, f"{HOST}_grid_vault.db")
 MAX_CONTENT = 100_000  # bound row size so one giant import can't bloat the vault
 
 if os.path.exists(OUT):
@@ -38,8 +45,6 @@ for path in sorted(glob.glob(SRC_GLOB)):
     rows = src.execute("""select id, timestamp, event_type, title, content, tags,
         coalesce(sensitivity, 'normal'), coalesce(enc, 0) from shards""")
     for sid, ts, etype, title, content, tags, sens, enc in rows:
-        # sensitivity is text ('normal' = exportable); anything else stays home,
-        # as does any encrypted row.
         if (sens or "normal").lower() not in ("normal", "") or enc:
             skipped += 1
             continue
@@ -54,10 +59,13 @@ out.execute("insert into shards_fts(rowid, title, content, tags) select rowid, t
 out.commit()
 
 size_mb = os.path.getsize(OUT) / 1e6
+print(f"source : {SRC_GLOB}")
 print(f"rows: {total}  skipped(sensitive/enc): {skipped}  size: {size_mb:.0f} MB")
 print("out:", OUT)
 
-# Distinctive sample rows for the mandatory index-on-arrival smoke test.
+# Distinctive sample rows for the mandatory index-on-arrival smoke test
+# (decision 16729: a federated store proves itself with a known-content query
+# returning its own provenance before anyone trusts it).
 print("\nsmoke candidates (oldest distinctive titles):")
 for title, ts in out.execute("""select title, timestamp from shards
         where length(title) > 30 and title not like '[CODEX]%'

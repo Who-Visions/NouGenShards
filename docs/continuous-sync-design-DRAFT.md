@@ -1,27 +1,44 @@
-# Shard Highway: Blade Primary and Who-Art Standby
+﻿# Continuous Sync Design - blade/whoart replica lane
 
-> Drafted by local Ollama `gemma4:e2b-qat`; reviewed and corrected by Codex on 2026-08-17.
+## 1. Write-Ownership Rule
 
-Blade is the sole public write primary for the nine-database NouGen shard grid. Both
-Cloudflare Tunnel connectors share one tunnel, and both terminate
-`shards.nougenai.com` traffic at Blade. This avoids the split-brain risk created by
-letting replicas write independent SQLite grids.
+*   **Canonical Write Authority:** Blade is the sole authority for writes to the 9-database SQLite grid.
+*   **Whoart Write Policy:** Whoart is read-only for the canonical data. All writes must originate from Blade.
+*   **Sync Mechanism:** Whoart's `/sync/push` endpoint is strictly for receiving updates *from* Blade (replication). Whoart's `/sync/pull` is for requesting updates *from* Blade.
+*   **GM-DECISION:** Implement a strict write-forward mechanism where Blade validates and commits all changes before broadcasting to Whoart.
 
-On Who-Art, `127.0.0.1:4444` is an SSH forward to Blade's `127.0.0.1:4444`; the
-Cloudflare connector sends its public traffic through that lane. Who-Art's complete
-local standby listens separately on `0.0.0.0:4445` and is not a public writer.
+## 2. Scheduled Bidirectional Sync
 
-Every five minutes, Who-Art runs an authenticated missing-hash sync from Blade to the
-standby. The sync compares compact `id,file_hash` manifests and transfers only absent
-records, including private records through the shared private-vault key. It is additive
-and idempotent; it does not replay SQLite WAL files or use last-write-wins clocks.
+*   **Schedule:** Bidirectional sync runs every 60 seconds, initiated by a dedicated scheduler service on both nodes.
+*   **Process:**
+    1.  **Pull Phase:** Whoart initiates `/sync/pull` to check for missing/newer data from Blade.
+    2.  **Push Phase:** Blade initiates `/sync/push` to broadcast committed changes to Whoart.
+    3.  **Acknowledgement:** Both nodes acknowledge receipt of the latest successful sync timestamp.
+*   **Data Format:** Sync payloads utilize a delta-based change log (e.g., SQLite WAL entries or JSON diffs) rather than full grid dumps.
 
-The synchronized baseline is 199,362 rows and 199,362 unique hashes. Both nodes have
-the same durable identity digest:
+## 3. Drift Detection
 
-`077eaa5d7a6bd1f76cdd685acd78bec7ff95ca3547fa72af32b2129cce72f0f8`
+*   **Metric 1 (Row Count):** Periodic (every 5 minutes) comparison of total row counts per database shard (9 databases).
+    *   *Threshold:* $\Delta > 0$ rows triggers immediate alert.
+*   **Metric 2 (Content Hash):** Every 10 minutes, calculate a cryptographic hash (SHA-256) of the serialized content of a statistically significant sample of rows (e.g., 1% of total rows per shard).
+    *   *Threshold:* Hash mismatch triggers a full shard content verification request.
+*   **GM-DECISION:** Drift detection must be asynchronous and non-blocking to avoid impacting sync throughput.
 
-All nine databases pass `PRAGMA integrity_check`. Promotion of Who-Art remains manual:
-stop or isolate the old primary, run a final sync when reachable, verify counts and the
-identity digest, then redirect Who-Art's public lane from the SSH forward to its local
-standby. Independent active writers are outside this design.
+## 4. Conflict Policy
+
+*   **Policy:** Last Write Wins (LWW) based on a synchronized, monotonically increasing logical clock (Lamport or Vector clock).
+*   **Same-Shard Edits:** If a write originates from Blade, it is the canonical version. If Whoart attempts a write (via a hypothetical future endpoint), it is rejected immediately.
+*   **Sync Conflict:** If a sync conflict occurs (e.g., clock skew leading to out-of-order application), the update with the higher logical clock value prevails.
+
+## 5. Failure Modes
+
+*   **Machine Down:** If Whoart is down, Blade continues to replicate to a persistent queue. Upon recovery, Whoart performs a full state reconciliation against the last known successful sync timestamp.
+*   **Sync Backlog:** If the sync queue exceeds 1 hour, the system triggers a throttling mechanism on the `/sync/push` endpoint to prioritize critical replication traffic over bulk updates.
+*   **Clock Skew:** NTP synchronization is mandatory. If skew exceeds 500ms, the LWW policy is temporarily relaxed to prioritize the higher logical clock value, followed by an automated re-sync.
+
+## 6. Rollout Gates
+
+*   **Gate 1 (Internal Stability):** 72 hours of continuous operation with zero critical drift alerts and zero sync backlog events.
+*   **Gate 2 (Tunnel Readiness):** Successful execution of a full, unthrottled bidirectional sync cycle (pull/push) with 100% content hash verification success for 48 hours.
+*   **Gate 3 (Production):** Cloudflare Tunnel ingress established and validated via synthetic traffic testing, confirming low latency and consistent data serving across both endpoints.
+*   **GM-DECISION:** Tunnel join is authorized only upon Gate 3 completion.

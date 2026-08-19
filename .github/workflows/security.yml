@@ -1,0 +1,136 @@
+# Supply-chain security gates. Authored 2026-08-17 per wargames/elevate-security.md.
+#
+# Ordering is deliberate: the 2026 worm class (Shai-Hulud -> ChainDrop) steals OIDC
+# tokens from runner memory, so a valid signature can sit on malware. Runtime +
+# workflow hardening therefore ranks ABOVE attestation. This file is the defensive
+# tier; SBOM/provenance live on the publish path (see deploy-space.yml).
+#
+# Every third-party action is pinned to a full commit SHA (mutable tags are the
+# tj-actions attack vector). GITHUB_TOKEN is deny-by-default; each job grants only
+# the scope it needs. harden-runner audits runner egress on every job — that audit
+# is precisely what catches the OIDC-exfil pattern the worms use.
+
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "27 4 * * 1"   # weekly Monday 04:27 UTC — posture drift check
+  workflow_dispatch:
+
+permissions: {}            # deny-all at the top; jobs opt in below
+
+jobs:
+  scorecard:
+    name: OpenSSF Scorecard
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write   # SARIF -> Security tab
+      id-token: write          # publish score to the public dashboard
+    steps:
+      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publishing to the public dashboard only works from the default branch;
+          # on a PR it errors. Score still computes + uploads to the Security tab.
+          publish_results: ${{ github.event_name != 'pull_request' }}
+      - uses: github/codeql-action/upload-sarif@d6317709a54fd87078d323eeb0e48ec331c8e621 # v3
+        with:
+          sarif_file: results.sarif
+
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@d6317709a54fd87078d323eeb0e48ec331c8e621 # v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none   # both langs are interpreted here; no compile step
+      - uses: github/codeql-action/analyze@d6317709a54fd87078d323eeb0e48ec331c8e621 # v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  secrets-history:
+    name: Secret scan (full history)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0          # gitleaks needs the whole history, not the tip
+          persist-credentials: false
+      # The gitleaks *action* paywalls organization repos (GITLEAKS_LICENSE); the
+      # *binary* is unrestricted. Pin the version + verify the sha256 so a hijacked
+      # release can't swap the scanner itself. --redact keeps any hit out of logs.
+      - name: gitleaks (full history, no license wall)
+        run: |
+          VER=8.30.1
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" -o gitleaks.tgz
+          tar -xzf gitleaks.tgz gitleaks
+          ./gitleaks detect --source . --log-opts="--all" --redact --exit-code 1
+
+  dependencies:
+    name: Dependency + config scan (blocking)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Trivy is the single blocking dependency + config gate: it scans
+      # requirements.txt / package-lock.json for known-vuln packages (it caught
+      # today's 5 HIGH CVEs), plus secret + IaC misconfig in one pass. osv-scanner
+      # can be added later as a pinned binary for lockfile-specific OSV coverage.
+      - name: Trivy filesystem scan (fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+  workflows:
+    name: Workflow injection scan (zizmor)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2

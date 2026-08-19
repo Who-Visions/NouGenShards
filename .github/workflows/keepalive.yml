@@ -7,11 +7,17 @@ on:
     - cron: "*/30 * * * *"
   workflow_dispatch:
 
+# A health curl needs no token at all (wargames/elevate-security.md M1).
+permissions: {}
+
 jobs:
   ping:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Ping relay /health
         run: |
           for attempt in 1 2 3; do

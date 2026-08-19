@@ -39,11 +39,20 @@ dependencies = [
     # AES-256-GCM for private_vault. Hard requirement, not optional: capture()
     # imports private_vault unconditionally to normalise `sensitivity`, so an
     # undeclared cryptography breaks every write, not just encrypted ones.
-    # 42.0 is the floor for the AESGCM aead API this uses.
-    "cryptography>=42.0",
+    # 42.0 is the floor for the AESGCM aead API this uses; 50.0.0 floor clears
+    # CVE-2026-69247 (trivy HIGH) and stops a recompile drifting back to it.
+    "cryptography>=50.0.0",
 ]
 
 [project.optional-dependencies]
+# NouGenTube lane (tools/nougentube.py): YouTube transcript ingestion.
+# Optional because the core substrate never touches YouTube; only the tube
+# tool lazy-imports these, and it degrades with a clear message when absent.
+tube = [
+    "youtube-transcript-api>=0.6",
+    "yt-dlp>=2024.1.1",
+]
+
 test = [
     "pytest>=7",
     "pytest-asyncio>=0.23",

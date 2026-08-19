@@ -285,10 +285,12 @@ def test_agent_route_receives_tenant_context(tenant_node, monkeypatch):
         observed["vault"] = core.active_vault_dir()
         return "ok"
 
-    monkeypatch.setattr(node, "run_agent", fake_agent)
+    # /agent is Rhea-Noir's route (PR #103). It recalls from the grid, so it
+    # must run against the CALLER's vault, not the owner's.
+    monkeypatch.setattr(node.rhea_noir, "ask", fake_agent)
     r = tenant_node["client"].post(
         "/agent", headers=_auth(tenant_node["token_b"]),
-        json={"name": "Rhea", "prompt": "check isolation"},
+        json={"prompt": "check isolation"},
     )
     assert r.status_code == 200
     assert observed == {

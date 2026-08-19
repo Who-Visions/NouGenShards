@@ -27,7 +27,6 @@ if os.environ.get("SPACE_ID"):
     os.environ["NOUGEN_VAULT_DIR"] = "/data/.vault"
 
 from nougen_shards import bind_probe, core, history, mcp_oauth, tenants
-from nougen_shards.agents import run_agent
 from nougen_shards.federation import federated_retrieve
 from nougen_shards.brain_scan import scan_environment
 
@@ -76,9 +75,14 @@ def recall_memory(query: str, limit: int = 5) -> list:
 
 @node_mcp.tool()
 def capture_experience(title: str, content: str, event_type: str = "KNOWLEDGE",
-                       tags: list[str] | None = None) -> dict:
-    """Store a unit of experience as a shard (deduplicated by content)."""
-    ok = core.capture(event_type, title, content, tags=tags)
+                       tags: list[str] | None = None,
+                       original_timestamp: str | None = None) -> dict:
+    """Store a unit of experience as a shard (deduplicated by content).
+
+    `original_timestamp` (ISO-8601) stamps migrated content at its true era
+    instead of capture time; invalid values fall back to now."""
+    ok = core.capture(event_type, title, content, tags=tags,
+                      original_timestamp=original_timestamp)
     return {"captured": bool(ok)}
 
 
@@ -160,6 +164,35 @@ def _window_search(query: str = "", since: Optional[str] = None,
 
     rows.sort(key=lambda x: x["timestamp"], reverse=True)
     return rows[:limit]
+
+
+def _health_cache_ttl() -> float:
+    """TTL for the expensive health/coverage aggregates. 0 disables caching.
+
+    /health must answer in well under a second even while a federated search is
+    hammering the disk (measured 2026-08-16: 7s under load). The aggregates it
+    reports move on capture cadence, not request cadence, so a short cache
+    changes nothing a caller can act on."""
+    return float(os.environ.get("NOUGEN_HEALTH_CACHE_S", "30"))
+
+
+#: (value, monotonic_ts) per aggregate. Stale-while-computing is acceptable:
+#: these are counts, not auth gates — the gates in /health are re-read live.
+_AGG_CACHE: dict = {}
+
+
+def _cached(key: str, compute):
+    ttl = _health_cache_ttl()
+    if ttl <= 0:
+        return compute()
+    import time as _time
+    hit = _AGG_CACHE.get(key)
+    now = _time.monotonic()
+    if hit is not None and now - hit[1] < ttl:
+        return hit[0]
+    value = compute()
+    _AGG_CACHE[key] = (value, now)
+    return value
 
 
 def _federated_coverage() -> dict | None:
@@ -267,11 +300,16 @@ def substrate_coverage() -> dict:
             "span": {"earliest": lo, "latest": hi},
             "months": dict(sorted(per_month.items())),
             "empty_months": gaps,
-            "grid": _substrate_coverage(),
+            # Cache key carries the active vault: a bare "substrate" key is
+            # module-level state shared across tenants, so it would serve one
+            # tenant's counts and DB detail to another.
+            "grid": _cached(f"substrate:{core.active_vault_dir()}", _substrate_coverage),
             "vault": str(core.active_vault_dir()),
             # Federated read-through extent (decision 16729): "not found" must
             # be distinguishable from "not mounted" at the federation layer.
-            "federated_stores": _federated_coverage()}
+            # Cached: enumerating 40+ stores' row counts costs ~3.5s live
+            # (nougen_memories alone is 379k rows) and moves on capture cadence.
+            "federated_stores": _cached("federated", _federated_coverage)}
 
 
 @node_mcp.tool()
@@ -748,7 +786,8 @@ def health(x_ngs_token: str = Header(None)):
     tenant = verify_token(x_ngs_token)
     context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
     try:
-        coverage = _substrate_coverage()
+        # Vault-keyed so the cache cannot hand one tenant another's coverage.
+        coverage = _cached(f"substrate:{tenant.vault_dir}", _substrate_coverage)
     finally:
         core.reset_active_vault(context_tokens)
     result.update({
@@ -788,12 +827,7 @@ class CaptureRequest(BaseModel):
     title: str
     content: str
     tags: Optional[List[str]] = None
-
-
-class AgentRequest(BaseModel):
-    name: str
-    prompt: str
-    model: Optional[str] = None
+    original_timestamp: Optional[str] = None
 
 
 class SyncPushRequest(BaseModel):
@@ -884,6 +918,7 @@ def search(req: SearchRequest, response: Response,
     # Over-fetch when bounded: filtering after ranking would otherwise starve
     # the result set down to a handful of in-era rows.
     fetch = min(limit * 5, 250) if bounded else limit
+    sweep_report: dict = {}
     try:
         # Federated, not core.retrieve: a remote caller must see the same corpus a
         # local CLI caller does. core.retrieve reads only nougen_shards_1..9.db,
@@ -892,7 +927,7 @@ def search(req: SearchRequest, response: Response,
         # them locally — the node answered "not found" about content it holds.
         # federated_retrieve degrades every remote lane independently, so this
         # cannot fail worse than the local-only path did.
-        results = federated_retrieve(req.query, limit=fetch)
+        results = federated_retrieve(req.query, limit=fetch, sweep_report=sweep_report)
     except Exception:
         logger.exception("search: full retrieve failed, falling back to keyword-only")
         try:
@@ -912,27 +947,39 @@ def search(req: SearchRequest, response: Response,
             logger.exception("search: windowed sweep failed; era-filtered results only")
         response.headers["X-NouGen-Held-Back"] = str(held_back)
 
-    return [_json_safe(r) for r in results[:limit]]
+    # Truncate to the caller's limit before the trailer: the over-fetch above is
+    # an internal ranking budget, not a promise to return more rows.
+    payload = [_json_safe(r) for r in results[:limit]]
+    # Coverage honesty: a store that errored or timed out mid-sweep is a hole in
+    # the corpus the caller must be able to see. Appended as a shard-shaped
+    # trailer (score 0, distinct event_type) so list-consuming clients keep
+    # parsing; absent entirely on a clean sweep, so the common path is unchanged.
+    if sweep_report.get("errored"):
+        payload.append({
+            "id": "federation_meta",
+            "event_type": "FEDERATION_STATUS",
+            "title": (f"federation: {len(sweep_report['errored'])} store(s) "
+                      "errored or timed out this sweep"),
+            "content": json.dumps({
+                "errored": sweep_report["errored"],
+                "stores_swept": sweep_report.get("stores_swept"),
+                "tier2": sweep_report.get("tier2"),
+                "tier2_deferred": sweep_report.get("tier2_deferred"),
+            }),
+            "tags": json.dumps(["federation_status"]),
+            "final_score": 0.0,
+            "_db_index": "federation_meta",
+        })
+    return payload
 
 
 @app.post("/capture")
 def capture_shard(req: CaptureRequest,
                   _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Single-shard capture for user agents."""
-    ok = core.capture(req.event_type, req.title, req.content, tags=req.tags)
+    ok = core.capture(req.event_type, req.title, req.content, tags=req.tags,
+                      original_timestamp=req.original_timestamp)
     return {"status": "ok", "captured": bool(ok)}
-
-
-@app.post("/agent")
-def dispatch_agent(req: AgentRequest,
-                   _tenant: tenants.Tenant = Depends(tenant_vault_context)):
-    """Run a prompt through a named roster agent."""
-    result = run_agent(req.name, req.prompt, model=req.model)
-    if result.startswith("[roster] No agent named"):
-        raise HTTPException(status_code=404, detail=result)
-    if result.startswith("[gatekeeper] Blocked"):
-        raise HTTPException(status_code=403, detail=result)
-    return {"status": "ok", "name": req.name, "response": result}
 
 
 @app.post("/sync/push")
@@ -971,6 +1018,14 @@ def sync_push(req: SyncPushRequest,
             domain_key=s.get("domain_key"),
             density_score=s.get("density_score"),
             sensitivity=sensitivity,
+            # Bulk ingest must stamp a shard at its TRUE era, exactly as
+            # /capture does. Dropping this silently re-dated every pushed shard
+            # to ingest time -- and because capture() dedups on a content hash,
+            # a re-push with the right date is a no-op, so the original era was
+            # unrecoverable. `timestamp` is the fallback because /sync/pull
+            # exports rows under that key, which makes pull -> push round-trip
+            # era-preserving instead of flattening history to the migration date.
+            original_timestamp=s.get("original_timestamp") or s.get("timestamp"),
         )
         if ok:
             count += 1
@@ -1017,6 +1072,34 @@ def sync_hashes(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
         finally:
             conn.close()
     return {"count": len(hashes), "hashes": hashes}
+
+
+# --- Rhea-Noir resident agent ---
+# NOTE: this block and rhea_noir.py must live in SOURCE, not only on the Space.
+# The Space is rebuilt by a "Space deploy: snapshot of <sha>" job that restores
+# from source, so anything applied only to the deployed artifact is deleted by
+# the next rebuild. That is what removed this route on 2026-08-18.
+import rhea_noir
+
+
+class AgentRequest(BaseModel):
+    prompt: str
+
+
+@app.post("/agent")
+def agent_ask(req: AgentRequest,
+              _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """Ask Rhea-Noir. Free lane first; her reply names the brain that answered."""
+    return rhea_noir.ask(req.prompt)
+
+
+@node_mcp.tool()
+def ask_rhea(prompt: str) -> dict:
+    """Ask Rhea-Noir, the grid's resident agent. She recalls from the memory
+    grid, gathers provenance-marked history, reads the tracker and relay, and
+    captures shards worth keeping. Her reply names which brain answered."""
+    return rhea_noir.ask(prompt)
+
 
 # --- Cortex HUD UI Logic ---
 

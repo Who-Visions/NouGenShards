@@ -1,22 +1,42 @@
 version: 2
+
+# A `cooldown` holds every update back a few days after release. This is the
+# direct defense against the 2026 worm class (Shai-Hulud -> ChainDrop): malicious
+# versions are typically yanked within hours-to-days of publish, so waiting out
+# that window means Dependabot never opens a PR for a compromised release in the
+# first place. Security-relevant majors get a shorter hold than routine minors.
+# (wargames/elevate-security.md M11)
 updates:
   - package-ecosystem: pip
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 5
+      semver-major-days: 3
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 5
+      semver-major-days: 3
   - package-ecosystem: npm
     directory: /ts
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 5
+      semver-major-days: 3
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 5
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 5

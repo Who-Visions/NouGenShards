@@ -87,42 +87,6 @@ def test_capture_search_roundtrip(client):
     assert any(h.get("title") == "Cloud automation shard" for h in r.json())
 
 
-def test_agent_dispatches_and_returns_json(client, monkeypatch):
-    calls = []
-
-    def fake_run_agent(name, prompt, model=None):
-        calls.append((name, prompt, model))
-        return "Hardening review complete."
-
-    monkeypatch.setattr(node, "run_agent", fake_run_agent)
-    r = client.post("/agent", json={
-        "name": "Rhea Noir",
-        "prompt": "Review the boundary",
-        "model": "rhea-noir:e2b",
-    }, headers=AUTH)
-
-    assert r.status_code == 200
-    assert r.json() == {
-        "status": "ok",
-        "name": "Rhea Noir",
-        "response": "Hardening review complete.",
-    }
-    assert calls == [("Rhea Noir", "Review the boundary", "rhea-noir:e2b")]
-
-
-@pytest.mark.parametrize(("agent_result", "status_code"), [
-    ("[roster] No agent named 'Ghost'. Roster: Rhea.", 404),
-    ("[gatekeeper] Blocked by DavOs Gatekeeper (Gate: test). Reason: denied", 403),
-])
-def test_agent_maps_roster_and_gatekeeper_failures(client, monkeypatch,
-                                                   agent_result, status_code):
-    monkeypatch.setattr(node, "run_agent", lambda *args, **kwargs: agent_result)
-    r = client.post("/agent", json={"name": "Rhea", "prompt": "audit"},
-                    headers=AUTH)
-    assert r.status_code == status_code
-    assert r.json()["detail"] == agent_result
-
-
 def test_search_degrades_instead_of_500(client, monkeypatch):
     """A crash in the full retrieval stack must not 500 the endpoint - federated
     callers read any non-200 as 'node down' and drop the relay. It must fall back
@@ -266,3 +230,82 @@ def test_search_bounded_still_returns_sparse_era_shards(client, monkeypatch):
                                      "since": "2000-01"}, headers=AUTH)
     assert r.status_code == 200
     assert any(row["title"] == "Quiet era shard" for row in r.json())
+
+def test_sync_push_preserves_original_timestamp(client):
+    """Bulk ingest must stamp a shard at its true era, like /capture does.
+
+    /sync/push forwarded event_type, tags, embedding, domain_key and
+    density_score to capture() but not original_timestamp, so every bulk-pushed
+    shard was re-dated to ingest time. The damage is permanent rather than
+    cosmetic: capture() dedups on a content hash, so a corrected re-push is a
+    silent no-op and the true era cannot be recovered. Verified against a live
+    node before the fix -- a shard sent stamped 2020-01-01 came back stamped
+    at push time.
+    """
+    r = client.post("/sync/push", json={"shards": [{
+        "title": "Era-true bulk shard",
+        "content": "Pushed in bulk, but it happened in 2020.",
+        "original_timestamp": "2020-01-01T00:00:00Z",
+    }]}, headers=AUTH)
+    assert r.status_code == 200
+    assert r.json()["count"] == 1
+
+    row = client.get("/sync/pull", headers=AUTH).json()[0]
+    assert row["timestamp"].startswith("2020-01-01"), (
+        f"bulk push must not re-date the shard to ingest time, got {row['timestamp']}")
+
+
+def test_sync_pull_push_round_trip_keeps_era(client):
+    """pull -> push must not flatten history to the migration date.
+
+    Exported rows carry their date under `timestamp`, not `original_timestamp`,
+    so a round trip through the export format is the realistic migration path
+    and the one most likely to silently re-date an entire vault.
+    """
+    client.post("/capture", json={
+        "title": "Old memory", "content": "Captured long ago.",
+        "original_timestamp": "2021-06-15T08:30:00Z",
+    }, headers=AUTH)
+    exported = client.get("/sync/pull", headers=AUTH).json()
+    assert exported[0]["timestamp"].startswith("2021-06-15")
+
+    # Same content dedups, so re-push a distinct body carrying the exported date.
+    replay = dict(exported[0])
+    replay["content"] = "Captured long ago, replayed to a sibling node."
+    r = client.post("/sync/push", json={"shards": [replay]}, headers=AUTH)
+    assert r.status_code == 200 and r.json()["count"] == 1
+
+    dates = sorted(row["timestamp"] for row in
+                   client.get("/sync/pull", headers=AUTH).json())
+    assert all(d.startswith("2021-06-15") for d in dates), (
+        f"round trip must preserve the era on both copies, got {dates}")
+
+
+def test_federated_read_token_falls_back_to_env(monkeypatch, tmp_path):
+    """A node with ephemeral storage must still authenticate its federated reads.
+
+    keymaker reads only from its on-disk store. On an HF Space with no volume
+    mounted, that store is empty after every restart -- but NGS_NODE_TOKEN is
+    still in the environment, because it is what the node authenticates its own
+    inbound requests with. Without the env fallback the node registers an
+    upstream, sends every federated read unauthenticated, takes a 401, and
+    returns an empty list that looks exactly like "the upstream has nothing".
+    """
+    from nougen_shards.connectors import cloud
+
+    sent = {}
+
+    # keymaker finds nothing — the wiped-store case.
+    # keymaker finds nothing — the wiped-store case.
+    import nougen_shards.keymaker as km
+    monkeypatch.setattr(km, "get_secret", lambda key: None)
+    monkeypatch.setenv("NGS_NODE_TOKEN", "env-token-value")
+    monkeypatch.setattr(cloud, "_open_cloud", lambda req, url, timeout: (
+        sent.__setitem__("token", req.get_header("X-ngs-token")) or b"[]"))
+
+    cloud.query_cloud_shards(
+        "anything", [{"name": "blade", "url": "https://blade.example.com"}], 3)
+
+    assert sent.get("token") == "env-token-value", (
+        "federated read must fall back to NGS_NODE_TOKEN from the environment "
+        "when the keymaker store is empty")
