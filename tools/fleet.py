@@ -11,11 +11,7 @@ Honours Rule 0.5 routing priority:
     5. Ollama Cloud routes      (heavy cloud fallback)
 
 Routes are read from the global MCP registry:
-<<<<<<< Updated upstream
-    ~\\.gemini\\antigravity-ide\\mcp_config.json
-=======
     %USERPROFILE%\\.gemini\\antigravity-ide\\mcp_config.json
->>>>>>> Stashed changes
 
 Usage
 -----
@@ -35,14 +31,10 @@ import json, os, sys, time, itertools, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request, urllib.error
 
-<<<<<<< Updated upstream
-MCP_CONFIG = os.path.expanduser(r"~\.gemini\antigravity-ide\mcp_config.json")
-=======
 MCP_CONFIG = os.environ.get(
     "NOUGEN_MCP_CONFIG",
     os.path.join(os.path.expanduser("~"), ".gemini", "antigravity-ide", "mcp_config.json"),
 )
->>>>>>> Stashed changes
 
 # Rule 0.5 priority: lower number = tried first
 PRIORITY = [
@@ -54,10 +46,31 @@ PRIORITY = [
     ("ollama-cloud", 5),
     ("vertex",       6),   # BILLED — opt-in only, see vertex_lane.py
 ]
+def _blade_ollama_url() -> str:
+    """Resolve blade's ollama endpoint instead of shipping a LAN address.
+
+    A hardcoded host is both a Rule 0.2 defect (environment-shaped value with no
+    env resolution) and the reason the repo privacy guard reports a private LAN
+    IP on every push. Order: NOUGEN_BLADE_OLLAMA_URL, then NOUGEN_BLADE_HOST,
+    then the documented fallback - which is logged so a stale default is visible
+    rather than silent.
+    """
+    url = os.environ.get("NOUGEN_BLADE_OLLAMA_URL")
+    if url:
+        return url
+    host = os.environ.get("NOUGEN_BLADE_HOST")
+    if host:
+        return "http://%s:11434/v1" % host
+    fallback = "blade.local"
+    print("[fleet] NOUGEN_BLADE_HOST unset - falling back to %s; set it to this "
+          "network's blade address if the local-ollama-blade lane fails" % fallback,
+          file=sys.stderr)
+    return "http://%s:11434/v1" % fallback
+
 LOCAL_ROUTES = [
     {"name": "local-ollama-whoart", "url": "http://localhost:11434/v1",
      "model": "gemma4:e2b-qat", "headers": {}, "kind": "local"},
-    {"name": "local-ollama-blade", "url": "http://10.0.0.87:11434/v1",
+    {"name": "local-ollama-blade", "url": _blade_ollama_url(),
      "model": "gemma4:e4b", "headers": {}, "kind": "local"},
     {"name": "lmstudio-whoart", "url": "http://localhost:1234/v1",
      "model": "local-model", "headers": {}, "kind": "lmstudio"},
