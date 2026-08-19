@@ -11,7 +11,11 @@ Honours Rule 0.5 routing priority:
     5. Ollama Cloud routes      (heavy cloud fallback)
 
 Routes are read from the global MCP registry:
+<<<<<<< Updated upstream
     ~\\.gemini\\antigravity-ide\\mcp_config.json
+=======
+    %USERPROFILE%\\.gemini\\antigravity-ide\\mcp_config.json
+>>>>>>> Stashed changes
 
 Usage
 -----
@@ -31,7 +35,14 @@ import json, os, sys, time, itertools, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request, urllib.error
 
+<<<<<<< Updated upstream
 MCP_CONFIG = os.path.expanduser(r"~\.gemini\antigravity-ide\mcp_config.json")
+=======
+MCP_CONFIG = os.environ.get(
+    "NOUGEN_MCP_CONFIG",
+    os.path.join(os.path.expanduser("~"), ".gemini", "antigravity-ide", "mcp_config.json"),
+)
+>>>>>>> Stashed changes
 
 # Rule 0.5 priority: lower number = tried first
 PRIORITY = [

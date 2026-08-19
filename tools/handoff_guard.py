@@ -25,6 +25,7 @@ REPO = Path(os.environ.get("NOUGEN_REPO", str(Path(__file__).resolve().parents[1
 HANDOFF_DIR = Path(os.environ.get("NOUGEN_HANDOFF_DIR", str(REPO / ".handoffs")))
 SESS_DIR = HANDOFF_DIR / ".sessions"
 AGENT = os.environ.get("NOUGEN_AGENT", "claude-cli")
+NL = chr(10)
 
 
 def _arg(name, default=None):
@@ -39,15 +40,112 @@ def _latest_mtime():
     return max((os.path.getmtime(f) for f in _handoff_files()), default=0.0)
 
 
-def _newest_text(limit=1800):
+def _age(seconds):
+    """Human age, so a leg can never read as 'now' just because it was injected."""
+    m = int(seconds // 60)
+    if m < 60:
+        return f"{m}m ago"
+    h = m // 60
+    return f"{h}h ago" if h < 48 else f"{h // 24}d ago"
+
+
+def _facet_rows(limit):
+    """Newest-first legs WITH facets, straight from the index.
+
+    Falls back to mtime+file scan when the DB is absent, so the guard still
+    works in a fresh clone. The DB path is preferred because it carries the
+    fields a file listing cannot: severity, topic, and the supersedes chain.
+    """
+    db = HANDOFF_DIR / "handoffs.db"
+    if not db.exists():
+        return None
+    try:
+        import sqlite3
+        conn = sqlite3.connect("file:" + str(db) + "?mode=ro", uri=True)
+        rows = conn.execute(
+            "SELECT handoff_id, goal, severity, topic, created_utc, agent, host, "
+            "incidents_open, supersedes, path FROM handoff_records "
+            "WHERE created_utc IS NOT NULL ORDER BY created_utc DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        conn.close()
+        return rows or None
+    except Exception:
+        return None
+
+
+def _leg_headline(path):
+    """First non-empty content line under the '# Agent Handoff' title, if any."""
+    try:
+        for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+            t = line.strip()
+            if t.startswith("**Goal**"):
+                return t.replace("**Goal**:", "").strip().strip("`")
+    except Exception:
+        pass
+    return Path(path).stem
+
+
+def _newest_text(limit=None, legs=None):
+    """Newest-first INDEX of recent legs + the newest body.
+
+    Injecting one truncated body (the old behaviour) is what let a stale leg's
+    unresolved-sounding narrative become the session's prior: there was no
+    timestamp to date it, no supersession order, and the truncation regularly
+    cut the body BEFORE the section that said the problem was fixed. The index
+    is one line per leg, so recency is legible before any body is read.
+    """
+    limit = int(os.environ.get("NOUGEN_HANDOFF_INJECT_CHARS", limit or 2600))
+    legs = int(os.environ.get("NOUGEN_HANDOFF_INJECT_LEGS", legs or 6))
     files = _handoff_files()
     if not files:
         return "(no handoffs in registry yet)"
-    newest = max(files, key=os.path.getmtime)
+    now = time.time()
+    ordered = sorted(files, key=os.path.getmtime, reverse=True)[:legs]
+    lines = [f"STATUS AS OF {datetime.datetime.now().astimezone().isoformat(timespec='seconds')} "
+             f"- {len(files)} legs in registry, {len(ordered)} newest listed, NEWEST FIRST.",
+             "A leg lower in this list is OLDER and may already be resolved by one above it. "
+             "Do not treat any body below as current state without checking the ones above it.",
+             ""]
+    rows = _facet_rows(legs)
+    if rows:
+        lines.append("SEVERITY: incident = this leg left an unresolved incident; "
+                     "active = open investigation; clear = nothing outstanding.")
+        lines.append("")
+        for i, r in enumerate(rows):
+            hid, goal, sev, topic, cutc, agent, host, inc, sup, rpath = r
+            try:
+                delta = now - datetime.datetime.fromisoformat(cutc).timestamp()
+            except Exception:
+                delta = 0
+            mark = "-> NEWEST" if i == 0 else "  superseded?" if i < 3 else "  older"
+            flag = "[INCIDENT]" if inc else ("[active]" if sev == "active" else "[clear] ")
+            lines.append(f"{mark} {flag} [{_age(delta)}] {agent}@{host} :: {goal or topic}")
+        open_inc = [r for r in rows if r[7]]
+        if open_inc:
+            lines.append("")
+            lines.append(f"{len(open_inc)} of the {len(rows)} newest legs are flagged INCIDENT. "
+                         "Check whether a NEWER leg already resolved it before reporting it as live.")
+        # rows carry the JSON path; the readable body is the sibling .md
+        newest_md = Path(rows[0][9]).with_suffix(".md") if rows[0][9] else None
+        if newest_md and newest_md.exists():
+            ordered = [newest_md]
+    else:
+        for i, f in enumerate(ordered):
+            mark = "-> NEWEST" if i == 0 else "  superseded?" if i < 3 else "  older"
+            lines.append(f"{mark} [{_age(now - os.path.getmtime(f))}] {Path(f).stem} :: {_leg_headline(f)}")
+    lines.append("")
+    lines.append("=== NEWEST LEG BODY ===")
     try:
-        return Path(newest).read_text(encoding="utf-8", errors="replace")[:limit]
+        body = Path(ordered[0]).read_text(encoding="utf-8", errors="replace")
     except Exception:
-        return "(latest handoff unreadable)"
+        body = "(latest handoff unreadable)"
+    if len(body) > limit:
+        body = body[:limit] + NL + NL + "[TRUNCATED at %d chars - the rest of this leg, " % limit
+        body += f"including any resolution, is in {Path(ordered[0]).name}. Read the file before "
+        body += "reporting anything in it as an open problem.]"
+    lines.append(body)
+    return NL.join(lines)
 
 
 def _git(*args):

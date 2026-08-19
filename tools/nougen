@@ -1,0 +1,59 @@
+#!/usr/bin/env sh
+# POSIX entry point for NouGenShards -- for Git Bash, WSL, macOS, Linux, CI,
+# and any agent that drives the CLI from a shell rather than a console window.
+#
+# Why this exists alongside nougen.bat
+# ------------------------------------
+# `nougen.bat` is a console launcher. Reaching it from a POSIX shell means
+# going through `cmd /c`, and cmd re-parses the command line: quoted arguments
+# containing spaces are split at the wrong place, so
+#
+#     nougen.bat handoff create -a "Claude Cli" -g "some goal"
+#
+# arrives as `-a Claude` plus the stray token `Cli"`, and the CLI rejects it.
+# The batch file also ends in `pause`, which blocks a non-interactive caller
+# forever instead of returning an exit code.
+#
+# This script execs the interpreter directly. Arguments go from the shell to
+# Python as argv with no intermediate parser, so quoting survives intact and
+# the process exits normally.
+#
+# Note the note rule still applies: pass multi-line handoff text with
+# `-M/--message-file`, never `-m`. cmd truncates a `-m` note at the first
+# newline, and POSIX double-quoting eats `$3`/`$4` inside currency amounts.
+#
+#   tools/nougen handoff create -a "Claude Cli" -g "goal" -M notes.md
+#   tools/nougen handoff rebuild-db
+#
+# Unlike the batch launcher this does NOT build or heal the venv; run
+# `nougen.bat` once (or `uv sync`) for that. Keeping provisioning in one place
+# means an agent invocation can never trigger a multi-minute install.
+
+set -eu
+
+# Repo root is this script's parent directory -- resolved from the script's own
+# location, so the caller's working directory is irrelevant.
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+# Prefer the project venv, then an explicit override, then whatever is on PATH.
+if [ -n "${NOUGEN_PYTHON:-}" ]; then
+    PY="$NOUGEN_PYTHON"
+elif [ -x "$REPO_ROOT/.venv/Scripts/python.exe" ]; then   # Windows venv layout
+    PY="$REPO_ROOT/.venv/Scripts/python.exe"
+elif [ -x "$REPO_ROOT/.venv/bin/python" ]; then           # POSIX venv layout
+    PY="$REPO_ROOT/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PY=python3
+elif command -v python >/dev/null 2>&1; then
+    PY=python
+else
+    echo "nougen: no Python found. Run nougen.bat once to build .venv," >&2
+    echo "        or set NOUGEN_PYTHON to an interpreter." >&2
+    exit 1
+fi
+
+PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+
+exec "$PY" -m nougen_shards.cli "$@"

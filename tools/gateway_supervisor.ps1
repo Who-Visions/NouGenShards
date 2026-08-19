@@ -29,7 +29,12 @@ $ErrorActionPreference = 'Stop'
 $Root       = Split-Path -Parent $PSScriptRoot
 $Python     = Join-Path $Root '.venv\Scripts\python.exe'
 $NodeLane   = Join-Path $PSScriptRoot 'node_lane.ps1'
+<<<<<<< Updated upstream
 $WorkerDir  = Join-Path (Split-Path -Parent $Root) 'nougen-fleet-mcp'
+=======
+$WorkerDir  = if ($env:NOUGEN_FLEET_WORKER_DIR) { $env:NOUGEN_FLEET_WORKER_DIR }
+              else { Join-Path $env:USERPROFILE 'Outpost\nougen-fleet-mcp' }
+>>>>>>> Stashed changes
 $RunDir     = Join-Path $Root '.node'
 $Cloudflared = Join-Path $PSScriptRoot 'bin\cloudflared.exe'
 $TunnelLog  = Join-Path $RunDir 'tunnel.log'
@@ -37,8 +42,13 @@ $TunnelPid  = Join-Path $RunDir 'tunnel.pid'
 $StateFile  = Join-Path $RunDir 'gateway_url.txt'
 $Port       = if ($env:NGS_PORT) { $env:NGS_PORT } else { '4444' }
 $env:PYTHONPATH = Join-Path $Root 'src'
+<<<<<<< Updated upstream
 $env:NOUGEN_VAULT_DIR = Join-Path $env:USERPROFILE '.nougen\shards'
 $env:NOUGEN_SECRETS_VAULT_DIR = Join-Path $env:USERPROFILE '.nougen\secrets'
+=======
+$env:NOUGEN_VAULT_DIR = (Join-Path $env:USERPROFILE '.nougen\shards')
+$env:NOUGEN_SECRETS_VAULT_DIR = (Join-Path $env:USERPROFILE '.nougen\secrets')
+>>>>>>> Stashed changes
 
 function Log($m) { "{0}  {1}" -f (Get-Date -Format 'HH:mm:ss'), $m }
 
