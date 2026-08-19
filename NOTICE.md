@@ -1,7 +1,7 @@
 # Notice
 
 ## Copyright
-Copyright © 2026 Who Visions LLC. All rights reserved.
+Copyright © 2020–present Who Visions LLC. All rights reserved.
 
 ## Trademarks
 **Who Visions**, **NouGen**, **NouGenShards**, and **Sol-Ai** are trademarks of Who Visions LLC. All other trademarks are the property of their respective owners.

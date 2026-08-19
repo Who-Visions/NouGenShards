@@ -1,6 +1,6 @@
 # Who Visions Source-Available License (v1.0)
 
-Copyright © 2026 Who Visions LLC. All rights reserved.
+Copyright © 2020–present Who Visions LLC. All rights reserved.
 
 ## 1. Overview
 This is a **source-available** license. This software is **not open source**. This license governs the use of the NouGenShards source code and related documentation (the "Software").

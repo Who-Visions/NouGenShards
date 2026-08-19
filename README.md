@@ -122,9 +122,24 @@ pip install .
 The Cortex HUD also ships as a native desktop app (Rust + Tauri v2, React frontend):
 
 ```bash
-npm install          # frontend deps
-npm run tauri dev    # live-reload development window
-npm run tauri build  # production app at src-tauri/target/release/
+npm install            # frontend deps
+npm run tauri:dev      # live-reload development window
+npm run tauri:build    # production app at src-tauri/target/release/
+```
+
+Use `tauri:dev`, not `tauri dev`. The production bundle ships a self-contained
+Python engine as a Tauri sidecar, and `externalBin` makes that binary a
+build-time requirement — so a fresh clone running `tauri dev` stops at
+``resource path `bin\nougen_engine-…exe` doesn't exist`` before it ever opens a
+window. Development does not need the sidecar: the Rust side falls back to
+running the engine from source under your system Python. `tauri:dev` therefore
+loads `src-tauri/tauri.dev.conf.json`, which drops `externalBin` and lets the
+app start straight from a checkout.
+
+Building the sidecar is only needed for a release bundle:
+
+```bash
+npm run sidecar        # PyInstaller; slow, and the artifact is not committed
 ```
 
 Prerequisites: Node 20+, Rust toolchain (`winget install Rustlang.Rustup`), and
@@ -260,4 +275,4 @@ See [`skills/README.md`](skills/README.md) for the layout and how to write one.
 
 ## 📜 Notice
 
-Copyright © 2026 Who Visions LLC. All rights reserved. 🛡️ This source code is provided for visibility and personal use only. Commercial reuse is not granted.
+Copyright © 2020–present Who Visions LLC. All rights reserved. 🛡️ This source code is provided for visibility and personal use only. Commercial reuse is not granted.
