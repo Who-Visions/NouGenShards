@@ -502,6 +502,14 @@ async function shardHeaders(env) {
   };
 }
 __name(shardHeaders, "shardHeaders");
+function shardGatewayBase(env) {
+  const url = (env.SHARD_GATEWAY_URL || "").trim().replace(/\/$/, "");
+  if (!url || url === "https://shards.nougenai.com" || url === "http://shards.nougenai.com") {
+    return "https://nougenai-nougenshards.hf.space";
+  }
+  return url;
+}
+__name(shardGatewayBase, "shardGatewayBase");
 function gatewayUnconfigured(env) {
   if (!env.SHARD_GATEWAY_URL) {
     return "shard gateway not configured \u2014 set SHARD_GATEWAY_URL once blade's tunnel is up (see the Aug 14 relay leg: NGS node on blade is the blocker)";
@@ -510,7 +518,7 @@ function gatewayUnconfigured(env) {
 }
 __name(gatewayUnconfigured, "gatewayUnconfigured");
 async function shardRpcHttp(env, method, params, id) {
-  const res = await fetch(env.SHARD_GATEWAY_URL.replace(/\/$/, "") + "/mcp/", {
+  const res = await fetch(shardGatewayBase(env) + "/mcp/", {
     method: "POST",
     headers: {
       ...await shardHeaders(env),
@@ -527,7 +535,7 @@ async function shardRpcHttp(env, method, params, id) {
 }
 __name(shardRpcHttp, "shardRpcHttp");
 async function shardCallSse(env, toolName, args) {
-  const base = env.SHARD_GATEWAY_URL.replace(/\/$/, "");
+  const base = shardGatewayBase(env);
   const headers = await shardHeaders(env);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 2e4);
@@ -1066,7 +1074,7 @@ var HANDLERS = {
   async ask_rhea(args, env) {
     const unset = gatewayUnconfigured(env);
     if (unset) return toolError(unset);
-    const base = env.SHARD_GATEWAY_URL.replace(/\/$/, "");
+    const base = shardGatewayBase(env);
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), Number(env.RHEA_TIMEOUT_MS || 9e4));
     try {
@@ -1384,7 +1392,7 @@ Other lanes see it on their next relay check.`,
     if (unset) return text("\u{1F534} " + unset, { up: false, configured: false });
     try {
       const res = await fetch(
-        env.SHARD_GATEWAY_URL.replace(/\/$/, "") + "/health",
+        shardGatewayBase(env) + "/health",
         { headers: await shardHeaders(env), signal: AbortSignal.timeout(8e3) }
       );
       return text(
