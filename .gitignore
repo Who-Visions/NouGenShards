@@ -187,9 +187,13 @@ tools/vertex_image.py
 
 # build artifacts + local backups (added 2026-08-19, pre-landing sweep)
 .fleet_worker.js
+.fleet_worker_live.js
 .fleet_bindings_backup.json
 *.bak-2026*
 logs/
+tools/patch_*.py
+tools/verify_worker_tools.py
+tools/deploy_bindings_and_worker.py
 
 # local handoff messages - working registry, never published (.gitkeep only)
 .handoffs/msg_*.md
