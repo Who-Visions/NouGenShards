@@ -25,7 +25,7 @@ def test_assurance_routes_to_iris_runner_and_requires_operator_gate():
 
 
 def test_assurance_redacts_secrets_before_and_after_iris():
-    secret = "nougen_fleet_token_" + "AB12cd34"  # split so scanners skip this fixture
+    secret = "".join(["nougen_", "fleet_", "token_", "fixture_fake_value"])
     seen = []
 
     def iris(prompt):
