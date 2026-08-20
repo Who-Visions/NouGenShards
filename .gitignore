@@ -170,6 +170,7 @@ tools/.anchor_cache.json
 tools/or_free_models.json
 tools/veilverse_*
 tools/dream_digest*.py
+!tools/dream_digest_run.py
 tools/dream_extract.py
 tools/dream_handoffs.py
 tools/fleet_keymaker_probe.py

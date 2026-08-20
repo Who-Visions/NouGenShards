@@ -103,7 +103,12 @@ class MirrorConfig:
     @classmethod
     def resolve(cls, **overrides) -> "MirrorConfig":
         root = Path(overrides.pop("watchtower_root", None) or resolve_watchtower_root())
-        vault = Path(_env("NOUGEN_VAULT_DIR") or (root / "vault"))
+        try:
+            from . import core
+            contextual_vault = core.active_vault_dir() if core.vault_context_is_set() else None
+        except Exception:
+            contextual_vault = None
+        vault = Path(contextual_vault or _env("NOUGEN_VAULT_DIR") or (root / "vault"))
         cfg = cls(
             watchtower_root=root,
             vault_dir=vault,

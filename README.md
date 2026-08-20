@@ -260,4 +260,4 @@ See [`skills/README.md`](skills/README.md) for the layout and how to write one.
 
 ## 📜 Notice
 
-Copyright © 2026 Who Visions LLC. All rights reserved. 🛡️ This source code is provided for visibility and personal use only. Commercial reuse is not granted.
+Copyright © 2020–present Who Visions LLC. All rights reserved. 🛡️ This source code is provided for visibility and personal use only. Commercial reuse is not granted.

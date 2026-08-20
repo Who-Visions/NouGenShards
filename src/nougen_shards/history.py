@@ -11,10 +11,11 @@ from typing import Optional
 
 # Configuration
 def get_history_db_path() -> Path:
-    """Gets the path to the history database dynamically, matching core.GLOBAL_DIR."""
+    """Gets the path to the history database in the active vault."""
     from . import core
-    core.GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
-    return core.GLOBAL_DIR / "history.db"
+    vault = core.active_vault_dir()
+    vault.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return vault / "history.db"
 
 
 def get_history_connection():

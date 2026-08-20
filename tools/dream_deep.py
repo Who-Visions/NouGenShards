@@ -48,7 +48,7 @@ def _resolve_volume_model():
     try:
         models = _models()
         prefs = tuple(m.strip() for m in os.environ.get(
-            "NOUGEN_DREAM_LOCAL_PREFS", "gemma4:e4b,gemma4:e2b").split(",") if m.strip())
+            "NOUGEN_DREAM_LOCAL_PREFS", "gemma4:e2b-qat,gemma4:e2b,gemma4:e4b").split(",") if m.strip())
         for pref in prefs:
             if pref in models:
                 return pref

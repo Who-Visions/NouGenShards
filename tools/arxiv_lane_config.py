@@ -66,13 +66,27 @@ def resolve_list(env_name, config_key, fallback, sep=";"):
 
 
 def resolve_vault_root():
-    """Vault dir: NOUGEN_VAULT_DIR -> config vault_dir -> WATCHTOWER_ROOT/vault.
+    """Vault dir: NOUGEN_ARXIV_VAULT_DIR -> config arxiv_vault_dir ->
+    NOUGEN_VAULT_DIR -> config vault_dir -> WATCHTOWER_ROOT/vault.
+
+    The lane-specific override exists because the general vault config can
+    legitimately point at the shard DB store while this lane's markdown corpus
+    (79k+ daily docs) lives elsewhere — GM decision 2026-08-16 (option b of
+    shard 17882): the arXiv lane gets its own vault knob rather than migrating
+    the corpus or baking a machine path into the scheduled task.
 
     The final fallback is derived, never a baked absolute path: a hardcoded
     "C:\\Users\\<someone>\\..." silently writes to the wrong place on any other
     machine or account instead of failing loudly.
     """
-    v, source = resolve("NOUGEN_VAULT_DIR", "vault_dir", None)
+    # Fallback is "" not None: resolve() casts the fallback through `cast`,
+    # and str(None) is the truthy string "None" — which made this function
+    # return a literal "None" vault dir (a cwd-relative folder!) whenever
+    # neither env nor config was set, and left the derived fallback below dead.
+    v, source = resolve("NOUGEN_ARXIV_VAULT_DIR", "arxiv_vault_dir", "")
+    if v:
+        return v, source
+    v, source = resolve("NOUGEN_VAULT_DIR", "vault_dir", "")
     if v:
         return v, source
     root = os.environ.get("WATCHTOWER_ROOT") or os.path.expanduser("~/Watchtower")

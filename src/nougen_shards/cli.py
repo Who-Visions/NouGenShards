@@ -4,6 +4,7 @@ import sys
 import json
 import sqlite3
 import os
+import numpy as np
 from pathlib import Path
 from . import core as shards
 from . import keymaker
@@ -21,6 +22,9 @@ from .connectors.cloud import push_to_cloud, pull_from_cloud
 from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
 from . import dream
 from . import evolution
+from . import assurance
+from . import tenants
+from . import agents
 
 from nougen_shards import __version__ as VERSION  # single source: pyproject
 
@@ -156,31 +160,188 @@ def cmd_init(_args):
     print(" 4. nougen add \"first shard\" (Start capturing manually)")
 
 
-def _run_interactive_chat(model, provider, client):
-    """Interactive chat loop."""
-    print(f"Entering interactive chat with {model} ({provider})...")
-    msgs = []
+def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen"):
+    """Elevated conversational chat loop with memory and slash commands (AGY / Codex / Claude CLI style)."""
+    # Quiet background connector warning logs from spamming interactive terminal
+    import logging
+    logging.getLogger("nougen_shards.connectors").setLevel(logging.ERROR)
+    logging.getLogger("nougen_shards.federation").setLevel(logging.ERROR)
+
+    persona = agents.get_agent(persona_name) or agents.get_agent("NouGen")
+    persona_title = persona.name if persona else persona_name
+    print("🪩 NouGen Interactive Intelligence Grid")
+    print(f"   Persona: {persona_title} | Model: {model} ({provider}) | Memory: Active (FTS5 + Dual Recall)")
+    print("   Type your request or use slash commands (/help, /search, /recall, /status, /handoff, /agent, /exit).\n")
+
+    history_msgs = []
+    if persona and persona.system_prompt:
+        history_msgs.append({"role": "system", "content": persona.system_prompt})
+
     while True:
         try:
-            user_input = input("\n[You]: ").strip()
-            if user_input.lower() in ['exit', 'quit']:
-                break
+            user_input = input(f"[{persona_title}] > ").strip()
             if not user_input:
                 continue
 
-            found = federation.federated_retrieve(user_input, limit=2)
-            context = shards.compile_recall_packet(found)
-            msgs.append({"role": "user", "content": f"{user_input}\n\n{context}"})
-            print(f"\n[{model}]: ", end="")
-            response = client.chat(model, msgs, stream=True)
-            msgs.append({"role": "assistant", "content": response})
+            # Slash command shortcuts
+            if user_input in ['/exit', '/quit', 'exit', 'quit']:
+                print("Session closed. Shards and context preserved.")
+                break
+
+            if user_input in ['/help', '/?']:
+                print("\n⚡ NouGen Autonomous Intelligence Grid — Commands & Top 1% Controls:")
+                print("  /agent <name>       - Switch active persona (NouGen, Sol-Ai, Rhea, DavOs, Iris, Kaedra, Griot, Kronos)")
+                print("  /agents             - List all roster personas, models, and system archetypes")
+                print("  /skills [task]      - Discover and resolve required skill contracts for a task")
+                print("  /exec <code>        - Execute sandboxed code block (Python/JS/TS)")
+                print("  /recall <query>     - Recall and score relevant memory shards across fabric")
+                print("  /search <query>     - Full substrate search (FTS5 + Cosine Vector)")
+                print("  /add <content>      - Capture an immutable shard directly into the vault")
+                print("  /status             - Inspect active substrate shards and database nodes")
+                print("  /models             - List live models available for current provider")
+                print("  /doctor             - Run system and telemetry diagnostics")
+                print("  /handoff [msg]      - Check or publish cross-agent session handoffs")
+                print("  /compress           - Summarize and compact current session context")
+                print("  /clear              - Clear conversation memory in current session")
+                print("  /exit               - Exit interactive mode\n")
+                continue
+
+            if user_input.startswith('/agents'):
+                print(f"\n{agents.list_roster()}\n")
+                continue
+
+            if user_input.startswith('/models'):
+                models_list = client.list_models()
+                print(f"\nAvailable models ({provider}):")
+                for m in models_list:
+                    print(f" - {m}")
+                print()
+                continue
+
+            if user_input.startswith('/skills'):
+                from . import skills as skill_reg
+                parts = user_input.split(maxsplit=1)
+                task_desc = parts[1] if len(parts) > 1 else ""
+                if task_desc:
+                    active_skills = skill_reg.resolve_skills(task_desc)
+                    if active_skills:
+                        print(f"\n🎯 Active Skills for '{task_desc}':")
+                        for sk in active_skills:
+                            print(f" • {sk.name}: {sk.description}\n")
+                    else:
+                        print(f"\nNo specific skills triggered for '{task_desc}'.")
+                else:
+                    print(f"\nInstalled Skills:\n{skill_reg.roster()}\n")
+                continue
+
+            if user_input.startswith('/exec '):
+                code_to_run = user_input.split(maxsplit=1)[1]
+                from . import nougen_sandbox
+                res = nougen_sandbox.execute_sandboxed(code_to_run, language="python", trusted=True, bypass_gatekeeper=True)
+                print(f"\n[Execution Result]:\n{res}\n")
+                continue
+
+            if user_input.startswith('/agent'):
+                parts = user_input.split(maxsplit=1)
+                if len(parts) > 1:
+                    new_persona = agents.get_agent(parts[1])
+                    if new_persona:
+                        persona = new_persona
+                        persona_title = persona.name
+                        history_msgs = [{"role": "system", "content": persona.system_prompt}]
+                        print(f"✅ Switched persona to {persona_title} ({persona.role}) [{persona.default_model}]")
+                    else:
+                        print(f"❌ Unknown persona '{parts[1]}'. Run /agents to view available personas.")
+                else:
+                    print(f"Active persona: {persona_title} ({persona.role if persona else 'Default'})")
+                continue
+
+            if user_input.startswith('/recall ') or user_input.startswith('/search '):
+                subquery = user_input.split(maxsplit=1)[1]
+                found = federation.federated_retrieve(subquery, limit=3)
+                if not found:
+                    print("No matching shards found.")
+                else:
+                    print(f"\n🔍 Recalled {len(found)} shard(s):")
+                    for s in found:
+                        print(f" - [{s['id']}] (Score: {s.get('final_score', 0):.2f}) {s.get('title')}\n   {s.get('content')[:140]}...")
+                continue
+
+            if user_input.startswith('/add '):
+                content = user_input.split(maxsplit=1)[1]
+                ok = shards.capture("KNOWLEDGE", content, content, ["cli-interactive"])
+                print("✅ Shard captured to substrate." if ok else "ℹ️ Shard already present.")
+                continue
+
+            if user_input == '/status':
+                active = shards.get_active_db_index()
+                print(f"Substrate Active DB: #{active}")
+                for i in range(1, shards.MAX_DB_COUNT + 1):
+                    p = shards.get_db_path(i)
+                    if p.exists():
+                        print(f" - DB #{i}: {p.stat().st_size / (1024*1024):.2f} MB")
+                continue
+
+            if user_input == '/compress':
+                if len(history_msgs) <= 1:
+                    print("Context already minimal.")
+                else:
+                    summary_prompt = "Compact the following conversation into key facts, decisions, and outcomes:\n" + "\n".join(f"{m['role']}: {m['content'][:300]}" for m in history_msgs if m['role'] != 'system')
+                    summary = client.chat(model, [{"role": "user", "content": summary_prompt}], stream=False)
+                    history_msgs = [{"role": "system", "content": persona.system_prompt if persona else ""}, {"role": "system", "content": f"Prior Conversation Summary: {summary}"}]
+                    print(f"\n✅ Context compacted ({len(summary)} chars retained).\n")
+                continue
+
+            if user_input == '/clear':
+                history_msgs = [{"role": "system", "content": persona.system_prompt}] if persona and persona.system_prompt else []
+                print("Session history cleared.")
+                continue
+
+            if user_input.startswith('/handoff'):
+                parts = user_input.split(maxsplit=1)
+                from . import handoff
+                if len(parts) > 1:
+                    handoff.create_handoff(parts[1], agent="cli", goal="interactive session task")
+                else:
+                    handoff.show_latest_handoff()
+                continue
+
+            # Autonomous Skill Guidance & Context Injection
+            from . import skills as skill_reg
+            applicable_skills = skill_reg.resolve_skills(user_input) if len(user_input.split()) > 1 else []
+            skill_ctx = skill_reg.format_instructions(applicable_skills) if applicable_skills else ""
+
+            # Dual-system memory recall & relay foresight (skip for 1-word generic greetings)
+            is_simple_greeting = user_input.lower() in ("hi", "hello", "hey", "sup", "yo", "good morning", "hello today")
+            context = ""
+            relay_ctx = ""
+            if not is_simple_greeting:
+                from . import handoff
+                files = handoff.get_handoff_files()
+                if files:
+                    latest_data = handoff._read_handoff(files[0])
+                    if latest_data and latest_data.get("status") in ("open", "in_progress"):
+                        relay_ctx = f"## Active Fleet Relay / Handoff:\n- Goal: {latest_data.get('goal')}\n- Agent: {latest_data.get('agent')}\n- Status: {latest_data.get('status')}"
+
+                found = federation.federated_retrieve(user_input, limit=2)
+                context = shards.compile_recall_packet(found) if found else ""
+
+            injected_parts = [p for p in [skill_ctx, relay_ctx, context, f"User Request: {user_input}"] if p]
+            prompt_with_ctx = "\n\n".join(injected_parts)
+            history_msgs.append({"role": "user", "content": prompt_with_ctx})
+
+            print(f"\n[{persona_title}]: ", end="")
+            response = client.chat(model, history_msgs, stream=True)
+            history_msgs.append({"role": "assistant", "content": response})
             print()
         except KeyboardInterrupt:
+            print("\nSession paused. Use /exit or Ctrl+C again to quit.")
             break
 
 
 def cmd_chat(args):
-    """Starts a chat session with an LLM."""
+    """Starts a chat session with an LLM or roster persona."""
+    persona_name = getattr(args, "agent", None) or "NouGen"
     prov_name = args.provider or "local"
     client = get_client(prov_name)
     if not client or not client.is_alive():
@@ -189,24 +350,32 @@ def cmd_chat(args):
 
     model = args.model
     if not model:
-        if isinstance(client, LocalLLMClient):
+        available = client.list_models() if client else []
+        persona = agents.get_agent(persona_name)
+        # Prioritize persona default model or modern local edge models
+        priority_models = [persona.default_model if persona else None, "gemma4:e2b", "gemma4:e2b-qat", "dav1d:e2b", "sol-ai:e4b"]
+        matched = next((m for m in priority_models if m and m in available), None)
+        if matched:
+            model = matched
+        elif available:
+            model = available[0]
+        elif persona and persona.default_model:
+            model = persona.default_model
+        elif isinstance(client, LocalLLMClient):
             model_config = client.find_best_edge_model()
             model = model_config.model_name if model_config else None
-        else:
-            available = client.list_models()
-            model = available[0] if available else None
 
     if not model:
-        print("Error: No model found.")
+        print("Error: No model found or configured for this environment.")
         return
 
     if not args.query:
-        _run_interactive_chat(model, prov_name, client)
+        _run_interactive_chat(model, prov_name, client, persona_name=persona_name)
     else:
         found = federation.federated_retrieve(args.query, limit=3)
         ctx = shards.compile_recall_packet(found)
         msgs = [{"role": "user", "content": f"{args.query}\n\n{ctx}"}]
-        print(f"[*] Querying {model}...")
+        print(f"[*] Querying {model} ({persona_name})...")
         resp = client.chat(model, msgs, stream=False)
         print(f"\n[Response]:\n{resp}")
 
@@ -306,8 +475,8 @@ def cmd_search(args):
     if getattr(args, 'json', False) is True:
         # Convert binary embeddings to lists for JSON serialization
         for res in results:
-            if 'embedding' in res and isinstance(res['embedding'], bytes):
-                res['embedding'] = json.loads(res['embedding'].decode())
+            if 'embedding' in res:
+                res['embedding'] = _embedding_for_json(res['embedding'])
         print(json.dumps(results))
         return
 
@@ -322,6 +491,34 @@ def cmd_search(args):
         # loop requires knowing that "Source:" is what --db wants.
         print(f"  ↳ helpful? nougen mark {res['id']} --worked --db {res['_db_index']}")
         print("-" * 40)
+
+
+def _embedding_for_json(value):
+    """Serialize both legacy JSON embeddings and current float32 BLOBs."""
+    if not isinstance(value, (bytes, bytearray, memoryview)):
+        return value
+    blob = bytes(value)
+    if blob.lstrip().startswith(b"["):
+        try:
+            return json.loads(blob.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+    if len(blob) % np.dtype(np.float32).itemsize:
+        return None
+    return np.frombuffer(blob, dtype=np.float32).tolist()
+
+
+def cmd_assure(args):
+    """Route a non-mutating evidence assurance verdict through Iris."""
+    result = assurance.assess_claim(args.claim, evidence=args.evidence)
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2))
+        return
+    print(f"[{result['status']}] confidence={result['confidence']:.2f} via Iris")
+    print(result["rationale"])
+    for caveat in result["caveats"]:
+        print(f"Caveat: {caveat}")
+    print("Operator gate required: yes")
 
 
 def cmd_mark(args):
@@ -667,13 +864,8 @@ def cmd_node(args):
                 for r in rows:
                     d = dict(r)
                     emb = d.get("embedding")
-                    if emb:
-                        try:
-                            raw = emb.decode() if isinstance(emb, (bytes, bytearray)) else emb
-                            d["embedding"] = json.loads(raw)
-                        except (AttributeError, ValueError, TypeError) as e:
-                            print(f"[!] Skipping bad embedding on shard #{d.get('id')}: {e}")
-                            d["embedding"] = None
+                    if emb is not None:
+                        d["embedding"] = _embedding_for_json(emb)
                     all_shards.append(d)
             finally:
                 conn.close()
@@ -838,6 +1030,20 @@ def cmd_dashboard(args):
     uvicorn.run(dashboard_app, host="127.0.0.1", port=args.port)
 
 
+def cmd_tenant(args):
+    """Mint additional node credentials without persisting plaintext tokens."""
+    if args.action != "mint":
+        return
+    try:
+        token = tenants.mint_tenant(args.tenant_id, args.label)
+    except tenants.TenantRegistryError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return
+    print(f"Tenant: {args.tenant_id}")
+    print(f"Token: {token}")
+    print("Save this token now; it is stored only as a SHA-256 hash and cannot be shown again.")
+
+
 def get_parser():
 
 
@@ -865,10 +1071,18 @@ def get_parser():
     p_search.add_argument("--domain", help="Explicit domain boundary key filter override")
     p_search.add_argument("--dual", action="store_true", help="Use dual-system memory recall (episodic + semantic rules)")
 
+    p_assure = subparsers.add_parser("assure", help="Label a claim through Iris evidence assurance")
+    p_assure.add_argument("claim")
+    p_assure.add_argument("--evidence", action="append", default=[],
+                          help="Evidence item; repeat for multiple items")
+    p_assure.add_argument("--json", action="store_true", help="Machine-readable output")
+
     p_chat = subparsers.add_parser("chat", help="Chat with memory")
     p_chat.add_argument("query", nargs="?")
     p_chat.add_argument("--model")
     p_chat.add_argument("--provider")
+    p_chat.add_argument("--agent", "-a", default=None,
+                        help="Persona to embody (NouGen, Sol-Ai, Rhea, DavOs, Iris, Kaedra, Griot, Kronos)")
 
     p_auth = subparsers.add_parser("auth", help="Manage keys")
     p_auth.add_argument("action", choices=["set-key", "list", "check"])
@@ -957,6 +1171,11 @@ def get_parser():
     p_node.add_argument("--name", help="Friendly name for the node")
     p_node.add_argument("--token", help="Auth token for push/pull")
     p_node.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_tenant = subparsers.add_parser("tenant", help="Manage isolated node tenants")
+    p_tenant.add_argument("action", choices=["mint"])
+    p_tenant.add_argument("tenant_id", help="Lowercase tenant slug")
+    p_tenant.add_argument("--label", required=True, help="Human-readable tenant label")
 
     p_doctor = subparsers.add_parser("doctor", help="Check system health")
     p_doctor.add_argument("--json", action="store_true", help="Machine-readable output")
@@ -1383,12 +1602,13 @@ def main():
     parser = get_parser()
     args = parser.parse_args()
     cmds = {
-        "init": cmd_init, "add": cmd_add, "search": cmd_search, "chat": cmd_chat,
+        "init": cmd_init, "add": cmd_add, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
-        "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage
+        "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
+        "tenant": cmd_tenant
     }
     if args.command in cmds:
         cmds[args.command](args)

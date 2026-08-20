@@ -1,0 +1,12 @@
+{
+  "machine": "whoart",
+  "agent": "codex",
+  "goal": "redaction, truthful inference preflight, Iris assurance, JSON search repair, dream recovery",
+  "scope": "tools/dream_digest_run.py src/nougen_shards/cli.py src/nougen_shards/assurance.py src/nougen_shards/agents.py tests .nougen/AUTHORITY.md Ollama",
+  "status": "released",
+  "branch": "agent/nougen-assurance-sprint",
+  "sha": "cd3c372a",
+  "created_utc": "2026-08-16T22:38:42.144166+00:00",
+  "ttl_hours": 8.0,
+  "released_utc": "2026-08-16T23:20:05.005621+00:00"
+}

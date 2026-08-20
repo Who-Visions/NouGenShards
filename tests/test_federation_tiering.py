@@ -13,6 +13,7 @@ test:
   - /health and coverage aggregates cached for NOUGEN_HEALTH_CACHE_S
 """
 import json
+from fastapi import Response
 import sqlite3
 import sys
 from pathlib import Path
@@ -187,9 +188,20 @@ class TestHealthAggregateCache:
             return real()
 
         monkeypatch.setattr(app_module, "_substrate_coverage", counting)
-        app_module.health()
-        app_module.health()
+        # Tenancy: the unauthenticated /health view deliberately performs no
+        # vault read, so the cache is only exercised on the authed path.
+        monkeypatch.setattr(app_module, "verify_token",
+                            lambda token: _FakeTenant())
+        app_module.health(x_ngs_token="t")
+        app_module.health(x_ngs_token="t")
         assert calls["n"] == 1
+
+
+class _FakeTenant:
+    """Stand-in for a resolved tenant: /health and /search only need the id and
+    vault path, and the cache key is derived from vault_dir."""
+    tenant_id = "owner"
+    vault_dir = "test-vault"
 
 
 class TestSearchSweepHonesty:
@@ -203,7 +215,7 @@ class TestSearchSweepHonesty:
 
         monkeypatch.setattr(app_module, "federated_retrieve", fake_retrieve)
         payload = app_module.search(app_module.SearchRequest(query="q", limit=3),
-                                    _token="t")
+                                    Response(), _tenant=None)
         assert len(payload) == 1
         meta = payload[0]
         assert meta["event_type"] == "FEDERATION_STATUS"
@@ -215,5 +227,5 @@ class TestSearchSweepHonesty:
         monkeypatch.setattr(app_module, "federated_retrieve",
                             lambda query, limit=3, sweep_report=None, **kw: [])
         payload = app_module.search(app_module.SearchRequest(query="q", limit=3),
-                                    _token="t")
+                                    Response(), _tenant=None)
         assert payload == []

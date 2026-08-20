@@ -1,0 +1,24 @@
+{
+  "id": "20260816T232004Z__whoart__codex",
+  "machine": "whoart",
+  "agent": "codex",
+  "goal": "Review and land NouGen assurance and dream recovery fixes",
+  "branch": "agent/nougen-assurance-sprint",
+  "sha": "58abf106",
+  "remote": "origin",
+  "created_utc": "2026-08-16T23:20:04.466730+00:00",
+  "stack": {
+    "manifests": [
+      "package.json",
+      "pyproject.toml",
+      "requirements.txt"
+    ],
+    "frameworks": [
+      "vite ^8.1.5",
+      "react ^19.2.7"
+    ],
+    "package_name": "nougenshards"
+  },
+  "dirty": true,
+  "status": "open"
+}

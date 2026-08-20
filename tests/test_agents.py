@@ -19,12 +19,20 @@ def test_specs_complete():
 def test_get_agent_case_insensitive():
     assert agents.get_agent("sol-ai").name == "Sol-Ai"
     assert agents.get_agent("NOUGEN").name == "NouGen"
+    assert agents.get_agent("Rhea Noir").name == "Rhea"
+    assert agents.get_agent("rhea-noir").name == "Rhea"
     assert agents.get_agent("ghost") is None
 
 
 def test_remember_speaks_anghkooey():
     assert "Anghkooey" in agents.ROSTER["Remember"].system_prompt
     assert agents.ROSTER["Remember"].motto == "Anghkooey."
+
+
+def test_iris_owns_assurance():
+    iris = agents.ROSTER["Iris"]
+    assert "assess_claim" in iris.engine_functions
+    assert "operator" in iris.system_prompt.lower()
 
 
 def test_list_roster_renders_all():

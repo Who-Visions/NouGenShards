@@ -1,0 +1,13 @@
+{
+  "machine": "whoart",
+  "agent": "fable",
+  "goal": "publish e2b delegation skill (Rule 0.7) + whoart vault builder + sync design draft",
+  "scope": "skills/e2b skills/README.md docs/continuous-sync-design-DRAFT.md tools/build_whoart_vault.py",
+  "status": "released",
+  "session": "89171aae-f371-4094-9a16-8d003aa86c81",
+  "branch": "agent/nougen-assurance-sprint",
+  "sha": "45a1d26a",
+  "created_utc": "2026-08-17T04:55:32.891248+00:00",
+  "ttl_hours": 2.0,
+  "released_utc": "2026-08-17T05:04:09.705760+00:00"
+}

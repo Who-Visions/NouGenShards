@@ -62,7 +62,7 @@ OLLAMA_URL = OLLAMA_HOST + "/api/generate"
 # Roster-wide default, overridable per agent. The literal is a logged fallback,
 # not the source of truth -- resolve env first so a machine with a different
 # fleet does not need a code change.
-DEFAULT_AGENT_MODEL = _env("NOUGEN_DEFAULT_MODEL") or "gemma4:31b-cloud"
+DEFAULT_AGENT_MODEL = _env("NOUGEN_DEFAULT_MODEL") or "gemma4:e2b-qat"
 
 
 def _agent_model(agent: str, fallback: Optional[str] = None) -> str:
@@ -131,7 +131,7 @@ ROSTER = {
             "whose timestamp cannot be trusted."),
         # Small-and-local is the right call for timestamp/decay math -- but on a
         # current generation, and overridable via NOUGEN_AGENT_MODEL_KRONOS.
-        default_model=_agent_model("Kronos", "gemma4:e2b"),
+        default_model=_agent_model("Kronos", "gemma4:e2b-qat"),
         engine_functions=["format_shard_when", "decay_utility_scores"],
     ),
     "DavOs": AgentSpec(
@@ -161,15 +161,17 @@ ROSTER = {
     ),
     "NouGen": AgentSpec(
         name="NouGen",
-        role="Orchestrator (Core Orchestration & Branding)",
+        role="Orchestrator (Core Technical Intelligence & Relay Foresight)",
         motto="The work is ours.",
         system_prompt=(
-            "You are NouGen, the orchestrator — the namable core itself. You "
-            "receive the request and decide which agents to engage: Sharder "
-            "for capture, Remember for recall, Kronos for time, DavOs for "
-            "gates, Sol-Ai for broad sight. You carry the brand: the answer "
-            "you hand back is composed, grounded in the vault, and yours."),
-        default_model=_agent_model("NouGen"),
+            "You are NouGen, the core AI intelligence engine for the user's local and fleet infrastructure. "
+            "You possess predictive foresight: you understand past memory, active handoffs, and ongoing relays "
+            "to anticipate what the user is trying to accomplish and proactively outline the immediate next steps or plays. "
+            "Speak directly, accurately, and concisely with 100-level clarity. "
+            "Do NOT output generic corporate filler or unsolicited outlines on simple greetings. "
+            "When helping with a task, ground your answer in verified state and always anticipate the next practical execution step."
+        ),
+        default_model=_agent_model("NouGen", "gemma4:e2b"),
         engine_functions=[],
     ),
     "Griot": AgentSpec(
@@ -210,22 +212,28 @@ ROSTER = {
     ),
     "Iris": AgentSpec(
         name="Iris",
-        role="Airspace (Web Research & Browser Actuation)",
-        motto="Observe and navigate the web.",
+        role="Airspace (Research, Evidence & Assurance)",
+        motto="Observe, verify, and show the caveat.",
         system_prompt=(
-            "You are Iris, the web researcher and browser specialist. You navigate "
+            "You are Iris, the research and evidence-assurance specialist. You navigate "
             "the external web sandbox, perform live literature searches, query APIs, "
-            "and compile reference documentation into structured knowledge."),
-        default_model="iris-ai:e4b",
-        engine_functions=[],
+            "and assess claims against explicit evidence. Separate verified facts from "
+            "inference, expose uncertainty and reachability limits, and never promote or "
+            "delete memory automatically from an assurance label; leave action to operator review."),
+        default_model=_agent_model("Iris", "gemma4:e2b-qat"),
+        engine_functions=["assess_claim"],
     ),
 }
 
 
 def get_agent(name: str) -> Optional[AgentSpec]:
-    """Case-insensitive roster lookup."""
+    """Case- and separator-insensitive roster lookup, including known aliases."""
+    normalized = "".join(ch for ch in name.casefold() if ch.isalnum())
+    aliases = {"rheanoir": "rhea"}
+    normalized = aliases.get(normalized, normalized)
     for key, spec in ROSTER.items():
-        if key.lower() == name.lower():
+        roster_name = "".join(ch for ch in key.casefold() if ch.isalnum())
+        if roster_name == normalized:
             return spec
     return None
 

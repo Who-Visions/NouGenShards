@@ -245,3 +245,19 @@ def roster(roots: Optional[list[Path]] = None) -> str:
     if not skills:
         return "(no skills installed)"
     return "\n".join(f"- {s.summary}" for s in skills)
+
+
+def resolve_skills(task: str, roots: Optional[list[Path]] = None) -> list[Skill]:
+    """Resolve and return matching skills for a given task description."""
+    return match(task, roots=roots)
+
+
+def format_instructions(skills: list[Skill]) -> str:
+    """Format a list of skills into instruction context for an agent prompt."""
+    if not skills:
+        return ""
+    sections = []
+    for s in skills:
+        body = s.body.strip() if s.body else s.description
+        sections.append(f"### Skill: {s.name}\n{body}")
+    return "## Applicable Skills & Domain Instructions:\n" + "\n\n".join(sections)
