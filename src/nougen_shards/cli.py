@@ -324,10 +324,18 @@ def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen")
                         relay_ctx = f"## Active Fleet Relay / Handoff:\n- Goal: {latest_data.get('goal')}\n- Agent: {latest_data.get('agent')}\n- Status: {latest_data.get('status')}"
 
                 found = federation.federated_retrieve(user_input, limit=2)
-                context = shards.compile_recall_packet(found) if found else ""
+                # Strict relevance threshold: ignore background noise (< 0.05)
+                valid_shards = [s for s in found if float(s.get("final_score", 0.0) or 0.0) >= 0.05 or float(s.get("utility_score_tripartite", 0.0) or 0.0) >= 0.05]
+                if valid_shards:
+                    context = f"## Relevant Vault Memory (Ground Truth):\n{shards.compile_recall_packet(valid_shards)}"
+                elif any(w in user_input.lower() for w in ("shard", "memory", "recall", "search", "who", "what", "where", "latest", "find")):
+                    context = f"## Vault Memory Status:\nNo matching memory shards found for '{user_input}' in the active vault databases (DB #1-9)."
 
-            injected_parts = [p for p in [skill_ctx, relay_ctx, context, f"User Request: {user_input}"] if p]
-            prompt_with_ctx = "\n\n".join(injected_parts)
+            injected_parts = [p for p in [skill_ctx, relay_ctx, context] if p]
+            if injected_parts:
+                prompt_with_ctx = "\n\n".join(injected_parts) + f"\n\n[User Query]:\n{user_input}"
+            else:
+                prompt_with_ctx = user_input
             history_msgs.append({"role": "user", "content": prompt_with_ctx})
 
             print(f"\n[{persona_title}]: ", end="")
