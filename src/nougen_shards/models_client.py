@@ -75,7 +75,19 @@ class OpenAIClient(LLMClient):
         return bool(self.api_key)
 
     def list_models(self) -> list:
-        return ["gpt-4o", "gpt-4o-mini"]
+        if not self.api_key:
+            return ["gpt-4o", "gpt-4o-mini", "o1", "o1-mini", "o3-mini", "gpt-4-turbo"]
+        try:
+            req = urllib.request.Request(f"{self.base_url}/models")
+            req.add_header("Authorization", f"Bearer {self.api_key or ''}")
+            with urllib.request.urlopen(req, timeout=5.0) as res:
+                data = json.loads(res.read().decode())
+                models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+                if models:
+                    return sorted(models)
+        except Exception:
+            pass
+        return ["gpt-4o", "gpt-4o-mini", "o1", "o1-mini", "o3-mini", "gpt-4-turbo"]
 
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:
@@ -169,7 +181,12 @@ class AnthropicClient(LLMClient):
         return bool(self.api_key)
 
     def list_models(self) -> list:
-        return ["claude-3-5-sonnet-latest"]
+        return [
+            "claude-3-7-sonnet-latest",
+            "claude-3-5-sonnet-latest",
+            "claude-3-5-haiku-latest",
+            "claude-3-opus-latest"
+        ]
 
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:
