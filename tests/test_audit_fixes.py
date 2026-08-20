@@ -56,13 +56,23 @@ def test_capture_redacts_secret_patterns_before_persistence(tmp_path, monkeypatc
 
     content = f"body {secret}"
     assert core.capture("KNOWLEDGE", f"title {secret}", content, tags=[secret])
-    fhash = hashlib.sha256(redact_content(content).encode()).hexdigest()
-    conn = core.get_connection(core.get_write_index(fhash))
-    try:
-        row = conn.execute("SELECT title, content, tags FROM shards").fetchone()
-    finally:
-        conn.close()
+    
+    # Locate the shard row across initialized cluster DBs
+    row = None
+    for i in range(1, core.MAX_DB_COUNT + 1):
+        p = core.get_db_path(i)
+        if not p.exists():
+            continue
+        conn = core.get_connection(i)
+        try:
+            r = conn.execute("SELECT title, content, tags FROM shards").fetchone()
+            if r:
+                row = r
+                break
+        finally:
+            conn.close()
 
+    assert row is not None
     assert secret not in row["title"]
     assert secret not in row["content"]
     assert secret not in row["tags"]
