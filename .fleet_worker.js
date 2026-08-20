@@ -672,8 +672,7 @@ function griotKey(row) {
 __name(griotKey, "griotKey");
 function text(t, structured) {
   return {
-    content: [{ type: "text", text: t }],
-    ...structured !== void 0 ? { structuredContent: structured } : {}
+    content: [{ type: "text", text: String(t) }]
   };
 }
 __name(text, "text");
@@ -1679,8 +1678,9 @@ ${body}`,
 };
 async function handleRpc(msg, env, keyId) {
   const { id, method, params } = msg;
-  const reply = /* @__PURE__ */ __name((result) => ({ jsonrpc: "2.0", id, result }), "reply");
-  const fail = /* @__PURE__ */ __name((code, message) => ({ jsonrpc: "2.0", id, error: { code, message } }), "fail");
+  const reqId = id !== undefined ? id : null;
+  const reply = /* @__PURE__ */ __name((result) => ({ jsonrpc: "2.0", id: reqId, result }), "reply");
+  const fail = /* @__PURE__ */ __name((code, message) => ({ jsonrpc: "2.0", id: reqId, error: { code, message } }), "fail");
   if (method === "initialize") {
     const requested = params?.protocolVersion;
     return reply({
