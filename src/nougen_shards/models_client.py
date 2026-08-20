@@ -374,7 +374,13 @@ class HuggingFaceClient(LLMClient):
         return bool(self.api_key)
 
     def list_models(self) -> list:
-        return ["meta-llama/Llama-3.2-3B-Instruct"]
+        return [
+            "meta-llama/Llama-3.3-70B-Instruct",
+            "meta-llama/Llama-3.2-3B-Instruct",
+            "meta-llama/Llama-3.2-1B-Instruct",
+            "Qwen/Qwen2.5-Coder-32B-Instruct",
+            "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+        ]
 
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:
