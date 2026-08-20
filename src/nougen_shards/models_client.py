@@ -124,13 +124,11 @@ class OpenAIClient(LLMClient):
                     if reasoning:
                         if not in_reasoning:
                             in_reasoning = True
-                            sys.stdout.write("\n💭 \033[90m[Thinking...]\n")
+                            sys.stdout.write("\033[90m💭 Thinking...\033[0m\r")
                             sys.stdout.flush()
-                        sys.stdout.write(f"\033[90m{reasoning}\033[0m")
-                        sys.stdout.flush()
                     elif in_reasoning and content:
                         in_reasoning = False
-                        sys.stdout.write("\n\033[0m\n")
+                        sys.stdout.write("              \r")
                         sys.stdout.flush()
 
                     if content:
@@ -140,7 +138,7 @@ class OpenAIClient(LLMClient):
                 except (json.JSONDecodeError, KeyError):
                     continue
         if in_reasoning:
-            sys.stdout.write("\033[0m\n")
+            sys.stdout.write("              \r")
             sys.stdout.flush()
         return full_content
 
@@ -929,13 +927,11 @@ class OllamaClient(LocalLLMClient):
                     if thinking:
                         if not in_thinking:
                             in_thinking = True
-                            sys.stdout.write("\n💭 \033[90m[Thinking...]\n")
+                            sys.stdout.write("\033[90m💭 Thinking...\033[0m\r")
                             sys.stdout.flush()
-                        sys.stdout.write(f"\033[90m{thinking}\033[0m")
-                        sys.stdout.flush()
                     elif in_thinking and content:
                         in_thinking = False
-                        sys.stdout.write("\n\033[0m\n")
+                        sys.stdout.write("              \r")
                         sys.stdout.flush()
 
                     if content:
@@ -943,7 +939,7 @@ class OllamaClient(LocalLLMClient):
                         sys.stdout.write(content)
                         sys.stdout.flush()
                 if in_thinking:
-                    sys.stdout.write("\033[0m\n")
+                    sys.stdout.write("              \r")
                     sys.stdout.flush()
                 return full
         except Exception as exc: # pylint: disable=broad-except
