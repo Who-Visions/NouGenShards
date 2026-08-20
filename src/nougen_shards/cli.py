@@ -164,9 +164,9 @@ def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen")
     """Elevated conversational chat loop with memory and slash commands (AGY / Codex / Claude CLI style)."""
     persona = agents.get_agent(persona_name) or agents.get_agent("NouGen")
     persona_title = persona.name if persona else persona_name
-    print(f"🪩 NouGen Interactive Intelligence Grid")
+    print("🪩 NouGen Interactive Intelligence Grid")
     print(f"   Persona: {persona_title} | Model: {model} ({provider}) | Memory: Active (FTS5 + Dual Recall)")
-    print(f"   Type your request or use slash commands (/help, /search, /recall, /status, /handoff, /agent, /exit).\n")
+    print("   Type your request or use slash commands (/help, /search, /recall, /status, /handoff, /agent, /exit).\n")
 
     history_msgs = []
     if persona and persona.system_prompt:
