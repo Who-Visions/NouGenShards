@@ -115,7 +115,7 @@ def test_no_timeout_less_urlopen_in_source():
     src = pathlib.Path("src/nougen_shards/models_client.py").read_text()
     assert "urlopen(req)" not in src, "found a urlopen without a timeout"
     assert "?key=" not in src, "Gemini API key is back in the URL query string"
-    assert src.count("x-goog-api-key") == 3
+    assert src.count("x-goog-api-key") == 4
 
 
 # --- SSRF guard (connectors) -------------------------------------------------

@@ -145,138 +145,140 @@ def init_db(index: int = 1):
     if key in _INITIALIZED_DBS:
         return
     conn = get_connection(index)
-    cursor = conn.cursor()
-
-    # Main table for shards (Module 3: Deep Grep Latent Structure)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS shards (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            title TEXT NOT NULL,
-            content TEXT NOT NULL,
-            tags TEXT,
-            utility_score REAL DEFAULT 1.0, -- usefulness prior: weight term in the relevance blend (Module 20)
-            access_count INTEGER DEFAULT 0,
-            file_hash TEXT UNIQUE NOT NULL,
-            domain_key TEXT DEFAULT 'global'
-        );
-    """)
-
-    # Add embedding column if missing (Module 11: Transform Architecture)
     try:
-        cursor.execute("ALTER TABLE shards ADD COLUMN embedding BLOB;")
-    except sqlite3.OperationalError:
-        pass
+        cursor = conn.cursor()
 
-    # Add domain_key column if missing (Sub-Graph Context Isolation)
-    try:
-        cursor.execute("ALTER TABLE shards ADD COLUMN domain_key TEXT DEFAULT 'global';")
-    except sqlite3.OperationalError:
-        pass
-
-    # Add density_score column if missing
-    try:
-        cursor.execute("ALTER TABLE shards ADD COLUMN density_score REAL DEFAULT 1.0;")
-    except sqlite3.OperationalError:
-        pass
-
-    # Add consolidated column if missing
-    try:
-        cursor.execute("ALTER TABLE shards ADD COLUMN consolidated INTEGER DEFAULT 0;")
-    except sqlite3.OperationalError:
-        pass
-
-    # Sensitivity classification (schema v2): 'normal' bodies stay plaintext,
-    # 'private'/'secret' bodies are AES-GCM encrypted by private_vault before
-    # they are written. enc=1 marks a row whose content column is ciphertext.
-    try:
-        cursor.execute("ALTER TABLE shards ADD COLUMN sensitivity TEXT DEFAULT 'normal';")
-    except sqlite3.OperationalError:
-        pass
-
-    try:
-        cursor.execute("ALTER TABLE shards ADD COLUMN enc INTEGER DEFAULT 0;")
-    except sqlite3.OperationalError:
-        pass
-
-    # Create semantic_knowledge table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS semantic_knowledge (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            subject TEXT NOT NULL,
-            predicate TEXT NOT NULL,
-            confidence_score REAL DEFAULT 1.0,
-            domain_key TEXT DEFAULT 'global',
-            updated_at TEXT NOT NULL,
-            UNIQUE(subject, predicate)
-        );
-    """)
-
-    # Create index for semantic domain lookup
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_semantic_domain_subject 
-        ON semantic_knowledge (domain_key, subject);
-    """)
-
-    # Create composite index for domain-bound retrieval
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_shards_domain_utility 
-        ON shards (domain_key, utility_score DESC);
-    """)
-
-
-    # FTS5 with Trigram for fuzzy recall (Module 1: Metamers)
-    try:
+        # Main table for shards (Module 3: Deep Grep Latent Structure)
         cursor.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS shards_fts USING fts5(
-                title,
-                content,
-                content='shards',
-                content_rowid='id',
-                tokenize='trigram'
-            );
-        """)
-    except sqlite3.OperationalError:
-        cursor.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS shards_fts USING fts5(
-                title,
-                content,
-                content='shards',
-                content_rowid='id'
+            CREATE TABLE IF NOT EXISTS shards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tags TEXT,
+                utility_score REAL DEFAULT 1.0, -- usefulness prior: weight term in the relevance blend (Module 20)
+                access_count INTEGER DEFAULT 0,
+                file_hash TEXT UNIQUE NOT NULL,
+                domain_key TEXT DEFAULT 'global'
             );
         """)
 
-    # Sync triggers (Module 18: Reconstruct Coherence).
-    # The FTS index must stay coherent on every write, not just inserts. Without
-    # the delete/update triggers, edited or removed shards leave stale rows that
-    # keep matching searches. External-content FTS5 needs the special 'delete'
-    # command rows to retract a row before re-indexing it.
-    cursor.execute("DROP TRIGGER IF EXISTS shards_ai")
-    cursor.execute("DROP TRIGGER IF EXISTS shards_ad")
-    cursor.execute("DROP TRIGGER IF EXISTS shards_au")
-    cursor.execute("""
-        CREATE TRIGGER shards_ai AFTER INSERT ON shards BEGIN
-            INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
-        END;
-    """)
-    cursor.execute("""
-        CREATE TRIGGER shards_ad AFTER DELETE ON shards BEGIN
-            INSERT INTO shards_fts(shards_fts, rowid, title, content)
-            VALUES ('delete', old.id, old.title, old.content);
-        END;
-    """)
-    cursor.execute("""
-        CREATE TRIGGER shards_au AFTER UPDATE ON shards BEGIN
-            INSERT INTO shards_fts(shards_fts, rowid, title, content)
-            VALUES ('delete', old.id, old.title, old.content);
-            INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
-        END;
-    """)
+        # Add embedding column if missing (Module 11: Transform Architecture)
+        try:
+            cursor.execute("ALTER TABLE shards ADD COLUMN embedding BLOB;")
+        except sqlite3.OperationalError:
+            pass
 
-    conn.commit()
-    conn.close()
-    _INITIALIZED_DBS.add(key)
+        # Add domain_key column if missing (Sub-Graph Context Isolation)
+        try:
+            cursor.execute("ALTER TABLE shards ADD COLUMN domain_key TEXT DEFAULT 'global';")
+        except sqlite3.OperationalError:
+            pass
+
+        # Add density_score column if missing
+        try:
+            cursor.execute("ALTER TABLE shards ADD COLUMN density_score REAL DEFAULT 1.0;")
+        except sqlite3.OperationalError:
+            pass
+
+        # Add consolidated column if missing
+        try:
+            cursor.execute("ALTER TABLE shards ADD COLUMN consolidated INTEGER DEFAULT 0;")
+        except sqlite3.OperationalError:
+            pass
+
+        # Sensitivity classification (schema v2): 'normal' bodies stay plaintext,
+        # 'private'/'secret' bodies are AES-GCM encrypted by private_vault before
+        # they are written. enc=1 marks a row whose content column is ciphertext.
+        try:
+            cursor.execute("ALTER TABLE shards ADD COLUMN sensitivity TEXT DEFAULT 'normal';")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE shards ADD COLUMN enc INTEGER DEFAULT 0;")
+        except sqlite3.OperationalError:
+            pass
+
+        # Create semantic_knowledge table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS semantic_knowledge (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject TEXT NOT NULL,
+                predicate TEXT NOT NULL,
+                confidence_score REAL DEFAULT 1.0,
+                domain_key TEXT DEFAULT 'global',
+                updated_at TEXT NOT NULL,
+                UNIQUE(subject, predicate)
+            );
+        """)
+
+        # Create index for semantic domain lookup
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_semantic_domain_subject 
+            ON semantic_knowledge (domain_key, subject);
+        """)
+
+        # Create composite index for domain-bound retrieval
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_shards_domain_utility 
+            ON shards (domain_key, utility_score DESC);
+        """)
+
+
+        # FTS5 with Trigram for fuzzy recall (Module 1: Metamers)
+        try:
+            cursor.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS shards_fts USING fts5(
+                    title,
+                    content,
+                    content='shards',
+                    content_rowid='id',
+                    tokenize='trigram'
+                );
+            """)
+        except sqlite3.OperationalError:
+            cursor.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS shards_fts USING fts5(
+                    title,
+                    content,
+                    content='shards',
+                    content_rowid='id'
+                );
+            """)
+
+        # Sync triggers (Module 18: Reconstruct Coherence).
+        # The FTS index must stay coherent on every write, not just inserts. Without
+        # the delete/update triggers, edited or removed shards leave stale rows that
+        # keep matching searches. External-content FTS5 needs the special 'delete'
+        # command rows to retract a row before re-indexing it.
+        cursor.execute("DROP TRIGGER IF EXISTS shards_ai")
+        cursor.execute("DROP TRIGGER IF EXISTS shards_ad")
+        cursor.execute("DROP TRIGGER IF EXISTS shards_au")
+        cursor.execute("""
+            CREATE TRIGGER shards_ai AFTER INSERT ON shards BEGIN
+                INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+            END;
+        """)
+        cursor.execute("""
+            CREATE TRIGGER shards_ad AFTER DELETE ON shards BEGIN
+                INSERT INTO shards_fts(shards_fts, rowid, title, content)
+                VALUES ('delete', old.id, old.title, old.content);
+            END;
+        """)
+        cursor.execute("""
+            CREATE TRIGGER shards_au AFTER UPDATE ON shards BEGIN
+                INSERT INTO shards_fts(shards_fts, rowid, title, content)
+                VALUES ('delete', old.id, old.title, old.content);
+                INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+            END;
+        """)
+
+        conn.commit()
+        _INITIALIZED_DBS.add(key)
+    finally:
+        conn.close()
 
 
 def get_dedup_path():
@@ -559,9 +561,9 @@ def _embed_for_capture(title: str, content: str) -> Optional[List[float]]:
     global EMBED_AT_CAPTURE_MISSES  # pylint: disable=global-statement
     model = os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text")
     try:
-        timeout = int(os.environ.get("NOUGEN_EMBED_TIMEOUT", "10"))
+        timeout = float(os.environ.get("NOUGEN_EMBED_TIMEOUT", "1.5"))
     except ValueError:
-        timeout = 10
+        timeout = 1.5
     try:
         from .embedding_backfill import embed as _embed  # local import: optional dep path
         vec = _embed(((title or "") + "\n" + (content or ""))[:4000], model, timeout=timeout)

@@ -162,6 +162,11 @@ def cmd_init(_args):
 
 def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen"):
     """Elevated conversational chat loop with memory and slash commands (AGY / Codex / Claude CLI style)."""
+    # Quiet background connector warning logs from spamming interactive terminal
+    import logging
+    logging.getLogger("nougen_shards.connectors").setLevel(logging.ERROR)
+    logging.getLogger("nougen_shards.federation").setLevel(logging.ERROR)
+
     persona = agents.get_agent(persona_name) or agents.get_agent("NouGen")
     persona_title = persona.name if persona else persona_name
     print("🪩 NouGen Interactive Intelligence Grid")
@@ -303,14 +308,25 @@ def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen")
 
             # Autonomous Skill Guidance & Context Injection
             from . import skills as skill_reg
-            applicable_skills = skill_reg.resolve_skills(user_input)
+            applicable_skills = skill_reg.resolve_skills(user_input) if len(user_input.split()) > 1 else []
             skill_ctx = skill_reg.format_instructions(applicable_skills) if applicable_skills else ""
 
-            # Dual-system memory recall
-            found = federation.federated_retrieve(user_input, limit=2)
-            context = shards.compile_recall_packet(found) if found else ""
+            # Dual-system memory recall & relay foresight (skip for 1-word generic greetings)
+            is_simple_greeting = user_input.lower() in ("hi", "hello", "hey", "sup", "yo", "good morning", "hello today")
+            context = ""
+            relay_ctx = ""
+            if not is_simple_greeting:
+                from . import handoff
+                files = handoff.get_handoff_files()
+                if files:
+                    latest_data = handoff._read_handoff(files[0])
+                    if latest_data and latest_data.get("status") in ("open", "in_progress"):
+                        relay_ctx = f"## Active Fleet Relay / Handoff:\n- Goal: {latest_data.get('goal')}\n- Agent: {latest_data.get('agent')}\n- Status: {latest_data.get('status')}"
 
-            injected_parts = [p for p in [user_input, skill_ctx, context] if p]
+                found = federation.federated_retrieve(user_input, limit=2)
+                context = shards.compile_recall_packet(found) if found else ""
+
+            injected_parts = [p for p in [skill_ctx, relay_ctx, context, f"User Request: {user_input}"] if p]
             prompt_with_ctx = "\n\n".join(injected_parts)
             history_msgs.append({"role": "user", "content": prompt_with_ctx})
 
@@ -334,18 +350,23 @@ def cmd_chat(args):
 
     model = args.model
     if not model:
+        available = client.list_models() if client else []
         persona = agents.get_agent(persona_name)
-        if persona and persona.default_model:
+        # Prioritize persona default model or modern local edge models
+        priority_models = [persona.default_model if persona else None, "gemma4:e2b", "gemma4:e2b-qat", "dav1d:e2b", "sol-ai:e4b"]
+        matched = next((m for m in priority_models if m and m in available), None)
+        if matched:
+            model = matched
+        elif available:
+            model = available[0]
+        elif persona and persona.default_model:
             model = persona.default_model
         elif isinstance(client, LocalLLMClient):
             model_config = client.find_best_edge_model()
             model = model_config.model_name if model_config else None
-        else:
-            available = client.list_models()
-            model = available[0] if available else None
 
     if not model:
-        print("Error: No model found.")
+        print("Error: No model found or configured for this environment.")
         return
 
     if not args.query:
@@ -843,13 +864,8 @@ def cmd_node(args):
                 for r in rows:
                     d = dict(r)
                     emb = d.get("embedding")
-                    if emb:
-                        try:
-                            raw = emb.decode() if isinstance(emb, (bytes, bytearray)) else emb
-                            d["embedding"] = json.loads(raw)
-                        except (AttributeError, ValueError, TypeError) as e:
-                            print(f"[!] Skipping bad embedding on shard #{d.get('id')}: {e}")
-                            d["embedding"] = None
+                    if emb is not None:
+                        d["embedding"] = _embedding_for_json(emb)
                     all_shards.append(d)
             finally:
                 conn.close()

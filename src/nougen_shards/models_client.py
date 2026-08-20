@@ -111,17 +111,37 @@ class OpenAIClient(LLMClient):
 
     def _stream_chat(self, response) -> str:
         full_content = ""
+        in_reasoning = False
         for line in response:
             line_str = line.decode().strip()
             if line_str.startswith("data: ") and line_str != "data: [DONE]":
                 try:
                     chunk = json.loads(line_str[6:])
-                    content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                    full_content += content
-                    sys.stdout.write(content)
-                    sys.stdout.flush()
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    reasoning = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                    content = delta.get("content") or ""
+
+                    if reasoning:
+                        if not in_reasoning:
+                            in_reasoning = True
+                            sys.stdout.write("\n💭 \033[90m[Thinking...]\n")
+                            sys.stdout.flush()
+                        sys.stdout.write(f"\033[90m{reasoning}\033[0m")
+                        sys.stdout.flush()
+                    elif in_reasoning and content:
+                        in_reasoning = False
+                        sys.stdout.write("\n\033[0m\n")
+                        sys.stdout.flush()
+
+                    if content:
+                        full_content += content
+                        sys.stdout.write(content)
+                        sys.stdout.flush()
                 except (json.JSONDecodeError, KeyError):
                     continue
+        if in_reasoning:
+            sys.stdout.write("\033[0m\n")
+            sys.stdout.flush()
         return full_content
 
     def embed(self, model: str, text: str) -> list:
@@ -253,7 +273,8 @@ class GeminiClient(LLMClient):
         if not self.api_key:
             return ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
         try:
-            req = urllib.request.Request(f"{self.base_url}?key={self.api_key or ''}")
+            req = urllib.request.Request(self.base_url)
+            req.add_header("x-goog-api-key", self.api_key or "")
             with urllib.request.urlopen(req, timeout=5.0) as res:
                 data = json.loads(res.read().decode())
                 models = [m.get("name", "").replace("models/", "") for m in data.get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
@@ -898,11 +919,31 @@ class OllamaClient(LocalLLMClient):
                                     f"num_predict={payload['options']['num_predict']}")
                     return _content
                 full = ""
+                in_thinking = False
                 for line in res:
                     chunk = json.loads(line.decode())
-                    content = chunk.get("message", {}).get("content", "")
-                    full += content
-                    sys.stdout.write(content)
+                    msg = chunk.get("message", {})
+                    thinking = msg.get("thinking", "")
+                    content = msg.get("content", "")
+
+                    if thinking:
+                        if not in_thinking:
+                            in_thinking = True
+                            sys.stdout.write("\n💭 \033[90m[Thinking...]\n")
+                            sys.stdout.flush()
+                        sys.stdout.write(f"\033[90m{thinking}\033[0m")
+                        sys.stdout.flush()
+                    elif in_thinking and content:
+                        in_thinking = False
+                        sys.stdout.write("\n\033[0m\n")
+                        sys.stdout.flush()
+
+                    if content:
+                        full += content
+                        sys.stdout.write(content)
+                        sys.stdout.flush()
+                if in_thinking:
+                    sys.stdout.write("\033[0m\n")
                     sys.stdout.flush()
                 return full
         except Exception as exc: # pylint: disable=broad-except

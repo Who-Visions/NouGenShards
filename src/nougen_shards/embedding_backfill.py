@@ -60,7 +60,7 @@ def _vram_used_mib() -> Optional[int]:
         return None
 
 
-def embed(text: str, model: str, timeout: int = 60) -> Optional[List[float]]:
+def embed(text: str, model: str, timeout: float = 60.0) -> Optional[List[float]]:
     """Single embedding via ollama /api/embed. Returns None on failure."""
     body = json.dumps({"model": model, "input": text}).encode("utf-8")
     req = urllib.request.Request(
@@ -78,7 +78,7 @@ def embed(text: str, model: str, timeout: int = 60) -> Optional[List[float]]:
         return None
 
 
-def embed_many(texts: List[str], model: str, timeout: int = 180) -> Optional[List[List[float]]]:
+def embed_many(texts: List[str], model: str, timeout: float = 180.0) -> Optional[List[List[float]]]:
     """Embed a list of texts in ONE ollama call.
 
     /api/embed accepts an array for `input` and returns one vector per item, so a
