@@ -4,7 +4,6 @@ Architecture: FastAPI + Persistent Storage (/data) + Token Auth + Multi-tab Grad
 """
 import os
 import sys
-import hmac
 import json
 import logging
 import hashlib
@@ -13,7 +12,7 @@ import contextlib
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
-from fastapi import FastAPI, Header, HTTPException, Depends
+from fastapi import FastAPI, Header, HTTPException, Depends, Response
 from pydantic import BaseModel
 import gradio as gr
 import subprocess
@@ -27,7 +26,7 @@ if os.environ.get("SPACE_ID"):
     os.environ["NOUGEN_HOME"] = "/data"
     os.environ["NOUGEN_VAULT_DIR"] = "/data/.vault"
 
-from nougen_shards import bind_probe, core, history, mcp_oauth
+from nougen_shards import bind_probe, core, history, mcp_oauth, tenants
 from nougen_shards.federation import federated_retrieve
 from nougen_shards.brain_scan import scan_environment
 
@@ -206,6 +205,8 @@ def _federated_coverage() -> dict | None:
     section disappears entirely rather than lying with zeros. Every store is
     opened read-only and degrades independently into `errored`.
     """
+    if core.active_tenant_id() != "owner":
+        return None
     if os.environ.get("NOUGEN_COVERAGE_FEDERATED", "1").strip().lower() in (
             "0", "false", "off", "no"):
         return None
@@ -299,8 +300,11 @@ def substrate_coverage() -> dict:
             "span": {"earliest": lo, "latest": hi},
             "months": dict(sorted(per_month.items())),
             "empty_months": gaps,
-            "grid": _cached("substrate", _substrate_coverage),
-            "vault": str(core.GLOBAL_DIR),
+            # Cache key carries the active vault: a bare "substrate" key is
+            # module-level state shared across tenants, so it would serve one
+            # tenant's counts and DB detail to another.
+            "grid": _cached(f"substrate:{core.active_vault_dir()}", _substrate_coverage),
+            "vault": str(core.active_vault_dir()),
             # Federated read-through extent (decision 16729): "not found" must
             # be distinguishable from "not mounted" at the federation layer.
             # Cached: enumerating 40+ stores' row counts costs ~3.5s live
@@ -473,6 +477,8 @@ def vault_put(key: str, value: str) -> dict:
 
     Returns a SHA-256 fingerprint (first 12 hex) so the caller can prove the
     stored value matches what they intended without the value being echoed."""
+    if core.active_tenant_id() != "owner":
+        raise PermissionError("the secrets vault is owner-only")
     from nougen_shards import keymaker
     keymaker.init_vault()
     keymaker.ingest_secret(key, value)
@@ -489,6 +495,8 @@ def vault_list() -> list:
 
     Enough to answer "is this credential present, and is it the one I think?"
     (compare fingerprints) without the vault becoming readable."""
+    if core.active_tenant_id() != "owner":
+        raise PermissionError("the secrets vault is owner-only")
     from nougen_shards import keymaker
     out = []
     if not keymaker.DB_PATH.exists():
@@ -553,6 +561,10 @@ def _seed_upstreams() -> list:
 
 def _registered_upstreams() -> list:
     """Read-through peers this node will fan out to, without their secrets."""
+    # Local import keeps this helper extractable by the focused AST tests.
+    from nougen_shards import core as active_core
+    if active_core.active_tenant_id() != "owner":
+        return []
     try:
         from nougen_shards import keymaker
         return [
@@ -624,13 +636,38 @@ _BAD_TOKEN_DETAIL = (
 )
 
 
-def verify_token(x_ngs_token: str = Header(None)):
-    if not NODE_TOKEN:
+def _credentials_configured() -> bool:
+    try:
+        return tenants.credentials_configured(NODE_TOKEN)
+    except tenants.TenantRegistryError as exc:
+        logger.error("tenant registry rejected: %s", exc)
+        raise HTTPException(status_code=503, detail="Tenant registry is invalid.") from exc
+
+
+def _resolve_tenant_credential(supplied: Optional[str]) -> Optional[tenants.Tenant]:
+    try:
+        return tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+    except tenants.TenantRegistryError as exc:
+        logger.error("tenant registry rejected: %s", exc)
+        raise HTTPException(status_code=503, detail="Tenant registry is invalid.") from exc
+
+
+def verify_token(x_ngs_token: str = Header(None)) -> tenants.Tenant:
+    if not _credentials_configured():
         raise HTTPException(status_code=503, detail="Node write-auth not configured.")
-    # Constant-time comparison to avoid leaking the token via timing.
-    if not x_ngs_token or not hmac.compare_digest(str(x_ngs_token), str(NODE_TOKEN)):
+    tenant = _resolve_tenant_credential(x_ngs_token)
+    if tenant is None:
         raise HTTPException(status_code=401, detail=_BAD_TOKEN_DETAIL)
-    return x_ngs_token
+    return tenant
+
+
+async def tenant_vault_context(tenant: tenants.Tenant = Depends(verify_token)):
+    """Hold the request's ContextVar binding through the complete handler."""
+    tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
+    try:
+        yield tenant
+    finally:
+        core.reset_active_vault(tokens)
 
 # --- API Endpoints ---
 
@@ -697,10 +734,8 @@ def _total_shards() -> int:
 
 
 @app.get("/health")
-def health():
-    """Launch-readiness report. Contains no secret values - only whether each
-    gate is configured - so it is safe to serve unauthenticated and doubles as
-    the go/no-go check before flipping the Space public."""
+def health(x_ngs_token: str = Header(None)):
+    """Generic readiness when open; tenant-local substrate detail when authed."""
     deploy_sha = None
     try:
         with open(".deploy_sha", encoding="utf-8") as f:
@@ -709,14 +744,16 @@ def health():
         pass
 
     node_token_ok = bool(NODE_TOKEN)
+    registry_configured = tenants.tenants_file().exists()
+    auth_configured = node_token_ok or registry_configured
     hud_auth_ok = bool(os.environ.get("NGS_HUD_USER") and os.environ.get("NGS_HUD_PASSWORD"))
     # On HF, enabling persistent storage mounts /data as its own filesystem;
     # without it /data is just a directory inside the ephemeral container.
     persistent = os.path.isdir("/data") and os.path.ismount("/data")
 
     warnings = []
-    if not node_token_ok:
-        warnings.append("NGS_NODE_TOKEN not set: data API returns 503 (deny-by-default)")
+    if not auth_configured:
+        warnings.append("No node credentials configured: data API returns 503 (deny-by-default)")
     if not hud_auth_ok:
         warnings.append("NGS_HUD_USER/NGS_HUD_PASSWORD not set: HUD would be open to anyone on a public Space")
     if not persistent:
@@ -728,7 +765,36 @@ def health():
             "to unauthenticated callers"
         )
 
-    coverage = _cached("substrate", _substrate_coverage)
+    result = {
+        "status": "ignited",
+        "deploy_sha": deploy_sha,
+        "storage": os.environ.get("NOUGEN_HOME", "default"),
+        "persistent_storage": persistent,
+        "node_token_configured": node_token_ok,
+        "tenant_registry_configured": registry_configured,
+        "hud_auth_configured": hud_auth_ok,
+        "api_docs_public": _serve_docs and _network_exposed,
+        "public_ready": auth_configured and hud_auth_ok,
+        "warnings": warnings,
+    }
+
+    # The unauthenticated view intentionally performs no vault reads and does
+    # not reveal shard counts, database names, or another tenant's path.
+    if not x_ngs_token:
+        return result
+
+    tenant = verify_token(x_ngs_token)
+    context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
+    try:
+        # Vault-keyed so the cache cannot hand one tenant another's coverage.
+        coverage = _cached(f"substrate:{tenant.vault_dir}", _substrate_coverage)
+    finally:
+        core.reset_active_vault(context_tokens)
+    result.update({
+        "tenant_id": tenant.tenant_id,
+        "total_shards": coverage["shards"],
+        "substrate": coverage,
+    })
     if not coverage["complete"] and not coverage["read_through"]:
         warnings.append(
             f"substrate incomplete: {coverage['databases_mounted']} of "
@@ -740,28 +806,9 @@ def health():
     if not persistent and not coverage["read_through"]:
         warnings.append(
             "no read-through upstream configured on ephemeral storage: this node "
-            "is the only home for what it holds, and holds it until the next deploy. "
-            "Set NGS_UPSTREAM_URL to federate against a durable node instead"
+            "is the only home for what it holds, and holds it until the next deploy"
         )
-
-    return {
-        "status": "ignited",
-        "deploy_sha": deploy_sha,
-        "storage": os.environ.get("NOUGEN_HOME", "default"),
-        "persistent_storage": persistent,
-        "node_token_configured": node_token_ok,
-        "hud_auth_configured": hud_auth_ok,
-        "api_docs_public": _serve_docs and _network_exposed,
-        "total_shards": coverage["shards"],
-        # A bare count says nothing about what it is a count OF. This says how
-        # much of the grid the number covers, so a caller can tell a real miss
-        # from a partial mount without a second request.
-        "substrate": coverage,
-        # Auth gates are the hard requirement for a public flip; storage is a
-        # durability concern surfaced via warnings.
-        "public_ready": node_token_ok and hud_auth_ok,
-        "warnings": warnings,
-    }
+    return result
 
 
 # --- API models ---
@@ -769,6 +816,10 @@ def health():
 class SearchRequest(BaseModel):
     query: str
     limit: int = 5
+    # Inclusive ISO era bounds, same convention as _window_search/recall_window:
+    # a bare "2026-03" is a whole month, "2026-03-14" a whole day.
+    since: Optional[str] = None
+    until: Optional[str] = None
 
 
 class CaptureRequest(BaseModel):
@@ -788,13 +839,62 @@ def _json_safe(item: dict) -> dict:
     return {k: v for k, v in item.items() if not isinstance(v, (bytes, bytearray))}
 
 
+def _in_era(row: dict, since: Optional[str], until: Optional[str]) -> bool:
+    """Is this row provably inside the requested era?
+
+    Same lexicographic ISO comparison _window_search does in SQL, with the same
+    inclusive upper bound (pad with \\uffff so "2026-03" covers all of March).
+
+    A row whose timestamp is missing or empty is NOT in the era. Federated
+    vault lanes hand back rows with no timestamp at all, and those were the
+    ones leaking: an undated memory cannot be shown as evidence of what a
+    bounded question asked about. It is held back and counted, not silently
+    mixed in with dated results.
+    """
+    ts = row.get("timestamp") or ""
+    if not isinstance(ts, str) or not ts.strip():
+        return False
+    if since and ts < since:
+        return False
+    if until and ts > until + "￿":
+        return False
+    return True
+
+
+def _era_filter(rows: list, since: Optional[str], until: Optional[str]) -> tuple:
+    """Split rows into (kept, held_back_count) against inclusive era bounds."""
+    kept = [r for r in rows if _in_era(r, since, until)]
+    return kept, len(rows) - len(kept)
+
+
+def _row_key(row: dict):
+    """Identity of a shard across arms: same shard from the SQL sweep and the
+    federated sweep must merge, not double-count."""
+    return (row.get("_db_index"), row.get("source"), row.get("id"))
+
+
+def _merge_rows(*groups) -> list:
+    """Union rows from several arms, first occurrence wins, newest first."""
+    seen, merged = set(), []
+    for group in groups:
+        for row in group:
+            key = _row_key(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(row)
+    merged.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
+    return merged
+
+
 # Every data endpoint requires X-NGS-Token (verify_token 503s until
 # NGS_NODE_TOKEN is configured, so the node is deny-by-default). This is what
 # makes it safe to run the Space public: reads and writes are both gated;
 # only /health and the separately-authed HUD are reachable without the token.
 
 @app.post("/search")
-def search(req: SearchRequest, _token: str = Depends(verify_token)):
+def search(req: SearchRequest, response: Response,
+           _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Memory recall for cloud callers (mirrors the connector's POST /search).
 
     A crash in the full retrieval stack (vector lane, rerank, a bad shard row on
@@ -802,8 +902,22 @@ def search(req: SearchRequest, _token: str = Depends(verify_token)):
     non-200 as "node down" and lose the relay entirely. So a failing full
     retrieve degrades to a keyword-only sweep, and a total failure returns an
     empty list rather than an exception.
+
+    since/until bound the era. They are enforced on EVERY arm, not just the SQL
+    sweep: federated vault lanes rank on content alone and were returning
+    2026-08 rows (and undated rows) to callers asking about 2025-Q1 — the
+    connector's ask_griot inherited that leak and reported held_back=0 while
+    doing it. Bounded requests therefore also run the timestamp-filtered SQL
+    sweep and union the two, so a sparse era still returns its own shards
+    instead of losing them to a relevance cut computed over the whole grid.
+    Rows dropped for falling outside (or having no) era are counted in the
+    X-NouGen-Held-Back response header rather than vanishing unremarked.
     """
     limit = max(1, min(req.limit, 50))
+    bounded = bool(req.since or req.until)
+    # Over-fetch when bounded: filtering after ranking would otherwise starve
+    # the result set down to a handful of in-era rows.
+    fetch = min(limit * 5, 250) if bounded else limit
     sweep_report: dict = {}
     try:
         # Federated, not core.retrieve: a remote caller must see the same corpus a
@@ -813,15 +927,29 @@ def search(req: SearchRequest, _token: str = Depends(verify_token)):
         # them locally — the node answered "not found" about content it holds.
         # federated_retrieve degrades every remote lane independently, so this
         # cannot fail worse than the local-only path did.
-        results = federated_retrieve(req.query, limit=limit, sweep_report=sweep_report)
+        results = federated_retrieve(req.query, limit=fetch, sweep_report=sweep_report)
     except Exception:
         logger.exception("search: full retrieve failed, falling back to keyword-only")
         try:
-            results = core._keyword_retrieve(req.query, limit, None, "*")
+            results = core._keyword_retrieve(req.query, fetch, None, "*")
         except Exception:
             logger.exception("search: keyword fallback also failed; returning []")
             results = []
-    payload = [_json_safe(r) for r in results]
+
+    if bounded:
+        results, held_back = _era_filter(results, req.since, req.until)
+        try:
+            # SQL-side sweep: filters before scoring, so a quiet era keeps its
+            # shards. Degrade to the filtered federated rows if it raises.
+            results = _merge_rows(results,
+                                  _window_search(req.query, req.since, req.until, limit))
+        except Exception:
+            logger.exception("search: windowed sweep failed; era-filtered results only")
+        response.headers["X-NouGen-Held-Back"] = str(held_back)
+
+    # Truncate to the caller's limit before the trailer: the over-fetch above is
+    # an internal ranking budget, not a promise to return more rows.
+    payload = [_json_safe(r) for r in results[:limit]]
     # Coverage honesty: a store that errored or timed out mid-sweep is a hole in
     # the corpus the caller must be able to see. Appended as a shard-shaped
     # trailer (score 0, distinct event_type) so list-consuming clients keep
@@ -846,7 +974,8 @@ def search(req: SearchRequest, _token: str = Depends(verify_token)):
 
 
 @app.post("/capture")
-def capture_shard(req: CaptureRequest, _token: str = Depends(verify_token)):
+def capture_shard(req: CaptureRequest,
+                  _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Single-shard capture for user agents."""
     ok = core.capture(req.event_type, req.title, req.content, tags=req.tags,
                       original_timestamp=req.original_timestamp)
@@ -854,8 +983,11 @@ def capture_shard(req: CaptureRequest, _token: str = Depends(verify_token)):
 
 
 @app.post("/sync/push")
-def sync_push(req: SyncPushRequest, _token: str = Depends(verify_token)):
+def sync_push(req: SyncPushRequest,
+              _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Bulk ingest (contract of connectors.cloud.push_to_cloud)."""
+    from nougen_shards import private_vault
+
     count = 0
     skipped = 0
     for s in req.shards:
@@ -863,6 +995,14 @@ def sync_push(req: SyncPushRequest, _token: str = Depends(verify_token)):
         if not title or not content:
             skipped += 1
             continue
+        sensitivity = s.get("sensitivity") or "normal"
+        # /sync/pull transports encrypted-at-rest bodies as ngenc1 ciphertext.
+        # Replicas share the lane data key, so unwrap before capture() hashes,
+        # redacts, embeds and re-encrypts under the receiving machine's DPAPI
+        # wrapper. Treating ciphertext as ordinary text silently declassifies it
+        # and creates a duplicate whose hash no longer represents the plaintext.
+        if private_vault.should_encrypt(sensitivity) and private_vault.is_encrypted(content):
+            content = private_vault.decrypt_text(content)
         tags = s.get("tags")
         if isinstance(tags, str):
             try:
@@ -877,6 +1017,7 @@ def sync_push(req: SyncPushRequest, _token: str = Depends(verify_token)):
             tags=tags, embedding=emb,
             domain_key=s.get("domain_key"),
             density_score=s.get("density_score"),
+            sensitivity=sensitivity,
             # Bulk ingest must stamp a shard at its TRUE era, exactly as
             # /capture does. Dropping this silently re-dated every pushed shard
             # to ingest time -- and because capture() dedups on a content hash,
@@ -894,7 +1035,7 @@ def sync_push(req: SyncPushRequest, _token: str = Depends(verify_token)):
 
 
 @app.get("/sync/pull")
-def sync_pull(_token: str = Depends(verify_token)):
+def sync_pull(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Full export (contract of connectors.cloud.pull_from_cloud)."""
     all_shards = []
     for i in range(1, core.MAX_DB_COUNT + 1):
@@ -916,6 +1057,23 @@ def sync_pull(_token: str = Depends(verify_token)):
             conn.close()
     return all_shards
 
+
+@app.get("/sync/hashes")
+def sync_hashes(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """Compact identity manifest for incremental replica synchronization."""
+    hashes = []
+    for i in range(1, core.MAX_DB_COUNT + 1):
+        if not core.get_db_path(i).exists():
+            continue
+        conn = core.get_connection(i)
+        try:
+            hashes.extend(row[0] for row in conn.execute(
+                "SELECT file_hash FROM shards WHERE file_hash IS NOT NULL"))
+        finally:
+            conn.close()
+    return {"count": len(hashes), "hashes": hashes}
+
+
 # --- Rhea-Noir resident agent ---
 # NOTE: this block and rhea_noir.py must live in SOURCE, not only on the Space.
 # The Space is rebuilt by a "Space deploy: snapshot of <sha>" job that restores
@@ -929,7 +1087,8 @@ class AgentRequest(BaseModel):
 
 
 @app.post("/agent")
-def agent_ask(req: AgentRequest, _token: str = Depends(verify_token)):
+def agent_ask(req: AgentRequest,
+              _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Ask Rhea-Noir. Free lane first; her reply names the brain that answered."""
     return rhea_noir.ask(req.prompt)
 
@@ -1114,16 +1273,21 @@ class _TokenGatedMCP:
     the X-NGS-Token header, an Authorization: Bearer header, or a ?token=
     query parameter - the Claude app's custom connectors cannot attach
     arbitrary headers, so the query form is the pre-baked-URL path while the
-    OAuth flow issues Bearer tokens. NODE_TOKEN is read at call time so tests
-    (and runtime reconfiguration) can swap it without re-importing the
-    module."""
+    OAuth flow issues tenant-bearing Bearer tokens. Credentials and the tenant
+    registry are read at call time so tests and runtime configuration changes
+    do not require re-importing the module."""
 
     def __init__(self, inner):
         self.inner = inner
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
-            if not NODE_TOKEN:
+            try:
+                configured = tenants.credentials_configured(NODE_TOKEN)
+            except tenants.TenantRegistryError:
+                await self._reject(send, 503, "Tenant registry is invalid.")
+                return
+            if not configured:
                 await self._reject(send, 503, "Node write-auth not configured.")
                 return
             headers = {k.decode("latin-1").lower(): v.decode("latin-1")
@@ -1140,11 +1304,27 @@ class _TokenGatedMCP:
                 from urllib.parse import parse_qs
                 qs = parse_qs(scope.get("query_string", b"").decode("latin-1"))
                 supplied = (qs.get("token") or [None])[0]
-            shared_ok = bool(supplied) and hmac.compare_digest(str(supplied), str(NODE_TOKEN))
-            if not shared_ok and not (supplied and mcp_oauth.issued_token_valid(supplied)):
+            tenant = None
+            if supplied:
+                try:
+                    tenant = tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+                    if tenant is None:
+                        issued_tenant_id = mcp_oauth.issued_token_tenant(supplied)
+                        if issued_tenant_id:
+                            tenant = tenants.tenant_by_id(issued_tenant_id, core.GLOBAL_DIR)
+                except tenants.TenantRegistryError:
+                    await self._reject(send, 503, "Tenant registry is invalid.")
+                    return
+            if tenant is None:
                 await self._reject(send, 401, "Invalid node token.",
                                    scope=scope)
                 return
+            context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
+            try:
+                await self.inner(scope, receive, send)
+            finally:
+                core.reset_active_vault(context_tokens)
+            return
         await self.inner(scope, receive, send)
 
     @staticmethod
@@ -1170,7 +1350,14 @@ class _TokenGatedMCP:
 
 # Register the OAuth endpoints BEFORE the Gradio catch-all at "/", or the HUD
 # swallows /authorize, /token, /register and the discovery documents.
-mcp_oauth.install(app, node_token_getter=lambda: NODE_TOKEN)
+mcp_oauth.install(
+    app,
+    node_token_getter=lambda: NODE_TOKEN,
+    tenant_resolver=lambda token: (
+        resolved.tenant_id if (resolved := _resolve_tenant_credential(token)) else None
+    ),
+    credentials_configured_getter=_credentials_configured,
+)
 
 # Mount BEFORE the Gradio catch-all at "/" so /mcp is routed to the MCP app.
 app.mount("/mcp", _TokenGatedMCP(_mcp_asgi))

@@ -75,7 +75,19 @@ class OpenAIClient(LLMClient):
         return bool(self.api_key)
 
     def list_models(self) -> list:
-        return ["gpt-4o", "gpt-4o-mini"]
+        if not self.api_key:
+            return ["gpt-4o", "gpt-4o-mini", "o3-mini", "o1", "o1-mini"]
+        try:
+            req = urllib.request.Request(f"{self.base_url}/models")
+            req.add_header("Authorization", f"Bearer {self.api_key or ''}")
+            with urllib.request.urlopen(req, timeout=5.0) as res:
+                data = json.loads(res.read().decode())
+                models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+                if models:
+                    return sorted(models)
+        except Exception:
+            pass
+        return ["gpt-4o", "gpt-4o-mini", "o3-mini", "o1", "o1-mini"]
 
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:
@@ -99,17 +111,37 @@ class OpenAIClient(LLMClient):
 
     def _stream_chat(self, response) -> str:
         full_content = ""
+        in_reasoning = False
         for line in response:
             line_str = line.decode().strip()
             if line_str.startswith("data: ") and line_str != "data: [DONE]":
                 try:
                     chunk = json.loads(line_str[6:])
-                    content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                    full_content += content
-                    sys.stdout.write(content)
-                    sys.stdout.flush()
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    reasoning = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                    content = delta.get("content") or ""
+
+                    if reasoning:
+                        if not in_reasoning:
+                            in_reasoning = True
+                            sys.stdout.write("\n💭 \033[90m[Thinking...]\n")
+                            sys.stdout.flush()
+                        sys.stdout.write(f"\033[90m{reasoning}\033[0m")
+                        sys.stdout.flush()
+                    elif in_reasoning and content:
+                        in_reasoning = False
+                        sys.stdout.write("\n\033[0m\n")
+                        sys.stdout.flush()
+
+                    if content:
+                        full_content += content
+                        sys.stdout.write(content)
+                        sys.stdout.flush()
                 except (json.JSONDecodeError, KeyError):
                     continue
+        if in_reasoning:
+            sys.stdout.write("\033[0m\n")
+            sys.stdout.flush()
         return full_content
 
     def embed(self, model: str, text: str) -> list:
@@ -169,7 +201,12 @@ class AnthropicClient(LLMClient):
         return bool(self.api_key)
 
     def list_models(self) -> list:
-        return ["claude-3-5-sonnet-latest"]
+        return [
+            "claude-3-7-sonnet-latest",
+            "claude-3-5-sonnet-latest",
+            "claude-3-5-haiku-latest",
+            "claude-3-opus-latest"
+        ]
 
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:
@@ -233,7 +270,19 @@ class GeminiClient(LLMClient):
         return bool(self.api_key)
 
     def list_models(self) -> list:
-        return ["gemini-1.5-pro", "gemini-1.5-flash"]
+        if not self.api_key:
+            return ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
+        try:
+            req = urllib.request.Request(self.base_url)
+            req.add_header("x-goog-api-key", self.api_key or "")
+            with urllib.request.urlopen(req, timeout=5.0) as res:
+                data = json.loads(res.read().decode())
+                models = [m.get("name", "").replace("models/", "") for m in data.get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
+                if models:
+                    return models
+        except Exception:
+            pass
+        return ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
 
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:
@@ -346,7 +395,13 @@ class HuggingFaceClient(LLMClient):
         return bool(self.api_key)
 
     def list_models(self) -> list:
-        return ["meta-llama/Llama-3.2-3B-Instruct"]
+        return [
+            "meta-llama/Llama-3.3-70B-Instruct",
+            "meta-llama/Llama-3.2-3B-Instruct",
+            "meta-llama/Llama-3.2-1B-Instruct",
+            "Qwen/Qwen2.5-Coder-32B-Instruct",
+            "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+        ]
 
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:
@@ -722,17 +777,16 @@ def find_best_model_from_list(models: List[str]) -> Optional[ModelBudgetConfig]:
             )
             
     # 3. Third tier: Official Gemma 4 QAT/edge/workstation defaults.
-    # Order is preference, and it is configuration rather than a constant: the
-    # cloud tags lead because they outrun the local 12b by a wide margin. Before
-    # this was ordered explicitly, 31b-cloud fell through to tier 4 and lost to
-    # 12b on any box that had both installed.
+    # The small QAT route leads because it fits Who-Art's 6 GB card, stays local,
+    # and is the fleet's resident drafting/digest lane. Heavy cloud and local
+    # models remain available through explicit selection or env configuration.
     gemma4_tags = [
         m.strip()
         for m in os.getenv(
             "NOUGEN_GEMMA4_PREFERENCE",
+            "gemma4:e2b-qat,gemma4:e2b-it-qat,gemma4:e2b,"
             "gemma4:31b-cloud,gemma4:e4b,gemma4:e4b-it-qat,"
-            "gemma4:12b,gemma4:12b-it-qat,"
-            "gemma4:e2b,gemma4:e2b-it-qat,gemma4:latest",
+            "gemma4:12b,gemma4:12b-it-qat,gemma4:latest",
         ).split(",")
         if m.strip()
     ]
@@ -841,18 +895,55 @@ class OllamaClient(LocalLLMClient):
                             data=json.dumps(payload).encode(), method="POST")
                         req2.add_header("Content-Type", "application/json")
                         with urllib.request.urlopen(req2, timeout=_HTTP_TIMEOUT) as res2:
-                            _content = json.loads(res2.read().decode()).get(
-                                "message", {}).get("content", "")
+                            retry_data = json.loads(res2.read().decode())
+                            _content = retry_data.get("message", {}).get("content", "")
                         if not _content.strip():
+                            # Thinking-capable models can exhaust num_predict
+                            # before they reach message.content. Those tokens
+                            # are still generated output, so preserve them
+                            # after the normal doubled-budget reverify. Prefer
+                            # the retry (larger budget), then the original
+                            # response if the retry happened to return less.
+                            for candidate in (retry_data, resp_data):
+                                _thinking = candidate.get("message", {}).get(
+                                    "thinking", "")
+                                if isinstance(_thinking, str) and _thinking.strip():
+                                    return ("[recovered from reasoning]\n"
+                                            + _thinking)
+                                # Some compatible servers answer /api/chat
+                                # with the /api/generate response shape.
+                                _response = candidate.get("response", "")
+                                if isinstance(_response, str) and _response.strip():
+                                    return _response
                             return ("Error: EMPTY_OUTPUT after reverify at "
                                     f"num_predict={payload['options']['num_predict']}")
                     return _content
                 full = ""
+                in_thinking = False
                 for line in res:
                     chunk = json.loads(line.decode())
-                    content = chunk.get("message", {}).get("content", "")
-                    full += content
-                    sys.stdout.write(content)
+                    msg = chunk.get("message", {})
+                    thinking = msg.get("thinking", "")
+                    content = msg.get("content", "")
+
+                    if thinking:
+                        if not in_thinking:
+                            in_thinking = True
+                            sys.stdout.write("\n💭 \033[90m[Thinking...]\n")
+                            sys.stdout.flush()
+                        sys.stdout.write(f"\033[90m{thinking}\033[0m")
+                        sys.stdout.flush()
+                    elif in_thinking and content:
+                        in_thinking = False
+                        sys.stdout.write("\n\033[0m\n")
+                        sys.stdout.flush()
+
+                    if content:
+                        full += content
+                        sys.stdout.write(content)
+                        sys.stdout.flush()
+                if in_thinking:
+                    sys.stdout.write("\033[0m\n")
                     sys.stdout.flush()
                 return full
         except Exception as exc: # pylint: disable=broad-except

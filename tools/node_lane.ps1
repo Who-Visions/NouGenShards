@@ -1,19 +1,18 @@
 <#
-  node_lane.ps1 - run the NouGenShards node (app.py) as this box's own shard lane.
+  node_lane.ps1 - run this box as a replica of the shared NouGen shard lane.
 
   The node serves the REST API (/health, /search, /capture, /sync/*), the
-  token-gated MCP endpoint at /mcp, and the Cortex HUD at /. It is independent
-  of blade's lane: its own token, its own port, same local shard substrate at
-  ~\.nougen\shards.
+  token-gated MCP endpoint at /mcp. Blade and Who-Art use the same lane token;
+  the named Cloudflare tunnel is only the highway between that lane and clients.
 
   The write token is never hardcoded - it is read at start time from the
-  keymaker vault under NGS_NODE_TOKEN_OUTPOST.
+  keymaker vault under NGS_NODE_TOKEN.
 
   Usage:
     .\tools\node_lane.ps1 start
     .\tools\node_lane.ps1 status
     .\tools\node_lane.ps1 stop
-    .\tools\node_lane.ps1 token     # prints the token (for wiring a client)
+    .\tools\node_lane.ps1 token     # prints only a non-reversible fingerprint
 #>
 param(
     [Parameter(Position = 0)]
@@ -24,7 +23,12 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $Root      = Split-Path -Parent $PSScriptRoot          # ...\Outpost\NouGen
-$Python    = Join-Path $Root '.venv\Scripts\python.exe'
+$VenvPython = Join-Path $Root '.venv\Scripts\python.exe'
+$Python    = if (Test-Path $VenvPython) {
+    $VenvPython
+} else {
+    (Get-Command python -ErrorAction Stop).Source
+}
 $RunDir    = Join-Path $Root '.node'
 $PidFile   = Join-Path $RunDir 'node.pid'
 $OutLog    = Join-Path $RunDir 'node.out.log'
@@ -35,7 +39,7 @@ $VaultDir  = Join-Path $env:USERPROFILE '.nougen\shards'   # shard substrate
 $SecretsDir = Join-Path $env:USERPROFILE '.nougen\secrets'
 $Port      = if ($env:NGS_PORT) { $env:NGS_PORT } else { '4444' }
 $BaseUrl   = "http://127.0.0.1:$Port"
-$SecretKey = 'NGS_NODE_TOKEN_OUTPOST'
+$SecretKey = 'NGS_NODE_TOKEN'
 
 function Get-NodeToken {
     $env:PYTHONPATH = Join-Path $Root 'src'
@@ -43,7 +47,7 @@ function Get-NodeToken {
     $env:NOUGEN_SECRETS_VAULT_DIR = $SecretsDir
     $tok = & $Python -c "from nougen_shards import keymaker as k; print(k.get_secret('$SecretKey') or '')"
     $tok = ($tok | Select-Object -Last 1).Trim()
-    if (-not $tok) { throw "$SecretKey not found in vault $VaultDir. Mint it before starting the lane." }
+    if (-not $tok) { throw "$SecretKey not found in the canonical secrets vault. Ingest the shared lane token before starting." }
     return $tok
 }
 
@@ -57,32 +61,57 @@ function Get-NodePid {
     return [int]$id
 }
 
+function Get-ListenerPid {
+    $listener = Get-NetTCPConnection -State Listen -LocalPort ([int]$Port) `
+        -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $listener) { return $null }
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)"
+    if (-not $proc -or $proc.Name -notlike 'python*' -or
+        $proc.CommandLine -notmatch '-m uvicorn app:app') {
+        throw "port $Port is owned by an unexpected process; refusing to manage it"
+    }
+    return [int]$listener.OwningProcess
+}
+
 switch ($Action) {
 
-    'token' { Get-NodeToken; break }
+    'token' {
+        $token = Get-NodeToken
+        $bytes = [Text.Encoding]::UTF8.GetBytes($token)
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $fp = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').Substring(0, 12).ToLowerInvariant()
+        } finally {
+            $sha.Dispose()
+        }
+        "node token configured (fp=$fp)"
+        break
+    }
 
     'start' {
         $running = Get-NodePid
-        if ($running) { "node already running (pid $running) on $BaseUrl"; break }
+        $listener = Get-ListenerPid
+        if ($listener) { "node already running (listener pid $listener) on $BaseUrl"; break }
+        if ($running) {
+            Stop-Process -Id $running -Force -Confirm:$false -ErrorAction SilentlyContinue
+            Remove-Item $PidFile -ErrorAction SilentlyContinue
+        }
 
         if (-not (Test-Path $RunDir)) { New-Item -ItemType Directory -Path $RunDir | Out-Null }
 
         $token = Get-NodeToken
 
-        # The child inherits these; app.py appends <cwd>\src to sys.path, so the
-        # working directory must be the repo root.
+        # The child inherits these. ngs_node_serve resolves the shared token,
+        # binds the token-gated data surface, and deliberately leaves the HUD
+        # unmounted when network exposed.
         $env:NGS_NODE_TOKEN   = $token
         $env:NGS_PORT         = $Port
+        $env:NGS_BIND_HOST    = if ($env:NGS_BIND_HOST) { $env:NGS_BIND_HOST } else { '0.0.0.0' }
         $env:NOUGEN_VAULT_DIR = $VaultDir
-    $env:NOUGEN_SECRETS_VAULT_DIR = $SecretsDir
+        $env:NOUGEN_SECRETS_VAULT_DIR = $SecretsDir
         $env:PYTHONPATH       = Join-Path $Root 'src'
-        # HUD basic-auth: without these the vault UI mounts open on loopback,
-        # which becomes a public hole the moment a tunnel points at this port.
-        $env:PYTHONPATH       = Join-Path $Root 'src'
-        $env:NGS_HUD_USER     = (& $Python -c "from nougen_shards import keymaker as k; print(k.get_secret('NGS_HUD_USER') or '')" | Select-Object -Last 1).Trim()
-        $env:NGS_HUD_PASSWORD = (& $Python -c "from nougen_shards import keymaker as k; print(k.get_secret('NGS_HUD_PASSWORD') or '')" | Select-Object -Last 1).Trim()
 
-        $proc = Start-Process -FilePath $Python -ArgumentList 'app.py' `
+        $proc = Start-Process -FilePath $Python -ArgumentList 'tools\ngs_node_serve.py' `
             -WorkingDirectory $Root -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput $OutLog -RedirectStandardError $ErrLog
         Set-Content -Path $PidFile -Value $proc.Id -Encoding utf8
@@ -107,20 +136,27 @@ switch ($Action) {
 
     'stop' {
         $running = Get-NodePid
-        if (-not $running) { 'node not running'; break }
-        Stop-Process -Id $running -Force -Confirm:$false
+        $listener = Get-ListenerPid
+        if (-not $running -and -not $listener) { 'node not running'; break }
+        if ($listener) {
+            Stop-Process -Id $listener -Force -Confirm:$false
+        }
+        if ($running -and $running -ne $listener) {
+            Stop-Process -Id $running -Force -Confirm:$false -ErrorAction SilentlyContinue
+        }
         Remove-Item $PidFile -ErrorAction SilentlyContinue
-        "node stopped (pid $running)"
+        "node stopped (launcher=$running listener=$listener)"
         break
     }
 
     'status' {
         $running = Get-NodePid
+        $listener = Get-ListenerPid
         try {
             $h = Invoke-RestMethod -Uri "$BaseUrl/health" -TimeoutSec 3
-            "UP    pid=$running  $BaseUrl  shards=$($h.total_shards)  token=$($h.node_token_configured)  public_ready=$($h.public_ready)"
+            "UP    launcher=$running listener=$listener  $BaseUrl  shards=$($h.total_shards)  token=$($h.node_token_configured)  public_ready=$($h.public_ready)"
         } catch {
-            "DOWN  pid=$running  $BaseUrl unreachable"
+            "DOWN  launcher=$running listener=$listener  $BaseUrl unreachable"
         }
         break
     }

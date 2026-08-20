@@ -14,6 +14,9 @@ SECRET_PATTERNS = [
     # AWS: AKIA (long-term) and ASIA (STS temporary) access keys.
     (re.compile(r'(?:AKIA|ASIA)[0-9A-Z]{16}'), "<REDACTED_AWS_ACCESS_KEY>"),
     (re.compile(r'AIza[0-9A-Za-z_-]{30,}'), "<REDACTED_GOOGLE_KEY>"),
+    # Cloudflare API tokens (cfat_...). Previously only caught when a label
+    # like "API Token" happened to precede them; a bare token passed through.
+    (re.compile(r'cfat_[A-Za-z0-9]{20,}'), "<REDACTED_CLOUDFLARE_TOKEN>"),
     (re.compile(r'xox[baprs]-[A-Za-z0-9-]{10,}'), "<REDACTED_SLACK_TOKEN>"),
     # NouGen token: match the token itself; do not consume a leading delimiter
     # (consuming it corrupted surrounding JSON and missed adjacent tokens).
@@ -33,7 +36,11 @@ SECRET_PATTERNS = [
     # General API Keys / Tokens. Broadened value charset to cover base64/url-safe
     # secrets (+/=.~) so they are not truncated at the first special char, and
     # added common credential labels (bearer, client_secret, pwd, pat, ...).
-    (re.compile(r'(?i)(?:api[_-]?key|secret|token|password|passwd|pwd|auth|credential|access[_-]?key|client[_-]?secret|private[_-]?key|bearer|session[_-]?token|\bpat\b|\bkey\b)[\s:=]+[\'"]?([A-Za-z0-9_\-+/=.~]{16,})[\'"]?'), "<REDACTED_SECRET>")
+    # Up to three short words may sit between the label and the value. Without
+    # this, "Access Key ID <32-hex>" and "fleet key outpost <44-char key>" both
+    # passed through unredacted — the exact shapes that leaked into dream
+    # digests on 2026-08-15 and 2026-08-19.
+    (re.compile(r'(?i)(?:api[_-]?key|secret|token|password|passwd|pwd|auth|credential|access[_-]?key|client[_-]?secret|private[_-]?key|bearer|session[_-]?token|\bpat\b|\bkey\b)[\s:=]+(?:[A-Za-z]{1,12}[\s:=]+){0,3}[\'"]?([A-Za-z0-9_\-+/=.~]{16,})[\'"]?'), "<REDACTED_SECRET>")
 ]
 
 

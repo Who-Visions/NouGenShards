@@ -1,0 +1,12 @@
+{
+  "machine": "whoart",
+  "agent": "codex",
+  "goal": "publish redaction, truthful preflight, recovered ingestion, Iris assurance, and JSON search fix",
+  "scope": ".gitignore docs/FLEET-LOG-2026-08-16.md src/nougen_shards/agents.py src/nougen_shards/assurance.py src/nougen_shards/cli.py tests/test_agents.py tests/test_assurance.py tests/test_cli.py tests/test_dream_digest_run.py tools/dream_digest_run.py",
+  "status": "released",
+  "branch": "agent/nougen-assurance-sprint",
+  "sha": "7e711620",
+  "created_utc": "2026-08-16T23:19:13.256181+00:00",
+  "ttl_hours": 4.0,
+  "released_utc": "2026-08-16T23:20:05.007137+00:00"
+}

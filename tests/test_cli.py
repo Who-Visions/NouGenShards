@@ -2,6 +2,8 @@
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
 import io
+import json
+import numpy as np
 import nougen_shards.cli as cli
 
 class TestCLI(unittest.TestCase):
@@ -56,6 +58,39 @@ class TestCLI(unittest.TestCase):
             cli.cmd_search(args)
             self.assertIn("🔍 Found 1 records across the fabric", fake_out.getvalue())
             self.assertIn("Final Score: 0.85", fake_out.getvalue())
+
+    @patch('nougen_shards.cli.federation.federated_retrieve')
+    def test_cmd_search_json_serializes_float32_blob(self, mock_retrieve):
+        args = MagicMock()
+        args.query = "test"
+        args.semantic = False
+        args.dual = False
+        args.json = True
+        args.domain = None
+        vector = np.array([0.25, -1.5, 3.0], dtype=np.float32)
+        mock_retrieve.return_value = [{"id": 1, "embedding": vector.tobytes()}]
+
+        with patch('sys.stdout', new=io.StringIO()) as fake_out:
+            cli.cmd_search(args)
+
+        payload = json.loads(fake_out.getvalue())
+        self.assertEqual(payload[0]["embedding"], vector.tolist())
+
+    @patch('nougen_shards.cli.federation.federated_retrieve')
+    def test_cmd_search_json_supports_legacy_embedding(self, mock_retrieve):
+        args = MagicMock()
+        args.query = "test"
+        args.semantic = False
+        args.dual = False
+        args.json = True
+        args.domain = None
+        mock_retrieve.return_value = [{"id": 1, "embedding": b"[0.5, -0.5]"}]
+
+        with patch('sys.stdout', new=io.StringIO()) as fake_out:
+            cli.cmd_search(args)
+
+        payload = json.loads(fake_out.getvalue())
+        self.assertEqual(payload[0]["embedding"], [0.5, -0.5])
 
     @patch('nougen_shards.cli.shards.mark_shard')
     def test_cmd_mark(self, mock_mark):
@@ -169,6 +204,46 @@ class TestCLI(unittest.TestCase):
             with patch('sys.stdout', new=io.StringIO()) as fake_out:
                 cli.cmd_ingest(args)
                 self.assertIn("✅ Ingestion complete", fake_out.getvalue())
+
+    @patch('nougen_shards.cli.get_client')
+    @patch('nougen_shards.cli.federation.federated_retrieve', return_value=[])
+    def test_cmd_chat_single_query(self, _mock_retrieve, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.is_alive.return_value = True
+        mock_client.chat.return_value = "Memory response"
+        mock_get_client.return_value = mock_client
+
+        args = MagicMock()
+        args.provider = "local"
+        args.model = "sol-ai:e4b"
+        args.query = "What is the stadium?"
+        args.agent = "Sol-Ai"
+
+        with patch('sys.stdout', new=io.StringIO()) as fake_out:
+            cli.cmd_chat(args)
+            self.assertIn("Querying sol-ai:e4b (Sol-Ai)", fake_out.getvalue())
+            self.assertIn("Memory response", fake_out.getvalue())
+
+    @patch('nougen_shards.cli.get_client')
+    @patch('builtins.input', side_effect=['/help', '/agents', '/exit'])
+    def test_run_interactive_chat_slash_commands(self, _mock_input, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.is_alive.return_value = True
+        mock_get_client.return_value = mock_client
+
+        args = MagicMock()
+        args.provider = "local"
+        args.model = "gemma4:e2b-qat"
+        args.query = None
+        args.agent = "NouGen"
+
+        with patch('sys.stdout', new=io.StringIO()) as fake_out:
+            cli.cmd_chat(args)
+            output = fake_out.getvalue()
+            self.assertIn("NouGen Interactive Intelligence Grid", output)
+            self.assertIn("Commands & Top 1% Controls", output)
+            self.assertIn("NOUGEN ROSTER", output)
+            self.assertIn("Session closed", output)
 
     @patch('sys.stdout', new_callable=io.StringIO)
     def test_main_no_args(self, mock_stdout):

@@ -16,8 +16,20 @@ from .gatekeeper import check_mutation_gate
 # number whose whole job is to be trustworthy. One source, no drift.
 try:
     __version__ = _pkg_version("nougen-shards")
-except PackageNotFoundError:  # running from a source tree, never installed
-    __version__ = "0.0.0+unknown"
+except PackageNotFoundError:
+    try:
+        __version__ = _pkg_version("nougen_shards")
+    except PackageNotFoundError:
+        # Running from source tree before pip install -e . -> read pyproject.toml if present
+        import pathlib
+        import re
+        _root = pathlib.Path(__file__).resolve().parents[2]
+        _pyproject = _root / "pyproject.toml"
+        if _pyproject.is_file():
+            _m = re.search(r'^version\s*=\s*"([^"]+)"', _pyproject.read_text(encoding="utf-8"), re.MULTILINE)
+            __version__ = _m.group(1) if _m else "0.0.0+unknown"
+        else:
+            __version__ = "0.0.0+unknown"
 VALERION_ENGINE = "Valerion"
 
 __all__ = [

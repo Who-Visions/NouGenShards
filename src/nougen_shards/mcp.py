@@ -1,5 +1,6 @@
 """Model Context Protocol (MCP) server for NouGenShards — Valerion Engine."""
 import sqlite3
+from nougen_shards import agents
 from typing import Optional, List
 
 # Fallback wrapper for mcp dependency if missing
@@ -436,6 +437,53 @@ def evolve_skill(instruction: str) -> str:
             f"Grounding: {result['grounding_source']}"
         )
     return f"❌ Evolution failed: {result.get('error')}"
+
+# --- Roster Agents ---
+
+@mcp.tool()
+def ask_iris(question: str, model: str = "") -> str:
+    """
+    Ask Iris, the always-on resident AI on this machine.
+
+    Iris is Airspace: research, evidence and assurance. She separates verified
+    fact from inference, states her caveats, and never promotes or deletes
+    memory on her own - action stays with the operator. She rides the pinned
+    resident model (gemma4:e2b-qat) as a system prompt, so asking her costs no
+    cloud tokens and loads no second model onto the card.
+
+    Use her for: checking a claim against evidence, a second read on something
+    you are about to assert, reachability/uncertainty assessment. She is a
+    local $0 lane - prefer her over a paid route for this class of question.
+
+    Args:
+        question: What to ask her.
+        model: Optional model override. Leave empty to use the resident.
+    """
+    return agents.run_agent("Iris", question, model=model or None)
+
+
+@mcp.tool()
+def ask_agent(name: str, prompt: str, model: str = "") -> str:
+    """
+    Run a prompt through any agent on the NouGen roster.
+
+    Local-first: tries the resident Ollama model, falling back to cloud only if
+    local is unreachable. The DavOs gatekeeper screens every prompt first.
+
+    Args:
+        name: Roster agent - Sharder, Remember, Kronos, DavOs, Sol-Ai, NouGen,
+            Griot, Rhea, Kaedra or Iris. Case-insensitive.
+        prompt: What to ask.
+        model: Optional model override. Leave empty for the agent default.
+    """
+    return agents.run_agent(name, prompt, model=model or None)
+
+
+@mcp.tool()
+def list_agents() -> str:
+    """List the NouGen roster: each agent's name, role and default model."""
+    return agents.list_roster()
+
 
 def main():
 

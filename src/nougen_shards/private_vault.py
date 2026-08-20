@@ -63,7 +63,7 @@ SENSITIVITY_PRIVATE = "private"
 SENSITIVITY_SECRET = "secret"
 _ENCRYPTED_AT = {SENSITIVITY_PRIVATE, SENSITIVITY_SECRET}
 
-_key_cache: Optional[bytes] = None
+_key_cache: dict[str, bytes] = {}
 
 
 class PrivateVaultError(RuntimeError):
@@ -89,6 +89,12 @@ def normalize_sensitivity(sensitivity: Optional[str]) -> str:
 
 def resolve_vault_dir() -> str:
     """Vault directory, discovered rather than assumed (Rule 0.2)."""
+    try:
+        from . import core
+        if core.vault_context_is_set():
+            return str(core.active_vault_dir())
+    except Exception:
+        pass
     env = os.environ.get(ENV_VAULT)
     if env:
         return env
@@ -124,6 +130,17 @@ def _candidate_key_paths() -> list:
     """
     seen, out = set(), []
     candidates = [os.path.dirname(key_path())]
+
+    try:
+        from . import core
+        tenant_isolated = core.vault_context_is_set() and core.active_tenant_id() != "owner"
+    except Exception:
+        tenant_isolated = False
+
+    # Owner-era key sweeping prevents accidental key divergence, but letting a
+    # tenant perform that sweep would read the owner's data key.
+    if tenant_isolated:
+        return candidates
 
     override = os.environ.get(ENV_KEY_SEARCH_PATH)
     if override:
@@ -208,11 +225,11 @@ def _generate_key() -> bytes:
 
 def load_key(create: bool = True) -> bytes:
     """Resolve the vault data key: env -> key file -> generate."""
-    global _key_cache
-    if _key_cache is not None:
-        return _key_cache
-
     env = os.environ.get(ENV_KEY)
+    cache_key = "env" if env else os.path.abspath(key_path())
+    if cache_key in _key_cache:
+        return _key_cache[cache_key]
+
     if env:
         try:
             raw = base64.b64decode(env)
@@ -222,7 +239,7 @@ def load_key(create: bool = True) -> bytes:
             raise PrivateVaultError(
                 f"{ENV_KEY} must decode to {_KEY_BYTES} bytes, got {len(raw)}"
             )
-        _key_cache = raw
+        _key_cache[cache_key] = raw
         return raw
 
     for path in _candidate_key_paths():
@@ -239,21 +256,20 @@ def load_key(create: bool = True) -> bytes:
                 f"profile changed, restore from {RECOVERY_FILENAME} by setting {ENV_KEY}."
             ) from exc
         raw = base64.b64decode(payload)
-        _key_cache = raw
+        _key_cache[cache_key] = raw
         return raw
 
     if not create:
         raise PrivateVaultError(
             f"no data key found in any of: {', '.join(_candidate_key_paths())}")
     raw = _generate_key()
-    _key_cache = raw
+    _key_cache[cache_key] = raw
     return raw
 
 
 def reset_key_cache() -> None:
     """Drop the in-process key cache. Used by tests and after key rotation."""
-    global _key_cache
-    _key_cache = None
+    _key_cache.clear()
 
 
 # --- primitives -------------------------------------------------------------

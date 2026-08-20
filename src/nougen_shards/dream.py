@@ -113,7 +113,13 @@ def extract_semantic_invariants_via_llm(content: str) -> List[Dict[str, str]]:
             return fallback_rule_parser(content)
             
         models = client.list_models()
-        model = "griot:e2b" if "griot:e2b" in models else (client.find_best_edge_model().model_name if models else None)
+        # Consolidation is a bulk local transform: use the resident QAT lane
+        # before loading a persona or asking the generic selector.
+        model = (
+            "gemma4:e2b-qat" if "gemma4:e2b-qat" in models
+            else "griot:e2b" if "griot:e2b" in models
+            else (client.find_best_edge_model().model_name if models else None)
+        )
         if not model:
             return fallback_rule_parser(content)
             

@@ -393,6 +393,16 @@ def init_vault():
             last_connected TEXT NOT NULL
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS local_vaults (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL,
+            table_name TEXT NOT NULL,
+            title_col TEXT NOT NULL,
+            content_col TEXT NOT NULL,
+            last_connected TEXT NOT NULL
+        )
+    ''')
     conn.commit()
     conn.close()
 

@@ -2,7 +2,23 @@
 
 All notable changes to NouGenShards will be documented in this file.
 
-## [Unreleased]
+## [1.3.1] - 2026-08-20
+### Added
+- **Dynamic Reasoning & Live Token Stream**: `OllamaClient` and `OpenAIClient` stream reasoning/thinking tokens live in dimmed ANSI styling with unbuffered real-time stdout delivery.
+- **Predictive Relay Foresight in Chat**: Integrated active fleet handoffs directly into the chat prompt context, enabling proactive next-step anticipation.
+- **Parallel Multi-Lane Federation**: `federated_retrieve` queries local shard databases, external SQL DBs, remote cloud nodes, and sibling SQLite vaults concurrently using thread pools.
+
+### Fixed
+- **Multi-Tenant Thread Isolation**: Fixed `ContextVar` loss in `federation.py` by propagating `copy_context().run` to worker threads, preventing tenant cross-talk.
+- **FTS5 Multi-Keyword Title Boosting**: Corrected `_build_fts_query` in `local_vault.py` to evaluate and sum title hits across all query keywords.
+- **Float32 Vector Deserialization in Cloud Sync**: Fixed Unicode decoding error in `nougen node push` by routing embeddings through `_embedding_for_json`.
+- **Sub-Second Embed Timeout Truncation**: Fixed float-to-int truncation in `_embed_for_capture` and `embedding_backfill.py`.
+- **SQLite Connection Leaks in `init_db()`**: Added `try/finally` protection around all table, trigger, and index creation logic.
+- **Version Resolution Fallback**: `__init__.py` falls back gracefully to `pyproject.toml` when package is run directly from development checkout.
+- **Skills Import Export**: Added missing `resolve_skills` and `format_instructions` helper wrappers in `skills.py`.
+- **Google Gemini API Key Header Auth**: Migrated `GeminiClient.list_models` from query param auth to `x-goog-api-key` header auth.
+
+## [1.3.0]
 ### Added
 - **Private Vault** (`nougen_shards.private_vault`): encryption at rest for personal-scope
   content. AES-256-GCM per value under one 32-byte vault data key, the key itself DPAPI-wrapped

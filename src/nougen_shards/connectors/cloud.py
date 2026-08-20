@@ -253,14 +253,17 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3,
                 continue
             # POST /search
             payload = {"query": query, "limit": limit}
+            search_url = f"{url}/search" if not url.endswith("/search") else url
             req = urllib.request.Request(
-                f"{url}/search",
+                search_url,
                 data=json.dumps(payload).encode(),
                 method="POST"
             )
             req.add_header("Content-Type", "application/json")
+            req.add_header("User-Agent", "NouGen/1.0 (NouGenShards-Fleet)")
             if node_token:
                 req.add_header("X-NGS-Token", node_token)
+                req.add_header("Authorization", f"Bearer {node_token}")
             _apply_edge_auth(req)
 
             remote_data = json.loads(_open_cloud(req, url, SEARCH_TIMEOUT_S).decode())

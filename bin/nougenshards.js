@@ -6,11 +6,15 @@ const { spawnSync } = require('child_process');
 const args = process.argv.slice(2);
 const pythonExecutable = process.platform === 'win32' ? 'python' : 'python3';
 const rootDir = path.resolve(__dirname, '..');
-const cliScript = path.join(rootDir, 'src', 'nougen_shards', 'cli.py');
+const srcDir = path.join(rootDir, 'src');
 
-const result = spawnSync(pythonExecutable, [cliScript, ...args], {
+const result = spawnSync(pythonExecutable, ['-m', 'nougen_shards.cli', ...args], {
   stdio: 'inherit',
-  cwd: rootDir
+  cwd: rootDir,
+  env: {
+    ...process.env,
+    PYTHONPATH: process.env.PYTHONPATH ? `${srcDir}${path.delimiter}${process.env.PYTHONPATH}` : srcDir
+  }
 });
 
 if (result.error) {

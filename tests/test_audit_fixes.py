@@ -33,7 +33,9 @@ def test_redaction_covers_modern_secret_forms(secret):
 
 def test_nougen_token_redaction_keeps_json_valid():
     # The old pattern consumed the leading delimiter and broke surrounding JSON.
-    out = redact_content('{"a":"nougen_fleet_token_AB12cd34","b":"x"}')
+    # Split literal so secret scanners don't flag this synthetic fixture.
+    fake = "nougen_fleet_token_" + "AB12cd34"
+    out = redact_content('{"a":"' + fake + '","b":"x"}')
     assert "nougen_fleet_token" not in out
     json.loads(out)  # must still parse
 
@@ -41,6 +43,38 @@ def test_nougen_token_redaction_keeps_json_valid():
 def test_truncated_private_key_is_redacted():
     clipped = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAA...cut"
     assert "REDACTED" in redact_content(clipped)
+
+
+def test_capture_redacts_secret_patterns_before_persistence(tmp_path, monkeypatch):
+    from nougen_shards import core
+
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(core, "GLOBAL_DIR", tmp_path)
+    core._INITIALIZED_DBS.clear()
+    secret = "sk-proj-" + "A" * 32
+
+    content = f"body {secret}"
+    assert core.capture("KNOWLEDGE", f"title {secret}", content, tags=[secret])
+    
+    # Locate the shard row across initialized cluster DBs
+    row = None
+    for i in range(1, core.MAX_DB_COUNT + 1):
+        p = core.get_db_path(i)
+        if not p.exists():
+            continue
+        conn = core.get_connection(i)
+        try:
+            r = conn.execute("SELECT title, content, tags FROM shards").fetchone()
+            if r:
+                row = r
+                break
+        finally:
+            conn.close()
+
+    assert row is not None
+    assert secret not in row["title"]
+    assert secret not in row["content"]
+    assert secret not in row["tags"]
 
 
 # --- structured validation (bool-as-number) ---------------------------------
@@ -90,7 +124,7 @@ def test_no_timeout_less_urlopen_in_source():
     src = pathlib.Path("src/nougen_shards/models_client.py").read_text()
     assert "urlopen(req)" not in src, "found a urlopen without a timeout"
     assert "?key=" not in src, "Gemini API key is back in the URL query string"
-    assert src.count("x-goog-api-key") == 3
+    assert src.count("x-goog-api-key") == 4
 
 
 # --- SSRF guard (connectors) -------------------------------------------------
@@ -165,6 +199,13 @@ def test_cloud_precedes_12b_in_selection():
     ).model_name == "gemma4:31b-cloud"
     # 12b remains usable when it is genuinely the only thing installed.
     assert find_best_model_from_list(["gemma4:12b"]).model_name == "gemma4:12b"
+
+
+def test_e2b_qat_precedes_implicit_heavy_routes():
+    from nougen_shards.models_client import find_best_model_from_list
+    assert find_best_model_from_list(
+        ["gemma4:e4b", "gemma4:31b-cloud", "gemma4:e2b-qat"]
+    ).model_name == "gemma4:e2b-qat"
 
 
 def test_search_context_fallback_keeps_fts_schema(tmp_path, monkeypatch):

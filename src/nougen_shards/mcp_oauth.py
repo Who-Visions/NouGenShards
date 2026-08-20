@@ -2,8 +2,9 @@
 
 Why this exists
 ---------------
-The node authenticates with a single shared secret (``NGS_NODE_TOKEN``),
-supplied as ``X-NGS-Token``, ``Authorization: Bearer``, or ``?token=``. That
+The node authenticates with the owner secret (``NGS_NODE_TOKEN``) or a hashed
+tenant credential, supplied as ``X-NGS-Token``, ``Authorization: Bearer``, or
+``?token=``. That
 works for anything that can be handed a pre-baked URL, but it does not work
 for the "Connect" button in a Claude custom connector: the client discovers
 auth the way MCP's authorization spec prescribes.
@@ -22,12 +23,11 @@ bare JSON 401 with no ``WWW-Authenticate``, so the client fell back to probing
 ``/.well-known/oauth-authorization-server``, got a 404, and surfaced
 "Couldn't register with NouGenShards's sign-in service."
 
-The node is its own authorization server. There is no user directory to
-authenticate against and no per-user data to scope, so the consent screen asks
-for the one credential that already exists - the node token - and exchanges it
-for a per-client access token. That keeps the shared secret out of the
-connector's stored URL and out of request logs, which is the main thing the
-``?token=`` path gives up.
+The node is its own authorization server. The consent screen resolves the
+typed credential to a tenant and exchanges it for a per-client access token
+that carries the same tenant id. That keeps the durable credential out of the
+connector's stored URL and request logs without collapsing tenants back into
+one vault.
 
 State is in-process and dies with the node. That matches the rest of the node
 on ephemeral storage (see the ``persistent_storage`` warning in /health); a
@@ -60,10 +60,10 @@ _CODE_TTL_SECONDS = 600
 # token to be entered at /authorize.
 _clients: dict[str, dict] = {}
 
-# Pending authorization codes: code -> {client_id, redirect_uri, challenge, exp}
+# Pending authorization codes: code -> {client_id, redirect_uri, challenge, exp, tenant_id}
 _codes: dict[str, dict] = {}
 
-# Issued access tokens: token -> {client_id, issued_at}
+# Issued access tokens: token -> {client_id, issued_at, tenant_id}
 _tokens: dict[str, dict] = {}
 
 
@@ -87,6 +87,15 @@ def issued_token_valid(token: str) -> bool:
     ever holding the shared secret.
     """
     return token in _tokens
+
+
+def issued_token_tenant(token: str) -> Optional[str]:
+    """Return the tenant carried by an issued token, never a default tenant."""
+    entry = _tokens.get(token)
+    if not entry:
+        return None
+    tenant_id = entry.get("tenant_id")
+    return tenant_id if isinstance(tenant_id, str) and tenant_id else None
 
 
 def public_base_url(request: Request) -> str:
@@ -143,7 +152,12 @@ _CONSENT_PAGE = """<!doctype html>
 """
 
 
-def install(app, node_token_getter: Callable[[], Optional[str]]) -> None:
+def install(
+    app,
+    node_token_getter: Optional[Callable[[], Optional[str]]] = None,
+    tenant_resolver: Optional[Callable[[str], Optional[str]]] = None,
+    credentials_configured_getter: Optional[Callable[[], bool]] = None,
+) -> None:
     """Register the OAuth endpoints on `app`.
 
     `node_token_getter` is read at request time rather than captured, so tests
@@ -272,10 +286,17 @@ def install(app, node_token_getter: Callable[[], Optional[str]]) -> None:
         _prune()
         client = _check_authorize_params(client_id, redirect_uri, code_challenge)
 
-        expected = node_token_getter()
-        if not expected:
+        configured = (credentials_configured_getter() if credentials_configured_getter
+                      else bool(node_token_getter and node_token_getter()))
+        if not configured:
             raise HTTPException(status_code=503, detail="Node write-auth not configured.")
-        if not node_token or not hmac.compare_digest(str(node_token), str(expected)):
+        if tenant_resolver:
+            tenant_id = tenant_resolver(node_token) if node_token else None
+        else:
+            expected = node_token_getter() if node_token_getter else None
+            tenant_id = ("owner" if node_token and expected
+                         and hmac.compare_digest(str(node_token), str(expected)) else None)
+        if not tenant_id:
             # Re-render rather than redirect: a wrong token is a user typo, not
             # a protocol error, and bouncing to the client would abort the flow.
             return HTMLResponse(
@@ -296,6 +317,7 @@ def install(app, node_token_getter: Callable[[], Optional[str]]) -> None:
             "redirect_uri": redirect_uri,
             "challenge": code_challenge,
             "exp": _now() + _CODE_TTL_SECONDS,
+            "tenant_id": tenant_id,
         }
         params = {"code": code}
         if state:
@@ -326,7 +348,14 @@ def install(app, node_token_getter: Callable[[], Optional[str]]) -> None:
             return JSONResponse({"error": "invalid_grant"}, status_code=400)
 
         access_token = secrets.token_urlsafe(32)
-        _tokens[access_token] = {"client_id": client_id, "issued_at": _now()}
+        tenant_id = entry.get("tenant_id")
+        if not tenant_id:
+            return JSONResponse({"error": "invalid_grant"}, status_code=400)
+        _tokens[access_token] = {
+            "client_id": client_id,
+            "issued_at": _now(),
+            "tenant_id": tenant_id,
+        }
         return JSONResponse({
             "access_token": access_token,
             "token_type": "Bearer",

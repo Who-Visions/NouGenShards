@@ -146,7 +146,10 @@ def _allowed_roots() -> list[Path]:
     if raw:
         return [Path(p.strip()).resolve() for p in raw.split(os.pathsep) if p.strip()]
     from .. import core  # local import: avoid a cycle at module load
-    return [Path(core.GLOBAL_DIR).resolve()]
+    # active_vault_dir(), not GLOBAL_DIR: the allow-list has to follow the
+    # request's tenant. GLOBAL_DIR is the owner vault, so using it here would
+    # let a tenant's federated sweep read the owner's vault root.
+    return [Path(core.active_vault_dir()).resolve()]
 
 
 def _is_valid_identifier(ident: str) -> bool:
@@ -253,18 +256,23 @@ def _build_fts_query(table: str, fts: str, title_col: str, content_col: str,
     bm25() is the ranking signal here rather than the hand-rolled density used on
     the LIKE path — it already accounts for term frequency and document length,
     which is what that heuristic was approximating. Title matches still get an
-    explicit boost because aboutness beats frequency for canon lookups.
+    explicit boost across all query terms because aboutness beats frequency.
     """
+    title_terms = " + ".join(
+        f'(CASE WHEN lower(t."{title_col}") LIKE ? THEN 1 ELSE 0 END)'
+        for _ in keywords
+    ) or "0"
     sql = (
         f'SELECT t."{title_col}" AS title, t."{content_col}" AS content, '
-        f'(CASE WHEN lower(t."{title_col}") LIKE ? THEN 1 ELSE 0 END) AS title_hits, '
+        f'({title_terms}) AS title_hits, '
         f'bm25(f."{fts}") AS bm25_rank '
         f'FROM "{fts}" f JOIN "{table}" t ON t.rowid = f.rowid '
         f'WHERE f."{fts}" MATCH ? '
         f'ORDER BY title_hits DESC, bm25_rank ASC '
         f'LIMIT ?'
     )
-    params = [f"%{keywords[0].lower()}%", _fts_match_expr(keywords), min(limit, MAX_ROWS)]
+    params = [f"%{kw.lower()}%" for kw in keywords]
+    params.extend([_fts_match_expr(keywords), min(limit, MAX_ROWS)])
     return sql, params
 
 
