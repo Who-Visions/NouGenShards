@@ -233,7 +233,18 @@ class GeminiClient(LLMClient):
         return bool(self.api_key)
 
     def list_models(self) -> list:
-        return ["gemini-1.5-pro", "gemini-1.5-flash"]
+        if not self.api_key:
+            return ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
+        try:
+            req = urllib.request.Request(f"{self.base_url}?key={self.api_key or ''}")
+            with urllib.request.urlopen(req, timeout=5.0) as res:
+                data = json.loads(res.read().decode())
+                models = [m.get("name", "").replace("models/", "") for m in data.get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
+                if models:
+                    return models
+        except Exception:
+            pass
+        return ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
 
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:
