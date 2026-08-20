@@ -24,6 +24,7 @@ from . import dream
 from . import evolution
 from . import assurance
 from . import tenants
+from . import agents
 
 from nougen_shards import __version__ as VERSION  # single source: pyproject
 
@@ -159,31 +160,120 @@ def cmd_init(_args):
     print(" 4. nougen add \"first shard\" (Start capturing manually)")
 
 
-def _run_interactive_chat(model, provider, client):
-    """Interactive chat loop."""
-    print(f"Entering interactive chat with {model} ({provider})...")
-    msgs = []
+def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen"):
+    """Elevated conversational chat loop with memory and slash commands (AGY / Codex / Claude CLI style)."""
+    persona = agents.get_agent(persona_name) or agents.get_agent("NouGen")
+    persona_title = persona.name if persona else persona_name
+    print(f"🪩 NouGen Interactive Intelligence Grid")
+    print(f"   Persona: {persona_title} | Model: {model} ({provider}) | Memory: Active (FTS5 + Dual Recall)")
+    print(f"   Type your request or use slash commands (/help, /search, /recall, /status, /handoff, /agent, /exit).\n")
+
+    history_msgs = []
+    if persona and persona.system_prompt:
+        history_msgs.append({"role": "system", "content": persona.system_prompt})
+
     while True:
         try:
-            user_input = input("\n[You]: ").strip()
-            if user_input.lower() in ['exit', 'quit']:
-                break
+            user_input = input(f"[{persona_title}] > ").strip()
             if not user_input:
                 continue
 
+            # Slash command shortcuts
+            if user_input in ['/exit', '/quit', 'exit', 'quit']:
+                print("Session closed. Shards and context preserved.")
+                break
+
+            if user_input in ['/help', '/?']:
+                print("\n⚡ NouGen Interactive Commands:")
+                print("  /agent <name>       - Switch active persona (NouGen, Sol-Ai, Rhea, DavOs, Iris, Kaedra, Griot, Kronos)")
+                print("  /agents             - List all roster personas and models")
+                print("  /recall <query>     - Recall and display relevant memory shards")
+                print("  /search <query>     - Full substrate search across fabric")
+                print("  /add <content>      - Capture a shard directly into the vault")
+                print("  /status             - Inspect substrate cluster status")
+                print("  /doctor             - Run system and service diagnostic")
+                print("  /handoff [msg]      - Check or publish cross-agent session handoffs")
+                print("  /clear              - Clear conversation memory in current session")
+                print("  /exit               - Exit interactive mode\n")
+                continue
+
+            if user_input.startswith('/agents'):
+                print(f"\n{agents.list_roster()}\n")
+                continue
+
+            if user_input.startswith('/agent'):
+                parts = user_input.split(maxsplit=1)
+                if len(parts) > 1:
+                    new_persona = agents.get_agent(parts[1])
+                    if new_persona:
+                        persona = new_persona
+                        persona_title = persona.name
+                        history_msgs = [{"role": "system", "content": persona.system_prompt}]
+                        print(f"✅ Switched persona to {persona_title} ({persona.role}) [{persona.default_model}]")
+                    else:
+                        print(f"❌ Unknown persona '{parts[1]}'. Run /agents to view available personas.")
+                else:
+                    print(f"Active persona: {persona_title} ({persona.role if persona else 'Default'})")
+                continue
+
+            if user_input.startswith('/recall ') or user_input.startswith('/search '):
+                subquery = user_input.split(maxsplit=1)[1]
+                found = federation.federated_retrieve(subquery, limit=3)
+                if not found:
+                    print("No matching shards found.")
+                else:
+                    print(f"\n🔍 Recalled {len(found)} shard(s):")
+                    for s in found:
+                        print(f" - [{s['id']}] (Score: {s.get('final_score', 0):.2f}) {s.get('title')}\n   {s.get('content')[:140]}...")
+                continue
+
+            if user_input.startswith('/add '):
+                content = user_input.split(maxsplit=1)[1]
+                ok = shards.capture("KNOWLEDGE", content, content, ["cli-interactive"])
+                print("✅ Shard captured to substrate." if ok else "ℹ️ Shard already present.")
+                continue
+
+            if user_input == '/status':
+                active = shards.get_active_db_index()
+                print(f"Substrate Active DB: #{active}")
+                for i in range(1, shards.MAX_DB_COUNT + 1):
+                    p = shards.get_db_path(i)
+                    if p.exists():
+                        print(f" - DB #{i}: {p.stat().st_size / (1024*1024):.2f} MB")
+                continue
+
+            if user_input == '/clear':
+                history_msgs = [{"role": "system", "content": persona.system_prompt}] if persona and persona.system_prompt else []
+                print("Session history cleared.")
+                continue
+
+            if user_input.startswith('/handoff'):
+                parts = user_input.split(maxsplit=1)
+                from . import handoff
+                if len(parts) > 1:
+                    handoff.create_handoff(parts[1], agent="cli", goal="interactive session task")
+                else:
+                    handoff.show_latest_handoff()
+                continue
+
+            # Regular conversation with live memory recall
             found = federation.federated_retrieve(user_input, limit=2)
-            context = shards.compile_recall_packet(found)
-            msgs.append({"role": "user", "content": f"{user_input}\n\n{context}"})
-            print(f"\n[{model}]: ", end="")
-            response = client.chat(model, msgs, stream=True)
-            msgs.append({"role": "assistant", "content": response})
+            context = shards.compile_recall_packet(found) if found else ""
+            prompt_with_ctx = f"{user_input}\n\n{context}" if context else user_input
+            history_msgs.append({"role": "user", "content": prompt_with_ctx})
+
+            print(f"\n[{persona_title}]: ", end="")
+            response = client.chat(model, history_msgs, stream=True)
+            history_msgs.append({"role": "assistant", "content": response})
             print()
         except KeyboardInterrupt:
+            print("\nSession paused. Use /exit or Ctrl+C again to quit.")
             break
 
 
 def cmd_chat(args):
-    """Starts a chat session with an LLM."""
+    """Starts a chat session with an LLM or roster persona."""
+    persona_name = getattr(args, "agent", None) or "NouGen"
     prov_name = args.provider or "local"
     client = get_client(prov_name)
     if not client or not client.is_alive():
@@ -192,7 +282,10 @@ def cmd_chat(args):
 
     model = args.model
     if not model:
-        if isinstance(client, LocalLLMClient):
+        persona = agents.get_agent(persona_name)
+        if persona and persona.default_model:
+            model = persona.default_model
+        elif isinstance(client, LocalLLMClient):
             model_config = client.find_best_edge_model()
             model = model_config.model_name if model_config else None
         else:
@@ -204,12 +297,12 @@ def cmd_chat(args):
         return
 
     if not args.query:
-        _run_interactive_chat(model, prov_name, client)
+        _run_interactive_chat(model, prov_name, client, persona_name=persona_name)
     else:
         found = federation.federated_retrieve(args.query, limit=3)
         ctx = shards.compile_recall_packet(found)
         msgs = [{"role": "user", "content": f"{args.query}\n\n{ctx}"}]
-        print(f"[*] Querying {model}...")
+        print(f"[*] Querying {model} ({persona_name})...")
         resp = client.chat(model, msgs, stream=False)
         print(f"\n[Response]:\n{resp}")
 
@@ -920,6 +1013,8 @@ def get_parser():
     p_chat.add_argument("query", nargs="?")
     p_chat.add_argument("--model")
     p_chat.add_argument("--provider")
+    p_chat.add_argument("--agent", "-a", default=None,
+                        help="Persona to embody (NouGen, Sol-Ai, Rhea, DavOs, Iris, Kaedra, Griot, Kronos)")
 
     p_auth = subparsers.add_parser("auth", help="Manage keys")
     p_auth.add_argument("action", choices=["set-key", "list", "check"])

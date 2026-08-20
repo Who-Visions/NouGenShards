@@ -205,6 +205,46 @@ class TestCLI(unittest.TestCase):
                 cli.cmd_ingest(args)
                 self.assertIn("✅ Ingestion complete", fake_out.getvalue())
 
+    @patch('nougen_shards.cli.get_client')
+    @patch('nougen_shards.cli.federation.federated_retrieve', return_value=[])
+    def test_cmd_chat_single_query(self, _mock_retrieve, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.is_alive.return_value = True
+        mock_client.chat.return_value = "Memory response"
+        mock_get_client.return_value = mock_client
+
+        args = MagicMock()
+        args.provider = "local"
+        args.model = "sol-ai:e4b"
+        args.query = "What is the stadium?"
+        args.agent = "Sol-Ai"
+
+        with patch('sys.stdout', new=io.StringIO()) as fake_out:
+            cli.cmd_chat(args)
+            self.assertIn("Querying sol-ai:e4b (Sol-Ai)", fake_out.getvalue())
+            self.assertIn("Memory response", fake_out.getvalue())
+
+    @patch('nougen_shards.cli.get_client')
+    @patch('builtins.input', side_effect=['/help', '/agents', '/exit'])
+    def test_run_interactive_chat_slash_commands(self, _mock_input, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.is_alive.return_value = True
+        mock_get_client.return_value = mock_client
+
+        args = MagicMock()
+        args.provider = "local"
+        args.model = "gemma4:e2b-qat"
+        args.query = None
+        args.agent = "NouGen"
+
+        with patch('sys.stdout', new=io.StringIO()) as fake_out:
+            cli.cmd_chat(args)
+            output = fake_out.getvalue()
+            self.assertIn("NouGen Interactive Intelligence Grid", output)
+            self.assertIn("NouGen Interactive Commands:", output)
+            self.assertIn("NOUGEN ROSTER", output)
+            self.assertIn("Session closed", output)
+
     @patch('sys.stdout', new_callable=io.StringIO)
     def test_main_no_args(self, mock_stdout):
         """Test main with no args."""
