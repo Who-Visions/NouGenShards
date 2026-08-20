@@ -76,7 +76,7 @@ class OpenAIClient(LLMClient):
 
     def list_models(self) -> list:
         if not self.api_key:
-            return ["gpt-4o", "gpt-4o-mini", "o1", "o1-mini", "o3-mini", "gpt-4-turbo"]
+            return ["gpt-4o", "gpt-4o-mini", "o3-mini", "o1", "o1-mini"]
         try:
             req = urllib.request.Request(f"{self.base_url}/models")
             req.add_header("Authorization", f"Bearer {self.api_key or ''}")
@@ -87,7 +87,7 @@ class OpenAIClient(LLMClient):
                     return sorted(models)
         except Exception:
             pass
-        return ["gpt-4o", "gpt-4o-mini", "o1", "o1-mini", "o3-mini", "gpt-4-turbo"]
+        return ["gpt-4o", "gpt-4o-mini", "o3-mini", "o1", "o1-mini"]
 
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:

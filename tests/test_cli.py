@@ -241,7 +241,7 @@ class TestCLI(unittest.TestCase):
             cli.cmd_chat(args)
             output = fake_out.getvalue()
             self.assertIn("NouGen Interactive Intelligence Grid", output)
-            self.assertIn("NouGen Interactive Commands:", output)
+            self.assertIn("Commands & Top 1% Controls", output)
             self.assertIn("NOUGEN ROSTER", output)
             self.assertIn("Session closed", output)
 

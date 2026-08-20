@@ -184,21 +184,56 @@ def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen")
                 break
 
             if user_input in ['/help', '/?']:
-                print("\n⚡ NouGen Interactive Commands:")
+                print("\n⚡ NouGen Autonomous Intelligence Grid — Commands & Top 1% Controls:")
                 print("  /agent <name>       - Switch active persona (NouGen, Sol-Ai, Rhea, DavOs, Iris, Kaedra, Griot, Kronos)")
-                print("  /agents             - List all roster personas and models")
-                print("  /recall <query>     - Recall and display relevant memory shards")
-                print("  /search <query>     - Full substrate search across fabric")
-                print("  /add <content>      - Capture a shard directly into the vault")
-                print("  /status             - Inspect substrate cluster status")
-                print("  /doctor             - Run system and service diagnostic")
+                print("  /agents             - List all roster personas, models, and system archetypes")
+                print("  /skills [task]      - Discover and resolve required skill contracts for a task")
+                print("  /exec <code>        - Execute sandboxed code block (Python/JS/TS)")
+                print("  /recall <query>     - Recall and score relevant memory shards across fabric")
+                print("  /search <query>     - Full substrate search (FTS5 + Cosine Vector)")
+                print("  /add <content>      - Capture an immutable shard directly into the vault")
+                print("  /status             - Inspect active substrate shards and database nodes")
+                print("  /models             - List live models available for current provider")
+                print("  /doctor             - Run system and telemetry diagnostics")
                 print("  /handoff [msg]      - Check or publish cross-agent session handoffs")
+                print("  /compress           - Summarize and compact current session context")
                 print("  /clear              - Clear conversation memory in current session")
                 print("  /exit               - Exit interactive mode\n")
                 continue
 
             if user_input.startswith('/agents'):
                 print(f"\n{agents.list_roster()}\n")
+                continue
+
+            if user_input.startswith('/models'):
+                models_list = client.list_models()
+                print(f"\nAvailable models ({provider}):")
+                for m in models_list:
+                    print(f" - {m}")
+                print()
+                continue
+
+            if user_input.startswith('/skills'):
+                from . import skills as skill_reg
+                parts = user_input.split(maxsplit=1)
+                task_desc = parts[1] if len(parts) > 1 else ""
+                if task_desc:
+                    active_skills = skill_reg.resolve_skills(task_desc)
+                    if active_skills:
+                        print(f"\n🎯 Active Skills for '{task_desc}':")
+                        for sk in active_skills:
+                            print(f" • {sk.name}: {sk.description}\n")
+                    else:
+                        print(f"\nNo specific skills triggered for '{task_desc}'.")
+                else:
+                    print(f"\nInstalled Skills:\n{skill_reg.roster()}\n")
+                continue
+
+            if user_input.startswith('/exec '):
+                code_to_run = user_input.split(maxsplit=1)[1]
+                from . import nougen_sandbox
+                res = nougen_sandbox.execute_sandboxed(code_to_run, language="python", trusted=True, bypass_gatekeeper=True)
+                print(f"\n[Execution Result]:\n{res}\n")
                 continue
 
             if user_input.startswith('/agent'):
@@ -242,6 +277,16 @@ def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen")
                         print(f" - DB #{i}: {p.stat().st_size / (1024*1024):.2f} MB")
                 continue
 
+            if user_input == '/compress':
+                if len(history_msgs) <= 1:
+                    print("Context already minimal.")
+                else:
+                    summary_prompt = "Compact the following conversation into key facts, decisions, and outcomes:\n" + "\n".join(f"{m['role']}: {m['content'][:300]}" for m in history_msgs if m['role'] != 'system')
+                    summary = client.chat(model, [{"role": "user", "content": summary_prompt}], stream=False)
+                    history_msgs = [{"role": "system", "content": persona.system_prompt if persona else ""}, {"role": "system", "content": f"Prior Conversation Summary: {summary}"}]
+                    print(f"\n✅ Context compacted ({len(summary)} chars retained).\n")
+                continue
+
             if user_input == '/clear':
                 history_msgs = [{"role": "system", "content": persona.system_prompt}] if persona and persona.system_prompt else []
                 print("Session history cleared.")
@@ -256,10 +301,17 @@ def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen")
                     handoff.show_latest_handoff()
                 continue
 
-            # Regular conversation with live memory recall
+            # Autonomous Skill Guidance & Context Injection
+            from . import skills as skill_reg
+            applicable_skills = skill_reg.resolve_skills(user_input)
+            skill_ctx = skill_reg.format_instructions(applicable_skills) if applicable_skills else ""
+
+            # Dual-system memory recall
             found = federation.federated_retrieve(user_input, limit=2)
             context = shards.compile_recall_packet(found) if found else ""
-            prompt_with_ctx = f"{user_input}\n\n{context}" if context else user_input
+
+            injected_parts = [p for p in [user_input, skill_ctx, context] if p]
+            prompt_with_ctx = "\n\n".join(injected_parts)
             history_msgs.append({"role": "user", "content": prompt_with_ctx})
 
             print(f"\n[{persona_title}]: ", end="")
