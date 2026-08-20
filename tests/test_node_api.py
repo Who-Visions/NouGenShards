@@ -140,6 +140,8 @@ def test_hash_manifest_requires_auth(client):
 
 
 def test_sync_push_preserves_private_sensitivity(client, monkeypatch):
+    import base64
+    monkeypatch.setenv("NOUGEN_PRIVATE_KEY", base64.b64encode(b"X" * 32).decode("ascii"))
     from nougen_shards import private_vault
 
     captured = {}

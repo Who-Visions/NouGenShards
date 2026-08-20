@@ -69,11 +69,10 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     # Parallel lane execution across threads (preserve ContextVar tenant isolation)
     from contextvars import copy_context
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        ctx = copy_context()
-        f_local = executor.submit(ctx.run, _fetch_local)
-        f_external = executor.submit(ctx.run, _fetch_external)
-        f_cloud = executor.submit(ctx.run, _fetch_cloud)
-        f_vaults = executor.submit(ctx.run, _fetch_vaults)
+        f_local = executor.submit(copy_context().run, _fetch_local)
+        f_external = executor.submit(copy_context().run, _fetch_external)
+        f_cloud = executor.submit(copy_context().run, _fetch_cloud)
+        f_vaults = executor.submit(copy_context().run, _fetch_vaults)
 
         local_results = f_local.result()
         external_results = f_external.result()
