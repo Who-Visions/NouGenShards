@@ -12,7 +12,7 @@ import contextlib
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
-from fastapi import FastAPI, Header, HTTPException, Depends, Response
+from fastapi import FastAPI, Header, HTTPException, Depends, Response, Query
 from pydantic import BaseModel
 import gradio as gr
 import subprocess
@@ -30,7 +30,7 @@ from nougen_shards import bind_probe, core, history, mcp_oauth, tenants
 from nougen_shards.federation import federated_retrieve
 from nougen_shards.brain_scan import scan_environment
 
-NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN")
+NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN") or os.environ.get("SHARD_GATEWAY_TOKEN")
 
 
 # --- Remote MCP server (mobile / Claude-app connector) ---
@@ -652,10 +652,25 @@ def _resolve_tenant_credential(supplied: Optional[str]) -> Optional[tenants.Tena
         raise HTTPException(status_code=503, detail="Tenant registry is invalid.") from exc
 
 
-def verify_token(x_ngs_token: str = Header(None)) -> tenants.Tenant:
+def verify_token(
+    x_ngs_token: Optional[str] = Header(None, alias="X-NGS-Token"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    shard_gateway_token: Optional[str] = Header(None, alias="Shard_Gateway_Token"),
+    shard_gateway_token_dash: Optional[str] = Header(None, alias="Shard-Gateway-Token"),
+    x_shard_gateway_token: Optional[str] = Header(None, alias="X-Shard-Gateway-Token"),
+    token: Optional[str] = Query(None),
+) -> tenants.Tenant:
     if not _credentials_configured():
         raise HTTPException(status_code=503, detail="Node write-auth not configured.")
-    tenant = _resolve_tenant_credential(x_ngs_token)
+    supplied = x_ngs_token
+    if not supplied and authorization:
+        if authorization.lower().startswith("bearer "):
+            supplied = authorization[7:].strip()
+        else:
+            supplied = authorization.strip()
+    if not supplied:
+        supplied = shard_gateway_token or shard_gateway_token_dash or x_shard_gateway_token or token
+    tenant = _resolve_tenant_credential(supplied)
     if tenant is None:
         raise HTTPException(status_code=401, detail=_BAD_TOKEN_DETAIL)
     return tenant
@@ -1300,6 +1315,14 @@ class _TokenGatedMCP:
                 auth = headers.get("authorization", "")
                 if auth[:7].lower() == "bearer ":
                     supplied = auth[7:].strip()
+                elif auth:
+                    supplied = auth.strip()
+            if not supplied:
+                supplied = (
+                    headers.get("shard_gateway_token")
+                    or headers.get("shard-gateway-token")
+                    or headers.get("x-shard-gateway-token")
+                )
             if not supplied:
                 from urllib.parse import parse_qs
                 qs = parse_qs(scope.get("query_string", b"").decode("latin-1"))
