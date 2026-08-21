@@ -1116,6 +1116,72 @@ def ask_rhea(prompt: str) -> dict:
     return rhea_noir.ask(prompt)
 
 
+# --- Dav1d Execution Layer ---
+from nougen_shards.dav1d_executor import run_dav1d_agy
+
+
+class Dav1dExecRequest(BaseModel):
+    command: str = "agy"
+    subcommand: Optional[str] = "mcp list"
+    args: Optional[List[str]] = None
+    prompt: Optional[str] = None
+    timeout: int = 30
+
+
+@app.post("/dav1d/exec")
+def dav1d_exec_endpoint(
+    req: Dav1dExecRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Execute bounded tooling on Dav1d. Returns structured runtime proof."""
+    return run_dav1d_agy(
+        command=req.command,
+        args=req.args,
+        subcommand=req.subcommand,
+        prompt=req.prompt,
+        timeout=req.timeout
+    )
+
+
+@app.post("/dav1d/agy")
+def dav1d_agy_endpoint(
+    req: Dav1dExecRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Invoke Google Antigravity CLI on Dav1d."""
+    return run_dav1d_agy(
+        command="agy",
+        args=req.args,
+        subcommand=req.subcommand,
+        prompt=req.prompt,
+        timeout=req.timeout
+    )
+
+
+@node_mcp.tool()
+def dav1d_exec(
+    command: str = "agy",
+    subcommand: str = "mcp list",
+    args: Optional[List[str]] = None,
+    prompt: str = ""
+) -> dict:
+    """Dav1d Execution Layer: Execute bounded AGY CLI operations and toolchain actions
+    on Dav1d. Griot reasons/retrieves; Dav1d executes.
+    Returns verifiable runtime evidence (machine, host, engine, version, exit_code, output)."""
+    return run_dav1d_agy(command=command, args=args, subcommand=subcommand, prompt=prompt)
+
+
+@node_mcp.tool()
+def agy_ask(
+    prompt: str = "",
+    subcommand: str = "mcp list",
+    args: Optional[List[str]] = None
+) -> dict:
+    """Invoke the Google Antigravity CLI (agy v1.1.17) through Dav1d.
+    Returns structured runtime proof from Dav1d."""
+    return run_dav1d_agy(command="agy", args=args, subcommand=subcommand, prompt=prompt)
+
+
 # --- Cortex HUD UI Logic ---
 
 def get_substrate_map():

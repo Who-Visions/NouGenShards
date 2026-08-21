@@ -37,9 +37,11 @@ TOOL_SPEC = """You may call tools by replying ONLY with JSON:
 {"tool": "capture", "title": "...", "content": "...", "tags": ["..."]} — save a shard
 {"tool": "tracker", "lane": "<lane>", "date": "YYYY-MM-DD"} — token usage dailies; omit lane to list lanes; omit date for latest available
 {"tool": "relay", "id": "<leg id>"} — read the fleet relay baton; omit id for the latest leg
+{"tool": "dav1d", "command": "agy", "subcommand": "mcp list", "args": ["mcp", "list"], "prompt": "..."} — execute bounded tooling on Dav1d (Google Antigravity CLI / local execution layer)
+{"tool": "agy", "subcommand": "mcp list"} — invoke AGY CLI on Dav1d to inspect MCP tools, changelogs, models, or query AGY
 {"tool": "health"} — grid status
 When you have what you need, reply ONLY with a JSON object whose "answer" field
-holds your finished reply to the user, e.g. {"answer": "Blade holds 202,979 shards."}
+holds your finished reply to the user, e.g. {"answer": "The node holds 100 items."}
 Rules:
 - Exactly ONE JSON object per reply. One tool call at a time, never several.
 - "answer" must be the finished reply itself. Never narrate your process, never
@@ -255,6 +257,14 @@ def _run_tool(call: dict) -> dict:
                 finally:
                     conn.close()
         return {"total_shards": counts}
+    if call.get("tool") in ("dav1d", "agy"):
+        from nougen_shards.dav1d_executor import run_dav1d_agy
+        return run_dav1d_agy(
+            command=str(call.get("command") or "agy"),
+            args=call.get("args"),
+            subcommand=call.get("subcommand"),
+            prompt=call.get("prompt"),
+        )
     return {"error": f"unknown tool {call.get('tool')}"}
 
 
