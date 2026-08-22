@@ -18,7 +18,11 @@ ALLOWED_SUBCOMMANDS = {
     "mcp", "changelog", "models", "agent", "agents", "help", "version", "--version", "-v"
 }
 
-_CACHED_VERSION = "1.1.17"
+# Version is resolved at call time (env -> live probe -> labeled fallback), never
+# pinned in source. A constant here drifted from 1.1.17 to 1.1.18 within a day and the
+# stale value was reported to the fleet as runtime evidence.
+_VERSION_UNKNOWN = "unknown"
+_VERSION_CACHE: Dict[str, str] = {}
 
 
 def _get_candidate_paths() -> List[str]:
@@ -46,12 +50,59 @@ def resolve_agy_binary() -> Optional[str]:
     return None
 
 
-def get_agy_version(bin_path: str) -> str:
-    """Returns the version string of the AGY binary."""
-    global _CACHED_VERSION
-    if _CACHED_VERSION:
-        return _CACHED_VERSION
-    return "1.1.17"
+def _version_probe_timeout() -> float:
+    """Seconds allowed for the `agy --version` probe."""
+    try:
+        return float(os.environ.get("NOUGEN_AGY_VERSION_TIMEOUT_SEC", "5"))
+    except ValueError:
+        logger.warning("NOUGEN_AGY_VERSION_TIMEOUT_SEC is not a number; using 5s")
+        return 5.0
+
+
+def _version_cache_enabled() -> bool:
+    """Per-process memo of the probe result. Disable with NOUGEN_AGY_VERSION_CACHE=0."""
+    return os.environ.get("NOUGEN_AGY_VERSION_CACHE", "1") != "0"
+
+
+def get_agy_version(bin_path: Optional[str], refresh: bool = False) -> str:
+    """Resolve the AGY CLI version from the binary itself.
+
+    Order: NOUGEN_AGY_VERSION override -> live `--version` probe -> "unknown".
+    Never returns a version it did not observe, because this string is published to
+    the fleet as runtime evidence and an invented one is worse than no answer.
+    """
+    pinned = os.environ.get("NOUGEN_AGY_VERSION", "").strip()
+    if pinned:
+        return pinned
+
+    if not bin_path:
+        return _VERSION_UNKNOWN
+
+    use_cache = _version_cache_enabled()
+    if use_cache and not refresh and bin_path in _VERSION_CACHE:
+        return _VERSION_CACHE[bin_path]
+
+    try:
+        res = subprocess.run(
+            [bin_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=_version_probe_timeout(),
+        )
+        raw = (res.stdout or "") or (res.stderr or "")
+        line = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
+        if res.returncode == 0 and line:
+            if use_cache:
+                _VERSION_CACHE[bin_path] = line
+            return line
+        logger.warning(
+            "agy --version exited %s with no parseable output; reporting unknown",
+            res.returncode,
+        )
+    except Exception as exc:
+        logger.warning("agy --version probe failed for %s: %s", bin_path, exc)
+
+    return _VERSION_UNKNOWN
 
 
 def _get_host_label() -> str:
@@ -90,7 +141,7 @@ def run_dav1d_agy(
             "machine": "Dav1d",
             "host": host_label,
             "engine": "agy-cli",
-            "version": _CACHED_VERSION,
+            "version": get_agy_version(resolve_agy_binary()),
             "command": " ".join([command] + target_args),
             "status": "rejected",
             "exit_code": 1,
@@ -104,7 +155,8 @@ def run_dav1d_agy(
             "machine": "Dav1d",
             "host": "Cloud / Space (Simulated / Remote Dav1d bridge)",
             "engine": "agy-cli",
-            "version": "1.1.17 (fleet manifest)",
+            "version": os.environ.get("NOUGEN_AGY_VERSION", "").strip()
+            or f"{_VERSION_UNKNOWN} (no agy binary on this host)",
             "command": f"{command} {subcommand or ' '.join(target_args)}".strip(),
             "status": "simulated",
             "exit_code": 0,

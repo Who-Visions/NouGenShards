@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# POSIX shim for the NouGen CLI (documented in CLAUDE.md, recreated 2026-08-22 after
+# it was found missing from this workspace).
+#
+# Why this exists: reaching nougen.bat through `cmd /c` makes cmd re-parse the command
+# line, so `-a "Claude Cli"` arrives as `-a Claude` plus a stray `Cli"` token. nougen.bat
+# also ends in `pause`, which hangs a non-interactive caller. This execs the venv
+# interpreter directly, so argv survives untouched and nothing blocks on input.
+#
+# Deliberately does NOT build or heal .venv. That stays nougen.bat's job, so an agent
+# call can never trigger a multi-minute install.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Interpreter: env override -> workspace venv (win/posix layout) -> PATH python.
+py="${NOUGEN_PYTHON:-}"
+if [ -z "$py" ]; then
+  for cand in "$here/.venv/Scripts/python.exe" "$here/.venv/bin/python"; do
+    [ -x "$cand" ] && { py="$cand"; break; }
+  done
+fi
+if [ -z "$py" ]; then
+  py="$(command -v python3 || command -v python || true)"
+  [ -n "$py" ] && echo "nougen: .venv not found under $here, falling back to $py" >&2
+fi
+if [ -z "$py" ]; then
+  echo "nougen: no Python interpreter found. Run nougen.bat once to build .venv, or set NOUGEN_PYTHON." >&2
+  exit 127
+fi
+
+export PYTHONPATH="$here/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$py" -m nougen_shards.cli "$@"

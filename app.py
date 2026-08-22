@@ -1177,7 +1177,10 @@ def agy_ask(
     subcommand: str = "mcp list",
     args: Optional[List[str]] = None
 ) -> dict:
-    """Invoke the Google Antigravity CLI (agy v1.1.17) through Dav1d.
+    """Invoke the Google Antigravity CLI through Dav1d.
+
+    The CLI version is not stated here; it is resolved from the binary at call time and
+    returned in the `version` field of the result.
     Returns structured runtime proof from Dav1d."""
     return run_dav1d_agy(command="agy", args=args, subcommand=subcommand, prompt=prompt)
 
