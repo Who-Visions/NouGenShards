@@ -1,0 +1,186 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Databases (-wal/-shm are sidecars that `*.db` does not match)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+
+# Local configuration
+mcp.config.json
+.env
+# `.env` does not match dotted-prefix variants like `.nougen.local.env`.
+*.local.env
+.nougen-hooks/
+.claude/
+secrets/
+.mcp-locks/
+
+# Keymaker vault (DPAPI-encrypted, user-bound — never ship). Covers the CSV
+# ledger and service_accounts/ JSON that *.db alone would miss.
+.nougen_vault/
+*_secrets.csv
+*_secrets.db
+service_accounts/
+
+# Fleet test reports / ad-hoc audit output
+tools/reports/
+ts/audit_results.json
+audit-runs/
+drill-runs/
+drills/
+
+# Virtual environments & session logs
+.venv/
+venv/
+transcript.log
+# .handoffs/ is the relay registry, and records ARE the payload — a registry
+# nobody else can read is not a registry. Ignored here since June, which is why
+# 130+ legs written in this repo never reached another machine.
+# The pre-relay records keep their old naming and stay local; anything written
+# by `relay` (<UTC>__<machine>__<agent>) is shared.
+.handoffs/handoff_*
+.handoffs/gemini handoffs/
+# `.handoffs/handoff_*` only anchors at the top level, so the pre-relay per-agent
+# subdirectories were untracked-but-not-ignored: one `git add -A` would have
+# published spend figures, incident notes and machine paths to a public remote.
+.handoffs/**/handoff_*
+.handoffs/*handoffs/
+.handoffs/.sessions/
+.handoffs/queue/
+.handoffs/_*.md
+.handoffs/audit_*
+.handoffs/fleet_audit_*.md
+.handoffs/*-note.md
+.handoffs/tauri-ipc-sprint-note.md
+.handoffs_msg_*.md
+.vault/
+pending_shards/
+
+# Node dependencies
+node_modules/
+package-lock.json
+
+# Development tools
+.pytest_cache/
+.benchmarks/
+.agents/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/gen/
+src-tauri/bin/*.exe
+src-tauri/bin/build/
+src-tauri/bin/dist/
+# Binary icon formats are regenerated locally via `tauri icon` (HF rejects them)
+src-tauri/icons/*.ico
+src-tauri/icons/*.icns
+src-tauri/icons/android/
+src-tauri/icons/ios/
+
+# Vault introspection / dump utilities — local-only crowbars that sit next to
+# the encrypted vault. Never ship in the public package.
+dump_vault.py
+dump_elevated.py
+dump_memories_schema.py
+get_memories_schema.py
+list_tables.py
+list_backup_tables.py
+tmp_dump.py
+tmp_dump_global.py
+tools/read_vault_shards.py
+load_secrets.py
+count_shards.py
+dream_all.py
+fast_ingest.py
+
+# One-time / version-numbered migration scripts — history belongs in git, not
+# in filenames. Local-only.
+migrate_vault.py
+migrate_vault_v2.py
+incremental_migration.py
+incremental_migration_v2.py
+migrate_memories.py
+verify_swap.py
+fix_types.py
+check_unsharded.py
+shard_vault_files.py
+tools/migrate_prototype_persistence.py
+
+# Fleet / orchestration tooling — internal, not part of the public package
+# (banned from the user-facing tree by the project constitution).
+tools/fleet_test.py
+tools/nougenai_fleet_registry_mcp.py
+
+# OS specific
+Thumbs.db
+.DS_Store
+
+# Private agent operating docs — local-only, never shipped.
+# These encode the maintainer's own agent roles, machine paths, fleet inventory
+# and routing/cost policy. They are load-bearing for local development but have
+# no value to anyone installing this package, so they stay on disk and out of
+# the repo. (Note: brain_scan treats "CLAUDE.md"/"GEMINI.md" as generic project
+# filenames it may scan in a *user's* project — that is unrelated to these.)
+/CLAUDE.md
+/GEMINI.md
+/AGENTS.md
+# Campaign retrospective — narrates real token volumes and dollar figures for the
+# maintainer's own accounts. Same reason as above: load-bearing locally, ops data
+# to a stranger.
+docs/valerion-orchestration-playbook.md
+
+# Internal ops surface -- never ships to the public repo (origin: GitHub,
+# hf: HuggingFace Space). War-games carry cost/billing analysis and unresolved
+# GM decisions; transcripts and dreams are working notes, not product.
+wargames/
+transcripts/
+dreams/
+*.blade-local-*
+fleet_keys_valid.json
+tools/fleet_keys_valid.json
+hf_router_models.json
+
+# Local-only: personal canon/provenance. This repo is PUBLIC - never publish these.
+canon/
+
+# Node runtime state and the vendored cloudflared binary (52 MB)
+.node/
+tools/bin/
+
+# Local-only media, scratch, and personal working records
+*.jpg
+*.jpeg
+*.png
+scratch/
+analysis/
+archive/
+assets/
+fleet/
+.handoffs/phone-chat-*
+tools/.anchor_cache.json
+tools/or_free_models.json
+tools/veilverse_*
+tools/dream_digest*.py
+tools/dream_extract.py
+tools/dream_handoffs.py
+tools/fleet_keymaker_probe.py
+tools/heic/
+tools/notion_mirror.py
+tools/nougenai_*.py
+tools/relay_push.py
+tools/run_list.py
+tools/shard_markdown.py
+tools/shard_outpost.py
+tools/update_mcp_*.py
+tools/vertex_image.py
+
+

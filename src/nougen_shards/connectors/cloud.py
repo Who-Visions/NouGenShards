@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 #: with no way to tune it: query_cloud_shards swallows the timeout, logs "cloud
 #: node skipped", and returns nothing, so a node a hair over the limit silently
 #: contributes zero to every federated recall.
-SEARCH_TIMEOUT_S = float(os.environ.get("NGS_CLOUD_SEARCH_TIMEOUT", "5.0"))
+SEARCH_TIMEOUT_S = float(os.environ.get("NGS_CLOUD_SEARCH_TIMEOUT", "1.5"))
 SYNC_TIMEOUT_S = float(os.environ.get("NGS_CLOUD_SYNC_TIMEOUT", "10.0"))
 
 # Network/parse failures that should degrade gracefully, not crash federation.
@@ -249,7 +249,7 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3,
             url = conf['url'].rstrip('/')
             name = conf['name']
             if not _is_safe_cloud_url(url):
-                logger.warning("cloud node skipped (%s): unsafe/insecure URL rejected", name)
+                logger.debug("cloud node skipped (%s): unsafe/insecure URL rejected", name)
                 continue
             # POST /search
             payload = {"query": query, "limit": limit}
@@ -290,7 +290,7 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3,
         except _NET_ERRORS as exc:
             # Resilient (one unreachable node must not kill federation) but no
             # longer silent. (Module 10: Graceful Degradation)
-            logger.warning("cloud node skipped (%s): %s: %s",
+            logger.debug("cloud node skipped (%s): %s: %s",
                            name, type(exc).__name__, exc)
             continue
 

@@ -353,8 +353,8 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
                 rows = conn.execute(sql, params).fetchall()
         except sqlite3.OperationalError as exc:
             if _timed_out(exc):
-                logger.warning("local vault %s: timed out after %.1fs, dropped from sweep",
-                               vid, budget)
+                logger.debug("local vault %s: timed out after %.1fs, dropped from sweep",
+                             vid, budget)
                 return [], f"timeout after {budget:.1f}s"
             raise
         finally:
@@ -394,8 +394,28 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
         return results, None
     except (sqlite3.Error, KeyError, TypeError, ValueError, OSError) as exc:
         # One bad vault must not kill the sweep — but say which one and why.
-        logger.warning("local vault skipped (%s): %s: %s", vid, type(exc).__name__, exc)
+        logger.debug("local vault skipped (%s): %s: %s", vid, type(exc).__name__, exc)
         return [], f"{type(exc).__name__}: {exc}"
+
+
+def _extract_keywords(query: str) -> list[str]:
+    """Extract clean search terms, stripping punctuation and common stopwords."""
+    raw_words = re.findall(r'[a-zA-Z0-9_\-]+', query)
+    boilerplate = {
+        "write", "python", "script", "code", "file", "fix", "error", "run", "test",
+        "implement", "create", "add", "modify", "update", "delete", "change", "verify",
+        "using", "with", "from", "that", "this", "here", "there", "what", "whats",
+        "where", "wheres", "how", "hows", "who", "whos", "which", "and", "the",
+        "for", "you", "are", "not", "out", "but", "about", "tell", "show", "find",
+        "search", "lookup", "give", "latest", "recent", "shard", "shards", "memory",
+        "memories", "record", "records", "vault", "vaults", "info", "information",
+        "does", "have", "has", "had", "can", "could", "would", "should", "will",
+        "please", "help", "know", "any", "all", "some", "our", "their", "his", "her"
+    }
+    tokens = [w for w in raw_words if len(w) >= 3 and w.lower() not in boilerplate]
+    if not tokens:
+        tokens = [w for w in raw_words if len(w) >= 3]
+    return tokens or [query]
 
 
 def query_local_vaults(query: str, vault_configs: list, limit: int = 3,
@@ -415,9 +435,7 @@ def query_local_vaults(query: str, vault_configs: list, limit: int = 3,
     when the caller passes a dict — a dropped store must be visible, never a
     silent hole in the corpus (coverage honesty).
     """
-    keywords = [w for w in query.split() if len(w) >= 3]
-    if not keywords:
-        keywords = [query]
+    keywords = _extract_keywords(query)
     if not vault_configs:
         return []
 

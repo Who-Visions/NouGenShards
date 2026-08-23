@@ -877,6 +877,27 @@ def _process_fts_result(row, db_index, query_embedding, now: datetime):
     return item
 
 
+def _extract_search_tokens(query: str) -> List[str]:
+    """Extract and clean keywords from arbitrary user input."""
+    import re
+    raw_words = re.findall(r'[a-zA-Z0-9_\-]+', query)
+    boilerplate = {
+        "write", "python", "script", "code", "file", "fix", "error", "run", "test",
+        "implement", "create", "add", "modify", "update", "delete", "change", "verify",
+        "using", "with", "from", "that", "this", "here", "there", "what", "whats",
+        "where", "wheres", "how", "hows", "who", "whos", "which", "and", "the",
+        "for", "you", "are", "not", "out", "but", "about", "tell", "show", "find",
+        "search", "lookup", "give", "latest", "recent", "shard", "shards", "memory",
+        "memories", "record", "records", "vault", "vaults", "info", "information",
+        "does", "have", "has", "had", "can", "could", "would", "should", "will",
+        "please", "help", "know", "any", "all", "some", "our", "their", "his", "her"
+    }
+    tokens = [w for w in raw_words if len(w) >= 3 and w.lower() not in boilerplate]
+    if not tokens:
+        tokens = [w for w in raw_words if len(w) >= 3]
+    return tokens
+
+
 def _build_fts_match_query(query: str, joiner: str = " ") -> Optional[str]:
     """
     Build a safe FTS5 MATCH expression from arbitrary user input.
@@ -893,20 +914,9 @@ def _build_fts_match_query(query: str, joiner: str = " ") -> Optional[str]:
     implicit-AND semantics; pass " OR " for the ranked-OR retry (tokens stay
     quoted either way, so user text still cannot inject operators).
     """
-    tokens = [t for t in query.split() if len(t) >= 3]
+    tokens = _extract_search_tokens(query)
     if not tokens:
         return None
-
-    # Strip common agent boilerplate and stop-words to prevent BM25 inflation
-    boilerplate = {
-        "write", "python", "script", "code", "file", "fix", "error", "run", "test",
-        "implement", "create", "add", "modify", "update", "delete", "change", "verify",
-        "using", "with", "from", "that", "this", "here", "there", "what", "where", "how",
-        "and", "the", "for", "you", "are", "not", "out", "but"
-    }
-    filtered_tokens = [t for t in tokens if t.lower() not in boilerplate]
-    if filtered_tokens:
-        tokens = filtered_tokens
 
     return joiner.join('"' + t.replace('"', '""') + '"' for t in tokens)
 
@@ -1011,15 +1021,26 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
             if not fts_worked:
                 history.log_event(0, i, "SEARCH_FALLBACK", metadata={"query": query})
                 
-                like_query = f"%{query}%"
+                search_tokens = _extract_search_tokens(query)
                 dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
                 dom_params = () if domain_key in (None, "*") else (domain_key,)
-                cursor = conn.execute(f"""
-                    SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
-                    FROM shards
-                    WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
-                    ORDER BY utility_score DESC, id ASC LIMIT ?
-                """, (*dom_params, like_query, like_query, limit))
+                if search_tokens:
+                    clauses = " OR ".join(["(title LIKE ? OR content LIKE ?)" for _ in search_tokens[:3]])
+                    like_params = [f"%{t}%" for t in search_tokens[:3] for _ in (0, 1)]
+                    cursor = conn.execute(f"""
+                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        FROM shards
+                        WHERE {dom_clause}({clauses})
+                        ORDER BY utility_score DESC, id ASC LIMIT ?
+                    """, (*dom_params, *like_params, limit))
+                else:
+                    like_query = f"%{query}%"
+                    cursor = conn.execute(f"""
+                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        FROM shards
+                        WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
+                        ORDER BY utility_score DESC, id ASC LIMIT ?
+                    """, (*dom_params, like_query, like_query, limit))
                 for row in cursor:
                     item = hydrate(dict(row))
                     item["_db_index"] = i
@@ -1071,7 +1092,8 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     # and n-gramming ~134k rows in Python. That was 40s of a 50s federated
     # /search — spent, then thrown away, on every query that matched anything.
     if _fuzzy_should_run(results, limit) and missed_dbs:
-        q_grams = ngram.char_ngrams(query)
+        clean_q = " ".join(_extract_search_tokens(query)) or query
+        q_grams = ngram.char_ngrams(clean_q)
         if q_grams:
             dom_params = () if domain_key in (None, "*") else (domain_key,)
             ing_clause, ing_params = _ingest_filter_sql("shards", include_research)
