@@ -185,3 +185,11 @@ tools/update_mcp_*.py
 tools/vertex_image.py
 
 
+
+# ops data never ships in the public repo (pi-remix Move 4.0)
+logs/
+*.log
+.fleet_bindings_backup.json
+.fleet_worker_live.js
+docs/FLEET-LOG-*.md
+docs/AUDIT_DEEP_DIVE.md
