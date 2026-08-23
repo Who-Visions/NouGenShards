@@ -330,6 +330,174 @@ def recall_window(query: str = "", since: str | None = None,
                           limit=max(1, min(limit, 50)))
 
 
+def _window_page_max() -> int:
+    """Per-page ceiling for cursor pagination, env-first (NOUGEN_WINDOW_PAGE_MAX)."""
+    raw = os.environ.get("NOUGEN_WINDOW_PAGE_MAX", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            logger.warning("NOUGEN_WINDOW_PAGE_MAX=%r not an int; using fallback", raw)
+    return 200
+
+
+def _window_clauses(query: str, since: Optional[str], until: Optional[str]) -> tuple:
+    """The one filter set shared by paging and counting, mirroring _window_search:
+    era bounds, the no_recall event-type exclusion, and the quoted FTS clause.
+    Page enumeration and the count tool MUST agree row-for-row, so they build
+    their WHERE from here and nowhere else."""
+    where, params = [], []
+    if since:
+        where.append("timestamp >= ?")
+        params.append(since)
+    if until:
+        # Inclusive prefix bound, same convention as _window_search.
+        where.append("timestamp <= ?")
+        params.append(until + "￿")
+    _nr = core.no_recall_event_types()
+    if _nr:
+        where.append("UPPER(event_type) NOT IN (%s)" % ",".join("?" * len(_nr)))
+        params.extend(_nr)
+    q = (query or "").strip()
+    if q:
+        where.append("id IN (SELECT rowid FROM shards_fts WHERE shards_fts MATCH ?)")
+        params.append('"' + q.replace('"', '""') + '"')
+    return where, params
+
+
+def _cursor_decode(cursor: str) -> tuple:
+    """Cursor is opaque to callers but is simply 'timestamp|db_index|id' — the
+    total-order key (timestamp DESC, db_index ASC, id ASC) of the last row of
+    the previous page. ISO timestamps never contain '|'."""
+    ts, db, sid = cursor.rsplit("|", 2)
+    return ts, int(db), int(sid)
+
+
+def _window_page(query: str = "", since: Optional[str] = None,
+                 until: Optional[str] = None, limit: int = 10,
+                 cursor: Optional[str] = None) -> dict:
+    """Keyset-paginated era sweep: deterministic total order over
+    (timestamp DESC, db_index ASC, id ASC), so walking pages to exhaustion
+    enumerates every matching shard exactly once — the exhaustive-audit
+    counterpart to _window_search's top-N sample."""
+    limit = max(1, min(limit, _window_page_max()))
+    base_where, base_params = _window_clauses(query, since, until)
+    cur = None
+    if cursor:
+        try:
+            cur = _cursor_decode(cursor)
+        except (ValueError, TypeError):
+            return {"rows": [], "next_cursor": None, "returned": 0,
+                    "error": "bad cursor; restart the sweep without one"}
+
+    rows = []
+    for i in range(1, core.MAX_DB_COUNT + 1):
+        if not core.get_db_path(i).exists():
+            continue
+        try:
+            conn = core.get_connection(i)
+        except Exception:
+            continue
+        try:
+            clauses = list(base_where)
+            args = list(base_params)
+            if cur is not None:
+                ts0, db0, id0 = cur
+                if i < db0:
+                    clauses.append("timestamp < ?")
+                    args.append(ts0)
+                elif i == db0:
+                    clauses.append("(timestamp < ? OR (timestamp = ? AND id > ?))")
+                    args.extend([ts0, ts0, id0])
+                else:
+                    clauses.append("timestamp <= ?")
+                    args.append(ts0)
+            sql = ("SELECT id, timestamp, event_type, title, content, tags, "
+                   "utility_score FROM shards")
+            if clauses:
+                sql += " WHERE " + " AND ".join(clauses)
+            # limit+1 per DB guarantees the merged set can both fill the page
+            # and prove whether anything remains beyond it.
+            sql += " ORDER BY timestamp DESC, id ASC LIMIT ?"
+            args.append(limit + 1)
+            for r in conn.execute(sql, args):
+                rows.append({"id": r[0], "timestamp": r[1], "event_type": r[2],
+                             "title": r[3], "content": r[4], "tags": r[5],
+                             "utility_score": r[6], "_db_index": i})
+        except Exception:
+            # One bad DB must not sink the sweep; the others still answer.
+            continue
+        finally:
+            conn.close()
+
+    if cur is not None:
+        # Belt-and-suspenders: drop anything not strictly after the cursor in
+        # the total order, in case a DB's SQL branch ever drifts.
+        ts0, db0, id0 = cur
+        rows = [r for r in rows
+                if r["timestamp"] < ts0
+                or (r["timestamp"] == ts0
+                    and (r["_db_index"] > db0
+                         or (r["_db_index"] == db0 and r["id"] > id0)))]
+
+    # Stable two-stage sort realizes (timestamp DESC, db ASC, id ASC).
+    rows.sort(key=lambda r: (r["_db_index"], r["id"]))
+    rows.sort(key=lambda r: r["timestamp"], reverse=True)
+    page = rows[:limit]
+    has_more = len(rows) > limit
+    next_cursor = None
+    if has_more and page:
+        last = page[-1]
+        next_cursor = "%s|%d|%d" % (last["timestamp"], last["_db_index"], last["id"])
+    return {"rows": page, "next_cursor": next_cursor, "returned": len(page)}
+
+
+@node_mcp.tool()
+def recall_window_page(query: str = "", since: str | None = None,
+                       until: str | None = None, limit: int = 10,
+                       cursor: str | None = None) -> dict:
+    """Exhaustively enumerate an era, page by page — the audit counterpart to
+    recall_window, which stays a top-N sample.
+
+    Walk: call without cursor, then keep passing back next_cursor until it
+    comes back null. Every matching shard is returned exactly once, in
+    (timestamp DESC) order, with cross-DB ties broken deterministically.
+    Pair with recall_window_count to prove the sweep saw the full row count.
+    """
+    return _window_page(query=query, since=since, until=until,
+                        limit=limit, cursor=cursor)
+
+
+@node_mcp.tool()
+def recall_window_count(query: str = "", since: str | None = None,
+                        until: str | None = None) -> dict:
+    """Exact matching-row count for an era, per cluster DB and total — built
+    from the same filters as recall_window_page, so an exhaustive page walk
+    and this count always agree. This is how an audit proves completeness."""
+    where, params = _window_clauses(query, since, until)
+    per_db, total = {}, 0
+    for i in range(1, core.MAX_DB_COUNT + 1):
+        if not core.get_db_path(i).exists():
+            continue
+        try:
+            conn = core.get_connection(i)
+        except Exception:
+            continue
+        try:
+            sql = "SELECT COUNT(*) FROM shards"
+            if where:
+                sql += " WHERE " + " AND ".join(where)
+            n = conn.execute(sql, params).fetchone()[0]
+            per_db[str(i)] = n
+            total += n
+        except Exception:
+            per_db[str(i)] = None
+            continue
+        finally:
+            conn.close()
+    return {"total": total, "per_db": per_db}
+
+
 def _resolve_shard(shard_id: int, db_index: Optional[int] = None,
                    expect_title: Optional[str] = None) -> tuple:
     """Pin a shard id to exactly one cluster DB, or refuse.
