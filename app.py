@@ -1185,6 +1185,35 @@ def agy_ask(
     return run_dav1d_agy(command="agy", args=args, subcommand=subcommand, prompt=prompt)
 
 
+# Aliases for the tool names callers have actually been invoking (fleet connector
+# advertises these; the gateway only executed dav1d_exec/agy_ask, which is why
+# ask_dav1d/dav1d_run returned "Unknown tool" — see .handoffs 20260822T213030Z and
+# 20260822T214900Z in NouGenRelay). Same bridge, no behavior change, just reachable
+# under both name sets until the advertised schema and the deployed one are unified.
+@node_mcp.tool()
+def ask_dav1d(
+    prompt: str = "",
+    subcommand: str = "mcp list",
+    args: Optional[List[str]] = None
+) -> dict:
+    """Alias of agy_ask. Invoke the Google Antigravity CLI through Dav1d.
+    Returns structured runtime proof from Dav1d."""
+    return run_dav1d_agy(command="agy", args=args, subcommand=subcommand, prompt=prompt)
+
+
+@node_mcp.tool()
+def dav1d_run(
+    command: str = "agy",
+    subcommand: str = "mcp list",
+    args: Optional[List[str]] = None,
+    prompt: str = ""
+) -> dict:
+    """Alias of dav1d_exec. Execute bounded AGY CLI operations and toolchain actions
+    on Dav1d. Returns verifiable runtime evidence (machine, host, engine, version,
+    exit_code, output)."""
+    return run_dav1d_agy(command=command, args=args, subcommand=subcommand, prompt=prompt)
+
+
 # --- Cortex HUD UI Logic ---
 
 def get_substrate_map():
