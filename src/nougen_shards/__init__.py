@@ -9,6 +9,7 @@ from .federation import federated_retrieve
 from .history import HistoryEngine, log_event, init_history_db
 from .graph import link_shards, related_shards
 from .gatekeeper import check_mutation_gate
+from .dav1d_executor import run_dav1d_agy
 
 # Read from installed package metadata rather than restated here. The v1.2.0
 # release bumped pyproject.toml and left this line at 1.1.0, so `nougen
@@ -44,4 +45,6 @@ __all__ = [
     "link_shards",
     "related_shards",
     "check_mutation_gate",
+    "run_dav1d_agy",
 ]
+

@@ -170,7 +170,6 @@ tools/.anchor_cache.json
 tools/or_free_models.json
 tools/veilverse_*
 tools/dream_digest*.py
-!tools/dream_digest_run.py
 tools/dream_extract.py
 tools/dream_handoffs.py
 tools/fleet_keymaker_probe.py
@@ -185,11 +184,3 @@ tools/update_mcp_*.py
 tools/vertex_image.py
 
 
-
-# ops data never ships in the public repo (pi-remix Move 4.0)
-logs/
-*.log
-.fleet_bindings_backup.json
-.fleet_worker_live.js
-docs/FLEET-LOG-*.md
-docs/AUDIT_DEEP_DIVE.md

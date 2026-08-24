@@ -172,7 +172,7 @@ def find_legacy_stores(roots=None) -> list:
     canonical = resolve_secrets_vault_dir().resolve()
     if roots is None:
         home = Path.home()
-        roots = [home / "Watchtower", home]
+        roots = [home / "Watchtower", home / ".nougen"]
     seen, found = set(), []
     for root in roots:
         try:
