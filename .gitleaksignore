@@ -19,3 +19,10 @@ ccbb1c931644da0f200822818f34c3c4f9dc05ff:.github/workflows/deploy-space.yml:gene
 d8c751594720630a4cbbf9450462f2e05736fa4b:.github/workflows/deploy-space.yml:generic-api-key:70
 2fc97dab7f97f338d85f78365ad7cf7c2bb51ed2:.github/workflows/deploy-space.yml:generic-api-key:32
 5ec851bfc44f12a0f88c0611347beebe7938b15b:.github/workflows/deploy-space.yml:generic-api-key:32
+
+# --- Triaged 2026-08-24 (Nyx): same two secrets already allowlisted above, but
+# re-detected under PR-branch commit SHAs (pull/7, pull/32) that CI's --all now
+# reaches. Identical values (SHA-256/12 ba20eef0dcd2 and ca9d5f027770), new SHAs
+# only. Not new leaks; not from PR #109/#110/#111. ---
+029ecda113e5b0c83cbcddd99401fa93e91413e5:tests/test_audit_fixes.py:aws-access-token:24
+aba0802c458afc97d9230a1c8476029805804971:.github/workflows/deploy-space.yml:generic-api-key:70
