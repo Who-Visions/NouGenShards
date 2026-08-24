@@ -11,7 +11,9 @@ Everything environment-shaped resolves from env with logged fallbacks:
   NGS_INFERENCE_TOKEN    HF token for router.huggingface.co (falls back HF_TOKEN)
   OPENROUTER_API_KEY     fallback lane key
   NOUGEN_PERSONA_PATH    persona charter file (default /data/rhea_noir_persona.txt)
-  NOUGEN_RHEA_MAX_ROUNDS tool-loop rounds (default 4)
+  NOUGEN_RHEA_MAX_ROUNDS tool-loop rounds (default 8); on exhaustion one
+                         compose-only pass turns the gathered tool trace into
+                         a best-effort answer instead of dropping it
 """
 import json
 import logging
@@ -287,7 +289,7 @@ def ask(prompt: str) -> dict:
     """The agent loop: persona + tools, bounded rounds, honest brain label."""
     messages = [{"role": "system", "content": _persona() + "\n\n" + TOOL_SPEC},
                 {"role": "user", "content": prompt}]
-    max_rounds = int(os.environ.get("NOUGEN_RHEA_MAX_ROUNDS", "4"))
+    max_rounds = int(os.environ.get("NOUGEN_RHEA_MAX_ROUNDS", "8"))
     tools_used = []
     brain = "none"
     for _ in range(max_rounds):
@@ -306,5 +308,23 @@ def ask(prompt: str) -> dict:
                                         "Continue: another tool call or your final answer, JSON only."})
             continue
         return {"answer": reply.strip(), "brain": brain, "tools_used": tools_used}
+    # Rounds exhausted with a tool trace in hand: force one compose-only pass
+    # instead of discarding everything the tools gathered. Deep archive sweeps
+    # legitimately spend every round on tools; the gathered evidence is the
+    # answer's raw material, not waste.
+    messages.append({"role": "user", "content":
+                     "ROUND LIMIT REACHED. Tool calls are no longer available. "
+                     "Compose your best final answer NOW from the tool results "
+                     "above, noting any gaps you could not cover. "
+                     'JSON {"answer": ...} or plain text.'})
+    try:
+        reply, brain = _chat(messages)
+        data = _first_json_object(reply)
+        answer = data["answer"] if data is not None and "answer" in data else reply.strip()
+    except Exception:
+        answer = ""
+    if answer:
+        return {"answer": answer, "brain": brain, "tools_used": tools_used,
+                "note": "composed at round limit"}
     return {"answer": "(round limit hit before a final answer)",
             "brain": brain, "tools_used": tools_used}
