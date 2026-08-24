@@ -89,12 +89,26 @@ jobs:
       # The gitleaks *action* paywalls organization repos (GITLEAKS_LICENSE); the
       # *binary* is unrestricted. Pin the version + verify the sha256 so a hijacked
       # release can't swap the scanner itself. --redact keeps any hit out of logs.
-      - name: gitleaks (full history, no license wall)
+      #
+      # Scope note (triaged 2026-08-24): this used to run --log-opts="--all", which
+      # walks EVERY ref the runner has fetched, not just the branch under test --
+      # including refs/pull/*/head and the synthetic refs/pull/*/merge commits.
+      # Those carry rebase copies of blobs that were already triaged, and each
+      # rebase mints a fresh commit SHA. .gitleaksignore keys on
+      # commit:file:rule:line, so every rebase produced a "new" finding for an old,
+      # known-safe value and the allowlist could never catch up. The merge refs are
+      # worse still: GitHub regenerates them whenever the base branch moves, so
+      # their SHAs are not stable enough to allowlist at all. Scanning HEAD's own
+      # history gates the branch actually being merged; an unmerged branch is gated
+      # by its own PR run rather than by every other branch's run. Triaged
+      # fingerprints stay recorded in .gitleaksignore.
+      # fetch-depth: 0 above is still required -- we want all of HEAD's history.
+      - name: gitleaks (full history of HEAD, no license wall)
         run: |
           VER=8.30.1
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" -o gitleaks.tgz
           tar -xzf gitleaks.tgz gitleaks
-          ./gitleaks detect --source . --log-opts="--all" --redact --exit-code 1
+          ./gitleaks detect --source . --log-opts="HEAD" --redact --exit-code 1
 
   dependencies:
     name: Dependency + config scan (blocking)
