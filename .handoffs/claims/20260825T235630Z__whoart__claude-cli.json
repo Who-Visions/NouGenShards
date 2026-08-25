@@ -1,0 +1,12 @@
+{
+  "machine": "whoart",
+  "agent": "claude-cli",
+  "goal": "Adobe 16-month research op: fleet notes + API schemas -> shards (60-min daemon)",
+  "scope": "NouGen/ops/adobe_research",
+  "status": "active",
+  "session": "99db9361-5393-4f79-a99e-a48cf94b8409",
+  "branch": "agent/nougen-assurance-sprint",
+  "sha": "588f3421",
+  "created_utc": "2026-08-25T23:56:30.641778+00:00",
+  "ttl_hours": 8.0
+}
