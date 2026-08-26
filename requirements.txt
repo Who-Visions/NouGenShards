@@ -118,7 +118,7 @@ numpy==2.5.0 ; python_full_version >= '3.12'
     #   nougen-shards (pyproject.toml)
     #   gradio
     #   pandas
-openai==2.44.0
+openai==3.3.1
     # via nougen-shards (pyproject.toml)
 orjson==3.11.9
     # via gradio
