@@ -1,0 +1,12 @@
+{
+  "machine": "whoart",
+  "agent": "claude-cli",
+  "goal": "Code xref vs top-1% (fleet consensus) + keymaker lane expansion",
+  "scope": "NouGen/ops/code_xref, mcp_config.json lanes",
+  "status": "active",
+  "session": "99db9361-5393-4f79-a99e-a48cf94b8409",
+  "branch": "agent/nougen-assurance-sprint",
+  "sha": "dea37313",
+  "created_utc": "2026-08-26T00:49:27.870234+00:00",
+  "ttl_hours": 8.0
+}
