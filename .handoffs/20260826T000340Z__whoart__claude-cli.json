@@ -1,0 +1,24 @@
+{
+  "id": "20260826T000340Z__whoart__claude-cli",
+  "machine": "whoart",
+  "agent": "claude-cli",
+  "goal": "Adobe research op RUNNING on Outpost (60-min daemon)",
+  "branch": "agent/nougen-assurance-sprint",
+  "sha": "57bdf957",
+  "remote": "origin",
+  "created_utc": "2026-08-26T00:03:40.560871+00:00",
+  "stack": {
+    "manifests": [
+      "package.json",
+      "pyproject.toml",
+      "requirements.txt"
+    ],
+    "frameworks": [
+      "vite ^8.1.5",
+      "react ^19.2.7"
+    ],
+    "package_name": "nougenshards"
+  },
+  "dirty": true,
+  "status": "open"
+}
