@@ -20,5 +20,14 @@
     "package_name": "nougenshards"
   },
   "dirty": true,
-  "status": "open"
+  "status": "complete",
+  "relay": [
+    {
+      "event": "complete",
+      "machine": "vm",
+      "agent": "claude-cli",
+      "at": "2026-08-26T08:57:32Z",
+      "note": "Dead baton: PR #89 (the target of this handoff) closed unmerged on 2026-08-20 and was never acked. Marking complete/dropped per the 2026-08-22 cross-repo audit's recommendation rather than leaving it open indefinitely."
+    }
+  ]
 }
