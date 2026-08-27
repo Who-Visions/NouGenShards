@@ -1,6 +1,7 @@
 """Federated Retrieval Engine. Merges local substrate, external DBs, and cloud nodes."""
 import logging
 import os
+import time
 from . import core
 
 
@@ -81,6 +82,14 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
             logger.warning("local vaults skipped: %s: %s", type(exc).__name__, exc)
             return []
 
+    # Scale tripwire: recall wall-clock grows with the corpus (44%/quarter
+    # measured 2026-08-27 at 203k shards). The cliff announces itself here,
+    # in the log, BEFORE it becomes tunnel timeouts and "node death" reports.
+    # When this warning becomes routine, the countermoves on file are: ANN
+    # index for the vector lane, per-db budget, or resharding the grid.
+    slow_ms = float(os.environ.get("NOUGEN_RECALL_SLOW_MS", "8000"))
+    sweep_started = time.monotonic()
+
     # Parallel lane execution across threads (preserve ContextVar tenant isolation)
     from contextvars import copy_context
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
@@ -93,6 +102,13 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         external_results = f_external.result()
         cloud_results = f_cloud.result()
         vault_results = f_vaults.result()
+
+    elapsed_ms = (time.monotonic() - sweep_started) * 1000.0
+    if elapsed_ms > slow_ms:
+        logger.warning(
+            "federated recall took %.0fms (threshold %.0fms, NOUGEN_RECALL_SLOW_MS): "
+            "corpus may be outgrowing the scan; see recall-bug-hunt tripwires",
+            elapsed_ms, slow_ms)
 
     vault_results = _confidence_gate(vault_results)
 
@@ -108,8 +124,9 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     except ValueError:
         logger.warning("bad NOUGEN_RRF_LANE_WEIGHTS %r; using defaults", raw_weights)
         lane_weights = [1.0, 0.7, 0.7, 0.5]
+    rrf_k = int(os.environ.get("NOUGEN_RRF_K", "60"))
     combined = core.reciprocal_rank_fusion(
-        [local_results, external_results, cloud_results, vault_results], k=60,
+        [local_results, external_results, cloud_results, vault_results], k=rrf_k,
         weights=lane_weights)
 
     return combined[:limit]
