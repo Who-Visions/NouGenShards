@@ -1067,10 +1067,15 @@ def cmd_dashboard(args):
         pass
 
     if not dashboard_app:
+        # Env-first, then the checkout this module lives in. No absolute
+        # machine paths: they leak the operator's disk layout on a public
+        # repo and go stale the moment the tree moves (Rule 0.2).
         candidate_paths = [
+            Path(p) for p in (os.environ.get("NOUGEN_APP_PATH"),)
+            if p
+        ] + [
             Path(__file__).resolve().parent.parent.parent / "app.py",
-            Path(r"C:\Users\super\Watchtower\NouGen\NouGenShards-repo\app.py"),
-            Path(r"C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\app.py"),
+            Path(os.getcwd()) / "app.py",
         ]
         for cp in candidate_paths:
             if cp.exists():

@@ -5,7 +5,7 @@
 - None.
 
 ## 📋 Recent Changes
-- **Self-healing Space Sync daemon LIVE**: C:\Users\super\Watchtower\scripts\space_sync_daemon.py + task "NouGen Space Sync" (15-min watchdog, single-instance lock). Earliest-first, era-true, checkpointed, dedup-safe; private/enc rows never leave blade; embeddings preserved. Referee = gemma4:31b-cloud (ollama, discovered dynamically) picks bounded remedies on repeated failure; strategy persists (~/.nougen/space_sync_strategy.json); crash guard self-restarts; incidents captured as shards.
+- **Self-healing Space Sync daemon LIVE**: %USERPROFILE%\Watchtower\scripts\space_sync_daemon.py + task "NouGen Space Sync" (15-min watchdog, single-instance lock). Earliest-first, era-true, checkpointed, dedup-safe; private/enc rows never leave blade; embeddings preserved. Referee = gemma4:31b-cloud (ollama, discovered dynamically) picks bounded remedies on repeated failure; strategy persists (~/.nougen/space_sync_strategy.json); crash guard self-restarts; incidents captured as shards.
 - **Space server patch (era-true)**: /sync/push now honors original_timestamp — committed directly to the HF Space repo (commit 14ca0388). ⚠️ Space runs AHEAD of GitHub main: land the same one-line app.py patch via PR.
 - Verified: blade ts 2026-06-16T19:58:30 == Space copy exactly; Space total 17,946 -> 18,646+ during smoke.
 - **Staged next mission**: wargames/kimi-space-agent.md — Kimi K3 persona (Rhea-Noir or Iris, GM picks) with grid tools in the Space, $0.
