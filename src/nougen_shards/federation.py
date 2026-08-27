@@ -1,6 +1,21 @@
 """Federated Retrieval Engine. Merges local substrate, external DBs, and cloud nodes."""
 import logging
+import os
 from . import core
+
+
+def _confidence_gate(rows: list) -> list:
+    """Drop low-confidence vault rows before the RRF merge.
+
+    RRF fuses by position only, so a lane returning one noisy row hands it the
+    same 1/(k+1) as another lane's best hit — measured 2026-08-27 as a 25k-char
+    raw doc at rank 1. local_vault scores its own rows in [0.05, 1.0] (base
+    0.45; below that = noise-penalized, no title hit); such rows are dropped
+    here rather than laundered into consensus. Env-first; the literal is the
+    fallback.
+    """
+    floor = float(os.environ.get("NOUGEN_VAULT_MIN_SCORE", "0.45"))
+    return [r for r in rows if (r.get("final_score") or 0.0) >= floor]
 from .connectors.sql import query_external_dbs
 from .connectors.cloud import query_cloud_shards
 from .connectors.local_vault import query_local_vaults
@@ -79,8 +94,22 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         cloud_results = f_cloud.result()
         vault_results = f_vaults.result()
 
-    # Merge and re-rank via Reciprocal Rank Fusion (RRF)
+    vault_results = _confidence_gate(vault_results)
+
+    # Merge and re-rank via Reciprocal Rank Fusion (RRF), with per-lane trust
+    # weights: the local grid is curated agent memory; vault lanes are raw
+    # document stores whose rank-1 must not tie the grid's rank-1 (measured
+    # 2026-08-27: a 25k-char shader spec outranked the root-cause shard the
+    # query was about). Env-first as "local,external,cloud,vault"; the literal
+    # is the fallback.
+    raw_weights = os.environ.get("NOUGEN_RRF_LANE_WEIGHTS", "1.0,0.7,0.7,0.5")
+    try:
+        lane_weights = [float(w) for w in raw_weights.split(",")][:4]
+    except ValueError:
+        logger.warning("bad NOUGEN_RRF_LANE_WEIGHTS %r; using defaults", raw_weights)
+        lane_weights = [1.0, 0.7, 0.7, 0.5]
     combined = core.reciprocal_rank_fusion(
-        [local_results, external_results, cloud_results, vault_results], k=60)
+        [local_results, external_results, cloud_results, vault_results], k=60,
+        weights=lane_weights)
 
     return combined[:limit]

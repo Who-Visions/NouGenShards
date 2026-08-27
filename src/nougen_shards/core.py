@@ -1058,10 +1058,19 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                                 sem_score = float(np.dot(query_embedding, emb_array))
                             except Exception:
                                 sem_score = 0.0
-                    likelihood = sem_score if query_embedding is not None else 0.5
+                    # No embedding to judge relevance = a weak prior, not a
+                    # coin-flip: the old 0.5 constant put relevance-blind LIKE
+                    # rows (chosen by utility DESC, not match quality) above
+                    # scored vector hits, which rarely exceed ~0.6 cosine.
+                    likelihood = sem_score if query_embedding is not None else _LIKE_NO_EMBED_PRIOR
 
                     decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), query_now)
-                    item["final_score"] = (likelihood * 0.5) + (decayed_utility * 0.5)
+                    # u/(1+u) bounds the prior so fresh utility=1.0 rows cannot
+                    # dominate on utility alone (ledger Round 3 fix, unmerged).
+                    squashed_utility = decayed_utility / (1.0 + decayed_utility)
+                    item["final_score"] = (likelihood * (1.0 - _RECALL_UTILITY_WEIGHT)
+                                           + squashed_utility * _RECALL_UTILITY_WEIGHT)
+                    item["_like_fallback"] = True
                     results.append(item)
                     db_hits += 1
 
@@ -1181,7 +1190,9 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     def _tier(x):
         if x.get("_fuzzy"):
             return 2
-        if x.get("_or_retry"):
+        # LIKE-fallback rows are selected relevance-blind (ORDER BY utility)
+        # and must never share the top tier with FTS AND-hits.
+        if x.get("_or_retry") or x.get("_like_fallback"):
             return 1
         return 0
     results.sort(key=lambda x: (_tier(x),
@@ -1251,15 +1262,29 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     return top_results
 
 
-def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[dict]:
+# Ranking priors, env-first (Rule 0.2); the literals are fallbacks only.
+_LIKE_NO_EMBED_PRIOR = float(os.environ.get("NOUGEN_LIKE_NO_EMBED_PRIOR", "0.25"))
+_RECALL_UTILITY_WEIGHT = float(os.environ.get("NOUGEN_RECALL_UTILITY_WEIGHT", "0.3"))
+
+
+def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
+                           weights: Optional[List[float]] = None) -> List[dict]:
     """
     Module 8 / 21: Reciprocal Rank Fusion (RRF) to merge multiple ranked lists.
 
-    Fuses by POSITION only: score = 1/(k+rank), summed across lists. Callers that
-    want match quality to influence the merge must hand their list in ranked
-    order — that is the supported lever, and it keeps this function's arithmetic
-    exactly as specified.
+    Fuses by POSITION only: score = w/(k+rank), summed across lists. Callers
+    that want match quality to influence the merge must hand their list in
+    ranked order — that is the supported lever, and it keeps this function's
+    arithmetic exactly as specified.
+
+    `weights` (optional, parallel to result_lists, default 1.0 each) scales a
+    list's contribution. Position parity across lanes was the measured failure
+    (2026-08-27): a raw-document vault lane's rank-1 tied the curated grid's
+    rank-1, so bulk-ingested docs outranked agent memory. Lanes are not equally
+    trustworthy; the caller says so here.
     """
+    if not weights:
+        weights = [1.0] * len(result_lists)
     rrf_scores = {}  # key -> float
     item_map = {}    # key -> dict
     
@@ -1276,13 +1301,14 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
         val = f"{title}|||{content}"
         return hashlib.sha256(val.encode("utf-8", errors="ignore")).hexdigest()
 
-    for rank_list in result_lists:
+    for list_idx, rank_list in enumerate(result_lists):
         if not rank_list:
             continue
+        lane_weight = weights[list_idx] if list_idx < len(weights) else 1.0
         for rank_idx, item in enumerate(rank_list):
             key = get_rrf_key(item)
             rank = rank_idx + 1
-            score = 1.0 / (k + rank)
+            score = lane_weight / (k + rank)
             rrf_scores[key] = rrf_scores.get(key, 0.0) + score
             
             if key not in item_map:
@@ -1298,7 +1324,11 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
     for key, item in item_map.items():
         consensus_score = rrf_scores[key]
         decayed_utility = item.get("utility_score", 1.0) * _temporal_decay(item.get("timestamp"), merge_now)
-        item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3))
+        # u/(1+u): unbounded utility multiplied consensus without limit, letting
+        # high-utility rows outrank cross-lane agreement (ledger Round 3 fix
+        # that never merged into this clone; symptom measured 2026-08-27).
+        squashed_utility = decayed_utility / (1.0 + decayed_utility)
+        item["final_score"] = consensus_score * (0.7 + (squashed_utility * 0.3))
         merged.append(item)
 
     # Tie-break fields are stringified: grid rows carry int _db_index/id while

@@ -3,6 +3,7 @@ NouGenShards Production Node & Cortex HUD.
 Architecture: FastAPI + Persistent Storage (/data) + Token Auth + Multi-tab Gradio UI.
 """
 import os
+import re
 import sys
 import json
 import logging
@@ -18,8 +19,12 @@ import gradio as gr
 import subprocess
 
 
-# Add src to path for absolute imports
-sys.path.append(os.path.join(os.getcwd(), 'src'))
+# Add src to path for absolute imports. insert(0), not append: site-packages
+# precedes an appended entry, so a stale installed nougen_shards would silently
+# shadow the working tree (measured 2026-08-27: venv wheel frozen at 1.3.0 while
+# src had diverged). Anchored to this file, not CWD, so a service launched from
+# any directory still imports the tree it lives in.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'src'))
 
 # Override Storage for HF Persistence
 if os.environ.get("SPACE_ID"):
@@ -69,8 +74,9 @@ def recall_memory(query: str, limit: int = 5) -> list:
     # Federated for the same reason as POST /search below: a remote MCP client
     # should not get a narrower corpus than the local CLI.
     results = federated_retrieve(query, limit=max(1, min(limit, 20)))
-    return [{k: v for k, v in r.items() if not isinstance(v, (bytes, bytearray))}
-            for r in results]
+    # Same compaction as POST /search (_json_safe): this path previously shipped
+    # raw rows and was the one that leaked full vault bodies to MCP clients.
+    return [_json_safe(r) for r in results]
 
 
 @node_mcp.tool()
@@ -1017,9 +1023,40 @@ class SyncPushRequest(BaseModel):
     shards: List[dict]
 
 
+# Search-surface payload hygiene. Sync/replication paths must NOT use this:
+# they move full-fidelity shards. Search callers get evidence, not archives -
+# a 25k-char raw vault body at rank 1 (measured 2026-08-27) is context poison
+# for every downstream agent. Caps resolve env-first; constants are fallbacks.
+_SEARCH_MAX_CONTENT = int(os.environ.get("NOUGEN_SEARCH_MAX_CONTENT_CHARS", "2800"))
+_SEARCH_MAX_FIELD = int(os.environ.get("NOUGEN_SEARCH_MAX_FIELD_CHARS", "400"))
+_SEARCH_COMPACT = os.environ.get("NOUGEN_SEARCH_COMPACT", "1") != "0"
+_HEAVY_KEY_RE = re.compile(r"embedding|_vector", re.I)
+# Identity/provenance fields are never clamped: truncating an id or path breaks
+# re-query-by-reference, which is the caller's only recourse after truncation.
+_UNCAPPED_KEYS = frozenset({"id", "_db_index", "source", "timestamp", "event_type",
+                            "file_path", "path", "shard_id", "db", "table"})
+_CONTENT_KEYS = frozenset({"content", "text", "body"})
+
+
+def _clamp(key: str, value):
+    if not isinstance(value, str):
+        return value
+    cap = _SEARCH_MAX_CONTENT if key in _CONTENT_KEYS else _SEARCH_MAX_FIELD
+    if key in _UNCAPPED_KEYS or len(value) <= cap:
+        return value
+    return value[:cap] + f"...[+{len(value) - cap} chars, requery by id for full body]"
+
+
 def _json_safe(item: dict) -> dict:
-    """Drop non-JSON-serializable fields (raw embedding bytes) from a shard row."""
-    return {k: v for k, v in item.items() if not isinstance(v, (bytes, bytearray))}
+    """Compact a shard row for a search surface: drop raw embedding bytes,
+    embedding/vector columns, and nulls; clamp oversized text fields.
+    NOUGEN_SEARCH_COMPACT=0 restores the legacy bytes-only filter."""
+    if not _SEARCH_COMPACT:
+        return {k: v for k, v in item.items() if not isinstance(v, (bytes, bytearray))}
+    return {k: _clamp(k, v) for k, v in item.items()
+            if v is not None
+            and not isinstance(v, (bytes, bytearray))
+            and not _HEAVY_KEY_RE.search(k)}
 
 
 def _in_era(row: dict, since: Optional[str], until: Optional[str]) -> bool:

@@ -242,8 +242,12 @@ def test_reciprocal_rank_fusion(setup_test_env):
     assert merged[1]["title"] == "Doc A"
     assert merged[2]["title"] == "Doc C"
     
-    # Check that scores are set as final_score
-    assert abs(merged[0]["final_score"] - (1.0/62 + 1.0/61)) < 1e-6
+    # Check that scores are set as final_score. Consensus is multiplied by the
+    # bounded utility prior 0.7 + 0.3*(u/(1+u)) (2026-08-27: raw utility let
+    # high-utility rows outrank cross-lane agreement). Default utility here is
+    # 1.0 and no timestamp means no decay, so the factor is 0.7 + 0.3*0.5.
+    consensus = 1.0/62 + 1.0/61
+    assert abs(merged[0]["final_score"] - consensus * 0.85) < 1e-6
 
 
 def test_retrieve_parallel_rrf_boost(setup_test_env):
