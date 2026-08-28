@@ -1,5 +1,5 @@
 """
-Tests for NouGen Vector-Graph RAG (Zilliz remix over local SQLite).
+Tests for NouGen Metameric Vector-Graph Substrate (Native Topological Memory).
 """
 import tempfile
 import pytest

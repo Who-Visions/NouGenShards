@@ -1,18 +1,18 @@
 """
-NouGen Vector-Graph RAG: Pure Vector Graph Traversal over SQLite.
-Remixed from Zilliz vector-graph-rag for the NouGenAi memory substrate.
+NouGen Metameric Vector-Graph Substrate: Native Topological Memory over SQLite.
+Engine: Valerion Cognitive Substrate — Autonomous NouGen Learning.
 
-Key Innovations:
-  1. No Graph Database Required: Entities, relations, and shards are stored
-     directly in SQLite with float32 little-endian vector BLOBs.
-  2. Multi-Way Retrieval: Searches both entity vectors and relation triplets
-     simultaneously using dense cosine similarity.
-  3. Subgraph Expansion via Indexed Lookups: Replaces slow Cypher graph traversals
-     with O(1) B-tree queries over foreign keys in SQLite.
-  4. Tri-Hybrid RRF Fusion: Merges Vector-Graph traversal with FTS5 BM25 keyword
-     search and Kronos temporal utility decay.
-  5. 100% Local & Free: Operates entirely on the Razer Blade stadium using
-     local Ollama embeddings (nomic-embed-text) and local Ollama/heuristic extraction.
+Key Architectural Pillars:
+  1. Sovereign SQLite Architecture: Entity vectors, relation triplets, and shards
+     are stored natively in SQLite float32 little-endian vector BLOBs.
+  2. Multi-Way Topological Retrieval: Concurrently navigates semantic entity spaces
+     and relational assertion graphs using dense cosine similarity.
+  3. O(1) Indexed Subgraph Expansion: Eliminates external graph engines and Cypher
+     queries, executing topological neighborhood walks via native SQLite B-Tree indexes.
+  4. Tri-Hybrid Reciprocal Rank Fusion: Synthesizes topological subgraph traversals,
+     FTS5 BM25 keyword rankings, and Kronos temporal utility decay.
+  5. 100% Sovereign & Local: Operates fully air-gapped on the Razer Blade stadium
+     with zero cloud dependencies, zero external subscriptions, and zero data leakage.
 """
 from __future__ import annotations
 
