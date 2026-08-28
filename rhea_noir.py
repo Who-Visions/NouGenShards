@@ -18,7 +18,6 @@ import logging
 import os
 import urllib.request
 import datetime
-import hashlib
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -462,9 +461,8 @@ def _run_tool(call: dict) -> dict:
 
         # Env-first (Rule 0.2); the constant is a logged fallback for the
         # machine this first shipped on, not a portable truth.
-        local_handoffs = Path(os.environ.get(
-            "NOUGEN_RELAY_LOCAL_DIR",
-            "c:/Users/super/Watchtower/NouGen/NouGenRelay/.handoffs"))
+        local_handoffs = Path(os.environ.get("NOUGEN_RELAY_LOCAL_DIR") or (
+            Path.home() / "Watchtower" / "NouGen" / "NouGenRelay" / ".handoffs"))
         if local_handoffs.is_dir():
             try:
                 (local_handoffs / f"{leg_id}.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -513,7 +511,18 @@ def _first_json_object(reply: str):
 
 def ask(prompt: str) -> dict:
     """The agent loop: persona + tools, guaranteed final synthesis, honest brain label."""
-    messages = [{"role": "system", "content": _persona() + "\n\n" + TOOL_SPEC},
+    system_text = _persona() + "\n\n" + TOOL_SPEC
+    # Staleness awareness: when this build trails the published repo, the
+    # agent itself tells the user an update is waiting (empty string when
+    # current, unknown, or the check is unreachable - never blocks the ask).
+    try:
+        from nougen_shards import update_check
+        notice = update_check.llm_notice()
+        if notice:
+            system_text += "\n\n" + notice
+    except Exception:
+        pass
+    messages = [{"role": "system", "content": system_text},
                 {"role": "user", "content": prompt}]
     max_tool_rounds = int(os.environ.get("NOUGEN_RHEA_MAX_TOOL_ROUNDS", os.environ.get("NOUGEN_RHEA_MAX_ROUNDS", "4")))
     tools_used = []
@@ -584,22 +593,30 @@ def ask(prompt: str) -> dict:
     messages.append({
         "role": "user",
         "content": (
-            "Tool budget reached. Synthesize all observations into your final answer now. "
+            "ROUND LIMIT REACHED. Synthesize all observations into your final answer now. "
             "Reply ONLY with a JSON object: {\"answer\": \"<your finished response>\"}. "
             "Do not request any further tools."
         )
     })
 
+    # A compose pass that yields another tool call (or dies) must never leak
+    # raw tool JSON as the user-facing answer - the pre-synthesis regression
+    # did exactly that. Composed text or the honest placeholder, nothing else.
+    note = "composed at round limit"
     try:
         final_reply, brain = _chat(messages)
         final_data = _first_json_object(final_reply)
         if final_data and "answer" in final_data:
             answer_text = str(final_data["answer"])
-        else:
+        elif final_data is None and final_reply.strip():
             answer_text = final_reply.strip()
+        else:
+            answer_text = "(round limit hit before a final answer)"
+            note = "compose returned a tool call instead of an answer"
     except Exception as exc:
-        logger.warning("final synthesis chat failed (%s); emitting digest", exc)
-        answer_text = f"Observations gathered from tools ({', '.join(tools_used)}), but final synthesis encountered an error: {exc}"
+        logger.warning("final synthesis chat failed (%s); emitting placeholder", exc)
+        answer_text = "(round limit hit before a final answer)"
+        note = f"compose failed: {type(exc).__name__}"
 
     return {
         "answer": answer_text,
@@ -607,5 +624,6 @@ def ask(prompt: str) -> dict:
         "tools_used": tools_used,
         "tool_calls_count": len(tools_used),
         "final_synthesis_forced": final_synthesis_forced,
+        "note": note,
         "status": "completed",
     }

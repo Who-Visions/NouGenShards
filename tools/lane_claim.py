@@ -31,9 +31,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-CLAIMS_DIR = Path(os.environ.get(
-    "NOUGEN_RELAY_LOCAL_DIR",
-    r"C:\Users\super\Watchtower\NouGen\NouGenRelay\.handoffs")) / "claims"
+CLAIMS_DIR = Path(os.environ.get("NOUGEN_RELAY_LOCAL_DIR") or (
+    Path.home() / "Watchtower" / "NouGen" / "NouGenRelay" / ".handoffs")) / "claims"
 AGENT = os.environ.get("NOUGEN_AGENT", "unknown-agent")
 MACHINE = os.environ.get("COMPUTERNAME", socket.gethostname()).lower()
 TTL_HOURS = float(os.environ.get("NOUGEN_CLAIM_TTL_HOURS", 8))

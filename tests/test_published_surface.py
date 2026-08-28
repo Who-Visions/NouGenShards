@@ -101,8 +101,6 @@ ALLOWED = {
         "fixtures must LOOK like real keys — the tests assert a credential "
         "never reaches a Result or a report, which only proves anything if "
         "the value has a credential's shape",
-    "docs/AUDIT_DEEP_DIVE.md":
-        "prose describing the patterns the redactor looks for",
     "tests/test_published_surface.py":
         "this file: the patterns live here by definition",
     "ops/launchd/com.whovisions.kaedragw.plist":

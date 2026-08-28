@@ -1069,8 +1069,8 @@ def cmd_dashboard(args):
     if not dashboard_app:
         candidate_paths = [
             Path(__file__).resolve().parent.parent.parent / "app.py",
-            Path(r"C:\Users\super\Watchtower\NouGen\NouGenShards-repo\app.py"),
-            Path(r"C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\app.py"),
+            Path.home() / "Watchtower" / "NouGen" / "NouGenShards-repo" / "app.py",
+            Path.home() / "Watchtower" / "NouGen" / "NouGenShards-push-main" / "app.py",
         ]
         for cp in candidate_paths:
             if cp.exists():

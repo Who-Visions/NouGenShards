@@ -1023,9 +1023,22 @@ def health(x_ngs_token: str = Header(None)):
             "to unauthenticated callers"
         )
 
+    # Staleness is a health fact: a node running old code reports it here so
+    # every dashboard (and the resident agent via llm_notice) can say "update".
+    try:
+        from nougen_shards import update_check
+        update = update_check.check_for_update()
+        if update.get("update_available"):
+            warnings.append(
+                f"Update available: this build ({update['local_sha']}) is behind "
+                f"{update['repo']}@{update['branch']} ({update['latest_sha']}) - pull the latest.")
+    except Exception:
+        update = {"update_available": None}
+
     result = {
         "status": "ignited",
         "deploy_sha": deploy_sha,
+        "update": update,
         "storage": os.environ.get("NOUGEN_HOME", "default"),
         "persistent_storage": persistent,
         "node_token_configured": node_token_ok,
