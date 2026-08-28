@@ -581,12 +581,17 @@ def verify(cfg: MirrorConfig, query: str, limit: int = 5) -> dict:
     match = " OR ".join(tokens) or query
     conn = sqlite3.connect(f"file:{cfg.mirror_db}?mode=ro", uri=True)
     try:
+        _nr = core.no_recall_event_types()
+        _nr_sql = (
+            " AND UPPER(s.event_type) NOT IN (%s)" % ",".join("?" * len(_nr))
+            if _nr else ""
+        )
         rows = conn.execute(
-            """SELECT s.id, s.timestamp, s.title, s.sensitivity
+            f"""SELECT s.id, s.timestamp, s.title, s.sensitivity
                  FROM shards_fts f JOIN shards s ON s.id = f.rowid
-                WHERE shards_fts MATCH ?
+                WHERE shards_fts MATCH ?{_nr_sql}
                 ORDER BY bm25(shards_fts) LIMIT ?""",
-            (match, limit),
+            (match, *(_nr), limit),
         ).fetchall()
     finally:
         conn.close()

@@ -262,8 +262,14 @@ def test_bogus_bearer_is_rejected(gated):
     assert r.status_code == 401
 
 
-def test_gate_503s_when_node_token_unset(gated):
-    """Deny-by-default: an unconfigured node must not fall open."""
+def test_gate_503s_when_node_token_unset(gated, monkeypatch, tmp_path):
+    """Deny-by-default: an unconfigured node must not fall open.
+
+    The tenant registry must be isolated too: on a machine whose live
+    ~/.nougen/tenants.json holds records, credentials count as configured
+    even with the owner token unset, and the gate correctly answers 401
+    instead of the 503 this test is about."""
+    monkeypatch.setenv("NOUGEN_TENANTS_FILE", str(tmp_path / "tenants.json"))
     saved = node.NODE_TOKEN
     node.NODE_TOKEN = None
     try:

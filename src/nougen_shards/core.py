@@ -201,6 +201,16 @@ def init_db(index: int = 1):
         except sqlite3.OperationalError:
             pass
 
+        try:
+            cursor.execute("ALTER TABLE shards ADD COLUMN temporal_meta TEXT;")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE shards ADD COLUMN original_timestamp TEXT;")
+        except sqlite3.OperationalError:
+            pass
+
         # Create semantic_knowledge table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS semantic_knowledge (
@@ -581,11 +591,88 @@ def _embed_for_capture(title: str, content: str) -> Optional[List[float]]:
     return vec
 
 
+def normalize_temporal_meta(
+    temporal_meta: Optional[dict | str] = None,
+    original_timestamp: Optional[str] = None,
+    event_time_original: Optional[str] = None,
+    source_created_at: Optional[str] = None,
+    source_modified_at: Optional[str] = None,
+    captured_at: Optional[str] = None,
+    ai_first_touched_at: Optional[str] = None,
+    ai_last_touched_at: Optional[str] = None,
+    migrated_at: Optional[str] = None,
+    amended_at: Optional[List[str] | str] = None,
+    now_iso: Optional[str] = None,
+) -> dict:
+    """Consolidate temporal provenance vectors into a structured dictionary.
+
+    Supports and preserves distinct temporal vector fields:
+    - event_time_original: when real-world event/content actually occurred or first existed.
+    - source_created_at: original file/source creation time.
+    - source_modified_at: original file/source modified time.
+    - captured_at: when NouGen first ingested/captured the shard (default: now).
+    - ai_first_touched_at / ai_last_touched_at: AI processing timestamps.
+    - migrated_at: when moved between stores.
+    - amended_at: list of amendment timestamps.
+    """
+    if now_iso is None:
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    t_dict = {}
+    if isinstance(temporal_meta, dict):
+        t_dict = dict(temporal_meta)
+    elif isinstance(temporal_meta, str) and temporal_meta.strip():
+        try:
+            parsed = json.loads(temporal_meta)
+            if isinstance(parsed, dict):
+                t_dict = parsed
+        except Exception:
+            t_dict = {}
+
+    if event_time_original:
+        t_dict["event_time_original"] = str(event_time_original)
+    elif original_timestamp and "event_time_original" not in t_dict:
+        t_dict["event_time_original"] = str(original_timestamp)
+
+    if source_created_at:
+        t_dict["source_created_at"] = str(source_created_at)
+    if source_modified_at:
+        t_dict["source_modified_at"] = str(source_modified_at)
+
+    if captured_at:
+        t_dict["captured_at"] = str(captured_at)
+    elif "captured_at" not in t_dict:
+        t_dict["captured_at"] = now_iso
+
+    if ai_first_touched_at:
+        t_dict["ai_first_touched_at"] = str(ai_first_touched_at)
+    if ai_last_touched_at:
+        t_dict["ai_last_touched_at"] = str(ai_last_touched_at)
+    if migrated_at:
+        t_dict["migrated_at"] = str(migrated_at)
+    if amended_at is not None:
+        if isinstance(amended_at, list):
+            t_dict["amended_at"] = [str(a) for a in amended_at]
+        elif isinstance(amended_at, str):
+            t_dict["amended_at"] = [amended_at]
+
+    return t_dict
+
+
 def capture(event_type: str, title: str, content: str,
             tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
             domain_key: Optional[str] = None, density_score: Optional[float] = None,
             sensitivity: Optional[str] = None,
-            original_timestamp: Optional[str] = None) -> bool:
+            original_timestamp: Optional[str] = None,
+            event_time_original: Optional[str] = None,
+            source_created_at: Optional[str] = None,
+            source_modified_at: Optional[str] = None,
+            captured_at: Optional[str] = None,
+            ai_first_touched_at: Optional[str] = None,
+            ai_last_touched_at: Optional[str] = None,
+            migrated_at: Optional[str] = None,
+            amended_at: Optional[List[str] | str] = None,
+            temporal_meta: Optional[dict | str] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants).
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
@@ -595,9 +682,9 @@ def capture(event_type: str, title: str, content: str,
     Titles and tags stay plaintext: they are the only handle recall has on an
     encrypted shard, so keep identifying detail out of them.
 
-    `original_timestamp` (ISO-8601 string) stamps migrated content at its TRUE
-    era instead of migration time, so date-window queries and coverage
-    histograms reflect when the experience actually happened. An unparseable
+    `original_timestamp` / `event_time_original` (ISO-8601 string) stamps migrated
+    content at its TRUE era instead of migration time, so date-window queries and
+    coverage histograms reflect when the experience actually happened. An unparseable
     value logs a warning and falls back to now -- it never crashes a write.
     """
     from . import private_vault as _pv  # pylint: disable=import-outside-toplevel
@@ -652,7 +739,27 @@ def capture(event_type: str, title: str, content: str,
             emb_blob = sqlite3.Binary(arr.tobytes())
 
         tags_str = json.dumps(tags or [])
-        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        # Resolve original_timestamp <-> event_time_original seamlessly
+        if event_time_original and not original_timestamp:
+            original_timestamp = event_time_original
+        elif original_timestamp and not event_time_original:
+            event_time_original = original_timestamp
+        elif not original_timestamp and not event_time_original and temporal_meta:
+            if isinstance(temporal_meta, dict) and "event_time_original" in temporal_meta:
+                original_timestamp = str(temporal_meta["event_time_original"])
+                event_time_original = str(temporal_meta["event_time_original"])
+            elif isinstance(temporal_meta, str) and temporal_meta.strip():
+                try:
+                    _tmd = json.loads(temporal_meta)
+                    if isinstance(_tmd, dict) and "event_time_original" in _tmd:
+                        original_timestamp = str(_tmd["event_time_original"])
+                        event_time_original = str(_tmd["event_time_original"])
+                except Exception:
+                    pass
+
+        now_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        timestamp = now_utc
         if original_timestamp:
             try:
                 # Validate; store the normalized ISO form so lexicographic
@@ -667,6 +774,21 @@ def capture(event_type: str, title: str, content: str,
                 logger.warning(
                     "capture: unparseable original_timestamp %r; "
                     "falling back to now", original_timestamp)
+
+        t_dict = normalize_temporal_meta(
+            temporal_meta=temporal_meta,
+            original_timestamp=original_timestamp,
+            event_time_original=event_time_original,
+            source_created_at=source_created_at,
+            source_modified_at=source_modified_at,
+            captured_at=captured_at,
+            ai_first_touched_at=ai_first_touched_at,
+            ai_last_touched_at=ai_last_touched_at,
+            migrated_at=migrated_at,
+            amended_at=amended_at,
+            now_iso=now_utc
+        )
+        temporal_meta_str = json.dumps(t_dict)
 
         # Encrypt LAST, immediately before the write: the dedup hash, the blob
         # gate, the redactor and the embedder all need the real text, and the
@@ -683,9 +805,9 @@ def capture(event_type: str, title: str, content: str,
         conn = get_connection(target_idx)
         try:
             cursor = conn.execute("""
-                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag))
+                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, temporal_meta, original_timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, temporal_meta_str, original_timestamp))
             conn.commit()
 
             # Log CREATED event
@@ -942,11 +1064,34 @@ def bulk_ingest_event_types() -> List[str]:
     return [t.strip().upper() for t in raw.split(",") if t.strip()]
 
 
+def no_recall_event_types() -> List[str]:
+    """Event types that are persisted but NEVER surfaced by recall.
+
+    Operational plumbing (daemon cursors, scan progress, lock bookkeeping)
+    belongs in the vault for maintenance and audit, not in an agent's context.
+    Unlike the ingest exclusions above, these stay hidden even when a caller
+    asks for the research corpus — `include_research` widens the corpus, it
+    does not open the machinery. Maintenance readers (dream consolidation)
+    query the tables directly and still see everything, deliberately.
+
+    Pattern borrowed from Pi's `disable-model-invocation`: persisted state a
+    model never sees. Env-resolvable; the constant is the logged fallback.
+    """
+    raw = os.environ.get("NOUGEN_NO_RECALL_EVENT_TYPES", "PLUMBING")
+    return [t.strip().upper() for t in raw.split(",") if t.strip()]
+
+
 def _ingest_filter_sql(alias: str = "s", include_research: bool = False):
-    """-> (sql_fragment, params). Fragment ends with ' AND ' or is empty."""
-    if include_research:
-        return "", ()
-    excluded = bulk_ingest_event_types()
+    """-> (sql_fragment, params). Fragment ends with ' AND ' or is empty.
+
+    Recall visibility in one place: the bulk-ingest exclusions (skippable via
+    include_research) plus the no-recall types (never skippable). Every recall
+    lane — FTS, LIKE fallback, fuzzy, vector — must apply this fragment; a
+    lane that skips it is a leak, which is exactly how IMPORT/INGEST rows
+    used to escape through the LIKE fallback.
+    """
+    excluded = [] if include_research else list(bulk_ingest_event_types())
+    excluded = list(dict.fromkeys(excluded + no_recall_event_types()))
     if not excluded:
         return "", ()
     marks = ",".join("?" for _ in excluded)
@@ -962,9 +1107,9 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     query_now = datetime.now(timezone.utc)
     results = []
     missed_dbs = []  # DBs where both exact lanes missed; fed to the fuzzy pass below
-    for i in range(1, MAX_DB_COUNT + 1):
-        if not get_db_path(i).exists():
-            continue
+    def _scan_one(i: int) -> tuple:
+        """Scan one cluster DB; returns (rows, missed_both_exact_lanes)."""
+        scan_results: list = []
         conn = get_connection(i)
         try:
             fts_worked = False
@@ -998,7 +1143,9 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         ing_clause, ing_params = _ingest_filter_sql("s", include_research)
                         cursor = conn.execute(f"""
                             SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
-                                   s.embedding, s.tags, s.domain_key, s.density_score, bm25(shards_fts) as bm25_score
+                                   s.embedding, s.tags, s.domain_key, s.density_score,
+                                   s.temporal_meta, s.original_timestamp,
+                                   bm25(shards_fts) as bm25_score
                             FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
                             WHERE {dom_clause}{ing_clause}shards_fts MATCH ?
                             ORDER BY bm25_score ASC, s.id ASC LIMIT ?
@@ -1015,7 +1162,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         item = _process_fts_result(row, i, query_embedding, query_now)
                         if via_or_retry:
                             item["_or_retry"] = True
-                        results.append(item)
+                        scan_results.append(item)
                     fts_worked = True
 
             if not fts_worked:
@@ -1024,23 +1171,27 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 search_tokens = _extract_search_tokens(query)
                 dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
                 dom_params = () if domain_key in (None, "*") else (domain_key,)
+                # The fallback lane obeys the same visibility rules as FTS —
+                # this was the leak that let excluded rows escape when FTS
+                # missed (see _ingest_filter_sql).
+                flt_sql, flt_params = _ingest_filter_sql("shards", include_research)
                 if search_tokens:
                     clauses = " OR ".join(["(title LIKE ? OR content LIKE ?)" for _ in search_tokens[:3]])
                     like_params = [f"%{t}%" for t in search_tokens[:3] for _ in (0, 1)]
                     cursor = conn.execute(f"""
-                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score, temporal_meta, original_timestamp
                         FROM shards
-                        WHERE {dom_clause}({clauses})
+                        WHERE {dom_clause}{flt_sql}({clauses})
                         ORDER BY utility_score DESC, id ASC LIMIT ?
-                    """, (*dom_params, *like_params, limit))
+                    """, (*dom_params, *flt_params, *like_params, limit))
                 else:
                     like_query = f"%{query}%"
                     cursor = conn.execute(f"""
-                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score, temporal_meta, original_timestamp
                         FROM shards
-                        WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
+                        WHERE {dom_clause}{flt_sql}(title LIKE ? OR content LIKE ?)
                         ORDER BY utility_score DESC, id ASC LIMIT ?
-                    """, (*dom_params, like_query, like_query, limit))
+                    """, (*dom_params, *flt_params, like_query, like_query, limit))
                 for row in cursor:
                     item = hydrate(dict(row))
                     item["_db_index"] = i
@@ -1058,19 +1209,48 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                                 sem_score = float(np.dot(query_embedding, emb_array))
                             except Exception:
                                 sem_score = 0.0
-                    likelihood = sem_score if query_embedding is not None else 0.5
+                    # No embedding to judge relevance = a weak prior, not a
+                    # coin-flip: the old 0.5 constant put relevance-blind LIKE
+                    # rows (chosen by utility DESC, not match quality) above
+                    # scored vector hits, which rarely exceed ~0.6 cosine.
+                    likelihood = sem_score if query_embedding is not None else _LIKE_NO_EMBED_PRIOR
 
                     decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), query_now)
-                    item["final_score"] = (likelihood * 0.5) + (decayed_utility * 0.5)
-                    results.append(item)
+                    # u/(1+u) bounds the prior so fresh utility=1.0 rows cannot
+                    # dominate on utility alone (ledger Round 3 fix, unmerged).
+                    squashed_utility = decayed_utility / (1.0 + decayed_utility)
+                    item["final_score"] = (likelihood * (1.0 - _RECALL_UTILITY_WEIGHT)
+                                           + squashed_utility * _RECALL_UTILITY_WEIGHT)
+                    item["_like_fallback"] = True
+                    scan_results.append(item)
                     db_hits += 1
 
             # Fuzzy lane is DEFERRED, not run here: note the miss and move on.
             # See the second pass below for why.
-            if not fts_worked and db_hits == 0:
-                missed_dbs.append(i)
+            return scan_results, (not fts_worked and db_hits == 0)
         finally:
             conn.close()
+
+    # Scan the cluster in parallel. Each mounted DB is an independent SQLite
+    # file and the FTS MATCH statement is where the wall-clock lives (~1s per
+    # statement measured 2026-08-26, x21 statements = a 22s serial scan that
+    # tripped the fleet worker's 30-45s timeouts). Readers don't contend;
+    # per-row history logging is queue-based. Worker count resolves env-first;
+    # results are collected in DB order so ranking stays deterministic, and
+    # ContextVars (the active vault binding) are propagated into each task.
+    import concurrent.futures as _cf
+    db_indexes = [i for i in range(1, MAX_DB_COUNT + 1) if get_db_path(i).exists()]
+    if db_indexes:
+        workers = (int(os.environ.get("NOUGEN_RECALL_DB_WORKERS", "0"))
+                   or min(len(db_indexes), (os.cpu_count() or 4)))
+        with _cf.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {i: pool.submit(copy_context().run, _scan_one, i)
+                       for i in db_indexes}
+        for i in db_indexes:
+            scan_results, missed = futures[i].result()
+            results.extend(scan_results)
+            if missed:
+                missed_dbs.append(i)
 
     # Fuzzy lane (docs/theory/n-gram-topologies.md §8.2): for DBs where BOTH
     # exact lanes missed, retry with fastText-style character trigram Dice
@@ -1145,7 +1325,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     sim_by_id = {rid: sim for sim, rid in keep}
                     placeholders = ",".join("?" * len(keep))
                     full = conn.execute(f"""
-                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score, temporal_meta, original_timestamp
                         FROM shards WHERE id IN ({placeholders})
                     """, tuple(rid for _, rid in keep)).fetchall()
                     fuzzy = []
@@ -1181,7 +1361,9 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     def _tier(x):
         if x.get("_fuzzy"):
             return 2
-        if x.get("_or_retry"):
+        # LIKE-fallback rows are selected relevance-blind (ORDER BY utility)
+        # and must never share the top tier with FTS AND-hits.
+        if x.get("_or_retry") or x.get("_like_fallback"):
             return 1
         return 0
     results.sort(key=lambda x: (_tier(x),
@@ -1214,7 +1396,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             dom_clause = dom_clause + ing_clause
             dom_params = (*dom_params, *ing_params)
             cursor = conn.execute(f"""
-                SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
+                SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, temporal_meta, original_timestamp
                 FROM shards
                 WHERE {dom_clause}embedding IS NOT NULL
             """, dom_params)
@@ -1251,15 +1433,29 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     return top_results
 
 
-def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[dict]:
+# Ranking priors, env-first (Rule 0.2); the literals are fallbacks only.
+_LIKE_NO_EMBED_PRIOR = float(os.environ.get("NOUGEN_LIKE_NO_EMBED_PRIOR", "0.25"))
+_RECALL_UTILITY_WEIGHT = float(os.environ.get("NOUGEN_RECALL_UTILITY_WEIGHT", "0.3"))
+
+
+def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
+                           weights: Optional[List[float]] = None) -> List[dict]:
     """
     Module 8 / 21: Reciprocal Rank Fusion (RRF) to merge multiple ranked lists.
 
-    Fuses by POSITION only: score = 1/(k+rank), summed across lists. Callers that
-    want match quality to influence the merge must hand their list in ranked
-    order — that is the supported lever, and it keeps this function's arithmetic
-    exactly as specified.
+    Fuses by POSITION only: score = w/(k+rank), summed across lists. Callers
+    that want match quality to influence the merge must hand their list in
+    ranked order — that is the supported lever, and it keeps this function's
+    arithmetic exactly as specified.
+
+    `weights` (optional, parallel to result_lists, default 1.0 each) scales a
+    list's contribution. Position parity across lanes was the measured failure
+    (2026-08-27): a raw-document vault lane's rank-1 tied the curated grid's
+    rank-1, so bulk-ingested docs outranked agent memory. Lanes are not equally
+    trustworthy; the caller says so here.
     """
+    if not weights:
+        weights = [1.0] * len(result_lists)
     rrf_scores = {}  # key -> float
     item_map = {}    # key -> dict
     
@@ -1276,13 +1472,14 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
         val = f"{title}|||{content}"
         return hashlib.sha256(val.encode("utf-8", errors="ignore")).hexdigest()
 
-    for rank_list in result_lists:
+    for list_idx, rank_list in enumerate(result_lists):
         if not rank_list:
             continue
+        lane_weight = weights[list_idx] if list_idx < len(weights) else 1.0
         for rank_idx, item in enumerate(rank_list):
             key = get_rrf_key(item)
             rank = rank_idx + 1
-            score = 1.0 / (k + rank)
+            score = lane_weight / (k + rank)
             rrf_scores[key] = rrf_scores.get(key, 0.0) + score
             
             if key not in item_map:
@@ -1298,7 +1495,11 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
     for key, item in item_map.items():
         consensus_score = rrf_scores[key]
         decayed_utility = item.get("utility_score", 1.0) * _temporal_decay(item.get("timestamp"), merge_now)
-        item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3))
+        # u/(1+u): unbounded utility multiplied consensus without limit, letting
+        # high-utility rows outrank cross-lane agreement (ledger Round 3 fix
+        # that never merged into this clone; symptom measured 2026-08-27).
+        squashed_utility = decayed_utility / (1.0 + decayed_utility)
+        item["final_score"] = consensus_score * (0.7 + (squashed_utility * 0.3))
         merged.append(item)
 
     # Tie-break fields are stringified: grid rows carry int _db_index/id while
@@ -1398,7 +1599,20 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             
         return reciprocal_rank_fusion([keyword_results, vector_results], k=60)
 
-    all_results = run_parallel_retrieval(domain_key)
+    if domain_key != "*" and not explicit_domain:
+        # Implicit CWD-domain always needs BOTH passes (see the fusion note
+        # below), and each pass is dominated by the same I/O-bound cluster
+        # scan -- overlapping them halves recall latency for the common case.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as outer:
+            scoped_future = outer.submit(
+                copy_context().run, run_parallel_retrieval, domain_key)
+            whole_future = outer.submit(
+                copy_context().run, run_parallel_retrieval, "*")
+            all_results = scoped_future.result()
+            whole_brain_early = whole_future.result()
+    else:
+        all_results = run_parallel_retrieval(domain_key)
+        whole_brain_early = None
 
     if domain_key != "*":
         if explicit_domain:
@@ -1413,7 +1627,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             # scoped (in-domain) scores by a domain-affinity boost so local
             # context still ranks first on ties but can no longer mask
             # near-exact matches that live under another writer's CWD-domain.
-            whole_brain = run_parallel_retrieval("*")
+            whole_brain = whole_brain_early
             boost = _domain_affinity_boost()
             fused: dict = {}
             for item in whole_brain:
@@ -1489,25 +1703,52 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
 
 
 def hydrate(item: Optional[dict]) -> Optional[dict]:
-    """Decrypt an encrypted shard body on the way out of the DB.
+    """Decrypt an encrypted shard body and unpack temporal metadata on the way out of the DB.
 
     Applied at every row->dict boundary so callers never have to know whether a
-    shard was stored private. Plaintext passes straight through, which keeps a
-    mixed corpus working. If the key is unavailable (wrong Windows profile, no
-    recovery key set) the row is returned with a placeholder body rather than
-    raising: one unreadable shard must not take down a whole recall.
+    shard was stored private or how temporal metadata was encoded. Plaintext
+    passes straight through, which keeps a mixed corpus working. If the key is
+    unavailable (wrong Windows profile, no recovery key set) the row is returned
+    with a placeholder body rather than raising: one unreadable shard must not take
+    down a whole recall.
     """
     if not item:
         return item
     body = item.get("content")
-    if not isinstance(body, str):
-        return item
-    try:
-        from . import private_vault as _pv  # pylint: disable=import-outside-toplevel
-        if _pv.is_encrypted(body):
-            item["content"] = _pv.decrypt_text(body)
-    except Exception as exc:  # key missing or tampered ciphertext
-        item["content"] = f"[encrypted shard -- unavailable: {type(exc).__name__}]"
+    if isinstance(body, str):
+        try:
+            from . import private_vault as _pv  # pylint: disable=import-outside-toplevel
+            if _pv.is_encrypted(body):
+                item["content"] = _pv.decrypt_text(body)
+        except Exception as exc:  # key missing or tampered ciphertext
+            item["content"] = f"[encrypted shard -- unavailable: {type(exc).__name__}]"
+
+    # Decode and harmonize temporal provenance fields
+    tm = item.get("temporal_meta")
+    tmd = None
+    if isinstance(tm, dict):
+        tmd = dict(tm)
+    elif isinstance(tm, str) and tm.strip():
+        try:
+            tmd = json.loads(tm)
+        except Exception:
+            tmd = None
+
+    orig_ts = item.get("original_timestamp")
+    if tmd and isinstance(tmd, dict):
+        evt_orig = tmd.get("event_time_original")
+        if evt_orig and not orig_ts:
+            item["original_timestamp"] = evt_orig
+        elif orig_ts and not evt_orig:
+            tmd["event_time_original"] = orig_ts
+            item["temporal_meta"] = json.dumps(tmd)
+        if evt_orig and "event_time_original" not in item:
+            item["event_time_original"] = evt_orig
+    elif orig_ts:
+        item["event_time_original"] = orig_ts
+        if not tm:
+            item["temporal_meta"] = json.dumps({"event_time_original": orig_ts})
+
     return item
 
 

@@ -20,12 +20,12 @@ import nougen_shards.core as shards
 
 
 @pytest.fixture(autouse=True)
-def setup_test_env(monkeypatch):
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
-        monkeypatch.setattr(shards, "GLOBAL_DIR", temp_path)
-        shards.init_db(1)
-        yield temp_path
+def setup_test_env(tmp_path, monkeypatch):
+    tokens = shards.bind_active_vault(tmp_path, "owner")
+    monkeypatch.setattr(shards, "GLOBAL_DIR", tmp_path)
+    shards.init_db(1)
+    yield tmp_path
+    shards.reset_active_vault(tokens)
 
 
 def _load_window_search():

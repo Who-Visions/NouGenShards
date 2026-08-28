@@ -38,13 +38,26 @@ class TenantRecord:
     tenant_id: str
     label: str
     token_sha256: str
+    #: A shared-vault tenant is a peer identity over the owner's vault: it
+    #: authenticates under its own credential (attribution, revocation) but
+    #: reads and writes the same shard grid the owner does. Default stays
+    #: isolated -- sharing is an explicit registry decision, never inferred.
+    shared_vault: bool = False
+    #: Google account allowed to grant THIS lane through the sign-in flow.
+    #: Empty means the lane is grantable only by an owner-listed account.
+    google_email: str = ""
 
     def as_dict(self) -> dict:
-        return {
+        payload = {
             "tenant_id": self.tenant_id,
             "label": self.label,
             "token_sha256": self.token_sha256,
         }
+        if self.shared_vault:
+            payload["shared_vault"] = True
+        if self.google_email:
+            payload["google_email"] = self.google_email
+        return payload
 
 
 def tenants_file() -> Path:
@@ -75,7 +88,16 @@ def _validate_record(raw: object, position: int) -> TenantRecord:
         raise TenantRegistryError(f"tenant {tenant_id!r} must have a non-empty label")
     if not isinstance(digest, str) or not TOKEN_HASH_RE.fullmatch(digest):
         raise TenantRegistryError(f"tenant {tenant_id!r} has an invalid token_sha256")
-    return TenantRecord(tenant_id=tenant_id, label=label.strip(), token_sha256=digest)
+    shared = raw.get("shared_vault", False)
+    if not isinstance(shared, bool):
+        raise TenantRegistryError(f"tenant {tenant_id!r} has a non-boolean shared_vault")
+    google_email = raw.get("google_email", "")
+    if not isinstance(google_email, str) or (
+            google_email and ("@" not in google_email or " " in google_email)):
+        raise TenantRegistryError(f"tenant {tenant_id!r} has an invalid google_email")
+    return TenantRecord(tenant_id=tenant_id, label=label.strip(), token_sha256=digest,
+                        shared_vault=shared,
+                        google_email=google_email.strip().casefold())
 
 
 def load_registry(path: Optional[Path] = None) -> list[TenantRecord]:
@@ -102,8 +124,9 @@ def load_registry(path: Optional[Path] = None) -> list[TenantRecord]:
     return records
 
 
-def vault_dir_for(tenant_id: str, owner_vault_dir: Path) -> Path:
-    if tenant_id == OWNER_TENANT_ID:
+def vault_dir_for(tenant_id: str, owner_vault_dir: Path,
+                  shared: bool = False) -> Path:
+    if tenant_id == OWNER_TENANT_ID or shared:
         return Path(owner_vault_dir)
     if not TENANT_ID_RE.fullmatch(tenant_id):
         raise TenantRegistryError(f"invalid tenant_id: {tenant_id!r}")
@@ -120,23 +143,24 @@ def resolve_token(token: Optional[str], owner_token: Optional[str], owner_vault_
     if not token:
         return None
     supplied_hash = token_sha256(token)
-    matches: list[tuple[str, str]] = []
+    matches: list[tuple[str, str, bool]] = []
 
     if owner_token:
         owner_hash = token_sha256(owner_token)
         if hmac.compare_digest(supplied_hash, owner_hash):
-            matches.append((OWNER_TENANT_ID, "Owner"))
+            matches.append((OWNER_TENANT_ID, "Owner", True))
 
     for record in load_registry():
         if hmac.compare_digest(supplied_hash, record.token_sha256):
-            matches.append((record.tenant_id, record.label))
+            matches.append((record.tenant_id, record.label, record.shared_vault))
 
     # Ambiguous credentials are configuration errors from an authorization
     # perspective: do not let record order decide which vault opens.
     if len(matches) != 1:
         return None
-    tenant_id, label = matches[0]
-    return Tenant(tenant_id, label, vault_dir_for(tenant_id, owner_vault_dir))
+    tenant_id, label, shared = matches[0]
+    return Tenant(tenant_id, label,
+                  vault_dir_for(tenant_id, owner_vault_dir, shared=shared))
 
 
 def tenant_by_id(tenant_id: str, owner_vault_dir: Path) -> Optional[Tenant]:
@@ -146,7 +170,8 @@ def tenant_by_id(tenant_id: str, owner_vault_dir: Path) -> Optional[Tenant]:
     for record in load_registry():
         if hmac.compare_digest(record.tenant_id, tenant_id):
             return Tenant(record.tenant_id, record.label,
-                          vault_dir_for(record.tenant_id, owner_vault_dir))
+                          vault_dir_for(record.tenant_id, owner_vault_dir,
+                                        shared=record.shared_vault))
     return None
 
 

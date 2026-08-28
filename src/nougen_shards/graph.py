@@ -81,8 +81,14 @@ def _shards_for_hashes(file_hashes: List[str]) -> Dict[str, Dict]:
         conn = core.get_connection(i)
         try:
             placeholders = ",".join("?" * len(remaining))
+            _nr = core.no_recall_event_types()
+            _nr_sql = (
+                " AND UPPER(event_type) NOT IN (%s)" % ",".join("?" * len(_nr))
+                if _nr else ""
+            )
             rows = conn.execute(
-                f"SELECT * FROM shards WHERE file_hash IN ({placeholders})", remaining
+                f"SELECT * FROM shards WHERE file_hash IN ({placeholders}){_nr_sql}",
+                (*remaining, *_nr),
             ).fetchall()
             for row in rows:
                 item = dict(row)

@@ -18,7 +18,12 @@ logger = logging.getLogger(__name__)
 #: with no way to tune it: query_cloud_shards swallows the timeout, logs "cloud
 #: node skipped", and returns nothing, so a node a hair over the limit silently
 #: contributes zero to every federated recall.
-SEARCH_TIMEOUT_S = float(os.environ.get("NGS_CLOUD_SEARCH_TIMEOUT", "1.5"))
+# Default raised 1.5 -> 8.0 (2026-08-27): lanes run in parallel threads, so a
+# slow cloud lane bounds wall-clock at max(lane), it does not serialize. At the
+# measured 44%/quarter corpus growth a large upstream cannot answer in 1.5s,
+# which turned the read-through lane into a silent zero on every query.
+# Latency-sensitive deploys tune it back down via the env var.
+SEARCH_TIMEOUT_S = float(os.environ.get("NGS_CLOUD_SEARCH_TIMEOUT", "8.0"))
 SYNC_TIMEOUT_S = float(os.environ.get("NGS_CLOUD_SYNC_TIMEOUT", "10.0"))
 
 # Network/parse failures that should degrade gracefully, not crash federation.

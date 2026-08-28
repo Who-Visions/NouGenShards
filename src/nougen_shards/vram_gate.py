@@ -27,6 +27,8 @@ OLLAMA = "http://127.0.0.1:11434"
 # Disk size and vendor Q4_0 tables are both wrong for this — per-layer
 # embeddings are not compressed in Ollama's e-series builds.
 MEASURED_LOAD_GB = {
+    # Measured live on Blade 2026-08-27 via `ollama ps` while Dav1d was loaded.
+    "dav1d:e2b": 2.7,
     "gemma4:e2b": 7.51, "Yukiai:e2b": 7.51, "solai:e2b": 7.51,
     "gemma4:e4b": 9.52, "Yukiai:e4b": 9.52, "solai:e4b": 9.52,
     "qwen3-vl:4b": 3.53,

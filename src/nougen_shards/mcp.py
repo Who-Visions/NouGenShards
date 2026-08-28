@@ -65,7 +65,16 @@ except TypeError:
 
 @mcp.tool()
 def capture_experience(event_type: str, title: str, content: str, tags: Optional[List[str]] = None,
-                       original_timestamp: Optional[str] = None) -> str:
+                       original_timestamp: Optional[str] = None,
+                       event_time_original: Optional[str] = None,
+                       source_created_at: Optional[str] = None,
+                       source_modified_at: Optional[str] = None,
+                       captured_at: Optional[str] = None,
+                       ai_first_touched_at: Optional[str] = None,
+                       ai_last_touched_at: Optional[str] = None,
+                       migrated_at: Optional[str] = None,
+                       amended_at: Optional[List[str]] = None,
+                       temporal_meta: Optional[dict] = None) -> str:
     """
     Store a unit of agent experience as a persistent shard.
 
@@ -77,9 +86,26 @@ def capture_experience(event_type: str, title: str, content: str, tags: Optional
         original_timestamp: Optional ISO-8601 timestamp stamping migrated
             content at its true era instead of capture time; invalid values
             fall back to now.
+        event_time_original: when the real-world event/content actually occurred or first existed.
+        source_created_at: original file/source creation time.
+        source_modified_at: original file/source modified time.
+        captured_at: when NouGen first ingested/captured the shard (default: now).
+        ai_first_touched_at / ai_last_touched_at: AI processing timestamps.
+        migrated_at: when moved between stores.
+        amended_at: list of amendment timestamps.
+        temporal_meta: arbitrary structured temporal provenance metadata.
     """
     success = capture(event_type, title, content, tags,
-                      original_timestamp=original_timestamp)
+                      original_timestamp=original_timestamp,
+                      event_time_original=event_time_original,
+                      source_created_at=source_created_at,
+                      source_modified_at=source_modified_at,
+                      captured_at=captured_at,
+                      ai_first_touched_at=ai_first_touched_at,
+                      ai_last_touched_at=ai_last_touched_at,
+                      migrated_at=migrated_at,
+                      amended_at=amended_at,
+                      temporal_meta=temporal_meta)
     return "Shard captured successfully." if success else "Shard already exists."
 
 @mcp.tool()

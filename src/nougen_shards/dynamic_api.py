@@ -198,9 +198,16 @@ def search_shards(query="", limit=40):
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
             cur = conn.cursor()
             
+            _nr = core.no_recall_event_types()
+            _nr_sql = (
+                " UPPER(event_type) NOT IN (%s) " % ",".join("?" * len(_nr))
+                if _nr else " 1=1 "
+            )
             if not query:
                 cur.execute(
-                    "SELECT id, title, content, utility_score, timestamp, tags FROM shards ORDER BY id DESC LIMIT 5"
+                    "SELECT id, title, content, utility_score, timestamp, tags FROM shards"
+                    f" WHERE{_nr_sql}ORDER BY id DESC LIMIT 5",
+                    tuple(_nr),
                 )
                 rows = cur.fetchall()
                 for r in rows:
@@ -217,13 +224,13 @@ def search_shards(query="", limit=40):
             else:
                 words = [w for w in query.split() if w]
                 sql = "SELECT id, title, content, utility_score, timestamp, tags FROM shards WHERE "
-                conditions = []
-                params = []
+                conditions = [] if not _nr else [_nr_sql.strip()]
+                params = list(_nr)
                 for w in words:
                     conditions.append("(LOWER(title) LIKE ? OR LOWER(content) LIKE ? OR LOWER(tags) LIKE ?)")
                     like_w = f"%{w}%"
                     params.extend([like_w, like_w, like_w])
-                
+
                 sql += " AND ".join(conditions) + " ORDER BY id DESC LIMIT 20"
                 cur.execute(sql, params)
                 rows = cur.fetchall()

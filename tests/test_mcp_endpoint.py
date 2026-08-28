@@ -73,7 +73,11 @@ def test_mcp_denies_without_token(client):
     assert r.status_code == 401
 
 
-def test_mcp_denies_when_unconfigured(client):
+def test_mcp_denies_when_unconfigured(client, monkeypatch, tmp_path):
+    # Isolate the tenant registry: on a machine whose live ~/.nougen/tenants.json
+    # holds records, credentials count as configured even with the owner token
+    # unset, and the gate correctly answers 401 instead of the 503 under test.
+    monkeypatch.setenv("NOUGEN_TENANTS_FILE", str(tmp_path / "tenants.json"))
     saved = node.NODE_TOKEN
     node.NODE_TOKEN = None
     try:

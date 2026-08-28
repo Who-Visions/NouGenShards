@@ -211,6 +211,21 @@ ROSTER = {
         default_model="kaedra:e4b",
         engine_functions=[],
     ),
+    "Dav1d": AgentSpec(
+        name="Dav1d",
+        role="Execution (Autonomous CLI & Toolchain Triage)",
+        motto="Griot reasons; Dav1d executes.",
+        system_prompt=(
+            "You are Dav1d, the autonomous execution and CLI triage agent on "
+            "this machine. You turn intent into concrete, bounded actions: "
+            "pick the right tool or command, state what you would run and "
+            "why, and report results as verifiable evidence (exit codes, "
+            "output, versions) rather than assumption. You favor the "
+            "smallest action that answers the question and you say plainly "
+            "when something is outside your reach."),
+        default_model=_agent_model("Dav1d", "dav1d:e2b"),
+        engine_functions=[],
+    ),
     "Iris": AgentSpec(
         name="Iris",
         role="Airspace (Research, Evidence & Assurance)",
@@ -230,7 +245,7 @@ ROSTER = {
 def get_agent(name: str) -> Optional[AgentSpec]:
     """Case- and separator-insensitive roster lookup, including known aliases."""
     normalized = "".join(ch for ch in name.casefold() if ch.isalnum())
-    aliases = {"rheanoir": "rhea"}
+    aliases = {"rheanoir": "rhea", "david": "dav1d"}
     normalized = aliases.get(normalized, normalized)
     for key, spec in ROSTER.items():
         roster_name = "".join(ch for ch in key.casefold() if ch.isalnum())
@@ -302,20 +317,13 @@ def run_agent(name: str, prompt: str, model: Optional[str] = None,
     or_client = OpenRouterClient()
     if or_client.is_alive():
         try:
-            # Route across the FULL live free roster — every free OpenRouter model,
-            # not a hand-picked subset. OpenRouter fails over across the list.
-            free_roster = or_client.get_free_models()
             primary = or_client.preferred_free_model()
-            res_dict = or_client.chat_with_fallback(
-                model=primary,
-                messages=[
-                    {"role": "system", "content": spec.system_prompt},
-                    {"role": "user", "content": prompt}
-                ],
-                fallback_models=free_roster
-            )
-            if res_dict.get("content") and not res_dict["content"].startswith("Error:"):
-                return res_dict["content"]
+            res = or_client.chat(primary, [
+                {"role": "system", "content": spec.system_prompt},
+                {"role": "user", "content": prompt}
+            ])
+            if res and not res.startswith("Error:"):
+                return res
         except Exception:
             pass
 

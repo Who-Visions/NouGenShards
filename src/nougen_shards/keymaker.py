@@ -297,8 +297,16 @@ def resolve_secrets_store(refresh: bool = False) -> dict:
     if not refresh and cache_key in _PROBE_CACHE:
         return _PROBE_CACHE[cache_key]
 
-    candidates = candidate_stores()
-    live = [probe for probe in (_probe_store(c) for c in candidates) if probe]
+    fast_candidates = []
+    if env_value:
+        fast_candidates.append(Path(env_value) / DB_FILENAME)
+    fast_candidates.append(Path.home() / ".nougen" / "secrets" / DB_FILENAME)
+    live = [probe for probe in (_probe_store(c) for c in fast_candidates) if probe]
+    if live:
+        candidates = fast_candidates
+    else:
+        candidates = candidate_stores()
+        live = [probe for probe in (_probe_store(c) for c in candidates) if probe]
 
     if env_value:
         active = Path(env_value) / DB_FILENAME

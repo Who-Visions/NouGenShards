@@ -66,17 +66,105 @@ _codes: dict[str, dict] = {}
 # Issued access tokens: token -> {client_id, issued_at, tenant_id}
 _tokens: dict[str, dict] = {}
 
+# Google sign-in legs in flight: state -> pending authorize params + exp.
+# Two stages share the dict: "start" rows await the Google redirect back,
+# "grant" rows await the lane pick. Same in-process lifetime trade as _codes.
+_google_pending: dict[str, dict] = {}
+
+#: Ceiling for a human round-trip through Google's account chooser.
+_GOOGLE_PENDING_TTL = int(os.environ.get("NOUGEN_GOOGLE_PENDING_TTL", "600"))
+
+#: Endpoints are Google-stable but env-overridable for tests and any future
+#: googleapis migration (dynamic-over-hardcode: the constant is the fallback).
+_GOOGLE_AUTH_URL = os.environ.get(
+    "NOUGEN_GOOGLE_AUTH_URL", "https://accounts.google.com/o/oauth2/v2/auth")
+_GOOGLE_TOKEN_URL = os.environ.get(
+    "NOUGEN_GOOGLE_TOKEN_URL", "https://oauth2.googleapis.com/token")
+_GOOGLE_TOKENINFO_URL = os.environ.get(
+    "NOUGEN_GOOGLE_TOKENINFO_URL", "https://oauth2.googleapis.com/tokeninfo")
+
+
+def _google_config() -> Optional[dict]:
+    """Google RP credentials, or None when sign-in is not provisioned.
+
+    Read per-request so the feature follows the environment without a code
+    change; the launcher (start_grid) is responsible for peeling the values
+    out of the keymaker into the child environment -- they never live in code.
+    """
+    client_id = os.environ.get("NOUGEN_GOOGLE_OAUTH_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("NOUGEN_GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+    if client_id and client_secret:
+        return {"client_id": client_id, "client_secret": client_secret}
+    return None
+
+
+def _google_exchange_code(code: str, redirect_uri: str, cfg: dict) -> Optional[str]:
+    """Redeem a Google authorization code for its id_token; None on failure.
+
+    Module-level and stdlib-only so tests monkeypatch it instead of the
+    network."""
+    import json as _json
+    import urllib.request
+    body = urlencode({
+        "code": code,
+        "client_id": cfg["client_id"],
+        "client_secret": cfg["client_secret"],
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+    }).encode("ascii")
+    req = urllib.request.Request(
+        _GOOGLE_TOKEN_URL, data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            payload = _json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    id_token = payload.get("id_token")
+    return id_token if isinstance(id_token, str) and id_token else None
+
+
+def _google_tokeninfo(id_token: str) -> Optional[dict]:
+    """Ask Google to validate an id_token; None on any failure."""
+    import json as _json
+    import urllib.request
+    url = f"{_GOOGLE_TOKENINFO_URL}?{urlencode({'id_token': id_token})}"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            return _json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _google_verified_email(id_token: str, cfg: dict) -> Optional[str]:
+    """Verified, lowercased email carried by the id_token, or None.
+
+    tokeninfo already checks signature and expiry; audience is checked here
+    because a token minted for any other client must not open this node."""
+    info = _google_tokeninfo(id_token)
+    if not info:
+        return None
+    if info.get("aud") != cfg["client_id"]:
+        return None
+    if str(info.get("email_verified")).lower() not in ("true", "1"):
+        return None
+    email = info.get("email")
+    return email.strip().casefold() if isinstance(email, str) and email else None
+
 
 def _now() -> int:
     return int(time.time())
 
 
 def _prune() -> None:
-    """Drop expired codes. Called on the paths that write new state, so the
-    dicts cannot grow without bound on a long-lived node."""
+    """Drop expired codes and stale Google legs. Called on the paths that
+    write new state, so the dicts cannot grow without bound on a long-lived
+    node."""
     cutoff = _now()
     for code in [c for c, v in _codes.items() if v["exp"] < cutoff]:
         _codes.pop(code, None)
+    for key in [k for k, v in _google_pending.items() if v["exp"] < cutoff]:
+        _google_pending.pop(key, None)
 
 
 def issued_token_valid(token: str) -> bool:
@@ -141,6 +229,7 @@ _CONSENT_PAGE = """<!doctype html>
 <form method="post" action="/authorize">
   <h1>Connect to NouGenShards</h1>
   <p><b>{client}</b> is requesting access to this memory node.</p>
+  {google}
   <input type="password" name="node_token" placeholder="Node token" autofocus required>
   {error}
   <input type="hidden" name="client_id" value="{client_id}">
@@ -151,13 +240,77 @@ _CONSENT_PAGE = """<!doctype html>
 </form>
 """
 
+#: Rendered into the consent page only when _google_config() resolves; the
+#: token input stays underneath as the bootstrap fallback.
+_GOOGLE_BUTTON = """
+  <a href="/oauth/google/start?{query}" style="display:block;text-align:center;
+     padding:.6rem;border-radius:6px;background:#fff;color:#222;font-weight:600;
+     text-decoration:none;margin-bottom:1rem">Sign in with Google</a>
+  <p style="text-align:center;color:#777;margin:0 0 1rem">or paste a node token</p>
+"""
+
+_LANE_PAGE = """<!doctype html>
+<title>Choose a lane</title>
+<style>
+ body{{font:15px/1.5 system-ui,sans-serif;background:#111;color:#eee;
+      display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}}
+ form{{background:#1c1c1c;padding:2rem;border-radius:12px;max-width:26rem;width:100%}}
+ h1{{font-size:1.1rem;margin:0 0 .25rem}} p{{color:#aaa;margin:0 0 1.25rem}}
+ button{{margin-top:.5rem;width:100%;padding:.6rem;border:0;border-radius:6px;
+         background:#c96442;color:#fff;font-weight:600;cursor:pointer}}
+</style>
+<form method="post" action="/oauth/google/grant">
+  <h1>Signed in as {email}</h1>
+  <p>Grant <b>{client}</b> access as which lane?</p>
+  <input type="hidden" name="grant_key" value="{grant_key}">
+  {buttons}
+</form>
+"""
+
 
 def install(
     app,
     node_token_getter: Optional[Callable[[], Optional[str]]] = None,
     tenant_resolver: Optional[Callable[[str], Optional[str]]] = None,
     credentials_configured_getter: Optional[Callable[[], bool]] = None,
+    lanes_for_email: Optional[Callable[[str], list]] = None,
 ) -> None:
+
+    def _render_consent(client_name: str, client_id: str, redirect_uri: str,
+                        state: str, code_challenge: str, error: str = "",
+                        status_code: int = 200) -> HTMLResponse:
+        google_block = ""
+        if _google_config() and lanes_for_email:
+            google_block = _GOOGLE_BUTTON.format(query=urlencode({
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "state": state,
+                "code_challenge": code_challenge,
+            }))
+        return HTMLResponse(_CONSENT_PAGE.format(
+            client=html.escape(client_name),
+            client_id=html.escape(client_id),
+            redirect_uri=html.escape(redirect_uri),
+            state=html.escape(state),
+            code_challenge=html.escape(code_challenge),
+            google=google_block,
+            error=error,
+        ), status_code=status_code)
+
+    def _issue_code_redirect(client_id: str, redirect_uri: str, challenge: str,
+                             state: str, tenant_id: str) -> RedirectResponse:
+        code = secrets.token_urlsafe(32)
+        _codes[code] = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "challenge": challenge,
+            "exp": _now() + _CODE_TTL_SECONDS,
+            "tenant_id": tenant_id,
+        }
+        params = {"code": code}
+        if state:
+            params["state"] = state
+        return RedirectResponse(f"{redirect_uri}?{urlencode(params)}", status_code=303)
     """Register the OAuth endpoints on `app`.
 
     `node_token_getter` is read at request time rather than captured, so tests
@@ -266,14 +419,8 @@ def install(
             raise HTTPException(status_code=400, detail="Only code_challenge_method=S256 is supported.")
         _check_authorize_params(client_id, redirect_uri, code_challenge)
         client = _clients[client_id]
-        return HTMLResponse(_CONSENT_PAGE.format(
-            client=html.escape(client["client_name"]),
-            client_id=html.escape(client_id),
-            redirect_uri=html.escape(redirect_uri),
-            state=html.escape(state),
-            code_challenge=html.escape(code_challenge),
-            error="",
-        ))
+        return _render_consent(client["client_name"], client_id, redirect_uri,
+                               state, code_challenge)
 
     @app.post("/authorize")
     def authorize_submit(
@@ -299,30 +446,105 @@ def install(
         if not tenant_id:
             # Re-render rather than redirect: a wrong token is a user typo, not
             # a protocol error, and bouncing to the client would abort the flow.
-            return HTMLResponse(
-                _CONSENT_PAGE.format(
-                    client=html.escape(client["client_name"]),
-                    client_id=html.escape(client_id),
-                    redirect_uri=html.escape(redirect_uri),
-                    state=html.escape(state),
-                    code_challenge=html.escape(code_challenge),
-                    error='<p class="err">Invalid node token.</p>',
-                ),
-                status_code=401,
-            )
+            return _render_consent(
+                client["client_name"], client_id, redirect_uri, state,
+                code_challenge, error='<p class="err">Invalid node token.</p>',
+                status_code=401)
 
-        code = secrets.token_urlsafe(32)
-        _codes[code] = {
+        return _issue_code_redirect(client_id, redirect_uri, code_challenge,
+                                    state, tenant_id)
+
+    @app.get("/oauth/google/start")
+    def google_start(
+        request: Request,
+        client_id: str = "",
+        redirect_uri: str = "",
+        state: str = "",
+        code_challenge: str = "",
+    ):
+        cfg = _google_config()
+        if not cfg or not lanes_for_email:
+            raise HTTPException(status_code=404, detail="Google sign-in is not configured.")
+        _prune()
+        _check_authorize_params(client_id, redirect_uri, code_challenge)
+        leg = secrets.token_urlsafe(32)
+        _google_pending[leg] = {
+            "stage": "start",
             "client_id": client_id,
             "redirect_uri": redirect_uri,
+            "state": state,
             "challenge": code_challenge,
-            "exp": _now() + _CODE_TTL_SECONDS,
-            "tenant_id": tenant_id,
+            "exp": _now() + _GOOGLE_PENDING_TTL,
         }
-        params = {"code": code}
-        if state:
-            params["state"] = state
-        return RedirectResponse(f"{redirect_uri}?{urlencode(params)}", status_code=303)
+        callback = f"{public_base_url(request)}/oauth/google/callback"
+        return RedirectResponse(f"{_GOOGLE_AUTH_URL}?" + urlencode({
+            "client_id": cfg["client_id"],
+            "redirect_uri": callback,
+            "response_type": "code",
+            "scope": "openid email",
+            "state": leg,
+            "prompt": "select_account",
+        }), status_code=303)
+
+    @app.get("/oauth/google/callback")
+    def google_callback(request: Request, code: str = "", state: str = "",
+                        error: str = ""):
+        cfg = _google_config()
+        if not cfg or not lanes_for_email:
+            raise HTTPException(status_code=404, detail="Google sign-in is not configured.")
+        _prune()
+        # Pop unconditionally: a leg is single-use whatever Google answered.
+        pending = _google_pending.pop(state, None)
+        if not pending or pending.get("stage") != "start" or pending["exp"] < _now():
+            raise HTTPException(status_code=400, detail="Sign-in expired; start over.")
+        if error or not code:
+            raise HTTPException(status_code=400, detail="Google sign-in was cancelled.")
+        callback = f"{public_base_url(request)}/oauth/google/callback"
+        id_token = _google_exchange_code(code, callback, cfg)
+        email = _google_verified_email(id_token, cfg) if id_token else None
+        if not email:
+            raise HTTPException(status_code=401, detail="Google sign-in could not be verified.")
+        lanes = list(lanes_for_email(email) or [])
+        if not lanes:
+            raise HTTPException(
+                status_code=403,
+                detail="This Google account is not mapped to any lane on this node.")
+        client = _clients.get(pending["client_id"]) or {}
+        if len(lanes) == 1:
+            return _issue_code_redirect(
+                pending["client_id"], pending["redirect_uri"],
+                pending["challenge"], pending["state"], lanes[0][0])
+        grant_key = secrets.token_urlsafe(32)
+        _google_pending[grant_key] = {
+            **pending,
+            "stage": "grant",
+            "email": email,
+            "lanes": [lane_id for lane_id, _label in lanes],
+            "exp": _now() + _GOOGLE_PENDING_TTL,
+        }
+        buttons = "\n".join(
+            f'<button type="submit" name="lane" value="{html.escape(lane_id)}">'
+            f'{html.escape(label)} ({html.escape(lane_id)})</button>'
+            for lane_id, label in lanes)
+        return HTMLResponse(_LANE_PAGE.format(
+            email=html.escape(email),
+            client=html.escape(client.get("client_name", "this client")),
+            grant_key=html.escape(grant_key),
+            buttons=buttons,
+        ))
+
+    @app.post("/oauth/google/grant")
+    def google_grant(grant_key: str = Form(""), lane: str = Form("")):
+        _prune()
+        pending = _google_pending.pop(grant_key, None)
+        if not pending or pending.get("stage") != "grant" or pending["exp"] < _now():
+            raise HTTPException(status_code=400, detail="Grant expired; start over.")
+        # The pick must come from the set the verified email was offered --
+        # the form is client-side and a POSTed lane is attacker-choosable.
+        if lane not in pending.get("lanes", []):
+            raise HTTPException(status_code=403, detail="Lane not offered to this account.")
+        return _issue_code_redirect(pending["client_id"], pending["redirect_uri"],
+                                    pending["challenge"], pending["state"], lane)
 
     @app.post("/token")
     def token_exchange(

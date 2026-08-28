@@ -31,7 +31,22 @@ $Python     = Join-Path $Root '.venv\Scripts\python.exe'
 $NodeLane   = Join-Path $PSScriptRoot 'node_lane.ps1'
 $WorkerDir  = Join-Path (Split-Path -Parent $Root) 'nougen-fleet-mcp'
 $RunDir     = Join-Path $Root '.node'
-$Cloudflared = Join-Path $PSScriptRoot 'bin\cloudflared.exe'
+# Env override -> repo-local copy -> whatever's on PATH -> the known system
+# install. 2026-08-27: this was a bare hardcoded tools\bin\cloudflared.exe
+# with no fallback, so a checkout missing that one file (this one did) made
+# Start-Tunnel fail outright even though 25 cloudflared.exe processes were
+# already running system-wide from a working install.
+$Cloudflared = if ($env:NOUGEN_CLOUDFLARED_EXE -and (Test-Path $env:NOUGEN_CLOUDFLARED_EXE)) {
+    $env:NOUGEN_CLOUDFLARED_EXE
+} elseif (Test-Path (Join-Path $PSScriptRoot 'bin\cloudflared.exe')) {
+    Join-Path $PSScriptRoot 'bin\cloudflared.exe'
+} elseif (Get-Command cloudflared.exe -ErrorAction SilentlyContinue) {
+    (Get-Command cloudflared.exe).Source
+} elseif (Test-Path 'C:\Program Files (x86)\cloudflared\cloudflared.exe') {
+    'C:\Program Files (x86)\cloudflared\cloudflared.exe'
+} else {
+    Join-Path $PSScriptRoot 'bin\cloudflared.exe'  # fallback; Start-Tunnel will fail loudly if truly absent
+}
 $TunnelLog  = Join-Path $RunDir 'tunnel.log'
 $TunnelPid  = Join-Path $RunDir 'tunnel.pid'
 $StateFile  = Join-Path $RunDir 'gateway_url.txt'
@@ -81,6 +96,10 @@ function Sync-Worker($url) {
     if ($known -eq $url) { return $false }
 
     Log "URL changed: '$known' -> '$url'  (updating worker)"
+    if (-not (Test-Path $WorkerDir)) {
+        Log "WorkerDir missing ($WorkerDir) - cannot push SHARD_GATEWAY_URL from here; update it via the Cloudflare dashboard/API or restore the checkout. Tunnel itself is up at $url."
+        return $false
+    }
     Push-Location $WorkerDir
     try {
         # SHARD_GATEWAY_URL is a var in wrangler.jsonc; rewrite it in place so
@@ -111,7 +130,14 @@ function Sync-Worker($url) {
     return $true
 }
 
+$script:CloudflaredLogged = $false
+
 function Tick {
+    if (-not $script:CloudflaredLogged) {
+        Log "cloudflared resolved to: $Cloudflared"
+        $script:CloudflaredLogged = $true
+    }
+
     # 1. node
     & $NodeLane start | Out-Null
 

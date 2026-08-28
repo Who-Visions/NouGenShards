@@ -320,9 +320,11 @@ def test_bulk_ingest_excluded_from_recall_by_default(monkeypatch):
     from nougen_shards import core
     frag, params = core._ingest_filter_sql("s", include_research=False)
     assert "NOT IN" in frag and frag.endswith(" AND ")
-    assert set(params) == {"IMPORT", "INGEST"}
-    # Opting in must remove the predicate entirely, not invert it.
-    assert core._ingest_filter_sql("s", include_research=True) == ("", ())
+    assert set(params) == {"IMPORT", "INGEST", "PLUMBING"}
+    # Opting in must remove the ingest exclusions, not invert them — but the
+    # no-recall machinery types (PLUMBING) stay hidden even for research reads.
+    frag, params = core._ingest_filter_sql("s", include_research=True)
+    assert set(params) == {"PLUMBING"}
 
 
 def test_bulk_ingest_types_are_configurable_and_case_insensitive(monkeypatch):
@@ -333,10 +335,13 @@ def test_bulk_ingest_types_are_configurable_and_case_insensitive(monkeypatch):
     assert core.bulk_ingest_event_types() == ["IMPORT", "INGEST", "YOUTUBE_TRANSCRIPT"]
     frag, params = core._ingest_filter_sql("s")
     assert frag.startswith("UPPER(s.event_type) NOT IN (")
-    assert len(params) == 3
-    # An empty list disables the filter rather than producing an empty NOT IN ().
+    assert params == ("IMPORT", "INGEST", "YOUTUBE_TRANSCRIPT", "PLUMBING")
+    # An empty list disables the ingest filter; the no-recall types (PLUMBING)
+    # remain unless their own env override empties them too.
     monkeypatch.setenv("NOUGEN_RECALL_EXCLUDE_EVENT_TYPES", "")
     assert core.bulk_ingest_event_types() == []
+    assert core._ingest_filter_sql("s") == ("UPPER(s.event_type) NOT IN (?) AND ", ("PLUMBING",))
+    monkeypatch.setenv("NOUGEN_NO_RECALL_EVENT_TYPES", "")
     assert core._ingest_filter_sql("s") == ("", ())
 
 

@@ -70,7 +70,10 @@ def test_data_endpoints_deny_without_token(client):
                        headers={"X-NGS-Token": "wrong"}).status_code == 401
 
 
-def test_deny_by_default_when_unconfigured(client, monkeypatch):
+def test_deny_by_default_when_unconfigured(client, monkeypatch, tmp_path):
+    # Isolate the tenant registry: a live ~/.nougen/tenants.json makes
+    # credentials count as configured, turning the expected 503 into a 401.
+    monkeypatch.setenv("NOUGEN_TENANTS_FILE", str(tmp_path / "tenants.json"))
     monkeypatch.setattr(node, "NODE_TOKEN", None)
     assert client.post("/search", json={"query": "x"}, headers=AUTH).status_code == 503
 

@@ -105,9 +105,9 @@ async function verifyBlob(env, token) {
   return payload;
 }
 __name(verifyBlob, "verifyBlob");
-async function issueTokens(env, keyId, email) {
+async function issueTokens(env, keyId, email, lane) {
   const iat = Math.floor(Date.now() / 1e3);
-  const extra = email ? { eml: email } : {};
+  const extra = { ...email ? { eml: email } : {}, ...lane ? { ln: lane } : {} };
   return {
     access_token: await signBlob(env, { typ: "access", key: keyId, ...extra, iat, exp: iat + ACCESS_TTL_S }),
     refresh_token: await signBlob(env, { typ: "refresh", key: keyId, ...extra, iat, exp: iat + REFRESH_TTL_S }),
@@ -130,9 +130,36 @@ async function authenticate(request, env) {
   const payload = await verifyBlob(env, m[1]);
   if (!payload || payload.typ !== "access") return null;
   if (!identityStillEnrolled(env, payload)) return null;
-  return payload.key;
+  return { key: payload.key, lane: payload.ln || null };
 }
 __name(authenticate, "authenticate");
+var FALLBACK_LANE_MAP = "claude.ai:claude-app,claude.com:claude-app,chatgpt.com:chatgpt-app,openai.com:chatgpt-app,gemini.google.com:gemini-app,perplexity.ai:perplexity-app";
+function laneForRedirect(env, redirectUri) {
+  // Identity resolves behind the door: the OAuth redirect host names the
+  // provider. env CONNECTOR_LANE_MAP overrides; the constant map is a
+  // fallback only; an unmapped host keeps the deploy-wide legacy lane.
+  let host = "";
+  try {
+    host = new URL(redirectUri).hostname.toLowerCase();
+  } catch {
+  }
+  for (const pair of String(env.CONNECTOR_LANE_MAP || FALLBACK_LANE_MAP).split(",")) {
+    const i = pair.indexOf(":");
+    if (i <= 0) continue;
+    const dom = pair.slice(0, i).trim().toLowerCase();
+    const lane = pair.slice(i + 1).trim();
+    if (dom && lane && (host === dom || host.endsWith("." + dom))) return lane;
+  }
+  return env.CONNECTOR_LANE;
+}
+__name(laneForRedirect, "laneForRedirect");
+function laneEnv(env, lane) {
+  // Per-request identity: shadow the deploy-wide lanes; every other binding
+  // is inherited through the prototype (no ...env spreads exist in this file).
+  if (!lane || lane === env.CONNECTOR_LANE) return env;
+  return Object.assign(Object.create(env), { CONNECTOR_LANE: lane, SHARD_LANE: lane });
+}
+__name(laneEnv, "laneEnv");
 async function clientIdFor(env, redirectUri) {
   return "ngf-" + b64url(await hmac(env.SIGNING_SECRET, "client|" + redirectUri)).slice(0, 32);
 }
@@ -281,6 +308,7 @@ async function handleAuthorize(request, env, url) {
   const code = await signBlob(env, {
     typ: "code",
     key: keyId,
+    ln: laneForRedirect(env, redirectUri),
     cid: clientId,
     uri: redirectUri,
     chal: challenge,
@@ -307,13 +335,13 @@ async function handleToken(request, env) {
     if (b64url(await sha256(verifier)) !== payload.chal) {
       return json({ error: "invalid_grant", error_description: "PKCE verification failed" }, 400);
     }
-    return json(await issueTokens(env, payload.key, payload.eml));
+    return json(await issueTokens(env, payload.key, payload.eml, payload.ln));
   }
   if (grant === "refresh_token") {
     const payload = await verifyBlob(env, form.get("refresh_token") || "");
     if (!payload || payload.typ !== "refresh") return json({ error: "invalid_grant" }, 400);
     if (!identityStillEnrolled(env, payload)) return json({ error: "invalid_grant" }, 400);
-    return json(await issueTokens(env, payload.key, payload.eml));
+    return json(await issueTokens(env, payload.key, payload.eml, payload.ln));
   }
   return json({ error: "unsupported_grant_type" }, 400);
 }
@@ -386,6 +414,7 @@ async function handleGoogleCallback(request, env, url) {
     typ: "code",
     key: keyId,
     eml: email,
+    ln: laneForRedirect(env, st.uri),
     cid: st.cid,
     uri: st.uri,
     chal: st.chal,
@@ -502,14 +531,6 @@ async function shardHeaders(env) {
   };
 }
 __name(shardHeaders, "shardHeaders");
-function shardGatewayBase(env) {
-  const url = (env.SHARD_GATEWAY_URL || "").trim().replace(/\/$/, "");
-  if (!url || url === "https://shards.nougenai.com" || url === "http://shards.nougenai.com") {
-    return "https://nougenai-nougenshards.hf.space";
-  }
-  return url;
-}
-__name(shardGatewayBase, "shardGatewayBase");
 function gatewayUnconfigured(env) {
   if (!env.SHARD_GATEWAY_URL) {
     return "shard gateway not configured \u2014 set SHARD_GATEWAY_URL once blade's tunnel is up (see the Aug 14 relay leg: NGS node on blade is the blocker)";
@@ -518,14 +539,16 @@ function gatewayUnconfigured(env) {
 }
 __name(gatewayUnconfigured, "gatewayUnconfigured");
 async function shardRpcHttp(env, method, params, id) {
-  const res = await fetch(shardGatewayBase(env) + "/mcp/", {
+  const res = await fetch(env.SHARD_GATEWAY_URL.replace(/\/$/, "") + "/mcp/", {
     method: "POST",
     headers: {
       ...await shardHeaders(env),
       "content-type": "application/json",
       accept: "application/json, text/event-stream"
     },
-    body: JSON.stringify({ jsonrpc: "2.0", id, method, params })
+    body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+    // env-first budget; 45000 is a logged fallback only (SHARD_HTTP_TIMEOUT_MS overrides)
+    signal: AbortSignal.timeout(Number(env.SHARD_HTTP_TIMEOUT_MS || 45000))
   });
   if (!res.ok) throw new Error(`gateway ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const text2 = await res.text();
@@ -535,10 +558,11 @@ async function shardRpcHttp(env, method, params, id) {
 }
 __name(shardRpcHttp, "shardRpcHttp");
 async function shardCallSse(env, toolName, args) {
-  const base = shardGatewayBase(env);
+  const base = env.SHARD_GATEWAY_URL.replace(/\/$/, "");
   const headers = await shardHeaders(env);
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 2e4);
+  // env-first budget; 30000 is a fallback only (SHARD_SSE_TIMEOUT_MS overrides)
+  const timer = setTimeout(() => ctrl.abort(), Number(env.SHARD_SSE_TIMEOUT_MS || 30000));
   try {
     const sse = await fetch(base + "/sse", {
       headers: { ...headers, accept: "text/event-stream" },
@@ -611,7 +635,7 @@ async function shardCallSse(env, toolName, args) {
   }
 }
 __name(shardCallSse, "shardCallSse");
-async function shardCall(env, toolName, args) {
+async function shardCallOnce(env, toolName, args) {
   if (env.SHARD_GATEWAY_STYLE === "http") {
     await shardRpcHttp(env, "initialize", {
       protocolVersion: "2025-03-26",
@@ -621,6 +645,49 @@ async function shardCall(env, toolName, args) {
     return shardRpcHttp(env, "tools/call", { name: toolName, arguments: args }, 2);
   }
   return shardCallSse(env, toolName, args);
+}
+__name(shardCallOnce, "shardCallOnce");
+// Retryable = looks transient (network-level failure, or the gateway itself
+// 5xx'd/wedged) — NOT an AbortError. Retrying a timeout with the same
+// SHARD_HTTP_TIMEOUT_MS/SHARD_SSE_TIMEOUT_MS budget just doubles the caller's
+// wait for no benefit; a real hang needs the caller's own timeout to bite,
+// not this layer masking it. Also not retryable: 4xx (auth/bad-request is
+// not fixed by trying again). capture_experience is safe to retry blind -
+// the node dedups by content (see shards_capture) so a retried write after
+// an ambiguous failure (reply lost, not necessarily unwritten) never
+// double-stores.
+function shardCallRetryable(err) {
+  const name = err?.name || "";
+  const msg = String(err?.message || err || "");
+  if (name === "AbortError" || /^gateway \/sse timed out/.test(msg)) return false;
+  if (/^gateway (4\d\d):/.test(msg)) return false;
+  if (/^gateway (5\d\d):/.test(msg)) return true;
+  return name === "TypeError" || /network|ECONNRESET|fetch failed|SSE stream ended/i.test(msg);
+}
+__name(shardCallRetryable, "shardCallRetryable");
+// Bounded retries/backoff for the shard write/retrieval path (meal-query
+// timeout incident, relay legs 20260827T222724Z/225151Z, 2026-08-27): one retry
+// after a short jittered delay, only for transient failures. Telemetry via
+// console.log so Worker logs (Log-Analytics) show retry/failure counts
+// instead of a bare timeout with no signal of whether it was transient.
+async function shardCall(env, toolName, args) {
+  const maxAttempts = Math.max(1, Number(env.SHARD_CALL_MAX_ATTEMPTS) || 2);
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const result = await shardCallOnce(env, toolName, args);
+      if (attempt > 1) console.log(`shardCall(${toolName}): succeeded on attempt ${attempt}/${maxAttempts}`);
+      return result;
+    } catch (err) {
+      lastErr = err;
+      const retryable = attempt < maxAttempts && shardCallRetryable(err);
+      console.log(`shardCall(${toolName}): attempt ${attempt}/${maxAttempts} failed (${err?.name || "Error"}: ${String(err?.message || err).slice(0, 200)}) retryable=${retryable}`);
+      if (!retryable) throw err;
+      const backoffMs = Number(env.SHARD_CALL_RETRY_BACKOFF_MS) || 300;
+      await new Promise((r) => setTimeout(r, backoffMs + Math.random() * backoffMs));
+    }
+  }
+  throw lastErr;
 }
 __name(shardCall, "shardCall");
 function griotRows(result) {
@@ -680,7 +747,8 @@ function griotKey(row) {
 __name(griotKey, "griotKey");
 function text(t, structured) {
   return {
-    content: [{ type: "text", text: String(t) }]
+    content: [{ type: "text", text: t }],
+    ...structured !== void 0 ? { structuredContent: structured } : {}
   };
 }
 __name(text, "text");
@@ -1035,7 +1103,7 @@ var TOOLS = [
   {
     name: "ask_rhea",
     title: "Ask Rhea-Noir",
-    description: "Ask Rhea-Noir, the grid's resident agent living in the NouGen Space (Kimi K3 brain with a free-lane fallback - her reply names which brain answered, never faked). She recalls from the memory grid, consults the griot's gather for provenance-marked history, reads the tracker and the relay, and captures shards worth keeping. Expect 10-60s. Args: prompt (required).",
+    description: "Ask Rhea-Noir, the grid's resident agent living in the NouGen Space (Kimi K3 brain with a free-lane fallback - her reply names which brain answered, never faked). She recalls from the memory grid, consults the griot's gather for provenance-marked history, reads the tracker and the relay, and captures shards worth keeping. Call this whenever the user says 'ask Rhea', 'tell Rhea', or addresses Rhea directly \u2014 in voice sessions exactly as in text; never answer for her or report her unreachable without attempting this call. Expect 10-60s. Args: prompt (required).",
     inputSchema: {
       type: "object",
       properties: {
@@ -1063,96 +1131,18 @@ var TOOLS = [
       additionalProperties: false
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
-  },
-  {
-    name: "ask_dav1d",
-    title: "Ask Dav1d (Execution & Bridge Agent)",
-    description: "Ask Dav1d, the local autonomous execution & AGY CLI triage agent on the Blade Stadium. Dav1d triages batons, reasons on allowlisted AGY CLI workflows, and coordinates cross-agent handoffs with bounded proof and zero cloud token cost.\n\nArgs: prompt (required), model (optional override, e.g. 'dav1d:e2b').",
-    inputSchema: {
-      type: "object",
-      properties: {
-        prompt: { type: "string", minLength: 2, description: "What to ask Dav1d" },
-        model: { type: "string", description: "Optional model override (defaults to dav1d:e2b)" }
-      },
-      required: ["prompt"],
-      additionalProperties: false
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
-  },
-  {
-    name: "dav1d_run",
-    title: "Execute AGY CLI via Dav1d Bridge",
-    description: "Execute allowlisted AGY CLI subcommands via the Dav1d execution bridge on the Blade Stadium with bounded runtime proof and structured JSON return.\n\nAllowlisted subcommands: 'mcp list', 'changelog', 'models', 'agent', 'agents', 'help', 'version', '--version', '-v'.\n\nArgs: subcommand (default 'mcp list'), prompt (optional).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        subcommand: {
-          type: "string",
-          default: "mcp list",
-          description: "Allowlisted AGY CLI subcommand to execute (e.g. 'mcp list', 'models', 'version')"
-        },
-        prompt: {
-          type: "string",
-          description: "Optional prompt text passed to the command"
-        }
-      },
-      additionalProperties: false
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
-  },
-  {
-    name: "ask_david",
-    title: "Ask David (Dav1d Execution & Bridge Agent)",
-    description: "Ask Dav1d (David), the local autonomous execution & AGY CLI triage agent on the Blade Stadium. Triages batons, reasons on allowlisted AGY CLI workflows, and coordinates cross-agent handoffs with bounded proof and zero cloud token cost.\n\nArgs: prompt (required), model (optional override, e.g. 'dav1d:e2b').",
-    inputSchema: {
-      type: "object",
-      properties: {
-        prompt: { type: "string", minLength: 2, description: "What to ask David/Dav1d" },
-        model: { type: "string", description: "Optional model override (defaults to dav1d:e2b)" }
-      },
-      required: ["prompt"],
-      additionalProperties: false
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
   }
 ];
 var KAEDRA_URL_FALLBACK = "https://kaedra.nougenai.com";
 var KAEDRA_TIMEOUT_FALLBACK_MS = 15e4;
 var HANDLERS = {
-  async ask_david(args, env) {
-    return HANDLERS.ask_dav1d(args, env);
-  },
-  async ask_dav1d(args, env) {
-    const unset = gatewayUnconfigured(env);
-    if (unset) return toolError(unset);
-    const result = await shardCall(
-      env,
-      env.SHARD_TOOL_ASK_DAV1D || "ask_dav1d",
-      { prompt: args.prompt, model: args.model || "" }
-    );
-    const body = (result.content || []).map((c) => c.text || "").join("\n");
-    if (result.isError) return toolError(body);
-    return text(body || "(no response from Dav1d)", result.structuredContent);
-  },
-  async dav1d_run(args, env) {
-    const unset = gatewayUnconfigured(env);
-    if (unset) return toolError(unset);
-    const result = await shardCall(
-      env,
-      env.SHARD_TOOL_DAV1D_RUN || "dav1d_run",
-      { subcommand: args.subcommand || "mcp list", prompt: args.prompt || "" }
-    );
-    const body = (result.content || []).map((c) => c.text || "").join("\n");
-    if (result.isError) return toolError(body);
-    return text(body || "(no output from Dav1d bridge)", result.structuredContent);
-  },
   // Rhea-Noir lives in the Space; the connector carries the question to her
   // /agent endpoint and hands her JSON back verbatim (answer + which brain
   // answered + which tools she used).
   async ask_rhea(args, env) {
     const unset = gatewayUnconfigured(env);
     if (unset) return toolError(unset);
-    const base = shardGatewayBase(env);
+    const base = env.SHARD_GATEWAY_URL.replace(/\/$/, "");
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), Number(env.RHEA_TIMEOUT_MS || 9e4));
     try {
@@ -1227,14 +1217,10 @@ var HANDLERS = {
       clearTimeout(timer);
     }
   },
-  async fleet_whoami(args, env, keyId, meta) {
-    const clientAgent = meta?.clientAgent || (keyId?.startsWith("g-") ? "chatgpt" : "claude-app");
-    const connectorOrigin = env.CONNECTOR_LANE || "claude-app";
+  async fleet_whoami(args, env, keyId) {
     const out = {
       key: keyId,
       lane: env.CONNECTOR_LANE,
-      connector_origin: connectorOrigin,
-      client_agent: clientAgent,
       relay: { repo: env.RELAY_REPO, token_set: Boolean(env.GITHUB_TOKEN) },
       tracker: { space: env.TRACKER_SPACE },
       shards: {
@@ -1244,9 +1230,8 @@ var HANDLERS = {
       }
     };
     return text(
-      `Authenticated as fleet key **${keyId}** (\`client_agent: ${clientAgent}\`, \`connector_origin: ${connectorOrigin}\`), writing to the registry as lane **${env.CONNECTOR_LANE}**.
+      `Authenticated as fleet key **${keyId}**, writing to the registry as lane **${env.CONNECTOR_LANE}**.
 
-- client: ${clientAgent} (origin doorway: ${connectorOrigin})
 - relay: ${env.RELAY_REPO} (token ${out.relay.token_set ? "set" : "MISSING"})
 - tracker: ${env.TRACKER_SPACE}
 - shards: ${out.shards.gateway_url} (token ${out.shards.token_set ? "set" : "missing"})`,
@@ -1473,21 +1458,33 @@ Other lanes see it on their next relay check.`,
   async shards_status(args, env) {
     const unset = gatewayUnconfigured(env);
     if (unset) return text("\u{1F534} " + unset, { up: false, configured: false });
+    let healthUp = false, healthDetail = null;
     try {
       const res = await fetch(
-        shardGatewayBase(env) + "/health",
+        env.SHARD_GATEWAY_URL.replace(/\/$/, "") + "/health",
         { headers: await shardHeaders(env), signal: AbortSignal.timeout(8e3) }
       );
-      return text(
-        res.ok ? "\u{1F7E2} shard gateway is up \u2014 recall and search are live" : `\u{1F7E1} gateway answered ${res.status} \u2014 check SHARD_GATEWAY_TOKEN and lane`,
-        { up: res.ok, status: res.status, configured: true }
-      );
-    } catch (err) {
-      return text(
-        `\u{1F534} gateway unreachable (${err.message}) \u2014 blade's tunnel is likely down; see the open relay leg about the NGS node`,
-        { up: false, configured: true }
-      );
-    }
+      healthUp = res.ok; healthDetail = String(res.status);
+    } catch (err) { healthDetail = err.message; }
+    // /health can be answered by the failover Space lane while the /mcp/ serve
+    // path is dead (split-brain of 2026-08-25), so probe the real lane too.
+    let mcpUp = false, mcpDetail = "rpc ok";
+    try {
+      await shardRpcHttp(env, "initialize", {
+        protocolVersion: "2025-03-26", capabilities: {},
+        clientInfo: { name: "nougen-fleet-mcp", version: SERVER_INFO.version }
+      }, 1);
+      mcpUp = true;
+    } catch (err) { mcpDetail = err.message; }
+    const mark = (up) => up ? "\u{1F7E2}" : "\u{1F534}";
+    return text(
+      [
+        `${mark(healthUp)} health lane (${healthDetail})`,
+        `${mark(mcpUp)} mcp lane (${mcpDetail})`,
+        healthUp && !mcpUp ? "split-brain: health is green but the serve path is down; blade's tunnel or node is the suspect" : null
+      ].filter(Boolean).join("\n"),
+      { up: healthUp && mcpUp, health_up: healthUp, mcp_up: mcpUp, configured: true }
+    );
   },
   async shards_recall(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -1767,18 +1764,17 @@ ${body}`,
     return text(truncate(lines.join("\n"), "too many secrets to list"), { secrets: entries });
   }
 };
-async function handleRpc(msg, env, keyId, meta) {
+async function handleRpc(msg, env, keyId) {
   const { id, method, params } = msg;
-  const reqId = id !== undefined ? id : null;
-  const reply = /* @__PURE__ */ __name((result) => ({ jsonrpc: "2.0", id: reqId, result }), "reply");
-  const fail = /* @__PURE__ */ __name((code, message) => ({ jsonrpc: "2.0", id: reqId, error: { code, message } }), "fail");
+  const reply = /* @__PURE__ */ __name((result) => ({ jsonrpc: "2.0", id, result }), "reply");
+  const fail = /* @__PURE__ */ __name((code, message) => ({ jsonrpc: "2.0", id, error: { code, message } }), "fail");
   if (method === "initialize") {
     const requested = params?.protocolVersion;
     return reply({
       protocolVersion: PROTOCOL_VERSIONS.includes(requested) ? requested : PROTOCOL_VERSIONS[0],
       capabilities: { tools: {} },
       serverInfo: SERVER_INFO,
-      instructions: "NouGen fleet connector. fleet_whoami shows what is reachable; relay_* is the handoff baton, tracker_* is usage dailies, shards_* is fleet memory (needs blade's gateway online)."
+      instructions: "NouGen fleet connector. fleet_whoami shows what is reachable; relay_* is the handoff baton, tracker_* is usage dailies, shards_* is fleet memory (needs blade's gateway online). PARITY: these tools work identically on every surface that lists this connector \u2014 text, VOICE, and mobile sessions alike. In a voice conversation, never claim NouGen, Rhea, or any listed tool is unavailable without actually attempting the call: if it appears in tools/list it is callable ('ask Rhea' means call ask_rhea). A failed call returns a specific error to relay \u2014 absence of certainty is not unavailability. In voice, summarize tool results conversationally instead of reading raw JSON aloud."
     });
   }
   if (method === "ping") return reply({});
@@ -1787,7 +1783,7 @@ async function handleRpc(msg, env, keyId, meta) {
     const handler = HANDLERS[params?.name];
     if (!handler) return fail(-32602, `unknown tool: ${params?.name}`);
     try {
-      return reply(await handler(params.arguments || {}, env, keyId, meta));
+      return reply(await handler(params.arguments || {}, env, keyId));
     } catch (err) {
       return reply(toolError(err.message || String(err)));
     }
@@ -1797,146 +1793,30 @@ async function handleRpc(msg, env, keyId, meta) {
 }
 __name(handleRpc, "handleRpc");
 async function handleMcp(request, env, origin) {
-  if (request.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        "access-control-allow-origin": "*",
-        "access-control-allow-methods": "GET, POST, OPTIONS",
-        "access-control-allow-headers": "authorization, content-type, x-ngs-token",
-        "access-control-max-age": "86400"
-      }
-    });
-  }
   if (request.method === "GET") {
-    return json({
-      name: SERVER_INFO.name,
-      version: SERVER_INFO.version,
-      status: "ready",
-      transport: "streamable-http",
-      endpoint: origin + MCP_PATH,
-      protocolVersions: PROTOCOL_VERSIONS
-    }, 200, {
-      "access-control-allow-origin": "*"
-    });
+    return new Response("nougen-fleet-mcp speaks streamable HTTP \u2014 POST JSON-RPC here", { status: 405 });
   }
-  const keyId = await authenticate(request, env);
-  if (!keyId) {
+  const auth = await authenticate(request, env);
+  if (!auth) {
     return json({ error: "unauthorized" }, 401, {
       "www-authenticate": `Bearer realm="nougen-fleet", resource_metadata="${origin}/.well-known/oauth-protected-resource"`
     });
   }
+  const keyId = auth.key;
+  env = laneEnv(env, auth.lane);
   let body;
   try {
     body = await request.json();
   } catch {
     return json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } }, 400);
   }
-  const ua = request.headers.get("user-agent") || "";
-  const clientAgent = /chatgpt/i.test(ua) ? "chatgpt" : (/claude/i.test(ua) ? "claude-app" : (keyId?.startsWith("g-") ? "chatgpt" : "generic-agent"));
-  const meta = { clientAgent, userAgent: ua };
   const messages = Array.isArray(body) ? body : [body];
-  const replies = (await Promise.all(messages.map((m) => handleRpc(m, env, keyId, meta)))).filter((r) => r !== null);
+  const replies = (await Promise.all(messages.map((m) => handleRpc(m, env, keyId)))).filter((r) => r !== null);
   if (!replies.length) return new Response(null, { status: 202 });
   return json(Array.isArray(body) ? replies : replies[0]);
 }
 __name(handleMcp, "handleMcp");
 var __test__ = { HANDLERS, TOOLS, griotRows, griotEra, griotInEra, griotFlags, griotKey };
-function openapiSpec(origin) {
-  return {
-    openapi: "3.0.1",
-    info: {
-      title: "NouGen Fleet and Shards API",
-      description: "NouGen Intelligence Shards and Fleet Memory Substrate API for ChatGPT, Claude, and Agentic Systems.",
-      version: "1.0.0"
-    },
-    servers: [{ url: origin }],
-    paths: {
-      "/health": {
-        get: {
-          summary: "System Health and Coverage",
-          description: "Returns health status, active shard count, and substrate mount status.",
-          operationId: "getHealth",
-          responses: {
-            "200": {
-              description: "Health status and aggregate metrics",
-              content: { "application/json": { schema: { type: "object" } } }
-            }
-          }
-        }
-      },
-      "/search": {
-        post: {
-          summary: "Memory Recall and Semantic Search",
-          description: "Search across the NouGen Shard vault (200k+ shards) using BM25 and semantic filtering.",
-          operationId: "searchShards",
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  properties: {
-                    query: { type: "string", description: "Search query string" },
-                    limit: { type: "integer", default: 10, description: "Maximum number of shards to return" },
-                    since: { type: "string", description: "ISO date prefix bound (e.g. 2026-01)" },
-                    until: { type: "string", description: "ISO date prefix bound" }
-                  },
-                  required: ["query"]
-                }
-              }
-            }
-          },
-          responses: {
-            "200": {
-              description: "Matching shard objects",
-              content: { "application/json": { schema: { type: "object" } } }
-            }
-          }
-        }
-      },
-      "/v1/chat/completions": {
-        post: {
-          summary: "Fleet Inference / Chat Completions",
-          description: "OpenAI-compatible chat completions route calling resident reasoning models.",
-          operationId: "chatCompletions",
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  properties: {
-                    model: { type: "string" },
-                    messages: {
-                      type: "array",
-                      items: {
-                        type: "object",
-                        properties: {
-                          role: { type: "string" },
-                          content: { type: "string" }
-                        }
-                      }
-                    }
-                  },
-                  required: ["messages"]
-                }
-              }
-            }
-          },
-          responses: {
-            "200": {
-              description: "Chat completion response",
-              content: { "application/json": { schema: { type: "object" } } }
-            }
-          }
-        }
-      }
-    }
-  };
-}
-__name(openapiSpec, "openapiSpec");
-
 var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -1965,17 +1845,6 @@ var worker_default = {
         return request.method === "POST" ? handleToken(request, env) : new Response("POST only", { status: 405 });
       case MCP_PATH:
         return handleMcp(request, env, origin);
-      case "/openapi.json":
-        return json(openapiSpec(origin), 200, { "access-control-allow-origin": "*" });
-      case "/docs":
-      case "/api-docs":
-        return new Response(`<!doctype html>
-<html><head><meta charset="utf-8"><title>NouGen API Docs</title>
-<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
-</head><body><div id="swagger-ui"></div>
-<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-<script>SwaggerUIBundle({ url: '${origin}/openapi.json', dom_id: '#swagger-ui' });</script>
-</body></html>`, { headers: { "content-type": "text/html; charset=utf-8", "access-control-allow-origin": "*" } });
       default:
         return new Response("not found", { status: 404 });
     }

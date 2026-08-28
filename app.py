@@ -3,6 +3,7 @@ NouGenShards Production Node & Cortex HUD.
 Architecture: FastAPI + Persistent Storage (/data) + Token Auth + Multi-tab Gradio UI.
 """
 import os
+import re
 import sys
 import json
 import logging
@@ -18,8 +19,12 @@ import gradio as gr
 import subprocess
 
 
-# Add src to path for absolute imports
-sys.path.append(os.path.join(os.getcwd(), 'src'))
+# Add src to path for absolute imports. insert(0), not append: site-packages
+# precedes an appended entry, so a stale installed nougen_shards would silently
+# shadow the working tree (measured 2026-08-27: venv wheel frozen at 1.3.0 while
+# src had diverged). Anchored to this file, not CWD, so a service launched from
+# any directory still imports the tree it lives in.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'src'))
 
 # Override Storage for HF Persistence
 if os.environ.get("SPACE_ID"):
@@ -69,20 +74,39 @@ def recall_memory(query: str, limit: int = 5) -> list:
     # Federated for the same reason as POST /search below: a remote MCP client
     # should not get a narrower corpus than the local CLI.
     results = federated_retrieve(query, limit=max(1, min(limit, 20)))
-    return [{k: v for k, v in r.items() if not isinstance(v, (bytes, bytearray))}
-            for r in results]
+    # Same compaction as POST /search (_json_safe): this path previously shipped
+    # raw rows and was the one that leaked full vault bodies to MCP clients.
+    return [_json_safe(r) for r in results]
 
 
 @node_mcp.tool()
 def capture_experience(title: str, content: str, event_type: str = "KNOWLEDGE",
                        tags: list[str] | None = None,
-                       original_timestamp: str | None = None) -> dict:
+                       original_timestamp: str | None = None,
+                       event_time_original: str | None = None,
+                       source_created_at: str | None = None,
+                       source_modified_at: str | None = None,
+                       captured_at: str | None = None,
+                       ai_first_touched_at: str | None = None,
+                       ai_last_touched_at: str | None = None,
+                       migrated_at: str | None = None,
+                       amended_at: list[str] | str | None = None,
+                       temporal_meta: dict | str | None = None) -> dict:
     """Store a unit of experience as a shard (deduplicated by content).
 
-    `original_timestamp` (ISO-8601) stamps migrated content at its true era
-    instead of capture time; invalid values fall back to now."""
+    `original_timestamp` / `event_time_original` (ISO-8601) stamps migrated
+    content at its true era instead of capture time; invalid values fall back to now."""
     ok = core.capture(event_type, title, content, tags=tags,
-                      original_timestamp=original_timestamp)
+                      original_timestamp=original_timestamp,
+                      event_time_original=event_time_original,
+                      source_created_at=source_created_at,
+                      source_modified_at=source_modified_at,
+                      captured_at=captured_at,
+                      ai_first_touched_at=ai_first_touched_at,
+                      ai_last_touched_at=ai_last_touched_at,
+                      migrated_at=migrated_at,
+                      amended_at=amended_at,
+                      temporal_meta=temporal_meta)
     return {"captured": bool(ok)}
 
 
@@ -113,20 +137,20 @@ def _window_search(query: str = "", since: Optional[str] = None,
 
     Filtering happens in SQL, before scoring, so a sparse era still returns its
     shards instead of losing them to a relevance cut computed over the whole
-    grid. Timestamps are ISO-8601 (2026-08-09T15:27:40.728875Z), which sorts
-    and compares lexicographically -- so a bare date like "2026-03" or
-    "2026-03-14" works as a bound with no parsing.
+    grid. Resolves date bounds against
+    COALESCE(json_extract(temporal_meta, '$.event_time_original'), original_timestamp, timestamp).
     """
+    ts_expr = "COALESCE(json_extract(temporal_meta, '$.event_time_original'), original_timestamp, timestamp)"
     where, params = [], []
     if since:
-        where.append("timestamp >= ?")
+        where.append(f"{ts_expr} >= ?")
         params.append(since)
     if until:
         # Inclusive: "2026-03" should cover all of March, and "2026-03-14"
         # the whole day, so pad the bound to the end of whatever precision
         # the caller gave rather than cutting at midnight.
-        params.append(until + "￿")
-        where.append("timestamp <= ?")
+        params.append(until + "\ufffd")
+        where.append(f"{ts_expr} <= ?")
 
     q = (query or "").strip()
     rows = []
@@ -140,21 +164,33 @@ def _window_search(query: str = "", since: Optional[str] = None,
         try:
             clauses = list(where)
             args = list(params)
+            # Window browsing sees the research corpus, never the plumbing.
+            _nr = core.no_recall_event_types()
+            if _nr:
+                clauses.append(
+                    "UPPER(event_type) NOT IN (%s)" % ",".join("?" * len(_nr))
+                )
+                args.extend(_nr)
             if q:
                 # Trigram FTS: match on the phrase, quoted so punctuation in the
                 # query cannot be read as FTS operator syntax.
                 clauses.append("id IN (SELECT rowid FROM shards_fts WHERE shards_fts MATCH ?)")
                 args.append('"' + q.replace('"', '""') + '"')
-            sql = ("SELECT id, timestamp, event_type, title, content, tags, utility_score "
-                   "FROM shards")
+            sql = (f"SELECT id, timestamp, event_type, title, content, tags, utility_score, "
+                   f"temporal_meta, original_timestamp, {ts_expr} AS effective_timestamp "
+                   f"FROM shards")
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
-            sql += " ORDER BY timestamp DESC LIMIT ?"
+            sql += f" ORDER BY {ts_expr} DESC LIMIT ?"
             args.append(limit)
             for r in conn.execute(sql, args):
                 rows.append({"id": r[0], "timestamp": r[1], "event_type": r[2],
                              "title": r[3], "content": r[4], "tags": r[5],
-                             "utility_score": r[6], "_db_index": i})
+                             "utility_score": r[6],
+                             "temporal_meta": r[7] if len(r) > 7 else None,
+                             "original_timestamp": r[8] if len(r) > 8 else None,
+                             "effective_timestamp": r[9] if len(r) > 9 else r[1],
+                             "_db_index": i})
         except Exception:
             # A malformed FTS query or a bad shard row on one DB must not sink
             # the whole sweep -- the other eight still have answers.
@@ -162,7 +198,7 @@ def _window_search(query: str = "", since: Optional[str] = None,
         finally:
             conn.close()
 
-    rows.sort(key=lambda x: x["timestamp"], reverse=True)
+    rows.sort(key=lambda x: str(x.get("effective_timestamp") or x.get("original_timestamp") or x.get("timestamp") or ""), reverse=True)
     return rows[:limit]
 
 
@@ -346,14 +382,15 @@ def _window_clauses(query: str, since: Optional[str], until: Optional[str]) -> t
     era bounds, the no_recall event-type exclusion, and the quoted FTS clause.
     Page enumeration and the count tool MUST agree row-for-row, so they build
     their WHERE from here and nowhere else."""
+    ts_expr = "COALESCE(json_extract(temporal_meta, '$.event_time_original'), original_timestamp, timestamp)"
     where, params = [], []
     if since:
-        where.append("timestamp >= ?")
+        where.append(f"{ts_expr} >= ?")
         params.append(since)
     if until:
         # Inclusive prefix bound, same convention as _window_search.
-        where.append("timestamp <= ?")
-        params.append(until + "￿")
+        where.append(f"{ts_expr} <= ?")
+        params.append(until + "\ufffd")
     _nr = core.no_recall_event_types()
     if _nr:
         where.append("UPPER(event_type) NOT IN (%s)" % ",".join("?" * len(_nr)))
@@ -380,6 +417,7 @@ def _window_page(query: str = "", since: Optional[str] = None,
     (timestamp DESC, db_index ASC, id ASC), so walking pages to exhaustion
     enumerates every matching shard exactly once — the exhaustive-audit
     counterpart to _window_search's top-N sample."""
+    ts_expr = "COALESCE(json_extract(temporal_meta, '$.event_time_original'), original_timestamp, timestamp)"
     limit = max(1, min(limit, _window_page_max()))
     base_where, base_params = _window_clauses(query, since, until)
     cur = None
@@ -404,51 +442,58 @@ def _window_page(query: str = "", since: Optional[str] = None,
             if cur is not None:
                 ts0, db0, id0 = cur
                 if i < db0:
-                    clauses.append("timestamp < ?")
+                    clauses.append(f"{ts_expr} < ?")
                     args.append(ts0)
                 elif i == db0:
-                    clauses.append("(timestamp < ? OR (timestamp = ? AND id > ?))")
+                    clauses.append(f"({ts_expr} < ? OR ({ts_expr} = ? AND id > ?))")
                     args.extend([ts0, ts0, id0])
                 else:
-                    clauses.append("timestamp <= ?")
+                    clauses.append(f"{ts_expr} <= ?")
                     args.append(ts0)
-            sql = ("SELECT id, timestamp, event_type, title, content, tags, "
-                   "utility_score FROM shards")
+            sql = (f"SELECT id, timestamp, event_type, title, content, tags, "
+                   f"utility_score, temporal_meta, original_timestamp, {ts_expr} AS effective_timestamp FROM shards")
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
             # limit+1 per DB guarantees the merged set can both fill the page
             # and prove whether anything remains beyond it.
-            sql += " ORDER BY timestamp DESC, id ASC LIMIT ?"
+            sql += f" ORDER BY {ts_expr} DESC, id ASC LIMIT ?"
             args.append(limit + 1)
             for r in conn.execute(sql, args):
                 rows.append({"id": r[0], "timestamp": r[1], "event_type": r[2],
                              "title": r[3], "content": r[4], "tags": r[5],
-                             "utility_score": r[6], "_db_index": i})
+                             "utility_score": r[6],
+                             "temporal_meta": r[7] if len(r) > 7 else None,
+                             "original_timestamp": r[8] if len(r) > 8 else None,
+                             "effective_timestamp": r[9] if len(r) > 9 else r[1],
+                             "_db_index": i})
         except Exception:
             # One bad DB must not sink the sweep; the others still answer.
             continue
         finally:
             conn.close()
 
+    def _get_eff_ts(x):
+        return str(x.get("effective_timestamp") or x.get("original_timestamp") or x.get("timestamp") or "")
+
     if cur is not None:
         # Belt-and-suspenders: drop anything not strictly after the cursor in
         # the total order, in case a DB's SQL branch ever drifts.
         ts0, db0, id0 = cur
         rows = [r for r in rows
-                if r["timestamp"] < ts0
-                or (r["timestamp"] == ts0
+                if _get_eff_ts(r) < ts0
+                or (_get_eff_ts(r) == ts0
                     and (r["_db_index"] > db0
                          or (r["_db_index"] == db0 and r["id"] > id0)))]
 
-    # Stable two-stage sort realizes (timestamp DESC, db ASC, id ASC).
+    # Stable two-stage sort realizes (effective_timestamp DESC, db ASC, id ASC).
     rows.sort(key=lambda r: (r["_db_index"], r["id"]))
-    rows.sort(key=lambda r: r["timestamp"], reverse=True)
+    rows.sort(key=_get_eff_ts, reverse=True)
     page = rows[:limit]
     has_more = len(rows) > limit
     next_cursor = None
     if has_more and page:
         last = page[-1]
-        next_cursor = "%s|%d|%d" % (last["timestamp"], last["_db_index"], last["id"])
+        next_cursor = "%s|%d|%d" % (_get_eff_ts(last), last["_db_index"], last["id"])
     return {"rows": page, "next_cursor": next_cursor, "returned": len(page)}
 
 
@@ -1011,15 +1056,73 @@ class CaptureRequest(BaseModel):
     content: str
     tags: Optional[List[str]] = None
     original_timestamp: Optional[str] = None
+    event_time_original: Optional[str] = None
+    source_created_at: Optional[str] = None
+    source_modified_at: Optional[str] = None
+    captured_at: Optional[str] = None
+    ai_first_touched_at: Optional[str] = None
+    ai_last_touched_at: Optional[str] = None
+    migrated_at: Optional[str] = None
+    amended_at: Optional[List[str]] = None
+    temporal_meta: Optional[dict] = None
 
 
 class SyncPushRequest(BaseModel):
     shards: List[dict]
 
 
+# Search-surface payload hygiene. Sync/replication paths must NOT use this:
+# they move full-fidelity shards. Search callers get evidence, not archives -
+# a 25k-char raw vault body at rank 1 (measured 2026-08-27) is context poison
+# for every downstream agent. Caps resolve env-first; constants are fallbacks.
+_SEARCH_MAX_CONTENT = int(os.environ.get("NOUGEN_SEARCH_MAX_CONTENT_CHARS", "2800"))
+_SEARCH_MAX_FIELD = int(os.environ.get("NOUGEN_SEARCH_MAX_FIELD_CHARS", "400"))
+_SEARCH_COMPACT = os.environ.get("NOUGEN_SEARCH_COMPACT", "1") != "0"
+_HEAVY_KEY_RE = re.compile(r"embedding|_vector", re.I)
+# Identity/provenance fields are never clamped: truncating an id or path breaks
+# re-query-by-reference, which is the caller's only recourse after truncation.
+_UNCAPPED_KEYS = frozenset({"id", "_db_index", "source", "timestamp", "event_type",
+                            "file_path", "path", "shard_id", "db", "table"})
+_CONTENT_KEYS = frozenset({"content", "text", "body"})
+
+
+def _clamp(key: str, value):
+    if not isinstance(value, str):
+        return value
+    cap = _SEARCH_MAX_CONTENT if key in _CONTENT_KEYS else _SEARCH_MAX_FIELD
+    if key in _UNCAPPED_KEYS or len(value) <= cap:
+        return value
+    return value[:cap] + f"...[+{len(value) - cap} chars, requery by id for full body]"
+
+
 def _json_safe(item: dict) -> dict:
-    """Drop non-JSON-serializable fields (raw embedding bytes) from a shard row."""
-    return {k: v for k, v in item.items() if not isinstance(v, (bytes, bytearray))}
+    """Compact a shard row for a search surface: drop raw embedding bytes,
+    embedding/vector columns, and nulls; clamp oversized text fields.
+    NOUGEN_SEARCH_COMPACT=0 restores the legacy bytes-only filter."""
+    if not _SEARCH_COMPACT:
+        return {k: v for k, v in item.items() if not isinstance(v, (bytes, bytearray))}
+    return {k: _clamp(k, v) for k, v in item.items()
+            if v is not None
+            and not isinstance(v, (bytes, bytearray))
+            and not _HEAVY_KEY_RE.search(k)}
+
+
+def _extract_effective_ts(row: dict) -> str:
+    tm = row.get("temporal_meta")
+    if isinstance(tm, dict) and tm.get("event_time_original"):
+        return str(tm["event_time_original"])
+    if isinstance(tm, str) and tm.strip():
+        try:
+            tmd = json.loads(tm)
+            if isinstance(tmd, dict) and tmd.get("event_time_original"):
+                return str(tmd["event_time_original"])
+        except Exception:
+            pass
+    if row.get("event_time_original"):
+        return str(row["event_time_original"])
+    if row.get("original_timestamp"):
+        return str(row["original_timestamp"])
+    return str(row.get("effective_timestamp") or row.get("timestamp") or "")
 
 
 def _in_era(row: dict, since: Optional[str], until: Optional[str]) -> bool:
@@ -1027,6 +1130,7 @@ def _in_era(row: dict, since: Optional[str], until: Optional[str]) -> bool:
 
     Same lexicographic ISO comparison _window_search does in SQL, with the same
     inclusive upper bound (pad with \\uffff so "2026-03" covers all of March).
+    Resolves date bounds against COALESCE(temporal_meta.event_time_original, original_timestamp, timestamp).
 
     A row whose timestamp is missing or empty is NOT in the era. Federated
     vault lanes hand back rows with no timestamp at all, and those were the
@@ -1034,12 +1138,12 @@ def _in_era(row: dict, since: Optional[str], until: Optional[str]) -> bool:
     bounded question asked about. It is held back and counted, not silently
     mixed in with dated results.
     """
-    ts = row.get("timestamp") or ""
+    ts = _extract_effective_ts(row)
     if not isinstance(ts, str) or not ts.strip():
         return False
     if since and ts < since:
         return False
-    if until and ts > until + "￿":
+    if until and ts > until + "\ufffd":
         return False
     return True
 
@@ -1066,7 +1170,7 @@ def _merge_rows(*groups) -> list:
                 continue
             seen.add(key)
             merged.append(row)
-    merged.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
+    merged.sort(key=lambda r: _extract_effective_ts(r), reverse=True)
     return merged
 
 
@@ -1161,7 +1265,16 @@ def capture_shard(req: CaptureRequest,
                   _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Single-shard capture for user agents."""
     ok = core.capture(req.event_type, req.title, req.content, tags=req.tags,
-                      original_timestamp=req.original_timestamp)
+                      original_timestamp=req.original_timestamp,
+                      event_time_original=req.event_time_original,
+                      source_created_at=req.source_created_at,
+                      source_modified_at=req.source_modified_at,
+                      captured_at=req.captured_at,
+                      ai_first_touched_at=req.ai_first_touched_at,
+                      ai_last_touched_at=req.ai_last_touched_at,
+                      migrated_at=req.migrated_at,
+                      amended_at=req.amended_at,
+                      temporal_meta=req.temporal_meta)
     return {"status": "ok", "captured": bool(ok)}
 
 
@@ -1201,14 +1314,16 @@ def sync_push(req: SyncPushRequest,
             domain_key=s.get("domain_key"),
             density_score=s.get("density_score"),
             sensitivity=sensitivity,
-            # Bulk ingest must stamp a shard at its TRUE era, exactly as
-            # /capture does. Dropping this silently re-dated every pushed shard
-            # to ingest time -- and because capture() dedups on a content hash,
-            # a re-push with the right date is a no-op, so the original era was
-            # unrecoverable. `timestamp` is the fallback because /sync/pull
-            # exports rows under that key, which makes pull -> push round-trip
-            # era-preserving instead of flattening history to the migration date.
             original_timestamp=s.get("original_timestamp") or s.get("timestamp"),
+            event_time_original=s.get("event_time_original"),
+            source_created_at=s.get("source_created_at"),
+            source_modified_at=s.get("source_modified_at"),
+            captured_at=s.get("captured_at"),
+            ai_first_touched_at=s.get("ai_first_touched_at"),
+            ai_last_touched_at=s.get("ai_last_touched_at"),
+            migrated_at=s.get("migrated_at"),
+            amended_at=s.get("amended_at"),
+            temporal_meta=s.get("temporal_meta"),
         )
         if ok:
             count += 1
@@ -1640,6 +1755,30 @@ class _TokenGatedMCP:
 
 # Register the OAuth endpoints BEFORE the Gradio catch-all at "/", or the HUD
 # swallows /authorize, /token, /register and the discovery documents.
+def _lanes_for_google_email(email: str) -> list:
+    """Lanes a verified Google account may grant: owner-listed accounts may
+    grant any lane (owner included); otherwise only tenants whose registry
+    record names this exact email. Owner emails come from the environment so
+    no account ever appears in shipped code."""
+    email = (email or "").strip().casefold()
+    if not email:
+        return []
+    owner_emails = {
+        e.strip().casefold()
+        for e in os.environ.get("NOUGEN_GOOGLE_OWNER_EMAILS", "").split(",")
+        if e.strip()
+    }
+    try:
+        records = tenants.load_registry()
+    except tenants.TenantRegistryError:
+        logger.error("tenant registry rejected during Google lane resolution")
+        return []
+    if email in owner_emails:
+        return ([(tenants.OWNER_TENANT_ID, "Owner")]
+                + [(r.tenant_id, r.label) for r in records])
+    return [(r.tenant_id, r.label) for r in records if r.google_email == email]
+
+
 mcp_oauth.install(
     app,
     node_token_getter=lambda: NODE_TOKEN,
@@ -1647,6 +1786,7 @@ mcp_oauth.install(
         resolved.tenant_id if (resolved := _resolve_tenant_credential(token)) else None
     ),
     credentials_configured_getter=_credentials_configured,
+    lanes_for_email=_lanes_for_google_email,
 )
 
 # Mount BEFORE the Gradio catch-all at "/" so /mcp is routed to the MCP app.
