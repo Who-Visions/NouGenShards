@@ -128,9 +128,10 @@ def _unprotect(stored: str) -> str:
     return stored  # legacy plaintext row (pre-encryption migration)
 
 
-def _fingerprint(value: str) -> str:
+def _fingerprint(value: str | bytes) -> str:
     """Non-reversible audit fingerprint of a secret (first 12 hex of SHA-256)."""
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    raw = value if isinstance(value, bytes) else str(value).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:12]
 
 # Portable Vault Resolution
 # This was `Path(os.getenv("NOUGEN_VAULT_DIR", ".nougen_vault"))`, which had two
@@ -160,34 +161,36 @@ def resolve_secrets_vault_dir() -> Path:
     explicit = os.getenv(ENV_SECRETS_VAULT, "").strip()
     if explicit:
         return Path(explicit)
-    wt = Path.home() / "Watchtower"
-    if (wt / "agent_secrets.db").is_file():
-        return wt
     return Path.home() / ".nougen" / "secrets"
 
 
 def find_legacy_stores(roots=None) -> list:
-    """Secret stores outside the canonical vault, so fragmentation is reported."""
+    """Secret stores outside the canonical vault, so fragmentation is reported.
+
+    `get_secret` returning None reads exactly like "never ingested" rather than
+    "you are pointed at the wrong file", which is why this is worth surfacing.
+    """
     canonical = resolve_secrets_vault_dir().resolve()
-    home = Path.home()
-    explicit_cands = [
-        home / "Watchtower" / "agent_secrets.db",
-        home / "Watchtower" / "shards_secrets.db",
-        home / "Watchtower" / "NouGen" / ".nougen_vault" / DB_FILENAME,
-        home / "Watchtower" / "Sol-Ai" / ".nougen_vault" / DB_FILENAME,
-        home / ".nougen" / "secrets" / DB_FILENAME,
-        home / ".nougen" / DB_FILENAME,
-    ]
+    if roots is None:
+        home = Path.home()
+        roots = [home / "Watchtower", home]
     seen, found = set(), []
-    for cand in explicit_cands:
-        if cand.is_file():
+    for root in roots:
+        try:
+            candidates = list(Path(root).glob(f"*/{_LEGACY_VAULT_DIRNAME}/{DB_FILENAME}"))
+            candidates += list(Path(root).glob(f"*/*/{_LEGACY_VAULT_DIRNAME}/{DB_FILENAME}"))
+            candidates += list(Path(root).glob(f"*/{DB_FILENAME}"))
+        except OSError:
+            continue
+        for path in candidates:
             try:
-                resolved = cand.resolve()
-                if resolved not in seen and resolved.parent != canonical:
-                    seen.add(resolved)
-                    found.append(resolved)
+                resolved = path.resolve()
             except OSError:
-                pass
+                continue
+            if resolved in seen or resolved.parent == canonical:
+                continue
+            seen.add(resolved)
+            found.append(resolved)
     return sorted(found)
 
 
@@ -255,7 +258,6 @@ def candidate_stores() -> list:
     explicit = os.getenv(ENV_SECRETS_VAULT, "").strip()
     if explicit:
         ordered.append(Path(explicit) / DB_FILENAME)
-    ordered.append(Path.home() / "Watchtower" / "agent_secrets.db")
     ordered.append(Path.home() / ".nougen" / "secrets" / DB_FILENAME)
     ordered.extend(find_legacy_stores())
     seen, out = set(), []
@@ -752,6 +754,7 @@ def migrate_to_encrypted() -> int:
                              (protected_uri, row_id))
                 migrated += 1
         conn.commit()
+        return migrated
     finally:
         conn.close()
 def _run_gcloud_cmd(args: list[str]) -> Optional[str]:
@@ -776,10 +779,10 @@ def _run_gcloud_cmd(args: list[str]) -> Optional[str]:
     return None
 
 
-def get_gcloud_token(auto_ingest: bool = True) -> Optional[str]:
-    """Resolves active Google Cloud access token, encrypts it into Keymaker vault if auto_ingest=True, and returns plaintext token."""
+def get_gcloud_token(auto_ingest: bool = True, force_refresh: bool = False) -> Optional[str]:
+    """Resolves active Google Cloud access token, auto-refreshes if older than 45m or on force_refresh, encrypts into Keymaker vault."""
     env_tok = os.getenv("VERTEX_BEARER_TOKEN") or os.getenv("VERTEX_ACCESS_TOKEN") or os.getenv("GCP_ACCESS_TOKEN")
-    if env_tok and env_tok.startswith("ya29."):
+    if env_tok and env_tok.startswith("ya29.") and not force_refresh:
         if auto_ingest:
             try:
                 ingest_secret("GCP_ACCESS_TOKEN", env_tok.strip())
@@ -787,9 +790,26 @@ def get_gcloud_token(auto_ingest: bool = True) -> Optional[str]:
                 pass
         return env_tok.strip()
 
-    cached = get_secret("GCP_ACCESS_TOKEN")
-    if cached and cached.startswith("ya29."):
-        return cached
+    if not force_refresh:
+        resolution = resolve_secrets_store()
+        try:
+            conn = sqlite3.connect(str(resolution["active"].resolve()), timeout=5.0)
+            row = conn.execute("SELECT secret_value, last_rotated FROM secrets WHERE secret_key = 'GCP_ACCESS_TOKEN'").fetchone()
+            conn.close()
+            if row:
+                stored_val, last_rotated = row
+                try:
+                    rotated_dt = datetime.strptime(last_rotated, "%Y-%m-%d %H:%M:%S")
+                    age_seconds = (datetime.now() - rotated_dt).total_seconds()
+                except Exception:
+                    age_seconds = 9999
+                # OAuth tokens expire at 60 minutes; if under 45 minutes, reuse cached
+                if age_seconds < 2700:
+                    val = _unprotect(str(stored_val))
+                    if val and val.startswith("ya29."):
+                        return val
+        except Exception:
+            pass
 
     tok = _run_gcloud_cmd(["auth", "print-access-token"])
     if tok and tok.startswith("ya29."):

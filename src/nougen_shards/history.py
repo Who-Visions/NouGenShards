@@ -109,28 +109,46 @@ def _history_writer_loop():
             continue
 
         if batch:
-            conn = None
-            try:
-                if not get_history_db_path().exists():
-                    init_history_db()
-                conn = get_history_connection()
-                conn.execute("PRAGMA synchronous = NORMAL;")
-                conn.execute("PRAGMA busy_timeout = 2000;")
-                conn.executemany("""
-                    INSERT INTO shard_events (shard_id, db_index, event_type, old_score, new_score, timestamp, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, batch)
-                conn.commit()
-            except sqlite3.Error as exc:
-                print(f"[Warning] Failed to flush background history events: {exc}", file=sys.stderr)
-            finally:
-                if conn is not None:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-                for _ in batch:
-                    _LOG_QUEUE.task_done()
+            by_db = {}
+            for entry in batch:
+                db_p = entry[0]
+                by_db.setdefault(db_p, []).append(entry[1:])
+
+            for db_path, entries in by_db.items():
+                conn = None
+                try:
+                    db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    conn = sqlite3.connect(str(db_path), timeout=10.0)
+                    conn.execute("PRAGMA journal_mode=WAL;")
+                    conn.execute("PRAGMA synchronous = NORMAL;")
+                    conn.execute("PRAGMA busy_timeout = 2000;")
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS shard_events (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            shard_id INTEGER NOT NULL,
+                            db_index INTEGER NOT NULL,
+                            event_type TEXT NOT NULL,
+                            old_score REAL,
+                            new_score REAL,
+                            timestamp TEXT NOT NULL,
+                            metadata JSON
+                        );
+                    """)
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_history_timestamp ON shard_events(timestamp);")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_history_shard ON shard_events(shard_id, db_index);")
+                    conn.executemany("""
+                        INSERT INTO shard_events (shard_id, db_index, event_type, old_score, new_score, timestamp, metadata)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, entries)
+                    conn.commit()
+                except sqlite3.Error as exc:
+                    print(f"[Warning] Failed to flush background history events: {exc}", file=sys.stderr)
+                finally:
+                    if conn is not None:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
 
 
 def _ensure_worker_started():
@@ -154,7 +172,8 @@ def log_event(shard_id: int, db_index: int, event_type: str,
     """Writes a historical event to the substrate asynchronously."""
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     meta_json = json.dumps(metadata or {})
-    item = (shard_id, db_index, event_type, old_score, new_score, timestamp, meta_json)
+    db_path = get_history_db_path()
+    item = (db_path, shard_id, db_index, event_type, old_score, new_score, timestamp, meta_json)
 
     _ensure_worker_started()
     try:
