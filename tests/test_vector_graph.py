@@ -29,6 +29,8 @@ def setup_test_env(monkeypatch):
         core.init_db(1)
         vector_graph.init_vector_graph_db()
         yield temp_path
+        import gc
+        gc.collect()
 
 
 def _mock_embed(text: str):

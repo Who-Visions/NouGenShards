@@ -828,6 +828,15 @@ def capture(event_type: str, title: str, content: str,
             "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
             (fhash, target_idx))
         dconn.commit()
+
+        # Autonomous Vector Graphing & Linking (Valerion Modules 6, 11, 18)
+        if os.environ.get("NOUGEN_AUTOGRAPH_ENABLED", "0") == "1":
+            try:
+                from . import vector_graph
+                vector_graph.ingest_shard_triplets(fhash, title, content)
+            except Exception as _vg_exc:
+                logger.debug("Auto-graphing deferred for %s: %s", fhash[:8], _vg_exc)
+
         return True
     finally:
         dconn.close()

@@ -58,6 +58,8 @@ def _unpack_vector(blob: bytes) -> Optional[np.ndarray]:
 
 def _cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
     """Cosine similarity between two 1D vectors."""
+    if len(vec_a) != len(vec_b):
+        return 0.0
     norm_a = np.linalg.norm(vec_a)
     norm_b = np.linalg.norm(vec_b)
     if norm_a == 0 or norm_b == 0:
@@ -301,6 +303,20 @@ def ingest_triplet(
                 embedding, head_entity_id, tail_entity_id, source_shard_hash, weight, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (rel_id, subject, predicate, obj, rel_text, rel_blob, head_id, tail_id, fhash, weight, now_str))
+
+        # Cross-shard topological edge linking (connects shards sharing this entity)
+        co_shards = conn.execute("""
+            SELECT DISTINCT source_shard_hash FROM shard_relations
+            WHERE (head_entity_id IN (?, ?) OR tail_entity_id IN (?, ?))
+              AND source_shard_hash != ?
+            LIMIT 8
+        """, (head_id, tail_id, head_id, tail_id, fhash)).fetchall()
+
+        for (other_hash,) in co_shards:
+            conn.execute("""
+                INSERT OR IGNORE INTO shard_edges (src_hash, dst_hash, relation, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (fhash, other_hash, predicate, now_str))
 
         conn.commit()
         return True
