@@ -155,6 +155,29 @@ def extract_triplets_heuristic(title: str, content: str) -> List[Tuple[str, str,
     if not text:
         return triplets
 
+    # Pattern 0: YAML Frontmatter extraction (topic, category, tags, source)
+    clean_subj = text.replace(".md", "").replace("intelligence_shard_", "").replace("_", " ").strip()
+    fm_match = re.search(r"^---\s*\n(.*?)\n---", content or "", re.DOTALL)
+    if fm_match:
+        for line in fm_match.group(1).split("\n"):
+            if ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            k = k.strip().lower()
+            v = v.strip()
+            if not v:
+                continue
+            if k == "topic":
+                triplets.append((clean_subj, "has_topic", v.replace("_", " ")))
+            elif k == "category":
+                triplets.append((clean_subj, "has_category", v))
+            elif k == "tags":
+                tags = [t.strip() for t in v.split(",") if t.strip()]
+                for tag in tags[:4]:
+                    triplets.append((clean_subj, "tagged_as", tag))
+            elif k == "source":
+                triplets.append((clean_subj, "sourced_from", v))
+
     # Pattern 1: Title structures like "Apollo: fix JWT expiry in auth.py"
     colon_match = re.match(r"^([A-Za-z0-9_\-\.]+)\s*:\s*(.+)$", text)
     if colon_match:
