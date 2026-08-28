@@ -9,9 +9,7 @@ Invalid values must never crash a write -- warn and fall back to now.
 import ast
 import logging
 import os
-import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 import pytest

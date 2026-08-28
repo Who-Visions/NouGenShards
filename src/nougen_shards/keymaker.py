@@ -153,43 +153,41 @@ def _fingerprint(value: str) -> str:
 # surfaced by find_legacy_stores() so drift is migrated deliberately.
 ENV_SECRETS_VAULT = "NOUGEN_SECRETS_VAULT_DIR"
 _LEGACY_VAULT_DIRNAME = ".nougen_vault"
-DB_FILENAME = "shards_secrets.db"
+DB_FILENAME = "agent_secrets.db"
 
 
 def resolve_secrets_vault_dir() -> Path:
     explicit = os.getenv(ENV_SECRETS_VAULT, "").strip()
     if explicit:
         return Path(explicit)
+    wt = Path.home() / "Watchtower"
+    if (wt / "agent_secrets.db").is_file():
+        return wt
     return Path.home() / ".nougen" / "secrets"
 
 
 def find_legacy_stores(roots=None) -> list:
-    """Secret stores outside the canonical vault, so fragmentation is reported.
-
-    `get_secret` returning None reads exactly like "never ingested" rather than
-    "you are pointed at the wrong file", which is why this is worth surfacing.
-    """
+    """Secret stores outside the canonical vault, so fragmentation is reported."""
     canonical = resolve_secrets_vault_dir().resolve()
-    if roots is None:
-        home = Path.home()
-        roots = [home / "Watchtower", home / ".nougen"]
+    home = Path.home()
+    explicit_cands = [
+        home / "Watchtower" / "agent_secrets.db",
+        home / "Watchtower" / "shards_secrets.db",
+        home / "Watchtower" / "NouGen" / ".nougen_vault" / DB_FILENAME,
+        home / "Watchtower" / "Sol-Ai" / ".nougen_vault" / DB_FILENAME,
+        home / ".nougen" / "secrets" / DB_FILENAME,
+        home / ".nougen" / DB_FILENAME,
+    ]
     seen, found = set(), []
-    for root in roots:
-        try:
-            candidates = list(Path(root).glob(f"*/{_LEGACY_VAULT_DIRNAME}/{DB_FILENAME}"))
-            candidates += list(Path(root).glob(f"*/*/{_LEGACY_VAULT_DIRNAME}/{DB_FILENAME}"))
-            candidates += list(Path(root).glob(f"*/{DB_FILENAME}"))
-        except OSError:
-            continue
-        for path in candidates:
+    for cand in explicit_cands:
+        if cand.is_file():
             try:
-                resolved = path.resolve()
+                resolved = cand.resolve()
+                if resolved not in seen and resolved.parent != canonical:
+                    seen.add(resolved)
+                    found.append(resolved)
             except OSError:
-                continue
-            if resolved in seen or resolved.parent == canonical:
-                continue
-            seen.add(resolved)
-            found.append(resolved)
+                pass
     return sorted(found)
 
 
@@ -236,7 +234,7 @@ def _probe_store(db_path: Path) -> Optional[dict]:
     try:
         if not db_path.is_file():
             return None
-        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+        conn = sqlite3.connect(str(db_path.resolve()), timeout=5.0)
         try:
             count, newest = conn.execute(
                 "SELECT COUNT(*), MAX(last_rotated) FROM secrets").fetchone()
@@ -257,6 +255,7 @@ def candidate_stores() -> list:
     explicit = os.getenv(ENV_SECRETS_VAULT, "").strip()
     if explicit:
         ordered.append(Path(explicit) / DB_FILENAME)
+    ordered.append(Path.home() / "Watchtower" / "agent_secrets.db")
     ordered.append(Path.home() / ".nougen" / "secrets" / DB_FILENAME)
     ordered.extend(find_legacy_stores())
     seen, out = set(), []
@@ -300,6 +299,7 @@ def resolve_secrets_store(refresh: bool = False) -> dict:
     fast_candidates = []
     if env_value:
         fast_candidates.append(Path(env_value) / DB_FILENAME)
+    fast_candidates.append(Path.home() / "Watchtower" / "agent_secrets.db")
     fast_candidates.append(Path.home() / ".nougen" / "secrets" / DB_FILENAME)
     live = [probe for probe in (_probe_store(c) for c in fast_candidates) if probe]
     if live:
@@ -426,10 +426,7 @@ def _export_to_csv():
             writer = csv.writer(f_out)
             writer.writerow(["id", "secret_key", "fingerprint_sha256_12", "encrypted", "last_rotated"])
             for row_id, key, stored, rotated in rows:
-                try:
-                    fp = _fingerprint(_unprotect(stored))
-                except OSError:
-                    fp = "unreadable"
+                fp = _fingerprint(stored)
                 writer.writerow([row_id, key, fp, _is_encrypted(stored), rotated])
     except sqlite3.Error:
         pass
@@ -640,7 +637,7 @@ def _read_secret_row(db_path: Path, key: str) -> Optional[str]:
     try:
         if not db_path.is_file():
             return None
-        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+        conn = sqlite3.connect(str(db_path.resolve()), timeout=5.0)
         try:
             row = conn.execute(
                 "SELECT secret_value FROM secrets WHERE secret_key = ?",
@@ -757,9 +754,78 @@ def migrate_to_encrypted() -> int:
         conn.commit()
     finally:
         conn.close()
-    if migrated:
-        _export_to_csv()
-    return migrated
+def _run_gcloud_cmd(args: list[str]) -> Optional[str]:
+    import subprocess
+    cmd_str = "gcloud " + " ".join(args)
+    for runner in (
+        ["cmd.exe", "/c", cmd_str],
+        ["powershell.exe", "-NoProfile", "-Command", cmd_str],
+    ):
+        try:
+            res = subprocess.run(runner, capture_output=True, text=True, timeout=20, shell=False)
+            out = res.stdout.strip()
+            if out and not out.startswith("ERROR:") and not out.startswith("WARNING:"):
+                # Handle possible trailing warnings or multilines
+                for line in out.splitlines():
+                    clean = line.strip()
+                    if clean and not clean.startswith("WARNING:") and not clean.startswith("ERROR:"):
+                        return clean
+                return out
+        except Exception:
+            continue
+    return None
+
+
+def get_gcloud_token(auto_ingest: bool = True) -> Optional[str]:
+    """Resolves active Google Cloud access token, encrypts it into Keymaker vault if auto_ingest=True, and returns plaintext token."""
+    env_tok = os.getenv("VERTEX_BEARER_TOKEN") or os.getenv("VERTEX_ACCESS_TOKEN") or os.getenv("GCP_ACCESS_TOKEN")
+    if env_tok and env_tok.startswith("ya29."):
+        if auto_ingest:
+            try:
+                ingest_secret("GCP_ACCESS_TOKEN", env_tok.strip())
+            except Exception:
+                pass
+        return env_tok.strip()
+
+    cached = get_secret("GCP_ACCESS_TOKEN")
+    if cached and cached.startswith("ya29."):
+        return cached
+
+    tok = _run_gcloud_cmd(["auth", "print-access-token"])
+    if tok and tok.startswith("ya29."):
+        if auto_ingest:
+            try:
+                ingest_secret("GCP_ACCESS_TOKEN", tok)
+            except Exception:
+                pass
+        return tok
+    return None
+
+
+def get_active_gcp_project(auto_ingest: bool = True) -> Optional[str]:
+    """Resolves active Google Cloud project ID from env, vault, or gcloud CLI."""
+    env_proj = os.getenv("NOUGENSTYLE_VERTEX_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT_ID")
+    if env_proj and env_proj != "(unset)":
+        if auto_ingest:
+            try:
+                ingest_secret("GCP_PROJECT_ID", env_proj.strip())
+            except Exception:
+                pass
+        return env_proj.strip()
+
+    cached = get_secret("GCP_PROJECT_ID")
+    if cached and cached != "(unset)":
+        return cached
+
+    proj = _run_gcloud_cmd(["config", "get-value", "project"])
+    if proj and proj != "(unset)":
+        if auto_ingest:
+            try:
+                ingest_secret("GCP_PROJECT_ID", proj)
+            except Exception:
+                pass
+        return proj
+    return None
 
 
 if __name__ == "__main__":
