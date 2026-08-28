@@ -138,6 +138,31 @@ switch ($Action) {
             $env:NOUGEN_SECRETS_VAULT_DIR = $SecretsDir
             $env:PYTHONPATH       = Join-Path $Root 'src'
 
+            # Rhea-Noir reads her inference keys from the ENVIRONMENT
+            # (rhea_noir.py: OPENROUTER_API_KEY, NGS_INFERENCE_TOKENS/HF_TOKEN),
+            # not from the vault. Peeling only NGS_NODE_TOKEN left all three of
+            # her lanes keyless, so /agent raised "no inference lane available"
+            # and every ask_rhea call returned 500. The keys were in the vault
+            # the whole time - nothing was missing, they just never reached the
+            # child process. Values are resolved here and never logged.
+            foreach ($pair in @(
+                @{ Env = 'OPENROUTER_API_KEY';   Keys = @('OPENROUTER_KEY_NOUGENAI','Cwho_openr') },
+                @{ Env = 'HF_TOKEN';             Keys = @('CWHO_HFS_KEY','AGY_HF_API') },
+                @{ Env = 'NGS_INFERENCE_TOKENS'; Keys = @('CWHO_HFS_KEY','AGY_HF_API') }
+            )) {
+                # An operator-set env var always wins over the vault.
+                if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($pair.Env))) {
+                    foreach ($k in $pair.Keys) {
+                        $v = & $Python -c "from nougen_shards import keymaker as m; print(m.get_secret('$k') or '')"
+                        if (-not [string]::IsNullOrWhiteSpace($v)) {
+                            Set-Item -Path "env:$($pair.Env)" -Value $v.Trim()
+                            Write-Host "  inference lane: $($pair.Env) <- vault:$k"
+                            break
+                        }
+                    }
+                }
+            }
+
             $proc = Start-Process -FilePath $Python -ArgumentList 'tools\ngs_node_serve.py' `
                 -WorkingDirectory $Root -WindowStyle Hidden -PassThru `
                 -RedirectStandardOutput $OutLog -RedirectStandardError $ErrLog
