@@ -8,6 +8,16 @@ from .core import capture, retrieve, mark_shard, compile_recall_packet
 from .federation import federated_retrieve
 from .history import HistoryEngine, log_event, init_history_db
 from .graph import link_shards, related_shards
+from .vector_graph import (
+    retrieve_vector_graph,
+    ingest_triplet,
+    ingest_shard_triplets,
+    init_vector_graph_db,
+    search_entities,
+    search_relations,
+    expand_subgraph,
+    fuse_with_fts,
+)
 from .gatekeeper import check_mutation_gate
 from .dav1d_executor import run_dav1d_agy
 
@@ -44,6 +54,14 @@ __all__ = [
     "init_history_db",
     "link_shards",
     "related_shards",
+    "retrieve_vector_graph",
+    "ingest_triplet",
+    "ingest_shard_triplets",
+    "init_vector_graph_db",
+    "search_entities",
+    "search_relations",
+    "expand_subgraph",
+    "fuse_with_fts",
     "check_mutation_gate",
     "run_dav1d_agy",
 ]

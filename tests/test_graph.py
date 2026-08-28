@@ -18,6 +18,9 @@ def setup_test_env(monkeypatch):
             return temp_path / f"test_shards_{index}.db"
         monkeypatch.setattr(core, "get_db_path", mock_get_db_path)
 
+        from nougen_shards import history
+        monkeypatch.setattr(history, "log_event", lambda *args, **kwargs: None)
+
         core.init_db(1)
         yield temp_path
 
