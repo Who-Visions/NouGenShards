@@ -522,7 +522,19 @@ def ask(prompt: str) -> dict:
 
     # 1. Tool execution loop (bounded by max_tool_rounds)
     for _ in range(max_tool_rounds):
-        reply, brain = _chat(messages)
+        try:
+            reply, brain = _chat(messages)
+        except RuntimeError as exc:
+            # All inference lanes down is an operational state, not a server
+            # fault: report it as a payload instead of letting it 500 the tool.
+            return {
+                "answer": f"Rhea is temporarily without an inference lane: {exc}",
+                "brain": "none",
+                "tools_used": tools_used,
+                "tool_calls_count": len(tools_used),
+                "final_synthesis_forced": False,
+                "status": "degraded",
+            }
         data = _first_json_object(reply)
         if data is None:
             return {

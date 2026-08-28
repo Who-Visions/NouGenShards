@@ -90,18 +90,42 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     slow_ms = float(os.environ.get("NOUGEN_RECALL_SLOW_MS", "8000"))
     sweep_started = time.monotonic()
 
-    # Parallel lane execution across threads (preserve ContextVar tenant isolation)
+    # Parallel lane execution across threads (preserve ContextVar tenant isolation).
+    # A shared deadline bounds the whole sweep: without it the request blocks on
+    # the slowest lane indefinitely (measured 2026-08-28: connector-side recall
+    # timeouts >25s while /health stayed sub-second). Lanes that miss the
+    # deadline are skipped with a log line and the sweep returns partial results.
+    recall_deadline_s = float(os.environ.get("NOUGEN_RECALL_DEADLINE_S", "20.0"))
     from contextvars import copy_context
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        f_local = executor.submit(copy_context().run, _fetch_local)
-        f_external = executor.submit(copy_context().run, _fetch_external)
-        f_cloud = executor.submit(copy_context().run, _fetch_cloud)
-        f_vaults = executor.submit(copy_context().run, _fetch_vaults)
-
-        local_results = f_local.result()
-        external_results = f_external.result()
-        cloud_results = f_cloud.result()
-        vault_results = f_vaults.result()
+    # No `with` block: __exit__ would join still-running lane threads and
+    # reintroduce the unbounded wait the deadline exists to prevent.
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    lane_futures = {
+        "local": executor.submit(copy_context().run, _fetch_local),
+        "external": executor.submit(copy_context().run, _fetch_external),
+        "cloud": executor.submit(copy_context().run, _fetch_cloud),
+        "vaults": executor.submit(copy_context().run, _fetch_vaults),
+    }
+    deadline = time.monotonic() + recall_deadline_s
+    lane_results = {}
+    for lane, future in lane_futures.items():
+        remaining = deadline - time.monotonic()
+        try:
+            lane_results[lane] = future.result(timeout=max(remaining, 0.001))
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            logger.warning(
+                "recall lane %r missed the %.1fs deadline (NOUGEN_RECALL_DEADLINE_S); "
+                "returning partial results without it", lane, recall_deadline_s)
+            lane_results[lane] = []
+        except Exception as exc:
+            logger.warning("recall lane %r failed: %s: %s", lane, type(exc).__name__, exc)
+            lane_results[lane] = []
+    executor.shutdown(wait=False, cancel_futures=True)
+    local_results = lane_results["local"]
+    external_results = lane_results["external"]
+    cloud_results = lane_results["cloud"]
+    vault_results = lane_results["vaults"]
 
     elapsed_ms = (time.monotonic() - sweep_started) * 1000.0
     if elapsed_ms > slow_ms:

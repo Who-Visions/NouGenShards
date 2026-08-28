@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -246,8 +247,19 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3,
         if not node_token:
             node_token = os.environ.get("NGS_NODE_TOKEN") or None
 
-    for conf in cloud_configs:
+    # Total budget across the serial peer walk: each dead-but-routable peer
+    # costs up to SEARCH_TIMEOUT_S, so N peers could serialize N x 8s and blow
+    # past every client timeout upstream (observed 2026-08-28 as connector
+    # recall timeouts). Per-peer timeout stays as-is; the walk itself is capped.
+    total_budget_s = float(os.environ.get("NGS_CLOUD_TOTAL_BUDGET_S", "10.0"))
+    walk_deadline = time.monotonic() + total_budget_s
+    for peer_idx, conf in enumerate(cloud_configs):
         name = conf.get('name', '?')
+        if time.monotonic() >= walk_deadline:
+            logger.warning(
+                "cloud sweep budget %.1fs exhausted (NGS_CLOUD_TOTAL_BUDGET_S); "
+                "skipping %d remaining peer(s)", total_budget_s, len(cloud_configs) - peer_idx)
+            break
         try:
             # Read config inside the try so a malformed row skips this node
             # instead of aborting the whole federation sweep.

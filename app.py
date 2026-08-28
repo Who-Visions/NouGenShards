@@ -301,14 +301,20 @@ def substrate_coverage() -> dict:
         except Exception:
             continue
         try:
-            for (ts,) in conn.execute("SELECT timestamp FROM shards WHERE timestamp IS NOT NULL"):
-                ts = str(ts)
-                per_month[ts[:7]] += 1
-                total += 1
-                if lo is None or ts < lo:
-                    lo = ts
-                if hi is None or ts > hi:
-                    hi = ts
+            # Aggregate in SQL: iterating every row in Python made this tool an
+            # O(corpus) scan per call (a measured contributor to the 2026-08-28
+            # connector timeouts at 200k+ shards).
+            for month, n, month_lo, month_hi in conn.execute(
+                    "SELECT substr(timestamp, 1, 7), COUNT(*), MIN(timestamp), MAX(timestamp) "
+                    "FROM shards WHERE timestamp IS NOT NULL GROUP BY substr(timestamp, 1, 7)"):
+                month = str(month)
+                per_month[month] += int(n)
+                total += int(n)
+                month_lo, month_hi = str(month_lo), str(month_hi)
+                if lo is None or month_lo < lo:
+                    lo = month_lo
+                if hi is None or month_hi > hi:
+                    hi = month_hi
         except Exception:
             continue
         finally:
@@ -332,10 +338,34 @@ def substrate_coverage() -> dict:
     # `total_shards` above is then a count of the readable part only. Reporting
     # the span without the mount state would let the second masquerade as the
     # first: a month reads as empty either way.
+    # Density invariant (fleet decision, relay leg 20260828T053457Z): monthly
+    # coverage must be dense from the grid's adoption era onward. A gap inside
+    # that window is a capture regression, not history -- surface it as a
+    # first-class violation instead of leaving callers to eyeball `months`.
+    dense_since = os.environ.get("NOUGEN_COVERAGE_DENSE_SINCE", "2025-10")
+    dense_min = int(os.environ.get("NOUGEN_COVERAGE_MIN_PER_MONTH", "1"))
+    now_month = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
+    dense_gaps = []
+    try:
+        y, m = map(int, dense_since.split("-"))
+        ny, nm = map(int, now_month.split("-"))
+        while (y, m) <= (ny, nm):
+            key = f"{y:04d}-{m:02d}"
+            if per_month.get(key, 0) < dense_min:
+                dense_gaps.append(key)
+            m += 1
+            if m == 13:
+                y, m = y + 1, 1
+    except ValueError:
+        dense_gaps = [f"invalid NOUGEN_COVERAGE_DENSE_SINCE: {dense_since!r}"]
     return {"total_shards": total,
             "span": {"earliest": lo, "latest": hi},
             "months": dict(sorted(per_month.items())),
             "empty_months": gaps,
+            "density_invariant": {"since": dense_since,
+                                  "min_per_month": dense_min,
+                                  "ok": not dense_gaps,
+                                  "violations": dense_gaps},
             # Cache key carries the active vault: a bare "substrate" key is
             # module-level state shared across tenants, so it would serve one
             # tenant's counts and DB detail to another.
