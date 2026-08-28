@@ -945,6 +945,14 @@ def checkpoint_orchestration(
         data["blocked_at"] = timestamp
         data["blocked_on"] = stamp
 
+    if "events" in data and isinstance(data["events"], list):
+        data["events"].append({
+            "event": state,
+            "agent": receiver,
+            "timestamp": timestamp,
+            "message": message or state,
+        })
+
     _atomic_write_json(target_path, data)
     db_synced = _sync_handoff_to_db(target_path, data)
     context_event_type = {
@@ -1101,6 +1109,13 @@ def acknowledge_handoff(
         data["acknowledged_on"] = stamp
         if message:
             data["acknowledgement_note"] = message
+        if "events" in data and isinstance(data["events"], list):
+            data["events"].append({
+                "event": "ack",
+                "agent": receiver,
+                "timestamp": data["acknowledged_at"],
+                "note": message or "",
+            })
         _atomic_write_json(target_path, data)
         db_synced = _sync_handoff_to_db(target_path, data)
         _log_context_event(
@@ -1711,6 +1726,10 @@ def pull_handoff_from_space(agent: Optional[str] = None):
             target_folder.mkdir(parents=True, exist_ok=True)
 
             json_path = target_folder / f"handoff_{handoff_id}.json"
+            if json_path.exists():
+                local_data = _read_handoff(json_path) or {}
+                from .handoff_sync import merge_leg_records
+                data = merge_leg_records(local_data, data)
             _atomic_write_json(json_path, data)
 
             # Reconstruct Sibling Markdown file

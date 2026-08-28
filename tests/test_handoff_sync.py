@@ -249,3 +249,162 @@ def test_index_and_registry_stay_local(monkeypatch, fleet):
     assert "triggers.json" not in tracked
     assert ".gitignore" not in tracked
     assert any(name.endswith(".json") for name in tracked)
+
+
+def test_merge_leg_records_status_progression():
+    """Leg status only advances (open->acked->done), never regresses to an older status."""
+    # open + open -> open
+    m = handoff_sync.merge_leg_records({"status": "open"}, {"status": "open"})
+    assert m["status"] == "open"
+
+    # open + acked -> acked
+    m = handoff_sync.merge_leg_records({"status": "open"}, {"status": "acked"})
+    assert m["status"] == "acked"
+
+    # acked + open -> acked (local ack survives stale down-sync copy)
+    m = handoff_sync.merge_leg_records({"status": "acked"}, {"status": "open"})
+    assert m["status"] == "acked"
+
+    # acknowledged + open -> acknowledged
+    m = handoff_sync.merge_leg_records({"status": "acknowledged"}, {"status": "open"})
+    assert m["status"] == "acknowledged"
+
+    # acked + done -> done
+    m = handoff_sync.merge_leg_records({"status": "acked"}, {"status": "done"})
+    assert m["status"] == "done"
+
+    # done + open -> done (never regresses to older status)
+    m = handoff_sync.merge_leg_records({"status": "done"}, {"status": "open"})
+    assert m["status"] == "done"
+
+    # done + acked -> done (never regresses to older status)
+    m = handoff_sync.merge_leg_records({"status": "done"}, {"status": "acked"})
+    assert m["status"] == "done"
+
+    # complete + acknowledged -> complete
+    m = handoff_sync.merge_leg_records({"status": "complete"}, {"status": "acknowledged"})
+    assert m["status"] == "complete"
+
+
+def test_merge_leg_records_unions_events_and_dedupes():
+    """Never drop relay events; union events across both copies (dedupe by event+agent+timestamp)."""
+    local = {
+        "id": "leg-101",
+        "status": "acked",
+        "events": [
+            {"event": "created", "agent": "codex", "timestamp": "2026-08-28T16:00:00Z"},
+            {"event": "ack", "agent": "claude-cli", "timestamp": "2026-08-28T16:05:00Z", "note": "on it"},
+        ],
+    }
+    stale_incoming = {
+        "id": "leg-101",
+        "status": "open",
+        "events": [
+            {"event": "created", "agent": "codex", "timestamp": "2026-08-28T16:00:00Z"},
+            {"event": "comment", "agent": "gateway", "timestamp": "2026-08-28T16:02:00Z", "msg": "queued"},
+        ],
+    }
+    merged = handoff_sync.merge_leg_records(local, stale_incoming)
+    assert merged["status"] == "acked"
+    assert len(merged["events"]) == 3
+    event_names = [e["event"] for e in merged["events"]]
+    assert event_names == ["created", "comment", "ack"]
+    assert any(e["event"] == "ack" and e["agent"] == "claude-cli" for e in merged["events"])
+
+
+def test_local_ack_survives_stale_down_synced_copy():
+    """An ack made locally survives a stale down-synced copy from the gateway."""
+    local_leg = {
+        "id": "20260828T160000Z__blade1tb__claude-cli",
+        "goal": "fix split-brain",
+        "status": "acknowledged",
+        "acknowledged_by": "claude-cli",
+        "acknowledged_at": "2026-08-28T16:05:00Z",
+        "events": [
+            {"event": "created", "agent": "codex", "timestamp": "2026-08-28T16:00:00Z"},
+            {"event": "ack", "agent": "claude-cli", "timestamp": "2026-08-28T16:05:00Z"},
+        ],
+    }
+    stale_incoming = {
+        "id": "20260828T160000Z__blade1tb__claude-cli",
+        "goal": "fix split-brain",
+        "status": "open",
+        "events": [
+            {"event": "created", "agent": "codex", "timestamp": "2026-08-28T16:00:00Z"},
+        ],
+    }
+    merged = handoff_sync.merge_leg_records(local_leg, stale_incoming)
+    assert merged["status"] == "acknowledged"
+    assert merged["acknowledged_by"] == "claude-cli"
+    assert merged["acknowledged_at"] == "2026-08-28T16:05:00Z"
+    assert len(merged["events"]) == 2
+    assert merged["events"][1]["event"] == "ack"
+
+
+def test_down_sync_file_merges_in_place(tmp_path):
+    """down_sync updates an existing file on disk by merging rather than clobbering."""
+    target_file = tmp_path / "leg.json"
+    local_data = {
+        "id": "leg-1",
+        "status": "acked",
+        "acknowledged_by": "claude-cli",
+        "events": [{"event": "ack", "agent": "claude-cli", "timestamp": "2026-08-28T16:05:00Z"}],
+    }
+    target_file.write_text(json.dumps(local_data, indent=2), encoding="utf-8")
+
+    stale_incoming = {
+        "id": "leg-1",
+        "status": "open",
+        "events": [{"event": "created", "agent": "codex", "timestamp": "2026-08-28T16:00:00Z"}],
+    }
+    res = handoff_sync.down_sync(target_file, stale_incoming)
+    assert res["status"] == "acked"
+    assert res["acknowledged_by"] == "claude-cli"
+    assert len(res["events"]) == 2
+
+    on_disk = json.loads(target_file.read_text(encoding="utf-8"))
+    assert on_disk["status"] == "acked"
+    assert on_disk["acknowledged_by"] == "claude-cli"
+    assert len(on_disk["events"]) == 2
+
+
+def test_git_sync_merges_conflicting_leg_files_and_preserves_ack(monkeypatch, fleet):
+    """Git sync resolves merge conflict automatically, preserving local ack against stale remote."""
+    _become(monkeypatch, fleet, "who-pc", "bbbb2222")
+    path_pc = handoff.create_handoff(goal="split brain test", agent="codex")
+    handoff_sync.sync(remote=fleet["remote"])
+
+    # Machine B pulls and acknowledges locally
+    _become(monkeypatch, fleet, "who-mac-mini", "aaaa1111")
+    monkeypatch.setenv("NOUGEN_AGENT", "claude-cli")
+    handoff_sync.sync(remote=fleet["remote"])
+    handoff.acknowledge_handoff()
+
+    # Machine A makes a concurrent commit to the same record on remote without the ack
+    _become(monkeypatch, fleet, "who-pc", "bbbb2222")
+    data_pc = json.loads(path_pc.read_text(encoding="utf-8"))
+    data_pc["goal"] = "split brain test - updated by gateway"
+    data_pc["events"] = [
+        {"event": "created", "agent": "codex", "timestamp": "2026-08-28T16:00:00Z"},
+        {"event": "comment", "agent": "gateway", "timestamp": "2026-08-28T16:02:00Z"},
+    ]
+    path_pc.write_text(json.dumps(data_pc, indent=2), encoding="utf-8")
+    handoff_sync.sync(remote=fleet["remote"])
+
+    # Machine B pulls from remote - previously this would fail with merge conflict and abort.
+    # Now _resolve_merge_conflicts merges them, preserving the local ack!
+    _become(monkeypatch, fleet, "who-mac-mini", "aaaa1111")
+    monkeypatch.setenv("NOUGEN_AGENT", "claude-cli")
+    report = handoff_sync.sync(remote=fleet["remote"])
+
+    assert report["pulled"] is True
+    assert not report["errors"]
+
+    # Check that Machine B's handoff file has the ack preserved and events unioned
+    files = handoff.get_handoff_files()
+    assert files
+    target_data = json.loads(files[0].read_text(encoding="utf-8"))
+    assert target_data["status"] == "acknowledged"
+    assert target_data["acknowledged_by"] == "claude-cli"
+    assert target_data["goal"] == "split brain test - updated by gateway"
+

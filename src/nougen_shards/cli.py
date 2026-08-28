@@ -1269,10 +1269,12 @@ def get_parser():
     p_handoff.add_argument("action", choices=[
         "create", "read", "list", "ack", "start", "checkpoint", "complete",
         "rebuild-db", "reconcile", "watch", "machines", "sync", "sync-init",
+        "down-sync",
         "triggers", "trigger-add", "trigger-rm", "trigger-enable",
         "trigger-disable", "trigger-test", "trigger-runs",
     ], help=("create | read | list | ack | start | checkpoint | complete | "
              "rebuild-db | reconcile | watch | machines | sync | sync-init | "
+             "down-sync | "
              "triggers | trigger-add | trigger-rm | trigger-enable | "
              "trigger-disable | trigger-test | trigger-runs"))
     p_handoff.add_argument("--json", action="store_true",
@@ -1492,7 +1494,7 @@ def cmd_handoff(args):
         )
     elif args.action == "machines":
         handoff.show_machines(getattr(args, "agent", None))
-    elif args.action in {"sync", "sync-init"}:
+    elif args.action in {"sync", "sync-init", "down-sync"}:
         cmd_handoff_sync(args)
     elif args.action.startswith("trigger"):
         cmd_handoff_triggers(args, handoff)
@@ -1515,10 +1517,13 @@ def cmd_handoff_sync(args):
             print("Set one with: nougen handoff sync-init --remote <git url>")
         return
 
+    push_flag = False if args.action == "down-sync" else not args.no_push
+    pull_flag = True if args.action == "down-sync" else not args.no_pull
+
     report = handoff_sync.sync(
         remote=args.remote,
-        push=not args.no_push,
-        pull=not args.no_pull,
+        push=push_flag,
+        pull=pull_flag,
         share_triggers=args.share_triggers,
         replay=not args.no_replay,
     )
