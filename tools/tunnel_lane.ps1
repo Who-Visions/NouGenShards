@@ -44,14 +44,42 @@ function Get-Cloudflared {
     throw 'cloudflared is not installed.'
 }
 
-function Get-TunnelToken {
+function Get-VaultSecret {
+    param([Parameter(Mandatory)][string]$Key)
     $env:PYTHONPATH = Join-Path $Root 'src'
     $env:NOUGEN_VAULT_DIR = $VaultDir
     $env:NOUGEN_SECRETS_VAULT_DIR = $SecretsDir
-    $tok = & $Python -c "from nougen_shards import keymaker as k; print(k.get_secret('$SecretKey') or '')"
-    $tok = ($tok | Select-Object -Last 1).Trim()
+    $val = & $Python -c "from nougen_shards import keymaker as k; print(k.get_secret('$Key') or '')"
+    return ($val | Select-Object -Last 1).Trim()
+}
+
+function Get-TunnelToken {
+    $tok = Get-VaultSecret -Key $SecretKey
     if (-not $tok) { throw "$SecretKey not found in the canonical secrets vault." }
     return $tok
+}
+
+function Get-NodeHealth {
+    <#
+        /health deliberately withholds the substrate block from unauthenticated
+        callers -- app.py returns early on `if not x_ngs_token` so an anonymous
+        request cannot learn shard counts, database names or another tenant's
+        vault path. That is a privacy boundary, not an oversight.
+
+        The old guard called /health with no token and then required
+        $health.substrate.recall_trustworthy. On an unauthenticated response
+        that field is always $null, so `-not $null` was always true and the
+        guard refused EVERY node, however healthy -- which is what pushed the
+        fleet onto ad-hoc quick tunnels instead of the named one.
+
+        Fix the caller, not the endpoint: send the node token so the check can
+        actually see the substrate it is asserting on.
+    #>
+    $headers = @{}
+    $nodeToken = Get-VaultSecret -Key 'NGS_NODE_TOKEN'
+    if ($nodeToken) { $headers['x-ngs-token'] = $nodeToken }
+    $health = Invoke-RestMethod -Uri 'http://127.0.0.1:4444/health' -Headers $headers -TimeoutSec 5
+    return [pscustomobject]@{ Health = $health; Authenticated = [bool]$nodeToken }
 }
 
 function Get-TunnelPid {
@@ -83,9 +111,21 @@ switch ($Action) {
         $running = Get-TunnelPid
         if ($running) { "tunnel already running (pid $running)"; break }
 
-        $nodeHealth = Invoke-RestMethod -Uri 'http://127.0.0.1:4444/health' -TimeoutSec 5
-        if (-not $nodeHealth.node_token_configured -or -not $nodeHealth.substrate.recall_trustworthy) {
-            throw 'local shard node is not ready; refusing to attach an inconsistent origin to the highway.'
+        $probe = Get-NodeHealth
+        $nodeHealth = $probe.Health
+        if (-not $nodeHealth.node_token_configured) {
+            throw 'local shard node has no credentials configured; refusing to attach it to the highway.'
+        }
+        if (-not $probe.Authenticated) {
+            # Distinguish "cannot verify" from "verified bad". Reporting the
+            # second when you mean the first is what made this guard look like a
+            # broken node for days.
+            throw ('cannot verify substrate: NGS_NODE_TOKEN is unavailable from the vault, ' +
+                   'so /health returns the unauthenticated view with no substrate block. ' +
+                   'Provision the node token rather than bypassing this check.')
+        }
+        if (-not $nodeHealth.substrate.recall_trustworthy) {
+            throw 'local shard node reports recall is not trustworthy; refusing to attach an inconsistent origin to the highway.'
         }
 
         if (-not (Test-Path $RunDir)) { New-Item -ItemType Directory -Path $RunDir | Out-Null }
