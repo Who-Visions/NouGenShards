@@ -3,7 +3,9 @@
 Tokens come from the shards keymaker (DPAPI); nothing prints a secret value,
 fingerprints only. Every environment-shaped value resolves env-first.
 """
+import json
 import msvcrt
+from datetime import datetime, timezone
 import os
 import shutil
 import subprocess
@@ -306,6 +308,17 @@ def _authenticated_probe():
         print(f"authenticated probe TIMEOUT after {timeout_s}s; see {alert}")
 
 
+
+def _write_beat(path, payload):
+    """Liveness the next reader can actually see. Never raises: a watchdog must
+    not die because its own heartbeat file is unwritable."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def watch():
     """Supervisor loop: the 08/25 outage was the node dying silently and staying
     dead for 23h because nothing re-ran main(). main() is idempotent (node port
@@ -323,12 +336,36 @@ def watch():
         print("another --watch supervisor already holds the watch lock; exiting (not an error)")
         return 0
     interval = int(os.environ.get("NOUGEN_GRID_WATCH_SECS", 300))
+
+    # This loop is launched from the Startup folder as `pythonw`, which has NO
+    # console: every print() below goes nowhere. On 2026-08-29 that made the
+    # watchdog indistinguishable from a working one -- the process was alive
+    # with 3s of CPU after four hours, and the only evidence it had never
+    # completed a tick was that its probe artifacts were 13 hours stale. A
+    # supervisor whose only failure report is print() under pythonw cannot
+    # itself be supervised.
+    #
+    # Heartbeat to a FILE, twice per tick, around the work. "Last tick started
+    # at 06:51 and never finished" is the sentence that was impossible to say
+    # this morning.
+    beat = PROBE_STATE_DIR / "grid_watch.heartbeat"
+    tick = 0
     while True:
+        tick += 1
+        started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _write_beat(beat, {"tick": tick, "phase": "started", "started_utc": started,
+                           "pid": os.getpid(), "interval_s": interval})
+        outcome, detail = "ok", ""
         try:
             main()
             _authenticated_probe()
-        except Exception as e:
-            print(f"watch pass failed ({type(e).__name__}: {e}); retrying next tick")
+        except Exception as e:  # pylint: disable=broad-except
+            outcome, detail = "failed", f"{type(e).__name__}: {e}"
+            print(f"watch pass failed ({detail}); retrying next tick")
+        _write_beat(beat, {"tick": tick, "phase": "finished", "outcome": outcome,
+                           "detail": detail, "started_utc": started,
+                           "finished_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                           "pid": os.getpid(), "interval_s": interval})
         time.sleep(interval)
 
 
