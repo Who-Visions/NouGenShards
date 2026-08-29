@@ -70,10 +70,10 @@ against a cold Space. Retry before concluding anything; warm, it answers in
 ## Sources
 
 Neither worker was in this repo when this was diagnosed; both were recovered
-with `wrangler init --from-dash` and are now committed beside this document:
+with `wrangler init --from-dash` and are now committed under `ops/workers/` (note: `fleet/` is gitignored, which is precisely why neither was ever tracked):
 
-- `fleet/worker/nougen-shard-failover.js`
-- `fleet/worker/nougen-fleet-mcp.deployed.js` (bundled deploy artifact)
+- `ops/workers/nougen-shard-failover.js`
+- `ops/workers/nougen-fleet-mcp.deployed.js` (bundled deploy artifact)
 
 Config values are **not** committed: the fleet worker's vars include an
 allowed-email list. Read them with
