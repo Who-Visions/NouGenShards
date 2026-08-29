@@ -178,6 +178,26 @@ def _path_is_allowed(path: Path) -> bool:
     return False
 
 
+
+def _redact(text: str) -> str:
+    """Best-effort secret redaction for anything leaving this connector.
+
+    Import is local and failure is non-fatal by design: this runs on the read
+    path, and a redactor that raises would take down search for every vault. A
+    broken redactor must degrade to "return nothing" rather than "return the
+    secret", so the fallback drops the body instead of passing it through.
+    """
+    if not text:
+        return text
+    try:
+        from ..brain_scan.redaction import redact_content  # pylint: disable=import-outside-toplevel
+        return redact_content(text)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error("local vault redactor unavailable (%s); withholding body rather "
+                     "than returning it unredacted", type(exc).__name__)
+        return "<WITHHELD: redactor unavailable>"
+
+
 def _build_query(table: str, title_col: str, content_col: str, keywords: list, limit: int):
     """The ranked per-vault SELECT, plus its parameters in STATEMENT order.
 
@@ -363,11 +383,21 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
         results = []
         for row in rows:
             item = dict(row)
+            # A LOCAL_VAULT row is a RAW FILE BODY, not a curated shard: nobody
+            # reviewed it before it became reachable by every lane holding a
+            # connector token. On 2026-08-29 a grid search returned one of these
+            # carrying a LIVE Notion integration token in plaintext, straight
+            # into two agents' contexts. The redactor already existed and simply
+            # was not on this path. Redact at the point of RETURN, not at
+            # ingest, because the vaults are read in place and were never
+            # rewritten.
+            title = _redact(item["title"] or "Untitled")
+            content = _redact(item["content"] or "")
             results.append({
                 "id": f"vault_{vid}_{_stable_hash(item['title'])[:16]}",
                 "event_type": "LOCAL_VAULT",
-                "title": item["title"] or "Untitled",
-                "content": item["content"] or "",
+                "title": title,
+                "content": content,
                 "tags": json.dumps(["local_vault", path.stem]),
                 "utility_score": 1.0,
                 "access_count": 0,
