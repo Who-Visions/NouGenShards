@@ -78,3 +78,24 @@ def test_bootstrap_check_emits_machine_readable_report():
     # Exit code must agree with the report; a green exit on a failed required
     # step is how a broken bootstrap ships unnoticed.
     assert (proc.returncode == 0) == data["ok"]
+
+
+def test_bootstrap_never_reads_a_credential_value():
+    """Presence must be membership, not a read.
+
+    CodeQL flagged three highs (py/clear-text-logging-sensitive-data) when this
+    file used os.environ.get on credential names -- correctly, since the value
+    entered the process even though only names were printed. A value that is
+    never bound cannot be leaked by a later edit.
+    """
+    src = BOOTSTRAP.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if (isinstance(fn, ast.Attribute) and fn.attr == "get"
+                and isinstance(fn.value, ast.Attribute) and fn.value.attr == "environ"):
+            raise AssertionError(
+                f"os.environ.get at line {node.lineno}: use membership, never read the value"
+            )

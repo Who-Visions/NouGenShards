@@ -100,6 +100,20 @@ def verify_cli(report: list) -> bool:
                 "nougen_shards.cli --help" if proc.returncode == 0 else proc.stderr.strip()[:200])
 
 
+def is_configured(name: str, env=None) -> bool:
+    """Presence WITHOUT ever binding the value.
+
+    Reading the variable pulls the credential into this process even when only
+    its NAME is printed. CodeQL flags that as clear-text logging of sensitive
+    information and is right to: the value has no reason to exist here at all,
+    so a membership test is both the smaller answer and the whole answer. A
+    variable that is set but empty counts as configured -- that is a
+    misconfiguration to fix at the source, not something worth reading a
+    secret to detect.
+    """
+    return name in (os.environ if env is None else env)
+
+
 def verify_secrets(report: list) -> None:
     """Presence only. A missing secret is NOT a bootstrap failure.
 
@@ -108,9 +122,9 @@ def verify_secrets(report: list) -> None:
     two is what makes a stack look irreproducible when it is merely unconfigured.
     """
     for name, why in SECRETS.items():
-        step(report, f"secret:{name}", bool(os.environ.get(name)), why, required=False)
+        step(report, f"secret:{name}", is_configured(name), why, required=False)
     for name, why in OPTIONAL_SECRETS.items():
-        step(report, f"secret:{name}", bool(os.environ.get(name)), f"optional - {why}", required=False)
+        step(report, f"secret:{name}", is_configured(name), f"optional - {why}", required=False)
 
 
 def main() -> int:
@@ -136,7 +150,7 @@ def main() -> int:
         print()
         if required_ok:
             print(f"Bootstrap OK. Interpreter: {venv_python()}")
-            missing = [n for n in SECRETS if not os.environ.get(n)]
+            missing = [n for n in SECRETS if not is_configured(n)]
             if missing:
                 print(f"Unconfigured (deployment only, not needed to build or test): {', '.join(missing)}")
         else:
