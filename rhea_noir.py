@@ -396,7 +396,7 @@ def ask(prompt: str) -> dict:
     """The agent loop: persona + tools, bounded rounds, honest brain label."""
     messages = [{"role": "system", "content": _persona() + "\n\n" + TOOL_SPEC},
                 {"role": "user", "content": prompt}]
-    max_rounds = int(os.environ.get("NOUGEN_RHEA_MAX_ROUNDS", "4"))
+    max_rounds = int(os.environ.get("NOUGEN_RHEA_MAX_ROUNDS", "8"))
     tools_used = []
     brain = "none"
     diagnostics = {}
@@ -428,5 +428,23 @@ def ask(prompt: str) -> dict:
                                         "Continue: another tool call or your final answer, JSON only."})
             continue
         return {"status": "ok", "answer": reply.strip(), "brain": brain, "tools_used": tools_used}
+    # Rounds exhausted with a tool trace in hand: force one compose-only pass
+    # instead of discarding everything the tools gathered. Deep archive sweeps
+    # legitimately spend every round on tools; the gathered evidence is the
+    # answer's raw material, not waste.
+    messages.append({"role": "user", "content":
+                     "ROUND LIMIT REACHED. Tool calls are no longer available. "
+                     "Compose your best final answer NOW from the tool results "
+                     "above, noting any gaps you could not cover. "
+                     'JSON {"answer": ...} or plain text.'})
+    try:
+        reply, brain = _chat(messages, diagnostics)
+        data = _first_json_object(reply)
+        answer = data["answer"] if data is not None and "answer" in data else reply.strip()
+    except Exception:
+        answer = ""
+    if answer:
+        return {"status": "ok", "answer": answer, "brain": brain,
+                "tools_used": tools_used, "note": "composed at round limit"}
     return {"status": "ok", "answer": "(round limit hit before a final answer)",
             "brain": brain, "tools_used": tools_used}

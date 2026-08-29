@@ -11,7 +11,7 @@ def test_round_limit_composes_from_tool_trace(monkeypatch):
     monkeypatch.setenv("NOUGEN_RHEA_MAX_ROUNDS", "2")
     calls = {"n": 0}
 
-    def fake_chat(messages):
+    def fake_chat(messages, diagnostics=None):
         calls["n"] += 1
         if calls["n"] <= 2:
             return '{"tool": "health"}', "test:brain"
@@ -31,7 +31,7 @@ def test_round_limit_composes_from_tool_trace(monkeypatch):
 def test_round_limit_placeholder_when_compose_fails(monkeypatch):
     monkeypatch.setenv("NOUGEN_RHEA_MAX_ROUNDS", "1")
 
-    def fake_chat(messages):
+    def fake_chat(messages, diagnostics=None):
         if any("ROUND LIMIT REACHED" in m["content"] for m in messages):
             raise RuntimeError("upstream down")
         return '{"tool": "health"}', "test:brain"
@@ -47,7 +47,7 @@ def test_round_limit_placeholder_when_compose_fails(monkeypatch):
 def test_normal_answer_path_unchanged(monkeypatch):
     monkeypatch.setattr(
         rhea_noir, "_chat",
-        lambda messages: ('{"answer": "direct"}', "test:brain"))
+        lambda messages, diagnostics=None: ('{"answer": "direct"}', "test:brain"))
     out = rhea_noir.ask("hi")
     assert out["answer"] == "direct"
     assert "note" not in out
