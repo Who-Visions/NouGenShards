@@ -1,6 +1,7 @@
 """Tests for the NouGenShards advanced memory substrate."""
 # pylint: disable=duplicate-code, protected-access
 import tempfile
+import json
 import pytest
 from pathlib import Path
 import nougen_shards.core as shards
@@ -51,6 +52,38 @@ def test_capture_and_retrieve_bayesian(setup_test_env):
     # The first one should be ranked higher due to higher utility prior
     assert results[0]["title"] == "Important Tool"
     assert "final_score" in results[0]
+
+
+def test_capture_accepts_relay_provenance_and_utility(setup_test_env):
+    """Relay publishers can pass provenance and a usefulness prior safely."""
+    source_uri = "relay_daemon://blade1tb"
+    assert shards.capture(
+        "DAEMON_AUTO_SHARD",
+        "Relay capture compatibility",
+        "The relay daemon writes durable shard milestones.",
+        source_uri=source_uri,
+        utility=0.9,
+    ) is True
+
+    row = None
+    for index in range(1, shards.MAX_DB_COUNT + 1):
+        if not shards.get_db_path(index).exists():
+            continue
+        conn = shards.get_connection(index)
+        try:
+            row = conn.execute(
+                "SELECT utility_score, temporal_meta FROM shards "
+                "WHERE title = ?",
+                ("Relay capture compatibility",),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row:
+            break
+
+    assert row is not None
+    assert row["utility_score"] == pytest.approx(0.9)
+    assert json.loads(row["temporal_meta"])["source_uri"] == source_uri
 
 def test_trigram_n_gram_recall(setup_test_env):
     """Test trigram tokenizer for fuzzy/substring recall."""

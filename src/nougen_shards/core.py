@@ -672,7 +672,9 @@ def capture(event_type: str, title: str, content: str,
             ai_last_touched_at: Optional[str] = None,
             migrated_at: Optional[str] = None,
             amended_at: Optional[List[str] | str] = None,
-            temporal_meta: Optional[dict | str] = None) -> bool:
+            temporal_meta: Optional[dict | str] = None,
+            source_uri: Optional[str] = None,
+            utility: Optional[float] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants).
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
@@ -686,6 +688,10 @@ def capture(event_type: str, title: str, content: str,
     content at its TRUE era instead of migration time, so date-window queries and
     coverage histograms reflect when the experience actually happened. An unparseable
     value logs a warning and falls back to now -- it never crashes a write.
+
+    `source_uri` and `utility` are compatibility fields used by relay and other
+    publishers. Provenance is retained in `temporal_meta`, while `utility` seeds
+    the usefulness prior without requiring callers to know the SQLite schema.
     """
     from . import private_vault as _pv  # pylint: disable=import-outside-toplevel
     from .brain_scan.redaction import redact_content  # pylint: disable=import-outside-toplevel
@@ -704,6 +710,12 @@ def capture(event_type: str, title: str, content: str,
 
     if density_score is None:
         density_score = calculate_contrastive_perplexity(content)
+
+    try:
+        utility_score = float(utility) if utility is not None else 1.0
+    except (TypeError, ValueError):
+        logger.warning("capture: invalid utility %r; falling back to schema default", utility)
+        utility_score = 1.0
 
     # Clean the content for O(1) deduplication hashing to exclude injected recall packets or static context.
     clean_content = content
@@ -788,6 +800,8 @@ def capture(event_type: str, title: str, content: str,
             amended_at=amended_at,
             now_iso=now_utc
         )
+        if source_uri is not None:
+            t_dict["source_uri"] = redact_content(str(source_uri))
         temporal_meta_str = json.dumps(t_dict)
 
         # Encrypt LAST, immediately before the write: the dedup hash, the blob
@@ -805,14 +819,14 @@ def capture(event_type: str, title: str, content: str,
         conn = get_connection(target_idx)
         try:
             cursor = conn.execute("""
-                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, temporal_meta, original_timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, temporal_meta_str, original_timestamp))
+                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, temporal_meta, original_timestamp, utility_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, temporal_meta_str, original_timestamp, utility_score))
             conn.commit()
 
             # Log CREATED event
             from . import history # pylint: disable=import-outside-toplevel
-            history.log_event(cursor.lastrowid or 0, target_idx, "CREATED", new_score=1.0)
+            history.log_event(cursor.lastrowid or 0, target_idx, "CREATED", new_score=utility_score)
         except sqlite3.IntegrityError:
             # Target DB already holds the hash (index was stale) — repair the
             # index so the next lookup short-circuits without touching shards.
