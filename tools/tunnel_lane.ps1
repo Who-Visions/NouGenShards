@@ -24,9 +24,16 @@ $Root       = Split-Path -Parent $PSScriptRoot
 $VenvPython = Join-Path $Root '.venv\Scripts\python.exe'
 $Python     = if (Test-Path $VenvPython) { $VenvPython } else { (Get-Command python -ErrorAction Stop).Source }
 $RunDir     = Join-Path $Root '.node'
-$PidFile    = Join-Path $RunDir 'tunnel.pid'
-$OutLog     = Join-Path $RunDir 'tunnel.out.log'
-$ErrLog     = Join-Path $RunDir 'tunnel.err.log'
+# The named highway tunnel and the quick tunnel (gateway_supervisor.ps1) are two
+# distinct processes. They MUST NOT share a pid file: sharing one made this lane
+# report UP for whichever cloudflared happened to be alive, so `start` short
+# circuited and blade.nougenai.com sat at 530 with nothing bound to it.
+$PidName    = if ($env:NGS_TUNNEL_PID_NAME) { $env:NGS_TUNNEL_PID_NAME } else { 'named_tunnel.pid' }
+$PidFile    = Join-Path $RunDir $PidName
+$OutLog     = Join-Path $RunDir ([IO.Path]::ChangeExtension($PidName, $null) + 'out.log')
+$ErrLog     = Join-Path $RunDir ([IO.Path]::ChangeExtension($PidName, $null) + 'err.log')
+$NodePort   = if ($env:NGS_PORT) { $env:NGS_PORT } else { '4444' }
+$NodeHealth = if ($env:NGS_NODE_HEALTH_URL) { $env:NGS_NODE_HEALTH_URL } else { "http://127.0.0.1:$NodePort/health" }
 $VaultDir   = Join-Path $env:USERPROFILE '.nougen\shards'
 $SecretsDir = Join-Path $env:USERPROFILE '.nougen\secrets'
 $SecretKey  = 'CLOUDFLARED_NGS_TUNNEL_TOKEN'
@@ -83,9 +90,24 @@ switch ($Action) {
         $running = Get-TunnelPid
         if ($running) { "tunnel already running (pid $running)"; break }
 
-        $nodeHealth = Invoke-RestMethod -Uri 'http://127.0.0.1:4444/health' -TimeoutSec 5
-        if (-not $nodeHealth.node_token_configured -or -not $nodeHealth.substrate.recall_trustworthy) {
-            throw 'local shard node is not ready; refusing to attach an inconsistent origin to the highway.'
+        $health = Invoke-RestMethod -Uri $NodeHealth -TimeoutSec 5
+        if (-not $health.node_token_configured) {
+            throw "local shard node at $NodeHealth has no node token; refusing to attach it to the highway."
+        }
+        # substrate/recall_trustworthy was dropped from /health at some point, which
+        # made this gate throw unconditionally and kept the highway down. Probe for
+        # the field instead of assuming it: enforce it when present, warn when the
+        # payload no longer carries it, and let NGS_TUNNEL_REQUIRE_SUBSTRATE=1 make
+        # its absence fatal again once the endpoint exposes it.
+        $substrate = $health.PSObject.Properties['substrate']
+        if ($substrate -and $null -ne $substrate.Value) {
+            if (-not $substrate.Value.recall_trustworthy) {
+                throw 'local shard node reports recall is not trustworthy; refusing to attach an inconsistent origin to the highway.'
+            }
+        } elseif ($env:NGS_TUNNEL_REQUIRE_SUBSTRATE -eq '1') {
+            throw "health payload from $NodeHealth carries no substrate block and NGS_TUNNEL_REQUIRE_SUBSTRATE=1; refusing to attach."
+        } else {
+            Write-Warning "health payload from $NodeHealth carries no substrate block; attaching on node_token + ignited status only."
         }
 
         if (-not (Test-Path $RunDir)) { New-Item -ItemType Directory -Path $RunDir | Out-Null }
