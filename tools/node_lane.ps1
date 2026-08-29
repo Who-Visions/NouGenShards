@@ -37,6 +37,7 @@ $VaultDir  = Join-Path $env:USERPROFILE '.nougen\shards'   # shard substrate
 # Secrets moved to their own vault upstream (~/.nougen/secrets). Pointing
 # keymaker at the shard cluster made init_vault icacls 40+ DBs and time out.
 $SecretsDir = Join-Path $env:USERPROFILE '.nougen\secrets'
+$SecretsDb  = Join-Path $SecretsDir 'shards_secrets.db'
 $Port      = if ($env:NGS_PORT) { $env:NGS_PORT } else { '4444' }
 $BaseUrl   = "http://127.0.0.1:$Port"
 $SecretKey = 'NGS_NODE_TOKEN'
@@ -62,6 +63,18 @@ function Get-NodeToken {
     $env:NOUGEN_SECRETS_VAULT_DIR = $SecretsDir
     $tok = & $Python -c "from nougen_shards import keymaker as k; print(k.get_secret('$SecretKey') or '')"
     $tok = ($tok | Select-Object -Last 1).Trim()
+    # Older blade stores keep the node credential in shards_secrets.db, while
+    # keymaker's canonical secrets resolver intentionally reads agent_secrets.db.
+    # Fall back through the write-only peel helper against that explicit store;
+    # this keeps the launcher pointed at %USERPROFILE%\.nougen without copying a
+    # credential or weakening the resolver globally.
+    if (-not $tok) {
+        $peel = Join-Path $env:USERPROFILE '.nougen\bin\keymaker_peel.py'
+        if ((Test-Path $peel) -and (Test-Path $SecretsDb)) {
+            $code = "import sys; from pathlib import Path; sys.path.insert(0, r'$($peel | Split-Path)'); import keymaker_peel as p; rows=p.load('$SecretKey', db=Path(r'$SecretsDb')); print(rows[0][1] if rows else '')"
+            $tok = (& $Python -c $code | Select-Object -Last 1).Trim()
+        }
+    }
     if (-not $tok) { throw "$SecretKey not found in the canonical secrets vault. Ingest the shared lane token before starting." }
     return $tok
 }
