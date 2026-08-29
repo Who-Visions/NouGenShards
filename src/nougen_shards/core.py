@@ -322,14 +322,23 @@ def _ensure_dedup_index(conn) -> None:
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists():
             continue
-        src = get_connection(i)
+        # A corrupt DB here does not break a read, it silently degrades DEDUP:
+        # the backfill aborts, hashes from the remaining DBs never land, and
+        # global dedup starts missing duplicates with no error anywhere.
+        src = None
         try:
+            src = get_connection(i)
             rows = src.execute("SELECT file_hash FROM shards").fetchall()
             conn.executemany(
                 "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
                 [(r["file_hash"], i) for r in rows])
+        except sqlite3.DatabaseError as exc:
+            logger.error("grid DB %s unreadable during dedup backfill, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            continue
         finally:
-            src.close()
+            if src is not None:
+                src.close()
     conn.commit()
 
 
@@ -1141,8 +1150,15 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 where = ""
             dom_params = (*dom_params, *ing_params)
             for i in missed_dbs:
-                conn = get_connection(i)
+                # Same guard as the first pass above, and this pass needs it
+                # MORE: missed_dbs is by definition the set the exact lanes came
+                # up short on, so a degraded DB is likelier to be in here than
+                # in a random sweep. It was missed on 2026-08-29 because the
+                # first pass in this same function was fixed and this one was
+                # not -- one function, two fan-outs, one patch.
+                conn = None
                 try:
+                    conn = get_connection(i)
                     # Score against a cheap projection: the similarity probe only
                     # ever reads title + the first 256 chars of content, so there
                     # is no reason to pull full content and embedding blobs for
@@ -1196,8 +1212,19 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     for item in fuzzy:
                         history.log_event(item["id"], i, "ACCESSED")
                         results.append(item)
+                except sqlite3.DatabaseError as exc:
+                    logger.error("grid DB %s unreadable during fuzzy pass, skipping it: %s: %s",
+                                 i, type(exc).__name__, exc)
+                    try:
+                        history.log_event(0, i, "DB_DEGRADED",
+                                          metadata={"error": f"{type(exc).__name__}: {exc}",
+                                                    "pass": "fuzzy"})
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+                    continue
                 finally:
-                    conn.close()
+                    if conn is not None:
+                        conn.close()
 
     # Tiered ordering: every full-coverage hit (FTS implicit-AND / LIKE)
     # outranks every OR-retry hit, which outranks every fuzzy hit, regardless
@@ -1681,6 +1708,15 @@ def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
                 conn.commit()
             else:
                 continue
+        except sqlite3.DatabaseError as exc:
+            # Found by tests/test_grid_fanout_guard_invariant.py after TWO
+            # careful human reads of this file missed it. It got the
+            # open-inside-the-try placement in the first sweep but never the
+            # handler, so a corrupt DB still aborted the walk and every later
+            # index went unchecked -- silently reporting "shard not found".
+            logger.error("grid DB %s unreadable while marking shard %s, skipping it: %s: %s",
+                         i, shard_id, type(exc).__name__, exc)
+            continue
         finally:
             if conn is not None:
                 conn.close()

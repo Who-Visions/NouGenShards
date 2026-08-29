@@ -15,6 +15,7 @@ Eight healthy DBs sat unread while health reported up.
 """
 # pylint: disable=duplicate-code, protected-access
 import shutil
+import sqlite3
 import tempfile
 from pathlib import Path
 
@@ -79,3 +80,41 @@ def test_corrupt_db_does_not_zero_the_federated_read(setup_test_env):
         "is correct, an empty one is a lie."
     )
     assert any(NEEDLE in (r.get("content") or "") for r in after)
+
+
+def test_fuzzy_second_pass_survives_a_db_that_fails_after_the_first(setup_test_env, monkeypatch):
+    """The SECOND fan-out in _keyword_retrieve needs the same guard as the first.
+
+    _keyword_retrieve sweeps every DB, notes the ones where both exact lanes
+    missed, and re-scans just those in a fuzzy pass. That second loop opens its
+    own connection, so a DB that was readable during the first pass and fails
+    during the second -- a lock, a checkpoint, a file replaced underneath -- hits
+    get_connection() outside any guard. It shipped unguarded on 2026-08-29
+    because the first pass in the same function was fixed and this one was not.
+    """
+    shards.init_db(CORRUPT_INDEX)
+    shards.capture("TEST", "Findable shard",
+                   f"This shard mentions {NEEDLE} and lives on a healthy grid database.")
+
+    real_get_connection = shards.get_connection
+    calls = {"n": 0}
+
+    def flaky(index):
+        if index == CORRUPT_INDEX:
+            calls["n"] += 1
+            if calls["n"] > 1:  # healthy for the first pass, broken for the fuzzy one
+                raise sqlite3.DatabaseError("database disk image is malformed")
+        return real_get_connection(index)
+
+    monkeypatch.setattr(shards, "get_connection", flaky)
+
+    results = shards.retrieve(NEEDLE, limit=5)
+
+    # Without this the test is vacuous: if the fuzzy pass never re-opened the
+    # DB, the guard it is meant to exercise was never reached.
+    assert calls["n"] > 1, "the fuzzy second pass never ran - this test proves nothing"
+    assert results, (
+        "the fuzzy second pass let a DatabaseError escape and killed the whole "
+        "retrieve - the healthy DB still holds the shard"
+    )
+    assert any(NEEDLE in (r.get("content") or "") for r in results)
