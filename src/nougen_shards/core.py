@@ -978,8 +978,12 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists():
             continue
-        conn = get_connection(i)
+        # get_connection() runs PRAGMA journal_mode=WAL, so a corrupt file can
+        # raise before the loop body starts. Opening INSIDE the try is the
+        # difference between degrading past a bad DB and dying on it.
+        conn = None
         try:
+            conn = get_connection(i)
             fts_worked = False
             db_hits = 0
             fts_query = _build_fts_match_query(query)
@@ -1071,8 +1075,36 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
             # See the second pass below for why.
             if not fts_worked and db_hits == 0:
                 missed_dbs.append(i)
+        except sqlite3.DatabaseError as exc:
+            # ONE bad DB must not zero out the whole federated read. The try
+            # around the FTS SQL below catches only sqlite3.OperationalError,
+            # but a corrupt file raises sqlite3.DatabaseError ("database disk
+            # image is malformed") -- its PARENT class, so that except never
+            # matched. With no except on this loop, the error escaped the
+            # for-loop entirely and every ranked read returned empty while the
+            # other 8 DBs sat there healthy and unread.
+            #
+            # 2026-08-29: that is exactly what shipped. shards_coverage showed
+            # databases_errored [{index:5, malformed}], and recall AND search
+            # both returned 0 against a six-figure vault while shards_window --
+            # which filters on timestamp and never touches this path -- happily
+            # returned rows. Health said up the whole time.
+            #
+            # Degrade per DB: record it, skip it, keep scanning. A partial
+            # answer from 8 DBs is worth infinitely more than a false empty,
+            # and the log line names the index so the corrupt file is findable
+            # instead of silently swallowed.
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     # Fuzzy lane (docs/theory/n-gram-topologies.md §8.2): for DBs where BOTH
     # exact lanes missed, retry with fastText-style character trigram Dice
@@ -1207,8 +1239,12 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists():
             continue
-        conn = get_connection(i)
+        # get_connection() runs PRAGMA journal_mode=WAL, so a corrupt file can
+        # raise before the loop body starts. Opening INSIDE the try is the
+        # difference between degrading past a bad DB and dying on it.
+        conn = None
         try:
+            conn = get_connection(i)
             dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
             dom_params = () if domain_key in (None, "*") else (domain_key,)
             ing_clause, ing_params = _ingest_filter_sql("shards", include_research)
@@ -1238,8 +1274,36 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                 decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), query_now)
                 item["final_score"] = (sem_score * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
                 results.append(item)
+        except sqlite3.DatabaseError as exc:
+            # ONE bad DB must not zero out the whole federated read. The try
+            # around the FTS SQL below catches only sqlite3.OperationalError,
+            # but a corrupt file raises sqlite3.DatabaseError ("database disk
+            # image is malformed") -- its PARENT class, so that except never
+            # matched. With no except on this loop, the error escaped the
+            # for-loop entirely and every ranked read returned empty while the
+            # other 8 DBs sat there healthy and unread.
+            #
+            # 2026-08-29: that is exactly what shipped. shards_coverage showed
+            # databases_errored [{index:5, malformed}], and recall AND search
+            # both returned 0 against a six-figure vault while shards_window --
+            # which filters on timestamp and never touches this path -- happily
+            # returned rows. Health said up the whole time.
+            #
+            # Degrade per DB: record it, skip it, keep scanning. A partial
+            # answer from 8 DBs is worth infinitely more than a false empty,
+            # and the log line names the index so the corrupt file is findable
+            # instead of silently swallowed.
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     # Deterministic order: score DESC (rounded so sub-epsilon temporal-decay
     # jitter doesn't reorder near-ties run-to-run), then (_db_index, id) ASC.
@@ -1533,14 +1597,46 @@ def locate_shard(shard_id: int) -> List[int]:
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists():
             continue
-        conn = get_connection(i)
+        # get_connection() runs PRAGMA journal_mode=WAL, so a corrupt file can
+        # raise before the loop body starts. Opening INSIDE the try is the
+        # difference between degrading past a bad DB and dying on it.
+        conn = None
         try:
+            conn = get_connection(i)
             if conn.execute("SELECT 1 FROM shards WHERE id = ?", (shard_id,)).fetchone():
                 found.append(i)
         except sqlite3.Error:
             continue
+        except sqlite3.DatabaseError as exc:
+            # ONE bad DB must not zero out the whole federated read. The try
+            # around the FTS SQL below catches only sqlite3.OperationalError,
+            # but a corrupt file raises sqlite3.DatabaseError ("database disk
+            # image is malformed") -- its PARENT class, so that except never
+            # matched. With no except on this loop, the error escaped the
+            # for-loop entirely and every ranked read returned empty while the
+            # other 8 DBs sat there healthy and unread.
+            #
+            # 2026-08-29: that is exactly what shipped. shards_coverage showed
+            # databases_errored [{index:5, malformed}], and recall AND search
+            # both returned 0 against a six-figure vault while shards_window --
+            # which filters on timestamp and never touches this path -- happily
+            # returned rows. Health said up the whole time.
+            #
+            # Degrade per DB: record it, skip it, keep scanning. A partial
+            # answer from 8 DBs is worth infinitely more than a false empty,
+            # and the log line names the index so the corrupt file is findable
+            # instead of silently swallowed.
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
     return found
 
 
@@ -1570,8 +1666,12 @@ def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
     for i in indices:
         if not get_db_path(i).exists():
             continue
-        conn = get_connection(i)
+        # get_connection() runs PRAGMA journal_mode=WAL, so a corrupt file can
+        # raise before the loop body starts. Opening INSIDE the try is the
+        # difference between degrading past a bad DB and dying on it.
+        conn = None
         try:
+            conn = get_connection(i)
             row = conn.execute("SELECT id, utility_score FROM shards WHERE id = ?", (shard_id,)).fetchone()
             if row:
                 old_score = row["utility_score"]
@@ -1582,7 +1682,8 @@ def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
             else:
                 continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
         # Log UTILITY_CHANGE event
         from . import history # pylint: disable=import-outside-toplevel
@@ -1600,12 +1701,44 @@ def decay_utility_scores(factor: float = 0.95):
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists():
             continue
-        conn = get_connection(i)
+        # get_connection() runs PRAGMA journal_mode=WAL, so a corrupt file can
+        # raise before the loop body starts. Opening INSIDE the try is the
+        # difference between degrading past a bad DB and dying on it.
+        conn = None
         try:
+            conn = get_connection(i)
             conn.execute("UPDATE shards SET utility_score = utility_score * ?", (factor,))
             conn.commit()
+        except sqlite3.DatabaseError as exc:
+            # ONE bad DB must not zero out the whole federated read. The try
+            # around the FTS SQL below catches only sqlite3.OperationalError,
+            # but a corrupt file raises sqlite3.DatabaseError ("database disk
+            # image is malformed") -- its PARENT class, so that except never
+            # matched. With no except on this loop, the error escaped the
+            # for-loop entirely and every ranked read returned empty while the
+            # other 8 DBs sat there healthy and unread.
+            #
+            # 2026-08-29: that is exactly what shipped. shards_coverage showed
+            # databases_errored [{index:5, malformed}], and recall AND search
+            # both returned 0 against a six-figure vault while shards_window --
+            # which filters on timestamp and never touches this path -- happily
+            # returned rows. Health said up the whole time.
+            #
+            # Degrade per DB: record it, skip it, keep scanning. A partial
+            # answer from 8 DBs is worth infinitely more than a false empty,
+            # and the log line names the index so the corrupt file is findable
+            # instead of silently swallowed.
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
     return True
 
 
@@ -1676,8 +1809,12 @@ def retrieve_semantic_rules(query: str, limit: int = 5, domain_key: str = "globa
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists():
             continue
-        conn = get_connection(i)
+        # get_connection() runs PRAGMA journal_mode=WAL, so a corrupt file can
+        # raise before the loop body starts. Opening INSIDE the try is the
+        # difference between degrading past a bad DB and dying on it.
+        conn = None
         try:
+            conn = get_connection(i)
             for word in words[:3]:
                 cursor = conn.execute("""
                     SELECT id, subject, predicate, confidence_score, domain_key, updated_at, ? as _db_index
@@ -1691,8 +1828,36 @@ def retrieve_semantic_rules(query: str, limit: int = 5, domain_key: str = "globa
                     rules.append(dict(row))
         except sqlite3.OperationalError:
             pass
+        except sqlite3.DatabaseError as exc:
+            # ONE bad DB must not zero out the whole federated read. The try
+            # around the FTS SQL below catches only sqlite3.OperationalError,
+            # but a corrupt file raises sqlite3.DatabaseError ("database disk
+            # image is malformed") -- its PARENT class, so that except never
+            # matched. With no except on this loop, the error escaped the
+            # for-loop entirely and every ranked read returned empty while the
+            # other 8 DBs sat there healthy and unread.
+            #
+            # 2026-08-29: that is exactly what shipped. shards_coverage showed
+            # databases_errored [{index:5, malformed}], and recall AND search
+            # both returned 0 against a six-figure vault while shards_window --
+            # which filters on timestamp and never touches this path -- happily
+            # returned rows. Health said up the whole time.
+            #
+            # Degrade per DB: record it, skip it, keep scanning. A partial
+            # answer from 8 DBs is worth infinitely more than a false empty,
+            # and the log line names the index so the corrupt file is findable
+            # instead of silently swallowed.
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
             
     # Deduplicate
     seen = set()
