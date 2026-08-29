@@ -134,7 +134,7 @@ function Assert-GatewayAuth {
     # is legitimately absent, so the probe fails for a reason that says nothing
     # about the gateway. Report that as unverified and do NOT touch the worker's
     # token over it.
-    if ($probe -match 'FLEET_KEY_OUTPOST missing|vault unreadable') {
+    if ($probe -match '^SKIPPED|FLEET_KEY_OUTPOST missing|vault unreadable') {
         Log "$Context probe cannot run here: $probe"
         Log "gateway auth UNVERIFIED from this host (probe needs the Outpost fleet key) - not touching SHARD_GATEWAY_TOKEN"
         return 'unverified'

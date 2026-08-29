@@ -19,6 +19,11 @@ Three states, so a caller never has to infer one from the other:
     OK <detail>               exit 0  authenticated AND the node returned content
     AUTH-OK-NO-DATA <detail>  exit 2  auth chain proven; the node behind it is
                                       empty or down. NOT a gateway fault.
+    SKIPPED <reason>          exit 3  this host CANNOT run the probe: it
+                                      authenticates with FLEET_KEY_OUTPOST, the
+                                      OUTPOST host's key, legitimately absent
+                                      anywhere else. Not a gateway fault and not
+                                      a failure of anything.
     FAIL <reason>             exit 1  a step in the OAuth chain actually failed
 
 Every line names the origin it probed. Health claims that do not name their
@@ -81,11 +86,20 @@ def main() -> int:
         from nougen_shards import keymaker
         fleet_key = keymaker.get_secret("FLEET_KEY_OUTPOST")
     except Exception as exc:
-        print(f"FAIL vault unreadable ({type(exc).__name__}) [origin {ORIGIN}]")
-        return 1
+        print(f"SKIPPED vault unreadable ({type(exc).__name__}) "
+              f"- cannot probe {ORIGIN} from this host")
+        return 3
     if not fleet_key:
-        print(f"FAIL FLEET_KEY_OUTPOST missing from vault [origin {ORIGIN}]")
-        return 1
+        # NOT a failure, and the difference is operational. This probe
+        # authenticates with the OUTPOST host's fleet key, so on any other box
+        # the key is legitimately absent and the probe simply cannot run.
+        # Exiting 1 here made blade's "NouGen Shards Authenticated Probe"
+        # scheduled task go red every five minutes about a gateway it was never
+        # able to check - noise that trains a reader to ignore the one signal
+        # that matters. Verified 2026-08-29: rc=1 on a 5-minute schedule.
+        print(f"SKIPPED FLEET_KEY_OUTPOST not on this host "
+              f"- cannot probe {ORIGIN} from here; run it from Outpost")
+        return 3
 
     status, body, _ = post("/register", {"redirect_uris": [REDIRECT]})
     if status != 201:
