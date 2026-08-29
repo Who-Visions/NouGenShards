@@ -1134,8 +1134,28 @@ def cmd_dashboard(args):
         print("Error: Dashboard module (app.py) not found in path.")
         return
 
-    print(f"🚀 Igniting Cortex HUD on http://127.0.0.1:{args.port}...")
-    uvicorn.run(dashboard_app, host="127.0.0.1", port=args.port)
+def cmd_init(args):
+    """Bootstrap the memory grid and run adaptive onboarding."""
+    from . import init
+    defaults = {}
+    interactive = not getattr(args, "defaults", False) and not getattr(args, "json", False) and not getattr(args, "no_onboarding", False)
+    
+    # Initialize core storage substrate (all 9 databases)
+    for i in range(1, shards.MAX_DB_COUNT + 1):
+        shards.init_db(i)
+    keymaker.init_vault()
+    
+    if getattr(args, "no_onboarding", False):
+        res = {"status": "ok", "message": "Substrate initialized (onboarding skipped)"}
+        if getattr(args, "json", False):
+            print(json.dumps(res, indent=2))
+        else:
+            print("✅ Core substrate initialized (9-DB grid).")
+        return
+
+    res = init.run_adaptive_onboarding(interactive=interactive, defaults=defaults)
+    if getattr(args, "json", False):
+        print(json.dumps(res, indent=2))
 
 
 def cmd_tenant(args):
