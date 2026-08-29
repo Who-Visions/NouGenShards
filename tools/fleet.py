@@ -80,6 +80,11 @@ OR_DIVERSE = [
     ("google-31b",  "google/gemma-4-31b-it:free"),
 ]
 
+# Completion-tested 2026-08-29 and not behind a shared upstream pool. Used only
+# to re-probe a route that 429'd, so one saturated model cannot mark a whole
+# account dead.
+PROBE_FALLBACK_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+
 
 def _kind(name: str) -> str:
     for prefix, _ in PRIORITY:
@@ -179,13 +184,32 @@ class Fleet:
         """Health-check every route in parallel. Populates self.healthy."""
         def check(rt):
             t0 = time.time()
-            try:
+
+            def attempt(route):
                 # 128 not 8: reasoning models (nemotron, gpt-oss, minimax) spend tokens
                 # thinking before content; at 8 they return empty and probe as dead.
-                out = self._call(rt, "Reply with the single word: OK", timeout=timeout, max_tokens=128)
-                ok = bool(out.strip())
-                return rt, ok, round(time.time() - t0, 1), out.strip()[:24]
+                return self._call(route, "Reply with the single word: OK",
+                                  timeout=timeout, max_tokens=128)
+            try:
+                out = attempt(rt)
+                return rt, bool(out.strip()), round(time.time() - t0, 1), out.strip()[:24]
             except Exception as ex:
+                # A 429 is a statement about one MODEL's shared upstream pool, not
+                # about the ACCOUNT. On 2026-08-29 all 8 OpenRouter routes were
+                # configured to probe google/gemma-4-31b-it:free, which sits behind
+                # a saturated Google AI Studio pool -- so every account read "down"
+                # while the same keys answered fine on nemotron. Retry once on a
+                # decorrelated model before condemning the route.
+                code = getattr(ex, "code", None)
+                if code == 429 and rt.get("model") != PROBE_FALLBACK_MODEL:
+                    try:
+                        alt = dict(rt, model=PROBE_FALLBACK_MODEL)
+                        out = attempt(alt)
+                        if out.strip():
+                            return rt, True, round(time.time() - t0, 1), "OK(alt)"
+                    except Exception:
+                        pass
+                    return rt, False, round(time.time() - t0, 1), "429 pooled"
                 return rt, False, round(time.time() - t0, 1), type(ex).__name__
         results = []
         with ThreadPoolExecutor(max_workers=workers) as ex:

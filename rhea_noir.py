@@ -103,14 +103,19 @@ def _try_local(messages: list):
     return None
 
 
+# Verified live against OpenRouter /api/v1/models + a real completion on
+# 2026-08-29. The six ids this list used to carry after nemotron were dead —
+# five returned HTTP 404 (retired model ids) and gemma-4-31b sits behind a
+# shared upstream pool that answers 429 most of the day, so a "rollover" list
+# of seven was really a list of one. Keep every entry here completion-tested;
+# a 404 entry costs a round trip and buys nothing.
 DEFAULT_FREE_MODELS = [
     "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "minimax/minimax-m3:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "dots-studio/dots-3-note-preview:free",
     "google/gemma-4-31b-it:free",
-    "openai/gpt-oss-20b:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen-2.5-coder-32b-instruct:free",
-    "mistralai/mistral-small-24b-instruct-2501:free",
-    "nousresearch/hermes-3-llama-3.1-405b:free",
 ]
 
 
@@ -140,6 +145,38 @@ def _try_free(messages: list, diagnostics: dict | None = None):
             logger.warning("free lane %s failed (%s)", m, err)
             if diagnostics is not None:
                 diagnostics[f"free:{m}"] = err
+    return None
+
+
+def _try_ollama_cloud(messages: list, diagnostics: dict | None = None):
+    """Ollama Cloud — the tier Rhea never tried.
+
+    A fleet probe on 2026-08-29 found 13 healthy Ollama Cloud routes at the
+    same moment Rhea reported brain=none, because her chain only knew local /
+    free / kimi. Keys are read as a comma-separated list so one exhausted
+    account rolls to the next, same shape as the kimi lane.
+    """
+    raw = _get_secret("NOUGEN_OLLAMA_CLOUD_KEYS") or _get_secret("NOUGEN_OLLAMA_CLOUD_KEY") or ""
+    keys = [k.strip() for k in raw.split(",") if k.strip()]
+    if not keys:
+        if diagnostics is not None:
+            diagnostics["ollama_cloud"] = "NOUGEN_OLLAMA_CLOUD_KEYS unset"
+        return None
+    url = os.environ.get("NOUGEN_OLLAMA_CLOUD_URL", "https://ollama.com/v1/chat/completions")
+    model = os.environ.get("NOUGEN_OLLAMA_CLOUD_MODEL", "gpt-oss:120b")
+    for idx, key in enumerate(keys):
+        try:
+            out = _openai_call(url, key, model, messages)
+            if out and out.strip():
+                return out, f"ollama-cloud:{model}"
+            if diagnostics is not None:
+                diagnostics[f"ollama_cloud:key_{idx}"] = "empty"
+        except urllib.error.HTTPError as exc:
+            if diagnostics is not None:
+                diagnostics[f"ollama_cloud:key_{idx}"] = f"HTTP {exc.code}"
+        except Exception as exc:
+            if diagnostics is not None:
+                diagnostics[f"ollama_cloud:key_{idx}"] = type(exc).__name__
     return None
 
 
@@ -190,13 +227,28 @@ def _chat(messages: list, diagnostics: dict | None = None) -> tuple:
         if kimi_out:
             return kimi_out
 
-    raise RuntimeError("no inference lane available (local, free + kimi all down)")
+    # 4. Ollama Cloud — last paid-adjacent tier before giving up
+    cloud_out = _try_ollama_cloud(messages, diagnostics)
+    if cloud_out:
+        return cloud_out
+
+    # Name every lane that was tried and why it failed. "all down" with no
+    # per-route detail is what made the 2026-08-29 outage undiagnosable from
+    # the connector side — the caller could not tell a missing key from a 429.
+    detail = "; ".join(f"{k}={v}" for k, v in sorted((diagnostics or {}).items()))
+    raise RuntimeError(
+        "no inference lane available (local, free, kimi, ollama-cloud all down)"
+        + (f" — {detail}" if detail else " — no per-route diagnostics captured")
+    )
 
 
 def _openai_call(url: str, token: str, model: str, messages: list) -> str:
     req = urllib.request.Request(url, data=json.dumps(
         {"model": model, "messages": messages,
-         "max_tokens": int(os.environ.get("NOUGEN_RHEA_MAX_TOKENS", "1200"))}).encode(),
+         # >=1400: Gemma 4 E-series emits a reasoning channel that eats the
+         # budget first, so an undersized cap returns empty content with no
+         # error. 1200 sat under that floor (fleet doctrine, Rule 0.5.1).
+         "max_tokens": int(os.environ.get("NOUGEN_RHEA_MAX_TOKENS", "1400"))}).encode(),
         method="POST")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
