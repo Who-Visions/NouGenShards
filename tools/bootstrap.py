@@ -142,25 +142,27 @@ def main() -> int:
     required_ok = all(r["ok"] for r in report if r["required"])
 
     # CodeQL raises py/clear-text-logging-sensitive-data on the three prints
-    # below. It is a name heuristic, not a real finding: what reaches stdout is
+    # below, and this repo's default-setup code scanning does not honor inline
+    # suppressions, so they must be dismissed in the Security tab by an owner.
+    # It is a name heuristic, not a real finding: what reaches stdout is
     # the NAME of an environment variable ("OPENROUTER_API_KEY"), which is
     # published in .env.example and the README, and the taint is inherited only
     # because SECRETS' keys contain KEY/TOKEN. No value is read anywhere in this
     # file -- is_configured() uses membership, and an AST test in
     # tests/test_repro_smoke.py fails the build if os.environ.get ever returns.
     if args.json:
-        print(json.dumps({"ok": required_ok, "root": str(ROOT), "steps": report},  # codeql[py/clear-text-logging-sensitive-data]
+        print(json.dumps({"ok": required_ok, "root": str(ROOT), "steps": report},
                          indent=2))
     else:
         for r in report:
             mark = "ok  " if r["ok"] else ("FAIL" if r["required"] else "--  ")
-            print(f"[{mark}] {r['step']:<34} {r['detail']}")  # codeql[py/clear-text-logging-sensitive-data]
+            print(f"[{mark}] {r['step']:<34} {r['detail']}")
         print()
         if required_ok:
             print(f"Bootstrap OK. Interpreter: {venv_python()}")
             missing = [n for n in SECRETS if not is_configured(n)]
             if missing:
-                print("Unconfigured (deployment only, not needed to build or test): "  # codeql[py/clear-text-logging-sensitive-data]
+                print("Unconfigured (deployment only, not needed to build or test): "
                       + ", ".join(missing))
         else:
             print("Bootstrap FAILED - see FAIL rows above.")
