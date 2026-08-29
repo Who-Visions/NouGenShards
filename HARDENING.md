@@ -145,3 +145,20 @@ mitigation: SVD-truncate + owner-held orthogonal rotation of stored vectors,
 env-gated (`NOUGEN_EMBED_ROTATION`), applied symmetrically on read/write so cosine
 ranking is preserved. Must not regress retrieval determinism or the tests. Connects
 to invariant 8 (secret-guard) and the "not a black box" sovereignty thesis.
+
+## 10. Runtime source and liveness must be recoverable
+**Failure observed:** the origin supervisor lived only under a machine-local
+`.nougen` directory, and `/health` alone could report green while authenticated
+MCP calls were broken.
+**Invariant:** the supervisor is versioned, installed atomically from the
+checkout, and a scheduled probe exercises an authenticated MCP recall.
+**Status:** ✅ `tools/start_grid.py` is the source of truth; `tools/install_grid_supervisor.ps1`
+backs up and hash-verifies the runtime copy at `%USERPROFILE%/.nougen/bin/start_grid.py`.
+`tools/gateway_probe.py` resolves its target from env/config, records a
+non-secret JSON result plus a `.alert` marker, and returns non-zero on any
+auth/MCP failure. `tools/install_gateway_probe_task.ps1` installs the bounded,
+CPU-only scheduled probe. ✅ `tools/vault_backup_restore.py` makes online SQLite
+snapshots and runs a temporary restore/integrity-check drill. ⬜ external backup
+volume and notification transport remain operator choices. The drill was
+validated against `graph.db`; the larger shard stores can be resumed safely in
+chunks with repeated `--only nougen_shards_N.db` invocations.

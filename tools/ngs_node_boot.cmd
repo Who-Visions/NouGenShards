@@ -13,9 +13,23 @@ REM It carries the same cross-process locks as node_lane.ps1 and is idempotent,
 REM so the Startup-folder copy and this scheduled task can safely overlap.
 
 setlocal
+set "NGS_ROOT=%~dp0.."
+pushd "%NGS_ROOT%" || exit /b 1
+rem Keep the runtime copy in .nougen synchronized with the checked-in source.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools\install_grid_supervisor.ps1"
+if errorlevel 1 (
+  popd
+  exit /b 1
+)
 set "NOUGEN_HOME=%USERPROFILE%\.nougen"
+set "NGS_REPO=%NGS_ROOT%"
 set "PYTHONW=%LocalAppData%\Programs\Python\Python311\pythonw.exe"
 if not exist "%PYTHONW%" set "PYTHONW=pythonw.exe"
-if not exist "%NOUGEN_HOME%\bin\start_grid.py" exit /b 1
+if not exist "%NOUGEN_HOME%\bin\start_grid.py" (
+  popd
+  exit /b 1
+)
 "%PYTHONW%" "%NOUGEN_HOME%\bin\start_grid.py" --watch
-exit /b %ERRORLEVEL%
+set "RC=%ERRORLEVEL%"
+popd
+exit /b %RC%

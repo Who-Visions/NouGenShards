@@ -1,20 +1,22 @@
 <#
-  Re-enables the two NouGen scheduled tasks that were deliberately DISABLED on
+  Re-enables the canonical NouGen node task that was deliberately DISABLED on
   2026-08-27 because they pointed at boot scripts that did not exist (every
   logon failed with result 1, while still appearing in audits as live
   launchers). Those scripts now exist:
 
-      tools\ngs_node_boot.cmd      -> node_lane.ps1 start
-      tools\ngs_gateway_boot.cmd   -> gateway_supervisor.ps1 -Once
+      tools\ngs_node_boot.cmd      -> the versioned start_grid supervisor
 
-  Both delegate to the LOCK-PROTECTED launchers, so running alongside the
+  The old gateway task stays DISABLED by design: its quick-tunnel supervisor
+  can compete with the named-tunnel owner. The authenticated probe has its own
+  lightweight task (tools\install_gateway_probe_task.ps1). The node launcher
+  is lock-protected, so running alongside the
   Startup-folder launcher (nougen_shards_grid.cmd) cannot stack competing binds
   on :4444 -- verified 2026-08-28: node_lane.ps1 start against a live node
   printed "node already running (listener pid 22328)" and exited 0 without
   touching the listener.
 
   Run:  powershell -NoProfile -ExecutionPolicy Bypass -File tools\enable_ngs_boot_tasks.ps1
-  Undo: Disable-ScheduledTask -TaskName 'NouGen NGS Node','NouGen Shard Gateway'
+  Undo: Disable-ScheduledTask -TaskName 'NouGen NGS Node'
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -23,8 +25,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 # Refuse to enable a task whose target is missing -- that is the exact defect
 # being fixed, and re-creating it silently would be worse than leaving it off.
 $targets = @{
-    'NouGen NGS Node'      = Join-Path $Root 'tools\ngs_node_boot.cmd'
-    'NouGen Shard Gateway' = Join-Path $Root 'tools\ngs_gateway_boot.cmd'
+    'NouGen NGS Node' = Join-Path $Root 'tools\ngs_node_boot.cmd'
 }
 
 foreach ($name in $targets.Keys) {
@@ -40,5 +41,5 @@ foreach ($name in $targets.Keys) {
     Write-Host "enabled: $name -> $path"
 }
 
-Get-ScheduledTask -TaskName 'NouGen NGS Node', 'NouGen Shard Gateway' |
+Get-ScheduledTask -TaskName 'NouGen NGS Node' |
     Select-Object TaskName, State | Format-Table -AutoSize
