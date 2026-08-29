@@ -298,16 +298,55 @@ def _authenticated_probe():
                          NOUGEN_PROBE_STATE_DIR=str(PROBE_STATE_DIR)),
                 stdout=fh, stderr=subprocess.STDOUT,
                 timeout=timeout_s, check=False)
+        # Write the state artifact from HERE, not from inside the probe. It was
+        # the probe's job, and on 2026-08-29 state/gateway_probe.json sat 13
+        # hours stale while this loop ticked -- a stale artifact reads exactly
+        # like a current one, which is how a dead watchdog passed for a live
+        # one all morning. This loop knows the probe ran and knows the exit
+        # code, so this loop records it, whoever owns the probe binary.
+        _record_probe(result.returncode, log)
         if result.returncode:
-            print(f"authenticated probe FAILED (rc={result.returncode}); see {log}")
+            print(f"authenticated probe rc={result.returncode}; see {log}")
         else:
             print("authenticated probe OK")
     except subprocess.TimeoutExpired:
         alert = PROBE_STATE_DIR / "gateway_probe.alert"
-        alert.write_text(f"probe timeout after {timeout_s}s\n", encoding="utf-8")
+        alert.write_text(f"probe timeout after {timeout_s}s" + chr(10), encoding="utf-8")
+        _record_probe(None, log, detail=f"timeout after {timeout_s}s")
         print(f"authenticated probe TIMEOUT after {timeout_s}s; see {alert}")
 
 
+
+
+# Exit codes gateway_probe.py contracts on. 3 = "this host cannot run the probe"
+# (it authenticates with the OUTPOST fleet key), which is NOT a failure and must
+# never be recorded as one -- that distinction is the whole point of the code.
+_PROBE_STATES = {0: "ok", 1: "failed", 2: "auth-ok-no-data", 3: "skipped"}
+
+
+def _record_probe(rc, log, detail=""):
+    """Stamp the probe outcome every tick, whatever it was.
+
+    Never raises. An artifact that stops updating is worse than no artifact: it
+    keeps answering, with yesterday's answer, in the same shape as a fresh one.
+    """
+    try:
+        if not detail:
+            try:
+                lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+                detail = lines[-1].strip() if lines else ""
+            except OSError:
+                detail = ""
+        PROBE_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        (PROBE_STATE_DIR / "gateway_probe.json").write_text(json.dumps({
+            "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "rc": rc,
+            "state": _PROBE_STATES.get(rc, "timeout" if rc is None else "unknown"),
+            "ok": rc == 0,
+            "detail": detail[:300],
+        }) + chr(10), encoding="utf-8")
+    except OSError:
+        pass
 
 def _write_beat(path, payload):
     """Liveness the next reader can actually see. Never raises: a watchdog must
