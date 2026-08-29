@@ -1,0 +1,61 @@
+NouGen — Local Worker Routing docs
+Copyright 2026 Who Visions LLC
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+these files except in compliance with the License. You may obtain a copy of the
+License in the LICENSE file alongside this NOTICE, or at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+------------------------------------------------------------------------------
+LICENSE SCOPE
+------------------------------------------------------------------------------
+
+This subtree (docs/local-worker/) is licensed under Apache-2.0 and is an
+EXCEPTION to the Who Visions Source-Available License v1.0 that governs the
+remainder of this repository. Adoption documentation is only useful if it can
+actually be adopted; the source-available terms are for the NouGen product code,
+not for setup guides.
+
+------------------------------------------------------------------------------
+PROVENANCE
+------------------------------------------------------------------------------
+
+The routing pattern documented here — a local Gemma 4 E2B worker behind a
+supervisor agent, the four-field worker contract (finding / evidence_pointer /
+confidence / next_action), and the local_inspection_worker subagent definition —
+originates in a public post by the copyright holder:
+
+    "Stop Burning Tokens on Tasks Gemma 4 E2B Can Handle"
+    u/SuperDaveWho, r/google_antigravity
+    https://www.reddit.com/r/google_antigravity/comments/1tvwdmh/
+
+README.md in this directory is written from that post.
+
+------------------------------------------------------------------------------
+RELATED INDEPENDENT WORK — NOT INCLUDED HERE
+------------------------------------------------------------------------------
+
+A separate documentation repository was independently written by another author
+after, and with credit to, the post above:
+
+    cj4c0b1/antigravity-local-worker-docs
+    https://github.com/cj4c0b1/antigravity-local-worker-docs
+    First commit 2026-06-04. Author's announcement credited the post by name.
+
+Thirteen files from that repository were previously vendored into this directory
+and have been REMOVED, because that repository carries no license — meaning all
+rights are reserved to its author and Who Visions had no grant to redistribute
+the files, least of all under source-available terms restricting commercial use.
+
+Removed 2026-08-28. Recoverable from this repository's git history if a license
+is later granted. If that material is wanted here again, the correct step is to
+ask that author to add an OSI license to their repository, then vendor it with
+attribution — not to relicense it unilaterally.
+
+The single file retained, scripts/delegate_task.py, does not appear in that
+repository and is the copyright holder's own work.
+
+Ideas are not copyrightable; expression is. The pattern is the copyright
+holder's and is freely documented here. The other author's prose, file layout
+and scripts are theirs, and are linked rather than copied.

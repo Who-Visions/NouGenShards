@@ -25,7 +25,17 @@ This Software is the client-side component of the Who Visions ecosystem. Certain
 ## 5. Termination
 This license terminates automatically if you violate any of these terms. Upon termination, you must cease all use of the Software and destroy all copies in your possession.
 
-## 6. Disclaimer
+## 6. Scope and Exceptions
+This license governs the Software **except** for subdirectories that carry their own `LICENSE`
+file, which are licensed on their own terms and are not subject to Sections 2 or 3 above.
+Current exceptions:
+
+- `docs/local-worker/` — Apache License 2.0. See `docs/local-worker/LICENSE` and its `NOTICE`.
+
+Where a subdirectory's own license conflicts with this one, that subdirectory's license controls
+for the files it covers.
+
+## 7. Disclaimer
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY.
 
 ---
