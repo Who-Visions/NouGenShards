@@ -54,7 +54,7 @@ def test_capture_and_retrieve_bayesian(setup_test_env):
 
 def test_capture_accepts_relay_provenance_and_utility(setup_test_env):
     """Relay publishers can pass provenance and a usefulness prior safely."""
-    source_uri = "relay_daemon://blade1tb"
+    source_uri = "relay_daemon://test-node"
     assert shards.capture(
         "DAEMON_AUTO_SHARD",
         "Relay capture compatibility",
