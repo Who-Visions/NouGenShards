@@ -3,6 +3,26 @@
 Resolved 2026-08-29. Recorded because the symptom pointed at inference and the
 cause was routing, and nothing about the real path lived in this repo.
 
+## Canonical address
+
+`https://shards.nougenai.com/mcp` IS THE FRONT DOOR. Every lane addresses that
+and only that. Everything else — the Space, blade, the failover worker — is a
+backend that resolves BEHIND it and is never addressed directly by a client.
+
+    SHARD_GATEWAY_URL = https://shards.nougenai.com
+
+Do not point a connector at `blade.nougenai.com`, at
+`nougenai-nougenshards.hf.space`, or at any `*.workers.dev` hostname. Those are
+origins, not addresses. A lane pointed at an origin has no failover, and when
+that origin goes down the lane goes down with it — which is exactly what
+happened on 2026-08-29 when a thunderstorm took blade offline while the Space
+was up and answering in 0.3s.
+
+This has now drifted three times (see the git log of `wrangler.jsonc`, whose
+own last commit reads "restore SHARD_GATEWAY_URL to the HF Space hostname
+production actually ran"). If a value other than the front door is ever
+observed in production, it is drift — repair it, do not adopt it.
+
 ## Symptom
 
 `ask_rhea` returned:
@@ -40,12 +60,41 @@ external client hitting that host is served by the failover worker
 (`x-nougen-origin: space`, verified). The Worker's own subrequest to a hostname
 in the same zone did not get the same treatment and reached the tunnel origin
 instead — so the failover the design depends on never ran for the connector.
-Fix: point at the failover worker's `workers.dev` hostname, which is outside
-the zone and therefore cannot be bypassed:
-`SHARD_GATEWAY_URL = https://nougen-shard-failover.whoentertains.workers.dev`
+**This fix was wrong and has been superseded — see "Canonical address" above.**
+It read: point at `https://nougen-shard-failover.whoentertains.workers.dev`,
+"outside the zone and therefore cannot be bypassed". Two problems:
 
-Pointing straight at the Space also works, but discards blade failover for the
-day blade returns. The `workers.dev` target keeps both.
+1. It abandons the front door instead of repairing it. Moving clients onto an
+   internal hostname means every lane needs to know an implementation detail,
+   and the next lane that does not know it points somewhere else again.
+2. Cloudflare's own limit says `workers.dev` subdomains carry the SAME
+   same-zone restriction as routes. It only appeared to work by being outside
+   the zone — an accident, not the mechanism.
+
+**The real cause is the ROUTING TYPE, not the hostname.** Per Cloudflare:
+
+> On the same zone, the only way for a Worker to communicate with another
+> Worker running on a **route**, or on a workers.dev subdomain, is via service
+> bindings. On the same zone, if a Worker is attempting to communicate with a
+> target Worker running on a **Custom Domain** rather than a route, the
+> limitation is removed.
+
+So `shards.nougenai.com` is bound as a **route**. That is the whole defect.
+
+CORRECT FIX — bind `shards.nougenai.com` to `nougen-shard-failover` as a
+**Custom Domain** rather than a route. Same-zone subrequests then resolve
+through it exactly like external ones, and `SHARD_GATEWAY_URL` stays on the
+canonical address for every lane.
+
+A service binding from `nougen-fleet-mcp` to `nougen-shard-failover` also
+works, is zero-cost with no network hop, and leaves the public front door
+untouched. Prefer it only if you want the in-zone caller to be explicit;
+Custom Domain is what makes every lane take one identical path.
+
+ORDERING MATTERS. Setting `SHARD_GATEWAY_URL` back to the front door BEFORE
+fixing the routing type reintroduces the bypass: the connector lands on the
+tunnel origin, and if blade is down there is nothing behind it. Fix the
+routing type first, then set the variable.
 
 ## Verification
 
