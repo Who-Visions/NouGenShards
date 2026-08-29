@@ -80,12 +80,14 @@ def discover_capabilities(ollama_url: str | None = None, env: dict | None = None
     local = _probe_ollama(base)
     return {
         "local_runtime": {"url": base, **local},
-        # Presence only -- the value never enters this process.
-        "credentials_present": sorted(n for n in CREDENTIAL_NAMES if env.get(n)),
-        "credentials_absent": sorted(n for n in CREDENTIAL_NAMES if not env.get(n)),
+        # Presence by MEMBERSHIP -- reading the variable would bind the
+        # credential into this process even though only names are ever kept,
+        # and a value that is never read cannot be leaked by a later change.
+        "credentials_present": sorted(n for n in CREDENTIAL_NAMES if n in env),
+        "credentials_absent": sorted(n for n in CREDENTIAL_NAMES if n not in env),
         "has_local_lane": local["reachable"] and bool(local["models"]),
-        "has_free_lane": bool(env.get("OPENROUTER_API_KEY")),
-        "has_paid_lane": bool(env.get("NGS_INFERENCE_TOKENS") or env.get("HF_TOKEN")),
+        "has_free_lane": "OPENROUTER_API_KEY" in env,
+        "has_paid_lane": "NGS_INFERENCE_TOKENS" in env or "HF_TOKEN" in env,
     }
 
 
