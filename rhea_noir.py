@@ -11,9 +11,7 @@ Everything environment-shaped resolves from env with logged fallbacks:
   NGS_INFERENCE_TOKEN    HF token for router.huggingface.co (falls back HF_TOKEN)
   OPENROUTER_API_KEY     fallback lane key
   NOUGEN_PERSONA_PATH    persona charter file (default /data/rhea_noir_persona.txt)
-  NOUGEN_RHEA_MAX_ROUNDS tool-loop rounds (default 8); on exhaustion one
-                         compose-only pass turns the gathered tool trace into
-                         a best-effort answer instead of dropping it
+  NOUGEN_RHEA_MAX_ROUNDS tool-loop rounds (default 4)
 """
 import json
 import logging
@@ -39,11 +37,9 @@ TOOL_SPEC = """You may call tools by replying ONLY with JSON:
 {"tool": "capture", "title": "...", "content": "...", "tags": ["..."]} — save a shard
 {"tool": "tracker", "lane": "<lane>", "date": "YYYY-MM-DD"} — token usage dailies; omit lane to list lanes; omit date for latest available
 {"tool": "relay", "id": "<leg id>"} — read the fleet relay baton; omit id for the latest leg
-{"tool": "dav1d", "command": "agy", "subcommand": "mcp list", "args": ["mcp", "list"], "prompt": "..."} — execute bounded tooling on Dav1d (Google Antigravity CLI / local execution layer)
-{"tool": "agy", "subcommand": "mcp list"} — invoke AGY CLI on Dav1d to inspect MCP tools, changelogs, models, or query AGY
 {"tool": "health"} — grid status
 When you have what you need, reply ONLY with a JSON object whose "answer" field
-holds your finished reply to the user, e.g. {"answer": "The node holds 100 items."}
+holds your finished reply to the user, e.g. {"answer": "Blade holds 202,979 shards."}
 Rules:
 - Exactly ONE JSON object per reply. One tool call at a time, never several.
 - "answer" must be the finished reply itself. Never narrate your process, never
@@ -62,47 +58,146 @@ def _persona() -> str:
     return DEFAULT_PERSONA
 
 
+
+def _get_secret(name: str):
+    val = os.environ.get(name)
+    if val and val.strip():
+        return val.strip()
+    try:
+        from nougen_shards import keymaker
+        s = keymaker.get_secret(name)
+        if s and s.strip():
+            return s.strip()
+    except Exception:
+        pass
+    return None
+
+
 _LAST_GOOD_KEY = {"i": 0}
 
 
 def _inference_keys() -> list:
-    """Every HF identity that may carry Inference-Provider credit, in order.
-
-    One account's monthly credit is small and runs out mid-day (402). The
-    operator holds many HF accounts, so a depleted one is a reason to move to
-    the next lane, not to drop to the weak fallback model. NGS_INFERENCE_TOKENS
-    takes a comma-separated list; NGS_INFERENCE_TOKEN stays supported alone.
-    """
-    raw = os.environ.get("NGS_INFERENCE_TOKENS", "")
-    keys = [k.strip() for k in raw.split(",") if k.strip()]
-    for solo in (os.environ.get("NGS_INFERENCE_TOKEN"), os.environ.get("HF_TOKEN")):
+    """Every HF identity that may carry Inference-Provider credit, in order."""
+    keys = []
+    raw = _get_secret("NGS_INFERENCE_TOKENS") or ""
+    for k in raw.split(","):
+        if k.strip():
+            keys.append(k.strip())
+    
+    # Check all candidate HF token names in env & vault
+    candidate_names = (
+        "NGS_INFERENCE_TOKEN",
+        "HF_TOKEN",
+        "HUGGINGFACE_API_KEY",
+        "HF_SPACE_API_KEY",
+        "HUGGINGFACE_KEY_WHOENTERTAINS_GMAIL_COM",
+        "HUGGINGFACE_KEY_DAVE_WHOVISIONS_COM",
+        "HUGGINGFACE_KEY_SUPERDAVEWHO_GMAIL_COM",
+        "HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM",
+        "HUGGINGFACE_KEY_AIWITHDAV3_GMAIL_COM",
+    )
+    for name in candidate_names:
+        solo = _get_secret(name)
         if solo and solo.strip() and solo.strip() not in keys:
             keys.append(solo.strip())
     return keys
 
 
-def _chat(messages: list) -> tuple:
-    """Returns (reply_text, brain_label). FREE lane first; Kimi only on request.
+def _try_local(messages: list):
+    """Attempt local Ollama execution on GPU VRAM at $0 before cloud fallback."""
+    local_url = os.environ.get("NOUGEN_OLLAMA_URL", "http://127.0.0.1:11434/v1")
+    model = os.environ.get("NOUGEN_RHEA_LOCAL_MODEL", "gemma4:e2b-qat")
+    try:
+        out = _openai_call(f"{local_url.rstrip('/')}/chat/completions", "ollama", model, messages)
+        if out and out.strip():
+            return out, f"local:{model}"
+    except Exception as exc:
+        logger.debug("local ollama lane unavailable (%s)", str(exc)[:80])
+    return None
 
-    Routing a request through the Space does NOT make the model free: the Space
-    is free compute, but calling router.huggingface.co bills Inference
-    Providers (Baseten/Fireworks et al) against a $0.10/month included credit,
-    and one afternoon of testing consumed $0.09 of it. Kimi K3 has no free tier
-    on any lane we can reach, so a $0-by-default agent cannot default to Kimi.
-    OpenRouter's :free models are genuinely $0 and, measured, answer this
-    tool-loop faster than K3 did. Kimi stays available as an opt-in escalation
-    (NOUGEN_RHEA_PREFER_KIMI=1) for work that actually needs the bigger brain.
+
+# Verified live against OpenRouter /api/v1/models + a real completion on
+# 2026-08-29. The six ids this list used to carry after nemotron were dead —
+# five returned HTTP 404 (retired model ids) and gemma-4-31b sits behind a
+# shared upstream pool that answers 429 most of the day, so a "rollover" list
+# of seven was really a list of one. Keep every entry here completion-tested;
+# a 404 entry costs a round trip and buys nothing.
+DEFAULT_FREE_MODELS = [
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "minimax/minimax-m3:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "dots-studio/dots-3-note-preview:free",
+    "google/gemma-4-31b-it:free",
+]
+
+
+def _try_free(messages: list, diagnostics: dict | None = None):
+    """Walk the $0 OpenRouter models in order; rollover on 429/404/failure."""
+    orkey = _get_secret("OPENROUTER_API_KEY")
+    if not orkey:
+        if diagnostics is not None:
+            diagnostics["openrouter"] = "OPENROUTER_API_KEY unset"
+        return None
+    raw = os.environ.get("NOUGEN_RHEA_FREE_MODELS", "")
+    models = [m.strip() for m in raw.split(",") if m.strip()] or DEFAULT_FREE_MODELS
+    for m in models:
+        try:
+            res = _openai_call(OPENROUTER_URL, orkey, m, messages)
+            if res and res.strip():
+                return res, f"free:{m}"
+            if diagnostics is not None:
+                diagnostics[f"free:{m}"] = "empty"
+        except urllib.error.HTTPError as exc:
+            err = f"HTTP {exc.code}"
+            logger.warning("free lane %s unavailable (%s)", m, err)
+            if diagnostics is not None:
+                diagnostics[f"free:{m}"] = err
+        except Exception as exc:
+            err = type(exc).__name__
+            logger.warning("free lane %s failed (%s)", m, err)
+            if diagnostics is not None:
+                diagnostics[f"free:{m}"] = err
+    return None
+
+
+def _try_ollama_cloud(messages: list, diagnostics: dict | None = None):
+    """Ollama Cloud — the tier Rhea never tried.
+
+    A fleet probe on 2026-08-29 found 13 healthy Ollama Cloud routes at the
+    same moment Rhea reported brain=none, because her chain only knew local /
+    free / kimi. Keys are read as a comma-separated list so one exhausted
+    account rolls to the next, same shape as the kimi lane.
     """
-    free_first = os.environ.get("NOUGEN_RHEA_PREFER_KIMI", "").strip() != "1"
-    if free_first:
-        out = _try_free(messages)
-        if out:
-            return out
+    raw = _get_secret("NOUGEN_OLLAMA_CLOUD_KEYS") or _get_secret("NOUGEN_OLLAMA_CLOUD_KEY") or ""
+    keys = [k.strip() for k in raw.split(",") if k.strip()]
+    if not keys:
+        if diagnostics is not None:
+            diagnostics["ollama_cloud"] = "NOUGEN_OLLAMA_CLOUD_KEYS unset"
+        return None
+    url = os.environ.get("NOUGEN_OLLAMA_CLOUD_URL", "https://ollama.com/v1/chat/completions")
+    model = os.environ.get("NOUGEN_OLLAMA_CLOUD_MODEL", "gpt-oss:120b")
+    for idx, key in enumerate(keys):
+        try:
+            out = _openai_call(url, key, model, messages)
+            if out and out.strip():
+                return out, f"ollama-cloud:{model}"
+            if diagnostics is not None:
+                diagnostics[f"ollama_cloud:key_{idx}"] = "empty"
+        except urllib.error.HTTPError as exc:
+            if diagnostics is not None:
+                diagnostics[f"ollama_cloud:key_{idx}"] = f"HTTP {exc.code}"
+        except Exception as exc:
+            if diagnostics is not None:
+                diagnostics[f"ollama_cloud:key_{idx}"] = type(exc).__name__
+    return None
+
+
+def _try_kimi(messages: list, diagnostics: dict | None = None):
+    """Attempt Kimi K3 via HF Inference Router."""
     keys = _inference_keys()
-    kimi = os.environ.get("NOUGEN_RHEA_MODEL", "")
+    kimi = os.environ.get("NOUGEN_RHEA_MODEL") or "moonshotai/Kimi-K3"
     if keys and kimi:
-        # Resume at the last key that worked so a depleted account is not
-        # re-tried on every single call.
         order = list(range(len(keys)))
         start = _LAST_GOOD_KEY["i"] % len(keys)
         order = order[start:] + order[:start]
@@ -112,44 +207,64 @@ def _chat(messages: list) -> tuple:
                 _LAST_GOOD_KEY["i"] = idx
                 return out, f"kimi:{kimi}"
             except Exception as exc:
-                logger.warning("kimi key #%d exhausted/failed (%s)", idx, str(exc)[:100])
-        logger.warning("all %d kimi keys failed; falling back", len(keys))
-    out = _try_free(messages)
-    if out:
-        return out
-    raise RuntimeError("no inference lane available (free + kimi both down)")
-
-
-def _try_free(messages: list):
-    """Walk the $0 OpenRouter models in order; None if every one is unavailable.
-
-    Free models rotate off the free tier without notice and rate-limit hard, so
-    this is a list, not a constant -- a 429 on one is not an outage.
-    """
-    orkey = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
-    if not orkey:
-        return None
-    raw = os.environ.get("NOUGEN_RHEA_FREE_MODELS", "")
-    models = [m.strip() for m in raw.split(",") if m.strip()] or [
-        "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "nvidia/nemotron-3-super-120b-a12b:free",
-        "z-ai/glm-5.2:free",
-        "openai/gpt-oss-20b:free",
-    ]
-    for m in models:
-        try:
-            return _openai_call(OPENROUTER_URL, orkey, m, messages), f"free:{m}"
-        except Exception as exc:
-            logger.warning("free lane %s unavailable (%s)", m, str(exc)[:90])
+                err = str(exc)[:80]
+                logger.warning("kimi key #%d exhausted/failed (%s)", idx, err)
+                if diagnostics is not None:
+                    diagnostics[f"kimi:key_{idx}"] = err
+    elif diagnostics is not None:
+        diagnostics["kimi"] = f"no keys found (keys={len(keys)})"
     return None
+
+
+def _chat(messages: list, diagnostics: dict | None = None) -> tuple:
+    """Returns (reply_text, brain_label). Free/Local lane first; Kimi only on request/fallback."""
+    prefer_kimi = os.environ.get("NOUGEN_RHEA_PREFER_KIMI", "").strip() == "1"
+    if prefer_kimi:
+        out = _try_kimi(messages, diagnostics)
+        if out:
+            return out
+
+    # 1. Try local Ollama ($0 GPU VRAM)
+    local_out = _try_local(messages)
+    if local_out:
+        return local_out
+
+    # 2. Try OpenRouter free models with rollover
+    free_out = _try_free(messages, diagnostics)
+    if free_out:
+        return free_out
+
+    # 3. Try Kimi if not preferred
+    if not prefer_kimi:
+        kimi_out = _try_kimi(messages, diagnostics)
+        if kimi_out:
+            return kimi_out
+
+    # 4. Ollama Cloud — last paid-adjacent tier before giving up
+    cloud_out = _try_ollama_cloud(messages, diagnostics)
+    if cloud_out:
+        return cloud_out
+
+    # Name every lane that was tried and why it failed. "all down" with no
+    # per-route detail is what made the 2026-08-29 outage undiagnosable from
+    # the connector side — the caller could not tell a missing key from a 429.
+    detail = "; ".join(f"{k}={v}" for k, v in sorted((diagnostics or {}).items()))
+    raise RuntimeError(
+        "no inference lane available (local, free, kimi, ollama-cloud all down)"
+        + (f" — {detail}" if detail else " — no per-route diagnostics captured")
+    )
 
 
 def _openai_call(url: str, token: str, model: str, messages: list) -> str:
     req = urllib.request.Request(url, data=json.dumps(
         {"model": model, "messages": messages,
-         "max_tokens": int(os.environ.get("NOUGEN_RHEA_MAX_TOKENS", "1200"))}).encode(),
+         # >=1400: Gemma 4 E-series emits a reasoning channel that eats the
+         # budget first, so an undersized cap returns empty content with no
+         # error. 1200 sat under that floor (fleet doctrine, Rule 0.5.1).
+         "max_tokens": int(os.environ.get("NOUGEN_RHEA_MAX_TOKENS", "1400"))}).encode(),
         method="POST")
-    req.add_header("Authorization", f"Bearer {token}")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=120) as r:
         return json.loads(r.read().decode())["choices"][0]["message"]["content"]
@@ -259,14 +374,6 @@ def _run_tool(call: dict) -> dict:
                 finally:
                     conn.close()
         return {"total_shards": counts}
-    if call.get("tool") in ("dav1d", "agy"):
-        from nougen_shards.dav1d_executor import run_dav1d_agy
-        return run_dav1d_agy(
-            command=str(call.get("command") or "agy"),
-            args=call.get("args"),
-            subcommand=call.get("subcommand"),
-            prompt=call.get("prompt"),
-        )
     return {"error": f"unknown tool {call.get('tool')}"}
 
 
@@ -289,16 +396,29 @@ def ask(prompt: str) -> dict:
     """The agent loop: persona + tools, bounded rounds, honest brain label."""
     messages = [{"role": "system", "content": _persona() + "\n\n" + TOOL_SPEC},
                 {"role": "user", "content": prompt}]
-    max_rounds = int(os.environ.get("NOUGEN_RHEA_MAX_ROUNDS", "8"))
+    max_rounds = int(os.environ.get("NOUGEN_RHEA_MAX_ROUNDS", "4"))
     tools_used = []
     brain = "none"
+    diagnostics = {}
     for _ in range(max_rounds):
-        reply, brain = _chat(messages)
+        try:
+            reply, brain = _chat(messages, diagnostics)
+        except Exception as exc:
+            logger.error("rhea inference failure: %s", exc)
+            diag_str = ", ".join(f"{k}: {v}" for k, v in diagnostics.items()) if diagnostics else str(exc)
+            return {
+                "status": "degraded",
+                "brain": "none",
+                "answer": f"All Rhea inference routes unavailable ({diag_str}).",
+                "diagnostics": diagnostics,
+                "tools_used": tools_used,
+            }
+
         data = _first_json_object(reply)
         if data is None:
-            return {"answer": reply.strip(), "brain": brain, "tools_used": tools_used}
+            return {"status": "ok", "answer": reply.strip(), "brain": brain, "tools_used": tools_used}
         if "answer" in data:
-            return {"answer": data["answer"], "brain": brain, "tools_used": tools_used}
+            return {"status": "ok", "answer": data["answer"], "brain": brain, "tools_used": tools_used}
         if "tool" in data:
             tools_used.append(data.get("tool"))
             result = _run_tool(data)
@@ -307,24 +427,6 @@ def ask(prompt: str) -> dict:
                              "content": f"TOOL RESULT: {json.dumps(result)[:4000]}\n"
                                         "Continue: another tool call or your final answer, JSON only."})
             continue
-        return {"answer": reply.strip(), "brain": brain, "tools_used": tools_used}
-    # Rounds exhausted with a tool trace in hand: force one compose-only pass
-    # instead of discarding everything the tools gathered. Deep archive sweeps
-    # legitimately spend every round on tools; the gathered evidence is the
-    # answer's raw material, not waste.
-    messages.append({"role": "user", "content":
-                     "ROUND LIMIT REACHED. Tool calls are no longer available. "
-                     "Compose your best final answer NOW from the tool results "
-                     "above, noting any gaps you could not cover. "
-                     'JSON {"answer": ...} or plain text.'})
-    try:
-        reply, brain = _chat(messages)
-        data = _first_json_object(reply)
-        answer = data["answer"] if data is not None and "answer" in data else reply.strip()
-    except Exception:
-        answer = ""
-    if answer:
-        return {"answer": answer, "brain": brain, "tools_used": tools_used,
-                "note": "composed at round limit"}
-    return {"answer": "(round limit hit before a final answer)",
+        return {"status": "ok", "answer": reply.strip(), "brain": brain, "tools_used": tools_used}
+    return {"status": "ok", "answer": "(round limit hit before a final answer)",
             "brain": brain, "tools_used": tools_used}
