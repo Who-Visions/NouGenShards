@@ -40,7 +40,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def post(path, data, form=False, headers=None):
+def post(path, data, form=False, headers=None, timeout=45):
     body = (urllib.parse.urlencode(data) if form else json.dumps(data)).encode()
     req = urllib.request.Request(ORIGIN + path, data=body, method="POST")
     req.add_header("content-type",
@@ -49,11 +49,22 @@ def post(path, data, form=False, headers=None):
     for h, v in (headers or {}).items():
         req.add_header(h, v)
     opener = urllib.request.build_opener(NoRedirect)
-    try:
-        with opener.open(req, timeout=30) as r:
-            return r.status, r.read().decode(), dict(r.headers)
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode(), dict(e.headers)
+    # A saturated origin is not an auth failure. The gateway fronts blade,
+    # which was measured at 24,523s CPU answering the second request after
+    # timing out on the first, so one slow call must not read as "gateway
+    # broken". Retry once on timeout/network error, then report a VERDICT --
+    # this tool's contract is one line of OK/FAIL, and an escaping
+    # TimeoutError traceback tells the supervisor nothing it can branch on.
+    for attempt in (1, 2):
+        try:
+            with opener.open(req, timeout=timeout) as r:
+                return r.status, r.read().decode(), dict(r.headers)
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode(), dict(e.headers)
+        except Exception as exc:  # URLError, TimeoutError, ssl timeouts
+            if attempt == 2:
+                return None, f"{type(exc).__name__}: {str(exc)[:80]}", {}
+    return None, "unreachable", {}
 
 
 def main() -> int:
@@ -68,6 +79,9 @@ def main() -> int:
         return 1
 
     status, body, _ = post("/register", {"redirect_uris": [REDIRECT]})
+    if status is None:
+        print(f"FAIL /register unreachable ({body})")
+        return 1
     if status != 201:
         print(f"FAIL /register {status}")
         return 1
@@ -78,6 +92,9 @@ def main() -> int:
         "client_id": cid, "redirect_uri": REDIRECT, "response_type": "code",
         "code_challenge": chal, "code_challenge_method": "S256",
         "scope": "fleet", "fleet_key": fleet_key}, form=True)
+    if status is None:
+        print(f"FAIL /authorize unreachable ({body})")
+        return 1
     if status != 302:
         print("FAIL consent rejected the fleet key")
         return 1
@@ -86,17 +103,30 @@ def main() -> int:
     status, body, _ = post("/token", {
         "grant_type": "authorization_code", "code": code,
         "redirect_uri": REDIRECT, "client_id": cid, "code_verifier": ver}, form=True)
+    if status is None:
+        print(f"FAIL /token unreachable ({body})")
+        return 1
     if status != 200:
         print(f"FAIL /token {status}")
         return 1
     tok = json.loads(body)["access_token"]
 
-    _, body, _ = post("/mcp", {
+    mcp_status, body, _ = post("/mcp", {
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "shards_recall",
                    "arguments": {"query": "gateway", "limit": 1}}},
-        headers={"authorization": "Bearer " + tok})
-    result = json.loads(body).get("result", {})
+        headers={"authorization": "Bearer " + tok}, timeout=90)
+    if mcp_status is None:
+        # Reached only after a retry, so this is a genuinely unresponsive
+        # origin -- distinct from an auth rejection, and it must say so.
+        print(f"FAIL gateway /mcp unreachable after retry ({body}) "
+              "-- origin may be saturated, not misauthenticated")
+        return 1
+    try:
+        result = json.loads(body).get("result", {})
+    except json.JSONDecodeError:
+        print(f"FAIL gateway /mcp returned non-JSON ({body[:80]!r})")
+        return 1
     text = (result.get("content") or [{}])[0].get("text", "")
     if result.get("isError") or "Error:" in text:
         print("FAIL " + text.strip().replace("\n", " ")[:120])
