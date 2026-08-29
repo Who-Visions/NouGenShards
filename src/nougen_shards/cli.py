@@ -196,18 +196,69 @@ def cmd_auth(args):
             print(" No cloud services connected.")
 
 
-def cmd_init(_args):
-    """Bootstrap the local shard layer."""
-    print("🪩 Initializing Valerion — The Metameric Memory Engine...")
+def cmd_init(args):
+    """Bootstrap the local shard layer, then adaptively onboard.
+
+    Onboarding asks only what discovery could not settle: no question about
+    which local model to prefer on a machine with no local runtime, and no
+    metered tier offered when no credential backs one. NouGen is a capability
+    layer over infrastructure the operator already owns, so first run
+    DISCOVERS the lanes rather than asserting them.
+    """
+    from . import init_onboarding
+
+    quiet = getattr(args, "json", False)
+    if not quiet:
+        print("🪩 Initializing Valerion — The Metameric Memory Engine...")
     shards.init_db(index=1)
-    print("✅ Created local-first database substrate.")
-    print("\n[IGNITION COMPLETE]")
-    print(" NouGenShards is now active. Your machine has memory.")
-    print("\nNext Plays:")
-    print(" 1. nougen brain scan         (Discover your lost AI history)")
-    print(" 2. nougen dashboard          (Launch the visual Cortex HUD)")
-    print(" 3. nougen auth set-key OR    (Connect to the cloud)")
-    print(" 4. nougen add \"first shard\" (Start capturing manually)")
+    if not quiet:
+        print("✅ Created local-first database substrate.")
+
+    if getattr(args, "no_onboarding", False):
+        if not quiet:
+            print("\n[IGNITION COMPLETE] Onboarding skipped (--no-onboarding).")
+        return None
+
+    interactive = (not getattr(args, "defaults", False)) and (not quiet) and sys.stdin.isatty()
+
+    def ask(q):
+        opts = q.get("options") or []
+        print(f"\n{q['prompt']}")
+        print(f"  ({q['why']})")
+        for i, opt in enumerate(opts, 1):
+            tag = "  <- default" if opt == q.get("default") else ""
+            print(f"   {i}) {opt}{tag}")
+        raw = input("  choice [enter for default]: ").strip()
+        if not raw:
+            return q.get("default")
+        if raw.isdigit() and 1 <= int(raw) <= len(opts):
+            return opts[int(raw) - 1]
+        return raw
+
+    profile = init_onboarding.run(assume_defaults=not interactive,
+                                  ask=ask if interactive else None)
+
+    def plain(p, style):
+        yield ""
+        yield style("[IGNITION COMPLETE]", "1")
+        yield " NouGenShards is now active. Your machine has memory."
+        yield ""
+        yield f" Route order:    {' -> '.join(p['route_order']) or '(none routable yet)'}"
+        yield f" Local default:  {p['default_local_model'] or '(none found)'}"
+        yield f" Cost ceiling:   {p['cost_ceiling']}"
+        yield f" Memory scope:   {p['memory_scope']}"
+        yield f" Profile:        {p['profile_path']}"
+        if not p["route_order"]:
+            yield ""
+            yield " No lane is routable yet. That is reported, never silently escalated."
+        yield ""
+        yield "Next Plays:"
+        yield " 1. nougen brain scan         (Discover your lost AI history)"
+        yield " 2. nougen dashboard          (Launch the visual Cortex HUD)"
+        yield " 3. nougen auth set-key OR    (Connect to the cloud)"
+        yield " 4. nougen add \"first shard\" (Start capturing manually)"
+
+    return emit(profile, plain, args)
 
 
 def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen"):
@@ -1110,7 +1161,12 @@ def get_parser():
     parser.add_argument("--version", action="version", version=f"NouGenShards v{VERSION} (Valerion Engine)")
     subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser("init", help="Bootstrap substrate")
+    p_init = subparsers.add_parser("init", help="Bootstrap substrate and onboard")
+    p_init.add_argument("--defaults", action="store_true",
+                        help="Accept every discovered default; ask nothing")
+    p_init.add_argument("--no-onboarding", action="store_true",
+                        help="Create the substrate only; skip capability discovery")
+    p_init.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_add = subparsers.add_parser("add", help="Save shard")
     p_add.add_argument("content", nargs="?")

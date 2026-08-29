@@ -78,7 +78,13 @@ def ensure_install(report: list, check_only: bool) -> bool:
         return step(report, "install", True, f"nougen_shards {probe.stdout.strip()}")
     if check_only:
         return step(report, "install", False, "nougen_shards not importable")
-    proc = run([str(py), "-m", "pip", "install", "-q", "-e", "."])
+    # `.[test]`, not `.`: the test extra pins pytest-asyncio, and without it 10
+    # async tests fail on a fresh clone in a way that reads like broken code
+    # rather than an incomplete install. A bootstrap that cannot produce a green
+    # suite has not finished bootstrapping.
+    proc = run([str(py), "-m", "pip", "install", "-q", "-e", ".[test]"])
+    if proc.returncode != 0:
+        proc = run([str(py), "-m", "pip", "install", "-q", "-e", "."])
     if proc.returncode != 0:
         return step(report, "install", False, proc.stderr.strip()[:200])
     probe = run([str(py), "-c", "import nougen_shards; print(nougen_shards.__version__)"])
