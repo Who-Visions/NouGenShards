@@ -29,6 +29,56 @@ from . import agents
 from nougen_shards import __version__ as VERSION  # single source: pyproject
 
 
+# --- semantic rendering ---------------------------------------------------
+# One command builds ONE payload dict. `--json` dumps it; the human view
+# FORMATS that same dict. Parity stops being a thing anyone has to remember
+# and becomes structural: a field a human can see is a field a script can
+# read, because both read the same object.
+#
+# The bug this replaces: cmd_stats printed a timeline and an acceleration
+# rate that --json never emitted, so automation was strictly blinder than a
+# terminal. Hand-rolled `print(json.dumps(...)); return` at 20-odd call sites
+# is what let the two drift apart.
+
+def supports_color(stream=None) -> bool:
+    """True only for a real TTY with color not explicitly disabled.
+
+    Honors NO_COLOR (https://no-color.org). Redirected output must stay
+    byte-identical to plain, or `nougen ... | grep` behaves differently from
+    what the operator just read on screen.
+    """
+    stream = stream or sys.stdout
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("NOUGEN_FORCE_COLOR"):
+        return True
+    return bool(getattr(stream, "isatty", lambda: False)())
+
+
+def emit(payload: dict, plain, args=None, stream=None) -> dict:
+    """Render one semantic payload as JSON or as human text.
+
+    `plain` is called with (payload, style) and yields display lines, so it
+    cannot show a value that is not in `payload`. `style` is a callable that
+    is the identity when the stream is not a TTY -- meaning plain and TTY
+    output differ only in styling, never in content.
+
+    Returns the payload so callers and tests can assert on it.
+    """
+    stream = stream or sys.stdout
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, default=str), file=stream)
+        return payload
+    color = supports_color(stream)
+
+    def style(text, code=""):
+        return f"\033[{code}m{text}\033[0m" if (color and code) else text
+
+    for line in plain(payload, style):
+        print(line, file=stream)
+    return payload
+
+
 
 # UTF-8 Console protection for Windows
 if sys.platform == "win32":
@@ -611,23 +661,30 @@ def cmd_stats(args):
     utility = engine.get_utility_delta(period)
     timeline = engine.get_timeline(period)
 
-    if getattr(args, 'json', False) is True:
-        print(json.dumps({
-            "period": period,
-            "growth": growth,
-            "utility_delta": utility
-        }))
-        return
+    total = growth['total_shards']
+    payload = {
+        "period": period,
+        "growth": growth,
+        "utility_delta": utility,
+        # Both of these used to be terminal-only, which made --json a strictly
+        # worse view of the same command than the human one.
+        "timeline": timeline,
+        "acceleration_rate_pct": (growth['new_shards'] / total * 100) if total > 0 else None,
+    }
 
-    print(f"📈 NouGenShards History ({period})")
-    print(timeline)
-    print(f"\n - New Shards Captured: {growth['new_shards']}")
-    print(f" - Total Memory Size:   {growth['total_shards']} shards")
-    print(f" - Usefulness \u0394: {'+' if utility >= 0 else ''}{utility:.2f}")
+    def plain(p, style):
+        g = p["growth"]
+        yield style(f"📈 NouGenShards History ({p['period']})", "1")
+        yield p["timeline"]
+        yield ""
+        yield f" - New Shards Captured: {g['new_shards']}"
+        yield f" - Total Memory Size:   {g['total_shards']} shards"
+        d = p["utility_delta"]
+        yield f" - Usefulness Δ: {'+' if d >= 0 else ''}{d:.2f}"
+        if p["acceleration_rate_pct"] is not None:
+            yield f" - Acceleration Rate:   {p['acceleration_rate_pct']:.1f}% expansion"
 
-    if growth['total_shards'] > 0:
-        rate = (growth['new_shards'] / growth['total_shards']) * 100
-        print(f" - Acceleration Rate:   {rate:.1f}% expansion")
+    return emit(payload, plain, args)
 
 
 def cmd_usage(args):
