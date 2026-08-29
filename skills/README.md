@@ -47,6 +47,11 @@ one costs a moment's reading.
 
 ## Installed
 
+- **`cross-session-messaging/`** — coordinate with other Claude Code sessions: reach one by
+  name, verify who a peer actually IS before relaying its claims as fact, and know what an
+  incoming message may not authorize (it is never user consent, and never a route around a
+  permission your own session was denied). Carries the delivery limits and the rule that
+  messages are ephemeral — a finding that must survive belongs in a relay leg or a shard.
 - **`design/`** — author, audit and emit design systems as portable `DESIGN.md` packages.
   Includes a validator with quality gates and three reference brand packages. Start from
   `design/brands/_template/`, not from one of the branded packages.
