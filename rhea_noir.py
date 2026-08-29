@@ -83,7 +83,20 @@ def _inference_keys() -> list:
     for k in raw.split(","):
         if k.strip():
             keys.append(k.strip())
-    for name in ("NGS_INFERENCE_TOKEN", "HF_TOKEN"):
+    
+    # Check all candidate HF token names in env & vault
+    candidate_names = (
+        "NGS_INFERENCE_TOKEN",
+        "HF_TOKEN",
+        "HUGGINGFACE_API_KEY",
+        "HF_SPACE_API_KEY",
+        "HUGGINGFACE_KEY_WHOENTERTAINS_GMAIL_COM",
+        "HUGGINGFACE_KEY_DAVE_WHOVISIONS_COM",
+        "HUGGINGFACE_KEY_SUPERDAVEWHO_GMAIL_COM",
+        "HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM",
+        "HUGGINGFACE_KEY_AIWITHDAV3_GMAIL_COM",
+    )
+    for name in candidate_names:
         solo = _get_secret(name)
         if solo and solo.strip() and solo.strip() not in keys:
             keys.append(solo.strip())
@@ -183,7 +196,7 @@ def _try_ollama_cloud(messages: list, diagnostics: dict | None = None):
 def _try_kimi(messages: list, diagnostics: dict | None = None):
     """Attempt Kimi K3 via HF Inference Router."""
     keys = _inference_keys()
-    kimi = os.environ.get("NOUGEN_RHEA_MODEL", "")
+    kimi = os.environ.get("NOUGEN_RHEA_MODEL") or "moonshotai/Kimi-K3"
     if keys and kimi:
         order = list(range(len(keys)))
         start = _LAST_GOOD_KEY["i"] % len(keys)
@@ -199,7 +212,7 @@ def _try_kimi(messages: list, diagnostics: dict | None = None):
                 if diagnostics is not None:
                     diagnostics[f"kimi:key_{idx}"] = err
     elif diagnostics is not None:
-        diagnostics["kimi"] = "no keys or NOUGEN_RHEA_MODEL unset"
+        diagnostics["kimi"] = f"no keys found (keys={len(keys)})"
     return None
 
 
