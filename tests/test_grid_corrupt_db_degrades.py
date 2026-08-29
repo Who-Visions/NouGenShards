@@ -118,3 +118,40 @@ def test_fuzzy_second_pass_survives_a_db_that_fails_after_the_first(setup_test_e
         "retrieve - the healthy DB still holds the shard"
     )
     assert any(NEEDLE in (r.get("content") or "") for r in results)
+
+
+def test_permission_denied_db_does_not_zero_the_read(setup_test_env, monkeypatch):
+    """An ACL-locked DB file must degrade the fan-out, not abort it.
+
+    Path.exists() returns False only for ENOENT/ENOTDIR -- on EACCES/EPERM it
+    RAISES. The existence probe used to sit OUTSIDE the try, so a permission
+    error escaped the DatabaseError handler two lines before it could help and
+    killed the whole federated read: the same failure the handler exists to
+    stop, through a different door.
+
+    (PowerShell's Test-Path has the mirror-image bug -- it RETURNS $false on
+    UnauthorizedAccessException, so "not allowed to look" is indistinguishable
+    from "not there". Raising is the better default; it just has to be caught.)
+    """
+    shards.init_db(CORRUPT_INDEX)
+    shards.capture("TEST", "Findable shard",
+                   f"This shard mentions {NEEDLE} and lives on a healthy grid database.")
+
+    real_get_db_path = shards.get_db_path
+
+    class Denied(type(real_get_db_path(HEALTHY_INDEX))):
+        def exists(self):
+            raise PermissionError(13, "Access is denied")
+
+    def denied_for_second(index):
+        p = real_get_db_path(index)
+        return Denied(p) if index == CORRUPT_INDEX else p
+
+    monkeypatch.setattr(shards, "get_db_path", denied_for_second)
+
+    results = shards.retrieve(NEEDLE, limit=5)
+    assert results, (
+        "a permission-denied DB aborted the whole retrieve - the healthy DB "
+        "still holds the shard"
+    )
+    assert any(NEEDLE in (r.get("content") or "") for r in results)
