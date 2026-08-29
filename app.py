@@ -609,6 +609,11 @@ app = FastAPI(
     redoc_url="/redoc" if _serve_docs else None,
     openapi_url="/openapi.json" if _serve_docs else None,
 )
+try:
+    from space_router import router as _inference_router
+    app.include_router(_inference_router)
+except Exception as _router_err:
+    print(f"[WARN] Inference router not mounted: {_router_err}", file=sys.stderr)
 if not _serve_docs:
     print(
         "[WARN] Interactive API docs not mounted: host is network-exposed "
