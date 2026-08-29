@@ -56,6 +56,10 @@ def _allow_tmp_roots(monkeypatch, tmp_path):
     monkeypatch.delenv("NOUGEN_FEDERATE_HOT_MAX_MB", raising=False)
     monkeypatch.delenv("NOUGEN_LOCAL_VAULT_TIMEOUT_S", raising=False)
     local_vault._FTS_PROBE_CACHE.clear()
+    # Module-global breaker state survives between tests; reset it for
+    # the same reason the FTS cache is reset, or this file becomes
+    # order-dependent.
+    local_vault._breaker.clear()
 
 
 class TestTierPartition:

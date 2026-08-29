@@ -149,7 +149,32 @@ def _allowed_roots() -> list[Path]:
     # active_vault_dir(), not GLOBAL_DIR: the allow-list has to follow the
     # request's tenant. GLOBAL_DIR is the owner vault, so using it here would
     # let a tenant's federated sweep read the owner's vault root.
-    return [Path(core.active_vault_dir()).resolve()]
+    active = Path(core.active_vault_dir())
+    roots = [active.resolve()]
+
+    # active_vault_dir() can hand back a RELATIVE path (".vault"), and
+    # .resolve() then anchors the allow-list to whatever directory the process
+    # was started in. Measured 2026-08-29: on whoart it resolved to
+    # <repo>\.vault, so the canonical substrate at ~/.nougen/shards was not an
+    # allowed root at all, while blade had NOUGEN_VAULT_DIR pointing at it
+    # correctly. Same code, different answer, decided by cwd -- which is how a
+    # registered vault ends up "outside allowed roots" or hunted at a stale
+    # path on one machine and not another.
+    #
+    # So the operator's DECLARED substrate is always allowed. Only an explicit
+    # NOUGEN_VAULT_DIR counts; nothing is inferred from cwd, and the tenant's
+    # active dir above still scopes the sweep.
+    declared = os.environ.get("NOUGEN_VAULT_DIR")
+    if declared:
+        d = Path(declared).expanduser().resolve()
+        if d not in roots:
+            roots.append(d)
+    elif not active.is_absolute():
+        logger.warning(
+            "local vault allow-list is cwd-relative (%s -> %s) and NOUGEN_VAULT_DIR "
+            "is unset; registered vaults outside this path will be skipped",
+            active, roots[0])
+    return roots
 
 
 def _is_valid_identifier(ident: str) -> bool:
@@ -284,6 +309,50 @@ def _has_fts(conn: sqlite3.Connection, table: str) -> str | None:
     return fts if row else None
 
 
+# --- circuit breaker -------------------------------------------------------
+# A vault that times out does NOT get remembered: the log line says "dropped
+# from sweep", but that drop lasts one request. The next sweep reopens the same
+# store and spends the full budget again.
+#
+# Measured on blade 2026-08-29: 1,340 timeouts across 26 distinct vaults in a
+# 4,000-line log window -- about 2,680 seconds of wall time burned re-proving
+# that the same dead stores are still dead. That node sat at ~2.8 cores pegged
+# and timed out on first contact through the tunnel while answering the retry,
+# which is what made a healthy gateway look broken.
+#
+# So: after _BREAKER_TRIPS consecutive timeouts a vault is skipped WITHOUT being
+# opened, until the cooldown expires. Any success resets it. The skip is
+# reported as an error string, never silently, because this module's contract is
+# that a dropped store stays visible (coverage honesty).
+_BREAKER_TRIPS = int(os.environ.get("NOUGEN_VAULT_BREAKER_TRIPS", "3"))
+_BREAKER_COOLDOWN_S = float(os.environ.get("NOUGEN_VAULT_BREAKER_COOLDOWN_S", "300"))
+_breaker: dict = {}
+
+
+def _breaker_open(vid: str) -> float | None:
+    """Seconds remaining on an open breaker, or None if the vault may be tried."""
+    st = _breaker.get(vid)
+    if not st or st["fails"] < _BREAKER_TRIPS:
+        return None
+    left = st["until"] - time.monotonic()
+    if left <= 0:
+        # Cooldown elapsed: allow exactly one probe rather than reopening the
+        # floodgates, so a still-dead vault costs one budget, not a full sweep.
+        st["fails"] = _BREAKER_TRIPS - 1
+        return None
+    return left
+
+
+def _breaker_record(vid: str, timed_out: bool) -> None:
+    if not timed_out:
+        _breaker.pop(vid, None)
+        return
+    st = _breaker.setdefault(vid, {"fails": 0, "until": 0.0})
+    st["fails"] += 1
+    if st["fails"] >= _BREAKER_TRIPS:
+        st["until"] = time.monotonic() + _BREAKER_COOLDOWN_S
+
+
 def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
     """Sweep a single vault. Never raises: a bad vault degrades to no rows.
 
@@ -292,6 +361,9 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
     only want the rows unpack index 0; query_local_vaults carries the error
     into its sweep report so a dropped store is visible, not silent."""
     vid = conf.get("id", "?")
+    cooling = _breaker_open(str(vid))
+    if cooling is not None:
+        return [], f"skipped: {_BREAKER_TRIPS} consecutive timeouts, retrying in {cooling:.0f}s"
     try:
         path = Path(conf["path"])
         table = conf["table_name"]
@@ -353,6 +425,7 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
                 rows = conn.execute(sql, params).fetchall()
         except sqlite3.OperationalError as exc:
             if _timed_out(exc):
+                _breaker_record(str(vid), True)
                 logger.warning("local vault %s: timed out after %.1fs, dropped from sweep",
                                vid, budget)
                 return [], f"timeout after {budget:.1f}s"
@@ -360,6 +433,7 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
         finally:
             conn.close()
 
+        _breaker_record(str(vid), False)
         results = []
         for row in rows:
             item = dict(row)
