@@ -26,6 +26,29 @@ for h in $HOSTS; do
   if ssh -O check "$h" 2>/dev/null; then
     continue
   fi
+
+  # No live master. Reap any -MNf process still lingering for this host BEFORE
+  # dialling a replacement.
+  #
+  # Without this the script leaks a master on every stale-socket cycle. When a
+  # peer's sshd restarts, or the socket is replaced, `-O check` correctly fails
+  # and we dial again -- but the previous `ssh -MNf` process keeps running
+  # forever, holding an sshd session open on the peer that nothing ever closes.
+  #
+  # Measured on phoebus before this fix: 46 orphaned masters, 42 of them to
+  # blade, the oldest 4h53m old, against a 180s launchd interval. The matching
+  # peer-side cost was 89 sshd processes on blade (936 MB RSS, ~12k handles),
+  # and on macOS the same accumulation exhausted MaxStartups and took inbound
+  # SSH down entirely -- connections were accepted and dropped before the
+  # banner, which looks exactly like "Remote Login is off".
+  #
+  # Safe because we only get here when `-O check` reported NO live master, so
+  # these processes are provably not serving anyone. pkill -f is scoped to the
+  # exact flag string and the host alias to avoid matching an interactive ssh.
+  if pkill -f "ssh .*-MNf ${h}\$" 2>/dev/null; then
+    log "reaped stale master(s) for $h"
+  fi
+
   # BatchMode: never block on a password prompt. A lane that needs a human is a
   # lane launchd cannot hold, and silently hanging here would wedge the agent.
   if ssh -o BatchMode=yes -o ConnectTimeout=10 -MNf "$h" 2>/dev/null; then
