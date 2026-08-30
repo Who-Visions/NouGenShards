@@ -461,6 +461,20 @@ _FREE_MODELS_CACHE: Dict[str, object] = {"ts": 0.0, "models": []}
 _FREE_MODELS_TTL = 3600  # seconds
 
 
+def _openrouter_fallback_limit() -> int:
+    """Return the provider's bounded fallback width from runtime config.
+
+    OpenRouter accepts no more than three entries in its ``models`` array.
+    Keep the default provider-safe, while allowing an operator to choose a
+    smaller width without changing code.
+    """
+    raw = os.getenv("NOUGEN_OPENROUTER_FALLBACK_LIMIT", "3")
+    try:
+        return max(1, min(3, int(raw)))
+    except (TypeError, ValueError):
+        return 3
+
+
 class OpenRouterClient(OpenAIClient):
     """Client for OpenRouter (Unified API)."""
     def __init__(self, api_key: Optional[str] = None):
@@ -526,6 +540,23 @@ class OpenRouterClient(OpenAIClient):
                     return mid
         return roster[0] if roster else FREE_MODEL_SEED[0]
 
+    def bounded_fallback_models(self, primary: Optional[str] = None,
+                                roster: Optional[list] = None) -> list:
+        """Select a provider-valid, de-duplicated fallback window.
+
+        Discovery remains full and live; only the request payload is bounded
+        to the provider's contract. The primary model is kept first when it
+        is a real model ID (``openrouter/auto`` is not a roster entry).
+        """
+        models = list(roster if roster is not None else self.get_free_models())
+        requested = (primary or "").strip()
+        ordered = []
+        if requested and requested != "openrouter/auto":
+            ordered.append(requested)
+        ordered.extend(models)
+        unique = list(dict.fromkeys(model for model in ordered if model))
+        return unique[:_openrouter_fallback_limit()]
+
     def list_models(self) -> list:
         # The roster IS the full live set of free OpenRouter models.
         return self.get_free_models()
@@ -561,13 +592,14 @@ class OpenRouterClient(OpenAIClient):
         if not self.api_key:
             return {"content": "Error: OR Key missing.", "model": "unknown"}
 
+        bounded_models = self.bounded_fallback_models(model, fallback_models)
         payload = {
             "model": model,
             "messages": messages,
             "stream": stream,
-            # Default to the FULL live free roster so fallback routes across every
-            # free model OpenRouter offers, not a curated handful.
-            "models": fallback_models if fallback_models is not None else self.get_free_models()
+            # Discovery is full and live, but OpenRouter's request contract
+            # limits this array to three models.
+            "models": bounded_models
         }
 
         if session_id:
