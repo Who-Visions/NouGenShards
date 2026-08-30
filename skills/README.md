@@ -54,6 +54,9 @@ one costs a moment's reading.
   local `gemma4:e2b-qat` Ollama lane instead of doing them inline (Rule 0.7: player
   drafts, coach reviews, GM decides). Carries the E-series call conventions and observed
   failure modes.
+- **`nougen-ctx/`** — enforce NouGen Rule 0.0 & Context Mode. Use context-mode tools
+  (`ctx_execute`, `ctx_execute_file`, `ctx_batch_execute`, `ctx_search`, `ctx_index`)
+  instead of raw terminal output to save 98% context window.
 
 ## Writing one
 
