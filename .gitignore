@@ -184,4 +184,11 @@ tools/shard_outpost.py
 tools/update_mcp_*.py
 tools/vertex_image.py
 
+# Lane-claim leases: ephemeral local coordination state, not repo content.
+# They carry machine names, pids and session ids, and this repo is public.
+.handoffs/claims/
 
+# Runtime output and patch backups - never repo content.
+logs/
+*.orig
+*.rej
