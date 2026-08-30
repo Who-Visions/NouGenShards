@@ -1362,8 +1362,11 @@ def _vector_cache_enabled() -> bool:
 #: included) from disk - a per-query vector scan was effectively a 10.7GB table
 #: scan across the grid (measured 27s, 2026-08-30). The cache pays that read
 #: once per process and answers subsequent queries with an in-RAM matmul.
-#: ~800MB RSS for a 260k-shard grid at 768 dims; NOUGEN_VECTOR_CACHE=0 disables.
+#: ~800MB RSS for a 260k-shard grid at 768 dims. NOUGEN_VECTOR_CACHE=0 turns
+#: the whole semantic lane OFF (there is no uncached fallback scan - see
+#: _vector_retrieve), warned once per process.
 _VECTOR_CACHE: dict = {}
+_VECTOR_LANE_OFF_WARNED = False
 _VECTOR_CACHE_LOCK = _threading.Lock()  # eager: lazy init of a lock is itself a race
 
 
@@ -1520,6 +1523,19 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     if query_embedding is None:
         return []
 
+    # There is deliberately NO uncached scan path: the pre-cache implementation
+    # read every row's full record per query (a 10.7GB effective scan, 27s).
+    # So the cache switch is a LANE switch - turning it off turns semantic
+    # recall off entirely, and that must be loud, not a silent empty result.
+    if not _vector_cache_enabled():
+        global _VECTOR_LANE_OFF_WARNED  # pylint: disable=global-statement
+        if not _VECTOR_LANE_OFF_WARNED:
+            logger.warning(
+                "NOUGEN_VECTOR_CACHE=0: the semantic recall lane is OFF "
+                "(no uncached scan path exists) - recall is keyword-only")
+            _VECTOR_LANE_OFF_WARNED = True
+        return []
+
     from . import history  # pylint: disable=import-outside-toplevel
 
     # One reference clock for the whole scan (see _temporal_decay).
@@ -1539,7 +1555,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             if not get_db_path(i).exists():
                 return db_rows
             conn = get_connection(i)
-            cache = _vector_cache_entry(i, conn) if _vector_cache_enabled() else None
+            cache = _vector_cache_entry(i, conn)
             scored = []  # (final_score, id)
             if cache and cache["dim"] == qdim and len(cache["ids"]):
                 sem_scores = np.array(cache["matrix"] @ q_vec)
