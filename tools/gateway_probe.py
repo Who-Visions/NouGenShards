@@ -5,11 +5,34 @@ gateway "up - recall and search are live" while every real call 401s. That
 false green hid a drifted SHARD_GATEWAY_TOKEN for hours on 2026-08-15 and is
 the single most misleading signal in this stack.
 
-Prints one line: OK <n> hits, or FAIL <reason>. Exit code mirrors it, so the
-supervisor can branch on either.
+The other half, added 2026-08-29 after this probe produced the mirror-image
+lie: a healthy gateway in front of an empty node used to print a
+gateway-shaped FAIL and exit 1. The whole OAuth chain had passed - register,
+authorize, consent accepting the fleet key, token issue, an accepted
+authenticated MCP call - and the ONLY failed assertion was that the reply
+carried no shard. Anyone reading the last line went and fixed the gateway,
+which was never broken. Auth health and data health are two questions and this
+prints two answers.
+
+Three states, so a caller never has to infer one from the other:
+
+    OK <detail>               exit 0  authenticated AND the node returned content
+    AUTH-OK-NO-DATA <detail>  exit 2  auth chain proven; the node behind it is
+                                      empty or down. NOT a gateway fault.
+    SKIPPED <reason>          exit 3  this host CANNOT run the probe: it
+                                      authenticates with FLEET_KEY_OUTPOST, the
+                                      OUTPOST host's key, legitimately absent
+                                      anywhere else. Not a gateway fault and not
+                                      a failure of anything.
+    FAIL <reason>             exit 1  a step in the OAuth chain actually failed
+
+Every line names the origin it probed. Health claims that do not name their
+origin are unfalsifiable: two lanes can report different health for "the
+gateway" and both be right, because they resolved different gateways.
 """
 import hashlib
 import json
+import os
 import secrets
 import sys
 import urllib.error
@@ -24,8 +47,10 @@ _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO / "tools"))
 sys.path.insert(0, str(_REPO / "src"))
 
-ORIGIN = "https://fleet.nougenai.com"
-REDIRECT = "http://localhost:8976/callback"
+# Resolve at run time: a pinned origin here is a claim about somebody else's
+# deployment, and this probe exists to stop unfalsifiable claims.
+ORIGIN = os.environ.get("NOUGEN_FLEET_ORIGIN", "https://fleet.nougenai.com").rstrip("/")
+REDIRECT = os.environ.get("NOUGEN_FLEET_REDIRECT", "http://localhost:8976/callback")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
 
@@ -61,15 +86,24 @@ def main() -> int:
         from nougen_shards import keymaker
         fleet_key = keymaker.get_secret("FLEET_KEY_OUTPOST")
     except Exception as exc:
-        print(f"FAIL vault unreadable ({type(exc).__name__})")
-        return 1
+        print(f"SKIPPED vault unreadable ({type(exc).__name__}) "
+              f"- cannot probe {ORIGIN} from this host")
+        return 3
     if not fleet_key:
-        print("FAIL FLEET_KEY_OUTPOST missing from vault")
-        return 1
+        # NOT a failure, and the difference is operational. This probe
+        # authenticates with the OUTPOST host's fleet key, so on any other box
+        # the key is legitimately absent and the probe simply cannot run.
+        # Exiting 1 here made blade's "NouGen Shards Authenticated Probe"
+        # scheduled task go red every five minutes about a gateway it was never
+        # able to check - noise that trains a reader to ignore the one signal
+        # that matters. Verified 2026-08-29: rc=1 on a 5-minute schedule.
+        print(f"SKIPPED FLEET_KEY_OUTPOST not on this host "
+              f"- cannot probe {ORIGIN} from here; run it from Outpost")
+        return 3
 
     status, body, _ = post("/register", {"redirect_uris": [REDIRECT]})
     if status != 201:
-        print(f"FAIL /register {status}")
+        print(f"FAIL /register {status} [origin {ORIGIN}]")
         return 1
     cid = json.loads(body)["client_id"]
     ver = b64url(secrets.token_bytes(48))
@@ -79,7 +113,7 @@ def main() -> int:
         "code_challenge": chal, "code_challenge_method": "S256",
         "scope": "fleet", "fleet_key": fleet_key}, form=True)
     if status != 302:
-        print("FAIL consent rejected the fleet key")
+        print(f"FAIL consent rejected the fleet key [origin {ORIGIN}]")
         return 1
     code = urllib.parse.parse_qs(
         urllib.parse.urlparse(hdrs["Location"]).query)["code"][0]
@@ -87,7 +121,7 @@ def main() -> int:
         "grant_type": "authorization_code", "code": code,
         "redirect_uri": REDIRECT, "client_id": cid, "code_verifier": ver}, form=True)
     if status != 200:
-        print(f"FAIL /token {status}")
+        print(f"FAIL /token {status} [origin {ORIGIN}]")
         return 1
     tok = json.loads(body)["access_token"]
 
@@ -102,9 +136,15 @@ def main() -> int:
         print("FAIL " + text.strip().replace("\n", " ")[:120])
         return 1
     if '"id"' not in text:
-        print("FAIL recall returned no shard content")
-        return 1
-    print("OK authenticated recall returned content")
+        # Auth is PROVEN at this point: register, authorize, consent, token and
+        # an accepted authenticated MCP call all passed. An empty recall is the
+        # node behind the gateway having nothing to give - a data-plane answer,
+        # not a gateway fault. Saying FAIL here sends the reader to fix the one
+        # component that just demonstrated it works.
+        print(f"AUTH-OK-NO-DATA authenticated recall accepted but returned no "
+              f"shard content - the node behind {ORIGIN} is empty or down")
+        return 2
+    print(f"OK authenticated recall returned content [origin {ORIGIN}]")
     return 0
 
 

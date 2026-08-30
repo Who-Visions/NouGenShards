@@ -24,9 +24,16 @@ $Root       = Split-Path -Parent $PSScriptRoot
 $VenvPython = Join-Path $Root '.venv\Scripts\python.exe'
 $Python     = if (Test-Path $VenvPython) { $VenvPython } else { (Get-Command python -ErrorAction Stop).Source }
 $RunDir     = Join-Path $Root '.node'
-$PidFile    = Join-Path $RunDir 'tunnel.pid'
-$OutLog     = Join-Path $RunDir 'tunnel.out.log'
-$ErrLog     = Join-Path $RunDir 'tunnel.err.log'
+# The named highway tunnel and the quick tunnel (gateway_supervisor.ps1) are two
+# distinct processes. They MUST NOT share a pid file: sharing one made this lane
+# report UP for whichever cloudflared happened to be alive, so `start` short
+# circuited and blade.nougenai.com sat at 530 with nothing bound to it.
+$PidName    = if ($env:NGS_TUNNEL_PID_NAME) { $env:NGS_TUNNEL_PID_NAME } else { 'named_tunnel.pid' }
+$PidFile    = Join-Path $RunDir $PidName
+$OutLog     = Join-Path $RunDir ([IO.Path]::ChangeExtension($PidName, $null) + 'out.log')
+$ErrLog     = Join-Path $RunDir ([IO.Path]::ChangeExtension($PidName, $null) + 'err.log')
+$NodePort   = if ($env:NGS_PORT) { $env:NGS_PORT } else { '4444' }
+$NodeHealth = if ($env:NGS_NODE_HEALTH_URL) { $env:NGS_NODE_HEALTH_URL } else { "http://127.0.0.1:$NodePort/health" }
 $VaultDir   = Join-Path $env:USERPROFILE '.nougen\shards'
 $SecretsDir = Join-Path $env:USERPROFILE '.nougen\secrets'
 $SecretKey  = 'CLOUDFLARED_NGS_TUNNEL_TOKEN'
@@ -78,7 +85,7 @@ function Get-NodeHealth {
     $headers = @{}
     $nodeToken = Get-VaultSecret -Key 'NGS_NODE_TOKEN'
     if ($nodeToken) { $headers['x-ngs-token'] = $nodeToken }
-    $health = Invoke-RestMethod -Uri 'http://127.0.0.1:4444/health' -Headers $headers -TimeoutSec 5
+    $health = Invoke-RestMethod -Uri $NodeHealth -Headers $headers -TimeoutSec 5
     return [pscustomobject]@{ Health = $health; Authenticated = [bool]$nodeToken }
 }
 

@@ -18,6 +18,13 @@ SECRET_PATTERNS = [
     # like "API Token" happened to precede them; a bare token passed through.
     (re.compile(r'cfat_[A-Za-z0-9]{20,}'), "<REDACTED_CLOUDFLARE_TOKEN>"),
     (re.compile(r'xox[baprs]-[A-Za-z0-9-]{10,}'), "<REDACTED_SLACK_TOKEN>"),
+    # Notion integration tokens (ntn_..., and the older secret_... form). Added
+    # 2026-08-29 after a LIVE ntn_ token came back verbatim in a grid search
+    # result: it matched no provider pattern here, and the generic labelled-
+    # secret rule missed it because it sat in source code as a bare assignment
+    # with no credential-shaped label in front of it.
+    (re.compile(r'ntn_[A-Za-z0-9]{20,}'), "<REDACTED_NOTION_TOKEN>"),
+    (re.compile(r'secret_[A-Za-z0-9]{40,}'), "<REDACTED_NOTION_TOKEN>"),
     # NouGen token: match the token itself; do not consume a leading delimiter
     # (consuming it corrupted surrounding JSON and missed adjacent tokens).
     (re.compile(r'nougen_[a-z]+_token_[A-Za-z0-9]+'), "<REDACTED_NOUGEN_TOKEN>"),

@@ -1,0 +1,36 @@
+#!/bin/sh
+# POSIX entry point for the nougen CLI. CLAUDE.md mandates this over nougen.bat
+# from Git Bash or WSL, for two reasons that both cost real time to rediscover:
+#
+#   1. Reaching the batch file through `cmd /c` makes cmd re-parse the command
+#      line, so `-a "Claude Cli"` arrives as `-a Claude` plus a stray `Cli"`
+#      token and the CLI errors out. Exec'ing the interpreter directly leaves
+#      argv untouched.
+#   2. nougen.bat ends in `pause`, which hangs a non-interactive caller instead
+#      of returning. (It honours NOUGEN_NO_PAUSE=1, but an agent should not have
+#      to know that.)
+#
+# This file was previously untracked and got removed by a working-tree clean,
+# which broke the documented path for every agent following CLAUDE.md while the
+# instructions still pointed at it. It is committed now so that cannot recur.
+#
+# Deliberately does NOT build or heal .venv. nougen.bat owns that. An agent call
+# must never be able to trigger a multi-minute install as a side effect; if the
+# venv is missing we say so and exit rather than silently taking minutes.
+set -e
+
+here=$(cd "$(dirname "$0")/.." && pwd)
+
+for candidate in \
+    "$here/.venv/Scripts/python.exe" \
+    "$here/.venv/bin/python" \
+    "$here/.venv/bin/python3"
+do
+    if [ -x "$candidate" ]; then
+        exec "$candidate" -m nougen_shards.cli "$@"
+    fi
+done
+
+echo "nougen: no interpreter found under $here/.venv" >&2
+echo "nougen: run nougen.bat once to build it (this shim will not, by design)" >&2
+exit 127

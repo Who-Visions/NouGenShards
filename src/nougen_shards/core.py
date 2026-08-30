@@ -322,14 +322,23 @@ def _ensure_dedup_index(conn) -> None:
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists():
             continue
-        src = get_connection(i)
+        # A corrupt DB here does not break a read, it silently degrades DEDUP:
+        # the backfill aborts, hashes from the remaining DBs never land, and
+        # global dedup starts missing duplicates with no error anywhere.
+        src = None
         try:
+            src = get_connection(i)
             rows = src.execute("SELECT file_hash FROM shards").fetchall()
             conn.executemany(
                 "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
                 [(r["file_hash"], i) for r in rows])
+        except (sqlite3.DatabaseError, OSError) as exc:
+            logger.error("grid DB %s unreadable during dedup backfill, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            continue
         finally:
-            src.close()
+            if src is not None:
+                src.close()
     conn.commit()
 
 
@@ -976,10 +985,21 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     results = []
     missed_dbs = []  # DBs where both exact lanes missed; fed to the fuzzy pass below
     for i in range(1, MAX_DB_COUNT + 1):
-        if not get_db_path(i).exists():
-            continue
-        conn = get_connection(i)
+        # The existence probe belongs INSIDE the guard too. Path.exists() returns
+        # False only for ENOENT/ENOTDIR; on EACCES/EPERM it RAISES. An
+        # ACL-locked DB file would therefore escape the handler below and kill
+        # the whole fan-out - the same failure the handler exists to stop,
+        # through a different door, two lines earlier.
+        #
+        # (PowerShell's Test-Path has the opposite bug: it RETURNS $false on
+        #  UnauthorizedAccessException, so "not allowed to look" reads as "not
+        #  there". Python raising here is the better default - it just has to be
+        #  caught rather than left outside the try.)
+        conn = None
         try:
+            if not get_db_path(i).exists():
+                continue
+            conn = get_connection(i)
             fts_worked = False
             db_hits = 0
             fts_query = _build_fts_match_query(query)
@@ -1071,8 +1091,36 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
             # See the second pass below for why.
             if not fts_worked and db_hits == 0:
                 missed_dbs.append(i)
+        except (sqlite3.DatabaseError, OSError) as exc:
+            # ONE bad DB must not zero out the whole federated read. The try
+            # around the FTS SQL below catches only sqlite3.OperationalError,
+            # but a corrupt file raises sqlite3.DatabaseError ("database disk
+            # image is malformed") -- its PARENT class, so that except never
+            # matched. With no except on this loop, the error escaped the
+            # for-loop entirely and every ranked read returned empty while the
+            # other 8 DBs sat there healthy and unread.
+            #
+            # 2026-08-29: that is exactly what shipped. shards_coverage showed
+            # databases_errored [{index:5, malformed}], and recall AND search
+            # both returned 0 against a six-figure vault while shards_window --
+            # which filters on timestamp and never touches this path -- happily
+            # returned rows. Health said up the whole time.
+            #
+            # Degrade per DB: record it, skip it, keep scanning. A partial
+            # answer from 8 DBs is worth infinitely more than a false empty,
+            # and the log line names the index so the corrupt file is findable
+            # instead of silently swallowed.
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     # Fuzzy lane (docs/theory/n-gram-topologies.md §8.2): for DBs where BOTH
     # exact lanes missed, retry with fastText-style character trigram Dice
@@ -1109,8 +1157,15 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 where = ""
             dom_params = (*dom_params, *ing_params)
             for i in missed_dbs:
-                conn = get_connection(i)
+                # Same guard as the first pass above, and this pass needs it
+                # MORE: missed_dbs is by definition the set the exact lanes came
+                # up short on, so a degraded DB is likelier to be in here than
+                # in a random sweep. It was missed on 2026-08-29 because the
+                # first pass in this same function was fixed and this one was
+                # not -- one function, two fan-outs, one patch.
+                conn = None
                 try:
+                    conn = get_connection(i)
                     # Score against a cheap projection: the similarity probe only
                     # ever reads title + the first 256 chars of content, so there
                     # is no reason to pull full content and embedding blobs for
@@ -1164,8 +1219,19 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     for item in fuzzy:
                         history.log_event(item["id"], i, "ACCESSED")
                         results.append(item)
+                except (sqlite3.DatabaseError, OSError) as exc:
+                    logger.error("grid DB %s unreadable during fuzzy pass, skipping it: %s: %s",
+                                 i, type(exc).__name__, exc)
+                    try:
+                        history.log_event(0, i, "DB_DEGRADED",
+                                          metadata={"error": f"{type(exc).__name__}: {exc}",
+                                                    "pass": "fuzzy"})
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+                    continue
                 finally:
-                    conn.close()
+                    if conn is not None:
+                        conn.close()
 
     # Tiered ordering: every full-coverage hit (FTS implicit-AND / LIKE)
     # outranks every OR-retry hit, which outranks every fuzzy hit, regardless
@@ -1205,10 +1271,21 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     query_now = datetime.now(timezone.utc)
     results = []
     for i in range(1, MAX_DB_COUNT + 1):
-        if not get_db_path(i).exists():
-            continue
-        conn = get_connection(i)
+        # The existence probe belongs INSIDE the guard too. Path.exists() returns
+        # False only for ENOENT/ENOTDIR; on EACCES/EPERM it RAISES. An
+        # ACL-locked DB file would therefore escape the handler below and kill
+        # the whole fan-out - the same failure the handler exists to stop,
+        # through a different door, two lines earlier.
+        #
+        # (PowerShell's Test-Path has the opposite bug: it RETURNS $false on
+        #  UnauthorizedAccessException, so "not allowed to look" reads as "not
+        #  there". Python raising here is the better default - it just has to be
+        #  caught rather than left outside the try.)
+        conn = None
         try:
+            if not get_db_path(i).exists():
+                continue
+            conn = get_connection(i)
             dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
             dom_params = () if domain_key in (None, "*") else (domain_key,)
             ing_clause, ing_params = _ingest_filter_sql("shards", include_research)
@@ -1238,8 +1315,36 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                 decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), query_now)
                 item["final_score"] = (sem_score * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
                 results.append(item)
+        except (sqlite3.DatabaseError, OSError) as exc:
+            # ONE bad DB must not zero out the whole federated read. The try
+            # around the FTS SQL below catches only sqlite3.OperationalError,
+            # but a corrupt file raises sqlite3.DatabaseError ("database disk
+            # image is malformed") -- its PARENT class, so that except never
+            # matched. With no except on this loop, the error escaped the
+            # for-loop entirely and every ranked read returned empty while the
+            # other 8 DBs sat there healthy and unread.
+            #
+            # 2026-08-29: that is exactly what shipped. shards_coverage showed
+            # databases_errored [{index:5, malformed}], and recall AND search
+            # both returned 0 against a six-figure vault while shards_window --
+            # which filters on timestamp and never touches this path -- happily
+            # returned rows. Health said up the whole time.
+            #
+            # Degrade per DB: record it, skip it, keep scanning. A partial
+            # answer from 8 DBs is worth infinitely more than a false empty,
+            # and the log line names the index so the corrupt file is findable
+            # instead of silently swallowed.
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     # Deterministic order: score DESC (rounded so sub-epsilon temporal-decay
     # jitter doesn't reorder near-ties run-to-run), then (_db_index, id) ASC.
@@ -1360,10 +1465,20 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     """
     import concurrent.futures
 
-    # Ensure all existing shard databases are schema-upgraded to the current version before querying
+    # Ensure all existing shard databases are schema-upgraded to the current
+    # version before querying. Per-DB guard for the same reason as the fan-outs
+    # below: Path.exists() RAISES on EACCES (only ENOENT/ENOTDIR return False)
+    # and init_db opens the file, so one unreadable DB here would abort recall
+    # before a single query ran -- upstream of every handler that exists to
+    # prevent exactly that.
     for i in range(1, MAX_DB_COUNT + 1):
-        if get_db_path(i).exists():
-            init_db(i)
+        try:
+            if get_db_path(i).exists():
+                init_db(i)
+        except (sqlite3.DatabaseError, OSError) as exc:
+            logger.error("grid DB %s unreadable during schema upgrade, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            continue
 
     # An explicit domain_key is a caller's deliberate scope and stays exclusive
     # (see test_domain_isolation_capture_and_retrieve). A domain resolved
@@ -1531,16 +1646,56 @@ def locate_shard(shard_id: int) -> List[int]:
     """
     found = []
     for i in range(1, MAX_DB_COUNT + 1):
-        if not get_db_path(i).exists():
-            continue
-        conn = get_connection(i)
+        # The existence probe belongs INSIDE the guard too. Path.exists() returns
+        # False only for ENOENT/ENOTDIR; on EACCES/EPERM it RAISES. An
+        # ACL-locked DB file would therefore escape the handler below and kill
+        # the whole fan-out - the same failure the handler exists to stop,
+        # through a different door, two lines earlier.
+        #
+        # (PowerShell's Test-Path has the opposite bug: it RETURNS $false on
+        #  UnauthorizedAccessException, so "not allowed to look" reads as "not
+        #  there". Python raising here is the better default - it just has to be
+        #  caught rather than left outside the try.)
+        conn = None
         try:
+            if not get_db_path(i).exists():
+                continue
+            conn = get_connection(i)
             if conn.execute("SELECT 1 FROM shards WHERE id = ?", (shard_id,)).fetchone():
                 found.append(i)
         except sqlite3.Error:
             continue
+        except (sqlite3.DatabaseError, OSError) as exc:
+            # ONE bad DB must not zero out the whole federated read. The try
+            # around the FTS SQL below catches only sqlite3.OperationalError,
+            # but a corrupt file raises sqlite3.DatabaseError ("database disk
+            # image is malformed") -- its PARENT class, so that except never
+            # matched. With no except on this loop, the error escaped the
+            # for-loop entirely and every ranked read returned empty while the
+            # other 8 DBs sat there healthy and unread.
+            #
+            # 2026-08-29: that is exactly what shipped. shards_coverage showed
+            # databases_errored [{index:5, malformed}], and recall AND search
+            # both returned 0 against a six-figure vault while shards_window --
+            # which filters on timestamp and never touches this path -- happily
+            # returned rows. Health said up the whole time.
+            #
+            # Degrade per DB: record it, skip it, keep scanning. A partial
+            # answer from 8 DBs is worth infinitely more than a false empty,
+            # and the log line names the index so the corrupt file is findable
+            # instead of silently swallowed.
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                from . import history  # pylint: disable=import-outside-toplevel
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
     return found
 
 
@@ -1568,10 +1723,21 @@ def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
     """
     indices = [db_index] if db_index is not None else range(1, MAX_DB_COUNT + 1)
     for i in indices:
-        if not get_db_path(i).exists():
-            continue
-        conn = get_connection(i)
+        # The existence probe belongs INSIDE the guard too. Path.exists() returns
+        # False only for ENOENT/ENOTDIR; on EACCES/EPERM it RAISES. An
+        # ACL-locked DB file would therefore escape the handler below and kill
+        # the whole fan-out - the same failure the handler exists to stop,
+        # through a different door, two lines earlier.
+        #
+        # (PowerShell's Test-Path has the opposite bug: it RETURNS $false on
+        #  UnauthorizedAccessException, so "not allowed to look" reads as "not
+        #  there". Python raising here is the better default - it just has to be
+        #  caught rather than left outside the try.)
+        conn = None
         try:
+            if not get_db_path(i).exists():
+                continue
+            conn = get_connection(i)
             row = conn.execute("SELECT id, utility_score FROM shards WHERE id = ?", (shard_id,)).fetchone()
             if row:
                 old_score = row["utility_score"]
@@ -1581,8 +1747,18 @@ def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
                 conn.commit()
             else:
                 continue
+        except (sqlite3.DatabaseError, OSError) as exc:
+            # Found by tests/test_grid_fanout_guard_invariant.py after TWO
+            # careful human reads of this file missed it. It got the
+            # open-inside-the-try placement in the first sweep but never the
+            # handler, so a corrupt DB still aborted the walk and every later
+            # index went unchecked -- silently reporting "shard not found".
+            logger.error("grid DB %s unreadable while marking shard %s, skipping it: %s: %s",
+                         i, shard_id, type(exc).__name__, exc)
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
         # Log UTILITY_CHANGE event
         from . import history # pylint: disable=import-outside-toplevel
@@ -1598,14 +1774,54 @@ def decay_utility_scores(factor: float = 0.95):
     Applies a decay factor to all utility scores to prevent stale dominance.
     """
     for i in range(1, MAX_DB_COUNT + 1):
-        if not get_db_path(i).exists():
-            continue
-        conn = get_connection(i)
+        # The existence probe belongs INSIDE the guard too. Path.exists() returns
+        # False only for ENOENT/ENOTDIR; on EACCES/EPERM it RAISES. An
+        # ACL-locked DB file would therefore escape the handler below and kill
+        # the whole fan-out - the same failure the handler exists to stop,
+        # through a different door, two lines earlier.
+        #
+        # (PowerShell's Test-Path has the opposite bug: it RETURNS $false on
+        #  UnauthorizedAccessException, so "not allowed to look" reads as "not
+        #  there". Python raising here is the better default - it just has to be
+        #  caught rather than left outside the try.)
+        conn = None
         try:
+            if not get_db_path(i).exists():
+                continue
+            conn = get_connection(i)
             conn.execute("UPDATE shards SET utility_score = utility_score * ?", (factor,))
             conn.commit()
+        except (sqlite3.DatabaseError, OSError) as exc:
+            # ONE bad DB must not zero out the whole federated read. The try
+            # around the FTS SQL below catches only sqlite3.OperationalError,
+            # but a corrupt file raises sqlite3.DatabaseError ("database disk
+            # image is malformed") -- its PARENT class, so that except never
+            # matched. With no except on this loop, the error escaped the
+            # for-loop entirely and every ranked read returned empty while the
+            # other 8 DBs sat there healthy and unread.
+            #
+            # 2026-08-29: that is exactly what shipped. shards_coverage showed
+            # databases_errored [{index:5, malformed}], and recall AND search
+            # both returned 0 against a six-figure vault while shards_window --
+            # which filters on timestamp and never touches this path -- happily
+            # returned rows. Health said up the whole time.
+            #
+            # Degrade per DB: record it, skip it, keep scanning. A partial
+            # answer from 8 DBs is worth infinitely more than a false empty,
+            # and the log line names the index so the corrupt file is findable
+            # instead of silently swallowed.
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                from . import history  # pylint: disable=import-outside-toplevel
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
     return True
 
 
@@ -1674,10 +1890,21 @@ def retrieve_semantic_rules(query: str, limit: int = 5, domain_key: str = "globa
     
     rules = []
     for i in range(1, MAX_DB_COUNT + 1):
-        if not get_db_path(i).exists():
-            continue
-        conn = get_connection(i)
+        # The existence probe belongs INSIDE the guard too. Path.exists() returns
+        # False only for ENOENT/ENOTDIR; on EACCES/EPERM it RAISES. An
+        # ACL-locked DB file would therefore escape the handler below and kill
+        # the whole fan-out - the same failure the handler exists to stop,
+        # through a different door, two lines earlier.
+        #
+        # (PowerShell's Test-Path has the opposite bug: it RETURNS $false on
+        #  UnauthorizedAccessException, so "not allowed to look" reads as "not
+        #  there". Python raising here is the better default - it just has to be
+        #  caught rather than left outside the try.)
+        conn = None
         try:
+            if not get_db_path(i).exists():
+                continue
+            conn = get_connection(i)
             for word in words[:3]:
                 cursor = conn.execute("""
                     SELECT id, subject, predicate, confidence_score, domain_key, updated_at, ? as _db_index
@@ -1691,8 +1918,37 @@ def retrieve_semantic_rules(query: str, limit: int = 5, domain_key: str = "globa
                     rules.append(dict(row))
         except sqlite3.OperationalError:
             pass
+        except (sqlite3.DatabaseError, OSError) as exc:
+            # ONE bad DB must not zero out the whole federated read. The try
+            # around the FTS SQL below catches only sqlite3.OperationalError,
+            # but a corrupt file raises sqlite3.DatabaseError ("database disk
+            # image is malformed") -- its PARENT class, so that except never
+            # matched. With no except on this loop, the error escaped the
+            # for-loop entirely and every ranked read returned empty while the
+            # other 8 DBs sat there healthy and unread.
+            #
+            # 2026-08-29: that is exactly what shipped. shards_coverage showed
+            # databases_errored [{index:5, malformed}], and recall AND search
+            # both returned 0 against a six-figure vault while shards_window --
+            # which filters on timestamp and never touches this path -- happily
+            # returned rows. Health said up the whole time.
+            #
+            # Degrade per DB: record it, skip it, keep scanning. A partial
+            # answer from 8 DBs is worth infinitely more than a false empty,
+            # and the log line names the index so the corrupt file is findable
+            # instead of silently swallowed.
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                from . import history  # pylint: disable=import-outside-toplevel
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
             
     # Deduplicate
     seen = set()

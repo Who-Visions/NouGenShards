@@ -609,6 +609,11 @@ app = FastAPI(
     redoc_url="/redoc" if _serve_docs else None,
     openapi_url="/openapi.json" if _serve_docs else None,
 )
+try:
+    from space_router import router as _inference_router
+    app.include_router(_inference_router)
+except Exception as _router_err:
+    print(f"[WARN] Inference router not mounted: {_router_err}", file=sys.stderr)
 if not _serve_docs:
     print(
         "[WARN] Interactive API docs not mounted: host is network-exposed "
@@ -719,6 +724,36 @@ def _substrate_coverage() -> dict:
 
     complete = len(mounted) == expected
     upstreams = _registered_upstreams()
+
+    # recall_trustworthy used to be `complete or bool(upstreams)`, which called
+    # recall trustworthy while a database was CORRUPT - the single most
+    # dangerous answer in this stack, because this tool's own description tells
+    # callers to check it "before concluding a recall miss means the memory does
+    # not exist". On 2026-08-29 it answered true with index 5 malformed and both
+    # ranked read paths returning zero rows, so anyone who did the responsible
+    # thing and checked coverage first was told to conclude data loss.
+    #
+    # An errored database is a fault, never a thin-cache-in-front-of-an-upstream
+    # situation: its rows are dark and no upstream flag changes that. And the
+    # upstream escape hatch itself was resting on an unchecked premise - this
+    # function never probes whether the upstream ANSWERS. The one configured
+    # that day was returning 530. So say which case it is instead of collapsing
+    # all of them into one boolean.
+    if errored:
+        trustworthy = False
+        reason = ("databases_errored is non-empty: those shards are unreadable, "
+                  "so a recall miss cannot distinguish absent from unreadable")
+    elif complete:
+        trustworthy = True
+        reason = "every expected database is mounted and readable"
+    elif upstreams:
+        trustworthy = True
+        reason = ("local grid is incomplete but read-through is configured; "
+                  "NOTE this does not verify the upstream actually answers")
+    else:
+        trustworthy = False
+        reason = "local grid is incomplete and no read-through upstream is configured"
+
     return {
         "complete": complete,
         "databases_expected": expected,
@@ -733,8 +768,10 @@ def _substrate_coverage() -> dict:
         "upstreams": upstreams,
         # Recall answers can only be trusted across the part that is mounted -
         # unless an upstream is carrying the corpus, in which case a thin local
-        # grid is expected rather than a fault.
-        "recall_trustworthy": complete or bool(upstreams),
+        # grid is expected rather than a fault. A corrupt database is neither:
+        # see the block above.
+        "recall_trustworthy": trustworthy,
+        "recall_trustworthy_reason": reason,
         "detail": mounted,
     }
 
