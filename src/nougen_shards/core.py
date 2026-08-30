@@ -637,6 +637,21 @@ def _embed_query(query: str) -> Optional[np.ndarray]:
     return (arr / norm) if norm > 0 else None
 
 
+#: Grid DBs whose FILES failed a write with a corruption-class error this
+#: process. Hash-routed writes skip them (content lands in the next healthy
+#: DB); retrieval already degrades per-DB on its own.
+_QUARANTINED_WRITE_DBS: set = set()
+
+
+def _next_healthy_write_index(after: int) -> int:
+    """Next write target after `after`, skipping quarantined indexes."""
+    for step in range(1, MAX_DB_COUNT + 1):
+        cand = ((after - 1 + step) % MAX_DB_COUNT) + 1
+        if cand not in _QUARANTINED_WRITE_DBS:
+            return cand
+    raise LookupError("every grid DB is quarantined for writes")
+
+
 def capture(event_type: str, title: str, content: str,
             tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
             domain_key: Optional[str] = None, density_score: Optional[float] = None,
@@ -709,7 +724,6 @@ def capture(event_type: str, title: str, content: str,
             return False
 
         target_idx = get_write_index(fhash)
-        init_db(target_idx)
 
         # Born recallable: if the caller did not supply a vector, make one now.
         if embedding is None and _embed_at_capture_enabled():
@@ -752,27 +766,74 @@ def capture(event_type: str, title: str, content: str,
             stored_content = _pv.encrypt_text(content)
             enc_flag = 1
 
-        conn = get_connection(target_idx)
-        try:
-            cursor = conn.execute("""
-                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, source_uri, utility_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, source_uri_value, utility_score))
-            conn.commit()
+        # Writes route AROUND corrupt DB files. capture() used to let a
+        # corruption-class error raise straight out, and /sync/push turned
+        # that into a 500 for its whole batch -- so every shard whose hash
+        # routed to a malformed DB was un-ingestable, deterministically
+        # (observed on the Space 2026-08-30: DB8 malformed, exactly the
+        # batches carrying DB8-routed hashes kept failing all three retries).
+        if target_idx in _QUARANTINED_WRITE_DBS:
+            target_idx = _next_healthy_write_index(target_idx)
+            init_db(target_idx)
+        inserted = False
+        for _reroute in range(MAX_DB_COUNT):
+            conn = None
+            try:
+                # init_db and get_connection both open the DB file, so they
+                # raise the same corruption-class errors as the INSERT and must
+                # sit inside this guard.
+                init_db(target_idx)
+                conn = get_connection(target_idx)
+                cursor = conn.execute("""
+                    INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, source_uri, utility_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, source_uri_value, utility_score))
+                conn.commit()
 
-            # Log CREATED event
-            from . import history # pylint: disable=import-outside-toplevel
-            history.log_event(cursor.lastrowid or 0, target_idx, "CREATED", new_score=utility_score)
-        except sqlite3.IntegrityError:
-            # Target DB already holds the hash (index was stale) — repair the
-            # index so the next lookup short-circuits without touching shards.
-            dconn.execute(
-                "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
-                (fhash, target_idx))
-            dconn.commit()
+                # Log CREATED event
+                from . import history # pylint: disable=import-outside-toplevel
+                history.log_event(cursor.lastrowid or 0, target_idx, "CREATED", new_score=utility_score)
+                inserted = True
+                break
+            except sqlite3.IntegrityError:
+                # Target DB already holds the hash (index was stale) — repair the
+                # index so the next lookup short-circuits without touching shards.
+                dconn.execute(
+                    "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
+                    (fhash, target_idx))
+                dconn.commit()
+                return False
+            except sqlite3.OperationalError:
+                # Locked/busy is NOT corruption: quarantining a merely-locked
+                # DB would permanently divert its hash range. Preserve the
+                # pre-quarantine contract and let the caller see it.
+                raise
+            except sqlite3.DatabaseError as db_err:
+                # Checked AFTER IntegrityError (its subclass): reaching here
+                # means the DB FILE is bad ("database disk image is
+                # malformed"). Quarantine the index for this process, record
+                # the degrade, and try the next healthy DB.
+                from . import history  # pylint: disable=import-outside-toplevel
+                _QUARANTINED_WRITE_DBS.add(target_idx)
+                logger.error("grid DB %s quarantined for writes: %s: %s",
+                             target_idx, type(db_err).__name__, db_err)
+                try:
+                    history.log_event(0, target_idx, "DB_DEGRADED",
+                                      metadata={"error": f"write: {type(db_err).__name__}: {db_err}"})
+                except Exception:  # pylint: disable=broad-except
+                    pass
+                try:
+                    target_idx = _next_healthy_write_index(target_idx)
+                except LookupError:
+                    logger.error("capture dropped shard %r: every grid DB is "
+                                 "quarantined for writes", title[:80])
+                    return False
+                init_db(target_idx)
+            finally:
+                if conn is not None:
+                    conn.close()
+        if not inserted:
             return False
-        finally:
-            conn.close()
 
         dconn.execute(
             "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
