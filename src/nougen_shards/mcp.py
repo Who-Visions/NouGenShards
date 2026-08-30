@@ -472,11 +472,43 @@ def ask_agent(name: str, prompt: str, model: str = "") -> str:
 
     Args:
         name: Roster agent - Sharder, Remember, Kronos, DavOs, Sol-Ai, NouGen,
-            Griot, Rhea, Kaedra or Iris. Case-insensitive.
+            Griot, Rhea, Kaedra, Iris or Dav1d. Case-insensitive.
         prompt: What to ask.
         model: Optional model override. Leave empty for the agent default.
     """
     return agents.run_agent(name, prompt, model=model or None)
+
+
+@mcp.tool()
+def ask_dav1d(prompt: str, model: str = "") -> str:
+    """
+    Ask Dav1d, the autonomous execution and CLI triage agent on this machine.
+
+    Dav1d is Execution & Bridge: triages batons, reasons on allowlisted AGY CLI
+    workflows, and coordinates cross-agent handoffs with bounded proof and zero
+    cloud token cost.
+
+    Args:
+        prompt: What to ask Dav1d.
+        model: Optional model override. Defaults to dav1d:e2b.
+    """
+    return agents.run_agent("Dav1d", prompt, model=model or None)
+
+
+@mcp.tool()
+def dav1d_run(subcommand: str = "mcp list", prompt: Optional[str] = None) -> dict:
+    """
+    Execute an allowlisted AGY CLI subcommand via the Dav1d execution bridge.
+
+    Runs natively on the Blade Stadium with bounded proof and structured JSON return.
+    Allowlisted subcommands: mcp list, changelog, models, agent, agents, help, version, --version, -v.
+
+    Args:
+        subcommand: The AGY CLI subcommand to execute (e.g. 'mcp list', 'models', 'version').
+        prompt: Optional prompt text passed to the command.
+    """
+    from nougen_shards.dav1d_executor import run_dav1d_agy
+    return run_dav1d_agy(subcommand=subcommand, prompt=prompt)
 
 
 @mcp.tool()

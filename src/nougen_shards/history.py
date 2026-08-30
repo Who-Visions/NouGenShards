@@ -83,35 +83,86 @@ def _count_shard_rows() -> Optional[int]:
     return total if seen_any else None
 
 
+import atexit
+import queue
+import threading
+
+_LOG_QUEUE: "queue.Queue[tuple]" = queue.Queue(maxsize=10000)
+_LOG_WORKER_THREAD: Optional[threading.Thread] = None
+_LOG_WORKER_LOCK = threading.Lock()
+_LOG_STOP_EVENT = threading.Event()
+
+
+def _history_writer_loop():
+    """Background worker thread that batches and commits telemetry events."""
+    while not _LOG_STOP_EVENT.is_set():
+        batch = []
+        try:
+            first = _LOG_QUEUE.get(timeout=0.2)
+            batch.append(first)
+            while len(batch) < 200:
+                try:
+                    batch.append(_LOG_QUEUE.get_nowait())
+                except queue.Empty:
+                    break
+        except queue.Empty:
+            continue
+
+        if batch:
+            conn = None
+            try:
+                if not get_history_db_path().exists():
+                    init_history_db()
+                conn = get_history_connection()
+                conn.execute("PRAGMA synchronous = NORMAL;")
+                conn.execute("PRAGMA busy_timeout = 2000;")
+                conn.executemany("""
+                    INSERT INTO shard_events (shard_id, db_index, event_type, old_score, new_score, timestamp, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, batch)
+                conn.commit()
+            except sqlite3.Error as exc:
+                print(f"[Warning] Failed to flush background history events: {exc}", file=sys.stderr)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                for _ in batch:
+                    _LOG_QUEUE.task_done()
+
+
+def _ensure_worker_started():
+    global _LOG_WORKER_THREAD
+    if _LOG_WORKER_THREAD is None or not _LOG_WORKER_THREAD.is_alive():
+        with _LOG_WORKER_LOCK:
+            if _LOG_WORKER_THREAD is None or not _LOG_WORKER_THREAD.is_alive():
+                _LOG_STOP_EVENT.clear()
+                _LOG_WORKER_THREAD = threading.Thread(target=_history_writer_loop, daemon=True, name="NouGenHistoryWriter")
+                _LOG_WORKER_THREAD.start()
+
+
+def _shutdown_history_writer():
+    _LOG_STOP_EVENT.set()
+
+atexit.register(_shutdown_history_writer)
+
+
 def log_event(shard_id: int, db_index: int, event_type: str,
               old_score: Optional[float] = None, new_score: Optional[float] = None, metadata: Optional[dict] = None):
-    """Writes a historical event to the substrate."""
+    """Writes a historical event to the substrate asynchronously."""
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     meta_json = json.dumps(metadata or {})
+    item = (shard_id, db_index, event_type, old_score, new_score, timestamp, meta_json)
 
-    # The ENTIRE body degrades gracefully: telemetry must never raise into
-    # callers. The lazy init and connection open used to sit outside the try,
-    # so concurrent retrieval lanes racing init/commit could leak an
-    # sqlite3.OperationalError into _keyword_retrieve's FTS block, where it
-    # was misread as "FTS unavailable" and scrambled retrieval ordering.
-    conn = None
+    _ensure_worker_started()
     try:
-        # Lazy init to prevent side-effects on import
-        if not get_history_db_path().exists():
-            init_history_db()
-        conn = get_history_connection()
-        conn.execute("""
-            INSERT INTO shard_events (shard_id, db_index, event_type, old_score, new_score, timestamp, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (shard_id, db_index, event_type, old_score, new_score, timestamp, meta_json))
-        conn.commit()
-    except sqlite3.Error as exc:
-        # Module 10: Graceful Degradation (Log failure but don't crash main memory).
-        # Write to stderr: a stray stdout line corrupts the MCP stdio JSON-RPC stream.
-        print(f"[Warning] Failed to log history event: {exc}", file=sys.stderr)
-    finally:
-        if conn is not None:
-            conn.close()
+        _LOG_QUEUE.put_nowait(item)
+    except queue.Full:
+        # If queue is saturated, log warning to stderr and degrade gracefully
+        print("[Warning] Shard history queue full, dropping event", file=sys.stderr)
+
 
 
 class HistoryEngine:

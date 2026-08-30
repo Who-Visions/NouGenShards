@@ -308,8 +308,17 @@ def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen")
 
             # Autonomous Skill Guidance & Context Injection
             from . import skills as skill_reg
-            applicable_skills = skill_reg.resolve_skills(user_input) if len(user_input.split()) > 1 else []
-            skill_ctx = skill_reg.format_instructions(applicable_skills) if applicable_skills else ""
+            if hasattr(skill_reg, "resolve_skills"):
+                applicable_skills = skill_reg.resolve_skills(user_input) if len(user_input.split()) > 1 else []
+            elif hasattr(skill_reg, "match"):
+                applicable_skills = skill_reg.match(user_input) if len(user_input.split()) > 1 else []
+            else:
+                applicable_skills = []
+
+            if hasattr(skill_reg, "format_instructions"):
+                skill_ctx = skill_reg.format_instructions(applicable_skills) if applicable_skills else ""
+            else:
+                skill_ctx = ""
 
             # Dual-system memory recall & relay foresight (skip for 1-word generic greetings)
             is_simple_greeting = user_input.lower() in ("hi", "hello", "hey", "sup", "yo", "good morning", "hello today")
@@ -323,9 +332,8 @@ def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen")
                     if latest_data and latest_data.get("status") in ("open", "in_progress"):
                         relay_ctx = f"## Active Fleet Relay / Handoff:\n- Goal: {latest_data.get('goal')}\n- Agent: {latest_data.get('agent')}\n- Status: {latest_data.get('status')}"
 
-                found = federation.federated_retrieve(user_input, limit=2)
-                # Strict relevance threshold: ignore background noise (< 0.05)
-                valid_shards = [s for s in found if float(s.get("final_score", 0.0) or 0.0) >= 0.05 or float(s.get("utility_score_tripartite", 0.0) or 0.0) >= 0.05]
+                found = federation.federated_retrieve(user_input, limit=3)
+                valid_shards = [s for s in found if s.get("content")]
                 if valid_shards:
                     context = f"## Relevant Vault Memory (Ground Truth):\n{shards.compile_recall_packet(valid_shards)}"
                 elif any(w in user_input.lower() for w in ("shard", "memory", "recall", "search", "who", "what", "where", "latest", "find")):
@@ -336,10 +344,11 @@ def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen")
                 prompt_with_ctx = "\n\n".join(injected_parts) + f"\n\n[User Query]:\n{user_input}"
             else:
                 prompt_with_ctx = user_input
-            history_msgs.append({"role": "user", "content": prompt_with_ctx})
+            turn_msgs = list(history_msgs) + [{"role": "user", "content": prompt_with_ctx}]
 
             print(f"\n[{persona_title}]: ", end="")
-            response = client.chat(model, history_msgs, stream=True)
+            response = client.chat(model, turn_msgs, stream=True)
+            history_msgs.append({"role": "user", "content": user_input})
             history_msgs.append({"role": "assistant", "content": response})
             print()
         except KeyboardInterrupt:
@@ -361,17 +370,43 @@ def cmd_chat(args):
         available = client.list_models() if client else []
         persona = agents.get_agent(persona_name)
         # Prioritize persona default model or modern local edge models
-        priority_models = [persona.default_model if persona else None, "gemma4:e2b", "gemma4:e2b-qat", "dav1d:e2b", "sol-ai:e4b"]
-        matched = next((m for m in priority_models if m and m in available), None)
+        priority_models = [
+            persona.default_model if persona else None,
+            "gemma4:e2b",
+            "sol-ai:e4b",
+            "dav1d:e2b",
+            "gemma4:12b",
+            "rhea-noir:e2b",
+            "kaedra:e4b",
+            "iris-ai:e4b",
+            "griot:e2b",
+            "DavOs:latest",
+        ]
+        matched = None
+        for pm in priority_models:
+            if not pm:
+                continue
+            for avail in available:
+                if (
+                    avail == pm
+                    or avail == f"{pm}:latest"
+                    or (":" in pm and avail == pm)
+                    or (pm in avail and not any(ex in avail for ex in ["cloud", "embed"]))
+                ):
+                    matched = avail
+                    break
+            if matched:
+                break
+
         if matched:
             model = matched
+        elif isinstance(client, LocalLLMClient) and hasattr(client, "find_best_edge_model"):
+            model_config = client.find_best_edge_model()
+            model = model_config.model_name if model_config else (available[0] if available else None)
         elif available:
             model = available[0]
         elif persona and persona.default_model:
             model = persona.default_model
-        elif isinstance(client, LocalLLMClient):
-            model_config = client.find_best_edge_model()
-            model = model_config.model_name if model_config else None
 
     if not model:
         print("Error: No model found or configured for this environment.")
@@ -1023,19 +1058,40 @@ def cmd_evolve(args):
 def cmd_dashboard(args):
     """Launches the Cortex HUD (Visual Dashboard)."""
     import uvicorn
-    # app.py is in the project root. When installed, we assume it's discoverable
-    # in the path or we use absolute import if available.
+    dashboard_app = None
     try:
-        # For local execution from root
         sys.path.append(os.getcwd())
         import app
-        dashboard_app = app.app
-    except ImportError:
-        print("Error: Dashboard module (app.py) not found in path.")
+        dashboard_app = getattr(app, "app", None)
+    except Exception:
+        pass
+
+    if not dashboard_app:
+        candidate_paths = [
+            Path(__file__).resolve().parent.parent.parent / "app.py",
+            Path(r"C:\Users\super\Watchtower\NouGen\NouGenShards-repo\app.py"),
+            Path(r"C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\app.py"),
+        ]
+        for cp in candidate_paths:
+            if cp.exists():
+                try:
+                    import importlib.util
+                    spec = importlib.util.spec_from_file_location("cortex_app", str(cp))
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    dashboard_app = getattr(mod, "app", None)
+                    if dashboard_app:
+                        break
+                except Exception:
+                    continue
+
+    if not dashboard_app:
+        print("Error: Dashboard module (app.py) not found.")
         return
 
-    print(f"🚀 Igniting Cortex HUD on http://127.0.0.1:{args.port}...")
-    uvicorn.run(dashboard_app, host="127.0.0.1", port=args.port)
+    port = getattr(args, "port", 7860) or 7860
+    print(f"🚀 Igniting Cortex HUD on http://127.0.0.1:{port}...")
+    uvicorn.run(dashboard_app, host="127.0.0.1", port=port)
 
 
 def cmd_tenant(args):

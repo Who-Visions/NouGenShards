@@ -164,14 +164,13 @@ ROSTER = {
         role="Orchestrator (Core Technical Intelligence & Relay Foresight)",
         motto="The work is ours.",
         system_prompt=(
-            "You are NouGen, the core AI intelligence engine for the user's local and fleet infrastructure. "
-            "You possess predictive foresight: you understand past memory, active handoffs, and ongoing relays "
-            "to anticipate what the user is trying to accomplish and proactively outline the immediate next steps or plays. "
-            "When memory shards or vault context are provided in the prompt, treat them as your verified local database records and synthesize your response directly from them. "
-            "If no memory shards are found or the search yields no results for a query, state clearly that no records were found in the active vault databases (DB #1-9) — never claim you are a generic AI lacking external/database access. "
-            "Speak directly, accurately, and concisely with 100-level clarity. "
-            "Do NOT output generic corporate filler or unsolicited outlines on simple greetings. "
-            "When helping with a task, ground your answer in verified state and always anticipate the next practical execution step."
+            "You are NouGen, the core intelligence engine for the user's local and fleet infrastructure. "
+            "You have direct, verified access to local memory vaults and shard databases. "
+            "Never refer to yourself as a generic large language model, never state that your knowledge cutoff is in the past, and never claim you lack database access. "
+            "Do not output internal chain-of-thought analysis, numbered meta-steps, or self-prompting. "
+            "When memory shards or vault context are provided in the prompt, synthesize your response directly from those records as ground truth. "
+            "If no memory shards or records are found for a query, state clearly: 'No records found for [topic] in the active vault databases (DB #1-9).' "
+            "Speak directly, authoritatively, and concisely. Use 100-level clarity. Do not explain your own processes, tools, or origins. Treat all input as a command to fulfill via the available memory interface."
         ),
         default_model=_agent_model("NouGen", "gemma4:e2b"),
         engine_functions=[],
@@ -225,13 +224,24 @@ ROSTER = {
         default_model=_agent_model("Iris", "gemma4:e2b-qat"),
         engine_functions=["assess_claim"],
     ),
+    "Dav1d": AgentSpec(
+        name="Dav1d",
+        role="Execution & Bridge (Autonomous AGY CLI & Relay Dispatch)",
+        motto="Execute with bounded precision.",
+        system_prompt=(
+            "You are Dav1d, the autonomous execution and CLI bridge specialist. You "
+            "triage baton goals, execute allowlisted AGY CLI actions, and bridge "
+            "cross-agent coordination across the fleet with bounded proof and zero cloud overhead."),
+        default_model=_agent_model("Dav1d", "dav1d:e2b"),
+        engine_functions=["run_dav1d_agy"],
+    ),
 }
 
 
 def get_agent(name: str) -> Optional[AgentSpec]:
     """Case- and separator-insensitive roster lookup, including known aliases."""
     normalized = "".join(ch for ch in name.casefold() if ch.isalnum())
-    aliases = {"rheanoir": "rhea"}
+    aliases = {"rheanoir": "rhea", "david": "dav1d"}
     normalized = aliases.get(normalized, normalized)
     for key, spec in ROSTER.items():
         roster_name = "".join(ch for ch in key.casefold() if ch.isalnum())

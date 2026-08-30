@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 # from being pointed at sqlite:///arbitrary files or other local/SSRF schemes
 # via an attacker-influenced external-DB config.
 _ALLOWED_DB_BACKENDS = {
-    "postgresql", "mysql", "mariadb", "mssql", "oracle", "cockroachdb",
+    "postgresql", "postgres", "mysql", "mariadb", "mssql", "oracle", "cockroachdb",
 }
 
 
@@ -61,8 +61,8 @@ def query_external_dbs(query: str, db_configs: list, limit: int = 3) -> list:
 
             # Reject non-network DB URIs (sqlite/file/etc.) before connecting.
             if not is_allowed_db_uri(conf['uri']):
-                logger.warning("external DB skipped (conf %s): disallowed URI scheme",
-                               conf.get('id', '?'))
+                logger.debug("external DB skipped (conf %s): disallowed URI scheme",
+                             conf.get('id', '?'))
                 continue
 
             # Module 10: Integrate Constraints (Timeout & Connection Pooling)
