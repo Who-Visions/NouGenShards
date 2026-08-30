@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading as _threading
 from contextvars import ContextVar, Token, copy_context
 from datetime import datetime, timezone
 from pathlib import Path
@@ -597,6 +598,45 @@ def _embed_for_capture(title: str, content: str) -> Optional[List[float]]:
     return vec
 
 
+def _query_embed_enabled() -> bool:
+    return os.environ.get("NOUGEN_QUERY_EMBED", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+def _embed_query(query: str) -> Optional[np.ndarray]:
+    """Embed the query at read time so the vector lane actually fires.
+
+    Shards are embedded at write ("born recallable"), but until 2026-08-30 no
+    recall caller ever computed a QUERY embedding, so _vector_retrieve was a
+    permanent no-op and every recall ran keyword-only against a fully-embedded
+    vault. A miss here is non-fatal: recall degrades to keyword lanes exactly
+    as before, and the miss is logged rather than swallowed.
+    """
+    model = os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text")
+    try:
+        # Default is looser than capture's 1.5s: the first query after an
+        # idle period pays ollama's model (re)load, and a cold-load miss here
+        # silently degrades every recall to keyword-only.
+        timeout = float(os.environ.get("NOUGEN_QUERY_EMBED_TIMEOUT",
+                                       os.environ.get("NOUGEN_EMBED_TIMEOUT", "3.0")))
+    except ValueError:
+        timeout = 3.0
+    try:
+        from .embedding_backfill import embed as _embed  # local import: optional dep path
+        vec = _embed((query or "")[:4000], model, timeout=timeout)
+    except Exception as exc:  # pylint: disable=broad-except
+        vec = None
+        logger.debug("query embedding raised: %s", exc)
+    if not vec:
+        logger.warning("query embedding unavailable (model=%s); recall is keyword-only "
+                       "for this query -- is ollama up?", model)
+        return None
+    arr = np.array(vec, dtype=np.float32)
+    norm = np.linalg.norm(arr)
+    return (arr / norm) if norm > 0 else None
+
+
 def capture(event_type: str, title: str, content: str,
             tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
             domain_key: Optional[str] = None, density_score: Optional[float] = None,
@@ -975,6 +1015,41 @@ def _ingest_filter_sql(alias: str = "s", include_research: bool = False):
     return f"UPPER({alias}.event_type) NOT IN ({marks}) AND ", tuple(excluded)
 
 
+def _retrieve_db_workers() -> int:
+    """Concurrent grid-DB scans per retrieval lane. Env-first (Rule 0.2)."""
+    raw = os.environ.get("NOUGEN_RETRIEVE_DB_WORKERS", "")
+    try:
+        n = int(raw) if raw.strip() else 0
+    except ValueError:
+        logger.warning("NOUGEN_RETRIEVE_DB_WORKERS=%r is not an int; using auto", raw)
+        n = 0
+    if n <= 0:
+        n = min(MAX_DB_COUNT, os.cpu_count() or 4)
+    return max(1, n)
+
+
+def _run_db_scans(scan_fn):
+    """Run scan_fn(i) for every grid DB concurrently; yield (i, result) in DB order.
+
+    The per-DB scan loops in both retrieval lanes were serial — on a 9-DB,
+    six-figure-shard grid that alone was ~14s per pass (measured 2026-08-30).
+    Each scan owns its connection, so threads never share sqlite handles, and
+    yielding in DB order keeps downstream merge/sort output bit-identical to
+    the serial loop.
+    """
+    import concurrent.futures  # pylint: disable=import-outside-toplevel
+    workers = _retrieve_db_workers()
+    if workers == 1:
+        for i in range(1, MAX_DB_COUNT + 1):
+            yield i, scan_fn(i)
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {i: executor.submit(copy_context().run, scan_fn, i)
+                   for i in range(1, MAX_DB_COUNT + 1)}
+        for i in range(1, MAX_DB_COUNT + 1):
+            yield i, futures[i].result()
+
+
 def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[List[float]] = None,
                       domain_key: str = "global", include_research: bool = False) -> list:
     """Scans for keyword matches using FTS5 (with LIKE fallback)."""
@@ -984,7 +1059,10 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     query_now = datetime.now(timezone.utc)
     results = []
     missed_dbs = []  # DBs where both exact lanes missed; fed to the fuzzy pass below
-    for i in range(1, MAX_DB_COUNT + 1):
+
+    def _scan_db(i: int) -> tuple:
+        """Scan one grid DB (thread-owned connection). Returns (rows, missed)."""
+        from . import history  # pylint: disable=import-outside-toplevel
         # The existence probe belongs INSIDE the guard too. Path.exists() returns
         # False only for ENOENT/ENOTDIR; on EACCES/EPERM it RAISES. An
         # ACL-locked DB file would therefore escape the handler below and kill
@@ -995,10 +1073,13 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
         #  UnauthorizedAccessException, so "not allowed to look" reads as "not
         #  there". Python raising here is the better default - it just has to be
         #  caught rather than left outside the try.)
+        db_rows: list = []
+        accessed: list = []
+        missed = False
         conn = None
         try:
             if not get_db_path(i).exists():
-                continue
+                return db_rows, missed
             conn = get_connection(i)
             fts_worked = False
             db_hits = 0
@@ -1044,11 +1125,11 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         break
                 if res:
                     for row in res:
-                        history.log_event(row["id"], i, "ACCESSED")
+                        accessed.append(row["id"])
                         item = _process_fts_result(row, i, query_embedding, query_now)
                         if via_or_retry:
                             item["_or_retry"] = True
-                        results.append(item)
+                        db_rows.append(item)
                     fts_worked = True
 
             if not fts_worked:
@@ -1066,7 +1147,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 for row in cursor:
                     item = hydrate(dict(row))
                     item["_db_index"] = i
-                    history.log_event(item["id"], i, "ACCESSED")
+                    accessed.append(item["id"])
                     sem_score = 0.0
                     if query_embedding is not None and item["embedding"]:
                         try:
@@ -1084,13 +1165,13 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
 
                     decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), query_now)
                     item["final_score"] = (likelihood * 0.5) + (decayed_utility * 0.5)
-                    results.append(item)
+                    db_rows.append(item)
                     db_hits += 1
 
             # Fuzzy lane is DEFERRED, not run here: note the miss and move on.
             # See the second pass below for why.
             if not fts_worked and db_hits == 0:
-                missed_dbs.append(i)
+                missed = True
         except (sqlite3.DatabaseError, OSError) as exc:
             # ONE bad DB must not zero out the whole federated read. The try
             # around the FTS SQL below catches only sqlite3.OperationalError,
@@ -1117,10 +1198,21 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                                   metadata={"error": f"{type(exc).__name__}: {exc}"})
             except Exception:  # pylint: disable=broad-except
                 pass
-            continue
         finally:
             if conn is not None:
                 conn.close()
+        # ONE batched history write per DB scan. The per-row log_event calls
+        # this replaces each opened a connection, INSERTed, committed, and
+        # closed - ~360 synchronous commits per recall, a measured multi-second
+        # tax that also serializes parallel scans on the history DB lock.
+        if accessed:
+            history.log_events([(sid, i, "ACCESSED") for sid in accessed])
+        return db_rows, missed
+
+    for i, (db_rows, missed) in _run_db_scans(_scan_db):
+        results.extend(db_rows)
+        if missed:
+            missed_dbs.append(i)
 
     # Fuzzy lane (docs/theory/n-gram-topologies.md §8.2): for DBs where BOTH
     # exact lanes missed, retry with fastText-style character trigram Dice
@@ -1259,81 +1351,262 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     return results[:limit]
 
 
+def _vector_cache_enabled() -> bool:
+    return os.environ.get("NOUGEN_VECTOR_CACHE", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+#: Process-level embedding matrix cache, one entry per grid DB. Selecting the
+#: embedding column from `shards` still reads every row's FULL record (content
+#: included) from disk - a per-query vector scan was effectively a 10.7GB table
+#: scan across the grid (measured 27s, 2026-08-30). The cache pays that read
+#: once per process and answers subsequent queries with an in-RAM matmul.
+#: ~800MB RSS for a 260k-shard grid at 768 dims; NOUGEN_VECTOR_CACHE=0 disables.
+_VECTOR_CACHE: dict = {}
+_VECTOR_CACHE_LOCK = _threading.Lock()  # eager: lazy init of a lock is itself a race
+
+
+def _vector_cache_lock():
+    return _VECTOR_CACHE_LOCK
+
+
+def _db_write_signature(i: int) -> tuple:
+    """Staleness key for DB i. Includes the -wal file: under WAL mode a write
+    lands there first and the main file's mtime does not move until checkpoint."""
+    sig = []
+    base = str(get_db_path(i))
+    for suffix in ("", "-wal"):
+        try:
+            st = os.stat(base + suffix)
+            sig.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            sig.append(None)
+    return tuple(sig)
+
+
+def _vector_cache_entry(i: int, conn) -> Optional[dict]:
+    """Return the (fresh) cache entry for DB i, loading or refreshing as needed.
+
+    Refresh strategy: the grid is append-mostly. On a signature change, rows
+    with id > the cached max are fetched and appended; a shrink in embedded-row
+    count forces a full reload. An embedding UPDATEd in place (backfill re-run)
+    stays stale until the next full reload - logged, accepted: the alternative
+    is re-reading the full table per capture, which is the cost this cache
+    exists to kill.
+    """
+    sig = _db_write_signature(i)
+    path = str(get_db_path(i))
+    entry = _VECTOR_CACHE.get(i)
+    if entry is not None and entry["sig"] == sig and entry["path"] == path:
+        return entry
+    with _vector_cache_lock():
+        entry = _VECTOR_CACHE.get(i)
+        if entry is not None and entry["sig"] == sig and entry["path"] == path:
+            return entry
+        # The cache key is the DB index, but the index can point at a DIFFERENT
+        # file mid-process (tests and tools repoint NOUGEN_VAULT_DIR - same
+        # reason init_db keys its guard by vault dir). Appending one vault's
+        # rows onto another's matrix would silently corrupt ranking, so a path
+        # change always forces a full reload. [codex finding, 2026-08-30]
+        if entry is not None and entry["path"] != path:
+            entry = None
+        count = conn.execute(
+            "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM shards WHERE embedding IS NOT NULL"
+        ).fetchone()
+        n_embedded, max_id = int(count[0]), int(count[1])
+        since_id = 0
+        if entry is not None and n_embedded >= entry["n_embedded"] and len(entry["ids"]):
+            since_id = entry["max_id"]  # append-only fast path
+        else:
+            entry = None  # full (re)load
+        cursor = conn.execute("""
+            SELECT id, timestamp, utility_score, domain_key, event_type, embedding
+            FROM shards WHERE embedding IS NOT NULL AND id > ? ORDER BY id ASC
+        """, (since_id,))
+        ids, ts, util, dom, etype, blobs, legacy = [], [], [], [], [], [], []
+        dim = entry["dim"] if entry else None
+        for row in cursor:
+            emb = row["embedding"]
+            if isinstance(emb, (bytes, bytearray)) and not emb.startswith(b"[") \
+                    and len(emb) % 4 == 0 and len(emb) > 0:
+                row_dim = len(emb) // 4
+                if dim is None:
+                    dim = row_dim
+                if row_dim == dim:
+                    ids.append(row["id"])
+                    ts.append(row["timestamp"])
+                    util.append(row["utility_score"] if row["utility_score"] is not None else 0.0)
+                    dom.append(row["domain_key"] or "")
+                    etype.append((row["event_type"] or "").upper())
+                    blobs.append(bytes(emb))
+                    continue
+            legacy.append((row["id"], row["utility_score"] or 0.0, row["timestamp"],
+                           row["domain_key"] or "", (row["event_type"] or "").upper(), emb))
+        if blobs:
+            new_matrix = np.frombuffer(b"".join(blobs), dtype=np.float32).reshape(len(blobs), dim)
+        else:
+            new_matrix = np.zeros((0, dim or 0), dtype=np.float32)
+        if entry is not None:
+            fresh = {
+                "sig": sig, "path": path, "dim": dim, "n_embedded": n_embedded, "max_id": max_id,
+                "ids": entry["ids"] + ids, "ts": entry["ts"] + ts,
+                "util": np.concatenate([entry["util"], np.asarray(util, dtype=np.float32)]),
+                "dom": entry["dom"] + dom, "etype": entry["etype"] + etype,
+                "matrix": np.vstack([entry["matrix"], new_matrix]) if len(ids) else entry["matrix"],
+                "legacy": entry["legacy"] + legacy,
+            }
+        else:
+            fresh = {
+                "sig": sig, "path": path, "dim": dim, "n_embedded": n_embedded, "max_id": max_id,
+                "ids": ids, "ts": ts, "util": np.asarray(util, dtype=np.float32),
+                "dom": dom, "etype": etype, "matrix": new_matrix, "legacy": legacy,
+            }
+        # Consistency gate: after an incremental append the cache must hold
+        # exactly the DB's embedded-row count. A backfill that fills NULL
+        # embeddings on OLD ids grows the count without growing max_id, which
+        # the append path can never see - detected here and answered with a
+        # full reload instead of serving a silently incomplete matrix.
+        # [codex finding, 2026-08-30]
+        if since_id and (len(fresh["ids"]) + len(fresh["legacy"])) != n_embedded:
+            logger.info(
+                "vector cache for DB %s inconsistent after incremental refresh "
+                "(%d cached vs %d embedded) - backfill or delete detected, full reload",
+                i, len(fresh["ids"]) + len(fresh["legacy"]), n_embedded)
+            cursor = conn.execute("""
+                SELECT id, timestamp, utility_score, domain_key, event_type, embedding
+                FROM shards WHERE embedding IS NOT NULL ORDER BY id ASC
+            """)
+            ids, ts, util, dom, etype, blobs, legacy = [], [], [], [], [], [], []
+            dim = None
+            for row in cursor:
+                emb = row["embedding"]
+                if isinstance(emb, (bytes, bytearray)) and not emb.startswith(b"[") \
+                        and len(emb) % 4 == 0 and len(emb) > 0:
+                    row_dim = len(emb) // 4
+                    if dim is None:
+                        dim = row_dim
+                    if row_dim == dim:
+                        ids.append(row["id"])
+                        ts.append(row["timestamp"])
+                        util.append(row["utility_score"] if row["utility_score"] is not None else 0.0)
+                        dom.append(row["domain_key"] or "")
+                        etype.append((row["event_type"] or "").upper())
+                        blobs.append(bytes(emb))
+                        continue
+                legacy.append((row["id"], row["utility_score"] or 0.0, row["timestamp"],
+                               row["domain_key"] or "", (row["event_type"] or "").upper(), emb))
+            matrix = (np.frombuffer(b"".join(blobs), dtype=np.float32).reshape(len(blobs), dim)
+                      if blobs else np.zeros((0, dim or 0), dtype=np.float32))
+            fresh = {
+                "sig": _db_write_signature(i), "path": path, "dim": dim,
+                "n_embedded": n_embedded, "max_id": max_id,
+                "ids": ids, "ts": ts, "util": np.asarray(util, dtype=np.float32),
+                "dom": dom, "etype": etype, "matrix": matrix, "legacy": legacy,
+            }
+        _VECTOR_CACHE[i] = fresh
+        return fresh
+
+
 def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                      domain_key: str = "global", include_research: bool = False) -> list:
-    """Scans for semantic vector matches independent of FTS."""
+    """Scans for semantic vector matches independent of FTS.
+
+    Scoring runs against the per-DB embedding matrix cache (one BLAS matvec -
+    see _VECTOR_CACHE); only each DB's top `limit` candidates are then fetched
+    and hydrate()d from sqlite. hydrate() can mean a DPAPI decrypt per row, so
+    it must never run across the whole corpus.
+    """
     if query_embedding is None:
         return []
 
-    from . import history # pylint: disable=import-outside-toplevel
+    from . import history  # pylint: disable=import-outside-toplevel
 
     # One reference clock for the whole scan (see _temporal_decay).
     query_now = datetime.now(timezone.utc)
-    results = []
-    for i in range(1, MAX_DB_COUNT + 1):
-        # The existence probe belongs INSIDE the guard too. Path.exists() returns
-        # False only for ENOENT/ENOTDIR; on EACCES/EPERM it RAISES. An
-        # ACL-locked DB file would therefore escape the handler below and kill
-        # the whole fan-out - the same failure the handler exists to stop,
-        # through a different door, two lines earlier.
-        #
-        # (PowerShell's Test-Path has the opposite bug: it RETURNS $false on
-        #  UnauthorizedAccessException, so "not allowed to look" reads as "not
-        #  there". Python raising here is the better default - it just has to be
-        #  caught rather than left outside the try.)
+    q_vec = np.asarray(query_embedding, dtype=np.float32)
+    qdim = int(q_vec.shape[0])
+    excluded_types = frozenset() if include_research else frozenset(bulk_ingest_event_types())
+
+    def _scan_db(i: int) -> list:
+        from . import history  # pylint: disable=import-outside-toplevel
+        db_rows: list = []
         conn = None
         try:
+            # Path.exists() raises on EACCES (only ENOENT/ENOTDIR are False),
+            # so the probe stays inside the guard - same rationale as the
+            # keyword lane.
             if not get_db_path(i).exists():
-                continue
+                return db_rows
             conn = get_connection(i)
-            dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
-            dom_params = () if domain_key in (None, "*") else (domain_key,)
-            ing_clause, ing_params = _ingest_filter_sql("shards", include_research)
-            dom_clause = dom_clause + ing_clause
-            dom_params = (*dom_params, *ing_params)
+            cache = _vector_cache_entry(i, conn) if _vector_cache_enabled() else None
+            scored = []  # (final_score, id)
+            if cache and cache["dim"] == qdim and len(cache["ids"]):
+                sem_scores = np.array(cache["matrix"] @ q_vec)
+                # Mask rows excluded by domain scope / ingest filter by sinking
+                # their scores below any real cosine instead of copying the
+                # matrix per query.
+                if domain_key not in (None, "*"):
+                    mask = np.fromiter((d != domain_key for d in cache["dom"]),
+                                       dtype=bool, count=len(cache["dom"]))
+                    sem_scores[mask] = -1e9
+                if excluded_types:
+                    mask = np.fromiter((e in excluded_types for e in cache["etype"]),
+                                       dtype=bool, count=len(cache["etype"]))
+                    sem_scores[mask] = -1e9
+                # Exact-score (timestamp parse + decay) only a semantic-top
+                # pool: _temporal_decay parses an ISO timestamp per call and
+                # doing that for every row was the residual latency after the
+                # matmul. The prior term is bounded (<= WEIGHT_PRIOR * utility),
+                # so a generous pool cannot exclude a row exact scoring would
+                # have promoted into the top `limit`.
+                pool_n = min(len(cache["ids"]), max(limit * 8, 256))
+                if pool_n < len(cache["ids"]):
+                    pool_idx = np.argpartition(-sem_scores, pool_n - 1)[:pool_n]
+                else:
+                    pool_idx = np.arange(len(cache["ids"]))
+                for idx in pool_idx:
+                    if sem_scores[idx] <= -1e8:
+                        continue
+                    decayed_utility = float(cache["util"][idx]) * _temporal_decay(cache["ts"][idx], query_now)
+                    scored.append((float(sem_scores[idx]) * WEIGHT_LIKELIHOOD
+                                   + decayed_utility * WEIGHT_PRIOR, int(cache["ids"][idx])))
+                for sid, utility, ts, dom, etype, emb in cache["legacy"]:
+                    if domain_key not in (None, "*") and dom != domain_key:
+                        continue
+                    if etype in excluded_types:
+                        continue
+                    try:
+                        emb_array = np.array(json.loads(emb.decode()), dtype=np.float32) \
+                            if emb.startswith(b"[") else np.frombuffer(emb, dtype=np.float32)
+                        sem = float(np.dot(q_vec, emb_array)) if emb_array.shape[0] == qdim else 0.0
+                    except Exception:  # pylint: disable=broad-except
+                        sem = 0.0
+                    decayed_utility = utility * _temporal_decay(ts, query_now)
+                    scored.append((sem * WEIGHT_LIKELIHOOD + decayed_utility * WEIGHT_PRIOR, sid))
+            elif cache and cache["dim"] not in (None, qdim):
+                logger.warning(
+                    "vector lane skipped on DB %s: cached embedding dim %s != query dim %s "
+                    "(embed model changed?)", i, cache["dim"], qdim)
+            if not scored:
+                return db_rows
+            scored.sort(key=lambda t: (-round(t[0], 6), t[1]))
+            top = scored[:limit]
+            placeholders = ",".join("?" for _ in top)
+            by_id = {sid: score for score, sid in top}
             cursor = conn.execute(f"""
                 SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
-                FROM shards
-                WHERE {dom_clause}embedding IS NOT NULL
-            """, dom_params)
+                FROM shards WHERE id IN ({placeholders})
+            """, [sid for _, sid in top])
             for row in cursor:
                 item = hydrate(dict(row))
                 item["_db_index"] = i
-                
-                try:
-                    if item["embedding"].startswith(b'['):
-                        raise ValueError("Legacy JSON embedding")
-                    emb_array = np.frombuffer(item["embedding"], dtype=np.float32)
-                    sem_score = float(np.dot(query_embedding, emb_array))
-                except Exception:
-                    try:
-                        emb_array = np.array(json.loads(item["embedding"].decode()), dtype=np.float32)
-                        sem_score = float(np.dot(query_embedding, emb_array))
-                    except Exception:
-                        sem_score = 0.0
-
-                decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), query_now)
-                item["final_score"] = (sem_score * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
-                results.append(item)
+                item["final_score"] = by_id.get(item["id"], 0.0)
+                db_rows.append(item)
         except (sqlite3.DatabaseError, OSError) as exc:
-            # ONE bad DB must not zero out the whole federated read. The try
-            # around the FTS SQL below catches only sqlite3.OperationalError,
-            # but a corrupt file raises sqlite3.DatabaseError ("database disk
-            # image is malformed") -- its PARENT class, so that except never
-            # matched. With no except on this loop, the error escaped the
-            # for-loop entirely and every ranked read returned empty while the
-            # other 8 DBs sat there healthy and unread.
-            #
-            # 2026-08-29: that is exactly what shipped. shards_coverage showed
-            # databases_errored [{index:5, malformed}], and recall AND search
-            # both returned 0 against a six-figure vault while shards_window --
-            # which filters on timestamp and never touches this path -- happily
-            # returned rows. Health said up the whole time.
-            #
-            # Degrade per DB: record it, skip it, keep scanning. A partial
-            # answer from 8 DBs is worth infinitely more than a false empty,
-            # and the log line names the index so the corrupt file is findable
-            # instead of silently swallowed.
+            # ONE bad DB must not zero out the whole federated read - degrade
+            # per DB: record it, skip it, keep scanning (see keyword lane for
+            # the 2026-08-29 incident that mandates this).
             logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
                          i, type(exc).__name__, exc)
             try:
@@ -1341,23 +1614,27 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                                   metadata={"error": f"{type(exc).__name__}: {exc}"})
             except Exception:  # pylint: disable=broad-except
                 pass
-            continue
         finally:
             if conn is not None:
                 conn.close()
+        return db_rows
+
+    results = []
+    for _i, db_rows in _run_db_scans(_scan_db):
+        results.extend(db_rows)
 
     # Deterministic order: score DESC (rounded so sub-epsilon temporal-decay
     # jitter doesn't reorder near-ties run-to-run), then (_db_index, id) ASC.
     results.sort(key=lambda x: (-round(x.get("final_score", 0.0), 6), x.get("_db_index", 0), x.get("id", 0)))
     top_results = results[:limit]
-    
-    for item in top_results:
-        history.log_event(item["id"], item["_db_index"], "ACCESSED")
-        
+
+    history.log_events([(item["id"], item["_db_index"], "ACCESSED") for item in top_results])
+
     return top_results
 
 
-def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[dict]:
+def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
+                           weights: Optional[List[float]] = None) -> List[dict]:
     """
     Module 8 / 21: Reciprocal Rank Fusion (RRF) to merge multiple ranked lists.
 
@@ -1382,13 +1659,18 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
         val = f"{title}|||{content}"
         return hashlib.sha256(val.encode("utf-8", errors="ignore")).hexdigest()
 
-    for rank_list in result_lists:
+    for list_idx, rank_list in enumerate(result_lists):
         if not rank_list:
             continue
+        # Optional per-list weight (default 1.0): lets a caller declare one
+        # lane authoritative without changing the 1/(k+rank) arithmetic.
+        weight = 1.0
+        if weights is not None and list_idx < len(weights):
+            weight = float(weights[list_idx])
         for rank_idx, item in enumerate(rank_list):
             key = get_rrf_key(item)
             rank = rank_idx + 1
-            score = 1.0 / (k + rank)
+            score = weight / (k + rank)
             rrf_scores[key] = rrf_scores.get(key, 0.0) + score
             
             if key not in item_map:
@@ -1495,6 +1777,11 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         norm = np.linalg.norm(arr)
         if norm > 0:
             query_embedding = arr / norm
+    elif _query_embed_enabled():
+        # No caller in the MCP/app path ever passed a query embedding, which
+        # left the vector lane permanently dark (see _embed_query). Compute one
+        # here, best-effort, so semantic recall works for every entry point.
+        query_embedding = _embed_query(query)
 
     candidate_limit = max(limit * 2, 20)
 
@@ -1514,22 +1801,29 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             
         return reciprocal_rank_fusion([keyword_results, vector_results], k=60)
 
-    all_results = run_parallel_retrieval(domain_key)
-
-    if domain_key != "*":
-        if explicit_domain:
+    if domain_key != "*" and not explicit_domain:
+        # Implicit CWD-domain: scoped-plus-global fusion, not scoped-else-
+        # global. Always run the whole-brain pass and merge, multiplying
+        # scoped (in-domain) scores by a domain-affinity boost so local
+        # context still ranks first on ties but can no longer mask
+        # near-exact matches that live under another writer's CWD-domain.
+        # The two passes are independent, so they run CONCURRENTLY - the
+        # serial version doubled recall latency on every implicit-domain call.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_scoped = executor.submit(copy_context().run, run_parallel_retrieval, domain_key)
+            future_whole = executor.submit(copy_context().run, run_parallel_retrieval, "*")
+            all_results = future_scoped.result()
+            whole_brain = future_whole.result()
+    else:
+        all_results = run_parallel_retrieval(domain_key)
+        whole_brain = None
+        if domain_key != "*" and not all_results:
             # Fallback: if the deliberately-scoped pass found nothing, sweep the
             # ENTIRE brain (all domain_keys). Without this, recall stays siloed
             # to one bucket (e.g. 'global' = <2% of shards) and misses the rest.
-            if not all_results:
-                all_results = run_parallel_retrieval("*")
-        else:
-            # Implicit CWD-domain: scoped-plus-global fusion, not scoped-else-
-            # global. Always run the whole-brain pass and merge, multiplying
-            # scoped (in-domain) scores by a domain-affinity boost so local
-            # context still ranks first on ties but can no longer mask
-            # near-exact matches that live under another writer's CWD-domain.
-            whole_brain = run_parallel_retrieval("*")
+            all_results = run_parallel_retrieval("*")
+
+    if whole_brain is not None:
             boost = _domain_affinity_boost()
             fused: dict = {}
             for item in whole_brain:
