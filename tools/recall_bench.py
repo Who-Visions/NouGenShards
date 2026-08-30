@@ -18,6 +18,22 @@ import os
 import statistics
 import sys
 import time
+
+# Windows consoles default to cp1252, and shard titles are arbitrary text - the
+# first one carrying a character outside that codepage (an arrow, an accent, an
+# emoji) raised UnicodeEncodeError mid-report and killed the run BEFORE it could
+# print its own p50/p95/accuracy verdict or set an exit code. A gate that cannot
+# state its result on the maintainer's own machine is not a gate. Reconfigure
+# rather than strip, so titles stay readable wherever the console can show them.
+_BENCH_ENCODING = os.environ.get("NOUGEN_BENCH_ENCODING", "utf-8")
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding=_BENCH_ENCODING, errors="replace")
+    except (AttributeError, OSError, LookupError):
+        # Not a reconfigurable TextIOWrapper (redirected/wrapped), or the
+        # console refuses the codepage. Leaving it alone is safe: the errors=
+        # handler below is what actually prevents the crash for the common case.
+        pass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
