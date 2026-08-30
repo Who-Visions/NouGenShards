@@ -1687,6 +1687,7 @@ def locate_shard(shard_id: int) -> List[int]:
             logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
                          i, type(exc).__name__, exc)
             try:
+                from . import history  # pylint: disable=import-outside-toplevel
                 history.log_event(0, i, "DB_DEGRADED",
                                   metadata={"error": f"{type(exc).__name__}: {exc}"})
             except Exception:  # pylint: disable=broad-except
@@ -1812,6 +1813,7 @@ def decay_utility_scores(factor: float = 0.95):
             logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
                          i, type(exc).__name__, exc)
             try:
+                from . import history  # pylint: disable=import-outside-toplevel
                 history.log_event(0, i, "DB_DEGRADED",
                                   metadata={"error": f"{type(exc).__name__}: {exc}"})
             except Exception:  # pylint: disable=broad-except
@@ -1938,6 +1940,7 @@ def retrieve_semantic_rules(query: str, limit: int = 5, domain_key: str = "globa
             logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
                          i, type(exc).__name__, exc)
             try:
+                from . import history  # pylint: disable=import-outside-toplevel
                 history.log_event(0, i, "DB_DEGRADED",
                                   metadata={"error": f"{type(exc).__name__}: {exc}"})
             except Exception:  # pylint: disable=broad-except
