@@ -1042,6 +1042,7 @@ def sync_push(req: SyncPushRequest,
 
     count = 0
     skipped = 0
+    errored = 0
     for s in req.shards:
         title, content = s.get("title"), s.get("content")
         if not title or not content:
@@ -1064,26 +1065,38 @@ def sync_push(req: SyncPushRequest,
         emb = s.get("embedding")
         if emb is not None and not isinstance(emb, list):
             emb = None
-        ok = core.capture(
-            s.get("event_type") or "KNOWLEDGE", title, content,
-            tags=tags, embedding=emb,
-            domain_key=s.get("domain_key"),
-            density_score=s.get("density_score"),
-            sensitivity=sensitivity,
-            # Bulk ingest must stamp a shard at its TRUE era, exactly as
-            # /capture does. Dropping this silently re-dated every pushed shard
-            # to ingest time -- and because capture() dedups on a content hash,
-            # a re-push with the right date is a no-op, so the original era was
-            # unrecoverable. `timestamp` is the fallback because /sync/pull
-            # exports rows under that key, which makes pull -> push round-trip
-            # era-preserving instead of flattening history to the migration date.
-            original_timestamp=s.get("original_timestamp") or s.get("timestamp"),
-        )
+        try:
+            ok = core.capture(
+                s.get("event_type") or "KNOWLEDGE", title, content,
+                tags=tags, embedding=emb,
+                domain_key=s.get("domain_key"),
+                density_score=s.get("density_score"),
+                sensitivity=sensitivity,
+                # Bulk ingest must stamp a shard at its TRUE era, exactly as
+                # /capture does. Dropping this silently re-dated every pushed
+                # shard to ingest time -- and because capture() dedups on a
+                # content hash, a re-push with the right date is a no-op, so
+                # the original era was unrecoverable. `timestamp` is the
+                # fallback because /sync/pull exports rows under that key,
+                # which makes pull -> push round-trip era-preserving instead
+                # of flattening history to the migration date.
+                original_timestamp=s.get("original_timestamp") or s.get("timestamp"),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            # One bad row (or one corrupt grid DB the capture path could not
+            # route around) must not turn the entire batch into a 500 — that
+            # exact failure made every batch carrying a hash routed to the
+            # Space's malformed DB8 un-ingestable (2026-08-30). Count it, log
+            # it, keep ingesting the rest of the batch.
+            errored += 1
+            logger.error("sync_push: shard %r failed: %s: %s",
+                         (title or "")[:80], type(exc).__name__, exc)
+            continue
         if ok:
             count += 1
         else:
             skipped += 1  # capture() dedups; an already-known shard is a skip
-    return {"status": "ok", "count": count, "skipped": skipped}
+    return {"status": "ok", "count": count, "skipped": skipped, "errored": errored}
 
 
 @app.get("/sync/pull")
