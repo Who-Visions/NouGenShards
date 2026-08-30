@@ -12,7 +12,7 @@ import contextlib
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
-from fastapi import FastAPI, Header, HTTPException, Depends, Response
+from fastapi import FastAPI, Header, HTTPException, Depends, Response, Query
 from pydantic import BaseModel
 import gradio as gr
 import subprocess
@@ -30,7 +30,7 @@ from nougen_shards import bind_probe, core, history, mcp_oauth, tenants
 from nougen_shards.federation import federated_retrieve
 from nougen_shards.brain_scan import scan_environment
 
-NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN")
+NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN") or os.environ.get("SHARD_GATEWAY_TOKEN")
 
 
 # --- Remote MCP server (mobile / Claude-app connector) ---
@@ -652,10 +652,25 @@ def _resolve_tenant_credential(supplied: Optional[str]) -> Optional[tenants.Tena
         raise HTTPException(status_code=503, detail="Tenant registry is invalid.") from exc
 
 
-def verify_token(x_ngs_token: str = Header(None)) -> tenants.Tenant:
+def verify_token(
+    x_ngs_token: Optional[str] = Header(None, alias="X-NGS-Token"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    shard_gateway_token: Optional[str] = Header(None, alias="Shard_Gateway_Token"),
+    shard_gateway_token_dash: Optional[str] = Header(None, alias="Shard-Gateway-Token"),
+    x_shard_gateway_token: Optional[str] = Header(None, alias="X-Shard-Gateway-Token"),
+    token: Optional[str] = Query(None),
+) -> tenants.Tenant:
     if not _credentials_configured():
         raise HTTPException(status_code=503, detail="Node write-auth not configured.")
-    tenant = _resolve_tenant_credential(x_ngs_token)
+    supplied = x_ngs_token
+    if not supplied and authorization:
+        if authorization.lower().startswith("bearer "):
+            supplied = authorization[7:].strip()
+        else:
+            supplied = authorization.strip()
+    if not supplied:
+        supplied = shard_gateway_token or shard_gateway_token_dash or x_shard_gateway_token or token
+    tenant = _resolve_tenant_credential(supplied)
     if tenant is None:
         raise HTTPException(status_code=401, detail=_BAD_TOKEN_DETAIL)
     return tenant
@@ -1101,6 +1116,72 @@ def ask_rhea(prompt: str) -> dict:
     return rhea_noir.ask(prompt)
 
 
+# --- Dav1d Execution Layer ---
+from nougen_shards.dav1d_executor import run_dav1d_agy
+
+
+class Dav1dExecRequest(BaseModel):
+    command: str = "agy"
+    subcommand: Optional[str] = "mcp list"
+    args: Optional[List[str]] = None
+    prompt: Optional[str] = None
+    timeout: int = 30
+
+
+@app.post("/dav1d/exec")
+def dav1d_exec_endpoint(
+    req: Dav1dExecRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Execute bounded tooling on Dav1d. Returns structured runtime proof."""
+    return run_dav1d_agy(
+        command=req.command,
+        args=req.args,
+        subcommand=req.subcommand,
+        prompt=req.prompt,
+        timeout=req.timeout
+    )
+
+
+@app.post("/dav1d/agy")
+def dav1d_agy_endpoint(
+    req: Dav1dExecRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Invoke Google Antigravity CLI on Dav1d."""
+    return run_dav1d_agy(
+        command="agy",
+        args=req.args,
+        subcommand=req.subcommand,
+        prompt=req.prompt,
+        timeout=req.timeout
+    )
+
+
+@node_mcp.tool()
+def dav1d_exec(
+    command: str = "agy",
+    subcommand: str = "mcp list",
+    args: Optional[List[str]] = None,
+    prompt: str = ""
+) -> dict:
+    """Dav1d Execution Layer: Execute bounded AGY CLI operations and toolchain actions
+    on Dav1d. Griot reasons/retrieves; Dav1d executes.
+    Returns verifiable runtime evidence (machine, host, engine, version, exit_code, output)."""
+    return run_dav1d_agy(command=command, args=args, subcommand=subcommand, prompt=prompt)
+
+
+@node_mcp.tool()
+def agy_ask(
+    prompt: str = "",
+    subcommand: str = "mcp list",
+    args: Optional[List[str]] = None
+) -> dict:
+    """Invoke the Google Antigravity CLI (agy v1.1.17) through Dav1d.
+    Returns structured runtime proof from Dav1d."""
+    return run_dav1d_agy(command="agy", args=args, subcommand=subcommand, prompt=prompt)
+
+
 # --- Cortex HUD UI Logic ---
 
 def get_substrate_map():
@@ -1300,6 +1381,14 @@ class _TokenGatedMCP:
                 auth = headers.get("authorization", "")
                 if auth[:7].lower() == "bearer ":
                     supplied = auth[7:].strip()
+                elif auth:
+                    supplied = auth.strip()
+            if not supplied:
+                supplied = (
+                    headers.get("shard_gateway_token")
+                    or headers.get("shard-gateway-token")
+                    or headers.get("x-shard-gateway-token")
+                )
             if not supplied:
                 from urllib.parse import parse_qs
                 qs = parse_qs(scope.get("query_string", b"").decode("latin-1"))

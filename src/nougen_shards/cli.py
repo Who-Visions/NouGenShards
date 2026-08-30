@@ -213,6 +213,23 @@ def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen")
     if persona and persona.system_prompt:
         history_msgs.append({"role": "system", "content": persona.system_prompt})
 
+def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen"):
+    """Elevated conversational chat loop with memory and slash commands (AGY / Codex / Claude CLI style)."""
+    # Quiet background connector warning logs from spamming interactive terminal
+    import logging
+    logging.getLogger("nougen_shards.connectors").setLevel(logging.ERROR)
+    logging.getLogger("nougen_shards.federation").setLevel(logging.ERROR)
+
+    persona = agents.get_agent(persona_name) or agents.get_agent("NouGen")
+    persona_title = persona.name if persona else persona_name
+    print("🪩 NouGen Interactive Intelligence Grid")
+    print(f"   Persona: {persona_title} | Model: {model} ({provider}) | Memory: Active (FTS5 + Dual Recall)")
+    print("   Type your request or use slash commands (/help, /search, /recall, /status, /handoff, /agent, /exit).\n")
+
+    history_msgs = []
+    if persona and persona.system_prompt:
+        history_msgs.append({"role": "system", "content": persona.system_prompt})
+
     while True:
         try:
             user_input = input(f"[{persona_title}] > ").strip()
@@ -360,10 +377,18 @@ def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen")
                         relay_ctx = f"## Active Fleet Relay / Handoff:\n- Goal: {latest_data.get('goal')}\n- Agent: {latest_data.get('agent')}\n- Status: {latest_data.get('status')}"
 
                 found = federation.federated_retrieve(user_input, limit=2)
-                context = shards.compile_recall_packet(found) if found else ""
+                # Strict relevance threshold: ignore background noise (< 0.05)
+                valid_shards = [s for s in found if float(s.get("final_score", 0.0) or 0.0) >= 0.05 or float(s.get("utility_score_tripartite", 0.0) or 0.0) >= 0.05]
+                if valid_shards:
+                    context = f"## Relevant Vault Memory (Ground Truth):\n{shards.compile_recall_packet(valid_shards)}"
+                elif any(w in user_input.lower() for w in ("shard", "memory", "recall", "search", "who", "what", "where", "latest", "find")):
+                    context = f"## Vault Memory Status:\nNo matching memory shards found for '{user_input}' in the active vault databases (DB #1-9)."
 
-            injected_parts = [p for p in [skill_ctx, relay_ctx, context, f"User Request: {user_input}"] if p]
-            prompt_with_ctx = "\n\n".join(injected_parts)
+            injected_parts = [p for p in [skill_ctx, relay_ctx, context] if p]
+            if injected_parts:
+                prompt_with_ctx = "\n\n".join(injected_parts) + f"\n\n[User Query]:\n{user_input}"
+            else:
+                prompt_with_ctx = user_input
             history_msgs.append({"role": "user", "content": prompt_with_ctx})
 
             print(f"\n[{persona_title}]: ", end="")
@@ -1091,6 +1116,20 @@ def cmd_init(args):
     res = init.run_adaptive_onboarding(interactive=interactive, defaults=defaults)
     if getattr(args, "json", False):
         print(json.dumps(res, indent=2))
+
+
+def cmd_tenant(args):
+    """Mint additional node credentials without persisting plaintext tokens."""
+    if args.action != "mint":
+        return
+    try:
+        token = tenants.mint_tenant(args.tenant_id, args.label)
+    except tenants.TenantRegistryError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return
+    print(f"Tenant: {args.tenant_id}")
+    print(f"Token: {token}")
+    print("Save this token now; it is stored only as a SHA-256 hash and cannot be shown again.")
 
 
 def cmd_tenant(args):

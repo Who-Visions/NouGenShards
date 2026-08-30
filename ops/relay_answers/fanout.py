@@ -7,7 +7,9 @@ import sys
 import json
 import pathlib
 
-sys.path.insert(0, r"C:\Users\super\Outpost\NouGen\tools")
+# derive the repo's tools/ from this file: a hardcoded absolute path names the
+# operator's account and disk layout on a public repo, and only works on one box.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "tools"))
 from fleet import Fleet  # noqa: E402
 
 OUT = pathlib.Path(__file__).parent / "raw"

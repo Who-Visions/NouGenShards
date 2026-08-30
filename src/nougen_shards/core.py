@@ -201,6 +201,13 @@ def init_db(index: int = 1):
         except sqlite3.OperationalError:
             pass
 
+        # Relay provenance (schema v3): older nodes did not retain the
+        # publisher URI, so add it idempotently during normal startup.
+        try:
+            cursor.execute("ALTER TABLE shards ADD COLUMN source_uri TEXT;")
+        except sqlite3.OperationalError:
+            pass
+
         # Create semantic_knowledge table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS semantic_knowledge (
@@ -585,7 +592,9 @@ def capture(event_type: str, title: str, content: str,
             tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
             domain_key: Optional[str] = None, density_score: Optional[float] = None,
             sensitivity: Optional[str] = None,
-            original_timestamp: Optional[str] = None) -> bool:
+            original_timestamp: Optional[str] = None,
+            source_uri: Optional[str] = None,
+            utility: Optional[float] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants).
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
@@ -599,6 +608,10 @@ def capture(event_type: str, title: str, content: str,
     era instead of migration time, so date-window queries and coverage
     histograms reflect when the experience actually happened. An unparseable
     value logs a warning and falls back to now -- it never crashes a write.
+
+    `source_uri` and `utility` are compatibility fields used by relay and other
+    publishers. Provenance is retained in the shard row, while `utility` seeds
+    the usefulness prior without requiring callers to know the SQLite schema.
     """
     from . import private_vault as _pv  # pylint: disable=import-outside-toplevel
     from .brain_scan.redaction import redact_content  # pylint: disable=import-outside-toplevel
@@ -617,6 +630,16 @@ def capture(event_type: str, title: str, content: str,
 
     if density_score is None:
         density_score = calculate_contrastive_perplexity(content)
+
+    try:
+        utility_score = float(utility) if utility is not None else 1.0
+    except (TypeError, ValueError):
+        logger.warning("capture: invalid utility %r; falling back to schema default", utility)
+        utility_score = 1.0
+
+    source_uri_value = (
+        redact_content(str(source_uri)) if source_uri is not None else None
+    )
 
     # Clean the content for O(1) deduplication hashing to exclude injected recall packets or static context.
     clean_content = content
@@ -683,14 +706,14 @@ def capture(event_type: str, title: str, content: str,
         conn = get_connection(target_idx)
         try:
             cursor = conn.execute("""
-                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag))
+                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, source_uri, utility_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, source_uri_value, utility_score))
             conn.commit()
 
             # Log CREATED event
             from . import history # pylint: disable=import-outside-toplevel
-            history.log_event(cursor.lastrowid or 0, target_idx, "CREATED", new_score=1.0)
+            history.log_event(cursor.lastrowid or 0, target_idx, "CREATED", new_score=utility_score)
         except sqlite3.IntegrityError:
             # Target DB already holds the hash (index was stale) — repair the
             # index so the next lookup short-circuits without touching shards.
