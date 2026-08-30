@@ -164,7 +164,9 @@ scratch/
 analysis/
 archive/
 assets/
-fleet/
+# anchored: the top-level fleet/ Modelfile dir only. Unanchored, this also
+# swallowed skills/fleet/, silently keeping that skill off every other machine.
+/fleet/
 .handoffs/phone-chat-*
 tools/.anchor_cache.json
 tools/or_free_models.json
