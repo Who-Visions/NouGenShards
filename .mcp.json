@@ -33,6 +33,13 @@
         "Accept": "application/json",
         "X-Goog-Api-Key": "${STITCH_API_KEY}"
       }
+    },
+    "nougen-ctx": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "context-mode"
+      ]
     }
   }
 }
