@@ -18,7 +18,9 @@ ALLOWED_SUBCOMMANDS = {
     "mcp", "changelog", "models", "agent", "agents", "help", "version", "--version", "-v"
 }
 
-_CACHED_VERSION = "1.1.17"
+# Last-known fleet value used only when the executable cannot answer a version
+# probe (for example, the cloud simulation path).
+_CACHED_VERSION = os.environ.get("NOUGEN_AGY_FALLBACK_VERSION", "1.1.17")
 
 
 def _get_candidate_paths() -> List[str]:
@@ -47,11 +49,21 @@ def resolve_agy_binary() -> Optional[str]:
 
 
 def get_agy_version(bin_path: str) -> str:
-    """Returns the version string of the AGY binary."""
+    """Return the live AGY version, with a logged fleet fallback."""
     global _CACHED_VERSION
-    if _CACHED_VERSION:
-        return _CACHED_VERSION
-    return "1.1.17"
+    try:
+        result = subprocess.run(
+            [bin_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=float(os.environ.get("NOUGEN_AGY_VERSION_TIMEOUT_SEC", "5")),
+        )
+        output = (result.stdout or result.stderr or "").strip()
+        if result.returncode == 0 and output:
+            _CACHED_VERSION = output.splitlines()[0].strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        logger.debug("AGY version probe failed for %s; using fallback", bin_path)
+    return _CACHED_VERSION
 
 
 def _get_host_label() -> str:
@@ -104,7 +116,7 @@ def run_dav1d_agy(
             "machine": "Dav1d",
             "host": "Cloud / Space (Simulated / Remote Dav1d bridge)",
             "engine": "agy-cli",
-            "version": "1.1.17 (fleet manifest)",
+            "version": f"{_CACHED_VERSION} (fleet manifest)",
             "command": f"{command} {subcommand or ' '.join(target_args)}".strip(),
             "status": "simulated",
             "exit_code": 0,

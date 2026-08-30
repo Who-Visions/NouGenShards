@@ -1214,8 +1214,23 @@ def agy_ask(
     subcommand: str = "mcp list",
     args: Optional[List[str]] = None
 ) -> dict:
-    """Invoke the Google Antigravity CLI (agy v1.1.17) through Dav1d.
+    """Invoke the Google Antigravity CLI through Dav1d.
     Returns structured runtime proof from Dav1d."""
+    return run_dav1d_agy(command="agy", args=args, subcommand=subcommand, prompt=prompt)
+
+
+@node_mcp.tool()
+def ask_dav1d(
+    prompt: str,
+    subcommand: str = "mcp list",
+    args: Optional[List[str]] = None
+) -> dict:
+    """Canonical Dav1d connector alias.
+
+    The fleet connector calls this name. Keep it on the same bounded executor
+    as ``agy_ask`` so the remote surface cannot silently fall back to a
+    simulated response or gain a second, less-safe execution path.
+    """
     return run_dav1d_agy(command="agy", args=args, subcommand=subcommand, prompt=prompt)
 
 
