@@ -1,6 +1,6 @@
 """NouGenShards: Persistent local memory for coding agents.
 
-Engine: Valerion — The Metameric Memory Engine (21-step cognitive architecture).
+Engine: Valerion — The Memory Engine (21-step cognitive architecture).
 """
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 

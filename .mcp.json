@@ -4,8 +4,7 @@
       "command": "python",
       "args": ["-m", "nougen_shards.mcp"],
       "env": {
-        "PYTHONPATH": "src",
-        "NOUGEN_VAULT_DIR": ".vault"
+        "PYTHONPATH": "src"
       }
     },
     "ollama": {

@@ -171,7 +171,7 @@ export function init_db(index: number = 1): void {
     /* column already exists */
   }
 
-  // FTS5 with Trigram for fuzzy recall (Module 1: Metamers)
+  // FTS5 with Trigram for fuzzy recall (Module 1: Convergent Traces)
   try {
     conn.exec(`
             CREATE VIRTUAL TABLE IF NOT EXISTS shards_fts USING fts5(
@@ -398,7 +398,7 @@ export function retrieve(query: string, limit: number = 3, query_embedding: numb
       }
 
       if (!fts_worked) {
-        // Fallback to LIKE (Module 1: Resolving Metamers for small query strings)
+        // Fallback to LIKE (Module 1: Resolving Convergent Traces for small query strings)
         const like_query = `%${query}%`;
         const rows = conn
           .prepare(`

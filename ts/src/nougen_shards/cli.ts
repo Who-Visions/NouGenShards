@@ -175,7 +175,7 @@ async function cmd_auth(args: Args): Promise<void> {
 }
 
 async function cmd_init(_args: Args): Promise<void> {
-  console.log("🪩 Initializing the Metameric Memory Engine...");
+  console.log("🪩 Initializing the Memory Engine...");
   shards.init_db(1);
   console.log("✅ Created local-first database substrate.");
   console.log("\n[IGNITION COMPLETE]");

@@ -1005,7 +1005,7 @@ def cmd_ingest(args):
 
 
 def cmd_dream(args):
-    """Executes the Dream cycle (Autonomous Metameric Evolution)."""
+    """Executes the Dream cycle (Autonomous Memory Evolution)."""
     if args.action == "wake":
         if not getattr(args, 'json', False):
             print("🌌 Entering the Dream State...  [EXPERIMENTAL: exports an SFT dataset; no live weight update]")

@@ -65,7 +65,7 @@ async function runCliExpectExit(tokens: string[]): Promise<{ out: string; code: 
 // 1) init -> banner + IGNITION COMPLETE, calls shards.init_db.
 test("cmd_init prints ignition banner", async () => {
   const out = await runCli(["init"]);
-  assert.ok(out.includes("Initializing the Metameric Memory Engine..."));
+  assert.ok(out.includes("Initializing the Memory Engine..."));
   assert.ok(out.includes("[IGNITION COMPLETE]"));
 });
 

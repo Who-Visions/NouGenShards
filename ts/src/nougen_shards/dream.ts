@@ -1,5 +1,5 @@
 /**
- * The Dream State (Autonomous Metameric Evolution). (TS mimic of dream.py)
+ * The Dream State (Autonomous Memory Evolution). (TS mimic of dream.py)
  * Implementation of TMEM: Parametric Memory through Fast-Weight Rollouts.
  */
 import { existsSync, writeFileSync } from "node:fs";

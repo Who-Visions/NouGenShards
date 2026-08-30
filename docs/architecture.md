@@ -1,4 +1,4 @@
-# Valerion: The Metameric Memory Engine
+# Valerion: The Memory Engine
 ### 21 Steps of Orchestration
 
 NouGenShards (NGS) is not just a database wrapper; it is an implementation of **Valerion** — a 21-step cognitive architecture that treats the chaotic output of disparate AI tools as a single, continuous stream of machine experience.
@@ -13,7 +13,7 @@ Valerion is mathematically grounded in the [Architecture of Adjacency](theory/n-
 ---
 
 ## Phase 1: The Reconnaissance (Discovery & Parsing)
-1. **Metamers**: The engine identifies disparate AI tool histories (`.claude`, `.cursor`, `.gemini`) that represent the same underlying phenomenon (machine experience).
+1. **Convergent Traces**: The engine identifies disparate AI tool histories (`.claude`, `.cursor`, `.gemini`) that represent the same underlying phenomenon (machine experience).
 2. **Activate Orchestration**: `nougen brain scan` initializes the environment discovery pipeline.
 3. **Deep Grep Latent Structure**: `brain_scan.scanner` crawls the local filesystem, identifying high-confidence dotfolders and hidden state files.
 4. **Surface Leverage**: `brain_scan.classifiers` scores the discovered files, isolating high-utility target files from raw noise.

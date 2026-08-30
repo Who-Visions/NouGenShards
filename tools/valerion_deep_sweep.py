@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-metameric_deep_sweep.py — Cognitive Substrate Compactor and Index Sweeper.
+valerion_deep_sweep.py — Cognitive Substrate Compactor and Index Sweeper.
 Performs global deduplication checks, rebuilds FTS5 trigram indexes,
 executes SQLite vacuum/optimization, and runs integrity diagnostics on all 9 nodes.
 """
@@ -51,7 +51,7 @@ def main():
     # that only reports what WOULD be removed.
     apply_changes = ("--confirm" in sys.argv) or ("--yes" in sys.argv)
 
-    console.print("\n[bold cyan]🧹 Metameric Deep Sweep — NouGenShards[/bold cyan]")
+    console.print("\n[bold cyan]🧹 Valerion Deep Sweep — NouGenShards[/bold cyan]")
     console.print(f"Sweeping database nodes in: [yellow]{vault_dir}[/yellow]")
     if not apply_changes:
         console.print("[bold yellow]DRY RUN[/bold yellow] — no shards will be deleted. "
@@ -186,7 +186,7 @@ def main():
         table.add_row(f"Node #{i}", dedup_status, fts_status, integrity_status, size_str)
         
     console.print(table)
-    console.print("\n[bold green]Metameric deep sweep completed successfully![/bold green]")
+    console.print("\n[bold green]Valerion deep sweep completed successfully![/bold green]")
 
 if __name__ == "__main__":
     main()
