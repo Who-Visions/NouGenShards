@@ -181,9 +181,9 @@ class NouGenMsgBus:
                 continue
             try:
                 if n == "blade":
-                    remote_cmd = f'python C:/Users/super/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py --target {target} --local "{text}"'
+                    remote_cmd = f'python %USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py --target {target} --local "{text}"'
                 elif n == "whoart":
-                    remote_cmd = f'python C:/Users/super/Outpost/NouGen/tools/nougenmsg.py --target {target} --local "{text}"'
+                    remote_cmd = f'python %USERPROFILE%/Outpost/NouGen/tools/nougenmsg.py --target {target} --local "{text}"'
                 else:
                     remote_cmd = f'python3 ~/.nougen/tools/nougenmsg.py --target {target} --local "{text}"'
                 
