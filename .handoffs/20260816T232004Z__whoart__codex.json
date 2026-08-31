@@ -20,5 +20,14 @@
     "package_name": "nougenshards"
   },
   "dirty": true,
-  "status": "open"
+  "status": "acked",
+  "relay": [
+    {
+      "event": "ack",
+      "machine": "vm",
+      "agent": "claude-cli",
+      "at": "2026-08-31T20:57:20.110413+00:00",
+      "note": "PR #89 (agent/nougen-assurance-sprint) was closed unmerged on 2026-08-20 without landing \u2014 verified via GitHub. The v1.3.1 work it describes did not ship from that branch; scoped fixes have since landed piecemeal through later PRs on main. Closing this baton so it stops firing as an unacked leg; no further action needed on PR #89 itself."
+    }
+  ]
 }
