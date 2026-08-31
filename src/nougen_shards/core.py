@@ -652,6 +652,58 @@ def _next_healthy_write_index(after: int) -> int:
     raise LookupError("every grid DB is quarantined for writes")
 
 
+class CaptureResult(dict):
+    """What `capture()` hands back: a bool that can also say what happened.
+
+    A bare True/False could not tell a caller whether a write FAILED or was a
+    no-op DUPLICATE, and could not name the row it wrote - so every surface
+    downstream could only forward "success" or "already exists", and a caller
+    that saw a falsy answer had no way to know which. Observed live: a capture
+    answered with an empty object and had in fact SUCCEEDED, while later ones
+    answered identically and had not landed.
+
+    It subclasses `dict` for two reasons: JSON/MCP serialization keeps working
+    with no encoder of its own, and `__bool__` is the `captured` flag, so every
+    existing `if capture(...)` / `assert capture(...)` caller keeps its exact
+    old meaning. Identity checks (`is True`) do not survive and are not part of
+    the contract - truthiness is.
+
+    Keys: `captured` (bool), `shard_id`/`db_index` (ints, present when the row
+    is known), `reason` (stable machine token: "written" / "duplicate" /
+    "error"), and `error` (short human string, only when nothing was written).
+    """
+
+    __slots__ = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.get("captured", False))
+
+    # Attribute access alongside the mapping. Callers that serialize this over
+    # MCP want the dict; callers reading it in Python want `.captured` rather
+    # than `["captured"]`, and a missing key should read as absent instead of
+    # raising - a result that failed before it ever reached a DB legitimately
+    # has no shard_id.
+    @property
+    def captured(self) -> bool:
+        return bool(self.get("captured", False))
+
+    @property
+    def shard_id(self):
+        return self.get("shard_id")
+
+    @property
+    def db_index(self):
+        return self.get("db_index")
+
+    @property
+    def reason(self):
+        return self.get("reason")
+
+    @property
+    def error(self):
+        return self.get("error")
+
+
 def capture(event_type: str, title: str, content: str,
             tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
             domain_key: Optional[str] = None, density_score: Optional[float] = None,
@@ -721,7 +773,8 @@ def capture(event_type: str, title: str, content: str,
         _ensure_dedup_index(dconn)
         if dconn.execute("SELECT 1 FROM hashes WHERE file_hash = ?",
                          (fhash,)).fetchone():
-            return False
+            return CaptureResult(captured=False, reason="duplicate",
+                                 error="duplicate: identical content is already in the vault")
 
         target_idx = get_write_index(fhash)
 
@@ -802,7 +855,9 @@ def capture(event_type: str, title: str, content: str,
                     "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
                     (fhash, target_idx))
                 dconn.commit()
-                return False
+                return CaptureResult(captured=False, reason="duplicate",
+                                     db_index=target_idx,
+                                     error="duplicate: row already present in the routed DB")
             except sqlite3.OperationalError:
                 # Locked/busy is NOT corruption: quarantining a merely-locked
                 # DB would permanently divert its hash range. Preserve the
@@ -827,19 +882,25 @@ def capture(event_type: str, title: str, content: str,
                 except LookupError:
                     logger.error("capture dropped shard %r: every grid DB is "
                                  "quarantined for writes", title[:80])
-                    return False
+                    return CaptureResult(
+                        captured=False, reason="error",
+                        error="every grid DB is quarantined for writes")
                 init_db(target_idx)
             finally:
                 if conn is not None:
                     conn.close()
         if not inserted:
-            return False
+            return CaptureResult(
+                captured=False, reason="error",
+                error="write did not land after exhausting healthy grid DBs")
 
         dconn.execute(
             "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
             (fhash, target_idx))
         dconn.commit()
-        return True
+        return CaptureResult(captured=True, reason="written",
+                             shard_id=int(cursor.lastrowid or 0),
+                             db_index=target_idx)
     finally:
         dconn.close()
 

@@ -61,7 +61,7 @@ def test_capture_accepts_relay_provenance_and_utility(setup_test_env):
         "The relay daemon writes durable shard milestones.",
         source_uri=source_uri,
         utility=0.9,
-    ) is True
+    ).captured
 
     row = None
     for index in range(1, shards.MAX_DB_COUNT + 1):
