@@ -49,7 +49,7 @@ def test_capture_routes_around_malformed_db(tmp_vault, monkeypatch):
     monkeypatch.setattr(core, "get_write_index", lambda fhash: corrupt_idx)
 
     ok = core.capture("KNOWLEDGE", "quarantine test", "unique body 1")
-    assert ok is True
+    assert ok.captured
     assert corrupt_idx in core._QUARANTINED_WRITE_DBS
 
     # The shard landed in a healthy DB, not the corrupt one.
@@ -70,7 +70,7 @@ def test_capture_routes_around_malformed_db(tmp_vault, monkeypatch):
 
     # Second capture skips the quarantined index without touching the file.
     ok2 = core.capture("KNOWLEDGE", "quarantine test 2", "unique body 2")
-    assert ok2 is True
+    assert ok2.captured
 
 
 def test_capture_returns_false_when_all_dbs_quarantined(tmp_vault, monkeypatch):
@@ -82,4 +82,4 @@ def test_capture_returns_false_when_all_dbs_quarantined(tmp_vault, monkeypatch):
     core.get_db_path(1).write_bytes(
         b"SQLite format 3\x00" + b"\xde\xad\xbe\xef" * 64)
     ok = core.capture("KNOWLEDGE", "no home", "unique body 3")
-    assert ok is False
+    assert not ok.captured
