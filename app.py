@@ -1122,48 +1122,64 @@ def sync_push(req: SyncPushRequest,
 
     count = 0
     skipped = 0
+    errored = 0
     for s in req.shards:
-        title, content = s.get("title"), s.get("content")
-        if not title or not content:
-            skipped += 1
+        # The ENTIRE per-shard body sits in one guard: decrypt, tag parsing,
+        # AND capture. This is the second time this protection ships - #148
+        # added a capture-only guard that a later merge silently dropped, and
+        # the regression resurfaced 2026-08-31 as deterministic 500 cascades
+        # on /sync/push (a row whose ngenc1 body fails cross-machine decrypt
+        # raises BEFORE capture, killing the whole 100-row batch, three
+        # retries each). One bad row is one `errored` tick, never a 500.
+        try:
+            title, content = s.get("title"), s.get("content")
+            if not title or not content:
+                skipped += 1
+                continue
+            sensitivity = s.get("sensitivity") or "normal"
+            # /sync/pull transports encrypted-at-rest bodies as ngenc1
+            # ciphertext. Replicas share the lane data key, so unwrap before
+            # capture() hashes, redacts, embeds and re-encrypts under the
+            # receiving machine's DPAPI wrapper. Treating ciphertext as
+            # ordinary text silently declassifies it and creates a duplicate
+            # whose hash no longer represents the plaintext.
+            if private_vault.should_encrypt(sensitivity) and private_vault.is_encrypted(content):
+                content = private_vault.decrypt_text(content)
+            tags = s.get("tags")
+            if isinstance(tags, str):
+                try:
+                    tags = json.loads(tags)
+                except ValueError:
+                    tags = None
+            emb = s.get("embedding")
+            if emb is not None and not isinstance(emb, list):
+                emb = None
+            ok = core.capture(
+                s.get("event_type") or "KNOWLEDGE", title, content,
+                tags=tags, embedding=emb,
+                domain_key=s.get("domain_key"),
+                density_score=s.get("density_score"),
+                sensitivity=sensitivity,
+                # Bulk ingest must stamp a shard at its TRUE era, exactly as
+                # /capture does. Dropping this silently re-dated every pushed
+                # shard to ingest time -- and because capture() dedups on a
+                # content hash, a re-push with the right date is a no-op, so
+                # the original era was unrecoverable. `timestamp` is the
+                # fallback because /sync/pull exports rows under that key,
+                # which makes pull -> push round-trip era-preserving instead
+                # of flattening history to the migration date.
+                original_timestamp=s.get("original_timestamp") or s.get("timestamp"),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            errored += 1
+            logger.error("sync_push: shard %r failed: %s: %s",
+                         (s.get("title") or "")[:80], type(exc).__name__, exc)
             continue
-        sensitivity = s.get("sensitivity") or "normal"
-        # /sync/pull transports encrypted-at-rest bodies as ngenc1 ciphertext.
-        # Replicas share the lane data key, so unwrap before capture() hashes,
-        # redacts, embeds and re-encrypts under the receiving machine's DPAPI
-        # wrapper. Treating ciphertext as ordinary text silently declassifies it
-        # and creates a duplicate whose hash no longer represents the plaintext.
-        if private_vault.should_encrypt(sensitivity) and private_vault.is_encrypted(content):
-            content = private_vault.decrypt_text(content)
-        tags = s.get("tags")
-        if isinstance(tags, str):
-            try:
-                tags = json.loads(tags)
-            except ValueError:
-                tags = None
-        emb = s.get("embedding")
-        if emb is not None and not isinstance(emb, list):
-            emb = None
-        ok = core.capture(
-            s.get("event_type") or "KNOWLEDGE", title, content,
-            tags=tags, embedding=emb,
-            domain_key=s.get("domain_key"),
-            density_score=s.get("density_score"),
-            sensitivity=sensitivity,
-            # Bulk ingest must stamp a shard at its TRUE era, exactly as
-            # /capture does. Dropping this silently re-dated every pushed shard
-            # to ingest time -- and because capture() dedups on a content hash,
-            # a re-push with the right date is a no-op, so the original era was
-            # unrecoverable. `timestamp` is the fallback because /sync/pull
-            # exports rows under that key, which makes pull -> push round-trip
-            # era-preserving instead of flattening history to the migration date.
-            original_timestamp=s.get("original_timestamp") or s.get("timestamp"),
-        )
         if ok:
             count += 1
         else:
             skipped += 1  # capture() dedups; an already-known shard is a skip
-    return {"status": "ok", "count": count, "skipped": skipped}
+    return {"status": "ok", "count": count, "skipped": skipped, "errored": errored}
 
 
 @app.get("/sync/pull")
