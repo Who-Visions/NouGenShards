@@ -637,14 +637,61 @@ def _embed_query(query: str) -> Optional[np.ndarray]:
     return (arr / norm) if norm > 0 else None
 
 
+class CaptureResult(dict):
+    """What `capture()` hands back: a bool that can also say what happened.
+
+    A bare `True`/`False` could not tell a caller whether a write failed or was
+    a no-op duplicate, and could not name the row it wrote - so every surface
+    downstream (the stdio MCP tool, the network MCP tool, the REST endpoint)
+    could only forward "success" or "already exists", and a caller that saw a
+    falsy answer had no way to know why. Observed live 2026-08-30: a capture
+    answered with an empty object and had in fact SUCCEEDED.
+
+    It subclasses `dict` for two reasons: JSON/MCP serialization keeps working
+    with no encoder of its own, and `__bool__` is overridden to the `captured`
+    flag so every existing `if capture(...)` / `assert capture(...)` caller
+    keeps its exact old meaning. Identity checks (`is True`) do not survive and
+    are not part of the contract - truthiness is.
+
+    Keys: `captured` (bool), `shard_id`/`db_index` (ints, present when the row
+    is known), `reason` (stable machine token: "written" / "duplicate"), and
+    `error` (short human string, present only when nothing was written).
+    """
+
+    __slots__ = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.get("captured", False))
+
+    @property
+    def captured(self) -> bool:
+        return bool(self.get("captured", False))
+
+    @property
+    def shard_id(self) -> Optional[int]:
+        return self.get("shard_id")
+
+    @property
+    def error(self) -> Optional[str]:
+        return self.get("error")
+
+    def __repr__(self) -> str:
+        return f"CaptureResult({dict.__repr__(self)})"
+
+
 def capture(event_type: str, title: str, content: str,
             tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
             domain_key: Optional[str] = None, density_score: Optional[float] = None,
             sensitivity: Optional[str] = None,
             original_timestamp: Optional[str] = None,
             source_uri: Optional[str] = None,
-            utility: Optional[float] = None) -> bool:
+            utility: Optional[float] = None) -> "CaptureResult":
     """Saves a unit of experience (Module 5: Extract Invariants).
+
+    Returns a `CaptureResult` - truthy exactly when a shard was written, and
+    carrying `shard_id`/`db_index` when it was, or `reason`/`error` when it was
+    not. Genuine faults are NOT folded into that result: a database or disk
+    error still raises, because a caller that cannot write must hear about it.
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
     'private', or 'secret'. Private and secret bodies are AES-256-GCM encrypted
@@ -704,9 +751,12 @@ def capture(event_type: str, title: str, content: str,
     dconn = _get_dedup_connection()
     try:
         _ensure_dedup_index(dconn)
-        if dconn.execute("SELECT 1 FROM hashes WHERE file_hash = ?",
-                         (fhash,)).fetchone():
-            return False
+        dupe = dconn.execute("SELECT db_index FROM hashes WHERE file_hash = ?",
+                             (fhash,)).fetchone()
+        if dupe:
+            return CaptureResult(
+                captured=False, reason="duplicate", db_index=dupe[0],
+                error="duplicate: identical content is already in the vault")
 
         target_idx = get_write_index(fhash)
         init_db(target_idx)
@@ -759,10 +809,11 @@ def capture(event_type: str, title: str, content: str,
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, source_uri_value, utility_score))
             conn.commit()
+            new_id = int(cursor.lastrowid or 0)
 
             # Log CREATED event
             from . import history # pylint: disable=import-outside-toplevel
-            history.log_event(cursor.lastrowid or 0, target_idx, "CREATED", new_score=utility_score)
+            history.log_event(new_id, target_idx, "CREATED", new_score=utility_score)
         except sqlite3.IntegrityError:
             # Target DB already holds the hash (index was stale) — repair the
             # index so the next lookup short-circuits without touching shards.
@@ -770,7 +821,9 @@ def capture(event_type: str, title: str, content: str,
                 "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
                 (fhash, target_idx))
             dconn.commit()
-            return False
+            return CaptureResult(
+                captured=False, reason="duplicate", db_index=target_idx,
+                error="duplicate: identical content is already in the vault")
         finally:
             conn.close()
 
@@ -778,7 +831,8 @@ def capture(event_type: str, title: str, content: str,
             "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
             (fhash, target_idx))
         dconn.commit()
-        return True
+        return CaptureResult(captured=True, reason="written",
+                             shard_id=new_id, db_index=target_idx)
     finally:
         dconn.close()
 

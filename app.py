@@ -80,10 +80,15 @@ def capture_experience(title: str, content: str, event_type: str = "KNOWLEDGE",
     """Store a unit of experience as a shard (deduplicated by content).
 
     `original_timestamp` (ISO-8601) stamps migrated content at its true era
-    instead of capture time; invalid values fall back to now."""
-    ok = core.capture(event_type, title, content, tags=tags,
-                      original_timestamp=original_timestamp)
-    return {"captured": bool(ok)}
+    instead of capture time; invalid values fall back to now.
+
+    The answer is always branchable: `captured` true/false, plus `shard_id` and
+    `db_index` when a row was written, or `reason`/`error` when none was. A
+    genuine write fault is not reported here at all - it raises, and the client
+    sees a tool error rather than a quiet false."""
+    result = core.capture(event_type, title, content, tags=tags,
+                          original_timestamp=original_timestamp)
+    return dict(result)
 
 
 @node_mcp.tool()
@@ -1028,10 +1033,15 @@ def search(req: SearchRequest, response: Response,
 @app.post("/capture")
 def capture_shard(req: CaptureRequest,
                   _tenant: tenants.Tenant = Depends(tenant_vault_context)):
-    """Single-shard capture for user agents."""
-    ok = core.capture(req.event_type, req.title, req.content, tags=req.tags,
-                      original_timestamp=req.original_timestamp)
-    return {"status": "ok", "captured": bool(ok)}
+    """Single-shard capture for user agents.
+
+    `status` stays "ok" for the HTTP contract; whether a shard was actually
+    written is `captured`, with `shard_id` when it was and `error` when it was
+    not - a caller must never have to guess which of the two happened.
+    """
+    result = core.capture(req.event_type, req.title, req.content, tags=req.tags,
+                          original_timestamp=req.original_timestamp)
+    return {"status": "ok", **dict(result)}
 
 
 @app.post("/sync/push")
