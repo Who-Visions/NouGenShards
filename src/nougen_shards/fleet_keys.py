@@ -62,7 +62,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, List, Optional
 
 #: Lane definitions. The probe URL is a cheap authenticated GET used to decide
 #: whether a credential works - never a generation call. Endpoints are
