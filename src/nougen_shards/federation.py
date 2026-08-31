@@ -1,5 +1,7 @@
 """Federated Retrieval Engine. Merges local substrate, external DBs, and cloud nodes."""
 import logging
+import os
+import threading
 from . import core
 from .connectors.sql import query_external_dbs
 from .connectors.cloud import query_cloud_shards
@@ -8,6 +10,50 @@ from . import keymaker
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+
+#: ONE shared pool for every federated lane call, for the life of the process.
+#:
+#: This used to be a fresh ThreadPoolExecutor per call, closed with
+#: `shutdown(wait=False)`. That does not stop running threads - it only
+#: declines to block on them - so every recall whose lane overran the deadline
+#: left its worker thread alive and unreferenced, with nothing bounding how
+#: many accumulated. Lanes DO overrun routinely (an unreachable local vault,
+#: a cloud peer returning 502), so a long-lived server bled threads on a
+#: steady drip.
+#:
+#: Measured 2026-08-31 on a node that had been serving ~8h: 7,077 threads,
+#: 28,846s CPU, and HTTP dead on every path while the OS still reported the
+#: process as responding - the async loop was starved of capacity to accept,
+#: which is why `netstat` showed a healthy LISTENING socket the whole time.
+#: The same node wedged three times in one evening with different memory
+#: profiles (1.7GB, 59GB, 4.4GB), which is what finally ruled memory out as
+#: the cause: the constant across all three was thread count, not bytes.
+#:
+#: A shared pool makes stragglers self-limiting. They occupy a slot until they
+#: finish and then free it, so the ceiling is `max_workers` rather than
+#: unbounded. Sized generously because a blocked slot delays a lane rather
+#: than failing it, and env-first per Rule 0.2.
+_LANE_EXECUTOR = None
+_LANE_EXECUTOR_LOCK = threading.Lock()
+
+
+def _lane_pool_size() -> int:
+    try:
+        return max(4, int(os.environ.get("NOUGEN_FED_LANE_POOL", "16")))
+    except ValueError:
+        return 16
+
+
+def _lane_executor():
+    """The process-wide lane pool, created once."""
+    global _LANE_EXECUTOR  # pylint: disable=global-statement
+    if _LANE_EXECUTOR is None:
+        with _LANE_EXECUTOR_LOCK:
+            if _LANE_EXECUTOR is None:
+                _LANE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=_lane_pool_size(),
+                    thread_name_prefix="nougen-fed-lane")
+    return _LANE_EXECUTOR
 
 import concurrent.futures
 
@@ -93,7 +139,7 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
             future.cancel()
             return default
 
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    executor = _lane_executor()
     try:
         f_local = executor.submit(copy_context().run, _fetch_local)
         f_external = executor.submit(copy_context().run, _fetch_external)
@@ -105,9 +151,11 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         cloud_results = _lane_result(f_cloud, "cloud", [])
         vault_results = _lane_result(f_vaults, "vaults", [])
     finally:
-        # Don't block on stragglers: a lane past the deadline finishes (or
-        # dies) on its own thread while the partial answer returns now.
-        executor.shutdown(wait=False)
+        # Deliberately NOT shutdown(): the pool is shared and long-lived.
+        # Stragglers keep running on it and free their slot when they finish,
+        # which is what bounds them. Calling shutdown here would retire the
+        # shared pool out from under concurrent callers.
+        pass
 
     # Merge via WEIGHTED Reciprocal Rank Fusion. The core grid is the curated
     # memory substrate; external DBs / cloud peers / registered local vaults
