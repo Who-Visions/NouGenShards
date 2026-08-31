@@ -65,12 +65,82 @@ node_mcp = FastMCP(
 @node_mcp.tool()
 def recall_memory(query: str, limit: int = 5) -> list:
     """Search the memory substrate. Returns ranked shards (fuzzy recall
-    included when exact matching misses)."""
+    included when exact matching misses). Long shard bodies are returned as
+    SNIPPETS with a truncation marker naming get_shard(shard_id, db_index) -
+    call that for a full body. Held context is what recall costs a caller
+    (98%+ of fleet spend is cache re-read, ~1.5% is output), so the default
+    injects handles-plus-snippets, not full documents."""
     # Federated for the same reason as POST /search below: a remote MCP client
     # should not get a narrower corpus than the local CLI.
     results = federated_retrieve(query, limit=max(1, min(limit, 20)))
-    return [{k: v for k, v in r.items() if not isinstance(v, (bytes, bytearray))}
-            for r in results]
+    return [_slim_shard(r) for r in results]
+
+
+def _recall_snippet_chars() -> int:
+    """Snippet budget per recalled shard body. Env-first; 0 disables slimming."""
+    raw = os.environ.get("NOUGEN_RECALL_SNIPPET_CHARS", "")
+    try:
+        n = int(raw) if raw.strip() else 700
+    except ValueError:
+        logger.warning("NOUGEN_RECALL_SNIPPET_CHARS=%r invalid; using 700", raw)
+        n = 700
+    return max(0, n)
+
+
+def _slim_shard(r: dict) -> dict:
+    """Strip bytes fields and truncate long bodies to a snippet + fetch handle.
+
+    Every character recall injects is held and re-read by the caller for the
+    rest of its session - measured fleet-wide at ~66x the cost of the same
+    character as output. Recall therefore ships a snippet with an explicit
+    pointer to get_shard for the full body, instead of the whole document.
+    """
+    out = {k: v for k, v in r.items() if not isinstance(v, (bytes, bytearray))}
+    budget = _recall_snippet_chars()
+    body = out.get("content")
+    if budget and isinstance(body, str) and len(body) > budget:
+        clipped = body[:budget].rsplit(" ", 1)[0] if " " in body[:budget] else body[:budget]
+        out["content"] = (
+            f"{clipped} ... [snippet: {len(body) - len(clipped)} more chars in the "
+            f"full shard - get_shard(shard_id={out.get('id', '?')}, "
+            f"db_index={out.get('_db_index', '?')})]"
+        )
+        out["content_truncated"] = True
+        out["content_full_chars"] = len(body)
+    return out
+
+
+@node_mcp.tool()
+def get_shard(shard_id: int, db_index: int | None = None) -> dict:
+    """Fetch ONE shard's full body by id - the on-demand counterpart to
+    recall_memory's snippets. Pass the db_index a recall result carried
+    (_db_index); omit it to search all grid databases for the id."""
+    indexes = [db_index] if db_index else list(range(1, core.MAX_DB_COUNT + 1))
+    for i in indexes:
+        if not core.get_db_path(i).exists():
+            continue
+        conn = None
+        try:
+            conn = core.get_connection(i)
+            row = conn.execute(
+                "SELECT * FROM shards WHERE id = ?", (shard_id,)).fetchone()
+            if row is None:
+                continue
+            item = core.hydrate(dict(row))
+            item["_db_index"] = i
+            return {k: v for k, v in item.items()
+                    if not isinstance(v, (bytes, bytearray))}
+        except Exception as exc:  # sqlite3.DatabaseError et al - one bad DB must not kill the lookup
+            logger.error("get_shard: DB %s unreadable, skipping: %s: %s",
+                         i, type(exc).__name__, exc)
+            continue
+        finally:
+            if conn is not None:
+                conn.close()
+    return {"found": False, "shard_id": shard_id,
+            "searched": indexes,
+            "hint": "id not present (or its DB is unreadable); ids are per-DB - "
+                    "pass the _db_index from the recall result"}
 
 
 @node_mcp.tool()
