@@ -86,6 +86,11 @@ _LANE_DEFAULTS = {
         "base": "https://api-inference.huggingface.co/models",
         "prefixes": ("HUGGINGFACE_KEY_", "HUGGINGFACE_", "HF_KEY_", "HF_"),
     },
+    "arliai": {
+        "probe": "https://api.arliai.com/v1/models",
+        "base": "https://api.arliai.com/v1",
+        "prefixes": ("ARLIAI_KEY_", "ARLIAI_"),
+    },
 }
 
 #: Names that match a lane prefix but are NOT bearer credentials. Object-store
