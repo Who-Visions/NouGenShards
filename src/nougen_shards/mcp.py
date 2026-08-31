@@ -78,9 +78,12 @@ def capture_experience(event_type: str, title: str, content: str, tags: Optional
             content at its true era instead of capture time; invalid values
             fall back to now.
     """
-    success = capture(event_type, title, content, tags,
-                      original_timestamp=original_timestamp)
-    return "Shard captured successfully." if success else "Shard already exists."
+    result = capture(event_type, title, content, tags,
+                     original_timestamp=original_timestamp)
+    if result:
+        return (f"Shard captured successfully (id {result['shard_id']} "
+                f"in db {result['db_index']}).")
+    return f"Shard NOT captured: {result.get('error', 'unknown reason')}"
 
 @mcp.tool()
 def recall_memory(query: str, limit: int = 3) -> str:

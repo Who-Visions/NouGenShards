@@ -49,7 +49,10 @@ def test_capture_routes_around_malformed_db(tmp_vault, monkeypatch):
     monkeypatch.setattr(core, "get_write_index", lambda fhash: corrupt_idx)
 
     ok = core.capture("KNOWLEDGE", "quarantine test", "unique body 1")
-    assert ok is True
+    # capture() now returns a CaptureResult, which is TRUTHY on a write but
+    # is not the `True` singleton. Truthiness is the contract; identity is not.
+    assert ok
+    assert ok.reason == "written" and ok.shard_id is not None
     assert corrupt_idx in core._QUARANTINED_WRITE_DBS
 
     # The shard landed in a healthy DB, not the corrupt one.
@@ -70,7 +73,8 @@ def test_capture_routes_around_malformed_db(tmp_vault, monkeypatch):
 
     # Second capture skips the quarantined index without touching the file.
     ok2 = core.capture("KNOWLEDGE", "quarantine test 2", "unique body 2")
-    assert ok2 is True
+    # Same contract: truthy CaptureResult, not the `True` singleton.
+    assert ok2 and ok2.reason == "written"
 
 
 def test_capture_returns_false_when_all_dbs_quarantined(tmp_vault, monkeypatch):
@@ -82,4 +86,6 @@ def test_capture_returns_false_when_all_dbs_quarantined(tmp_vault, monkeypatch):
     core.get_db_path(1).write_bytes(
         b"SQLite format 3\x00" + b"\xde\xad\xbe\xef" * 64)
     ok = core.capture("KNOWLEDGE", "no home", "unique body 3")
-    assert ok is False
+    # Falsy, and now able to say WHY it failed rather than just that it did.
+    assert not ok
+    assert ok.reason == "error" and "quarantined" in ok.error

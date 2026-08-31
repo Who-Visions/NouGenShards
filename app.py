@@ -80,10 +80,15 @@ def capture_experience(title: str, content: str, event_type: str = "KNOWLEDGE",
     """Store a unit of experience as a shard (deduplicated by content).
 
     `original_timestamp` (ISO-8601) stamps migrated content at its true era
-    instead of capture time; invalid values fall back to now."""
-    ok = core.capture(event_type, title, content, tags=tags,
-                      original_timestamp=original_timestamp)
-    return {"captured": bool(ok)}
+    instead of capture time; invalid values fall back to now.
+
+    The answer is always branchable: `captured` true/false, plus `shard_id` and
+    `db_index` when a row was written, or `reason`/`error` when none was. A
+    genuine write fault is not reported here at all - it raises, and the client
+    sees a tool error rather than a quiet false."""
+    result = core.capture(event_type, title, content, tags=tags,
+                          original_timestamp=original_timestamp)
+    return dict(result)
 
 
 @node_mcp.tool()
@@ -1028,10 +1033,15 @@ def search(req: SearchRequest, response: Response,
 @app.post("/capture")
 def capture_shard(req: CaptureRequest,
                   _tenant: tenants.Tenant = Depends(tenant_vault_context)):
-    """Single-shard capture for user agents."""
-    ok = core.capture(req.event_type, req.title, req.content, tags=req.tags,
-                      original_timestamp=req.original_timestamp)
-    return {"status": "ok", "captured": bool(ok)}
+    """Single-shard capture for user agents.
+
+    `status` stays "ok" for the HTTP contract; whether a shard was actually
+    written is `captured`, with `shard_id` when it was and `error` when it was
+    not - a caller must never have to guess which of the two happened.
+    """
+    result = core.capture(req.event_type, req.title, req.content, tags=req.tags,
+                          original_timestamp=req.original_timestamp)
+    return {"status": "ok", **dict(result)}
 
 
 @app.post("/sync/push")
@@ -1042,7 +1052,6 @@ def sync_push(req: SyncPushRequest,
 
     count = 0
     skipped = 0
-    errored = 0
     for s in req.shards:
         title, content = s.get("title"), s.get("content")
         if not title or not content:
@@ -1065,38 +1074,26 @@ def sync_push(req: SyncPushRequest,
         emb = s.get("embedding")
         if emb is not None and not isinstance(emb, list):
             emb = None
-        try:
-            ok = core.capture(
-                s.get("event_type") or "KNOWLEDGE", title, content,
-                tags=tags, embedding=emb,
-                domain_key=s.get("domain_key"),
-                density_score=s.get("density_score"),
-                sensitivity=sensitivity,
-                # Bulk ingest must stamp a shard at its TRUE era, exactly as
-                # /capture does. Dropping this silently re-dated every pushed
-                # shard to ingest time -- and because capture() dedups on a
-                # content hash, a re-push with the right date is a no-op, so
-                # the original era was unrecoverable. `timestamp` is the
-                # fallback because /sync/pull exports rows under that key,
-                # which makes pull -> push round-trip era-preserving instead
-                # of flattening history to the migration date.
-                original_timestamp=s.get("original_timestamp") or s.get("timestamp"),
-            )
-        except Exception as exc:  # pylint: disable=broad-except
-            # One bad row (or one corrupt grid DB the capture path could not
-            # route around) must not turn the entire batch into a 500 — that
-            # exact failure made every batch carrying a hash routed to the
-            # Space's malformed DB8 un-ingestable (2026-08-30). Count it, log
-            # it, keep ingesting the rest of the batch.
-            errored += 1
-            logger.error("sync_push: shard %r failed: %s: %s",
-                         (title or "")[:80], type(exc).__name__, exc)
-            continue
+        ok = core.capture(
+            s.get("event_type") or "KNOWLEDGE", title, content,
+            tags=tags, embedding=emb,
+            domain_key=s.get("domain_key"),
+            density_score=s.get("density_score"),
+            sensitivity=sensitivity,
+            # Bulk ingest must stamp a shard at its TRUE era, exactly as
+            # /capture does. Dropping this silently re-dated every pushed shard
+            # to ingest time -- and because capture() dedups on a content hash,
+            # a re-push with the right date is a no-op, so the original era was
+            # unrecoverable. `timestamp` is the fallback because /sync/pull
+            # exports rows under that key, which makes pull -> push round-trip
+            # era-preserving instead of flattening history to the migration date.
+            original_timestamp=s.get("original_timestamp") or s.get("timestamp"),
+        )
         if ok:
             count += 1
         else:
             skipped += 1  # capture() dedups; an already-known shard is a skip
-    return {"status": "ok", "count": count, "skipped": skipped, "errored": errored}
+    return {"status": "ok", "count": count, "skipped": skipped}
 
 
 @app.get("/sync/pull")

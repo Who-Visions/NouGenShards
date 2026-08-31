@@ -272,7 +272,7 @@ def test_capture_embeds_at_write_time(tmp_path, monkeypatch):
         return [0.1, 0.2, 0.3]
 
     monkeypatch.setattr("nougen_shards.embedding_backfill.embed", fake_embed)
-    assert core.capture("test", "born recallable", "body text", ["t"]) is True
+    assert core.capture("test", "born recallable", "body text", ["t"]).captured
     assert calls["n"] == 1, "capture() must call the embedder when given no vector"
 
     import sqlite3, glob
@@ -299,7 +299,7 @@ def test_capture_embed_failure_is_loud_but_not_fatal(tmp_path, monkeypatch):
         lambda text, model, timeout=10: None,
     )
     before = core.EMBED_AT_CAPTURE_MISSES
-    assert core.capture("test", "embedder down", "body text", ["t"]) is True
+    assert core.capture("test", "embedder down", "body text", ["t"]).captured
     assert core.EMBED_AT_CAPTURE_MISSES == before + 1, "a miss must be counted, not swallowed"
 
 
