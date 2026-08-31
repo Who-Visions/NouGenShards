@@ -7,6 +7,7 @@ import json
 import msvcrt
 from datetime import datetime, timezone
 import os
+import socket
 import shutil
 import subprocess
 import sys
@@ -107,6 +108,47 @@ def port_up():
         return f"down ({type(e).__name__})"
 
 
+#: Every address a node instance could already be occupying. A launcher must
+#: check ALL of them, not just the one it intends to use: on Windows a bind to
+#: 0.0.0.0 and a bind to 127.0.0.1 on the same port COEXIST, so two instances
+#: can both "succeed" and each serve a different set of clients.
+def _bind_candidates():
+    seen, out = set(), []
+    for host in (BIND, "127.0.0.1", "0.0.0.0"):
+        if host and host not in seen:
+            seen.add(host)
+            out.append(host)
+    return out
+
+
+def port_taken():
+    """Which address already has something bound to PORT, or None.
+
+    This exists because the launch guard used to gate on `port_up()`, an HTTP
+    health probe. A WEDGED node fails that probe while still holding its
+    socket, so the launcher concluded "nothing is running" and started a
+    second instance on top of the first. Both then mounted the same nine grid
+    DBs and wedged each other further, while `netstat` kept showing a healthy
+    LISTENING socket - which is precisely the "socket listening, process
+    responding, every HTTP path 000" signature that has been misread as a
+    single hung server several times.
+
+    A bind test answers the question the health probe cannot: is this port
+    OWNED, regardless of whether its owner is well.
+    """
+    for host in _bind_candidates():
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            # Deliberately NOT SO_REUSEADDR: the point is to detect an
+            # existing owner, and reuse would let the test succeed anyway.
+            s.bind((host, int(PORT)))
+        except OSError:
+            return host
+        finally:
+            s.close()
+    return None
+
+
 def rotate_log(path, cap=None):
     """Size-capped rotation so an append-forever log can't eat the disk."""
     cap = cap if cap is not None else int(os.environ.get("NOUGEN_GRID_LOG_MAX_BYTES", 10_000_000))
@@ -130,9 +172,26 @@ def main():
     rotate_log(SCRATCH / "ngs_node.log")
     rotate_log(SCRATCH / "cloudflared_tunnel.log")
 
+    # Say who we are and what we intend before doing anything, so a log from a
+    # stacked-instance incident names its own participants instead of leaving
+    # the next reader to correlate three sessions' notes.
+    print(f"[start_grid] pid={os.getpid()} intends bind={BIND}:{PORT} "
+          f"(checking {', '.join(_bind_candidates())})")
+
     status = port_up()
+    owner = port_taken()
     if isinstance(status, int):
-        print(f"node already up on :{PORT} (health {status})")
+        print(f"node already up on :{PORT} (health {status}, bound {owner or BIND})")
+    elif owner:
+        # Someone owns the port but is not answering: a wedged instance, or a
+        # second launcher's child mid-startup. Starting another one here is
+        # what produced the stacked-instance wedges - it never recovers the
+        # sick node and it doubles the writers on the grid DBs. Stand down and
+        # let a supervisor or an operator deal with the incumbent.
+        print(f"[start_grid] port {PORT} is already bound on {owner} but "
+              f"/health says {status}; NOT starting a second instance. "
+              f"The incumbent is wedged or still starting - kill it first.")
+        return 0
     else:
         lock = NodeLaunchLock(NODE_LOCK_PATH)
         if not lock.__enter__():
