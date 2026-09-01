@@ -1259,6 +1259,7 @@ import rhea_noir
 # ~100s edge cut with a diagnosable error instead of an opaque 524.
 import asyncio
 import concurrent.futures
+import contextvars
 
 _RHEA_POOL = concurrent.futures.ThreadPoolExecutor(
     max_workers=int(os.environ.get("NOUGEN_RHEA_WORKERS", "4")),
@@ -1272,9 +1273,12 @@ class AgentRequest(BaseModel):
 
 async def _ask_rhea_bounded(prompt: str) -> dict:
     loop = asyncio.get_running_loop()
+    # The tenant's vault binding lives in ContextVars on this request's task;
+    # a bare executor thread would silently run Rhea in the owner vault.
+    ctx = contextvars.copy_context()
     try:
         return await asyncio.wait_for(
-            loop.run_in_executor(_RHEA_POOL, rhea_noir.ask, prompt),
+            loop.run_in_executor(_RHEA_POOL, ctx.run, rhea_noir.ask, prompt),
             timeout=_RHEA_HARD_CAP_S)
     except asyncio.TimeoutError:
         return {"answer": "(rhea hard cap hit - the node is overloaded, "
