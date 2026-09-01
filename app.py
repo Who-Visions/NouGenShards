@@ -1671,7 +1671,35 @@ mcp_oauth.install(
 )
 
 # Mount BEFORE the Gradio catch-all at "/" so /mcp is routed to the MCP app.
+class _McpSlashNormalizer:
+    """Serve `/mcp` exactly like `/mcp/`.
+
+    `/mcp` is the documented public front door - a healthy node answers GET
+    with 405, never 404. But Starlette's Mount hands the inner ASGI app an
+    EMPTY path for the bare mount point, every inner route misses it, and the
+    door reports 404 while `/mcp/` serves fine in the same process. Clients
+    that omit the trailing slash were being told the front door does not
+    exist (2026-09-01 retrieval incident). Rewriting the path BEFORE routing
+    fixes it for the mount, the token gate, and the inner app at once;
+    normalizing inside the gate cannot work, because routing 404s first.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == "/mcp":
+            scope = dict(scope)
+            scope["path"] = "/mcp/"
+            scope["raw_path"] = b"/mcp/"
+        await self.app(scope, receive, send)
+
+
 app.mount("/mcp", _TokenGatedMCP(_mcp_asgi))
+# Added as middleware, not as a wrapper around `app`: the middleware stack runs
+# ahead of the router (which is what 404s the bare path) while `app` stays a
+# FastAPI instance for every route registered after this line.
+app.add_middleware(_McpSlashNormalizer)
 # _on_platform / _bind_host / _network_exposed are resolved once at import time,
 # up beside the FastAPI() constructor - the docs guard needs them before `app`
 # exists, and one probe keeps both guards agreeing on what "exposed" means.
