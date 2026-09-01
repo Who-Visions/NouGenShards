@@ -4,8 +4,6 @@ Surgical replacement for the volume-wipe doctrine (2026-09-01 Space-sqlite P1):
 six of nine DBs went malformed and the wipe would have destroyed the three
 healthy indices - including six hours of freshly repopulated rows - with them.
 """
-import os
-import sqlite3
 from pathlib import Path
 
 import pytest
