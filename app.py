@@ -7,6 +7,7 @@ import sys
 import json
 import logging
 import hashlib
+import sqlite3
 import datetime
 import contextlib
 from typing import List, Optional
@@ -1220,9 +1221,18 @@ def sync_push(req: SyncPushRequest,
 
 
 @app.get("/sync/pull")
-def sync_pull(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
-    """Full export (contract of connectors.cloud.pull_from_cloud)."""
+def sync_pull(response: Response,
+              _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """Full export (contract of connectors.cloud.pull_from_cloud).
+
+    One malformed grid DB must not 500 the whole export: the corruption that
+    makes an index unreadable is precisely when a puller needs everything the
+    OTHER indices still hold. The response stays a bare list (pull_from_cloud's
+    contract); degraded state is surfaced in the X-NGS-Degraded-DBs header and
+    the DB_DEGRADED history event, mirroring core's per-DB scan guard.
+    """
     all_shards = []
+    degraded = []
     for i in range(1, core.MAX_DB_COUNT + 1):
         if not core.get_db_path(i).exists():
             continue
@@ -1238,15 +1248,30 @@ def sync_pull(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
                     except (AttributeError, ValueError, TypeError, UnicodeDecodeError):
                         d["embedding"] = None
                 all_shards.append(d)
+        except (sqlite3.DatabaseError, OSError) as exc:
+            degraded.append(i)
+            logger.error("grid DB %s unreadable during sync/pull, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            with contextlib.suppress(Exception):
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}",
+                                            "route": "/sync/pull"})
         finally:
             conn.close()
+    if degraded:
+        response.headers["X-NGS-Degraded-DBs"] = ",".join(str(i) for i in degraded)
     return all_shards
 
 
 @app.get("/sync/hashes")
 def sync_hashes(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
-    """Compact identity manifest for incremental replica synchronization."""
+    """Compact identity manifest for incremental replica synchronization.
+
+    Guarded per DB like /sync/pull: a malformed index is reported in
+    databases_skipped (additive field) instead of failing the manifest.
+    """
     hashes = []
+    degraded = []
     for i in range(1, core.MAX_DB_COUNT + 1):
         if not core.get_db_path(i).exists():
             continue
@@ -1254,9 +1279,17 @@ def sync_hashes(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
         try:
             hashes.extend(row[0] for row in conn.execute(
                 "SELECT file_hash FROM shards WHERE file_hash IS NOT NULL"))
+        except (sqlite3.DatabaseError, OSError) as exc:
+            degraded.append(i)
+            logger.error("grid DB %s unreadable during sync/hashes, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            with contextlib.suppress(Exception):
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}",
+                                            "route": "/sync/hashes"})
         finally:
             conn.close()
-    return {"count": len(hashes), "hashes": hashes}
+    return {"count": len(hashes), "hashes": hashes, "databases_skipped": degraded}
 
 
 # --- Rhea-Noir resident agent ---
