@@ -11,8 +11,18 @@ from typing import Optional
 
 # Configuration
 def get_history_db_path() -> Path:
-    """Gets the path to the history database in the active vault."""
-    from . import core
+    """Gets the path to the history database in the active vault.
+
+    Snapshot mode redirects telemetry to ephemeral local disk: the vault is a
+    read-only artifact on a network mount, and history is the one writer that
+    would otherwise still touch it.
+    """
+    from . import core, snapshot_mode
+    if snapshot_mode.enabled():
+        import tempfile
+        ep = Path(tempfile.gettempdir()) / "nougen_snapshot_history"
+        ep.mkdir(parents=True, exist_ok=True)
+        return ep / "history.db"
     vault = core.active_vault_dir()
     vault.mkdir(parents=True, exist_ok=True, mode=0o700)
     return vault / "history.db"

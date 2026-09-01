@@ -79,6 +79,11 @@ def _ensure_active_vault_dir() -> Path:
 
 def get_db_path(index: int) -> Path:
     """Returns the path for a specific database index (Module 11: Transform Architecture)."""
+    from . import snapshot_mode  # pylint: disable=import-outside-toplevel
+    if snapshot_mode.enabled():
+        snap = snapshot_mode.snapshot_dir()
+        if snap is not None:
+            return snap / f"nougen_shards_{index}.db"
     return active_vault_dir() / f"nougen_shards_{index}.db"
 
 
@@ -122,8 +127,20 @@ def get_active_db_index() -> int:
 
 
 def get_connection(index: int):
-    """Establishes an SQLite connection with WAL enabled (Module 19: Stabilize Reasoning)."""
+    """Establishes an SQLite connection with WAL enabled (Module 19: Stabilize Reasoning).
+
+    In snapshot mode the file is a published read-only artifact on a network
+    mount: open it immutable (no locks, no journal probing, no shm) - the
+    only sqlite access pattern that is safe over FUSE, and the reason
+    snapshot mode exists at all.
+    """
     path = get_db_path(index)
+    from . import snapshot_mode  # pylint: disable=import-outside-toplevel
+    if snapshot_mode.enabled() and snapshot_mode.snapshot_dir() is not None:
+        conn = sqlite3.connect(f"file:{path}?immutable=1&mode=ro", uri=True,
+                               timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        return conn
     conn = sqlite3.connect(str(path), timeout=10.0)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.row_factory = sqlite3.Row
@@ -133,7 +150,7 @@ def get_connection(index: int):
 _INITIALIZED_DBS = set()
 
 
-def init_db(index: int = 1):
+def init_db(index: int = 1):  # noqa: C901
     """Initializes the substrate schema (Module 6: Copy Successful Topology).
 
     Idempotent, but re-running CREATE TABLE / DROP+CREATE TRIGGER on every
@@ -141,6 +158,11 @@ def init_db(index: int = 1):
     initialized once per process. Keyed by vault dir because tests and tools
     repoint NOUGEN_VAULT_DIR/GLOBAL_DIR mid-process.
     """
+    from . import snapshot_mode  # pylint: disable=import-outside-toplevel
+    if snapshot_mode.enabled() and snapshot_mode.snapshot_dir() is not None:
+        # Snapshot artifacts are published complete and immutable; there is
+        # nothing to initialize and nothing may be written.
+        return
     vault = _ensure_active_vault_dir()
     key = (str(vault), index)
     if key in _INITIALIZED_DBS:
@@ -763,6 +785,19 @@ def capture(event_type: str, title: str, content: str,
         clean_content = content.split("=== NOUGENSHARDS RECALL PACKET")[0].strip()
 
     fhash = hashlib.md5(clean_content.encode("utf-8", errors="ignore")).hexdigest()
+
+    from . import snapshot_mode  # pylint: disable=import-outside-toplevel
+    if snapshot_mode.enabled():
+        # This node serves read-only snapshot artifacts and must never write
+        # sqlite (that is what corrupted every Space-local grid). Captures
+        # forward to the writer node over the tunnel instead.
+        fwd = snapshot_mode.forward_capture({
+            "title": title, "content": content, "event_type": event_type,
+            "tags": tags, "domain_key": domain_key,
+            "density_score": density_score, "sensitivity": sensitivity,
+            "original_timestamp": original_timestamp,
+        })
+        return CaptureResult(fwd)
 
     # Global Deduplication (Module 12): one indexed lookup in the central
     # hash index — O(1) — instead of scanning all 9 cluster databases.
