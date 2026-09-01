@@ -14,6 +14,9 @@ Everything environment-shaped resolves from env with logged fallbacks:
   NOUGEN_RHEA_MAX_ROUNDS tool-loop rounds (default 8); on exhaustion one
                          compose-only pass turns the gathered tool trace into
                          a best-effort answer instead of dropping it
+  NOUGEN_RHEA_TOOL_S     per-tool-call budget (default 25); a tool stuck on a
+                         slow store returns a timeout error to the loop instead
+                         of wedging the whole request past the proxy cut
   NOUGEN_RHEA_DEADLINE_S wall-clock budget for the whole loop (default 75).
                          Every proxy between a caller and this Space cuts the
                          connection at ~90-100s, so a grounded prompt that
@@ -21,6 +24,7 @@ Everything environment-shaped resolves from env with logged fallbacks:
                          inside this budget or the caller sees a 524, not an
                          answer.
 """
+import concurrent.futures
 import json
 import logging
 import os
@@ -279,6 +283,25 @@ def _run_tool(call: dict) -> dict:
     return {"error": f"unknown tool {call.get('tool')}"}
 
 
+_TOOL_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+
+def _run_tool_bounded(call: dict, deadline: float) -> dict:
+    """_run_tool under a budget: a recall stuck scanning a malformed grid DB
+    (or any slow store) must not wedge the request past the proxy cut. The
+    stuck worker thread is abandoned, not killed - the loop moves on."""
+    budget = min(float(os.environ.get("NOUGEN_RHEA_TOOL_S", "25")),
+                 max(5.0, deadline - time.monotonic()))
+    fut = _TOOL_POOL.submit(_run_tool, call)
+    try:
+        return fut.result(timeout=budget)
+    except concurrent.futures.TimeoutError:
+        logger.warning("tool %s timed out after %.0fs", call.get("tool"), budget)
+        return {"error": f"tool {call.get('tool')} timed out after {int(budget)}s"}
+    except Exception as exc:
+        return {"error": f"tool {call.get('tool')} failed: {str(exc)[:200]}"}
+
+
 def _first_json_object(reply: str):
     """First JSON object in a reply, tolerant of fences, prose, or several
     objects back-to-back (reasoning models sometimes emit two tool calls at
@@ -318,7 +341,7 @@ def ask(prompt: str) -> dict:
             return {"answer": data["answer"], "brain": brain, "tools_used": tools_used}
         if "tool" in data:
             tools_used.append(data.get("tool"))
-            result = _run_tool(data)
+            result = _run_tool_bounded(data, deadline)
             messages.append({"role": "assistant", "content": reply})
             messages.append({"role": "user",
                              "content": f"TOOL RESULT: {json.dumps(result)[:4000]}\n"
