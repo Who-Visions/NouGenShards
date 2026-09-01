@@ -30,12 +30,20 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import time
 import urllib.request
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+#: Single-flight guard for the localize copy. Without it, every concurrent
+#: request that arrived before the copy finished started its OWN copy of the
+#: same 10.7GB file set over the same destination paths - observed live
+#: 2026-09-01 00:26Z onward as hours of colliding "localizing snapshot file"
+#: log lines with the node's HTTP wedged behind them.
+_LOCALIZE_LOCK = threading.Lock()
 
 _cache: dict = {"at": 0.0, "dir": None, "stamp": None}
 
@@ -118,7 +126,15 @@ def _maybe_localize(remote_dir: Path, snap_stamp: str) -> Path:
     done_marker = local / ".complete"
     if done_marker.exists():
         return local
+    # Single-flight: exactly one caller copies; everyone else serves the
+    # mount (slow but alive) until .complete appears. Blocking here would
+    # wedge every request behind a multi-GB copy - which is precisely how
+    # the unlocked version failed.
+    if not _LOCALIZE_LOCK.acquire(blocking=False):
+        return remote_dir
     try:
+        if done_marker.exists():
+            return local
         local.mkdir(parents=True, exist_ok=True)
         t0 = time.time()
         total = 0
@@ -130,9 +146,11 @@ def _maybe_localize(remote_dir: Path, snap_stamp: str) -> Path:
                 continue
             logger.info("localizing snapshot file %s (%.0fMB)...",
                         src.name, src.stat().st_size / 1e6)
-            shutil.copyfile(src, dst)
-            if dst.stat().st_size != src.stat().st_size:
+            part = local / (src.name + ".part")
+            shutil.copyfile(src, part)
+            if part.stat().st_size != src.stat().st_size:
                 raise OSError(f"short copy of {src.name}")
+            part.replace(dst)  # atomic: readers never see a torn file
             total += dst.stat().st_size
         done_marker.write_text("ok", encoding="utf-8")
         logger.info("snapshot %s localized: %.2fGB in %.0fs",
@@ -146,6 +164,29 @@ def _maybe_localize(remote_dir: Path, snap_stamp: str) -> Path:
         logger.error("snapshot localize failed (%s); serving from the mount "
                      "(SLOW but functional)", exc)
         return remote_dir
+    finally:
+        _LOCALIZE_LOCK.release()
+
+
+def prewarm() -> None:
+    """Start the localize copy in a daemon thread at process start, so the
+    copy happens once at boot instead of inside the first unlucky request."""
+    if not (enabled() and _localize_enabled()):
+        return
+
+    def _run():
+        try:
+            d = snapshot_dir()
+            logger.info("snapshot prewarm resolved: %s", d)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.error("snapshot prewarm failed: %s", exc)
+
+    threading.Thread(target=_run, name="snapshot-prewarm", daemon=True).start()
+
+
+# Boot-time prewarm: importing this module on a snapshot-mode node begins the
+# copy immediately. Requests arriving before it finishes serve the mount.
+prewarm()
 
 
 def stamp() -> Optional[str]:
