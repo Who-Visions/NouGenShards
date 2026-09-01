@@ -1100,21 +1100,34 @@ def search(req: SearchRequest, response: Response,
     # Truncate to the caller's limit before the trailer: the over-fetch above is
     # an internal ranking budget, not a promise to return more rows.
     payload = [_json_safe(r) for r in results[:limit]]
-    # Coverage honesty: a store that errored or timed out mid-sweep is a hole in
-    # the corpus the caller must be able to see. Appended as a shard-shaped
-    # trailer (score 0, distinct event_type) so list-consuming clients keep
-    # parsing; absent entirely on a clean sweep, so the common path is unchanged.
-    if sweep_report.get("errored"):
+    # Coverage honesty: a store that errored/timed out, OR one that was quietly
+    # deferred to tier 2 (large + unindexed, never swept unless
+    # NOUGEN_FEDERATE_TIER2 is on), is a hole in the corpus the caller must be
+    # able to see. A tier2-deferred-only sweep used to leave this trailer off
+    # entirely, so a targeted query whose only match lived in a cold store came
+    # back indistinguishable from "nothing anywhere matched" (e.g. a store like
+    # unk_trader_vault sitting cold: shown 0, total 0, failures [] — no signal
+    # that it was skipped rather than searched and empty). Appended as a
+    # shard-shaped trailer (score 0, distinct event_type) so list-consuming
+    # clients keep parsing; absent entirely on a clean sweep with nothing
+    # deferred, so the common path is unchanged.
+    errored = sweep_report.get("errored") or []
+    tier2_deferred = sweep_report.get("tier2_deferred") or []
+    if errored or tier2_deferred:
+        clauses = []
+        if errored:
+            clauses.append(f"{len(errored)} store(s) errored or timed out")
+        if tier2_deferred:
+            clauses.append(f"{len(tier2_deferred)} store(s) deferred to tier 2 (unswept)")
         payload.append({
             "id": "federation_meta",
             "event_type": "FEDERATION_STATUS",
-            "title": (f"federation: {len(sweep_report['errored'])} store(s) "
-                      "errored or timed out this sweep"),
+            "title": "federation: " + "; ".join(clauses) + " this sweep",
             "content": json.dumps({
-                "errored": sweep_report["errored"],
+                "errored": errored,
                 "stores_swept": sweep_report.get("stores_swept"),
                 "tier2": sweep_report.get("tier2"),
-                "tier2_deferred": sweep_report.get("tier2_deferred"),
+                "tier2_deferred": tier2_deferred,
             }),
             "tags": json.dumps(["federation_status"]),
             "final_score": 0.0,

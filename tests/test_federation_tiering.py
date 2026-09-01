@@ -226,6 +226,28 @@ class TestSearchSweepHonesty:
         assert body["errored"][0]["store"] == "slowstore"
         assert body["tier2_deferred"] == ["big1"]
 
+    def test_tier2_deferred_only_surfaces_in_response_trailer(self, app_module, monkeypatch):
+        # Reproduces the "targeted query returns nothing" blind spot: no store
+        # errored, but the only relevant vault (large + unindexed) was quietly
+        # deferred to tier 2 and never swept. Before this fix the trailer only
+        # fired on `errored`, so this case looked identical to a clean miss.
+        def fake_retrieve(query, limit=3, sweep_report=None, **kw):
+            if sweep_report is not None:
+                sweep_report.update({
+                    "errored": [], "stores_swept": 3, "tier2": False,
+                    "tier2_deferred": ["unk_trader_vault"]})
+            return []
+
+        monkeypatch.setattr(app_module, "federated_retrieve", fake_retrieve)
+        payload = app_module.search(app_module.SearchRequest(query="UNK Trader", limit=3),
+                                    Response(), _tenant=None)
+        assert len(payload) == 1
+        meta = payload[0]
+        assert meta["event_type"] == "FEDERATION_STATUS"
+        body = json.loads(meta["content"])
+        assert body["errored"] == []
+        assert body["tier2_deferred"] == ["unk_trader_vault"]
+
     def test_clean_sweep_leaves_response_unchanged(self, app_module, monkeypatch):
         monkeypatch.setattr(app_module, "federated_retrieve",
                             lambda query, limit=3, sweep_report=None, **kw: [])
