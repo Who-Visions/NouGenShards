@@ -1252,24 +1252,50 @@ def sync_hashes(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
 # the next rebuild. That is what removed this route on 2026-08-18.
 import rhea_noir
 
+# Rhea gets her own worker pool: sync endpoints share the framework's default
+# threadpool, and threads stuck scanning an unhealthy grid volume exhaust it,
+# starving /agent before ask() even starts (observed 2026-09-01: /health in
+# 0.2s while a no-tool /agent hung 120s). The hard cap answers inside the
+# ~100s edge cut with a diagnosable error instead of an opaque 524.
+import asyncio
+import concurrent.futures
+
+_RHEA_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=int(os.environ.get("NOUGEN_RHEA_WORKERS", "4")),
+    thread_name_prefix="rhea")
+_RHEA_HARD_CAP_S = float(os.environ.get("NOUGEN_RHEA_HARD_CAP_S", "92"))
+
 
 class AgentRequest(BaseModel):
     prompt: str
 
 
+async def _ask_rhea_bounded(prompt: str) -> dict:
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_RHEA_POOL, rhea_noir.ask, prompt),
+            timeout=_RHEA_HARD_CAP_S)
+    except asyncio.TimeoutError:
+        return {"answer": "(rhea hard cap hit - the node is overloaded, "
+                          "likely stuck grid-volume scans; retry after a "
+                          "restart or ask without grid tools)",
+                "brain": "none", "tools_used": [], "error": "hard_cap"}
+
+
 @app.post("/agent")
-def agent_ask(req: AgentRequest,
-              _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+async def agent_ask(req: AgentRequest,
+                    _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Ask Rhea-Noir. Free lane first; her reply names the brain that answered."""
-    return rhea_noir.ask(req.prompt)
+    return await _ask_rhea_bounded(req.prompt)
 
 
 @node_mcp.tool()
-def ask_rhea(prompt: str) -> dict:
+async def ask_rhea(prompt: str) -> dict:
     """Ask Rhea-Noir, the grid's resident agent. She recalls from the memory
     grid, gathers provenance-marked history, reads the tracker and relay, and
     captures shards worth keeping. Her reply names which brain answered."""
-    return rhea_noir.ask(prompt)
+    return await _ask_rhea_bounded(prompt)
 
 
 # --- Dav1d Execution Layer ---
