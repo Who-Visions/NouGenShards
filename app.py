@@ -733,13 +733,13 @@ def _resolve_tenant_credential(supplied: Optional[str]) -> Optional[tenants.Tena
         raise HTTPException(status_code=503, detail="Tenant registry is invalid.") from exc
 
 
-def verify_token(
-    x_ngs_token: Optional[str] = Header(None, alias="X-NGS-Token"),
-    authorization: Optional[str] = Header(None, alias="Authorization"),
-    shard_gateway_token: Optional[str] = Header(None, alias="Shard_Gateway_Token"),
-    shard_gateway_token_dash: Optional[str] = Header(None, alias="Shard-Gateway-Token"),
-    x_shard_gateway_token: Optional[str] = Header(None, alias="X-Shard-Gateway-Token"),
-    token: Optional[str] = Query(None),
+def _verify_token_sync(
+    x_ngs_token: Optional[str] = None,
+    authorization: Optional[str] = None,
+    shard_gateway_token: Optional[str] = None,
+    shard_gateway_token_dash: Optional[str] = None,
+    x_shard_gateway_token: Optional[str] = None,
+    token: Optional[str] = None,
 ) -> tenants.Tenant:
     if not _credentials_configured():
         raise HTTPException(status_code=503, detail="Node write-auth not configured.")
@@ -755,6 +755,20 @@ def verify_token(
     if tenant is None:
         raise HTTPException(status_code=401, detail=_BAD_TOKEN_DETAIL)
     return tenant
+
+
+async def verify_token(
+    x_ngs_token: Optional[str] = Header(None, alias="X-NGS-Token"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    shard_gateway_token: Optional[str] = Header(None, alias="Shard_Gateway_Token"),
+    shard_gateway_token_dash: Optional[str] = Header(None, alias="Shard-Gateway-Token"),
+    x_shard_gateway_token: Optional[str] = Header(None, alias="X-Shard-Gateway-Token"),
+    token: Optional[str] = Query(None),
+) -> tenants.Tenant:
+    """Async so auth never queues behind the shared sync-endpoint threadpool
+    (registry read + sha256 are cheap enough for the event loop)."""
+    return _verify_token_sync(x_ngs_token, authorization, shard_gateway_token,
+                              shard_gateway_token_dash, x_shard_gateway_token, token)
 
 
 async def tenant_vault_context(tenant: tenants.Tenant = Depends(verify_token)):
@@ -933,7 +947,7 @@ def _health_authed(result: dict, warnings: list, persistent: bool,
     `warnings` is the same list `result["warnings"]` points at, so appends
     here still land in the response -- same aliasing the inline code relied on.
     """
-    tenant = verify_token(x_ngs_token)
+    tenant = _verify_token_sync(x_ngs_token)
     context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
     try:
         # Vault-keyed so the cache cannot hand one tenant another's coverage.
