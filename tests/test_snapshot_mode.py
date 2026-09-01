@@ -57,7 +57,11 @@ def test_disabled_without_env(monkeypatch):
 def test_resolves_latest_and_routes_paths(snapshot_root):
     assert snapshot_mode.enabled()
     assert snapshot_mode.stamp() == "20260831T000000Z"
-    assert core.get_db_path(1).parent == snapshot_root / "snapshots" / "20260831T000000Z"
+    # With localize on (the default) the resolved dir is the local cache copy;
+    # either way it is named by the stamp and holds the DB.
+    resolved = core.get_db_path(1)
+    assert resolved.parent.name == "20260831T000000Z"
+    assert resolved.exists()
 
 
 def test_connection_is_immutable_readonly(snapshot_root):
@@ -115,3 +119,24 @@ def test_missing_latest_dir_keeps_previous(snapshot_root):
         encoding="utf-8")
     snapshot_mode._cache["at"] = 0.0  # force refresh
     assert snapshot_mode.snapshot_dir() == good
+
+
+def test_localize_copies_once_and_reuses(snapshot_root, monkeypatch, tmp_path):
+    monkeypatch.setenv("NOUGEN_SNAPSHOT_LOCALIZE", "1")
+    monkeypatch.setenv("NOUGEN_SNAPSHOT_CACHE", str(tmp_path / "cache"))
+    snapshot_mode._cache.update(at=0.0, dir=None, stamp=None)
+    d1 = snapshot_mode.snapshot_dir()
+    assert d1 is not None and str(tmp_path) in str(d1), "must serve localized copy"
+    assert (d1 / ".complete").exists()
+    mtime = (d1 / "nougen_shards_1.db").stat().st_mtime_ns
+    snapshot_mode._cache.update(at=0.0, dir=None, stamp=None)
+    d2 = snapshot_mode.snapshot_dir()
+    assert d2 == d1
+    assert (d2 / "nougen_shards_1.db").stat().st_mtime_ns == mtime, "no re-copy"
+
+
+def test_localize_disabled_serves_mount(snapshot_root, monkeypatch):
+    monkeypatch.setenv("NOUGEN_SNAPSHOT_LOCALIZE", "0")
+    snapshot_mode._cache.update(at=0.0, dir=None, stamp=None)
+    d = snapshot_mode.snapshot_dir()
+    assert d is not None and str(snapshot_root) in str(d)

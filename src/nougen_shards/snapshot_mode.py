@@ -15,14 +15,22 @@ snapshots/ (on the Space: /data, so LATEST.json lives at
 /data/snapshots/LATEST.json). Unset = everything behaves exactly as before.
 
   NOUGEN_SNAPSHOT_DIR         root containing snapshots/LATEST.json
+  NOUGEN_SNAPSHOT_LOCALIZE    "1" (default): copy the snapshot to container-
+                              local disk before serving - sqlite FTS queries
+                              do random page reads, which are unusable over a
+                              FUSE mount (measured: a 2-term search exceeded
+                              280s cold). "0" serves straight off the mount.
   NOUGEN_SNAPSHOT_REFRESH_S   how often to re-read LATEST.json (default 300)
   NOUGEN_CAPTURE_FORWARD_URL  where captures go (e.g. https://blade.nougenai.com)
   NGS_FORWARD_TOKEN           X-NGS-Token for the forward target (falls back
                               to NGS_NODE_TOKEN)
 """
+import hashlib
 import json
 import logging
 import os
+import shutil
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -73,7 +81,7 @@ def snapshot_dir() -> Optional[Path]:
         stamp = meta.get("stamp")
         cand = base / "snapshots" / str(stamp)
         if stamp and cand.is_dir():
-            resolved = cand
+            resolved = _maybe_localize(cand, str(stamp))
         else:
             logger.warning("snapshot LATEST names %r but the directory is "
                            "missing; keeping previous snapshot", stamp)
@@ -86,6 +94,59 @@ def snapshot_dir() -> Optional[Path]:
         stamp = _cache["stamp"]
     _cache.update(at=now, dir=resolved, stamp=stamp)
     return resolved
+
+
+def _localize_enabled() -> bool:
+    return os.environ.get("NOUGEN_SNAPSHOT_LOCALIZE", "1").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def _maybe_localize(remote_dir: Path, snap_stamp: str) -> Path:
+    """Copy the snapshot to local disk once per stamp; serve locally.
+
+    Sequential bulk copy over the mount is fine (one-time, streaming);
+    per-query random page reads are not (a cold 2-term FTS search exceeded
+    280s). Verification: each file's size must match after copy; a short or
+    failed copy falls back to the remote dir rather than serving a torn file.
+    Old localized stamps are pruned to bound disk use.
+    """
+    if not _localize_enabled():
+        return remote_dir
+    cache_root = Path(os.environ.get("NOUGEN_SNAPSHOT_CACHE",
+                                     str(Path(tempfile.gettempdir())
+                                         / "nougen_snapshot_cache")))
+    local = cache_root / snap_stamp
+    done_marker = local / ".complete"
+    if done_marker.exists():
+        return local
+    try:
+        local.mkdir(parents=True, exist_ok=True)
+        t0 = time.time()
+        total = 0
+        for src in sorted(remote_dir.iterdir()):
+            if not src.is_file():
+                continue
+            dst = local / src.name
+            if dst.exists() and dst.stat().st_size == src.stat().st_size:
+                continue
+            logger.info("localizing snapshot file %s (%.0fMB)...",
+                        src.name, src.stat().st_size / 1e6)
+            shutil.copyfile(src, dst)
+            if dst.stat().st_size != src.stat().st_size:
+                raise OSError(f"short copy of {src.name}")
+            total += dst.stat().st_size
+        done_marker.write_text("ok", encoding="utf-8")
+        logger.info("snapshot %s localized: %.2fGB in %.0fs",
+                    snap_stamp, total / 1e9, time.time() - t0)
+        # prune older localized stamps
+        for other in cache_root.iterdir():
+            if other.is_dir() and other.name != snap_stamp:
+                shutil.rmtree(other, ignore_errors=True)
+        return local
+    except OSError as exc:
+        logger.error("snapshot localize failed (%s); serving from the mount "
+                     "(SLOW but functional)", exc)
+        return remote_dir
 
 
 def stamp() -> Optional[str]:
