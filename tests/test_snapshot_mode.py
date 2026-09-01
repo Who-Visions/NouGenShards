@@ -140,3 +140,18 @@ def test_localize_disabled_serves_mount(snapshot_root, monkeypatch):
     snapshot_mode._cache.update(at=0.0, dir=None, stamp=None)
     d = snapshot_mode.snapshot_dir()
     assert d is not None and str(snapshot_root) in str(d)
+
+
+def test_localize_single_flight_loser_serves_mount(snapshot_root, monkeypatch, tmp_path):
+    monkeypatch.setenv("NOUGEN_SNAPSHOT_LOCALIZE", "1")
+    monkeypatch.setenv("NOUGEN_SNAPSHOT_CACHE", str(tmp_path / "cache"))
+    snapshot_mode._cache.update(at=0.0, dir=None, stamp=None)
+    remote = snapshot_root / "snapshots" / "20260831T000000Z"
+    assert snapshot_mode._LOCALIZE_LOCK.acquire(blocking=False)
+    try:
+        # while another thread holds the copy lock, callers must get the
+        # mount path immediately instead of queueing behind a multi-GB copy
+        out = snapshot_mode._maybe_localize(remote, "20260831T000000Z")
+        assert out == remote
+    finally:
+        snapshot_mode._LOCALIZE_LOCK.release()
