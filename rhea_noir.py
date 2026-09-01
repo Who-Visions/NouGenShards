@@ -42,6 +42,7 @@ TOOL_SPEC = """You may call tools by replying ONLY with JSON:
 {"tool": "dav1d", "command": "agy", "subcommand": "mcp list", "args": ["mcp", "list"], "prompt": "..."} — execute bounded tooling on Dav1d (Google Antigravity CLI / local execution layer)
 {"tool": "agy", "subcommand": "mcp list"} — invoke AGY CLI on Dav1d to inspect MCP tools, changelogs, models, or query AGY
 {"tool": "health"} — grid status
+{"tool": "gateway", "name": "<blade local tool name>", "arguments": {...}} — call any other tool on blade's node directly, for full fleet parity beyond the shortcuts above. Verified local names: recall_memory, recall_window, substrate_coverage, capture_experience, mark_utility, shard_amend, shard_retract, shard_forget, vault_put, vault_list, dav1d_exec, agy_ask. Prefer the dedicated tools above when they cover it (recall/griot/capture/tracker/relay/dav1d/agy/health) — gateway is for the rest.
 When you have what you need, reply ONLY with a JSON object whose "answer" field
 holds your finished reply to the user, e.g. {"answer": "The node holds 100 items."}
 Rules:
@@ -260,14 +261,80 @@ def _run_tool(call: dict) -> dict:
                     conn.close()
         return {"total_shards": counts}
     if call.get("tool") in ("dav1d", "agy"):
-        from nougen_shards.dav1d_executor import run_dav1d_agy
-        return run_dav1d_agy(
-            command=str(call.get("command") or "agy"),
-            args=call.get("args"),
-            subcommand=call.get("subcommand"),
-            prompt=call.get("prompt"),
-        )
+        # The real AGY binary only exists on blade's Stadium node
+        # (dav1d_executor._get_host_label()). Rhea runs IN the Space, so
+        # calling run_dav1d_agy() in-process here always hits the Space's
+        # simulated fallback -- confirmed live 2026-09-01. This must be an
+        # HTTP hop to blade, same as every other gateway tool below.
+        return _gateway_call("dav1d_exec", {
+            "command": str(call.get("command") or "agy"),
+            "subcommand": call.get("subcommand"),
+            "args": call.get("args"),
+            "prompt": call.get("prompt"),
+            "timeout": int(call.get("timeout") or 30),
+        })
+    if call.get("tool") == "gateway":
+        name = str(call.get("name") or "").strip()
+        if not name:
+            return {"error": 'gateway tool call requires a "name"'}
+        return _gateway_call(name, call.get("arguments") or {})
     return {"error": f"unknown tool {call.get('tool')}"}
+
+
+def _gateway_call(name: str, arguments: dict) -> dict:
+    """Real MCP tools/call against blade's own node.
+
+    Not the OAuth-gated public shards.nougenai.com/mcp front door -- blade's
+    node takes the simpler X-NGS-Token scheme the Cloudflare Worker itself
+    uses when it talks to blade (nougen-fleet-mcp/src/worker.js shardHeaders/
+    shardRpcHttp), and this mirrors that exact two-step protocol (initialize,
+    then tools/call) rather than the Worker's separate SSE fallback path,
+    since that one is proven to work as blade's simple HTTP mode.
+
+    `name` is blade's LOCAL tool name, not always the public gateway's
+    advertised name (worker.js's SHARD_TOOL_* mapping: public shards_window
+    == local recall_window, shards_search/shards_recall == recall_memory,
+    shards_coverage == substrate_coverage; capture_experience, mark_utility,
+    shard_amend, shard_retract, shard_forget, vault_put, vault_list,
+    dav1d_exec, agy_ask share their local and public names).
+    """
+    base = (os.environ.get("SHARD_GATEWAY_URL") or "").rstrip("/")
+    token = os.environ.get("SHARD_GATEWAY_TOKEN") or os.environ.get("NGS_NODE_TOKEN") or ""
+    if not base:
+        return {"error": "blade gateway lane not configured (SHARD_GATEWAY_URL unset)"}
+    timeout_s = int(os.environ.get("NOUGEN_GATEWAY_TIMEOUT_S", "60"))
+
+    def _rpc(method: str, params: dict, call_id: int):
+        req = urllib.request.Request(
+            base + "/mcp/",
+            data=json.dumps({"jsonrpc": "2.0", "id": call_id, "method": method, "params": params}).encode(),
+            method="POST",
+            headers={"X-NGS-Token": token, "Content-Type": "application/json",
+                     "Accept": "application/json, text/event-stream"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout_s) as r:
+            raw = r.read().decode()
+        if raw.startswith("event:") or raw.startswith("data:"):
+            line = next(l for l in raw.split("\n") if l.startswith("data:"))
+            data = json.loads(line[5:].strip())
+        else:
+            data = json.loads(raw)
+        if data.get("error"):
+            raise RuntimeError(data["error"].get("message", str(data["error"])))
+        return data.get("result")
+
+    try:
+        _rpc("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
+                            "clientInfo": {"name": "rhea-noir", "version": "1.0"}}, 1)
+        result = _rpc("tools/call", {"name": name, "arguments": arguments or {}}, 2)
+    except Exception as exc:
+        return {"error": f"blade unreachable for tool {name}: {exc}"}
+    if not isinstance(result, dict):
+        return {"error": f"unexpected result shape from {name}"}
+    if result.get("isError"):
+        body = "; ".join(c.get("text", "") for c in (result.get("content") or []) if isinstance(c, dict))
+        return {"error": body or f"{name} returned an error"}
+    return result.get("structuredContent") or result
 
 
 def _first_json_object(reply: str):

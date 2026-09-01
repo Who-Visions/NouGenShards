@@ -13,6 +13,7 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 from fastapi import FastAPI, Header, HTTPException, Depends, Response, Query
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import gradio as gr
 import subprocess
@@ -1166,12 +1167,20 @@ class Dav1dExecRequest(BaseModel):
 
 
 @app.post("/dav1d/exec")
-def dav1d_exec_endpoint(
+async def dav1d_exec_endpoint(
     req: Dav1dExecRequest,
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
-    """Execute bounded tooling on Dav1d. Returns structured runtime proof."""
-    return run_dav1d_agy(
+    """Execute bounded tooling on Dav1d. Returns structured runtime proof.
+
+    async def on purpose (2026-09-01, pairs with #161's /health fix). This
+    route's whole body is the blocking subprocess call, so unlike /health
+    there is no cheap inline half -- the entire call goes to the threadpool,
+    keeping the event loop (and therefore /health and every other async
+    route) free while a slow AGY command runs.
+    """
+    return await run_in_threadpool(
+        run_dav1d_agy,
         command=req.command,
         args=req.args,
         subcommand=req.subcommand,
@@ -1181,12 +1190,14 @@ def dav1d_exec_endpoint(
 
 
 @app.post("/dav1d/agy")
-def dav1d_agy_endpoint(
+async def dav1d_agy_endpoint(
     req: Dav1dExecRequest,
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
-    """Invoke Google Antigravity CLI on Dav1d."""
-    return run_dav1d_agy(
+    """Invoke Google Antigravity CLI on Dav1d. See dav1d_exec_endpoint for why
+    this is async def with the call offloaded to the threadpool."""
+    return await run_in_threadpool(
+        run_dav1d_agy,
         command="agy",
         args=req.args,
         subcommand=req.subcommand,
