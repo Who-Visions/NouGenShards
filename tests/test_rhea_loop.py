@@ -74,3 +74,27 @@ def test_deadline_forces_compose_before_rounds_exhaust(monkeypatch):
     assert out["answer"] == "composed under deadline"
     assert out["tools_used"] == []
     assert out["note"] == "composed at budget limit"
+
+
+def test_stuck_tool_times_out_instead_of_wedging(monkeypatch):
+    """A tool stuck on a slow store returns a timeout error to the loop."""
+    import time as _time
+    monkeypatch.setenv("NOUGEN_RHEA_MAX_ROUNDS", "2")
+    monkeypatch.setenv("NOUGEN_RHEA_TOOL_S", "1")
+    seen = {}
+
+    def fake_chat(messages, timeout_s=120.0):
+        last = messages[-1]["content"]
+        if "TOOL RESULT" in last:
+            seen["result"] = last
+            return '{"answer": "moved on"}', "test:brain"
+        if "BUDGET REACHED" in last:
+            return '{"answer": "composed"}', "test:brain"
+        return '{"tool": "recall", "query": "x"}', "test:brain"
+
+    monkeypatch.setattr(rhea_noir, "_chat", fake_chat)
+    monkeypatch.setattr(rhea_noir, "_run_tool", lambda call: _time.sleep(30))
+
+    out = rhea_noir.ask("sweep")
+    assert out["answer"] in ("moved on", "composed")
+    assert "timed out" in seen.get("result", "")
