@@ -104,6 +104,10 @@ def _chat(messages: list, timeout_s: float = 120.0) -> tuple:
     tool-loop faster than K3 did. Kimi stays available as an opt-in escalation
     (NOUGEN_RHEA_PREFER_KIMI=1) for work that actually needs the bigger brain.
     """
+    # timeout_s bounds this WHOLE call - free walk, kimi walk, and the last
+    # free retry share it. Two walks each given the full budget is how a
+    # rate-limited hour doubled the wall clock and 524'd /agent.
+    chat_ends = time.monotonic() + timeout_s
     free_first = os.environ.get("NOUGEN_RHEA_PREFER_KIMI", "").strip() != "1"
     if free_first:
         out = _try_free(messages, timeout_s)
@@ -111,13 +115,13 @@ def _chat(messages: list, timeout_s: float = 120.0) -> tuple:
             return out
     keys = _inference_keys()
     kimi = os.environ.get("NOUGEN_RHEA_MODEL", "")
-    if keys and kimi:
+    if keys and kimi and chat_ends - time.monotonic() > 3.0:
         # Resume at the last key that worked so a depleted account is not
         # re-tried on every single call.
         order = list(range(len(keys)))
         start = _LAST_GOOD_KEY["i"] % len(keys)
         order = order[start:] + order[:start]
-        walk_ends = time.monotonic() + timeout_s
+        walk_ends = chat_ends
         for idx in order:
             remaining = walk_ends - time.monotonic()
             if remaining < 3.0:
@@ -130,9 +134,11 @@ def _chat(messages: list, timeout_s: float = 120.0) -> tuple:
             except Exception as exc:
                 logger.warning("kimi key #%d exhausted/failed (%s)", idx, str(exc)[:100])
         logger.warning("all %d kimi keys failed; falling back", len(keys))
-    out = _try_free(messages, timeout_s)
-    if out:
-        return out
+    tail = chat_ends - time.monotonic()
+    if not free_first and tail > 3.0:
+        out = _try_free(messages, tail)
+        if out:
+            return out
     raise RuntimeError("no inference lane available (free + kimi both down)")
 
 
