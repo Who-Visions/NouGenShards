@@ -150,6 +150,80 @@ def get_connection(index: int):
 _INITIALIZED_DBS = set()
 
 
+def quarantine_malformed_dbs() -> list:
+    """Rename unreadable grid DB files aside so the grid heals itself at boot.
+
+    2026-09-01 Space-sqlite P1: six of nine grid DBs went "disk image is
+    malformed" on the Space's network-backed volume. The files cannot be
+    repaired remotely (no shell on a Space) and a full volume wipe throws away
+    every HEALTHY index with them. Surgical alternative: quick_check each grid
+    DB; a file that fails is RENAMED (never deleted - forensics) to
+    ``<name>.malformed-<utcstamp>`` together with its -wal/-shm sidecars, and
+    an empty healthy DB is recreated in its place. Healthy indices are never
+    touched, and a missing-only refill can then restore just the lost rows.
+
+    Env-gated per Rule 0.2: ``NOUGEN_QUARANTINE_MALFORMED_ON_BOOT`` (default
+    on; "0"/"false"/"no"/"off" disables). No-op in snapshot mode - published
+    snapshots are immutable artifacts.
+
+    Returns a list of {"index", "moved_to", "reason"} dicts, one per
+    quarantined DB, so callers can log and surface the action.
+    """
+    flag = os.environ.get("NOUGEN_QUARANTINE_MALFORMED_ON_BOOT", "1")
+    if flag.strip().lower() in ("0", "false", "no", "off"):
+        return []
+    from . import snapshot_mode  # pylint: disable=import-outside-toplevel
+    if snapshot_mode.enabled() and snapshot_mode.snapshot_dir() is not None:
+        return []
+    quarantined = []
+    for i in range(1, MAX_DB_COUNT + 1):
+        path = get_db_path(i)
+        if not path.exists():
+            continue
+        reason = None
+        try:
+            conn = sqlite3.connect(str(path), timeout=10.0)
+            try:
+                row = conn.execute("PRAGMA quick_check(1);").fetchone()
+            finally:
+                conn.close()
+            if row and str(row[0]).lower() == "ok":
+                continue
+            reason = str(row[0]) if row else "quick_check returned no row"
+        except (sqlite3.DatabaseError, OSError) as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dest = path.with_name(f"{path.name}.malformed-{stamp}")
+        try:
+            path.rename(dest)
+        except OSError as exc:
+            # Locked or volume-level fault: leave it - the per-DB scan guards
+            # already skip unreadable files, so this is no worse than before.
+            logger.error("grid DB %s failed quick_check but could not be "
+                         "quarantined (%s): %s", i, reason, exc)
+            continue
+        for suffix in ("-wal", "-shm"):
+            side = Path(str(path) + suffix)
+            if side.exists():
+                try:
+                    side.rename(Path(str(dest) + suffix))
+                except OSError as exc:
+                    logger.error("grid DB %s sidecar %s not moved: %s",
+                                 i, suffix, exc)
+        _INITIALIZED_DBS.discard((str(path.parent), i))
+        init_db(i)
+        logger.error("grid DB %s quarantined to %s (%s) and recreated empty",
+                     i, dest.name, reason)
+        try:
+            from . import history  # pylint: disable=import-outside-toplevel
+            history.log_event(0, i, "DB_QUARANTINED",
+                              metadata={"moved_to": dest.name, "reason": reason})
+        except Exception:  # pylint: disable=broad-except
+            pass
+        quarantined.append({"index": i, "moved_to": dest.name, "reason": reason})
+    return quarantined
+
+
 def init_db(index: int = 1):  # noqa: C901
     """Initializes the substrate schema (Module 6: Copy Successful Topology).
 

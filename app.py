@@ -654,6 +654,13 @@ def _registered_upstreams() -> list:
 
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
+    # Heal the grid before anything scans it: malformed DB files are renamed
+    # aside (kept for forensics) and recreated empty, so healthy indices and
+    # their rows survive instead of a whole-volume wipe. Gated by
+    # NOUGEN_QUARANTINE_MALFORMED_ON_BOOT; see core.quarantine_malformed_dbs.
+    for q in core.quarantine_malformed_dbs():
+        logger.warning("boot quarantine: grid DB %(index)s -> %(moved_to)s "
+                       "(%(reason)s)", q)
     _seed_upstreams()
     # The streamable-HTTP session manager needs a running task group.
     async with node_mcp.session_manager.run():
