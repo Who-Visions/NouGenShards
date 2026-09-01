@@ -13,6 +13,7 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 from fastapi import FastAPI, Header, HTTPException, Depends, Response, Query
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import gradio as gr
 import subprocess
@@ -861,8 +862,20 @@ def _total_shards() -> int:
 
 
 @app.get("/health")
-def health(x_ngs_token: str = Header(None)):
-    """Generic readiness when open; tenant-local substrate detail when authed."""
+async def health(x_ngs_token: str = Header(None)):
+    """Generic readiness when open; tenant-local substrate detail when authed.
+
+    async def on purpose (2026-09-01). Every heavy endpoint here (/search,
+    /sync/*, /agent, /dav1d/*) is sync-def, so they all dispatch through the
+    same default anyio threadpool (~40 threads). A handful of wedged /agent
+    or slow federated /search calls exhausts it, and a sync-def /health then
+    QUEUES behind them -- observed at the shards.nougenai.com front door as
+    /health hanging 30-120s with zero bytes while unknown paths 404ed
+    instantly (routing never touches the pool). The unauthenticated probe is
+    pure cheap local reads, so it now runs on the event loop and always
+    answers; only the authed, vault-touching tail goes to the pool, where it
+    may honestly wait its turn.
+    """
     deploy_sha = None
     try:
         with open(".deploy_sha", encoding="utf-8") as f:
@@ -909,7 +922,17 @@ def health(x_ngs_token: str = Header(None)):
     # not reveal shard counts, database names, or another tenant's path.
     if not x_ngs_token:
         return result
+    return await run_in_threadpool(
+        _health_authed, result, warnings, persistent, x_ngs_token)
 
+
+def _health_authed(result: dict, warnings: list, persistent: bool,
+                   x_ngs_token: str) -> dict:
+    """Vault-touching half of /health; runs in the threadpool by design.
+
+    `warnings` is the same list `result["warnings"]` points at, so appends
+    here still land in the response -- same aliasing the inline code relied on.
+    """
     tenant = verify_token(x_ngs_token)
     context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
     try:

@@ -192,8 +192,11 @@ class TestHealthAggregateCache:
         # vault read, so the cache is only exercised on the authed path.
         monkeypatch.setattr(app_module, "verify_token",
                             lambda token: _FakeTenant())
-        app_module.health(x_ngs_token="t")
-        app_module.health(x_ngs_token="t")
+        # health() is async def (so unauth probes cannot starve behind the
+        # sync threadpool); run the coroutine for real or the counter stays 0.
+        import asyncio
+        asyncio.run(app_module.health(x_ngs_token="t"))
+        asyncio.run(app_module.health(x_ngs_token="t"))
         assert calls["n"] == 1
 
 
