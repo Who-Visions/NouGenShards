@@ -61,16 +61,31 @@ Rules:
   describe what a tool returned, and never echo this instruction's example text."""
 
 
+_PERSONA_CACHE = {"text": None}
+
+
 def _persona() -> str:
+    """Persona charter, read ONCE and cached for the process lifetime.
+
+    The charter lives on the grid volume; an unhealthy mount makes open()
+    hang, and this runs at the top of every ask() - before any budget exists.
+    The read is bounded and the result cached; changing the charter file
+    needs a restart, which the Space does on every deploy anyway."""
+    if _PERSONA_CACHE["text"] is not None:
+        return _PERSONA_CACHE["text"]
     path = os.environ.get("NOUGEN_PERSONA_PATH", "/data/rhea_noir_persona.txt")
-    try:
+
+    def _read():
         with open(path, encoding="utf-8") as f:
-            text = f.read().strip()
-            if text:
-                return text
-    except OSError:
-        pass
-    return DEFAULT_PERSONA
+            return f.read().strip()
+
+    text = ""
+    try:
+        text = _TOOL_POOL.submit(_read).result(timeout=3.0)
+    except Exception:
+        logger.warning("persona read unavailable at %s; using default", path)
+    _PERSONA_CACHE["text"] = text or DEFAULT_PERSONA
+    return _PERSONA_CACHE["text"]
 
 
 _LAST_GOOD_KEY = {"i": 0}
@@ -339,6 +354,7 @@ def ask(prompt: str) -> dict:
     """The agent loop: persona + tools, bounded rounds, honest brain label."""
     messages = [{"role": "system", "content": _persona() + "\n\n" + TOOL_SPEC},
                 {"role": "user", "content": prompt}]
+    t0 = time.monotonic()
     max_rounds = int(os.environ.get("NOUGEN_RHEA_MAX_ROUNDS", "8"))
     # Wall-clock budget: proxies cut the connection at ~90-100s, so the loop
     # must leave itself room to compose. A round that would start with less
@@ -356,6 +372,8 @@ def ask(prompt: str) -> dict:
         if data is None:
             return {"answer": reply.strip(), "brain": brain, "tools_used": tools_used}
         if "answer" in data:
+            logger.info("rhea answered in %.1fs (tools=%s, brain=%s)",
+                        time.monotonic() - t0, tools_used, brain)
             return {"answer": data["answer"], "brain": brain, "tools_used": tools_used}
         if "tool" in data:
             tools_used.append(data.get("tool"))
@@ -381,6 +399,8 @@ def ask(prompt: str) -> dict:
         answer = data["answer"] if data is not None and "answer" in data else reply.strip()
     except Exception:
         answer = ""
+    logger.info("rhea composed at budget limit in %.1fs (tools=%s, brain=%s)",
+                time.monotonic() - t0, tools_used, brain)
     if answer:
         return {"answer": answer, "brain": brain, "tools_used": tools_used,
                 "note": "composed at budget limit"}
