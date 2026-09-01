@@ -138,23 +138,59 @@ def _maybe_localize(remote_dir: Path, snap_stamp: str) -> Path:
         local.mkdir(parents=True, exist_ok=True)
         t0 = time.time()
         total = 0
-        for src in sorted(remote_dir.iterdir()):
-            if not src.is_file():
-                continue
-            dst = local / src.name
-            if dst.exists() and dst.stat().st_size == src.stat().st_size:
-                continue
-            logger.info("localizing snapshot file %s (%.0fMB)...",
-                        src.name, src.stat().st_size / 1e6)
-            part = local / (src.name + ".part")
-            shutil.copyfile(src, part)
-            if part.stat().st_size != src.stat().st_size:
-                raise OSError(f"short copy of {src.name}")
-            part.replace(dst)  # atomic: readers never see a torn file
-            total += dst.stat().st_size
+        # Transport order matters enormously: the FUSE mount reads at roughly
+        # 1MB/s (measured 2026-09-01: a boot copy of 10.7GB was still
+        # grinding after 90+ minutes), while the Hub's HTTP download path is
+        # CDN-backed. Fetch over HTTP when we can name the bucket and have a
+        # token; fall back to the mount copy otherwise.
+        bucket = os.environ.get("NOUGEN_SNAPSHOT_BUCKET", "nougenai/ngs-vault")
+        via_http = False
+        if bucket and os.environ.get("HF_TOKEN"):
+            try:
+                from huggingface_hub import HfApi  # pylint: disable=import-outside-toplevel
+                api = HfApi(token=os.environ["HF_TOKEN"])
+                pairs = []
+                for src in sorted(remote_dir.iterdir()):
+                    if not src.is_file():
+                        continue
+                    dst = local / src.name
+                    if dst.exists() and dst.stat().st_size == src.stat().st_size:
+                        continue
+                    pairs.append((f"snapshots/{snap_stamp}/{src.name}", dst))
+                if pairs:
+                    logger.info("localizing %d snapshot files via Hub HTTP "
+                                "download...", len(pairs))
+                    api.download_bucket_files(bucket, pairs,
+                                              raise_on_missing_files=True)
+                for src in sorted(remote_dir.iterdir()):
+                    if src.is_file():
+                        dst = local / src.name
+                        if not dst.exists() or dst.stat().st_size != src.stat().st_size:
+                            raise OSError(f"HTTP download incomplete: {src.name}")
+                        total += dst.stat().st_size
+                via_http = True
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("HTTP localize failed (%s: %s); falling back to "
+                               "mount copy", type(exc).__name__, exc)
+        if not via_http:
+            for src in sorted(remote_dir.iterdir()):
+                if not src.is_file():
+                    continue
+                dst = local / src.name
+                if dst.exists() and dst.stat().st_size == src.stat().st_size:
+                    continue
+                logger.info("localizing snapshot file %s (%.0fMB) via mount...",
+                            src.name, src.stat().st_size / 1e6)
+                part = local / (src.name + ".part")
+                shutil.copyfile(src, part)
+                if part.stat().st_size != src.stat().st_size:
+                    raise OSError(f"short copy of {src.name}")
+                part.replace(dst)  # atomic: readers never see a torn file
+                total += dst.stat().st_size
         done_marker.write_text("ok", encoding="utf-8")
-        logger.info("snapshot %s localized: %.2fGB in %.0fs",
-                    snap_stamp, total / 1e9, time.time() - t0)
+        logger.info("snapshot %s localized (%s): %.2fGB in %.0fs",
+                    snap_stamp, "http" if via_http else "mount",
+                    total / 1e9, time.time() - t0)
         # prune older localized stamps
         for other in cache_root.iterdir():
             if other.is_dir() and other.name != snap_stamp:
