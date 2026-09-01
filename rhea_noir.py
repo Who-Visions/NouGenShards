@@ -117,9 +117,14 @@ def _chat(messages: list, timeout_s: float = 120.0) -> tuple:
         order = list(range(len(keys)))
         start = _LAST_GOOD_KEY["i"] % len(keys)
         order = order[start:] + order[:start]
+        walk_ends = time.monotonic() + timeout_s
         for idx in order:
+            remaining = walk_ends - time.monotonic()
+            if remaining < 3.0:
+                logger.warning("kimi walk budget exhausted at key #%d", idx)
+                break
             try:
-                out = _openai_call(ROUTER_URL, keys[idx], kimi, messages, timeout_s)
+                out = _openai_call(ROUTER_URL, keys[idx], kimi, messages, remaining)
                 _LAST_GOOD_KEY["i"] = idx
                 return out, f"kimi:{kimi}"
             except Exception as exc:
@@ -147,9 +152,16 @@ def _try_free(messages: list, timeout_s: float = 120.0):
         "z-ai/glm-5.2:free",
         "openai/gpt-oss-20b:free",
     ]
+    # timeout_s is the budget for the WHOLE walk, not per attempt: a slow
+    # rate-limited model must not triple the wall clock for the ones behind it.
+    walk_ends = time.monotonic() + timeout_s
     for m in models:
+        remaining = walk_ends - time.monotonic()
+        if remaining < 3.0:
+            logger.warning("free walk budget exhausted before %s", m)
+            break
         try:
-            return _openai_call(OPENROUTER_URL, orkey, m, messages, timeout_s), f"free:{m}"
+            return _openai_call(OPENROUTER_URL, orkey, m, messages, remaining), f"free:{m}"
         except Exception as exc:
             logger.warning("free lane %s unavailable (%s)", m, str(exc)[:90])
     return None
