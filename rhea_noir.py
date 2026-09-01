@@ -14,10 +14,17 @@ Everything environment-shaped resolves from env with logged fallbacks:
   NOUGEN_RHEA_MAX_ROUNDS tool-loop rounds (default 8); on exhaustion one
                          compose-only pass turns the gathered tool trace into
                          a best-effort answer instead of dropping it
+  NOUGEN_RHEA_DEADLINE_S wall-clock budget for the whole loop (default 75).
+                         Every proxy between a caller and this Space cuts the
+                         connection at ~90-100s, so a grounded prompt that
+                         legitimately spends its rounds must still compose
+                         inside this budget or the caller sees a 524, not an
+                         answer.
 """
 import json
 import logging
 import os
+import time
 import urllib.request
 
 logger = logging.getLogger(__name__)
@@ -81,7 +88,7 @@ def _inference_keys() -> list:
     return keys
 
 
-def _chat(messages: list) -> tuple:
+def _chat(messages: list, timeout_s: float = 120.0) -> tuple:
     """Returns (reply_text, brain_label). FREE lane first; Kimi only on request.
 
     Routing a request through the Space does NOT make the model free: the Space
@@ -95,7 +102,7 @@ def _chat(messages: list) -> tuple:
     """
     free_first = os.environ.get("NOUGEN_RHEA_PREFER_KIMI", "").strip() != "1"
     if free_first:
-        out = _try_free(messages)
+        out = _try_free(messages, timeout_s)
         if out:
             return out
     keys = _inference_keys()
@@ -108,19 +115,19 @@ def _chat(messages: list) -> tuple:
         order = order[start:] + order[:start]
         for idx in order:
             try:
-                out = _openai_call(ROUTER_URL, keys[idx], kimi, messages)
+                out = _openai_call(ROUTER_URL, keys[idx], kimi, messages, timeout_s)
                 _LAST_GOOD_KEY["i"] = idx
                 return out, f"kimi:{kimi}"
             except Exception as exc:
                 logger.warning("kimi key #%d exhausted/failed (%s)", idx, str(exc)[:100])
         logger.warning("all %d kimi keys failed; falling back", len(keys))
-    out = _try_free(messages)
+    out = _try_free(messages, timeout_s)
     if out:
         return out
     raise RuntimeError("no inference lane available (free + kimi both down)")
 
 
-def _try_free(messages: list):
+def _try_free(messages: list, timeout_s: float = 120.0):
     """Walk the $0 OpenRouter models in order; None if every one is unavailable.
 
     Free models rotate off the free tier without notice and rate-limit hard, so
@@ -138,20 +145,20 @@ def _try_free(messages: list):
     ]
     for m in models:
         try:
-            return _openai_call(OPENROUTER_URL, orkey, m, messages), f"free:{m}"
+            return _openai_call(OPENROUTER_URL, orkey, m, messages, timeout_s), f"free:{m}"
         except Exception as exc:
             logger.warning("free lane %s unavailable (%s)", m, str(exc)[:90])
     return None
 
 
-def _openai_call(url: str, token: str, model: str, messages: list) -> str:
+def _openai_call(url: str, token: str, model: str, messages: list, timeout_s: float = 120.0) -> str:
     req = urllib.request.Request(url, data=json.dumps(
         {"model": model, "messages": messages,
          "max_tokens": int(os.environ.get("NOUGEN_RHEA_MAX_TOKENS", "1200"))}).encode(),
         method="POST")
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with urllib.request.urlopen(req, timeout=max(5.0, timeout_s)) as r:
         return json.loads(r.read().decode())["choices"][0]["message"]["content"]
 
 
@@ -222,9 +229,11 @@ def _run_tool(call: dict) -> dict:
     if call.get("tool") == "relay":
         repo = os.environ.get("NOUGEN_RELAY_REPO", "Who-Visions/NouGenRelay")
         branch = os.environ.get("NOUGEN_RELAY_BRANCH", "main")
-        gh_token = (os.environ.get("NOUGEN_RELAY_GITHUB_TOKEN") or "").strip()
+        gh_token = (os.environ.get("NOUGEN_RELAY_GITHUB_TOKEN")
+                    or os.environ.get("GITHUB_TOKEN") or "").strip()
         if not gh_token:
-            return {"error": "relay lane not configured (NOUGEN_RELAY_GITHUB_TOKEN unset)"}
+            return {"error": "relay lane not configured "
+                             "(NOUGEN_RELAY_GITHUB_TOKEN / GITHUB_TOKEN unset)"}
         import base64
         def _gh(path):
             req = urllib.request.Request(f"https://api.github.com/repos/{repo}{path}",
@@ -290,10 +299,18 @@ def ask(prompt: str) -> dict:
     messages = [{"role": "system", "content": _persona() + "\n\n" + TOOL_SPEC},
                 {"role": "user", "content": prompt}]
     max_rounds = int(os.environ.get("NOUGEN_RHEA_MAX_ROUNDS", "8"))
+    # Wall-clock budget: proxies cut the connection at ~90-100s, so the loop
+    # must leave itself room to compose. A round that would start with less
+    # than the compose reserve remaining goes straight to the compose pass.
+    deadline = time.monotonic() + float(os.environ.get("NOUGEN_RHEA_DEADLINE_S", "75"))
+    compose_reserve = 20.0
     tools_used = []
     brain = "none"
     for _ in range(max_rounds):
-        reply, brain = _chat(messages)
+        remaining = deadline - time.monotonic()
+        if remaining < compose_reserve + 5.0:
+            break
+        reply, brain = _chat(messages, timeout_s=remaining - compose_reserve)
         data = _first_json_object(reply)
         if data is None:
             return {"answer": reply.strip(), "brain": brain, "tools_used": tools_used}
@@ -313,18 +330,18 @@ def ask(prompt: str) -> dict:
     # legitimately spend every round on tools; the gathered evidence is the
     # answer's raw material, not waste.
     messages.append({"role": "user", "content":
-                     "ROUND LIMIT REACHED. Tool calls are no longer available. "
+                     "TIME OR ROUND BUDGET REACHED. Tool calls are no longer available. "
                      "Compose your best final answer NOW from the tool results "
                      "above, noting any gaps you could not cover. "
                      'JSON {"answer": ...} or plain text.'})
     try:
-        reply, brain = _chat(messages)
+        reply, brain = _chat(messages, timeout_s=max(10.0, deadline - time.monotonic()))
         data = _first_json_object(reply)
         answer = data["answer"] if data is not None and "answer" in data else reply.strip()
     except Exception:
         answer = ""
     if answer:
         return {"answer": answer, "brain": brain, "tools_used": tools_used,
-                "note": "composed at round limit"}
+                "note": "composed at budget limit"}
     return {"answer": "(round limit hit before a final answer)",
             "brain": brain, "tools_used": tools_used}
