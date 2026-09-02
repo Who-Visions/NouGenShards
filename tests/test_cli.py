@@ -2,6 +2,7 @@
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
 import io
+import sys
 import json
 import numpy as np
 import nougen_shards.cli as cli
@@ -253,6 +254,73 @@ class TestCLI(unittest.TestCase):
                 cli.main()
             self.assertEqual(cm.exception.code, 0)
             self.assertIn("🪩 NouGenShards CLI", mock_stdout.getvalue())
+
+
+
+class TestRelaySubcommand(unittest.TestCase):
+    """`nougen relay ...` forwards to the NouGenRelay CLI inside the registry clone."""
+
+    def test_parser_forwards_remainder(self):
+        args = cli.get_parser().parse_args(["relay", "ack", "--id", "leg1", "-m", "taking it"])
+        self.assertEqual(args.command, "relay")
+        self.assertEqual(args.relay_args, ["ack", "--id", "leg1", "-m", "taking it"])
+
+    def test_forwards_argv_and_cwd_then_restores(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = os.path.realpath(tmp)
+            seen = {}
+
+            def fake_main():
+                seen["argv"] = list(sys.argv)
+                seen["cwd"] = os.path.realpath(os.getcwd())
+                return 0
+
+            before_cwd = os.getcwd()
+            before_argv = list(sys.argv)
+            args = MagicMock()
+            args.relay_args = ["--", "open", "--json"]
+            with patch("nougen_shards.cli.find_relay_registry", return_value=cli.Path(registry)), \
+                 patch("nougen_shards.cli._import_relay_main", return_value=fake_main):
+                cli.cmd_relay(args)
+            self.assertEqual(seen["argv"], ["relay", "open", "--json"])
+            self.assertEqual(seen["cwd"], registry)
+            self.assertEqual(os.getcwd(), before_cwd)
+            self.assertEqual(list(sys.argv), before_argv)
+
+    def test_nonzero_relay_exit_propagates(self):
+        args = MagicMock()
+        args.relay_args = ["ack"]
+        with patch("nougen_shards.cli.find_relay_registry", return_value=cli.Path(".")), \
+             patch("nougen_shards.cli._import_relay_main", return_value=lambda: 3):
+            with self.assertRaises(SystemExit) as ctx:
+                cli.cmd_relay(args)
+        self.assertEqual(ctx.exception.code, 3)
+
+    def test_missing_registry_fails_loudly(self):
+        args = MagicMock()
+        args.relay_args = ["open"]
+        with patch("nougen_shards.cli.find_relay_registry", return_value=None), \
+             patch("sys.stderr", new=io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as ctx:
+                cli.cmd_relay(args)
+        self.assertEqual(ctx.exception.code, cli.EX_CONFIG)
+        self.assertIn("NOUGEN_RELAY_DIR", err.getvalue())
+
+    def test_registry_requires_handoffs_and_package(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            bare = cli.Path(tmp) / "bare"
+            bare.mkdir()
+            (bare / ".handoffs").mkdir()  # a legacy per-repo registry, no engine
+            good = cli.Path(tmp) / "good"
+            (good / ".handoffs").mkdir(parents=True)
+            (good / "src" / "nougen_relay").mkdir(parents=True)
+            with patch.dict(os.environ, {"NOUGEN_RELAY_DIR": str(bare), "FLEET_RELAY_DIR": str(good)}):
+                self.assertEqual(cli.find_relay_registry(), good)
+
 
 if __name__ == '__main__':
     unittest.main()
