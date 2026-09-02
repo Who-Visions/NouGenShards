@@ -1209,8 +1209,10 @@ def get_parser():
     p_brain.add_argument("--confirm", action="store_true", help="Confirm writing to database")
     p_brain.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    # add_help=False: `-h/--help` must reach the relay engine, not stop here.
     p_relay = subparsers.add_parser(
-        "relay", help="Fleet relay board (NouGenRelay): open | read | ack | create | claim ...",
+        "relay", add_help=False,
+        help="Fleet relay board (NouGenRelay): open | read | ack | create | claim ...",
         description=("Pass-through to the NouGenRelay CLI, run against the fleet registry "
                      "clone. Everything after `relay` is handed to it verbatim, so "
                      "`nougen relay open`, `nougen relay ack --id <leg>` and "
@@ -1622,6 +1624,17 @@ def _relay_registry_candidates():
         raw = os.environ.get(var, "").strip()
         if raw:
             yield Path(raw).expanduser()
+    # An installed (editable) nougen_relay is normally the registry clone's
+    # own src/ tree, so the clone is two levels above the package.
+    try:
+        import nougen_relay as _relay_pkg
+    except ImportError:
+        _relay_pkg = None
+    pkg_file = getattr(_relay_pkg, "__file__", None)
+    if pkg_file:
+        pkg_path = Path(pkg_file).resolve()
+        if len(pkg_path.parents) > 2:
+            yield pkg_path.parents[2]
     here = Path(__file__).resolve()
     # src/nougen_shards/cli.py -> repo root is parents[2]; the fleet keeps
     # NouGenRelay either beside the repo or beside the repo's parent folder
