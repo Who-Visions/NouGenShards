@@ -266,11 +266,14 @@ class TestRelaySubcommand(unittest.TestCase):
         self.assertEqual(args.relay_args, ["ack", "--id", "leg1", "-m", "taking it"])
 
     def test_help_reaches_the_engine(self):
-        # `nougen relay --help` must be the engine's help, not this parser's.
-        args = cli.get_parser().parse_args(["relay", "--help"])
-        self.assertEqual(args.relay_args, ["--help"])
-        args = cli.get_parser().parse_args(["relay", "-h"])
-        self.assertEqual(args.relay_args, ["-h"])
+        # `nougen relay --help` must be the engine's help, not this parser's:
+        # main() hands everything after `relay` over before argparse runs.
+        for flag in ("--help", "-h"):
+            with patch("sys.argv", ["nougen", "relay", flag, "open"]), \
+                 patch("nougen_shards.cli.cmd_relay") as fake:
+                cli.main()
+            fake.assert_called_once()
+            self.assertEqual(fake.call_args[0][0].relay_args, [flag, "open"])
 
     def test_forwards_argv_and_cwd_then_restores(self):
         import os

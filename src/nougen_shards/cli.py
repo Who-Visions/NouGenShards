@@ -1655,14 +1655,14 @@ def find_relay_registry():
 def _import_relay_main(registry):
     """Import nougen_relay.main, falling back to the registry clone's src tree."""
     try:
-        from nougen_relay import main as relay_main
+        from nougen_relay.cli import main as relay_main
         return relay_main
     except ImportError:
         pass
     src = str(registry / "src")
     if src not in sys.path:
         sys.path.insert(0, src)
-    from nougen_relay import main as relay_main  # noqa: E402
+    from nougen_relay.cli import main as relay_main  # noqa: E402
     return relay_main
 
 
@@ -1705,6 +1705,12 @@ def main():
         print()
         get_parser().print_help()
         sys.exit(0)
+    if sys.argv[1] == "relay":
+        # Pure pass-through: argparse (3.13+) refuses to let a REMAINDER
+        # positional swallow a leading option, so `nougen relay --help` and
+        # `nougen relay -h` would die here instead of reaching the engine.
+        cmd_relay(argparse.Namespace(command="relay", relay_args=sys.argv[2:]))
+        return
     parser = get_parser()
     args = parser.parse_args()
     cmds = {
