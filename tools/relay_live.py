@@ -93,7 +93,12 @@ def save_cursor(data: dict) -> None:
 
 
 def _git(repo: Path, *args: str, timeout: float) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=timeout)
+    """Always decode git output as UTF-8. Leg bodies carry curly quotes and
+    arrows; with the console codepage (cp1252 on Windows) the reader thread
+    died on byte 0x9d and stdout came back None, which sank every pass for
+    18 minutes on 2026-09-03."""
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=timeout)
 
 
 def fetch(repo: Path) -> str:
@@ -172,8 +177,8 @@ def leg_record(repo: Path, leg_id: str) -> dict:
         return {}
     try:
         r = _git(repo, "show", f"{remote_ref(repo)}:.handoffs/{leg_id}.json", timeout=_env_float("NOUGEN_RELAY_LIVE_GIT_TIMEOUT_S", 40))
-        return json.loads(r.stdout) if r.returncode == 0 else {}
-    except (OSError, subprocess.SubprocessError, ValueError):
+        return json.loads(r.stdout or "") if r.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
         return {}
 
 
@@ -224,7 +229,13 @@ def one_pass(*, dry: bool = False, quiet: bool = False) -> dict:
     skip = self_labels()
     sent, skipped = [], []
     for leg_id in new[: int(_env_float("NOUGEN_RELAY_LIVE_MAX", 8))]:
-        leg = leg_summary(repo, leg_id)
+        try:
+            leg = leg_summary(repo, leg_id)
+        except Exception as exc:  # pylint: disable=broad-except
+            # one unreadable leg must never sink the pass: deliver it by id
+            parts = leg_id.split("__")
+            leg = {"id": leg_id, "machine": parts[1] if len(parts) > 1 else "?", "agent": parts[2] if len(parts) > 2 else "?",
+                   "goal": f"(body unreadable: {type(exc).__name__})", "status": "?", "created_utc": ""}
         if f"{leg['machine']}/{leg['agent']}" in skip:
             skipped.append(leg_id)
             continue

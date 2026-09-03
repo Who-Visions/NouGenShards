@@ -116,14 +116,28 @@ def test_legs_on_registry_branch_are_delivered_before_working_tree_sync(monkeypa
     monkeypatch.setenv("NOUGEN_RELAY_LIVE_FETCH", "1")
     assert mod.registry_branch(blade) == "main"
     assert mod.one_pass(quiet=True)["new"] == 0
-    leg(work, "20260903T030000Z__chatgpt-app__g-whoentertains", "chatgpt-app", "g-whoentertains", "Committed upstream only", "2026-09-03T03:00:00.000Z")
+    # curly quotes, arrow and a check mark: bytes the Windows console codepage cannot decode
+    # (this exact shape sank every pass for 18 minutes on 2026-09-03)
+    leg(work, "20260903T030000Z__chatgpt-app__g-whoentertains", "chatgpt-app", "g-whoentertains", "Committed upstream only: “Jarvis Who?” → fleet ✓", "2026-09-03T03:00:00.000Z")
     subprocess.run(["git", "-C", str(work), "add", "."], check=True)
     subprocess.run(["git", "-C", str(work), "commit", "-q", "-m", "leg"], check=True, env={**dict(__import__("os").environ), **env})
     subprocess.run(["git", "-C", str(work), "push", "-q"], check=True)
     out = mod.one_pass(quiet=True)
     assert out["fetch"].startswith("ok") and out["new"] == 1 and len(sent) == 1
-    assert "Committed upstream only" in sent[0]
+    assert "Committed upstream only: “Jarvis Who?” → fleet ✓" in sent[0], "non-cp1252 body decoded as UTF-8"
     assert not (blade / ".handoffs" / "20260903T030000Z__chatgpt-app__g-whoentertains.json").exists(), "read-only: nothing copied into the working tree"
+
+
+def test_unreadable_leg_is_delivered_by_id_and_never_sinks_the_pass(monkeypatch, tmp_path):
+    mod, repo, sent = setup(monkeypatch, tmp_path)
+    mod.one_pass(quiet=True)
+    leg(repo, "20260903T040000Z__chatgpt-app__g-whoentertains", "chatgpt-app", "g-whoentertains", "fine leg")
+    (repo / ".handoffs" / "20260903T040100Z__phoebus__claude-cli.json").write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(mod, "leg_summary", lambda r, i: (_ for _ in ()).throw(TypeError("boom")) if "040100Z" in i else {"id": i, "machine": "chatgpt-app", "agent": "g-whoentertains", "goal": "fine leg", "status": "open", "created_utc": ""})
+    out = mod.one_pass(quiet=True)
+    assert out["new"] == 2 and len(sent) == 2
+    assert any("body unreadable: TypeError" in s and "040100Z" in s for s in sent)
+    assert mod.one_pass(quiet=True)["new"] == 0, "cursor advanced past the bad leg too"
 
 
 def test_wake_flag_touches_file(monkeypatch, tmp_path, capsys):
