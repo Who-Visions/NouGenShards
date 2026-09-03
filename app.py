@@ -41,26 +41,19 @@ NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN") or os.environ.get("SHARD_GATEWAY_T
 # use the node's memory directly. Deliberately exposes ONLY the memory tools:
 # execute_sandboxed_code and brain scan/import stay stdio-local - remote code
 # execution and container-filesystem recon do not belong on a network surface.
-from mcp.server.fastmcp import FastMCP  # noqa: E402
+from mcp.server.mcpserver import MCPServer  # noqa: E402
 from mcp.server.transport_security import TransportSecuritySettings  # noqa: E402
 
-node_mcp = FastMCP(
+# mcp 2.x renamed FastMCP to MCPServer and moved the HTTP transport options
+# (stateless_http, json_response, streamable_http_path, transport_security)
+# off the constructor and onto streamable_http_app() - they are passed at the
+# _mcp_asgi call below, not here.
+node_mcp = MCPServer(
     "NouGenShards",
     instructions=(
         "Persistent memory node. Use recall_memory before reasoning from "
         "scratch and capture_experience to store durable learnings."
     ),
-    # Stateless JSON mode: every request is self-contained, which suits a
-    # Space that may cold-start between calls.
-    stateless_http=True,
-    json_response=True,
-    streamable_http_path="/",
-    # DNS-rebinding protection is a defense for loopback-bound servers whose
-    # only gate is network locality; this endpoint is explicitly token-gated
-    # (see _TokenGatedMCP) and served from a public host whose Host header
-    # varies (hf.space, custom domains), so host allow-listing would only
-    # break legitimate clients without adding security.
-    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 
@@ -591,7 +584,19 @@ def vault_list() -> list:
     return out
 
 
-_mcp_asgi = node_mcp.streamable_http_app()
+_mcp_asgi = node_mcp.streamable_http_app(
+    # Stateless JSON mode: every request is self-contained, which suits a
+    # Space that may cold-start between calls.
+    stateless_http=True,
+    json_response=True,
+    streamable_http_path="/",
+    # DNS-rebinding protection is a defense for loopback-bound servers whose
+    # only gate is network locality; this endpoint is explicitly token-gated
+    # (see _TokenGatedMCP) and served from a public host whose Host header
+    # varies (hf.space, custom domains), so host allow-listing would only
+    # break legitimate clients without adding security.
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+)
 
 
 def _seed_upstreams() -> list:
