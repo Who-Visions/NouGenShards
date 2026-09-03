@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.nougen.msgnode</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.nougen/bin/nougenmsg_node_launch.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NOUGEN_NODE_NAME</key><string>__NODE_NAME__</string>
+    <key>NOUGEN_AGY_MSG_PORT</key><string>8766</string>
+    <key>NOUGEN_AGY_MSG_BIND</key><string>0.0.0.0</string>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/.nougen/logs/nougenmsg_node.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.nougen/logs/nougenmsg_node.err.log</string>
+</dict>
+</plist>

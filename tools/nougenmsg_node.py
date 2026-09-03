@@ -11,6 +11,11 @@ Wire contract (identical to the HTTP side of the Windows listener, so an
 existing ``send --node <name>`` reaches this process unchanged)::
 
     POST /msg     {"text": ..., "sender": ..., "priority": ...}  -> queue + inbox file
+                  Response: {"delivered": true, "node": ..., "file": ...}
+                  plus an OPTIONAL "elevated" object. Senders MUST tolerate its
+                  absence: a missing "elevated" means "not evaluated", never
+                  "denied". It is an internal enrichment on nodes that run the
+                  judgment gate, not part of the cross-node contract.
     GET  /status  {"status": "online", "node": ..., "pending_messages": N}
     GET  /health  {"ok": true}
     GET  /pop     drain and return the pending queue
@@ -72,6 +77,22 @@ def node_name() -> str:
 INBOX = _env_path("NOUGEN_AGY_INBOX", ".nougen", "agy_inbox")
 STATE = _env_path("NOUGEN_MSG_STATE", ".nougen", "state", "agy_last_msg.json")
 NODE = node_name()
+
+# Opt-in auth: unset means open, exactly as before (an unupgraded sender keeps
+# working). Set means every POST /msg must present it, since a message that
+# passes auth may be eligible for elevated delivery (see the drain hooks),
+# not just an inbox write. The receiver only ever sees this via env — never
+# read from a plist, never logged, never echoed back in a response.
+AUTH_TOKEN = os.environ.get("NOUGEN_AGY_MSG_TOKEN", "").strip()
+
+# Elevated delivery: writes directly into a live Claude Code session's
+# messaging socket, framed identically to a real cross-session message. Only
+# reachable for senders that already passed AUTH_TOKEN above (network gate),
+# and only after Kaedra approves the content (judgment gate) — see
+# _agy_live_delivery.py, shared with relay_watch_node.py so both transports
+# feed the same audited decision instead of two copies that could drift.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _agy_live_delivery import gate_and_deliver, registry_parity_ok  # noqa: E402
 
 
 def safe_sender(raw: object) -> str:
@@ -153,6 +174,9 @@ class Handler(BaseHTTPRequestHandler):
         if self._route() != "/msg":
             self._send({"error": "not found", "path": self._route()}, 404)
             return
+        if AUTH_TOKEN and self.headers.get("X-NGS-Token", "") != AUTH_TOKEN:
+            self._send({"error": "unauthorized"}, 401)
+            return
         try:
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b"{}"
@@ -168,8 +192,18 @@ class Handler(BaseHTTPRequestHandler):
         msg.setdefault("priority", "normal")
         msg.setdefault("timestamp", time.time())
         msg["target"] = msg.get("target") or NODE
-        path = record(msg)
-        self._send({"delivered": True, "method": "http", "node": NODE, "file": path.name})
+        path = record(msg)  # inbox write always happens — covers a session that's asleep
+
+        elevated = {"attempted": False}
+        if AUTH_TOKEN:  # opting into auth is opting into the elevated pathway
+            elevated = gate_and_deliver(
+                str(msg.get("text", "")), str(msg.get("sender", "unknown")),
+                message_id=msg.get("message_id"),  # honored if the sender provides one
+                origin=str(msg.get("origin", "peer")),
+                origin_proof=msg.get("origin_proof"))
+
+        self._send({"delivered": True, "method": "http", "node": NODE, "file": path.name,
+                    "elevated": elevated})
 
 
 def resolve_port() -> "tuple":
@@ -183,8 +217,13 @@ def resolve_port() -> "tuple":
 def main() -> int:
     port, source = resolve_port()
     bind = os.environ.get("NOUGEN_AGY_MSG_BIND", "").strip() or DEFAULT_BIND
-    print("[nougenmsg_node] node={} bind={}:{} inbox={} port_source={}".format(
-        NODE, bind, port, INBOX, source), flush=True)
+    print("[nougenmsg_node] node={} bind={}:{} inbox={} port_source={} auth={} kaedra_gate={}".format(
+        NODE, bind, port, INBOX, source,
+        "required" if AUTH_TOKEN else "open",
+        "configured" if os.environ.get("KAEDRA_GATEWAY_TOKEN", "").strip() else "unset"),
+        flush=True)
+    ok, detail = registry_parity_ok()
+    print("[nougenmsg_node] registry_parity={} ({})".format("ok" if ok else "MISMATCH", detail), flush=True)
     server = ThreadingHTTPServer((bind, port), Handler)
     server.daemon_threads = True
     try:
