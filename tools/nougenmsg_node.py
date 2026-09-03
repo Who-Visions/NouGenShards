@@ -85,6 +85,23 @@ NODE = node_name()
 # read from a plist, never logged, never echoed back in a response.
 AUTH_TOKEN = os.environ.get("NOUGEN_AGY_MSG_TOKEN", "").strip()
 
+# AUTH_LATCH says "a token WAS deployed on this node", which is a different
+# fact from "a token resolved just now". Without the distinction, a vault miss
+# is indistinguishable from a fresh un-provisioned node, and the fail-open rule
+# below silently downgrades a hardened receiver to accept-all.
+#
+# That is not hypothetical. Observed 2026-09-03 on a live LAN-reachable node:
+# one key stopped resolving, the launch wrapper exported an empty string, and a
+# routine reload flipped the receiver from auth=required to auth=open for ~37
+# minutes. Unauthenticated POSTs were accepted. Nothing announced it, because
+# from the code's point of view a node with no token has simply never been set
+# up. Fail-open belongs in a rollout, never in a gate that was already closed.
+#
+# Fail-SAFE parsing: any value other than an explicit off-word latches, so a
+# typo closes the door rather than opening it.
+_AUTH_LATCH_RAW = os.environ.get("NOUGEN_AGY_MSG_AUTH", "").strip()
+AUTH_LATCH = _AUTH_LATCH_RAW.lower() not in ("", "0", "off", "false", "optional")
+
 # Elevated delivery: writes directly into a live Claude Code session's
 # messaging socket, framed identically to a real cross-session message. Only
 # reachable for senders that already passed AUTH_TOKEN above (network gate),
@@ -93,6 +110,24 @@ AUTH_TOKEN = os.environ.get("NOUGEN_AGY_MSG_TOKEN", "").strip()
 # feed the same audited decision instead of two copies that could drift.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _agy_live_delivery import gate_and_deliver, registry_parity_ok  # noqa: E402
+
+
+def _auth_mode() -> str:
+    """The startup line's auth field, which must be able to say LATCHED-NO-TOKEN.
+
+    A node whose config claims protection it does not have is worse than one
+    that knows it is open, because the wrong belief stops anyone looking. That
+    happened on this fleet: a latch was set in a service definition while the
+    running code had no reference to it, and the node was reported as fail-closed
+    for an hour while it was fail-open. Printing the latch AS READ BY THIS CODE
+    makes a config-only change unable to masquerade as protection: if the value
+    does not appear here, this build is not reading it.
+    """
+    if AUTH_TOKEN:
+        return "required(latch={})".format("on" if AUTH_LATCH else "off")
+    if AUTH_LATCH:
+        return "LATCHED-NO-TOKEN:refusing-all"
+    return "open(unlatched)"
 
 
 def safe_sender(raw: object) -> str:
@@ -206,6 +241,13 @@ class Handler(BaseHTTPRequestHandler):
         if self._route() != "/msg":
             self._send({"error": "not found", "path": self._route()}, 404)
             return
+        if AUTH_LATCH and not AUTH_TOKEN:
+            # Latched but nothing resolved: refuse rather than serve openly.
+            # A node that was provisioned and lost its secret is a fault to
+            # report, not a fresh node to welcome.
+            self._send({"error": "unauthorized", "reason":
+                        "auth latched required but no token resolved"}, 401)
+            return
         if AUTH_TOKEN and self.headers.get("X-NGS-Token", "") != AUTH_TOKEN:
             self._send({"error": "unauthorized"}, 401)
             return
@@ -257,7 +299,7 @@ def main() -> int:
     bind = os.environ.get("NOUGEN_AGY_MSG_BIND", "").strip() or DEFAULT_BIND
     print("[nougenmsg_node] node={} bind={}:{} inbox={} port_source={} auth={} kaedra_gate={}".format(
         NODE, bind, port, INBOX, source,
-        "required" if AUTH_TOKEN else "open",
+        _auth_mode(),
         "configured" if os.environ.get("KAEDRA_GATEWAY_TOKEN", "").strip() else "unset"),
         flush=True)
     ok, detail = registry_parity_ok()
