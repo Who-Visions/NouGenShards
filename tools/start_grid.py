@@ -249,29 +249,15 @@ def _start_node(node_token):
             print("rhea free lane: openrouter key wired")
         else:
             print("rhea free lane: no openrouter key found (agent lane degraded)")
-    # Rhea's Kimi lane rides the fleet's HF accounts: each account carries
-    # small monthly Inference-Providers credit, and rhea_noir walks the
-    # comma list when one 402s (the "free through a space" ride was always
-    # these credits - one afternoon burned $0.09 of one account). Wire ALL
-    # distinct hf_ tokens from both keymaker stores, not one.
-    if not os.environ.get("NGS_INFERENCE_TOKENS"):
-        hf_tokens = {}
-        for pat in ("%HF_%", "%HUGGING%"):
-            for db in (SECRETS_DB, None):
-                try:
-                    rows = keymaker_peel.load(pat, db=db, min_len=20)
-                except Exception:
-                    continue
-                for _label, value, _rot in rows:
-                    if value.startswith("hf_"):
-                        hf_tokens[keymaker_peel.fingerprint(value)] = value
-        if hf_tokens:
-            env["NGS_INFERENCE_TOKENS"] = ",".join(hf_tokens.values())
-            print(f"rhea kimi lane: {len(hf_tokens)} fleet hf token(s) wired")
-    if not os.environ.get("NOUGEN_RHEA_MODEL"):
-        env["NOUGEN_RHEA_MODEL"] = os.environ.get(
-            "NOUGEN_KIMI_MODEL", "moonshotai/Kimi-K3")
-        print(f"rhea kimi model: {env['NOUGEN_RHEA_MODEL']}")
+    # Blade owns Rhea's controller; the owned Space is her narrow Kimi bridge.
+    # Direct HF Inference Providers are intentionally not wired into Blade.
+    space = os.environ.get("NOUGEN_KIMI_SPACE", "nougenai/NouGenShards")
+    env["NOUGEN_KIMI_SPACE"] = space
+    env["NOUGEN_KIMI_SPACE_URL"] = os.environ.get(
+        "NOUGEN_KIMI_SPACE_URL", "https://nougenai-nougenshards.hf.space")
+    env["NOUGEN_KIMI_SPACE_TOKEN"] = node_token
+    env["NOUGEN_RHEA_ENABLE_HF_INFERENCE"] = "0"
+    print(f"rhea kimi bridge: {space}")
     log = SCRATCH / "ngs_node.log"
     python_exe = REPO / ".venv" / "Scripts" / "python.exe"
     if not python_exe.is_file():
