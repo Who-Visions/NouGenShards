@@ -16,14 +16,25 @@ TOOLS = Path(__file__).resolve().parent.parent / "tools"
 sys.path.insert(0, str(TOOLS))
 
 
+def _purge_wake_modules():
+    """Drop the wake package under EVERY import shape it can hold.
+
+    It can be cached as "wake" or as "tools.wake" depending on what is on
+    sys.path, and clearing only one leaves a module whose adapters were
+    discovered under different conditions. That is how these tests passed on a
+    machine where the runtime IS installed: the fixture missed the cached copy.
+    """
+    for name in [m for m in sys.modules
+                 if m == "wake" or m.startswith(("wake.", "tools.wake"))]:
+        del sys.modules[name]
+
+
 @pytest.fixture()
 def wake(monkeypatch):
     """The wake package with no adapter importable: the default everywhere."""
     monkeypatch.setenv("NOUGEN_WAKE_ANTIGRAVITY_BIN", "")
-    monkeypatch.setenv("NOUGEN_WAKE_CODEX_BIN", "")
     monkeypatch.setattr("shutil.which", lambda *a, **k: None)
-    for name in [m for m in sys.modules if m.startswith("wake")]:
-        del sys.modules[name]
+    _purge_wake_modules()
     return importlib.import_module("wake")
 
 
@@ -45,7 +56,7 @@ def test_status_explains_each_absence(wake):
     """Diagnosable without guessing which runtime is missing."""
     status = wake.status()
     assert status["available"] == []
-    assert set(status["unavailable"]) == {"antigravity", "codex"}
+    assert set(status["unavailable"]) == {"antigravity"}
     assert all(isinstance(v, str) and v for v in status["unavailable"].values())
 
 
@@ -109,7 +120,8 @@ def test_target_must_match_an_adapter(wake, monkeypatch):
 @pytest.fixture()
 def node(monkeypatch):
     """The receiver module, with the wake layer absent (the default node)."""
-    for name in [m for m in sys.modules if m.startswith(("wake", "nougenmsg_node"))]:
+    _purge_wake_modules()
+    for name in [m for m in sys.modules if m.startswith("nougenmsg_node")]:
         del sys.modules[name]
     monkeypatch.setattr("shutil.which", lambda *a, **k: None)
     return importlib.import_module("nougenmsg_node")

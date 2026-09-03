@@ -208,6 +208,18 @@ def check(refresh: bool = False):
                      "below is against an out-of-date reference"
                      .format(behind, _remote_of(root, ref))))
     rows.extend(pull_health(root, ref))
+    # WRONG-REPO GUARD. If not one watched path exists at this ref, the ref is
+    # almost certainly the wrong repository rather than a node running four
+    # untracked files. UNTRACKED is the worst severity this tool emits, so a
+    # mismatched NOUGEN_SHARDS_REPO / NOUGEN_BUS_DIR pairing would otherwise
+    # produce a screenful of its loudest verdict instantly. Same principle as
+    # STALE-first: say the reference is wrong BEFORE judging anything against
+    # it, and return "cannot determine" rather than a confident wrong answer.
+    watched = [canon for _, canon in build_map()]
+    if watched and not any(canonical_bytes(root, ref, c) is not None for c in watched):
+        return root, ref, [("CONFIG", ref, "", "",
+                            "none of the {} watched path(s) exist at this ref; wrong "
+                            "repository for NOUGEN_SHARDS_REPO?".format(len(watched)))]
     for candidates, canon_path in build_map():
         runtime = resolve_runtime(candidates, canon_path)
         canon = canonical_bytes(root, ref, canon_path)
@@ -280,6 +292,8 @@ def main() -> int:
         written = announce(rows, ref)
         if written:
             print("[drift] announced to {}".format(written.name))
+    if any(r[0] == "CONFIG" for r in rows):
+        return 2  # cannot determine: the reference itself is suspect
     return 0 if all(r[0] == "MATCH" for r in rows) else 1
 
 

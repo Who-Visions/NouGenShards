@@ -29,9 +29,18 @@ from typing import Any, Dict, List
 _ADAPTERS: List[Any] = []
 _IMPORT_ERRORS: Dict[str, str] = {}
 
-for _name in ("antigravity", "codex"):
+# Imported RELATIVE to this package, never by a hardcoded "tools.wake.x" path.
+# A hardcoded package path makes availability a function of sys.path SHAPE
+# rather than of runtime presence: the daemon runs with tools/ itself on the
+# path, so "tools" is not importable there and every adapter failed with
+# ModuleNotFoundError, which is indistinguishable from "no runtime installed".
+# Worse in the other direction: anyone who later normalised the daemon's
+# sys.path would have silently switched waking ON with no decision taken.
+# Using __name__ works under either import shape, so the ONLY thing that can
+# make an adapter appear is the runtime it looks for.
+for _name in ("antigravity",):
     try:
-        _mod = __import__("tools.wake.{}".format(_name), fromlist=["Adapter"])
+        _mod = __import__("{}.{}".format(__name__, _name), fromlist=["Adapter"])
         _ADAPTERS.append(_mod.Adapter())
     except Exception as _exc:  # pylint: disable=broad-except
         _IMPORT_ERRORS[_name] = "{}: {}".format(type(_exc).__name__, str(_exc)[:80])
