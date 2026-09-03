@@ -91,15 +91,16 @@ def inbox_path(filename: str) -> Path:
     """Resolve ``filename`` inside the inbox, refusing anything that escapes it.
 
     ``safe_sender`` already strips the characters that make an escape possible.
-    This is the second, independent check: resolve the candidate and confirm the
-    inbox is genuinely its parent, so a future edit to the sanitizer cannot
-    quietly reintroduce a traversal.
+    This is the second, independent barrier: reduce the name to its last
+    component, resolve it against the inbox, and refuse anything that does not
+    land under the inbox root, so a future edit to the sanitizer cannot quietly
+    reintroduce a traversal.
     """
-    root = INBOX.resolve()
-    candidate = (root / filename).resolve()
-    if candidate.parent != root:
+    root = os.path.realpath(str(INBOX))
+    candidate = os.path.realpath(os.path.join(root, os.path.basename(filename)))
+    if not candidate.startswith(root + os.sep):
         raise ValueError("refusing to write outside the inbox: {!r}".format(filename))
-    return candidate
+    return Path(candidate)
 
 
 def record(msg: dict) -> Path:

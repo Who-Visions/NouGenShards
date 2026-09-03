@@ -127,12 +127,11 @@ def test_watch_interval_prefers_env(watch, monkeypatch):
     assert watch.resolve_interval() == (watch.DEFAULT_INTERVAL_SECS, "fallback")
 
 
-def test_inbox_path_refuses_an_escape(receiver):
-    """The containment check is independent of the sender sanitizer."""
-    with pytest.raises(ValueError):
-        receiver.inbox_path(".." + "/" + "escaped.json")
-    with pytest.raises(ValueError):
-        receiver.inbox_path("nested/child.json")
+def test_inbox_path_strips_any_directory_part(receiver):
+    """A name carrying a directory is reduced to its last component."""
+    for hostile in ("../escaped.json", "nested/child.json", "/abs/child.json"):
+        assert receiver.inbox_path(hostile).parent == Path(
+            receiver.INBOX.resolve()).resolve()
 
 
 def test_inbox_path_accepts_a_plain_name(receiver):
