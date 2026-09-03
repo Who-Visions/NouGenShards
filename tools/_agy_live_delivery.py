@@ -286,14 +286,33 @@ ORIGIN_TS_RE = re.compile(r"^\s*origin_ts:\s*(\d+)\s*$", re.MULTILINE)
 _ORIGIN_PREFIXES = ("origin_nonce:", "origin_ts:", "origin_sig:")
 
 
+class MalformedOriginLines(ValueError):
+    """More than one occurrence of an origin line. Never legitimate."""
+
+
 def parse_origin_lines(body: str) -> "tuple[str | None, str | None, str | None]":
     """(nonce, timestamp, signature) from a raw leg body; None for any absent.
 
     Only whole lines starting with the prefix count — see the anchoring note
     above. The same rule normalise_body uses to drop them.
+
+    Raises MalformedOriginLines if ANY of the three appears more than once.
+    Two nodes that resolved duplicates differently (first-match vs last-match)
+    would extract different nonces for the same leg, sign different bytes,
+    and burn different replay slots — an attacker who can append one line to
+    a body could desync the two replay stores. A legitimate signer never
+    emits two, so rejecting removes the question rather than answering it.
+    A markdown-quoted line ("> origin_nonce: ...") starts with ">" after
+    strip, so it neither counts here nor is dropped by normalise_body —
+    quoting a signed leg inside another leg stays byte-consistent.
     """
-    n, t, s = ORIGIN_NONCE_RE.search(body), ORIGIN_TS_RE.search(body), ORIGIN_SIG_RE.search(body)
-    return (n.group(1) if n else None, t.group(1) if t else None, s.group(1) if s else None)
+    found = {}
+    for name, pat in (("nonce", ORIGIN_NONCE_RE), ("ts", ORIGIN_TS_RE), ("sig", ORIGIN_SIG_RE)):
+        matches = pat.findall(body)
+        if len(matches) > 1:
+            raise MalformedOriginLines("duplicate origin_{} line ({} occurrences)".format(name, len(matches)))
+        found[name] = matches[0] if matches else None
+    return (found["nonce"], found["ts"], found["sig"])
 
 
 def normalise_body(body: str) -> str:

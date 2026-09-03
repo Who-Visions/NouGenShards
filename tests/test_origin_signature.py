@@ -199,3 +199,27 @@ def test_module_imports_without_fcntl(gate, monkeypatch):
     sys.modules.pop("_agy_live_delivery", None)
     mod = importlib.import_module("_agy_live_delivery")
     assert mod.canonical_signing_input("restart relay", "n1", "1788433000", "do the thing") == WORKED_EXAMPLE
+
+
+# --- duplicate origin lines are malformed, never resolved --------------------
+# First-match vs last-match resolution would let an attacker who can append
+# one line make two nodes extract different nonces for the same leg and burn
+# different replay slots. Both nodes reject outright instead.
+
+@pytest.mark.parametrize("dup", [
+    "origin_nonce: a\norigin_nonce: b",
+    "origin_ts: 1788433000\norigin_ts: 1788433001",
+    "origin_sig: " + "a" * 64 + "\norigin_sig: " + "b" * 64,
+])
+def test_duplicate_origin_line_is_malformed(gate, dup):
+    with pytest.raises(gate.MalformedOriginLines):
+        gate.parse_origin_lines("body\n" + dup)
+
+
+def test_markdown_quoted_origin_line_is_neither_counted_nor_dropped(gate):
+    """The safe way to quote a signed leg inside another leg: a '> ' prefix.
+    Not an origin line on either node, so it does not trip the duplicate
+    check and it survives normalisation byte-for-byte."""
+    body = "quoting the earlier leg:\n> origin_nonce: earlier\n> origin_sig: " + "c" * 64 + "\norigin_nonce: mine"
+    assert gate.parse_origin_lines(body) == ("mine", None, None)
+    assert gate.normalise_body(body) == "quoting the earlier leg:\n> origin_nonce: earlier\n> origin_sig: " + "c" * 64
