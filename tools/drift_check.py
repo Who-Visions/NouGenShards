@@ -97,6 +97,25 @@ def _remote_of(root: Path, ref: str) -> str:
     return upstream or "origin/" + ref
 
 
+def tracking_ref(root: Path):
+    """The ref this checkout would actually fast-forward FROM.
+
+    Pull-readiness is a property of the CHECKED-OUT BRANCH and its own
+    upstream, not of the canonical comparison ref. Conflating the two is a
+    defect this fleet paid for twice in one day: a clone sitting on a feature
+    branch was reported PULL-BLOCKED purely because its HEAD is not an
+    ancestor of origin/main -- once loudly enough to escalate a destructive
+    change to the owner, on a node whose watcher was in fact perfectly
+    current. A branch that tracks something other than main is not blocked;
+    it is on a branch.
+
+    Returns None when the branch has no upstream (or HEAD is detached), which
+    is genuinely unknowable rather than blocked.
+    """
+    return _git(root, "rev-parse", "--abbrev-ref", "--symbolic-full-name",
+                "@{upstream}") or None
+
+
 def canonical_bytes(root: Path, ref: str, path: str):
     """Bytes of ``path`` at ``ref``, or None when it does not exist there."""
     try:
@@ -107,7 +126,7 @@ def canonical_bytes(root: Path, ref: str, path: str):
         return None
 
 
-def pull_health(root: Path, ref: str):
+def pull_health(root: Path):
     """Can this clone still fast-forward, and what would stop it?
 
     A watcher that pulls on a timer goes QUIETLY BLIND when the pull starts
@@ -131,13 +150,23 @@ def pull_health(root: Path, ref: str):
         rows.append(("PULL-RISK", str(root), "", "",
                      "{} modified TRACKED file(s); an upstream touch to any of them makes "
                      "--ff-only refuse. First: {}".format(len(modified), ", ".join(modified[:3]))))
+    # Ancestry is judged against THIS branch's upstream. Using the canonical
+    # ref here reports every feature branch as blocked; see tracking_ref().
+    upstream = tracking_ref(root)
+    if upstream is None:
+        branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD") or "HEAD"
+        rows.append(("NO-UPSTREAM", str(root), "", "",
+                     "{} tracks no upstream; whether a pull could fast-forward here "
+                     "cannot be determined".format(branch)))
+        return rows
     ancestor = subprocess.run(
-        ["git", "-C", str(root), "merge-base", "--is-ancestor", "HEAD", ref],
+        ["git", "-C", str(root), "merge-base", "--is-ancestor", "HEAD", upstream],
         capture_output=True, timeout=60)
     if ancestor.returncode != 0:
         rows.append(("PULL-BLOCKED", str(root), "", "",
-                     "HEAD is not an ancestor of {}; no fast-forward is possible and a "
-                     "polling watcher here has already stopped learning".format(ref)))
+                     "HEAD is not an ancestor of its own upstream {}; no fast-forward "
+                     "is possible and a polling watcher here has already stopped "
+                     "learning".format(upstream)))
     return rows
 
 
@@ -207,7 +236,7 @@ def check(refresh: bool = False):
         rows.append(("STALE", ref, "", "", "{} commit(s) behind {}; every comparison "
                      "below is against an out-of-date reference"
                      .format(behind, _remote_of(root, ref))))
-    rows.extend(pull_health(root, ref))
+    rows.extend(pull_health(root))
     # WRONG-REPO GUARD. If not one watched path exists at this ref, the ref is
     # almost certainly the wrong repository rather than a node running four
     # untracked files. UNTRACKED is the worst severity this tool emits, so a
