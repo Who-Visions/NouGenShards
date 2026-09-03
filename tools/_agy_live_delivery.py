@@ -116,7 +116,7 @@ def classify_with_kaedra(text: str) -> dict:
         return {**base, "verdict": "DENY", "ok": False,
                 "reason_code": "gate_unavailable", "detail": "kaedra unreachable: {}".format(type(exc).__name__)}
     reply = str(out.get("response", "")).strip()
-    lines = [l.strip() for l in reply.splitlines() if l.strip()]
+    lines = [line.strip() for line in reply.splitlines() if line.strip()]
     verdict = lines[-1].upper() if lines else ""
     # Labelled, not bare: a bare "YES" next to a denial reads as a
     # contradiction in logs — the exact confusion this format was built to

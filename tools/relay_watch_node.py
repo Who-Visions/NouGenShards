@@ -131,9 +131,6 @@ def announce(leg_id: str, path: Path) -> None:
     # parameter instead. Full, untruncated goal: GOAL_CHARS truncation above
     # is display-only and must not change what gets verified.
     full_goal = str(record.get("goal") or "")
-    # Blade's exact normalisation, so both verifiers agree byte-for-byte:
-    # drop the origin lines, right-strip every remaining line, trim the
-    # whole thing. Trailing-whitespace churn must not break a signature.
     # Raw body goes in; the verifier normalises it itself (see
     # canonical_signing_input), so there is no step here to get wrong.
     origin_status = (
