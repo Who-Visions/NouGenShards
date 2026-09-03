@@ -42,6 +42,14 @@ import sys
 import time
 from pathlib import Path
 
+# On Windows a child process spawned from a windowless parent (pythonw, a
+# hidden scheduled task) still gets its OWN console window, which flashes on
+# screen. One check run spawns a git child per watched file plus several repo
+# queries, so a "hidden" hourly task produced dozens of visible flashes. This
+# flag suppresses the child console. It does not exist off Windows, hence the
+# getattr with a 0 default.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 HERE = Path(__file__).resolve()
 HOME = Path.home()
 DEFAULT_SECRETS = "NOUGEN_AGY_MSG_TOKEN,NOUGEN_USER_ORIGIN_TOKEN,KAEDRA_GATEWAY_TOKEN,NGS_NODE_TOKEN"
@@ -64,7 +72,7 @@ def sha16(path: Path) -> str:
 
 def git(repo: Path, *args: str) -> str:
     try:
-        r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=20)
+        r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=20, creationflags=_NO_WINDOW)
         return r.stdout.strip() if r.returncode == 0 else "ERR"
     except (OSError, subprocess.SubprocessError):
         return "ERR"
@@ -107,7 +115,7 @@ def secret_fingerprint(repo: Path, key: str, salt: str) -> str:
         return "NO-VENV"
     try:
         r = subprocess.run([str(py), "-c", _FINGERPRINT_CHILD, str(repo / "src"), key, salt],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30, creationflags=_NO_WINDOW)
         return r.stdout.strip() or "ERR"
     except (OSError, subprocess.SubprocessError):
         return "ERR"

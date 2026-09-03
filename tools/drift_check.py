@@ -42,6 +42,14 @@ import sys
 import time
 from pathlib import Path
 
+# On Windows a child process spawned from a windowless parent (pythonw, a
+# hidden scheduled task) still gets its OWN console window, which flashes on
+# screen. One check run spawns a git child per watched file plus several repo
+# queries, so a "hidden" hourly task produced dozens of visible flashes. This
+# flag suppresses the child console. It does not exist off Windows, hence the
+# getattr with a 0 default.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 HOME = Path.home()
 
 # Canonical paths this tool watches by default. The runtime side is normally
@@ -79,7 +87,7 @@ def canonical_ref(root: Path) -> str:
 def _git(root: Path, *args: str) -> str:
     try:
         r = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
-                           text=True, timeout=60)
+                           text=True, timeout=60, creationflags=_NO_WINDOW)
         return r.stdout.strip() if r.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -120,7 +128,7 @@ def canonical_bytes(root: Path, ref: str, path: str):
     """Bytes of ``path`` at ``ref``, or None when it does not exist there."""
     try:
         r = subprocess.run(["git", "-C", str(root), "show", "{}:{}".format(ref, path)],
-                           capture_output=True, timeout=60)
+                           capture_output=True, timeout=60, creationflags=_NO_WINDOW)
         return r.stdout if r.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
         return None
@@ -161,7 +169,7 @@ def pull_health(root: Path):
         return rows
     ancestor = subprocess.run(
         ["git", "-C", str(root), "merge-base", "--is-ancestor", "HEAD", upstream],
-        capture_output=True, timeout=60)
+        capture_output=True, timeout=60, creationflags=_NO_WINDOW)
     if ancestor.returncode != 0:
         rows.append(("PULL-BLOCKED", str(root), "", "",
                      "HEAD is not an ancestor of its own upstream {}; no fast-forward "
