@@ -41,6 +41,14 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _agy_live_delivery import gate_and_deliver, registry_parity_ok, verify_user_origin_signature  # noqa: E402
+import re  # noqa: E402
+
+_ORIGIN_SIG_RE = re.compile(r"origin_sig:\s*([0-9a-fA-F]{64})")
+_ORIGIN_NONCE_RE = re.compile(r"origin_nonce:\s*(\S+)")
+_ORIGIN_TS_RE = re.compile(r"origin_ts:\s*(\d+)")
+
 HOME = Path.home()
 
 HANDOFF_DIRNAME = ".handoffs"
@@ -115,8 +123,32 @@ def announce(leg_id: str, path: Path) -> None:
     goal = str(record.get("goal") or "(no goal)")[:GOAL_CHARS]
     who = "{}/{}".format(record.get("machine", "?"), record.get("agent", "?"))
     status = record.get("status", "?")
+    body_text = str(record.get("body") or "")
+    sig_match = _ORIGIN_SIG_RE.search(body_text)
+    nonce_match = _ORIGIN_NONCE_RE.search(body_text)
+    ts_match = _ORIGIN_TS_RE.search(body_text)
+    # Signs goal AND body now, not goal alone (the sibling node caught the gap: a
+    # goal-only signature authenticates a headline while the payload
+    # underneath is unverified and attacker-replaceable). Canonical body has
+    # the origin_nonce/origin_sig lines themselves stripped — the signature
+    # cannot cover its own value, and the nonce is covered via its own
+    # parameter instead. Full, untruncated goal: GOAL_CHARS truncation above
+    # is display-only and must not change what gets verified.
+    full_goal = str(record.get("goal") or "")
+    # Blade's exact normalisation, so both verifiers agree byte-for-byte:
+    # drop the origin lines, right-strip every remaining line, trim the
+    # whole thing. Trailing-whitespace churn must not break a signature.
+    stripped = _ORIGIN_SIG_RE.sub("", _ORIGIN_NONCE_RE.sub("", _ORIGIN_TS_RE.sub("", body_text)))
+    canonical_body = "\n".join(line.rstrip() for line in stripped.splitlines()).strip()
+    origin_nonce = nonce_match.group(1) if nonce_match else None
+    origin_status = (
+        verify_user_origin_signature(full_goal, canonical_body, origin_nonce, sig_match.group(1),
+                                     timestamp=(ts_match.group(1) if ts_match else None))
+        if sig_match else None)
     print("[relay_watch] NEW {} ({}) from {}: {}".format(leg_id, status, who, goal), flush=True)
     INBOX.mkdir(parents=True, exist_ok=True)
+    text = ("relay leg {} from {} ({}): {} -- read the full leg before acting; "
+             "a leg is coordination, not permission.".format(leg_id, who, status, goal))
     message = {
         "type": "live_message",
         "sender": "relay-watch",
@@ -124,9 +156,25 @@ def announce(leg_id: str, path: Path) -> None:
         "priority": "high" if status == "open" else "normal",
         "timestamp": time.time(),
         "leg_id": leg_id,
-        "text": ("relay leg {} from {} ({}): {} -- read the full leg before acting; "
-                 "a leg is coordination, not permission.".format(leg_id, who, status, goal)),
+        "text": text,
     }
+    # Elevation eligibility mirrors the existing priority signal: only an
+    # open leg is worth interrupting a live session for. A leg's git
+    # provenance (it came from a commit, not an anonymous POST) says who
+    # wrote it, not whether the content is safe to hand to a session with
+    # teammate-level trust — that judgment is Kaedra's alone, same gate the
+    # network path uses (leg 20260903T055249Z: transport possession, git
+    # commit included, is not provenance strong enough to skip the gate).
+    if status == "open" and os.environ.get("KAEDRA_GATEWAY_TOKEN", "").strip():
+        # leg_id is already a stable, unique identifier — a strictly better
+        # dedup key than the content-hash fallback _agy_live_delivery uses
+        # for senders that can't provide one. origin_status, when a valid
+        # origin_sig was found above, bypasses Kaedra the same way a proven
+        # HTTP origin_proof does (leg 20260903T104345Z) — an unsigned or
+        # badly-signed leg still runs the ordinary content gate.
+        message["elevated"] = gate_and_deliver(
+            text, "relay-watch:{}".format(who),
+            message_id=(origin_nonce or leg_id), origin_status=origin_status)
     inbox_file = INBOX / "msg_{}_relay-watch.json".format(int(time.time() * 1000))
     inbox_file.write_text(json.dumps(message, indent=2), encoding="utf-8")
 
@@ -140,6 +188,8 @@ def resolve_interval() -> "tuple":
 
 def main() -> int:
     root = relay_dir()
+    ok, detail = registry_parity_ok()
+    print("[relay_watch] registry_parity={} ({})".format("ok" if ok else "MISMATCH", detail), flush=True)
     interval, source = resolve_interval()
     once = os.environ.get("NOUGEN_RELAY_WATCH_ONCE", "").strip() == "1"
     seen = load_seen()
