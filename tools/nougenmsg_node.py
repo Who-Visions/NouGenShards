@@ -23,7 +23,8 @@ Configuration resolves from the environment first, then a documented fallback:
 
 ===========================  ===========================================
 ``NOUGEN_AGY_MSG_PORT``      listen port (default 8766)
-``NOUGEN_AGY_MSG_BIND``      bind address (default 0.0.0.0)
+``NOUGEN_AGY_MSG_BIND``      bind address (default 127.0.0.1; set
+                             0.0.0.0 to accept cross-machine sends)
 ``NOUGEN_AGY_INBOX``         inbox directory (default ~/.nougen/agy_inbox)
 ``NOUGEN_MSG_STATE``         last-message file (default
                              ~/.nougen/state/agy_last_msg.json)
@@ -49,8 +50,9 @@ from pathlib import Path
 PENDING: "queue.Queue" = queue.Queue()
 
 DEFAULT_PORT = 8766
-DEFAULT_BIND = "0.0.0.0"
+DEFAULT_BIND = "127.0.0.1"  # opt into a LAN bind with NOUGEN_AGY_MSG_BIND
 PREVIEW_CHARS = 400
+SENDER_LABEL_CHARS = 64
 
 
 def _env_path(key: str, *default_parts: str) -> Path:
@@ -72,12 +74,25 @@ STATE = _env_path("NOUGEN_MSG_STATE", ".nougen", "state", "agy_last_msg.json")
 NODE = node_name()
 
 
+def safe_sender(raw: object) -> str:
+    """A filename-safe sender label built from an allowlist, never a blocklist.
+
+    The sender arrives over the network and is used to name a file, so this
+    keeps only characters known to be inert in a path segment and drops
+    everything else, rather than trying to enumerate the dangerous ones.
+    An empty or fully-stripped value falls back to ``unknown``.
+    """
+    kept = [c for c in str(raw or "") if c.isalnum() or c in "._-"]
+    label = "".join(kept).strip("._-")[:SENDER_LABEL_CHARS]
+    return label or "unknown"
+
+
 def record(msg: dict) -> Path:
     """Persist one message to the inbox and the last-message state file."""
     INBOX.mkdir(parents=True, exist_ok=True)
     STATE.parent.mkdir(parents=True, exist_ok=True)
-    sender = str(msg.get("sender") or "unknown").replace("/", "-").replace("\\", "-")
-    path = INBOX / "msg_{}_{}.json".format(int(time.time() * 1000), sender)
+    filename = "msg_{}_{}.json".format(int(time.time() * 1000), safe_sender(msg.get("sender")))
+    path = INBOX / filename
     path.write_text(json.dumps(msg, indent=2), encoding="utf-8")
     STATE.write_text(json.dumps(msg, indent=2), encoding="utf-8")
     PENDING.put(msg)

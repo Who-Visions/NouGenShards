@@ -90,7 +90,7 @@ to one machine.
 | --- | --- | --- |
 | `NOUGEN_NODE_NAME` | receiver | short hostname |
 | `NOUGEN_AGY_MSG_PORT` | receiver | `8766` |
-| `NOUGEN_AGY_MSG_BIND` | receiver | `0.0.0.0` |
+| `NOUGEN_AGY_MSG_BIND` | receiver | `127.0.0.1` (set `0.0.0.0` to accept sends from other machines) |
 | `NOUGEN_AGY_INBOX` | both | `~/.nougen/agy_inbox` |
 | `NOUGEN_MSG_STATE` | receiver | `~/.nougen/state/agy_last_msg.json` |
 | `NOUGEN_RELAY_DIR` | watch | probe for a clone with a handoff directory |
