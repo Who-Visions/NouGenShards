@@ -11,7 +11,7 @@ def _patch_local(monkeypatch):
     monkeypatch.setattr(
         federation.core,
         "reciprocal_rank_fusion",
-        lambda lists, k=60: [s for sub in lists for s in sub],
+        lambda lists, k=60, weights=None: [s for sub in lists for s in sub],
     )
     monkeypatch.setattr(federation.keymaker, "list_external_dbs",
                         lambda: [{"id": 1, "name": "ext"}])

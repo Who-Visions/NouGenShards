@@ -137,6 +137,12 @@ class Handler(BaseHTTPRequestHandler):
             "model": model,
             "prompt": prompt,
             "stream": False,
+            # kaedracode is a thinking model: with thinking on it spends
+            # hundreds of hidden tokens before any visible text, so a small
+            # num_predict exhausts the budget and returns response:"" with
+            # done_reason=length. Thinking is off unless the caller sends
+            # think:true (and budgets num_predict for it).
+            "think": bool(body.get("think", False)),
             # Pin the model in memory: the 38s cold load is a one-time cost,
             # not a per-call one.
             "keep_alive": -1,
@@ -152,7 +158,18 @@ class Handler(BaseHTTPRequestHandler):
             payload["options"] = options
 
         try:
-            out = _ollama("/api/generate", payload)
+            try:
+                out = _ollama("/api/generate", payload)
+            except urllib.error.HTTPError as e:
+                # A model without the thinking capability rejects the think
+                # key with a 400; retry once without it.
+                detail = e.read().decode("utf-8", "replace")[:200]
+                if e.code == 400 and "think" in detail:
+                    payload.pop("think", None)
+                    out = _ollama("/api/generate", payload)
+                else:
+                    self._send(502, {"error": "ollama rejected", "detail": detail})
+                    return
         except urllib.error.URLError as e:
             self._send(502, {"error": "ollama unreachable", "detail": str(e)[:200]})
             return
@@ -165,6 +182,9 @@ class Handler(BaseHTTPRequestHandler):
             "response": out.get("response", ""),
             "eval_count": out.get("eval_count"),
             "total_ms": round(out.get("total_duration", 0) / 1e6),
+            # length here means the num_predict budget ran out mid-answer —
+            # the one visible symptom of the empty-response failure mode.
+            "done_reason": out.get("done_reason"),
         })
 
 

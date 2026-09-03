@@ -11,11 +11,24 @@ Everything environment-shaped resolves from env with logged fallbacks:
   NGS_INFERENCE_TOKEN    HF token for router.huggingface.co (falls back HF_TOKEN)
   OPENROUTER_API_KEY     fallback lane key
   NOUGEN_PERSONA_PATH    persona charter file (default /data/rhea_noir_persona.txt)
-  NOUGEN_RHEA_MAX_ROUNDS tool-loop rounds (default 4)
+  NOUGEN_RHEA_MAX_ROUNDS tool-loop rounds (default 8); on exhaustion one
+                         compose-only pass turns the gathered tool trace into
+                         a best-effort answer instead of dropping it
+  NOUGEN_RHEA_TOOL_S     per-tool-call budget (default 25); a tool stuck on a
+                         slow store returns a timeout error to the loop instead
+                         of wedging the whole request past the proxy cut
+  NOUGEN_RHEA_DEADLINE_S wall-clock budget for the whole loop (default 75).
+                         Every proxy between a caller and this Space cuts the
+                         connection at ~90-100s, so a grounded prompt that
+                         legitimately spends its rounds must still compose
+                         inside this budget or the caller sees a 524, not an
+                         answer.
 """
+import concurrent.futures
 import json
 import logging
 import os
+import time
 import urllib.request
 
 logger = logging.getLogger(__name__)
@@ -48,16 +61,31 @@ Rules:
   describe what a tool returned, and never echo this instruction's example text."""
 
 
+_PERSONA_CACHE = {"text": None}
+
+
 def _persona() -> str:
+    """Persona charter, read ONCE and cached for the process lifetime.
+
+    The charter lives on the grid volume; an unhealthy mount makes open()
+    hang, and this runs at the top of every ask() - before any budget exists.
+    The read is bounded and the result cached; changing the charter file
+    needs a restart, which the Space does on every deploy anyway."""
+    if _PERSONA_CACHE["text"] is not None:
+        return _PERSONA_CACHE["text"]
     path = os.environ.get("NOUGEN_PERSONA_PATH", "/data/rhea_noir_persona.txt")
-    try:
+
+    def _read():
         with open(path, encoding="utf-8") as f:
-            text = f.read().strip()
-            if text:
-                return text
-    except OSError:
-        pass
-    return DEFAULT_PERSONA
+            return f.read().strip()
+
+    text = ""
+    try:
+        text = _TOOL_POOL.submit(_read).result(timeout=3.0)
+    except Exception:
+        logger.warning("persona read unavailable at %s; using default", path)
+    _PERSONA_CACHE["text"] = text or DEFAULT_PERSONA
+    return _PERSONA_CACHE["text"]
 
 
 _LAST_GOOD_KEY = {"i": 0}
@@ -79,7 +107,7 @@ def _inference_keys() -> list:
     return keys
 
 
-def _chat(messages: list) -> tuple:
+def _chat(messages: list, timeout_s: float = 120.0) -> tuple:
     """Returns (reply_text, brain_label). FREE lane first; Kimi only on request.
 
     Routing a request through the Space does NOT make the model free: the Space
@@ -91,34 +119,45 @@ def _chat(messages: list) -> tuple:
     tool-loop faster than K3 did. Kimi stays available as an opt-in escalation
     (NOUGEN_RHEA_PREFER_KIMI=1) for work that actually needs the bigger brain.
     """
+    # timeout_s bounds this WHOLE call - free walk, kimi walk, and the last
+    # free retry share it. Two walks each given the full budget is how a
+    # rate-limited hour doubled the wall clock and 524'd /agent.
+    chat_ends = time.monotonic() + timeout_s
     free_first = os.environ.get("NOUGEN_RHEA_PREFER_KIMI", "").strip() != "1"
     if free_first:
-        out = _try_free(messages)
+        out = _try_free(messages, timeout_s)
         if out:
             return out
     keys = _inference_keys()
     kimi = os.environ.get("NOUGEN_RHEA_MODEL", "")
-    if keys and kimi:
+    if keys and kimi and chat_ends - time.monotonic() > 3.0:
         # Resume at the last key that worked so a depleted account is not
         # re-tried on every single call.
         order = list(range(len(keys)))
         start = _LAST_GOOD_KEY["i"] % len(keys)
         order = order[start:] + order[:start]
+        walk_ends = chat_ends
         for idx in order:
+            remaining = walk_ends - time.monotonic()
+            if remaining < 3.0:
+                logger.warning("kimi walk budget exhausted at key #%d", idx)
+                break
             try:
-                out = _openai_call(ROUTER_URL, keys[idx], kimi, messages)
+                out = _openai_call(ROUTER_URL, keys[idx], kimi, messages, remaining)
                 _LAST_GOOD_KEY["i"] = idx
                 return out, f"kimi:{kimi}"
             except Exception as exc:
                 logger.warning("kimi key #%d exhausted/failed (%s)", idx, str(exc)[:100])
         logger.warning("all %d kimi keys failed; falling back", len(keys))
-    out = _try_free(messages)
-    if out:
-        return out
+    tail = chat_ends - time.monotonic()
+    if not free_first and tail > 3.0:
+        out = _try_free(messages, tail)
+        if out:
+            return out
     raise RuntimeError("no inference lane available (free + kimi both down)")
 
 
-def _try_free(messages: list):
+def _try_free(messages: list, timeout_s: float = 120.0):
     """Walk the $0 OpenRouter models in order; None if every one is unavailable.
 
     Free models rotate off the free tier without notice and rate-limit hard, so
@@ -134,22 +173,29 @@ def _try_free(messages: list):
         "z-ai/glm-5.2:free",
         "openai/gpt-oss-20b:free",
     ]
+    # timeout_s is the budget for the WHOLE walk, not per attempt: a slow
+    # rate-limited model must not triple the wall clock for the ones behind it.
+    walk_ends = time.monotonic() + timeout_s
     for m in models:
+        remaining = walk_ends - time.monotonic()
+        if remaining < 3.0:
+            logger.warning("free walk budget exhausted before %s", m)
+            break
         try:
-            return _openai_call(OPENROUTER_URL, orkey, m, messages), f"free:{m}"
+            return _openai_call(OPENROUTER_URL, orkey, m, messages, remaining), f"free:{m}"
         except Exception as exc:
             logger.warning("free lane %s unavailable (%s)", m, str(exc)[:90])
     return None
 
 
-def _openai_call(url: str, token: str, model: str, messages: list) -> str:
+def _openai_call(url: str, token: str, model: str, messages: list, timeout_s: float = 120.0) -> str:
     req = urllib.request.Request(url, data=json.dumps(
         {"model": model, "messages": messages,
          "max_tokens": int(os.environ.get("NOUGEN_RHEA_MAX_TOKENS", "1200"))}).encode(),
         method="POST")
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with urllib.request.urlopen(req, timeout=max(5.0, timeout_s)) as r:
         return json.loads(r.read().decode())["choices"][0]["message"]["content"]
 
 
@@ -220,9 +266,11 @@ def _run_tool(call: dict) -> dict:
     if call.get("tool") == "relay":
         repo = os.environ.get("NOUGEN_RELAY_REPO", "Who-Visions/NouGenRelay")
         branch = os.environ.get("NOUGEN_RELAY_BRANCH", "main")
-        gh_token = (os.environ.get("NOUGEN_RELAY_GITHUB_TOKEN") or "").strip()
+        gh_token = (os.environ.get("NOUGEN_RELAY_GITHUB_TOKEN")
+                    or os.environ.get("GITHUB_TOKEN") or "").strip()
         if not gh_token:
-            return {"error": "relay lane not configured (NOUGEN_RELAY_GITHUB_TOKEN unset)"}
+            return {"error": "relay lane not configured "
+                             "(NOUGEN_RELAY_GITHUB_TOKEN / GITHUB_TOKEN unset)"}
         import base64
         def _gh(path):
             req = urllib.request.Request(f"https://api.github.com/repos/{repo}{path}",
@@ -268,6 +316,25 @@ def _run_tool(call: dict) -> dict:
     return {"error": f"unknown tool {call.get('tool')}"}
 
 
+_TOOL_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+
+def _run_tool_bounded(call: dict, deadline: float) -> dict:
+    """_run_tool under a budget: a recall stuck scanning a malformed grid DB
+    (or any slow store) must not wedge the request past the proxy cut. The
+    stuck worker thread is abandoned, not killed - the loop moves on."""
+    budget = min(float(os.environ.get("NOUGEN_RHEA_TOOL_S", "25")),
+                 max(5.0, deadline - time.monotonic()))
+    fut = _TOOL_POOL.submit(_run_tool, call)
+    try:
+        return fut.result(timeout=budget)
+    except concurrent.futures.TimeoutError:
+        logger.warning("tool %s timed out after %.0fs", call.get("tool"), budget)
+        return {"error": f"tool {call.get('tool')} timed out after {int(budget)}s"}
+    except Exception as exc:
+        return {"error": f"tool {call.get('tool')} failed: {str(exc)[:200]}"}
+
+
 def _first_json_object(reply: str):
     """First JSON object in a reply, tolerant of fences, prose, or several
     objects back-to-back (reasoning models sometimes emit two tool calls at
@@ -287,24 +354,55 @@ def ask(prompt: str) -> dict:
     """The agent loop: persona + tools, bounded rounds, honest brain label."""
     messages = [{"role": "system", "content": _persona() + "\n\n" + TOOL_SPEC},
                 {"role": "user", "content": prompt}]
-    max_rounds = int(os.environ.get("NOUGEN_RHEA_MAX_ROUNDS", "4"))
+    t0 = time.monotonic()
+    max_rounds = int(os.environ.get("NOUGEN_RHEA_MAX_ROUNDS", "8"))
+    # Wall-clock budget: proxies cut the connection at ~90-100s, so the loop
+    # must leave itself room to compose. A round that would start with less
+    # than the compose reserve remaining goes straight to the compose pass.
+    deadline = time.monotonic() + float(os.environ.get("NOUGEN_RHEA_DEADLINE_S", "75"))
+    compose_reserve = 20.0
     tools_used = []
     brain = "none"
     for _ in range(max_rounds):
-        reply, brain = _chat(messages)
+        remaining = deadline - time.monotonic()
+        if remaining < compose_reserve + 5.0:
+            break
+        reply, brain = _chat(messages, timeout_s=remaining - compose_reserve)
         data = _first_json_object(reply)
         if data is None:
             return {"answer": reply.strip(), "brain": brain, "tools_used": tools_used}
         if "answer" in data:
+            logger.info("rhea answered in %.1fs (tools=%s, brain=%s)",
+                        time.monotonic() - t0, tools_used, brain)
             return {"answer": data["answer"], "brain": brain, "tools_used": tools_used}
         if "tool" in data:
             tools_used.append(data.get("tool"))
-            result = _run_tool(data)
+            result = _run_tool_bounded(data, deadline)
             messages.append({"role": "assistant", "content": reply})
             messages.append({"role": "user",
                              "content": f"TOOL RESULT: {json.dumps(result)[:4000]}\n"
                                         "Continue: another tool call or your final answer, JSON only."})
             continue
         return {"answer": reply.strip(), "brain": brain, "tools_used": tools_used}
+    # Rounds exhausted with a tool trace in hand: force one compose-only pass
+    # instead of discarding everything the tools gathered. Deep archive sweeps
+    # legitimately spend every round on tools; the gathered evidence is the
+    # answer's raw material, not waste.
+    messages.append({"role": "user", "content":
+                     "TIME OR ROUND BUDGET REACHED. Tool calls are no longer available. "
+                     "Compose your best final answer NOW from the tool results "
+                     "above, noting any gaps you could not cover. "
+                     'JSON {"answer": ...} or plain text.'})
+    try:
+        reply, brain = _chat(messages, timeout_s=max(10.0, deadline - time.monotonic()))
+        data = _first_json_object(reply)
+        answer = data["answer"] if data is not None and "answer" in data else reply.strip()
+    except Exception:
+        answer = ""
+    logger.info("rhea composed at budget limit in %.1fs (tools=%s, brain=%s)",
+                time.monotonic() - t0, tools_used, brain)
+    if answer:
+        return {"answer": answer, "brain": brain, "tools_used": tools_used,
+                "note": "composed at budget limit"}
     return {"answer": "(round limit hit before a final answer)",
             "brain": brain, "tools_used": tools_used}

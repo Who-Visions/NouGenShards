@@ -12,10 +12,20 @@ class MockFastMCP:
     def tool(self): return lambda f: f
     def run(self): print("MCP not installed.")
 
+# mcp 2.x renamed FastMCP to MCPServer (mcp.server.fastmcp no longer exists).
+# Both spellings are accepted so a node mid-upgrade keeps serving on either
+# version; the constructor kwargs used below (dependencies, instructions) and
+# .tool()/.run() are unchanged across the rename.
 try:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer  # mcp >= 2
 except ImportError:
-    FastMCP = MockFastMCP # type: ignore
+    try:
+        from mcp.server.fastmcp import FastMCP as MCPServer  # mcp < 2
+    except ImportError:
+        MCPServer = MockFastMCP  # type: ignore
+
+# Backwards-compatible alias for any caller still importing the old name.
+FastMCP = MCPServer
 
 from .core import capture, mark_shard, compile_recall_packet
 from . import nougen_context
@@ -49,17 +59,17 @@ def _server_instructions() -> str:
     )
 
 
-# Initialize FastMCP Server
+# Initialize the MCP server
 try:
-    mcp = FastMCP(
+    mcp = MCPServer(
         "NouGenShards",
         dependencies=["mcp"],
         instructions=_server_instructions(),
     )
 except TypeError:
-    # Older FastMCP builds predate the instructions kwarg; the apply_skills tool
+    # Older builds predate the instructions kwarg; the apply_skills tool
     # still enforces skills, the roster just does not ride the handshake.
-    mcp = FastMCP("NouGenShards", dependencies=["mcp"])
+    mcp = MCPServer("NouGenShards", dependencies=["mcp"])
 
 # --- Memory Core (Shards) ---
 
@@ -78,9 +88,12 @@ def capture_experience(event_type: str, title: str, content: str, tags: Optional
             content at its true era instead of capture time; invalid values
             fall back to now.
     """
-    success = capture(event_type, title, content, tags,
-                      original_timestamp=original_timestamp)
-    return "Shard captured successfully." if success else "Shard already exists."
+    result = capture(event_type, title, content, tags,
+                     original_timestamp=original_timestamp)
+    if result:
+        return (f"Shard captured successfully (id {result['shard_id']} "
+                f"in db {result['db_index']}).")
+    return f"Shard NOT captured: {result.get('error', 'unknown reason')}"
 
 @mcp.tool()
 def recall_memory(query: str, limit: int = 3) -> str:

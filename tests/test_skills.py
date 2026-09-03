@@ -150,3 +150,29 @@ def test_design_skill_documents_a_real_validator_path():
     for cited in re.findall(r"python\s+(\S*validate\.py)", prose):
         resolved = Path(__file__).resolve().parents[1] / cited
         assert resolved.is_file(), f"SKILL.md cites {cited}, which does not exist"
+
+
+# --- nougen-ctx skill verification -----------------------------------------
+_NOUGEN_CTX_SKILL = Path(__file__).resolve().parents[1] / "skills" / "nougen-ctx" / "SKILL.md"
+
+
+@pytest.mark.skipif(not _NOUGEN_CTX_SKILL.is_file(), reason="nougen-ctx skill not installed")
+def test_nougen_ctx_skill_discovered_in_repo():
+    discovered = skills.discover()
+    names = [s.name for s in discovered]
+    assert "nougen-ctx" in names, f"'nougen-ctx' missing from discovered skills: {names}"
+
+    ctx_skill = next(s for s in discovered if s.name == "nougen-ctx")
+    assert "Rule 0.0" in ctx_skill.description or "Context Mode" in ctx_skill.description
+    assert ctx_skill.path == _NOUGEN_CTX_SKILL
+
+
+@pytest.mark.skipif(not _NOUGEN_CTX_SKILL.is_file(), reason="nougen-ctx skill not installed")
+def test_nougen_ctx_skill_frontmatter_and_content():
+    text = _NOUGEN_CTX_SKILL.read_text(encoding="utf-8")
+    assert text.startswith("---")
+    assert "name: nougen-ctx" in text
+    assert "ctx_execute" in text
+    assert "ctx_search" in text
+    assert "ctx_batch_execute" in text
+

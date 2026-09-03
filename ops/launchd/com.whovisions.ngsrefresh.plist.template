@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.whovisions.ngsrefresh</string>
+
+    <!-- Restarts com.whovisions.ngsnode and logs recall latency either side of
+         the restart. See ops/ngs-node-refresh.sh for why the node needs this. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/ops/ngs-node-refresh.sh</string>
+    </array>
+
+    <!-- Once nightly, offset off the hour so it never lands on a cron-shaped
+         job that runs at :00.
+
+         This was six-hourly until the first live run measured what a restart
+         is actually worth once the fleet fan-out is pointed at this node:
+         before=20.4s, after=20.3s. A restart recovers UPTIME degradation
+         (measured 16s -> 3s earlier the same day with no fan-out traffic) but
+         recovers nothing from CONCURRENT LOAD, and load now dominates. Four
+         restarts a day would buy four cold-start outages of 95-250s each and
+         very little speed. Nightly keeps the uptime component bounded and
+         keeps collecting the before/after series, without pretending the
+         restart is the fix. The fix is the node's concurrency ceiling. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>15</integer></dict>
+    </array>
+
+    <!-- Deliberately NOT RunAtLoad: installing or reloading the agents should
+         not bounce a healthy node as a side effect. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <key>StandardOutPath</key>
+    <string>__REPO__/logs/ngs-refresh.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/logs/ngs-refresh.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

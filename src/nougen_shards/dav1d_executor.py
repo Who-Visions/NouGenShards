@@ -160,7 +160,7 @@ def run_dav1d_agy(
             "command": f"{command} {subcommand or ' '.join(target_args)}".strip(),
             "status": "simulated",
             "exit_code": 0,
-            "output": "AGY CLI registered on Dav1d node. FastMCP bridge operational."
+            "output": "AGY CLI registered on Dav1d node. MCP bridge operational."
         }
 
     version = get_agy_version(bin_path)
