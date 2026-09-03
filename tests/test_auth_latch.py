@@ -49,7 +49,7 @@ def test_the_incident_latched_but_token_vanished(monkeypatch):
     assert node.AUTH_LATCH is True
     assert node.AUTH_TOKEN == ""
     mode = node._auth_mode()
-    assert mode == "LATCHED-NO-TOKEN:refusing-all"
+    assert mode == "LATCHED-NO-TOKEN:refusing-mutations"
     assert "open" not in mode, "a latched node with no token must never print open"
 
 

@@ -122,11 +122,17 @@ def _auth_mode() -> str:
     for an hour while it was fail-open. Printing the latch AS READ BY THIS CODE
     makes a config-only change unable to masquerade as protection: if the value
     does not appear here, this build is not reading it.
+
+    "refusing-mutations" is deliberately narrower than "refusing-all". /health
+    and /status stay open so liveness probes work. Every surface that WRITES or
+    DESTROYS is gated, including GET /pop, which drains the queue. The string
+    has to match what the code actually refuses: claiming more than the
+    mechanism delivers is the failure this change exists to prevent.
     """
     if AUTH_TOKEN:
         return "required(latch={})".format("on" if AUTH_LATCH else "off")
     if AUTH_LATCH:
-        return "LATCHED-NO-TOKEN:refusing-all"
+        return "LATCHED-NO-TOKEN:refusing-mutations"
     return "open(unlatched)"
 
 
@@ -223,6 +229,28 @@ class Handler(BaseHTTPRequestHandler):
     def _route(self) -> str:
         return self.path.split("?", 1)[0].rstrip("/") or "/"
 
+    def _reject_unauthorized(self) -> bool:
+        """Refuse a request that must not proceed. True when already answered.
+
+        Used by every MUTATING surface, not only POST /msg. GET /pop reads AND
+        DESTROYS: it returns every queued message and empties the queue, so an
+        unauthenticated caller who can reach the port steals fleet traffic and
+        deletes it from the recipient in a single request. The HTTP verb is not
+        the security boundary; what the handler DOES is.
+
+        /health and /status stay open deliberately, because liveness probes need
+        them and they expose little. That is why the startup mode string says
+        refusing-mutations rather than refusing-all.
+        """
+        if AUTH_LATCH and not AUTH_TOKEN:
+            self._send({"error": "unauthorized", "reason":
+                        "auth latched required but no token resolved"}, 401)
+            return True
+        if AUTH_TOKEN and self.headers.get("X-NGS-Token", "") != AUTH_TOKEN:
+            self._send({"error": "unauthorized"}, 401)
+            return True
+        return False
+
     def do_GET(self) -> None:
         route = self._route()
         if route in ("/status", "/health", "/"):
@@ -230,6 +258,8 @@ class Handler(BaseHTTPRequestHandler):
                         "timestamp": time.time(), "pending_messages": PENDING.qsize(),
                         "ok": True, "transport": "http"})
         elif route == "/pop":
+            if self._reject_unauthorized():   # /pop MUTATES: read-and-destroy
+                return
             drained = []
             while not PENDING.empty():
                 drained.append(PENDING.get_nowait())
@@ -241,15 +271,7 @@ class Handler(BaseHTTPRequestHandler):
         if self._route() != "/msg":
             self._send({"error": "not found", "path": self._route()}, 404)
             return
-        if AUTH_LATCH and not AUTH_TOKEN:
-            # Latched but nothing resolved: refuse rather than serve openly.
-            # A node that was provisioned and lost its secret is a fault to
-            # report, not a fresh node to welcome.
-            self._send({"error": "unauthorized", "reason":
-                        "auth latched required but no token resolved"}, 401)
-            return
-        if AUTH_TOKEN and self.headers.get("X-NGS-Token", "") != AUTH_TOKEN:
-            self._send({"error": "unauthorized"}, 401)
+        if self._reject_unauthorized():
             return
         try:
             length = int(self.headers.get("Content-Length") or 0)
