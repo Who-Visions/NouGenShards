@@ -61,6 +61,10 @@ WATCHED = ["tools/nougenmsg_node.py", "tools/relay_watch_node.py",
            "tools/drift_check.py"]
 DEFAULT_MAP = [([".nougen/bin/" + Path(c).name], c) for c in WATCHED]
 
+# Filesystem and process clocks disagree slightly, and a restart is not
+# instantaneous. Only a gap larger than this counts as "started before".
+PROCESS_CLOCK_SLACK_S = 5.0
+
 
 def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -178,6 +182,132 @@ def pull_health(root: Path):
     return rows
 
 
+def _live_processes():
+    """(pid, ppid, start_epoch, argv) for every live process, or [] if unknown.
+
+    Stdlib only and FAIL-SOFT by design: a node where enumeration is
+    unavailable returns nothing and this whole check stays silent. Inventing
+    rows from a failed probe is the exact defect this tool keeps finding in
+    other tools -- an incomplete view reported as a complete answer.
+    """
+    if os.name == "nt":
+        ps = ["powershell", "-NoProfile", "-Command",
+              "Get-CimInstance Win32_Process | ForEach-Object { "
+              "'{0}`t{1}`t{2}`t{3}' -f $_.ProcessId, $_.ParentProcessId, "
+              "[int][double]::Parse((Get-Date $_.CreationDate -UFormat %s)), $_.CommandLine }"]
+        sep = "\t"
+    else:
+        ps = ["ps", "-eo", "pid=,ppid=,lstart=,command="]
+        sep = None
+    try:
+        r = subprocess.run(ps, capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return []
+    except (OSError, subprocess.SubprocessError):
+        return []
+    out = []
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            if sep:
+                pid, ppid, started, argv = line.split(sep, 3)
+                out.append((int(pid), int(ppid), float(started), argv))
+            else:
+                parts = line.split(None, 2)
+                if len(parts) < 3:
+                    continue
+                pid, ppid, rest = parts
+                # lstart is a fixed 24-char ctime string, then the command
+                stamp, argv = rest[:24], rest[24:].strip()
+                started = time.mktime(time.strptime(stamp))
+                out.append((int(pid), int(ppid), started, argv))
+        except (ValueError, OverflowError):
+            continue
+    return out
+
+
+def _service_managed_pids():
+    """PIDs the service manager owns, or None when that cannot be determined.
+
+    None means "unknown" and suppresses the unmanaged-process row entirely --
+    absent and broken must not share a branch.
+    """
+    cmd = ["launchctl", "list"] if sys.platform == "darwin" else None
+    if cmd is None:
+        return None
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    pids = set()
+    for line in r.stdout.splitlines()[1:]:
+        head = line.split("\t", 1)[0].strip()
+        if head.isdigit():
+            pids.add(int(head))
+    return pids
+
+
+def process_health(runtime_paths):
+    """Is the node RUNNING canonical, as opposed to merely storing it?
+
+    Every per-file row in this tool compares bytes ON DISK. Python reads a
+    module once at import, so from that moment the file and the running
+    process are independent: a node can report a clean 5/5 MATCH while a
+    process serves code that no longer exists anywhere. That is not
+    hypothetical -- on 2026-09-03 phoebus reported all-MATCH while an
+    orphaned receiver from before the pull served a route the pull had just
+    closed, and the same shape (a value held in memory after its source
+    changed underneath) is what let a vault miss go unnoticed for ~37 minutes
+    while the node printed auth=required.
+
+    Two rows, both about processes rather than files:
+      STALE-PROCESS      started BEFORE the file it runs was last written, so
+                         the running bytes cannot be the bytes on disk
+      UNMANAGED-PROCESS  running a watched script while the service manager
+                         does not own it -- nothing will restart it, and
+                         nothing will stop it either
+    """
+    procs = _live_processes()
+    if not procs:
+        return []
+    managed = _service_managed_pids()
+    rows = []
+    for path in runtime_paths:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        name = path.name
+        for pid, ppid, started, argv in procs:
+            if name not in argv:
+                continue
+            if started and started < mtime - PROCESS_CLOCK_SLACK_S:
+                rows.append(("STALE-PROCESS", str(path), "", "",
+                             "pid {} started {} before this file was last written; the "
+                             "running bytes are NOT the bytes on disk, so every MATCH "
+                             "row above is silent about it"
+                             .format(pid, _ago(mtime - started))))
+            if managed is not None and ppid == 1 and pid not in managed:
+                rows.append(("UNMANAGED-PROCESS", str(path), "", "",
+                             "pid {} runs this file but the service manager does not own "
+                             "it; it will not be restarted, and a reload will not replace "
+                             "it".format(pid)))
+    return rows
+
+
+def _ago(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    if seconds < 90:
+        return "{:.0f}s".format(seconds)
+    if seconds < 5400:
+        return "{:.0f}m".format(seconds / 60)
+    return "{:.1f}h".format(seconds / 3600)
+
+
 def build_map():
     """Canonical path -> runtime candidates, with env entries OVERRIDING.
 
@@ -257,20 +387,29 @@ def check(refresh: bool = False):
         return root, ref, [("CONFIG", ref, "", "",
                             "none of the {} watched path(s) exist at this ref; wrong "
                             "repository for NOUGEN_SHARDS_REPO?".format(len(watched)))]
+    file_rows = []
+    runtime_paths = []
     for candidates, canon_path in build_map():
         runtime = resolve_runtime(candidates, canon_path)
         canon = canonical_bytes(root, ref, canon_path)
+        if runtime is not None:
+            runtime_paths.append(runtime)
         if runtime is None and canon is None:
             continue
         if runtime is None:
-            rows.append(("MISSING", canon_path, "", sha(canon)[:16], "canonical exists, not running here"))
+            file_rows.append(("MISSING", canon_path, "", sha(canon)[:16], "canonical exists, not running here"))
         elif canon is None:
-            rows.append(("UNTRACKED", canon_path, sha(runtime.read_bytes())[:16], "",
-                         "running from {} but absent at {}".format(runtime, ref)))
+            file_rows.append(("UNTRACKED", canon_path, sha(runtime.read_bytes())[:16], "",
+                              "running from {} but absent at {}".format(runtime, ref)))
         else:
             r_hash, c_hash = sha(runtime.read_bytes()), sha(canon)
             state = "MATCH" if r_hash == c_hash else "DRIFT"
-            rows.append((state, canon_path, r_hash[:16], c_hash[:16], str(runtime)))
+            file_rows.append((state, canon_path, r_hash[:16], c_hash[:16], str(runtime)))
+    # Process rows come BEFORE the per-file rows, same principle as STALE-first:
+    # a MATCH describes a file, and a stale process makes that file's row silent
+    # about what is actually serving. Say the view is incomplete before showing it.
+    rows.extend(process_health(runtime_paths))
+    rows.extend(file_rows)
     return root, ref, rows
 
 
