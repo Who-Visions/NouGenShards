@@ -87,12 +87,27 @@ def safe_sender(raw: object) -> str:
     return label or "unknown"
 
 
+def inbox_path(filename: str) -> Path:
+    """Resolve ``filename`` inside the inbox, refusing anything that escapes it.
+
+    ``safe_sender`` already strips the characters that make an escape possible.
+    This is the second, independent check: resolve the candidate and confirm the
+    inbox is genuinely its parent, so a future edit to the sanitizer cannot
+    quietly reintroduce a traversal.
+    """
+    root = INBOX.resolve()
+    candidate = (root / filename).resolve()
+    if candidate.parent != root:
+        raise ValueError("refusing to write outside the inbox: {!r}".format(filename))
+    return candidate
+
+
 def record(msg: dict) -> Path:
     """Persist one message to the inbox and the last-message state file."""
     INBOX.mkdir(parents=True, exist_ok=True)
     STATE.parent.mkdir(parents=True, exist_ok=True)
     filename = "msg_{}_{}.json".format(int(time.time() * 1000), safe_sender(msg.get("sender")))
-    path = INBOX / filename
+    path = inbox_path(filename)
     path.write_text(json.dumps(msg, indent=2), encoding="utf-8")
     STATE.write_text(json.dumps(msg, indent=2), encoding="utf-8")
     PENDING.put(msg)

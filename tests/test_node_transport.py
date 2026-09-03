@@ -125,3 +125,16 @@ def test_watch_interval_prefers_env(watch, monkeypatch):
     assert watch.resolve_interval() == (15, "env")
     monkeypatch.setenv("NOUGEN_RELAY_WATCH_SECS", "0")
     assert watch.resolve_interval() == (watch.DEFAULT_INTERVAL_SECS, "fallback")
+
+
+def test_inbox_path_refuses_an_escape(receiver):
+    """The containment check is independent of the sender sanitizer."""
+    with pytest.raises(ValueError):
+        receiver.inbox_path(".." + "/" + "escaped.json")
+    with pytest.raises(ValueError):
+        receiver.inbox_path("nested/child.json")
+
+
+def test_inbox_path_accepts_a_plain_name(receiver):
+    resolved = receiver.inbox_path("msg_1_claude-cli.json")
+    assert resolved.parent == receiver.INBOX.resolve()
