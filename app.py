@@ -18,6 +18,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import gradio as gr
 import subprocess
+import time
 
 
 # Add src to path for absolute imports
@@ -658,8 +659,41 @@ def _registered_upstreams() -> list:
         return []
 
 
+def _warmup_enabled() -> bool:
+    return os.environ.get("NOUGEN_WARMUP", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _start_recall_warmup() -> None:
+    """Prime the per-process vector cache before the first real recall.
+
+    core.retrieve() builds its vector cache lazily. On a large grid that first
+    build can take longer than the federation recall deadline
+    (NOUGEN_RECALL_DEADLINE_S, default 20s), so after every node start the
+    FIRST recall silently dropped the local grid lane and answered from the
+    other lanes only, and a fan-out peer missed its budget for the same reason.
+    Warming on a daemon thread keeps startup non-blocking. NOUGEN_WARMUP=0
+    disables it; an empty grid is skipped so a warm-up never creates DB files.
+    """
+    if not _warmup_enabled():
+        return
+    if not any(core.get_db_path(i).exists() for i in range(1, core.MAX_DB_COUNT + 1)):
+        return
+    import threading as _threading
+
+    def _run():
+        started = time.perf_counter()
+        try:
+            core.retrieve("warmup", limit=1, domain_key="*")
+            logging.getLogger(__name__).info("recall warm-up done in %.1fs", time.perf_counter() - started)
+        except Exception as exc:  # pylint: disable=broad-except
+            logging.getLogger(__name__).warning("recall warm-up skipped: %s: %s", type(exc).__name__, exc)
+
+    _threading.Thread(target=_run, name="nougen-recall-warmup", daemon=True).start()
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
+    _start_recall_warmup()
     # Heal the grid before anything scans it: malformed DB files are renamed
     # aside (kept for forensics) and recreated empty, so healthy indices and
     # their rows survive instead of a whole-volume wipe. Gated by
