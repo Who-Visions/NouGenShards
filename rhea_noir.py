@@ -108,29 +108,23 @@ def _inference_keys() -> list:
 
 
 def _chat(messages: list, timeout_s: float = 120.0) -> tuple:
-    """Returns (reply_text, brain_label). FREE lane first; Kimi only on request.
-
-    Routing a request through the Space does NOT make the model free: the Space
-    is free compute, but calling router.huggingface.co bills Inference
-    Providers (Baseten/Fireworks et al) against a $0.10/month included credit,
-    and one afternoon of testing consumed $0.09 of it. Kimi K3 has no free tier
-    on any lane we can reach, so a $0-by-default agent cannot default to Kimi.
-    OpenRouter's :free models are genuinely $0 and, measured, answer this
-    tool-loop faster than K3 did. Kimi stays available as an opt-in escalation
-    (NOUGEN_RHEA_PREFER_KIMI=1) for work that actually needs the bigger brain.
-    """
+    """Run Blade's Rhea controller with the owned Kimi Space as brain lane."""
     # timeout_s bounds this WHOLE call - free walk, kimi walk, and the last
     # free retry share it. Two walks each given the full budget is how a
     # rate-limited hour doubled the wall clock and 524'd /agent.
     chat_ends = time.monotonic() + timeout_s
-    free_first = os.environ.get("NOUGEN_RHEA_PREFER_KIMI", "").strip() != "1"
-    if free_first:
-        out = _try_free(messages, timeout_s)
-        if out:
-            return out
+    out = _try_kimi_space(messages, timeout_s)
+    if out:
+        return out
+    out = _try_free(messages, max(3.0, chat_ends - time.monotonic()))
+    if out:
+        return out
+    inference_enabled = os.environ.get(
+        "NOUGEN_RHEA_ENABLE_HF_INFERENCE", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
     keys = _inference_keys()
     kimi = os.environ.get("NOUGEN_RHEA_MODEL", "")
-    if keys and kimi and chat_ends - time.monotonic() > 3.0:
+    if inference_enabled and keys and kimi and chat_ends - time.monotonic() > 3.0:
         # Resume at the last key that worked so a depleted account is not
         # re-tried on every single call.
         order = list(range(len(keys)))
@@ -149,12 +143,7 @@ def _chat(messages: list, timeout_s: float = 120.0) -> tuple:
             except Exception as exc:
                 logger.warning("kimi key #%d exhausted/failed (%s)", idx, str(exc)[:100])
         logger.warning("all %d kimi keys failed; falling back", len(keys))
-    tail = chat_ends - time.monotonic()
-    if not free_first and tail > 3.0:
-        out = _try_free(messages, tail)
-        if out:
-            return out
-    raise RuntimeError("no inference lane available (free + kimi both down)")
+    raise RuntimeError("no inference lane available (kimi-space + free down; HF Inference Providers disabled or unavailable)")
 
 
 def _try_free(messages: list, timeout_s: float = 120.0):
@@ -186,6 +175,36 @@ def _try_free(messages: list, timeout_s: float = 120.0):
         except Exception as exc:
             logger.warning("free lane %s unavailable (%s)", m, str(exc)[:90])
     return None
+
+
+def _try_kimi_space(messages: list, timeout_s: float = 120.0):
+    """Call the narrow authenticated Kimi bridge in Rhea's owned HF Space."""
+    space = (os.environ.get("NOUGEN_KIMI_SPACE") or "").strip()
+    base = (os.environ.get("NOUGEN_KIMI_SPACE_URL") or "").strip().rstrip("/")
+    if not base and space:
+        host = space.replace("/", "-").replace("_", "-").replace(".", "-").lower()
+        base = f"https://{host}.hf.space"
+    if not base:
+        logger.warning("Kimi Space lane unset")
+        return None
+    token = (os.environ.get("NOUGEN_KIMI_SPACE_TOKEN") or
+             os.environ.get("SHARD_GATEWAY_TOKEN") or "").strip()
+    try:
+        req = urllib.request.Request(
+            f"{base}/rhea/brain",
+            data=json.dumps({"messages": messages}).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(req, timeout=max(5.0, timeout_s)) as response:
+            payload = json.loads(response.read().decode())
+        answer = str(payload.get("answer") or "").strip()
+        if not answer:
+            raise RuntimeError("Kimi bridge returned no answer")
+        return answer, f"kimi-space:{payload.get('model') or space or base}"
+    except Exception as exc:
+        logger.warning("kimi-space %s unavailable (%s)", space or base, str(exc)[:120])
+        return None
 
 
 def _openai_call(url: str, token: str, model: str, messages: list, timeout_s: float = 120.0) -> str:

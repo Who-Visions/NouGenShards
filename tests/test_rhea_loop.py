@@ -56,6 +56,27 @@ def test_normal_answer_path_unchanged(monkeypatch):
     assert "note" not in out
 
 
+def test_kimi_space_is_first_lane(monkeypatch):
+    monkeypatch.setattr(rhea_noir, "_try_kimi_space", lambda messages, timeout_s: ("space", "kimi-space:owned"))
+    monkeypatch.setattr(rhea_noir, "_try_free", lambda *args: (_ for _ in ()).throw(AssertionError("free lane ran")))
+    assert rhea_noir._chat([{"role": "user", "content": "hi"}]) == ("space", "kimi-space:owned")
+
+
+def test_hf_inference_providers_require_explicit_enable(monkeypatch):
+    monkeypatch.delenv("NOUGEN_RHEA_ENABLE_HF_INFERENCE", raising=False)
+    monkeypatch.setenv("NOUGEN_RHEA_MODEL", "moonshotai/Kimi-K3")
+    monkeypatch.setattr(rhea_noir, "_try_kimi_space", lambda *args: None)
+    monkeypatch.setattr(rhea_noir, "_try_free", lambda *args: None)
+    monkeypatch.setattr(rhea_noir, "_inference_keys", lambda: ["must-not-run"])
+    monkeypatch.setattr(rhea_noir, "_openai_call", lambda *args: (_ for _ in ()).throw(AssertionError("HF provider ran")))
+    try:
+        rhea_noir._chat([{"role": "user", "content": "hi"}])
+    except RuntimeError as exc:
+        assert "HF Inference Providers disabled" in str(exc)
+    else:
+        raise AssertionError("expected no-lane RuntimeError")
+
+
 def test_deadline_forces_compose_before_rounds_exhaust(monkeypatch):
     """A deadline already spent goes straight to compose — no tool rounds."""
     monkeypatch.setenv("NOUGEN_RHEA_MAX_ROUNDS", "8")

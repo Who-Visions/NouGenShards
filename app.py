@@ -1325,6 +1325,10 @@ class AgentRequest(BaseModel):
     prompt: str
 
 
+class RheaBrainRequest(BaseModel):
+    messages: List[dict]
+
+
 async def _ask_rhea_bounded(prompt: str) -> dict:
     loop = asyncio.get_running_loop()
     # The tenant's vault binding lives in ContextVars on this request's task;
@@ -1346,6 +1350,25 @@ async def agent_ask(req: AgentRequest,
                     _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Ask Rhea-Noir. Free lane first; her reply names the brain that answered."""
     return await _ask_rhea_bounded(req.prompt)
+
+
+@app.post("/rhea/brain")
+def rhea_brain(req: RheaBrainRequest,
+               _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """Space-only Kimi bridge for Blade's Rhea controller."""
+    keys = rhea_noir._inference_keys()
+    model = os.environ.get("NOUGEN_RHEA_MODEL", "").strip()
+    if not keys or not model:
+        raise HTTPException(status_code=503, detail="Kimi Space lane is not configured")
+    failures = []
+    for token in keys:
+        try:
+            answer = rhea_noir._openai_call(
+                rhea_noir.ROUTER_URL, token, model, req.messages)
+            return {"answer": answer, "model": model, "lane": "hf-space-kimi"}
+        except Exception as exc:
+            failures.append(type(exc).__name__)
+    raise HTTPException(status_code=502, detail="Kimi Space providers failed: " + ",".join(failures))
 
 
 @node_mcp.tool()
