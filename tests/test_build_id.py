@@ -42,10 +42,20 @@ def test_build_id_is_stable_across_calls(node):
     assert node.build_id() == node.build_id()
 
 
-def test_build_id_appears_in_status_payload(node):
-    # /status must carry it so a checker never has to scrape a log line.
+def test_build_id_is_not_on_the_unauthenticated_status_surface(node):
+    """/status is open for liveness probes. A build id there tells an
+    anonymous LAN caller which build a node runs, which is a rung toward
+    choosing an exploit against a node it can already reach. Keep it on the
+    authenticated response instead."""
     src = (TOOLS / "nougenmsg_node.py").read_text()
-    assert '"build": build_id()' in src
+    status_block = src.split('if route in ("/status", "/health", "/")')[1].split("elif")[0]
+    assert "build" not in status_block, "build id must not ride the unauthenticated /status payload"
+
+
+def test_build_id_rides_the_authenticated_response(node):
+    """A checker holding the token gets it without scraping a log line."""
+    src = (TOOLS / "nougenmsg_node.py").read_text()
+    assert '"build": build_id()' in src.split("def do_POST")[1]
 
 
 def test_changing_the_file_changes_the_id(tmp_path):
