@@ -281,7 +281,6 @@ class Handler(BaseHTTPRequestHandler):
         route = self._route()
         if route in ("/status", "/health", "/"):
             self._send({"status": "online", "service": "agy-msg", "node": NODE,
-                        "build": build_id(),
                         "timestamp": time.time(), "pending_messages": PENDING.qsize(),
                         "ok": True, "transport": "http"})
         elif route == "/pop":
@@ -331,7 +330,13 @@ class Handler(BaseHTTPRequestHandler):
             # tools/wake for why availability is discovered, not configured.
             elevated["wake"] = _maybe_wake(msg, elevated)
 
+        # build id rides the AUTHENTICATED response only. /status is open for
+        # liveness, and telling an anonymous LAN caller exactly which build a
+        # node runs is a rung toward choosing an exploit against a node it can
+        # already reach — not a secret, but not free either. A checker holding
+        # the token gets it cheaply; a scanner does not.
         self._send({"delivered": True, "method": "http", "node": NODE, "file": path.name,
+                    "build": build_id(),
                     "elevated": elevated})
 
 
