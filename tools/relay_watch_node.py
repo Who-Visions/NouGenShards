@@ -42,12 +42,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _agy_live_delivery import gate_and_deliver, registry_parity_ok, verify_user_origin_signature  # noqa: E402
-import re  # noqa: E402
-
-_ORIGIN_SIG_RE = re.compile(r"origin_sig:\s*([0-9a-fA-F]{64})")
-_ORIGIN_NONCE_RE = re.compile(r"origin_nonce:\s*(\S+)")
-_ORIGIN_TS_RE = re.compile(r"origin_ts:\s*(\d+)")
+from _agy_live_delivery import (  # noqa: E402
+    gate_and_deliver, parse_origin_lines, registry_parity_ok, verify_user_origin_signature)
 
 HOME = Path.home()
 
@@ -124,9 +120,9 @@ def announce(leg_id: str, path: Path) -> None:
     who = "{}/{}".format(record.get("machine", "?"), record.get("agent", "?"))
     status = record.get("status", "?")
     body_text = str(record.get("body") or "")
-    sig_match = _ORIGIN_SIG_RE.search(body_text)
-    nonce_match = _ORIGIN_NONCE_RE.search(body_text)
-    ts_match = _ORIGIN_TS_RE.search(body_text)
+    # Origin-line grammar and body normalisation live in the gate module —
+    # one definition, so this caller cannot drift from what gets verified.
+    origin_nonce, origin_ts, origin_sig = parse_origin_lines(body_text)
     # Signs goal AND body now, not goal alone (the sibling node caught the gap: a
     # goal-only signature authenticates a headline while the payload
     # underneath is unverified and attacker-replaceable). Canonical body has
@@ -138,13 +134,11 @@ def announce(leg_id: str, path: Path) -> None:
     # Blade's exact normalisation, so both verifiers agree byte-for-byte:
     # drop the origin lines, right-strip every remaining line, trim the
     # whole thing. Trailing-whitespace churn must not break a signature.
-    stripped = _ORIGIN_SIG_RE.sub("", _ORIGIN_NONCE_RE.sub("", _ORIGIN_TS_RE.sub("", body_text)))
-    canonical_body = "\n".join(line.rstrip() for line in stripped.splitlines()).strip()
-    origin_nonce = nonce_match.group(1) if nonce_match else None
+    # Raw body goes in; the verifier normalises it itself (see
+    # canonical_signing_input), so there is no step here to get wrong.
     origin_status = (
-        verify_user_origin_signature(full_goal, canonical_body, origin_nonce, sig_match.group(1),
-                                     timestamp=(ts_match.group(1) if ts_match else None))
-        if sig_match else None)
+        verify_user_origin_signature(full_goal, body_text, origin_nonce, origin_sig, timestamp=origin_ts)
+        if origin_sig else None)
     print("[relay_watch] NEW {} ({}) from {}: {}".format(leg_id, status, who, goal), flush=True)
     INBOX.mkdir(parents=True, exist_ok=True)
     text = ("relay leg {} from {} ({}): {} -- read the full leg before acting; "

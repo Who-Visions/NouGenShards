@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import socket
 import threading
 import time
@@ -253,36 +254,70 @@ def _check_and_mark_duplicate(key: str) -> bool:
 #                                          ordinary peer content gate
 #   - origin="peer_suggestion" or
 #     "peer_execution_request" (or unset) -> ordinary peer content gate
+# Read once at import from the environment (the launch wrapper resolves it
+# from the vault). A token provisioned AFTER this process started is invisible
+# until the process restarts — see tools/launchd/README.md. Deliberate: this
+# module stays stdlib-only and portable, so it does not import the vault.
 USER_ORIGIN_TOKEN = os.environ.get("NOUGEN_USER_ORIGIN_TOKEN", "").strip()
+
+# The three origin lines a signer places in a relay-leg body. Their VALUE
+# GRAMMAR is contract: a signer emitting e.g. an uppercase-hex signature must
+# verify identically on every node (hex case is accepted either way by
+# lowercasing before compare; the nonce is any non-space run; the timestamp
+# is decimal digits only).
+ORIGIN_SIG_RE = re.compile(r"origin_sig:\s*([0-9a-fA-F]{64})")
+ORIGIN_NONCE_RE = re.compile(r"origin_nonce:\s*(\S+)")
+ORIGIN_TS_RE = re.compile(r"origin_ts:\s*(\d+)")
+
+
+def parse_origin_lines(body: str) -> "tuple[str | None, str | None, str | None]":
+    """(nonce, timestamp, signature) from a raw leg body; None for any absent."""
+    n, t, s = ORIGIN_NONCE_RE.search(body), ORIGIN_TS_RE.search(body), ORIGIN_SIG_RE.search(body)
+    return (n.group(1) if n else None, t.group(1) if t else None, s.group(1) if s else None)
+
+
+def normalise_body(body: str) -> str:
+    """The canonical body form every node must derive identically.
+
+    Drop the three origin lines (a signature cannot cover its own value, and
+    nonce/timestamp are covered as their own fields), right-strip every
+    remaining line, trim the whole. Trailing-whitespace churn must never
+    break a signature. Idempotent.
+    """
+    stripped = ORIGIN_SIG_RE.sub("", ORIGIN_NONCE_RE.sub("", ORIGIN_TS_RE.sub("", body)))
+    return "\n".join(line.rstrip() for line in stripped.splitlines()).strip()
 
 
 def canonical_signing_input(goal: str, nonce: str, timestamp: str, body: str) -> bytes:
-    """The one fleet-wide signing form, converged with the sibling node 2026-09-03.
+    """The one fleet-wide signing form. THIS DOCSTRING IS THE SIGNER'S SPEC.
 
-    Length-prefixed fields, joined with "|":
-        str(len(utf8)) + ":" + utf8   for each of (goal, nonce, body)
-    e.g. goal "restart relay", nonce "n1", body "do the thing" ->
-        b"13:restart relay|2:n1|12:do the thing"
+    Four length-prefixed fields, in this order, joined with "|":
+        str(len(utf8_bytes)) + ":" + utf8_bytes   for each of
+        (goal, nonce, timestamp, body)
+    then HMAC-SHA256 with the owner-origin token, hex, lowercase.
 
-    Length prefixes kill the delimiter collision the sibling node flagged: without
-    them goal="a|b"+nonce="c" hashes identically to goal="a"+nonce="b|c".
-    Chosen over per-field hashing because it is one HMAC with no nested
-    digests — simpler for the signer, which is the user's own ChatGPT
-    session, not a machine. Two verifiers that disagree would make a
-    signed leg pass on one node and fail on the other: one scheme, not two.
+    Worked example, byte-checked on every node (sha256[:16] cb955f7584fe7ca3):
+        goal "restart relay", nonce "n1", timestamp "1788433000",
+        body "do the thing"  ->
+        b"13:restart relay|2:n1|10:1788433000|12:do the thing"
 
-    `body` must already be normalised by the caller: origin lines stripped,
-    each line right-stripped, whole thing trimmed (the sibling node's form), so
-    trailing-whitespace churn cannot break a signature.
+    `timestamp` is plain decimal unix seconds. `body` may be passed RAW: it
+    is normalised here (see normalise_body) so no caller can skip that step
+    and produce bytes that verify nowhere. A signer must apply the same
+    normalisation to what it signs — sign the body you will send, minus the
+    three origin lines, lines right-stripped, whole trimmed.
+
+    Why this shape: length prefixes kill the delimiter collision (goal "a|b"
+    + nonce "c" would otherwise hash like goal "a" + nonce "b|c"); one HMAC
+    with no nested digests keeps it simple for a signer that is a chat
+    session, not a machine. The timestamp is the fourth field because
+    without it an evicted nonce becomes replayable again — a captured
+    owner-signed message is dormant, not dead, until its nonce ages out.
+    Signing it and rejecting on age makes eviction safe by construction and
+    bounds how long a signed command is good for: 15 minutes, not forever.
     """
     parts = []
-    # Timestamp is the fourth field (converged with the sibling node 2026-09-03): without
-    # it an evicted nonce becomes replayable again — a captured owner-signed
-    # leg is dormant, not dead, until its nonce ages out of the store. Signing
-    # the timestamp and rejecting on age makes eviction safe by construction
-    # (retention only has to exceed max age) and answers "how long is a
-    # signed command good for" — 15 minutes, not forever.
-    for field in (goal, nonce, timestamp, body):
+    for field in (goal, nonce, timestamp, normalise_body(body)):
         raw = field.encode("utf-8")
         parts.append(str(len(raw)).encode("ascii") + b":" + raw)
     return b"|".join(parts)

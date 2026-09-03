@@ -13,7 +13,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import importlib
-import os
 import sys
 import time
 from pathlib import Path
