@@ -288,14 +288,35 @@ def wait(seconds: float, wake: Path, slice_s: float, *, clock=time.time, sleep=t
             return "wake"
 
 
+def shield_console_interrupts() -> str:
+    """A resident daemon must not die to a stray console Ctrl+C: on 2026-09-03
+    02:06Z one reached the task's console (exit 0xC000013A) and two legs sat
+    unseen for 25 minutes. It is stopped by process termination (Stop-Process /
+    SIGTERM), never by Ctrl+C. NOUGEN_RELAY_LIVE_IGNORE_SIGINT=0 restores it."""
+    if os.environ.get("NOUGEN_RELAY_LIVE_IGNORE_SIGINT", "1").strip() == "0":
+        return "sigint honoured"
+    import signal
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    if os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleCtrlHandler(None, True)
+            return "sigint ignored + console ctrl-c shielded"
+        except Exception:  # pylint: disable=broad-except
+            return "sigint ignored"
+    return "sigint ignored"
+
+
 def run_daemon(*, dry: bool, quiet: bool) -> None:
+    shield = shield_console_interrupts()
     active = _env_float("NOUGEN_RELAY_LIVE_ACTIVE_S", 3)
     window = _env_float("NOUGEN_RELAY_LIVE_ACTIVE_WINDOW_S", 600)
     idle_max = max(_env_float("NOUGEN_RELAY_LIVE_INTERVAL_S", 60), active)
     slice_s = _env_float("NOUGEN_RELAY_LIVE_WAKE_POLL_S", 0.5)
     wake = wake_path()
     print(json.dumps({"daemon": "relay_live", "active_s": active, "window_s": window, "idle_max_s": idle_max,
-                      "wake": str(wake), "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}), flush=True)
+                      "wake": str(wake), "interrupts": shield, "pid": os.getpid(),
+                      "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}), flush=True)
     interval, last_active = active, time.time()
     while True:
         new_count = 0
