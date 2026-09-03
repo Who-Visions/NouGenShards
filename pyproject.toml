@@ -25,7 +25,7 @@ dependencies = [
     # CI went red on it with no commit behind the change, and the next Space
     # rebuild would have shipped a container that cannot boot. Migrating to the
     # 2.x API is deliberate work, not something a `pip install` should decide.
-    "mcp>=1.0,<2.0",
+    "mcp>=1.0,<3.0",
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "sqlalchemy>=2.0",       # connectors/sql.py uses the 2.0 API (make_url, text)
