@@ -21,6 +21,11 @@ Configuration, env first, documented fallback:
   NOUGEN_CC_SESSIONS      live-session registry (default ~/.nougen/cc_sessions.json)
   NOUGEN_MANIFEST_SECRETS comma list of vault key names to fingerprint
                           (default: the fleet-bus set)
+  NOUGEN_MANIFEST_SALT    per-comparison nonce the two nodes agree on out of
+                          band. Secret rows emit HMAC-SHA256(salt, value)[:12];
+                          without it they emit SALT-REQUIRED, never a bare
+                          hash (a bare hash prefix pasted into a relay leg
+                          is a permanent offline-guess oracle for that secret)
 
 Usage: python3 tools/parity_manifest.py [--json]
 Stdlib only. Never writes anything. Safe to run on any node.
@@ -65,16 +70,44 @@ def git(repo: Path, *args: str) -> str:
         return "ERR"
 
 
-def secret_fingerprint(repo: Path, key: str) -> str:
-    """sha256[:12] of the vault value via the repo's keymaker, never the value."""
+# Runs in the repo's venv (where the vault module lives), never in this
+# process. Receives src path, key name and salt as ARGV — no Python source is
+# built from data. Emits only HMAC-SHA256(salt, value)[:12]: a keyed, one-way
+# fingerprint. The value itself is never read into this process at all.
+_FINGERPRINT_CHILD = (
+    "import sys, hmac, hashlib\n"
+    "src, key, salt = sys.argv[1], sys.argv[2], sys.argv[3]\n"
+    "sys.path.insert(0, src)\n"
+    "from nougen_shards import keymaker\n"
+    "v = keymaker.get_secret(key)\n"
+    "print(hmac.new(salt.encode(), v.encode(), hashlib.sha256).hexdigest()[:12] if v else 'UNSET')\n"
+)
+
+
+def secret_fingerprint(repo: Path, key: str, salt: str) -> str:
+    """Keyed fingerprint of a vault value for cross-node comparison. Never the value.
+
+    Why salted, not a bare hash: a bare sha256 prefix is a deterministic
+    function of the secret alone, so once pasted into a relay leg or a PR
+    (a git repo) it is a permanent offline-verification oracle for any
+    guess, and a brute-force target for any low-entropy value that ever
+    lands under one of these key names. With a per-comparison salt that the
+    two nodes exchange out of band (NOUGEN_MANIFEST_SALT), the emitted
+    fingerprint is useless to anyone without the salt, unlinkable across
+    comparison sessions, and still answers the only question it exists to
+    answer: do these two vaults hold the same value or not.
+
+    Without a salt this deliberately emits SALT-REQUIRED rather than a bare
+    hash — the unsafe form is not available by omission.
+    """
+    if not salt:
+        return "SALT-REQUIRED"
     py = repo / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     if not py.exists():
         return "NO-VENV"
-    code = ("import sys,hashlib; sys.path.insert(0,{src!r});"
-            "from nougen_shards import keymaker; v=keymaker.get_secret({key!r});"
-            "print(hashlib.sha256(v.encode()).hexdigest()[:12] if v else 'UNSET')").format(src=str(repo / "src"), key=key)
     try:
-        r = subprocess.run([str(py), "-c", code], capture_output=True, text=True, timeout=30)
+        r = subprocess.run([str(py), "-c", _FINGERPRINT_CHILD, str(repo / "src"), key, salt],
+                           capture_output=True, text=True, timeout=30)
         return r.stdout.strip() or "ERR"
     except (OSError, subprocess.SubprocessError):
         return "ERR"
@@ -136,8 +169,10 @@ def build() -> dict:
     for f in sorted(p.name for p in hooks.glob("*.py")) if hooks.is_dir() else []:
         rows.append(("hook:" + f, str(hooks / f), sha16(hooks / f), ""))
     rows.extend(contract_rows(bus))
+    salt = os.environ.get("NOUGEN_MANIFEST_SALT", "").strip()
     for key in secrets:
-        rows.append(("secret-fp:" + key, "vault", secret_fingerprint(repo, key), "sha256[:12] of value; value never emitted"))
+        rows.append(("secret-fp:" + key, "vault", secret_fingerprint(repo, key, salt),
+                     "HMAC(salt, value)[:12]; value never read by this process; useless without the salt"))
     try:
         n = len(json.loads(registry.read_text())) if registry.exists() else 0
     except (OSError, ValueError):
