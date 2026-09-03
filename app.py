@@ -1356,6 +1356,35 @@ async def ask_rhea(prompt: str) -> dict:
     return await _ask_rhea_bounded(prompt)
 
 
+class RheaBrainRequest(BaseModel):
+    messages: List[dict]
+
+
+@app.post("/rhea/brain")
+def rhea_brain(req: RheaBrainRequest,
+               _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """Narrow Space-only Kimi bridge for Blade's Rhea controller.
+
+    Blade's rhea_noir._try_kimi_space POSTs here first. The Space holds the
+    HF inference tokens (NGS_INFERENCE_TOKENS) and the Kimi model id
+    (NOUGEN_RHEA_MODEL), so the K3 lane bills the Space, never the node.
+    503 = lane unconfigured on the Space, 502 = every provider key failed.
+    """
+    keys = rhea_noir._inference_keys()
+    model = os.environ.get("NOUGEN_RHEA_MODEL", "").strip()
+    if not keys or not model:
+        raise HTTPException(status_code=503, detail="Kimi Space lane is not configured")
+    failures = []
+    for token in keys:
+        try:
+            answer = rhea_noir._openai_call(rhea_noir.ROUTER_URL, token, model, req.messages)
+            return {"answer": answer, "model": model, "lane": "hf-space-kimi"}
+        except Exception as exc:
+            failures.append(type(exc).__name__)
+    raise HTTPException(status_code=502,
+                        detail="Kimi Space providers failed: " + ",".join(failures))
+
+
 # --- Dav1d Execution Layer ---
 from nougen_shards.dav1d_executor import run_dav1d_agy
 
