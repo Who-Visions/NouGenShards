@@ -107,6 +107,40 @@ def canonical_bytes(root: Path, ref: str, path: str):
         return None
 
 
+def pull_health(root: Path, ref: str):
+    """Can this clone still fast-forward, and what would stop it?
+
+    A watcher that pulls on a timer goes QUIETLY BLIND when the pull starts
+    failing: it logs a reason nobody reads and keeps announcing only what it
+    already has, which looks identical to a quiet period. Two causes, both
+    seen in this fleet:
+
+    * a MODIFIED TRACKED file that upstream later touches, which makes
+      --ff-only refuse. Locally-modified state that is also synced upstream is
+      the trap, and the file need not be touched yet for the clone to be armed.
+    * a HEAD that is no longer an ancestor of the canonical ref at all, so no
+      fast-forward is possible regardless of working-tree state.
+
+    Reported as rows so a blind watcher can announce its own blindness rather
+    than looking healthy while it stops learning anything new.
+    """
+    rows = []
+    modified = [ln[3:] for ln in _git(root, "status", "--porcelain").splitlines()
+                if ln[:2].strip() and not ln.startswith("??")]
+    if modified:
+        rows.append(("PULL-RISK", str(root), "", "",
+                     "{} modified TRACKED file(s); an upstream touch to any of them makes "
+                     "--ff-only refuse. First: {}".format(len(modified), ", ".join(modified[:3]))))
+    ancestor = subprocess.run(
+        ["git", "-C", str(root), "merge-base", "--is-ancestor", "HEAD", ref],
+        capture_output=True, timeout=60)
+    if ancestor.returncode != 0:
+        rows.append(("PULL-BLOCKED", str(root), "", "",
+                     "HEAD is not an ancestor of {}; no fast-forward is possible and a "
+                     "polling watcher here has already stopped learning".format(ref)))
+    return rows
+
+
 def build_map():
     """Canonical path -> runtime candidates, with env entries OVERRIDING.
 
@@ -173,6 +207,7 @@ def check(refresh: bool = False):
         rows.append(("STALE", ref, "", "", "{} commit(s) behind {}; every comparison "
                      "below is against an out-of-date reference"
                      .format(behind, _remote_of(root, ref))))
+    rows.extend(pull_health(root, ref))
     for candidates, canon_path in build_map():
         runtime = resolve_runtime(candidates, canon_path)
         canon = canonical_bytes(root, ref, canon_path)
