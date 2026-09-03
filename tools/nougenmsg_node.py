@@ -43,6 +43,7 @@ so it needs a supervisor to be a real transport.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -110,6 +111,31 @@ AUTH_LATCH = _AUTH_LATCH_RAW.lower() not in ("", "0", "off", "false", "optional"
 # feed the same audited decision instead of two copies that could drift.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _agy_live_delivery import gate_and_deliver, registry_parity_ok  # noqa: E402
+
+
+def build_id() -> str:
+    """sha256[:12] of THE FILE THIS PROCESS ACTUALLY LOADED.
+
+    Deliberately hashes ``__file__`` rather than asking git what a nearby
+    checkout says. A checkout describes a directory; a process can be running
+    bytes from a path nobody is checking, and on 2026-09-03 that gap was real:
+    a node pulled canonical, the files on disk matched byte-for-byte, and the
+    still-running process kept serving pre-pull code. Every disk-based check
+    reported MATCH for the whole window while the node was vulnerable.
+
+    Hashing the loaded file makes the claim come from the thing being claimed
+    about — the same reason the auth mode string reports the latch AS READ BY
+    THIS CODE rather than as configured. A comparison against a running
+    build id cannot be fooled by a reload that never happened.
+
+    Never raises: an unreadable ``__file__`` (frozen, zipimport, exec'd from
+    memory) yields "unknown", which a checker must treat as "cannot
+    determine" rather than as a match.
+    """
+    try:
+        return hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()[:12]
+    except Exception:  # noqa: BLE001 - identifying yourself must never break startup
+        return "unknown"
 
 
 def _auth_mode() -> str:
@@ -255,6 +281,7 @@ class Handler(BaseHTTPRequestHandler):
         route = self._route()
         if route in ("/status", "/health", "/"):
             self._send({"status": "online", "service": "agy-msg", "node": NODE,
+                        "build": build_id(),
                         "timestamp": time.time(), "pending_messages": PENDING.qsize(),
                         "ok": True, "transport": "http"})
         elif route == "/pop":
@@ -319,7 +346,8 @@ def resolve_port() -> "tuple":
 def main() -> int:
     port, source = resolve_port()
     bind = os.environ.get("NOUGEN_AGY_MSG_BIND", "").strip() or DEFAULT_BIND
-    print("[nougenmsg_node] node={} bind={}:{} inbox={} port_source={} auth={} kaedra_gate={}".format(
+    print("[nougenmsg_node] build={} node={} bind={}:{} inbox={} port_source={} auth={} kaedra_gate={}".format(
+        build_id(),
         NODE, bind, port, INBOX, source,
         _auth_mode(),
         "configured" if os.environ.get("KAEDRA_GATEWAY_TOKEN", "").strip() else "unset"),
