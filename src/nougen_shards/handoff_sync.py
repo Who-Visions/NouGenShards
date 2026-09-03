@@ -56,7 +56,7 @@ def _git(args: list[str], cwd: Path, timeout: int = 60) -> tuple[int, str, str]:
             ["git", *args],
             cwd=str(cwd),
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=timeout,
             check=False,
         )

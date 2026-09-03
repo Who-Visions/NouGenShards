@@ -93,7 +93,7 @@ def access_token(force: bool = False) -> str:
             return _tok_cache["value"]
         out = subprocess.run(
             ["gcloud", "auth", "print-access-token"],
-            capture_output=True, text=True, timeout=60, shell=(os.name == "nt"),
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, shell=(os.name == "nt"),
         )
         if out.returncode != 0:
             raise RuntimeError(f"gcloud auth failed: {out.stderr.strip()[:200]}")

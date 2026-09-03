@@ -71,7 +71,7 @@ def execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=timeout,
             env=env,
             check=False,

@@ -134,7 +134,7 @@ def main():
             print(f"[{i}/{len(windows)}] {label} attempt {attempt}", flush=True)
             proc = subprocess.run(
                 [sys.executable, TARGET, "--start", a.isoformat(), "--end", b.isoformat()],
-                capture_output=True, text=True)
+                capture_output=True, text=True, encoding="utf-8", errors="replace")
             # The script's last stdout line is its JSON summary.
             summary = None
             for ln in reversed((proc.stdout or "").strip().splitlines()):

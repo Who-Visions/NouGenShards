@@ -67,7 +67,7 @@ def total_vram_bytes():
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         return int(out.stdout.strip().splitlines()[0]) * 1024 * 1024
     except Exception:
         return 0

@@ -27,7 +27,7 @@ def _resolve_project_root() -> Path:
         return module_root
     try:
         r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                           capture_output=True, text=True, timeout=5, check=False)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, check=False)
         if r.returncode == 0 and r.stdout.strip():
             return Path(r.stdout.strip())
     except OSError:
@@ -142,7 +142,7 @@ def get_cwd_repo_root() -> Path | None:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             check=False,
             timeout=10,
         )
@@ -588,7 +588,7 @@ def get_git_status() -> Dict:
         res_branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             check=False,
             cwd=PROJECT_ROOT,
             timeout=10,
@@ -600,7 +600,7 @@ def get_git_status() -> Dict:
         res_status = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             check=False,
             cwd=PROJECT_ROOT,
             timeout=10,
@@ -614,7 +614,7 @@ def get_git_status() -> Dict:
         res_commits = subprocess.run(
             ["git", "log", "-n", "3", "--oneline"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             check=False,
             cwd=PROJECT_ROOT,
             timeout=10,

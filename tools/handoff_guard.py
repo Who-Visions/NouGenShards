@@ -72,7 +72,7 @@ def _newest_text(limit=1800):
 def _git(*args):
     try:
         return subprocess.run(["git", "-C", str(REPO), *args],
-                              capture_output=True, text=True, timeout=GIT_TIMEOUT_S).stdout.strip()
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=GIT_TIMEOUT_S).stdout.strip()
     except Exception:
         return ""
 

@@ -268,6 +268,7 @@ def _execute(trigger: dict, event: str, data: dict, path: Path, mode: str) -> di
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             run_record["status"] = "background"
         else:
@@ -277,7 +278,7 @@ def _execute(trigger: dict, event: str, data: dict, path: Path, mode: str) -> di
                 cwd=cwd,
                 env=env,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 timeout=int(trigger.get("timeout") or DEFAULT_TIMEOUT),
                 check=False,
             )

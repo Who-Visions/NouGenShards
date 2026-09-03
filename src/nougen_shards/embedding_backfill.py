@@ -53,7 +53,7 @@ def _vram_used_mib() -> Optional[int]:
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         ).stdout.strip().splitlines()
         return int(out[0]) if out else None
     except Exception:
