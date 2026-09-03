@@ -295,8 +295,8 @@ function indexHtml(): string {
 <body style="margin:0;background:#0f1117;color:#e6e6e6;font-family:system-ui,sans-serif">
   <div id="root"></div>
   <script type="module">
-    import React from "https://esm.sh/react@18.3.1";
-    import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
+    import React from "https://esm.sh/react@19.2.8";
+    import { createRoot } from "https://esm.sh/react-dom@19.2.8/client";
 
     // Inline runtime mirror of Hud.tsx (the canonical TSX source). Since we only run
     // tsc (no bundler) we mount a runtime twin here that calls the same /api/* routes.
