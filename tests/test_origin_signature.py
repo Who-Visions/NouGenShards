@@ -151,3 +151,51 @@ def test_nonce_store_survives_reimport(gate, tmp_path, monkeypatch):
     sys.modules.pop("_agy_live_delivery", None)
     reloaded = importlib.import_module("_agy_live_delivery")
     assert reloaded.verify_user_origin_signature(g, b, n, sig, timestamp=t) == "user_claimed_unverified"
+
+
+# --- normalisation cases the worked example structurally cannot catch ------
+# The shared example's body has no origin lines, so it passes whether origin
+# lines are dropped as whole lines or substituted as text. These three are
+# where the two approaches diverge, found by running both implementations
+# side by side on the same inputs.
+
+def test_origin_line_in_the_middle_leaves_no_blank_line(gate):
+    assert gate.normalise_body("line A\norigin_nonce: n1\nline B") == "line A\nline B"
+
+
+def test_interleaved_origin_lines_leave_no_blank_lines(gate):
+    body = "A\norigin_nonce: n1\nB\norigin_ts: 1788433000\nC\norigin_sig: " + "a" * 64
+    assert gate.normalise_body(body) == "A\nB\nC"
+
+
+def test_prefix_inside_prose_is_not_an_origin_line(gate):
+    """A leg that merely DISCUSSES the scheme must normalise unchanged."""
+    prose = "the origin_nonce: field is described here, and origin_sig: too"
+    assert gate.normalise_body(prose) == prose
+    assert gate.parse_origin_lines(prose) == (None, None, None)
+
+
+def test_prose_mention_before_real_line_is_not_extracted(gate):
+    body = "note: origin_nonce: fake in prose\norigin_nonce: real-1\norigin_ts: 1788433000\norigin_sig: " + "b" * 64
+    nonce, ts, sig = gate.parse_origin_lines(body)
+    assert (nonce, ts, sig) == ("real-1", "1788433000", "b" * 64)
+    assert gate.normalise_body(body) == "note: origin_nonce: fake in prose"
+
+
+def test_signature_over_body_with_mid_origin_lines_verifies(gate):
+    """End to end: a signer that signs the body minus the origin lines must
+    verify when the receiver sees those lines mid-body, not only at the end."""
+    g, n, t = "goal", "n-12", _now()
+    signed_body = "A\nB\nC"
+    sent_body = "A\norigin_nonce: {}\nB\norigin_ts: {}\nC".format(n, t)
+    sig = _sign(gate, g, n, t, signed_body)
+    assert gate.verify_user_origin_signature(g, sent_body, n, sig, timestamp=t) == "user_verified"
+
+
+def test_module_imports_without_fcntl(gate, monkeypatch):
+    """The canonical module must be importable on Windows: no POSIX-only
+    import at module scope. Simulate fcntl being absent and re-import."""
+    monkeypatch.setitem(sys.modules, "fcntl", None)  # makes `import fcntl` raise ImportError
+    sys.modules.pop("_agy_live_delivery", None)
+    mod = importlib.import_module("_agy_live_delivery")
+    assert mod.canonical_signing_input("restart relay", "n1", "1788433000", "do the thing") == WORKED_EXAMPLE

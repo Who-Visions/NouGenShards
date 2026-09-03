@@ -13,7 +13,6 @@ not on which transport it arrived over.
 from __future__ import annotations
 
 import errno
-import fcntl
 import hashlib
 import hmac
 import json
@@ -25,6 +24,15 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# POSIX advisory locks where available; on Windows fall back to an
+# O_CREAT|O_EXCL lock file (see _acquire_lock). A module-scope `import fcntl`
+# made this canonical, public module un-importable on a Windows clone —
+# silent ImportError on a supported platform is the worst option.
+try:
+    import fcntl  # type: ignore[import-not-found]
+except ImportError:  # Windows
+    fcntl = None  # type: ignore[assignment]
 
 # Bumped whenever KAEDRA_SYSTEM's judgment behavior changes, so a log line
 # says which policy produced a verdict (coassist leg 20260903T062421Z, #4/#5:
@@ -265,13 +273,25 @@ USER_ORIGIN_TOKEN = os.environ.get("NOUGEN_USER_ORIGIN_TOKEN", "").strip()
 # verify identically on every node (hex case is accepted either way by
 # lowercasing before compare; the nonce is any non-space run; the timestamp
 # is decimal digits only).
-ORIGIN_SIG_RE = re.compile(r"origin_sig:\s*([0-9a-fA-F]{64})")
-ORIGIN_NONCE_RE = re.compile(r"origin_nonce:\s*(\S+)")
-ORIGIN_TS_RE = re.compile(r"origin_ts:\s*(\d+)")
+# LINE-ANCHORED (^ with MULTILINE): an origin line is a line that STARTS with
+# the prefix. Unanchored patterns were an interop break: ordinary prose that
+# merely mentions "origin_nonce:" would be matched — partially eaten out of
+# the signed body by one node and left intact by another — and a prose
+# mention appearing before the real line would be extracted as the nonce.
+# A leg that discusses the scheme must normalise identically to a leg that
+# does not.
+ORIGIN_SIG_RE = re.compile(r"^\s*origin_sig:\s*([0-9a-fA-F]{64})\s*$", re.MULTILINE)
+ORIGIN_NONCE_RE = re.compile(r"^\s*origin_nonce:\s*(\S+)\s*$", re.MULTILINE)
+ORIGIN_TS_RE = re.compile(r"^\s*origin_ts:\s*(\d+)\s*$", re.MULTILINE)
+_ORIGIN_PREFIXES = ("origin_nonce:", "origin_ts:", "origin_sig:")
 
 
 def parse_origin_lines(body: str) -> "tuple[str | None, str | None, str | None]":
-    """(nonce, timestamp, signature) from a raw leg body; None for any absent."""
+    """(nonce, timestamp, signature) from a raw leg body; None for any absent.
+
+    Only whole lines starting with the prefix count — see the anchoring note
+    above. The same rule normalise_body uses to drop them.
+    """
     n, t, s = ORIGIN_NONCE_RE.search(body), ORIGIN_TS_RE.search(body), ORIGIN_SIG_RE.search(body)
     return (n.group(1) if n else None, t.group(1) if t else None, s.group(1) if s else None)
 
@@ -279,13 +299,21 @@ def parse_origin_lines(body: str) -> "tuple[str | None, str | None, str | None]"
 def normalise_body(body: str) -> str:
     """The canonical body form every node must derive identically.
 
-    Drop the three origin lines (a signature cannot cover its own value, and
-    nonce/timestamp are covered as their own fields), right-strip every
-    remaining line, trim the whole. Trailing-whitespace churn must never
-    break a signature. Idempotent.
+    Drop every WHOLE LINE whose stripped, lowercased form starts with one of
+    the three origin prefixes (a signature cannot cover its own value;
+    nonce and timestamp are covered as their own fields). Then right-strip
+    every remaining line and trim the whole. Idempotent.
+
+    Whole-line drop, not text substitution: substituting the matched text
+    leaves the line's newline behind as a blank line whenever an origin line
+    sits anywhere but last, and unanchored substitution partially eats prose
+    that mentions a prefix. Both produced different bytes on two nodes for
+    the same signed leg. The shared worked example cannot catch either,
+    because its body has no origin lines at all — the battery has explicit
+    cases for both.
     """
-    stripped = ORIGIN_SIG_RE.sub("", ORIGIN_NONCE_RE.sub("", ORIGIN_TS_RE.sub("", body)))
-    return "\n".join(line.rstrip() for line in stripped.splitlines()).strip()
+    kept = [ln for ln in body.splitlines() if not ln.strip().lower().startswith(_ORIGIN_PREFIXES)]
+    return "\n".join(ln.rstrip() for ln in kept).strip()
 
 
 def canonical_signing_input(goal: str, nonce: str, timestamp: str, body: str) -> bytes:
@@ -336,15 +364,58 @@ def canonical_signing_input(goal: str, nonce: str, timestamp: str, body: str) ->
 _NONCE_STORE = Path(os.environ.get(
     "NOUGEN_USED_NONCES_FILE", str(Path.home() / ".nougen" / "state" / "used_origin_nonces.json")))
 _NONCE_RETENTION_S = 30 * 24 * 3600
+_LOCK_TIMEOUT_S = 5.0
+
+
+def _acquire_lock(lock_path: str) -> "tuple[str, int]":
+    """Cross-process exclusive lock on the nonce store. Raises on failure.
+
+    POSIX: flock on a lock file. Windows: O_CREAT|O_EXCL lock file, retried
+    until a deadline. The retry matters: on Windows a create can hit a
+    sharing violation while another holder is unlinking the same path —
+    transient and expected under contention. Treating that OSError as fatal
+    rejected 1 in 8 legitimate concurrent nonces on the sibling node (fail-
+    closed, so never a replay accepted, but a rejected owner command is
+    exactly the friction this path exists to remove). Only the deadline
+    decides failure.
+    """
+    if fcntl is not None:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return ("posix", fd)
+    deadline = time.time() + _LOCK_TIMEOUT_S
+    while True:
+        try:
+            return ("excl", os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR))
+        except OSError:
+            if time.time() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
+def _release_lock(lock: "tuple[str, int]", lock_path: str) -> None:
+    kind, fd = lock
+    try:
+        if kind == "posix" and fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+        if kind == "excl":
+            try:
+                os.unlink(lock_path)
+            except OSError:
+                pass
 
 
 def _consume_nonce_once(nonce: str) -> bool:
     """True if `nonce` was already used (durably, across restarts)."""
     lock_path = str(_NONCE_STORE) + ".lock"
     _NONCE_STORE.parent.mkdir(parents=True, exist_ok=True)
-    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        lock = _acquire_lock(lock_path)
+    except Exception:
+        return True  # could not take the lock -> cannot promise freshness -> fail closed
+    try:
         try:
             data = json.loads(_NONCE_STORE.read_text(encoding="utf-8")) if _NONCE_STORE.exists() else {}
             if not isinstance(data, dict):
@@ -368,8 +439,7 @@ def _consume_nonce_once(nonce: str) -> bool:
             return True
         return False
     finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        os.close(lock_fd)
+        _release_lock(lock, lock_path)
 
 
 SIGNATURE_MAX_AGE_S = 900       # 15 min: covers a 60s relay poll + clock skew, kills a captured leg fast
