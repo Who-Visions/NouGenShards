@@ -124,6 +124,38 @@ def inbox_path(filename: str) -> Path:
     return Path(candidate)
 
 
+try:  # discovery, not configuration: absent adapters mean waking is impossible here
+    from wake import enabled as _wake_enabled, status as _wake_status, wake as _wake_dispatch
+except Exception:  # pylint: disable=broad-except
+    _wake_enabled = lambda: False               # noqa: E731
+    _wake_status = lambda: {"available": [], "unavailable": {"wake": "package not importable"}}
+    _wake_dispatch = None
+
+
+def _maybe_wake(msg: dict, verdict: dict) -> dict:
+    """Wake an idle agent, but only for a message the gates already approved.
+
+    Three refusals, each reported rather than silent:
+    * no adapter imports here -> "unavailable", so a node that cannot be woken
+      says so instead of appearing to accept and doing nothing;
+    * the gate did not approve -> "not approved", so waking can never be a way
+      around a judgment that delivery had to satisfy;
+    * no explicit target -> "no target", so waking is opt-in per message even
+      after approval, and an ordinary status ping never starts an agent.
+    """
+    if not _wake_enabled() or _wake_dispatch is None:
+        return {"attempted": False, "wake": "unavailable", **_wake_status()}
+    approved = bool(verdict.get("kaedra_approved")) or \
+        verdict.get("origin") == "user_verified"
+    if not approved:
+        return {"attempted": False, "wake": "not approved",
+                "reason_code": verdict.get("reason_code")}
+    target = str(msg.get("wake_target") or "").strip()
+    if not target:
+        return {"attempted": False, "wake": "no target"}
+    return _wake_dispatch(target, str(msg.get("text", "")), msg)
+
+
 def record(msg: dict) -> Path:
     """Persist one message to the inbox and the last-message state file."""
     INBOX.mkdir(parents=True, exist_ok=True)
@@ -201,6 +233,12 @@ class Handler(BaseHTTPRequestHandler):
                 message_id=msg.get("message_id"),  # honored if the sender provides one
                 origin=str(msg.get("origin", "peer")),
                 origin_proof=msg.get("origin_proof"))
+            # Waking STARTS an agent where delivery only reaches one that is
+            # already live, so it runs strictly after the same gates and only
+            # on their approval. Never reachable for an unapproved message,
+            # and never switched on by anything in the message itself: see
+            # tools/wake for why availability is discovered, not configured.
+            elevated["wake"] = _maybe_wake(msg, elevated)
 
         self._send({"delivered": True, "method": "http", "node": NODE, "file": path.name,
                     "elevated": elevated})
