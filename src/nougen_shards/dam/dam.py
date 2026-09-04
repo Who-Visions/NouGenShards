@@ -16,13 +16,45 @@ from .gate import Decision, classify
 from .store import DamStore
 
 
+class NotArmed(Exception):
+    """The dam has not proven its substrate and refuses to accept writes."""
+
+
 class Dam:
     def __init__(self, store: DamStore, *, key: bytes, lane: str,
-                 hmac_key: Optional[bytes] = None):
+                 hmac_key: Optional[bytes] = None,
+                 require_preflight: bool = False):
         self.store = store
         self.key = key
         self.lane = lane
         self.hmac_key = hmac_key
+        # Verification before protection. Encryption on infrastructure that
+        # cannot be shown to store and return data is theater -- it guards the
+        # payload while the ground underneath drops it. When this is set, the
+        # dam refuses writes until arm() has proven the substrate.
+        self.require_preflight = require_preflight
+        self._armed = not require_preflight
+        self._preflight_report: Optional[Dict[str, Any]] = None
+
+    def arm(self, *, health_probe: Optional[Callable[[], Any]] = None,
+            verify_tls_host: Optional[str] = None,
+            strict: bool = True) -> Dict[str, Any]:
+        """Run every substrate gate. Only then will the dam accept writes."""
+        from .preflight import Preflight
+        report = Preflight(self.store, key=self.key, hmac_key=self.hmac_key,
+                           health_probe=health_probe,
+                           verify_tls_host=verify_tls_host).run(strict=strict)
+        self._preflight_report = report
+        self._armed = bool(report["armed"])
+        return report
+
+    @property
+    def armed(self) -> bool:
+        return self._armed
+
+    @property
+    def preflight_report(self) -> Optional[Dict[str, Any]]:
+        return self._preflight_report
 
     # -- front door ------------------------------------------------------
     def submit(self, operation: str, payload: Dict[str, Any],
@@ -74,6 +106,14 @@ class Dam:
              idempotency_key: Optional[str] = None,
              reason: str = "") -> Dict[str, Any]:
         """Encrypt, sign, store. Returns the truthful fallback receipt."""
+        if not self._armed:
+            # Refusing is the safe answer. Accepting a write into a dam whose
+            # store has not been shown to return data is how "durable" becomes
+            # a lie -- the caller stops holding the content because we said we
+            # had it.
+            return self._hard(operation, None,
+                              "dam not armed: preflight has not proven the "
+                              "substrate (call arm())")
         try:
             env = env_mod.seal(operation, payload, key=self.key, lane=self.lane,
                                idempotency_key=idempotency_key,

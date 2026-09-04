@@ -11,7 +11,8 @@ Vocabulary (relay leg 20260904T040803Z):
 from .dam import Dam
 from .gate import Decision, classify
 from .spillway import Spillway
+from .preflight import Preflight, PreflightFailure
 from .store import DamStore, HFDamStore, LocalDamStore
 
-__all__ = ["Dam", "Spillway", "DamStore", "LocalDamStore", "HFDamStore",
+__all__ = ["Dam", "Preflight", "PreflightFailure", "Spillway", "DamStore", "LocalDamStore", "HFDamStore",
            "classify", "Decision"]
