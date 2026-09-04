@@ -109,3 +109,51 @@ def test_read_inbox_normalizes_legacy_source_to_sender(tmp_path, monkeypatch):
 
     assert messages[0]["source"] == "nougen-phoebus"
     assert messages[0]["sender"] == "nougen-phoebus"
+
+
+def test_origin_envelope_preserves_session_identity_and_machine_conflict(monkeypatch):
+    monkeypatch.setattr("nougen_shards.nougenmsg.get_current_node", lambda: "phoebus")
+    origin = NouGenMsgBus._origin_envelope({
+        "session_id": "session-123456789",
+        "session_title": "Codex Tracker",
+        "machine": "blade",
+        "lane": "codex",
+        "original_sender": "codex-mac-mini",
+    })
+
+    assert origin["session_id"] == "session-123456789"
+    assert origin["provenance_state"] == "asserted"
+    assert origin["transport_machine"] == "phoebus"
+    assert origin["conflicts"] == [{
+        "field": "machine", "claimed": "blade", "transport_observed": "phoebus",
+    }]
+
+
+def test_missing_session_identity_is_explicitly_unknown():
+    origin = NouGenMsgBus._origin_envelope({})
+    assert origin["session_id"] is None
+    assert origin["provenance_state"] == "unknown"
+    assert origin["unknown_reason"] == "session_identity_not_supplied"
+
+
+def test_remote_origin_is_encoded_not_interpolated(monkeypatch):
+    calls = []
+
+    class Result:
+        stdout = "ok"
+        stderr = ""
+
+    monkeypatch.setattr(
+        "nougen_shards.nougenmsg.subprocess.run",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or Result(),
+    )
+    title = 'session title with "quotes"; $(id)'
+    result = NouGenMsgBus.emit_node(
+        "somewhere-else", "codex", "plain message",
+        origin={"session_id": "session-a", "session_title": title},
+    )
+
+    assert result == {"somewhere-else": "ok"}
+    remote_cmd = calls[0][0][0][2]
+    assert "--origin-b64" in remote_cmd
+    assert title not in remote_cmd

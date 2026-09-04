@@ -5,7 +5,8 @@ Delivers structured live-pings and IPC messages across agents and nodes.
 """
 import sys
 import os
-import glob
+import base64
+import json
 import time
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -17,7 +18,7 @@ if hasattr(sys.stderr, "reconfigure"):
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from nougen_shards.nougenmsg import NouGenMsgBus, AgentPinger, get_current_node
+from nougen_shards.nougenmsg import NouGenMsgBus, get_current_node
 
 def print_help():
     print("""
@@ -31,6 +32,7 @@ Usage:
   agy msg @antigravity "<message>"            Send to local Antigravity inbox
   agy msg @codex "<message>"                  Send to local OpenAI Codex inbox
   agy msg @phoebus "<message>"                Send to Phoebus (Mac Mini)
+  agy msg --session-id ID --lane codex "<message>"  Attach session provenance
 
 Inspection & Discovery:
   agy msg --peers                             List discovered local pipes and reachable nodes
@@ -86,6 +88,40 @@ def main():
     args = sys.argv[1:]
     node = None
     target_agent = "all"
+    origin = {}
+
+    for flag, field in (("--session-id", "session_id"),
+                        ("--session-title", "session_title"),
+                        ("--sender", "original_sender"),
+                        ("--lane", "lane")):
+        if flag in args:
+            idx = args.index(flag)
+            if idx + 1 >= len(args):
+                print(f"[!] Error: {flag} requires a value.")
+                return
+            origin[field] = args[idx + 1]
+            args = [value for pos, value in enumerate(args)
+                    if pos not in (idx, idx + 1)]
+    if "--origin-b64" in args:
+        idx = args.index("--origin-b64")
+        if idx + 1 >= len(args):
+            print("[!] Error: --origin-b64 requires a value.")
+            return
+        encoded = args[idx + 1]
+        try:
+            padding = "=" * (-len(encoded) % 4)
+            decoded = json.loads(base64.urlsafe_b64decode(encoded + padding))
+            if isinstance(decoded, dict):
+                origin.update(decoded)
+        except (ValueError, json.JSONDecodeError):
+            print("[!] Error: invalid origin envelope.")
+            return
+        args = [value for pos, value in enumerate(args)
+                if pos not in (idx, idx + 1)]
+
+    origin.setdefault("session_id", os.environ.get("NOUGEN_SESSION_ID"))
+    origin.setdefault("session_title", os.environ.get("NOUGEN_SESSION_TITLE"))
+    origin.setdefault("lane", os.environ.get("NOUGEN_LANE"))
 
     # Check for @destination token
     cleaned_args = []
@@ -114,15 +150,15 @@ def main():
     curr = get_current_node()
     if not node or node == "fleet":
         print(f"🌐 [Fleet Broadcast] Source: {curr.upper()} | Agent Target: {target_agent.upper()}...")
-        res = NouGenMsgBus.emit_fleet(text=text, target=target_agent)
+        res = NouGenMsgBus.emit_fleet(text=text, target=target_agent, origin=origin)
         print("Fleet Results:", res)
     elif node in ["local", curr]:
         print(f"📍 [Local Live-Ping] Source: {curr.upper()} | Target: {target_agent.upper()}...")
-        res = NouGenMsgBus.live_ping(target=target_agent, text=text)
+        res = NouGenMsgBus.live_ping(target=target_agent, text=text, origin=origin)
         print("Local Results:", res)
     else:
         print(f"🛰️ [Targeted Node Dispatch] Source: {curr.upper()} -> Target Node: {node.upper()} ({target_agent.upper()})...")
-        res = NouGenMsgBus.emit_node(node=node, target=target_agent, text=text)
+        res = NouGenMsgBus.emit_node(node=node, target=target_agent, text=text, origin=origin)
         print("Result:", res)
 
 if __name__ == "__main__":

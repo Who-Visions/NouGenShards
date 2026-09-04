@@ -3,7 +3,7 @@ Universal Multi-Agent Live-Ping and Message Delivery Service.
 Routes IPC and notification pings to Claude Code, Antigravity, OpenAI Codex, and Ollama across the fleet.
 """
 import os
-import sys
+import base64
 import glob
 import json
 import time
@@ -149,7 +149,7 @@ class AgentPinger:
         return (auth_line + chr(10) + user_line + chr(10)).encode("utf-8")
 
     @staticmethod
-    def ping_claude(prompt: str) -> Dict[str, Any]:
+    def ping_claude(prompt: str, origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Deliver a NouGenMsg into every live, registered Claude Code session
         over its own messaging socket, and drop the same message in the Claude
         inbox for the UserPromptSubmit drain hook. Sessions whose socket no
@@ -228,7 +228,8 @@ class AgentPinger:
             os.makedirs(inbox_dir, exist_ok=True)
             inbox_file = os.path.join(inbox_dir, f"ping_{int(time.time() * 1000)}.json")
             with open(inbox_file, "w", encoding="utf-8") as f:
-                json.dump({"source": source, "target": "claude", "text": prompt, "timestamp": time.time(),
+                json.dump({"source": source, "sender": origin.get("original_sender") if origin else source,
+                           "origin": origin, "target": "claude", "text": prompt, "timestamp": time.time(),
                            "delivered_live": bool(delivered), "delivered_to": [d.get("session_id") for d in delivered]}, f, indent=2)
         except OSError:
             inbox_file = None
@@ -247,6 +248,7 @@ class AgentPinger:
         domain: str = "executive:heuristics",
         leg_id: Optional[str] = None,
         goal: Optional[str] = None,
+        origin: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Drops live event notification into Antigravity session inbox across both locations and notifies local AgyMsg bus."""
         inboxes = [
@@ -258,6 +260,8 @@ class AgentPinger:
 
         payload = {
             "source": f"nougen-{get_current_node()}",
+            "sender": (origin or {}).get("original_sender") or f"nougen-{get_current_node()}",
+            "origin": origin,
             "target": "antigravity",
             "text": prompt,
             "domain": domain,
@@ -296,7 +300,7 @@ class AgentPinger:
         return {"status": "dropped", "files": written_files, "primary": written_files[0] if written_files else None, "pipe_delivered": pipe_delivered}
 
     @staticmethod
-    def ping_codex(prompt: str) -> Dict[str, Any]:
+    def ping_codex(prompt: str, origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Drops live event notification into OpenAI Codex session inbox."""
         inbox_dir = os.path.expanduser(os.path.join("~", ".codex", "inbox"))
         os.makedirs(inbox_dir, exist_ok=True)
@@ -305,6 +309,8 @@ class AgentPinger:
 
         payload = {
             "source": f"nougen-{get_current_node()}",
+            "sender": (origin or {}).get("original_sender") or f"nougen-{get_current_node()}",
+            "origin": origin,
             "target": "codex",
             "text": prompt,
             "timestamp": time.time()
@@ -358,6 +364,8 @@ class AgentPinger:
 class NouGenMsgBus:
     """Unified Multi-Agent & Multi-Node Broadcast Bus."""
 
+    _SAFE_IDENT = re.compile(r"^[A-Za-z0-9_.:@-]{1,64}$")
+
     @staticmethod
     def parse_destination(target_str: str) -> Tuple[str, str]:
         """
@@ -389,18 +397,47 @@ class NouGenMsgBus:
         return ('local', 'all')
 
     @classmethod
-    def live_ping(cls, target: str, text: str, node: Optional[str] = None) -> Dict[str, Any]:
+    def _origin_envelope(cls, supplied: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Build a provenance envelope without inventing missing session identity."""
+        supplied = dict(supplied or {})
+        current = get_current_node()
+        claimed_machine = supplied.get("machine")
+        conflicts = list(supplied.get("conflicts") or [])
+        if claimed_machine and claimed_machine != current:
+            conflicts.append({"field": "machine", "claimed": claimed_machine,
+                              "transport_observed": current})
+        session_id = supplied.get("session_id")
+        return {
+            "session_id": session_id,
+            "session_title": supplied.get("session_title"),
+            "machine": claimed_machine or current,
+            "transport_machine": current,
+            "lane": supplied.get("lane"),
+            "transport": supplied.get("transport") or "nougenmsg",
+            "original_sender": supplied.get("original_sender"),
+            "relay_path": list(supplied.get("relay_path") or []),
+            "timestamp": supplied.get("timestamp") or time.time(),
+            "provenance_state": supplied.get("provenance_state") or (
+                "asserted" if session_id else "unknown"),
+            "unknown_reason": None if session_id else "session_identity_not_supplied",
+            "conflicts": conflicts,
+        }
+
+    @classmethod
+    def live_ping(cls, target: str, text: str, node: Optional[str] = None,
+                  origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         target = target.lower()
         results = {}
+        envelope = cls._origin_envelope(origin)
 
         if target in ["claude", "all"]:
-            results["claude_pipes"] = AgentPinger.ping_claude(text)
+            results["claude_pipes"] = AgentPinger.ping_claude(text, envelope)
 
         if target in ["antigravity", "all"]:
-            results["antigravity"] = AgentPinger.ping_antigravity(text)
+            results["antigravity"] = AgentPinger.ping_antigravity(text, origin=envelope)
 
         if target in ["codex", "all"]:
-            results["codex"] = AgentPinger.ping_codex(text)
+            results["codex"] = AgentPinger.ping_codex(text, envelope)
 
         if target in ["ollama", "all"]:
             results["ollama"] = AgentPinger.ping_ollama(text, node=node or "local")
@@ -458,8 +495,12 @@ class NouGenMsgBus:
         return (f"NouGenMsg body {mid} shipped to ~/{remote_rel}, {len(text)} chars {lines} lines, read it there", None)
 
     @classmethod
-    def emit_node(cls, node: str, target: str, text: str) -> Dict[str, Any]:
+    def emit_node(cls, node: str, target: str, text: str,
+                  origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Dispatches message specifically to a target node."""
+        for label, value in (("node", node), ("target", target)):
+            if not cls._SAFE_IDENT.fullmatch(str(value or "")):
+                return {node: f"Error: refusing unsafe {label} {value!r}"}
         refused = cls._refuse_if_shell_unsafe(node, target, text)
         if refused:
             if "not a plain token" in refused[node]:
@@ -474,15 +515,20 @@ class NouGenMsgBus:
             text = pointer
         curr = get_current_node()
         if node in ["local", curr]:
-            return {curr: cls.live_ping(target=target, text=text)}
+            return {curr: cls.live_ping(target=target, text=text, origin=origin)}
+
+        envelope = cls._origin_envelope(origin)
+        origin_b64 = base64.urlsafe_b64encode(
+            json.dumps(envelope, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii").rstrip("=")
 
         try:
             if node == "blade":
-                remote_cmd = f'python C:/Users/super/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py --target {target} --local "{text}"'
+                remote_cmd = f'python C:/Users/super/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py --target {target} --local --origin-b64 {origin_b64} "{text}"'
             elif node == "whoart":
-                remote_cmd = f'python C:/Users/super/Outpost/NouGen/tools/nougenmsg.py --target {target} --local "{text}"'
+                remote_cmd = f'python C:/Users/super/Outpost/NouGen/tools/nougenmsg.py --target {target} --local --origin-b64 {origin_b64} "{text}"'
             else:
-                remote_cmd = f'python3 ~/.nougen/tools/nougenmsg.py --target {target} --local "{text}"'
+                remote_cmd = f'python3 ~/.nougen/tools/nougenmsg.py --target {target} --local --origin-b64 {origin_b64} "{text}"'
             
             res = subprocess.run(["ssh", node, remote_cmd], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
             output = res.stdout.strip() if res.stdout else res.stderr.strip()
@@ -491,14 +537,15 @@ class NouGenMsgBus:
             return {node: f"Error: {e}"}
 
     @classmethod
-    def emit_fleet(cls, text: str, target: str = "all") -> Dict[str, Any]:
+    def emit_fleet(cls, text: str, target: str = "all",
+                   origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Dispatches message across all nodes in the fleet."""
         curr = get_current_node()
-        results = {curr: cls.live_ping(target=target, text=text)}
+        results = {curr: cls.live_ping(target=target, text=text, origin=origin)}
         nodes = ["blade", "phoebus"] if curr == "whoart" else (["whoart", "phoebus"] if curr == "blade" else ["whoart", "blade"])
         for n in nodes:
             try:
-                res = cls.emit_node(n, target, text)
+                res = cls.emit_node(n, target, text, origin=origin)
                 results.update(res)
             except Exception as e:
                 results[n] = f"Error: {e}"
