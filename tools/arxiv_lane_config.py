@@ -160,13 +160,26 @@ def resolve_vault_root(artifact_prefixes=None):
         # TypeError or a meaningless ordering waiting for a refactor to trip
         # it. Pinned by test_min_never_compares_past_rank_and_index. Raised by
         # an adversarial review panel, 2026-09-04.
-        rank, _, value, src, note = min(ranked, key=lambda r: r[:2])
+        rank, index, value, src, note = min(ranked, key=lambda r: r[:2])
         detail = list(note)
         if dead:
             detail.append("skipped dead: " + ", ".join(dead))
+        others = [(r, i, s) for r, i, _, s, _ in ranked if (r, i) != (rank, index)]
         # Name every live candidate this one outranked, so a wrong-but-real
         # layer losing is visible rather than merely absent from the output.
-        outranked = [s for r, _, _, s, _ in ranked if (r, s) != (rank, src)]
+        outranked = [s for r, i, s in others if r > rank]
+        # A candidate tied at the SAME rank lost only on chain order, not
+        # evidence. That distinction matters most at rank 1: two candidates
+        # both hitting the probe cap without a match means the walk could not
+        # confirm OR rule out either one, and chain order picked the winner by
+        # configured priority alone. A confident-looking "inconclusive" note
+        # with no mention of the tie is the "wrong-but-real directory silently
+        # wins" failure this module exists to prevent, moved one rank up.
+        # Raised by an adversarial review panel, 2026-09-04.
+        tied = [s for r, i, s in others if r == rank]
+        if tied and rank == 1:
+            detail.append("tied (inconclusive) with, broke by chain order: "
+                          + ", ".join(tied))
         if outranked and rank == 0:
             detail.append("outranked: " + ", ".join(outranked))
         if detail:
@@ -223,11 +236,31 @@ def _probe_candidate(path, artifact_prefixes):
         seen = 0
         with os.scandir(path) as entries:
             for entry in entries:
-                name_lower = entry.name.lower()
-                for prefix, prefix_lower in zip(wanted, wanted_lower):
-                    if name_lower.startswith(prefix_lower):
-                        return 0, ["artifacts: %s*" % prefix]
+                # Files only. A cache/temp/sync-scratch DIRECTORY named after
+                # the prefix (`arxiv_cs_AI_cache/`) previously matched
+                # `startswith` and returned rank 0 on a vault holding no
+                # corpus at all -- the one rank the whole design treats as
+                # conclusive, so a false rank-0 short-circuits the walk
+                # instead of just misgrading one candidate. Verified from
+                # source and flagged by an adversarial review panel,
+                # 2026-09-04. `is_file()` follows symlinks by default, which
+                # is what we want: a symlinked FILE named like an artifact is
+                # still evidence of one. A stat failure (dangling symlink,
+                # reparse point) is neither evidence of an artifact nor a
+                # crash -- treat it as "not a file" and move on.
+                try:
+                    is_file = entry.is_file()
+                except OSError:
+                    is_file = False
+                if is_file:
+                    name_lower = entry.name.lower()
+                    for prefix, prefix_lower in zip(wanted, wanted_lower):
+                        if name_lower.startswith(prefix_lower):
+                            return 0, ["artifacts: %s*" % prefix]
                 seen += 1
+                if seen >= _PROBE_ENTRY_CAP:
+                    return 1, ["corpus probe inconclusive: none of %s in first %d entries"
+                               % ("/".join(wanted), _PROBE_ENTRY_CAP)]
                 if seen >= _PROBE_ENTRY_CAP:
                     return 1, ["corpus probe inconclusive: none of %s in first %d entries"
                                % ("/".join(wanted), _PROBE_ENTRY_CAP)]

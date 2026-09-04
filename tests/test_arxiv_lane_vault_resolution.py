@@ -212,6 +212,9 @@ def test_inconclusive_probe_is_not_demoted_below_a_confirmed_empty_dir(
         def __init__(self, name):
             self.name = name
 
+        def is_file(self):
+            return True
+
     fake_entries = [FakeEntry(f"filler_{i:03d}.md") for i in range(20)]
     fake_entries.append(FakeEntry("arxiv_cs_AI_2026-09-01.md"))
     real_scandir = os.scandir
@@ -454,3 +457,88 @@ def test_min_selector_is_stable_under_monkeypatched_index_collision(monkeypatch)
     # (Python's min is stable) -- proving the comparison never reaches `value`.
     winner = min(ranked, key=lambda r: r[:2])
     assert winner[2] == "zzz_would_lose_if_value_compared"
+
+
+# --- findings verified from source after a second adversarial pass (Luna via
+# blade), 2026-09-04. Both were confirmed against the actual code before
+# fixing, per the method every lane settled on today: a proxy's output is a
+# lead, not a finding, until someone opens the file.
+
+def test_directory_named_like_an_artifact_does_not_count(monkeypatch, tmp_path):
+    """The severe one. `entry.name.startswith(prefix)` had no `is_file()` gate,
+    so an EMPTY subdirectory named `arxiv_cs_AI_cache/` returned rank 0 -- the
+    one rank this whole design treats as conclusive, on a vault holding no
+    corpus at all. A cache dir, a temp dir, or a sync tool's scratch folder is
+    enough. Verified directly against the source before fixing, not taken on
+    the panel's word."""
+    trap = _populate(tmp_path / "trap", [])
+    (trap / "arxiv_cs_AI_cache").mkdir()          # directory, not a file
+    (trap / "arxiv_cs_AI_cache" / "inner.md").write_text("x", encoding="utf-8")
+    real = _populate(tmp_path / "real", ["arxiv_cs_AI_2026-09-01.md"])
+    monkeypatch.setenv("NOUGEN_ARXIV_VAULT_DIR", str(trap))
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(real))
+    value, source = cfg.resolve_vault_root()
+    assert value == str(real)
+    assert "outranked" in source
+
+
+def test_dangling_symlink_named_like_an_artifact_does_not_crash_or_count(
+        monkeypatch, tmp_path):
+    """entry.is_file() can raise on a symlink whose target is gone. That must
+    degrade to 'not a file', not crash the probe."""
+    trap = _populate(tmp_path / "trap", [])
+    link = trap / "arxiv_cs_AI_dangling.md"
+    target = tmp_path / "gone_target.md"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        import pytest as _pytest
+        _pytest.skip("symlink creation requires elevated privileges on this host")
+    real = _populate(tmp_path / "real", ["arxiv_cs_AI_2026-09-01.md"])
+    monkeypatch.setenv("NOUGEN_ARXIV_VAULT_DIR", str(trap))
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(real))
+    value, source = cfg.resolve_vault_root()
+    assert value == str(real)
+
+
+def test_rank_1_tie_is_named_not_silently_broken_by_chain_order(
+        monkeypatch, tmp_path):
+    """Two candidates both hit the probe cap without a match: the walk could
+    not confirm OR rule out either one, and chain order alone picked the
+    winner. That is the exact 'wrong-but-real directory silently wins' failure
+    this module exists to prevent, moved one rank up -- so it must say so
+    rather than reading as a confident 'inconclusive'."""
+    monkeypatch.setattr(cfg, "_PROBE_ENTRY_CAP", 5, raising=False)
+
+    class FakeEntry:
+        def __init__(self, name):
+            self.name = name
+
+        def is_file(self):
+            return True
+
+    filler = [FakeEntry(f"filler_{i:03d}.md") for i in range(20)]
+    real_scandir = os.scandir
+    first = _populate(tmp_path / "first", ["placeholder.md"])
+    second = _populate(tmp_path / "second", ["placeholder.md"])
+
+    def fake_scandir(path):
+        norm = os.path.normpath(str(path))
+        if norm in (os.path.normpath(str(first)), os.path.normpath(str(second))):
+            from contextlib import contextmanager
+
+            @contextmanager
+            def cm():
+                yield iter(filler)
+            return cm()
+        return real_scandir(path)
+
+    monkeypatch.setattr(cfg.os, "scandir", fake_scandir)
+    monkeypatch.setenv("NOUGEN_ARXIV_VAULT_DIR", str(first))
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(second))
+    value, source = cfg.resolve_vault_root()
+    # Chain order still decides WHICH one wins (documented, tested elsewhere) --
+    # what this test pins is that the tie itself is visible.
+    assert value == str(first)
+    assert "tied (inconclusive)" in source
+    assert "chain order" in source
