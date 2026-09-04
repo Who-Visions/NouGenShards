@@ -68,8 +68,43 @@ def recall_memory(query: str, limit: int = 5) -> list:
     injects handles-plus-snippets, not full documents."""
     # Federated for the same reason as POST /search below: a remote MCP client
     # should not get a narrower corpus than the local CLI.
-    results = federated_retrieve(query, limit=max(1, min(limit, 20)))
-    return [_slim_shard(r) for r in results]
+    sweep_report: dict = {}
+    results = federated_retrieve(query, limit=max(1, min(limit, 20)),
+                                 sweep_report=sweep_report)
+    out = [_slim_shard(r) for r in results]
+    # Same coverage trailer POST /search appends, for the same reason: this is
+    # the lane the fleet's connectors actually recall through, and an empty
+    # list here reads to an agent as "the substrate holds nothing on this".
+    # A lane dropped by the deadline must not be able to say that.
+    if sweep_report.get("lanes_timed_out"):
+        out.append(_deadline_trailer(sweep_report))
+    return out
+
+
+def _deadline_trailer(sweep_report: dict) -> dict:
+    """Shard-shaped marker saying an answer is INCOMPLETE rather than empty.
+
+    Shaped like a shard (score 0, distinct event_type) so list-consuming
+    clients keep parsing instead of type-erroring on a dict they did not
+    expect. Absent entirely on a clean sweep, so the common path is unchanged.
+    """
+    dropped = sweep_report.get("lanes_timed_out") or []
+    return {
+        "id": "federation_meta",
+        "event_type": "FEDERATION_STATUS",
+        "title": (f"recall INCOMPLETE: {len(dropped)} lane(s) "
+                  f"({', '.join(dropped)}) missed the "
+                  f"{sweep_report.get('deadline_s')}s deadline — absence in "
+                  "these results is NOT evidence of absence in the substrate"),
+        "content": json.dumps({
+            "lanes_timed_out": dropped,
+            "deadline_s": sweep_report.get("deadline_s"),
+            "deadline_exceeded": bool(sweep_report.get("deadline_exceeded")),
+        }),
+        "tags": json.dumps(["federation_status"]),
+        "final_score": 0.0,
+        "_db_index": "federation_meta",
+    }
 
 
 def _recall_snippet_chars() -> int:
@@ -1165,14 +1200,43 @@ def search(req: SearchRequest, response: Response,
     # the corpus the caller must be able to see. Appended as a shard-shaped
     # trailer (score 0, distinct event_type) so list-consuming clients keep
     # parsing; absent entirely on a clean sweep, so the common path is unchanged.
-    if sweep_report.get("errored"):
+    #
+    # A whole LANE dropped by the recall deadline is the same hole one size up,
+    # and until 2026-09-04 it was invisible: measured on phoebus, a recall that
+    # overran the deadline returned HTTP 200 with a 2-byte body — byte-identical
+    # to a genuine "no matches". Callers cannot tell silence from absence, so
+    # every latency and grace-period argument was being conducted on data that
+    # could not distinguish the two. Lane drops therefore raise the same trailer
+    # and are additionally reported in headers, for clients that read the
+    # envelope rather than the rows.
+    lanes_timed_out = sweep_report.get("lanes_timed_out") or []
+    if lanes_timed_out:
+        response.headers["X-NouGen-Lanes-Timed-Out"] = ",".join(lanes_timed_out)
+        response.headers["X-NouGen-Recall-Deadline-S"] = str(
+            sweep_report.get("deadline_s", ""))
+        # Deliberately set whenever coverage is incomplete, INCLUDING the
+        # non-empty case: a partial answer that looks whole is the same defect
+        # with better camouflage.
+        response.headers["X-NouGen-Degraded"] = "1"
+    if sweep_report.get("errored") or lanes_timed_out:
+        errored = sweep_report.get("errored") or []
+        if lanes_timed_out:
+            title = (f"federation: {len(lanes_timed_out)} lane(s) "
+                     f"({', '.join(lanes_timed_out)}) missed the "
+                     f"{sweep_report.get('deadline_s')}s recall deadline — "
+                     "this answer is INCOMPLETE, not empty")
+        else:
+            title = (f"federation: {len(errored)} store(s) "
+                     "errored or timed out this sweep")
         payload.append({
             "id": "federation_meta",
             "event_type": "FEDERATION_STATUS",
-            "title": (f"federation: {len(sweep_report['errored'])} store(s) "
-                      "errored or timed out this sweep"),
+            "title": title,
             "content": json.dumps({
-                "errored": sweep_report["errored"],
+                "errored": errored,
+                "lanes_timed_out": lanes_timed_out,
+                "deadline_s": sweep_report.get("deadline_s"),
+                "deadline_exceeded": bool(sweep_report.get("deadline_exceeded")),
                 "stores_swept": sweep_report.get("stores_swept"),
                 "tier2": sweep_report.get("tier2"),
                 "tier2_deferred": sweep_report.get("tier2_deferred"),
