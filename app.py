@@ -32,6 +32,7 @@ if os.environ.get("SPACE_ID"):
 
 from nougen_shards import bind_probe, core, history, mcp_oauth, tenants
 from nougen_shards.federation import federated_retrieve
+from nougen_shards import fd_budget
 from nougen_shards.brain_scan import scan_environment
 
 NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN") or os.environ.get("SHARD_GATEWAY_TOKEN")
@@ -756,6 +757,13 @@ def _start_recall_warmup() -> None:
 
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
+    # Descriptor headroom FIRST: launchd starts this process with a soft
+    # open-files limit of 256 and an unlimited hard limit. One recall opens
+    # ~40 files; six concurrent fan-outs hit 256 exactly, every further open()
+    # fails, the vector cache rebuilds on each request and the local lane
+    # misses its deadline on every query (phoebus, 2026-09-04). The process may
+    # raise its own soft limit, so it does - before the warm-up opens anything.
+    fd_budget.ensure_fd_headroom()
     _start_recall_warmup()
     # Heal the grid before anything scans it: malformed DB files are renamed
     # aside (kept for forensics) and recreated empty, so healthy indices and
