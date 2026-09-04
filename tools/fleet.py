@@ -111,6 +111,7 @@ class Fleet:
                     "model": e.get("model", "gpt-3.5-turbo"),
                     "headers": e.get("headers", {}) or {},
                     "kind": _kind(name),
+                    "min_tokens": e.get("min_tokens", 0),
                 })
         if include_local:
             self.routes.extend(LOCAL_ROUTES)
