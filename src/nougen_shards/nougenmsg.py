@@ -18,6 +18,42 @@ def get_current_node() -> str:
     host = os.environ.get("COMPUTERNAME", "").lower()
     return "whoart" if "proart" in host or "whoart" in host else "blade"
 
+def sender_identity() -> Dict[str, Any]:
+    """Who is sending, at session granularity. The node name alone (get_current_node)
+    made every session on a box indistinguishable (2026-09-04: four misattributed
+    receipts on blade). Resolved at call time from env -> registry -> harness
+    session record; every field is optional and absent when unknown."""
+    ident: Dict[str, Any] = {"node": get_current_node(), "agent": os.environ.get("NOUGEN_AGENT") or None}
+    sock = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET", "").strip()
+    if sock:
+        ident["socket"] = sock
+        try:
+            reg_path = os.environ.get("NOUGEN_CC_SESSIONS") or os.path.expanduser(os.path.join("~", ".nougen", "cc_sessions.json"))
+            with open(reg_path, encoding="utf-8") as f:
+                entry = (json.load(f).get("sessions") or {}).get(sock) or {}
+            if entry.get("session_id"):
+                ident["session_id"] = entry["session_id"]
+        except (OSError, ValueError):
+            pass
+        try:
+            import glob as _glob
+            for sf in _glob.glob(os.path.expanduser(os.path.join("~", ".claude", "sessions", "*.json"))):
+                with open(sf, encoding="utf-8") as f:
+                    rec = json.load(f)
+                if rec.get("messagingSocketPath") == sock:
+                    ident["name"] = rec.get("name"); ident.setdefault("session_id", rec.get("sessionId")); break
+        except (OSError, ValueError):
+            pass
+    return ident
+
+
+def sender_label(prefix: str = "nougen") -> str:
+    """'nougen-blade/nougen-1e' when the session is known, else the old 'nougen-blade'."""
+    ident = sender_identity()
+    base = f"{prefix}-{ident['node']}"
+    return f"{base}/{ident['name']}" if ident.get("name") else base
+
+
 class AgentPinger:
     """Delivers live pings directly into agent context, named pipes, and session inboxes."""
 
@@ -155,7 +191,7 @@ class AgentPinger:
         longer opens are pruned from the registry. There is no ack on the wire,
         so delivery_verified stays False by design: the receiver's context is
         the proof, never the byte count (shard 17142)."""
-        source = f"NouGenMsg-{get_current_node()}"
+        source = sender_label("NouGenMsg")
         text = f"NouGenMsg from {source}: {prompt}"
         reg_path = AgentPinger._cc_registry_path()
         try:
@@ -245,7 +281,8 @@ class AgentPinger:
         written_files = []
 
         payload = {
-            "source": f"nougen-{get_current_node()}",
+            "source": sender_label(),
+            "sender": sender_identity(),
             "target": "antigravity",
             "text": prompt,
             "domain": domain,
@@ -292,7 +329,8 @@ class AgentPinger:
         filepath = os.path.join(inbox_dir, filename)
 
         payload = {
-            "source": f"nougen-{get_current_node()}",
+            "source": sender_label(),
+            "sender": sender_identity(),
             "target": "codex",
             "text": prompt,
             "timestamp": time.time()

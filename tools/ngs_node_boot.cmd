@@ -29,7 +29,9 @@ if not exist "%NOUGEN_HOME%\bin\start_grid.py" (
   popd
   exit /b 1
 )
-"%PYTHONW%" "%NOUGEN_HOME%\bin\start_grid.py" --watch
+REM 2026-09-04: start /b so this cmd exits instead of holding a console window open
+REM while pythonw runs; the watcher is detached and its own log is the record.
+start "" /b "%PYTHONW%" "%NOUGEN_HOME%\bin\start_grid.py" --watch
 set "RC=%ERRORLEVEL%"
 popd
 exit /b %RC%
