@@ -1419,9 +1419,20 @@ def rhea_brain(req: RheaBrainRequest,
             answer = rhea_noir._openai_call(rhea_noir.ROUTER_URL, token, model, req.messages)
             return {"answer": answer, "model": model, "lane": "hf-space-kimi"}
         except Exception as exc:
-            failures.append(type(exc).__name__)
+            # Keep the HTTP status and the router's first line so Blade's log
+            # can tell a 402 (no credits) from a 404 (bad model id) without a
+            # Space shell; never echo the token.
+            code = getattr(exc, "code", None)
+            body = ""
+            try:
+                body = exc.read().decode(errors="replace")[:120]  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            failures.append(f"{type(exc).__name__}{'' if code is None else ' ' + str(code)}"
+                            + (f" {body!r}" if body else ""))
     raise HTTPException(status_code=502,
-                        detail="Kimi Space providers failed: " + ",".join(failures))
+                        detail=f"Kimi Space providers failed for model {model!r} with "
+                               f"{len(keys)} key(s): " + " | ".join(failures))
 
 
 # --- Dav1d Execution Layer ---
