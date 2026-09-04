@@ -16,9 +16,11 @@ cannot regress silently.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from nougen_shards.nougenmsg import NouGenMsgBus
+from nougen_shards.nougenmsg import AgentPinger, NouGenMsgBus
 
 # A node name that is neither "local" nor the current node, so emit_node reaches
 # the validation branch instead of short-circuiting to a local delivery.
@@ -60,3 +62,33 @@ def test_unsafe_node_is_refused(node):
 def test_legitimate_identifiers_pass_validation(value):
     """These must NOT be refused -- guarding against an over-tight anchor."""
     assert NouGenMsgBus._SAFE_IDENT.fullmatch(value), value
+
+
+def test_remote_ollama_payload_is_stdin_not_remote_shell(monkeypatch):
+    """Prompt and model must never be interpolated into the ssh command."""
+    calls = []
+
+    class Result:
+        stdout = '{"response": "ok"}'
+        stderr = ""
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return Result()
+
+    monkeypatch.setattr("nougen_shards.nougenmsg.subprocess.run", fake_run)
+    prompt = 'hello " $(touch /tmp/PWNED) ; `id`'
+    model = 'model"; rm -rf /'
+    result = AgentPinger.ping_ollama(prompt, node=REMOTE_NODE, model=model)
+
+    assert result["response"] == "ok"
+    args, kwargs = calls[0]
+    assert args[0] == [
+        "ssh", "--", REMOTE_NODE,
+        "curl -sS -X POST http://127.0.0.1:11434/api/generate --data-binary @-",
+    ]
+    assert json.loads(kwargs["input"]) == {
+        "model": model, "prompt": prompt, "stream": False,
+    }
+    assert prompt not in args[0]
+    assert model not in args[0]
