@@ -41,6 +41,10 @@ dependencies = [
     # 42.0 is the floor for the AESGCM aead API this uses; 50.0.0 floor clears
     # CVE-2026-69247 (trivy HIGH) and stops a recompile drifting back to it.
     "cryptography>=50.0.0",
+    # Keymaker uses the OS credential store on macOS/Linux. Without this,
+    # get_secret() raises at runtime and an auth-latched message node correctly
+    # refuses every mutating request after restart.
+    "keyring>=25.7",
 ]
 
 [project.optional-dependencies]
