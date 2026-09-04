@@ -392,9 +392,32 @@ class NouGenMsgBus:
 
         return results
 
+    # Characters the RECEIVING node's login shell would interpret when ssh
+    # re-joins the remote argv into one string (zsh on phoebus, cmd/bash on the
+    # Windows lanes). Two lanes tripped this on 2026-09-03, one on a glob and one
+    # on backticks; valid shell would have RUN. Until the transport carries the
+    # payload over stdin (next PR), refuse loudly instead of interpolating.
+    _REMOTE_SHELL_UNSAFE = frozenset(chr(c) for c in (
+        34, 39, 96, 36, 92, 59, 124, 38, 60, 62, 40, 41, 123, 125, 91, 93, 33, 37, 94, 42, 63, 10, 13))
+    # i.e. " ' ` $ backslash ; | & < > ( ) { } [ ] ! % ^ * ? LF CR
+
+    @classmethod
+    def _refuse_if_shell_unsafe(cls, node: str, target: str, text: str):
+        if not re.fullmatch(r"[A-Za-z0-9_.@-]+", target or ""):
+            return {node: f"Error: refused, target {target!r} is not a plain token"}
+        bad = sorted({c for c in text if c in cls._REMOTE_SHELL_UNSAFE})
+        if bad:
+            return {node: "Error: refused, message contains characters the remote shell would "
+                          f"interpret ({''.join(bad)!r}); ship the body as a file (scp) and send a "
+                          "plain-ASCII pointer line instead"}
+        return None
+
     @classmethod
     def emit_node(cls, node: str, target: str, text: str) -> Dict[str, Any]:
         """Dispatches message specifically to a target node."""
+        refused = cls._refuse_if_shell_unsafe(node, target, text)
+        if refused:
+            return refused
         curr = get_current_node()
         if node in ["local", curr]:
             return {curr: cls.live_ping(target=target, text=text)}
