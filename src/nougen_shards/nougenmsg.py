@@ -524,9 +524,9 @@ class NouGenMsgBus:
 
         try:
             if node == "blade":
-                remote_cmd = f'python C:/Users/super/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py --target {target} --local --origin-b64 {origin_b64} "{text}"'
+                remote_cmd = f'python %USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py --target {target} --local --origin-b64 {origin_b64} "{text}"'
             elif node == "whoart":
-                remote_cmd = f'python C:/Users/super/Outpost/NouGen/tools/nougenmsg.py --target {target} --local --origin-b64 {origin_b64} "{text}"'
+                remote_cmd = f'python %USERPROFILE%/Outpost/NouGen/tools/nougenmsg.py --target {target} --local --origin-b64 {origin_b64} "{text}"'
             else:
                 remote_cmd = f'python3 ~/.nougen/tools/nougenmsg.py --target {target} --local --origin-b64 {origin_b64} "{text}"'
             
