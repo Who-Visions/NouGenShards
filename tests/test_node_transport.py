@@ -21,6 +21,7 @@ def _load(name: str, monkeypatch, tmp_path: Path):
     monkeypatch.setenv("NOUGEN_AGY_INBOX", str(tmp_path / "inbox"))
     monkeypatch.setenv("NOUGEN_MSG_STATE", str(tmp_path / "state" / "last.json"))
     monkeypatch.setenv("NOUGEN_RELAY_CURSOR", str(tmp_path / "state" / "cursor.json"))
+    monkeypatch.setenv("NOUGEN_CODEX_TARGET_FILE", str(tmp_path / "state" / "no-codex-target.json"))
     monkeypatch.setenv("NOUGEN_NODE_NAME", "testnode")
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
@@ -109,7 +110,12 @@ def test_watch_cursor_round_trips(watch, tmp_path):
     assert watch.load_seen() == {"one", "two"}
 
 
-def test_watch_announce_writes_an_inbox_message(watch, tmp_path):
+def test_watch_announce_writes_an_inbox_message(watch, tmp_path, monkeypatch):
+    queued = []
+    monkeypatch.setattr(
+        watch, "deliver_relay_notice",
+        lambda leg_id, source, status: queued.append((leg_id, source, status)) or
+        {"attempted": True, "delivered": True})
     root = _registry(tmp_path, "20260101T000000Z__m__a")
     leg = root / ".handoffs" / "20260101T000000Z__m__a.json"
     watch.announce("20260101T000000Z__m__a", leg)
@@ -118,6 +124,8 @@ def test_watch_announce_writes_an_inbox_message(watch, tmp_path):
     payload = json.loads(written[0].read_text(encoding="utf-8"))
     assert payload["leg_id"] == "20260101T000000Z__m__a"
     assert "not permission" in payload["text"]
+    assert payload["codex_live"]["delivered"] is True
+    assert queued == [("20260101T000000Z__m__a", "m/a", "open")]
 
 
 def test_watch_interval_prefers_env(watch, monkeypatch):

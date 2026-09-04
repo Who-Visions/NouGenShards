@@ -11,6 +11,20 @@ Copy the two `*_launch.sh` wrappers and the `*.plist.example` files, then:
    Set `NOUGEN_SHARDS_REPO` if the wrapper is not run from inside the repo.
 3. `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<label>.plist`
 
+## Live Codex delivery
+
+Set the receiving Codex task once in `~/.nougen/codex/relay_target.json`:
+
+```json
+{"thread_id": "your-codex-task-id"}
+```
+
+Approved NouGenMsg socket traffic is queued through the native `codex queue`
+surface. Every relay transition also queues a metadata-only notice; untrusted
+relay bodies are not promoted into a Codex user message. If Codex is closed or
+the target is unavailable, the ordinary NouGen inbox remains the durable
+fallback and the delivery result records the failure.
+
 ## Secrets are read once, at process start
 
 The wrappers resolve `NOUGEN_AGY_MSG_TOKEN`, `KAEDRA_GATEWAY_TOKEN` and

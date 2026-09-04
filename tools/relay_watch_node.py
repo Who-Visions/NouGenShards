@@ -43,8 +43,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _agy_live_delivery import (  # noqa: E402
-    MalformedOriginLines, gate_and_deliver, parse_origin_lines, registry_parity_ok,
-    verify_user_origin_signature)
+    MalformedOriginLines, deliver_relay_notice, gate_and_deliver, parse_origin_lines,
+    registry_parity_ok, verify_user_origin_signature)
 
 HOME = Path.home()
 
@@ -178,6 +178,10 @@ def announce(leg_id: str, path: Path) -> None:
         message["elevated"] = gate_and_deliver(
             text, "relay-watch:{}".format(who),
             message_id=(origin_nonce or leg_id), origin_status=origin_status)
+    codex_result = ((message.get("elevated") or {}).get("live_delivery") or {}).get("codex")
+    if not isinstance(codex_result, dict) or not codex_result.get("delivered"):
+        codex_result = deliver_relay_notice(leg_id, who, str(status))
+    message["codex_live"] = codex_result
     inbox_file = INBOX / "msg_{}_relay-watch.json".format(int(time.time() * 1000))
     inbox_file.write_text(json.dumps(message, indent=2), encoding="utf-8")
 

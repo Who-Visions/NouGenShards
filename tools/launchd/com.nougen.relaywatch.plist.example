@@ -11,6 +11,7 @@
   <dict>
     <key>NOUGEN_NODE_NAME</key><string>__NODE_NAME__</string>
     <key>NOUGEN_RELAY_DIR</key><string>__NOUGEN_RELAY_DIR__</string>
+    <key>NOUGEN_CODEX_TARGET_FILE</key><string>__HOME__/.nougen/codex/relay_target.json</string>
     <key>NOUGEN_RELAY_WATCH_SECS</key><string>60</string>
     <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin</string>
   </dict>
