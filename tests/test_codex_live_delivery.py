@@ -79,3 +79,35 @@ def test_live_delivery_reports_codex_alongside_claude(delivery, monkeypatch):
     result = delivery.deliver_to_live_sessions("hello", "peer")
 
     assert result["codex"] == {"delivered": True, "text": "hello", "source": "peer"}
+
+
+def test_codex_target_skips_claude_sockets(delivery, monkeypatch):
+    monkeypatch.setattr(
+        delivery, "_read_registry",
+        lambda: {"claude-1": {"socket": "/tmp/claude.sock", "token": "t"}})
+    monkeypatch.setattr(
+        delivery, "_send_live",
+        lambda *_args: pytest.fail("Codex-targeted message reached Claude"))
+    monkeypatch.setattr(
+        delivery, "deliver_to_codex_session",
+        lambda text, source: {"delivered": True, "text": text, "source": source})
+
+    result = delivery.deliver_to_live_sessions("hello", "peer", target="codex")
+
+    assert set(result) == {"codex"}
+    assert result["codex"]["delivered"] is True
+
+
+def test_claude_target_skips_codex_queue(delivery, monkeypatch):
+    monkeypatch.setattr(
+        delivery, "_read_registry",
+        lambda: {"claude-1": {"socket": "/tmp/claude.sock", "token": "t"}})
+    monkeypatch.setattr(delivery, "_send_live", lambda *_args: True)
+    monkeypatch.setattr(
+        delivery, "deliver_to_codex_session",
+        lambda *_args: pytest.fail("Claude-targeted message reached Codex"))
+
+    result = delivery.deliver_to_live_sessions("hello", "peer", target="claude")
+
+    assert set(result) == {"claude-1"}
+    assert result["claude-1"]["delivered"] is True

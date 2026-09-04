@@ -260,36 +260,42 @@ def deliver_relay_notice(leg_id: str, source: str, status: str) -> dict:
     return _queue_codex(content)
 
 
-def deliver_to_live_sessions(text: str, source: str) -> dict:
-    """Best-effort delivery to registered Claude sockets and the Codex queue."""
+def deliver_to_live_sessions(text: str, source: str, target: str = "all") -> dict:
+    """Best-effort delivery only to the requested live provider target."""
     content = "NouGenMsg from {}: {}".format(source, text)
     results = {}
-    for session_id, entry in _read_registry().items():
-        sock_path = entry.get("socket", "")
-        token = entry.get("token", "")
-        if not sock_path or not token:
-            continue
-        delivered = False
-        last_exc = None
-        for _attempt in range(LIVE_DELIVERY_RETRIES):
-            try:
-                delivered = _send_live(sock_path, token, content)
-                break
-            except OSError as exc:
-                last_exc = exc
-                # Only a genuinely dead endpoint gets pruned. A timeout or a
-                # busy socket means the session is mid-turn and still alive —
-                # the sibling node lost a live session to exactly this distinction on
-                # 2026-09-02 before tightening the check.
-                if exc.errno in (errno.ENOENT, errno.ECONNREFUSED):
-                    _prune_session(session_id)
+    requested = str(target or "all").strip().lower()
+    if requested in ("all", "claude"):
+        for session_id, entry in _read_registry().items():
+            sock_path = entry.get("socket", "")
+            token = entry.get("token", "")
+            if not sock_path or not token:
+                continue
+            delivered = False
+            last_exc = None
+            for _attempt in range(LIVE_DELIVERY_RETRIES):
+                try:
+                    delivered = _send_live(sock_path, token, content)
                     break
-                time.sleep(LIVE_DELIVERY_WAIT_S)
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                time.sleep(LIVE_DELIVERY_WAIT_S)
-        results[session_id] = {"delivered": delivered, "error": None if delivered else str(last_exc)}
-    results["codex"] = deliver_to_codex_session(text, source)
+                except OSError as exc:
+                    last_exc = exc
+                    # Only a genuinely dead endpoint gets pruned. A timeout or a
+                    # busy socket means the session is mid-turn and still alive —
+                    # the sibling node lost a live session to exactly this distinction on
+                    # 2026-09-02 before tightening the check.
+                    if exc.errno in (errno.ENOENT, errno.ECONNREFUSED):
+                        _prune_session(session_id)
+                        break
+                    time.sleep(LIVE_DELIVERY_WAIT_S)
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    time.sleep(LIVE_DELIVERY_WAIT_S)
+            results[session_id] = {
+                "delivered": delivered,
+                "error": None if delivered else str(last_exc),
+            }
+    if requested in ("all", "codex"):
+        results["codex"] = deliver_to_codex_session(text, source)
     return results
 
 
@@ -617,7 +623,8 @@ def verify_user_origin(claimed_origin: str, proof: "str | None") -> str:
 
 def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
                       origin: str = "peer", origin_proof: "str | None" = None,
-                      origin_status: "str | None" = None) -> dict:
+                      origin_status: "str | None" = None,
+                      target: str = "all") -> dict:
     """One call: dedup, classify origin, then either bypass or run the content gate.
 
     What both callers use. `message_id` is optional — pass it through from a
@@ -643,7 +650,7 @@ def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
         # dropped), still fully logged as exactly this path.
         return {"attempted": True, "origin": "user_verified", "kaedra_approved": None,
                 "quarantined": False, "reason_code": "user_origin_proven",
-                "live_delivery": deliver_to_live_sessions(text, source)}
+                "live_delivery": deliver_to_live_sessions(text, source, target=target)}
 
     result = classify_with_kaedra(text)
     base_origin_field = {"origin": origin_status} if origin_status == "user_claimed_unverified" else {}
@@ -654,4 +661,4 @@ def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
                 "policy_version": result["policy_version"]}
     return {**base_origin_field, "attempted": True, "kaedra_approved": True, "quarantined": False,
             "reason_code": result["reason_code"], "policy_version": result["policy_version"],
-            "live_delivery": deliver_to_live_sessions(text, source)}
+            "live_delivery": deliver_to_live_sessions(text, source, target=target)}

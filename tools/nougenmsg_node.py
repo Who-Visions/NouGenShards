@@ -195,7 +195,10 @@ try:  # discovery, not configuration: absent adapters mean waking is impossible 
     from wake import enabled as _wake_enabled, status as _wake_status, wake as _wake_dispatch
 except Exception:  # pylint: disable=broad-except
     _wake_enabled = lambda: False               # noqa: E731
-    _wake_status = lambda: {"available": [], "unavailable": {"wake": "package not importable"}}
+
+    def _wake_status():
+        return {"available": [], "unavailable": {"wake": "package not importable"}}
+
     _wake_dispatch = None
 
 
@@ -322,7 +325,8 @@ class Handler(BaseHTTPRequestHandler):
                 str(msg.get("text", "")), str(msg.get("sender", "unknown")),
                 message_id=msg.get("message_id"),  # honored if the sender provides one
                 origin=str(msg.get("origin", "peer")),
-                origin_proof=msg.get("origin_proof"))
+                origin_proof=msg.get("origin_proof"),
+                target=str(msg.get("target", "all")))
             # Waking STARTS an agent where delivery only reaches one that is
             # already live, so it runs strictly after the same gates and only
             # on their approval. Never reachable for an unapproved message,

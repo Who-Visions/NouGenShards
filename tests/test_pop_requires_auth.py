@@ -90,3 +90,17 @@ def test_liveness_probes_stay_open(server):
     """/health and /status are deliberately unauthenticated: probes need them."""
     assert _req("/health")[0] == 200
     assert _req("/status")[0] == 200
+
+
+def test_message_target_reaches_delivery_gate(server, monkeypatch):
+    captured = {}
+
+    def fake_gate(text, source, **kwargs):
+        captured.update({"text": text, "source": source, **kwargs})
+        return {"attempted": True, "live_delivery": {}}
+
+    monkeypatch.setattr(server, "gate_and_deliver", fake_gate)
+    status, _body = _post("targeted")
+
+    assert status == 200
+    assert captured["target"] == "nobody"
