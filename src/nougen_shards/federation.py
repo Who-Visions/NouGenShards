@@ -129,18 +129,46 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     import time as _time
     started = _time.monotonic()
 
+    _lane_started: dict = {}
+
+    def _timed(name, fn):
+        """Wrap a lane so it times ITSELF.
+
+        First cut of this measured elapsed at COLLECTION time, from the shared
+        start. Because lanes are collected in a fixed order and `local` is
+        collected first, every lane then reported the same number — the moment
+        the slowest one resolved. Measured 2026-09-04: all four lanes read
+        "20.19s" when only `local` was slow and the other three had finished
+        long before. Reporting collection order as duration is the same error
+        this instrumentation exists to expose, one level down.
+        """
+        def _run():
+            _lane_started[name] = _time.monotonic()
+            try:
+                return fn()
+            finally:
+                _lane_started[name + ":done"] = _time.monotonic()
+        return _run
+
     def _record_lane(name, status, rows):
         """Per-lane elapsed and row count, for tuning the deadline on evidence.
 
         The deadline was argued about for a day on end-to-end latency alone,
         which cannot say WHICH lane was slow or whether it returned anything.
-        Recorded here because this is the only place that knows both.
         """
         if sweep_report is None:
             return
+        t0 = _lane_started.get(name)
+        t1 = _lane_started.get(name + ":done")
+        if t0 is None:
+            elapsed = None            # never got a worker slot
+        elif t1 is None:
+            elapsed = round(_time.monotonic() - t0, 3)   # still running
+        else:
+            elapsed = round(t1 - t0, 3)
         sweep_report.setdefault("lanes", {})[name] = {
             "status": status,
-            "elapsed_s": round(_time.monotonic() - started, 3),
+            "elapsed_s": elapsed,
             "rows": rows,
         }
 
@@ -170,10 +198,10 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
 
     executor = _lane_executor()
     try:
-        f_local = executor.submit(copy_context().run, _fetch_local)
-        f_external = executor.submit(copy_context().run, _fetch_external)
-        f_cloud = executor.submit(copy_context().run, _fetch_cloud)
-        f_vaults = executor.submit(copy_context().run, _fetch_vaults)
+        f_local = executor.submit(copy_context().run, _timed("local", _fetch_local))
+        f_external = executor.submit(copy_context().run, _timed("external", _fetch_external))
+        f_cloud = executor.submit(copy_context().run, _timed("cloud", _fetch_cloud))
+        f_vaults = executor.submit(copy_context().run, _timed("vaults", _fetch_vaults))
 
         local_results = _lane_result(f_local, "local", [])
         external_results = _lane_result(f_external, "external", [])

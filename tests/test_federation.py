@@ -123,3 +123,35 @@ def test_sweep_report_stays_optional(monkeypatch):
 
     results = federation.federated_retrieve("q", limit=5)
     assert any(r["id"] == "local_1" for r in results)
+
+
+def test_each_lane_reports_its_own_duration_not_the_collection_order(monkeypatch):
+    """Lanes are collected in a fixed order, so measuring elapsed at collection
+    time reports when the SLOWEST lane resolved, for every lane.
+
+    Measured on the live node 2026-09-04: all four lanes read "20.19s" when
+    only `local` was slow and the other three had finished in well under a
+    second. A fast lane must not inherit a slow lane's number — that is the
+    same 'the summary lied while the data was fine' failure this
+    instrumentation exists to prevent.
+    """
+    import time
+
+    _patch_local(monkeypatch)
+
+    def slow_external(*a, **k):
+        time.sleep(1.0)
+        return []
+
+    monkeypatch.setattr(federation, "query_external_dbs", slow_external)
+    monkeypatch.setattr(federation, "query_cloud_shards", lambda *a, **k: [])
+    monkeypatch.setenv("NOUGEN_RECALL_DEADLINE_S", "30")
+
+    report = {}
+    federation.federated_retrieve("q", limit=5, sweep_report=report)
+    lanes = report["lanes"]
+
+    assert lanes["external"]["elapsed_s"] >= 1.0
+    # local did nothing slow; it must not be charged for external's second.
+    assert lanes["local"]["elapsed_s"] < 0.9, lanes
+    assert lanes["local"]["status"] == "ok"
