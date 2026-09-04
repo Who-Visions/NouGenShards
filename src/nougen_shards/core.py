@@ -19,6 +19,11 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+#: Seconds a capture may wait for its embedding before storing NULL and
+#: leaving the row for embedding_backfill. Env-tunable per Rule 0.0 item 4;
+#: the literal is a fallback only.
+DEFAULT_EMBED_CAPTURE_TIMEOUT_S = float(os.environ.get("NOUGEN_EMBED_CAPTURE_TIMEOUT_S", "15"))
+
 # Configuration (Module 10: Integrate Constraints)
 MAX_DB_SIZE = 1 * 1024 * 1024 * 1024  # 1GB Safety Limit per DB
 MAX_DB_COUNT = 9
@@ -674,7 +679,11 @@ def _embed_for_capture(title: str, content: str) -> Optional[List[float]]:
     global EMBED_AT_CAPTURE_MISSES  # pylint: disable=global-statement
     model = os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text")
     try:
-        timeout = float(os.environ.get("NOUGEN_EMBED_TIMEOUT", "1.5"))
+        # Capture-time embed budget. 1.5s was the original default and lost
+        # ~90% of captures on phoebus (measured 2026-09-03: 0.25s hot, 4.5s
+        # warm, 13.4s cold load for nomic-embed-text). Env-tunable, logged fallback.
+        timeout = float(os.environ.get("NOUGEN_EMBED_TIMEOUT",
+                                       str(DEFAULT_EMBED_CAPTURE_TIMEOUT_S)))
     except ValueError:
         timeout = 1.5
     try:
