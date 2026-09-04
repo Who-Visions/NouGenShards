@@ -8,6 +8,7 @@ import json
 import logging
 import hashlib
 import sqlite3
+import re
 import datetime
 import contextlib
 from typing import List, Optional
@@ -81,6 +82,12 @@ def recall_memory(query: str, limit: int = 5) -> list:
     return out
 
 
+# A stored timestamp is only usable for era math if it is ISO-shaped.
+# Anchored at the start only: full ISO strings carry time and offset after the
+# month, and this is the exact prefix the window contract compares on.
+_ISO_MONTH_RE = re.compile(r"\d{4}-\d{2}")
+
+
 def _deadline_trailer(sweep_report: dict) -> dict:
     """Shard-shaped marker saying an answer is INCOMPLETE rather than empty.
 
@@ -100,6 +107,7 @@ def _deadline_trailer(sweep_report: dict) -> dict:
             "lanes_timed_out": dropped,
             "deadline_s": sweep_report.get("deadline_s"),
             "deadline_exceeded": bool(sweep_report.get("deadline_exceeded")),
+            "lanes": sweep_report.get("lanes"),
         }),
         "tags": json.dumps(["federation_status"]),
         "final_score": 0.0,
@@ -362,6 +370,7 @@ def substrate_coverage() -> dict:
     holes rather than infer them."""
     from collections import Counter
     per_month = Counter()
+    malformed = 0
     lo, hi, total = None, None, 0
     for i in range(1, core.MAX_DB_COUNT + 1):
         if not core.get_db_path(i).exists():
@@ -373,8 +382,21 @@ def substrate_coverage() -> dict:
         try:
             for (ts,) in conn.execute("SELECT timestamp FROM shards WHERE timestamp IS NOT NULL"):
                 ts = str(ts)
-                per_month[ts[:7]] += 1
                 total += 1
+                # Not every stored timestamp is ISO. 15 legacy rows on the
+                # phoebus grid hold Unix epoch floats ("1765164383.78") from a
+                # direct-write path that predates capture()'s normalisation.
+                # Two things went wrong with them here, and only one was loud:
+                #   * the gap walk below did `map(int, months[0].split("-"))`
+                #     and raised ValueError, 500-ing this endpoint;
+                #   * quietly, "1765..." sorts BEFORE "2026-..." lexicographically,
+                #     so a single epoch row became `span.earliest` and this
+                #     endpoint reported a substrate reaching back to year 1765.
+                # The crash was the mercy: it stopped us believing the span.
+                if not _ISO_MONTH_RE.match(ts):
+                    malformed += 1
+                    continue
+                per_month[ts[:7]] += 1
                 if lo is None or ts < lo:
                     lo = ts
                 if hi is None or ts > hi:
@@ -406,6 +428,12 @@ def substrate_coverage() -> dict:
             "span": {"earliest": lo, "latest": hi},
             "months": dict(sorted(per_month.items())),
             "empty_months": gaps,
+            # Rows counted in total_shards but excluded from span/months/gaps
+            # because their timestamp is not ISO. Reported rather than dropped:
+            # these shards are real content that no era-bounded query can
+            # reach, and a caller comparing total_shards against the month
+            # histogram must be able to see why they disagree.
+            "malformed_timestamps": malformed,
             # Cache key carries the active vault: a bare "substrate" key is
             # module-level state shared across tenants, so it would serve one
             # tenant's counts and DB detail to another.
@@ -1209,6 +1237,12 @@ def search(req: SearchRequest, response: Response,
     # could not distinguish the two. Lane drops therefore raise the same trailer
     # and are additionally reported in headers, for clients that read the
     # envelope rather than the rows.
+    lanes = sweep_report.get("lanes") or {}
+    if lanes:
+        # Healthy timings matter as much as failures: a deadline can only be
+        # tuned against the distribution, not against its tail.
+        response.headers["X-NouGen-Lane-Timings"] = ",".join(
+            f"{n}={d['status']}:{d['elapsed_s']}s" for n, d in sorted(lanes.items()))
     lanes_timed_out = sweep_report.get("lanes_timed_out") or []
     if lanes_timed_out:
         response.headers["X-NouGen-Lanes-Timed-Out"] = ",".join(lanes_timed_out)
@@ -1235,6 +1269,7 @@ def search(req: SearchRequest, response: Response,
             "content": json.dumps({
                 "errored": errored,
                 "lanes_timed_out": lanes_timed_out,
+                "lanes": sweep_report.get("lanes"),
                 "deadline_s": sweep_report.get("deadline_s"),
                 "deadline_exceeded": bool(sweep_report.get("deadline_exceeded")),
                 "stores_swept": sweep_report.get("stores_swept"),
