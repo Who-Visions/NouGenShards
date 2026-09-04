@@ -407,17 +407,56 @@ class NouGenMsgBus:
             return {node: f"Error: refused, target {target!r} is not a plain token"}
         bad = sorted({c for c in text if c in cls._REMOTE_SHELL_UNSAFE})
         if bad:
-            return {node: "Error: refused, message contains characters the remote shell would "
-                          f"interpret ({''.join(bad)!r}); ship the body as a file (scp) and send a "
-                          "plain-ASCII pointer line instead"}
+            return {node: "unsafe: message contains characters the remote shell would "
+                          f"interpret ({''.join(bad)!r}); emit_node ships the body as a file instead"}
         return None
+
+    @classmethod
+    def _ship_body(cls, node: str, text: str):
+        """Copy text to node:~/.nougen/msg-<id>.md with scp; return (pointer, None) or (None, error).
+
+        No remote shell command is issued (no mkdir), so nothing here is
+        re-parsed on the target: scp writes into ~/.nougen, which every node
+        already has as NOUGEN_HOME. The pointer contains only [A-Za-z0-9 ~/.,-_].
+        """
+        import hashlib
+        import tempfile
+        mid = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+        remote_rel = f".nougen/msg-{mid}.md"
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False) as fh:
+            fh.write(text)
+            local = fh.name
+        try:
+            cp = subprocess.run(["scp", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", local, f"{node}:{remote_rel}"],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                timeout=float(os.environ.get("NOUGEN_MSG_SHIP_TIMEOUT_S", "60")))
+        except (OSError, subprocess.SubprocessError) as exc:
+            return None, f"Error: body shipping failed, {type(exc).__name__}"
+        finally:
+            try:
+                os.unlink(local)
+            except OSError:
+                pass
+        if cp.returncode != 0:
+            return None, "Error: body shipping failed, " + (cp.stderr or "scp exit " + str(cp.returncode)).strip()[:120]
+        lines = text.count(chr(10)) + 1
+        return (f"NouGenMsg body {mid} shipped to ~/{remote_rel}, {len(text)} chars {lines} lines, read it there", None)
 
     @classmethod
     def emit_node(cls, node: str, target: str, text: str) -> Dict[str, Any]:
         """Dispatches message specifically to a target node."""
         refused = cls._refuse_if_shell_unsafe(node, target, text)
         if refused:
-            return refused
+            if "not a plain token" in refused[node]:
+                return refused
+            # Substantive traffic (leg bodies, JSON, code, paths) is FULL of shell
+            # metacharacters; refusing it would silence the bus. Ship the body as
+            # a file over scp instead and send a plain-ASCII pointer through the
+            # existing path. Nothing user-authored ever reaches the remote shell.
+            pointer, err = cls._ship_body(node, text)
+            if err:
+                return {node: err}
+            text = pointer
         curr = get_current_node()
         if node in ["local", curr]:
             return {curr: cls.live_ping(target=target, text=text)}
