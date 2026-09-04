@@ -27,6 +27,7 @@ _repo_override = os.environ.get("NGS_REPO", "").strip()
 _repo_candidates = ([Path(_repo_override).expanduser()] if _repo_override else [])
 _repo_candidates.extend((_HERE.parent.parent, Path.cwd()))
 REPO = next((p for p in _repo_candidates if (p / "src").is_dir()), _HERE.parent.parent)
+VAULT_DIR = _path_env("NOUGEN_VAULT_DIR", NOUGEN_HOME / "shards")
 SECRETS_DB = _path_env("NOUGEN_SECRETS_DB", NOUGEN_HOME / "secrets" / "shards_secrets.db")
 sys.path.insert(0, str(NOUGEN_HOME / "bin"))
 import keymaker_peel  # noqa: E402
@@ -219,6 +220,13 @@ def _start_node(node_token):
                NGS_PORT=PORT,
                NGS_BIND_HOST=BIND,
                PYTHONPATH=str(REPO / "src"),
+               # Pin the storage roots the launcher resolved instead of letting the
+               # node re-read the ambient env. Two silent-loss incidents came from
+               # this gap: a node without NOUGEN_HOME served an EMPTY vault, and on
+               # 2026-09-03 a node whose CWD held a repo-local .vault/ wrote 8,289
+               # captures there (core.py autodetect) while recall read ~/.nougen/shards.
+               NOUGEN_HOME=str(NOUGEN_HOME),
+               NOUGEN_VAULT_DIR=str(VAULT_DIR),
                # The node dies silently under /search floods (08/25, twice
                # 08/27) with no Python traceback - the signature of a
                # native-level crash. faulthandler makes the next death
