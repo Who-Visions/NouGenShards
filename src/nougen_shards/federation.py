@@ -137,6 +137,17 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
             logger.warning("federated lane %r missed the %.1fs recall deadline; skipped",
                            name, deadline_s)
             future.cancel()
+            # A skipped lane returns its empty default, which merges exactly
+            # like a lane that genuinely matched nothing. Measured 2026-09-04:
+            # a recall that overran the deadline came back HTTP 200 with a
+            # 2-byte body, indistinguishable from "no matches" - silent recall
+            # loss that no caller could detect even in principle. Record it so
+            # the drop is at least observable; the log line above is not, since
+            # callers do not read our logs.
+            if sweep_report is not None:
+                sweep_report.setdefault("lanes_timed_out", []).append(name)
+                sweep_report["deadline_s"] = deadline_s
+                sweep_report["deadline_exceeded"] = True
             return default
 
     executor = _lane_executor()

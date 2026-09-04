@@ -472,12 +472,24 @@ def cmd_search(args):
             embedding = client.embed(model, args.query)
 
     # Use Federation for unified search
-    results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding, domain_key=domain_key)
+    sweep_report: dict = {}
+    results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding,
+                                            domain_key=domain_key, sweep_report=sweep_report)
+    dropped = sweep_report.get("lanes_timed_out") or []
+    if dropped:
+        # stderr, not stdout: --json consumers must keep parsing a clean stream,
+        # but a human reading "No shards found." has to be told the difference
+        # between an empty substrate and a sweep that never finished.
+        print(f"[!] recall INCOMPLETE: lane(s) {', '.join(dropped)} missed the "
+              f"{sweep_report.get('deadline_s')}s deadline; results below are partial",
+              file=sys.stderr)
     if not results:
         if getattr(args, 'json', False) is True:
             print("[]")
         else:
-            print("No shards found.")
+            print("No shards found." if not dropped
+                  else "No shards returned — but the sweep timed out, so this is "
+                       "NOT evidence the substrate is empty.")
         return
 
     if getattr(args, 'json', False) is True:
