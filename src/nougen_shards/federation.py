@@ -129,10 +129,25 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     import time as _time
     started = _time.monotonic()
 
+    def _record_lane(name, status, rows):
+        """Per-lane elapsed and row count, for tuning the deadline on evidence.
+
+        The deadline was argued about for a day on end-to-end latency alone,
+        which cannot say WHICH lane was slow or whether it returned anything.
+        Recorded here because this is the only place that knows both.
+        """
+        if sweep_report is None:
+            return
+        sweep_report.setdefault("lanes", {})[name] = {
+            "status": status,
+            "elapsed_s": round(_time.monotonic() - started, 3),
+            "rows": rows,
+        }
+
     def _lane_result(future, name, default):
         remaining = deadline_s - (_time.monotonic() - started)
         try:
-            return future.result(timeout=max(0.1, remaining))
+            out = future.result(timeout=max(0.1, remaining))
         except concurrent.futures.TimeoutError:
             logger.warning("federated lane %r missed the %.1fs recall deadline; skipped",
                            name, deadline_s)
@@ -148,7 +163,10 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
                 sweep_report.setdefault("lanes_timed_out", []).append(name)
                 sweep_report["deadline_s"] = deadline_s
                 sweep_report["deadline_exceeded"] = True
+                _record_lane(name, "timeout", None)
             return default
+        _record_lane(name, "ok", len(out) if out is not None else 0)
+        return out
 
     executor = _lane_executor()
     try:
