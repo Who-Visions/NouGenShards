@@ -146,10 +146,31 @@ def get_connection(index: int):
                                timeout=30.0)
         conn.row_factory = sqlite3.Row
         return conn
-    conn = sqlite3.connect(str(path), timeout=10.0)
+    try:
+        conn = sqlite3.connect(str(path), timeout=10.0)
+    except sqlite3.OperationalError as exc:
+        # "unable to open database file" is how the descriptor ceiling shows
+        # up: the file is there, the process just cannot open one more. Every
+        # caller degrades ("ONE bad DB must not zero out the read"), so without
+        # this line the ceiling is invisible - phoebus ran at it for a day
+        # while /health stayed 200. Name the count, then re-raise unchanged.
+        if "unable to open" in str(exc).lower():
+            from . import fd_budget  # pylint: disable=import-outside-toplevel
+            logger.error("grid DB %s: %s - process holds %s open descriptors "
+                         "(soft limit %s); see fd_budget.py",
+                         index, exc, fd_budget.open_fd_count(), _nofile_soft_limit())
+        raise
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _nofile_soft_limit():
+    try:
+        import resource  # pylint: disable=import-outside-toplevel
+        return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    except (ImportError, ValueError, OSError):
+        return None
 
 
 _INITIALIZED_DBS = set()
