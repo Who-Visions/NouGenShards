@@ -57,12 +57,42 @@ def _lane_executor():
 
 import concurrent.futures
 
+
+class FederatedResult(list):
+    """A result list that also says WHETHER IT IS COMPLETE.
+
+    A bare list cannot distinguish "nothing matched" from "three of four lanes
+    failed" -- the caller sees ``[]`` either way. That ambiguity is exactly how
+    a recall goes blind: an agent told to recall before reasoning gets an empty
+    list, reads it as absence, and reasons from scratch while the corpus that
+    would have answered it sits behind a lane that timed out.
+
+    Subclassing ``list`` keeps every existing caller working unchanged -- they
+    iterate or slice -- while giving anyone who asks a truthful answer about
+    coverage. Slicing returns a plain list (Python drops the subclass), so the
+    flags are read on the object this function returns, not on a slice of it.
+    """
+
+    def __init__(self, rows=(), lane_failures=None):
+        super().__init__(rows)
+        self.lane_failures = list(lane_failures or [])
+
+    @property
+    def complete(self) -> bool:
+        """True only when every lane reported. Never infer this from ``len()``."""
+        return not self.lane_failures
+
+
 def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None,
                        domain_key: Optional[str] = None,
                        sweep_report: Optional[dict] = None) -> list:
     """
     Module 8: Combine Compatible Systems (Parallel Multi-Lane Execution).
     Polls local Shard substrate, external DBs, sibling vaults, and remote cloud nodes concurrently.
+
+    Returns a :class:`FederatedResult` -- a list that also reports which lanes
+    failed. Lane errors and deadline misses used to reach a log line and nowhere
+    else, so a degraded sweep was indistinguishable from an empty corpus.
     """
     local_results = []
     external_results = []
@@ -78,11 +108,32 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         cloud_configs = []
     vault_configs = keymaker.list_local_vaults()
 
+    # Coverage honesty. A lane that errors or misses the deadline is a HOLE IN
+    # THE CORPUS, and a hole that reaches only a log line is invisible to the
+    # caller -- who then reads the short result as "nothing matched". Every
+    # failure below is recorded in the same ``sweep_report["errored"]`` contract
+    # local_vault already uses, so the /search trailer surfaces it with no
+    # endpoint change, AND mirrored onto the returned list for library callers
+    # (CLI, rhea, shadow_xoah) that pass no sweep_report and would otherwise
+    # still be blind.
+    lane_failures: list = []
+
+    def _note_lane(
+        name: str, error: str, failure_class: Optional[str] = None
+    ) -> None:
+        entry = {"store": f"lane:{name}", "error": error}
+        if failure_class:
+            entry["failure_class"] = failure_class
+        lane_failures.append(entry)
+        if sweep_report is not None:
+            sweep_report.setdefault("errored", []).append(entry)
+
     def _fetch_local():
         try:
             return core.retrieve(query, limit=limit, query_embedding=query_embedding, domain_key=domain_key)
         except Exception as exc:
             logger.warning("local retrieve skipped: %s: %s", type(exc).__name__, exc)
+            _note_lane("local", f"{type(exc).__name__}: {exc}")
             return []
 
     def _fetch_external():
@@ -92,6 +143,7 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
             return query_external_dbs(query, external_configs, limit=limit)
         except Exception as exc:
             logger.warning("external DBs skipped: %s: %s", type(exc).__name__, exc)
+            _note_lane("external", f"{type(exc).__name__}: {exc}")
             return []
 
     def _fetch_cloud():
@@ -102,6 +154,7 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
                 query, cloud_configs, limit=limit, sweep_report=sweep_report)
         except Exception as exc:
             logger.warning("cloud nodes skipped: %s: %s", type(exc).__name__, exc)
+            _note_lane("cloud", f"{type(exc).__name__}: {exc}")
             return []
 
     def _fetch_vaults():
@@ -111,6 +164,7 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
             return query_local_vaults(query, vault_configs, limit=limit, sweep_report=sweep_report)
         except Exception as exc:
             logger.warning("local vaults skipped: %s: %s", type(exc).__name__, exc)
+            _note_lane("vaults", f"{type(exc).__name__}: {exc}")
             return []
 
     # Parallel lane execution across threads (preserve ContextVar tenant isolation)
@@ -180,12 +234,11 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         except concurrent.futures.TimeoutError:
             logger.warning("federated lane %r missed the %.1fs recall deadline; skipped",
                            name, deadline_s)
-            if sweep_report is not None:
-                sweep_report.setdefault("errored", []).append({
-                    "store": name,
-                    "error": f"lane missed {deadline_s:.1f}s recall deadline",
-                    "failure_class": "transport_timeout",
-                })
+            _note_lane(
+                name,
+                f"missed the {deadline_s:.1f}s recall deadline",
+                "transport_timeout",
+            )
             future.cancel()
             # A skipped lane returns its empty default, which merges exactly
             # like a lane that genuinely matched nothing. Measured 2026-09-04:
@@ -236,4 +289,5 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         [local_results, external_results, cloud_results, vault_results], k=60,
         weights=[1.0, lane_weight, lane_weight, lane_weight])
 
-    return combined[:limit]
+    # Ship coverage WITH the rows, never only in a log line.
+    return FederatedResult(combined[:limit], lane_failures)
