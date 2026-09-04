@@ -830,17 +830,51 @@ _BAD_TOKEN_DETAIL = (
 def _credentials_configured() -> bool:
     try:
         return tenants.credentials_configured(NODE_TOKEN)
+    except tenants.RegistryUnreadableError as exc:
+        # Distinct from a malformed registry ON PURPOSE. "Tenant registry is
+        # invalid" is a claim about configuration; this box is simply out of a
+        # local resource and its config is fine. A peer that cannot tell those
+        # apart marks a healthy node as unauthenticated.
+        logger.error("tenant registry unreadable (resource exhaustion): %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=("Local resource exhaustion: the tenant registry could not be "
+                    "read. This node's credentials are configured; it is "
+                    "temporarily unable to serve. Retry."),
+            headers={"X-NouGen-Failure-Class": "local_resource_exhaustion",
+                     "Retry-After": "30"},
+        ) from exc
     except tenants.TenantRegistryError as exc:
         logger.error("tenant registry rejected: %s", exc)
-        raise HTTPException(status_code=503, detail="Tenant registry is invalid.") from exc
+        raise HTTPException(
+            status_code=503, detail="Tenant registry is invalid.",
+            headers={"X-NouGen-Failure-Class": "registry_invalid"},
+        ) from exc
 
 
 def _resolve_tenant_credential(supplied: Optional[str]) -> Optional[tenants.Tenant]:
     try:
         return tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+    except tenants.RegistryUnreadableError as exc:
+        # Distinct from a malformed registry ON PURPOSE. "Tenant registry is
+        # invalid" is a claim about configuration; this box is simply out of a
+        # local resource and its config is fine. A peer that cannot tell those
+        # apart marks a healthy node as unauthenticated.
+        logger.error("tenant registry unreadable (resource exhaustion): %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=("Local resource exhaustion: the tenant registry could not be "
+                    "read. This node's credentials are configured; it is "
+                    "temporarily unable to serve. Retry."),
+            headers={"X-NouGen-Failure-Class": "local_resource_exhaustion",
+                     "Retry-After": "30"},
+        ) from exc
     except tenants.TenantRegistryError as exc:
         logger.error("tenant registry rejected: %s", exc)
-        raise HTTPException(status_code=503, detail="Tenant registry is invalid.") from exc
+        raise HTTPException(
+            status_code=503, detail="Tenant registry is invalid.",
+            headers={"X-NouGen-Failure-Class": "registry_invalid"},
+        ) from exc
 
 
 def _verify_token_sync(
@@ -1802,8 +1836,16 @@ class _TokenGatedMCP:
         if scope["type"] == "http":
             try:
                 configured = tenants.credentials_configured(NODE_TOKEN)
+            except tenants.RegistryUnreadableError:
+                await self._reject(
+                    send, 503,
+                    "Local resource exhaustion: the tenant registry could not be "
+                    "read. This node's credentials are configured; retry.",
+                    failure_class="local_resource_exhaustion")
+                return
             except tenants.TenantRegistryError:
-                await self._reject(send, 503, "Tenant registry is invalid.")
+                await self._reject(send, 503, "Tenant registry is invalid.",
+                                   failure_class="registry_invalid")
                 return
             if not configured:
                 await self._reject(send, 503, "Node write-auth not configured.")
@@ -1838,8 +1880,16 @@ class _TokenGatedMCP:
                         issued_tenant_id = mcp_oauth.issued_token_tenant(supplied)
                         if issued_tenant_id:
                             tenant = tenants.tenant_by_id(issued_tenant_id, core.GLOBAL_DIR)
+                except tenants.RegistryUnreadableError:
+                    await self._reject(
+                        send, 503,
+                        "Local resource exhaustion: the tenant registry could not "
+                        "be read. This node's credentials are configured; retry.",
+                        failure_class="local_resource_exhaustion")
+                    return
                 except tenants.TenantRegistryError:
-                    await self._reject(send, 503, "Tenant registry is invalid.")
+                    await self._reject(send, 503, "Tenant registry is invalid.",
+                                       failure_class="registry_invalid")
                     return
             if tenant is None:
                 await self._reject(send, 401, "Invalid node token.",
@@ -1854,10 +1904,17 @@ class _TokenGatedMCP:
         await self.inner(scope, receive, send)
 
     @staticmethod
-    async def _reject(send, status, detail, scope=None):
+    async def _reject(send, status, detail, scope=None, failure_class=None):
         body = json.dumps({"detail": detail}).encode("utf-8")
         headers = [(b"content-type", b"application/json"),
                    (b"content-length", str(len(body)).encode())]
+        # Machine-readable cause. A 503 is not self-describing: a peer needs to
+        # know whether this node is misconfigured or merely out of descriptors,
+        # because one is a page and the other is a retry.
+        if failure_class:
+            headers.append((b"x-nougen-failure-class", failure_class.encode()))
+            if failure_class == "local_resource_exhaustion":
+                headers.append((b"retry-after", b"30"))
         if status == 401 and scope is not None:
             # RFC 9728 section 5.1. Without this pointer the client cannot
             # discover the authorization server, falls back to probing
