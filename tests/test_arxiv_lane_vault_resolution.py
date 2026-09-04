@@ -194,14 +194,39 @@ def test_a_barren_result_is_warned_about_in_describe(monkeypatch, tmp_path):
 def test_inconclusive_probe_is_not_demoted_below_a_confirmed_empty_dir(
         monkeypatch, tmp_path):
     """A real corpus whose first N entries happen not to match must not lose to a
-    directory PROVEN to hold nothing. Absence of proof is not proof of absence."""
+    directory PROVEN to hold nothing. Absence of proof is not proof of absence.
+
+    scandir order is mocked rather than relied on. The first version of this
+    test built the ordering out of filenames ("aaa_*" before "arxiv_cs_AI_*"),
+    which holds on NTFS (name order) but not on Linux ext4, where directory
+    iteration order is effectively arbitrary -- it passed locally on Windows
+    and failed in CI on every Python version, with the real artifact found
+    inside the cap instead of past it. Mocking the entries directly makes the
+    ordering the test's premise rather than the filesystem's mood.
+    """
     monkeypatch.setattr(cfg, "_PROBE_ENTRY_CAP", 5, raising=False)
-    # Filler must sort BEFORE "arxiv_cs_AI_" or scandir finds the artifact
-    # immediately and the candidate ranks 0 -- which is what happened the first
-    # time this test was written.
-    big = _populate(tmp_path / "big", [f"aaa_{i:03d}.md" for i in range(20)])
-    (big / "arxiv_cs_AI_2026-09-01.md").write_text("x", encoding="utf-8")
+    big = _populate(tmp_path / "big", ["placeholder.md"])
     empty = _populate(tmp_path / "empty", ["a.txt"])
+
+    class FakeEntry:
+        def __init__(self, name):
+            self.name = name
+
+    fake_entries = [FakeEntry(f"filler_{i:03d}.md") for i in range(20)]
+    fake_entries.append(FakeEntry("arxiv_cs_AI_2026-09-01.md"))
+    real_scandir = os.scandir
+
+    def fake_scandir(path):
+        if os.path.normpath(str(path)) == os.path.normpath(str(big)):
+            from contextlib import contextmanager
+
+            @contextmanager
+            def cm():
+                yield iter(fake_entries)
+            return cm()
+        return real_scandir(path)
+
+    monkeypatch.setattr(cfg.os, "scandir", fake_scandir)
     monkeypatch.setenv("NOUGEN_ARXIV_VAULT_DIR", str(big))
     monkeypatch.setenv("NOUGEN_VAULT_DIR", str(empty))
     value, source = cfg.resolve_vault_root()
