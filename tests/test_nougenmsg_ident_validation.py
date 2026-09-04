@@ -92,3 +92,20 @@ def test_remote_ollama_payload_is_stdin_not_remote_shell(monkeypatch):
     }
     assert prompt not in args[0]
     assert model not in args[0]
+
+
+def test_read_inbox_normalizes_legacy_source_to_sender(tmp_path, monkeypatch):
+    """Ping receipts using the legacy field must not render as Unknown."""
+    inbox = tmp_path / ".codex" / "inbox"
+    inbox.mkdir(parents=True)
+    (inbox / "ping.json").write_text(
+        '{"source": "nougen-phoebus", "text": "hello"}', encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "nougen_shards.nougenmsg.os.path.expanduser", lambda _path: str(inbox)
+    )
+
+    messages = NouGenMsgBus.read_inbox("codex")
+
+    assert messages[0]["source"] == "nougen-phoebus"
+    assert messages[0]["sender"] == "nougen-phoebus"

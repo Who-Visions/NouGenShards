@@ -552,6 +552,12 @@ class NouGenMsgBus:
                     # Normalize text / content field
                     if "text" not in data and "content" in data:
                         data["text"] = data["content"]
+                    # Older ping emitters used ``source`` while message
+                    # emitters used ``sender``. Keep both fields, but give
+                    # every reader one canonical display identity so a
+                    # node-origin receipt never renders as "Unknown".
+                    if not data.get("sender") and data.get("source"):
+                        data["sender"] = data["source"]
                     messages.append(data)
             except Exception:
                 continue
