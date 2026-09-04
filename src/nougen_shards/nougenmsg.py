@@ -321,11 +321,26 @@ class AgentPinger:
         url = "http://127.0.0.1:11434/api/generate"
         
         if node not in ["local", get_current_node()]:
-            payload = json.dumps({"model": target_model, "prompt": prompt, "stream": False})
-            escaped = payload.replace('"', '\\"')
-            cmd = f'curl -s -X POST http://127.0.0.1:11434/api/generate -d "{escaped}"'
+            # The remote command is interpreted by the remote login shell.
+            # Keep it entirely constant; caller-controlled JSON travels over
+            # stdin, where shell syntax has no meaning.
+            payload = json.dumps(
+                {"model": target_model, "prompt": prompt, "stream": False}
+            )
+            remote_cmd = (
+                "curl -sS -X POST http://127.0.0.1:11434/api/generate "
+                "--data-binary @-"
+            )
             try:
-                res = subprocess.run(["ssh", node, cmd], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=8)
+                res = subprocess.run(
+                    ["ssh", "--", node, remote_cmd],
+                    input=payload,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=8,
+                )
                 data = json.loads(res.stdout)
                 return {"node": node, "model": target_model, "response": data.get("response", "").strip()}
             except Exception as e:
