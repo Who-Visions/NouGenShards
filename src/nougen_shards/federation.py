@@ -98,7 +98,8 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         if not cloud_configs:
             return []
         try:
-            return query_cloud_shards(query, cloud_configs, limit=limit)
+            return query_cloud_shards(
+                query, cloud_configs, limit=limit, sweep_report=sweep_report)
         except Exception as exc:
             logger.warning("cloud nodes skipped: %s: %s", type(exc).__name__, exc)
             return []
@@ -179,6 +180,12 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         except concurrent.futures.TimeoutError:
             logger.warning("federated lane %r missed the %.1fs recall deadline; skipped",
                            name, deadline_s)
+            if sweep_report is not None:
+                sweep_report.setdefault("errored", []).append({
+                    "store": name,
+                    "error": f"lane missed {deadline_s:.1f}s recall deadline",
+                    "failure_class": "transport_timeout",
+                })
             future.cancel()
             # A skipped lane returns its empty default, which merges exactly
             # like a lane that genuinely matched nothing. Measured 2026-09-04:
