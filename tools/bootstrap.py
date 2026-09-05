@@ -142,6 +142,12 @@ def main() -> int:
     required_ok = all(r["ok"] for r in report if r["required"])
 
     if args.json:
+        # CodeQL name-heuristic false positive: `report` carries only step
+        # LABELS ("secret:OPENROUTER_API_KEY"), booleans and descriptions. No
+        # credential value is ever read into this process -- is_configured()
+        # is a membership test against os.environ and never binds the value.
+        # The taint CodeQL follows is the identifier, not the secret.
+        # codeql[py/clear-text-logging-sensitive-data]
         print(json.dumps({"ok": required_ok, "root": str(ROOT), "steps": report}, indent=2))
     else:
         for r in report:
@@ -152,6 +158,12 @@ def main() -> int:
             print(f"Bootstrap OK. Interpreter: {venv_python()}")
             missing = [n for n in SECRETS if not is_configured(n)]
             if missing:
+                # Same false positive as above: `missing` holds the KEYS of
+                # SECRETS -- variable names like "NGS_NODE_TOKEN" -- not their
+                # values. Printing which credentials are unset is the entire
+                # point of a bootstrap check, and doing it without reading any
+                # of them is why is_configured() exists.
+                # codeql[py/clear-text-logging-sensitive-data]
                 print(f"Unconfigured (deployment only, not needed to build or test): {', '.join(missing)}")
         else:
             print("Bootstrap FAILED - see FAIL rows above.")
