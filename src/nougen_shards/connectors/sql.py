@@ -19,8 +19,16 @@ _ALLOWED_DB_BACKENDS = {
 
 
 def is_valid_identifier(ident: str) -> bool:
-    """Strict regex for safe SQL identifiers."""
-    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", ident))
+    """Strict whitelist for identifiers interpolated UNQUOTED into SQL below.
+
+    fullmatch, not match: `$` also matches immediately before a trailing
+    newline, so `re.match` accepted "users
+" and passed it straight into the
+    f-string that builds `FROM {table}`. Unquoted interpolation makes this site
+    strictly weaker than the quoted one in local_vault, so it gets the same
+    fix. (Third site of the pattern; nougenmsg._SAFE_IDENT was the first.)
+    """
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", ident or ""))
 
 
 def is_allowed_db_uri(uri: str) -> bool:

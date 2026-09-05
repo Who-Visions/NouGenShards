@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.whovisions.phoebus-logshow-guard</string>
+
+    <!-- Kills `log show` children of Antigravity's language_server that have
+         run past the age limit in ops/phoebus-logshow-guard.sh. See that
+         script for the 2026-09-05 incident this guards against: a 26-process
+         fan-out drove load average to 367 and wedged com.whovisions.ngsnode
+         for 4+ hours without it ever crashing or leaving the process table. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/ops/phoebus-logshow-guard.sh</string>
+    </array>
+
+    <!-- Every 60s: a stuck `log show` is presumed stuck at 120s old (the
+         script's AGE_LIMIT_S), so a 60s cadence catches it within one cycle
+         of crossing that line without polling so often the guard itself
+         becomes load. -->
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <!-- Safe to run immediately: a pass with nothing to kill is a no-op, so
+         this does not carry the ngsrefresh caution about bouncing a healthy
+         node on install/reload. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <key>StandardOutPath</key>
+    <string>__REPO__/logs/phoebus-logshow-guard.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/logs/phoebus-logshow-guard.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

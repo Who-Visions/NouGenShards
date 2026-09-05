@@ -211,8 +211,26 @@ def _open_cloud(req, url: str, timeout: float) -> bytes:
             return res.read()
 
 
+def _failure_class(exc: BaseException) -> str:
+    """Classify failures visible to the caller, including no-response timeouts."""
+    if isinstance(exc, urllib.error.HTTPError):
+        header = exc.headers.get("X-NouGen-Failure-Class") if exc.headers else None
+        if header:
+            return str(header)
+        if exc.code in (401, 403):
+            return "auth_rejected"
+        return "remote_http_error"
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    if isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in str(reason).lower():
+        return "transport_timeout"
+    if isinstance(exc, (json.JSONDecodeError, KeyError, ValueError)):
+        return "invalid_response"
+    return "transport_error"
+
+
 def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3,
-                       node_token: Optional[str] = None) -> list:
+                       node_token: Optional[str] = None,
+                       sweep_report: Optional[dict] = None) -> list:
     """
     Queries remote NouGenShards nodes and maps results to standard format.
 
@@ -292,6 +310,12 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3,
             # longer silent. (Module 10: Graceful Degradation)
             logger.warning("cloud node skipped (%s): %s: %s",
                            name, type(exc).__name__, exc)
+            if sweep_report is not None:
+                sweep_report.setdefault("errored", []).append({
+                    "store": f"cloud:{name}",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "failure_class": _failure_class(exc),
+                })
             continue
 
     return results

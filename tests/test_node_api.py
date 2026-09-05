@@ -100,11 +100,24 @@ def test_search_degrades_instead_of_500(client, monkeypatch):
     assert r.status_code == 200
     assert isinstance(r.json(), list)
 
-    # Both lanes blow up -> still 200 with an empty list, never an exception.
+    # Both lanes blow up -> still 200, never an exception. The body now carries a
+    # FEDERATION_STATUS trailer naming the lane that died instead of a bare [].
+    #
+    # This assertion used to be `== []`, and that was the bug: a total retrieval
+    # failure and an empty corpus returned byte-identical bodies, so a caller
+    # told to recall before reasoning read "the stack is down" as "nothing
+    # matched". A degraded answer must be distinguishable from an honest empty
+    # one; the trailer scores 0.0 and carries a distinct event_type so
+    # list-consuming clients keep parsing.
     monkeypatch.setattr(core, "_keyword_retrieve", boom)
     r = client.post("/search", json={"query": "anything", "limit": 3}, headers=AUTH)
     assert r.status_code == 200
-    assert r.json() == []
+    body = r.json()
+    assert isinstance(body, list)
+    assert [row for row in body if row.get("event_type") != "FEDERATION_STATUS"] == []
+    trailer = [row for row in body if row.get("event_type") == "FEDERATION_STATUS"]
+    assert len(trailer) == 1, "a dead retrieval stack must say so, not return a silent []"
+    assert "lane:local" in trailer[0]["content"]
 
 
 def test_pull_and_dedup_aware_push(client):

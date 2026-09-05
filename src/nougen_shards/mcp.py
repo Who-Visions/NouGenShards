@@ -105,10 +105,28 @@ def recall_memory(query: str, limit: int = 3) -> str:
         query: The search term or context you are trying to match.
         limit: Max number of results to return.
     """
-    shards_list = federated_retrieve(query, limit=limit)
+    # sweep_report is how a lane dropped by the recall deadline becomes visible.
+    # Without it this tool answered "No relevant shards found" for a timed-out
+    # sweep — a positive claim about the substrate that the substrate never
+    # made. An agent acting on that will re-derive knowledge it already holds.
+    sweep_report: dict = {}
+    shards_list = federated_retrieve(query, limit=limit, sweep_report=sweep_report)
+    dropped = sweep_report.get("lanes_timed_out") or []
     if not shards_list:
+        if dropped:
+            return ("Recall INCOMPLETE — no answer, not an empty substrate: "
+                    f"{len(dropped)} lane(s) ({', '.join(dropped)}) missed the "
+                    f"{sweep_report.get('deadline_s')}s recall deadline. "
+                    "Retry, or raise NOUGEN_RECALL_DEADLINE_S; do NOT conclude "
+                    "the substrate holds nothing on this query.")
         return "No relevant shards found in the memory substrate."
-    return compile_recall_packet(shards_list)
+    packet = compile_recall_packet(shards_list)
+    if dropped:
+        packet += ("\n\n[COVERAGE WARNING] Partial result: "
+                   f"{len(dropped)} lane(s) ({', '.join(dropped)}) missed the "
+                   f"{sweep_report.get('deadline_s')}s recall deadline. "
+                   "Shards below are real; absence below proves nothing.")
+    return packet
 
 @mcp.tool()
 def mark_utility(shard_id: int, worked: bool, db_index: Optional[int] = None) -> str:

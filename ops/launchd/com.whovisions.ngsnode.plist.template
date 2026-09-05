@@ -35,6 +35,23 @@
     <key>StandardErrorPath</key>
     <string>__REPO__/logs/ngs-node.err.log</string>
 
+    <!-- Descriptor headroom. launchd's default soft limit is 256 open files;
+         one recall opens ~40 and six concurrent fan-outs hit the ceiling
+         exactly (phoebus, 2026-09-04: every open() then failed, the vector
+         cache rebuilt per request, the local lane missed every deadline).
+         app.py also raises its own soft limit at startup (fd_budget.py); this
+         is the belt to that brace, and covers the launcher shell too. -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>8192</integer>
+    </dict>
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
+
     <!-- Background service: keeps the node off the interactive scheduler band
          and exempt from App Nap. -->
     <key>ProcessType</key>

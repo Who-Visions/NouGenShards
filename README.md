@@ -105,7 +105,19 @@ graph TD
 
 ### 1. Install
 
-**Windows (One-Click)** 🪟
+One command takes a fresh clone to a working state — it creates the virtualenv,
+installs the project, verifies the CLI, and reports which credentials are
+unconfigured without ever reading their values:
+
+```bash
+python tools/bootstrap.py
+```
+
+`--check` verifies without changing anything; `--json` emits a report CI can gate
+on. It is stdlib-only by design, because it has to run before anything is
+installed.
+
+**Windows (One-Click)** 🖥️
 ```bash
 # Just run the launcher
 nougen.bat
@@ -204,22 +216,50 @@ nougen handoff list
 
 ## 🤖 Fleet Agent Roster
 
-NouGenShards features a 10-agent roster (personas layered over the memory engine). These agents route through local models by default (providing $0 cloud cost execution) but support automatic fail-soft to OpenRouter Cloud or Who Visions Cloud (Ollama Cloud) depending on key availability:
+NouGenShards features a 10-agent roster (personas layered over the memory engine). They execute on local models by default, at $0:
 
-- **Sharder**: Ingestion (Data Capture & Indexing) — Binds to `dav1d:e2b`.
-- **Remember**: Recall (Memory Retrieval & Verification) — Binds to `sol-ai:e4b`.
-- **Kronos**: Time (Temporal Grounding & Decay) — Binds to `gemma4:e2b`.
-- **DavOs**: Operations (Oversight & Gatekeeper) — Binds to `DavOs:latest`.
-- **Sol-Ai**: Broad Reasoning & Illumination — Binds to `sol-ai:e4b`.
-- **NouGen**: Orchestrator (Core Orchestration & Branding) — Binds to `gemma4:31b-cloud`.
-- **Griot**: Rules (Semantic Synthesis & Consolidation) — Binds to `griot:e2b`.
-- **Rhea**: Security (System Hardening & Audit) — Binds to `rhea-noir:e2b`.
-- **Kaedra**: Pedagogy (Tensor Mathematics & Training) — Binds to `kaedra:e4b`.
-- **Iris**: Airspace (Web Research & Browser Actuation) — Binds to `iris-ai:e4b`.
+- **Sharder**: Ingestion (Data Capture & Indexing).
+- **Remember**: Recall (Memory Retrieval & Verification).
+- **Kronos**: Time (Temporal Grounding & Decay).
+- **DavOs**: Operations (Oversight & Gatekeeper).
+- **Sol-Ai**: Broad Reasoning & Illumination.
+- **NouGen**: Orchestrator (Core Orchestration & Branding).
+- **Griot**: Rules (Semantic Synthesis & Consolidation).
+- **Rhea**: Security (System Hardening & Audit).
+- **Kaedra**: Pedagogy (Tensor Mathematics & Training).
+- **Iris**: Airspace (Web Research & Browser Actuation).
 
-These personas run locally or seamlessly fall back to cloud providers depending on key configuration, offering hybrid processing.
+These are **roles, not separate model downloads**. They ride the resident local model (`gemma4:e2b-qat`) as system prompts; the Modelfiles under `fleet/` are the source of truth for each persona's charter. Earlier revisions of this list named per-persona tags such as `iris-ai:e4b` and `sol-ai:e4b` — those tags no longer exist, and full-fat persona builds do not fit a 6 GB card, so the VRAM gate reroutes them by design.
+
+Routing prefers the local lane, then free lanes. If no lane is available the run **reports that** rather than silently escalating to a metered provider — see the capability-layer section below.
 
 ---
+
+## 🧭 NouGen is a capability layer, not an inference provider
+
+NouGen runs on infrastructure **you already own**: your API accounts, your local
+GPU, your repositories and storage. It supplies orchestration, memory, a handoff
+baton, and routing policy. It holds no model of its own and resells no inference.
+
+That is a design constraint, not a disclaimer, and it decides real behaviour:
+
+- **Credentials are deployment configuration, never build inputs.** A clean clone
+  must build, import and pass its tests with zero credentials present. Anything
+  that fails without a key is misfiled. `tools/bootstrap.py` enforces this, and
+  `tests/test_repro_smoke.py` keeps it enforced.
+- **Capability discovery, not provider assumption.** What is available is
+  *detected* at run time — which local models are resident, which accounts
+  answer, which endpoints are reachable — rather than assumed from a fixed
+  vendor. A 6 GB card and a 24 GB card get different routes from the same code.
+- **$0 lanes come first.** Local Ollama, then free lanes, then anything metered.
+- **An unavailable lane is reported, never silently escalated to a paid one.**
+  Refusal is a route. Discovering a paid fallback in a bill is not.
+- **Memory and coordination are yours too.** Shards are the knowledge substrate;
+  the relay is the handoff baton between machines. Both live on your storage.
+
+The practical test: if NouGen disappeared tomorrow, every account, model, shard
+and repository it touched would still be yours, exactly where it already was.
+
 
 ## ☁️ Cloud & Hybrid Modes
 

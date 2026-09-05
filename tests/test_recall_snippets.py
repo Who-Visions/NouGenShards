@@ -20,6 +20,14 @@ import app as node_app  # noqa: E402
 from nougen_shards import core  # noqa: E402
 
 
+def _tool_body(tool):
+    """The tool's underlying sync function, past FastMCP registration and the
+    threadpool offload. Tools register as async wrappers so a blocking body
+    cannot hold the event loop (app._offloaded); the body itself stays sync."""
+    fn = getattr(tool, "fn", tool)
+    return getattr(fn, "__wrapped__", fn)
+
+
 @pytest.fixture()
 def tmp_vault(monkeypatch):
     temp_dir = tempfile.mkdtemp()
@@ -79,14 +87,12 @@ def test_get_shard_returns_full_body(tmp_vault, monkeypatch):
     sid = conn.execute("SELECT id FROM shards WHERE title = ?",
                        ("snippet target",)).fetchone()[0]
     conn.close()
-    fetched = node_app.get_shard.fn(sid, 2) if hasattr(node_app.get_shard, "fn") \
-        else node_app.get_shard(sid, 2)
+    fetched = _tool_body(node_app.get_shard)(sid, 2)
     assert fetched.get("content", "").startswith("full body")
     assert fetched["_db_index"] == 2
 
 
 def test_get_shard_miss_reports_hint(tmp_vault):
-    fetched = node_app.get_shard.fn(999999) if hasattr(node_app.get_shard, "fn") \
-        else node_app.get_shard(999999)
+    fetched = _tool_body(node_app.get_shard)(999999)
     assert fetched.get("found") is False
     assert "hint" in fetched
