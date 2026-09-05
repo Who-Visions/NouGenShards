@@ -336,10 +336,36 @@ class AgentPinger:
 
         return {"status": "dropped", "file": filepath, "pipe_delivered": False}
 
+    # Ollama tags are per-machine -- whatever was pulled there -- and they have
+    # diverged. Measured 2026-09-05 against each node's /api/tags, with sizes:
+    #   whoart   gemma4:e2b-qat 4.34 GB PRESENT; gemma4:e2b 7.16 GB
+    #   blade    gemma4:e2b present; e2b-qat ABSENT
+    #   phoebus  gemma4:e2b present; e2b-qat ABSENT
+    #
+    # whoart's card is 6141 MiB. The qat build fits at 4.34 GB and is why
+    # CLAUDE.md Rule 0.5.1 pins it as the resident local lane; plain e2b is
+    # 7.16 GB and does NOT fit, so a fleet-wide "gemma4:e2b" default points
+    # whoart at a model a gigabyte larger than its VRAM.
+    _OLLAMA_DEFAULTS = {"whoart": "gemma4:e2b-qat"}
+    _OLLAMA_FALLBACK = "gemma4:e2b"
+
+    @staticmethod
+    def _default_ollama_model(node: str) -> str:
+        """The model tag installed on -- and small enough for -- the machine
+        that will actually serve this request.
+
+        A single fleet-wide default cannot be correct: the nodes hold
+        different tags, and whoart's 6141 MiB card only fits the quantized
+        build. Key off the serving machine instead.
+        """
+        current = get_current_node()
+        machine = current if node in ("local", "", None, current) else node
+        return AgentPinger._OLLAMA_DEFAULTS.get(machine, AgentPinger._OLLAMA_FALLBACK)
+
     @staticmethod
     def ping_ollama(prompt: str, node: str = "local", model: Optional[str] = None) -> Dict[str, Any]:
         """Pings local or remote Ollama instance with zero-cost tactical evaluation."""
-        target_model = model or "gemma4:e2b"
+        target_model = model or AgentPinger._default_ollama_model(node)
         url = "http://127.0.0.1:11434/api/generate"
         
         if node not in ["local", get_current_node()]:
