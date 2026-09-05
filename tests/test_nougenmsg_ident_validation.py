@@ -16,6 +16,7 @@ cannot regress silently.
 
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -136,17 +137,32 @@ def test_missing_session_identity_is_explicitly_unknown():
     assert origin["unknown_reason"] == "session_identity_not_supplied"
 
 
-def test_remote_origin_is_encoded_not_interpolated(monkeypatch):
-    calls = []
-
+def _stub_ssh(monkeypatch, calls, stdout="ok"):
+    """Capture ssh/scp argv. emit_node probes --capabilities first, so the
+    message dispatch is always the LAST call."""
     class Result:
-        stdout = "ok"
-        stderr = ""
+        def __init__(self):
+            self.stdout = stdout
+            self.stderr = ""
+            self.returncode = 0
 
     monkeypatch.setattr(
         "nougen_shards.nougenmsg.subprocess.run",
         lambda *args, **kwargs: calls.append((args, kwargs)) or Result(),
     )
+    # emit_node runs ssh through _ssh_capture (temp file, never a pipe), so the
+    # ssh legs are stubbed at that seam rather than at subprocess.run.
+    monkeypatch.setattr(
+        NouGenMsgBus, "_ssh_capture",
+        lambda argv, timeout=None: calls.append(((argv,), {})) or stdout,
+    )
+    NouGenMsgBus._TEXT_B64_SUPPORT.clear()
+
+
+def test_remote_origin_is_encoded_not_interpolated(monkeypatch):
+    calls = []
+    _stub_ssh(monkeypatch, calls)
+
     title = 'session title with "quotes"; $(id)'
     result = NouGenMsgBus.emit_node(
         "somewhere-else", "codex", "plain message",
@@ -154,6 +170,40 @@ def test_remote_origin_is_encoded_not_interpolated(monkeypatch):
     )
 
     assert result == {"somewhere-else": "ok"}
-    remote_cmd = calls[0][0][0][2]
+    remote_cmd = calls[-1][0][0][-1]
     assert "--origin-b64" in remote_cmd
     assert title not in remote_cmd
+
+
+def test_body_goes_inline_as_base64_when_node_supports_it(monkeypatch):
+    """A node advertising text-b64 receives the body encoded on the command
+    line -- no scp hop, no metacharacter refusal, nothing user-authored
+    reaching the remote shell."""
+    calls = []
+    _stub_ssh(monkeypatch, calls, stdout="nougenmsg-capabilities: text-b64")
+
+    body = 'parens (Coach), quotes "x", $(id); rm -rf / && echo pwned'
+    result = NouGenMsgBus.emit_node("somewhere-else", "codex", body)
+
+    assert result == {"somewhere-else": "nougenmsg-capabilities: text-b64"}
+    remote_cmd = calls[-1][0][0][-1]
+    assert "--text-b64 " in remote_cmd
+    # The raw body never appears, and no shell metacharacter rides along.
+    assert body not in remote_cmd
+    for meta in ('"', "'", "$", ";", "&", "|", "(", ")", "`"):
+        assert meta not in remote_cmd.split("--text-b64 ")[1]
+
+    encoded = remote_cmd.split("--text-b64 ")[1].strip()
+    padding = "=" * (-len(encoded) % 4)
+    assert base64.urlsafe_b64decode(encoded + padding).decode("utf-8") == body
+
+
+def test_capability_probe_is_cached_per_node(monkeypatch):
+    calls = []
+    _stub_ssh(monkeypatch, calls, stdout="nougenmsg-capabilities: text-b64")
+
+    NouGenMsgBus.emit_node("somewhere-else", "codex", "one")
+    NouGenMsgBus.emit_node("somewhere-else", "codex", "two")
+
+    probes = [c for c in calls if "--capabilities" in c[0][0][-1]]
+    assert len(probes) == 1
