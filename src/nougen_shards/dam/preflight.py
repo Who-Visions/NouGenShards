@@ -134,6 +134,12 @@ class Preflight:
             return {"skipped": "no host configured"}
         import socket
         ctx = ssl.create_default_context()
+        # create_default_context() still permits TLS 1.0/1.1 on some builds.
+        # This gate exists to prove the dam can reach an HF-backed store, so
+        # it must negotiate what that store actually accepts — pinning the
+        # floor at 1.2 also stops the gate from "passing" over a downgraded
+        # connection the real client would refuse.
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         paths = ssl.get_default_verify_paths()
         if not (paths.cafile or paths.capath or os.environ.get("SSL_CERT_FILE")):
             raise AssertionError(
