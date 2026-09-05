@@ -19,7 +19,10 @@ from nougen_shards.dam import Preflight, PreflightFailure  # noqa: E402
 from nougen_shards.dam.dam import Dam  # noqa: E402
 from nougen_shards.dam.store import LocalDamStore  # noqa: E402
 
-PY = "/Users/kushboygroup/The Observatory/NouGen/nougenshards/.venv/bin/python"
+# The interpreter running this script. Hardcoding an absolute path named
+# the operator and the layout of their disk in a public repo, which is
+# what tests/test_published_surface.py exists to catch.
+PY = sys.executable
 KEY = b"\x07" * 32
 HMAC = b"\x08" * 32
 
