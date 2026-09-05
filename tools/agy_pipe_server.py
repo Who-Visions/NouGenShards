@@ -73,10 +73,87 @@ kernel32.WriteFile.restype = wintypes.BOOL
 
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 kernel32.CloseHandle.restype = wintypes.BOOL
+kernel32.AttachConsole.argtypes = [wintypes.DWORD]
+kernel32.AttachConsole.restype = wintypes.BOOL
+kernel32.FreeConsole.argtypes = []
+kernel32.FreeConsole.restype = wintypes.BOOL
+kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+kernel32.GetStdHandle.restype = wintypes.HANDLE
+kernel32.WriteConsoleInputW.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+kernel32.WriteConsoleInputW.restype = wintypes.BOOL
+
+
+class KEY_EVENT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("bKeyDown", wintypes.BOOL),
+        ("wRepeatCount", wintypes.WORD),
+        ("wVirtualKeyCode", wintypes.WORD),
+        ("wVirtualScanCode", wintypes.WORD),
+        ("uChar", wintypes.WCHAR),
+        ("dwControlKeyState", wintypes.DWORD),
+    ]
+
+
+class INPUT_RECORD_UNION(ctypes.Union):
+    _fields_ = [("KeyEvent", KEY_EVENT_RECORD)]
+
+
+class INPUT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("EventType", wintypes.WORD),
+        ("Event", INPUT_RECORD_UNION),
+    ]
+
+
+def wake_idle_consoles() -> int:
+    """Finds active agy CLI processes and pulses VK_RETURN into console input buffer."""
+    import subprocess
+    woken = 0
+    try:
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-Command", "Get-Process -Name agy -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"],
+            text=True,
+            errors="replace",
+            timeout=2,
+        )
+        pids = [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
+    except Exception:
+        pids = []
+
+    for pid in pids:
+        try:
+            kernel32.FreeConsole()
+            if kernel32.AttachConsole(pid):
+                hStdin = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+                rec_down = INPUT_RECORD()
+                rec_down.EventType = 1  # KEY_EVENT
+                rec_down.Event.KeyEvent.bKeyDown = True
+                rec_down.Event.KeyEvent.wRepeatCount = 1
+                rec_down.Event.KeyEvent.wVirtualKeyCode = 0x0D  # VK_RETURN
+                rec_down.Event.KeyEvent.wVirtualScanCode = 0x1C
+                rec_down.Event.KeyEvent.uChar = "\r"
+
+                rec_up = INPUT_RECORD()
+                rec_up.EventType = 1
+                rec_up.Event.KeyEvent.bKeyDown = False
+                rec_up.Event.KeyEvent.wRepeatCount = 1
+                rec_up.Event.KeyEvent.wVirtualKeyCode = 0x0D
+                rec_up.Event.KeyEvent.wVirtualScanCode = 0x1C
+                rec_up.Event.KeyEvent.uChar = "\r"
+
+                records = (INPUT_RECORD * 2)(rec_down, rec_up)
+                written = wintypes.DWORD(0)
+                if kernel32.WriteConsoleInputW(hStdin, ctypes.byref(records), 2, ctypes.byref(written)):
+                    woken += 1
+                kernel32.FreeConsole()
+        except Exception:
+            pass
+
+    return woken
 
 
 def drop_to_inboxes(payload: Dict[str, Any]) -> list[str]:
-    """Drops the received message into Antigravity inbox paths for hook ingestion."""
+    """Drops the received message into Antigravity inbox paths for hook ingestion and pulses idle sessions."""
     timestamp_ms = int(time.time() * 1000)
     filename = f"ping_{timestamp_ms}.json"
     written = []
@@ -89,6 +166,10 @@ def drop_to_inboxes(payload: Dict[str, Any]) -> list[str]:
             written.append(str(target_file))
         except Exception as e:
             sys.stderr.write(f"[agy_pipe] Error writing to {inbox}: {e}\n")
+
+    woken = wake_idle_consoles()
+    if woken > 0:
+        print(f"[agy_pipe] Pulsed {woken} idle agy CLI session(s) via Win32 console buffer", flush=True)
 
     return written
 
@@ -131,13 +212,26 @@ def run_server():
             success = kernel32.ReadFile(handle, read_buf, BUFSIZE, ctypes.byref(bytes_read), None)
             if success and bytes_read.value > 0:
                 raw_data = read_buf.raw[:bytes_read.value].decode("utf-8", errors="replace").strip()
-                
-                # Parse JSON or wrap plain text
-                try:
-                    msg_obj = json.loads(raw_data)
-                    if not isinstance(msg_obj, dict):
-                        msg_obj = {"text": str(msg_obj)}
-                except json.JSONDecodeError:
+                lines = [line.strip() for line in raw_data.splitlines() if line.strip()]
+                msg_obj: Dict[str, Any] = {}
+                for line in lines:
+                    try:
+                        parsed = json.loads(line)
+                        if isinstance(parsed, dict):
+                            if parsed.get("type") == "auth":
+                                continue
+                            if parsed.get("type") == "user" and isinstance(parsed.get("message"), dict):
+                                msg_obj["text"] = parsed["message"].get("content", "")
+                                msg_obj["source"] = parsed.get("sender") or "claude-code"
+                            elif "text" in parsed or "content" in parsed:
+                                msg_obj.update(parsed)
+                            elif not msg_obj:
+                                msg_obj = parsed
+                    except json.JSONDecodeError:
+                        if not msg_obj.get("text"):
+                            msg_obj["text"] = line
+
+                if not msg_obj:
                     msg_obj = {"text": raw_data}
 
                 msg_obj.setdefault("source", "pipe_client")

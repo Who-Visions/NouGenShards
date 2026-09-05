@@ -573,6 +573,25 @@ class NouGenMsgBus:
         """Discovers active local pipes and session inboxes across agents."""
         curr = get_current_node()
         claude_pipes = AgentPinger._discover_claude_endpoints()
+        agy_pipes: List[str] = []
+        agy_reg = os.path.expanduser(os.path.join("~", ".nougen", "agy_sessions.json"))
+        if os.path.exists(agy_reg):
+            try:
+                with open(agy_reg, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    sessions = data.get("sessions") or {}
+                    for pipe_k in sessions.keys():
+                        if pipe_k not in agy_pipes:
+                            agy_pipes.append(pipe_k)
+            except Exception:
+                pass
+        if not agy_pipes:
+            candidates = glob.glob(r"\\.\pipe\LOCAL\agy-msg-*")
+            if candidates:
+                agy_pipes.extend(candidates)
+            elif os.name == "nt":
+                agy_pipes.append(r"\\.\pipe\LOCAL\agy-msg-antigravity")
+
         try:
             from .codex_pipe import request as codex_request
             codex_pipe = codex_request({"op": "status"})
@@ -588,6 +607,7 @@ class NouGenMsgBus:
         return {
             "current_node": curr,
             "claude_active_pipes": claude_pipes,
+            "antigravity_active_pipes": agy_pipes,
             "codex_pipe": codex_pipe,
             "antigravity_inbox_unread": gemini_messages,
             "codex_inbox_unread": codex_messages,

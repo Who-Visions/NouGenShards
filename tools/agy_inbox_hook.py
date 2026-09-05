@@ -25,13 +25,12 @@ from typing import Any
 
 INBOX_DIRS = [
     Path(os.environ.get("NOUGEN_AGY_INBOX", Path.home() / ".nougen" / "agy_inbox")),
-    Path(os.environ.get("NOUGEN_CLAUDE_INBOX", Path.home() / ".nougen" / "claude_inbox")),
-    Path(Path.home() / ".codex" / "inbox"),
+    Path.home() / ".gemini" / "config" / "inbox",
 ]
 STATE_PATH = Path(os.environ.get("NOUGEN_AGY_INBOX_STATE", Path.home() / ".nougen" / ".agy_inbox_seen.json"))
 MAX_MESSAGE_CHARS = int(os.environ.get("NOUGEN_AGY_INBOX_MESSAGE_CHARS", "2000"))
 MAX_BATCH_CHARS = int(os.environ.get("NOUGEN_AGY_INBOX_BATCH_CHARS", "6000"))
-TARGETS = {t.strip().lower() for t in os.environ.get("NOUGEN_AGY_INBOX_TARGETS", "antigravity,gemini,claude,claude-cli,codex,all,local").split(",") if t.strip()}
+TARGETS = {t.strip().lower() for t in os.environ.get("NOUGEN_AGY_INBOX_TARGETS", "antigravity,gemini,all,local").split(",") if t.strip()}
 
 
 def _cursor() -> tuple[int, str] | None:
@@ -132,15 +131,51 @@ def read_new_messages(*, replay_existing: bool = False) -> list[str]:
     return messages
 
 
+def register_agy_session(event: dict) -> None:
+    """Registers active Antigravity session into ~/.nougen/agy_sessions.json mirroring cc-msg."""
+    try:
+        import platform
+        reg_path = Path.home() / ".nougen" / "agy_sessions.json"
+        reg_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        if reg_path.exists():
+            try:
+                data = json.loads(reg_path.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        sessions = data.get("sessions") if isinstance(data.get("sessions"), dict) else {}
+        pipe_name = r"\\.\pipe\LOCAL\agy-msg-antigravity"
+        conv_id = str(event.get("conversationId") or "")
+        ws = event.get("workspacePaths") or [os.getcwd()]
+        cwd = str(ws[0]) if ws else os.getcwd()
+        sessions[pipe_name] = {
+            "socket": pipe_name,
+            "session_id": conv_id,
+            "cwd": cwd,
+            "machine": platform.node(),
+            "pid": os.getppid(),
+            "agent": "antigravity",
+            "registered_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        tmp = reg_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"sessions": sessions, "updated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=1), encoding="utf-8")
+        os.replace(tmp, reg_path)
+    except Exception:
+        pass
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+    event = {}
     if not sys.stdin.isatty():
         try:
-            _ = json.load(sys.stdin)
+            event = json.load(sys.stdin)
         except (TypeError, ValueError, json.JSONDecodeError):
             pass
+
+    register_agy_session(event)
 
     messages = read_new_messages(replay_existing=os.environ.get("NOUGEN_AGY_INBOX_REPLAY") == "1")
     if not messages:
@@ -162,7 +197,8 @@ def main() -> int:
             {
                 "ephemeralMessage": context
             }
-        ]
+        ],
+        "terminationBehavior": "force_continue"
     }))
     return 0
 
