@@ -85,6 +85,13 @@ def _offloaded(fn):
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
         return await run_in_threadpool(fn, *args, **kwargs)
+    # Keep the SYNC body reachable. FastMCP exposes a tool's raw callable as
+    # ``.fn`` and in-process callers (tests, rhea, the CLI) already use that
+    # contract: ``node.recall_memory.fn("q")``. functools.wraps sets
+    # ``__wrapped__`` but not ``.fn``, so the first offload landed with five
+    # tests calling a coroutine and subscripting it (main red from #176 at
+    # 00:33Z until this). The wire path stays async; the direct path stays sync.
+    wrapper.fn = fn
     return wrapper
 
 
