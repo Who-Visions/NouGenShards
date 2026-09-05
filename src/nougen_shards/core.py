@@ -186,10 +186,31 @@ def get_connection(index: int):
                                timeout=30.0)
         conn.row_factory = sqlite3.Row
         return conn
-    conn = sqlite3.connect(str(path), timeout=10.0)
+    try:
+        conn = sqlite3.connect(str(path), timeout=10.0)
+    except sqlite3.OperationalError as exc:
+        # "unable to open database file" is how the descriptor ceiling shows
+        # up: the file is there, the process just cannot open one more. Every
+        # caller degrades ("ONE bad DB must not zero out the read"), so without
+        # this line the ceiling is invisible - phoebus ran at it for a day
+        # while /health stayed 200. Name the count, then re-raise unchanged.
+        if "unable to open" in str(exc).lower():
+            from . import fd_budget  # pylint: disable=import-outside-toplevel
+            logger.error("grid DB %s: %s - process holds %s open descriptors "
+                         "(soft limit %s); see fd_budget.py",
+                         index, exc, fd_budget.open_fd_count(), _nofile_soft_limit())
+        raise
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _nofile_soft_limit():
+    try:
+        import resource  # pylint: disable=import-outside-toplevel
+        return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    except (ImportError, ValueError, OSError):
+        return None
 
 
 _INITIALIZED_DBS = set()
@@ -1648,10 +1669,45 @@ def _vector_cache_enabled() -> bool:
 _VECTOR_CACHE: dict = {}
 _VECTOR_LANE_OFF_WARNED = False
 _VECTOR_CACHE_LOCK = _threading.Lock()  # eager: lazy init of a lock is itself a race
+#: One build lock PER DB, not one for the grid. A single grid-wide lock
+#: serialized the nine warm-up builds (15.7s cold, measured) and, worse, made
+#: every request that arrived during a build queue behind ALL nine. On
+#: phoebus 2026-09-04 one six-way burst 32s after boot left 327 threads
+#: parked on that lock, each holding its sqlite connections, draining at ~10
+#: threads per 6 minutes while every recall missed its deadline. Per-DB locks
+#: let the builds run in parallel and let a waiter wait for one matrix, not
+#: the grid.
+_VECTOR_DB_LOCKS: dict = {}
+_VECTOR_WAIT_WARNED: set = set()
 
 
-def _vector_cache_lock():
-    return _VECTOR_CACHE_LOCK
+def _vector_cache_lock(i: Optional[int] = None):
+    """Build lock for DB ``i``; with no argument, the table guard (compat)."""
+    if i is None:
+        return _VECTOR_CACHE_LOCK
+    with _VECTOR_CACHE_LOCK:
+        lock = _VECTOR_DB_LOCKS.get(i)
+        if lock is None:
+            lock = _VECTOR_DB_LOCKS[i] = _threading.Lock()
+        return lock
+
+
+def _vector_cache_wait_s() -> float:
+    """How long a recall may wait for another thread's matrix build.
+
+    Bounded on purpose: a request that cannot get the matrix in time answers
+    from the keyword lane (and from the stale matrix if one exists) instead of
+    becoming a straggler that outlives its own deadline. Env-first (Rule 0.2).
+    Default 5s: a warm build of one 110MB grid DB is ~0.5s, a cold one a few
+    seconds; anything longer means the process is in trouble and piling on
+    makes it worse.
+    """
+    raw = os.environ.get("NOUGEN_VECTOR_CACHE_WAIT_S", "")
+    try:
+        return float(raw) if raw.strip() else 5.0
+    except ValueError:
+        logger.warning("NOUGEN_VECTOR_CACHE_WAIT_S=%r is not a number; using 5.0", raw)
+        return 5.0
 
 
 def _db_write_signature(i: int) -> tuple:
@@ -1683,7 +1739,24 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
     entry = _VECTOR_CACHE.get(i)
     if entry is not None and entry["sig"] == sig and entry["path"] == path:
         return entry
-    with _vector_cache_lock():
+    lock = _vector_cache_lock(i)
+    if not lock.acquire(timeout=_vector_cache_wait_s()):
+        # Another thread is building this DB's matrix and has held it longer
+        # than the wait budget. Do NOT queue: a stale matrix still ranks the
+        # rows it knows about, and None hands this DB to the keyword lane.
+        # Either answer inside the recall deadline; a queued thread does not.
+        # Warned once per DB per process - the condition repeats by nature.
+        if i not in _VECTOR_WAIT_WARNED:
+            _VECTOR_WAIT_WARNED.add(i)
+            logger.warning("grid DB %s: vector cache build held its lock past %.1fs; "
+                           "answering %s for this recall (NOUGEN_VECTOR_CACHE_WAIT_S)",
+                           i, _vector_cache_wait_s(),
+                           "from the stale matrix" if entry is not None and entry["path"] == path
+                           else "keyword-only")
+        if entry is not None and entry["path"] == path:
+            return entry
+        return None
+    try:
         entry = _VECTOR_CACHE.get(i)
         if entry is not None and entry["sig"] == sig and entry["path"] == path:
             return entry
@@ -1789,6 +1862,8 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
             }
         _VECTOR_CACHE[i] = fresh
         return fresh
+    finally:
+        lock.release()
 
 
 def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,

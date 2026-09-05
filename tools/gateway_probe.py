@@ -34,6 +34,7 @@ import hashlib
 import json
 import os
 import secrets
+import ssl
 import sys
 import urllib.error
 import urllib.parse
@@ -65,6 +66,20 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _ssl_context():
+    """Use the packaged CA bundle when the interpreter has one.
+
+    Python.org macOS builds do not necessarily inherit Keychain roots.  A bare
+    urllib opener can therefore fail before the probe reaches authentication,
+    misreporting a trust-store problem as a bad fleet credential.
+    """
+    try:
+        import certifi
+    except ImportError:
+        return None
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 def post(path, data, form=False, headers=None):
     body = (urllib.parse.urlencode(data) if form else json.dumps(data)).encode()
     req = urllib.request.Request(ORIGIN + path, data=body, method="POST")
@@ -73,7 +88,11 @@ def post(path, data, form=False, headers=None):
     req.add_header("user-agent", UA)  # Cloudflare 403s the default Python agent
     for h, v in (headers or {}).items():
         req.add_header(h, v)
-    opener = urllib.request.build_opener(NoRedirect)
+    handlers = [NoRedirect]
+    context = _ssl_context()
+    if context is not None:
+        handlers.append(urllib.request.HTTPSHandler(context=context))
+    opener = urllib.request.build_opener(*handlers)
     try:
         with opener.open(req, timeout=30) as r:
             return r.status, r.read().decode(), dict(r.headers)

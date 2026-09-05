@@ -89,6 +89,7 @@ def _persona() -> str:
 
 
 _LAST_GOOD_KEY = {"i": 0}
+_LAST_GOOD_KIMI = {"i": 0}
 
 
 def _inference_keys() -> list:
@@ -124,6 +125,15 @@ def _chat(messages: list, timeout_s: float = 120.0) -> tuple:
     # rate-limited hour doubled the wall clock and 524'd /agent.
     chat_ends = time.monotonic() + timeout_s
     free_first = os.environ.get("NOUGEN_RHEA_PREFER_KIMI", "").strip() != "1"
+
+    # K3 via OpenRouter goes first when preferred. This lane replaces the
+    # Hugging Face Space bridge entirely -- the Space 401s from inside a third
+    # party's runtime, and HF Inference Providers 402'd on 6 of 7 fleet tokens.
+    if not free_first:
+        out = _try_kimi_openrouter(messages, chat_ends - time.monotonic())
+        if out:
+            return out
+
     if free_first:
         out = _try_free(messages, timeout_s)
         if out:
@@ -155,6 +165,53 @@ def _chat(messages: list, timeout_s: float = 120.0) -> tuple:
         if out:
             return out
     raise RuntimeError("no inference lane available (free + kimi both down)")
+
+
+def _kimi_or_keys() -> list:
+    """OpenRouter keys cleared for the paid K3 lane, in walk order."""
+    raw = os.environ.get("NOUGEN_OPENROUTER_K3_KEYS", "")
+    keys = [k.strip() for k in raw.split(",") if k.strip()]
+    if not keys:
+        solo = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+        if solo:
+            keys = [solo]
+    return keys
+
+
+def _try_kimi_openrouter(messages: list, timeout_s: float = 120.0):
+    """K3 via OpenRouter. Returns (text, brain) or None.
+
+    This is the direct lane: no Hugging Face Space, no Inference Providers.
+    The Space bridge (akhaliq/Kimi-K3) 401s from inside a third party's Space
+    we cannot supply credentials to, and HF Inference Providers returned 402
+    "monthly included credits depleted" on 6 of 7 fleet tokens on 2026-09-04.
+    Measured the same night, 25 of 25 OpenRouter keys answered K3 with 200.
+
+    Not free -- $3/M prompt, $15/M completion -- but it is the only K3 route
+    that actually answers, and the key ring spreads it.
+    """
+    keys = _kimi_or_keys()
+    model = os.environ.get("NOUGEN_RHEA_KIMI_MODEL", "moonshotai/kimi-k3")
+    if not keys:
+        return None
+    # One shared budget across the whole ring: giving each key the full budget
+    # is what doubled wall clock and 524'd /agent in September.
+    walk_ends = time.monotonic() + timeout_s
+    order = list(range(len(keys)))
+    start = _LAST_GOOD_KIMI["i"] % len(keys)
+    order = order[start:] + order[:start]
+    for idx in order:
+        remaining = walk_ends - time.monotonic()
+        if remaining < 3.0:
+            logger.warning("kimi/openrouter budget exhausted at key #%d", idx)
+            break
+        try:
+            out = _openai_call(OPENROUTER_URL, keys[idx], model, messages, remaining)
+            _LAST_GOOD_KIMI["i"] = idx
+            return out, f"kimi:{model}@openrouter"
+        except Exception as exc:
+            logger.warning("kimi/openrouter key #%d failed (%s)", idx, str(exc)[:100])
+    return None
 
 
 def _try_free(messages: list, timeout_s: float = 120.0):

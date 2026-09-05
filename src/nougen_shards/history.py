@@ -123,7 +123,13 @@ def log_event(shard_id: int, db_index: int, event_type: str,
     except sqlite3.Error as exc:
         # Module 10: Graceful Degradation (Log failure but don't crash main memory).
         # Write to stderr: a stray stdout line corrupts the MCP stdio JSON-RPC stream.
-        print(f"[Warning] Failed to log history event: {exc}", file=sys.stderr)
+        # "unable to open database file" here is the descriptor ceiling, not a
+        # broken history DB (phoebus logged it 1,698 times in one day at
+        # exactly 256 open files). Say what the process holds so the line
+        # diagnoses itself instead of pointing at the wrong file.
+        from . import fd_budget  # pylint: disable=import-outside-toplevel
+        print(f"[Warning] Failed to log history event: {exc} "
+              f"(open descriptors: {fd_budget.open_fd_count()})", file=sys.stderr)
     finally:
         _writer_lock().release()
         if conn is not None:

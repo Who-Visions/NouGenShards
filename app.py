@@ -8,8 +8,10 @@ import json
 import logging
 import hashlib
 import sqlite3
+import re
 import datetime
 import contextlib
+import functools
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,7 @@ if os.environ.get("SPACE_ID"):
 
 from nougen_shards import bind_probe, core, history, mcp_oauth, tenants
 from nougen_shards.federation import federated_retrieve
+from nougen_shards import fd_budget
 from nougen_shards.brain_scan import scan_environment
 
 NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN") or os.environ.get("SHARD_GATEWAY_TOKEN")
@@ -58,7 +61,35 @@ node_mcp = MCPServer(
 )
 
 
+def _offloaded(fn):
+    """Run a blocking tool body in a worker thread instead of the event loop.
+
+    FastMCP calls a SYNC tool function directly inside its async handler
+    (func_metadata.call_fn_with_arg_validation ends in a bare `return
+    fn(**args)` with no threadpool), so a sync tool owns the event loop for its
+    whole duration -- nothing else on that connection can be read, answered, or
+    streamed until it returns. Measured on phoebus: three concurrent recalls
+    took 63s EACH through the node, while the same three ran in 0.85s wall as
+    plain threads in-process. The retrieval code was never the bottleneck; the
+    loop being held was.
+
+    Offloading is safe by precedent rather than by hope: the sync-def FastAPI
+    endpoints (POST /search and friends) already run these same bodies in
+    Starlette's threadpool today, so nothing here newly acquires a thread it
+    was not already using.
+
+    functools.wraps keeps __name__, __doc__ and __annotations__, which is what
+    FastMCP reads to build the tool name, description and argument schema --
+    inspect.signature follows __wrapped__, so the schema is unchanged.
+    """
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        return await run_in_threadpool(fn, *args, **kwargs)
+    return wrapper
+
+
 @node_mcp.tool()
+@_offloaded
 def recall_memory(query: str, limit: int = 5) -> list:
     """Search the memory substrate. Returns ranked shards (fuzzy recall
     included when exact matching misses). Long shard bodies are returned as
@@ -68,8 +99,50 @@ def recall_memory(query: str, limit: int = 5) -> list:
     injects handles-plus-snippets, not full documents."""
     # Federated for the same reason as POST /search below: a remote MCP client
     # should not get a narrower corpus than the local CLI.
-    results = federated_retrieve(query, limit=max(1, min(limit, 20)))
-    return [_slim_shard(r) for r in results]
+    sweep_report: dict = {}
+    results = federated_retrieve(query, limit=max(1, min(limit, 20)),
+                                 sweep_report=sweep_report)
+    out = [_slim_shard(r) for r in results]
+    # Same coverage trailer POST /search appends, for the same reason: this is
+    # the lane the fleet's connectors actually recall through, and an empty
+    # list here reads to an agent as "the substrate holds nothing on this".
+    # A lane dropped by the deadline must not be able to say that.
+    if sweep_report.get("lanes_timed_out"):
+        out.append(_deadline_trailer(sweep_report))
+    return out
+
+
+# A stored timestamp is only usable for era math if it is ISO-shaped.
+# Anchored at the start only: full ISO strings carry time and offset after the
+# month, and this is the exact prefix the window contract compares on.
+_ISO_MONTH_RE = re.compile(r"\d{4}-\d{2}")
+
+
+def _deadline_trailer(sweep_report: dict) -> dict:
+    """Shard-shaped marker saying an answer is INCOMPLETE rather than empty.
+
+    Shaped like a shard (score 0, distinct event_type) so list-consuming
+    clients keep parsing instead of type-erroring on a dict they did not
+    expect. Absent entirely on a clean sweep, so the common path is unchanged.
+    """
+    dropped = sweep_report.get("lanes_timed_out") or []
+    return {
+        "id": "federation_meta",
+        "event_type": "FEDERATION_STATUS",
+        "title": (f"recall INCOMPLETE: {len(dropped)} lane(s) "
+                  f"({', '.join(dropped)}) missed the "
+                  f"{sweep_report.get('deadline_s')}s deadline — absence in "
+                  "these results is NOT evidence of absence in the substrate"),
+        "content": json.dumps({
+            "lanes_timed_out": dropped,
+            "deadline_s": sweep_report.get("deadline_s"),
+            "deadline_exceeded": bool(sweep_report.get("deadline_exceeded")),
+            "lanes": sweep_report.get("lanes"),
+        }),
+        "tags": json.dumps(["federation_status"]),
+        "final_score": 0.0,
+        "_db_index": "federation_meta",
+    }
 
 
 def _recall_snippet_chars() -> int:
@@ -107,6 +180,7 @@ def _slim_shard(r: dict) -> dict:
 
 
 @node_mcp.tool()
+@_offloaded
 def get_shard(shard_id: int, db_index: int | None = None) -> dict:
     """Fetch ONE shard's full body by id - the on-demand counterpart to
     recall_memory's snippets. Pass the db_index a recall result carried
@@ -140,6 +214,7 @@ def get_shard(shard_id: int, db_index: int | None = None) -> dict:
 
 
 @node_mcp.tool()
+@_offloaded
 def capture_experience(title: str, content: str, event_type: str = "KNOWLEDGE",
                        tags: list[str] | None = None,
                        original_timestamp: str | None = None) -> dict:
@@ -158,6 +233,7 @@ def capture_experience(title: str, content: str, event_type: str = "KNOWLEDGE",
 
 
 @node_mcp.tool()
+@_offloaded
 def mark_utility(shard_id: int, worked: bool, db_index: int | None = None) -> dict:
     """Feed back whether a recalled shard was useful; adjusts its ranking prior."""
     core.mark_shard(shard_id, worked=worked, db_index=db_index)
@@ -165,6 +241,7 @@ def mark_utility(shard_id: int, worked: bool, db_index: int | None = None) -> di
 
 
 @node_mcp.tool()
+@_offloaded
 def node_status() -> dict:
     """Node health: shard count and storage mode."""
     return {"status": "ignited",
@@ -313,6 +390,7 @@ def _federated_coverage() -> dict | None:
 
 
 @node_mcp.tool()
+@_offloaded
 def substrate_coverage() -> dict:
     """What this node actually holds, so a recall MISS can be told apart from a
     PARTIAL MOUNT.
@@ -327,6 +405,7 @@ def substrate_coverage() -> dict:
     holes rather than infer them."""
     from collections import Counter
     per_month = Counter()
+    malformed = 0
     lo, hi, total = None, None, 0
     for i in range(1, core.MAX_DB_COUNT + 1):
         if not core.get_db_path(i).exists():
@@ -338,8 +417,21 @@ def substrate_coverage() -> dict:
         try:
             for (ts,) in conn.execute("SELECT timestamp FROM shards WHERE timestamp IS NOT NULL"):
                 ts = str(ts)
-                per_month[ts[:7]] += 1
                 total += 1
+                # Not every stored timestamp is ISO. 15 legacy rows on the
+                # phoebus grid hold Unix epoch floats ("1765164383.78") from a
+                # direct-write path that predates capture()'s normalisation.
+                # Two things went wrong with them here, and only one was loud:
+                #   * the gap walk below did `map(int, months[0].split("-"))`
+                #     and raised ValueError, 500-ing this endpoint;
+                #   * quietly, "1765..." sorts BEFORE "2026-..." lexicographically,
+                #     so a single epoch row became `span.earliest` and this
+                #     endpoint reported a substrate reaching back to year 1765.
+                # The crash was the mercy: it stopped us believing the span.
+                if not _ISO_MONTH_RE.match(ts):
+                    malformed += 1
+                    continue
+                per_month[ts[:7]] += 1
                 if lo is None or ts < lo:
                     lo = ts
                 if hi is None or ts > hi:
@@ -371,6 +463,12 @@ def substrate_coverage() -> dict:
             "span": {"earliest": lo, "latest": hi},
             "months": dict(sorted(per_month.items())),
             "empty_months": gaps,
+            # Rows counted in total_shards but excluded from span/months/gaps
+            # because their timestamp is not ISO. Reported rather than dropped:
+            # these shards are real content that no era-bounded query can
+            # reach, and a caller comparing total_shards against the month
+            # histogram must be able to see why they disagree.
+            "malformed_timestamps": malformed,
             # Cache key carries the active vault: a bare "substrate" key is
             # module-level state shared across tenants, so it would serve one
             # tenant's counts and DB detail to another.
@@ -384,6 +482,7 @@ def substrate_coverage() -> dict:
 
 
 @node_mcp.tool()
+@_offloaded
 def recall_window(query: str = "", since: str | None = None,
                   until: str | None = None, limit: int = 10) -> list:
     """Browse the vault by ERA, newest first -- the date-filtered counterpart to
@@ -449,6 +548,7 @@ def _resolve_shard(shard_id: int, db_index: Optional[int] = None,
 
 
 @node_mcp.tool()
+@_offloaded
 def shard_amend(shard_id: int, note: str, db_index: int | None = None,
                 confirm_title: str | None = None) -> dict:
     """Append a dated note to an existing shard, preserving everything already
@@ -473,6 +573,7 @@ def shard_amend(shard_id: int, note: str, db_index: int | None = None,
 
 
 @node_mcp.tool()
+@_offloaded
 def shard_retract(shard_id: int, reason: str, db_index: int | None = None,
                   confirm_title: str | None = None) -> dict:
     """Retract a shard WITHOUT erasing it: prefix its title [RETRACTED], append
@@ -517,6 +618,7 @@ def shard_retract(shard_id: int, reason: str, db_index: int | None = None,
 
 
 @node_mcp.tool()
+@_offloaded
 def shard_forget(shard_id: int, confirm_title: str, db_index: int | None = None) -> dict:
     """PERMANENTLY delete a shard. Irreversible -- there is no undo and no
     tombstone; the row and its FTS index entry are gone.
@@ -539,6 +641,7 @@ def shard_forget(shard_id: int, confirm_title: str, db_index: int | None = None)
 
 
 @node_mcp.tool()
+@_offloaded
 def vault_put(key: str, value: str) -> dict:
     """Write a secret into the keymaker vault. WRITE-ONLY BY DESIGN.
 
@@ -561,6 +664,7 @@ def vault_put(key: str, value: str) -> dict:
 
 
 @node_mcp.tool()
+@_offloaded
 def vault_list() -> list:
     """Secret NAMES and fingerprints in the vault -- never values.
 
@@ -693,6 +797,13 @@ def _start_recall_warmup() -> None:
 
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
+    # Descriptor headroom FIRST: launchd starts this process with a soft
+    # open-files limit of 256 and an unlimited hard limit. One recall opens
+    # ~40 files; six concurrent fan-outs hit 256 exactly, every further open()
+    # fails, the vector cache rebuilds on each request and the local lane
+    # misses its deadline on every query (phoebus, 2026-09-04). The process may
+    # raise its own soft limit, so it does - before the warm-up opens anything.
+    fd_budget.ensure_fd_headroom()
     _start_recall_warmup()
     # Heal the grid before anything scans it: malformed DB files are renamed
     # aside (kept for forensics) and recreated empty, so healthy indices and
@@ -767,17 +878,51 @@ _BAD_TOKEN_DETAIL = (
 def _credentials_configured() -> bool:
     try:
         return tenants.credentials_configured(NODE_TOKEN)
+    except tenants.RegistryUnreadableError as exc:
+        # Distinct from a malformed registry ON PURPOSE. "Tenant registry is
+        # invalid" is a claim about configuration; this box is simply out of a
+        # local resource and its config is fine. A peer that cannot tell those
+        # apart marks a healthy node as unauthenticated.
+        logger.error("tenant registry unreadable (resource exhaustion): %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=("Local resource exhaustion: the tenant registry could not be "
+                    "read. This node's credentials are configured; it is "
+                    "temporarily unable to serve. Retry."),
+            headers={"X-NouGen-Failure-Class": "local_resource_exhaustion",
+                     "Retry-After": "30"},
+        ) from exc
     except tenants.TenantRegistryError as exc:
         logger.error("tenant registry rejected: %s", exc)
-        raise HTTPException(status_code=503, detail="Tenant registry is invalid.") from exc
+        raise HTTPException(
+            status_code=503, detail="Tenant registry is invalid.",
+            headers={"X-NouGen-Failure-Class": "registry_invalid"},
+        ) from exc
 
 
 def _resolve_tenant_credential(supplied: Optional[str]) -> Optional[tenants.Tenant]:
     try:
         return tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+    except tenants.RegistryUnreadableError as exc:
+        # Distinct from a malformed registry ON PURPOSE. "Tenant registry is
+        # invalid" is a claim about configuration; this box is simply out of a
+        # local resource and its config is fine. A peer that cannot tell those
+        # apart marks a healthy node as unauthenticated.
+        logger.error("tenant registry unreadable (resource exhaustion): %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=("Local resource exhaustion: the tenant registry could not be "
+                    "read. This node's credentials are configured; it is "
+                    "temporarily unable to serve. Retry."),
+            headers={"X-NouGen-Failure-Class": "local_resource_exhaustion",
+                     "Retry-After": "30"},
+        ) from exc
     except tenants.TenantRegistryError as exc:
         logger.error("tenant registry rejected: %s", exc)
-        raise HTTPException(status_code=503, detail="Tenant registry is invalid.") from exc
+        raise HTTPException(
+            status_code=503, detail="Tenant registry is invalid.",
+            headers={"X-NouGen-Failure-Class": "registry_invalid"},
+        ) from exc
 
 
 def _verify_token_sync(
@@ -1165,14 +1310,50 @@ def search(req: SearchRequest, response: Response,
     # the corpus the caller must be able to see. Appended as a shard-shaped
     # trailer (score 0, distinct event_type) so list-consuming clients keep
     # parsing; absent entirely on a clean sweep, so the common path is unchanged.
-    if sweep_report.get("errored"):
+    #
+    # A whole LANE dropped by the recall deadline is the same hole one size up,
+    # and until 2026-09-04 it was invisible: measured on phoebus, a recall that
+    # overran the deadline returned HTTP 200 with a 2-byte body — byte-identical
+    # to a genuine "no matches". Callers cannot tell silence from absence, so
+    # every latency and grace-period argument was being conducted on data that
+    # could not distinguish the two. Lane drops therefore raise the same trailer
+    # and are additionally reported in headers, for clients that read the
+    # envelope rather than the rows.
+    lanes = sweep_report.get("lanes") or {}
+    if lanes:
+        # Healthy timings matter as much as failures: a deadline can only be
+        # tuned against the distribution, not against its tail.
+        response.headers["X-NouGen-Lane-Timings"] = ",".join(
+            f"{n}={d['status']}:{d['elapsed_s']}s" for n, d in sorted(lanes.items()))
+    lanes_timed_out = sweep_report.get("lanes_timed_out") or []
+    if lanes_timed_out:
+        response.headers["X-NouGen-Lanes-Timed-Out"] = ",".join(lanes_timed_out)
+        response.headers["X-NouGen-Recall-Deadline-S"] = str(
+            sweep_report.get("deadline_s", ""))
+        # Deliberately set whenever coverage is incomplete, INCLUDING the
+        # non-empty case: a partial answer that looks whole is the same defect
+        # with better camouflage.
+        response.headers["X-NouGen-Degraded"] = "1"
+    if sweep_report.get("errored") or lanes_timed_out:
+        errored = sweep_report.get("errored") or []
+        if lanes_timed_out:
+            title = (f"federation: {len(lanes_timed_out)} lane(s) "
+                     f"({', '.join(lanes_timed_out)}) missed the "
+                     f"{sweep_report.get('deadline_s')}s recall deadline — "
+                     "this answer is INCOMPLETE, not empty")
+        else:
+            title = (f"federation: {len(errored)} store(s) "
+                     "errored or timed out this sweep")
         payload.append({
             "id": "federation_meta",
             "event_type": "FEDERATION_STATUS",
-            "title": (f"federation: {len(sweep_report['errored'])} store(s) "
-                      "errored or timed out this sweep"),
+            "title": title,
             "content": json.dumps({
-                "errored": sweep_report["errored"],
+                "errored": errored,
+                "lanes_timed_out": lanes_timed_out,
+                "lanes": sweep_report.get("lanes"),
+                "deadline_s": sweep_report.get("deadline_s"),
+                "deadline_exceeded": bool(sweep_report.get("deadline_exceeded")),
                 "stores_swept": sweep_report.get("stores_swept"),
                 "tier2": sweep_report.get("tier2"),
                 "tier2_deferred": sweep_report.get("tier2_deferred"),
@@ -1478,6 +1659,7 @@ def dav1d_agy_endpoint(
 
 
 @node_mcp.tool()
+@_offloaded
 def dav1d_exec(
     command: str = "agy",
     subcommand: str = "mcp list",
@@ -1491,6 +1673,7 @@ def dav1d_exec(
 
 
 @node_mcp.tool()
+@_offloaded
 def agy_ask(
     prompt: str = "",
     subcommand: str = "mcp list",
@@ -1506,6 +1689,7 @@ def agy_ask(
 
 
 @node_mcp.tool()
+@_offloaded
 def ask_dav1d(
     prompt: str,
     subcommand: str = "mcp list",
@@ -1703,8 +1887,16 @@ class _TokenGatedMCP:
         if scope["type"] == "http":
             try:
                 configured = tenants.credentials_configured(NODE_TOKEN)
+            except tenants.RegistryUnreadableError:
+                await self._reject(
+                    send, 503,
+                    "Local resource exhaustion: the tenant registry could not be "
+                    "read. This node's credentials are configured; retry.",
+                    failure_class="local_resource_exhaustion")
+                return
             except tenants.TenantRegistryError:
-                await self._reject(send, 503, "Tenant registry is invalid.")
+                await self._reject(send, 503, "Tenant registry is invalid.",
+                                   failure_class="registry_invalid")
                 return
             if not configured:
                 await self._reject(send, 503, "Node write-auth not configured.")
@@ -1739,8 +1931,16 @@ class _TokenGatedMCP:
                         issued_tenant_id = mcp_oauth.issued_token_tenant(supplied)
                         if issued_tenant_id:
                             tenant = tenants.tenant_by_id(issued_tenant_id, core.GLOBAL_DIR)
+                except tenants.RegistryUnreadableError:
+                    await self._reject(
+                        send, 503,
+                        "Local resource exhaustion: the tenant registry could not "
+                        "be read. This node's credentials are configured; retry.",
+                        failure_class="local_resource_exhaustion")
+                    return
                 except tenants.TenantRegistryError:
-                    await self._reject(send, 503, "Tenant registry is invalid.")
+                    await self._reject(send, 503, "Tenant registry is invalid.",
+                                       failure_class="registry_invalid")
                     return
             if tenant is None:
                 await self._reject(send, 401, "Invalid node token.",
@@ -1755,10 +1955,17 @@ class _TokenGatedMCP:
         await self.inner(scope, receive, send)
 
     @staticmethod
-    async def _reject(send, status, detail, scope=None):
+    async def _reject(send, status, detail, scope=None, failure_class=None):
         body = json.dumps({"detail": detail}).encode("utf-8")
         headers = [(b"content-type", b"application/json"),
                    (b"content-length", str(len(body)).encode())]
+        # Machine-readable cause. A 503 is not self-describing: a peer needs to
+        # know whether this node is misconfigured or merely out of descriptors,
+        # because one is a page and the other is a retry.
+        if failure_class:
+            headers.append((b"x-nougen-failure-class", failure_class.encode()))
+            if failure_class == "local_resource_exhaustion":
+                headers.append((b"retry-after", b"30"))
         if status == 401 and scope is not None:
             # RFC 9728 section 5.1. Without this pointer the client cannot
             # discover the authorization server, falls back to probing
