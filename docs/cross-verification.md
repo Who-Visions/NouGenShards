@@ -15,10 +15,21 @@ qualitatively stronger than the same claim measured three times on one box.
 promoting a local finding to fleet truth.** Preserve the chain:
 
 > observation → contradiction check → measured provenance → corrected
-> conclusion → reusable method
+> conclusion → reusable method → **publish the discriminator, not the total**
 
-**Treat differences between nodes as information, not noise.** The asymmetry is
-usually the finding. Blade's runtime provenance read from its Windows parent
+That last step is load-bearing. The leaked-file count only converged when
+someone showed *how* they were splitting the set rather than what they counted;
+the recall numbers were worthless until someone named the layer they measured
+at. **A total invites agreement. A method invites refutation.**
+
+**Treat differences between nodes as information, not noise — this is the
+headline, not a footnote.** Every real finding on 2026-09-05 came from a
+*contradiction*, not a concurrence: in-process 8.67s against HTTP 25s; one lane
+green while another timed out on the identical query; 5-of-5 rows in process
+against 1 row over HTTP. Each gap *was* the finding, and each was invisible
+while lanes measured different layers on different boxes and compared the
+results as though they were the same quantity. **The compounding comes from
+contradiction.** Blade's runtime provenance read from its Windows parent
 process chain, next to phoebus's `lsof` cwd, exposed a real deployment
 difference: blade runs from a dirty working tree, phoebus from an isolated
 deployment clone. Neither node could have found that alone.
@@ -95,9 +106,29 @@ before choosing the test.
   from the wrong instrument, and it will never be questioned precisely because
   it agrees.
 
-## Where the method breaks
+## Where the method breaks — read this before trusting a concurrence
 
-Consensus is not verification. Two lanes agreed that unversioned code was
-running on the always-on node and escalated it; a third ran one `lsof` and it
-dissolved. **The measurement nobody ran is worth more than the one three lanes
-repeated.**
+**Agreement is evidence only when the methods are independent.** Two lanes
+running the same command on different machines is *one measurement with two
+witnesses*. Stated without this condition, "verify across nodes" gets read as
+"if two lanes agree, it is true" — and on 2026-09-05 that produced three
+confident wrong answers, each with two or more lanes agreeing.
+
+| trap | what happened |
+|---|---|
+| **shared scope** | Three lanes each *improved* the leak-scoping predicate and converged — and all three scanned the same four directories. A fourth found the session transcripts; a fifth store turned up after that. Right predicate, wrong directory list, three-way agreement. |
+| **shared premise** | "Phoebus has no embeddings" originated in one lane, was inherited by a second, and a third built a two-node comparison on it. The corpus had 3 nulls in 108,415 the whole time — and one of those lanes had measured that themselves hours earlier. The *conclusion* was right, which is exactly why nobody rechecked the premise. |
+| **shared instrument** | Two lanes measured the sync workflow instead of CI and reached the correct per-repo conclusion by luck. **A measurement that agrees with the right answer is never questioned, because it agrees.** |
+
+**The test, before treating concurrence as confirmation — different tools,
+different scopes, different premises?** If any of the three is shared, you have
+one measurement with two witnesses.
+
+The whoart/blade case is the good example precisely because the *methods*
+differed by OS: a Windows parent-process chain against a POSIX `lsof` cwd. That
+agreement carried real information. Same-method agreement carries none.
+
+And the corollary: **the measurement nobody ran is worth more than the one three
+lanes repeated.** Two lanes agreed that unversioned code was running on the
+always-on node and escalated it to the owner; a third ran one `lsof` and it
+dissolved.
