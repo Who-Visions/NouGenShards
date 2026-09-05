@@ -472,12 +472,24 @@ def cmd_search(args):
             embedding = client.embed(model, args.query)
 
     # Use Federation for unified search
-    results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding, domain_key=domain_key)
+    sweep_report: dict = {}
+    results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding,
+                                            domain_key=domain_key, sweep_report=sweep_report)
+    dropped = sweep_report.get("lanes_timed_out") or []
+    if dropped:
+        # stderr, not stdout: --json consumers must keep parsing a clean stream,
+        # but a human reading "No shards found." has to be told the difference
+        # between an empty substrate and a sweep that never finished.
+        print(f"[!] recall INCOMPLETE: lane(s) {', '.join(dropped)} missed the "
+              f"{sweep_report.get('deadline_s')}s deadline; results below are partial",
+              file=sys.stderr)
     if not results:
         if getattr(args, 'json', False) is True:
             print("[]")
         else:
-            print("No shards found.")
+            print("No shards found." if not dropped
+                  else "No shards returned — but the sweep timed out, so this is "
+                       "NOT evidence the substrate is empty.")
         return
 
     if getattr(args, 'json', False) is True:
@@ -733,6 +745,20 @@ def cmd_ctx(args):
             print("ℹ️ Shard already exists.")
 
 
+def resolve_router_model() -> str:
+    """The router's default model. Env first (Rule 0.2), logged fallback.
+
+    It was hardcoded to "openrouter/auto" in five places, so switching the
+    fleet's default meant editing code and redeploying every node — and
+    `router doctor` reported the literal rather than what a call would
+    actually use, which is how a stale default survives being "checked".
+    """
+    model = os.environ.get("NOUGEN_ROUTER_MODEL", "").strip()
+    if model:
+        return model
+    return "openrouter/auto"
+
+
 def cmd_router(args):
     """Handles OpenRouter production routing commands."""
     client = OpenRouterClient()
@@ -746,7 +772,7 @@ def cmd_router(args):
         messages = router.build_cache_friendly_messages(sys_prompt, [{"role": "user", "content": args.input}])
         
         res = client.chat_with_fallback(
-            model=args.model or "openrouter/auto",
+            model=args.model or resolve_router_model(),
             messages=messages,
             fallback_models=args.fallback,
             session_id=args.session_id,
@@ -778,7 +804,7 @@ def cmd_router(args):
 
         messages = [{"role": "user", "content": args.input}]
         res = client.structured_chat(
-            model=args.model or "openrouter/auto",
+            model=args.model or resolve_router_model(),
             messages=messages,
             schema=schema,
             fallback_models=args.fallback,
@@ -801,7 +827,7 @@ def cmd_router(args):
     elif args.action == "doctor":
         diag = {
             "openrouter_key": client.is_alive(),
-            "default_model": "openrouter/auto",
+            "default_model": resolve_router_model(),
             "response_healing": True,
             "session_id_recommendation": router.make_session_id("default", "cli")
         }
@@ -1131,7 +1157,7 @@ def get_parser():
     
     p_router_chat = p_router_sub.add_parser("chat", help="Chat with fallback")
     p_router_chat.add_argument("input")
-    p_router_chat.add_argument("--model", default="openrouter/auto")
+    p_router_chat.add_argument("--model", default=None)
     p_router_chat.add_argument("--fallback", action="append", help="Fallback models")
     p_router_chat.add_argument("--session-id")
     p_router_chat.add_argument("--stream", action="store_true")
@@ -1142,7 +1168,7 @@ def get_parser():
     p_router_json = p_router_sub.add_parser("json", help="Structured JSON chat")
     p_router_json.add_argument("input")
     p_router_json.add_argument("--schema", required=True)
-    p_router_json.add_argument("--model", default="openrouter/auto")
+    p_router_json.add_argument("--model", default=None)
     p_router_json.add_argument("--fallback", action="append")
     p_router_json.add_argument("--session-id")
     p_router_json.add_argument("--healing", action="store_true", default=True)
