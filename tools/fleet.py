@@ -49,6 +49,7 @@ PRIORITY = [
 # literal (10.0.0.87 / 192.168.1.16) is what broke blade's firewall rule and
 # its CLAUDE.md docs, so it is not a hypothetical failure mode.
 BLADE_HOST  = os.environ.get("NOUGEN_BLADE_HOST",  "blade1tb.local")
+BLADE_MODEL = os.environ.get("NOUGEN_BLADE_MODEL", "gemma4:e2b")
 # The route is NAMED for whoart, so it must ADDRESS whoart. Defaulting this
 # to localhost meant that whenever Fleet dispatched from any other box, the
 # "whoart" lane loaded a ~7GB gemma4 onto THAT machine instead. On phoebus
@@ -61,7 +62,7 @@ LOCAL_ROUTES = [
     {"name": "local-ollama-whoart", "url": f"http://{WHOART_HOST}:11434/v1",
      "model": "gemma4:e2b-qat", "headers": {}, "kind": "local"},
     {"name": "local-ollama-blade", "url": f"http://{BLADE_HOST}:11434/v1",
-     "model": "gemma4:e4b", "headers": {}, "kind": "local"},
+     "model": BLADE_MODEL, "headers": {}, "kind": "local"},
     {"name": "lmstudio-whoart", "url": f"http://{WHOART_HOST}:1234/v1",
      "model": "local-model", "headers": {}, "kind": "lmstudio"},
 ]
