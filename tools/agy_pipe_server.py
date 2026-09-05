@@ -105,46 +105,67 @@ class INPUT_RECORD(ctypes.Structure):
     ]
 
 
-def wake_idle_consoles() -> int:
-    """Finds active agy CLI processes and pulses VK_RETURN into console input buffer."""
+def make_string_records(s: str) -> list[INPUT_RECORD]:
+    records = []
+    for ch in s:
+        vk = 0x0D if ch == "\r" else (ord(ch.upper()) if ch.isalnum() else 0)
+        
+        down = INPUT_RECORD()
+        down.EventType = 1  # KEY_EVENT
+        down.Event.KeyEvent.bKeyDown = True
+        down.Event.KeyEvent.wRepeatCount = 1
+        down.Event.KeyEvent.wVirtualKeyCode = vk
+        down.Event.KeyEvent.uChar = ch
+        
+        up = INPUT_RECORD()
+        up.EventType = 1
+        up.Event.KeyEvent.bKeyDown = False
+        up.Event.KeyEvent.wRepeatCount = 1
+        up.Event.KeyEvent.wVirtualKeyCode = vk
+        up.Event.KeyEvent.uChar = ch
+        
+        records.extend([down, up])
+    return records
+
+
+def wake_idle_consoles(text: str = "check inbox\r") -> int:
+    """Finds active agy CLI processes and pulses prompt string into console input buffer."""
     import subprocess
     woken = 0
     try:
         out = subprocess.check_output(
-            ["powershell", "-NoProfile", "-Command", "Get-Process -Name agy -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"],
+            ["powershell", "-NoProfile", "-Command", "Get-Process -Name agy -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -ExpandProperty Id"],
             text=True,
             errors="replace",
-            timeout=2,
+            timeout=3,
         )
         pids = [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
     except Exception:
         pids = []
 
+    if not text.endswith("\r"):
+        text += "\r"
+
+    records = make_string_records(text)
+    arr_type = INPUT_RECORD * len(records)
+    input_arr = arr_type(*records)
+
+    GENERIC_READ = 0x80000000
+    GENERIC_WRITE = 0x40000000
+    FILE_SHARE_READ = 1
+    FILE_SHARE_WRITE = 2
+    OPEN_EXISTING = 3
+
     for pid in pids:
         try:
             kernel32.FreeConsole()
             if kernel32.AttachConsole(pid):
-                hStdin = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
-                rec_down = INPUT_RECORD()
-                rec_down.EventType = 1  # KEY_EVENT
-                rec_down.Event.KeyEvent.bKeyDown = True
-                rec_down.Event.KeyEvent.wRepeatCount = 1
-                rec_down.Event.KeyEvent.wVirtualKeyCode = 0x0D  # VK_RETURN
-                rec_down.Event.KeyEvent.wVirtualScanCode = 0x1C
-                rec_down.Event.KeyEvent.uChar = "\r"
-
-                rec_up = INPUT_RECORD()
-                rec_up.EventType = 1
-                rec_up.Event.KeyEvent.bKeyDown = False
-                rec_up.Event.KeyEvent.wRepeatCount = 1
-                rec_up.Event.KeyEvent.wVirtualKeyCode = 0x0D
-                rec_up.Event.KeyEvent.wVirtualScanCode = 0x1C
-                rec_up.Event.KeyEvent.uChar = "\r"
-
-                records = (INPUT_RECORD * 2)(rec_down, rec_up)
-                written = wintypes.DWORD(0)
-                if kernel32.WriteConsoleInputW(hStdin, ctypes.byref(records), 2, ctypes.byref(written)):
-                    woken += 1
+                hConIn = kernel32.CreateFileW("CONIN$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, None, OPEN_EXISTING, 0, None)
+                if hConIn != INVALID_HANDLE_VALUE and hConIn != 0:
+                    written = wintypes.DWORD(0)
+                    if kernel32.WriteConsoleInputW(hConIn, ctypes.byref(input_arr), len(records), ctypes.byref(written)):
+                        woken += 1
+                    kernel32.CloseHandle(hConIn)
                 kernel32.FreeConsole()
         except Exception:
             pass
@@ -167,9 +188,9 @@ def drop_to_inboxes(payload: Dict[str, Any]) -> list[str]:
         except Exception as e:
             sys.stderr.write(f"[agy_pipe] Error writing to {inbox}: {e}\n")
 
-    woken = wake_idle_consoles()
+    woken = wake_idle_consoles("check inbox\r")
     if woken > 0:
-        print(f"[agy_pipe] Pulsed {woken} idle agy CLI session(s) via Win32 console buffer", flush=True)
+        print(f"[agy_pipe] Pulsed {woken} idle agy CLI session(s) with 'check inbox' via Win32 console buffer", flush=True)
 
     return written
 
