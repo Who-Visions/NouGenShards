@@ -112,6 +112,7 @@ class Fleet:
                     "model": e.get("model", "gpt-3.5-turbo"),
                     "headers": e.get("headers", {}) or {},
                     "kind": _kind(name),
+                    "min_tokens": e.get("min_tokens", 0),
                 })
         if include_local:
             self.routes.extend(LOCAL_ROUTES)
@@ -155,7 +156,7 @@ class Fleet:
 
     # ---------- transport ----------
     def _call(self, route: dict, prompt: str, timeout: int = 120,
-              max_tokens: int = 800, temperature: float = 0.0) -> str:
+              max_tokens: int = 2048, temperature: float = 0.0) -> str:
         # Reasoning models spend a hidden budget before emitting content and
         # return empty at HTTP 200 if starved. A route may declare its floor.
         max_tokens = max(max_tokens, route.get("min_tokens", 0))
