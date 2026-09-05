@@ -313,7 +313,7 @@ class AgentPinger:
         try:
             from .codex_pipe import deliver
             res = deliver(prompt, origin=origin)
-            if res.get("pipe_delivered"):
+            if res.get("pipe_delivered") or (res.get("file") and res.get("status") in {"queued", "saved"}):
                 return res
         except Exception:
             pass
