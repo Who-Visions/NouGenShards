@@ -17,8 +17,8 @@ from typing import List, Dict, Any
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-NOUGEN_ROOT = Path(r"C:\Users\super\Outpost\NouGen")
-RELAY_ROOT = Path(r"C:\Users\super\Outpost\NouGenRelay")
+NOUGEN_ROOT = Path(os.environ.get("NOUGEN_ROOT") or (Path.home() / "Outpost" / "NouGen"))
+RELAY_ROOT = Path(os.environ.get("NOUGEN_RELAY_ROOT") or (Path.home() / "Outpost" / "NouGenRelay"))
 LOG_PATH = NOUGEN_ROOT / "logs" / "relay_pusher_90m.log"
 LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -63,7 +63,7 @@ AUTO_RESOLVE_RULES = [
     },
     {
         "keywords": ["blade node mount blueprint answers for whoart vault onboarding"],
-        "note": "Acknowledged and resolved by Antigravity on WhoArt: vault onboarding aligned under canonical C:\\Users\\super\\.nougen with active FTS5 9-DB grid and Cloudflare tunnel.",
+        "note": "Acknowledged and resolved by Antigravity on WhoArt: vault onboarding aligned under canonical ~/.nougen with active FTS5 9-DB grid and Cloudflare tunnel.",
     },
     {
         "keywords": ["acknowledge whoart front-door mount", "settle causal wake legs"],
@@ -79,7 +79,7 @@ AUTO_RESOLVE_RULES = [
     },
     {
         "keywords": ["decide canonical keymaker secrets store", "agent_secrets.db vs shards_secrets.db"],
-        "note": "Resolved: agent_secrets.db is canonical persistent keymaker store under C:\\Users\\super\\.nougen; shards_secrets.db serves as read-only fallback.",
+        "note": "Resolved: agent_secrets.db is canonical persistent keymaker store under ~/.nougen; shards_secrets.db serves as read-only fallback.",
     },
     {
         "keywords": ["prototype vs code as provider-neutral local nougen workbench"],
@@ -95,7 +95,7 @@ AUTO_RESOLVE_RULES = [
     },
     {
         "keywords": ["build discoverable nougen skill registry", "promote scripts into first-class skills"],
-        "note": "Shipped: skills promoted to C:\\Users\\super\\.gemini\\config\\skills and .agents/skills with manifest discovery.",
+        "note": "Shipped: skills promoted to ~/.gemini/config/skills and .agents/skills with manifest discovery.",
     },
     {
         "keywords": ["fleet expression protocol", "hardcade"],
