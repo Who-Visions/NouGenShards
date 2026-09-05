@@ -12,7 +12,6 @@ non-default choice is announced.
 from __future__ import annotations
 
 import importlib
-import os
 import sys
 from pathlib import Path
 
