@@ -40,9 +40,9 @@ def request(payload, pipe=PIPE):
     return json.loads(incoming.raw[:count.value].decode("utf-8"))
 
 
-def deliver(text):
+def deliver(text, origin=None):
     payload = {"source": "nougen-" + os.environ.get("COMPUTERNAME", "local").lower(),
-               "target": "codex", "text": text, "timestamp": time.time()}
+               "target": "codex", "text": text, "origin": origin, "timestamp": time.time()}
     try:
         return request(payload)
     except (OSError, ValueError) as exc:
