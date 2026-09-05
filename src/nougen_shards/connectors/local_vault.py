@@ -149,11 +149,31 @@ def _allowed_roots() -> list[Path]:
     # active_vault_dir(), not GLOBAL_DIR: the allow-list has to follow the
     # request's tenant. GLOBAL_DIR is the owner vault, so using it here would
     # let a tenant's federated sweep read the owner's vault root.
+    #
+    # And NOT the parent, for the same reason one level up. This was widened to
+    #   [vdir, vdir.parent, ~/.nougen, ~/.nougen/vault, ~/Watchtower/...]
+    # which reverses the sentence above: active_vault_dir() resolves to
+    # ~/.nougen/shards, so `.parent` alone re-grants ~/.nougen -- the owner root,
+    # holding the Keymaker secrets store. For a tenant vault, `.parent` grants
+    # its sibling tenants. The guarantee is pinned by
+    # tests/test_local_vault_allowed_roots.py rather than by this comment alone.
+    #
+    # A deployment that genuinely needs more sets NOUGEN_LOCAL_VAULT_ROOTS above
+    # -- explicitly and per deployment, instead of every process inheriting a
+    # wider boundary by default.
     return [Path(core.active_vault_dir()).resolve()]
 
 
 def _is_valid_identifier(ident: str) -> bool:
-    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", ident or ""))
+    """Whitelist for identifiers that get interpolated into SQL below.
+
+    fullmatch, not match: `$` also matches immediately BEFORE a trailing
+    newline, so `re.match(r"...$", ident)` matches an identifier that ends in a
+    newline, and that identifier reaches the query builder. Same hole that was
+    closed in nougenmsg._SAFE_IDENT (node-a, 2026-09-04) -- this is the second
+    site of the pattern.
+    """
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", ident or ""))
 
 
 def _stable_hash(value) -> str:
