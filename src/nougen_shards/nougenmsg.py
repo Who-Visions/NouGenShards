@@ -339,7 +339,7 @@ class AgentPinger:
     @staticmethod
     def ping_ollama(prompt: str, node: str = "local", model: Optional[str] = None) -> Dict[str, Any]:
         """Pings local or remote Ollama instance with zero-cost tactical evaluation."""
-        target_model = model or ("gemma4:e2b-qat" if node in ["local", "whoart"] else "sol-ai:e4b")
+        target_model = model or "gemma4:e2b"
         url = "http://127.0.0.1:11434/api/generate"
         
         if node not in ["local", get_current_node()]:
@@ -361,21 +361,25 @@ class AgentPinger:
                     text=True,
                     encoding="utf-8",
                     errors="replace",
-                    timeout=8,
+                    timeout=30,
                 )
                 data = json.loads(res.stdout)
                 return {"node": node, "model": target_model, "response": data.get("response", "").strip()}
             except Exception as e:
                 return {"node": node, "model": target_model, "error": str(e)}
 
+
         try:
             req_data = json.dumps({"model": target_model, "prompt": prompt, "stream": False}).encode("utf-8")
             req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=2) as r:
+            with urllib.request.urlopen(req, timeout=30) as r:
                 res = json.loads(r.read().decode())
                 return {"node": "local", "model": target_model, "response": res.get("response", "").strip()}
+
         except Exception as exc:
             return {"node": "local", "model": target_model, "error": str(exc)}
+
+
 
 class NouGenMsgBus:
     """Unified Multi-Agent & Multi-Node Broadcast Bus."""
