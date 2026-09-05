@@ -417,6 +417,18 @@ class NouGenMsgBus:
         return ('local', 'all')
 
     @classmethod
+    def _extend_relay_path(cls, existing, current: str) -> List[str]:
+        """Append this hop, so a multi-hop message can be traced back.
+
+        Idempotent per hop: re-enveloping on the same node (emit_fleet calls
+        live_ping and emit_node in one pass) must not stack duplicates.
+        """
+        path = [str(hop) for hop in (existing or [])]
+        if not path or path[-1] != current:
+            path.append(current)
+        return path
+
+    @classmethod
     def _origin_envelope(cls, supplied: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Build a provenance envelope without inventing missing session identity."""
         supplied = dict(supplied or {})
@@ -434,8 +446,15 @@ class NouGenMsgBus:
             "transport_machine": current,
             "lane": supplied.get("lane"),
             "transport": supplied.get("transport") or "nougenmsg",
-            "original_sender": supplied.get("original_sender"),
-            "relay_path": list(supplied.get("relay_path") or []),
+            # Stamped once, at the origin, and never overwritten on a hop --
+            # that is the whole point of the field. It was left null, so
+            # read_inbox and ping_* fell through to "nougen-<current node>"
+            # and every message arrived labelled with the LAST hop: whoart
+            # traffic reaching phoebus read as nougen-phoebus, origin.machine
+            # phoebus. The content carried the origin; the envelope did not,
+            # so cross-machine provenance was unrecoverable after one hop.
+            "original_sender": supplied.get("original_sender") or f"nougen-{current}",
+            "relay_path": cls._extend_relay_path(supplied.get("relay_path"), current),
             "timestamp": supplied.get("timestamp") or time.time(),
             "provenance_state": supplied.get("provenance_state") or (
                 "asserted" if session_id else "unknown"),
