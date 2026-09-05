@@ -36,6 +36,7 @@ the emit_node region wholesale from a reference implementation, so it needs
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
@@ -119,19 +120,28 @@ def status(text, kind):
 
 # ------------------------------------------------------------------- audit --
 
-def find_copies(host=None):
+def find_copies(host=None, pattern="nougenmsg.py"):
     """Locate nougenmsg.py copies. Uses the platform's indexed search where
     available -- a recursive walk is far too slow on these trees and silently
     truncates under a timeout, which is how a live stale copy stayed hidden."""
     if host:
+        # mdfind is fast but DOES NOT INDEX DOTFOLDERS, and ~/.nougen is where
+        # the canonical runtime copy lives -- auditing with mdfind alone found
+        # 5 of the 7 codex_pipe.py copies on phoebus and missed the one the
+        # fleet actually imports. Union it with a bounded find over the dot
+        # roots, which are small enough not to stall.
+        dot_roots = "$HOME/.nougen $HOME/.claude $HOME/.gemini $HOME/.codex"
         script = (
-            'command -v mdfind >/dev/null 2>&1 && mdfind -name nougenmsg.py 2>/dev/null'
-            ' || find "$HOME" -name "nougenmsg.py" -maxdepth 8 2>/dev/null'
+            f'{{ command -v mdfind >/dev/null 2>&1 && mdfind -name {pattern} 2>/dev/null;'
+            f' find "$HOME" -maxdepth 8 -name "{pattern}" 2>/dev/null;'
+            f' find {dot_roots} -maxdepth 8 -name "{pattern}" 2>/dev/null; }} | sort -u'
         )
         out = ssh_capture(["ssh", "-n", "-o", "BatchMode=yes",
                            "-o", "ConnectTimeout=10", host, script], timeout=120)
+        # Match the basename exactly: endswith() would let test_codex_pipe.py
+        # masquerade as codex_pipe.py and inflate the divergence count.
         return [line.strip() for line in out.splitlines()
-                if line.strip().endswith("nougenmsg.py")]
+                if os.path.basename(line.strip()) == pattern]
 
     roots = [REPO_ROOT, os.path.expanduser("~/.nougen")]
     found = []
@@ -140,8 +150,8 @@ def find_copies(host=None):
             dirnames[:] = [d for d in dirnames
                            if d not in {".git", "node_modules", "__pycache__",
                                         ".venv", "venv"}]
-            if "nougenmsg.py" in filenames:
-                found.append(os.path.join(dirpath, "nougenmsg.py"))
+            if pattern in filenames:
+                found.append(os.path.join(dirpath, pattern))
     return sorted(set(found))
 
 
@@ -176,43 +186,71 @@ def ssh_capture(argv, timeout):
 
 
 def cmd_audit(args):
-    copies = find_copies(args.host)
+    pattern = args.pattern
+    copies = find_copies(args.host, pattern)
     if not copies:
-        print("no nougenmsg.py copies found"
+        print(f"no {pattern} copies found"
               + (f" on {args.host}" if args.host else ""))
         return 1
 
+    protocol_aware = pattern == "nougenmsg.py"
     where = args.host or "local"
-    print(f"\n{len(copies)} copy(ies) on {where}\n")
-    rows, stale = [], 0
+    print(f"\n{len(copies)} copy(ies) of {pattern} on {where}\n")
+
+    rows, stale, digests = [], 0, {}
     for path in copies:
         try:
             text = read_remote(args.host, path) if args.host else \
                 open(path, encoding="utf-8", errors="replace").read()
         except OSError as exc:
-            rows.append((path, "?", f"unreadable: {exc.strerror}"))
+            rows.append((path, "?", f"unreadable: {exc.strerror}", "--------"))
             continue
         if not text:
-            rows.append((path, "?", "unreadable"))
+            rows.append((path, "?", "unreadable", "--------"))
             continue
-        kind = classify(path, text)
-        state = status(text, kind)
-        if state == "STALE":
-            stale += 1
-        rows.append((path, kind, state))
+        digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:8]
+        digests.setdefault(digest, []).append(path)
+        if protocol_aware:
+            kind = classify(path, text)
+            state = status(text, kind)
+            if state == "STALE":
+                stale += 1
+        else:
+            kind, state = classify(path, text), ""
+        rows.append((path, kind, state, digest))
 
-    width = min(max((len(r[0]) for r in rows), default=20), 96)
-    for path, kind, state in sorted(rows, key=lambda r: (r[2] != "STALE", r[0])):
+    width = min(max((len(r[0]) for r in rows), default=20), 88)
+    for path, kind, state, digest in sorted(rows,
+                                            key=lambda r: (r[2] != "STALE", r[0])):
         mark = "!!" if state == "STALE" else "  "
-        print(f" {mark} {path[-width:]:<{width}}  {kind:<8} {state}")
+        print(f" {mark} {path[-width:]:<{width}}  {kind:<8} {digest}  {state}")
 
     print()
-    if stale:
-        print(f"{stale} stale copy(ies). A stale SENDER emits file pointers for")
-        print("everyone; a stale RECEIVER reads --capabilities as message text.")
-        print("Patch with:  nougenmsg_rollout.py patch <file> --write")
+    # Content divergence is the signal that survives when there is no protocol
+    # marker to test. Seven copies of a transport module on one node, three
+    # patched and four stale -- with the fleet importing a stale one -- is a
+    # real incident shape here, not a hypothetical (phoebus codex_pipe.py,
+    # 2026-09-05). Distinct contents are what make it visible at a glance.
+    if len(digests) > 1:
+        ranked = sorted(digests.items(), key=lambda kv: -len(kv[1]))
+        print(f"{len(digests)} DISTINCT CONTENTS among {len(copies)} copies:")
+        for digest, paths in ranked:
+            print(f"  {digest}  x{len(paths)}")
+        print("Copies of one module that differ mean some caller is importing an")
+        print("older one. A fix landed in one tree is not a fix in the field --")
+        print("check which copy the failing caller actually imports.")
     else:
-        print("all copies speak the inline protocol")
+        print(f"all {len(copies)} copies are byte-identical")
+
+    if protocol_aware:
+        print()
+        if stale:
+            print(f"{stale} stale copy(ies). A stale SENDER emits file pointers for")
+            print("everyone; a stale RECEIVER reads --capabilities as message text.")
+            print("Patch with:  nougenmsg_rollout.py patch <file> --write")
+        else:
+            print("all copies speak the inline protocol")
+
     print("\nNote: a patched file on disk does NOT fix an already-running")
     print("process -- Python caches the module at import. Restart daemons.")
     return 0
@@ -321,6 +359,11 @@ def main(argv=None):
 
     audit = sub.add_parser("audit", help="find copies and report which are stale")
     audit.add_argument("--host", help="audit a remote fleet node over ssh")
+    audit.add_argument("--pattern", default="nougenmsg.py",
+                       help="module filename to audit (default: nougenmsg.py). "
+                            "Any transport module works, e.g. codex_pipe.py -- "
+                            "protocol checks apply only to nougenmsg.py, but "
+                            "content-divergence reporting applies to all.")
     audit.set_defaults(func=cmd_audit)
 
     patch = sub.add_parser("patch", help="bring one copy up to the protocol")
