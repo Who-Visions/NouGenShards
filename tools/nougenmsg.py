@@ -86,6 +86,12 @@ def main():
         return
 
     # Discovery
+    if "--capabilities" in sys.argv:
+        # Probed over ssh by NouGenMsgBus.emit_node to decide whether this
+        # receiver can take a base64 body inline instead of an scp'd file.
+        print("nougenmsg-capabilities: text-b64")
+        return
+
     if "--peers" in sys.argv or "--list-peers" in sys.argv or "--list-pipes" in sys.argv:
         peers = NouGenMsgBus.list_peers()
         print(f"\n📡 Discovered Peers on Node: [{peers['current_node'].upper()}]")
@@ -170,6 +176,22 @@ def main():
         args = [value for pos, value in enumerate(args)
                 if pos not in (idx, idx + 1)]
 
+    forced_text = None
+    if "--text-b64" in args:
+        idx = args.index("--text-b64")
+        if idx + 1 >= len(args):
+            print("[!] Error: --text-b64 requires a value.")
+            return
+        encoded = args[idx + 1]
+        try:
+            padding = "=" * (-len(encoded) % 4)
+            forced_text = base64.urlsafe_b64decode(encoded + padding).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            print("[!] Error: invalid --text-b64 payload.")
+            return
+        args = [value for pos, value in enumerate(args)
+                if pos not in (idx, idx + 1)]
+
     origin.setdefault("session_id", os.environ.get("NOUGEN_SESSION_ID"))
     origin.setdefault("session_title", os.environ.get("NOUGEN_SESSION_TITLE"))
     origin.setdefault("lane", os.environ.get("NOUGEN_LANE"))
@@ -192,7 +214,7 @@ def main():
             target_agent = cleaned_args[idx + 1]
             cleaned_args = [x for i, x in enumerate(cleaned_args) if i not in (idx, idx + 1)]
 
-    text = " ".join(cleaned_args).strip()
+    text = forced_text if forced_text is not None else " ".join(cleaned_args).strip()
     if not text:
         print("[!] Error: No message text provided.")
         print_help()

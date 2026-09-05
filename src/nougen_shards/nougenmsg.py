@@ -510,6 +510,38 @@ class NouGenMsgBus:
         lines = text.count(chr(10)) + 1
         return (f"NouGenMsg body {mid} shipped to ~/{remote_rel}, {len(text)} chars {lines} lines, read it there", None)
 
+    _REMOTE_SCRIPTS = {
+        "blade": "python %USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py",
+        "whoart": "python %USERPROFILE%/Outpost/NouGen/tools/nougenmsg.py",
+    }
+    _DEFAULT_REMOTE_SCRIPT = "python3 ~/.nougen/tools/nougenmsg.py"
+
+    # node -> whether its nougenmsg.py understands --text-b64. Probed once per
+    # process; a node that predates the flag keeps the scp pointer path.
+    _TEXT_B64_SUPPORT: Dict[str, bool] = {}
+
+    # Without BatchMode a nested, non-interactive ssh blocks on a credential or
+    # host-key prompt it can never be answered, burning the whole timeout; -n
+    # keeps it off our stdin. _ship_body already does this for scp.
+    _SSH_OPTS = ["-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+
+    @classmethod
+    def _supports_text_b64(cls, node: str, script: str) -> bool:
+        if node in cls._TEXT_B64_SUPPORT:
+            return cls._TEXT_B64_SUPPORT[node]
+        supported = False
+        try:
+            res = subprocess.run(
+                ["ssh", *cls._SSH_OPTS, node, f"{script} --capabilities"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=float(os.environ.get("NOUGEN_MSG_PROBE_TIMEOUT_S", "15")),
+            )
+            supported = "text-b64" in (res.stdout or "")
+        except (OSError, subprocess.SubprocessError):
+            supported = False
+        cls._TEXT_B64_SUPPORT[node] = supported
+        return supported
+
     @classmethod
     def emit_node(cls, node: str, target: str, text: str,
                   origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -517,20 +549,11 @@ class NouGenMsgBus:
         for label, value in (("node", node), ("target", target)):
             if not cls._SAFE_IDENT.fullmatch(str(value or "")):
                 return {node: f"Error: refusing unsafe {label} {value!r}"}
-        refused = cls._refuse_if_shell_unsafe(node, target, text)
-        if refused:
-            if "not a plain token" in refused[node]:
-                return refused
-            # Substantive traffic (leg bodies, JSON, code, paths) is FULL of shell
-            # metacharacters; refusing it would silence the bus. Ship the body as
-            # a file over scp instead and send a plain-ASCII pointer through the
-            # existing path. Nothing user-authored ever reaches the remote shell.
-            pointer, err = cls._ship_body(node, text)
-            if err:
-                return {node: err}
-            text = pointer
+
         curr = get_current_node()
         if node in ["local", curr]:
+            # No shell is involved locally, so the body needs no encoding or
+            # shipping — deliver it verbatim.
             return {curr: cls.live_ping(target=target, text=text, origin=origin)}
 
         envelope = cls._origin_envelope(origin)
@@ -538,15 +561,32 @@ class NouGenMsgBus:
             json.dumps(envelope, separators=(",", ":")).encode("utf-8")
         ).decode("ascii").rstrip("=")
 
+        script = cls._REMOTE_SCRIPTS.get(node, cls._DEFAULT_REMOTE_SCRIPT)
+        base = f"{script} --target {target} --local --origin-b64 {origin_b64}"
+
+        if cls._supports_text_b64(node, script):
+            # base64url is [A-Za-z0-9_-], so the body survives the remote shell
+            # untouched and arrives inline — no metacharacter refusal, no scp hop.
+            text_b64 = base64.urlsafe_b64encode(
+                text.encode("utf-8")).decode("ascii").rstrip("=")
+            remote_cmd = f"{base} --text-b64 {text_b64}"
+        else:
+            refused = cls._refuse_if_shell_unsafe(node, target, text)
+            if refused:
+                if "not a plain token" in refused[node]:
+                    return refused
+                # Substantive traffic (leg bodies, JSON, code, paths) is FULL of shell
+                # metacharacters; refusing it would silence the bus. Ship the body as
+                # a file over scp instead and send a plain-ASCII pointer through the
+                # existing path. Nothing user-authored ever reaches the remote shell.
+                pointer, err = cls._ship_body(node, text)
+                if err:
+                    return {node: err}
+                text = pointer
+            remote_cmd = f'{base} "{text}"'
+
         try:
-            if node == "blade":
-                remote_cmd = f'python %USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py --target {target} --local --origin-b64 {origin_b64} "{text}"'
-            elif node == "whoart":
-                remote_cmd = f'python %USERPROFILE%/Outpost/NouGen/tools/nougenmsg.py --target {target} --local --origin-b64 {origin_b64} "{text}"'
-            else:
-                remote_cmd = f'python3 ~/.nougen/tools/nougenmsg.py --target {target} --local --origin-b64 {origin_b64} "{text}"'
-            
-            res = subprocess.run(["ssh", node, remote_cmd], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+            res = subprocess.run(["ssh", *cls._SSH_OPTS, node, remote_cmd], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
             output = res.stdout.strip() if res.stdout else res.stderr.strip()
             return {node: output}
         except Exception as e:
