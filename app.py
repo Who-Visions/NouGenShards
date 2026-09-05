@@ -1341,16 +1341,27 @@ def search(req: SearchRequest, response: Response,
         # non-empty case: a partial answer that looks whole is the same defect
         # with better camouflage.
         response.headers["X-NouGen-Degraded"] = "1"
-    if sweep_report.get("errored") or lanes_timed_out:
+    # A store deferred to tier 2 (large + unindexed, never swept unless
+    # NOUGEN_FEDERATE_TIER2 is on) is a hole in the corpus exactly like an
+    # errored one, and used to produce NO trailer at all: a targeted query whose
+    # only match lived in a cold store came back shown 0 / total 0 / failures []
+    # — indistinguishable from "searched everywhere, matched nothing". That is
+    # the difference between an empty answer and an unasked question.
+    tier2_deferred = sweep_report.get("tier2_deferred") or []
+    if sweep_report.get("errored") or lanes_timed_out or tier2_deferred:
         errored = sweep_report.get("errored") or []
         if lanes_timed_out:
             title = (f"federation: {len(lanes_timed_out)} lane(s) "
                      f"({', '.join(lanes_timed_out)}) missed the "
                      f"{sweep_report.get('deadline_s')}s recall deadline — "
                      "this answer is INCOMPLETE, not empty")
-        else:
+        elif errored:
             title = (f"federation: {len(errored)} store(s) "
                      "errored or timed out this sweep")
+        else:
+            title = (f"federation: {len(tier2_deferred)} store(s) deferred to "
+                     "tier 2 and never swept — this answer is INCOMPLETE, not "
+                     "empty")
         payload.append({
             "id": "federation_meta",
             "event_type": "FEDERATION_STATUS",
@@ -1363,7 +1374,7 @@ def search(req: SearchRequest, response: Response,
                 "deadline_exceeded": bool(sweep_report.get("deadline_exceeded")),
                 "stores_swept": sweep_report.get("stores_swept"),
                 "tier2": sweep_report.get("tier2"),
-                "tier2_deferred": sweep_report.get("tier2_deferred"),
+                "tier2_deferred": tier2_deferred,
             }),
             "tags": json.dumps(["federation_status"]),
             "final_score": 0.0,
