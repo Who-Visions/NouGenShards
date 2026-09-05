@@ -149,11 +149,31 @@ def _allowed_roots() -> list[Path]:
     # active_vault_dir(), not GLOBAL_DIR: the allow-list has to follow the
     # request's tenant. GLOBAL_DIR is the owner vault, so using it here would
     # let a tenant's federated sweep read the owner's vault root.
+    #
+    # And NOT the parent, for the same reason one level up. This was widened to
+    #   [vdir, vdir.parent, ~/.nougen, ~/.nougen/vault, ~/Watchtower/...]
+    # which reverses the sentence above: active_vault_dir() resolves to
+    # ~/.nougen/shards, so `.parent` alone re-grants ~/.nougen -- the owner root,
+    # holding the Keymaker secrets store. For a tenant vault, `.parent` grants
+    # its sibling tenants. The guarantee is pinned by
+    # tests/test_local_vault_allowed_roots.py rather than by this comment alone.
+    #
+    # A deployment that genuinely needs more sets NOUGEN_LOCAL_VAULT_ROOTS above
+    # -- explicitly and per deployment, instead of every process inheriting a
+    # wider boundary by default.
     return [Path(core.active_vault_dir()).resolve()]
 
 
 def _is_valid_identifier(ident: str) -> bool:
-    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", ident or ""))
+    """Whitelist for identifiers that get interpolated into SQL below.
+
+    fullmatch, not match: `$` also matches immediately BEFORE a trailing
+    newline, so `re.match(r"...$", ident)` matches an identifier that ends in a
+    newline, and that identifier reaches the query builder. Same hole that was
+    closed in nougenmsg._SAFE_IDENT (node-a, 2026-09-04) -- this is the second
+    site of the pattern.
+    """
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", ident or ""))
 
 
 def _stable_hash(value) -> str:
@@ -176,6 +196,26 @@ def _path_is_allowed(path: Path) -> bool:
         except ValueError:
             continue
     return False
+
+
+
+def _redact(text: str) -> str:
+    """Best-effort secret redaction for anything leaving this connector.
+
+    Import is local and failure is non-fatal by design: this runs on the read
+    path, and a redactor that raises would take down search for every vault. A
+    broken redactor must degrade to "return nothing" rather than "return the
+    secret", so the fallback drops the body instead of passing it through.
+    """
+    if not text:
+        return text
+    try:
+        from ..brain_scan.redaction import redact_content  # pylint: disable=import-outside-toplevel
+        return redact_content(text)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error("local vault redactor unavailable (%s); withholding body rather "
+                     "than returning it unredacted", type(exc).__name__)
+        return "<WITHHELD: redactor unavailable>"
 
 
 def _build_query(table: str, title_col: str, content_col: str, keywords: list, limit: int):
@@ -363,11 +403,21 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
         results = []
         for row in rows:
             item = dict(row)
+            # A LOCAL_VAULT row is a RAW FILE BODY, not a curated shard: nobody
+            # reviewed it before it became reachable by every lane holding a
+            # connector token. On 2026-08-29 a grid search returned one of these
+            # carrying a LIVE Notion integration token in plaintext, straight
+            # into two agents' contexts. The redactor already existed and simply
+            # was not on this path. Redact at the point of RETURN, not at
+            # ingest, because the vaults are read in place and were never
+            # rewritten.
+            title = _redact(item["title"] or "Untitled")
+            content = _redact(item["content"] or "")
             results.append({
                 "id": f"vault_{vid}_{_stable_hash(item['title'])[:16]}",
                 "event_type": "LOCAL_VAULT",
-                "title": item["title"] or "Untitled",
-                "content": item["content"] or "",
+                "title": title,
+                "content": content,
                 "tags": json.dumps(["local_vault", path.stem]),
                 "utility_score": 1.0,
                 "access_count": 0,

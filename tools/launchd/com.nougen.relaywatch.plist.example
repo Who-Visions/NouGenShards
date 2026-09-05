@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.nougen.relaywatch</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.nougen/bin/relay_watch_node_launch.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NOUGEN_NODE_NAME</key><string>__NODE_NAME__</string>
+    <key>NOUGEN_RELAY_DIR</key><string>__NOUGEN_RELAY_DIR__</string>
+    <key>NOUGEN_RELAY_WATCH_SECS</key><string>60</string>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/.nougen/logs/relay_watch.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.nougen/logs/relay_watch.err.log</string>
+</dict>
+</plist>

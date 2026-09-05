@@ -95,7 +95,10 @@ class TestFederatedCoverage:
         """Consumers parse tolerantly but must still find every pre-existing
         field; federated_stores may only ADD."""
         monkeypatch.setenv("NOUGEN_COVERAGE_FEDERATED", "0")
-        out = app_module.substrate_coverage()
+        # Tools are registered as async wrappers so a blocking body cannot hold
+        # the event loop (app._offloaded); __wrapped__ is the sync body itself.
+        coverage = app_module.substrate_coverage
+        out = getattr(coverage, "__wrapped__", coverage)()
         for field in ("total_shards", "span", "months", "empty_months",
                       "grid", "vault"):
             assert field in out

@@ -472,12 +472,24 @@ def cmd_search(args):
             embedding = client.embed(model, args.query)
 
     # Use Federation for unified search
-    results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding, domain_key=domain_key)
+    sweep_report: dict = {}
+    results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding,
+                                            domain_key=domain_key, sweep_report=sweep_report)
+    dropped = sweep_report.get("lanes_timed_out") or []
+    if dropped:
+        # stderr, not stdout: --json consumers must keep parsing a clean stream,
+        # but a human reading "No shards found." has to be told the difference
+        # between an empty substrate and a sweep that never finished.
+        print(f"[!] recall INCOMPLETE: lane(s) {', '.join(dropped)} missed the "
+              f"{sweep_report.get('deadline_s')}s deadline; results below are partial",
+              file=sys.stderr)
     if not results:
         if getattr(args, 'json', False) is True:
             print("[]")
         else:
-            print("No shards found.")
+            print("No shards found." if not dropped
+                  else "No shards returned — but the sweep timed out, so this is "
+                       "NOT evidence the substrate is empty.")
         return
 
     if getattr(args, 'json', False) is True:
@@ -733,6 +745,20 @@ def cmd_ctx(args):
             print("ℹ️ Shard already exists.")
 
 
+def resolve_router_model() -> str:
+    """The router's default model. Env first (Rule 0.2), logged fallback.
+
+    It was hardcoded to "openrouter/auto" in five places, so switching the
+    fleet's default meant editing code and redeploying every node — and
+    `router doctor` reported the literal rather than what a call would
+    actually use, which is how a stale default survives being "checked".
+    """
+    model = os.environ.get("NOUGEN_ROUTER_MODEL", "").strip()
+    if model:
+        return model
+    return "openrouter/auto"
+
+
 def cmd_router(args):
     """Handles OpenRouter production routing commands."""
     client = OpenRouterClient()
@@ -746,7 +772,7 @@ def cmd_router(args):
         messages = router.build_cache_friendly_messages(sys_prompt, [{"role": "user", "content": args.input}])
         
         res = client.chat_with_fallback(
-            model=args.model or "openrouter/auto",
+            model=args.model or resolve_router_model(),
             messages=messages,
             fallback_models=args.fallback,
             session_id=args.session_id,
@@ -778,7 +804,7 @@ def cmd_router(args):
 
         messages = [{"role": "user", "content": args.input}]
         res = client.structured_chat(
-            model=args.model or "openrouter/auto",
+            model=args.model or resolve_router_model(),
             messages=messages,
             schema=schema,
             fallback_models=args.fallback,
@@ -801,7 +827,7 @@ def cmd_router(args):
     elif args.action == "doctor":
         diag = {
             "openrouter_key": client.is_alive(),
-            "default_model": "openrouter/auto",
+            "default_model": resolve_router_model(),
             "response_healing": True,
             "session_id_recommendation": router.make_session_id("default", "cli")
         }
@@ -1131,7 +1157,7 @@ def get_parser():
     
     p_router_chat = p_router_sub.add_parser("chat", help="Chat with fallback")
     p_router_chat.add_argument("input")
-    p_router_chat.add_argument("--model", default="openrouter/auto")
+    p_router_chat.add_argument("--model", default=None)
     p_router_chat.add_argument("--fallback", action="append", help="Fallback models")
     p_router_chat.add_argument("--session-id")
     p_router_chat.add_argument("--stream", action="store_true")
@@ -1142,7 +1168,7 @@ def get_parser():
     p_router_json = p_router_sub.add_parser("json", help="Structured JSON chat")
     p_router_json.add_argument("input")
     p_router_json.add_argument("--schema", required=True)
-    p_router_json.add_argument("--model", default="openrouter/auto")
+    p_router_json.add_argument("--model", default=None)
     p_router_json.add_argument("--fallback", action="append")
     p_router_json.add_argument("--session-id")
     p_router_json.add_argument("--healing", action="store_true", default=True)
@@ -1208,6 +1234,19 @@ def get_parser():
     p_brain.add_argument("--no-redact", action="store_true", help="Do not redact secrets")
     p_brain.add_argument("--confirm", action="store_true", help="Confirm writing to database")
     p_brain.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    # add_help=False: `-h/--help` must reach the relay engine, not stop here.
+    p_relay = subparsers.add_parser(
+        "relay", add_help=False,
+        help="Fleet relay board (NouGenRelay): open | read | ack | create | claim ...",
+        description=("Pass-through to the NouGenRelay CLI, run against the fleet registry "
+                     "clone. Everything after `relay` is handed to it verbatim, so "
+                     "`nougen relay open`, `nougen relay ack --id <leg>` and "
+                     "`nougen relay --help` all behave exactly like the bare `relay` command. "
+                     "The registry is found via $NOUGEN_RELAY_DIR, then $FLEET_RELAY_DIR, then "
+                     "a NouGenRelay checkout beside this repo."))
+    p_relay.add_argument("relay_args", nargs=argparse.REMAINDER,
+                         help="Arguments forwarded to the relay CLI")
 
     p_handoff = subparsers.add_parser("handoff", help="Cross-agent session handoff notes")
     p_handoff.add_argument("action", choices=[
@@ -1596,6 +1635,91 @@ def cmd_handoff_triggers(args, handoff):
                 print(f"    stderr: {run['stderr'].strip()[:200]}")
         return
 
+RELAY_DIR_ENV_VARS = ("NOUGEN_RELAY_DIR", "FLEET_RELAY_DIR")
+EX_CONFIG = 78
+
+
+def _relay_registry_candidates():
+    """Where the fleet registry clone may live, most explicit first.
+
+    A NouGenShards checkout carries its own legacy `.handoffs/` (the older
+    per-repo handoff system), so simply running the relay CLI from this repo
+    silently reads the wrong board. The registry must be located explicitly.
+    """
+    for var in RELAY_DIR_ENV_VARS:
+        raw = os.environ.get(var, "").strip()
+        if raw:
+            yield Path(raw).expanduser()
+    # An installed (editable) nougen_relay is normally the registry clone's
+    # own src/ tree, so the clone is two levels above the package.
+    try:
+        import nougen_relay as _relay_pkg
+    except ImportError:
+        _relay_pkg = None
+    pkg_file = getattr(_relay_pkg, "__file__", None)
+    if pkg_file:
+        pkg_path = Path(pkg_file).resolve()
+        if len(pkg_path.parents) > 2:
+            yield pkg_path.parents[2]
+    here = Path(__file__).resolve()
+    # src/nougen_shards/cli.py -> repo root is parents[2]; the fleet keeps
+    # NouGenRelay either beside the repo or beside the repo's parent folder
+    # (The Observatory/NouGenRelay next to The Observatory/NouGen/nougenshards).
+    for depth in (3, 4):
+        if len(here.parents) > depth:
+            yield here.parents[depth] / "NouGenRelay"
+
+
+def find_relay_registry():
+    """Return the NouGenRelay clone that holds a `.handoffs/` registry, or None."""
+    for cand in _relay_registry_candidates():
+        if (cand / ".handoffs").is_dir() and (cand / "src" / "nougen_relay").is_dir():
+            return cand
+    return None
+
+
+def _import_relay_main(registry):
+    """Import nougen_relay.main, falling back to the registry clone's src tree."""
+    try:
+        from nougen_relay.cli import main as relay_main
+        return relay_main
+    except ImportError:
+        pass
+    src = str(registry / "src")
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    from nougen_relay.cli import main as relay_main  # noqa: E402
+    return relay_main
+
+
+def cmd_relay(args):
+    """Forward to the NouGenRelay CLI inside the fleet registry clone."""
+    registry = find_relay_registry()
+    if registry is None:
+        tried = ", ".join(str(c) for c in _relay_registry_candidates())
+        print("[FATAL] no NouGenRelay registry found (need a clone with .handoffs/ and src/nougen_relay/).",
+              file=sys.stderr)
+        print(f"        looked in: {tried}", file=sys.stderr)
+        print("        set NOUGEN_RELAY_DIR=/path/to/NouGenRelay, or clone it beside this repo.",
+              file=sys.stderr)
+        sys.exit(EX_CONFIG)
+    relay_main = _import_relay_main(registry)
+    forwarded = list(getattr(args, "relay_args", None) or [])
+    if forwarded[:1] == ["--"]:
+        forwarded = forwarded[1:]
+    prev_cwd = os.getcwd()
+    prev_argv = sys.argv
+    os.chdir(registry)
+    sys.argv = ["relay", *forwarded]
+    try:
+        rc = relay_main()
+    finally:
+        sys.argv = prev_argv
+        os.chdir(prev_cwd)
+    if rc:
+        sys.exit(rc)
+
+
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
@@ -1607,6 +1731,12 @@ def main():
         print()
         get_parser().print_help()
         sys.exit(0)
+    if sys.argv[1] == "relay":
+        # Pure pass-through: argparse (3.13+) refuses to let a REMAINDER
+        # positional swallow a leading option, so `nougen relay --help` and
+        # `nougen relay -h` would die here instead of reaching the engine.
+        cmd_relay(argparse.Namespace(command="relay", relay_args=sys.argv[2:]))
+        return
     parser = get_parser()
     args = parser.parse_args()
     cmds = {
@@ -1616,7 +1746,7 @@ def main():
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
-        "tenant": cmd_tenant
+        "tenant": cmd_tenant, "relay": cmd_relay
     }
     if args.command in cmds:
         cmds[args.command](args)
