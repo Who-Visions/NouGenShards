@@ -6,11 +6,20 @@ failed and recall went cold on every request. These tests pin the contract of
 the startup raise without touching the real process limit.
 """
 import logging
-import resource
 import sys
 from pathlib import Path
 
 import pytest
+
+# `resource` is POSIX-only. Importing it at module scope aborted COLLECTION on
+# Windows, so `pytest tests/` on whoart or blade died with "Interrupted: 1 error
+# during collection" and deselected all ~1017 tests -- two of the three fleet
+# nodes could not run the suite at all, and the failure reads like a broken
+# tree rather than a platform gap. The descriptor ceiling this file pins is a
+# launchd/POSIX contract, so skipping here loses no coverage: CI and phoebus
+# still run it.
+resource = pytest.importorskip(
+    "resource", reason="POSIX-only; fd ceiling is a launchd contract")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
