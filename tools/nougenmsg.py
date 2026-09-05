@@ -147,6 +147,42 @@ def main():
     target_agent = "all"
     origin = {}
 
+    # Accept the `send --target-node X --target-agent Y --text ...` shape.
+    #
+    # Callers across the fleet emit it, but this CLI had no `send` verb and did
+    # not know --target-node/--target-agent, so the whole command line fell
+    # through to the positional join and was delivered VERBATIM AS THE MESSAGE
+    # BODY -- routing flags and all -- to every agent instead of the one
+    # addressed. Measured 2026-09-05 across the four inboxes: 97 of 1136
+    # messages, 8% of fleet traffic, misrouted this way.
+    #
+    # The `send` token is only consumed when a flag from that shape follows, so
+    # a message that legitimately begins with the word "send" is untouched.
+    if args and args[0] == "send" and any(
+            flag in args for flag in ("--target-node", "--target-agent", "--text")):
+        args = args[1:]
+
+    for flag, field in (("--target-node", "node"), ("--target-agent", "agent")):
+        if flag in args:
+            idx = args.index(flag)
+            if idx + 1 >= len(args):
+                print(f"[!] Error: {flag} requires a value.")
+                return
+            if field == "node":
+                node = args[idx + 1]
+            else:
+                target_agent = args[idx + 1]
+            args = [value for pos, value in enumerate(args)
+                    if pos not in (idx, idx + 1)]
+
+    # --text takes the whole remainder as the body, so an unquoted message
+    # keeps its spaces instead of being re-split.
+    explicit_text = None
+    if "--text" in args:
+        idx = args.index("--text")
+        explicit_text = " ".join(args[idx + 1:]).strip()
+        args = args[:idx]
+
     for flag, field in (("--session-id", "session_id"),
                         ("--session-title", "session_title"),
                         ("--sender", "original_sender"),
@@ -214,7 +250,14 @@ def main():
             target_agent = cleaned_args[idx + 1]
             cleaned_args = [x for i, x in enumerate(cleaned_args) if i not in (idx, idx + 1)]
 
-    text = forced_text if forced_text is not None else " ".join(cleaned_args).strip()
+    # Precedence: an encoded body wins, then an explicit --text, then whatever
+    # positional words are left.
+    if forced_text is not None:
+        text = forced_text
+    elif explicit_text is not None:
+        text = explicit_text
+    else:
+        text = " ".join(cleaned_args).strip()
     if not text:
         print("[!] Error: No message text provided.")
         print_help()
