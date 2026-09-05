@@ -24,14 +24,28 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-_SAFE = re.compile(r"[^A-Za-z0-9._:-]")
+# ":" is deliberately EXCLUDED. event_id is "sha256:<hex>" (envelope.py:72),
+# and NTFS reads a colon as the alternate-data-stream separator, so writing
+# "sha256:abcd.json" fails with WinError 87 "The parameter is incorrect".
+# The dam could not spool a single event on whoart or blade -- a durable
+# spool that cannot write on two of three fleet nodes.
+_SAFE = re.compile(r"[^A-Za-z0-9._-]")
+# The pre-fix spelling, for READS only, so events already spooled on POSIX
+# under "sha256:<hex>.json" are still found and are not re-processed.
+_SAFE_LEGACY = re.compile(r"[^A-Za-z0-9._:-]")
 
 
 def object_path(prefix: str, event_id: str, created_utc: str) -> str:
-    """`pending/2026/09/04/sha256:abcd....json` — date-partitioned, immutable."""
+    """`pending/2026/09/04/sha256_abcd....json` — date-partitioned, immutable."""
     date = (created_utc or "")[:10].replace("-", "/") or "0000/00/00"
-    safe = _SAFE.sub("_", event_id)
-    return f"{prefix}/{date}/{safe}.json"
+    return f"{prefix}/{date}/{_SAFE.sub('_', event_id)}.json"
+
+
+def legacy_object_path(prefix: str, event_id: str, created_utc: str) -> str:
+    """The path this store used before colons were excluded. Read-only:
+    never write here, but an object already at this path counts as present."""
+    date = (created_utc or "")[:10].replace("-", "/") or "0000/00/00"
+    return f"{prefix}/{date}/{_SAFE_LEGACY.sub('_', event_id)}.json"
 
 
 class DamStore:
@@ -52,11 +66,14 @@ class LocalDamStore(DamStore):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def _write_once(self, rel: str, obj: Dict[str, Any]) -> str:
+    def _write_once(self, rel: str, obj: Dict[str, Any],
+                    legacy_rel: Optional[str] = None) -> str:
         p = self.root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        if p.exists():
+        if p.exists() or (legacy_rel and (self.root / legacy_rel).exists()):
             # Immutable: re-sealing the same event is a no-op, not a rewrite.
+            # The legacy spelling counts: an event spooled before colons were
+            # excluded must not be written a second time under the new name.
             return rel
         tmp = p.with_suffix(p.suffix + ".tmp")
         tmp.write_text(json.dumps(obj, indent=2, sort_keys=True), encoding="utf-8")
@@ -64,16 +81,19 @@ class LocalDamStore(DamStore):
         return rel
 
     def put_pending(self, env: Dict[str, Any]) -> str:
-        return self._write_once(
-            object_path("pending", env["event_id"], env.get("created_utc", "")), env)
+        eid, created = env["event_id"], env.get("created_utc", "")
+        return self._write_once(object_path("pending", eid, created), env,
+                                legacy_object_path("pending", eid, created))
 
     def put_acked(self, event_id: str, created_utc: str,
                   receipt: Dict[str, Any]) -> str:
-        return self._write_once(object_path("acked", event_id, created_utc), receipt)
+        return self._write_once(object_path("acked", event_id, created_utc), receipt,
+                                legacy_object_path("acked", event_id, created_utc))
 
     def put_quarantine(self, event_id: str, created_utc: str,
                        reason: Dict[str, Any]) -> str:
-        return self._write_once(object_path("silt", event_id, created_utc), reason)
+        return self._write_once(object_path("silt", event_id, created_utc), reason,
+                                legacy_object_path("silt", event_id, created_utc))
 
     def _iter(self, prefix: str) -> Iterator[Path]:
         base = self.root / prefix
@@ -96,10 +116,15 @@ class LocalDamStore(DamStore):
         return out
 
     def is_acked(self, event_id: str, created_utc: str) -> bool:
-        return (self.root / object_path("acked", event_id, created_utc)).exists()
+        return self._exists("acked", event_id, created_utc)
 
     def is_quarantined(self, event_id: str, created_utc: str) -> bool:
-        return (self.root / object_path("silt", event_id, created_utc)).exists()
+        return self._exists("silt", event_id, created_utc)
+
+    def _exists(self, prefix: str, event_id: str, created_utc: str) -> bool:
+        """True if the object is present under either spelling."""
+        return ((self.root / object_path(prefix, event_id, created_utc)).exists()
+                or (self.root / legacy_object_path(prefix, event_id, created_utc)).exists())
 
 
 class HFDamStore(DamStore):
