@@ -11,8 +11,18 @@ from typing import Optional
 
 # Configuration
 def get_history_db_path() -> Path:
-    """Gets the path to the history database in the active vault."""
-    from . import core
+    """Gets the path to the history database in the active vault.
+
+    Snapshot mode redirects telemetry to ephemeral local disk: the vault is a
+    read-only artifact on a network mount, and history is the one writer that
+    would otherwise still touch it.
+    """
+    from . import core, snapshot_mode
+    if snapshot_mode.enabled():
+        import tempfile
+        ep = Path(tempfile.gettempdir()) / "nougen_snapshot_history"
+        ep.mkdir(parents=True, exist_ok=True)
+        return ep / "history.db"
     vault = core.active_vault_dir()
     vault.mkdir(parents=True, exist_ok=True, mode=0o700)
     return vault / "history.db"
@@ -23,6 +33,7 @@ def get_history_connection():
     db_path = get_history_db_path()
     conn = sqlite3.connect(str(db_path), timeout=10.0)
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=10000;")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -96,6 +107,10 @@ def log_event(shard_id: int, db_index: int, event_type: str,
     # was misread as "FTS unavailable" and scrambled retrieval ordering.
     conn = None
     try:
+        # Same writer lock as log_events: every in-process writer serializes
+        # here so telemetry never contends with itself on sqlite's single
+        # writer slot. [codex finding, 2026-08-30]
+        _writer_lock().acquire()
         # Lazy init to prevent side-effects on import
         if not get_history_db_path().exists():
             init_history_db()
@@ -108,8 +123,68 @@ def log_event(shard_id: int, db_index: int, event_type: str,
     except sqlite3.Error as exc:
         # Module 10: Graceful Degradation (Log failure but don't crash main memory).
         # Write to stderr: a stray stdout line corrupts the MCP stdio JSON-RPC stream.
-        print(f"[Warning] Failed to log history event: {exc}", file=sys.stderr)
+        # "unable to open database file" here is the descriptor ceiling, not a
+        # broken history DB (phoebus logged it 1,698 times in one day at
+        # exactly 256 open files). Say what the process holds so the line
+        # diagnoses itself instead of pointing at the wrong file.
+        from . import fd_budget  # pylint: disable=import-outside-toplevel
+        print(f"[Warning] Failed to log history event: {exc} "
+              f"(open descriptors: {fd_budget.open_fd_count()})", file=sys.stderr)
     finally:
+        _writer_lock().release()
+        if conn is not None:
+            conn.close()
+
+
+import threading as _threading
+
+_WRITER_LOCK = _threading.Lock()  # eager: lazy init of a lock is itself a race
+
+
+def _writer_lock():
+    return _WRITER_LOCK
+
+
+def log_events(events: list):
+    """Batch-writes multiple events in a single transaction.
+
+    One connection + commit for the whole batch: the per-row log_event() above
+    costs an open+INSERT+commit+close per call, and retrieval was paying ~360
+    of those per recall (measured 2026-08-30). Batch writers are serialized
+    in-process (parallel grid scans all land here at once; letting them pile
+    onto sqlite's single-writer lock turned telemetry into "database is
+    locked" noise); cross-process contention is handled by busy_timeout.
+    Degrades gracefully exactly like log_event.
+    """
+    if not events:
+        return
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    rows = []
+    for ev in events:
+        if len(ev) == 3:
+            sid, db_idx, ev_type = ev
+            rows.append((sid, db_idx, ev_type, None, None, timestamp, "{}"))
+        elif len(ev) == 6:
+            sid, db_idx, ev_type, old_s, new_s, meta = ev
+            rows.append((sid, db_idx, ev_type, old_s, new_s, timestamp, json.dumps(meta or {})))
+        else:
+            rows.append((*ev[:5], timestamp, json.dumps(ev[5] if len(ev) > 5 else {})))
+
+    conn = None
+    try:
+        _writer_lock().acquire()
+        if not get_history_db_path().exists():
+            init_history_db()
+        conn = get_history_connection()
+        conn.executemany("""
+            INSERT INTO shard_events (shard_id, db_index, event_type, old_score, new_score, timestamp, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, rows)
+        conn.commit()
+    except sqlite3.Error as exc:
+        print(f"[Warning] Failed to log history events batch: {exc}", file=sys.stderr)
+    finally:
+        _writer_lock().release()
         if conn is not None:
             conn.close()
 

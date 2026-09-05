@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import errno
 import json
 import os
 import re
@@ -24,6 +25,36 @@ OWNER_TENANT_ID = "owner"
 
 class TenantRegistryError(ValueError):
     """The configured registry is unsafe or malformed."""
+
+
+class RegistryUnreadableError(TenantRegistryError):
+    """The registry could not be READ — a transient local resource failure.
+
+    Deliberately a subclass, so every existing `except TenantRegistryError`
+    keeps catching it and no caller changes behaviour by accident. What it adds
+    is the ability to tell two categorically different things apart:
+
+      * malformed/unsafe registry -> a configuration fault. Operator must fix
+        the file. Retrying is pointless.
+      * unreadable registry       -> this box ran out of a local resource
+        (descriptors, memory). The config is fine. Retrying later works.
+
+    Measured on phoebus 2026-09-04: the node exhausted its 256-descriptor
+    launchd limit, could not open tenants.json, and returned
+    `503 {"detail":"Tenant registry is invalid."}` on every data endpoint —
+    byte-identical to a node with no token configured. Peers recorded it as
+    unauthenticated. /health stayed 200 throughout, because it never opens the
+    registry. The node was serving a lie about its own configuration for as
+    long as the pressure lasted.
+    """
+
+    #: errnos that mean "the box is out of something", not "the file is wrong".
+    TRANSIENT_ERRNOS = frozenset({
+        errno.EMFILE,   # per-process descriptor limit
+        errno.ENFILE,   # system-wide descriptor table full
+        errno.ENOMEM,   # out of memory
+        errno.ENOSPC,   # no space left
+    })
 
 
 @dataclass(frozen=True)
@@ -85,7 +116,16 @@ def load_registry(path: Optional[Path] = None) -> list[TenantRecord]:
         raw = json.loads(registry_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return []
-    except (OSError, json.JSONDecodeError) as exc:
+    except OSError as exc:
+        # Out of descriptors is not a malformed registry. Conflating them is
+        # what let a resource failure impersonate an auth failure.
+        if exc.errno in RegistryUnreadableError.TRANSIENT_ERRNOS:
+            raise RegistryUnreadableError(
+                f"cannot read tenant registry {registry_path}: {exc.strerror} "
+                f"(errno {exc.errno}) — local resource exhaustion, not a "
+                "configuration fault") from exc
+        raise TenantRegistryError(f"cannot load tenant registry {registry_path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
         raise TenantRegistryError(f"cannot load tenant registry {registry_path}: {exc}") from exc
 
     records_raw = raw.get("tenants") if isinstance(raw, dict) else raw

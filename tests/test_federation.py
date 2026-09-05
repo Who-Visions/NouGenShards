@@ -11,7 +11,7 @@ def _patch_local(monkeypatch):
     monkeypatch.setattr(
         federation.core,
         "reciprocal_rank_fusion",
-        lambda lists, k=60: [s for sub in lists for s in sub],
+        lambda lists, k=60, weights=None: [s for sub in lists for s in sub],
     )
     monkeypatch.setattr(federation.keymaker, "list_external_dbs",
                         lambda: [{"id": 1, "name": "ext"}])
@@ -56,3 +56,102 @@ def test_both_remotes_fail_local_survives(monkeypatch):
 
     results = federation.federated_retrieve("q", limit=5)
     assert [r["id"] for r in results] == ["local_1"]
+
+
+def test_a_lane_that_misses_the_deadline_is_recorded_not_silent(monkeypatch):
+    """A skipped lane must be observable to the caller, not only to our logs.
+
+    Measured on phoebus 2026-09-04: a recall that overran
+    NOUGEN_RECALL_DEADLINE_S returned HTTP 200 with a 2-byte body. The lane
+    timeout was caught, logged, and converted to that lane's empty default,
+    which merges exactly like a lane that genuinely matched nothing. Status
+    said healthy, latency said slow, and nothing anywhere said "this answer is
+    missing shards" - silent recall loss no caller could detect in principle.
+
+    The per-store layer already got this right (a timed-out store is reported
+    errored, never silently skipped); this is the same rule one level up.
+    """
+    _patch_local(monkeypatch)
+    monkeypatch.setenv("NOUGEN_RECALL_DEADLINE_S", "0.15")
+
+    import time
+
+    def slow(*a, **k):
+        time.sleep(5)
+        return []
+
+    monkeypatch.setattr(federation, "query_external_dbs", slow)
+    monkeypatch.setattr(federation, "query_cloud_shards", slow)
+
+    report = {}
+    federation.federated_retrieve("q", limit=5, sweep_report=report)
+
+    assert report.get("deadline_exceeded") is True
+    assert report.get("deadline_s") == 0.15
+    # The lanes that were dropped are named, so a caller can say which corpus
+    # is missing rather than only that something is.
+    assert set(report.get("lanes_timed_out", [])) & {"external", "cloud"}
+
+
+def test_no_deadline_key_is_set_when_every_lane_answers(monkeypatch):
+    """The flag must mean something. Setting it unconditionally would make a
+    healthy recall indistinguishable from a degraded one all over again."""
+    _patch_local(monkeypatch)
+    monkeypatch.setattr(federation, "query_external_dbs", lambda *a, **k: [])
+    monkeypatch.setattr(federation, "query_cloud_shards", lambda *a, **k: [])
+
+    report = {}
+    federation.federated_retrieve("q", limit=5, sweep_report=report)
+
+    assert "deadline_exceeded" not in report
+    assert "lanes_timed_out" not in report
+
+
+def test_sweep_report_stays_optional(monkeypatch):
+    """Every existing caller passes nothing; a missing report must not raise."""
+    _patch_local(monkeypatch)
+    monkeypatch.setenv("NOUGEN_RECALL_DEADLINE_S", "0.15")
+
+    import time
+
+    def slow(*a, **k):
+        time.sleep(5)
+        return []
+
+    monkeypatch.setattr(federation, "query_external_dbs", slow)
+    monkeypatch.setattr(federation, "query_cloud_shards", slow)
+
+    results = federation.federated_retrieve("q", limit=5)
+    assert any(r["id"] == "local_1" for r in results)
+
+
+def test_each_lane_reports_its_own_duration_not_the_collection_order(monkeypatch):
+    """Lanes are collected in a fixed order, so measuring elapsed at collection
+    time reports when the SLOWEST lane resolved, for every lane.
+
+    Measured on the live node 2026-09-04: all four lanes read "20.19s" when
+    only `local` was slow and the other three had finished in well under a
+    second. A fast lane must not inherit a slow lane's number — that is the
+    same 'the summary lied while the data was fine' failure this
+    instrumentation exists to prevent.
+    """
+    import time
+
+    _patch_local(monkeypatch)
+
+    def slow_external(*a, **k):
+        time.sleep(1.0)
+        return []
+
+    monkeypatch.setattr(federation, "query_external_dbs", slow_external)
+    monkeypatch.setattr(federation, "query_cloud_shards", lambda *a, **k: [])
+    monkeypatch.setenv("NOUGEN_RECALL_DEADLINE_S", "30")
+
+    report = {}
+    federation.federated_retrieve("q", limit=5, sweep_report=report)
+    lanes = report["lanes"]
+
+    assert lanes["external"]["elapsed_s"] >= 1.0
+    # local did nothing slow; it must not be charged for external's second.
+    assert lanes["local"]["elapsed_s"] < 0.9, lanes
+    assert lanes["local"]["status"] == "ok"

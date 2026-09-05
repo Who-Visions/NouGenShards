@@ -7,15 +7,20 @@ import sys
 import json
 import logging
 import hashlib
+import sqlite3
+import re
 import datetime
 import contextlib
+import functools
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 from fastapi import FastAPI, Header, HTTPException, Depends, Response, Query
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import gradio as gr
 import subprocess
+import time
 
 
 # Add src to path for absolute imports
@@ -28,6 +33,7 @@ if os.environ.get("SPACE_ID"):
 
 from nougen_shards import bind_probe, core, history, mcp_oauth, tenants
 from nougen_shards.federation import federated_retrieve
+from nougen_shards import fd_budget
 from nougen_shards.brain_scan import scan_environment
 
 NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN") or os.environ.get("SHARD_GATEWAY_TOKEN")
@@ -39,54 +45,195 @@ NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN") or os.environ.get("SHARD_GATEWAY_T
 # use the node's memory directly. Deliberately exposes ONLY the memory tools:
 # execute_sandboxed_code and brain scan/import stay stdio-local - remote code
 # execution and container-filesystem recon do not belong on a network surface.
-from mcp.server.fastmcp import FastMCP  # noqa: E402
+from mcp.server.mcpserver import MCPServer  # noqa: E402
 from mcp.server.transport_security import TransportSecuritySettings  # noqa: E402
 
-node_mcp = FastMCP(
+# mcp 2.x renamed FastMCP to MCPServer and moved the HTTP transport options
+# (stateless_http, json_response, streamable_http_path, transport_security)
+# off the constructor and onto streamable_http_app() - they are passed at the
+# _mcp_asgi call below, not here.
+node_mcp = MCPServer(
     "NouGenShards",
     instructions=(
         "Persistent memory node. Use recall_memory before reasoning from "
         "scratch and capture_experience to store durable learnings."
     ),
-    # Stateless JSON mode: every request is self-contained, which suits a
-    # Space that may cold-start between calls.
-    stateless_http=True,
-    json_response=True,
-    streamable_http_path="/",
-    # DNS-rebinding protection is a defense for loopback-bound servers whose
-    # only gate is network locality; this endpoint is explicitly token-gated
-    # (see _TokenGatedMCP) and served from a public host whose Host header
-    # varies (hf.space, custom domains), so host allow-listing would only
-    # break legitimate clients without adding security.
-    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 
+def _offloaded(fn):
+    """Run a blocking tool body in a worker thread instead of the event loop.
+
+    FastMCP calls a SYNC tool function directly inside its async handler
+    (func_metadata.call_fn_with_arg_validation ends in a bare `return
+    fn(**args)` with no threadpool), so a sync tool owns the event loop for its
+    whole duration -- nothing else on that connection can be read, answered, or
+    streamed until it returns. Measured on phoebus: three concurrent recalls
+    took 63s EACH through the node, while the same three ran in 0.85s wall as
+    plain threads in-process. The retrieval code was never the bottleneck; the
+    loop being held was.
+
+    Offloading is safe by precedent rather than by hope: the sync-def FastAPI
+    endpoints (POST /search and friends) already run these same bodies in
+    Starlette's threadpool today, so nothing here newly acquires a thread it
+    was not already using.
+
+    functools.wraps keeps __name__, __doc__ and __annotations__, which is what
+    FastMCP reads to build the tool name, description and argument schema --
+    inspect.signature follows __wrapped__, so the schema is unchanged.
+    """
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        return await run_in_threadpool(fn, *args, **kwargs)
+    return wrapper
+
+
 @node_mcp.tool()
+@_offloaded
 def recall_memory(query: str, limit: int = 5) -> list:
     """Search the memory substrate. Returns ranked shards (fuzzy recall
-    included when exact matching misses)."""
+    included when exact matching misses). Long shard bodies are returned as
+    SNIPPETS with a truncation marker naming get_shard(shard_id, db_index) -
+    call that for a full body. Held context is what recall costs a caller
+    (98%+ of fleet spend is cache re-read, ~1.5% is output), so the default
+    injects handles-plus-snippets, not full documents."""
     # Federated for the same reason as POST /search below: a remote MCP client
     # should not get a narrower corpus than the local CLI.
-    results = federated_retrieve(query, limit=max(1, min(limit, 20)))
-    return [{k: v for k, v in r.items() if not isinstance(v, (bytes, bytearray))}
-            for r in results]
+    sweep_report: dict = {}
+    results = federated_retrieve(query, limit=max(1, min(limit, 20)),
+                                 sweep_report=sweep_report)
+    out = [_slim_shard(r) for r in results]
+    # Same coverage trailer POST /search appends, for the same reason: this is
+    # the lane the fleet's connectors actually recall through, and an empty
+    # list here reads to an agent as "the substrate holds nothing on this".
+    # A lane dropped by the deadline must not be able to say that.
+    if sweep_report.get("lanes_timed_out"):
+        out.append(_deadline_trailer(sweep_report))
+    return out
+
+
+# A stored timestamp is only usable for era math if it is ISO-shaped.
+# Anchored at the start only: full ISO strings carry time and offset after the
+# month, and this is the exact prefix the window contract compares on.
+_ISO_MONTH_RE = re.compile(r"\d{4}-\d{2}")
+
+
+def _deadline_trailer(sweep_report: dict) -> dict:
+    """Shard-shaped marker saying an answer is INCOMPLETE rather than empty.
+
+    Shaped like a shard (score 0, distinct event_type) so list-consuming
+    clients keep parsing instead of type-erroring on a dict they did not
+    expect. Absent entirely on a clean sweep, so the common path is unchanged.
+    """
+    dropped = sweep_report.get("lanes_timed_out") or []
+    return {
+        "id": "federation_meta",
+        "event_type": "FEDERATION_STATUS",
+        "title": (f"recall INCOMPLETE: {len(dropped)} lane(s) "
+                  f"({', '.join(dropped)}) missed the "
+                  f"{sweep_report.get('deadline_s')}s deadline — absence in "
+                  "these results is NOT evidence of absence in the substrate"),
+        "content": json.dumps({
+            "lanes_timed_out": dropped,
+            "deadline_s": sweep_report.get("deadline_s"),
+            "deadline_exceeded": bool(sweep_report.get("deadline_exceeded")),
+            "lanes": sweep_report.get("lanes"),
+        }),
+        "tags": json.dumps(["federation_status"]),
+        "final_score": 0.0,
+        "_db_index": "federation_meta",
+    }
+
+
+def _recall_snippet_chars() -> int:
+    """Snippet budget per recalled shard body. Env-first; 0 disables slimming."""
+    raw = os.environ.get("NOUGEN_RECALL_SNIPPET_CHARS", "")
+    try:
+        n = int(raw) if raw.strip() else 700
+    except ValueError:
+        logger.warning("NOUGEN_RECALL_SNIPPET_CHARS=%r invalid; using 700", raw)
+        n = 700
+    return max(0, n)
+
+
+def _slim_shard(r: dict) -> dict:
+    """Strip bytes fields and truncate long bodies to a snippet + fetch handle.
+
+    Every character recall injects is held and re-read by the caller for the
+    rest of its session - measured fleet-wide at ~66x the cost of the same
+    character as output. Recall therefore ships a snippet with an explicit
+    pointer to get_shard for the full body, instead of the whole document.
+    """
+    out = {k: v for k, v in r.items() if not isinstance(v, (bytes, bytearray))}
+    budget = _recall_snippet_chars()
+    body = out.get("content")
+    if budget and isinstance(body, str) and len(body) > budget:
+        clipped = body[:budget].rsplit(" ", 1)[0] if " " in body[:budget] else body[:budget]
+        out["content"] = (
+            f"{clipped} ... [snippet: {len(body) - len(clipped)} more chars in the "
+            f"full shard - get_shard(shard_id={out.get('id', '?')}, "
+            f"db_index={out.get('_db_index', '?')})]"
+        )
+        out["content_truncated"] = True
+        out["content_full_chars"] = len(body)
+    return out
 
 
 @node_mcp.tool()
+@_offloaded
+def get_shard(shard_id: int, db_index: int | None = None) -> dict:
+    """Fetch ONE shard's full body by id - the on-demand counterpart to
+    recall_memory's snippets. Pass the db_index a recall result carried
+    (_db_index); omit it to search all grid databases for the id."""
+    indexes = [db_index] if db_index else list(range(1, core.MAX_DB_COUNT + 1))
+    for i in indexes:
+        if not core.get_db_path(i).exists():
+            continue
+        conn = None
+        try:
+            conn = core.get_connection(i)
+            row = conn.execute(
+                "SELECT * FROM shards WHERE id = ?", (shard_id,)).fetchone()
+            if row is None:
+                continue
+            item = core.hydrate(dict(row))
+            item["_db_index"] = i
+            return {k: v for k, v in item.items()
+                    if not isinstance(v, (bytes, bytearray))}
+        except Exception as exc:  # sqlite3.DatabaseError et al - one bad DB must not kill the lookup
+            logger.error("get_shard: DB %s unreadable, skipping: %s: %s",
+                         i, type(exc).__name__, exc)
+            continue
+        finally:
+            if conn is not None:
+                conn.close()
+    return {"found": False, "shard_id": shard_id,
+            "searched": indexes,
+            "hint": "id not present (or its DB is unreadable); ids are per-DB - "
+                    "pass the _db_index from the recall result"}
+
+
+@node_mcp.tool()
+@_offloaded
 def capture_experience(title: str, content: str, event_type: str = "KNOWLEDGE",
                        tags: list[str] | None = None,
                        original_timestamp: str | None = None) -> dict:
     """Store a unit of experience as a shard (deduplicated by content).
 
     `original_timestamp` (ISO-8601) stamps migrated content at its true era
-    instead of capture time; invalid values fall back to now."""
-    ok = core.capture(event_type, title, content, tags=tags,
-                      original_timestamp=original_timestamp)
-    return {"captured": bool(ok)}
+    instead of capture time; invalid values fall back to now.
+
+    The answer is always branchable: `captured` true/false, plus `shard_id` and
+    `db_index` when a row was written, or `reason`/`error` when none was. A
+    genuine write fault is not reported here at all - it raises, and the client
+    sees a tool error rather than a quiet false."""
+    result = core.capture(event_type, title, content, tags=tags,
+                          original_timestamp=original_timestamp)
+    return dict(result)
 
 
 @node_mcp.tool()
+@_offloaded
 def mark_utility(shard_id: int, worked: bool, db_index: int | None = None) -> dict:
     """Feed back whether a recalled shard was useful; adjusts its ranking prior."""
     core.mark_shard(shard_id, worked=worked, db_index=db_index)
@@ -94,6 +241,7 @@ def mark_utility(shard_id: int, worked: bool, db_index: int | None = None) -> di
 
 
 @node_mcp.tool()
+@_offloaded
 def node_status() -> dict:
     """Node health: shard count and storage mode."""
     return {"status": "ignited",
@@ -242,6 +390,7 @@ def _federated_coverage() -> dict | None:
 
 
 @node_mcp.tool()
+@_offloaded
 def substrate_coverage() -> dict:
     """What this node actually holds, so a recall MISS can be told apart from a
     PARTIAL MOUNT.
@@ -256,6 +405,7 @@ def substrate_coverage() -> dict:
     holes rather than infer them."""
     from collections import Counter
     per_month = Counter()
+    malformed = 0
     lo, hi, total = None, None, 0
     for i in range(1, core.MAX_DB_COUNT + 1):
         if not core.get_db_path(i).exists():
@@ -267,8 +417,21 @@ def substrate_coverage() -> dict:
         try:
             for (ts,) in conn.execute("SELECT timestamp FROM shards WHERE timestamp IS NOT NULL"):
                 ts = str(ts)
-                per_month[ts[:7]] += 1
                 total += 1
+                # Not every stored timestamp is ISO. 15 legacy rows on the
+                # phoebus grid hold Unix epoch floats ("1765164383.78") from a
+                # direct-write path that predates capture()'s normalisation.
+                # Two things went wrong with them here, and only one was loud:
+                #   * the gap walk below did `map(int, months[0].split("-"))`
+                #     and raised ValueError, 500-ing this endpoint;
+                #   * quietly, "1765..." sorts BEFORE "2026-..." lexicographically,
+                #     so a single epoch row became `span.earliest` and this
+                #     endpoint reported a substrate reaching back to year 1765.
+                # The crash was the mercy: it stopped us believing the span.
+                if not _ISO_MONTH_RE.match(ts):
+                    malformed += 1
+                    continue
+                per_month[ts[:7]] += 1
                 if lo is None or ts < lo:
                     lo = ts
                 if hi is None or ts > hi:
@@ -300,6 +463,12 @@ def substrate_coverage() -> dict:
             "span": {"earliest": lo, "latest": hi},
             "months": dict(sorted(per_month.items())),
             "empty_months": gaps,
+            # Rows counted in total_shards but excluded from span/months/gaps
+            # because their timestamp is not ISO. Reported rather than dropped:
+            # these shards are real content that no era-bounded query can
+            # reach, and a caller comparing total_shards against the month
+            # histogram must be able to see why they disagree.
+            "malformed_timestamps": malformed,
             # Cache key carries the active vault: a bare "substrate" key is
             # module-level state shared across tenants, so it would serve one
             # tenant's counts and DB detail to another.
@@ -313,6 +482,7 @@ def substrate_coverage() -> dict:
 
 
 @node_mcp.tool()
+@_offloaded
 def recall_window(query: str = "", since: str | None = None,
                   until: str | None = None, limit: int = 10) -> list:
     """Browse the vault by ERA, newest first -- the date-filtered counterpart to
@@ -378,6 +548,7 @@ def _resolve_shard(shard_id: int, db_index: Optional[int] = None,
 
 
 @node_mcp.tool()
+@_offloaded
 def shard_amend(shard_id: int, note: str, db_index: int | None = None,
                 confirm_title: str | None = None) -> dict:
     """Append a dated note to an existing shard, preserving everything already
@@ -402,6 +573,7 @@ def shard_amend(shard_id: int, note: str, db_index: int | None = None,
 
 
 @node_mcp.tool()
+@_offloaded
 def shard_retract(shard_id: int, reason: str, db_index: int | None = None,
                   confirm_title: str | None = None) -> dict:
     """Retract a shard WITHOUT erasing it: prefix its title [RETRACTED], append
@@ -446,6 +618,7 @@ def shard_retract(shard_id: int, reason: str, db_index: int | None = None,
 
 
 @node_mcp.tool()
+@_offloaded
 def shard_forget(shard_id: int, confirm_title: str, db_index: int | None = None) -> dict:
     """PERMANENTLY delete a shard. Irreversible -- there is no undo and no
     tombstone; the row and its FTS index entry are gone.
@@ -468,6 +641,7 @@ def shard_forget(shard_id: int, confirm_title: str, db_index: int | None = None)
 
 
 @node_mcp.tool()
+@_offloaded
 def vault_put(key: str, value: str) -> dict:
     """Write a secret into the keymaker vault. WRITE-ONLY BY DESIGN.
 
@@ -490,6 +664,7 @@ def vault_put(key: str, value: str) -> dict:
 
 
 @node_mcp.tool()
+@_offloaded
 def vault_list() -> list:
     """Secret NAMES and fingerprints in the vault -- never values.
 
@@ -514,7 +689,19 @@ def vault_list() -> list:
     return out
 
 
-_mcp_asgi = node_mcp.streamable_http_app()
+_mcp_asgi = node_mcp.streamable_http_app(
+    # Stateless JSON mode: every request is self-contained, which suits a
+    # Space that may cold-start between calls.
+    stateless_http=True,
+    json_response=True,
+    streamable_http_path="/",
+    # DNS-rebinding protection is a defense for loopback-bound servers whose
+    # only gate is network locality; this endpoint is explicitly token-gated
+    # (see _TokenGatedMCP) and served from a public host whose Host header
+    # varies (hf.space, custom domains), so host allow-listing would only
+    # break legitimate clients without adding security.
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+)
 
 
 def _seed_upstreams() -> list:
@@ -576,8 +763,55 @@ def _registered_upstreams() -> list:
         return []
 
 
+def _warmup_enabled() -> bool:
+    return os.environ.get("NOUGEN_WARMUP", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _start_recall_warmup() -> None:
+    """Prime the per-process vector cache before the first real recall.
+
+    core.retrieve() builds its vector cache lazily. On a large grid that first
+    build can take longer than the federation recall deadline
+    (NOUGEN_RECALL_DEADLINE_S, default 20s), so after every node start the
+    FIRST recall silently dropped the local grid lane and answered from the
+    other lanes only, and a fan-out peer missed its budget for the same reason.
+    Warming on a daemon thread keeps startup non-blocking. NOUGEN_WARMUP=0
+    disables it; an empty grid is skipped so a warm-up never creates DB files.
+    """
+    if not _warmup_enabled():
+        return
+    if not any(core.get_db_path(i).exists() for i in range(1, core.MAX_DB_COUNT + 1)):
+        return
+    import threading as _threading
+
+    def _run():
+        started = time.perf_counter()
+        try:
+            core.retrieve("warmup", limit=1, domain_key="*")
+            logging.getLogger(__name__).info("recall warm-up done in %.1fs", time.perf_counter() - started)
+        except Exception as exc:  # pylint: disable=broad-except
+            logging.getLogger(__name__).warning("recall warm-up skipped: %s: %s", type(exc).__name__, exc)
+
+    _threading.Thread(target=_run, name="nougen-recall-warmup", daemon=True).start()
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
+    # Descriptor headroom FIRST: launchd starts this process with a soft
+    # open-files limit of 256 and an unlimited hard limit. One recall opens
+    # ~40 files; six concurrent fan-outs hit 256 exactly, every further open()
+    # fails, the vector cache rebuilds on each request and the local lane
+    # misses its deadline on every query (phoebus, 2026-09-04). The process may
+    # raise its own soft limit, so it does - before the warm-up opens anything.
+    fd_budget.ensure_fd_headroom()
+    _start_recall_warmup()
+    # Heal the grid before anything scans it: malformed DB files are renamed
+    # aside (kept for forensics) and recreated empty, so healthy indices and
+    # their rows survive instead of a whole-volume wipe. Gated by
+    # NOUGEN_QUARANTINE_MALFORMED_ON_BOOT; see core.quarantine_malformed_dbs.
+    for q in core.quarantine_malformed_dbs():
+        logger.warning("boot quarantine: grid DB %(index)s -> %(moved_to)s "
+                       "(%(reason)s)", q)
     _seed_upstreams()
     # The streamable-HTTP session manager needs a running task group.
     async with node_mcp.session_manager.run():
@@ -609,6 +843,11 @@ app = FastAPI(
     redoc_url="/redoc" if _serve_docs else None,
     openapi_url="/openapi.json" if _serve_docs else None,
 )
+try:
+    from space_router import router as _inference_router
+    app.include_router(_inference_router)
+except Exception as _router_err:
+    print(f"[WARN] Inference router not mounted: {_router_err}", file=sys.stderr)
 if not _serve_docs:
     print(
         "[WARN] Interactive API docs not mounted: host is network-exposed "
@@ -639,26 +878,60 @@ _BAD_TOKEN_DETAIL = (
 def _credentials_configured() -> bool:
     try:
         return tenants.credentials_configured(NODE_TOKEN)
+    except tenants.RegistryUnreadableError as exc:
+        # Distinct from a malformed registry ON PURPOSE. "Tenant registry is
+        # invalid" is a claim about configuration; this box is simply out of a
+        # local resource and its config is fine. A peer that cannot tell those
+        # apart marks a healthy node as unauthenticated.
+        logger.error("tenant registry unreadable (resource exhaustion): %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=("Local resource exhaustion: the tenant registry could not be "
+                    "read. This node's credentials are configured; it is "
+                    "temporarily unable to serve. Retry."),
+            headers={"X-NouGen-Failure-Class": "local_resource_exhaustion",
+                     "Retry-After": "30"},
+        ) from exc
     except tenants.TenantRegistryError as exc:
         logger.error("tenant registry rejected: %s", exc)
-        raise HTTPException(status_code=503, detail="Tenant registry is invalid.") from exc
+        raise HTTPException(
+            status_code=503, detail="Tenant registry is invalid.",
+            headers={"X-NouGen-Failure-Class": "registry_invalid"},
+        ) from exc
 
 
 def _resolve_tenant_credential(supplied: Optional[str]) -> Optional[tenants.Tenant]:
     try:
         return tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+    except tenants.RegistryUnreadableError as exc:
+        # Distinct from a malformed registry ON PURPOSE. "Tenant registry is
+        # invalid" is a claim about configuration; this box is simply out of a
+        # local resource and its config is fine. A peer that cannot tell those
+        # apart marks a healthy node as unauthenticated.
+        logger.error("tenant registry unreadable (resource exhaustion): %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=("Local resource exhaustion: the tenant registry could not be "
+                    "read. This node's credentials are configured; it is "
+                    "temporarily unable to serve. Retry."),
+            headers={"X-NouGen-Failure-Class": "local_resource_exhaustion",
+                     "Retry-After": "30"},
+        ) from exc
     except tenants.TenantRegistryError as exc:
         logger.error("tenant registry rejected: %s", exc)
-        raise HTTPException(status_code=503, detail="Tenant registry is invalid.") from exc
+        raise HTTPException(
+            status_code=503, detail="Tenant registry is invalid.",
+            headers={"X-NouGen-Failure-Class": "registry_invalid"},
+        ) from exc
 
 
-def verify_token(
-    x_ngs_token: Optional[str] = Header(None, alias="X-NGS-Token"),
-    authorization: Optional[str] = Header(None, alias="Authorization"),
-    shard_gateway_token: Optional[str] = Header(None, alias="Shard_Gateway_Token"),
-    shard_gateway_token_dash: Optional[str] = Header(None, alias="Shard-Gateway-Token"),
-    x_shard_gateway_token: Optional[str] = Header(None, alias="X-Shard-Gateway-Token"),
-    token: Optional[str] = Query(None),
+def _verify_token_sync(
+    x_ngs_token: Optional[str] = None,
+    authorization: Optional[str] = None,
+    shard_gateway_token: Optional[str] = None,
+    shard_gateway_token_dash: Optional[str] = None,
+    x_shard_gateway_token: Optional[str] = None,
+    token: Optional[str] = None,
 ) -> tenants.Tenant:
     if not _credentials_configured():
         raise HTTPException(status_code=503, detail="Node write-auth not configured.")
@@ -674,6 +947,20 @@ def verify_token(
     if tenant is None:
         raise HTTPException(status_code=401, detail=_BAD_TOKEN_DETAIL)
     return tenant
+
+
+async def verify_token(
+    x_ngs_token: Optional[str] = Header(None, alias="X-NGS-Token"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    shard_gateway_token: Optional[str] = Header(None, alias="Shard_Gateway_Token"),
+    shard_gateway_token_dash: Optional[str] = Header(None, alias="Shard-Gateway-Token"),
+    x_shard_gateway_token: Optional[str] = Header(None, alias="X-Shard-Gateway-Token"),
+    token: Optional[str] = Query(None),
+) -> tenants.Tenant:
+    """Async so auth never queues behind the shared sync-endpoint threadpool
+    (registry read + sha256 are cheap enough for the event loop)."""
+    return _verify_token_sync(x_ngs_token, authorization, shard_gateway_token,
+                              shard_gateway_token_dash, x_shard_gateway_token, token)
 
 
 async def tenant_vault_context(tenant: tenants.Tenant = Depends(verify_token)):
@@ -719,6 +1006,36 @@ def _substrate_coverage() -> dict:
 
     complete = len(mounted) == expected
     upstreams = _registered_upstreams()
+
+    # recall_trustworthy used to be `complete or bool(upstreams)`, which called
+    # recall trustworthy while a database was CORRUPT - the single most
+    # dangerous answer in this stack, because this tool's own description tells
+    # callers to check it "before concluding a recall miss means the memory does
+    # not exist". On 2026-08-29 it answered true with index 5 malformed and both
+    # ranked read paths returning zero rows, so anyone who did the responsible
+    # thing and checked coverage first was told to conclude data loss.
+    #
+    # An errored database is a fault, never a thin-cache-in-front-of-an-upstream
+    # situation: its rows are dark and no upstream flag changes that. And the
+    # upstream escape hatch itself was resting on an unchecked premise - this
+    # function never probes whether the upstream ANSWERS. The one configured
+    # that day was returning 530. So say which case it is instead of collapsing
+    # all of them into one boolean.
+    if errored:
+        trustworthy = False
+        reason = ("databases_errored is non-empty: those shards are unreadable, "
+                  "so a recall miss cannot distinguish absent from unreadable")
+    elif complete:
+        trustworthy = True
+        reason = "every expected database is mounted and readable"
+    elif upstreams:
+        trustworthy = True
+        reason = ("local grid is incomplete but read-through is configured; "
+                  "NOTE this does not verify the upstream actually answers")
+    else:
+        trustworthy = False
+        reason = "local grid is incomplete and no read-through upstream is configured"
+
     return {
         "complete": complete,
         "databases_expected": expected,
@@ -733,8 +1050,10 @@ def _substrate_coverage() -> dict:
         "upstreams": upstreams,
         # Recall answers can only be trusted across the part that is mounted -
         # unless an upstream is carrying the corpus, in which case a thin local
-        # grid is expected rather than a fault.
-        "recall_trustworthy": complete or bool(upstreams),
+        # grid is expected rather than a fault. A corrupt database is neither:
+        # see the block above.
+        "recall_trustworthy": trustworthy,
+        "recall_trustworthy_reason": reason,
         "detail": mounted,
     }
 
@@ -749,8 +1068,20 @@ def _total_shards() -> int:
 
 
 @app.get("/health")
-def health(x_ngs_token: str = Header(None)):
-    """Generic readiness when open; tenant-local substrate detail when authed."""
+async def health(x_ngs_token: str = Header(None)):
+    """Generic readiness when open; tenant-local substrate detail when authed.
+
+    async def on purpose (2026-09-01). Every heavy endpoint here (/search,
+    /sync/*, /agent, /dav1d/*) is sync-def, so they all dispatch through the
+    same default anyio threadpool (~40 threads). A handful of wedged /agent
+    or slow federated /search calls exhausts it, and a sync-def /health then
+    QUEUES behind them -- observed at the shards.nougenai.com front door as
+    /health hanging 30-120s with zero bytes while unknown paths 404ed
+    instantly (routing never touches the pool). The unauthenticated probe is
+    pure cheap local reads, so it now runs on the event loop and always
+    answers; only the authed, vault-touching tail goes to the pool, where it
+    may honestly wait its turn.
+    """
     deploy_sha = None
     try:
         with open(".deploy_sha", encoding="utf-8") as f:
@@ -797,8 +1128,18 @@ def health(x_ngs_token: str = Header(None)):
     # not reveal shard counts, database names, or another tenant's path.
     if not x_ngs_token:
         return result
+    return await run_in_threadpool(
+        _health_authed, result, warnings, persistent, x_ngs_token)
 
-    tenant = verify_token(x_ngs_token)
+
+def _health_authed(result: dict, warnings: list, persistent: bool,
+                   x_ngs_token: str) -> dict:
+    """Vault-touching half of /health; runs in the threadpool by design.
+
+    `warnings` is the same list `result["warnings"]` points at, so appends
+    here still land in the response -- same aliasing the inline code relied on.
+    """
+    tenant = _verify_token_sync(x_ngs_token)
     context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
     try:
         # Vault-keyed so the cache cannot hand one tenant another's coverage.
@@ -969,14 +1310,50 @@ def search(req: SearchRequest, response: Response,
     # the corpus the caller must be able to see. Appended as a shard-shaped
     # trailer (score 0, distinct event_type) so list-consuming clients keep
     # parsing; absent entirely on a clean sweep, so the common path is unchanged.
-    if sweep_report.get("errored"):
+    #
+    # A whole LANE dropped by the recall deadline is the same hole one size up,
+    # and until 2026-09-04 it was invisible: measured on phoebus, a recall that
+    # overran the deadline returned HTTP 200 with a 2-byte body — byte-identical
+    # to a genuine "no matches". Callers cannot tell silence from absence, so
+    # every latency and grace-period argument was being conducted on data that
+    # could not distinguish the two. Lane drops therefore raise the same trailer
+    # and are additionally reported in headers, for clients that read the
+    # envelope rather than the rows.
+    lanes = sweep_report.get("lanes") or {}
+    if lanes:
+        # Healthy timings matter as much as failures: a deadline can only be
+        # tuned against the distribution, not against its tail.
+        response.headers["X-NouGen-Lane-Timings"] = ",".join(
+            f"{n}={d['status']}:{d['elapsed_s']}s" for n, d in sorted(lanes.items()))
+    lanes_timed_out = sweep_report.get("lanes_timed_out") or []
+    if lanes_timed_out:
+        response.headers["X-NouGen-Lanes-Timed-Out"] = ",".join(lanes_timed_out)
+        response.headers["X-NouGen-Recall-Deadline-S"] = str(
+            sweep_report.get("deadline_s", ""))
+        # Deliberately set whenever coverage is incomplete, INCLUDING the
+        # non-empty case: a partial answer that looks whole is the same defect
+        # with better camouflage.
+        response.headers["X-NouGen-Degraded"] = "1"
+    if sweep_report.get("errored") or lanes_timed_out:
+        errored = sweep_report.get("errored") or []
+        if lanes_timed_out:
+            title = (f"federation: {len(lanes_timed_out)} lane(s) "
+                     f"({', '.join(lanes_timed_out)}) missed the "
+                     f"{sweep_report.get('deadline_s')}s recall deadline — "
+                     "this answer is INCOMPLETE, not empty")
+        else:
+            title = (f"federation: {len(errored)} store(s) "
+                     "errored or timed out this sweep")
         payload.append({
             "id": "federation_meta",
             "event_type": "FEDERATION_STATUS",
-            "title": (f"federation: {len(sweep_report['errored'])} store(s) "
-                      "errored or timed out this sweep"),
+            "title": title,
             "content": json.dumps({
-                "errored": sweep_report["errored"],
+                "errored": errored,
+                "lanes_timed_out": lanes_timed_out,
+                "lanes": sweep_report.get("lanes"),
+                "deadline_s": sweep_report.get("deadline_s"),
+                "deadline_exceeded": bool(sweep_report.get("deadline_exceeded")),
                 "stores_swept": sweep_report.get("stores_swept"),
                 "tier2": sweep_report.get("tier2"),
                 "tier2_deferred": sweep_report.get("tier2_deferred"),
@@ -991,10 +1368,15 @@ def search(req: SearchRequest, response: Response,
 @app.post("/capture")
 def capture_shard(req: CaptureRequest,
                   _tenant: tenants.Tenant = Depends(tenant_vault_context)):
-    """Single-shard capture for user agents."""
-    ok = core.capture(req.event_type, req.title, req.content, tags=req.tags,
-                      original_timestamp=req.original_timestamp)
-    return {"status": "ok", "captured": bool(ok)}
+    """Single-shard capture for user agents.
+
+    `status` stays "ok" for the HTTP contract; whether a shard was actually
+    written is `captured`, with `shard_id` when it was and `error` when it was
+    not - a caller must never have to guess which of the two happened.
+    """
+    result = core.capture(req.event_type, req.title, req.content, tags=req.tags,
+                          original_timestamp=req.original_timestamp)
+    return {"status": "ok", **dict(result)}
 
 
 @app.post("/sync/push")
@@ -1005,54 +1387,79 @@ def sync_push(req: SyncPushRequest,
 
     count = 0
     skipped = 0
+    errored = 0
     for s in req.shards:
-        title, content = s.get("title"), s.get("content")
-        if not title or not content:
-            skipped += 1
+        # The ENTIRE per-shard body sits in one guard: decrypt, tag parsing,
+        # AND capture. This is the second time this protection ships - #148
+        # added a capture-only guard that a later merge silently dropped, and
+        # the regression resurfaced 2026-08-31 as deterministic 500 cascades
+        # on /sync/push (a row whose ngenc1 body fails cross-machine decrypt
+        # raises BEFORE capture, killing the whole 100-row batch, three
+        # retries each). One bad row is one `errored` tick, never a 500.
+        try:
+            title, content = s.get("title"), s.get("content")
+            if not title or not content:
+                skipped += 1
+                continue
+            sensitivity = s.get("sensitivity") or "normal"
+            # /sync/pull transports encrypted-at-rest bodies as ngenc1
+            # ciphertext. Replicas share the lane data key, so unwrap before
+            # capture() hashes, redacts, embeds and re-encrypts under the
+            # receiving machine's DPAPI wrapper. Treating ciphertext as
+            # ordinary text silently declassifies it and creates a duplicate
+            # whose hash no longer represents the plaintext.
+            if private_vault.should_encrypt(sensitivity) and private_vault.is_encrypted(content):
+                content = private_vault.decrypt_text(content)
+            tags = s.get("tags")
+            if isinstance(tags, str):
+                try:
+                    tags = json.loads(tags)
+                except ValueError:
+                    tags = None
+            emb = s.get("embedding")
+            if emb is not None and not isinstance(emb, list):
+                emb = None
+            ok = core.capture(
+                s.get("event_type") or "KNOWLEDGE", title, content,
+                tags=tags, embedding=emb,
+                domain_key=s.get("domain_key"),
+                density_score=s.get("density_score"),
+                sensitivity=sensitivity,
+                # Bulk ingest must stamp a shard at its TRUE era, exactly as
+                # /capture does. Dropping this silently re-dated every pushed
+                # shard to ingest time -- and because capture() dedups on a
+                # content hash, a re-push with the right date is a no-op, so
+                # the original era was unrecoverable. `timestamp` is the
+                # fallback because /sync/pull exports rows under that key,
+                # which makes pull -> push round-trip era-preserving instead
+                # of flattening history to the migration date.
+                original_timestamp=s.get("original_timestamp") or s.get("timestamp"),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            errored += 1
+            logger.error("sync_push: shard %r failed: %s: %s",
+                         (s.get("title") or "")[:80], type(exc).__name__, exc)
             continue
-        sensitivity = s.get("sensitivity") or "normal"
-        # /sync/pull transports encrypted-at-rest bodies as ngenc1 ciphertext.
-        # Replicas share the lane data key, so unwrap before capture() hashes,
-        # redacts, embeds and re-encrypts under the receiving machine's DPAPI
-        # wrapper. Treating ciphertext as ordinary text silently declassifies it
-        # and creates a duplicate whose hash no longer represents the plaintext.
-        if private_vault.should_encrypt(sensitivity) and private_vault.is_encrypted(content):
-            content = private_vault.decrypt_text(content)
-        tags = s.get("tags")
-        if isinstance(tags, str):
-            try:
-                tags = json.loads(tags)
-            except ValueError:
-                tags = None
-        emb = s.get("embedding")
-        if emb is not None and not isinstance(emb, list):
-            emb = None
-        ok = core.capture(
-            s.get("event_type") or "KNOWLEDGE", title, content,
-            tags=tags, embedding=emb,
-            domain_key=s.get("domain_key"),
-            density_score=s.get("density_score"),
-            sensitivity=sensitivity,
-            # Bulk ingest must stamp a shard at its TRUE era, exactly as
-            # /capture does. Dropping this silently re-dated every pushed shard
-            # to ingest time -- and because capture() dedups on a content hash,
-            # a re-push with the right date is a no-op, so the original era was
-            # unrecoverable. `timestamp` is the fallback because /sync/pull
-            # exports rows under that key, which makes pull -> push round-trip
-            # era-preserving instead of flattening history to the migration date.
-            original_timestamp=s.get("original_timestamp") or s.get("timestamp"),
-        )
         if ok:
             count += 1
         else:
             skipped += 1  # capture() dedups; an already-known shard is a skip
-    return {"status": "ok", "count": count, "skipped": skipped}
+    return {"status": "ok", "count": count, "skipped": skipped, "errored": errored}
 
 
 @app.get("/sync/pull")
-def sync_pull(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
-    """Full export (contract of connectors.cloud.pull_from_cloud)."""
+def sync_pull(response: Response,
+              _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """Full export (contract of connectors.cloud.pull_from_cloud).
+
+    One malformed grid DB must not 500 the whole export: the corruption that
+    makes an index unreadable is precisely when a puller needs everything the
+    OTHER indices still hold. The response stays a bare list (pull_from_cloud's
+    contract); degraded state is surfaced in the X-NGS-Degraded-DBs header and
+    the DB_DEGRADED history event, mirroring core's per-DB scan guard.
+    """
     all_shards = []
+    degraded = []
     for i in range(1, core.MAX_DB_COUNT + 1):
         if not core.get_db_path(i).exists():
             continue
@@ -1068,15 +1475,30 @@ def sync_pull(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
                     except (AttributeError, ValueError, TypeError, UnicodeDecodeError):
                         d["embedding"] = None
                 all_shards.append(d)
+        except (sqlite3.DatabaseError, OSError) as exc:
+            degraded.append(i)
+            logger.error("grid DB %s unreadable during sync/pull, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            with contextlib.suppress(Exception):
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}",
+                                            "route": "/sync/pull"})
         finally:
             conn.close()
+    if degraded:
+        response.headers["X-NGS-Degraded-DBs"] = ",".join(str(i) for i in degraded)
     return all_shards
 
 
 @app.get("/sync/hashes")
 def sync_hashes(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
-    """Compact identity manifest for incremental replica synchronization."""
+    """Compact identity manifest for incremental replica synchronization.
+
+    Guarded per DB like /sync/pull: a malformed index is reported in
+    databases_skipped (additive field) instead of failing the manifest.
+    """
     hashes = []
+    degraded = []
     for i in range(1, core.MAX_DB_COUNT + 1):
         if not core.get_db_path(i).exists():
             continue
@@ -1084,9 +1506,17 @@ def sync_hashes(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
         try:
             hashes.extend(row[0] for row in conn.execute(
                 "SELECT file_hash FROM shards WHERE file_hash IS NOT NULL"))
+        except (sqlite3.DatabaseError, OSError) as exc:
+            degraded.append(i)
+            logger.error("grid DB %s unreadable during sync/hashes, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            with contextlib.suppress(Exception):
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}",
+                                            "route": "/sync/hashes"})
         finally:
             conn.close()
-    return {"count": len(hashes), "hashes": hashes}
+    return {"count": len(hashes), "hashes": hashes, "databases_skipped": degraded}
 
 
 # --- Rhea-Noir resident agent ---
@@ -1096,24 +1526,94 @@ def sync_hashes(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
 # the next rebuild. That is what removed this route on 2026-08-18.
 import rhea_noir
 
+# Rhea gets her own worker pool: sync endpoints share the framework's default
+# threadpool, and threads stuck scanning an unhealthy grid volume exhaust it,
+# starving /agent before ask() even starts (observed 2026-09-01: /health in
+# 0.2s while a no-tool /agent hung 120s). The hard cap answers inside the
+# ~100s edge cut with a diagnosable error instead of an opaque 524.
+import asyncio
+import concurrent.futures
+import contextvars
+
+_RHEA_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=int(os.environ.get("NOUGEN_RHEA_WORKERS", "4")),
+    thread_name_prefix="rhea")
+_RHEA_HARD_CAP_S = float(os.environ.get("NOUGEN_RHEA_HARD_CAP_S", "92"))
+
 
 class AgentRequest(BaseModel):
     prompt: str
 
 
+async def _ask_rhea_bounded(prompt: str) -> dict:
+    loop = asyncio.get_running_loop()
+    # The tenant's vault binding lives in ContextVars on this request's task;
+    # a bare executor thread would silently run Rhea in the owner vault.
+    ctx = contextvars.copy_context()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_RHEA_POOL, ctx.run, rhea_noir.ask, prompt),
+            timeout=_RHEA_HARD_CAP_S)
+    except asyncio.TimeoutError:
+        return {"answer": "(rhea hard cap hit - the node is overloaded, "
+                          "likely stuck grid-volume scans; retry after a "
+                          "restart or ask without grid tools)",
+                "brain": "none", "tools_used": [], "error": "hard_cap"}
+
+
 @app.post("/agent")
-def agent_ask(req: AgentRequest,
-              _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+async def agent_ask(req: AgentRequest,
+                    _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Ask Rhea-Noir. Free lane first; her reply names the brain that answered."""
-    return rhea_noir.ask(req.prompt)
+    return await _ask_rhea_bounded(req.prompt)
 
 
 @node_mcp.tool()
-def ask_rhea(prompt: str) -> dict:
+async def ask_rhea(prompt: str) -> dict:
     """Ask Rhea-Noir, the grid's resident agent. She recalls from the memory
     grid, gathers provenance-marked history, reads the tracker and relay, and
     captures shards worth keeping. Her reply names which brain answered."""
-    return rhea_noir.ask(prompt)
+    return await _ask_rhea_bounded(prompt)
+
+
+class RheaBrainRequest(BaseModel):
+    messages: List[dict]
+
+
+@app.post("/rhea/brain")
+def rhea_brain(req: RheaBrainRequest,
+               _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """Narrow Space-only Kimi bridge for Blade's Rhea controller.
+
+    Blade's rhea_noir._try_kimi_space POSTs here first. The Space holds the
+    HF inference tokens (NGS_INFERENCE_TOKENS) and the Kimi model id
+    (NOUGEN_RHEA_MODEL), so the K3 lane bills the Space, never the node.
+    503 = lane unconfigured on the Space, 502 = every provider key failed.
+    """
+    keys = rhea_noir._inference_keys()
+    model = os.environ.get("NOUGEN_RHEA_MODEL", "").strip()
+    if not keys or not model:
+        raise HTTPException(status_code=503, detail="Kimi Space lane is not configured")
+    failures = []
+    for token in keys:
+        try:
+            answer = rhea_noir._openai_call(rhea_noir.ROUTER_URL, token, model, req.messages)
+            return {"answer": answer, "model": model, "lane": "hf-space-kimi"}
+        except Exception as exc:
+            # Keep the HTTP status and the router's first line so Blade's log
+            # can tell a 402 (no credits) from a 404 (bad model id) without a
+            # Space shell; never echo the token.
+            code = getattr(exc, "code", None)
+            body = ""
+            try:
+                body = exc.read().decode(errors="replace")[:120]  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            failures.append(f"{type(exc).__name__}{'' if code is None else ' ' + str(code)}"
+                            + (f" {body!r}" if body else ""))
+    raise HTTPException(status_code=502,
+                        detail=f"Kimi Space providers failed for model {model!r} with "
+                               f"{len(keys)} key(s): " + " | ".join(failures))
 
 
 # --- Dav1d Execution Layer ---
@@ -1159,6 +1659,7 @@ def dav1d_agy_endpoint(
 
 
 @node_mcp.tool()
+@_offloaded
 def dav1d_exec(
     command: str = "agy",
     subcommand: str = "mcp list",
@@ -1172,13 +1673,34 @@ def dav1d_exec(
 
 
 @node_mcp.tool()
+@_offloaded
 def agy_ask(
     prompt: str = "",
     subcommand: str = "mcp list",
     args: Optional[List[str]] = None
 ) -> dict:
-    """Invoke the Google Antigravity CLI (agy v1.1.17) through Dav1d.
+    """Invoke the Google Antigravity CLI through Dav1d.
+
+    The CLI version is not stated here; it is resolved from the binary at call time and
+    returned in the `version` field of the result.
+
     Returns structured runtime proof from Dav1d."""
+    return run_dav1d_agy(command="agy", args=args, subcommand=subcommand, prompt=prompt)
+
+
+@node_mcp.tool()
+@_offloaded
+def ask_dav1d(
+    prompt: str,
+    subcommand: str = "mcp list",
+    args: Optional[List[str]] = None
+) -> dict:
+    """Canonical Dav1d connector alias.
+
+    The fleet connector calls this name. Keep it on the same bounded executor
+    as ``agy_ask`` so the remote surface cannot silently fall back to a
+    simulated response or gain a second, less-safe execution path.
+    """
     return run_dav1d_agy(command="agy", args=args, subcommand=subcommand, prompt=prompt)
 
 
@@ -1365,8 +1887,16 @@ class _TokenGatedMCP:
         if scope["type"] == "http":
             try:
                 configured = tenants.credentials_configured(NODE_TOKEN)
+            except tenants.RegistryUnreadableError:
+                await self._reject(
+                    send, 503,
+                    "Local resource exhaustion: the tenant registry could not be "
+                    "read. This node's credentials are configured; retry.",
+                    failure_class="local_resource_exhaustion")
+                return
             except tenants.TenantRegistryError:
-                await self._reject(send, 503, "Tenant registry is invalid.")
+                await self._reject(send, 503, "Tenant registry is invalid.",
+                                   failure_class="registry_invalid")
                 return
             if not configured:
                 await self._reject(send, 503, "Node write-auth not configured.")
@@ -1401,8 +1931,16 @@ class _TokenGatedMCP:
                         issued_tenant_id = mcp_oauth.issued_token_tenant(supplied)
                         if issued_tenant_id:
                             tenant = tenants.tenant_by_id(issued_tenant_id, core.GLOBAL_DIR)
+                except tenants.RegistryUnreadableError:
+                    await self._reject(
+                        send, 503,
+                        "Local resource exhaustion: the tenant registry could not "
+                        "be read. This node's credentials are configured; retry.",
+                        failure_class="local_resource_exhaustion")
+                    return
                 except tenants.TenantRegistryError:
-                    await self._reject(send, 503, "Tenant registry is invalid.")
+                    await self._reject(send, 503, "Tenant registry is invalid.",
+                                       failure_class="registry_invalid")
                     return
             if tenant is None:
                 await self._reject(send, 401, "Invalid node token.",
@@ -1417,10 +1955,17 @@ class _TokenGatedMCP:
         await self.inner(scope, receive, send)
 
     @staticmethod
-    async def _reject(send, status, detail, scope=None):
+    async def _reject(send, status, detail, scope=None, failure_class=None):
         body = json.dumps({"detail": detail}).encode("utf-8")
         headers = [(b"content-type", b"application/json"),
                    (b"content-length", str(len(body)).encode())]
+        # Machine-readable cause. A 503 is not self-describing: a peer needs to
+        # know whether this node is misconfigured or merely out of descriptors,
+        # because one is a page and the other is a retry.
+        if failure_class:
+            headers.append((b"x-nougen-failure-class", failure_class.encode()))
+            if failure_class == "local_resource_exhaustion":
+                headers.append((b"retry-after", b"30"))
         if status == 401 and scope is not None:
             # RFC 9728 section 5.1. Without this pointer the client cannot
             # discover the authorization server, falls back to probing
@@ -1449,7 +1994,35 @@ mcp_oauth.install(
 )
 
 # Mount BEFORE the Gradio catch-all at "/" so /mcp is routed to the MCP app.
+class _McpSlashNormalizer:
+    """Serve `/mcp` exactly like `/mcp/`.
+
+    `/mcp` is the documented public front door - a healthy node answers GET
+    with 405, never 404. But Starlette's Mount hands the inner ASGI app an
+    EMPTY path for the bare mount point, every inner route misses it, and the
+    door reports 404 while `/mcp/` serves fine in the same process. Clients
+    that omit the trailing slash were being told the front door does not
+    exist (2026-09-01 retrieval incident). Rewriting the path BEFORE routing
+    fixes it for the mount, the token gate, and the inner app at once;
+    normalizing inside the gate cannot work, because routing 404s first.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == "/mcp":
+            scope = dict(scope)
+            scope["path"] = "/mcp/"
+            scope["raw_path"] = b"/mcp/"
+        await self.app(scope, receive, send)
+
+
 app.mount("/mcp", _TokenGatedMCP(_mcp_asgi))
+# Added as middleware, not as a wrapper around `app`: the middleware stack runs
+# ahead of the router (which is what 404s the bare path) while `app` stays a
+# FastAPI instance for every route registered after this line.
+app.add_middleware(_McpSlashNormalizer)
 # _on_platform / _bind_host / _network_exposed are resolved once at import time,
 # up beside the FastAPI() constructor - the docs guard needs them before `app`
 # exists, and one probe keeps both guards agreeing on what "exposed" means.

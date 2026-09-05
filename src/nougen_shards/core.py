@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading as _threading
 from contextvars import ContextVar, Token, copy_context
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,11 @@ from typing import List, Optional
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+#: Seconds a capture may wait for its embedding before storing NULL and
+#: leaving the row for embedding_backfill. Env-tunable per Rule 0.0 item 4;
+#: the literal is a fallback only.
+DEFAULT_EMBED_CAPTURE_TIMEOUT_S = float(os.environ.get("NOUGEN_EMBED_CAPTURE_TIMEOUT_S", "15"))
 
 # Configuration (Module 10: Integrate Constraints)
 MAX_DB_SIZE = 1 * 1024 * 1024 * 1024  # 1GB Safety Limit per DB
@@ -78,6 +84,11 @@ def _ensure_active_vault_dir() -> Path:
 
 def get_db_path(index: int) -> Path:
     """Returns the path for a specific database index (Module 11: Transform Architecture)."""
+    from . import snapshot_mode  # pylint: disable=import-outside-toplevel
+    if snapshot_mode.enabled():
+        snap = snapshot_mode.snapshot_dir()
+        if snap is not None:
+            return snap / f"nougen_shards_{index}.db"
     return active_vault_dir() / f"nougen_shards_{index}.db"
 
 
@@ -121,18 +132,125 @@ def get_active_db_index() -> int:
 
 
 def get_connection(index: int):
-    """Establishes an SQLite connection with WAL enabled (Module 19: Stabilize Reasoning)."""
+    """Establishes an SQLite connection with WAL enabled (Module 19: Stabilize Reasoning).
+
+    In snapshot mode the file is a published read-only artifact on a network
+    mount: open it immutable (no locks, no journal probing, no shm) - the
+    only sqlite access pattern that is safe over FUSE, and the reason
+    snapshot mode exists at all.
+    """
     path = get_db_path(index)
-    conn = sqlite3.connect(str(path), timeout=10.0)
+    from . import snapshot_mode  # pylint: disable=import-outside-toplevel
+    if snapshot_mode.enabled() and snapshot_mode.snapshot_dir() is not None:
+        conn = sqlite3.connect(f"file:{path}?immutable=1&mode=ro", uri=True,
+                               timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        return conn
+    try:
+        conn = sqlite3.connect(str(path), timeout=10.0)
+    except sqlite3.OperationalError as exc:
+        # "unable to open database file" is how the descriptor ceiling shows
+        # up: the file is there, the process just cannot open one more. Every
+        # caller degrades ("ONE bad DB must not zero out the read"), so without
+        # this line the ceiling is invisible - phoebus ran at it for a day
+        # while /health stayed 200. Name the count, then re-raise unchanged.
+        if "unable to open" in str(exc).lower():
+            from . import fd_budget  # pylint: disable=import-outside-toplevel
+            logger.error("grid DB %s: %s - process holds %s open descriptors "
+                         "(soft limit %s); see fd_budget.py",
+                         index, exc, fd_budget.open_fd_count(), _nofile_soft_limit())
+        raise
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.row_factory = sqlite3.Row
     return conn
 
 
+def _nofile_soft_limit():
+    try:
+        import resource  # pylint: disable=import-outside-toplevel
+        return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    except (ImportError, ValueError, OSError):
+        return None
+
+
 _INITIALIZED_DBS = set()
 
 
-def init_db(index: int = 1):
+def quarantine_malformed_dbs() -> list:
+    """Rename unreadable grid DB files aside so the grid heals itself at boot.
+
+    2026-09-01 Space-sqlite P1: six of nine grid DBs went "disk image is
+    malformed" on the Space's network-backed volume. The files cannot be
+    repaired remotely (no shell on a Space) and a full volume wipe throws away
+    every HEALTHY index with them. Surgical alternative: quick_check each grid
+    DB; a file that fails is RENAMED (never deleted - forensics) to
+    ``<name>.malformed-<utcstamp>`` together with its -wal/-shm sidecars, and
+    an empty healthy DB is recreated in its place. Healthy indices are never
+    touched, and a missing-only refill can then restore just the lost rows.
+
+    Env-gated per Rule 0.2: ``NOUGEN_QUARANTINE_MALFORMED_ON_BOOT`` (default
+    on; "0"/"false"/"no"/"off" disables). No-op in snapshot mode - published
+    snapshots are immutable artifacts.
+
+    Returns a list of {"index", "moved_to", "reason"} dicts, one per
+    quarantined DB, so callers can log and surface the action.
+    """
+    flag = os.environ.get("NOUGEN_QUARANTINE_MALFORMED_ON_BOOT", "1")
+    if flag.strip().lower() in ("0", "false", "no", "off"):
+        return []
+    from . import snapshot_mode  # pylint: disable=import-outside-toplevel
+    if snapshot_mode.enabled() and snapshot_mode.snapshot_dir() is not None:
+        return []
+    quarantined = []
+    for i in range(1, MAX_DB_COUNT + 1):
+        path = get_db_path(i)
+        if not path.exists():
+            continue
+        reason = None
+        try:
+            conn = sqlite3.connect(str(path), timeout=10.0)
+            try:
+                row = conn.execute("PRAGMA quick_check(1);").fetchone()
+            finally:
+                conn.close()
+            if row and str(row[0]).lower() == "ok":
+                continue
+            reason = str(row[0]) if row else "quick_check returned no row"
+        except (sqlite3.DatabaseError, OSError) as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dest = path.with_name(f"{path.name}.malformed-{stamp}")
+        try:
+            path.rename(dest)
+        except OSError as exc:
+            # Locked or volume-level fault: leave it - the per-DB scan guards
+            # already skip unreadable files, so this is no worse than before.
+            logger.error("grid DB %s failed quick_check but could not be "
+                         "quarantined (%s): %s", i, reason, exc)
+            continue
+        for suffix in ("-wal", "-shm"):
+            side = Path(str(path) + suffix)
+            if side.exists():
+                try:
+                    side.rename(Path(str(dest) + suffix))
+                except OSError as exc:
+                    logger.error("grid DB %s sidecar %s not moved: %s",
+                                 i, suffix, exc)
+        _INITIALIZED_DBS.discard((str(path.parent), i))
+        init_db(i)
+        logger.error("grid DB %s quarantined to %s (%s) and recreated empty",
+                     i, dest.name, reason)
+        try:
+            from . import history  # pylint: disable=import-outside-toplevel
+            history.log_event(0, i, "DB_QUARANTINED",
+                              metadata={"moved_to": dest.name, "reason": reason})
+        except Exception:  # pylint: disable=broad-except
+            pass
+        quarantined.append({"index": i, "moved_to": dest.name, "reason": reason})
+    return quarantined
+
+
+def init_db(index: int = 1):  # noqa: C901
     """Initializes the substrate schema (Module 6: Copy Successful Topology).
 
     Idempotent, but re-running CREATE TABLE / DROP+CREATE TRIGGER on every
@@ -140,6 +258,11 @@ def init_db(index: int = 1):
     initialized once per process. Keyed by vault dir because tests and tools
     repoint NOUGEN_VAULT_DIR/GLOBAL_DIR mid-process.
     """
+    from . import snapshot_mode  # pylint: disable=import-outside-toplevel
+    if snapshot_mode.enabled() and snapshot_mode.snapshot_dir() is not None:
+        # Snapshot artifacts are published complete and immutable; there is
+        # nothing to initialize and nothing may be written.
+        return
     vault = _ensure_active_vault_dir()
     key = (str(vault), index)
     if key in _INITIALIZED_DBS:
@@ -198,6 +321,13 @@ def init_db(index: int = 1):
 
         try:
             cursor.execute("ALTER TABLE shards ADD COLUMN enc INTEGER DEFAULT 0;")
+        except sqlite3.OperationalError:
+            pass
+
+        # Relay provenance (schema v3): older nodes did not retain the
+        # publisher URI, so add it idempotently during normal startup.
+        try:
+            cursor.execute("ALTER TABLE shards ADD COLUMN source_uri TEXT;")
         except sqlite3.OperationalError:
             pass
 
@@ -315,14 +445,23 @@ def _ensure_dedup_index(conn) -> None:
     for i in range(1, MAX_DB_COUNT + 1):
         if not get_db_path(i).exists():
             continue
-        src = get_connection(i)
+        # A corrupt DB here does not break a read, it silently degrades DEDUP:
+        # the backfill aborts, hashes from the remaining DBs never land, and
+        # global dedup starts missing duplicates with no error anywhere.
+        src = None
         try:
+            src = get_connection(i)
             rows = src.execute("SELECT file_hash FROM shards").fetchall()
             conn.executemany(
                 "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
                 [(r["file_hash"], i) for r in rows])
+        except (sqlite3.DatabaseError, OSError) as exc:
+            logger.error("grid DB %s unreadable during dedup backfill, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            continue
         finally:
-            src.close()
+            if src is not None:
+                src.close()
     conn.commit()
 
 
@@ -561,7 +700,11 @@ def _embed_for_capture(title: str, content: str) -> Optional[List[float]]:
     global EMBED_AT_CAPTURE_MISSES  # pylint: disable=global-statement
     model = os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text")
     try:
-        timeout = float(os.environ.get("NOUGEN_EMBED_TIMEOUT", "1.5"))
+        # Capture-time embed budget. 1.5s was the original default and lost
+        # ~90% of captures on phoebus (measured 2026-09-03: 0.25s hot, 4.5s
+        # warm, 13.4s cold load for nomic-embed-text). Env-tunable, logged fallback.
+        timeout = float(os.environ.get("NOUGEN_EMBED_TIMEOUT",
+                                       str(DEFAULT_EMBED_CAPTURE_TIMEOUT_S)))
     except ValueError:
         timeout = 1.5
     try:
@@ -581,11 +724,119 @@ def _embed_for_capture(title: str, content: str) -> Optional[List[float]]:
     return vec
 
 
+def _query_embed_enabled() -> bool:
+    return os.environ.get("NOUGEN_QUERY_EMBED", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+def _embed_query(query: str) -> Optional[np.ndarray]:
+    """Embed the query at read time so the vector lane actually fires.
+
+    Shards are embedded at write ("born recallable"), but until 2026-08-30 no
+    recall caller ever computed a QUERY embedding, so _vector_retrieve was a
+    permanent no-op and every recall ran keyword-only against a fully-embedded
+    vault. A miss here is non-fatal: recall degrades to keyword lanes exactly
+    as before, and the miss is logged rather than swallowed.
+    """
+    model = os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text")
+    try:
+        # Default is looser than capture's 1.5s: the first query after an
+        # idle period pays ollama's model (re)load, and a cold-load miss here
+        # silently degrades every recall to keyword-only.
+        timeout = float(os.environ.get("NOUGEN_QUERY_EMBED_TIMEOUT",
+                                       os.environ.get("NOUGEN_EMBED_TIMEOUT", "3.0")))
+    except ValueError:
+        timeout = 3.0
+    try:
+        from .embedding_backfill import embed as _embed  # local import: optional dep path
+        vec = _embed((query or "")[:4000], model, timeout=timeout)
+    except Exception as exc:  # pylint: disable=broad-except
+        vec = None
+        logger.debug("query embedding raised: %s", exc)
+    if not vec:
+        logger.warning("query embedding unavailable (model=%s); recall is keyword-only "
+                       "for this query -- is ollama up?", model)
+        return None
+    arr = np.array(vec, dtype=np.float32)
+    norm = np.linalg.norm(arr)
+    return (arr / norm) if norm > 0 else None
+
+
+#: Grid DBs whose FILES failed a write with a corruption-class error this
+#: process. Hash-routed writes skip them (content lands in the next healthy
+#: DB); retrieval already degrades per-DB on its own.
+_QUARANTINED_WRITE_DBS: set = set()
+
+
+def _next_healthy_write_index(after: int) -> int:
+    """Next write target after `after`, skipping quarantined indexes."""
+    for step in range(1, MAX_DB_COUNT + 1):
+        cand = ((after - 1 + step) % MAX_DB_COUNT) + 1
+        if cand not in _QUARANTINED_WRITE_DBS:
+            return cand
+    raise LookupError("every grid DB is quarantined for writes")
+
+
+class CaptureResult(dict):
+    """What `capture()` hands back: a bool that can also say what happened.
+
+    A bare True/False could not tell a caller whether a write FAILED or was a
+    no-op DUPLICATE, and could not name the row it wrote - so every surface
+    downstream could only forward "success" or "already exists", and a caller
+    that saw a falsy answer had no way to know which. Observed live: a capture
+    answered with an empty object and had in fact SUCCEEDED, while later ones
+    answered identically and had not landed.
+
+    It subclasses `dict` for two reasons: JSON/MCP serialization keeps working
+    with no encoder of its own, and `__bool__` is the `captured` flag, so every
+    existing `if capture(...)` / `assert capture(...)` caller keeps its exact
+    old meaning. Identity checks (`is True`) do not survive and are not part of
+    the contract - truthiness is.
+
+    Keys: `captured` (bool), `shard_id`/`db_index` (ints, present when the row
+    is known), `reason` (stable machine token: "written" / "duplicate" /
+    "error"), and `error` (short human string, only when nothing was written).
+    """
+
+    __slots__ = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.get("captured", False))
+
+    # Attribute access alongside the mapping. Callers that serialize this over
+    # MCP want the dict; callers reading it in Python want `.captured` rather
+    # than `["captured"]`, and a missing key should read as absent instead of
+    # raising - a result that failed before it ever reached a DB legitimately
+    # has no shard_id.
+    @property
+    def captured(self) -> bool:
+        return bool(self.get("captured", False))
+
+    @property
+    def shard_id(self):
+        return self.get("shard_id")
+
+    @property
+    def db_index(self):
+        return self.get("db_index")
+
+    @property
+    def reason(self):
+        return self.get("reason")
+
+    @property
+    def error(self):
+        return self.get("error")
+
+
 def capture(event_type: str, title: str, content: str,
             tags: Optional[List[str]] = None, embedding: Optional[List[float]] = None,
             domain_key: Optional[str] = None, density_score: Optional[float] = None,
             sensitivity: Optional[str] = None,
-            original_timestamp: Optional[str] = None) -> bool:
+            original_timestamp: Optional[str] = None,
+            source_uri: Optional[str] = None,
+            utility: Optional[float] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants).
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
@@ -599,6 +850,10 @@ def capture(event_type: str, title: str, content: str,
     era instead of migration time, so date-window queries and coverage
     histograms reflect when the experience actually happened. An unparseable
     value logs a warning and falls back to now -- it never crashes a write.
+
+    `source_uri` and `utility` are compatibility fields used by relay and other
+    publishers. Provenance is retained in the shard row, while `utility` seeds
+    the usefulness prior without requiring callers to know the SQLite schema.
     """
     from . import private_vault as _pv  # pylint: disable=import-outside-toplevel
     from .brain_scan.redaction import redact_content  # pylint: disable=import-outside-toplevel
@@ -618,12 +873,35 @@ def capture(event_type: str, title: str, content: str,
     if density_score is None:
         density_score = calculate_contrastive_perplexity(content)
 
+    try:
+        utility_score = float(utility) if utility is not None else 1.0
+    except (TypeError, ValueError):
+        logger.warning("capture: invalid utility %r; falling back to schema default", utility)
+        utility_score = 1.0
+
+    source_uri_value = (
+        redact_content(str(source_uri)) if source_uri is not None else None
+    )
+
     # Clean the content for O(1) deduplication hashing to exclude injected recall packets or static context.
     clean_content = content
     if "=== NOUGENSHARDS RECALL PACKET" in content:
         clean_content = content.split("=== NOUGENSHARDS RECALL PACKET")[0].strip()
 
     fhash = hashlib.md5(clean_content.encode("utf-8", errors="ignore")).hexdigest()
+
+    from . import snapshot_mode  # pylint: disable=import-outside-toplevel
+    if snapshot_mode.enabled():
+        # This node serves read-only snapshot artifacts and must never write
+        # sqlite (that is what corrupted every Space-local grid). Captures
+        # forward to the writer node over the tunnel instead.
+        fwd = snapshot_mode.forward_capture({
+            "title": title, "content": content, "event_type": event_type,
+            "tags": tags, "domain_key": domain_key,
+            "density_score": density_score, "sensitivity": sensitivity,
+            "original_timestamp": original_timestamp,
+        })
+        return CaptureResult(fwd)
 
     # Global Deduplication (Module 12): one indexed lookup in the central
     # hash index — O(1) — instead of scanning all 9 cluster databases.
@@ -634,10 +912,10 @@ def capture(event_type: str, title: str, content: str,
         _ensure_dedup_index(dconn)
         if dconn.execute("SELECT 1 FROM hashes WHERE file_hash = ?",
                          (fhash,)).fetchone():
-            return False
+            return CaptureResult(captured=False, reason="duplicate",
+                                 error="duplicate: identical content is already in the vault")
 
         target_idx = get_write_index(fhash)
-        init_db(target_idx)
 
         # Born recallable: if the caller did not supply a vector, make one now.
         if embedding is None and _embed_at_capture_enabled():
@@ -680,33 +958,88 @@ def capture(event_type: str, title: str, content: str,
             stored_content = _pv.encrypt_text(content)
             enc_flag = 1
 
-        conn = get_connection(target_idx)
-        try:
-            cursor = conn.execute("""
-                INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag))
-            conn.commit()
+        # Writes route AROUND corrupt DB files. capture() used to let a
+        # corruption-class error raise straight out, and /sync/push turned
+        # that into a 500 for its whole batch -- so every shard whose hash
+        # routed to a malformed DB was un-ingestable, deterministically
+        # (observed on the Space 2026-08-30: DB8 malformed, exactly the
+        # batches carrying DB8-routed hashes kept failing all three retries).
+        if target_idx in _QUARANTINED_WRITE_DBS:
+            target_idx = _next_healthy_write_index(target_idx)
+            init_db(target_idx)
+        inserted = False
+        for _reroute in range(MAX_DB_COUNT):
+            conn = None
+            try:
+                # init_db and get_connection both open the DB file, so they
+                # raise the same corruption-class errors as the INSERT and must
+                # sit inside this guard.
+                init_db(target_idx)
+                conn = get_connection(target_idx)
+                cursor = conn.execute("""
+                    INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, source_uri, utility_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, source_uri_value, utility_score))
+                conn.commit()
 
-            # Log CREATED event
-            from . import history # pylint: disable=import-outside-toplevel
-            history.log_event(cursor.lastrowid or 0, target_idx, "CREATED", new_score=1.0)
-        except sqlite3.IntegrityError:
-            # Target DB already holds the hash (index was stale) — repair the
-            # index so the next lookup short-circuits without touching shards.
-            dconn.execute(
-                "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
-                (fhash, target_idx))
-            dconn.commit()
-            return False
-        finally:
-            conn.close()
+                # Log CREATED event
+                from . import history # pylint: disable=import-outside-toplevel
+                history.log_event(cursor.lastrowid or 0, target_idx, "CREATED", new_score=utility_score)
+                inserted = True
+                break
+            except sqlite3.IntegrityError:
+                # Target DB already holds the hash (index was stale) — repair the
+                # index so the next lookup short-circuits without touching shards.
+                dconn.execute(
+                    "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
+                    (fhash, target_idx))
+                dconn.commit()
+                return CaptureResult(captured=False, reason="duplicate",
+                                     db_index=target_idx,
+                                     error="duplicate: row already present in the routed DB")
+            except sqlite3.OperationalError:
+                # Locked/busy is NOT corruption: quarantining a merely-locked
+                # DB would permanently divert its hash range. Preserve the
+                # pre-quarantine contract and let the caller see it.
+                raise
+            except sqlite3.DatabaseError as db_err:
+                # Checked AFTER IntegrityError (its subclass): reaching here
+                # means the DB FILE is bad ("database disk image is
+                # malformed"). Quarantine the index for this process, record
+                # the degrade, and try the next healthy DB.
+                from . import history  # pylint: disable=import-outside-toplevel
+                _QUARANTINED_WRITE_DBS.add(target_idx)
+                logger.error("grid DB %s quarantined for writes: %s: %s",
+                             target_idx, type(db_err).__name__, db_err)
+                try:
+                    history.log_event(0, target_idx, "DB_DEGRADED",
+                                      metadata={"error": f"write: {type(db_err).__name__}: {db_err}"})
+                except Exception:  # pylint: disable=broad-except
+                    pass
+                try:
+                    target_idx = _next_healthy_write_index(target_idx)
+                except LookupError:
+                    logger.error("capture dropped shard %r: every grid DB is "
+                                 "quarantined for writes", title[:80])
+                    return CaptureResult(
+                        captured=False, reason="error",
+                        error="every grid DB is quarantined for writes")
+                init_db(target_idx)
+            finally:
+                if conn is not None:
+                    conn.close()
+        if not inserted:
+            return CaptureResult(
+                captured=False, reason="error",
+                error="write did not land after exhausting healthy grid DBs")
 
         dconn.execute(
             "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
             (fhash, target_idx))
         dconn.commit()
-        return True
+        return CaptureResult(captured=True, reason="written",
+                             shard_id=int(cursor.lastrowid or 0),
+                             db_index=target_idx)
     finally:
         dconn.close()
 
@@ -943,6 +1276,41 @@ def _ingest_filter_sql(alias: str = "s", include_research: bool = False):
     return f"UPPER({alias}.event_type) NOT IN ({marks}) AND ", tuple(excluded)
 
 
+def _retrieve_db_workers() -> int:
+    """Concurrent grid-DB scans per retrieval lane. Env-first (Rule 0.2)."""
+    raw = os.environ.get("NOUGEN_RETRIEVE_DB_WORKERS", "")
+    try:
+        n = int(raw) if raw.strip() else 0
+    except ValueError:
+        logger.warning("NOUGEN_RETRIEVE_DB_WORKERS=%r is not an int; using auto", raw)
+        n = 0
+    if n <= 0:
+        n = min(MAX_DB_COUNT, os.cpu_count() or 4)
+    return max(1, n)
+
+
+def _run_db_scans(scan_fn):
+    """Run scan_fn(i) for every grid DB concurrently; yield (i, result) in DB order.
+
+    The per-DB scan loops in both retrieval lanes were serial — on a 9-DB,
+    six-figure-shard grid that alone was ~14s per pass (measured 2026-08-30).
+    Each scan owns its connection, so threads never share sqlite handles, and
+    yielding in DB order keeps downstream merge/sort output bit-identical to
+    the serial loop.
+    """
+    import concurrent.futures  # pylint: disable=import-outside-toplevel
+    workers = _retrieve_db_workers()
+    if workers == 1:
+        for i in range(1, MAX_DB_COUNT + 1):
+            yield i, scan_fn(i)
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {i: executor.submit(copy_context().run, scan_fn, i)
+                   for i in range(1, MAX_DB_COUNT + 1)}
+        for i in range(1, MAX_DB_COUNT + 1):
+            yield i, futures[i].result()
+
+
 def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[List[float]] = None,
                       domain_key: str = "global", include_research: bool = False) -> list:
     """Scans for keyword matches using FTS5 (with LIKE fallback)."""
@@ -952,11 +1320,28 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     query_now = datetime.now(timezone.utc)
     results = []
     missed_dbs = []  # DBs where both exact lanes missed; fed to the fuzzy pass below
-    for i in range(1, MAX_DB_COUNT + 1):
-        if not get_db_path(i).exists():
-            continue
-        conn = get_connection(i)
+
+    def _scan_db(i: int) -> tuple:
+        """Scan one grid DB (thread-owned connection). Returns (rows, missed)."""
+        from . import history  # pylint: disable=import-outside-toplevel
+        # The existence probe belongs INSIDE the guard too. Path.exists() returns
+        # False only for ENOENT/ENOTDIR; on EACCES/EPERM it RAISES. An
+        # ACL-locked DB file would therefore escape the handler below and kill
+        # the whole fan-out - the same failure the handler exists to stop,
+        # through a different door, two lines earlier.
+        #
+        # (PowerShell's Test-Path has the opposite bug: it RETURNS $false on
+        #  UnauthorizedAccessException, so "not allowed to look" reads as "not
+        #  there". Python raising here is the better default - it just has to be
+        #  caught rather than left outside the try.)
+        db_rows: list = []
+        accessed: list = []
+        missed = False
+        conn = None
         try:
+            if not get_db_path(i).exists():
+                return db_rows, missed
+            conn = get_connection(i)
             fts_worked = False
             db_hits = 0
             fts_query = _build_fts_match_query(query)
@@ -1001,11 +1386,11 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         break
                 if res:
                     for row in res:
-                        history.log_event(row["id"], i, "ACCESSED")
+                        accessed.append(row["id"])
                         item = _process_fts_result(row, i, query_embedding, query_now)
                         if via_or_retry:
                             item["_or_retry"] = True
-                        results.append(item)
+                        db_rows.append(item)
                     fts_worked = True
 
             if not fts_worked:
@@ -1023,7 +1408,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 for row in cursor:
                     item = hydrate(dict(row))
                     item["_db_index"] = i
-                    history.log_event(item["id"], i, "ACCESSED")
+                    accessed.append(item["id"])
                     sem_score = 0.0
                     if query_embedding is not None and item["embedding"]:
                         try:
@@ -1041,15 +1426,54 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
 
                     decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), query_now)
                     item["final_score"] = (likelihood * 0.5) + (decayed_utility * 0.5)
-                    results.append(item)
+                    db_rows.append(item)
                     db_hits += 1
 
             # Fuzzy lane is DEFERRED, not run here: note the miss and move on.
             # See the second pass below for why.
             if not fts_worked and db_hits == 0:
-                missed_dbs.append(i)
+                missed = True
+        except (sqlite3.DatabaseError, OSError) as exc:
+            # ONE bad DB must not zero out the whole federated read. The try
+            # around the FTS SQL below catches only sqlite3.OperationalError,
+            # but a corrupt file raises sqlite3.DatabaseError ("database disk
+            # image is malformed") -- its PARENT class, so that except never
+            # matched. With no except on this loop, the error escaped the
+            # for-loop entirely and every ranked read returned empty while the
+            # other 8 DBs sat there healthy and unread.
+            #
+            # 2026-08-29: that is exactly what shipped. shards_coverage showed
+            # databases_errored [{index:5, malformed}], and recall AND search
+            # both returned 0 against a six-figure vault while shards_window --
+            # which filters on timestamp and never touches this path -- happily
+            # returned rows. Health said up the whole time.
+            #
+            # Degrade per DB: record it, skip it, keep scanning. A partial
+            # answer from 8 DBs is worth infinitely more than a false empty,
+            # and the log line names the index so the corrupt file is findable
+            # instead of silently swallowed.
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
+        # ONE batched history write per DB scan. The per-row log_event calls
+        # this replaces each opened a connection, INSERTed, committed, and
+        # closed - ~360 synchronous commits per recall, a measured multi-second
+        # tax that also serializes parallel scans on the history DB lock.
+        if accessed:
+            history.log_events([(sid, i, "ACCESSED") for sid in accessed])
+        return db_rows, missed
+
+    for i, (db_rows, missed) in _run_db_scans(_scan_db):
+        results.extend(db_rows)
+        if missed:
+            missed_dbs.append(i)
 
     # Fuzzy lane (docs/theory/n-gram-topologies.md §8.2): for DBs where BOTH
     # exact lanes missed, retry with fastText-style character trigram Dice
@@ -1086,8 +1510,15 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 where = ""
             dom_params = (*dom_params, *ing_params)
             for i in missed_dbs:
-                conn = get_connection(i)
+                # Same guard as the first pass above, and this pass needs it
+                # MORE: missed_dbs is by definition the set the exact lanes came
+                # up short on, so a degraded DB is likelier to be in here than
+                # in a random sweep. It was missed on 2026-08-29 because the
+                # first pass in this same function was fixed and this one was
+                # not -- one function, two fan-outs, one patch.
+                conn = None
                 try:
+                    conn = get_connection(i)
                     # Score against a cheap projection: the similarity probe only
                     # ever reads title + the first 256 chars of content, so there
                     # is no reason to pull full content and embedding blobs for
@@ -1141,8 +1572,19 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     for item in fuzzy:
                         history.log_event(item["id"], i, "ACCESSED")
                         results.append(item)
+                except (sqlite3.DatabaseError, OSError) as exc:
+                    logger.error("grid DB %s unreadable during fuzzy pass, skipping it: %s: %s",
+                                 i, type(exc).__name__, exc)
+                    try:
+                        history.log_event(0, i, "DB_DEGRADED",
+                                          metadata={"error": f"{type(exc).__name__}: {exc}",
+                                                    "pass": "fuzzy"})
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+                    continue
                 finally:
-                    conn.close()
+                    if conn is not None:
+                        conn.close()
 
     # Tiered ordering: every full-coverage hit (FTS implicit-AND / LIKE)
     # outranks every OR-retry hit, which outranks every fuzzy hit, regardless
@@ -1170,66 +1612,360 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     return results[:limit]
 
 
+def _vector_cache_enabled() -> bool:
+    return os.environ.get("NOUGEN_VECTOR_CACHE", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+#: Process-level embedding matrix cache, one entry per grid DB. Selecting the
+#: embedding column from `shards` still reads every row's FULL record (content
+#: included) from disk - a per-query vector scan was effectively a 10.7GB table
+#: scan across the grid (measured 27s, 2026-08-30). The cache pays that read
+#: once per process and answers subsequent queries with an in-RAM matmul.
+#: ~800MB RSS for a 260k-shard grid at 768 dims. NOUGEN_VECTOR_CACHE=0 turns
+#: the whole semantic lane OFF (there is no uncached fallback scan - see
+#: _vector_retrieve), warned once per process.
+_VECTOR_CACHE: dict = {}
+_VECTOR_LANE_OFF_WARNED = False
+_VECTOR_CACHE_LOCK = _threading.Lock()  # eager: lazy init of a lock is itself a race
+#: One build lock PER DB, not one for the grid. A single grid-wide lock
+#: serialized the nine warm-up builds (15.7s cold, measured) and, worse, made
+#: every request that arrived during a build queue behind ALL nine. On
+#: phoebus 2026-09-04 one six-way burst 32s after boot left 327 threads
+#: parked on that lock, each holding its sqlite connections, draining at ~10
+#: threads per 6 minutes while every recall missed its deadline. Per-DB locks
+#: let the builds run in parallel and let a waiter wait for one matrix, not
+#: the grid.
+_VECTOR_DB_LOCKS: dict = {}
+_VECTOR_WAIT_WARNED: set = set()
+
+
+def _vector_cache_lock(i: Optional[int] = None):
+    """Build lock for DB ``i``; with no argument, the table guard (compat)."""
+    if i is None:
+        return _VECTOR_CACHE_LOCK
+    with _VECTOR_CACHE_LOCK:
+        lock = _VECTOR_DB_LOCKS.get(i)
+        if lock is None:
+            lock = _VECTOR_DB_LOCKS[i] = _threading.Lock()
+        return lock
+
+
+def _vector_cache_wait_s() -> float:
+    """How long a recall may wait for another thread's matrix build.
+
+    Bounded on purpose: a request that cannot get the matrix in time answers
+    from the keyword lane (and from the stale matrix if one exists) instead of
+    becoming a straggler that outlives its own deadline. Env-first (Rule 0.2).
+    Default 5s: a warm build of one 110MB grid DB is ~0.5s, a cold one a few
+    seconds; anything longer means the process is in trouble and piling on
+    makes it worse.
+    """
+    raw = os.environ.get("NOUGEN_VECTOR_CACHE_WAIT_S", "")
+    try:
+        return float(raw) if raw.strip() else 5.0
+    except ValueError:
+        logger.warning("NOUGEN_VECTOR_CACHE_WAIT_S=%r is not a number; using 5.0", raw)
+        return 5.0
+
+
+def _db_write_signature(i: int) -> tuple:
+    """Staleness key for DB i. Includes the -wal file: under WAL mode a write
+    lands there first and the main file's mtime does not move until checkpoint."""
+    sig = []
+    base = str(get_db_path(i))
+    for suffix in ("", "-wal"):
+        try:
+            st = os.stat(base + suffix)
+            sig.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            sig.append(None)
+    return tuple(sig)
+
+
+def _vector_cache_entry(i: int, conn) -> Optional[dict]:
+    """Return the (fresh) cache entry for DB i, loading or refreshing as needed.
+
+    Refresh strategy: the grid is append-mostly. On a signature change, rows
+    with id > the cached max are fetched and appended; a shrink in embedded-row
+    count forces a full reload. An embedding UPDATEd in place (backfill re-run)
+    stays stale until the next full reload - logged, accepted: the alternative
+    is re-reading the full table per capture, which is the cost this cache
+    exists to kill.
+    """
+    sig = _db_write_signature(i)
+    path = str(get_db_path(i))
+    entry = _VECTOR_CACHE.get(i)
+    if entry is not None and entry["sig"] == sig and entry["path"] == path:
+        return entry
+    lock = _vector_cache_lock(i)
+    if not lock.acquire(timeout=_vector_cache_wait_s()):
+        # Another thread is building this DB's matrix and has held it longer
+        # than the wait budget. Do NOT queue: a stale matrix still ranks the
+        # rows it knows about, and None hands this DB to the keyword lane.
+        # Either answer inside the recall deadline; a queued thread does not.
+        # Warned once per DB per process - the condition repeats by nature.
+        if i not in _VECTOR_WAIT_WARNED:
+            _VECTOR_WAIT_WARNED.add(i)
+            logger.warning("grid DB %s: vector cache build held its lock past %.1fs; "
+                           "answering %s for this recall (NOUGEN_VECTOR_CACHE_WAIT_S)",
+                           i, _vector_cache_wait_s(),
+                           "from the stale matrix" if entry is not None and entry["path"] == path
+                           else "keyword-only")
+        if entry is not None and entry["path"] == path:
+            return entry
+        return None
+    try:
+        entry = _VECTOR_CACHE.get(i)
+        if entry is not None and entry["sig"] == sig and entry["path"] == path:
+            return entry
+        # The cache key is the DB index, but the index can point at a DIFFERENT
+        # file mid-process (tests and tools repoint NOUGEN_VAULT_DIR - same
+        # reason init_db keys its guard by vault dir). Appending one vault's
+        # rows onto another's matrix would silently corrupt ranking, so a path
+        # change always forces a full reload. [codex finding, 2026-08-30]
+        if entry is not None and entry["path"] != path:
+            entry = None
+        count = conn.execute(
+            "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM shards WHERE embedding IS NOT NULL"
+        ).fetchone()
+        n_embedded, max_id = int(count[0]), int(count[1])
+        since_id = 0
+        if entry is not None and n_embedded >= entry["n_embedded"] and len(entry["ids"]):
+            since_id = entry["max_id"]  # append-only fast path
+        else:
+            entry = None  # full (re)load
+        cursor = conn.execute("""
+            SELECT id, timestamp, utility_score, domain_key, event_type, embedding
+            FROM shards WHERE embedding IS NOT NULL AND id > ? ORDER BY id ASC
+        """, (since_id,))
+        ids, ts, util, dom, etype, blobs, legacy = [], [], [], [], [], [], []
+        dim = entry["dim"] if entry else None
+        for row in cursor:
+            emb = row["embedding"]
+            if isinstance(emb, (bytes, bytearray)) and not emb.startswith(b"[") \
+                    and len(emb) % 4 == 0 and len(emb) > 0:
+                row_dim = len(emb) // 4
+                if dim is None:
+                    dim = row_dim
+                if row_dim == dim:
+                    ids.append(row["id"])
+                    ts.append(row["timestamp"])
+                    util.append(row["utility_score"] if row["utility_score"] is not None else 0.0)
+                    dom.append(row["domain_key"] or "")
+                    etype.append((row["event_type"] or "").upper())
+                    blobs.append(bytes(emb))
+                    continue
+            legacy.append((row["id"], row["utility_score"] or 0.0, row["timestamp"],
+                           row["domain_key"] or "", (row["event_type"] or "").upper(), emb))
+        if blobs:
+            new_matrix = np.frombuffer(b"".join(blobs), dtype=np.float32).reshape(len(blobs), dim)
+        else:
+            new_matrix = np.zeros((0, dim or 0), dtype=np.float32)
+        if entry is not None:
+            fresh = {
+                "sig": sig, "path": path, "dim": dim, "n_embedded": n_embedded, "max_id": max_id,
+                "ids": entry["ids"] + ids, "ts": entry["ts"] + ts,
+                "util": np.concatenate([entry["util"], np.asarray(util, dtype=np.float32)]),
+                "dom": entry["dom"] + dom, "etype": entry["etype"] + etype,
+                "matrix": np.vstack([entry["matrix"], new_matrix]) if len(ids) else entry["matrix"],
+                "legacy": entry["legacy"] + legacy,
+            }
+        else:
+            fresh = {
+                "sig": sig, "path": path, "dim": dim, "n_embedded": n_embedded, "max_id": max_id,
+                "ids": ids, "ts": ts, "util": np.asarray(util, dtype=np.float32),
+                "dom": dom, "etype": etype, "matrix": new_matrix, "legacy": legacy,
+            }
+        # Consistency gate: after an incremental append the cache must hold
+        # exactly the DB's embedded-row count. A backfill that fills NULL
+        # embeddings on OLD ids grows the count without growing max_id, which
+        # the append path can never see - detected here and answered with a
+        # full reload instead of serving a silently incomplete matrix.
+        # [codex finding, 2026-08-30]
+        if since_id and (len(fresh["ids"]) + len(fresh["legacy"])) != n_embedded:
+            logger.info(
+                "vector cache for DB %s inconsistent after incremental refresh "
+                "(%d cached vs %d embedded) - backfill or delete detected, full reload",
+                i, len(fresh["ids"]) + len(fresh["legacy"]), n_embedded)
+            cursor = conn.execute("""
+                SELECT id, timestamp, utility_score, domain_key, event_type, embedding
+                FROM shards WHERE embedding IS NOT NULL ORDER BY id ASC
+            """)
+            ids, ts, util, dom, etype, blobs, legacy = [], [], [], [], [], [], []
+            dim = None
+            for row in cursor:
+                emb = row["embedding"]
+                if isinstance(emb, (bytes, bytearray)) and not emb.startswith(b"[") \
+                        and len(emb) % 4 == 0 and len(emb) > 0:
+                    row_dim = len(emb) // 4
+                    if dim is None:
+                        dim = row_dim
+                    if row_dim == dim:
+                        ids.append(row["id"])
+                        ts.append(row["timestamp"])
+                        util.append(row["utility_score"] if row["utility_score"] is not None else 0.0)
+                        dom.append(row["domain_key"] or "")
+                        etype.append((row["event_type"] or "").upper())
+                        blobs.append(bytes(emb))
+                        continue
+                legacy.append((row["id"], row["utility_score"] or 0.0, row["timestamp"],
+                               row["domain_key"] or "", (row["event_type"] or "").upper(), emb))
+            matrix = (np.frombuffer(b"".join(blobs), dtype=np.float32).reshape(len(blobs), dim)
+                      if blobs else np.zeros((0, dim or 0), dtype=np.float32))
+            fresh = {
+                "sig": _db_write_signature(i), "path": path, "dim": dim,
+                "n_embedded": n_embedded, "max_id": max_id,
+                "ids": ids, "ts": ts, "util": np.asarray(util, dtype=np.float32),
+                "dom": dom, "etype": etype, "matrix": matrix, "legacy": legacy,
+            }
+        _VECTOR_CACHE[i] = fresh
+        return fresh
+    finally:
+        lock.release()
+
+
 def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                      domain_key: str = "global", include_research: bool = False) -> list:
-    """Scans for semantic vector matches independent of FTS."""
+    """Scans for semantic vector matches independent of FTS.
+
+    Scoring runs against the per-DB embedding matrix cache (one BLAS matvec -
+    see _VECTOR_CACHE); only each DB's top `limit` candidates are then fetched
+    and hydrate()d from sqlite. hydrate() can mean a DPAPI decrypt per row, so
+    it must never run across the whole corpus.
+    """
     if query_embedding is None:
         return []
 
-    from . import history # pylint: disable=import-outside-toplevel
+    # There is deliberately NO uncached scan path: the pre-cache implementation
+    # read every row's full record per query (a 10.7GB effective scan, 27s).
+    # So the cache switch is a LANE switch - turning it off turns semantic
+    # recall off entirely, and that must be loud, not a silent empty result.
+    if not _vector_cache_enabled():
+        global _VECTOR_LANE_OFF_WARNED  # pylint: disable=global-statement
+        if not _VECTOR_LANE_OFF_WARNED:
+            logger.warning(
+                "NOUGEN_VECTOR_CACHE=0: the semantic recall lane is OFF "
+                "(no uncached scan path exists) - recall is keyword-only")
+            _VECTOR_LANE_OFF_WARNED = True
+        return []
+
+    from . import history  # pylint: disable=import-outside-toplevel
 
     # One reference clock for the whole scan (see _temporal_decay).
     query_now = datetime.now(timezone.utc)
-    results = []
-    for i in range(1, MAX_DB_COUNT + 1):
-        if not get_db_path(i).exists():
-            continue
-        conn = get_connection(i)
+    q_vec = np.asarray(query_embedding, dtype=np.float32)
+    qdim = int(q_vec.shape[0])
+    excluded_types = frozenset() if include_research else frozenset(bulk_ingest_event_types())
+
+    def _scan_db(i: int) -> list:
+        from . import history  # pylint: disable=import-outside-toplevel
+        db_rows: list = []
+        conn = None
         try:
-            dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
-            dom_params = () if domain_key in (None, "*") else (domain_key,)
-            ing_clause, ing_params = _ingest_filter_sql("shards", include_research)
-            dom_clause = dom_clause + ing_clause
-            dom_params = (*dom_params, *ing_params)
+            # Path.exists() raises on EACCES (only ENOENT/ENOTDIR are False),
+            # so the probe stays inside the guard - same rationale as the
+            # keyword lane.
+            if not get_db_path(i).exists():
+                return db_rows
+            conn = get_connection(i)
+            cache = _vector_cache_entry(i, conn)
+            scored = []  # (final_score, id)
+            if cache and cache["dim"] == qdim and len(cache["ids"]):
+                sem_scores = np.array(cache["matrix"] @ q_vec)
+                # Mask rows excluded by domain scope / ingest filter by sinking
+                # their scores below any real cosine instead of copying the
+                # matrix per query.
+                if domain_key not in (None, "*"):
+                    mask = np.fromiter((d != domain_key for d in cache["dom"]),
+                                       dtype=bool, count=len(cache["dom"]))
+                    sem_scores[mask] = -1e9
+                if excluded_types:
+                    mask = np.fromiter((e in excluded_types for e in cache["etype"]),
+                                       dtype=bool, count=len(cache["etype"]))
+                    sem_scores[mask] = -1e9
+                # Exact-score (timestamp parse + decay) only a semantic-top
+                # pool: _temporal_decay parses an ISO timestamp per call and
+                # doing that for every row was the residual latency after the
+                # matmul. The prior term is bounded (<= WEIGHT_PRIOR * utility),
+                # so a generous pool cannot exclude a row exact scoring would
+                # have promoted into the top `limit`.
+                pool_n = min(len(cache["ids"]), max(limit * 8, 256))
+                if pool_n < len(cache["ids"]):
+                    pool_idx = np.argpartition(-sem_scores, pool_n - 1)[:pool_n]
+                else:
+                    pool_idx = np.arange(len(cache["ids"]))
+                for idx in pool_idx:
+                    if sem_scores[idx] <= -1e8:
+                        continue
+                    decayed_utility = float(cache["util"][idx]) * _temporal_decay(cache["ts"][idx], query_now)
+                    scored.append((float(sem_scores[idx]) * WEIGHT_LIKELIHOOD
+                                   + decayed_utility * WEIGHT_PRIOR, int(cache["ids"][idx])))
+                for sid, utility, ts, dom, etype, emb in cache["legacy"]:
+                    if domain_key not in (None, "*") and dom != domain_key:
+                        continue
+                    if etype in excluded_types:
+                        continue
+                    try:
+                        emb_array = np.array(json.loads(emb.decode()), dtype=np.float32) \
+                            if emb.startswith(b"[") else np.frombuffer(emb, dtype=np.float32)
+                        sem = float(np.dot(q_vec, emb_array)) if emb_array.shape[0] == qdim else 0.0
+                    except Exception:  # pylint: disable=broad-except
+                        sem = 0.0
+                    decayed_utility = utility * _temporal_decay(ts, query_now)
+                    scored.append((sem * WEIGHT_LIKELIHOOD + decayed_utility * WEIGHT_PRIOR, sid))
+            elif cache and cache["dim"] not in (None, qdim):
+                logger.warning(
+                    "vector lane skipped on DB %s: cached embedding dim %s != query dim %s "
+                    "(embed model changed?)", i, cache["dim"], qdim)
+            if not scored:
+                return db_rows
+            scored.sort(key=lambda t: (-round(t[0], 6), t[1]))
+            top = scored[:limit]
+            placeholders = ",".join("?" for _ in top)
+            by_id = {sid: score for score, sid in top}
             cursor = conn.execute(f"""
                 SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key
-                FROM shards
-                WHERE {dom_clause}embedding IS NOT NULL
-            """, dom_params)
+                FROM shards WHERE id IN ({placeholders})
+            """, [sid for _, sid in top])
             for row in cursor:
                 item = hydrate(dict(row))
                 item["_db_index"] = i
-                
-                try:
-                    if item["embedding"].startswith(b'['):
-                        raise ValueError("Legacy JSON embedding")
-                    emb_array = np.frombuffer(item["embedding"], dtype=np.float32)
-                    sem_score = float(np.dot(query_embedding, emb_array))
-                except Exception:
-                    try:
-                        emb_array = np.array(json.loads(item["embedding"].decode()), dtype=np.float32)
-                        sem_score = float(np.dot(query_embedding, emb_array))
-                    except Exception:
-                        sem_score = 0.0
-
-                decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), query_now)
-                item["final_score"] = (sem_score * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
-                results.append(item)
+                item["final_score"] = by_id.get(item["id"], 0.0)
+                db_rows.append(item)
+        except (sqlite3.DatabaseError, OSError) as exc:
+            # ONE bad DB must not zero out the whole federated read - degrade
+            # per DB: record it, skip it, keep scanning (see keyword lane for
+            # the 2026-08-29 incident that mandates this).
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
+        return db_rows
+
+    results = []
+    for _i, db_rows in _run_db_scans(_scan_db):
+        results.extend(db_rows)
 
     # Deterministic order: score DESC (rounded so sub-epsilon temporal-decay
     # jitter doesn't reorder near-ties run-to-run), then (_db_index, id) ASC.
     results.sort(key=lambda x: (-round(x.get("final_score", 0.0), 6), x.get("_db_index", 0), x.get("id", 0)))
     top_results = results[:limit]
-    
-    for item in top_results:
-        history.log_event(item["id"], item["_db_index"], "ACCESSED")
-        
+
+    history.log_events([(item["id"], item["_db_index"], "ACCESSED") for item in top_results])
+
     return top_results
 
 
-def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[dict]:
+def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
+                           weights: Optional[List[float]] = None) -> List[dict]:
     """
     Module 8 / 21: Reciprocal Rank Fusion (RRF) to merge multiple ranked lists.
 
@@ -1254,13 +1990,18 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
         val = f"{title}|||{content}"
         return hashlib.sha256(val.encode("utf-8", errors="ignore")).hexdigest()
 
-    for rank_list in result_lists:
+    for list_idx, rank_list in enumerate(result_lists):
         if not rank_list:
             continue
+        # Optional per-list weight (default 1.0): lets a caller declare one
+        # lane authoritative without changing the 1/(k+rank) arithmetic.
+        weight = 1.0
+        if weights is not None and list_idx < len(weights):
+            weight = float(weights[list_idx])
         for rank_idx, item in enumerate(rank_list):
             key = get_rrf_key(item)
             rank = rank_idx + 1
-            score = 1.0 / (k + rank)
+            score = weight / (k + rank)
             rrf_scores[key] = rrf_scores.get(key, 0.0) + score
             
             if key not in item_map:
@@ -1337,10 +2078,20 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     """
     import concurrent.futures
 
-    # Ensure all existing shard databases are schema-upgraded to the current version before querying
+    # Ensure all existing shard databases are schema-upgraded to the current
+    # version before querying. Per-DB guard for the same reason as the fan-outs
+    # below: Path.exists() RAISES on EACCES (only ENOENT/ENOTDIR return False)
+    # and init_db opens the file, so one unreadable DB here would abort recall
+    # before a single query ran -- upstream of every handler that exists to
+    # prevent exactly that.
     for i in range(1, MAX_DB_COUNT + 1):
-        if get_db_path(i).exists():
-            init_db(i)
+        try:
+            if get_db_path(i).exists():
+                init_db(i)
+        except (sqlite3.DatabaseError, OSError) as exc:
+            logger.error("grid DB %s unreadable during schema upgrade, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            continue
 
     # An explicit domain_key is a caller's deliberate scope and stays exclusive
     # (see test_domain_isolation_capture_and_retrieve). A domain resolved
@@ -1357,6 +2108,11 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         norm = np.linalg.norm(arr)
         if norm > 0:
             query_embedding = arr / norm
+    elif _query_embed_enabled():
+        # No caller in the MCP/app path ever passed a query embedding, which
+        # left the vector lane permanently dark (see _embed_query). Compute one
+        # here, best-effort, so semantic recall works for every entry point.
+        query_embedding = _embed_query(query)
 
     candidate_limit = max(limit * 2, 20)
 
@@ -1376,22 +2132,29 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             
         return reciprocal_rank_fusion([keyword_results, vector_results], k=60)
 
-    all_results = run_parallel_retrieval(domain_key)
-
-    if domain_key != "*":
-        if explicit_domain:
+    if domain_key != "*" and not explicit_domain:
+        # Implicit CWD-domain: scoped-plus-global fusion, not scoped-else-
+        # global. Always run the whole-brain pass and merge, multiplying
+        # scoped (in-domain) scores by a domain-affinity boost so local
+        # context still ranks first on ties but can no longer mask
+        # near-exact matches that live under another writer's CWD-domain.
+        # The two passes are independent, so they run CONCURRENTLY - the
+        # serial version doubled recall latency on every implicit-domain call.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_scoped = executor.submit(copy_context().run, run_parallel_retrieval, domain_key)
+            future_whole = executor.submit(copy_context().run, run_parallel_retrieval, "*")
+            all_results = future_scoped.result()
+            whole_brain = future_whole.result()
+    else:
+        all_results = run_parallel_retrieval(domain_key)
+        whole_brain = None
+        if domain_key != "*" and not all_results:
             # Fallback: if the deliberately-scoped pass found nothing, sweep the
             # ENTIRE brain (all domain_keys). Without this, recall stays siloed
             # to one bucket (e.g. 'global' = <2% of shards) and misses the rest.
-            if not all_results:
-                all_results = run_parallel_retrieval("*")
-        else:
-            # Implicit CWD-domain: scoped-plus-global fusion, not scoped-else-
-            # global. Always run the whole-brain pass and merge, multiplying
-            # scoped (in-domain) scores by a domain-affinity boost so local
-            # context still ranks first on ties but can no longer mask
-            # near-exact matches that live under another writer's CWD-domain.
-            whole_brain = run_parallel_retrieval("*")
+            all_results = run_parallel_retrieval("*")
+
+    if whole_brain is not None:
             boost = _domain_affinity_boost()
             fused: dict = {}
             for item in whole_brain:
@@ -1508,16 +2271,56 @@ def locate_shard(shard_id: int) -> List[int]:
     """
     found = []
     for i in range(1, MAX_DB_COUNT + 1):
-        if not get_db_path(i).exists():
-            continue
-        conn = get_connection(i)
+        # The existence probe belongs INSIDE the guard too. Path.exists() returns
+        # False only for ENOENT/ENOTDIR; on EACCES/EPERM it RAISES. An
+        # ACL-locked DB file would therefore escape the handler below and kill
+        # the whole fan-out - the same failure the handler exists to stop,
+        # through a different door, two lines earlier.
+        #
+        # (PowerShell's Test-Path has the opposite bug: it RETURNS $false on
+        #  UnauthorizedAccessException, so "not allowed to look" reads as "not
+        #  there". Python raising here is the better default - it just has to be
+        #  caught rather than left outside the try.)
+        conn = None
         try:
+            if not get_db_path(i).exists():
+                continue
+            conn = get_connection(i)
             if conn.execute("SELECT 1 FROM shards WHERE id = ?", (shard_id,)).fetchone():
                 found.append(i)
         except sqlite3.Error:
             continue
+        except (sqlite3.DatabaseError, OSError) as exc:
+            # ONE bad DB must not zero out the whole federated read. The try
+            # around the FTS SQL below catches only sqlite3.OperationalError,
+            # but a corrupt file raises sqlite3.DatabaseError ("database disk
+            # image is malformed") -- its PARENT class, so that except never
+            # matched. With no except on this loop, the error escaped the
+            # for-loop entirely and every ranked read returned empty while the
+            # other 8 DBs sat there healthy and unread.
+            #
+            # 2026-08-29: that is exactly what shipped. shards_coverage showed
+            # databases_errored [{index:5, malformed}], and recall AND search
+            # both returned 0 against a six-figure vault while shards_window --
+            # which filters on timestamp and never touches this path -- happily
+            # returned rows. Health said up the whole time.
+            #
+            # Degrade per DB: record it, skip it, keep scanning. A partial
+            # answer from 8 DBs is worth infinitely more than a false empty,
+            # and the log line names the index so the corrupt file is findable
+            # instead of silently swallowed.
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                from . import history  # pylint: disable=import-outside-toplevel
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
     return found
 
 
@@ -1545,10 +2348,21 @@ def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
     """
     indices = [db_index] if db_index is not None else range(1, MAX_DB_COUNT + 1)
     for i in indices:
-        if not get_db_path(i).exists():
-            continue
-        conn = get_connection(i)
+        # The existence probe belongs INSIDE the guard too. Path.exists() returns
+        # False only for ENOENT/ENOTDIR; on EACCES/EPERM it RAISES. An
+        # ACL-locked DB file would therefore escape the handler below and kill
+        # the whole fan-out - the same failure the handler exists to stop,
+        # through a different door, two lines earlier.
+        #
+        # (PowerShell's Test-Path has the opposite bug: it RETURNS $false on
+        #  UnauthorizedAccessException, so "not allowed to look" reads as "not
+        #  there". Python raising here is the better default - it just has to be
+        #  caught rather than left outside the try.)
+        conn = None
         try:
+            if not get_db_path(i).exists():
+                continue
+            conn = get_connection(i)
             row = conn.execute("SELECT id, utility_score FROM shards WHERE id = ?", (shard_id,)).fetchone()
             if row:
                 old_score = row["utility_score"]
@@ -1558,8 +2372,18 @@ def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
                 conn.commit()
             else:
                 continue
+        except (sqlite3.DatabaseError, OSError) as exc:
+            # Found by tests/test_grid_fanout_guard_invariant.py after TWO
+            # careful human reads of this file missed it. It got the
+            # open-inside-the-try placement in the first sweep but never the
+            # handler, so a corrupt DB still aborted the walk and every later
+            # index went unchecked -- silently reporting "shard not found".
+            logger.error("grid DB %s unreadable while marking shard %s, skipping it: %s: %s",
+                         i, shard_id, type(exc).__name__, exc)
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
         # Log UTILITY_CHANGE event
         from . import history # pylint: disable=import-outside-toplevel
@@ -1575,14 +2399,54 @@ def decay_utility_scores(factor: float = 0.95):
     Applies a decay factor to all utility scores to prevent stale dominance.
     """
     for i in range(1, MAX_DB_COUNT + 1):
-        if not get_db_path(i).exists():
-            continue
-        conn = get_connection(i)
+        # The existence probe belongs INSIDE the guard too. Path.exists() returns
+        # False only for ENOENT/ENOTDIR; on EACCES/EPERM it RAISES. An
+        # ACL-locked DB file would therefore escape the handler below and kill
+        # the whole fan-out - the same failure the handler exists to stop,
+        # through a different door, two lines earlier.
+        #
+        # (PowerShell's Test-Path has the opposite bug: it RETURNS $false on
+        #  UnauthorizedAccessException, so "not allowed to look" reads as "not
+        #  there". Python raising here is the better default - it just has to be
+        #  caught rather than left outside the try.)
+        conn = None
         try:
+            if not get_db_path(i).exists():
+                continue
+            conn = get_connection(i)
             conn.execute("UPDATE shards SET utility_score = utility_score * ?", (factor,))
             conn.commit()
+        except (sqlite3.DatabaseError, OSError) as exc:
+            # ONE bad DB must not zero out the whole federated read. The try
+            # around the FTS SQL below catches only sqlite3.OperationalError,
+            # but a corrupt file raises sqlite3.DatabaseError ("database disk
+            # image is malformed") -- its PARENT class, so that except never
+            # matched. With no except on this loop, the error escaped the
+            # for-loop entirely and every ranked read returned empty while the
+            # other 8 DBs sat there healthy and unread.
+            #
+            # 2026-08-29: that is exactly what shipped. shards_coverage showed
+            # databases_errored [{index:5, malformed}], and recall AND search
+            # both returned 0 against a six-figure vault while shards_window --
+            # which filters on timestamp and never touches this path -- happily
+            # returned rows. Health said up the whole time.
+            #
+            # Degrade per DB: record it, skip it, keep scanning. A partial
+            # answer from 8 DBs is worth infinitely more than a false empty,
+            # and the log line names the index so the corrupt file is findable
+            # instead of silently swallowed.
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                from . import history  # pylint: disable=import-outside-toplevel
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
     return True
 
 
@@ -1651,10 +2515,21 @@ def retrieve_semantic_rules(query: str, limit: int = 5, domain_key: str = "globa
     
     rules = []
     for i in range(1, MAX_DB_COUNT + 1):
-        if not get_db_path(i).exists():
-            continue
-        conn = get_connection(i)
+        # The existence probe belongs INSIDE the guard too. Path.exists() returns
+        # False only for ENOENT/ENOTDIR; on EACCES/EPERM it RAISES. An
+        # ACL-locked DB file would therefore escape the handler below and kill
+        # the whole fan-out - the same failure the handler exists to stop,
+        # through a different door, two lines earlier.
+        #
+        # (PowerShell's Test-Path has the opposite bug: it RETURNS $false on
+        #  UnauthorizedAccessException, so "not allowed to look" reads as "not
+        #  there". Python raising here is the better default - it just has to be
+        #  caught rather than left outside the try.)
+        conn = None
         try:
+            if not get_db_path(i).exists():
+                continue
+            conn = get_connection(i)
             for word in words[:3]:
                 cursor = conn.execute("""
                     SELECT id, subject, predicate, confidence_score, domain_key, updated_at, ? as _db_index
@@ -1668,8 +2543,37 @@ def retrieve_semantic_rules(query: str, limit: int = 5, domain_key: str = "globa
                     rules.append(dict(row))
         except sqlite3.OperationalError:
             pass
+        except (sqlite3.DatabaseError, OSError) as exc:
+            # ONE bad DB must not zero out the whole federated read. The try
+            # around the FTS SQL below catches only sqlite3.OperationalError,
+            # but a corrupt file raises sqlite3.DatabaseError ("database disk
+            # image is malformed") -- its PARENT class, so that except never
+            # matched. With no except on this loop, the error escaped the
+            # for-loop entirely and every ranked read returned empty while the
+            # other 8 DBs sat there healthy and unread.
+            #
+            # 2026-08-29: that is exactly what shipped. shards_coverage showed
+            # databases_errored [{index:5, malformed}], and recall AND search
+            # both returned 0 against a six-figure vault while shards_window --
+            # which filters on timestamp and never touches this path -- happily
+            # returned rows. Health said up the whole time.
+            #
+            # Degrade per DB: record it, skip it, keep scanning. A partial
+            # answer from 8 DBs is worth infinitely more than a false empty,
+            # and the log line names the index so the corrupt file is findable
+            # instead of silently swallowed.
+            logger.error("grid DB %s unreadable during scan, skipping it: %s: %s",
+                         i, type(exc).__name__, exc)
+            try:
+                from . import history  # pylint: disable=import-outside-toplevel
+                history.log_event(0, i, "DB_DEGRADED",
+                                  metadata={"error": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # pylint: disable=broad-except
+                pass
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
             
     # Deduplicate
     seen = set()
