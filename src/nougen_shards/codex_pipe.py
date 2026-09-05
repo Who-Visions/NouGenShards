@@ -60,7 +60,8 @@ def native_destination():
         uuid.UUID(thread)
     except (ValueError, AttributeError) as exc:
         raise OSError("Invalid Codex task target") from exc
-    executable = os.environ.get("NOUGEN_CODEX_CLI", "").strip() or shutil.which("codex")
+    executable = (os.environ.get("NOUGEN_CODEX_CLI", "").strip()
+                  or shutil.which("codex") or str(Path.home() / ".local" / "bin" / "codex"))
     if not executable or not Path(executable).is_file():
         raise OSError("Codex CLI unavailable")
     return thread, executable
