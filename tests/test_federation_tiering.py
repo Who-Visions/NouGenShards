@@ -190,7 +190,7 @@ class TestHealthAggregateCache:
         monkeypatch.setattr(app_module, "_substrate_coverage", counting)
         # Tenancy: the unauthenticated /health view deliberately performs no
         # vault read, so the cache is only exercised on the authed path.
-        monkeypatch.setattr(app_module, "verify_token",
+        monkeypatch.setattr(app_module, "_verify_token_sync",
                             lambda token: _FakeTenant())
         # health() is async def (so unauth probes cannot starve behind the
         # sync threadpool); run the coroutine for real or the counter stays 0.
