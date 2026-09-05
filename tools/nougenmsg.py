@@ -8,6 +8,7 @@ import os
 import base64
 import json
 import time
+from typing import Any
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -41,6 +42,44 @@ Inspection & Discovery:
   agy msg --help                              Show this help menu
 """)
 
+def print_inline_banner(title: str, results: Any, message_text: str = "") -> None:
+    border = "=" * 68
+    print(f"\n{border}")
+    print(f"🛰️  {title}")
+    print(border)
+    if message_text:
+        preview = (message_text[:76] + "...") if len(message_text) > 76 else message_text
+        print(f'💬 Message: "{preview}"')
+        print("-" * 68)
+
+    if isinstance(results, dict):
+        for key, val in results.items():
+            if isinstance(val, dict):
+                if any(k in val for k in ["status", "delivered", "pipe_delivered", "file"]):
+                    status = val.get("status") or ("delivered" if val.get("delivered") else None) or ("online" if val.get("ok") else "unknown")
+                    icon = "✅" if status in ["delivered", "queued", "online"] else ("⚠️" if status == "dropped" else "❌")
+                    pipe_info = " (Pipe: Active)" if val.get("pipe_delivered") else " (Inbox: Synced)"
+                    receipt = val.get("receipt", "")
+                    receipt_str = f" | {receipt[:40]}..." if receipt else ""
+                    print(f"  {icon} {key.upper():<12} -> Status: {status.upper()}{pipe_info}{receipt_str}")
+                else:
+                    print(f"  🌐 Node [{key.upper()}]:")
+                    for a_k, a_v in val.items():
+                        if isinstance(a_v, dict):
+                            st = a_v.get("status") or ("delivered" if a_v.get("delivered") else None) or "unknown"
+                            ic = "✅" if st in ["delivered", "queued", "online"] else ("⚠️" if st == "dropped" else "❌")
+                            p_info = " [Pipe: Active]" if a_v.get("pipe_delivered") else " [Inbox: Synced]"
+                            rc = a_v.get("receipt", "")
+                            rc_str = f" | {rc[:30]}..." if rc else ""
+                            print(f"      {ic} {a_k:<12} -> {st.upper()}{p_info}{rc_str}")
+                        else:
+                            print(f"      • {a_k}: {a_v}")
+            else:
+                print(f"  • {key}: {val}")
+    else:
+        print(f"  {results}")
+    print(f"{border}\n")
+
 def main():
     if len(sys.argv) < 2 or "--help" in sys.argv or "-h" in sys.argv:
         print_help()
@@ -52,6 +91,9 @@ def main():
         print(f"\n📡 Discovered Peers on Node: [{peers['current_node'].upper()}]")
         print(f"  • Claude Active Pipes: {len(peers['claude_active_pipes'])}")
         for p in peers['claude_active_pipes']:
+            print(f"      - {p}")
+        print(f"  • Antigravity Active Pipes: {len(peers.get('antigravity_active_pipes', []))}")
+        for p in peers.get('antigravity_active_pipes', []):
             print(f"      - {p}")
         print(f"  • Antigravity Inbox Unread: {peers['antigravity_inbox_unread']} message(s)")
         print(f"  • Codex Inbox Unread:       {peers['codex_inbox_unread']} message(s)")
@@ -66,11 +108,20 @@ def main():
             if idx + 1 < len(sys.argv):
                 target = sys.argv[idx + 1]
         msgs = NouGenMsgBus.read_inbox(target=target)
-        print(f"\n📬 Inbox for [{target.upper()}] ({len(msgs)} messages):")
-        for m in msgs:
-            ts_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(m.get('timestamp', time.time())))
-            print(f"  [{ts_str}] From: {m.get('source')} | Domain: {m.get('domain', 'default')}")
-            print(f"    Message: {m.get('text')}\n")
+        border = "=" * 68
+        print(f"\n{border}")
+        print(f"📬  INBOX: [{target.upper()}] ({len(msgs)} messages)")
+        print(border)
+        if not msgs:
+            print("  (inbox is empty)")
+        else:
+            for m in msgs:
+                ts_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(m.get('timestamp', time.time())))
+                src = m.get('source') or m.get('sender') or 'unknown'
+                dom = f" [{m.get('domain')}]" if m.get('domain') else ""
+                print(f"  • [{ts_str}] From: @{src}{dom}")
+                print(f"    └─ {m.get('text')}")
+        print(f"{border}\n")
         return
 
     # Clear inbox
@@ -147,19 +198,17 @@ def main():
         print_help()
         return
 
+
     curr = get_current_node()
     if not node or node == "fleet":
-        print(f"🌐 [Fleet Broadcast] Source: {curr.upper()} | Agent Target: {target_agent.upper()}...")
         res = NouGenMsgBus.emit_fleet(text=text, target=target_agent, origin=origin)
-        print("Fleet Results:", res)
+        print_inline_banner(f"FLEET BROADCAST: {curr.upper()} -> {target_agent.upper()}", res, text)
     elif node in ["local", curr]:
-        print(f"📍 [Local Live-Ping] Source: {curr.upper()} | Target: {target_agent.upper()}...")
         res = NouGenMsgBus.live_ping(target=target_agent, text=text, origin=origin)
-        print("Local Results:", res)
+        print_inline_banner(f"LOCAL LIVE-PING: {curr.upper()} -> {target_agent.upper()}", res, text)
     else:
-        print(f"🛰️ [Targeted Node Dispatch] Source: {curr.upper()} -> Target Node: {node.upper()} ({target_agent.upper()})...")
         res = NouGenMsgBus.emit_node(node=node, target=target_agent, text=text, origin=origin)
-        print("Result:", res)
+        print_inline_banner(f"NODE DISPATCH: {curr.upper()} -> {node.upper()} ({target_agent.upper()})", res, text)
 
 if __name__ == "__main__":
     main()

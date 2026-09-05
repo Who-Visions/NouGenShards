@@ -280,28 +280,44 @@ class AgentPinger:
             except Exception:
                 continue
 
-        # Also dispatch to live local named pipe / HTTP listener
+        # Dispatch to live local Win32 Named Pipe if present
         pipe_delivered = False
-        try:
-            from .agy_msg import AgyMsgBus
-            bus_res = AgyMsgBus.send_local(
-                text=prompt,
-                sender=payload["source"],
-                priority="normal",
-                leg_id=leg_id,
-                goal=goal,
-                target="antigravity",
-                action="wake",
-            )
-            pipe_delivered = bool(bus_res.get("delivered"))
-        except Exception:
-            pass
+        if os.name == "nt":
+            try:
+                pipe_path = r"\\.\pipe\LOCAL\agy-msg-antigravity"
+                pipe_payload = (json.dumps(payload) + "\n").encode("utf-8")
+                bytes_sent = AgentPinger._write_windows_named_pipe(pipe_path, pipe_payload)
+                pipe_delivered = bytes_sent > 0
+            except Exception:
+                pipe_delivered = False
+        else:
+            try:
+                import glob, socket
+                for sock in glob.glob("/tmp/agy-socks/*.sock"):
+                    try:
+                        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                        s.connect(sock)
+                        s.sendall(json.dumps(payload).encode("utf-8") + b"\n")
+                        s.close()
+                        pipe_delivered = True
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
-        return {"status": "dropped", "files": written_files, "primary": written_files[0] if written_files else None, "pipe_delivered": pipe_delivered}
+        return {"status": "delivered" if pipe_delivered else "dropped", "files": written_files, "primary": written_files[0] if written_files else None, "pipe_delivered": pipe_delivered}
 
     @staticmethod
     def ping_codex(prompt: str, origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Drops live event notification into OpenAI Codex session inbox."""
+        """Queue through the local Codex pipe, retaining an inbox fallback."""
+        try:
+            from .codex_pipe import deliver
+            res = deliver(prompt, origin=origin)
+            if res.get("pipe_delivered"):
+                return res
+        except Exception:
+            pass
+
         inbox_dir = os.path.expanduser(os.path.join("~", ".codex", "inbox"))
         os.makedirs(inbox_dir, exist_ok=True)
         filename = f"ping_{int(time.time() * 1000)}.json"
@@ -318,7 +334,7 @@ class AgentPinger:
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
 
-        return {"status": "dropped", "file": filepath}
+        return {"status": "dropped", "file": filepath, "pipe_delivered": False}
 
     @staticmethod
     def ping_ollama(prompt: str, node: str = "local", model: Optional[str] = None) -> Dict[str, Any]:
@@ -557,6 +573,30 @@ class NouGenMsgBus:
         """Discovers active local pipes and session inboxes across agents."""
         curr = get_current_node()
         claude_pipes = AgentPinger._discover_claude_endpoints()
+        agy_pipes: List[str] = []
+        agy_reg = os.path.expanduser(os.path.join("~", ".nougen", "agy_sessions.json"))
+        if os.path.exists(agy_reg):
+            try:
+                with open(agy_reg, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    sessions = data.get("sessions") or {}
+                    for pipe_k in sessions.keys():
+                        if pipe_k not in agy_pipes:
+                            agy_pipes.append(pipe_k)
+            except Exception:
+                pass
+        if not agy_pipes:
+            candidates = glob.glob(r"\\.\pipe\LOCAL\agy-msg-*")
+            if candidates:
+                agy_pipes.extend(candidates)
+            elif os.name == "nt":
+                agy_pipes.append(r"\\.\pipe\LOCAL\agy-msg-antigravity")
+
+        try:
+            from .codex_pipe import request as codex_request
+            codex_pipe = codex_request({"op": "status"})
+        except Exception:
+            codex_pipe = {"status": "offline"}
 
         inbox_gemini = os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox"))
         inbox_codex = os.path.expanduser(os.path.join("~", ".codex", "inbox"))
@@ -567,6 +607,8 @@ class NouGenMsgBus:
         return {
             "current_node": curr,
             "claude_active_pipes": claude_pipes,
+            "antigravity_active_pipes": agy_pipes,
+            "codex_pipe": codex_pipe,
             "antigravity_inbox_unread": gemini_messages,
             "codex_inbox_unread": codex_messages,
             "nodes_reachable": ["whoart", "blade", "phoebus"]

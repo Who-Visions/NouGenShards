@@ -28,15 +28,55 @@ DEFAULT_EMBED_CAPTURE_TIMEOUT_S = float(os.environ.get("NOUGEN_EMBED_CAPTURE_TIM
 MAX_DB_SIZE = 1 * 1024 * 1024 * 1024  # 1GB Safety Limit per DB
 MAX_DB_COUNT = 9
 
-_vault_dir = os.environ.get("NOUGEN_VAULT_DIR")
-if not _vault_dir:
-    local_vault = Path(".vault")
-    if local_vault.exists() and local_vault.is_dir():
-        _vault_dir = str(local_vault)
-    else:
-        _vault_dir = str(Path.home() / ".nougen" / "shards")
+#: Where the vault came from. Never silent: a node writing somewhere other
+#: than the default must say so, because the failure mode is invisible.
+VAULT_SOURCE = "default"
 
-GLOBAL_DIR = Path(_vault_dir)
+
+def _resolve_vault_dir() -> Path:
+    """Pick the vault directory. Explicit beats implicit; nothing is CWD-relative.
+
+    `Path(".vault")` used to be honoured here, resolved against the current
+    working directory. `bin/ngs-node.sh` does `cd "$REPO"` before exec, so any
+    stray `.vault/` directory anywhere in the repo silently captured the whole
+    grid: writes reported success and landed in a store nobody was searching.
+    That is exactly how 8,289 rows were stranded on one node on 2026-09-03
+    while `shards_capture` kept returning `{"captured": true}` (relay legs
+    20260904T013055Z, 20260904T042257Z).
+
+    A repo-local vault is still reachable, but it must now be asked for by
+    name rather than acquired by accident, and the choice is always logged.
+    """
+    global VAULT_SOURCE
+
+    explicit = os.environ.get("NOUGEN_VAULT_DIR")
+    if explicit:
+        VAULT_SOURCE = "NOUGEN_VAULT_DIR"
+        return Path(explicit).expanduser().resolve()
+
+    # Opt-in only, and anchored to the package rather than to CWD, so the
+    # answer does not change with the directory a process happens to start in.
+    if os.environ.get("NOUGEN_VAULT_ALLOW_LOCAL", "").strip() == "1":
+        anchor = Path(__file__).resolve().parent.parent.parent
+        local_vault = anchor / ".vault"
+        if local_vault.is_dir():
+            VAULT_SOURCE = "repo-local (NOUGEN_VAULT_ALLOW_LOCAL=1)"
+            logger.warning(
+                "NouGen vault: using repo-local %s — this vault is NOT the "
+                "shared grid at %s; shards written here are invisible to "
+                "federated recall", local_vault, Path.home() / ".nougen" / "shards")
+            return local_vault.resolve()
+
+    VAULT_SOURCE = "default"
+    return (Path.home() / ".nougen" / "shards").resolve()
+
+
+GLOBAL_DIR = _resolve_vault_dir()
+
+if VAULT_SOURCE != "default":
+    logger.warning("NouGen vault resolved to %s via %s", GLOBAL_DIR, VAULT_SOURCE)
+else:
+    logger.info("NouGen vault: %s", GLOBAL_DIR)
 
 _ACTIVE_VAULT_DIR: ContextVar[Optional[Path]] = ContextVar(
     "nougen_active_vault_dir", default=None)
