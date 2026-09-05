@@ -20,7 +20,7 @@
     "package_name": "nougenshards"
   },
   "dirty": true,
-  "status": "in_progress",
+  "status": "complete",
   "relay": [
     {
       "event": "ack",
@@ -36,6 +36,14 @@
       "agent": "claude-cli",
       "at": "2026-09-03T16:56:51.032206+00:00",
       "note": "Tracked via #135 (open) and #136 (draft, blocked on #135). Scheduled relay sweep, triggered by PR #195 opening."
+    },
+    {
+      "event": "checkpoint",
+      "state": "complete",
+      "machine": "vm",
+      "agent": "claude-cli",
+      "at": "2026-09-05T12:56:00Z",
+      "note": "Resolved. #135 and #136 closed 2026-09-05T07:08-07:09Z: the Rhea half was superseded by main's 2026-09 hardening (#160/#162/#163/#164/#168/#204), and the five salvageable commits landed clean as #230 (merged 07:21Z). #136's remaining content was superseded the same way (see #132/#133 precedent); nothing from it was ported. This baton's work is on main. Scheduled relay sweep, triggered by NouGenShards PR #235 opening."
     }
   ]
 }
