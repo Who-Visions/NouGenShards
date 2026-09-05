@@ -47,13 +47,13 @@ def grid(tmp_path, monkeypatch):
 
 
 def test_epoch_timestamp_does_not_crash_the_endpoint(grid):
-    out = node.substrate_coverage()
+    out = node.substrate_coverage.fn()
     assert out["total_shards"] == 3
 
 
 def test_epoch_row_never_becomes_the_span(grid):
     """The quiet half. A year-1765 earliest is not a substrate, it is a bug."""
-    out = node.substrate_coverage()
+    out = node.substrate_coverage.fn()
     assert out["span"]["earliest"] == "2026-01-05T00:00:00Z"
     assert out["span"]["latest"] == "2026-03-05T00:00:00Z"
 
@@ -61,7 +61,7 @@ def test_epoch_row_never_becomes_the_span(grid):
 def test_the_unusable_row_is_reported_not_dropped(grid):
     """It is real content no era-bounded query can reach. Counted in
     total_shards, absent from months — a caller must be able to see why."""
-    out = node.substrate_coverage()
+    out = node.substrate_coverage.fn()
     assert out["malformed_timestamps"] == 1
     assert sum(out["months"].values()) == 2
     assert out["empty_months"] == ["2026-02"]
@@ -72,4 +72,4 @@ def test_clean_grid_reports_zero(grid, tmp_path, monkeypatch):
     conn.execute("DELETE FROM shards WHERE timestamp NOT LIKE '2%'")
     conn.commit()
     conn.close()
-    assert node.substrate_coverage()["malformed_timestamps"] == 0
+    assert node.substrate_coverage.fn()["malformed_timestamps"] == 0
