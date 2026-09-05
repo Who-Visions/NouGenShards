@@ -563,7 +563,26 @@ class NouGenMsgBus:
         "blade": "python %USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py",
         "whoart": "python %USERPROFILE%/Outpost/NouGen/tools/nougenmsg.py",
     }
-    _DEFAULT_REMOTE_SCRIPT = "python3 ~/.nougen/tools/nougenmsg.py"
+    # A bare `python3` is a coin flip on a box with more than one interpreter.
+    # phoebus has /usr/bin/python3 (3.9, numpy present) and
+    # /usr/local/bin/python3 (3.13, NO numpy), and /usr/local/bin precedes
+    # /usr/bin on the PATH a non-interactive `ssh host cmd` gets. The receiver
+    # imports nougen_shards -> core -> numpy, so the wrong pick dies at IMPORT
+    # and the sender sees a failed hop, never "numpy missing" -- the node would
+    # look unreachable for a reason nothing reports.
+    #
+    # Real remote sends currently land (verified whoart -> phoebus 2026-09-05,
+    # arrival carried relay_path ['whoart','phoebus']), so sshd's own PATH
+    # resolves it today. That is luck we should not keep depending on: choose
+    # the first interpreter that can actually import the dependency, rather
+    # than the first one named python3. NOUGEN_REMOTE_PYTHON overrides.
+    _DEFAULT_REMOTE_SCRIPT = (
+        'p="${NOUGEN_REMOTE_PYTHON:-}"; '
+        'if [ -z "$p" ]; then for c in /usr/bin/python3 /usr/local/bin/python3 python3; do '
+        'command -v "$c" >/dev/null 2>&1 && "$c" -c "import numpy" >/dev/null 2>&1 '
+        '&& { p="$c"; break; }; done; fi; '
+        '"${p:-python3}" ~/.nougen/tools/nougenmsg.py'
+    )
 
     # node -> whether its nougenmsg.py understands --text-b64. Probed once per
     # process; a node that predates the flag keeps the scp pointer path.
