@@ -150,6 +150,12 @@ def _stub_ssh(monkeypatch, calls, stdout="ok"):
         "nougen_shards.nougenmsg.subprocess.run",
         lambda *args, **kwargs: calls.append((args, kwargs)) or Result(),
     )
+    # emit_node runs ssh through _ssh_capture (temp file, never a pipe), so the
+    # ssh legs are stubbed at that seam rather than at subprocess.run.
+    monkeypatch.setattr(
+        NouGenMsgBus, "_ssh_capture",
+        lambda argv, timeout=None: calls.append(((argv,), {})) or stdout,
+    )
     NouGenMsgBus._TEXT_B64_SUPPORT.clear()
 
 

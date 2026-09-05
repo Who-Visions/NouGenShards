@@ -526,17 +526,41 @@ class NouGenMsgBus:
     _SSH_OPTS = ["-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
 
     @classmethod
+    def _ssh_capture(cls, argv, timeout: float) -> str:
+        """Run ssh and return its combined output, via a temp file rather than
+        a pipe.
+
+        Windows OpenSSH blocks when its stdout is a pipe held by the parent:
+        measured on blade, `ssh whoart "echo hi"` times out at 20s with
+        capture_output=True and returns in 0.5s writing to a file. scp was
+        never affected, which is why bodies shipped fine while every ssh
+        dispatch on that link timed out and silently fell back to a pointer.
+        """
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix=".sshout")
+        try:
+            with os.fdopen(fd, "wb") as sink:
+                subprocess.run(argv, stdout=sink, stderr=subprocess.STDOUT,
+                               stdin=subprocess.DEVNULL, timeout=timeout)
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                return fh.read()
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    @classmethod
     def _supports_text_b64(cls, node: str, script: str) -> bool:
         if node in cls._TEXT_B64_SUPPORT:
             return cls._TEXT_B64_SUPPORT[node]
         supported = False
         try:
-            res = subprocess.run(
+            out = cls._ssh_capture(
                 ["ssh", *cls._SSH_OPTS, node, f"{script} --capabilities"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=float(os.environ.get("NOUGEN_MSG_PROBE_TIMEOUT_S", "15")),
             )
-            supported = "text-b64" in (res.stdout or "")
+            supported = "text-b64" in out
         except (OSError, subprocess.SubprocessError):
             supported = False
         cls._TEXT_B64_SUPPORT[node] = supported
@@ -586,9 +610,11 @@ class NouGenMsgBus:
             remote_cmd = f'{base} "{text}"'
 
         try:
-            res = subprocess.run(["ssh", *cls._SSH_OPTS, node, remote_cmd], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
-            output = res.stdout.strip() if res.stdout else res.stderr.strip()
-            return {node: output}
+            output = cls._ssh_capture(
+                ["ssh", *cls._SSH_OPTS, node, remote_cmd],
+                timeout=float(os.environ.get("NOUGEN_MSG_SEND_TIMEOUT_S", "20")),
+            )
+            return {node: output.strip()}
         except Exception as e:
             return {node: f"Error: {e}"}
 
