@@ -11,6 +11,7 @@ import sqlite3
 import re
 import datetime
 import contextlib
+import functools
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,35 @@ node_mcp = MCPServer(
 )
 
 
+def _offloaded(fn):
+    """Run a blocking tool body in a worker thread instead of the event loop.
+
+    FastMCP calls a SYNC tool function directly inside its async handler
+    (func_metadata.call_fn_with_arg_validation ends in a bare `return
+    fn(**args)` with no threadpool), so a sync tool owns the event loop for its
+    whole duration -- nothing else on that connection can be read, answered, or
+    streamed until it returns. Measured on phoebus: three concurrent recalls
+    took 63s EACH through the node, while the same three ran in 0.85s wall as
+    plain threads in-process. The retrieval code was never the bottleneck; the
+    loop being held was.
+
+    Offloading is safe by precedent rather than by hope: the sync-def FastAPI
+    endpoints (POST /search and friends) already run these same bodies in
+    Starlette's threadpool today, so nothing here newly acquires a thread it
+    was not already using.
+
+    functools.wraps keeps __name__, __doc__ and __annotations__, which is what
+    FastMCP reads to build the tool name, description and argument schema --
+    inspect.signature follows __wrapped__, so the schema is unchanged.
+    """
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        return await run_in_threadpool(fn, *args, **kwargs)
+    return wrapper
+
+
 @node_mcp.tool()
+@_offloaded
 def recall_memory(query: str, limit: int = 5) -> list:
     """Search the memory substrate. Returns ranked shards (fuzzy recall
     included when exact matching misses). Long shard bodies are returned as
@@ -151,6 +180,7 @@ def _slim_shard(r: dict) -> dict:
 
 
 @node_mcp.tool()
+@_offloaded
 def get_shard(shard_id: int, db_index: int | None = None) -> dict:
     """Fetch ONE shard's full body by id - the on-demand counterpart to
     recall_memory's snippets. Pass the db_index a recall result carried
@@ -184,6 +214,7 @@ def get_shard(shard_id: int, db_index: int | None = None) -> dict:
 
 
 @node_mcp.tool()
+@_offloaded
 def capture_experience(title: str, content: str, event_type: str = "KNOWLEDGE",
                        tags: list[str] | None = None,
                        original_timestamp: str | None = None) -> dict:
@@ -202,6 +233,7 @@ def capture_experience(title: str, content: str, event_type: str = "KNOWLEDGE",
 
 
 @node_mcp.tool()
+@_offloaded
 def mark_utility(shard_id: int, worked: bool, db_index: int | None = None) -> dict:
     """Feed back whether a recalled shard was useful; adjusts its ranking prior."""
     core.mark_shard(shard_id, worked=worked, db_index=db_index)
@@ -209,6 +241,7 @@ def mark_utility(shard_id: int, worked: bool, db_index: int | None = None) -> di
 
 
 @node_mcp.tool()
+@_offloaded
 def node_status() -> dict:
     """Node health: shard count and storage mode."""
     return {"status": "ignited",
@@ -357,6 +390,7 @@ def _federated_coverage() -> dict | None:
 
 
 @node_mcp.tool()
+@_offloaded
 def substrate_coverage() -> dict:
     """What this node actually holds, so a recall MISS can be told apart from a
     PARTIAL MOUNT.
@@ -448,6 +482,7 @@ def substrate_coverage() -> dict:
 
 
 @node_mcp.tool()
+@_offloaded
 def recall_window(query: str = "", since: str | None = None,
                   until: str | None = None, limit: int = 10) -> list:
     """Browse the vault by ERA, newest first -- the date-filtered counterpart to
@@ -513,6 +548,7 @@ def _resolve_shard(shard_id: int, db_index: Optional[int] = None,
 
 
 @node_mcp.tool()
+@_offloaded
 def shard_amend(shard_id: int, note: str, db_index: int | None = None,
                 confirm_title: str | None = None) -> dict:
     """Append a dated note to an existing shard, preserving everything already
@@ -537,6 +573,7 @@ def shard_amend(shard_id: int, note: str, db_index: int | None = None,
 
 
 @node_mcp.tool()
+@_offloaded
 def shard_retract(shard_id: int, reason: str, db_index: int | None = None,
                   confirm_title: str | None = None) -> dict:
     """Retract a shard WITHOUT erasing it: prefix its title [RETRACTED], append
@@ -581,6 +618,7 @@ def shard_retract(shard_id: int, reason: str, db_index: int | None = None,
 
 
 @node_mcp.tool()
+@_offloaded
 def shard_forget(shard_id: int, confirm_title: str, db_index: int | None = None) -> dict:
     """PERMANENTLY delete a shard. Irreversible -- there is no undo and no
     tombstone; the row and its FTS index entry are gone.
@@ -603,6 +641,7 @@ def shard_forget(shard_id: int, confirm_title: str, db_index: int | None = None)
 
 
 @node_mcp.tool()
+@_offloaded
 def vault_put(key: str, value: str) -> dict:
     """Write a secret into the keymaker vault. WRITE-ONLY BY DESIGN.
 
@@ -625,6 +664,7 @@ def vault_put(key: str, value: str) -> dict:
 
 
 @node_mcp.tool()
+@_offloaded
 def vault_list() -> list:
     """Secret NAMES and fingerprints in the vault -- never values.
 
@@ -1619,6 +1659,7 @@ def dav1d_agy_endpoint(
 
 
 @node_mcp.tool()
+@_offloaded
 def dav1d_exec(
     command: str = "agy",
     subcommand: str = "mcp list",
@@ -1632,6 +1673,7 @@ def dav1d_exec(
 
 
 @node_mcp.tool()
+@_offloaded
 def agy_ask(
     prompt: str = "",
     subcommand: str = "mcp list",
@@ -1647,6 +1689,7 @@ def agy_ask(
 
 
 @node_mcp.tool()
+@_offloaded
 def ask_dav1d(
     prompt: str,
     subcommand: str = "mcp list",
