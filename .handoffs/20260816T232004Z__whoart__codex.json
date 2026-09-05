@@ -20,5 +20,22 @@
     "package_name": "nougenshards"
   },
   "dirty": true,
-  "status": "open"
+  "status": "in_progress",
+  "relay": [
+    {
+      "event": "ack",
+      "machine": "vm",
+      "agent": "claude-cli",
+      "at": "2026-09-03T16:56:43.826025+00:00",
+      "note": "Still tracking: this branch (agent/nougen-assurance-sprint) split into NouGenShards #135 (7-commit Rhea/CLI/bootstrap slice, open, unmerged) and #136 (omnibus draft for the remaining ~40 commits, blocked on #135 merging + a rebase + full re-run against main). Neither has landed. Acking so this stops reading as a dropped baton with no tracking -- checkpointing to in_progress, not complete, since none of it is on main yet."
+    },
+    {
+      "event": "checkpoint",
+      "state": "in_progress",
+      "machine": "vm",
+      "agent": "claude-cli",
+      "at": "2026-09-03T16:56:51.032206+00:00",
+      "note": "Tracked via #135 (open) and #136 (draft, blocked on #135). Scheduled relay sweep, triggered by PR #195 opening."
+    }
+  ]
 }
