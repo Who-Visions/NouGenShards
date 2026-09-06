@@ -10,6 +10,7 @@ this as production self-evolution.
 """
 
 import hashlib
+import json
 import re
 from typing import Dict, Optional, Any
 from pathlib import Path
@@ -71,6 +72,9 @@ class EvolutionEngine:
         """
         The core OpenSkill loop: Acquire -> Refine -> Verify -> Deploy.
         """
+        if not isinstance(instruction, str) or not instruction.strip():
+            return {"verified": False, "experimental": True,
+                    "error": "A nonempty skill instruction is required."}
         # 1. Acquire
         grounding = self.acquire_knowledge(instruction)
         
@@ -84,10 +88,13 @@ class EvolutionEngine:
         # `description` to decide which skills govern a task. A skill written
         # without it is discoverable but never matches, so it never gets used.
         summary = " ".join(instruction.split())
+        # JSON strings are valid YAML scalars. Quote rather than discard
+        # punctuation and Unicode needed to discover the skill by its name.
+        metadata = json.dumps(summary, ensure_ascii=True)
         skill_content = (
             "---\n"
-            f"name: {summary}\n"
-            f"description: {summary}\n"
+            f"name: {metadata}\n"
+            f"description: {metadata}\n"
             "---\n\n"
             f"# SKILL: {instruction}\n\n"
             f"## Grounding\n{grounding}\n\n"
@@ -104,6 +111,7 @@ class EvolutionEngine:
             # any char outside [a-z0-9_-] so a crafted instruction (e.g. "../etc/x")
             # can't traverse outside the skills/ directory.
             slug = re.sub(r"[^a-z0-9_-]+", "_", instruction.lower().strip()).strip("_") or "skill"
+            slug = slug[:120].rstrip("_") or "skill"
             # Append a short stable hash of the raw instruction so two distinct
             # instructions that collapse to the same slug (e.g. "a/b" and "a b")
             # don't overwrite each other's skill file / shard.

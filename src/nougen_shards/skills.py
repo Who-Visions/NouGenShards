@@ -20,6 +20,7 @@ is worse than one that understands a small subset of YAML.
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -107,7 +108,10 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
             continue
         value = found.group(2).strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
+            try:
+                value = json.loads(value) if value[0] == '"' else value[1:-1]
+            except ValueError:
+                value = value[1:-1]
         meta[found.group(1).lower()] = value
 
     return meta, text[match.end():]
