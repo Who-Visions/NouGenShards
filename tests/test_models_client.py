@@ -361,3 +361,31 @@ def test_ollama_batch_embed_fallback(mock_urlopen):
     client = OllamaClient()
     res = client.batch_embed("nomic-embed-text", ["hello", "world"])
     assert res == [[0.15, 0.16], [0.17, 0.18]]
+
+
+def _fake_gate_with_ps(monkeypatch, resident_ps):
+    """Gate that refuses unmeasured models; /api/ps is replaced by resident_ps."""
+    from nougen_shards import vram_gate
+    monkeypatch.setenv("NOUGEN_VRAM_GATE", "1")  # do not bypass under pytest
+    monkeypatch.setattr(vram_gate, "MEASURED_LOAD_GB", {})
+    monkeypatch.setattr(vram_gate, "_residents", lambda: resident_ps)
+    monkeypatch.setattr(vram_gate, "_free_vram_gb", lambda: 0.0)
+    return vram_gate
+
+
+def test_chat_raw_refreshes_gate_size_from_api_ps(monkeypatch, mock_urlopen):
+    gate = _fake_gate_with_ps(monkeypatch, [{"name": "kaedra:e4b", "size_vram": 9_100_000_000}])
+    mock_response = MagicMock()
+    mock_response.read.return_value = json.dumps({"message": {"content": "hi"}}).encode()
+    mock_urlopen.return_value.__enter__.return_value = mock_response
+    resp = OllamaClient().chat_raw("kaedra:e4b", [{"role": "user", "content": "x"}])
+    assert resp == {"message": {"content": "hi"}}
+    assert gate.MEASURED_LOAD_GB["kaedra:e4b"] > 8
+
+
+def test_chat_raw_refusal_stands_when_api_ps_lacks_model(monkeypatch, mock_urlopen):
+    gate = _fake_gate_with_ps(monkeypatch, [{"name": "other:e2b", "size_vram": 1_000_000_000}])
+    resp = OllamaClient().chat_raw("kaedra:e4b", [{"role": "user", "content": "x"}])
+    assert "no measured load size" in resp.get("error", "")
+    assert "kaedra:e4b" not in gate.MEASURED_LOAD_GB
+    mock_urlopen.assert_not_called()

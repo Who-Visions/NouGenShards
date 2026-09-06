@@ -275,6 +275,22 @@ def run_agent(name: str, prompt: str, model: Optional[str] = None,
             # model by name - that is the manual opt-in lane: the gate clears
             # the card and runs it even oversized (2026-08-08 operator rule).
             _manual = model is not None
+            if spec.name == "Kaedra":
+                # Move 3: Kaedra alone gets the read-only tool loop on the
+                # local lane. Other agents keep the single chat call.
+                from nougen_shards.kaedra_tools import run_tool_loop
+
+                def _chat_fn(_model, _messages, tools=None):
+                    return local_client.chat_raw(_model, _messages, tools=tools,
+                                                 num_ctx=num_ctx, manual=_manual)
+
+                tool_text, tool_calls = run_tool_loop(_chat_fn, target_model, [
+                    {"role": "system", "content": spec.system_prompt},
+                    {"role": "user", "content": prompt}
+                ], log=logger)
+                logger.info("kaedra tool loop made %d call(s)", len(tool_calls))
+                if tool_text.strip() and not tool_text.startswith("Error:"):
+                    return tool_text
             local_result = local_client.chat(target_model, [
                 {"role": "system", "content": spec.system_prompt},
                 {"role": "user", "content": prompt}
