@@ -10,6 +10,7 @@ import logging
 import os
 import sqlite3
 import threading as _threading
+import time
 from contextvars import ContextVar, Token, copy_context
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,6 +48,26 @@ MAX_DB_COUNT = 9
 #: Where the vault came from. Never silent: a node writing somewhere other
 #: than the default must say so, because the failure mode is invisible.
 VAULT_SOURCE = "default"
+
+_VALID_JOURNAL_MODES = {"WAL", "DELETE", "TRUNCATE", "PERSIST", "MEMORY", "OFF"}
+
+
+def get_vault_journal_mode() -> str:
+    """Return the SQLite PRAGMA journal_mode for vault databases.
+
+    Defaults to WAL for local disk performance, but can be overridden with
+    NOUGEN_VAULT_JOURNAL_MODE (e.g. DELETE or TRUNCATE). Object-storage and
+    network bucket mounts (like HuggingFace Space /data bucket mounts) lack POSIX
+    shared-memory / coherent locking required by WAL; forcing WAL on such mounts
+    causes database corruption and spurious quarantines.
+    """
+    mode = os.environ.get("NOUGEN_VAULT_JOURNAL_MODE", "").strip().upper()
+    if mode in _VALID_JOURNAL_MODES:
+        return mode
+    # Auto-detection for known object-storage / container environments
+    if os.environ.get("SPACE_ID") or os.environ.get("HF_SPACE_ID") or os.path.exists("/data/.huggingface"):
+        return "DELETE"
+    return "WAL"
 
 
 def _resolve_vault_dir() -> Path:
@@ -216,7 +237,8 @@ def get_connection(index: int):
                          "(soft limit %s); see fd_budget.py",
                          index, exc, fd_budget.open_fd_count(), _nofile_soft_limit())
         raise
-    conn.execute("PRAGMA journal_mode=WAL;")
+    mode = get_vault_journal_mode()
+    conn.execute(f"PRAGMA journal_mode={mode};")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -263,17 +285,29 @@ def quarantine_malformed_dbs() -> list:
         if not path.exists():
             continue
         reason = None
-        try:
-            conn = sqlite3.connect(str(path), timeout=10.0)
+        # Attempt 1: check integrity. If it fails, retry once on a fresh connection
+        # to ensure transient incoherent reads on network/fuse mounts don't trigger
+        # spurious quarantines.
+        for attempt in range(2):
+            reason = None
             try:
-                row = conn.execute("PRAGMA quick_check(1);").fetchone()
-            finally:
-                conn.close()
-            if row and str(row[0]).lower() == "ok":
-                continue
-            reason = str(row[0]) if row else "quick_check returned no row"
-        except (sqlite3.DatabaseError, OSError) as exc:
-            reason = f"{type(exc).__name__}: {exc}"
+                conn = sqlite3.connect(str(path), timeout=10.0)
+                try:
+                    row = conn.execute("PRAGMA quick_check(1);").fetchone()
+                finally:
+                    conn.close()
+                if row and str(row[0]).lower() == "ok":
+                    reason = None
+                    break
+                reason = str(row[0]) if row else "quick_check returned no row"
+            except (sqlite3.DatabaseError, OSError) as exc:
+                reason = f"{type(exc).__name__}: {exc}"
+            if attempt == 0:
+                time.sleep(0.1)
+
+        if reason is None:
+            continue
+
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         dest = path.with_name(f"{path.name}.malformed-{stamp}")
         try:
@@ -480,7 +514,8 @@ def _get_dedup_connection():
     the authority; this index is a router/cache in front of it.
     """
     conn = sqlite3.connect(str(get_dedup_path()), timeout=10.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
+    mode = get_vault_journal_mode()
+    conn.execute(f"PRAGMA journal_mode={mode};")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS hashes (
             file_hash TEXT PRIMARY KEY,
