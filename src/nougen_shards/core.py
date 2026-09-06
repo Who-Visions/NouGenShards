@@ -25,7 +25,23 @@ logger = logging.getLogger(__name__)
 DEFAULT_EMBED_CAPTURE_TIMEOUT_S = float(os.environ.get("NOUGEN_EMBED_CAPTURE_TIMEOUT_S", "15"))
 
 # Configuration (Module 10: Integrate Constraints)
-MAX_DB_SIZE = 1 * 1024 * 1024 * 1024  # 1GB Safety Limit per DB
+#: Per-database size ceiling used by :func:`is_db_full` to steer writes away
+#: from a database that has grown too large. Raised from 1GB to 2GB on
+#: 2026-09-06: every database in the restored grid sits at roughly 1.2GB, so
+#: under the old ceiling ALL NINE read as full at once. get_write_index then
+#: skipped every candidate and fell through to the bare hash target, which
+#: silently spread rows for one hash across neighbouring databases. That drift
+#: is not cosmetic — a per-database dedup pass over the restored grid reported
+#: 61,376 "new" rows when only 253 were genuinely new; the other 61,124 were
+#: the same shards already present under a different index. Dedup must still be
+#: global (see get_routing_index), but the ceiling should not put the grid in
+#: the all-full state as a matter of course.
+#: NOT a corruption control: quarantine is driven by integrity failures, never
+#: by size, so changing this does not affect that path.
+#: Override per node with NOUGEN_MAX_DB_SIZE (bytes) — the fleet does not share
+#: one disk, and a node with less headroom must be able to say so.
+MAX_DB_SIZE = int(os.environ.get(
+    "NOUGEN_MAX_DB_SIZE", 2 * 1024 * 1024 * 1024))  # 2GB safety limit per DB
 MAX_DB_COUNT = 9
 
 #: Where the vault came from. Never silent: a node writing somewhere other
