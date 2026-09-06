@@ -97,8 +97,15 @@ def _git(repo: Path, *args: str, timeout: float) -> subprocess.CompletedProcess:
     arrows; with the console codepage (cp1252 on Windows) the reader thread
     died on byte 0x9d and stdout came back None, which sank every pass for
     18 minutes on 2026-09-03."""
+    # CREATE_NO_WINDOW + stdin=DEVNULL: this daemon runs under pythonw (no
+    # console), so every git.exe child would otherwise allocate a fresh console
+    # and pop a visible Windows Terminal window per call (~2/sec on 2026-09-06,
+    # which made the machine unusable). DEVNULL also stops git/GCM from ever
+    # blocking on an interactive credential prompt.
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=timeout)
+                          encoding="utf-8", errors="replace", timeout=timeout,
+                          stdin=subprocess.DEVNULL,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
 def fetch(repo: Path) -> str:
