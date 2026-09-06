@@ -170,7 +170,10 @@ def consolidate_episodic_data(limit: int = 10) -> Dict[str, Any]:
     Queries raw shards where utility_score >= 1.0 and consolidated = 0,
     extracts invariants, upserts to semantic_knowledge, and marks them consolidated.
     """
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        raise ValueError("limit must be a nonnegative integer")
     unconsolidated = []
+    errors = []
     for i in range(1, core.MAX_DB_COUNT + 1):
         if not core.get_db_path(i).exists():
             continue
@@ -180,27 +183,35 @@ def consolidate_episodic_data(limit: int = 10) -> Dict[str, Any]:
                 SELECT id, content, domain_key, utility_score, ? as _db_index
                 FROM shards
                 WHERE utility_score >= 1.0 AND consolidated = 0
+                ORDER BY utility_score DESC, id
                 LIMIT ?
             """, (i, limit))
             for row in cursor:
                 unconsolidated.append(dict(row))
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as exc:
+            errors.append({"db_index": i, "stage": "scan", "error": str(exc)})
         finally:
             conn.close()
             
+    # LIMIT is a cycle-wide budget, not a separate allowance for every DB.
+    unconsolidated.sort(key=lambda row: (-row["utility_score"], row["_db_index"], row["id"]))
+    unconsolidated = unconsolidated[:limit]
     new_invariants_count = 0
     consolidated_shards_count = 0
     extracted_rules = []
     
     for shard in unconsolidated:
         invariants = extract_semantic_invariants_via_llm(shard["content"])
+        if not isinstance(invariants, list):
+            errors.append({"db_index": shard["_db_index"], "shard_id": shard["id"],
+                           "stage": "extract", "error": "Expected a list of invariants"})
+            continue
         if invariants:
             db_idx = shard["_db_index"]
             conn = core.get_connection(db_idx)
             try:
                 timestamp = datetime.datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-                shard_invariants_inserted = 0
+                shard_rules = []
                 for inv in invariants:
                     # The LLM extraction can return non-dict elements; skip them
                     # rather than letting AttributeError escape the sqlite handler
@@ -215,6 +226,9 @@ def consolidate_episodic_data(limit: int = 10) -> Dict[str, Any]:
                     # raise AttributeError on .strip() and escape the sqlite handler.
                     if not isinstance(sub, str) or not isinstance(pred, str):
                         continue
+                    sub, pred = sub.strip(), pred.strip()
+                    if not sub or not pred:
+                        continue
 
                     conn.execute("""
                         INSERT INTO semantic_knowledge (subject, predicate, domain_key, updated_at)
@@ -223,19 +237,21 @@ def consolidate_episodic_data(limit: int = 10) -> Dict[str, Any]:
                             confidence_score = confidence_score + 0.1,
                             updated_at = excluded.updated_at
                     """, (sub.strip(), pred.strip(), shard.get("domain_key", "global"), timestamp))
-                    extracted_rules.append({"subject": sub.strip(), "predicate": pred.strip()})
-                    new_invariants_count += 1
-                    shard_invariants_inserted += 1
+                    shard_rules.append({"subject": sub, "predicate": pred})
 
                 # Only mark consolidated / count the shard when at least one
                 # invariant was actually inserted; a bare dict or all-skipped
                 # payload must not falsely retire the shard.
-                if shard_invariants_inserted:
+                if shard_rules:
                     conn.execute("UPDATE shards SET consolidated = 1 WHERE id = ?", (shard["id"],))
                     conn.commit()
+                    extracted_rules.extend(shard_rules)
+                    new_invariants_count += len(shard_rules)
                     consolidated_shards_count += 1
             except sqlite3.Error as exc:
-                print(f"[Warning] Failed to save semantic invariant: {exc}")
+                conn.rollback()
+                errors.append({"db_index": db_idx, "shard_id": shard["id"],
+                               "stage": "save", "error": str(exc)})
             finally:
                 conn.close()
                 
@@ -243,7 +259,9 @@ def consolidate_episodic_data(limit: int = 10) -> Dict[str, Any]:
         "shards_scanned": len(unconsolidated),
         "shards_consolidated": consolidated_shards_count,
         "new_invariants_extracted": new_invariants_count,
-        "rules": extracted_rules
+        "rules": extracted_rules,
+        "errors": errors,
+        "complete": not errors,
     }
 
 
@@ -270,5 +288,8 @@ def wake() -> Dict[str, Any]:
         "sft_pairs_generated": len(sft_pairs),
         "parametric_dataset_path": dataset_path,
         "dual_system_consolidation": consolidation_results,
-        "status": "Decay applied, SFT dataset exported, and dual-system semantic consolidation completed."
+        "complete": consolidation_results["complete"],
+        "status": ("Decay applied, SFT dataset exported, and dual-system semantic consolidation completed."
+                   if consolidation_results["complete"] else
+                   "Decay applied and SFT dataset exported; semantic consolidation encountered errors.")
     }
