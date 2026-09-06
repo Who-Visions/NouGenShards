@@ -97,9 +97,31 @@ switch ($Action) {
             Remove-Item $PidFile -ErrorAction SilentlyContinue
         }
 
-        if (-not (Test-Path $RunDir)) { New-Item -ItemType Directory -Path $RunDir | Out-Null }
+        # Synchronize with start_grid.py via shared cross-process lock (Defect O6)
+        $lockFile = if ($env:NOUGEN_NODE_LOCK) {
+            $env:NOUGEN_NODE_LOCK
+        } else {
+            Join-Path $env:USERPROFILE '.nougen\bin\node_lane.lock'
+        }
+        $lockDir = Split-Path -Parent $lockFile
+        if (-not (Test-Path $lockDir)) { New-Item -ItemType Directory -Path $lockDir -Force | Out-Null }
+        
+        $lockStream = $null
+        try {
+            $lockStream = [System.IO.File]::Open($lockFile, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        } catch {
+            "another launcher is currently starting the node (lock held at $lockFile); standing down"
+            break
+        }
 
-        $token = Get-NodeToken
+        try {
+            # Re-check listener inside the lock
+            $listener = Get-ListenerPid
+            if ($listener) { "node already running (listener pid $listener) on $BaseUrl"; break }
+
+            if (-not (Test-Path $RunDir)) { New-Item -ItemType Directory -Path $RunDir | Out-Null }
+
+            $token = Get-NodeToken
 
         # The child inherits these. ngs_node_serve resolves the shared token,
         # binds the token-gated data surface, and deliberately leaves the HUD
@@ -130,6 +152,12 @@ switch ($Action) {
         } else {
             "node did NOT answer /health within 15s - see $ErrLog"
             exit 1
+        }
+        } finally {
+            if ($lockStream) {
+                $lockStream.Close()
+                $lockStream.Dispose()
+            }
         }
         break
     }
