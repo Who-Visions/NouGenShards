@@ -693,7 +693,25 @@ def get_secret(key: str) -> Optional[str]:
                            "call; no store is modified.", msg, other["path"])
             return found
         logger.warning(msg)
-        return None
+    # Check canonical fallback aliases for common typo/drift pairs (Defect O11)
+    # Allows callers to use either the canonical name or the legacy typo name interchangeably.
+    canonical_aliases = {
+        "ARLAI_API_KEY": ["ARLIAI_API_KEY"],
+        "ARLIAI_API_KEY": ["ARLAI_API_KEY"],
+        "OLLAMA_MRSB_OLLAMA_KEY": ["OLLAMA_MRSB_OLLAMAA_KEY"],
+        "OLLAMA_MRSB_OLLAMAA_KEY": ["OLLAMA_MRSB_OLLAMA_KEY"],
+        "OPENROUTER_API_KEY": ["OPENROUTER_OPENROUTER_OPENROUTER_API_KEY"],
+        "OPENROUTER_OPENROUTER_OPENROUTER_API_KEY": ["OPENROUTER_API_KEY"],
+        "OPENROUTER_KEY_EATSRUGER_GMAIL_COM": ["OPENROUTER_KEY_EATSUGER_GMAIL_COM"],
+        "OPENROUTER_KEY_EATSUGER_GMAIL_COM": ["OPENROUTER_KEY_EATSRUGER_GMAIL_COM"],
+        "OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM": ["OPENROUTER_DAVEMERALUS"],
+        "OPENROUTER_DAVEMERALUS": ["OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM"],
+    }
+    for alias in canonical_aliases.get(key, []):
+        alias_val = _read_secret_row(resolution["active"], alias)
+        if alias_val is not None:
+            return alias_val
+
     return None
 
 

@@ -1406,6 +1406,7 @@ def sync_push(req: SyncPushRequest,
     count = 0
     skipped = 0
     errored = 0
+    errors = []
     for s in req.shards:
         # The ENTIRE per-shard body sits in one guard: decrypt, tag parsing,
         # AND capture. This is the second time this protection ships - #148
@@ -1454,15 +1455,23 @@ def sync_push(req: SyncPushRequest,
                 original_timestamp=s.get("original_timestamp") or s.get("timestamp"),
             )
         except Exception as exc:  # pylint: disable=broad-except
+            err_msg = f"{type(exc).__name__}: {exc}"
             errored += 1
-            logger.error("sync_push: shard %r failed: %s: %s",
-                         (s.get("title") or "")[:80], type(exc).__name__, exc)
+            errors.append({"title": (s.get("title") or "")[:80], "error": err_msg})
+            logger.error("sync_push: shard %r failed: %s",
+                         (s.get("title") or "")[:80], err_msg)
             continue
         if ok:
             count += 1
         else:
             skipped += 1  # capture() dedups; an already-known shard is a skip
-    return {"status": "ok", "count": count, "skipped": skipped, "errored": errored}
+    return {
+        "status": "ok",
+        "count": count,
+        "skipped": skipped,
+        "errored": errored,
+        **({"errors": errors} if errors else {}),
+    }
 
 
 @app.get("/sync/pull")
