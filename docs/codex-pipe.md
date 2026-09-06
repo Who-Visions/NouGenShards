@@ -32,3 +32,28 @@ The native queue command was checked against the installed CLI help. The broader
 session interface is described in https://developers.openai.com/codex/app-server/.
 No new model process, remote listener, fleet deployment, or permission bypass is
 configured by this adapter.
+
+## Phoebus desktop delivery and wake
+
+The macOS adapter uses native `codex queue` against the explicit task in
+`~/.nougen/codex/relay_target.json`. A user-selected destination may set
+`"pinned": true`; the lifecycle hook then preserves it across other sessions.
+Unpin only when intentionally returning to most-recent-session routing.
+
+`tools/wake/codex.py` uses the same native delivery path, including its durable
+inbox fallback. It never launches a competing `codex exec` process. A provider
+`target: "codex"` implies the Codex wake target, but authentication and the
+existing content/origin gate still apply. Successful existing native delivery
+suppresses a second queue submission. The native desktop coordinator waits
+until the active turn completes before submitting queued follow-ups.
+
+Receiver `/health` reports adapter availability and whether wake is enabled.
+`NOUGEN_WAKE_DISABLED=1` disables dispatch even if the adapters are available.
+`pending_messages` counts the in-memory copies awaiting `/pop`; it is not the
+number of failed deliveries and resets on process restart. Durable inbox files
+remain independent. Do not drain or replay old messages merely to make this
+counter zero.
+
+Queue archives now retain the destination task, origin metadata, and native
+receipt. A receipt still does not prove model consumption; verify that with an
+attributed response from the destination task.

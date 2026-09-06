@@ -211,13 +211,18 @@ def _maybe_wake(msg: dict, verdict: dict) -> dict:
       after approval, and an ordinary status ping never starts an agent.
     """
     if not _wake_enabled() or _wake_dispatch is None:
-        return {"attempted": False, "wake": "unavailable", **_wake_status()}
+        return {"attempted": False, "wake": "disabled" if _wake_dispatch is not None and _wake_status().get("available") else "unavailable", **_wake_status()}
     approved = bool(verdict.get("kaedra_approved")) or \
         verdict.get("origin") == "user_verified"
     if not approved:
         return {"attempted": False, "wake": "not approved",
                 "reason_code": verdict.get("reason_code")}
     target = str(msg.get("wake_target") or "").strip()
+    if not target and msg.get("target") == "codex":
+        target = "codex"
+    existing = verdict.get("live_delivery", {}).get("codex", {})
+    if target == "codex" and (existing.get("queue_accepted") or existing.get("delivered")):
+        return {"attempted": False, "wake": "already queued", "delivery_verified": False}
     if not target:
         return {"attempted": False, "wake": "no target"}
     return _wake_dispatch(target, str(msg.get("text", "")), msg)
@@ -282,7 +287,9 @@ class Handler(BaseHTTPRequestHandler):
         if route in ("/status", "/health", "/"):
             self._send({"status": "online", "service": "agy-msg", "node": NODE,
                         "timestamp": time.time(), "pending_messages": PENDING.qsize(),
-                        "ok": True, "transport": "http"})
+                        "ok": True, "transport": "http",
+                        "pending_semantics": "undrained inbox copies; independent of delivery",
+                        "wake": _wake_status()})
         elif route == "/pop":
             if self._reject_unauthorized():   # /pop MUTATES: read-and-destroy
                 return

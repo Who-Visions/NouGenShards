@@ -105,7 +105,8 @@ def handle(payload, thread, executable, transport="windows_pipe"):
     if not isinstance(text, str) or not text.strip():
         raise ValueError("Expected nonempty text")
     message = {"source": str(payload.get("source", "local-pipe-client")),
-               "target": "codex", "text": text, "timestamp": time.time()}
+               "target": "codex", "thread_id": thread, "origin": payload.get("origin", {}),
+               "text": text, "timestamp": time.time()}
     path = save(message)
     result = {"status": "saved", "file": str(path), "thread": thread,
               "pipe_delivered": transport == "windows_pipe", "transport": transport,
@@ -119,6 +120,10 @@ def handle(payload, thread, executable, transport="windows_pipe"):
             result["error"] = (proc.stderr or proc.stdout)[-2000:]
         else:
             result.update(status="queued", queue_accepted=True, receipt=proc.stdout.strip())
+            message["delivery"] = {"status": "queued", "thread_id": thread,
+                                   "queue_accepted": True, "delivery_verified": False,
+                                   "receipt": proc.stdout.strip()}
+            path.write_text(json.dumps(message, ensure_ascii=False), encoding="utf-8")
             archive = path.parent / "archive"
             archive.mkdir(exist_ok=True)
             destination = archive / path.name

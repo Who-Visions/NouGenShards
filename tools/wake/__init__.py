@@ -38,7 +38,7 @@ _IMPORT_ERRORS: Dict[str, str] = {}
 # sys.path would have silently switched waking ON with no decision taken.
 # Using __name__ works under either import shape, so the ONLY thing that can
 # make an adapter appear is the runtime it looks for.
-for _name in ("antigravity",):
+for _name in ("antigravity", "codex"):
     try:
         _mod = __import__("{}.{}".format(__name__, _name), fromlist=["Adapter"])
         _ADAPTERS.append(_mod.Adapter())
@@ -53,7 +53,7 @@ def available() -> List[str]:
 
 def status() -> Dict[str, Any]:
     """What can and cannot wake here, and why not. Diagnosable without guessing."""
-    return {"available": available(), "unavailable": _IMPORT_ERRORS}
+    return {"available": available(), "unavailable": _IMPORT_ERRORS, "enabled": enabled()}
 
 
 def wake(target: str, text: str, event: Dict[str, Any] = None) -> Dict[str, Any]:
