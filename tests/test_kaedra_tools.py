@@ -5,7 +5,8 @@ from nougen_shards import kaedra_tools as kt
 
 
 EXPECTED = ["fleet_whoami", "shards_search", "shards_recall",
-            "relay_latest", "relay_open", "reach_state"]
+            "relay_latest", "relay_open", "reach_state",
+            "shards_capture", "nougenmsg_send"]
 
 
 def test_tools_schema():
@@ -163,3 +164,97 @@ def test_loop_surfaces_missing_message_key():
     text, log = kt.run_tool_loop(lambda m, msgs, tools=None: {"done": True}, "m", [])
     assert text.startswith("[chat error]")
     assert log[-1]["ok"] is False and log[-1]["tool"] == "_chat"
+
+
+def test_fleet_whoami_identity_ground_truth(monkeypatch):
+    monkeypatch.setenv("NOUGEN_KAEDRA_MODEL", "kaedra:e4b")
+    monkeypatch.setenv("NOUGEN_KAEDRA_GATEWAY", "http://127.0.0.1:4455")
+    out = kt.dispatch("fleet_whoami", {})
+    assert out["agent"] == "Kaedra"
+    assert out["model_tag"] == "kaedra:e4b"
+    assert out["gateway"] == "http://127.0.0.1:4455"
+    assert out["identity_source"] == "tool:fleet_whoami"
+    assert "shards_capture" in out["grant_scope"]
+    assert "nougenmsg_send" in out["grant_scope"]
+
+
+def test_shards_capture_stamps_kaedra_authored(monkeypatch):
+    from nougen_shards import core
+    captured_payload = {}
+
+    def fake_capture(event_type, title, content, tags=None, **kwargs):
+        captured_payload["event_type"] = event_type
+        captured_payload["title"] = title
+        captured_payload["content"] = content
+        captured_payload["tags"] = tags
+        captured_payload.update(kwargs)
+        return {"captured": True, "shard_id": 999, "db_index": 1, "reason": "written"}
+
+    monkeypatch.setattr(core, "capture", fake_capture)
+    out = kt.dispatch("shards_capture", {
+        "title": "Test Insight",
+        "content": "Secret revelation",
+        "tags": ["war-game"]
+    })
+    assert out["captured"] is True
+    assert out["shard_id"] == 999
+    assert "kaedra-authored" in out["tags"]
+    assert "war-game" in out["tags"]
+    assert captured_payload["source_uri"] == "agent:kaedra:move3"
+    assert "kaedra-authored" in captured_payload["tags"]
+
+
+def test_shards_capture_validation():
+    assert kt.dispatch("shards_capture", {}) == {
+        "error": "title and content are required for shards_capture"
+    }
+
+
+def test_nougenmsg_send_echo_guard():
+    # Refuse messaging herself directly
+    res1 = kt.dispatch("nougenmsg_send", {"target": "@kaedra", "message": "wake up"})
+    assert "echo guard" in res1.get("error", "").lower()
+
+    res2 = kt.dispatch("nougenmsg_send", {"target": "kaedra", "message": "ping"})
+    assert "echo guard" in res2.get("error", "").lower()
+
+    res3 = kt.dispatch("nougenmsg_send", {"target": "@blade:kaedra", "message": "ping"})
+    assert "echo guard" in res3.get("error", "").lower()
+
+
+def test_nougenmsg_send_dispatches_to_bus(monkeypatch):
+    from nougen_shards.nougenmsg import NouGenMsgBus
+    dispatched = {}
+
+    def fake_live_ping(target, text, node=None, origin=None):
+        dispatched["target"] = target
+        dispatched["text"] = text
+        dispatched["node"] = node
+        dispatched["origin"] = origin
+        return {"status": "delivered"}
+
+    monkeypatch.setattr(NouGenMsgBus, "live_ping", fake_live_ping)
+    out = kt.dispatch("nougenmsg_send", {"target": "@blade:antigravity", "message": "status report"})
+    assert out["delivered"] is True
+    assert dispatched["target"] == "antigravity"
+    assert dispatched["node"] == "blade"
+    assert dispatched["text"] == "status report"
+    assert dispatched["origin"]["original_sender"] == "kaedra"
+
+
+def test_loop_falls_back_to_workers_ai_on_local_error(monkeypatch):
+    import sys
+    from unittest.mock import MagicMock
+    
+    mock_wac = MagicMock()
+    mock_wac.kaedra_cloud_fallback.return_value = {
+        "message": {"role": "assistant", "content": "cloud fallback answered"},
+        "usage": {"neurons": 3.75}
+    }
+    monkeypatch.setitem(sys.modules, "nougen_shards.workers_ai_client", mock_wac)
+
+    text, log = kt.run_tool_loop(
+        lambda m, msgs, tools=None: {"error": "local VRAM full"}, "m", []
+    )
+    assert text == "cloud fallback answered"
+    assert any(e.get("tool") == "_workers_ai_fallback" and e.get("ok") for e in log)

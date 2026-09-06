@@ -84,6 +84,25 @@ TOOLS: List[Dict[str, Any]] = [
                        " this checkout; if so, report that." + _CITE_RULE,
         "parameters": {"type": "object", "properties": {}, "required": []},
     }},
+    {"type": "function", "function": {
+        "name": "shards_capture",
+        "description": "Capture an insight, finding, or experience directly into the memory vault."
+                       " Automatically stamped with kaedra-authored tag and provenance." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {
+            "title": {"type": "string", "description": "Short title describing the finding."},
+            "content": {"type": "string", "description": "The detailed content to persist in the vault."},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional search tags."},
+        }, "required": ["title", "content"]},
+    }},
+    {"type": "function", "function": {
+        "name": "nougenmsg_send",
+        "description": "Send an inter-agent or fleet message over the NouGenMsg bus."
+                       " Lane-scoped and echo-guarded (cannot target self/kaedra)." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {
+            "target": {"type": "string", "description": "Destination: e.g. @blade, @phoebus, @claude, @all, @antigravity, @codex."},
+            "message": {"type": "string", "description": "Message text to deliver."},
+        }, "required": ["target", "message"]},
+    }},
 ]
 
 TOOL_NAMES = frozenset(t["function"]["name"] for t in TOOLS)
@@ -103,9 +122,21 @@ def _limit(args: dict) -> int:
 def _fleet_whoami(args: dict) -> dict:
     from nougen_shards.machine import machine_identity
     ident = machine_identity()
-    return {"machine_id": ident.get("machine_id"), "host": ident.get("host"),
-            "hostname": ident.get("hostname"), "platform": ident.get("platform"),
-            "os": ident.get("os")}
+    model = os.getenv("NOUGEN_KAEDRA_MODEL", "kaedra:e4b")
+    gateway = os.getenv("NOUGEN_KAEDRA_GATEWAY", "http://127.0.0.1:4455")
+    return {
+        "agent": "Kaedra",
+        "machine_id": ident.get("machine_id"),
+        "host": ident.get("host"),
+        "hostname": ident.get("hostname"),
+        "platform": ident.get("platform"),
+        "os": ident.get("os"),
+        "serving_node": ident.get("host"),
+        "model_tag": model,
+        "gateway": gateway,
+        "grant_scope": sorted(list(TOOL_NAMES)),
+        "identity_source": "tool:fleet_whoami",
+    }
 
 
 def _shards_search(args: dict) -> dict:
@@ -188,6 +219,68 @@ def _reach_state(args: dict) -> dict:
         return {"unavailable": True, "reason": f"reach_matrix run failed: {exc}"}
 
 
+def _shards_capture(args: dict) -> dict:
+    from nougen_shards import core
+    title = str(args.get("title", "")).strip()
+    content = str(args.get("content", "")).strip()
+    if not title or not content:
+        return {"error": "title and content are required for shards_capture"}
+
+    raw_tags = args.get("tags") or []
+    if isinstance(raw_tags, str):
+        tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+    elif isinstance(raw_tags, list):
+        tags = [str(t).strip() for t in raw_tags if str(t).strip()]
+    else:
+        tags = []
+
+    if "kaedra-authored" not in tags:
+        tags.append("kaedra-authored")
+
+    res = core.capture(
+        event_type="kaedra_insight",
+        title=title,
+        content=content,
+        tags=tags,
+        source_uri="agent:kaedra:move3"
+    )
+    if isinstance(res, dict):
+        return {
+            "captured": bool(res.get("captured")),
+            "shard_id": res.get("shard_id"),
+            "db_index": res.get("db_index"),
+            "reason": res.get("reason"),
+            "tags": tags,
+        }
+    return {"captured": bool(res), "tags": tags}
+
+
+def _nougenmsg_send(args: dict) -> dict:
+    from nougen_shards.nougenmsg import NouGenMsgBus, get_current_node
+    target = str(args.get("target", "")).strip()
+    message = str(args.get("message", "")).strip()
+    if not target or not message:
+        return {"error": "target and message are required for nougenmsg_send"}
+
+    # Echo guard: do not allow messaging herself or creating recursive wakeup loops
+    clean = target.lower().lstrip("@")
+    if "kaedra" in clean or "self" in clean:
+        return {"error": "refused: echo guard prevented targeting self/kaedra"}
+
+    node, agent = NouGenMsgBus.parse_destination(target)
+    if agent == "kaedra":
+        return {"error": "refused: echo guard prevented targeting agent kaedra"}
+
+    origin = {
+        "original_sender": "kaedra",
+        "machine": get_current_node(),
+        "lane": "kaedra-autonomous",
+        "provenance_state": "asserted",
+    }
+    res = NouGenMsgBus.live_ping(agent, message, node=node, origin=origin)
+    return {"delivered": True, "target": target, "result": res}
+
+
 _DISPATCH: Dict[str, Callable[[dict], dict]] = {
     "fleet_whoami": _fleet_whoami,
     "shards_search": _shards_search,
@@ -195,6 +288,8 @@ _DISPATCH: Dict[str, Callable[[dict], dict]] = {
     "relay_latest": _relay_latest,
     "relay_open": _relay_open,
     "reach_state": _reach_state,
+    "shards_capture": _shards_capture,
+    "nougenmsg_send": _nougenmsg_send,
 }
 
 
@@ -243,17 +338,33 @@ def run_tool_loop(chat_fn: Callable[..., dict], model: str, messages: list,
         resp = chat_fn(model, msgs, tools=TOOLS) or {}
         if not isinstance(resp, dict) or "error" in resp or "message" not in resp:
             # OllamaClient.chat_raw returns {"error": ...} instead of raising
-            # (VRAM refusal, HTTP failure). Surface it: an empty answer with an
-            # empty call_log reads as success to a scorer.
+            # (VRAM refusal, HTTP failure). Attempt cloud fallback before giving up.
             if isinstance(resp, dict):
                 err = resp.get("error") or "chat returned no message"
             else:
                 err = f"chat returned {type(resp).__name__}, not a dict"
             text = str(err)
-            lg.warning("kaedra tool loop chat error: %s", text)
-            call_log.append({"tool": "_chat", "args": {}, "result_size": len(text),
-                             "ok": False, "error": text})
-            return f"[chat error] {text}", call_log
+
+            if _env_int("NOUGEN_KAEDRA_FALLBACK", 1):
+                try:
+                    from nougen_shards.workers_ai_client import kaedra_cloud_fallback
+                    lg.info("kaedra tool loop local chat error (%s); trying workers-ai fallback", text)
+                    fb_resp = kaedra_cloud_fallback(messages=msgs, tools=TOOLS)
+                    if isinstance(fb_resp, dict) and "message" in fb_resp and "error" not in fb_resp:
+                        call_log.append({"tool": "_workers_ai_fallback", "args": {"original_error": text},
+                                         "result_size": len(json.dumps(fb_resp.get("usage", {}))), "ok": True})
+                        resp = fb_resp
+                    else:
+                        fb_err = fb_resp.get("error") if isinstance(fb_resp, dict) else str(fb_resp)
+                        lg.warning("workers-ai cloud fallback also failed: %s", fb_err)
+                except Exception as fb_exc:  # pylint: disable=broad-except
+                    lg.warning("workers-ai fallback raised: %s", fb_exc)
+
+            if not isinstance(resp, dict) or "error" in resp or "message" not in resp:
+                lg.warning("kaedra tool loop chat error: %s", text)
+                call_log.append({"tool": "_chat", "args": {}, "result_size": len(text),
+                                 "ok": False, "error": text})
+                return f"[chat error] {text}", call_log
         message = resp.get("message") or {}
         final_text = message.get("content") or ""
         tool_calls = message.get("tool_calls") or []
