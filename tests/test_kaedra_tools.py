@@ -151,3 +151,17 @@ def test_loop_no_tool_calls_returns_content():
     text, log = kt.run_tool_loop(
         lambda m, msgs, tools=None: {"message": {"content": "plain"}}, "m", [])
     assert text == "plain" and log == []
+
+
+def test_loop_surfaces_chat_error_dict():
+    text, log = kt.run_tool_loop(
+        lambda m, msgs, tools=None: {"error": "boom"}, "m", [])
+    assert text.startswith("[chat error]") and "boom" in text
+    assert log[-1]["ok"] is False and log[-1]["tool"] == "_chat"
+    assert log[-1]["error"] == "boom"
+
+
+def test_loop_surfaces_missing_message_key():
+    text, log = kt.run_tool_loop(lambda m, msgs, tools=None: {"done": True}, "m", [])
+    assert text.startswith("[chat error]")
+    assert log[-1]["ok"] is False and log[-1]["tool"] == "_chat"

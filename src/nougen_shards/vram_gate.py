@@ -61,6 +61,31 @@ def _residents() -> list[dict]:
         return json.loads(r.read()).get("models", [])
 
 
+def measure_load_size(model: str) -> float | None:
+    """Read `model`'s resident footprint from /api/ps and record it.
+
+    Returns the size in GB (size_vram, falling back to size) and stores it in
+    MEASURED_LOAD_GB so later check_vram() calls see it; None when the model is
+    not resident or /api/ps cannot be read. Never raises.
+    """
+    try:
+        residents = _residents()
+    except Exception:
+        return None
+    for m in residents:
+        if model not in (m.get("name"), m.get("model")):
+            continue
+        raw = m.get("size_vram") or m.get("size")
+        if not raw:
+            return None
+        gb = round(float(raw) / (1024 ** 3), 2)
+        if gb <= 0:
+            return None
+        MEASURED_LOAD_GB[model] = gb
+        return gb
+    return None
+
+
 def resident_model() -> str | None:
     """The pinned resident (IRIS's model) — NouGen's DEFAULT local lane.
 

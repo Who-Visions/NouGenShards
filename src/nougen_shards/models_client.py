@@ -1,6 +1,7 @@
 """Modular LLM client interface for NouGenShards with embedding support."""
 from abc import ABC, abstractmethod
 import json
+import logging
 import urllib.request
 import urllib.error
 import sys
@@ -11,6 +12,8 @@ from dataclasses import dataclass
 
 from . import keymaker
 from . import structured
+
+logger = logging.getLogger(__name__)
 
 # Hard cap on any cloud HTTP call so a stalled provider can't hang the process.
 # Resolved from env (NOUGEN_OLLAMA_HTTP_TIMEOUT_S); the constant is a logged fallback.
@@ -1001,8 +1004,16 @@ class OllamaClient(LocalLLMClient):
         VRAM admission gate as chat(); a refusal returns {"error": ...} so the
         caller can fall through instead of raising.
         """
-        from .vram_gate import check_vram
-        _v = check_vram(model, manual=manual)
+        from . import vram_gate
+        _v = vram_gate.check_vram(model, manual=manual)
+        if not _v.ok and _v.reason.startswith("no measured load size"):
+            # The static table can lag a model that is already resident:
+            # measure it once from /api/ps, then re-evaluate the gate once.
+            measured = vram_gate.measure_load_size(model)
+            logger.info("vram gate: refreshed load size for %s from /api/ps -> %s",
+                        model, f"{measured:.2f} GB" if measured else "not resident")
+            if measured:
+                _v = vram_gate.check_vram(model, manual=manual)
         if not _v.ok:
             return {"error": f"VRAM gate refused local run - {_v.reason}"}
         options = {"num_predict": int(os.getenv("NOUGEN_NUM_PREDICT", "1400"))}

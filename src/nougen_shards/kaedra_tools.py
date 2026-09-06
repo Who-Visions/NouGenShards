@@ -241,6 +241,19 @@ def run_tool_loop(chat_fn: Callable[..., dict], model: str, messages: list,
 
     for rnd in range(rounds + 1):
         resp = chat_fn(model, msgs, tools=TOOLS) or {}
+        if not isinstance(resp, dict) or "error" in resp or "message" not in resp:
+            # OllamaClient.chat_raw returns {"error": ...} instead of raising
+            # (VRAM refusal, HTTP failure). Surface it: an empty answer with an
+            # empty call_log reads as success to a scorer.
+            if isinstance(resp, dict):
+                err = resp.get("error") or "chat returned no message"
+            else:
+                err = f"chat returned {type(resp).__name__}, not a dict"
+            text = str(err)
+            lg.warning("kaedra tool loop chat error: %s", text)
+            call_log.append({"tool": "_chat", "args": {}, "result_size": len(text),
+                             "ok": False, "error": text})
+            return f"[chat error] {text}", call_log
         message = resp.get("message") or {}
         final_text = message.get("content") or ""
         tool_calls = message.get("tool_calls") or []
