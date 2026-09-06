@@ -1,0 +1,162 @@
+{
+  "_doc": "Surface manifest for tools/reach_matrix.py (Move 6). Override with NOUGEN_SURFACES_FILE. Each row: name, kind (http|mcp|tcp|search|control), target, expect.status list, expect.node (who should answer, resolved from /health fields via node_signatures). Add a surface here, never in code. Nodes on default storage (whoart, phoebus) report storage=default and cannot be told apart from /health fields alone; they are labelled ngs-node(default-storage) rather than guessed.",
+  "node_signatures": [
+    {
+      "node": "fleet-store",
+      "persistent_storage": true,
+      "storage": "/data"
+    },
+    {
+      "node": "blade-local",
+      "persistent_storage": false,
+      "storage_endswith": ".nougen"
+    },
+    {
+      "node": "ngs-node(default-storage)",
+      "storage": "default"
+    }
+  ],
+  "surfaces": [
+    {
+      "name": "shards front door /health",
+      "kind": "http",
+      "target": "https://shards.nougenai.com/health",
+      "expect": {
+        "status": [
+          200
+        ],
+        "node": "fleet-store"
+      }
+    },
+    {
+      "name": "shards front door /mcp",
+      "kind": "mcp",
+      "target": "https://shards.nougenai.com/mcp",
+      "expect": {
+        "status": [
+          405,
+          401,
+          400
+        ]
+      }
+    },
+    {
+      "name": "shards front door /search (auth)",
+      "kind": "search",
+      "target": "https://shards.nougenai.com/search",
+      "expect": {
+        "status": [
+          200
+        ]
+      }
+    },
+    {
+      "name": "failover worker /health",
+      "kind": "http",
+      "target": "https://nougen-shard-failover.whoentertains.workers.dev/health",
+      "expect": {
+        "status": [
+          200
+        ],
+        "node": "fleet-store"
+      }
+    },
+    {
+      "name": "blade.nougenai.com /health",
+      "kind": "http",
+      "target": "https://blade.nougenai.com/health",
+      "expect": {
+        "status": [
+          200
+        ],
+        "node": "blade-local"
+      }
+    },
+    {
+      "name": "whoart-vault /health",
+      "kind": "http",
+      "target": "https://whoart-vault.nougenai.com/health",
+      "expect": {
+        "status": [
+          200
+        ]
+      }
+    },
+    {
+      "name": "phoebus /health",
+      "kind": "http",
+      "target": "https://phoebus.nougenai.com/health",
+      "expect": {
+        "status": [
+          200
+        ]
+      }
+    },
+    {
+      "name": "local NGS node /health",
+      "kind": "http",
+      "target": "http://127.0.0.1:${NGS_PORT:-4444}/health",
+      "expect": {
+        "status": [
+          200
+        ],
+        "node": "blade-local"
+      },
+      "vantage_only": [
+        "blade"
+      ]
+    },
+    {
+      "name": "local ollama",
+      "kind": "http",
+      "target": "http://127.0.0.1:${OLLAMA_PORT:-11434}/api/tags",
+      "expect": {
+        "status": [
+          200
+        ]
+      }
+    },
+    {
+      "name": "relay registry (GitHub, private repo answers 404 unauthenticated)",
+      "kind": "http",
+      "target": "https://api.github.com/repos/Who-Visions/NouGenRelay",
+      "expect": {
+        "status": [
+          200,
+          404
+        ]
+      }
+    },
+    {
+      "name": "tracker Space",
+      "kind": "http",
+      "target": "https://huggingface.co/api/spaces/nougenai/NouGenTracker-node",
+      "expect": {
+        "status": [
+          200,
+          401
+        ]
+      }
+    },
+    {
+      "name": "Shadow Dweller wiki",
+      "kind": "http",
+      "target": "https://shadow-dweller-wiki.whoentertains.workers.dev/",
+      "expect": {
+        "status": [
+          200
+        ]
+      }
+    },
+    {
+      "name": "CONTROL dead host (must be RED)",
+      "kind": "control",
+      "target": "https://reach-matrix-control.invalid/health",
+      "expect": {
+        "status": [
+          200
+        ]
+      }
+    }
+  ]
+}
