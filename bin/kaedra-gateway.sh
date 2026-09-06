@@ -36,4 +36,10 @@ if [ -z "${KAEDRA_GATEWAY_TOKEN:-}" ]; then
     exit 78  # EX_CONFIG
 fi
 
-exec /usr/bin/python3 "$REPO/ops/kaedra/kaedra_gateway.py"
+# Use the repo's virtual environment so nougen_shards and all dependencies are natively available.
+PYTHON_BIN="$REPO/.venv/bin/python"
+if [ ! -x "$PYTHON_BIN" ]; then
+    PYTHON_BIN="/usr/bin/python3"
+fi
+
+exec "$PYTHON_BIN" "$REPO/ops/kaedra/kaedra_gateway.py"
