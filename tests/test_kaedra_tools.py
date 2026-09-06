@@ -1,8 +1,6 @@
 """Kaedra read-only tool path (war game Move 3)."""
 import json
 
-import pytest
-
 from nougen_shards import kaedra_tools as kt
 
 
@@ -64,9 +62,9 @@ def test_relay_open_filters_closed_legs(monkeypatch):
             {"id": "leg-3", "agent": "c", "live_status": "in_progress", "goal": "g"}]
     monkeypatch.setattr(handoff, "handoff_feed", lambda agent=None, limit=25: feed)
     latest = kt.dispatch("relay_latest", {"limit": 2})
-    assert [l["id"] for l in latest["legs"]] == ["leg-1", "leg-2"]
+    assert [leg["id"] for leg in latest["legs"]] == ["leg-1", "leg-2"]
     opened = kt.dispatch("relay_open", {})
-    assert [l["id"] for l in opened["legs"]] == ["leg-2", "leg-3"]
+    assert [leg["id"] for leg in opened["legs"]] == ["leg-2", "leg-3"]
 
 
 def test_reach_state_unavailable_when_module_missing(monkeypatch):
