@@ -235,6 +235,24 @@ class Handler(BaseHTTPRequestHandler):
                         tool=c.get("tool", "unknown"), args=c.get("args", {}),
                         result_size=int(c.get("result_size") or 0),
                         ok=bool(c.get("ok")), error=str(c.get("error") or ""))
+                # Same honesty rule as /generate: run_tool_loop can RETURN
+                # normally while recording a chat failure in call_log (it
+                # yields "[chat error] ..." rather than raising). Reporting
+                # that as a 200 would hand the caller a failure wearing an
+                # answer's clothes.
+                loop_error = next(
+                    (c for c in call_log
+                     if not c.get("ok") and c.get("tool") in ("_loop", "_chat")),
+                    None)
+                if loop_error:
+                    self._send(502, {
+                        "error": "tool loop failed",
+                        "detail": str(loop_error.get("error") or "")[:300],
+                        "tool_calls_made": [c.get("tool") for c in call_log],
+                        "tool_rounds": len(call_log),
+                        "partial_response": text or None,
+                    })
+                    return
                 self._send(200, {
                     "model": model,
                     "message": {"role": "assistant", "content": text},
@@ -340,8 +358,30 @@ class Handler(BaseHTTPRequestHandler):
                     tool=c.get("tool", "unknown"), args=c.get("args", {}),
                     result_size=int(c.get("result_size") or 0),
                     ok=bool(c.get("ok")), error=str(c.get("error") or ""))
-            # Only fall through to plain generate if the loop produced nothing
-            # at all; a degraded answer still beats an empty 200.
+            # NEVER fall through to plain generate after a tool-loop FAILURE.
+            # The earlier version did, and whoart/outpost-1d caught it (leg
+            # 20260906T215836Z): when the loop dies mid-flight — the observed
+            # case was ConnectionResetError [Errno 54] against ollama — the
+            # fallback re-ran the prompt with no tools and returned the model's
+            # raw first-round text as a 200. The caller saw "fleet_whoami\n"
+            # with no grant-log entry and no way to tell it from an answer.
+            # That is the exact success-shaped failure this fleet keeps getting
+            # burned by, and it was introduced here. A caller must be able to
+            # distinguish "the tools ran and this is the result" from "the
+            # loop broke", so the error is returned, never papered over.
+            loop_error = next(
+                (c for c in call_log
+                 if not c.get("ok") and c.get("tool") in ("_loop", "_chat")),
+                None)
+            if loop_error:
+                self._send(502, {
+                    "error": "tool loop failed",
+                    "detail": str(loop_error.get("error") or "")[:300],
+                    "tool_calls_made": [c.get("tool") for c in call_log],
+                    "tool_rounds": len(call_log),
+                    "partial_response": text or None,
+                })
+                return
             if text:
                 self._send(200, {
                     "model": model,
