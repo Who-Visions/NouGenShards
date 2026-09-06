@@ -12,7 +12,7 @@ gateway - Worker -> named tunnel -> local service - so the fleet gets a
 Ollama has NO authentication of its own. Exposing 11434 through a tunnel
 would hand the internet a free GPU, so this process is the fence:
 
-  * every generate call requires X-Kaedra-Token (constant-time compared)
+  * every generate/chat call requires X-Kaedra-Token (constant-time compared)
   * only allow-listed models can be named - no pulling or running arbitrary
     weights through the public hostname
   * /health is unauthenticated but returns booleans only, matching the NGS
@@ -30,23 +30,40 @@ is inference-speed.
 import hmac
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 TOKEN = os.environ.get("KAEDRA_GATEWAY_TOKEN", "")
 PORT = int(os.environ.get("KAEDRA_GATEWAY_PORT", "4455"))
-# Allow-list: the Kaedra personas plus their base models. Anything else is a
-# 403 - this hostname is not a general-purpose Ollama proxy.
 ALLOWED = set(filter(None, os.environ.get(
     "KAEDRA_MODELS",
     "kaedracode:e2b,kaedracode:e4b,kaedracode:latest,gemma4:e2b,gemma4:e4b",
 ).split(",")))
 DEFAULT_MODEL = os.environ.get("KAEDRA_DEFAULT_MODEL", "kaedracode:e2b")
-# Ollama can take minutes on a cold load; the tunnel and Worker both cap
-# earlier, so this only needs to be generous enough not to be the first cap.
 TIMEOUT = int(os.environ.get("KAEDRA_TIMEOUT", "180"))
+
+GRANT_LOG_PATH = Path.home() / ".nougen" / "logs" / "kaedra_grant.log"
+GRANT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _log_grant_call(tool: str, args: dict, result_size: int, ok: bool, error: str = ""):
+    entry = {
+        "ts": time.time(),
+        "tool": tool,
+        "args": args,
+        "result_size": result_size,
+        "ok": ok,
+        "error": error
+    }
+    try:
+        with open(GRANT_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        print(f"[grant_log_error] {e}", flush=True)
 
 
 def _ollama(path: str, payload: dict) -> dict:
@@ -101,7 +118,6 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
             return
         available = _models()
-        # Booleans and model NAMES only - never the token, never a path.
         self._send(200, {
             "status": "ready" if available else "ollama_unreachable",
             "ollama_up": bool(available),
@@ -112,7 +128,8 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def do_POST(self):
-        if self.path.split("?")[0] != "/generate":
+        route = self.path.split("?")[0]
+        if route not in ("/generate", "/chat"):
             self._send(404, {"error": "not found"})
             return
         if not self._authed():
@@ -124,36 +141,94 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": "invalid JSON body"})
             return
 
-        prompt = (body.get("prompt") or "").strip()
-        if not prompt:
-            self._send(400, {"error": "prompt is required"})
-            return
         model = body.get("model") or DEFAULT_MODEL
         if model not in ALLOWED:
             self._send(403, {"error": "model not allowed", "allowed": sorted(ALLOWED)})
+            return
+
+        options = {}
+        if isinstance(body.get("temperature"), (int, float)):
+            options["temperature"] = body["temperature"]
+        if isinstance(body.get("num_predict"), int):
+            options["num_predict"] = body["num_predict"]
+
+        if route == "/chat":
+            messages = body.get("messages") or []
+            if not messages:
+                prompt = (body.get("prompt") or "").strip()
+                if prompt:
+                    messages = [{"role": "user", "content": prompt}]
+                else:
+                    self._send(400, {"error": "messages or prompt is required for /chat"})
+                    return
+
+            payload = {
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "think": bool(body.get("think", False)),
+                "keep_alive": -1,
+            }
+            if "tools" in body:
+                payload["tools"] = body["tools"]
+            if options:
+                payload["options"] = options
+
+            try:
+                try:
+                    out = _ollama("/api/chat", payload)
+                except urllib.error.HTTPError as e:
+                    detail = e.read().decode("utf-8", "replace")[:200]
+                    if e.code == 400 and "think" in detail:
+                        payload.pop("think", None)
+                        out = _ollama("/api/chat", payload)
+                    else:
+                        self._send(502, {"error": "ollama rejected", "detail": detail})
+                        return
+            except urllib.error.URLError as e:
+                self._send(502, {"error": "ollama unreachable", "detail": str(e)[:200]})
+                return
+            except Exception as e:
+                self._send(500, {"error": "chat failed", "detail": str(e)[:200]})
+                return
+
+            msg = out.get("message", {})
+            tool_calls = msg.get("tool_calls")
+            if tool_calls:
+                for tc in tool_calls:
+                    fn = tc.get("function", {})
+                    _log_grant_call(
+                        tool=fn.get("name", "unknown"),
+                        args=fn.get("arguments", {}),
+                        result_size=len(json.dumps(fn.get("arguments", {}))),
+                        ok=True
+                    )
+
+            self._send(200, {
+                "model": model,
+                "message": msg,
+                "response": msg.get("content", ""),
+                "eval_count": out.get("eval_count"),
+                "total_ms": round(out.get("total_duration", 0) / 1e6),
+                "done_reason": out.get("done_reason"),
+            })
+            return
+
+        # route == "/generate"
+        prompt = (body.get("prompt") or "").strip()
+        if not prompt:
+            self._send(400, {"error": "prompt is required"})
             return
 
         payload = {
             "model": model,
             "prompt": prompt,
             "stream": False,
-            # kaedracode is a thinking model: with thinking on it spends
-            # hundreds of hidden tokens before any visible text, so a small
-            # num_predict exhausts the budget and returns response:"" with
-            # done_reason=length. Thinking is off unless the caller sends
-            # think:true (and budgets num_predict for it).
             "think": bool(body.get("think", False)),
-            # Pin the model in memory: the 38s cold load is a one-time cost,
-            # not a per-call one.
             "keep_alive": -1,
         }
         if body.get("system"):
             payload["system"] = body["system"]
-        options = {}
-        if isinstance(body.get("temperature"), (int, float)):
-            options["temperature"] = body["temperature"]
-        if isinstance(body.get("num_predict"), int):
-            options["num_predict"] = body["num_predict"]
         if options:
             payload["options"] = options
 
@@ -161,8 +236,6 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 out = _ollama("/api/generate", payload)
             except urllib.error.HTTPError as e:
-                # A model without the thinking capability rejects the think
-                # key with a 400; retry once without it.
                 detail = e.read().decode("utf-8", "replace")[:200]
                 if e.code == 400 and "think" in detail:
                     payload.pop("think", None)
@@ -182,8 +255,6 @@ class Handler(BaseHTTPRequestHandler):
             "response": out.get("response", ""),
             "eval_count": out.get("eval_count"),
             "total_ms": round(out.get("total_duration", 0) / 1e6),
-            # length here means the num_predict budget ran out mid-answer —
-            # the one visible symptom of the empty-response failure mode.
             "done_reason": out.get("done_reason"),
         })
 
