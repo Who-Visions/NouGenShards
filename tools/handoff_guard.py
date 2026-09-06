@@ -71,8 +71,12 @@ def _newest_text(limit=1800):
 
 def _git(*args):
     try:
+        # pythonw has no std handles: give the child its own stdin and no console,
+        # or CreateProcess fails with 0x800700e8 (ERROR_NO_DATA) on every hook fire.
         return subprocess.run(["git", "-C", str(REPO), *args],
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=GIT_TIMEOUT_S).stdout.strip()
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=GIT_TIMEOUT_S,
+                              stdin=subprocess.DEVNULL,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
     except Exception:
         return ""
 
