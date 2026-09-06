@@ -13,7 +13,22 @@ from . import keymaker
 from . import structured
 
 # Hard cap on any cloud HTTP call so a stalled provider can't hang the process.
-_HTTP_TIMEOUT = 120
+# Resolved from env (NOUGEN_OLLAMA_HTTP_TIMEOUT_S); the constant is a logged fallback.
+_HTTP_TIMEOUT_DEFAULT = 120
+
+
+def _resolve_http_timeout() -> float:
+    raw = os.getenv("NOUGEN_OLLAMA_HTTP_TIMEOUT_S")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            print(f"[models_client] NOUGEN_OLLAMA_HTTP_TIMEOUT_S={raw!r} is not a number; "
+                  f"falling back to {_HTTP_TIMEOUT_DEFAULT}s", file=sys.stderr)
+    return float(_HTTP_TIMEOUT_DEFAULT)
+
+
+_HTTP_TIMEOUT = _resolve_http_timeout()
 
 
 @dataclass
@@ -976,6 +991,37 @@ class OllamaClient(LocalLLMClient):
                 return full
         except Exception as exc: # pylint: disable=broad-except
             return f"Error: {exc}"
+
+    def chat_raw(self, model: str, messages: list, tools: Optional[list] = None,
+                 num_ctx: Optional[int] = None, manual: bool = False,
+                 timeout: Optional[float] = None) -> dict:
+        """POST /api/chat (stream false) and return the raw JSON dict.
+
+        Used by tool-calling loops that need message.tool_calls intact. Same
+        VRAM admission gate as chat(); a refusal returns {"error": ...} so the
+        caller can fall through instead of raising.
+        """
+        from .vram_gate import check_vram
+        _v = check_vram(model, manual=manual)
+        if not _v.ok:
+            return {"error": f"VRAM gate refused local run - {_v.reason}"}
+        options = {"num_predict": int(os.getenv("NOUGEN_NUM_PREDICT", "1400"))}
+        if num_ctx:
+            options["num_ctx"] = int(num_ctx)
+        payload: dict = {"model": model, "messages": messages, "stream": False,
+                         "options": options}
+        if tools:
+            payload["tools"] = tools
+        if _v.reason != "already resident":
+            payload["keep_alive"] = 0
+        req = urllib.request.Request(
+            f"{self.base_url}/api/chat", data=json.dumps(payload).encode(), method="POST")
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout or _HTTP_TIMEOUT) as res:
+                return json.loads(res.read().decode())
+        except Exception as exc:  # pylint: disable=broad-except
+            return {"error": str(exc)}
 
     def embed(self, model: str, text: str) -> list:
         payload = {"model": model, "prompt": text}
