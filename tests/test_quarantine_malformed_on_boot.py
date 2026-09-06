@@ -108,3 +108,34 @@ def test_no_orphan_sidecars_can_poison_the_recreated_db(vault):
 def test_missing_files_are_not_created(vault):
     assert core.quarantine_malformed_dbs() == []
     assert not core.get_db_path(5).exists()
+
+
+def test_vault_journal_mode_defaults_to_wal(monkeypatch):
+    monkeypatch.delenv("NOUGEN_VAULT_JOURNAL_MODE", raising=False)
+    monkeypatch.delenv("SPACE_ID", raising=False)
+    monkeypatch.delenv("HF_SPACE_ID", raising=False)
+    assert core.get_vault_journal_mode() == "WAL"
+
+
+def test_vault_journal_mode_env_override(monkeypatch):
+    monkeypatch.setenv("NOUGEN_VAULT_JOURNAL_MODE", "delete")
+    assert core.get_vault_journal_mode() == "DELETE"
+    monkeypatch.setenv("NOUGEN_VAULT_JOURNAL_MODE", "truncate")
+    assert core.get_vault_journal_mode() == "TRUNCATE"
+
+
+def test_vault_journal_mode_auto_detects_space(monkeypatch):
+    monkeypatch.delenv("NOUGEN_VAULT_JOURNAL_MODE", raising=False)
+    monkeypatch.setenv("SPACE_ID", "Who-Visions/NouGenShards")
+    assert core.get_vault_journal_mode() == "DELETE"
+
+
+def test_vault_connection_honors_delete_journal_mode(vault, monkeypatch):
+    monkeypatch.setenv("NOUGEN_VAULT_JOURNAL_MODE", "DELETE")
+    core.init_db(1)
+    conn = core.get_connection(1)
+    try:
+        row = conn.execute("PRAGMA journal_mode;").fetchone()
+        assert str(row[0]).upper() == "DELETE"
+    finally:
+        conn.close()
