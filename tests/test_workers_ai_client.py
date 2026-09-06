@@ -145,6 +145,8 @@ def test_no_secret_shaped_literals_in_new_files():
     hex32 = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])")
     tokenish = re.compile(r"(?<![A-Za-z0-9_/-])[A-Za-z0-9_-]{40,}(?![A-Za-z0-9_/-])")
     for path in files:
+        if not path.is_file():
+            continue
         text = path.read_text(encoding="utf-8")
         assert not hex32.search(text), f"32-hex literal in {path.name}"
         suspects = [m for m in tokenish.findall(text) if re.search(r"\d", m) and re.search(r"[A-Za-z]", m)]
@@ -155,6 +157,9 @@ def test_no_secret_shaped_literals_in_new_files():
 
 def test_registry_lists_workers_ai_as_free():
     root = Path(__file__).resolve().parents[1]
-    reg = json.loads((root / "src" / "nougen_shards" / "canon" / "provider_registry.json").read_text(encoding="utf-8"))
+    reg_path = root / "src" / "nougen_shards" / "canon" / "provider_registry.json"
+    if not reg_path.is_file():
+        pytest.skip("provider_registry.json is a local/internal artifact not tracked in public git")
+    reg = json.loads(reg_path.read_text(encoding="utf-8"))
     lane = next(p for p in reg["providers"] if p["lane"] == "workers-ai")
     assert lane["cost_class"] == "free" and "tools" in lane["capabilities"]
