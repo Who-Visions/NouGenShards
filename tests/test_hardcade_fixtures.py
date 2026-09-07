@@ -142,3 +142,55 @@ def test_shared_credential_collapses_to_single_observation():
     assert result.verdict != "PERFECT"
     assert result.effective_observations == 1
     assert any("Observations share a single credential" in r for r in result.reasons)
+
+
+def _tuple(node, credential, observer, claim="api healthy"):
+    return EvidenceTuple(
+        claim=claim,
+        probe=f"probe-{node}",
+        node=node,
+        observed={"status_code": 200, "body_length": 9},
+        credential=credential,
+        observer=observer,
+        subject="api",
+    )
+
+
+def test_self_reported_tuple_cannot_corroborate_a_verified_one():
+    """Hop 4 rule 1: identity, not just credentials, bounds independence.
+
+    Regression. Counting distinct CREDENTIALS alone let a self-reported tuple
+    pair with one verified tuple and reach 2 effective observations, emitting
+    PERFECT on evidence where only ONE party's identity was ever established.
+    Credentials catch one actor wearing two hostnames; verified identity catches
+    one hostname vouching for itself. Both bounds are required.
+    """
+    result = evaluate_hardcade_evidence(
+        claim="api healthy",
+        evidence_list=[
+            _tuple("self-reported", "key-alpha", "whoart"),
+            _tuple("phoebus", "key-beta", "phoebus"),
+        ],
+        subject="api",
+        observer="phoebus",
+    )
+
+    assert result.effective_observations == 1, "a self-reported tuple must not corroborate"
+    assert result.verdict not in ("PERFECT", "GODLIKE")
+    assert any("self-reported" in r for r in result.reasons)
+
+
+def test_two_verified_nodes_with_distinct_credentials_still_reach_godlike():
+    """Negative control: the fix must not collapse genuinely independent evidence."""
+    result = evaluate_hardcade_evidence(
+        claim="api healthy",
+        evidence_list=[
+            _tuple("whoart", "key-alpha", "whoart"),
+            _tuple("phoebus", "key-beta", "phoebus"),
+        ],
+        subject="api",
+        observer="phoebus",
+    )
+
+    assert result.verdict == "GODLIKE"
+    assert result.effective_observations == 2

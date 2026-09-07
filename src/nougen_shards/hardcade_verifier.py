@@ -140,18 +140,43 @@ def evaluate_hardcade_evidence(
                 reasons=[f"Hit {idx}: Zero tools executed with {obs['hallucinated_answers']} hallucinations."]
             )
 
-    # Corroboration verification
-    effective_obs_count = len(distinct_credentials) if distinct_credentials else len(distinct_observer_nodes)
+    # Corroboration verification.
+    #
+    # Hop 4 rule 1 (identity): a self-reported tuple can NEVER count toward
+    # corroboration, no matter how many nodes the evidence names. Counting
+    # distinct credentials alone let a self-reported tuple pair with one
+    # verified tuple and reach 2 effective observations -- PERFECT on evidence
+    # where only ONE party's identity was ever established. Independence is
+    # bounded by the number of tuples whose identity was stamped by an OBSERVER,
+    # and then de-duplicated by credential (hop 4 rule 2). Neither bound alone
+    # is sufficient: credentials catch one actor wearing two hostnames, verified
+    # identity catches one hostname vouching for itself.
+    corroborating = len(distinct_observer_nodes)
+    if distinct_credentials:
+        corroborating = min(corroborating, len(distinct_credentials))
+    effective_obs_count = corroborating
     
     # Check if all observations shared a single credential
     if len(evidence_list) > 1 and len(distinct_credentials) == 1:
         reasons.append("Observations share a single credential; counts as ONE observation.")
         effective_obs_count = 1
 
-    # Check self-reported limitation
+    # Check self-reported limitation. Report it whenever ANY tuple's identity was
+    # self-reported, not only when every tuple was: a mixed set is exactly the
+    # case that silently reached PERFECT before, and the caller needs to see why
+    # its observation count is lower than the number of tuples it supplied.
+    self_reported_count = sum(
+        1 for ev in evidence_list
+        if ev.node == "self-reported" or (subject and ev.node == subject and not ev.observer)
+    )
     if not distinct_observer_nodes or distinct_observer_nodes == {"self-reported"}:
         reasons.append("Identity is self-reported only; cannot provide independent corroboration.")
         effective_obs_count = min(effective_obs_count, 1)
+    elif self_reported_count:
+        reasons.append(
+            f"{self_reported_count} of {len(evidence_list)} tuples are self-reported; "
+            "they do not count toward corroboration."
+        )
 
     if effective_obs_count >= 2 and len(evidence_list) >= 2:
         if len(distinct_observer_nodes) >= 2:
