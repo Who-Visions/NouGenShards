@@ -76,3 +76,35 @@ def test_expand_resolves_env_with_default(monkeypatch):
     assert m.expand("http://127.0.0.1:${NGS_PORT:-4444}/health") == "http://127.0.0.1:4444/health"
     monkeypatch.setenv("NGS_PORT", "5555")
     assert m.expand("http://127.0.0.1:${NGS_PORT:-4444}/health") == "http://127.0.0.1:5555/health"
+
+
+def test_row_carries_token_fp_for_authenticated_surface():
+    m = _module()
+    surface = {"name": "search", "kind": "search", "target": "https://a/search"}
+    row = m.probe(surface, SIGS, token="mock_token_fixture", here="whoart")
+    assert row["token_fp"] is not None
+    assert len(row["token_fp"]) == 12
+
+
+def test_reconcile_vantages_asserts_combo_breaker_on_shared_credential():
+    m = _module()
+    import hashlib
+    fp_a = hashlib.sha256(b"probe_alpha").hexdigest()[:12]
+    fp_b = hashlib.sha256(b"probe_beta").hexdigest()[:12]
+
+    run_whoart = {"vantage": "whoart", "token_fp": fp_a}
+    run_blade = {"vantage": "blade", "token_fp": fp_a}
+    run_phoebus = {"vantage": "phoebus", "token_fp": fp_a}
+
+    # All three vantages sharing the same credential collapse to 1 observation -> COMBO BREAKER
+    rec = m.reconcile_vantages([run_whoart, run_blade, run_phoebus])
+    assert rec["verdict"] == "COMBO BREAKER"
+    assert rec["announcer_call"] == "COMBO BREAKER"
+    assert rec["independent_observations"] == 1
+
+    # Distinct credentials corroborate -> GODLIKE
+    run_blade_distinct = {"vantage": "blade", "token_fp": fp_b}
+    rec_distinct = m.reconcile_vantages([run_whoart, run_blade_distinct])
+    assert rec_distinct["verdict"] == "CORROBORATED"
+    assert rec_distinct["announcer_call"] == "GODLIKE"
+    assert rec_distinct["independent_observations"] == 2
