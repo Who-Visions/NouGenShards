@@ -107,7 +107,7 @@ This is measured, not theoretical. Cloudflare's versions API for
 |---|---|---|---|
 | 20:58:33Z | 9e02cb53 | api | 5d93139fe18620fcb87445318c98f7e4 |
 | 19:25:28Z | 80e010fe | api | 5d93139fe18620fcb87445318c98f7e4 |
-| 03:12:12Z | 6c8764da | **wrangler** | whoentertains@gmail.com |
+| 03:12:12Z | 6c8764da | **wrangler** | <operator> |
 | 03:11:19Z | e2b39a55 | api | 5d93139fe18620fcb87445318c98f7e4 |
 
 Four deploys from at least three different lanes carry **one** author id — the
