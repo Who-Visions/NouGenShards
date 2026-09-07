@@ -259,7 +259,7 @@ def link(destiny_id: int, kind: str, ref: str, role: str = "evidence",
         conn.execute("INSERT OR IGNORE INTO destiny_links (destiny_id, kind, ref, role, note, created_utc) VALUES (?,?,?,?,?,?)",
                      (destiny_id, kind, ref, role, note, now))
         links = conn.execute("SELECT kind, ref, role, note FROM destiny_links WHERE destiny_id=? ORDER BY id", (destiny_id,)).fetchall()
-    return {"id": destiny_id, "links": [dict(l) for l in links]}
+    return {"id": destiny_id, "links": [dict(lnk) for lnk in links]}
 
 
 def get_destiny(destiny_id: int) -> Dict[str, Any]:
@@ -268,7 +268,7 @@ def get_destiny(destiny_id: int) -> Dict[str, Any]:
         if row is None:
             return {"error": f"destiny {destiny_id} not found"}
         d = _row_to_dict(row)
-        d["links"] = [dict(l) for l in conn.execute(
+        d["links"] = [dict(lnk) for lnk in conn.execute(
             "SELECT kind, ref, role, note, created_utc FROM destiny_links WHERE destiny_id=? ORDER BY id", (destiny_id,))]
         d["events"] = [dict(e) for e in conn.execute(
             "SELECT from_status, to_status, actor, evidence, created_utc FROM destiny_events WHERE destiny_id=? ORDER BY id", (destiny_id,))]

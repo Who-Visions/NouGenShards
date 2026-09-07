@@ -15,14 +15,11 @@ Authority: NouGen Relay Leg 20260829T120647Z__claude-app__g-whoentertains / Rule
 from __future__ import annotations
 
 import enum
-import hashlib
-import json
-import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_EVEN
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------

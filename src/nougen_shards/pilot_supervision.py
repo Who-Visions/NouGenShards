@@ -15,7 +15,7 @@ import enum
 import json
 import logging
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -23,20 +23,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import core
 from .reasoning_governor import (
-    CognitiveYieldMetrics,
     ConsequenceClass,
     GovernorAction,
     ReasoningDecision,
     ReasoningGovernor,
-    ReasoningValueBucket,
-    RuntimeState,
     TaskClass,
-    TerminalState,
     TrajectoryCheckpoint,
     compute_cognitive_yield,
 )
 from .progressive_skills import (
-    ProgressiveSkill,
     ProgressiveSkillManager,
     SkillTier,
     get_progressive_skill_manager,

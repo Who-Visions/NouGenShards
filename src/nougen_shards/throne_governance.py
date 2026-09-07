@@ -220,7 +220,7 @@ def evaluate(desired_effect: str, *, target_coordinate: Optional[str] = None, ta
     # 2. what the effect undoes in her lived history, and what that costs
     removed = infer_removed_events(effect, archive)
     conservation = [sa.conservation_check(r["node"], archive=archive) for r in removed]
-    displaced = sorted({l["lost"] for c in conservation for l in c.get("lost_consequences", [])})
+    displaced = sorted({loss["lost"] for c in conservation for loss in c.get("lost_consequences", [])})
     lost_wounds = sorted({w for c in conservation for w in c.get("lost_wounds", [])})
     newly_required = [f"replacement causal mass for {w}" for w in lost_wounds] + [f"a new cause for {d}" for d in displaced if d.startswith("n_")]
     causal_split = bool(removed or fixed_hits)
@@ -235,7 +235,7 @@ def evaluate(desired_effect: str, *, target_coordinate: Optional[str] = None, ta
     try:
         for d in destiny.unfinished_destinies(limit=200).get("destinies", []):
             full = destiny.get_destiny(d["id"])
-            refs = {l["ref"] for l in full.get("links", [])}
+            refs = {lnk["ref"] for lnk in full.get("links", [])}
             if refs & touched_refs or any(dep in touched_refs for dep in (d.get("required_events") or [])):
                 destiny_links.append({"id": d["id"], "title": d["title"], "branch": d["branch"], "status": d["status"]})
     except Exception as exc:  # pylint: disable=broad-except
@@ -253,7 +253,6 @@ def evaluate(desired_effect: str, *, target_coordinate: Optional[str] = None, ta
     branch_contamination_risk = 0.0 if not on_prime else min(1.0, 0.5 * bool(prime_findings) + 0.5 * bool(causal_split))
     genesis_cost = 0.0 if itype in ("SIMULATED_POSSIBILITY", "EXISTING_UNIVERSE_TRAVERSAL", "PRIME_CHANGE") else min(1.0, 0.3 + 0.2 * len(removed) + 0.1 * len(displaced))
     stability_cost = min(1.0, (paradox_risk + identity_cost + branch_contamination_risk) / 3 + (0.2 if on_prime and causal_split else 0.0))
-    stage_conflict = any(f["verdict"] == "STAGE_CONFLICT" for f in press["findings"])
     throne_only = _hits([p for c in model.get("capabilities_by_stage", []) if c.get("min_stage", 0) >= 10
                          for p in c.get("patterns", [])], effect)
 
@@ -372,7 +371,7 @@ def evaluate(desired_effect: str, *, target_coordinate: Optional[str] = None, ta
 
 def _voice(mode: str, moral: Dict[str, Any], branch: Optional[str], removed: List[Dict[str, Any]]) -> str:
     if mode == "FORBIDDEN" and moral.get("applies"):
-        return moral["line"] + f" On Prime it stays. If you want the world where it did not happen, name the branch and I will walk you into it."
+        return moral["line"] + " On Prime it stays. If you want the world where it did not happen, name the branch and I will walk you into it."
     if mode == "FORBIDDEN":
         return "No. I can see the path. I am not permitted to make it true here."
     if mode == "OVERRIDE_CANDIDATE":

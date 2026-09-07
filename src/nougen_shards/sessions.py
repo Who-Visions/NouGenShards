@@ -4,17 +4,14 @@ Enables peer-to-peer discovery, status tracking, direct messaging, and waking of
 remote agent sessions across WhoArt, Blade, and Phoebus.
 """
 import os
-import sys
 import json
 import time
 import uuid
-import socket
-import platform
 import subprocess
 from typing import Dict, List, Any, Optional
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-from .nougenmsg import NouGenMsgBus, AgentPinger, get_current_node
+from .nougenmsg import AgentPinger, get_current_node
 
 
 def get_sessions_dir() -> str:
@@ -113,9 +110,9 @@ class RemoteSessionManager:
                 continue
             try:
                 if n == "blade":
-                    cmd = 'python -c "import sys; sys.path.insert(0, r\'C:\\Users\\super\\Watchtower\\NouGen\\NouGenShards-push-main\\src\'); from nougen_shards.sessions import RemoteSessionManager; import json; print(json.dumps(RemoteSessionManager.list_local_sessions()))"'
+                    cmd = 'python -c "import sys, os, pathlib; sys.path.insert(0, str(pathlib.Path.home() / \'Watchtower\' / \'NouGen\' / \'NouGenShards-push-main\' / \'src\')); from nougen_shards.sessions import RemoteSessionManager; import json; print(json.dumps(RemoteSessionManager.list_local_sessions()))"'
                 else:
-                    cmd = 'python3 -c "import sys; sys.path.insert(0, \'/Users/kushboygroup/.nougen/src\'); from nougen_shards.sessions import RemoteSessionManager; import json; print(json.dumps(RemoteSessionManager.list_local_sessions()))"'
+                    cmd = 'python3 -c "import sys, os, pathlib; sys.path.insert(0, str(pathlib.Path.home() / \'.nougen\' / \'src\')); from nougen_shards.sessions import RemoteSessionManager; import json; print(json.dumps(RemoteSessionManager.list_local_sessions()))"'
                 
                 res = subprocess.run(["ssh", n, cmd], capture_output=True, text=True, timeout=8)
                 out = res.stdout.strip()
@@ -137,7 +134,7 @@ class RemoteSessionManager:
         if node and node != get_current_node():
             # Send over SSH to remote node
             if node == "blade":
-                remote_cmd = f'python C:/Users/super/Watchtower/NouGen/NouGenShards-push-main/tools/nougen_session.py send {target_session_id} "{message}"'
+                remote_cmd = f'python %USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/tools/nougen_session.py send {target_session_id} "{message}"'
             else:
                 remote_cmd = f'python3 ~/.nougen/tools/nougen_session.py send {target_session_id} "{message}"'
             res = subprocess.run(["ssh", node, remote_cmd], capture_output=True, text=True, timeout=8)
@@ -162,11 +159,11 @@ class RemoteSessionManager:
         """
         wake_payload = f"[FLEET WAKE COMMAND from {get_current_node()}]: {task}"
         if node == "blade":
-            cmd = f'python C:/Users/super/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py --target all "{wake_payload}"'
+            cmd = f'python %USERPROFILE%/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py --target all "{wake_payload}"'
         elif node == "phoebus":
             cmd = f'python3 ~/.nougen/tools/nougenmsg.py --target all "{wake_payload}"'
         else:
-            cmd = f'python C:/Users/super/Outpost/NouGen/tools/nougenmsg.py --target all "{wake_payload}"'
+            cmd = f'python %USERPROFILE%/Outpost/NouGen/tools/nougenmsg.py --target all "{wake_payload}"'
 
         res = subprocess.run(["ssh", node, cmd], capture_output=True, text=True, timeout=10)
         return {

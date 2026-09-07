@@ -4,14 +4,13 @@ Bypasses directory listing API limits (1,000-file cap) using `git log --diff-fil
 Provides fast cache reads for hooks and async background git fetch refreshes.
 """
 import os
-import sys
 import json
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
-REPO = Path(os.environ.get("NOUGEN_RELAY_REPO", r"C:\Users\super\Outpost\NouGenRelay"))
+REPO = Path(os.environ.get("NOUGEN_RELAY_REPO", Path.home() / "Outpost" / "NouGenRelay"))
 CACHE = Path(os.environ.get("NOUGEN_RELAY_CACHE", Path.home() / ".nougen" / "state" / "relay_watch.json"))
 MAX_LEGS = int(os.environ.get("NOUGEN_RELAY_MAX", "12"))
 CATCHUP_HOURS = float(os.environ.get("NOUGEN_RELAY_CATCHUP_H", "12"))

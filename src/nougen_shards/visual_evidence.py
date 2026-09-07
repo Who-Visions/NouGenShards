@@ -24,7 +24,6 @@ import base64
 import hashlib
 import json
 import math
-import os
 import re
 import sqlite3
 import struct
