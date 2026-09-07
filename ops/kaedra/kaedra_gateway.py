@@ -17,7 +17,10 @@ would hand the internet a free GPU, so this process is the fence:
     weights through the public hostname
   * /health is unauthenticated but returns booleans only, matching the NGS
     node's convention, so the Worker can probe reachability without a secret
-  * bound to loopback; the tunnel ingress is the only path in
+  * HOST defaults to 0.0.0.0 (LAN-reachable, not loopback-only) so other
+    fleet boxes can reach it directly; X-Kaedra-Token is the actual fence,
+    not network position - override via KAEDRA_GATEWAY_HOST/KAEDRA_BIND to
+    restrict to loopback if a box only needs the tunnel path
 
 keep_alive
 ----------
