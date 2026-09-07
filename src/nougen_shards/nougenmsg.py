@@ -13,6 +13,45 @@ import urllib.request
 import re
 from typing import Dict, Any, List, Optional, Tuple
 
+
+def _unread_since_cursor(inbox_dir: str) -> int:
+    """Inbox files newer than the drain cursor -- i.e. genuinely unconsumed.
+
+    Mirrors agy_inbox_hook's ordering exactly: entries are keyed (mtime_ns,
+    name) and the cursor is the last key it consumed. Falls back to the raw
+    file count ONLY when no cursor exists yet, because then nothing has been
+    drained and every file really is unread.
+    """
+    if not os.path.exists(inbox_dir):
+        return 0
+    state_path = os.environ.get(
+        "NOUGEN_AGY_INBOX_STATE",
+        os.path.expanduser(os.path.join("~", ".nougen", ".agy_inbox_seen.json")))
+    cursor = None
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        cursor = (int(data["mtime_ns"]), str(data["name"]))
+    except Exception:  # pylint: disable=broad-except
+        cursor = None
+
+    count = 0
+    for path in glob.glob(os.path.join(inbox_dir, "*.json")):
+        name = os.path.basename(path)
+        if name.startswith("."):
+            continue
+        if cursor is None:
+            count += 1
+            continue
+        try:
+            key = (os.stat(path).st_mtime_ns, name)
+        except OSError:
+            continue
+        if key > cursor:
+            count += 1
+    return count
+
+
 def get_current_node() -> str:
     if os.name != "nt":
         return "phoebus"
@@ -735,8 +774,15 @@ class NouGenMsgBus:
         inbox_gemini = os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox"))
         inbox_codex = os.path.expanduser(os.path.join("~", ".codex", "inbox"))
 
-        gemini_messages = len(glob.glob(os.path.join(inbox_gemini, "*.json"))) if os.path.exists(inbox_gemini) else 0
-        codex_messages = len(glob.glob(os.path.join(inbox_codex, "*.json"))) if os.path.exists(inbox_codex) else 0
+        # UNREAD means "not yet consumed", not "has ever arrived" (blade,
+        # 2026-09-07). These were raw file counts, and nothing ever deletes an
+        # inbox file -- agy_inbox_hook advances a cursor instead -- so the
+        # number could only ever climb. It read 1138 "unread" on blade while the
+        # cursor sat on the newest message, consumed minutes earlier: a lifetime
+        # arrival total wearing the label of a backlog, which is exactly the
+        # alarm a fleet lane then escalates. Count against the hook's cursor.
+        gemini_messages = _unread_since_cursor(inbox_gemini)
+        codex_messages = _unread_since_cursor(inbox_codex)
 
         return {
             "current_node": curr,
