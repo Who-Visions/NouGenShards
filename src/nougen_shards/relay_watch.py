@@ -1,6 +1,6 @@
 """
 NouGenRelay Watchdog: Git-Commit Based Auto-Push for Relay Legs.
-Bypasses directory listing API limits (1,000-file cap) using `git log --diff-filter=A`.
+Bypasses directory listing API limits (~1000 file ceiling) using `git log --diff-filter=A`.
 Provides fast cache reads for hooks and async background git fetch refreshes.
 """
 import os

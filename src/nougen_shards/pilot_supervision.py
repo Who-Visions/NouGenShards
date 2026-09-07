@@ -5,9 +5,9 @@ Operationalizes live multi-agent pilot supervision and progressive guidance:
 - Co-Pilot (Reasoning Governor): Real-time observer of trajectory, margin, invariants & costs
 - Supervisor (Coach/Apollo): Higher-intelligence interceptor that steers, breaks deadlocks,
   allocates cognitive quanta, and gates mutations
-- Operator (GM/Dav3): Supreme authority for mutation approvals and strategic resets
+- Operator (GM): Supreme authority for mutation approvals and strategic resets
 
-Authority: Relay leg 20260829T120432Z__chatgpt-app__g-whoentertains / Rule 0.0.
+Authority: Relay leg 20260829T120432Z / Rule 0.0.
 """
 from __future__ import annotations
 
@@ -117,7 +117,7 @@ class PilotSession:
     consequence_class: ConsequenceClass
     pilot_name: str = "Sol-Ai"
     supervisor_name: str = "Apollo"
-    operator_name: str = "Dav3"
+    operator_name: str = "GM"
     status: PilotStatus = PilotStatus.INITIALIZED
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))

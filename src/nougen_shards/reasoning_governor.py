@@ -10,7 +10,7 @@ verify, act, abstain, escalate, or stop. It enforces the separation between the
 Reasoning Governor ("Is more cognition likely to improve state?") and the Epistemic Gate
 ("Is current evidence sufficient to license action?").
 
-Authority: NouGen Relay Leg 20260829T120647Z__claude-app__g-whoentertains / Rule 0.0.
+Authority: NouGen Relay Leg 20260829T120647Z / Rule 0.0.
 """
 from __future__ import annotations
 

@@ -10,7 +10,7 @@ Progressive Disclosure:
 - Level 1 (Discovery): Light metadata (name, description, tier, triggers) for system prompts
 - Level 2 (Activation): Full instruction body, invariants, and implementation scripts loaded on demand
 
-Authority: Relay leg 20260829T120432Z__chatgpt-app__g-whoentertains / Rule 0.0.
+Authority: Relay leg 20260829T120432Z / Rule 0.0.
 """
 from __future__ import annotations
 
