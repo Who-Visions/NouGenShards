@@ -52,8 +52,17 @@ def test_shards_recall_binds_get_shard_by_id(monkeypatch):
     out = kt.dispatch("shards_recall", {"shard_id": "7", "db_index": 2})
     assert seen["args"] == (7, 2)
     assert out["shard"]["id"] == 7
-    assert kt.dispatch("shards_recall", {}) == {
-        "error": "shard_id and db_index (integers) are required"}
+
+    # A locator resolves to the same call, so search output is usable directly.
+    out = kt.dispatch("shards_recall", {"locator": "blade:2#7"})
+    assert seen["args"] == (7, 2)
+    assert out["shard"]["id"] == 7
+
+    # No reference at all is still an error. A bare id now is too: ids are per-DB
+    # and collide, so resolving one without a db_index returns a confidently wrong
+    # row rather than the caller's row.
+    assert "error" in kt.dispatch("shards_recall", {})
+    assert "ambiguous" in kt.dispatch("shards_recall", {"shard_id": 7})["error"]
 
 
 def test_relay_open_filters_closed_legs(monkeypatch):

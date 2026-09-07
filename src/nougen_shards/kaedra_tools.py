@@ -18,6 +18,8 @@ import logging
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from nougen_shards import locator
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,7 +49,8 @@ TOOLS: List[Dict[str, Any]] = [
     {"type": "function", "function": {
         "name": "shards_search",
         "description": "Search the memory vault for shards matching a query. Returns"
-                       " id, db_index, title, score." + _CITE_RULE,
+                       " locator (node:db#id), id, db_index, title, score. Cite the"
+                       " locator, never the bare id: ids are per-DB and collide." + _CITE_RULE,
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "Search text."},
             "limit": {"type": "integer", "description": "Max shards to return."},
@@ -55,12 +58,14 @@ TOOLS: List[Dict[str, Any]] = [
     }},
     {"type": "function", "function": {
         "name": "shards_recall",
-        "description": "Fetch one shard by id and db_index (both from shards_search)."
-                       + _CITE_RULE,
+        "description": "Fetch one shard by its locator from shards_search."
+                       " A bare id is rejected as ambiguous." + _CITE_RULE,
         "parameters": {"type": "object", "properties": {
-            "shard_id": {"type": "integer", "description": "Shard id from shards_search."},
-            "db_index": {"type": "integer", "description": "db_index from shards_search."},
-        }, "required": ["shard_id", "db_index"]},
+            "locator": {"type": "string",
+                        "description": "Locator from shards_search, e.g. blade:2#29825."},
+            "shard_id": {"type": "integer", "description": "Legacy: id, needs db_index."},
+            "db_index": {"type": "integer", "description": "Legacy: db_index."},
+        }, "required": []},
     }},
     {"type": "function", "function": {
         "name": "relay_latest",
@@ -149,23 +154,36 @@ def _shards_search(args: dict) -> dict:
     for it in items:
         if not isinstance(it, dict):
             continue
-        out.append({"id": it.get("id"), "db_index": it.get("db_index"),
+        # core.retrieve tags rows with the private _db_index; reading "db_index"
+        # here returned None for every row, so shards_search advertised a db_index
+        # it never supplied and callers fell back to citing bare, colliding ids.
+        db = it.get("_db_index", it.get("db_index"))
+        out.append({"id": it.get("id"), "db_index": db,
+                    "locator": locator.format_locator(it.get("id"), db),
                     "title": it.get("title"), "score": it.get("score")})
     return {"query": query, "shards": out}
 
 
 def _shards_recall(args: dict) -> dict:
     from nougen_shards import core
-    try:
-        shard_id = int(args["shard_id"])
-        db_index = int(args["db_index"])
-    except (KeyError, TypeError, ValueError):
-        return {"error": "shard_id and db_index (integers) are required"}
-    row = core.get_shard_by_id(shard_id, db_index)
+    ref = locator.parse(args.get("locator") or args.get("shard_id"))
+    if ref is None:
+        return {"error": "locator (node:db#id) or shard_id + db_index is required"}
+    db_index = ref.db_index
+    if db_index is None:
+        try:
+            db_index = int(args["db_index"])
+        except (KeyError, TypeError, ValueError):
+            # Refuse to guess. A bare id names a different shard in every DB, so
+            # defaulting here would return a confidently wrong row.
+            return {"error": f"shard id {ref.shard_id} is ambiguous without a db_index;"
+                             f" pass the locator from shards_search (node:db#id)"}
+    row = core.get_shard_by_id(ref.shard_id, db_index)
+    loc = locator.format_locator(ref.shard_id, db_index)
     if not row:
-        return {"shard": None, "reason": f"no shard {shard_id} in db {db_index}"}
+        return {"shard": None, "reason": f"no shard {loc}"}
     cap = _env_int("NOUGEN_KAEDRA_RESULT_CHARS", 4000)
-    return {"shard": {"id": row.get("id"), "db_index": db_index,
+    return {"shard": {"id": row.get("id"), "db_index": db_index, "locator": loc,
                       "title": row.get("title"),
                       "content": str(row.get("content", ""))[:cap]}}
 
