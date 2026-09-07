@@ -4,10 +4,9 @@ CLI handlers and command routing for NouGen Wake and Runtime commands.
 from __future__ import annotations
 
 import json
-import sys
 from typing import Any
 from .manager import WakeManager
-from .adapters import list_adapters, get_adapter
+from .adapters import list_adapters
 
 
 def cmd_runtime(args: Any) -> None:

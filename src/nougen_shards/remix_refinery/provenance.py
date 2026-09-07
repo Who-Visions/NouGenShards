@@ -4,7 +4,7 @@ Immutable Provenance Ledger & Audit Trail for Remix Refinery.
 
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Optional
 from .models import ProvenanceLedger
 
 DEFAULT_LEDGER_DIR = Path.home() / ".nougen" / "provenance"

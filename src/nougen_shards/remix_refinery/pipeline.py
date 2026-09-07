@@ -4,15 +4,12 @@ HARVEST -> ATOMIZE -> STRIP -> ANCHOR -> MUTATE -> BRAID -> COLLIDE -> SCORE -> 
 """
 
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
 from .models import (
     ProcessDonorCard,
     CanonAnchor,
     MutationOperator,
-    MutationTrace,
     CandidateMechanism,
-    CollisionReport,
-    TransformationScore,
     ProvenanceLedger,
     MechanismStatus,
 )

@@ -4,7 +4,6 @@ Inspects account /usage, /status, or quota error strings (e.g., "Resets in 2h57m
 and automatically schedules a durable WakeTicket to ping agents back up when limits reset.
 """
 
-import os
 import re
 import sys
 import json
@@ -12,12 +11,12 @@ import time
 import uuid
 import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, List
 
 from nougen_shards.nougenmsg import NouGenMsgBus, get_current_node
 
 DEFAULT_TICKET_DIR = Path.home() / ".nougen" / "wake_tickets"
-RELAY_WAKE_DIR = Path(r"C:\Users\super\Outpost\NouGenRelay\.relay\wake")
+RELAY_WAKE_DIR = Path.home() / "Outpost" / "NouGenRelay" / ".relay" / "wake"
 
 
 class QuotaWakeParser:

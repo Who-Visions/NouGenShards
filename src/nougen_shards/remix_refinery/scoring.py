@@ -6,7 +6,7 @@ veil_distance = .25*(1-leakage) + .20*canon_fit + .15*cultural + .15*physics + .
 """
 
 import re
-from typing import List, Dict, Any, Tuple
+from typing import List
 from .models import TransformationScore
 
 

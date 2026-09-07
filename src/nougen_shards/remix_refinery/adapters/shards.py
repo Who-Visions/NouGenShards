@@ -4,7 +4,7 @@ Only ingests canon-safe native mechanisms. Strips all donor surface references.
 Attaches provenance metadata as process_reference:* tags.
 """
 
-from typing import Optional, Dict, Any, List
+from typing import Optional
 from ..models import CandidateMechanism, ProvenanceLedger, MechanismStatus
 
 
@@ -34,7 +34,7 @@ class ShardRefineryAdapter:
             f"**Veil Distance**: {candidate.scores.veil_distance:.2f} | **Donor Leakage**: {candidate.scores.donor_leakage:.2f}\n\n"
             f"## Native Expression\n{candidate.native_expression}\n\n"
             f"## Scene Applications\n" + "\n".join(f"- {app}" for app in candidate.scene_applications) + "\n\n"
-            f"## Lineage & Anchors\n" + "\n".join(f"- [{anc.lineage}] {anc.concept}" for anc in candidate.canon_anchors) + "\n\n"
+            "## Lineage & Anchors\n" + "\n".join(f"- [{anc.lineage}] {anc.concept}" for anc in candidate.canon_anchors) + "\n\n"
             f"## Provenance\n"
             f"- Ledger ID: `{ledger.ledger_id}`\n"
             f"- Braided Sources: {', '.join(candidate.independent_donors)}\n"

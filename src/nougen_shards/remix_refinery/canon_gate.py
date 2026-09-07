@@ -4,7 +4,7 @@ Enforces non-negotiable invariant:
 'The donor must become unrecognizable before canon can recognize it.'
 """
 
-from typing import List, Dict, Any, Tuple
+from typing import List
 from .models import CollisionReport, MechanismStatus, TransformationScore
 
 
