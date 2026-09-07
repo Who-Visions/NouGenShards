@@ -10,8 +10,6 @@ import json
 import socket
 from unittest import mock
 
-import pytest
-
 from nougen_shards import snapshot_mode
 
 
