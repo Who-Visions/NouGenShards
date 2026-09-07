@@ -158,7 +158,13 @@ def classify(surface: dict, status, text: str, err, signatures: list[dict]) -> t
 
 
 def probe(surface: dict, signatures: list[dict], token: str | None, here: str) -> dict:
-    row = {"name": surface["name"], "kind": surface["kind"], "target": expand(surface["target"]), "vantage": here}
+    row = {
+        "name": surface["name"],
+        "kind": surface["kind"],
+        "target": expand(surface["target"]),
+        "vantage": here,
+        "token_fp": fingerprint(token) if surface["kind"] in ("search", "capture") or "token" in surface.get("expect", {}) else None
+    }
     only = surface.get("vantage_only")
     if only and here not in only:
         row.update(state="SKIPPED", status=None, ms=None, node="-", note=f"vantage_only {only}")
@@ -184,6 +190,40 @@ def probe(surface: dict, signatures: list[dict], token: str | None, here: str) -
     state, node, note = classify(surface, status, text, err, signatures)
     row.update(state=state, status=status, ms=ms, node=node, note=note)
     return row
+
+
+def reconcile_vantages(vantage_results: list[dict]) -> dict:
+    """Reconcile multiple vantage runs against Hardcade Hop 4 credential independence.
+
+    Rule: Observations sharing a credential are ONE observation. Two or three
+    runs showing the same token_fp for authenticated surfaces cannot provide
+    independent corroboration; cross-vantage reconciliation flags them as
+    COLLAPSED_CREDENTIAL and asserts COMBO BREAKER instead of multi-node green.
+    """
+    if not vantage_results:
+        return {"verdict": "INCOMPLETE", "independent_vantages": 0, "shared_credentials": []}
+
+    vantages = [r.get("vantage") for r in vantage_results]
+    token_fps = {r.get("token_fp") for r in vantage_results if r.get("token_fp")}
+
+    # Check if multiple vantages used the same non-empty token_fp
+    if len(vantage_results) > 1 and len(token_fps) == 1 and None not in token_fps:
+        return {
+            "verdict": "COMBO BREAKER",
+            "announcer_call": "COMBO BREAKER",
+            "reason": "Observations across multiple vantages share a single credential fingerprint; collapsed to 1 observation",
+            "vantages": vantages,
+            "token_fp": list(token_fps)[0],
+            "independent_observations": 1
+        }
+
+    return {
+        "verdict": "CORROBORATED" if len(token_fps) > 1 else "SINGLE_VANTAGE",
+        "announcer_call": "GODLIKE" if len(token_fps) >= 2 else "PERFECT",
+        "vantages": vantages,
+        "token_fps": list(token_fps),
+        "independent_observations": len(token_fps) or len(vantage_results)
+    }
 
 
 def run(manifest: dict, token: str | None, here: str | None = None) -> dict:
