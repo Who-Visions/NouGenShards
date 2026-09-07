@@ -51,6 +51,7 @@ HOME = Path.home()
 HANDOFF_DIRNAME = ".handoffs"
 LEG_GLOB = "*.json"
 DEFAULT_INTERVAL_SECS = 60
+LOCK_STALE_SECS = 300  # a holder quieter than this is treated as dead
 PULL_TIMEOUT_SECS = 180
 CURSOR_KEEP = 4000  # ids are time-ordered, so the tail is the useful part
 GOAL_CHARS = 180
@@ -78,6 +79,7 @@ def relay_dir() -> Path:
 
 CURSOR = _env_path("NOUGEN_RELAY_CURSOR", ".nougen", "state", "relay_watch.json")
 INBOX = _env_path("NOUGEN_AGY_INBOX", ".nougen", "agy_inbox")
+LOCK = _env_path("NOUGEN_RELAY_WATCH_LOCK", ".nougen", "state", "relay_watch.lock")
 
 
 def load_seen() -> set:
@@ -94,16 +96,31 @@ def save_seen(seen: set) -> None:
 
 
 def pull(root: Path) -> str:
-    """Fast-forward the clone. Returns ``ok`` or a short reason."""
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(root), "pull", "--ff-only", "--quiet"],
-            capture_output=True, text=True, timeout=PULL_TIMEOUT_SECS)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return str(exc)[:120]
-    if result.returncode == 0:
-        return "ok"
-    return (result.stderr.strip().splitlines() or ["pull failed"])[0][:120]
+    """Fast-forward the clone. Returns ``ok`` or a short reason.
+
+    Deliberately fetch-then-merge rather than ``git pull``.  ``pull`` decides
+    what to merge by reading ``.git/FETCH_HEAD``, a file that every concurrent
+    fetch in the clone rewrites wholesale.  When two fetches interleave, more
+    than one branch ends up marked for merge and ``--ff-only`` aborts with
+    "Cannot fast-forward to multiple branches" -- which is a race, not a
+    diverged branch, and it wedges the node blind to the board until someone
+    looks.  Observed on WhoArt 2026-09-07.  A second fetcher here is by design
+    rather than a bug to remove: the codex LAN lane watches this same clone
+    from its own service.  Merging the tracking ref instead reads a ref that
+    no other fetch can make ambiguous, so the two watchers stop colliding.
+    """
+    steps = (["fetch", "--quiet", "origin"], ["merge", "--ff-only", "--quiet", "@{u}"])
+    for args in steps:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(root)] + args,
+                capture_output=True, text=True, timeout=PULL_TIMEOUT_SECS)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return str(exc)[:120]
+        if result.returncode != 0:
+            fallback = "{} failed".format(args[0])
+            return (result.stderr.strip().splitlines() or [fallback])[0][:120]
+    return "ok"
 
 
 def legs(root: Path) -> dict:
@@ -182,6 +199,82 @@ def announce(leg_id: str, path: Path) -> None:
     inbox_file.write_text(json.dumps(message, indent=2), encoding="utf-8")
 
 
+def _pid_alive(pid: int) -> bool:
+    """Whether a process with this pid exists. Best effort, no psutil."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return code.value == 259  # STILL_ACTIVE
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def acquire_lock(interval: int) -> bool:
+    """Claim the one-watcher-per-node slot, or report that it is taken.
+
+    The scheduled task that starts this daemon also carries a repeat trigger,
+    and the daemon never exits, so without a guard every repeat leaves another
+    immortal watcher behind: eight were live on WhoArt on 2026-09-07, spawned
+    ten minutes apart.  Their concurrent ``git pull`` calls interleaved writes
+    into ``.git/FETCH_HEAD`` until several branches were marked for merge and
+    ``--ff-only`` refused with "Cannot fast-forward to multiple branches" --
+    so the duplicates did not merely waste a process, they blinded the node to
+    the board.  With this guard the repeat trigger becomes the restart-if-dead
+    watchdog it was always meant to be.
+
+    A holder counts as live only if its pid exists AND it has touched the lock
+    recently, so neither a crashed watcher nor a recycled pid can wedge the
+    slot shut.
+    """
+    stale_after = max(LOCK_STALE_SECS, interval * 5)
+    LOCK.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        held = int(LOCK.read_text(encoding="utf-8").split()[0])
+        quiet_for = time.time() - LOCK.stat().st_mtime
+    except (OSError, ValueError, IndexError):
+        held, quiet_for = 0, None
+    if held and held != os.getpid() and quiet_for is not None and quiet_for < stale_after:
+        if _pid_alive(held):
+            print("[relay_watch] pid {} is already watching here (seen {:.0f}s ago); "
+                  "this start is a duplicate, exiting".format(held, quiet_for), flush=True)
+            return False
+    heartbeat()
+    return True
+
+
+def heartbeat() -> None:
+    """Refresh the lock so a live watcher is never mistaken for a stale one."""
+    try:
+        LOCK.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def release_lock() -> None:
+    """Drop the slot on a clean exit, but never steal another watcher's lock."""
+    try:
+        if LOCK.read_text(encoding="utf-8").split()[0] == str(os.getpid()):
+            LOCK.unlink()
+    except (OSError, ValueError, IndexError):
+        pass
+
+
 def resolve_interval() -> "tuple":
     raw = os.environ.get("NOUGEN_RELAY_WATCH_SECS", "").strip()
     if raw.isdigit() and int(raw) > 0:
@@ -195,6 +288,8 @@ def main() -> int:
     print("[relay_watch] registry_parity={} ({})".format("ok" if ok else "MISMATCH", detail), flush=True)
     interval, source = resolve_interval()
     once = os.environ.get("NOUGEN_RELAY_WATCH_ONCE", "").strip() == "1"
+    if not acquire_lock(interval):
+        return 0
     seen = load_seen()
     if not seen:
         seen = set(legs(root))
@@ -202,20 +297,24 @@ def main() -> int:
         print("[relay_watch] cursor primed with {} existing legs".format(len(seen)), flush=True)
     print("[relay_watch] interval={}s ({}) once={} inbox={}".format(
         interval, source, once, INBOX), flush=True)
-    while True:
-        status = pull(root)
-        current = legs(root)
-        fresh = sorted(set(current) - seen)
-        for leg_id in fresh:
-            announce(leg_id, current[leg_id])
-        if fresh:
-            seen |= set(fresh)
-            save_seen(seen)
-        elif status != "ok":
-            print("[relay_watch] pull: {}".format(status), flush=True)
-        if once:
-            return 0
-        time.sleep(interval)
+    try:
+        while True:
+            heartbeat()
+            status = pull(root)
+            current = legs(root)
+            fresh = sorted(set(current) - seen)
+            for leg_id in fresh:
+                announce(leg_id, current[leg_id])
+            if fresh:
+                seen |= set(fresh)
+                save_seen(seen)
+            elif status != "ok":
+                print("[relay_watch] pull: {}".format(status), flush=True)
+            if once:
+                return 0
+            time.sleep(interval)
+    finally:
+        release_lock()
 
 
 if __name__ == "__main__":
