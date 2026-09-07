@@ -26,6 +26,7 @@ snapshots/ (on the Space: /data, so LATEST.json lives at
                               to NGS_NODE_TOKEN)
 """
 import json
+import socket
 import logging
 import os
 import shutil
@@ -248,17 +249,82 @@ def forward_capture(payload: dict) -> dict:
         timeout = float(os.environ.get("NOUGEN_FORWARD_TIMEOUT_S", "20"))
     except ValueError:
         timeout = 20.0
+    timed_out = False
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             answer = json.loads(resp.read().decode("utf-8"))
+    except socket.timeout:
+        # A timeout is NOT a failed write (blade, 2026-09-07). The writer may
+        # have committed the row and merely answered slowly -- blade's
+        # /sync/push runs against DBs an embedding backfill is also hammering.
+        # Retry, but REMEMBER that we timed out, because the retry will dedup
+        # against OUR OWN first write and come back "already present". Reading
+        # that as "duplicate" is what reported captured:false over four writes
+        # that had landed (24540@db1, 26155@db9, 27509@db4, 30203@db7).
+        timed_out = True
+        logger.warning("capture forward to %s timed out after %.1fs; retrying "
+                       "(the first attempt may already have committed)",
+                       url, timeout)
+        try:
+            req2 = urllib.request.Request(
+                f"{url}/sync/push", data=body,
+                headers={"Content-Type": "application/json",
+                         "X-NGS-Token": token})
+            with urllib.request.urlopen(req2, timeout=timeout) as resp:
+                answer = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.error("capture forward retry to %s failed: %s: %s",
+                         url, type(exc).__name__, exc)
+            return {"captured": False, "reason": "error",
+                    "error": f"forward failed after timeout retry: "
+                             f"{type(exc).__name__}"}
     except Exception as exc:  # pylint: disable=broad-except
         logger.error("capture forward to %s failed: %s: %s",
                      url, type(exc).__name__, exc)
         return {"captured": False, "reason": "error",
                 "error": f"forward failed: {type(exc).__name__}"}
+
+    # Prefer the per-shard result: it names the row and says whether this exact
+    # content is durable, instead of making us infer an outcome from a counter.
+    rows = answer.get("results") or []
+    row = rows[0] if len(rows) == 1 else None
+    identity = {}
+    if row:
+        for k in ("shard_id", "db_index"):
+            if row.get(k) is not None:
+                identity[k] = row[k]
+
     if answer.get("count"):
-        return {"captured": True, "reason": "forwarded"}
+        return {"captured": True, "reason": "forwarded", **identity}
+
+    # A malformed row was REJECTED and nothing was written anywhere. That is an
+    # error, never a duplicate -- reporting it as a duplicate tells the caller
+    # its write was a redundant no-op while the shard was dropped.
+    if answer.get("skipped_malformed") or (row and row.get("reason") == "malformed"):
+        return {"captured": False, "reason": "error",
+                "error": "forward target REJECTED the row (missing title or "
+                         "content on arrival) -- not a duplicate; the shard "
+                         "was not written anywhere"}
+
     if answer.get("skipped"):
-        return {"captured": False, "reason": "duplicate"}
+        durable = bool(row.get("durable")) if row else bool(
+            answer.get("skipped_duplicate"))
+        if timed_out and durable:
+            # Our own first attempt committed it. Reporting "duplicate" here is
+            # a FALSE NEGATIVE: the caller believes its write was lost, and the
+            # documented consequence is that it writes the content again by
+            # hand (27507@db4 duplicates 24540@db1, created exactly this way).
+            return {"captured": True, "reason": "written",
+                    "note": "first attempt timed out but had committed; "
+                            "confirmed durable on retry", **identity}
+        if durable:
+            # A genuine pre-existing duplicate: we did not write it this call,
+            # and it was there before we started.
+            return {"captured": False, "reason": "duplicate",
+                    "durable": True, **identity}
+        return {"captured": False, "reason": "error",
+                "error": "forward target skipped the row and did not confirm "
+                         "it as durable", **identity}
+
     return {"captured": False, "reason": "error",
             "error": f"forward target answered {answer}"}

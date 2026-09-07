@@ -1001,10 +1001,57 @@ def capture(event_type: str, title: str, content: str,
     dconn = _get_dedup_connection()
     try:
         _ensure_dedup_index(dconn)
-        if dconn.execute("SELECT 1 FROM hashes WHERE file_hash = ?",
-                         (fhash,)).fetchone():
-            return CaptureResult(captured=False, reason="duplicate",
-                                 error="duplicate: identical content is already in the vault")
+        dup = dconn.execute("SELECT db_index FROM hashes WHERE file_hash = ?",
+                            (fhash,)).fetchone()
+        if dup:
+            # Name the row we are deduplicating AGAINST (blade, 2026-09-07).
+            # A bare "duplicate" with no identity is why /sync/push callers
+            # could not tell "your payload is already durable at row N" from
+            # "your write failed" -- forward_capture inferred the latter and
+            # reported captured:false over four writes that had in fact landed
+            # (24540@db1, 26155@db9, 27509@db4, 30203@db7). Identity turns a
+            # dedup hit into a positive statement about durability.
+            dup_index = dup[0] if not isinstance(dup, sqlite3.Row) else dup["db_index"]
+            dup_id = None
+            # Short-lived READ-ONLY handle, opened and closed here rather than
+            # taken from the shared pool: a dedup answer must not leave a new
+            # file handle on a grid DB it would not otherwise have touched.
+            # (Caught by tmpdir teardown on Windows, which cannot unlink an
+            # open .db -- a leaked handle in a test is a leaked handle in
+            # production too, it just fails somewhere less visible.)
+            dup_conn = None
+            try:
+                dup_path = get_db_path(dup_index)
+                if dup_path.exists():
+                    dup_conn = sqlite3.connect(f"file:{dup_path}?mode=ro", uri=True)
+                    row = dup_conn.execute(
+                        "SELECT id FROM shards WHERE file_hash = ? LIMIT 1",
+                        (fhash,)).fetchone()
+                    if row is not None:
+                        dup_id = row[0]
+            except Exception:  # pylint: disable=broad-except
+                pass  # identity is a bonus; never fail a dedup answer over it
+            finally:
+                if dup_conn is not None:
+                    try:
+                        dup_conn.close()
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+            result = CaptureResult(
+                captured=False, reason="duplicate",
+                error="duplicate: identical content is already in the vault")
+            # NOT `shard_id`/`db_index`: those mean "the row THIS call wrote",
+            # and this call wrote nothing. Claiming them here would let a
+            # caller take credit for someone else's write. Separate keys keep
+            # both facts true at once -- see test_no_silent_failures.py, which
+            # pins "nothing was written, so no id may be claimed".
+            result["existing_db_index"] = dup_index
+            if dup_id is not None:
+                result["existing_shard_id"] = dup_id
+            # `durable` is the fact the caller actually needs: this exact
+            # content IS on disk, whoever put it there.
+            result["durable"] = True
+            return result
 
         target_idx = get_write_index(fhash)
 
