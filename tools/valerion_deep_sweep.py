@@ -1,8 +1,12 @@
 #!/usr/bin/env python
 """
-metameric_deep_sweep.py — Cognitive Substrate Compactor and Index Sweeper.
+valerion_deep_sweep.py — Cognitive Substrate Compactor and Index Sweeper.
 Performs global deduplication checks, rebuilds FTS5 trigram indexes,
-executes SQLite vacuum/optimization, and runs integrity diagnostics on all 9 nodes.
+executes SQLite vacuum/optimization, and runs integrity diagnostics on every
+grid DB discovered at run time.
+
+NOTE: byte-identical to tools/metameric_deep_sweep.py. Both names are kept
+deliberately; consolidating them is a naming decision, not a cleanup.
 """
 import os
 import sys
