@@ -194,3 +194,76 @@ def test_two_verified_nodes_with_distinct_credentials_still_reach_godlike():
 
     assert result.verdict == "GODLIKE"
     assert result.effective_observations == 2
+
+
+def test_unstamped_hostnames_do_not_corroborate():
+    """Identity verification is opt-IN, not opt-OUT.
+
+    Regression, found by whoart/outpost-1d re-deriving PR #268 independently.
+    The first fix caught the honest confessor (node="self-reported") and missed
+    the ordinary case: two tuples carrying plain hostnames and NO observer were
+    counted as two independent observers and reached GODLIKE, having been
+    stamped by nobody. That is the realistic shape — it is what NouGenMsg
+    produces when a lane self-stamps NouGenMsg-<node>. A hostname is a claim
+    about identity, not evidence of it.
+    """
+    result = evaluate_hardcade_evidence(
+        claim="api healthy",
+        evidence_list=[
+            EvidenceTuple(claim="api healthy", probe="p1", node="alpha",
+                          observed={"status_code": 200, "body_length": 9},
+                          credential="key-alpha", subject="api"),
+            EvidenceTuple(claim="api healthy", probe="p2", node="beta",
+                          observed={"status_code": 200, "body_length": 9},
+                          credential="key-beta", subject="api"),
+        ],
+        subject="api",
+        observer="phoebus",
+    )
+
+    assert result.effective_observations == 0
+    assert result.verdict not in ("PERFECT", "GODLIKE")
+
+
+def test_observer_equal_to_subject_cannot_vouch_for_itself():
+    """A subject stamping its own tuples is self-attestation wearing a uniform."""
+    result = evaluate_hardcade_evidence(
+        claim="api healthy",
+        evidence_list=[
+            EvidenceTuple(claim="api healthy", probe="p1", node="alpha",
+                          observed={"status_code": 200, "body_length": 9},
+                          credential="key-alpha", observer="api", subject="api"),
+            EvidenceTuple(claim="api healthy", probe="p2", node="beta",
+                          observed={"status_code": 200, "body_length": 9},
+                          credential="key-beta", observer="api", subject="api"),
+        ],
+        subject="api",
+        observer="phoebus",
+    )
+
+    assert result.effective_observations == 0
+    assert result.verdict not in ("PERFECT", "GODLIKE")
+
+
+def test_same_observer_twice_is_one_observation():
+    """Deliberate, not a bug: one observer running two probes is one vantage.
+
+    Documented so nobody "fixes" it into counting two. Independence is about
+    who observed, not how many probes they ran.
+    """
+    result = evaluate_hardcade_evidence(
+        claim="api healthy",
+        evidence_list=[
+            EvidenceTuple(claim="api healthy", probe="p1", node="alpha",
+                          observed={"status_code": 200, "body_length": 9},
+                          credential="key-alpha", observer="whoart", subject="api"),
+            EvidenceTuple(claim="api healthy", probe="p2", node="beta",
+                          observed={"status_code": 200, "body_length": 9},
+                          credential="key-beta", observer="whoart", subject="api"),
+        ],
+        subject="api",
+        observer="whoart",
+    )
+
+    assert result.effective_observations == 1
+    assert result.verdict not in ("PERFECT", "GODLIKE")

@@ -64,15 +64,32 @@ def evaluate_hardcade_evidence(
                 reasons=[f"Hit {idx}: Invalid evidence tuple. All 4 fields (claim, probe, node, observed) mandatory."]
             )
 
-        # Rule 2 & 3: Node stamped by observer, never subject. Self-reported cannot corroborate.
-        node_effective = ev.node
-        if ev.node == "self-reported" or (subject and ev.node == subject and not ev.observer):
-            node_effective = "self-reported"
-        elif ev.observer and ev.observer != ev.subject:
+        # Rule 2 & 3: node is stamped by an OBSERVER, never by the subject.
+        #
+        # Identity verification is opt-IN, deliberately. The earlier form fell
+        # back to trusting any node string that was not the literal
+        # "self-reported", which made verification opt-OUT: a tuple was treated
+        # as an independent observer unless it confessed otherwise. Two tuples
+        # carrying ordinary hostnames and no observer at all - which is exactly
+        # what NouGenMsg produces when a lane self-stamps NouGenMsg-<node> -
+        # then scored 2 independent observations and reached GODLIKE, having
+        # been stamped by nobody. A hostname is a claim about identity, not
+        # evidence of it; the whole point of hop 4 is that the subject does not
+        # get to assert who it is.
+        #
+        # So: corroborating identity requires an observer PRESENT and DISTINCT
+        # from the subject. Everything else - absent observer, observer equal to
+        # the subject, or the literal "self-reported" - is self-reported and can
+        # never corroborate.
+        # An explicit node="self-reported" is an admission and always wins, even
+        # if an observer field is populated: a tuple that declares its identity
+        # unverified must never be upgraded by metadata around it.
+        subject_of = ev.subject or subject
+        if ev.node != "self-reported" and ev.observer and ev.observer != subject_of:
             node_effective = ev.observer
             distinct_observer_nodes.add(node_effective)
-        elif ev.node != "self-reported":
-            distinct_observer_nodes.add(ev.node)
+        else:
+            node_effective = "self-reported"
 
         # Rule 4: Credential deduplication
         if ev.credential:
@@ -167,7 +184,8 @@ def evaluate_hardcade_evidence(
     # its observation count is lower than the number of tuples it supplied.
     self_reported_count = sum(
         1 for ev in evidence_list
-        if ev.node == "self-reported" or (subject and ev.node == subject and not ev.observer)
+        if ev.node == "self-reported"
+        or not (ev.observer and ev.observer != (ev.subject or subject))
     )
     if not distinct_observer_nodes or distinct_observer_nodes == {"self-reported"}:
         reasons.append("Identity is self-reported only; cannot provide independent corroboration.")
