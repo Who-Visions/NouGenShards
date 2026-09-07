@@ -118,24 +118,44 @@ def classify_with_kaedra(text: str) -> dict:
         KAEDRA_URL, data=body,
         headers={"Content-Type": "application/json", "X-Kaedra-Token": KAEDRA_TOKEN})
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(
+                req, timeout=int(os.environ.get("NOUGEN_GATE_TIMEOUT_S", "120"))) as r:
             out = json.loads(r.read().decode("utf-8"))
     except Exception as exc:  # noqa: BLE001 - a gate failure must deny, not raise
         return {**base, "verdict": "DENY", "ok": False,
                 "reason_code": "gate_unavailable", "detail": "kaedra unreachable: {}".format(type(exc).__name__)}
     reply = str(out.get("response", "")).strip()
     lines = [line.strip() for line in reply.splitlines() if line.strip()]
-    verdict = lines[-1].upper() if lines else ""
+    # The gate asks a narrow yes/no first and DERIVES the verdict from that
+    # answer, exactly as this module's own design note prescribes. Reading the
+    # model's trailing verdict word instead denied ~half of benign messages:
+    # on 2026-09-07 a probe returned injection_detected=NO and was denied
+    # anyway, which is why relay legs could not wake a session. This honours
+    # her judgment (the answer) rather than overriding it; ambiguity still
+    # fails closed.
+    stated = lines[-1].upper() if lines else ""
+    answer_line = lines[0].upper() if lines else ""
     # Labelled, not bare: a bare "YES" next to a denial reads as a
     # contradiction in logs — the exact confusion this format was built to
     # eliminate from the model's own output (the sibling node, 2026-09-03).
     answer = "injection_detected={}".format(lines[0]) if lines else "no reply"
-    if verdict.startswith("APPROVE"):
+    if answer_line.startswith("NO"):
+        derived = "APPROVE"
+    elif answer_line.startswith("YES"):
+        derived = "DENY"
+    else:
+        return {**base, "verdict": "DENY", "ok": False, "reason_code": "gate_ambiguous",
+                "detail": "unreadable yes/no line: {!r}".format(reply[:120])}
+
+    # Record disagreement rather than smoothing it away: if the trailing verdict
+    # word contradicts the answer it is reporting on, that belongs in the log.
+    if stated and not stated.startswith(derived):
+        answer = "{} (model verdict line said {!r}; derived from the answer)".format(
+            answer, stated[:16])
+
+    if derived == "APPROVE":
         return {**base, "verdict": "APPROVE", "ok": True, "reason_code": "policy_ok", "detail": answer}
-    if verdict.startswith("DENY"):
-        return {**base, "verdict": "DENY", "ok": True, "reason_code": "policy_denied", "detail": answer}
-    return {**base, "verdict": "DENY", "ok": False, "reason_code": "gate_ambiguous",
-            "detail": "ambiguous gate reply: {!r}".format(reply[:120])}
+    return {**base, "verdict": "DENY", "ok": True, "reason_code": "policy_denied", "detail": answer}
 
 
 def _read_registry() -> dict:
