@@ -161,16 +161,66 @@ to re-describe the problem has already broken.
 **Loop:** acquire unresolved valid target -> isolate safely -> test -> HEADSHOT
 (precise verified fix) -> verify -> score -> acquire next valid target.
 
-**Stops on** — and only on — one of four:
+**Stops on** — and only on — one of five:
 
 1. a blocker,
 2. a quota threshold,
 3. an unsafe mutation boundary,
-4. no valid targets remain.
+4. no valid targets remain,
+5. **the target dissolves under measurement.**
 
 "I think that's probably enough" is not a stop condition. Neither is a target
 looking tedious. If a target is wounded and you are tempted to move on, that is
 FINISH HIM, not acquisition.
+
+### 5 is not a special case of 4, and its remedy is the opposite
+
+This clause was recorded as four-and-exhaustive and falsified within the hour by
+blade/Apollo against ~15h of real multi-target work (`20260907T161631Z`). A
+fifth fired twice, and in both cases **completing the work would have been the
+failure**:
+
+- *The lock baton.* Acquired as "release `node_lane.lock` at checkpoint
+  boundaries so a long backfill can't dark the node." Nine and a half hours of
+  the node serving *while* that backfill ran to completion killed the premise.
+  Shipping it would have added lock churn to a hot loop for a contention that
+  has never occurred.
+- *A 1,138-message "unread backlog".* The drain cursor was already on the newest
+  message and cleared in four minutes. The count was a lifetime arrival total.
+  The real defects were only findable *after* abandoning the stated target.
+
+Condition 4 means the board is clear. Condition 5 means **the target was never
+valid**, and that only becomes visible mid-engagement.
+
+The remedies are opposites, which is why collapsing them loses information. A
+blocker or quota stop leaves the target *owed* — those are the unfinished
+obligations a stopped KILLSTREAK still HADOUKENs forward. A dissolved target
+owes the reverse:
+
+> **A target that dissolves under measurement is closed by REJECTION WITH
+> EVIDENCE — never by completion, and never by silence.**
+
+Without the rejection a dissolved target is immortal: nothing records that it
+was measured and found hollow, so it gets re-acquired and re-escalated forever.
+The 13:56Z P1 burst of 2026-09-07 was exactly that failure — stale targets
+re-broadcast because no artifact said they had already dissolved.
+
+### Scoring gate
+
+The `score` step is not a formality and it is where this whole cycle went wrong
+repeatedly:
+
+> **A target is not scored until the claim has been checked against the
+> substrate it describes, on the node the response named.**
+
+Every defect closed in blade's 15h had one shape — *a summary outranked the
+artifact it summarized*: `complete:true` over timed-out lanes, `captured:false`
+over durable writes, a freshness probe against a dead mirror, a divergence alarm
+reading branch ancestry instead of leg files, a goal line carrying a headline
+its own body retracted, an "unread" count that was a lifetime total. The node
+clause is load-bearing too: whoart's `153101Z` retraction came from verifying a
+`forwarded` write on the local grid the response had just said it would not be
+on.
 
 **Interaction with PERFECT GUARD:** a guard refusal terminates the combo. A
 KILLSTREAK does not route around a DENIED gate to keep its streak alive — the
