@@ -1446,8 +1446,11 @@ def sync_push(req: SyncPushRequest,
 
     count = 0
     skipped = 0
+    skipped_duplicate = 0
+    skipped_malformed = 0
     errored = 0
     errors = []
+    results = []
     for s in req.shards:
         # The ENTIRE per-shard body sits in one guard: decrypt, tag parsing,
         # AND capture. This is the second time this protection ships - #148
@@ -1460,6 +1463,9 @@ def sync_push(req: SyncPushRequest,
             title, content = s.get("title"), s.get("content")
             if not title or not content:
                 skipped += 1
+                skipped_malformed += 1
+                results.append({"reason": "malformed", "durable": False,
+                                "title": (s.get("title") or "")[:80]})
                 continue
             sensitivity = s.get("sensitivity") or "normal"
             # /sync/pull transports encrypted-at-rest bodies as ngenc1
@@ -1502,14 +1508,47 @@ def sync_push(req: SyncPushRequest,
             logger.error("sync_push: shard %r failed: %s",
                          (s.get("title") or "")[:80], err_msg)
             continue
+        # Report WHY a shard was skipped, and name the row either way
+        # (blade, 2026-09-07). Both skip paths used to increment one `skipped`
+        # counter, so a caller could not tell a REJECTED malformed row from an
+        # ALREADY-DURABLE one. snapshot_mode.forward_capture read that counter
+        # and reported captured:false over writes that had landed. A skip is
+        # not a failure unless we say which kind it is.
+        entry = {"reason": (ok or {}).get("reason") if isinstance(ok, dict) else None,
+                 "durable": bool(ok) or bool((ok or {}).get("durable"))
+                 if isinstance(ok, dict) else bool(ok)}
+        if isinstance(ok, dict):
+            # A fresh write reports shard_id/db_index; a dedup hit reports
+            # existing_* (it wrote nothing and may not claim an id). The wire
+            # entry carries whichever is true, so the client can locate the
+            # row without either of us pretending we wrote it.
+            for k in ("shard_id", "db_index"):
+                if ok.get(k) is not None:
+                    entry[k] = ok[k]
+            for src, dst in (("existing_shard_id", "shard_id"),
+                             ("existing_db_index", "db_index")):
+                if ok.get(src) is not None and entry.get(dst) is None:
+                    entry[dst] = ok[src]
+                    entry["id_is_preexisting"] = True
+        results.append(entry)
         if ok:
             count += 1
         else:
             skipped += 1  # capture() dedups; an already-known shard is a skip
+            if entry.get("durable"):
+                skipped_duplicate += 1
+            else:
+                skipped_malformed += 1
     return {
         "status": "ok",
         "count": count,
         "skipped": skipped,
+        # `skipped` stays the sum for existing callers; these two say WHICH.
+        "skipped_duplicate": skipped_duplicate,
+        "skipped_malformed": skipped_malformed,
+        # Per-shard outcome with row identity, so a caller can verify its
+        # payload's durability instead of inferring it from a counter.
+        "results": results,
         "errored": errored,
         **({"errors": errors} if errors else {}),
     }
