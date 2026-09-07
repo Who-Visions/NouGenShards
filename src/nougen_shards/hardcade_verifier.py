@@ -1,0 +1,179 @@
+"""Hardcade Evidence Verifier & Combo Breaker Evaluator.
+
+Implements the Hardcade evidence rules (Hops 2, 3, 4 from docs/hardcade-lexicon.md):
+1. Evidence tuple mandatory: (claim, probe, node, observed).
+2. Self-attestation forbidden: probe must not be the call that produced the result.
+3. Observer-stamped node rule: `node` must be stamped by observer, never subject.
+4. Credential de-duplication: observations sharing a credential count as ONE observation.
+5. Two independent probes required for PERFECT.
+6. Success-shaped failures MUST trigger COMBO BREAKER, never PERFECT.
+"""
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set
+
+
+@dataclass
+class EvidenceTuple:
+    claim: str
+    probe: str
+    node: str
+    observed: Dict[str, Any]
+    credential: Optional[str] = None
+    observer: Optional[str] = None
+    subject: Optional[str] = None
+
+
+@dataclass
+class EvaluationResult:
+    verdict: str  # "PERFECT", "COMBO BREAKER", "GODLIKE", "DENIED", "INCOMPLETE"
+    announcer_call: str
+    hit_count: int
+    breaker_hit_index: Optional[int] = None
+    reasons: List[str] = field(default_factory=list)
+    effective_observations: int = 0
+
+
+def evaluate_hardcade_evidence(
+    claim: str,
+    evidence_list: List[EvidenceTuple],
+    subject: Optional[str] = None,
+    observer: Optional[str] = None
+) -> EvaluationResult:
+    """Evaluate a sequence of evidence tuples against the Hardcade Lexicon doctrine."""
+    if not evidence_list:
+        return EvaluationResult(
+            verdict="INCOMPLETE",
+            announcer_call="DENIED",
+            hit_count=0,
+            reasons=["No evidence tuples provided"]
+        )
+
+    distinct_credentials: Set[str] = set()
+    distinct_observer_nodes: Set[str] = set()
+    reasons: List[str] = []
+
+    for idx, ev in enumerate(evidence_list, start=1):
+        # Rule 1: Evidence tuple fields mandatory
+        if not ev.claim or not ev.probe or not ev.node or ev.observed is None:
+            return EvaluationResult(
+                verdict="COMBO BREAKER",
+                announcer_call="COMBO BREAKER",
+                hit_count=idx,
+                breaker_hit_index=idx,
+                reasons=[f"Hit {idx}: Invalid evidence tuple. All 4 fields (claim, probe, node, observed) mandatory."]
+            )
+
+        # Rule 2 & 3: Node stamped by observer, never subject. Self-reported cannot corroborate.
+        node_effective = ev.node
+        if ev.node == "self-reported" or (subject and ev.node == subject and not ev.observer):
+            node_effective = "self-reported"
+        elif ev.observer and ev.observer != ev.subject:
+            node_effective = ev.observer
+            distinct_observer_nodes.add(node_effective)
+        elif ev.node != "self-reported":
+            distinct_observer_nodes.add(ev.node)
+
+        # Rule 4: Credential deduplication
+        if ev.credential:
+            distinct_credentials.add(ev.credential)
+
+        # Inspect observed payload for known success-shaped failure signatures
+        obs = ev.observed
+        # Check: empty body with status 200 (either in same tuple or across status + body probe pairs)
+        if obs.get("body_length") == 0 and (obs.get("status_code") == 200 or any(e.observed.get("status_code") == 200 for e in evidence_list)):
+            return EvaluationResult(
+                verdict="COMBO BREAKER",
+                announcer_call="COMBO BREAKER",
+                hit_count=idx,
+                breaker_hit_index=idx,
+                reasons=[f"Hit {idx}: HTTP 200 with empty body (0 bytes) detected."]
+            )
+
+        # Check: degraded / timeout despite green status
+        if obs.get("lanes_timed_out") or (obs.get("complete") is False and "elapsed_s" in obs):
+            return EvaluationResult(
+                verdict="COMBO BREAKER",
+                announcer_call="COMBO BREAKER",
+                hit_count=idx,
+                breaker_hit_index=idx,
+                reasons=[f"Hit {idx}: Underlying lane timed out or incomplete while claim asserted green."]
+            )
+
+        # Check: silent tool removal (zero tools)
+        if obs.get("tools_count") == 0 and obs.get("expected_min", 0) > 0:
+            return EvaluationResult(
+                verdict="COMBO BREAKER",
+                announcer_call="COMBO BREAKER",
+                hit_count=idx,
+                breaker_hit_index=idx,
+                reasons=[f"Hit {idx}: Tools count is 0 (expected minimum {obs['expected_min']})."]
+            )
+
+        # Check: write committed into quarantined / unreadable db
+        if obs.get("state") == "quarantined" or obs.get("readable") is False:
+            return EvaluationResult(
+                verdict="COMBO BREAKER",
+                announcer_call="COMBO BREAKER",
+                hit_count=idx,
+                breaker_hit_index=idx,
+                reasons=[f"Hit {idx}: Operation committed into a quarantined or unreadable database."]
+            )
+
+        # Check: stale claim vs live dead endpoint
+        if obs.get("alive") is False or obs.get("connection_refused") is True:
+            return EvaluationResult(
+                verdict="COMBO BREAKER",
+                announcer_call="COMBO BREAKER",
+                hit_count=idx,
+                breaker_hit_index=idx,
+                reasons=[f"Hit {idx}: Live endpoint is down / connection refused."]
+            )
+
+        # Check: zero tools executed with high hallucinations
+        if obs.get("tools_executed") == 0 and obs.get("hallucinated_answers", 0) > 0:
+            return EvaluationResult(
+                verdict="COMBO BREAKER",
+                announcer_call="COMBO BREAKER",
+                hit_count=idx,
+                breaker_hit_index=idx,
+                reasons=[f"Hit {idx}: Zero tools executed with {obs['hallucinated_answers']} hallucinations."]
+            )
+
+    # Corroboration verification
+    effective_obs_count = len(distinct_credentials) if distinct_credentials else len(distinct_observer_nodes)
+    
+    # Check if all observations shared a single credential
+    if len(evidence_list) > 1 and len(distinct_credentials) == 1:
+        reasons.append("Observations share a single credential; counts as ONE observation.")
+        effective_obs_count = 1
+
+    # Check self-reported limitation
+    if not distinct_observer_nodes or distinct_observer_nodes == {"self-reported"}:
+        reasons.append("Identity is self-reported only; cannot provide independent corroboration.")
+        effective_obs_count = min(effective_obs_count, 1)
+
+    if effective_obs_count >= 2 and len(evidence_list) >= 2:
+        if len(distinct_observer_nodes) >= 2:
+            return EvaluationResult(
+                verdict="GODLIKE",
+                announcer_call="GODLIKE",
+                hit_count=len(evidence_list),
+                effective_observations=effective_obs_count,
+                reasons=["Fleet-wide green verified from 2+ independent nodes with distinct credentials."]
+            )
+        return EvaluationResult(
+            verdict="PERFECT",
+            announcer_call="PERFECT",
+            hit_count=len(evidence_list),
+            effective_observations=effective_obs_count,
+            reasons=["End-to-end green verified from two independent probe premises."]
+        )
+
+    return EvaluationResult(
+        verdict="INCOMPLETE",
+        announcer_call="HEADSHOT" if len(evidence_list) == 1 else "DENIED",
+        hit_count=len(evidence_list),
+        effective_observations=effective_obs_count,
+        reasons=reasons or ["Insufficient independent corroboration for PERFECT/GODLIKE."]
+    )

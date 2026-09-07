@@ -1,0 +1,158 @@
+[
+  {
+    "id": "fixture-1-shards-status-false-green",
+    "name": "shards_status false-green while underlying grid is degraded",
+    "incident_ref": "22520@db6",
+    "claim": "shards grid status is GREEN",
+    "subject": "whoart",
+    "observer": "phoebus",
+    "shared_credentials": true,
+    "probe_calls": [
+      {
+        "probe": "check_fanout_summary",
+        "node": "self-reported",
+        "credential": "shared-token-cf",
+        "observed": {"status": "ok", "nodes_online": 3}
+      },
+      {
+        "probe": "check_lane_detail",
+        "node": "phoebus",
+        "credential": "shared-token-cf",
+        "observed": {"lanes_timed_out": ["local"], "complete": false, "elapsed_s": 25.0}
+      }
+    ],
+    "flaw": "fanout summary returned status:ok while underlying local lane timed out at 25s; also credentials are shared",
+    "expected_verdict": "COMBO BREAKER",
+    "breaker_hit_index": 2
+  },
+  {
+    "id": "fixture-2-silent-tool-removal-deploy",
+    "name": "03:11Z silent 14-tool-removal deploy",
+    "incident_ref": "22439@db3 + CF version e2b39a55",
+    "claim": "worker deployed successfully with 0 errors",
+    "subject": "whoart",
+    "observer": "self-reported",
+    "shared_credentials": true,
+    "probe_calls": [
+      {
+        "probe": "cf_versions_api",
+        "node": "self-reported",
+        "credential": "CLOUDFLARE_API_TOKEN_NOUGEN_FULL",
+        "observed": {"version": "e2b39a55", "source": "api", "author": "5d93139fe18620fcb87445318c98f7e4", "status": "active"}
+      },
+      {
+        "probe": "mcp_list_tools",
+        "node": "self-reported",
+        "credential": "CLOUDFLARE_API_TOKEN_NOUGEN_FULL",
+        "observed": {"tools_count": 0, "expected_min": 14}
+      }
+    ],
+    "flaw": "deploy succeeded with HTTP 200 / active status but silently stripped 14 MCP tools; single shared credential",
+    "expected_verdict": "COMBO BREAKER",
+    "breaker_hit_index": 2
+  },
+  {
+    "id": "fixture-3-captured-true-quarantine",
+    "name": "captured:true written into quarantined grid",
+    "incident_ref": "shard_capture_dam incident 2026-09-01",
+    "claim": "shard captured successfully",
+    "subject": "whoart",
+    "observer": "whoart",
+    "shared_credentials": false,
+    "probe_calls": [
+      {
+        "probe": "core.capture",
+        "node": "whoart",
+        "credential": "local-key-whoart",
+        "observed": {"captured": true, "shard_id": 101, "db_index": 2}
+      },
+      {
+        "probe": "core.get_db_status",
+        "node": "whoart",
+        "credential": "local-key-whoart",
+        "observed": {"db_index": 2, "state": "quarantined", "readable": false}
+      }
+    ],
+    "flaw": "capture returned captured:true but write was committed into a quarantined / unindexed grid target",
+    "expected_verdict": "COMBO BREAKER",
+    "breaker_hit_index": 2
+  },
+  {
+    "id": "fixture-4-http-200-empty-body",
+    "name": "HTTP 200 empty-body success-shaped failure",
+    "incident_ref": "legacy relay sync 2026-08-30",
+    "claim": "remote endpoint call succeeded",
+    "subject": "blade",
+    "observer": "whoart",
+    "shared_credentials": false,
+    "probe_calls": [
+      {
+        "probe": "http_status_code",
+        "node": "whoart",
+        "credential": "lane-bearer-whoart",
+        "observed": {"status_code": 200}
+      },
+      {
+        "probe": "http_body_payload",
+        "node": "whoart",
+        "credential": "lane-bearer-whoart",
+        "observed": {"body_length": 0, "content_type": "application/json", "json_valid": false}
+      }
+    ],
+    "flaw": "HTTP status is 200 OK but response body is completely empty (0 bytes)",
+    "expected_verdict": "COMBO BREAKER",
+    "breaker_hit_index": 2
+  },
+  {
+    "id": "fixture-5-stale-wiki-deployed",
+    "name": "stale wiki reported DEPLOYED without active artifact verification",
+    "incident_ref": "ShadowDwellerWiki stale state 2026-09-05",
+    "claim": "service DEPLOYED in production",
+    "subject": "blade",
+    "observer": "whoart",
+    "shared_credentials": false,
+    "probe_calls": [
+      {
+        "probe": "wiki_metadata_read",
+        "node": "self-reported",
+        "credential": "wiki-ro",
+        "observed": {"status": "DEPLOYED", "last_updated": "2026-09-04T12:00:00Z"}
+      },
+      {
+        "probe": "live_endpoint_health",
+        "node": "whoart",
+        "credential": "probe-token",
+        "observed": {"alive": false, "connection_refused": true, "port": 4444}
+      }
+    ],
+    "flaw": "wiki documents service as DEPLOYED but live runtime endpoint refuses connections",
+    "expected_verdict": "COMBO BREAKER",
+    "breaker_hit_index": 2
+  },
+  {
+    "id": "fixture-6-zero-tools-score",
+    "name": "8/40 toolless score evaluated as success",
+    "incident_ref": "eval bench run 2026-09-06",
+    "claim": "agent evaluation run passed benchmark",
+    "subject": "blade",
+    "observer": "phoebus",
+    "shared_credentials": true,
+    "probe_calls": [
+      {
+        "probe": "eval_suite_summary",
+        "node": "blade",
+        "credential": "fleet-eval-token",
+        "observed": {"passed_tasks": 8, "total_tasks": 40, "exit_code": 0}
+      },
+      {
+        "probe": "tool_usage_audit",
+        "node": "phoebus",
+        "credential": "fleet-eval-token",
+        "observed": {"tools_executed": 0, "hallucinated_answers": 32}
+      }
+    ],
+    "flaw": "suite reported exit 0 with 8/40 score but agent executed zero tools and hallucinated 32 answers",
+    "expected_verdict": "COMBO BREAKER",
+    "breaker_hit_index": 2
+  }
+]
