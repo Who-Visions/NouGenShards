@@ -141,3 +141,41 @@ because the transport demonstrably will not carry it.
 *Note for hop 5: the Kaedra grant-log hook hop 2 proposes inherits this exact
 defect. If the gateway writes `node` from its own process, the added field is
 decorative. It must be stamped by the receiving side.*
+
+## Operational state vocabulary (leg 20260907T024133Z, canonized from blade)
+
+The calls above describe verified OUTCOMES of a pass. This table is the
+orthogonal axis: the standing STATE of a node, lane, or run at a point in
+time. Same doctrine applies — no artifact, no call — and the evidence column
+names the probe that is allowed to establish each state.
+
+| term | means | admissible evidence |
+|---|---|---|
+| GREEN | quota under 60%, NORMAL routing | `QuotaGovernor` tier output, not a human estimate |
+| GAME OVER | failed / dead operational state | a probe that OBSERVED the failure (non-200, no listener, traceback) |
+| 1UP | verified restoration/reset out of GAME OVER | a re-probe of the SAME check that produced the GAME OVER |
+| CONTINUE? → 1UP | the recovery flow itself: GAME OVER acknowledged, then restored | both probes cited, in order |
+| COMBO BREAKER | a success-shaped failure detected | the artifact that looked green and the probe that disproved it |
+| CLEAR SCREEN | zero open relay legs, no active rounds | `relay` listing showing 0 open — a lane's say-so is not a screen |
+| COMBO xN | N legs closed | the N leg ids |
+| N-HIT COMBO | N PRs merged in one run/session | the N PR numbers or SHAs |
+| TAG IN | fleet broadcast / handoff to another lane or machine | the leg id or NouGenMsg id carrying the baton |
+| INSERT COIN | explicit continuation / new-run permission. Paid overflow stays separately governed and is **not** implied by this call | the authorizing instruction, quoted |
+
+### The state calls decay; the outcome calls do not
+
+A HEADSHOT stays true forever — it names something that happened. GREEN,
+CLEAR SCREEN and 1UP are claims about *now*, and they go stale silently. A
+state call must therefore carry the UTC of the probe that established it, and
+any lane repeating it later is making a fresh claim that needs a fresh probe.
+
+Worked example, blade 2026-09-07 02:45Z: a relay update announced the node
+"healthy on port 4444" with `/quota/evaluate` live. Re-probed from blade:
+`netstat -ano | grep :4444` returns five rows — which reads as a busy port —
+but **not one is LISTENING**; all five are TIME_WAIT client sockets left over
+from connections that have already closed, and `curl` to both `/health` and
+`/quota/evaluate` returns HTTP 000. The announcement was true when made and
+false when read, and the naive probe (`grep :4444`, non-empty ⇒ up) would have
+confirmed the stale claim. That is a COMBO BREAKER on a GREEN, and the reason
+the evidence column above specifies *which* probe counts: for a listener it is
+`grep -i listening`, never a bare port match.
