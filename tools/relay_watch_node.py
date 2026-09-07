@@ -48,6 +48,7 @@ from _agy_live_delivery import (  # noqa: E402
 
 HOME = Path.home()
 
+BLIND_ALERT_SECS = int(os.environ.get("NOUGEN_BLIND_ALERT_SECS", "1800"))
 HANDOFF_DIRNAME = ".handoffs"
 LEG_GLOB = "*.json"
 DEFAULT_INTERVAL_SECS = 60
@@ -93,17 +94,107 @@ def save_seen(seen: set) -> None:
     CURSOR.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def pull(root: Path) -> str:
-    """Fast-forward the clone. Returns ``ok`` or a short reason."""
+def _git(root: Path, *args: str):
+    return subprocess.run(["git", "-C", str(root), *args],
+                          capture_output=True, text=True, timeout=PULL_TIMEOUT_SECS)
+
+
+def divergence(root: Path):
+    """(ahead, behind) for local HEAD vs origin/main; (-1, -1) when unknown."""
     try:
-        result = subprocess.run(
-            ["git", "-C", str(root), "pull", "--ff-only", "--quiet"],
-            capture_output=True, text=True, timeout=PULL_TIMEOUT_SECS)
+        r = _git(root, "rev-list", "--left-right", "--count", "origin/main...HEAD")
+    except (OSError, subprocess.SubprocessError):
+        return (-1, -1)
+    parts = r.stdout.split()
+    if r.returncode != 0 or len(parts) != 2:
+        return (-1, -1)
+    try:
+        return (int(parts[1]), int(parts[0]))
+    except ValueError:
+        return (-1, -1)
+
+
+def dirty_legs(root: Path) -> int:
+    """Count uncommitted (modified or untracked) leg files in the working tree.
+
+    A dirty tree blocks ``merge --ff-only`` while leaving commit ancestry
+    looking clean, so an ancestry check reports the wrong cause and the obvious
+    remedy (rebase/reset) destroys legs that exist nowhere else.
+    """
+    try:
+        r = _git(root, "status", "--porcelain", "--", HANDOFF_DIRNAME + "/")
+    except (OSError, subprocess.SubprocessError):
+        return -1
+    if r.returncode != 0:
+        return -1
+    return sum(1 for line in r.stdout.splitlines() if line.strip())
+
+
+def content_current(root: Path) -> bool:
+    """True when every leg file origin/main holds is already on disk.
+
+    Ancestry-independent on purpose: this is the question the daemon actually
+    cares about, and ``rev-list`` cannot answer it.
+    """
+    try:
+        r = _git(root, "diff", "--quiet", "HEAD", "origin/main", "--",
+                 HANDOFF_DIRNAME + "/")
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
+def missing_legs(root: Path) -> int:
+    """Count of leg files origin/main has that this working tree does not."""
+    try:
+        r = _git(root, "diff", "--name-only", "HEAD", "origin/main", "--",
+                 HANDOFF_DIRNAME + "/")
+    except (OSError, subprocess.SubprocessError):
+        return -1
+    if r.returncode != 0:
+        return -1
+    return sum(1 for line in r.stdout.splitlines() if line.endswith(".json"))
+
+
+def pull(root: Path) -> str:
+    """Fast-forward the clone from origin/main explicitly.
+
+    The bare ``git pull --ff-only`` this replaces could not name its own
+    failure. In a clone carrying several worktrees it died on "Cannot
+    fast-forward to multiple branches", and once local HEAD held any commit of
+    its own a fast-forward was impossible by definition -- both surfaced as one
+    generic line. On 2026-09-07 phoebus ran 9h36m blind to 62 remote legs while
+    the log repeated the same sentence ~570 times.
+    """
+    try:
+        fetched = _git(root, "fetch", "--quiet", "origin", "main")
+        if fetched.returncode != 0:
+            return "fetch failed: {}".format(
+                (fetched.stderr.strip().splitlines() or ["?"])[0][:100])
+        merged = _git(root, "merge", "--ff-only", "--quiet", "FETCH_HEAD")
     except (OSError, subprocess.SubprocessError) as exc:
         return str(exc)[:120]
-    if result.returncode == 0:
+    if merged.returncode == 0:
         return "ok"
-    return (result.stderr.strip().splitlines() or ["pull failed"])[0][:120]
+    ahead, behind = divergence(root)
+    # Three DIFFERENT things block a fast-forward and conflating them ships bad
+    # advice: (1) real divergence, (2) ancestry drift over an identical tree
+    # (rebase/re-clone/squash/mirror, or a stale unused local branch), and
+    # (3) uncommitted local edits. Case 3 is invisible to commit ancestry and
+    # must NEVER be answered with "rebase" -- that discards untracked legs held
+    # nowhere else. Blindness is about what the daemon can READ, so decide it
+    # on file content and report ancestry only as the cause.
+    dirty = dirty_legs(root)
+    if dirty > 0:
+        return ("ff-only blocked by {} UNCOMMITTED leg file(s) in the working "
+                "tree -- not divergence. Do NOT rebase or reset: untracked legs "
+                "here exist nowhere else. Commit or claim them first.".format(dirty))
+    if content_current(root):
+        return ("ff-only blocked (ancestry ahead={} behind={}) but leg content "
+                "is CURRENT -- not blind; needs a rebase".format(ahead, behind))
+    return ("DIVERGED ahead={} behind={}, {} leg file(s) MISSING from disk -- "
+            "registry is BLIND to remote legs until this is resolved".format(
+                ahead, behind, missing_legs(root)))
 
 
 def legs(root: Path) -> dict:
@@ -202,6 +293,7 @@ def main() -> int:
         print("[relay_watch] cursor primed with {} existing legs".format(len(seen)), flush=True)
     print("[relay_watch] interval={}s ({}) once={} inbox={}".format(
         interval, source, once, INBOX), flush=True)
+    blind_since = [0.0]
     while True:
         status = pull(root)
         current = legs(root)
@@ -211,8 +303,24 @@ def main() -> int:
         if fresh:
             seen |= set(fresh)
             save_seen(seen)
-        elif status != "ok":
+        if status != "ok":
+            # Print unconditionally. Gating this on "no fresh legs" is what let
+            # a 9h36m blindness hide behind every busy cycle.
             print("[relay_watch] pull: {}".format(status), flush=True)
+            if status.startswith("DIVERGED") and time.time() - blind_since[0] > BLIND_ALERT_SECS:
+                blind_since[0] = time.time()
+                try:
+                    deliver_to_live_sessions(
+                        "RELAY WATCHER BLIND on {}: {}. Newest leg on this "
+                        "daemon's disk is {} -- resolve before trusting any "
+                        "'no open legs' reading.".format(
+                            os.environ.get("NOUGEN_MACHINE", "?"), status,
+                            max(legs(root), default="(none)")),
+                        source="relay-watch/self-check")
+                except Exception as exc:  # self-reporting must never kill the loop
+                    print("[relay_watch] blind-alert failed: {}".format(exc), flush=True)
+        else:
+            blind_since[0] = 0.0
         if once:
             return 0
         time.sleep(interval)
