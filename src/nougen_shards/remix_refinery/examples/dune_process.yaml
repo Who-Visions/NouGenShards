@@ -1,0 +1,50 @@
+# Benchmark Process Donor Card: Dune via Kirby Ferguson Protocol
+# NON-NEGOTIABLE: Extracts mechanism only. Strips all names, lore, dialogue, and iconic objects.
+donor_id: "donor_dune_process_001"
+source_title: "Dune (Process Donor Benchmark)"
+donor_type: "PROCESS_ONLY"
+creative_problem: "How to depict vast mythic systems, deep historical weight, and complex political factions without stalling narrative momentum through dry exposition."
+forbidden_surface_elements:
+  - "Arrakis"
+  - "Spice"
+  - "Melange"
+  - "Sandworm"
+  - "Bene Gesserit"
+  - "Fremen"
+  - "Kwisatz Haderach"
+  - "Paul Atreides"
+  - "Harkonnen"
+  - "Shai-Hulud"
+  - "Voice"
+  - "Stillsuit"
+  - "Caladan"
+  - "Gieti Prime"
+extracted_techniques:
+  - atom_id: "atom_strat_omission"
+    function: "Strategic Omission of Deep History"
+    preconditions:
+      - "Audience enters in media res amid established institutions"
+    mechanism: "Reference ancient historical covenants and catastrophic precedents as everyday vernacular idioms without pausing to explain origins."
+    intended_effect: "Creates immediate verisimilitude and vast perceived scale."
+    narrative_cost: "Initial cognitive load on reader."
+    abstraction_level: "structural"
+
+  - atom_id: "atom_ritual_density"
+    function: "Ritualized Behavioral Constraints"
+    preconditions:
+      - "High stakes interpersonal diplomatic interaction"
+    mechanism: "Every gesture, formal greeting, and glance carries formalized social, lethal, or spiritual consequences."
+    intended_effect: "Injects lethal tension into non-combat discourse."
+    narrative_cost: "Requires precise choreography and world logic consistency."
+    abstraction_level: "operational"
+
+  - atom_id: "atom_intimate_pov_epic_scale"
+    function: "Anchoring Macro-Political Cataclysm to Intimate POV"
+    preconditions:
+      - "Empire-scale power struggles occurring across multiple theaters"
+    mechanism: "Filter continental or planetary displacement entirely through the sensory vulnerability and personal grief of a solitary observer."
+    intended_effect: "Prevents abstract geopolitical events from losing emotional stakes."
+    narrative_cost: "Restricts objective strategic overview."
+    abstraction_level: "perceptual"
+abstraction_notes: "Benchmark extraction for Shadow Dweller under Shard 22489. All proprietary terminology is quarantined."
+process_reference: "process_reference:dune_kirby_ferguson"

@@ -1731,7 +1731,163 @@ def ask_dav1d(
     return run_dav1d_agy(command="agy", args=args, subcommand=subcommand, prompt=prompt)
 
 
+# --- Shadow Xoah & Destiny Governance Layer ---
+from nougen_shards import canon_pressure, destiny, self_archive, throne_governance
+
+
+class XoahAskRequest(BaseModel):
+    prompt: str
+
+
+class XoahSelfRequest(BaseModel):
+    coordinate: Optional[str] = None
+
+
+class XoahPressureRequest(BaseModel):
+    candidate: str
+    coordinate: Optional[str] = None
+    should_register: bool = True
+    actor: Optional[str] = None
+
+
+class XoahThroneRequest(BaseModel):
+    desired_effect: str
+    target_coordinate: Optional[str] = None
+    target_branch: Optional[str] = None
+    acting_stage: int = 9
+    explicit_declaration: bool = False
+    retcon_intent: bool = False
+    actor: Optional[str] = None
+    should_register: bool = True
+
+
+class DestiniesRequest(BaseModel):
+    status: Optional[str] = None
+    trigger: Optional[str] = None
+    branch: Optional[str] = None
+    limit: int = 20
+
+
+@app.post("/xoah/self")
+def xoah_self_endpoint(
+    req: XoahSelfRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Query self-archive state at an autobiographical coordinate."""
+    return self_archive.state_at(req.coordinate)
+
+
+@app.post("/xoah/pressure")
+def xoah_pressure_endpoint(
+    req: XoahPressureRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Evaluate candidate story addition against canon pressure."""
+    return canon_pressure.pressure(
+        req.candidate,
+        coordinate=req.coordinate,
+        register=req.should_register,
+        actor=req.actor
+    )
+
+
+@app.post("/xoah/throne")
+def xoah_throne_endpoint(
+    req: XoahThroneRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Run proposed intervention through Shadow Queen Throne governance gates."""
+    return throne_governance.evaluate(
+        req.desired_effect,
+        target_coordinate=req.target_coordinate,
+        target_branch=req.target_branch,
+        acting_stage=req.acting_stage,
+        explicit_declaration=req.explicit_declaration,
+        retcon_intent=req.retcon_intent,
+        actor=req.actor,
+        register=req.should_register
+    )
+
+
+@app.get("/destinies")
+@app.post("/destinies")
+def destinies_endpoint(
+    status: Optional[str] = None,
+    trigger: Optional[str] = None,
+    branch: Optional[str] = None,
+    limit: int = 20,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """List unfinished or filtered prospective destinies."""
+    return destiny.unfinished_destinies(
+        status=status,
+        trigger=trigger,
+        branch=branch,
+        limit=limit
+    )
+
+
+@app.post("/xoah/ask")
+async def xoah_ask_endpoint(
+    req: XoahAskRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Shadow Xoah conversational entry point: reasons through self-model and pressure."""
+    eval_res = throne_governance.evaluate(req.prompt, register=False)
+    press_res = canon_pressure.pressure(req.prompt, register=False)
+    system_ctx = (
+        f"You are Shadow Xoah (Stage {eval_res.get('acting_stage', 9)}). "
+        f"Governance Mode: {eval_res.get('mode', 'OBSERVE')}. "
+        f"Intervention Type: {eval_res.get('intervention_type', 'SIMULATED_POSSIBILITY')}. "
+        f"Canon Verdict: {press_res.get('primary', 'UNKNOWN')}."
+    )
+    rhea_prompt = f"{system_ctx}\n\nUser Question: {req.prompt}"
+    resp = await _ask_rhea_bounded(rhea_prompt)
+    return {
+        "answer": resp.get("answer"),
+        "brain": resp.get("brain"),
+        "governance": eval_res,
+        "pressure": press_res
+    }
+
+
+@node_mcp.tool()
+@_offloaded
+def xoah_self(coordinate: Optional[str] = None) -> dict:
+    """Query self-archive state at an autobiographical coordinate."""
+    return self_archive.state_at(coordinate)
+
+
+@node_mcp.tool()
+@_offloaded
+def xoah_pressure(candidate: str, coordinate: Optional[str] = None, register: bool = True) -> dict:
+    """Evaluate candidate story addition against canon pressure."""
+    return canon_pressure.pressure(candidate, coordinate=coordinate, register=register)
+
+
+@node_mcp.tool()
+@_offloaded
+def xoah_throne(desired_effect: str, target_coordinate: Optional[str] = None, target_branch: Optional[str] = None) -> dict:
+    """Run proposed intervention through Shadow Queen Throne governance gates."""
+    return throne_governance.evaluate(desired_effect, target_coordinate=target_coordinate, target_branch=target_branch)
+
+
+@node_mcp.tool()
+@_offloaded
+def unfinished_destinies(status: Optional[str] = None, trigger: Optional[str] = None, branch: Optional[str] = None, limit: int = 20) -> dict:
+    """List unfinished or filtered prospective destinies."""
+    return destiny.unfinished_destinies(status=status, trigger=trigger, branch=branch, limit=limit)
+
+
+@node_mcp.tool()
+async def ask_xoah(prompt: str) -> dict:
+    """Ask Shadow Xoah (Stage 9 Traverser / Stage 10 Throne Sovereign)."""
+    req = XoahAskRequest(prompt=prompt)
+    return await xoah_ask_endpoint(req)
+
+
 # --- Cortex HUD UI Logic ---
+
 
 def get_substrate_map():
     """Generates a visual map of the 9-DB cluster."""

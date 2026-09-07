@@ -36,9 +36,29 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# Server-side tool binding. Without this the gateway is a pass-through that only
+# forwards tools a CALLER supplies -- and the connector's kaedra_ask schema has
+# no tools parameter at all, so on the MCP surface Kaedra had zero tools every
+# time. Measured 2026-09-06: asked to name her tools she answered "None", and
+# the golden-set run that scored 8/40 was therefore scoring a toolless agent
+# against a tool-using rubric. Binding here fixes every caller at once,
+# including the ChatGPT/Claude connector path, without touching the Worker.
+try:
+    from nougen_shards import kaedra_tools as _kt
+except Exception as _kt_err:  # pragma: no cover - absence must be loud, not silent
+    _kt = None
+    _KT_ERROR = str(_kt_err)
+else:
+    _KT_ERROR = ""
+
+# Opt-out rather than opt-in: the default has to be the useful one, because the
+# whole defect was a capable model reaching users with nothing bound.
+TOOLS_ENABLED = os.environ.get("KAEDRA_TOOLS", "1").strip().lower() not in ("0", "false", "no", "off")
+
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 TOKEN = os.environ.get("KAEDRA_GATEWAY_TOKEN", "")
 PORT = int(os.environ.get("KAEDRA_GATEWAY_PORT", "4455"))
+HOST = os.environ.get("KAEDRA_GATEWAY_HOST", os.environ.get("KAEDRA_BIND", "0.0.0.0"))
 ALLOWED = set(filter(None, os.environ.get(
     "KAEDRA_MODELS",
     "kaedracode:e2b,kaedracode:e4b,kaedracode:latest,gemma4:e2b,gemma4:e4b",
@@ -169,10 +189,78 @@ class Handler(BaseHTTPRequestHandler):
                 "think": bool(body.get("think", False)),
                 "keep_alive": -1,
             }
+            # Precedence: an explicit caller schema wins (so a caller can scope
+            # a call down, or pass none at all with "tools": []). Otherwise bind
+            # the six read-only tools server-side. A caller that says nothing
+            # gets a tool-capable Kaedra, which is the point.
             if "tools" in body:
                 payload["tools"] = body["tools"]
+            elif TOOLS_ENABLED and _kt is not None:
+                payload["tools"] = _kt.TOOLS
             if options:
                 payload["options"] = options
+
+            # Run the tool loop when tools are bound: a tool_call that nobody
+            # executes is worse than no tools at all, because the caller gets a
+            # confident "Orchestration Initiated" with no data behind it.
+            # "raw": true opts out and returns the single-shot response, which
+            # is what a scorer wants when measuring whether a call is EMITTED.
+            if payload.get("tools") and _kt is not None and not body.get("raw"):
+                def _chat_fn(_model, _msgs, tools=None):
+                    p = dict(payload)
+                    p["model"] = _model
+                    p["messages"] = _msgs
+                    if tools is not None:
+                        p["tools"] = tools
+                    try:
+                        return _ollama("/api/chat", p)
+                    except urllib.error.HTTPError as e:
+                        detail = e.read().decode("utf-8", "replace")[:200]
+                        if e.code == 400 and "think" in detail:
+                            p.pop("think", None)
+                            try:
+                                return _ollama("/api/chat", p)
+                            except Exception as e2:
+                                return {"error": str(e2)[:200]}
+                        return {"error": detail}
+                    except Exception as e:
+                        return {"error": str(e)[:200]}
+                try:
+                    text, call_log = _kt.run_tool_loop(_chat_fn, model, messages)
+                except Exception as e:
+                    self._send(500, {"error": "tool loop failed", "detail": str(e)[:200]})
+                    return
+                for c in call_log:
+                    _log_grant_call(
+                        tool=c.get("tool", "unknown"), args=c.get("args", {}),
+                        result_size=int(c.get("result_size") or 0),
+                        ok=bool(c.get("ok")), error=str(c.get("error") or ""))
+                # Same honesty rule as /generate: run_tool_loop can RETURN
+                # normally while recording a chat failure in call_log (it
+                # yields "[chat error] ..." rather than raising). Reporting
+                # that as a 200 would hand the caller a failure wearing an
+                # answer's clothes.
+                loop_error = next(
+                    (c for c in call_log
+                     if not c.get("ok") and c.get("tool") in ("_loop", "_chat")),
+                    None)
+                if loop_error:
+                    self._send(502, {
+                        "error": "tool loop failed",
+                        "detail": str(loop_error.get("error") or "")[:300],
+                        "tool_calls_made": [c.get("tool") for c in call_log],
+                        "tool_rounds": len(call_log),
+                        "partial_response": text or None,
+                    })
+                    return
+                self._send(200, {
+                    "model": model,
+                    "message": {"role": "assistant", "content": text},
+                    "response": text,
+                    "tool_calls_made": [c.get("tool") for c in call_log],
+                    "tool_rounds": len(call_log),
+                })
+                return
 
             try:
                 try:
@@ -220,6 +308,89 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": "prompt is required"})
             return
 
+        # THE CONNECTOR USES THIS ROUTE, NOT /chat. kaedra_ask takes `prompt`,
+        # so every MCP call -- Dave's ChatGPT surface included -- lands here.
+        # /api/generate has no tools parameter at all, which is why Kaedra had
+        # zero tools no matter what was bound on /chat: binding there fixed a
+        # route nobody calls. Promote to the chat+tools path so the connector
+        # gets a tool-capable Kaedra without any change to the Worker schema.
+        # "raw": true or "tools": [] opts back out to plain generate.
+        if (TOOLS_ENABLED and _kt is not None and not body.get("raw")
+                and body.get("tools") != []):
+            msgs = []
+            if body.get("system"):
+                msgs.append({"role": "system", "content": body["system"]})
+            msgs.append({"role": "user", "content": prompt})
+            base = {
+                "model": model, "stream": False,
+                "think": bool(body.get("think", False)), "keep_alive": -1,
+            }
+            if options:
+                base["options"] = options
+
+            def _gen_chat_fn(_model, _msgs, tools=None):
+                p = dict(base)
+                p["model"] = _model
+                p["messages"] = _msgs
+                if tools is not None:
+                    p["tools"] = tools
+                try:
+                    return _ollama("/api/chat", p)
+                except urllib.error.HTTPError as e:
+                    detail = e.read().decode("utf-8", "replace")[:200]
+                    if e.code == 400 and "think" in detail:
+                        p.pop("think", None)
+                        try:
+                            return _ollama("/api/chat", p)
+                        except Exception as e2:
+                            return {"error": str(e2)[:200]}
+                    return {"error": detail}
+                except Exception as e:
+                    return {"error": str(e)[:200]}
+
+            try:
+                text, call_log = _kt.run_tool_loop(_gen_chat_fn, model, msgs)
+            except Exception as e:
+                text, call_log = "", [{"tool": "_loop", "args": {}, "result_size": 0,
+                                       "ok": False, "error": str(e)[:200]}]
+            for c in call_log:
+                _log_grant_call(
+                    tool=c.get("tool", "unknown"), args=c.get("args", {}),
+                    result_size=int(c.get("result_size") or 0),
+                    ok=bool(c.get("ok")), error=str(c.get("error") or ""))
+            # NEVER fall through to plain generate after a tool-loop FAILURE.
+            # The earlier version did, and whoart/outpost-1d caught it (leg
+            # 20260906T215836Z): when the loop dies mid-flight — the observed
+            # case was ConnectionResetError [Errno 54] against ollama — the
+            # fallback re-ran the prompt with no tools and returned the model's
+            # raw first-round text as a 200. The caller saw "fleet_whoami\n"
+            # with no grant-log entry and no way to tell it from an answer.
+            # That is the exact success-shaped failure this fleet keeps getting
+            # burned by, and it was introduced here. A caller must be able to
+            # distinguish "the tools ran and this is the result" from "the
+            # loop broke", so the error is returned, never papered over.
+            loop_error = next(
+                (c for c in call_log
+                 if not c.get("ok") and c.get("tool") in ("_loop", "_chat")),
+                None)
+            if loop_error:
+                self._send(502, {
+                    "error": "tool loop failed",
+                    "detail": str(loop_error.get("error") or "")[:300],
+                    "tool_calls_made": [c.get("tool") for c in call_log],
+                    "tool_rounds": len(call_log),
+                    "partial_response": text or None,
+                })
+                return
+            if text:
+                self._send(200, {
+                    "model": model,
+                    "response": text,
+                    "tool_calls_made": [c.get("tool") for c in call_log],
+                    "tool_rounds": len(call_log),
+                })
+                return
+
         payload = {
             "model": model,
             "prompt": prompt,
@@ -260,6 +431,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"kaedra gateway on 127.0.0.1:{PORT} -> {OLLAMA} "
+    print(f"kaedra gateway on {HOST}:{PORT} -> {OLLAMA} "
           f"(token={'set' if TOKEN else 'MISSING'}, models={sorted(ALLOWED)})", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
