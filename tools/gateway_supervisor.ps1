@@ -84,6 +84,30 @@ function Sync-Worker($url) {
     $known = if (Test-Path $StateFile) { (Get-Content $StateFile -Raw).Trim() } else { '' }
     if ($known -eq $url) { return $false }
 
+    # EPHEMERAL-TUNNEL GUARD (blade, 2026-09-07). A quick tunnel's hostname
+    # lives exactly as long as the cloudflared process that requested it. Run
+    # ad-hoc - over SSH, from an interactive shell - this function happily
+    # rewrote production config from the NAMED tunnel to a trycloudflare URL
+    # that died with the invoking session:
+    #   URL changed: 'https://blade.nougenai.com' -> 'https://satin-memory-assess-productivity.trycloudflare.com'
+    # Nothing looked wrong afterwards, because the failover chain tries the
+    # Space first and the Space was healthy. A dead origin only bites when the
+    # Space fails - i.e. exactly when failover is supposed to save you.
+    #
+    # A restore tool that mutates SHARED state must refuse to run when its own
+    # tunnel would be ephemeral. Downgrading a stable named hostname to a quick
+    # tunnel is never a restore; it is a regression with a deploy attached.
+    # Override deliberately with NGS_ALLOW_EPHEMERAL_ORIGIN=1 (a service on
+    # blade whose tunnel outlives the caller is the legitimate case).
+    $allowEphemeral = $env:NGS_ALLOW_EPHEMERAL_ORIGIN -in @('1','true','yes','on')
+    if (-not $allowEphemeral -and $url -like '*trycloudflare.com*' -and $known -and $known -notlike '*trycloudflare.com*') {
+        Log "DENIED: refusing to repoint the worker from named origin '$known' to ephemeral quick tunnel '$url'."
+        Log "        A quick tunnel dies with this process; the worker would keep a dead origin and the"
+        Log "        failure would stay invisible until the Space fails. Set NGS_ALLOW_EPHEMERAL_ORIGIN=1"
+        Log "        to override, or start the named tunnel instead."
+        return $false
+    }
+
     Log "URL changed: '$known' -> '$url'  (updating worker)"
     Push-Location $WorkerDir
     try {
