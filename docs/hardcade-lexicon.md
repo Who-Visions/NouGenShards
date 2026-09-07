@@ -21,13 +21,14 @@ never diverted by any command here.
 
 | move | input | semantics |
 |---|---|---|
-| HADOUKEN | DOWN + FORWARD → Destiny | propagate intent forward AND persist it as a prospective goal (destiny), so it survives lane death |
+| HADOUKEN | DOWN + FORWARD → Destiny | persist settled truth DOWN into durable memory AND propagate the unfinished obligation FORWARD into Destiny/Relay, so both survive lane death. Two halves: a HADOUKEN whose capture is unconfirmed has only completed its FORWARD half |
 | SHORYUKEN | FORWARD + HADOUKEN | advance the baton and fire a destiny off the advance |
 | FLASH KICK | DOWN, CHARGE, UP | the closed loop: execute-and-report. NOT a fanout |
 | CRACK SHOOT | DOWN + BACK | probe a lane and bring the baton straight back |
 | SONIC BOOM | BACK + CHARGE + FORWARD | pull back, verify locally, then re-advance with evidence |
 | RAGING STORM | DOWN + CHARGE + FORWARD | push intent in, do the work, advance the result (Geese lineage) |
 | HURRICANE KICK | circular sweep | round-robin: every distinct reachable lane touches the baton once, contributes ONE concrete refinement/proof, forwards to the next distinct lane; unreachable lanes recorded, never blocking |
+| KILLSTREAK | inherited state, repeat until stop | stateful multi-target loop: acquire unresolved valid target -> isolate safely -> test -> HEADSHOT -> verify -> score -> acquire next. INHERITS unfinished combat state, so the operator never restates the bug, machine, hypothesis, test or desired outcome. Stops on: blocker, quota threshold, unsafe mutation boundary, or no valid targets remain |
 | ZANGIEF SPD | full circle | one full relay-direction circle through a scope |
 | 720 | double circle | two full verification circles before any verdict — the anti-single-source rule |
 
@@ -57,7 +58,9 @@ evidence).
 | call | fires when |
 |---|---|
 | FIRST BLOOD | first verified repro/evidence on a fresh incident |
-| HEADSHOT | root cause proven with a mechanism, not a correlation |
+| HEADSHOT | a precise VERIFIED fix: root cause proven with a mechanism, not a correlation, and the fix confirmed against the failing case |
+| FINISH HIM | force one wounded target through end-to-end closure before acquiring the next -- the anti-abandonment gate on a KILLSTREAK |
+| FATALITY | terminal proof of closure. See FATALITY CLOSE: relay ack + shard capture + completion leg, all three |
 | DOUBLE KILL / MULTI KILL | 2 / 3+ defects closed WITH verification in one pass |
 | ULTRA KILL / MONSTER KILL | 5+ closures / an entire defect class retired |
 | PERFECT | end-to-end green verified from the consuming lane AND one independent surface (the two-probe rule, leg 201837Z item 5) |
@@ -141,3 +144,39 @@ because the transport demonstrably will not carry it.
 *Note for hop 5: the Kaedra grant-log hook hop 2 proposes inherits this exact
 defect. If the gateway writes `node` from its own process, the added field is
 decorative. It must be stamped by the receiving side.*
+
+
+## KILLSTREAK: state inheritance and stop conditions
+
+Canonised from `20260907T160858Z__chatgpt-app__g-whoentertains`.
+
+KILLSTREAK is the only move that carries state *between* targets. Everything
+else in this lexicon describes one baton movement; KILLSTREAK describes a lane
+that keeps working a battlefield it already understands.
+
+**Inherits:** the bug, the machine, the hypothesis, the test, the desired
+outcome. The operator restates none of it. A KILLSTREAK that asks the operator
+to re-describe the problem has already broken.
+
+**Loop:** acquire unresolved valid target -> isolate safely -> test -> HEADSHOT
+(precise verified fix) -> verify -> score -> acquire next valid target.
+
+**Stops on** — and only on — one of four:
+
+1. a blocker,
+2. a quota threshold,
+3. an unsafe mutation boundary,
+4. no valid targets remain.
+
+"I think that's probably enough" is not a stop condition. Neither is a target
+looking tedious. If a target is wounded and you are tempted to move on, that is
+FINISH HIM, not acquisition.
+
+**Interaction with PERFECT GUARD:** a guard refusal terminates the combo. A
+KILLSTREAK does not route around a DENIED gate to keep its streak alive — the
+streak is not the point, the closure is.
+
+**Interaction with HADOUKEN:** a KILLSTREAK ending on a stop condition still
+owes a HADOUKEN — persist what was settled, propagate what was not. The
+unfinished targets are the obligation; dropping them because the lane ended is
+how work is lost between sessions.
