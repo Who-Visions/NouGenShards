@@ -141,3 +141,25 @@ def test_paid_overflow_emits_insert_coin():
     assert alert is not None
     assert alert.level == QuotaLevel.INSERT_COIN
     assert alert.recommended_route == "paid-overflow"
+
+
+import pytest
+
+@pytest.mark.anyio
+async def test_app_evaluate_quota_tool():
+    import app
+    res = await app.evaluate_quota(
+        provider="claude-opus",
+        bucket="5-hour-window",
+        used=92.0,
+        limit=100.0,
+        provenance="metered"
+    )
+    assert res["transition"] is True
+    assert res["level"] == "RATION"
+    assert res["directive"] == "RATION_CLOUD"
+    assert res["recommended_route"] == "openrouter-free"
+    assert res["percent_used"] == 92.0
+    assert res["provenance"] == "metered"
+
+

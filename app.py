@@ -1886,6 +1886,110 @@ async def ask_xoah(prompt: str) -> dict:
     return await xoah_ask_endpoint(req)
 
 
+# --- Hardcade Quota Alert Ladder & Telemetry Governor ---
+from nougen_shards.quota_governor import QuotaGovernor, QuotaLevel, DenominatorProvenance, RoutingDirective
+
+_global_quota_governor = QuotaGovernor()
+
+
+class QuotaEvalRequest(BaseModel):
+    provider: str
+    bucket: str
+    used: float
+    limit: Optional[float] = None
+    provenance: str = "metered"
+    reset_eta: Optional[str] = None
+    active_work: Optional[str] = None
+
+
+@app.post("/quota/evaluate")
+def quota_evaluate_endpoint(
+    req: QuotaEvalRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Evaluate provider usage against the Hardcade quota alert ladder."""
+    prov_enum = (
+        DenominatorProvenance(req.provenance)
+        if req.provenance in DenominatorProvenance._value2member_map_
+        else DenominatorProvenance.UNKNOWN
+    )
+    alert = _global_quota_governor.evaluate_usage(
+        req.provider,
+        req.bucket,
+        req.used,
+        req.limit,
+        provenance=prov_enum,
+        reset_eta=req.reset_eta,
+        active_work=req.active_work
+    )
+    pct = (req.used / req.limit * 100.0) if req.limit and req.limit > 0 else 0.0
+    if alert is None:
+        level, directive, route = _global_quota_governor.classify_percentage(pct)
+        return {
+            "status": "ok",
+            "transition": False,
+            "level": level.value,
+            "directive": directive.value,
+            "recommended_route": route,
+            "percent_used": pct,
+            "provenance": prov_enum.value
+        }
+    return {
+        "status": "ok",
+        "transition": True,
+        "alert_id": alert.alert_id,
+        "level": alert.level.value,
+        "directive": alert.directive.value,
+        "recommended_route": alert.recommended_route,
+        "percent_used": alert.percent_used,
+        "provenance": alert.provenance.value,
+        "reset_eta": alert.reset_eta,
+        "active_work": alert.active_work
+    }
+
+
+@node_mcp.tool()
+@_offloaded
+def evaluate_quota(
+    provider: str,
+    bucket: str,
+    used: float,
+    limit: Optional[float] = None,
+    provenance: str = "metered"
+) -> dict:
+    """Evaluate provider usage against the Hardcade quota alert ladder.
+    Returns level (<60% GREEN, 60% HEADS_UP, 75% LOW_AMMO, 85% DANGER, 90% RATION,
+    95% CONTINUE, 99% FINAL_ROUND, 100% GAME_OVER, 1UP for reset), routing directive,
+    and recommended route."""
+    prov_enum = (
+        DenominatorProvenance(provenance)
+        if provenance in DenominatorProvenance._value2member_map_
+        else DenominatorProvenance.UNKNOWN
+    )
+    alert = _global_quota_governor.evaluate_usage(provider, bucket, used, limit, provenance=prov_enum)
+    pct = (used / limit * 100.0) if limit and limit > 0 else 0.0
+    if alert is None:
+        level, directive, route = _global_quota_governor.classify_percentage(pct)
+        return {
+            "transition": False,
+            "level": level.value,
+            "directive": directive.value,
+            "recommended_route": route,
+            "percent_used": pct,
+            "provenance": prov_enum.value
+        }
+    return {
+        "transition": True,
+        "alert_id": alert.alert_id,
+        "level": alert.level.value,
+        "directive": alert.directive.value,
+        "recommended_route": alert.recommended_route,
+        "percent_used": alert.percent_used,
+        "provenance": alert.provenance.value
+    }
+
+
+
 # --- Cortex HUD UI Logic ---
 
 
