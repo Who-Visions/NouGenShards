@@ -259,6 +259,15 @@ def forward_capture(payload: dict) -> dict:
     if answer.get("count"):
         return {"captured": True, "reason": "forwarded"}
     if answer.get("skipped"):
-        return {"captured": False, "reason": "duplicate"}
+        # NOT a duplicate (blade, 2026-09-07). /sync/push increments `skipped`
+        # for a row it REJECTED -- its only skip path is `if not title or not
+        # content`. Reporting that as "duplicate" tells the caller its write
+        # was a redundant no-op when in fact the payload arrived malformed and
+        # the shard was dropped. That is how a broken forward masquerades as a
+        # healthy vault: the write is lost and every surface reports success.
+        return {"captured": False, "reason": "error",
+                "error": "forward target REJECTED the row (missing title or "
+                         "content on arrival) -- not a duplicate; the shard "
+                         "was not written anywhere"}
     return {"captured": False, "reason": "error",
             "error": f"forward target answered {answer}"}

@@ -139,8 +139,14 @@ switch ($Action) {
         Set-Content -Path $PidFile -Value $proc.Id -Encoding utf8
 
         # Uvicorn + gradio import takes a few seconds; poll rather than sleep blind.
+        # 15s was too tight (blade, 2026-09-07): the app import alone -- fastapi,
+        # gradio, the MCP server -- runs ~25s on blade, so a healthy node was
+        # declared dead every time and the boot chain still exited 0. Poll to
+        # NGS_HEALTH_WAIT_S (default 90) instead; a slow import is not a failure,
+        # and the only cost of waiting is a slower honest answer.
+        $waitS   = if ($env:NGS_HEALTH_WAIT_S) { [int]$env:NGS_HEALTH_WAIT_S } else { 90 }
         $ready = $false
-        foreach ($i in 1..30) {
+        foreach ($i in 1..($waitS * 2)) {
             try {
                 $h = Invoke-RestMethod -Uri "$BaseUrl/health" -TimeoutSec 2
                 $ready = $true
@@ -150,7 +156,7 @@ switch ($Action) {
         if ($ready) {
             "node up  pid $($proc.Id)  $BaseUrl  shards=$($h.total_shards)  token_configured=$($h.node_token_configured)"
         } else {
-            "node did NOT answer /health within 15s - see $ErrLog"
+            "node did NOT answer /health within ${waitS}s - see $ErrLog"
             exit 1
         }
         } finally {

@@ -981,6 +981,21 @@ def capture(event_type: str, title: str, content: str,
 
     fhash = hashlib.md5(clean_content.encode("utf-8", errors="ignore")).hexdigest()
 
+    # Empty content must never reach the dedup index (blade, 2026-09-07).
+    # A single empty-content row -- db4 id 1311, an intelligence_shard SYNC
+    # from 2026-07-24 -- put md5("") = d41d8cd98f00b204e9800998ecf8427e in the
+    # hash index permanently. From that moment EVERY capture whose content
+    # arrived empty matched it and was answered "duplicate: identical content
+    # is already in the vault". That reads as a successful no-op, so a caller
+    # losing its content on the wire is told its write was redundant rather
+    # than that it failed, and the write is dropped in silence. An empty
+    # capture is always a caller bug; say so instead of deduplicating it.
+    if not clean_content.strip():
+        return CaptureResult(
+            captured=False, reason="error",
+            error="empty content: refusing to capture (and refusing to report "
+                  "it as a duplicate of the empty-content shard in the index)")
+
     from . import snapshot_mode  # pylint: disable=import-outside-toplevel
     if snapshot_mode.enabled():
         # This node serves read-only snapshot artifacts and must never write

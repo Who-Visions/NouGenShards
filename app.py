@@ -802,6 +802,53 @@ def _start_recall_warmup() -> None:
     _threading.Thread(target=_run, name="nougen-recall-warmup", daemon=True).start()
 
 
+def _start_boot_quarantine() -> None:
+    """Heal the grid off the critical path.
+
+    Malformed DB files are renamed aside (kept for forensics) and recreated
+    empty, so healthy indices and their rows survive instead of a whole-volume
+    wipe. Gated by NOUGEN_QUARANTINE_MALFORMED_ON_BOOT; see
+    core.quarantine_malformed_dbs.
+
+    Why a thread and not a straight call (blade, 2026-09-07): the scan runs
+    ``PRAGMA quick_check`` over every grid DB, and on blade that is ~7.1GB
+    across 8 files -- measured 5.6/12.8/3.9/9.1/13.0/12.9/11.6/12.5s, ~81s
+    total. Run inline it blocks the lifespan, so uvicorn never binds the port.
+    node_lane.ps1 gives /health 15s, declared the node dead, and the boot chain
+    reported success while nothing listened on 4444 -- a success-shaped failure
+    that read as "blade shard write error" from every lane forwarding to it.
+    The cost scales with vault size, so it only ever gets worse. Healing is not
+    urgent (a malformed DB is already malformed); serving is. Warm on a daemon
+    thread exactly like the recall warm-up, and let the port bind immediately.
+    """
+    import threading as _threading  # local, mirroring _start_recall_warmup
+
+    if os.environ.get("NOUGEN_QUARANTINE_ON_BOOT_BLOCKING", "").strip().lower() in ("1", "true", "yes", "on"):
+        _run_boot_quarantine()
+        return
+
+    # The sibling warm-up imports this name function-locally, so it is NOT in
+    # module scope: using it here raised NameError and killed startup BEFORE the
+    # port bound. The task then exited 0 having started nothing -- the exact
+    # success-shaped boot failure this function's own docstring warns about.
+    import threading as _threading
+
+    _threading.Thread(
+        target=_run_boot_quarantine, name="nougen-boot-quarantine", daemon=True
+    ).start()
+
+
+def _run_boot_quarantine() -> None:
+    try:
+        started = time.perf_counter()
+        for q in core.quarantine_malformed_dbs():
+            logger.warning("boot quarantine: grid DB %(index)s -> %(moved_to)s "
+                           "(%(reason)s)", q)
+        logger.info("boot quarantine done in %.1fs", time.perf_counter() - started)
+    except Exception as exc:  # pragma: no cover - never take the node down for a scan
+        logger.warning("boot quarantine skipped: %s: %s", type(exc).__name__, exc)
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
     # Descriptor headroom FIRST: launchd starts this process with a soft
@@ -812,13 +859,7 @@ async def _lifespan(_app):
     # raise its own soft limit, so it does - before the warm-up opens anything.
     fd_budget.ensure_fd_headroom()
     _start_recall_warmup()
-    # Heal the grid before anything scans it: malformed DB files are renamed
-    # aside (kept for forensics) and recreated empty, so healthy indices and
-    # their rows survive instead of a whole-volume wipe. Gated by
-    # NOUGEN_QUARANTINE_MALFORMED_ON_BOOT; see core.quarantine_malformed_dbs.
-    for q in core.quarantine_malformed_dbs():
-        logger.warning("boot quarantine: grid DB %(index)s -> %(moved_to)s "
-                       "(%(reason)s)", q)
+    _start_boot_quarantine()
     _seed_upstreams()
     # The streamable-HTTP session manager needs a running task group.
     async with node_mcp.session_manager.run():
@@ -1811,19 +1852,25 @@ def xoah_throne_endpoint(
 
 @app.get("/destinies")
 @app.post("/destinies")
+@app.post("/destiny/unfinished")
 def destinies_endpoint(
+    req: Optional[DestiniesRequest] = None,
     status: Optional[str] = None,
     trigger: Optional[str] = None,
     branch: Optional[str] = None,
-    limit: int = 20,
+    limit: Optional[int] = None,
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
     """List unfinished or filtered prospective destinies."""
+    st = (req.status if req and req.status is not None else status)
+    tr = (req.trigger if req and req.trigger is not None else trigger)
+    br = (req.branch if req and req.branch is not None else branch)
+    lm = (req.limit if req and req.limit is not None else (limit or 20))
     return destiny.unfinished_destinies(
-        status=status,
-        trigger=trigger,
-        branch=branch,
-        limit=limit
+        status=st,
+        trigger=tr,
+        branch=br,
+        limit=lm
     )
 
 
