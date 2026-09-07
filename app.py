@@ -1811,19 +1811,25 @@ def xoah_throne_endpoint(
 
 @app.get("/destinies")
 @app.post("/destinies")
+@app.post("/destiny/unfinished")
 def destinies_endpoint(
+    req: Optional[DestiniesRequest] = None,
     status: Optional[str] = None,
     trigger: Optional[str] = None,
     branch: Optional[str] = None,
-    limit: int = 20,
+    limit: Optional[int] = None,
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
     """List unfinished or filtered prospective destinies."""
+    st = (req.status if req and req.status is not None else status)
+    tr = (req.trigger if req and req.trigger is not None else trigger)
+    br = (req.branch if req and req.branch is not None else branch)
+    lm = (req.limit if req and req.limit is not None else (limit or 20))
     return destiny.unfinished_destinies(
-        status=status,
-        trigger=trigger,
-        branch=branch,
-        limit=limit
+        status=st,
+        trigger=tr,
+        branch=br,
+        limit=lm
     )
 
 
