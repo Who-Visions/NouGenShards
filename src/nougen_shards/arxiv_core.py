@@ -7,16 +7,10 @@ Enables agents and operators to:
 """
 from __future__ import annotations
 
-import argparse
-import datetime
-import json
-import os
-import re
-import sys
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 ARXIV_API_URL = "http://export.arxiv.org/api/query"
 

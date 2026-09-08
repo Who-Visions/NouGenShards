@@ -6,13 +6,10 @@ and audits transcripts with zero external dependencies.
 """
 from __future__ import annotations
 
-import glob
 import json
 import os
-import re
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 BRAIN_DIR = Path(os.path.expanduser("~/.gemini/antigravity/brain"))
 

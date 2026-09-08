@@ -14,9 +14,8 @@ import json
 import os
 import re
 import subprocess
-import sys
 import urllib.request
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 
 def _run(cmd: list[str]) -> str:
