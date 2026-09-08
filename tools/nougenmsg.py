@@ -67,6 +67,7 @@ _BANNER_GLYPH = "\U0001F6F0️"
 
 def _emoji_map() -> dict:
     table = dict(_DEFAULT_EMOJI)
+    table.update({k.replace(' ', ''): v for k, v in _DEFAULT_EMOJI.items()})
     raw = os.environ.get("NOUGEN_MSG_EMOJI_MAP", "").strip()
     if raw:
         try:
