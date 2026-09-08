@@ -13,6 +13,51 @@ import urllib.request
 import re
 from typing import Dict, Any, List, Optional, Tuple
 
+_SESSION_VARS = ("NOUGEN_SESSION", "CLAUDE_CODE_SESSION_ID")
+
+
+def resolve_session() -> str:
+    """Which SESSION on this lane is speaking, or "" when nothing knows.
+
+    A NouGenMsg payload names a BOX at best (get_current_node's three-way
+    hardcoded branch) and a connector's own label at worst. Several sessions
+    run on one box under one lane name, so a message can be delivered and
+    credited to the wrong writer with nothing in the record to catch it.
+    Measured on blade 2026-09-08: 124 relay legs under a single byline in one
+    day, 28 of them from the session reading them, and work misattributed
+    four separate times on the strength of that field alone.
+
+    Mirrors nougen_relay.core.resolve_session so both transports agree on what
+    a session id is. Returns "" when no source answers, so the payload carries
+    no session key rather than a guess.
+    """
+    for var in _SESSION_VARS:
+        value = os.environ.get(var, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def resolve_origin_host() -> str:
+    """The physical box this message was written on, regardless of its label.
+
+    Deliberately NOT get_current_node(): that returns one of three hardcoded
+    names, and a connector-written message inherits whichever branch happens
+    to fire rather than saying where it actually ran. This asks the OS.
+    Named `origin_host` because `origin` already means the original-sender
+    routing block in this payload shape, and overloading it would silently
+    change meaning for every existing consumer.
+
+    Returns "" when the host cannot be determined.
+    """
+    try:
+        import socket
+
+        return socket.gethostname().split(".")[0].lower()
+    except Exception:
+        return ""
+
+
 def get_current_node() -> str:
     if os.name != "nt":
         return "phoebus"
@@ -228,9 +273,13 @@ class AgentPinger:
             os.makedirs(inbox_dir, exist_ok=True)
             inbox_file = os.path.join(inbox_dir, f"ping_{int(time.time() * 1000)}.json")
             with open(inbox_file, "w", encoding="utf-8") as f:
+                _msg_session = resolve_session()
+                _msg_host = resolve_origin_host()
                 json.dump({"source": source, "sender": origin.get("original_sender") if origin else source,
                            "origin": origin, "target": "claude", "text": prompt, "timestamp": time.time(),
-                           "delivered_live": bool(delivered), "delivered_to": [d.get("session_id") for d in delivered]}, f, indent=2)
+                           "delivered_live": bool(delivered), "delivered_to": [d.get("session_id") for d in delivered],
+                           **({"session": _msg_session} if _msg_session else {}),
+                           **({"origin_host": _msg_host} if _msg_host else {})}, f, indent=2)
         except OSError:
             inbox_file = None
         if not sessions and not delivered:
@@ -258,10 +307,14 @@ class AgentPinger:
         filename = f"ping_{int(time.time() * 1000)}.json"
         written_files = []
 
+        _msg_session = resolve_session()
+        _msg_host = resolve_origin_host()
         payload = {
             "source": f"nougen-{get_current_node()}",
             "sender": (origin or {}).get("original_sender") or f"nougen-{get_current_node()}",
             "origin": origin,
+            **({"session": _msg_session} if _msg_session else {}),
+            **({"origin_host": _msg_host} if _msg_host else {}),
             "target": "antigravity",
             "text": prompt,
             "domain": domain,
@@ -323,10 +376,14 @@ class AgentPinger:
         filename = f"ping_{int(time.time() * 1000)}.json"
         filepath = os.path.join(inbox_dir, filename)
 
+        _msg_session = resolve_session()
+        _msg_host = resolve_origin_host()
         payload = {
             "source": f"nougen-{get_current_node()}",
             "sender": (origin or {}).get("original_sender") or f"nougen-{get_current_node()}",
             "origin": origin,
+            **({"session": _msg_session} if _msg_session else {}),
+            **({"origin_host": _msg_host} if _msg_host else {}),
             "target": "codex",
             "text": prompt,
             "timestamp": time.time()
