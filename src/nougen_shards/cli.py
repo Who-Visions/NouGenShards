@@ -93,6 +93,50 @@ if sys.platform == "win32":
 def cmd_pr(args):
     from . import pr_lease
     store = pr_lease.LeaseStore()
+    if args.pr_action == "review":
+        from . import pr_review
+        lease = store.get(args.repo, args.objective)
+        if lease is None:
+            print(f"error: no lease for objective={args.objective!r} repo={args.repo!r}; run `pr attach` first", file=sys.stderr)
+            sys.exit(1)
+        window = pr_review.incremental_review_window(args.repo_path, lease)
+        payload = {
+            "since_sha": window.since_sha, "until_sha": window.until_sha,
+            "commit_count": window.commit_count, "new_commits": window.new_commits,
+            "is_empty": window.is_empty, "diff": window.diff,
+        }
+        if args.mark_reviewed and not window.is_empty:
+            store.mark_reviewed(args.repo, args.objective, window.until_sha)
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            if window.is_empty:
+                print(f"Nothing new since {window.since_sha or '(first review)'} — skip.")
+            else:
+                print(f"{window.commit_count} new commit(s) since {window.since_sha or '(first review)'}: {window.until_sha}")
+                for sha in window.new_commits:
+                    print(f"  - {sha}")
+                if args.mark_reviewed:
+                    print(f"Checkpoint advanced to {window.until_sha}")
+        return
+    if args.pr_action == "sync-comments":
+        from . import pr_review
+        try:
+            findings_raw = json.loads(Path(args.findings_file).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"error: could not read --findings-file: {e}", file=sys.stderr)
+            sys.exit(1)
+        findings = [pr_review.Finding(file=f["file"], line=f["line"], body=f["body"]) for f in findings_raw]
+        try:
+            result = pr_review.sync_review_comments(args.repo, args.pr, args.commit, findings)
+        except RuntimeError as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(1)
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"posted={result['posted']} updated={result['updated']} skipped={result['skipped']} (of {result['total']} findings)")
+        return
     if args.pr_action == "attach":
         lease, started = store.attach_objective(args.repo, args.objective, branch_hint=args.branch)
         payload = {
@@ -1477,6 +1521,18 @@ def get_parser():
     p_pr_confetti.add_argument("--repo", required=True)
     p_pr_confetti.add_argument("--min-group", type=int, default=3)
     p_pr_confetti.add_argument("--json", action="store_true")
+    p_pr_review = pr_sub.add_parser("review", help="Incremental review window: commits/diff since the lease's last reviewed SHA (Phase 2)")
+    p_pr_review.add_argument("--repo", required=True, help="owner/name (lease key)")
+    p_pr_review.add_argument("--objective", required=True, help="Objective this lease was attached under")
+    p_pr_review.add_argument("--repo-path", required=True, help="Local git checkout to diff")
+    p_pr_review.add_argument("--mark-reviewed", action="store_true", help="Advance the lease's checkpoint to the new HEAD once this window is reviewed")
+    p_pr_review.add_argument("--json", action="store_true")
+    p_pr_sync = pr_sub.add_parser("sync-comments", help="Post/update PR review comments from a findings file, deduped by (file, line, text) fingerprint (Phase 2)")
+    p_pr_sync.add_argument("--repo", required=True, help="owner/name")
+    p_pr_sync.add_argument("--pr", type=int, required=True, help="PR number")
+    p_pr_sync.add_argument("--commit", required=True, help="Commit SHA new comments are anchored to")
+    p_pr_sync.add_argument("--findings-file", required=True, help="JSON file: list of {file, line, body}")
+    p_pr_sync.add_argument("--json", action="store_true")
 
     p_brain = subparsers.add_parser("brain", help="Universal AI Memory Forensic Engine")
     p_brain.add_argument("action", choices=["scan", "import"])

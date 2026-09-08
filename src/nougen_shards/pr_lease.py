@@ -142,6 +142,23 @@ class LeaseStore:
         self._save()
         return Lease(**row)
 
+    def mark_reviewed(self, repo: str, objective: str, sha: str) -> Lease:
+        """Advance the lease's review checkpoint after an incremental review
+        pass. Deliberately separate from record_push (push tracking): a
+        review can run without a push happening (re-reviewing existing
+        commits) and a push can happen without an immediate review, so the
+        two cadences must not clobber each other's SHA."""
+        okey = _slug(objective)
+        key = self._key(repo, okey)
+        row = self._data.get(key)
+        if not row:
+            raise KeyError(f"no lease for objective={objective!r} repo={repo!r}; call lease()/attach_objective() first")
+        row["last_reviewed_sha"] = sha
+        row["updated_utc"] = _now()
+        self._data[key] = row
+        self._save()
+        return Lease(**row)
+
     def open_chain(self, repo: str) -> Optional[Lease]:
         """Most recently touched lease in `repo` that still has chain room
         (chain_len < CHAIN_MAX). None if every lease is full or none exist."""
