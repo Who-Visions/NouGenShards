@@ -392,6 +392,75 @@ class AgentPinger:
         return {"status": "delivered" if pipe_delivered else "dropped", "files": written_files, "primary": written_files[0] if written_files else None, "pipe_delivered": pipe_delivered}
 
     @staticmethod
+    def ping_kaedra(
+        prompt: str,
+        domain: str = "shadow:tactician",
+        leg_id: Optional[str] = None,
+        goal: Optional[str] = None,
+        origin: Optional[Dict[str, Any]] = None,
+        model: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Drops live event notification into Kaedra inbox and triggers local Tier 0 Ollama tactical evaluation."""
+        inboxes = [
+            os.path.expanduser(os.path.join("~", ".nougen", "kaedra_inbox")),
+            os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox")),
+        ]
+        filename = f"kaedra_ping_{int(time.time() * 1000)}.json"
+        written_files = []
+
+        _msg_session = resolve_session()
+        _msg_host = resolve_origin_host()
+        payload = {
+            "source": f"nougen-{get_current_node()}",
+            "sender": (origin or {}).get("original_sender") or f"nougen-{get_current_node()}",
+            "origin": origin,
+            **({"session": _msg_session} if _msg_session else {}),
+            **({"origin_host": _msg_host} if _msg_host else {}),
+            "target": "kaedra",
+            "text": prompt,
+            "domain": domain,
+            "leg_id": leg_id,
+            "goal": goal,
+            "timestamp": time.time(),
+        }
+
+        for inbox_dir in inboxes:
+            try:
+                os.makedirs(inbox_dir, exist_ok=True)
+                fp = os.path.join(inbox_dir, filename)
+                with open(fp, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, indent=2)
+                written_files.append(fp)
+            except Exception:
+                continue
+
+        # Evaluate through local Ollama Tier 0 (same as AgentPinger.ping_ollama)
+        target_model = model or os.environ.get("KAEDRA_OLLAMA_MODEL", "kaedracode:e2b")
+        ollama_url = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/") + "/api/generate"
+        ollama_result = {}
+        try:
+            req_data = json.dumps({
+                "model": target_model,
+                "prompt": prompt,
+                "stream": False,
+            }).encode("utf-8")
+            req = urllib.request.Request(ollama_url, data=req_data, headers={"Content-Type": "application/json"})
+            timeout_s = float(os.environ.get("KAEDRA_OLLAMA_TIMEOUT", "60.0"))
+            with urllib.request.urlopen(req, timeout=timeout_s) as r:
+                res = json.loads(r.read().decode())
+                ollama_result = {"status": "evaluated", "model": target_model, "response": res.get("response", "").strip()}
+        except Exception as exc:
+            ollama_result = {"status": "error", "model": target_model, "error": str(exc)}
+
+        return {
+            "status": "delivered" if written_files else "dropped",
+            "agent": "kaedra",
+            "files": written_files,
+            "primary": written_files[0] if written_files else None,
+            "ollama": ollama_result,
+        }
+
+    @staticmethod
     def ping_codex(prompt: str, origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Queue through the local Codex pipe, retaining an inbox fallback."""
         try:
@@ -592,7 +661,7 @@ class NouGenMsgBus:
             return ('fleet', 'all')
 
         known_nodes = {'blade', 'whoart', 'phoebus', 'local', 'fleet'}
-        known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'all'}
+        known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'kaedra', 'all'}
         # Model lanes carry the model in the agent slot: '@ollama:gemma4:31b-cloud'
         # -> ('local', 'ollama:gemma4:31b-cloud'); '@blade:openrouter:nvidia/x'
         # -> ('blade', 'openrouter:nvidia/x'). live_ping splits family from model.
@@ -684,6 +753,9 @@ class NouGenMsgBus:
 
         if family in ["codex", "all"]:
             results["codex"] = AgentPinger.ping_codex(text, envelope)
+
+        if family in ["kaedra", "all"]:
+            results["kaedra"] = AgentPinger.ping_kaedra(text, origin=envelope)
 
         if family == "ollama" or (family == "all" and models_on_all):
             results["ollama"] = AgentPinger.ping_ollama(text, node=node or "local",
@@ -937,15 +1009,43 @@ class NouGenMsgBus:
         }
 
     @classmethod
+    def send(cls, target_str: str, text: str, origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Dispatches message according to destination parsed from target string."""
+        node, agent = cls.parse_destination(target_str)
+        if node == "fleet":
+            return cls.emit_fleet(text, target=agent, origin=origin)
+        return cls.emit_node(node, agent, text, origin=origin)
+
+    @classmethod
+    def probe_fleet_nodes(cls) -> List[str]:
+        """Returns list of reachable nodes."""
+        curr = get_current_node()
+        nodes = [curr]
+        for candidate in ["blade", "whoart"]:
+            if candidate != curr:
+                try:
+                    res = subprocess.run(["ssh", "-o", "ConnectTimeout=2", "--", candidate, "echo ok"],
+                                         capture_output=True, text=True, timeout=3)
+                    if res.returncode == 0:
+                        nodes.append(candidate)
+                except Exception:
+                    pass
+        return sorted(list(set(nodes)))
+
+    @classmethod
     def read_inbox(cls, target: str = "antigravity", limit: int = 10) -> List[Dict[str, Any]]:
         """Reads recent unread messages from agent inbox across all registered directories."""
-        inbox_dirs = (
-            [
+        if target == "antigravity":
+            inbox_dirs = [
                 os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
-                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox"))
-            ] if target == "antigravity"
-            else [os.path.expanduser(os.path.join("~", ".codex", "inbox"))]
-        )
+                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox")),
+            ]
+        elif target == "kaedra":
+            inbox_dirs = [
+                os.path.expanduser(os.path.join("~", ".nougen", "kaedra_inbox")),
+            ]
+        else:
+            inbox_dirs = [os.path.expanduser(os.path.join("~", ".codex", "inbox"))]
 
         all_files = []
         for d in inbox_dirs:
@@ -988,18 +1088,23 @@ class NouGenMsgBus:
                     messages.append(data)
             except Exception:
                 continue
+
         return messages
 
     @classmethod
     def clear_inbox(cls, target: str = "antigravity") -> int:
-        """Archives or deletes all read messages from inbox across all directories."""
-        inbox_dirs = (
-            [
+        """Clears all json files from the target agent's inboxes. Returns count removed."""
+        if target == "antigravity":
+            inbox_dirs = [
                 os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
-                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox"))
-            ] if target == "antigravity"
-            else [os.path.expanduser(os.path.join("~", ".codex", "inbox"))]
-        )
+                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox")),
+            ]
+        elif target == "kaedra":
+            inbox_dirs = [
+                os.path.expanduser(os.path.join("~", ".nougen", "kaedra_inbox")),
+            ]
+        else:
+            inbox_dirs = [os.path.expanduser(os.path.join("~", ".codex", "inbox"))]
 
         count = 0
         for inbox_dir in inbox_dirs:
