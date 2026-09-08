@@ -297,6 +297,19 @@ def forward_capture(payload: dict) -> dict:
     if answer.get("count"):
         return {"captured": True, "reason": "forwarded", **identity}
 
+    # The writer hit a fault (locked or quarantined grid DB). Surface ITS
+    # error string: this used to fall through to the "malformed" branch below
+    # and blame the payload for a lock the writer never named.
+    if row and row.get("reason") == "error":
+        return {"captured": False, "reason": "error",
+                "error": f"writer {url} could not write the row: "
+                         f"{row.get('error') or 'unspecified write fault'}"}
+    if not row and answer.get("errored"):
+        first = (answer.get("errors") or [{}])[0]
+        return {"captured": False, "reason": "error",
+                "error": f"writer {url} could not write the row: "
+                         f"{first.get('error') or 'unspecified write fault'}"}
+
     # A malformed row was REJECTED and nothing was written anywhere. That is an
     # error, never a duplicate -- reporting it as a duplicate tells the caller
     # its write was a redundant no-op while the shard was dropped.
