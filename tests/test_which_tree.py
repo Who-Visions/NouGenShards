@@ -125,3 +125,52 @@ def test_absent_health_fields_are_a_definite_answer(monkeypatch, capsys):
                          "--health", "https://example.invalid"])
     assert which_tree.main() == 1
     assert "ABSENT" in capsys.readouterr().out
+
+
+def test_process_path_survives_the_health_branch_existing(monkeypatch, capsys):
+    """Regression: #281 shadowed the module-level count() and broke every real match.
+
+    Adding --health introduced `count = body.get(...)` inside main(), which
+    makes `count` a LOCAL name for the entire function — so the process path
+    below it died with UnboundLocalError on every --proc that actually matched
+    something. It shipped because the new path was tested and the old one was
+    only exercised against a NO-match case, which returns before reaching the
+    shadowed name.
+
+    Found by whoart running the tool for real on 2026-09-08. This test walks
+    the full main() with a matching process and a resolvable module, so the
+    two paths can never diverge silently again.
+    """
+    sys.path.insert(0, str(TOOL.parent))
+    try:
+        import which_tree
+    finally:
+        sys.path.pop(0)
+
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr(which_tree, "pids", lambda pattern: [(1234, "python fake.py")])
+    monkeypatch.setattr(which_tree, "cwd_of", lambda pid: str(root))
+    monkeypatch.setattr(which_tree, "pythonpath_of", lambda pid: str(root / "src"))
+    monkeypatch.setattr(sys, "argv", [
+        "which_tree", "--module", "nougen_shards.brain_scan.redaction",
+        "--marker", r"re\.compile", "--proc", "fake.py",
+    ])
+
+    rc = which_tree.main()
+    out = capsys.readouterr().out
+    assert "WINS" in out, out
+    assert "marker=" in out
+    assert rc == 0
+
+
+def test_health_branch_does_not_bind_a_name_used_elsewhere():
+    """Guards the specific mistake rather than only its symptom.
+
+    A local named `count` in main() is always a bug here, because the process
+    path calls the module-level count(). Asserting on the source is crude, but
+    it fails loudly at the moment someone reintroduces the shadow rather than
+    only when a live process happens to match.
+    """
+    source = TOOL.read_text(encoding="utf-8")
+    body = source.split("def main(")[1]
+    assert "\n        count = " not in body, "main() rebinds count(); use another name"

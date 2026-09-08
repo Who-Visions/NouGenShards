@@ -151,21 +151,25 @@ def main() -> int:
             print(f"{args.health}: health unreachable ({type(exc).__name__})",
                   file=sys.stderr)
             return 1
-        count = body.get("redaction_patterns")
+        # NOT named `count`: that shadows the module-level count() for the
+        # WHOLE function, including the process path below, which then dies
+        # with UnboundLocalError on every real --proc match. Shipped that way
+        # in #281 and caught by whoart running it for real on 2026-09-08.
+        patterns = body.get("redaction_patterns")
         fingerprint = body.get("redaction_fingerprint")
         print(f"{args.health}")
-        if count is None and fingerprint is None:
+        if patterns is None and fingerprint is None:
             # Absence is the diagnostic, not a gap in the check: a node that
             # publishes neither field is running code from before the fields
             # existed. Saying "unknown" here would hide a definite answer.
             print("  redaction fields ABSENT -> this node predates the "
                   "self-reporting change and is running older code")
             return 1
-        print(f"  redaction_patterns    {count}")
+        print(f"  redaction_patterns    {patterns}")
         print(f"  redaction_fingerprint {fingerprint}")
         bad = False
-        if args.expect is not None and count != args.expect:
-            print(f"  EXPECTED {args.expect} patterns, node reports {count}")
+        if args.expect is not None and patterns != args.expect:
+            print(f"  EXPECTED {args.expect} patterns, node reports {patterns}")
             bad = True
         if args.fingerprint and fingerprint != args.fingerprint:
             print(f"  EXPECTED fingerprint {args.fingerprint}")
