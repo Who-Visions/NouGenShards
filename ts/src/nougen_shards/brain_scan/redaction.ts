@@ -44,6 +44,32 @@ export const SECRET_PATTERNS: [RegExp, string][] = [
   // JWTs (trailing segment may be empty for unsigned/alg=none tokens).
   [/eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]*/g, "<REDACTED_JWT>"],
 
+  // --- added 2026-09-07 from the cross-node shape audit, mirroring the eight
+  // additions on the Python side. This table and redaction.py are two halves
+  // of one set with no parity test between them, which is the same drift that
+  // let three nodes each miss half the shapes -- one layer down. Keep them
+  // byte-equivalent; tests/test_credential_patterns.py::test_typescript_half_
+  // has_parity is the guard.
+  // Marker-only, zero-entropy shapes -- see the Python half.
+  [/-----END[ A-Z0-9]*PRIVATE KEY-----/g, "<REDACTED_PRIVATE_KEY>"],
+  [/DefaultEndpointsProtocol\s*=\s*[a-z]+;[^\s]*/g, "<REDACTED_AZURE_CONNECTION>"],
+  [/sk_live_[A-Za-z0-9]{16,}/g, "<REDACTED_STRIPE_KEY>"],
+  [/sk_test_[A-Za-z0-9]{16,}/g, "<REDACTED_STRIPE_KEY>"],
+  [/glpat-[A-Za-z0-9_\-]{20}/g, "<REDACTED_GITLAB_TOKEN>"],
+  [/npm_[A-Za-z0-9]{36}/g, "<REDACTED_NPM_TOKEN>"],
+  [/v1\.0-[A-Za-z0-9]{20,}-[A-Za-z0-9_\-]{20,}/g, "<REDACTED_CLOUDFLARE_TOKEN>"],
+  [/(AccountKey\s*=\s*)[A-Za-z0-9+/=]{20,}/gi, "$1<REDACTED_AZURE_KEY>"],
+  // A PEM header with no body after it -- a truncated log line.
+  [/-----BEGIN[ A-Z0-9]*PRIVATE KEY-----/g, "<REDACTED_PRIVATE_KEY>"],
+
+  // Runs BEFORE the generic label rule below: that rule matches a bare label
+  // anywhere, so NGS_NODE_TOKEN=<value> became NGS_NODE_<REDACTED_SECRET>,
+  // destroying half the key's own NAME.
+  [
+    /([A-Za-z0-9]*(?:SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIAL)[A-Za-z0-9_]*\s*[=:]\s*)['"]?[A-Za-z0-9_\-+/=.~]{8,}/gi,
+    "$1<REDACTED_SECRET>",
+  ],
+
   // General API Keys / Tokens. Broadened value charset for base64/url-safe
   // secrets (+/=.~) and added labels (bearer/client_secret/pwd/pat/...).
   [
