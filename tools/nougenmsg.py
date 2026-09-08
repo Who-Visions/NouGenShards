@@ -87,7 +87,7 @@ def resolve_agent_label() -> str:
     return "claude-cli"
 
 
-def house_style(text: str, node: str, agent: str) -> str:
+def house_style(text: str, node: str, agent: str, session_id: str = "") -> str:
     """Decorate a plain message into the fleet banner format.
 
     Lines already carrying a glyph (first char outside ASCII) or a [TAG] are

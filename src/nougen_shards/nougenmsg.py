@@ -12,6 +12,7 @@ import subprocess
 import urllib.request
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional, Tuple
 
 _SESSION_VARS = ("NOUGEN_SESSION", "CLAUDE_CODE_SESSION_ID")
@@ -953,12 +954,21 @@ class NouGenMsgBus:
         # A standalone/external clone has no private fleet to broadcast into;
         # only fan out to the other two boxes when this IS one of them.
         nodes = sorted(fleet_nodes - {curr}) if curr in fleet_nodes else []
-        for n in nodes:
-            try:
-                res = cls.emit_node(n, target, text, origin=origin)
-                results.update(res)
-            except Exception as e:
-                results[n] = f"Error: {e}"
+        # Peers are independent SSH hops with their own timeout each (default
+        # 20s via NOUGEN_MSG_SEND_TIMEOUT_S) - run them concurrently rather
+        # than one after another. Sequential cost every caller the SUM of
+        # every unreachable peer's timeout (40s for 2 dead peers); parallel
+        # cost is the MAX (20s), since each hop still bounds itself.
+        if nodes:
+            with ThreadPoolExecutor(max_workers=len(nodes)) as pool:
+                futures = {pool.submit(cls.emit_node, n, target, text, origin=origin): n
+                           for n in nodes}
+                for future in as_completed(futures):
+                    n = futures[future]
+                    try:
+                        results.update(future.result())
+                    except Exception as e:
+                        results[n] = f"Error: {e}"
 
         return results
 
