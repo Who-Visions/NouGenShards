@@ -251,9 +251,12 @@ def mark_utility(shard_id: int, worked: bool, db_index: int | None = None) -> di
 @_offloaded
 def node_status() -> dict:
     """Node health: shard count and storage mode."""
+    from nougen_shards.brain_scan import redaction as _redaction
     return {"status": "ignited",
             "total_shards": _total_shards(),
-            "storage": os.environ.get("NOUGEN_HOME", "default")}
+            "storage": os.environ.get("NOUGEN_HOME", "default"),
+            "redaction_patterns": len(_redaction.SECRET_PATTERNS),
+            "redaction_fingerprint": _redaction.pattern_fingerprint()}
 
 
 def _window_search(query: str = "", since: Optional[str] = None,
@@ -1074,6 +1077,23 @@ def _total_shards() -> int:
     return _substrate_coverage()["shards"]
 
 
+def _redaction_count() -> int:
+    """Pattern count of the redaction module THIS process imported."""
+    try:
+        from nougen_shards.brain_scan import redaction
+        return len(redaction.SECRET_PATTERNS)
+    except Exception:                       # pragma: no cover - health must not 500
+        return -1
+
+
+def _redaction_fingerprint() -> str:
+    try:
+        from nougen_shards.brain_scan import redaction
+        return redaction.pattern_fingerprint()
+    except Exception:                       # pragma: no cover
+        return "unavailable"
+
+
 @app.get("/health")
 async def health(x_ngs_token: str = Header(None)):
     """Generic readiness when open; tenant-local substrate detail when authed.
@@ -1126,6 +1146,12 @@ async def health(x_ngs_token: str = Header(None)):
         "node_token_configured": node_token_ok,
         "tenant_registry_configured": registry_configured,
         "hud_auth_configured": hud_auth_ok,
+        # Which redaction code this node is ACTUALLY RUNNING. Not which
+        # commit is on main -- see pattern_fingerprint's docstring. Count and
+        # fingerprint only; the module path is deployment topology and stays
+        # off the public view.
+        "redaction_patterns": _redaction_count(),
+        "redaction_fingerprint": _redaction_fingerprint(),
         "api_docs_public": _serve_docs and _network_exposed,
         "public_ready": auth_configured and hud_auth_ok,
         "warnings": warnings,
