@@ -125,3 +125,38 @@ def test_absent_health_fields_are_a_definite_answer(monkeypatch, capsys):
                          "--health", "https://example.invalid"])
     assert which_tree.main() == 1
     assert "ABSENT" in capsys.readouterr().out
+
+
+def test_proc_mode_does_not_crash_on_a_real_match(tmp_path):
+    """Regression: --health's local `count` used to shadow the module-level
+    count() for main()'s ENTIRE scope, so a genuine --proc match raised
+    UnboundLocalError on the line that counts the marker in the winning file.
+    The empty-match test above never reaches that line, so this never had
+    coverage; found running the tool for real against a live process instead
+    of only against synthetic ones.
+    """
+    import os
+
+    pkg = tmp_path / "src" / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "mod.py").write_text("re.compile(1)\nre.compile(2)\n", encoding="utf-8")
+
+    marker = "which-tree-proc-mode-regression-marker"
+    # The marker process's OWN environment is what pythonpath_of() reads back,
+    # so PYTHONPATH has to be set on IT, not on the which_tree.py invocation --
+    # which_tree.py never uses its own PYTHONPATH, only the target process's.
+    child_env = {**os.environ, "PYTHONPATH": str(tmp_path / "src")}
+    marker_proc = subprocess.Popen(
+        [sys.executable, "-c", f"import time; time.sleep(30)  # {marker}"],
+        env=child_env)
+    try:
+        r = subprocess.run(
+            [sys.executable, str(TOOL), "--module", "pkg.mod",
+             "--marker", r"re\.compile\(", "--expect", "2", "--proc", marker],
+            capture_output=True, text=True, check=False)
+        assert "UnboundLocalError" not in r.stderr, r.stderr
+        assert "NOT FOUND" not in r.stdout
+        assert "marker=2" in r.stdout
+    finally:
+        marker_proc.kill()
+        marker_proc.wait(timeout=5)
