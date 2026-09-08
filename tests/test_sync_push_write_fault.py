@@ -10,7 +10,6 @@ relabeled twice on the way back.
 """
 import io
 import json
-import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
