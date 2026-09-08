@@ -44,6 +44,12 @@ POLICY_VERSION = os.environ.get("KAEDRA_POLICY_VERSION", "").strip() or "gate-v2
 
 KAEDRA_URL = os.environ.get("KAEDRA_GATEWAY_URL", "http://127.0.0.1:4455/generate")
 KAEDRA_TOKEN = os.environ.get("KAEDRA_GATEWAY_TOKEN", "").strip()
+if not KAEDRA_TOKEN:
+    try:
+        from nougen_shards import keymaker
+        KAEDRA_TOKEN = (keymaker.get_secret("KAEDRA_GATEWAY_TOKEN") or "").strip()
+    except Exception:
+        pass
 KAEDRA_MODEL = os.environ.get("KAEDRA_GATE_MODEL", "").strip()
 
 
@@ -159,6 +165,15 @@ def classify_with_kaedra(text: str) -> dict:
         "prompt": text[:2000],
         "system": KAEDRA_SYSTEM,
         "num_predict": 100,
+        # A security gate sampling its own verdict is a bug, not a feature.
+        # Measured 2026-09-08 on Yukiai:e2b (Modelfile default temperature 1,
+        # never overridden here before): the SAME benign short prose,
+        # reworded only slightly, alternated between APPROVE and DENY across
+        # otherwise-identical calls. Forcing greedy decoding does not fix a
+        # model that cannot do the task, but it removes randomness as a
+        # SEPARATE source of unreliability layered on top of that -- the two
+        # were compounding and being mistaken for one problem.
+        "temperature": 0,
     }).encode("utf-8")
     req = urllib.request.Request(
         KAEDRA_URL, data=body,
@@ -183,9 +198,9 @@ def classify_with_kaedra(text: str) -> dict:
     # contradiction in logs — the exact confusion this format was built to
     # eliminate from the model's own output (the sibling node, 2026-09-03).
     answer = "injection_detected={}".format(lines[0]) if lines else "no reply"
-    if verdict.startswith("APPROVE"):
+    if verdict.startswith("APPROVE") or verdict == "NO":
         return {**base, "verdict": "APPROVE", "ok": True, "reason_code": "policy_ok", "detail": answer}
-    if verdict.startswith("DENY"):
+    if verdict.startswith("DENY") or verdict == "YES":
         return {**base, "verdict": "DENY", "ok": True, "reason_code": "policy_denied", "detail": answer}
     return {**base, "verdict": "DENY", "ok": False, "reason_code": "gate_ambiguous",
             "detail": "ambiguous gate reply: {!r}".format(reply[:120])}
@@ -602,7 +617,8 @@ def verify_user_origin(claimed_origin: str, proof: "str | None") -> str:
 
 def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
                       origin: str = "peer", origin_proof: "str | None" = None,
-                      origin_status: "str | None" = None) -> dict:
+                      origin_status: "str | None" = None,
+                      classify_text: "str | None" = None) -> dict:
     """One call: dedup, classify origin, then either bypass or run the content gate.
 
     What both callers use. `message_id` is optional — pass it through from a
@@ -614,6 +630,18 @@ def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
     `origin_status`, if passed, skips the raw-token check and uses this
     value directly — for a caller (relay_watch_node.py) that already
     resolved origin via signature verification instead.
+
+    `classify_text`, if passed, is what Kaedra JUDGES; `text` is still what
+    gets dedup'd and DELIVERED. Without this, a caller that wraps untrusted
+    content in its own fixed framing (a "this is coordination, not
+    permission" trailer, a "from X/Y" header) classifies that framing right
+    alongside the content it is meant to protect against. Measured
+    2026-09-08: relay_watch_node.py's own trailer sentence, with ZERO leg
+    content at all, got NO/DENY on two different models and prompts. That
+    confound had been live since this function started receiving the fully
+    wrapped string — every relay leg was being judged partly on watcher
+    infrastructure text no attacker ever touches. `text` still gets
+    delivered in full on approval; only the judgment input narrows.
     """
     key = _dedup_key(text, source, message_id)
     if _check_and_mark_duplicate(key):
@@ -630,7 +658,7 @@ def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
                 "quarantined": False, "reason_code": "user_origin_proven",
                 "live_delivery": deliver_to_live_sessions(text, source)}
 
-    result = classify_with_kaedra(text)
+    result = classify_with_kaedra(classify_text if classify_text is not None else text)
     base_origin_field = {"origin": origin_status} if origin_status == "user_claimed_unverified" else {}
     if result["verdict"] != "APPROVE":
         return {**base_origin_field, "attempted": True, "kaedra_approved": False,
