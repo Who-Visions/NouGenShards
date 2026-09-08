@@ -148,7 +148,11 @@ CONTROLS: tuple[str, ...] = (
     "the token budget was 1000000 tokens",
     "def get_secret(key): return keymaker.get_secret(key)",
     "see docs/architecture.md for the API_KEY naming convention",
-    "https://phoebus.nougenai.com/health",
+    # A plain https URL, deliberately example.com: a control string must not
+    # carry deployment topology. This one named a real fleet host until
+    # 2026-09-08 — harmless to the redactor, and exactly the kind of detail the
+    # public-release gate exists to keep out of a repo strangers clone.
+    "https://example.com/health",
     "git rev-parse HEAD -> 592d348a1b2c3d4e5f60718293a4b5c6d7e8f900",
     "SELECT token, count(*) FROM usage GROUP BY token",
 )
