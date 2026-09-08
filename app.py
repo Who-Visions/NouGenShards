@@ -1852,7 +1852,8 @@ class XoahPressureRequest(BaseModel):
 
 
 class XoahThroneRequest(BaseModel):
-    desired_effect: str
+    desired_effect: Optional[str] = None
+    effect: Optional[str] = None
     target_coordinate: Optional[str] = None
     target_branch: Optional[str] = None
     acting_stage: int = 9
@@ -1898,8 +1899,11 @@ def xoah_throne_endpoint(
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
     """Run proposed intervention through Shadow Queen Throne governance gates."""
+    effect_val = req.desired_effect or req.effect or ""
+    if not effect_val:
+        raise HTTPException(status_code=400, detail="desired_effect or effect is required")
     return throne_governance.evaluate(
-        req.desired_effect,
+        effect_val,
         target_coordinate=req.target_coordinate,
         target_branch=req.target_branch,
         acting_stage=req.acting_stage,
@@ -1968,9 +1972,10 @@ def xoah_pressure(candidate: str, coordinate: Optional[str] = None, register: bo
 
 @node_mcp.tool()
 @_offloaded
-def xoah_throne(desired_effect: str, target_coordinate: Optional[str] = None, target_branch: Optional[str] = None) -> dict:
+def xoah_throne(desired_effect: str = "", effect: Optional[str] = None, target_coordinate: Optional[str] = None, target_branch: Optional[str] = None) -> dict:
     """Run proposed intervention through Shadow Queen Throne governance gates."""
-    return throne_governance.evaluate(desired_effect, target_coordinate=target_coordinate, target_branch=target_branch)
+    val = desired_effect or effect or ""
+    return throne_governance.evaluate(val, target_coordinate=target_coordinate, target_branch=target_branch)
 
 
 @node_mcp.tool()

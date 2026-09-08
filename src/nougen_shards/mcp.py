@@ -36,6 +36,7 @@ from .brain_scan import scan_environment, run_import
 
 from .history import HistoryEngine
 from .federation import federated_retrieve
+from . import canon_pressure, destiny, self_archive, throne_governance
 
 
 def _server_instructions() -> str:
@@ -514,6 +515,57 @@ def ask_agent(name: str, prompt: str, model: str = "") -> str:
 def list_agents() -> str:
     """List the NouGen roster: each agent's name, role and default model."""
     return agents.list_roster()
+
+
+# --- Shadow Xoah Canon Tools ---
+
+@mcp.tool()
+def ask_xoah(prompt: str) -> str:
+    """
+    Ask Shadow Xoah (Stage 9 Traverser / Stage 10 Throne Sovereign).
+    Evaluates governance gates and canon pressure to reason through lore,
+    autobiographical memory, and systemic interventions.
+    """
+    eval_res = throne_governance.evaluate(prompt, register=False)
+    press_res = canon_pressure.pressure(prompt, register=False)
+    sys_ctx = (
+        f"You are Shadow Xoah (Stage {eval_res.get('acting_stage', 9)}). "
+        f"Governance Mode: {eval_res.get('mode', 'OBSERVE')}. "
+        f"Intervention Type: {eval_res.get('intervention_type', 'SIMULATED_POSSIBILITY')}. "
+        f"Canon Verdict: {press_res.get('primary', 'UNKNOWN')}."
+    )
+    full_prompt = f"{sys_ctx}\n\nQuestion: {prompt}"
+    return agents.run_agent("Xoah", full_prompt)
+
+
+@mcp.tool()
+def xoah_pressure(candidate: str, coordinate: str = "", register: bool = True) -> dict:
+    """Evaluate candidate story addition or canon lock against Shadow Xoah canon pressure."""
+    return canon_pressure.pressure(candidate, coordinate=coordinate or None, register=register)
+
+
+@mcp.tool()
+def xoah_self(coordinate: str = "") -> dict:
+    """Query self-archive state at an autobiographical coordinate."""
+    return self_archive.state_at(coordinate or None)
+
+
+@mcp.tool()
+def xoah_throne(desired_effect: str = "", effect: str = "", target_coordinate: str = "", target_branch: str = "") -> dict:
+    """Run proposed intervention through Shadow Queen Throne governance gates."""
+    val = desired_effect or effect or ""
+    return throne_governance.evaluate(val, target_coordinate=target_coordinate or None, target_branch=target_branch or None)
+
+
+@mcp.tool()
+def unfinished_destinies(status: str = "", trigger: str = "", branch: str = "", limit: int = 20) -> dict:
+    """List unfinished or filtered prospective destinies."""
+    return destiny.unfinished_destinies(
+        status=status or None,
+        trigger=trigger or None,
+        branch=branch or None,
+        limit=limit
+    )
 
 
 def main():
