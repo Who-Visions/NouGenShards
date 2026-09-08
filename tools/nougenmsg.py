@@ -19,7 +19,7 @@ if hasattr(sys.stderr, "reconfigure"):
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from nougen_shards.nougenmsg import NouGenMsgBus, get_current_node
+from nougen_shards.nougenmsg import NouGenMsgBus, get_current_node, resolve_session
 
 def print_help():
     print("""
@@ -117,6 +117,14 @@ def house_style(text: str, node: str, agent: str) -> str:
         width = 30
     heavy, light = "━" * width, "─" * width
     stamp = time.strftime("%Y-%m-%d %H:%M %z")
+    # Session id in the header (GM, 2026-09-08 14:10 EDT): two sessions on
+    # one host both built --dry-run in the same hour, each banner just said
+    # "whoart". Host and lane identify a machine; the session identifies who
+    # is typing. Short form only; the full id rides in the payload.
+    sess = resolve_session()
+    who = f"{node.upper()} / {agent.upper()}"
+    if sess:
+        who += f" / sess {str(sess)[:8]}"
 
     status: list[str] = []
     free: list[str] = []
@@ -132,7 +140,7 @@ def house_style(text: str, node: str, agent: str) -> str:
         else:
             free.append(f"• {s}")
 
-    out = [f"{_BANNER_GLYPH} {node.upper()} / {agent.upper()}  ·  {stamp}", heavy,
+    out = [f"{_BANNER_GLYPH} {who}  ·  {stamp}", heavy,
            f"\U0001F4CC {head}"]
     if status or free:
         out.append(light)
@@ -224,7 +232,9 @@ def main():
         else:
             for m in msgs:
                 ts_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(m.get('timestamp', time.time())))
-                src = m.get('source') or m.get('sender') or 'unknown'
+                # sender is WHO spoke (a model lane sets it to "ollama:<model>");
+                # source is only the host that wrote the file.
+                src = m.get('sender') or m.get('source') or 'unknown'
                 dom = f" [{m.get('domain')}]" if m.get('domain') else ""
                 print(f"  • [{ts_str}] From: @{src}{dom}")
                 print(f"    └─ {m.get('text')}")
