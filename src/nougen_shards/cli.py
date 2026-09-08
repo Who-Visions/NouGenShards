@@ -1538,6 +1538,10 @@ def get_parser():
     p_msg.add_argument("--to", dest="target", default="all", help="Target node or agent")
     p_msg.add_argument("--peers", action="store_true", help="List reachable fleet peers")
     p_msg.add_argument("--json", action="store_true", help="JSON output")
+    p_msg.add_argument("--session-id", dest="session_id", default=None,
+                        help="This session's id, so provenance_state is 'asserted' not 'unknown'")
+    p_msg.add_argument("--lane", dest="lane", default=None,
+                        help="Fleet lane label (e.g. claude-app, claude-cli)")
 
     p_evidence = subparsers.add_parser("evidence", help="Epistemic assurance & evidence class validation")
     p_evidence.add_argument("evidence_action", choices=["classes", "require"], default="classes", nargs="?")
@@ -1988,7 +1992,10 @@ def cmd_msg(args):
         emit({"nodes": nodes}, plain=_plain_peers, args=args)
         return
 
-    res = bus.send(target, msg_text)
+    session_id = getattr(args, "session_id", None)
+    lane = getattr(args, "lane", None)
+    origin = {"session_id": session_id, "lane": lane} if (session_id or lane) else None
+    res = bus.send(target, msg_text, origin=origin)
     def _plain_send(p, style):
         yield f"Message dispatched to {target}: {p}"
     emit(res if isinstance(res, dict) else {"result": res}, plain=_plain_send, args=args)
