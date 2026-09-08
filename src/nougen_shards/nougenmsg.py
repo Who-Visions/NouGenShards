@@ -11,13 +11,92 @@ import shutil
 import subprocess
 import urllib.request
 import re
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
+# Hostname substrings that identify a machine as a member of the reference
+# fleet. Membership is asserted by MATCHING, never assumed by elimination.
+_FLEET_NODE_HOSTNAME_MARKERS = (
+    ("whoart", ("whoart", "proart")),
+    ("blade", ("blade",)),
+    ("phoebus", ("phoebus",)),
+)
+
+STANDALONE_NODE = "standalone"
+
+
+def _hostname_candidates() -> List[str]:
+    """Every name this machine answers to, lowercased. Cheap and side-effect free."""
+    names = [os.environ.get("COMPUTERNAME", ""), os.environ.get("HOSTNAME", "")]
+    try:
+        import socket
+        names.append(socket.gethostname())
+    except Exception:
+        pass
+    return [n.lower() for n in names if n]
+
+
 def get_current_node() -> str:
-    if os.name != "nt":
-        return "phoebus"
-    host = os.environ.get("COMPUTERNAME", "").lower()
-    return "whoart" if "proart" in host or "whoart" in host else "blade"
+    """Identify this machine, defaulting to ``standalone`` for everyone else.
+
+    NouGenShards is a PUBLIC repository. The previous implementation decided
+    identity by ELIMINATION -- every non-Windows machine was "phoebus", and
+    every Windows machine that was not "whoart" was "blade". That is fine on
+    a three-machine private fleet and wrong everywhere else: a stranger who
+    clones this repo on Ubuntu became "phoebus", and one on any other Windows
+    box became "blade". Their pings, envelopes and logs then carried a
+    reference-fleet identity that was never theirs, and the repo leaked the
+    assumption that those three machines are the whole world.
+
+    So membership is now asserted by MATCHING, not by elimination:
+
+    1. ``NOUGEN_FLEET_NODE`` wins outright. An operator naming their own node
+       is the only authority that needs no inference, and it is the escape
+       hatch for a fleet machine whose hostname does not contain its label.
+    2. Otherwise the hostname must actually match a known fleet marker.
+    3. Otherwise: ``standalone``. Not a guess at which of someone else's
+       machines this might be.
+
+    The failure mode is deliberately inverted. Previously an unknown machine
+    silently impersonated a fleet node; now a fleet node whose hostname was
+    renamed degrades to ``standalone``, which is visible, harmless, and fixed
+    by setting one environment variable.
+    """
+    explicit = os.environ.get("NOUGEN_FLEET_NODE", "").strip().lower()
+    if explicit:
+        return explicit
+
+    # Local, uncommitted marker file. This exists because a fleet machine's
+    # hostname is not reliably its label -- the reference fleet's own macOS
+    # node answers to a name containing no fleet marker at all. Hardcoding
+    # such hostnames would put private machine names into a public repo, which
+    # is the same leak this function is being fixed to stop. A one-line file
+    # the operator drops on their own box says it without shipping it.
+    try:
+        marker = Path(os.path.expanduser("~")) / ".nougen" / "fleet_node"
+        if marker.is_file():
+            named = marker.read_text(encoding="utf-8").strip().lower()
+            if named:
+                return named
+    except Exception:
+        pass
+
+    hosts = _hostname_candidates()
+    for node, markers in _FLEET_NODE_HOSTNAME_MARKERS:
+        if any(m in h for h in hosts for m in markers):
+            return node
+    return STANDALONE_NODE
+
+
+def is_fleet_node() -> bool:
+    """True when this machine resolved to a known fleet node rather than standalone.
+
+    Callers that address fleet hardware (SSH hops, node-specific transports)
+    should gate on this instead of assuming ``get_current_node()`` named a real
+    peer -- otherwise a standalone clone tries to reach machines it has no
+    business contacting.
+    """
+    return get_current_node() != STANDALONE_NODE
 
 class AgentPinger:
     """Delivers live pings directly into agent context, named pipes, and session inboxes."""
