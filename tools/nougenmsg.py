@@ -115,6 +115,11 @@ def house_style(text: str, node: str, agent: str) -> str:
         width = int(os.environ.get("NOUGEN_MSG_RULE_WIDTH", "30"))
     except ValueError:
         width = 30
+    # Dynamic terminal auto-scaling & textwrap hanging indents
+    import shutil
+    import textwrap
+    cols = shutil.get_terminal_size(fallback=(80, 24)).columns
+    width = max(30, min(cols - 2, 72)) if not os.environ.get("NOUGEN_MSG_RULE_WIDTH") else width
     heavy, light = "━" * width, "─" * width
     stamp = time.strftime("%Y-%m-%d %H:%M %z")
     # Session id in the header (GM, 2026-09-08 14:10 EDT): two sessions on
@@ -136,9 +141,13 @@ def house_style(text: str, node: str, agent: str) -> str:
         key, sep, rest = s.partition(":")
         k = key.strip().lower()
         if sep and rest.strip() and k in table:
-            status.append(f"{table[k]} {key.strip()}: {rest.strip()}")
+            prefix = f"{table[k]} {key.strip()}: "
+            sub_indent = " " * max(len(prefix) - 1, 4)
+            wrapped = textwrap.fill(rest.strip(), width=width, initial_indent=prefix, subsequent_indent=sub_indent)
+            status.append(wrapped)
         else:
-            free.append(f"• {s}")
+            wrapped = textwrap.fill(s, width=width, initial_indent="• ", subsequent_indent="  ")
+            free.append(wrapped)
 
     out = [f"{_BANNER_GLYPH} {who}  ·  {stamp}", heavy,
            f"\U0001F4CC {head}"]
