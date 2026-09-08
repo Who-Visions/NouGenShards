@@ -1077,6 +1077,18 @@ def _total_shards() -> int:
     return _substrate_coverage()["shards"]
 
 
+def _vault_journal_mode() -> str:
+    """Journal mode this process would open vault DBs with."""
+    try:
+        from nougen_shards.core import get_vault_journal_mode
+        return get_vault_journal_mode()
+    except Exception:                       # pragma: no cover - health must not 500
+        # Pre-#253 code has no such function. That absence is itself the
+        # answer: the node cannot configure journal mode at all, so it is on
+        # WAL unconditionally.
+        return "unavailable (pre-#253)"
+
+
 def _redaction_count() -> int:
     """Pattern count of the redaction module THIS process imported."""
     try:
@@ -1152,6 +1164,14 @@ async def health(x_ngs_token: str = Header(None)):
         # off the public view.
         "redaction_patterns": _redaction_count(),
         "redaction_fingerprint": _redaction_fingerprint(),
+        # Which SQLite journal mode this node's vault ACTUALLY uses. #253 made
+        # this configurable because forcing WAL on object-storage mounts causes
+        # corruption and spurious quarantines -- but configurable is not the
+        # same as configured, and the default is still WAL. Publishing it is
+        # what makes "is this node on a safe mode for its mount?" a measurement
+        # rather than an inference; #255 was narrowed to a network-backed
+        # volume, and the last question nobody could answer was this one.
+        "vault_journal_mode": _vault_journal_mode(),
         "api_docs_public": _serve_docs and _network_exposed,
         "public_ready": auth_configured and hud_auth_ok,
         "warnings": warnings,
