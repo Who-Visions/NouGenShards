@@ -183,6 +183,104 @@ def house_style(text: str, node: str, agent: str) -> str:
     return "\n".join(out)
 
 
+# --- Direct HTTP mesh route -------------------------------------------------
+# Phoebus benchmarked the node's own :8766 HTTP listener at ~5ms per send
+# against ~500ms for the multiplexed ssh exec (relay leg 20260908T194206Z),
+# so the HTTP route is the FIRST choice for a remote node and ssh is the
+# fallback. Every knob resolves env -> keymaker -> logged fallback constant.
+HTTP_ROUTE_FALLBACK_PORT = 8766          # fallback only; NOUGEN_MSG_PORT wins
+# Transport alone is ~70ms on the LAN, but an authenticated node runs its
+# Kaedra gate before it answers (measured on phoebus 2026-09-08: 1.1s to 10s,
+# one 15s miss), so the fallback must cover the gate, not just the wire.
+HTTP_ROUTE_FALLBACK_TIMEOUT_S = 15.0     # fallback only; NOUGEN_MSG_HTTP_TIMEOUT_S wins
+ROUTE_CHOICES = ("auto", "http", "ssh")
+
+
+def _route_port() -> tuple:
+    for key in ("NOUGEN_MSG_PORT", "NOUGEN_AGY_MSG_PORT"):
+        raw = os.environ.get(key, "").strip()
+        if raw.isdigit():
+            return int(raw), key
+    return HTTP_ROUTE_FALLBACK_PORT, "fallback"
+
+
+def _route_node_ip(node: str) -> tuple:
+    key = "NOUGEN_NODE_{}_IP".format(node.upper().replace("-", "_"))
+    return os.environ.get(key, "").strip() or None, key
+
+
+def _route_token() -> str:
+    token = os.environ.get("NOUGEN_AGY_MSG_TOKEN", "").strip()
+    if token:
+        return token
+    try:
+        from nougen_shards import keymaker  # Keymaker first, never a paste
+        return (keymaker.get_secret("NOUGEN_AGY_MSG_TOKEN") or "").strip()
+    except Exception:
+        return ""
+
+
+def send_direct_http(node: str, target: str, text: str, origin: dict) -> tuple:
+    """POST the message to <node>:<port>/msg. Returns (result_dict, None) on
+    delivery or (None, reason) so the caller can fall back to ssh."""
+    import urllib.error
+    import urllib.request
+
+    ip, ip_key = _route_node_ip(node)
+    if not ip:
+        return None, "{} unset".format(ip_key)
+    port, port_source = _route_port()
+    raw_timeout = os.environ.get("NOUGEN_MSG_HTTP_TIMEOUT_S", "").strip()
+    timeout = float(raw_timeout) if raw_timeout else HTTP_ROUTE_FALLBACK_TIMEOUT_S
+    build_envelope = getattr(NouGenMsgBus, "_origin_envelope", None)
+    try:
+        envelope = build_envelope(origin) if build_envelope else dict(origin or {})
+    except Exception as exc:  # never let envelope shaping block delivery
+        return None, "origin envelope failed: {}".format(exc)
+    payload = {
+        "text": text,
+        "target": target,
+        "sender": (origin or {}).get("original_sender") or get_current_node(),
+        "origin": "peer",
+        "origin_envelope": envelope,
+        "timestamp": time.time(),
+        "type": "live_message",
+    }
+    headers = {"Content-Type": "application/json"}
+    token = _route_token()
+    if token:
+        headers["X-NGS-Token"] = token
+    req = urllib.request.Request("http://{}:{}/msg".format(ip, port),
+                                 data=json.dumps(payload).encode("utf-8"),
+                                 headers=headers, method="POST")
+    started = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        return None, "HTTP {} from {}:{} (port source {})".format(exc.code, ip, port, port_source)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return None, "{}:{} unreachable: {}".format(ip, port, exc)
+    ms = (time.perf_counter() - started) * 1000.0
+    body["route"] = "http"
+    body["ms"] = round(ms, 1)
+    body["port_source"] = port_source
+    return body, None
+
+
+def dispatch_node(node: str, target: str, text: str, origin: dict, route: str = "auto") -> tuple:
+    """Route a remote send: http first, ssh fallback (auto), or one route only.
+    Returns (results_dict, route_used)."""
+    if route in ("auto", "http"):
+        body, reason = send_direct_http(node, target, text, origin)
+        if body is not None:
+            return {node: body}, "http"
+        if route == "http":
+            return {node: "Error: http route failed: {}".format(reason)}, "http"
+        print("[i] http route unavailable ({}); falling back to ssh".format(reason), file=sys.stderr)
+    return NouGenMsgBus.emit_node(node=node, target=target, text=text, origin=origin), "ssh"
+
+
 def print_inline_banner(title: str, results: Any, message_text: str = "") -> None:
     border = "=" * 68
     print(f"\n{border}")
@@ -305,6 +403,21 @@ def main():
             flag in args for flag in ("--target-node", "--target-agent", "--text")):
         args = args[1:]
 
+    # --route auto|http|ssh picks the remote transport; auto = http first,
+    # ssh fallback. NOUGEN_MSG_ROUTE sets the default without a flag.
+    route = os.environ.get("NOUGEN_MSG_ROUTE", "auto").strip().lower() or "auto"
+    if "--route" in args:
+        idx = args.index("--route")
+        if idx + 1 >= len(args):
+            print("[!] Error: --route requires one of {}.".format("|".join(ROUTE_CHOICES)))
+            return
+        route = args[idx + 1].strip().lower()
+        args = [value for pos, value in enumerate(args)
+                if pos not in (idx, idx + 1)]
+    if route not in ROUTE_CHOICES:
+        print("[!] Error: --route must be one of {} (got {!r}).".format("|".join(ROUTE_CHOICES), route))
+        return
+
     for flag, field in (("--target-node", "node"), ("--target-agent", "agent")):
         if flag in args:
             idx = args.index(flag)
@@ -419,8 +532,8 @@ def main():
         res = NouGenMsgBus.live_ping(target=target_agent, text=text, origin=origin)
         print_inline_banner(f"LOCAL LIVE-PING: {curr.upper()} -> {target_agent.upper()}", res, text)
     else:
-        res = NouGenMsgBus.emit_node(node=node, target=target_agent, text=text, origin=origin)
-        print_inline_banner(f"NODE DISPATCH: {curr.upper()} -> {node.upper()} ({target_agent.upper()})", res, text)
+        res, used = dispatch_node(node=node, target=target_agent, text=text, origin=origin, route=route)
+        print_inline_banner(f"NODE DISPATCH [{used}]: {curr.upper()} -> {node.upper()} ({target_agent.upper()})", res, text)
 
 if __name__ == "__main__":
     main()
