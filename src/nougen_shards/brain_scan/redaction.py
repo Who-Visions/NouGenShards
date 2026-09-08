@@ -1,3 +1,4 @@
+import hashlib
 import re
 
 SECRET_PATTERNS = [
@@ -107,3 +108,23 @@ def redact_content(content: str) -> str:
     for pattern, replacement in SECRET_PATTERNS:
         redacted = pattern.sub(replacement, redacted)
     return redacted
+
+
+def pattern_fingerprint() -> str:
+    """A comparable identity for THIS pattern set, safe to publish anywhere.
+
+    Why a fingerprint and not a path: on 2026-09-08 a redaction fix merged to
+    main three times and ran on no live process in the fleet. Fifteen copies of
+    this file existed across two nodes; one had the fix. Finding that out took
+    per-OS archaeology (``lsof``, ``ps eww``) that does not even run on half
+    the fleet.
+
+    A node that publishes this in its health payload lets any other node answer
+    "is the fix live there?" with one HTTP call, on any platform. The path is
+    deliberately NOT published: it is deployment topology, and the public
+    health view must not carry it. A count plus a fingerprint is enough to
+    compare two nodes, which is the same reason fleet doctrine compares
+    credential fingerprints rather than values.
+    """
+    joined = "\n".join(pattern.pattern for pattern, _ in SECRET_PATTERNS)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
