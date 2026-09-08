@@ -357,6 +357,7 @@ def main():
 
     # Check for @destination token
     raw_text = False
+    dry_run = False
     cleaned_args = []
     for a in args:
         if a.startswith("@") and not node:
@@ -367,6 +368,8 @@ def main():
             node = "local"
         elif a == "--raw":
             raw_text = True
+        elif a == "--dry-run":
+            dry_run = True
         else:
             cleaned_args.append(a)
 
@@ -392,6 +395,22 @@ def main():
     curr = get_current_node()
     if not raw_text:
         text = house_style(text, curr, resolve_agent_label())
+
+    if dry_run:
+        dry_res = {
+            "dry_run": True,
+            "status": "simulated",
+            "node": node or "fleet",
+            "target": target_agent,
+            "text": text,
+        }
+        print_inline_banner(
+            f"DRY RUN: {curr.upper()} -> {(node or 'fleet').upper()} ({target_agent.upper()})",
+            dry_res,
+            text,
+        )
+        return
+
     if not node or node == "fleet":
         res = NouGenMsgBus.emit_fleet(text=text, target=target_agent, origin=origin)
         print_inline_banner(f"FLEET BROADCAST: {curr.upper()} -> {target_agent.upper()}", res, text)
