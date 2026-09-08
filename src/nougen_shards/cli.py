@@ -95,6 +95,56 @@ if sys.platform == "win32":
     except (AttributeError, ValueError):
         pass
 
+def cmd_pr(args):
+    from . import pr_lease
+    store = pr_lease.LeaseStore()
+    if args.pr_action == "attach":
+        lease, started = store.attach_objective(args.repo, args.objective, branch_hint=args.branch)
+        payload = {
+            "started_new_chain": started, "branch": lease.branch,
+            "objective_count": lease.chain_len, "chain_status": lease.chain_status,
+            "chained_objectives": lease.chained_objectives,
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            verb = "Started new chain" if started else "Attached to open chain"
+            print(f"{verb}: {lease.branch}  [{lease.chain_status}]  ({lease.chain_len} objective(s))")
+            for o in lease.chained_objectives:
+                print(f"  - {o}")
+        return
+    if args.pr_action == "status":
+        leases = store.all_leases(repo=args.repo)
+        payload = [{"branch": l.branch, "pr_number": l.pr_number, "chain_status": l.chain_status,
+                     "objective_count": l.chain_len, "objectives": l.chained_objectives,
+                     "updated_utc": l.updated_utc} for l in leases]
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            if not payload:
+                print(f"No leases for {args.repo}")
+            for row in payload:
+                print(f"{row['branch']:<40} PR#{row['pr_number'] or '-':<6} {row['chain_status']:<12} {row['objective_count']} objective(s)")
+        return
+    if args.pr_action == "confetti":
+        try:
+            groups = pr_lease.detect_confetti(args.repo, min_group=args.min_group)
+        except RuntimeError as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(1)
+        if args.json:
+            print(json.dumps(groups, indent=2))
+        else:
+            if not groups:
+                print("No confetti clusters detected.")
+            for g in groups:
+                print(f"⚠ {g['author']}: {g['total_count']} open PRs look related ({g['small_count']} atomic-sized)")
+                for pr in g["prs"]:
+                    print(f"    #{pr['number']} {pr['title']}  [{pr['branch']}]")
+                print(f"    -> {g['reason']}")
+        return
+
+
 def cmd_brain(args):
     """Universal AI Memory Forensic Engine."""
     if args.action == "scan":
@@ -686,6 +736,76 @@ def cmd_search(args):
         # loop requires knowing that "Source:" is what --db wants.
         print(f"  ↳ helpful? nougen mark {res['id']} --worked --db {res['_db_index']}")
         print("-" * 40)
+
+
+def cmd_get(args):
+    """Retrieve a specific shard by content hash (sha:...) or locator (<id>@db<N>)."""
+    target = getattr(args, 'target', '').strip()
+    if not target:
+        print("[!] No target specified. Usage: nougen get <sha:hash|hash|id@dbN|id>", file=sys.stderr)
+        sys.exit(1)
+
+    shard = None
+    # 1. Content hash lookup: 'sha:...' or hex string (>= 8 chars)
+    is_hash = target.lower().startswith("sha:") or (
+        len(target) >= 8 and all(c in "0123456789abcdefABCDEF" for c in target)
+    )
+
+    if is_hash:
+        shard = shards.get_shard_by_hash(target)
+    # 2. Locator with db index: e.g. 12159@db6
+    elif "@db" in target.lower():
+        parts = target.lower().split("@db")
+        try:
+            shard_id = int(parts[0])
+            db_index = int(parts[1])
+            shard = shards.get_shard_by_id(shard_id, db_index)
+        except ValueError:
+            print(f"[!] Invalid locator format '{target}'. Expected <id>@db<N>", file=sys.stderr)
+            sys.exit(1)
+    # 3. Bare integer ID: probe across databases
+    elif target.isdigit():
+        shard_id = int(target)
+        dbs = shards.locate_shard(shard_id)
+        if not dbs:
+            shard = None
+        elif len(dbs) == 1:
+            shard = shards.get_shard_by_id(shard_id, dbs[0])
+        else:
+            print(f"[!] Collision: shard id {shard_id} exists in multiple databases: {['db' + str(d) for d in dbs]}.", file=sys.stderr)
+            print(f"    Please specify exact database: nougen get {shard_id}@db{dbs[0]}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # Fallback to hash probe
+        shard = shards.get_shard_by_hash(target)
+
+    if not shard:
+        if getattr(args, 'json', False):
+            print(json.dumps({"error": "NOT_FOUND", "target": target}))
+        else:
+            print(f"[!] NOT FOUND: '{target}' does not resolve to any shard in the active grid.")
+        sys.exit(1)
+
+    if getattr(args, 'json', False):
+        if 'embedding' in shard and shard['embedding'] is not None:
+            shard['embedding'] = _embedding_for_json(shard['embedding'])
+        print(json.dumps(shard, indent=2, default=str))
+        return
+
+    # Human-readable format
+    db_idx = shard.get('__db_index__') or '?'
+    title = shard.get('title') or '(untitled)'
+    fhash = shard.get('file_hash') or ''
+    created = shard.get('created_at') or ''
+    tags = shard.get('tags') or ''
+    sid = shard.get('id')
+
+    print(f"🪩 Shard [{sid}@db{db_idx}] · {title}")
+    print(f"   Address: sha:{fhash[:12]} ({fhash})")
+    print(f"   Created: {created} | Tags: {tags}")
+    print("─" * 70)
+    print(shard.get('content', ''))
+
 
 
 def _embedding_for_json(value):
@@ -1297,6 +1417,10 @@ def get_parser():
     p_search.add_argument("--domain", help="Explicit domain boundary key filter override")
     p_search.add_argument("--dual", action="store_true", help="Use dual-system memory recall (episodic + semantic rules)")
 
+    p_get = subparsers.add_parser("get", help="Get a specific shard by content hash (sha:...) or locator (<id>@db<N>)")
+    p_get.add_argument("target", help="Shard content hash (sha:<12+ hex> or <hash>), locator (<id>@db<N>), or ID")
+    p_get.add_argument("--json", action="store_true", help="Machine-readable output")
+
     p_assure = subparsers.add_parser("assure", help="Label a claim through Iris evidence assurance")
     p_assure.add_argument("claim")
     p_assure.add_argument("--evidence", action="append", default=[],
@@ -1417,6 +1541,21 @@ def get_parser():
 
     p_dashboard = subparsers.add_parser("dashboard", help="Launch visual Cortex HUD")
     p_dashboard.add_argument("--port", type=int, default=4444, help="Port to run on")
+
+    p_pr = subparsers.add_parser("pr", help="PR lease governor + confetti detector (Shang Tsung / pr-agent absorption, Phase 1)")
+    pr_sub = p_pr.add_subparsers(dest="pr_action", required=True)
+    p_pr_attach = pr_sub.add_parser("attach", help="Fold an objective into the repo's open PR chain (3-5 objectives/PR), or start a new one")
+    p_pr_attach.add_argument("--repo", required=True, help="owner/name")
+    p_pr_attach.add_argument("--objective", required=True, help="One-line objective being bundled")
+    p_pr_attach.add_argument("--branch", help="Branch name hint if a new chain is started")
+    p_pr_attach.add_argument("--json", action="store_true")
+    p_pr_status = pr_sub.add_parser("status", help="Show open leases/chains for a repo")
+    p_pr_status.add_argument("--repo", required=True)
+    p_pr_status.add_argument("--json", action="store_true")
+    p_pr_confetti = pr_sub.add_parser("confetti", help="Detect clusters of small open PRs that should be consolidated")
+    p_pr_confetti.add_argument("--repo", required=True)
+    p_pr_confetti.add_argument("--min-group", type=int, default=3)
+    p_pr_confetti.add_argument("--json", action="store_true")
 
     p_brain = subparsers.add_parser("brain", help="Universal AI Memory Forensic Engine")
     p_brain.add_argument("action", choices=["scan", "import"])
@@ -2123,7 +2262,7 @@ def main():
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
-        "tenant": cmd_tenant, "relay": cmd_relay,
+        "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr,
         "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence
     }
