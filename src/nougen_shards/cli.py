@@ -1973,7 +1973,7 @@ def cmd_msg(args):
         print("[ERROR] nougenmsg module not available.", file=sys.stderr)
         sys.exit(1)
 
-    bus = nougenmsg.NouGenMsgBus()
+    bus = nougenmsg.NouGenMsgBus
     msg_text = getattr(args, "message", "")
     target = getattr(args, "target", "all")
 
@@ -1982,13 +1982,17 @@ def cmd_msg(args):
         return
 
     if getattr(args, "peers", False):
-        nodes = bus.probe_fleet_nodes()
+        peers = bus.list_peers()
         def _plain_peers(p, style):
-            yield f"Reachable fleet nodes: {p.get('nodes', [])}"
-        emit({"nodes": nodes}, plain=_plain_peers, args=args)
+            yield f"Reachable fleet nodes: {p}"
+        emit(peers if isinstance(peers, dict) else {"peers": peers}, plain=_plain_peers, args=args)
         return
 
-    res = bus.send(target, msg_text)
+    node, agent_target = bus.parse_destination(target)
+    if node == "fleet":
+        res = bus.emit_fleet(msg_text, target=agent_target)
+    else:
+        res = bus.emit_node(node, agent_target, msg_text)
     def _plain_send(p, style):
         yield f"Message dispatched to {target}: {p}"
     emit(res if isinstance(res, dict) else {"result": res}, plain=_plain_send, args=args)
