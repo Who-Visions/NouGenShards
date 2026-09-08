@@ -139,7 +139,9 @@ def house_style(text: str, node: str, agent: str, session_id: str = "") -> str:
         if ord(s[0]) > 0x7F:
             status.append(s)
             continue
-        key, sep, rest = s.partition(":")
+        # Strip leading list bullets, hashes, or dashes from keys
+        s_clean = s.lstrip('-*#• ').strip()
+        key, sep, rest = s_clean.partition(":")
         k = key.strip().lower()
         if sep and rest.strip() and k in table:
             prefix = f"{table[k]} {key.strip()}: "
