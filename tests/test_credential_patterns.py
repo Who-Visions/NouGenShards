@@ -10,6 +10,8 @@ Every value here is synthetic padding. Never add a real credential.
 
 import re
 
+import pytest
+
 from nougen_shards import credential_patterns as cp
 
 
@@ -205,3 +207,49 @@ def test_embedded_tier_covers_real_world_wrappings():
     for required in ("json value", "url query param", "env assignment",
                      "bearer header", "yaml indented"):
         assert required in cp.EMBEDDED
+
+
+def test_self_test_refuses_on_a_stale_backing_set(monkeypatch):
+    """A stale pattern set must raise, not quietly under-report.
+
+    Reproduces the 2026-09-08 confusion exactly: a peer fetched this fixture
+    without the pattern module it delegates to, scored 20/28, and reported the
+    module broken. Both situations -- a real gap and a stale dependency --
+    produced identical output, so neither could be told from the number.
+    """
+    monkeypatch.setattr(cp, "redact", lambda s: s)
+    with pytest.raises(cp.StaleBackingSetError) as exc:
+        cp.self_test()
+    msg = str(exc.value)
+    assert "brain_scan.redaction" in msg
+    assert "Refusing" in msg
+
+
+def test_score_self_tests_only_its_own_detector(monkeypatch):
+    """Scoring a FOREIGN detector must still work, however badly it does.
+
+    Cross-scoring is the entire point; a self-test that blocked a poor foreign
+    score would defeat it.
+    """
+    r = cp.score(detector=lambda s: s)          # a detector that redacts nothing
+    assert r["tp"] == 0 and r["fn"] == r["cases"]
+
+
+def test_fixture_values_are_identifiable_as_synthetic_by_a_scanner(monkeypatch):
+    """Every shape must be recognisable as test data by an outside scanner.
+
+    A scanner reading the transcripts of the session that authored this
+    fixture WILL match these values and count them as findings. Measured
+    2026-09-08: of two sk-proj- strings on phoebus, one was this fixture's own.
+    The discriminator is fabricated padding -- a run of >=16 identical
+    characters, which no real key has -- so every shape that carries secret
+    material must carry padding too.
+    """
+    padding = re.compile(r"(.)\1{15,}")
+    # MARKERS are excluded BY DEFINITION: a marker carries no secret material,
+    # so there is nothing to pad. It is also harmless for a scanner to match
+    # one, because the marker is not itself a secret.
+    for name, sample in {**cp.SHAPES, **cp.EMBEDDED, **cp.LOW_CONFIDENCE}.items():
+        assert padding.search(sample), (
+            f"{name!r} has no padding run, so a scanner cannot tell it from a "
+            f"live key found in a transcript")

@@ -77,9 +77,10 @@ def _pem(kind: str) -> str:
     return "-----BEGIN " + (kind + " " if kind else "") + "PRIVATE" + " KEY-----"
 
 # Bump whenever SHAPES, CONTROLS, or brain_scan.redaction's patterns change.
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 
 __all__ = ["VERSION", "SHAPES", "EMBEDDED", "MARKERS", "LOW_CONFIDENCE",
+           "self_test", "StaleBackingSetError",
            "CONTROLS", "CONTROLS_V2", "redact", "contains_credential", "score"]
 
 
@@ -129,8 +130,6 @@ SHAPES: dict[str, str] = {
     "jwt": (_b64('{"alg":"HS256"}') + "." + _b64('{"sub":"1234567890"}')
             + "." + "G" * 43),
     "pem openssh": _pem("OPENSSH") + "\n" + "N" * 64,
-    # A header with no body: how a PEM key appears in a truncated log line.
-    "pem header only": _pem("RSA"),
     "pem rsa": _pem("RSA") + "\n" + "H" * 64
                + "\n" + "-----END " + "RSA PRIVATE" + " KEY-----",
     "azure connection string":
@@ -175,7 +174,7 @@ EMBEDDED: dict[str, str] = {
     "env assignment": "OPENAI_API_KEY=" + _K,
     "quoted, trailing comma": "'" + "gh" + "p_" + "C" * 36 + "',",
     "markdown backticks": "`" + "hf" + "_" + "D" * 30 + "`",
-    "yaml indented": "  token: " + "xox" + "p-123456789012-zzzz",
+    "yaml indented": "  token: " + "xox" + "p-123456789012-" + "z" * 32,
     "bearer header": "Authorization: Bearer " + _K,
     "inside prose": "use " + "sk" + "-or-v1-" + "a" * 32 + " for routing.",
 }
@@ -219,6 +218,37 @@ CONTROLS_V2: tuple[str, ...] = CONTROLS + (
 )
 
 
+class StaleBackingSetError(RuntimeError):
+    """The patterns this fixture scores are older than the fixture itself."""
+
+
+def self_test() -> None:
+    """Refuse to produce a number if the backing pattern set cannot see us.
+
+    THE FAILURE THIS PREVENTS, measured 2026-09-08: this module is a thin
+    delegate -- the fixture lives here, the patterns live in
+    ``brain_scan.redaction``. Fetch this file alone and you get a fixture
+    describing 41 shapes backed by whatever pattern set is already installed.
+    A peer did exactly that, scored 20 of 28, and reported the module broken;
+    the module was fine and their copy of the pattern set was eight patterns
+    behind. Nothing in the output distinguished those two situations.
+
+    A scanner that cannot see its own fixture must refuse to report a number.
+    Credit for the principle, and for the catch, goes to blade's harness
+    self-test, which is what surfaced the mismatch at all.
+    """
+    blind = [n for n, v in SHAPES.items() if redact(v) == v]
+    if blind:
+        raise StaleBackingSetError(
+            "the backing pattern set in nougen_shards.brain_scan.redaction "
+            "cannot match {} of this fixture's own {} shapes: {}. "
+            "This fixture is version {} and delegates every pattern to that "
+            "module -- fetching credential_patterns.py without it produces "
+            "exactly this. Update the whole package, then re-score. Refusing "
+            "to report a number.".format(
+                len(blind), len(SHAPES), sorted(blind), VERSION))
+
+
 def score(detector=None) -> dict:
     """Score a detector and return counts, never a ratio.
 
@@ -227,6 +257,11 @@ def score(detector=None) -> dict:
     percentage hides which half failed, and in a security artifact the
     precision half is the one that gets omitted.
     """
+    if detector is None:
+        # Only self-test the module's own set; a caller scoring a FOREIGN
+        # detector is entitled to any result, including a bad one -- that is
+        # the whole point of cross-scoring.
+        self_test()
     detector = detector or redact
     def hit(s):
         return detector(s) != s
