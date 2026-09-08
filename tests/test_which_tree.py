@@ -160,3 +160,18 @@ def test_proc_mode_does_not_crash_on_a_real_match(tmp_path):
     finally:
         marker_proc.kill()
         marker_proc.wait(timeout=5)
+
+
+def test_health_branch_does_not_bind_a_name_used_elsewhere():
+    """Guards the specific mistake rather than only its symptom.
+
+    A local named `count` in main() is always a bug here, because the process
+    path calls the module-level count(). Asserting on the source is crude, but
+    it fails loudly at the moment someone reintroduces the shadow rather than
+    only when a live process happens to match. Credit: phoebus, PR #296 --
+    same defect, independently found and fixed while this PR was already open;
+    folded in here rather than landing both.
+    """
+    source = TOOL.read_text(encoding="utf-8")
+    body = source.split("def main(")[1]
+    assert "\n        count = " not in body, "main() rebinds count(); use another name"
