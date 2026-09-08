@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import urllib.request
 import re
+import uuid
 from typing import Dict, Any, List, Optional, Tuple
 
 _SESSION_VARS = ("NOUGEN_SESSION", "CLAUDE_CODE_SESSION_ID")
@@ -336,6 +337,10 @@ class AgentPinger:
         _msg_session = resolve_session()
         _msg_host = resolve_origin_host()
         payload = {
+            # One id per emit: the same payload lands in every inbox dir and is
+            # re-dropped by the pipe server, so without an id a reader cannot
+            # tell four copies from four messages (2026-09-08: 1 send, 4 rows).
+            "message_id": uuid.uuid4().hex,
             "source": f"nougen-{get_current_node()}",
             "sender": (origin or {}).get("original_sender") or f"nougen-{get_current_node()}",
             "origin": origin,
@@ -405,6 +410,10 @@ class AgentPinger:
         _msg_session = resolve_session()
         _msg_host = resolve_origin_host()
         payload = {
+            # One id per emit: the same payload lands in every inbox dir and is
+            # re-dropped by the pipe server, so without an id a reader cannot
+            # tell four copies from four messages (2026-09-08: 1 send, 4 rows).
+            "message_id": uuid.uuid4().hex,
             "source": f"nougen-{get_current_node()}",
             "sender": (origin or {}).get("original_sender") or f"nougen-{get_current_node()}",
             "origin": origin,
@@ -850,12 +859,28 @@ class NouGenMsgBus:
             if os.path.exists(d):
                 all_files.extend(glob.glob(os.path.join(d, "*.json")))
 
-        files = sorted(all_files, key=os.path.getmtime, reverse=True)[:limit]
+        # Read a wider window than `limit`, then collapse copies: the same emit
+        # lands in every inbox dir and again via the pipe server. Identity is
+        # message_id when the emitter stamped one, else source|text|timestamp
+        # for rows written before ids existed. Window width is env-tunable.
+        try:
+            window = max(limit, limit * int(os.environ.get("NOUGEN_MSG_INBOX_DEDUP_FACTOR", "4")))
+        except ValueError:
+            window = limit * 4
+        files = sorted(all_files, key=os.path.getmtime, reverse=True)[:window]
         messages = []
+        seen = set()
         for f in files:
+            if len(messages) >= limit:
+                break
             try:
                 with open(f, "r", encoding="utf-8") as fp:
                     data = json.load(fp)
+                    identity = data.get("message_id") or "|".join(
+                        str(data.get(k, "")) for k in ("source", "text", "content", "timestamp"))
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
                     data["_file"] = os.path.basename(f)
                     data["_mtime"] = os.path.getmtime(f)
                     # Normalize text / content field

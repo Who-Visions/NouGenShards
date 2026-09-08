@@ -42,6 +42,107 @@ Inspection & Discovery:
   agy msg --help                              Show this help menu
 """)
 
+# Fleet house style: every message opens with a [NODE / AGENT] banner and each
+# "Key: text" line carries a status glyph. Hand-typing this per send is what
+# produced flat prose on the wire (GM, 2026-09-08). Keys resolve env -> default
+# so a lane can extend the vocabulary without touching code: set
+# NOUGEN_MSG_EMOJI_MAP to a JSON object of {"key": "glyph"}. Pass --raw to send
+# text exactly as typed.
+_DEFAULT_EMOJI = {
+    "incident": "\U0001F534", "alert": "\U0001F534", "outage": "\U0001F534",
+    "root cause": "\U0001F3AF", "cause": "\U0001F3AF", "finding": "\U0001F3AF",
+    "fix": "\U0001F527", "patch": "\U0001F527", "now": "\U0001F527", "change": "\U0001F527",
+    "restart": "♻️", "deploy": "♻️",
+    "proof": "✅", "verified": "✅", "done": "✅", "ok": "✅", "alive": "✅",
+    "relay": "\U0001F4E1", "leg": "\U0001F4E1", "handoff": "\U0001F4E1",
+    "open": "⚠️", "warn": "⚠️", "risk": "⚠️", "still open": "⚠️",
+    "blocked": "⛔", "blocker": "⛔",
+    "ask": "\U0001F64B", "need": "\U0001F64B", "needs": "\U0001F64B",
+    "lesson": "\U0001F4D8", "status": "\U0001F4CA", "next": "➡️",
+    "ping": "\U0001F3D3", "pong": "\U0001F3D3", "ack": "\U0001F3D3",
+    "lane": "\U0001F6E4️", "claim": "\U0001F6E4️",
+}
+_BANNER_GLYPH = "\U0001F6F0️"
+
+
+def _emoji_map() -> dict:
+    table = dict(_DEFAULT_EMOJI)
+    raw = os.environ.get("NOUGEN_MSG_EMOJI_MAP", "").strip()
+    if raw:
+        try:
+            table.update({str(k).lower(): str(v) for k, v in json.loads(raw).items()})
+        except (ValueError, AttributeError):
+            print("[!] NOUGEN_MSG_EMOJI_MAP is not a JSON object; using the default glyph table",
+                  file=sys.stderr)
+    return table
+
+
+def resolve_agent_label() -> str:
+    """Which agent is speaking: NOUGEN_AGENT, else the lane, else a logged fallback."""
+    label = os.environ.get("NOUGEN_AGENT") or os.environ.get("NOUGEN_LANE")
+    if label:
+        return label
+    print("[i] NOUGEN_AGENT unset; banner labels this sender 'claude-cli' (fallback)",
+          file=sys.stderr)
+    return "claude-cli"
+
+
+def house_style(text: str, node: str, agent: str) -> str:
+    """Decorate a plain message into the fleet banner format.
+
+    Lines already carrying a glyph (first char outside ASCII) or a [TAG] are
+    left untouched, so a hand-formatted message round-trips unchanged and
+    re-sending a received message does not double-decorate it.
+    """
+    table = _emoji_map()
+    lines = [ln for ln in (text.splitlines() or [text]) if ln.strip()]
+    # A bare one-liner with no "Key:" prefix is a nudge, not a report. It goes
+    # out exactly as typed so quick pings and the existing CLI contract stay
+    # byte-identical; decoration is for structured multi-line traffic.
+    if len(lines) == 1:
+        key, sep, rest = lines[0].strip().partition(":")
+        if not (sep and rest.strip() and key.strip().lower() in table):
+            return text
+    # Already decorated (first line carries a glyph or [TAG]): pass through so a
+    # forwarded or re-sent banner is never wrapped in a second banner.
+    head = lines[0].strip()
+    if ord(head[0]) > 0x7F or head.startswith("["):
+        return "\n".join(ln.strip() for ln in lines)
+
+    # Layout: HEADER (who, when) / SUBJECT (first line) / BODY (status lines,
+    # then free text). Rule width is env-tunable for narrow terminals.
+    try:
+        width = int(os.environ.get("NOUGEN_MSG_RULE_WIDTH", "30"))
+    except ValueError:
+        width = 30
+    heavy, light = "━" * width, "─" * width
+    stamp = time.strftime("%Y-%m-%d %H:%M %z")
+
+    status: list[str] = []
+    free: list[str] = []
+    for line in lines[1:]:
+        s = line.strip()
+        if ord(s[0]) > 0x7F:
+            status.append(s)
+            continue
+        key, sep, rest = s.partition(":")
+        k = key.strip().lower()
+        if sep and rest.strip() and k in table:
+            status.append(f"{table[k]} {key.strip()}: {rest.strip()}")
+        else:
+            free.append(f"• {s}")
+
+    out = [f"{_BANNER_GLYPH} {node.upper()} / {agent.upper()}  ·  {stamp}", heavy,
+           f"\U0001F4CC {head}"]
+    if status or free:
+        out.append(light)
+    out.extend(status)
+    if status and free:
+        out.append(light)
+    out.extend(free)
+    return "\n".join(out)
+
+
 def print_inline_banner(title: str, results: Any, message_text: str = "") -> None:
     border = "=" * 68
     print(f"\n{border}")
@@ -233,6 +334,7 @@ def main():
     origin.setdefault("lane", os.environ.get("NOUGEN_LANE"))
 
     # Check for @destination token
+    raw_text = False
     cleaned_args = []
     for a in args:
         if a.startswith("@") and not node:
@@ -241,6 +343,8 @@ def main():
             target_agent = ag
         elif a == "--local":
             node = "local"
+        elif a == "--raw":
+            raw_text = True
         else:
             cleaned_args.append(a)
 
@@ -263,8 +367,9 @@ def main():
         print_help()
         return
 
-
     curr = get_current_node()
+    if not raw_text:
+        text = house_style(text, curr, resolve_agent_label())
     if not node or node == "fleet":
         res = NouGenMsgBus.emit_fleet(text=text, target=target_agent, origin=origin)
         print_inline_banner(f"FLEET BROADCAST: {curr.upper()} -> {target_agent.upper()}", res, text)

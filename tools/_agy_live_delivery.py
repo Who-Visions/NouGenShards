@@ -198,10 +198,28 @@ def _send_live(sock_path: str, token: str, content: str) -> bool:
         s.close()
 
 
+def _local_source_label() -> str:
+    """The `source` this host's own emits carry (see NouGenMsgBus payload)."""
+    try:
+        from nougen_shards.nougenmsg import get_current_node  # noqa: WPS433
+        return "nougen-{}".format(get_current_node())
+    except Exception:  # noqa: BLE001
+        return "nougen-{}".format(socket.gethostname().split(".")[0].lower())
+
+
 def deliver_to_live_sessions(text: str, source: str) -> dict:
-    """Best-effort write into every registered live session. Never raises."""
+    """Best-effort write into every registered live session. Never raises.
+
+    Echo policy: by default a host's own emits ARE relayed back into its
+    sessions, because the GM watches the fleet from a session on this host
+    and wants outbound banners to appear inline. Set NOUGEN_MSG_ECHO_SELF=0
+    to apply the fleet echo guard (never loop a ping back to its own node).
+    """
     content = "NouGenMsg from {}: {}".format(source, text)
     results = {}
+    echo_self = os.environ.get("NOUGEN_MSG_ECHO_SELF", "1").strip().lower() not in ("0", "false", "no")
+    if not echo_self and source == _local_source_label():
+        return {"skipped": "echo_guard", "source": source}
     for session_id, entry in _read_registry().items():
         sock_path = entry.get("socket", "")
         token = entry.get("token", "")
