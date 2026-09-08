@@ -143,6 +143,17 @@ def cmd_pr(args):
                     print(f"    #{pr['number']} {pr['title']}  [{pr['branch']}]")
                 print(f"    -> {g['reason']}")
         return
+    if args.pr_action == "context":
+        from . import pr_context
+        ctx = pr_context.gather_context(args.path, relay_objective=args.objective)
+        if args.json:
+            print(json.dumps({
+                "repo_root": ctx.repo_root, "rule_files": list(ctx.rule_files.keys()),
+                "skill_files": ctx.skill_files, "relay_objective": ctx.relay_objective,
+            }, indent=2))
+        else:
+            print(ctx.as_prompt_block())
+        return
 
 
 def cmd_brain(args):
@@ -1556,6 +1567,10 @@ def get_parser():
     p_pr_confetti.add_argument("--repo", required=True)
     p_pr_confetti.add_argument("--min-group", type=int, default=3)
     p_pr_confetti.add_argument("--json", action="store_true")
+    p_pr_context = pr_sub.add_parser("context", help="Gather CLAUDE.md/AGENTS.md/GEMINI.md + skills as review context")
+    p_pr_context.add_argument("--path", default=".", help="Repo checkout root")
+    p_pr_context.add_argument("--objective", help="Active relay objective to include")
+    p_pr_context.add_argument("--json", action="store_true")
 
     p_brain = subparsers.add_parser("brain", help="Universal AI Memory Forensic Engine")
     p_brain.add_argument("action", choices=["scan", "import"])
