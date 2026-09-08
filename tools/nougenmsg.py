@@ -19,7 +19,39 @@ if hasattr(sys.stderr, "reconfigure"):
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from nougen_shards.nougenmsg import NouGenMsgBus, get_current_node, resolve_session
+def _import_bus():
+    """Import the bus WITHOUT running nougen_shards/__init__ when possible.
+
+    Measured 2026-09-08 on blade: the pipe write is 10 ms, but importing the
+    package costs ~2.2 s (federation -> sqlalchemy) on every send, so a "live"
+    ping felt like seconds. nougenmsg.py has no top-level package imports and
+    only lazy relative ones (model lanes), so a stub package with __path__ set
+    lets those still resolve. NOUGEN_MSG_FAST_IMPORT=0 restores the plain
+    import; any failure falls back to it too.
+    """
+    fast = os.environ.get("NOUGEN_MSG_FAST_IMPORT", "1").strip().lower() not in ("0", "false", "no")
+    if fast and "nougen_shards" not in sys.modules:
+        import importlib
+        import types
+        pkg_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src", "nougen_shards"))
+        if os.path.isfile(os.path.join(pkg_dir, "nougenmsg.py")):
+            stub = types.ModuleType("nougen_shards")
+            stub.__path__ = [pkg_dir]
+            stub.__package__ = "nougen_shards"
+            sys.modules["nougen_shards"] = stub
+            try:
+                return importlib.import_module("nougen_shards.nougenmsg")
+            except Exception:  # pylint: disable=broad-except
+                sys.modules.pop("nougen_shards", None)
+                sys.modules.pop("nougen_shards.nougenmsg", None)
+    import nougen_shards.nougenmsg as _mod  # pylint: disable=import-outside-toplevel
+    return _mod
+
+
+_bus_mod = _import_bus()
+NouGenMsgBus = _bus_mod.NouGenMsgBus
+get_current_node = _bus_mod.get_current_node
+resolve_session = _bus_mod.resolve_session
 
 def print_help():
     print("""
