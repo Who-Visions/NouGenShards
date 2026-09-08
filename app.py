@@ -1519,8 +1519,10 @@ def sync_push(req: SyncPushRequest,
         # ALREADY-DURABLE one. snapshot_mode.forward_capture read that counter
         # and reported captured:false over writes that had landed. A skip is
         # not a failure unless we say which kind it is.
-        entry = {"reason": (ok or {}).get("reason") if isinstance(ok, dict) else None,
-                 "durable": bool(ok) or bool((ok or {}).get("durable"))
+        # `ok or {}` threw away reason/durable on every falsy CaptureResult,
+        # which is exactly the case a caller needs them for.
+        entry = {"reason": ok.get("reason") if isinstance(ok, dict) else None,
+                 "durable": bool(ok) or bool(ok.get("durable"))
                  if isinstance(ok, dict) else bool(ok)}
         if isinstance(ok, dict):
             # A fresh write reports shard_id/db_index; a dedup hit reports
@@ -1535,6 +1537,20 @@ def sync_push(req: SyncPushRequest,
                 if ok.get(src) is not None and entry.get(dst) is None:
                     entry[dst] = ok[src]
                     entry["id_is_preexisting"] = True
+        if isinstance(ok, dict) and ok.get("reason") == "error":
+            # A write FAULT (locked grid DB, every DB quarantined, exhausted
+            # targets) is not a malformed row. Tallying it under
+            # skipped_malformed made forward_capture tell every lane its
+            # payload arrived without title/content, while blade's log said
+            # "database is locked" (2026-09-08, three lanes lost captures).
+            err_msg = ok.get("error") or "capture failed"
+            entry["error"] = err_msg
+            results.append(entry)
+            errored += 1
+            errors.append({"title": (s.get("title") or "")[:80], "error": err_msg})
+            logger.error("sync_push: shard %r not written: %s",
+                         (s.get("title") or "")[:80], err_msg)
+            continue
         results.append(entry)
         if ok:
             count += 1
