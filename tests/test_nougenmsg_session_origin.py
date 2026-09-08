@@ -54,10 +54,14 @@ def test_a_ping_payload_carries_session_when_the_harness_has_one(monkeypatch, tm
     monkeypatch.setenv("NOUGEN_SESSION", "sess-77")
     monkeypatch.setattr(m, "get_current_node", lambda: "blade")
     codex_inbox = tmp_path / "codex_inbox"
+    monkeypatch.setenv("NOUGEN_CODEX_INBOX", str(codex_inbox))
     monkeypatch.setattr(m.os.path, "expanduser",
                          lambda p: str(codex_inbox) if p.endswith(".codex/inbox".replace("/", m.os.sep))
                          or "codex" in p else p)
     m.os.makedirs(codex_inbox, exist_ok=True)
+    # Ensure it always hits the fallback inbox write in testing
+    from nougen_shards import codex_pipe
+    monkeypatch.setattr(codex_pipe, "deliver", lambda *a, **k: (_ for _ in ()).throw(OSError("mock fallback")))
 
     m.AgentPinger.ping_codex("hello", origin=None)
     files = list(codex_inbox.glob("ping_*.json"))
@@ -71,10 +75,13 @@ def test_a_ping_payload_carries_session_when_the_harness_has_one(monkeypatch, tm
 def test_a_ping_payload_omits_session_when_the_harness_has_none(clean_session_env, monkeypatch, tmp_path):
     monkeypatch.setattr(m, "get_current_node", lambda: "blade")
     codex_inbox = tmp_path / "codex_inbox2"
+    monkeypatch.setenv("NOUGEN_CODEX_INBOX", str(codex_inbox))
     monkeypatch.setattr(m.os.path, "expanduser",
                          lambda p: str(codex_inbox) if p.endswith(".codex/inbox".replace("/", m.os.sep))
                          or "codex" in p else p)
     m.os.makedirs(codex_inbox, exist_ok=True)
+    from nougen_shards import codex_pipe
+    monkeypatch.setattr(codex_pipe, "deliver", lambda *a, **k: (_ for _ in ()).throw(OSError("mock fallback")))
 
     m.AgentPinger.ping_codex("hello", origin=None)
     files = list(codex_inbox.glob("ping_*.json"))
