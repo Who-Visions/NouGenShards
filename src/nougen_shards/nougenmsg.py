@@ -58,11 +58,37 @@ def resolve_origin_host() -> str:
         return ""
 
 
+_KNOWN_FLEET_HOSTS = {
+    "phoebus": ("phoebus", "kushboygroups-mac-mini"),
+    "whoart": ("proart", "whoart"),
+    "blade": ("blade1tb", "blade"),
+}
+
+
 def get_current_node() -> str:
-    if os.name != "nt":
-        return "phoebus"
-    host = os.environ.get("COMPUTERNAME", "").lower()
-    return "whoart" if "proart" in host or "whoart" in host else "blade"
+    """Which of Dave's three fleet boxes this is, or "standalone" for
+    everyone else.
+
+    NouGenShards is a public repo. The old version of this function assumed
+    every non-Windows box was phoebus and every Windows box was blade —
+    meaning a stranger cloning this on Ubuntu got branded "phoebus" in their
+    own logs, and a Windows contributor got branded "blade". An explicit
+    `NOUGEN_FLEET_NODE` override always wins (for a fleet box whose hostname
+    doesn't match the patterns below); otherwise this only ever returns one
+    of the three names when the actual hostname matches a known fleet
+    pattern, and "standalone" for everything else.
+    """
+    override = os.environ.get("NOUGEN_FLEET_NODE", "").strip().lower()
+    if override in _KNOWN_FLEET_HOSTS:
+        return override
+
+    host = resolve_origin_host()
+    if not host and os.name == "nt":
+        host = os.environ.get("COMPUTERNAME", "").lower()
+    for node, patterns in _KNOWN_FLEET_HOSTS.items():
+        if any(p in host for p in patterns):
+            return node
+    return "standalone"
 
 class AgentPinger:
     """Delivers live pings directly into agent context, named pipes, and session inboxes."""
@@ -749,7 +775,10 @@ class NouGenMsgBus:
         """Dispatches message across all nodes in the fleet."""
         curr = get_current_node()
         results = {curr: cls.live_ping(target=target, text=text, origin=origin)}
-        nodes = ["blade", "phoebus"] if curr == "whoart" else (["whoart", "phoebus"] if curr == "blade" else ["whoart", "blade"])
+        fleet_nodes = {"blade", "whoart", "phoebus"}
+        # A standalone/external clone has no private fleet to broadcast into;
+        # only fan out to the other two boxes when this IS one of them.
+        nodes = sorted(fleet_nodes - {curr}) if curr in fleet_nodes else []
         for n in nodes:
             try:
                 res = cls.emit_node(n, target, text, origin=origin)
