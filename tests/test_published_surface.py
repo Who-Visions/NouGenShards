@@ -93,6 +93,11 @@ ALLOWED = {
         "the TypeScript half of the same pattern table",
     "tests/test_brain_scan.py":
         "fixtures that must look like real keys to exercise redaction",
+    "src/nougen_shards/credential_patterns.py":
+        "the shared credential-shape fixture: every value is assembled at "
+        "import from repeated padding, so nothing here can be a live key — "
+        "test_credential_patterns.py::test_every_shape_is_structurally_"
+        "synthetic proves that mechanically rather than on trust",
     "ts/src/test/brain_scan.test.ts":
         "same fixtures, TypeScript side",
     "tests/test_audit_fixes.py":

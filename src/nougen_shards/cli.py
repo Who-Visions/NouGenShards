@@ -544,6 +544,75 @@ def cmd_add(args):
         print("ℹ️ Shard already exists.")
 
 
+def cmd_get(args):
+    """Resolve a shard by CONTENT HASH — a lookup, not a ranked query.
+
+    Why this exists: `<id>@db<n>` is a node-local address that silently
+    resolves to unrelated content on another node, and "cite by phrase" is a
+    RANKED QUERY. Tested 2026-09-08, a phrase citation returned the very shard
+    it was meant to supersede, ranked above it, with no signal to the reader.
+
+    `shards.file_hash` is md5 of the cleaned content -- no node id, no
+    timestamp, no path -- so it is identical on every node that holds the same
+    bytes, is UNIQUE per DB, and is already indexed. It was built for dedup
+    routing and is a content address nobody was pointing at citations.
+    Confirmed independently on two nodes with different corpora before this
+    shipped.
+
+    Accepts a prefix. Ambiguity is reported, never silently resolved to the
+    first match -- a citation that quietly picks one of several is worse than
+    one that fails.
+    """
+    from . import core
+
+    wanted = str(args.hash).strip().lower()
+    if len(wanted) < 6:
+        print("Error: give at least 6 hex characters of the content hash.")
+        sys.exit(1)
+
+    hits = []
+    for index in range(1, core.MAX_DB_COUNT + 1):
+        path = core.get_db_path(index)
+        if not path.exists():
+            continue
+        try:
+            conn = core.sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+            try:
+                rows = conn.execute(
+                    "SELECT id, file_hash, timestamp, title, content, tags "
+                    "FROM shards WHERE file_hash LIKE ? || '%'", (wanted,)
+                ).fetchall()
+            finally:
+                conn.close()
+        except Exception:                       # a single unreadable DB must
+            continue                            # not hide hits in the others
+        for row in rows:
+            hits.append((index,) + tuple(row))
+
+    if not hits:
+        print(f"No shard with content hash {wanted}* on this node.")
+        print("A hash is content-derived: absence here means these BYTES are "
+              "not on this node, not that the shard does not exist.")
+        sys.exit(1)
+
+    if len(hits) > 1:
+        print(f"AMBIGUOUS: {len(hits)} shards match {wanted}* — quote more characters.")
+        for index, sid, fhash, ts, title, _content, _tags in hits:
+            print(f"  {fhash[:16]}  {sid}@db{index}  {ts}  {title[:50]}")
+        sys.exit(1)
+
+    index, sid, fhash, ts, title, content, tags = hits[0]
+    print(f"hash    {fhash}")
+    print(f"located {sid}@db{index}   (a node-local locator, NOT the address)")
+    print(f"when    {ts}")
+    print(f"tags    {tags or '-'}")
+    print(f"title   {title}")
+    print("-" * 72)
+    print(content if getattr(args, "full", False) else content[:2000])
+    if not getattr(args, "full", False) and len(content) > 2000:
+        print(f"\n[... {len(content) - 2000} more characters — pass --full]")
+
+
 def cmd_search(args):
     """Search for shards across local substrate and external DBs."""
     domain_key = getattr(args, 'domain', None)
@@ -1210,6 +1279,11 @@ def get_parser():
     p_add.add_argument("--provider", help="Embedding provider")
     p_add.add_argument("--domain", help="Explicit domain boundary key override")
 
+    p_get = subparsers.add_parser(
+        "get", help="Resolve a shard by content hash (a lookup, not a search)")
+    p_get.add_argument("hash", help="content hash or a prefix of at least 6 hex chars")
+    p_get.add_argument("--full", action="store_true", help="print the whole body")
+
     p_search = subparsers.add_parser("search", help="Search substrate")
     p_search.add_argument("query")
     p_search.add_argument("--semantic", action="store_true", help="Use vector search")
@@ -1853,7 +1927,7 @@ def main():
     parser = get_parser()
     args = parser.parse_args()
     cmds = {
-        "init": cmd_init, "add": cmd_add, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
+        "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
