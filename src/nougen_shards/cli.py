@@ -1537,6 +1537,8 @@ def get_parser():
     p_msg.add_argument("message", nargs="?", default="", help="Message text to send")
     p_msg.add_argument("--to", dest="target", default="all", help="Target node or agent")
     p_msg.add_argument("--peers", action="store_true", help="List reachable fleet peers")
+    p_msg.add_argument("--dry-run", action="store_true",
+                        help="Resolve the target and print what would be sent, without sending it")
     p_msg.add_argument("--json", action="store_true", help="JSON output")
 
     p_evidence = subparsers.add_parser("evidence", help="Epistemic assurance & evidence class validation")
@@ -1989,6 +1991,21 @@ def cmd_msg(args):
         return
 
     node, agent_target = bus.parse_destination(target)
+
+    if getattr(args, "dry_run", False):
+        preview = {
+            "target": target,
+            "resolved_node": node,
+            "resolved_agent": agent_target,
+            "would_call": ("emit_fleet" if node == "fleet" else "emit_node"),
+            "message": msg_text,
+        }
+        def _plain_dry_run(p, style):
+            yield f"[dry-run] --to {p['target']!r} resolves to node={p['resolved_node']!r} agent={p['resolved_agent']!r}"
+            yield f"[dry-run] would call {p['would_call']}(...) — nothing sent"
+        emit(preview, plain=_plain_dry_run, args=args)
+        return
+
     if node == "fleet":
         res = bus.emit_fleet(msg_text, target=agent_target)
     else:
