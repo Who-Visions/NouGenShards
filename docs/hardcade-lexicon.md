@@ -230,3 +230,74 @@ streak is not the point, the closure is.
 owes a HADOUKEN — persist what was settled, propagate what was not. The
 unfinished targets are the obligation; dropping them because the lane ended is
 how work is lost between sessions.
+
+---
+
+## SHANG TSUNG — soul steal: take the peer's INSTRUMENT, not their conclusion
+
+*Canonised 2026-09-08 by GM. Shang Tsung takes the other fighter's form and
+then fights with it.*
+
+> **When a peer node produces a better instrument, take the instrument and turn
+> it on yourself first.** Their *conclusions* you verify; their *methods* you
+> absorb. A method that found a defect on their machine will find a different
+> one on yours, because it was not built around your blind spots.
+
+The move is not agreement and it is not deference. It is: *that measuring
+device is better than mine — I am now running it against my own work.*
+
+### Why it is a distinct move
+
+The fleet already had ways to check a peer's **claim**: CROSS-VERIFY, 720,
+PERFECT GUARD. It had no name for adopting a peer's **apparatus**. The
+difference matters because a shared conclusion between two nodes proves little
+if both reached it with the same flawed tool — and because the node that built
+an instrument is the one least able to see what it misses.
+
+### The night that named it — 2026-09-07/08, phoebus and blade
+
+Every entry below is a real exchange, and in every one the *stolen* instrument
+found a defect the originator's own instrument could not:
+
+| taken from | instrument | what it found in the taker's work |
+|---|---|---|
+| blade | 20-case external corpus | a bare PEM header defeating BOTH of phoebus's PEM rules |
+| blade | "a scanner that cannot see its own fixture must refuse to report a number" | became `StaleBackingSetError` (#279) — fired on blade's own stale path 8 min later |
+| blade | 18-shape suite + the marker-only class | 2 more zero-entropy misses within minutes; became fixture v2 |
+| blade | AST counting over `grep -c` | phoebus's census held at 9 — *the prediction failed*, which is also a result |
+| blade | import-and-ask for Windows | became `--health` (#281), with the boundary drawn in code |
+| phoebus | fixture v2 + `which_tree` | blade extended 16==19 across SIX versions: 7→16, 14→27, 16/17/19→28 identical, 29→40 |
+
+Three consecutive pattern-set versions bought **zero** coverage. Neither node
+could have established that alone: one supplied the fixture, the other supplied
+the versions.
+
+### The boundary — steal the tool, keep the scepticism
+
+Taking an instrument is not taking its result. When phoebus adopted
+import-and-ask it shipped with the limit stated **in the code**: it reports
+what *that* interpreter resolves, under *that* environment, and is only the
+service's answer when run under the service's own env. Absorbing a method
+without its failure mode is how you inherit someone else's blind spot on top of
+your own.
+
+Corollary, learned the hard way the same night: **do not generalise a peer's
+correction to your own node without measuring.** blade revised 6 copies → 25;
+phoebus assumed the same undercount, recounted, and got 9 again. Their
+correction was a property of their filesystem, not a law.
+
+### Done-when
+
+The peer's instrument runs against **your** artifact, its result is published
+as counts, and the limit you found in it is written down where the next caller
+will hit it. Credit the origin by leg id — the lane carries no session id, so
+"blade said" is not resolvable; the leg is.
+
+### Interaction
+
+- **720 / FINAL ATOMIC BUSTER** — a SHANG TSUNG is the natural first circle:
+  absorb and execute. The second circle is the peer running *your* instrument
+  back. Tonight's exchange closed both.
+- **PERFECT GUARD** — never steal a method to route around a refusal.
+- **HADOUKEN** — the stolen instrument is persisted (committed, tested), not
+  used once and dropped. Otherwise the next session re-derives it.
