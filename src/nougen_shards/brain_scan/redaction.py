@@ -47,7 +47,48 @@ SECRET_PATTERNS = [
     # this, "Access Key ID <32-hex>" and "fleet key outpost <44-char key>" both
     # passed through unredacted — the exact shapes that leaked into dream
     # digests on 2026-08-15 and 2026-08-19.
-    (re.compile(r'(?i)(?:api[_-]?key|secret|token|password|passwd|pwd|auth|credential|access[_-]?key|client[_-]?secret|private[_-]?key|bearer|session[_-]?token|\bpat\b|\bkey\b)[\s:=]+(?:[A-Za-z]{1,12}[\s:=]+){0,3}[\'"]?([A-Za-z0-9_\-+/=.~]{16,})[\'"]?'), "<REDACTED_SECRET>")
+    # Runs BEFORE the generic label rule below, deliberately. That rule matches
+    # a bare label anywhere, so on NGS_NODE_TOKEN=<value> it consumed "TOKEN"
+    # as well and emitted "NGS_NODE_<REDACTED_SECRET>" -- destroying half the
+    # key's NAME. Names are the part that is safe to keep and the part that
+    # makes a redacted line diagnosable, so the name-preserving rule wins.
+    # A credential label that is part of a longer identifier rather than a
+    # standalone word: NGS_NODE_TOKEN=, CLOUDFLARE_API_TOKEN=, SOME_SECRET_KEY=.
+    # The rule above requires the label to be followed by [\s:=], so an
+    # underscore-joined name like SOME_SECRET_KEY defeated it -- and those are
+    # exactly the names this fleet's own keys carry.
+    (re.compile(r'(?i)([A-Za-z0-9]*(?:SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIAL)[A-Za-z0-9_]*\s*[=:]\s*)[\'"]?[A-Za-z0-9_\-+/=.~]{8,}'), r"\1<REDACTED_SECRET>"),
+    (re.compile(r'(?i)(?:api[_-]?key|secret|token|password|passwd|pwd|auth|credential|access[_-]?key|client[_-]?secret|private[_-]?key|bearer|session[_-]?token|\bpat\b|\bkey\b)[\s:=]+(?:[A-Za-z]{1,12}[\s:=]+){0,3}[\'"]?([A-Za-z0-9_\-+/=.~]{16,})[\'"]?'), "<REDACTED_SECRET>"),
+
+    # --- added 2026-09-07 from the cross-node shape audit --------------
+    # Three nodes each ran a private pattern set and each missed roughly half
+    # of what the others tested for. This module was already the strongest of
+    # them (20 of 27 merged shapes, zero false positives) -- these seven close
+    # the rest rather than starting a fourth set. Fixture:
+    # tests/test_credential_patterns.py.
+    # A PEM header with NO body after it. The two block rules above both
+    # require key material to follow, so a lone header line survived -- and a
+    # truncated log line, a diff hunk, or a file listing is exactly where one
+    # appears. Found by blade's independent 20-case corpus (case 8), which is
+    # the first fixture scored here that phoebus did not write.
+    (re.compile(r'-----BEGIN[ A-Z0-9]*PRIVATE KEY-----'), "<REDACTED_PRIVATE_KEY>"),
+    # Marker-only, zero-entropy shapes. There is no random material in these,
+    # so every rule written to match "the secret" misses them structurally --
+    # blade predicted the class after the bare BEGIN header defeated both PEM
+    # rules, and fixture v2 immediately found two more here. A PEM END block
+    # means a key was in this text; an Azure connection-string prefix means
+    # an AccountKey was.
+    (re.compile(r'-----END[ A-Z0-9]*PRIVATE KEY-----'), "<REDACTED_PRIVATE_KEY>"),
+    (re.compile(r'DefaultEndpointsProtocol\s*=\s*[a-z]+;[^\s]*'), "<REDACTED_AZURE_CONNECTION>"),
+    (re.compile(r'sk_live_[A-Za-z0-9]{16,}'), "<REDACTED_STRIPE_KEY>"),
+    (re.compile(r'sk_test_[A-Za-z0-9]{16,}'), "<REDACTED_STRIPE_KEY>"),
+    (re.compile(r'glpat-[A-Za-z0-9_\-]{20}'), "<REDACTED_GITLAB_TOKEN>"),
+    (re.compile(r'npm_[A-Za-z0-9]{36}'), "<REDACTED_NPM_TOKEN>"),
+    # Cloudflare's scoped v1.0- tokens; cfat_ above covers only the older form.
+    (re.compile(r'v1\.0-[A-Za-z0-9]{20,}-[A-Za-z0-9_\-]{20,}'), "<REDACTED_CLOUDFLARE_TOKEN>"),
+    # Azure connection strings. Keeps the AccountKey= label so the line stays
+    # diagnosable, and destroys only the value.
+    (re.compile(r'(?i)(AccountKey\s*=\s*)[A-Za-z0-9+/=]{20,}'), r"\1<REDACTED_AZURE_KEY>"),
 ]
 
 
