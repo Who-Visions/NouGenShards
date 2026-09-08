@@ -63,3 +63,65 @@ def test_count_returns_minus_one_for_an_unreadable_file():
     finally:
         sys.path.pop(0)
     assert which_tree.count("/no/such/file/anywhere", "x") == -1
+
+
+def test_health_mode_requires_an_explicit_user_agent():
+    """The default Python-urllib UA is refused with 403 by the edge.
+
+    Measured 2026-09-08: urllib's default User-Agent got HTTP 403 from a node's
+    /health while curl got 200 from the same URL in the same second. A peer had
+    reported that 403 hours earlier and it could not be reproduced -- because
+    the reproduction attempt used curl. The endpoint was never down; it answers
+    some clients and not others, and a health check that only works from one
+    HTTP client is not a health check.
+    """
+    sys.path.insert(0, str(TOOL.parent))
+    try:
+        import which_tree
+    finally:
+        sys.path.pop(0)
+    captured = {}
+
+    class FakeResponse:
+        def read(self):
+            return b'{"redaction_patterns": 1, "redaction_fingerprint": "x"}'
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    import urllib.request
+    real = urllib.request.urlopen
+
+    def spy(req, timeout=None):
+        captured["ua"] = req.get_header("User-agent")
+        return FakeResponse()
+
+    urllib.request.urlopen = spy
+    try:
+        which_tree.ask_health("https://example.invalid")
+    finally:
+        urllib.request.urlopen = real
+
+    assert captured["ua"], "no User-Agent was set"
+    assert "urllib" not in captured["ua"].lower()
+
+
+def test_absent_health_fields_are_a_definite_answer(monkeypatch, capsys):
+    """A node publishing neither field is running pre-self-report code.
+
+    That is a conclusion, not a gap -- reporting it as "unknown" would discard
+    a definite answer and let an out-of-date node read as merely unmeasured.
+    """
+    sys.path.insert(0, str(TOOL.parent))
+    try:
+        import which_tree
+    finally:
+        sys.path.pop(0)
+
+    monkeypatch.setattr(which_tree, "ask_health", lambda url, timeout=30.0: {"status": "ignited"})
+    monkeypatch.setattr(sys, "argv",
+                        ["which_tree", "--module", "m", "--marker", "x",
+                         "--health", "https://example.invalid"])
+    assert which_tree.main() == 1
+    assert "ABSENT" in capsys.readouterr().out

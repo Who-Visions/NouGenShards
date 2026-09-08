@@ -25,10 +25,12 @@ differs from --expect, so it can gate a deploy rather than decorate a report.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
 import sys
+import urllib.request
 
 
 def _run(cmd: list[str]) -> str:
@@ -97,6 +99,37 @@ def count(path: str, marker: str) -> int:
         return -1
 
 
+def ask_health(url: str, timeout: float = 30.0) -> dict:
+    """Ask a node what redaction code it is RUNNING, over HTTP.
+
+    This is the portable answer, and on a mixed fleet it is the only one. The
+    process-inspection path below needs ``lsof`` and ``ps eww`` and so does not
+    run on Windows at all.
+
+    It is also the only method that survives the mistake this tool exists to
+    catch. Importing the module and asking it -- the obvious portable
+    alternative -- reports what THIS interpreter resolves, under THIS
+    environment. That is a different question from what the service resolves,
+    and answering the first while believing you answered the second is exactly
+    how a redaction fix sat on main, verified by three nodes, running on none
+    of them. Import-and-ask is correct only when run under the service's own
+    interpreter and environment; a node's own health report is correct
+    always, because the node computed it from the module it actually loaded.
+    """
+    # An explicit User-Agent is REQUIRED, not cosmetic. The default
+    # "Python-urllib/3.x" is refused with HTTP 403 by the edge in front of
+    # these nodes while curl gets 200 from the same URL in the same second
+    # (measured 2026-09-08). A peer reported that 403 hours earlier and I
+    # could not reproduce it -- because I reached for curl. The endpoint was
+    # never down for either of us; it answers some clients and not others.
+    req = urllib.request.Request(
+        url.rstrip("/") + "/health",
+        headers={"Accept": "application/json",
+                 "User-Agent": "nougen-which-tree/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -104,7 +137,41 @@ def main() -> int:
     ap.add_argument("--marker", required=True, help="regex counted in the file")
     ap.add_argument("--expect", type=int, help="required count; sets exit status")
     ap.add_argument("--proc", default="app.py", help="substring of the process command")
+    ap.add_argument("--health", metavar="URL",
+                    help="ask a node over HTTP instead of inspecting processes "
+                         "(portable; the only method that works on Windows)")
+    ap.add_argument("--fingerprint", metavar="HEX",
+                    help="with --health: the redaction_fingerprint to require")
     args = ap.parse_args()
+
+    if args.health:
+        try:
+            body = ask_health(args.health)
+        except Exception as exc:
+            print(f"{args.health}: health unreachable ({type(exc).__name__})",
+                  file=sys.stderr)
+            return 1
+        count = body.get("redaction_patterns")
+        fingerprint = body.get("redaction_fingerprint")
+        print(f"{args.health}")
+        if count is None and fingerprint is None:
+            # Absence is the diagnostic, not a gap in the check: a node that
+            # publishes neither field is running code from before the fields
+            # existed. Saying "unknown" here would hide a definite answer.
+            print("  redaction fields ABSENT -> this node predates the "
+                  "self-reporting change and is running older code")
+            return 1
+        print(f"  redaction_patterns    {count}")
+        print(f"  redaction_fingerprint {fingerprint}")
+        bad = False
+        if args.expect is not None and count != args.expect:
+            print(f"  EXPECTED {args.expect} patterns, node reports {count}")
+            bad = True
+        if args.fingerprint and fingerprint != args.fingerprint:
+            print(f"  EXPECTED fingerprint {args.fingerprint}")
+            bad = True
+        print("FAIL" if bad else "OK")
+        return 1 if bad else 0
 
     procs = pids(args.proc)
     if not procs:
