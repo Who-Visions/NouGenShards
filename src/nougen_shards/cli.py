@@ -25,6 +25,11 @@ from . import evolution
 from . import assurance
 from . import tenants
 from . import agents
+from . import tree_probe
+from . import arxiv_core
+from . import viz_core
+from . import tube
+from . import evidence
 
 from nougen_shards import __version__ as VERSION  # single source: pyproject
 
@@ -1502,6 +1507,42 @@ def get_parser():
                            default=False,
                            help="(sync) Also sync triggers.json — it is executable config, opt in knowingly")
 
+    # --- Expanded Fleet Tool Subparsers ---
+    p_tree = subparsers.add_parser("tree", help="Process provenance & import resolution inspection")
+    p_tree.add_argument("--proc", default="app.py", help="Substring of process command")
+    p_tree.add_argument("--module", default="nougen_shards.brain_scan.redaction", help="Dotted module path")
+    p_tree.add_argument("--marker", default=r"re\.compile", help="Regex marker in module")
+    p_tree.add_argument("--expect", type=int, default=29, help="Expected marker count")
+    p_tree.add_argument("--health", metavar="URL", help="Inspect node /health URL over HTTP")
+    p_tree.add_argument("--json", action="store_true", help="JSON output")
+
+    p_tube = subparsers.add_parser("tube", help="YouTube/Media transcript ingestion & dedupe")
+    p_tube.add_argument("tube_action", choices=["pull"], default="pull", nargs="?")
+    p_tube.add_argument("url", help="YouTube video or playlist URL")
+    p_tube.add_argument("--dry-run", action="store_true", help="Do not capture shards")
+
+    p_arxiv = subparsers.add_parser("arxiv", help="Autonomous arXiv research & shard capture")
+    p_arxiv.add_argument("arxiv_action", choices=["search", "ingest"], default="search")
+    p_arxiv.add_argument("query", help="Search query or arXiv ID")
+    p_arxiv.add_argument("--arxiv-id", dest="arxiv_id", default=None, help="Specific arXiv ID to ingest")
+    p_arxiv.add_argument("--limit", type=int, default=5, help="Max results")
+    p_arxiv.add_argument("--json", action="store_true", help="JSON output")
+
+    p_viz = subparsers.add_parser("viz", help="Session forensic & token cost visualizer")
+    p_viz.add_argument("viz_action", choices=["tokens", "session"], default="tokens", nargs="?")
+    p_viz.add_argument("--session-id", dest="session_id", default=None, help="Session ID")
+    p_viz.add_argument("--json", action="store_true", help="JSON output")
+
+    p_msg = subparsers.add_parser("msg", help="Live fleet IPC messaging & socket broadcast")
+    p_msg.add_argument("message", nargs="?", default="", help="Message text to send")
+    p_msg.add_argument("--to", dest="target", default="all", help="Target node or agent")
+    p_msg.add_argument("--peers", action="store_true", help="List reachable fleet peers")
+    p_msg.add_argument("--json", action="store_true", help="JSON output")
+
+    p_evidence = subparsers.add_parser("evidence", help="Epistemic assurance & evidence class validation")
+    p_evidence.add_argument("evidence_action", choices=["classes", "require"], default="classes", nargs="?")
+    p_evidence.add_argument("--tags", default="", help="Comma-separated tags to validate")
+
     return parser
 
 
@@ -1822,6 +1863,155 @@ def cmd_handoff_triggers(args, handoff):
                 print(f"    stderr: {run['stderr'].strip()[:200]}")
         return
 
+
+def cmd_tree(args):
+    """Process provenance & import inspection."""
+    if getattr(args, "health", None):
+        try:
+            info = tree_probe.inspect_node_health(args.health)
+            def _plain_health(p, style):
+                yield f"Health check for {args.health}:"
+                for k, v in p.items():
+                    yield f"  {k:<24} {v}"
+            emit(info, plain=_plain_health, args=args)
+        except Exception as e:
+            print(f"[ERROR] Health check failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    res = tree_probe.probe_local_tree(
+        module=getattr(args, "module", "nougen_shards.brain_scan.redaction"),
+        marker=getattr(args, "marker", r"re\.compile"),
+        expect=getattr(args, "expect", 29),
+        proc_pattern=getattr(args, "proc", "app.py")
+    )
+    def _plain_tree(p, style):
+        yield f"\n🌲 Tree Provenance Probe: {p['status'].upper()}"
+        for proc in p.get("processes", []):
+            yield f"  PID {proc['pid']}: {proc['command'][:60]}"
+            yield f"    cwd:        {proc['cwd']}"
+            yield f"    PYTHONPATH: {proc['pythonpath']}"
+            yield f"    resolved:   {proc['resolved_file']}"
+            yield f"    marker:     {proc['marker_count']} (expected: {proc['is_expected']})"
+    emit(res, plain=_plain_tree, args=args)
+    if res["status"] != "ok":
+        sys.exit(1)
+
+
+def cmd_tube(args):
+    """NouGenTube media transcript ingester."""
+    action = getattr(args, "tube_action", "pull")
+    if action == "pull":
+        url = args.url
+        print(f"📺 NouGenTube pulling: {url}")
+        try:
+            prev_argv = sys.argv
+            sys.argv = ["tube", url]
+            if getattr(args, "dry_run", False):
+                sys.argv.append("--dry-run")
+            try:
+                tube.main()
+            finally:
+                sys.argv = prev_argv
+        except SystemExit:
+            pass
+        except Exception as e:
+            print(f"[ERROR] Tube ingest failed: {e}", file=sys.stderr)
+            sys.exit(1)
+
+
+def cmd_arxiv(args):
+    """ArXiv paper intelligence & shard capture."""
+    action = getattr(args, "arxiv_action", "search")
+    if action == "search":
+        papers = arxiv_core.search_arxiv(args.query, max_results=args.limit)
+        def _plain_search(p, style):
+            yield f"\n📄 arXiv search for '{args.query}' ({len(p.get('papers', []))} hits):\n"
+            for i, item in enumerate(p.get("papers", []), 1):
+                yield f"{i}. [{item['arxiv_id']}] {item['title']}"
+                yield f"   Authors: {', '.join(item['authors'][:3])}"
+                yield f"   URL:     {item['url']}\n"
+        emit({"query": args.query, "papers": papers}, plain=_plain_search, args=args)
+    elif action == "ingest":
+        papers = arxiv_core.search_arxiv(args.arxiv_id, max_results=1)
+        if not papers:
+            print(f"Paper {args.arxiv_id} not found.", file=sys.stderr)
+            sys.exit(1)
+        res = arxiv_core.ingest_paper_to_shard(papers[0])
+        def _plain_ingest(p, style):
+            yield f"Captured shard #{p['shard_id']} (db{p['db']}) sha:{p['file_hash'][:12]}"
+        emit(res, plain=_plain_ingest, args=args)
+
+
+def cmd_viz(args):
+    """Brain session forensic & token telemetry visualizer."""
+    action = getattr(args, "viz_action", "tokens")
+    if action in {"tokens", "session"}:
+        sid = getattr(args, "session_id", None)
+        report = viz_core.audit_session(sid)
+        def _plain_viz(p, style):
+            if p.get("status") == "error":
+                yield f"[ERROR] {p.get('message')}"
+                return
+            yield f"\n🧠 Brain Forensic Telemetry — Session {p['session_id'][:12]}..."
+            yield f"  Total Steps:      {p['total_steps']}"
+            yield f"  Tool Invocations: {p['tool_calls']}"
+            yield f"  User Inputs:      {p['user_inputs']}"
+            yield f"  Input Tokens:     ~{p['tokens']['input']:,}"
+            yield f"  Output Tokens:    ~{p['tokens']['output']:,}"
+            yield f"  Total Tokens:     ~{p['tokens']['total']:,}"
+            yield f"  Est Cost (Flash): ${p['cost_estimate']['gemini_3_flash_usd']:.4f}"
+            yield f"  Est Cost (Pro):   ${p['cost_estimate']['gemini_3_1_pro_usd']:.4f}\n"
+        emit(report, plain=_plain_viz, args=args)
+
+
+def cmd_msg(args):
+    """Fleet live IPC messaging bus."""
+    try:
+        from nougen_shards import nougenmsg
+    except ImportError:
+        print("[ERROR] nougenmsg module not available.", file=sys.stderr)
+        sys.exit(1)
+
+    bus = nougenmsg.NouGenMsgBus()
+    msg_text = getattr(args, "message", "")
+    target = getattr(args, "target", "all")
+
+    if not msg_text and not getattr(args, "peers", False):
+        print("Usage: nougen msg '<message>' [--to <target>]")
+        return
+
+    if getattr(args, "peers", False):
+        nodes = bus.probe_fleet_nodes()
+        def _plain_peers(p, style):
+            yield f"Reachable fleet nodes: {p.get('nodes', [])}"
+        emit({"nodes": nodes}, plain=_plain_peers, args=args)
+        return
+
+    res = bus.send(target, msg_text)
+    def _plain_send(p, style):
+        yield f"Message dispatched to {target}: {p}"
+    emit(res if isinstance(res, dict) else {"result": res}, plain=_plain_send, args=args)
+
+
+def cmd_evidence(args):
+    """Epistemic assurance & evidence classification validation."""
+    action = getattr(args, "evidence_action", "classes")
+    if action == "classes":
+        print("\n⚖️ NouGen Evidence Classes (Strongest to Weakest):\n")
+        for cls, desc in evidence.CLASSES.items():
+            print(f"  • {evidence.PREFIX}{cls:<10} — {desc}")
+        print()
+    elif action == "require":
+        tags = getattr(args, "tags", "").split(",")
+        try:
+            validated = evidence.require(*[t.strip() for t in tags if t.strip()])
+            print(f"Validated evidence tags: {validated}")
+        except ValueError as e:
+            print(f"[REJECTED] {e}", file=sys.stderr)
+            sys.exit(1)
+
+
 RELAY_DIR_ENV_VARS = ("NOUGEN_RELAY_DIR", "FLEET_RELAY_DIR")
 EX_CONFIG = 78
 
@@ -1933,7 +2123,9 @@ def main():
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
-        "tenant": cmd_tenant, "relay": cmd_relay
+        "tenant": cmd_tenant, "relay": cmd_relay,
+        "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
+        "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence
     }
     if args.command in cmds:
         cmds[args.command](args)
