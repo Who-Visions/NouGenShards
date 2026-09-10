@@ -1537,6 +1537,8 @@ def get_parser():
     p_msg.add_argument("message", nargs="?", default="", help="Message text to send")
     p_msg.add_argument("--to", dest="target", default="all", help="Target node or agent")
     p_msg.add_argument("--peers", action="store_true", help="List reachable fleet peers")
+    p_msg.add_argument("--dry-run", action="store_true",
+                        help="Resolve the target and print what would be sent, without sending it")
     p_msg.add_argument("--json", action="store_true", help="JSON output")
 
     p_evidence = subparsers.add_parser("evidence", help="Epistemic assurance & evidence class validation")
@@ -1973,7 +1975,7 @@ def cmd_msg(args):
         print("[ERROR] nougenmsg module not available.", file=sys.stderr)
         sys.exit(1)
 
-    bus = nougenmsg.NouGenMsgBus()
+    bus = nougenmsg.NouGenMsgBus
     msg_text = getattr(args, "message", "")
     target = getattr(args, "target", "all")
 
@@ -1982,13 +1984,32 @@ def cmd_msg(args):
         return
 
     if getattr(args, "peers", False):
-        nodes = bus.probe_fleet_nodes()
+        peers = bus.list_peers()
         def _plain_peers(p, style):
-            yield f"Reachable fleet nodes: {p.get('nodes', [])}"
-        emit({"nodes": nodes}, plain=_plain_peers, args=args)
+            yield f"Reachable fleet nodes: {p}"
+        emit(peers if isinstance(peers, dict) else {"peers": peers}, plain=_plain_peers, args=args)
         return
 
-    res = bus.send(target, msg_text)
+    node, agent_target = bus.parse_destination(target)
+
+    if getattr(args, "dry_run", False):
+        preview = {
+            "target": target,
+            "resolved_node": node,
+            "resolved_agent": agent_target,
+            "would_call": ("emit_fleet" if node == "fleet" else "emit_node"),
+            "message": msg_text,
+        }
+        def _plain_dry_run(p, style):
+            yield f"[dry-run] --to {p['target']!r} resolves to node={p['resolved_node']!r} agent={p['resolved_agent']!r}"
+            yield f"[dry-run] would call {p['would_call']}(...) — nothing sent"
+        emit(preview, plain=_plain_dry_run, args=args)
+        return
+
+    if node == "fleet":
+        res = bus.emit_fleet(msg_text, target=agent_target)
+    else:
+        res = bus.emit_node(node, agent_target, msg_text)
     def _plain_send(p, style):
         yield f"Message dispatched to {target}: {p}"
     emit(res if isinstance(res, dict) else {"result": res}, plain=_plain_send, args=args)
