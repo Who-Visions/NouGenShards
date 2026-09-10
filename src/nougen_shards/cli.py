@@ -143,6 +143,20 @@ def cmd_pr(args):
                     print(f"    #{pr['number']} {pr['title']}  [{pr['branch']}]")
                 print(f"    -> {g['reason']}")
         return
+    if args.pr_action == "review":
+        from . import pr_review
+        res = pr_review.run_review(
+            repo=args.repo,
+            pr_number=args.pr_number,
+            objective=args.objective,
+            incremental=not args.full,
+            dry_run=args.dry_run,
+        )
+        if args.json:
+            print(json.dumps(res, indent=2))
+        else:
+            print(f"Review {res.get('status')}: {res.get('comments_count', 0)} comments posted.")
+        return
     if args.pr_action == "context":
         from . import pr_context
         ctx = pr_context.gather_context(args.path, relay_objective=args.objective)
@@ -1425,9 +1439,10 @@ def get_parser():
     p_add.add_argument("--domain", help="Explicit domain boundary key override")
 
     p_get = subparsers.add_parser(
-        "get", help="Resolve a shard by content hash (a lookup, not a search)")
-    p_get.add_argument("hash", help="content hash or a prefix of at least 6 hex chars")
+        "get", help="Resolve a shard by content hash, locator (<id>@db<N>), or ID")
+    p_get.add_argument("target", help="Shard content hash (sha:<12+ hex> or <hash>), locator (<id>@db<N>), or ID")
     p_get.add_argument("--full", action="store_true", help="print the whole body")
+    p_get.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_search = subparsers.add_parser("search", help="Search substrate")
     p_search.add_argument("query")
@@ -1436,10 +1451,6 @@ def get_parser():
     p_search.add_argument("--json", action="store_true", help="Machine-readable output")
     p_search.add_argument("--domain", help="Explicit domain boundary key filter override")
     p_search.add_argument("--dual", action="store_true", help="Use dual-system memory recall (episodic + semantic rules)")
-
-    p_get = subparsers.add_parser("get", help="Get a specific shard by content hash (sha:...) or locator (<id>@db<N>)")
-    p_get.add_argument("target", help="Shard content hash (sha:<12+ hex> or <hash>), locator (<id>@db<N>), or ID")
-    p_get.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_assure = subparsers.add_parser("assure", help="Label a claim through Iris evidence assurance")
     p_assure.add_argument("claim")
@@ -1576,6 +1587,14 @@ def get_parser():
     p_pr_confetti.add_argument("--repo", required=True)
     p_pr_confetti.add_argument("--min-group", type=int, default=3)
     p_pr_confetti.add_argument("--json", action="store_true")
+    p_pr_review = pr_sub.add_parser("review", help="Incremental review with deduped comments")
+    p_pr_review.add_argument("--repo", required=True, help="GitHub repository (owner/repo)")
+    p_pr_review.add_argument("--pr", dest="pr_number", type=int, required=True, help="PR number to review")
+    p_pr_review.add_argument("--objective", required=True, help="Active relay objective")
+    p_pr_review.add_argument("--full", action="store_true", help="Run full review instead of incremental")
+    p_pr_review.add_argument("--dry-run", action="store_true", help="Preview comments without posting")
+    p_pr_review.add_argument("--json", action="store_true", help="JSON output")
+
     p_pr_context = pr_sub.add_parser("context", help="Gather CLAUDE.md/AGENTS.md/GEMINI.md + skills as review context")
     p_pr_context.add_argument("--path", default=".", help="Repo checkout root")
     p_pr_context.add_argument("--objective", help="Active relay objective to include")
