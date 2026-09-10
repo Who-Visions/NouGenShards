@@ -516,6 +516,32 @@ def list_agents() -> str:
     return agents.list_roster()
 
 
+@mcp.tool()
+def transcribe_media(source: str, language: str = "", whisper_model: str = "base", auto_shard: bool = True) -> str:
+    """
+    Transcribe and summarize video/audio from 30+ platforms (YouTube, X, TikTok, Apple Podcasts, etc.)
+    or local media files using local Whisper, and automatically shard results into the NouGen 9-DB cluster.
+
+    Args:
+        source: URL or local file path to audio/video file.
+        language: Language code (e.g. 'en', 'zh', 'es'). Default auto-detect.
+        whisper_model: Whisper model size ('tiny', 'base', 'small', 'medium', 'large').
+        auto_shard: If True, writes full markdown transcript directly into NouGen shards.
+    """
+    import json
+    from .transcriber import NouGenTranscriber
+    transcriber = NouGenTranscriber(whisper_model=whisper_model)
+    res = transcriber.process_and_shard(source=source, language=language or None, auto_shard=auto_shard)
+    return json.dumps({
+        "title": res.get("title"),
+        "source": res.get("source"),
+        "language": res.get("language"),
+        "sharded": res.get("sharded"),
+        "transcript_file": res.get("transcript_file"),
+        "text_preview": res.get("text", "")[:500] + ("..." if len(res.get("text", "")) > 500 else ""),
+    }, indent=2)
+
+
 def main():
 
     """Main entry point for the MCP server."""

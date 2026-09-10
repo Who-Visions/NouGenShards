@@ -1,0 +1,34 @@
+{
+  "name": "ai-video-transcriber",
+  "version": "0.1.0",
+  "description": "Transcribe, summarize, translate, and archive videos, podcasts, local media files, and text transcripts.",
+  "author": {
+    "name": "AI Video Transcriber contributors"
+  },
+  "license": "MIT",
+  "keywords": [
+    "video",
+    "transcription",
+    "summary",
+    "podcast",
+    "whisper"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "AI Video Transcriber",
+    "shortDescription": "Transcribe and summarize videos, podcasts, and media files.",
+    "longDescription": "Use this plugin to run AI Video Transcriber's headless pipeline from Codex. It extracts platform subtitles when available, falls back to local Whisper for media, and can produce transcripts, summaries, translations, and source media files.",
+    "developerName": "AI Video Transcriber contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Transcription",
+      "Summarization"
+    ],
+    "defaultPrompt": [
+      "Transcribe this video URL and summarize it in English.",
+      "转录这个视频，并生成中文摘要。",
+      "Get the raw transcript from this local media file."
+    ],
+    "brandColor": "#5B6CFF"
+  }
+}

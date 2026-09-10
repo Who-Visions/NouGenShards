@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Video Transcriber</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.2/marked.min.js"></script>
+  <style>
+    :root {
+      --bg:           #000000;
+      --surface:      #08090c;
+      --surface-2:    #0e1015;
+      --surface-3:    #15181f;
+      --border:       #1c2029;
+      --border-light: #2a303c;
+      --accent:       #22d3ee;
+      --accent-h:     #4ce0f7;
+      --accent-dim:   #0e7490;
+      --accent-text:  #67e8f9;
+      --accent-2:     #818cf8;
+      --glow:         34, 211, 238;
+      --purple:       #a78bfa;
+      --purple-h:     #c9bcff;
+      --purple-rgb:   167, 139, 250;
+      --link:         #3ddbff;
+      --link-h:       #7de9ff;
+      --text:         #e5e9f0;
+      --text-muted:   #8b94a6;
+      --text-dim:     #545d6e;
+      --success:      #34d399;
+      --error:        #f87171;
+      --r:            12px;
+      --r-sm:         8px;
+      --mono:         ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Ambient glow — sits behind everything, never intercepts clicks */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(920px 520px at 12% -12%, rgba(34,211,238,.10), transparent 62%),
+        radial-gradient(760px 460px at 88% -4%,  rgba(129,140,248,.09), transparent 62%);
+    }
+    .navbar, .main { position: relative; z-index: 1; }
+
+    ::selection { background: rgba(var(--glow), .28); color: #fff; }
+
+    /* ── Navbar ─────────────────────────────────────────── */
+    .navbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 28px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(0,0,0,.55);
+      backdrop-filter: blur(12px);
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      text-decoration: none;
+    }
+    .nav-logo-text {
+      font-size: 15px;
+      font-weight: 650;
+      color: #fff;
+      letter-spacing: -0.01em;
+    }
+    .nav-logo-text em { color: #fff; font-style: normal; }
+
+    .lang-btn {
+      background: var(--surface-2);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: color .2s, border-color .2s, box-shadow .2s;
+    }
+    .lang-btn:hover {
+      color: var(--accent-text);
+      border-color: var(--accent-dim);
+      box-shadow: 0 0 0 3px rgba(var(--glow), .07);
+    }
+
+    /* ── Main ────────────────────────────────────────────── */
+    .main {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 52px 24px 80px;
+    }
+
+    .page-title {
+      font-size: clamp(2rem, 5vw, 2.9rem);
+      font-weight: 740;
+      line-height: 1.15;
+      letter-spacing: -0.025em;
+      margin-bottom: 10px;
+      color: #fff;
+      text-align: center;
+    }
+    .page-sub {
+      font-size: 15px;
+      color: var(--text-muted);
+      margin: 0 auto 32px;
+      max-width: 640px;
+      text-align: center;
+    }
+
+    /* ── Error banner ────────────────────────────────────── */
+    .error-banner {
+      display: none;
+      background: rgba(248,113,113,.09);
+      border: 1px solid rgba(248,113,113,.28);
+      border-radius: var(--r-sm);
+      padding: 11px 14px;
+      font-size: 13px;
+      color: var(--error);
+      margin-bottom: 16px;
+      gap: 8px;
+      align-items: flex-start;
+    }
+    .error-banner.show { display: flex; }
+
+    /* ── URL row ─────────────────────────────────────────── */
+    .input-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .url-wrap { position: relative; flex: 1; }
+    .url-wrap .url-icon {
+      position: absolute;
+      left: 13px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-dim);
+      font-size: 13px;
+      pointer-events: none;
+      transition: color .2s;
+    }
+    .url-wrap:focus-within .url-icon { color: var(--accent); }
+    .url-input {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 15px;
+      padding: 13px 14px 13px 36px;
+      outline: none;
+      transition: border-color .2s, box-shadow .2s, background .2s;
+    }
+    .url-input::placeholder { color: var(--text-dim); }
+    .url-input:focus {
+      border-color: var(--accent-dim);
+      background: var(--surface-2);
+      box-shadow: 0 0 0 3px rgba(var(--glow), .13);
+    }
+
+    .btn-go {
+      background: linear-gradient(135deg, #7fe9f8 0%, #a9b3fc 100%);
+      color: #0a1420;
+      border: none;
+      border-radius: 10px;
+      padding: 13px 22px;
+      font-size: 15px;
+      font-weight: 670;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+      flex-shrink: 0;
+      box-shadow: 0 0 0 1px rgba(var(--glow), .3), 0 6px 22px -8px rgba(var(--glow), .55);
+      transition: filter .2s, transform .1s, opacity .2s, box-shadow .2s;
+    }
+    .btn-go:hover {
+      filter: brightness(1.1);
+      box-shadow: 0 0 0 1px rgba(var(--glow), .45), 0 8px 28px -8px rgba(var(--glow), .7);
+    }
+    .btn-go:active { transform: scale(.98); }
+    .btn-go:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+      transform: none;
+      filter: none;
+      box-shadow: none;
+    }
+
+    /* ── Upload zone ─────────────────────────────────────── */
+    .upload-section { margin-bottom: 18px; }
+    .upload-zone .upload-or {
+      font-size: 13px;
+      color: var(--text-dim);
+      margin: 0 0 8px;
+    }
+    .upload-zone {
+      border: 1px dashed var(--border-light);
+      border-radius: var(--r);
+      background: var(--surface-2);
+      padding: 22px 16px 20px;
+      text-align: center;
+      transition: border-color .2s, background .2s, box-shadow .2s;
+      cursor: pointer;
+    }
+    .upload-zone:hover,
+    .upload-zone:focus {
+      outline: none;
+      border-color: var(--accent-dim);
+      background: var(--surface-3);
+    }
+    .upload-zone.dragover {
+      border-color: var(--accent);
+      background: var(--surface-3);
+      box-shadow: 0 0 0 3px rgba(var(--glow), .15);
+    }
+    .upload-zone .upload-formats {
+      font-family: var(--mono);
+      font-size: 11.5px;
+      color: var(--text-muted);
+      margin-bottom: 14px;
+      line-height: 1.6;
+      letter-spacing: .02em;
+    }
+    .btn-upload-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 20px;
+      border-radius: 999px;
+      border: 1px solid var(--border-light);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: border-color .2s, color .2s, background .2s, box-shadow .2s;
+    }
+    .btn-upload-pill:hover {
+      border-color: var(--accent);
+      color: var(--accent-text);
+      box-shadow: 0 0 0 3px rgba(var(--glow), .08);
+    }
+    .btn-upload-pill:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    /* ── Settings row (toggle + summary lang + video switch) ── */
+    .settings-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 0;
+    }
+    .settings-row-left {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+
+    .settings-toggle {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-size: 13px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 0;
+      transition: color .2s;
+      user-select: none;
+      flex-shrink: 0;
+    }
+    .settings-toggle:hover { color: var(--accent-text); }
+    .settings-toggle .arrow { font-size: 9px; transition: transform .25s; }
+    .settings-toggle.open .arrow { transform: rotate(180deg); }
+
+    .inline-lang {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .inline-lang-label {
+      font-size: 13px;
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+    .inline-lang-select {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
+      color: var(--text);
+      font-size: 13px;
+      padding: 5px 26px 5px 9px;
+      outline: none;
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238b94a6' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .inline-lang-select:focus {
+      border-color: var(--accent-dim);
+      box-shadow: 0 0 0 3px rgba(var(--glow), .12);
+    }
+    .inline-lang-select option { background: var(--surface-2); }
+
+    /* Toggle switch — "keep original video" */
+    .switch-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .switch-wrap input {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .switch-track {
+      width: 34px;
+      height: 19px;
+      border-radius: 999px;
+      background: var(--surface-3);
+      border: 1px solid var(--border-light);
+      position: relative;
+      flex-shrink: 0;
+      transition: background .2s, border-color .2s, box-shadow .2s;
+    }
+    .switch-dot {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: var(--text-dim);
+      transition: transform .22s cubic-bezier(.4,0,.2,1), background .22s, box-shadow .22s;
+    }
+    .switch-wrap input:checked + .switch-track {
+      background: rgba(var(--glow), .16);
+      border-color: var(--accent-dim);
+    }
+    .switch-wrap input:checked + .switch-track .switch-dot {
+      transform: translateX(15px);
+      background: var(--accent);
+      box-shadow: 0 0 9px rgba(var(--glow), .8);
+    }
+    .switch-wrap input:focus-visible + .switch-track {
+      box-shadow: 0 0 0 3px rgba(var(--glow), .18);
+    }
+    .switch-text {
+      font-size: 13px;
+      color: var(--text-dim);
+      white-space: nowrap;
+      transition: color .2s;
+    }
+    .switch-wrap:hover .switch-text { color: var(--text-muted); }
+    .switch-wrap input:checked ~ .switch-text { color: var(--text-muted); }
+
+    .settings-body {
+      overflow: hidden;
+      max-height: 0;
+      transition: max-height .3s ease, margin-top .3s;
+    }
+    .settings-body.open {
+      max-height: 240px;
+      margin-top: 12px;
+    }
+
+    .settings-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
+      padding: 16px;
+    }
+    .settings-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .settings-grid .span2 { grid-column: 1 / -1; }
+
+    .s-label {
+      display: block;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      font-weight: 650;
+      text-transform: uppercase;
+      letter-spacing: .09em;
+      color: var(--text-muted);
+      margin-bottom: 5px;
+    }
+
+    .s-input, .s-select {
+      width: 100%;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
+      color: var(--text);
+      font-size: 13px;
+      padding: 8px 11px;
+      outline: none;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .s-input::placeholder { color: var(--text-dim); }
+    .s-input:focus, .s-select:focus {
+      border-color: var(--accent-dim);
+      box-shadow: 0 0 0 3px rgba(var(--glow), .12);
+    }
+
+    .s-select {
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238b94a6' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      padding-right: 28px;
+    }
+    .s-select option { background: var(--surface-2); }
+
+    .key-row { display: flex; gap: 7px; }
+    .key-row .s-input { flex: 1; min-width: 0; }
+
+    .btn-fetch {
+      background: var(--surface-3);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: var(--r-sm);
+      padding: 8px 11px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      transition: all .2s;
+    }
+    .btn-fetch:hover { border-color: var(--accent-dim); color: var(--accent-text); }
+    .btn-fetch:disabled { opacity: .5; cursor: not-allowed; }
+
+    .fetch-status {
+      font-family: var(--mono);
+      font-size: 11px;
+      margin-top: 4px;
+      min-height: 16px;
+    }
+    .fetch-status.ok  { color: var(--success); }
+    .fetch-status.err { color: var(--error); }
+
+    /* ── Result panel ────────────────────────────────────── */
+    .result-panel {
+      background: linear-gradient(180deg, var(--surface) 0%, rgba(8,9,12,.6) 100%);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      margin-top: 14px;
+      overflow: hidden;
+    }
+
+    /* empty state */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 64px 24px;
+      gap: 16px;
+      color: var(--text-muted);
+    }
+    .empty-state .es-icon {
+      font-size: 1.5rem;
+      color: var(--accent);
+      width: 52px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      border: 1px solid var(--border-light);
+      background: rgba(var(--glow), .06);
+      box-shadow: 0 0 26px -6px rgba(var(--glow), .45);
+    }
+    .empty-state .es-text { font-size: 14px; text-align: center; max-width: 380px; }
+
+    /* progress */
+    .progress-panel {
+      display: none;
+      padding: 28px 24px 24px;
+    }
+    .progress-panel.show { display: block; }
+
+    .prog-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12.5px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .prog-top-left { display: flex; align-items: center; gap: 8px; }
+    #progressStatus { font-family: var(--mono); color: var(--accent-text); }
+    .mode-badge {
+      display: none;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      padding: 2px 8px;
+      border-radius: 20px;
+      border: 1px solid;
+    }
+    .mode-badge.subtitle {
+      color: var(--success);
+      border-color: rgba(52,211,153,.35);
+      background: rgba(52,211,153,.08);
+    }
+    .mode-badge.whisper {
+      color: var(--accent-text);
+      border-color: rgba(var(--glow),.35);
+      background: rgba(var(--glow),.08);
+    }
+    .prog-bar {
+      width: 100%;
+      height: 5px;
+      background: var(--surface-3);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 9px;
+    }
+    .prog-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      width: 0%;
+      border-radius: 3px;
+      box-shadow: 0 0 12px rgba(var(--glow), .6);
+      transition: width .4s ease;
+    }
+    .prog-fill.subtitle-mode {
+      background: linear-gradient(90deg, #10b981, var(--success));
+      box-shadow: 0 0 12px rgba(52,211,153,.55);
+    }
+    .prog-msg { font-size: 12px; color: var(--text-dim); font-style: italic; }
+
+    /* results */
+    .results-panel { display: none; }
+    .results-panel.show { display: block; }
+
+    .tab-bar {
+      display: flex;
+      align-items: stretch;
+      border-bottom: 1px solid var(--border);
+      padding: 14px 18px 0;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+
+    /* Label + its own download icon share one underline */
+    .tab-item {
+      display: flex;
+      align-items: center;
+      gap: 1px;
+      padding-right: 7px;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: border-color .2s;
+    }
+    .tab-item.active { border-bottom-color: var(--accent); }
+
+    .tab-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 13px;
+      font-weight: 500;
+      padding: 9px 8px 9px 12px;
+      cursor: pointer;
+      transition: color .2s;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-item.active .tab-btn { color: var(--accent-text); }
+
+    /* Purple so it reads as a separate action, not part of the tab switch.
+       Clickable on any tab, active or not. */
+    .tab-dl {
+      background: none;
+      border: none;
+      color: var(--purple);
+      font-size: 14px;
+      line-height: 1;
+      padding: 6px 6px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      transition: color .2s, background .2s, transform .1s;
+    }
+    .tab-dl:hover {
+      color: var(--purple-h);
+      background: rgba(var(--purple-rgb), .16);
+    }
+    .tab-dl:active { transform: scale(.9); }
+    .tab-dl:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(var(--purple-rgb), .3);
+    }
+
+    .no-speech-banner {
+      display: none;
+      align-items: flex-start;
+      gap: 10px;
+      margin: 18px 20px 0;
+      padding: 12px 14px;
+      border: 1px solid rgba(251, 191, 36, .3);
+      background: rgba(251, 191, 36, .08);
+      border-radius: var(--r-sm);
+      color: #fcd34d;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .no-speech-banner.show { display: flex; }
+    .no-speech-banner i { margin-top: 3px; flex-shrink: 0; }
+
+    .tab-pane { display: none; padding: 20px 20px 24px; }
+    .tab-pane.active { display: block; }
+
+    .md-content {
+      font-size: 14px;
+      line-height: 1.8;
+      color: var(--text);
+    }
+    .md-content h1 { font-size: 1.35rem; margin: 0 0 14px; }
+    .md-content h2 { font-size: 1.15rem; margin: 22px 0 8px; }
+    .md-content h3 { font-size: 1rem; margin: 16px 0 6px; }
+    .md-content p  { margin-bottom: 13px; }
+    .md-content strong { color: var(--accent-text); }
+    /* Source URLs are autolinked by marked — override the browser's dark blue */
+    .md-content a {
+      color: var(--link);
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+    .md-content a:hover { color: var(--link-h); text-decoration: underline; }
+    .md-content hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+    .md-content blockquote {
+      border-left: 3px solid var(--accent-dim);
+      padding-left: 12px;
+      color: var(--text-muted);
+      margin: 10px 0;
+    }
+
+    /* ── Original media block ────────────────────────────── */
+    .media-block {
+      display: none;
+      border-top: 1px solid var(--border);
+      padding: 18px 20px 22px;
+    }
+    .media-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .media-label {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-family: var(--mono);
+      font-size: 15px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: var(--text);
+    }
+    .media-label i { color: var(--accent-text); font-size: 14px; }
+    .media-meta {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text-dim);
+      letter-spacing: .03em;
+    }
+    .media-frame {
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
+      background: #000;
+      overflow: hidden;
+      margin-bottom: 12px;
+      line-height: 0;
+    }
+    .media-video {
+      display: block;
+      width: 100%;
+      max-height: 420px;
+      background: #000;
+    }
+    .media-audio {
+      display: block;
+      width: 100%;
+      padding: 12px;
+      line-height: normal;
+    }
+    .btn-media-dl {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--accent-dim);
+      background: rgba(var(--glow), .07);
+      color: var(--accent-text);
+      font-size: 12.5px;
+      font-weight: 620;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: background .2s, box-shadow .2s, color .2s;
+    }
+    .btn-media-dl:hover {
+      background: rgba(var(--glow), .15);
+      color: #fff;
+      box-shadow: 0 0 0 3px rgba(var(--glow), .12);
+    }
+    /* Sits at the right end of the tab row, opposite the three tabs */
+    .tab-bar .btn-media-dl {
+      margin-left: auto;
+      align-self: center;
+      margin-bottom: 7px;
+    }
+
+    /* ── Footer ──────────────────────────────────────────── */
+    .footer {
+      text-align: center;
+      padding: 36px 24px;
+      color: var(--text-dim);
+      font-size: 12px;
+      border-top: 1px solid var(--border);
+      margin-top: 48px;
+    }
+
+    /* ── Spinner ─────────────────────────────────────────── */
+    .spinner {
+      display: inline-block;
+      width: 15px; height: 15px;
+      border: 2px solid rgba(10,20,32,.3);
+      border-top-color: #0a1420;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Responsive ──────────────────────────────────────── */
+    @media (max-width: 560px) {
+      .navbar { padding: 12px 16px; }
+      .main { padding: 36px 16px 60px; }
+      .input-row { flex-direction: column; }
+      .btn-go { justify-content: center; }
+      .settings-row { flex-wrap: wrap; gap: 10px; }
+      .settings-row-left { gap: 12px; }
+      .settings-grid { grid-template-columns: 1fr; }
+      .settings-grid .span2 { grid-column: 1; }
+      .settings-body.open { max-height: 320px; }
+      .media-video { max-height: 260px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Navbar -->
+<nav class="navbar">
+  <a class="nav-logo" href="https://sipsip.ai" target="_blank" rel="noopener noreferrer">
+    <span class="nav-logo-text">sipsip<em>.ai</em></span>
+  </a>
+  <button id="langToggle" class="lang-btn">
+    <span id="langText">English</span>
+    <i class="fas fa-chevron-down" style="font-size:9px;"></i>
+  </button>
+</nav>
+
+<!-- Main -->
+<main class="main">
+  <h1 class="page-title" data-i18n="title">AI Video Transcriber</h1>
+  <p class="page-sub" data-i18n="subtitle">Automatic transcription, AI summary, and original video download for 30+ platforms</p>
+
+  <!-- Error -->
+  <div id="errorBanner" class="error-banner">
+    <i class="fas fa-exclamation-circle" style="margin-top:1px;flex-shrink:0;"></i>
+    <span id="errorMsg"></span>
+  </div>
+
+  <!-- URL form -->
+  <form id="videoForm" autocomplete="off">
+    <div class="input-row">
+      <div class="url-wrap">
+        <i class="fas fa-link url-icon"></i>
+        <input
+          id="videoUrl"
+          type="url"
+          class="url-input"
+          placeholder="Paste YouTube, Tiktok, Bilibili or other platform video URLs..."
+          data-i18n-placeholder="video_url_placeholder"
+          required
+        >
+      </div>
+      <button type="submit" id="submitBtn" class="btn-go">
+        <i class="fas fa-bolt"></i>
+        <span data-i18n="start_transcription">Transcribe</span>
+      </button>
+    </div>
+  </form>
+
+  <div class="upload-section" id="uploadSection">
+    <div class="upload-zone" id="uploadZone" tabindex="0" role="button" aria-label="Upload files">
+      <p class="upload-or" data-i18n="upload_or">or drop your files</p>
+      <p class="upload-formats" data-i18n="upload_formats">.mp3 · .mp4 · .wav · .m4a · .webm · .mkv · .ogg · .flac</p>
+      <button type="button" class="btn-upload-pill" id="uploadPickBtn">
+        <i class="fas fa-upload"></i>
+        <span data-i18n="upload_files_btn">Upload files</span>
+      </button>
+    </div>
+    <input type="file" id="fileInput" accept=".txt,.mp3,.mp4,.m4a,.wav,.webm,.mkv,.ogg,.flac" hidden>
+  </div>
+
+  <!-- Settings row: Summary Language + keep-video switch + AI Settings toggle -->
+  <div class="settings-row">
+    <div class="settings-row-left">
+      <div class="inline-lang">
+        <label class="inline-lang-label" for="summaryLanguage" data-i18n="summary_language">Summary Language</label>
+        <select id="summaryLanguage" class="inline-lang-select">
+          <option value="en">English</option>
+          <option value="zh">中文（简体）</option>
+          <option value="es">Español</option>
+          <option value="fr">Français</option>
+          <option value="de">Deutsch</option>
+          <option value="it">Italiano</option>
+          <option value="pt">Português</option>
+          <option value="ru">Русский</option>
+          <option value="ja">日本語</option>
+          <option value="ko">한국어</option>
+          <option value="ar">العربية</option>
+        </select>
+      </div>
+
+      <label class="switch-wrap" for="keepVideo" title="Download the source video alongside the transcript">
+        <input type="checkbox" id="keepVideo" checked>
+        <span class="switch-track"><span class="switch-dot"></span></span>
+        <span class="switch-text" data-i18n="keep_video">Keep original video</span>
+      </label>
+    </div>
+
+    <button class="settings-toggle" id="settingsToggle">
+      <i class="fas fa-sliders-h" style="font-size:10px;"></i>
+      <span data-i18n="ai_settings">AI Settings</span>
+      <i class="fas fa-chevron-down arrow"></i>
+    </button>
+  </div>
+
+  <div class="settings-body" id="settingsBody">
+    <div class="settings-card">
+      <div class="settings-grid">
+
+        <!-- Base URL (full row) -->
+        <div class="span2">
+          <label class="s-label" data-i18n="model_base_url">Model API Base URL</label>
+          <input
+            id="modelBaseUrl"
+            class="s-input"
+            type="url"
+            placeholder="https://openrouter.ai/api/v1"
+            data-i18n-placeholder="model_base_url_placeholder"
+            autocomplete="off"
+          >
+        </div>
+
+        <!-- API Key -->
+        <div>
+          <label class="s-label" data-i18n="api_key">API Key</label>
+          <div class="key-row">
+            <input
+              id="apiKeyInput"
+              class="s-input"
+              type="password"
+              placeholder="sk-..."
+              data-i18n-placeholder="api_key_placeholder"
+              autocomplete="new-password"
+            >
+            <button type="button" id="fetchModelsBtn" class="btn-fetch">
+              <i class="fas fa-sync-alt" id="fetchIcon"></i>
+              <span data-i18n="fetch_models">Fetch</span>
+            </button>
+          </div>
+          <div id="fetchStatus" class="fetch-status"></div>
+        </div>
+
+        <!-- Model selector -->
+        <div>
+          <label class="s-label" data-i18n="model_select">Model</label>
+          <select id="modelSelect" class="s-select">
+            <option value="" data-i18n="model_default">— use server default —</option>
+          </select>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Result panel -->
+  <div class="result-panel" id="resultPanel">
+
+    <!-- Empty state (default) -->
+    <div class="empty-state" id="emptyState">
+      <span class="es-icon"><i class="fas fa-bolt"></i></span>
+      <span class="es-text" data-i18n="empty_hint">Paste a video URL or drop a file above and let AI do the heavy lifting.</span>
+    </div>
+
+    <!-- Progress -->
+    <div class="progress-panel" id="progressPanel">
+      <div class="prog-top">
+        <div class="prog-top-left">
+          <span data-i18n="processing_progress">Processing</span>
+          <span class="mode-badge" id="modeBadge"></span>
+        </div>
+        <span id="progressStatus">0%</span>
+      </div>
+      <div class="prog-bar">
+        <div class="prog-fill" id="progressFill"></div>
+      </div>
+      <div class="prog-msg" id="progressMessage" data-i18n="preparing">Preparing…</div>
+    </div>
+
+    <!-- Results -->
+    <div class="results-panel" id="resultsPanel">
+      <!-- Each tab carries its own download icon; the icons work without
+           activating the tab first. -->
+      <div class="tab-bar">
+        <div class="tab-item active" data-tab="script">
+          <button class="tab-btn" data-tab="script">
+            <span data-i18n="transcript_text">Transcript</span>
+          </button>
+          <button class="tab-dl" id="downloadScript" data-i18n-title="download_transcript" title="Transcript">
+            <i class="fas fa-circle-down"></i>
+          </button>
+        </div>
+        <div class="tab-item" data-tab="summary" id="summaryTabItem">
+          <button class="tab-btn" data-tab="summary">
+            <span data-i18n="intelligent_summary">AI Summary</span>
+          </button>
+          <button class="tab-dl" id="downloadSummary" data-i18n-title="download_summary" title="Summary">
+            <i class="fas fa-circle-down"></i>
+          </button>
+        </div>
+        <div class="tab-item" data-tab="translation" id="translationTabItem" style="display:none;">
+          <button class="tab-btn" data-tab="translation">
+            <span data-i18n="translation">Translation</span>
+          </button>
+          <button class="tab-dl" id="downloadTranslation" data-i18n-title="download_translation" title="Translation">
+            <i class="fas fa-circle-down"></i>
+          </button>
+        </div>
+
+        <!-- Right side of the tab row; hidden when the result has no media -->
+        <button class="btn-media-dl" id="downloadVideo" style="display:none;">
+          <i class="fas fa-circle-down"></i>
+          <span data-i18n="download_video">Download original video</span>
+        </button>
+      </div>
+
+      <!-- Shown when the source had no speech at all -->
+      <div class="no-speech-banner" id="noSpeechBanner">
+        <i class="fas fa-volume-xmark"></i>
+        <span data-i18n="no_speech_notice">No speech detected in this video, so there is nothing to transcribe. Summary and translation are skipped — the original video is still available below.</span>
+      </div>
+
+      <div id="scriptTab" class="tab-pane active">
+        <div class="md-content" id="scriptContent"></div>
+      </div>
+      <div id="summaryTab" class="tab-pane">
+        <div class="md-content" id="summaryContent"></div>
+      </div>
+      <div id="translationTab" class="tab-pane">
+        <div class="md-content" id="translationContent"></div>
+      </div>
+
+      <!-- Original video / audio -->
+      <div class="media-block" id="mediaBlock">
+        <div class="media-head">
+          <span class="media-label">
+            <i class="fas fa-film"></i>
+            <span data-i18n="original_media">Original video</span>
+          </span>
+          <span class="media-meta" id="mediaMeta"></span>
+        </div>
+        <div class="media-frame" id="mediaFrame"></div>
+      </div>
+    </div>
+
+  </div><!-- /result-panel -->
+
+  <div class="footer">
+    <p data-i18n="footer_text">This tool is part of <a href="https://sipsip.ai" target="_blank" style="color:#fff;text-decoration:none;">sipsip.ai</a> — distill anything and get daily AI briefs from your favorite creators</p>
+  </div>
+</main>
+
+<script src="/static/app.js?v=20260818"></script>
+</body>
+</html>
