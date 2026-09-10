@@ -222,6 +222,9 @@ def ack_leg(leg_id: str, note: str) -> bool:
         return False
 
 
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def push_relay_repo() -> bool:
     try:
         # Check if there are changes in .handoffs
@@ -229,15 +232,20 @@ def push_relay_repo() -> bool:
             ["git", "status", "--porcelain", ".handoffs/"],
             cwd=str(RELAY_ROOT),
             text=True,
-            errors="replace"
+            errors="replace",
+            stdin=subprocess.DEVNULL,
+            creationflags=_NO_WINDOW
         )
         if not status_out.strip():
             return False
 
-        subprocess.run(["git", "add", ".handoffs/"], cwd=str(RELAY_ROOT), check=True)
+        subprocess.run(["git", "add", ".handoffs/"], cwd=str(RELAY_ROOT), check=True,
+                       stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
         commit_msg = f"relay: autonomous 90m batch close of verified open legs [{time.strftime('%Y-%m-%d %H:%M')}]"
-        subprocess.run(["git", "commit", "-m", commit_msg], cwd=str(RELAY_ROOT), check=True)
-        subprocess.run(["git", "push", "origin", "main"], cwd=str(RELAY_ROOT), check=True)
+        subprocess.run(["git", "commit", "-m", commit_msg], cwd=str(RELAY_ROOT), check=True,
+                       stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+        subprocess.run(["git", "push", "origin", "main"], cwd=str(RELAY_ROOT), check=True,
+                       stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
         log("✅ Git push to origin/main successful in NouGenRelay.")
         return True
     except Exception as e:

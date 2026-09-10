@@ -94,9 +94,19 @@ def save_seen(seen: set) -> None:
     CURSOR.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+# On Windows a child process spawned from a windowless parent (pythonw, a
+# hidden scheduled task or background daemon) still gets its OWN console window,
+# which flashes or pops on screen. This flag suppresses the child console window.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def _git(root: Path, *args: str):
     return subprocess.run(["git", "-C", str(root), *args],
-                          capture_output=True, text=True, timeout=PULL_TIMEOUT_SECS)
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace",
+                          stdin=subprocess.DEVNULL,
+                          creationflags=_NO_WINDOW,
+                          timeout=PULL_TIMEOUT_SECS)
 
 
 def divergence(root: Path):
