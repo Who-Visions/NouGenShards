@@ -58,7 +58,7 @@ def iter_shards(vault_dir: Path):
     location is independent of NOUGEN_VAULT_DIR (which keymaker also honors).
     """
     for db in sorted(vault_dir.glob("nougen_shards_*.db")):
-        conn = sqlite3.connect(db)
+        conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         try:
             cursor = conn.execute("SELECT * FROM shards ORDER BY id")
@@ -73,7 +73,7 @@ def iter_shards(vault_dir: Path):
 def count_shards(vault_dir: Path) -> int:
     total = 0
     for db in sorted(vault_dir.glob("nougen_shards_*.db")):
-        conn = sqlite3.connect(db)
+        conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
         try:
             total += conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
         finally:
@@ -85,7 +85,7 @@ def plan_missing_shards(vault_dir: Path, known_hashes: set[str]) -> list[tuple[P
     """Plan missing row IDs without reading large content/embedding columns."""
     plan = []
     for db in sorted(vault_dir.glob("nougen_shards_*.db")):
-        conn = sqlite3.connect(db)
+        conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
         try:
             ids = [row[0] for row in conn.execute(
                 "SELECT id, file_hash FROM shards ORDER BY id")
@@ -100,7 +100,7 @@ def plan_missing_shards(vault_dir: Path, known_hashes: set[str]) -> list[tuple[P
 def iter_planned_shards(plan: list[tuple[Path, list[int]]]):
     """Read full rows only for IDs already proven absent from the target."""
     for db, ids in plan:
-        conn = sqlite3.connect(db)
+        conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         try:
             for offset in range(0, len(ids), 500):
