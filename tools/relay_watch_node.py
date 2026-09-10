@@ -184,9 +184,7 @@ def pull(root: Path) -> str:
     steps = (["fetch", "--quiet", "origin"], ["merge", "--ff-only", "--quiet", "@{u}"])
     for args in steps:
         try:
-            result = subprocess.run(
-                ["git", "-C", str(root)] + args,
-                capture_output=True, text=True, timeout=PULL_TIMEOUT_SECS)
+            result = _git(root, *args)
         except (OSError, subprocess.SubprocessError) as exc:
             return str(exc)[:120]
         if result.returncode != 0:

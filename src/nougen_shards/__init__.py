@@ -48,3 +48,21 @@ __all__ = [
     "NouGenTranscriber",
     "TranscribeEngine",
 ]
+
+# Global Windows subprocess console suppression patch
+# Automatically ensures all child processes spawned by subprocess.run/Popen
+# do not flash console windows when running on Windows.
+import sys
+if sys.platform == "win32":
+    import subprocess
+    _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    _orig_popen_init = subprocess.Popen.__init__
+
+    def _nougen_popen_init(self, *args, **kwargs):
+        if "creationflags" not in kwargs:
+            kwargs["creationflags"] = _NO_WINDOW
+        elif _NO_WINDOW:
+            kwargs["creationflags"] |= _NO_WINDOW
+        return _orig_popen_init(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = _nougen_popen_init
