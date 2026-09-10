@@ -20,7 +20,6 @@ instead, without changing what's delivered on approval.
 import importlib
 import sys
 from pathlib import Path
-from unittest import mock
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))

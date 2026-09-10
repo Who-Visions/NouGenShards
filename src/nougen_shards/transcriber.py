@@ -6,15 +6,11 @@ Faster-Whisper local speech-to-text, and automatic NouGen 9-DB FTS5 sharding
 directly into the nougen_shards core package.
 """
 
-import asyncio
-import os
 import re
-import shutil
 import subprocess
-import sys
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import yt_dlp
 from faster_whisper import WhisperModel
@@ -128,7 +124,7 @@ class NouGenTranscriber:
                 raise RuntimeError(f"FFmpeg audio extraction failed: {res.stderr[:500]}")
             return str(out_audio), title, {"source": source, "is_local": True}
 
-        out_tmpl = str(self.output_dir / f"%(title).70s_%(id)s.%(ext)s")
+        out_tmpl = str(self.output_dir / "%(title).70s_%(id)s.%(ext)s")
         ydl_opts = {
             "format": "bestaudio/best",
             "outtmpl": out_tmpl,

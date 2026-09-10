@@ -115,9 +115,9 @@ def cmd_pr(args):
         return
     if args.pr_action == "status":
         leases = store.all_leases(repo=args.repo)
-        payload = [{"branch": l.branch, "pr_number": l.pr_number, "chain_status": l.chain_status,
-                     "objective_count": l.chain_len, "objectives": l.chained_objectives,
-                     "updated_utc": l.updated_utc} for l in leases]
+        payload = [{"branch": item.branch, "pr_number": item.pr_number, "chain_status": item.chain_status,
+                     "objective_count": item.chain_len, "objectives": item.chained_objectives,
+                     "updated_utc": item.updated_utc} for item in leases]
         if args.json:
             print(json.dumps(payload, indent=2))
         else:
@@ -624,7 +624,7 @@ def cmd_add(args):
         print("ℹ️ Shard already exists.")
 
 
-def cmd_get(args):
+def _cmd_get_legacy(args):
     """Resolve a shard by CONTENT HASH — a lookup, not a ranked query.
 
     Why this exists: `<id>@db<n>` is a node-local address that silently
