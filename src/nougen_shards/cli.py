@@ -1261,6 +1261,15 @@ def cmd_dream(args):
                     print(" - Newly extracted rules:")
                     for r in ds["rules"][:5]:
                         print(f"   * [{r['subject']}] {r['predicate']}")
+            
+            # Print evolved procedural skills
+            if summary.get("evolved_skills"):
+                print("\n⚡ [Autonomous Skill Evolution]")
+                for sk in summary["evolved_skills"]:
+                    status_badge = "Verified in Sandbox (PILOT)" if sk.get("verified") else "Candidate"
+                    print(f" - Evolved Skill: {sk['name']} [{status_badge}]")
+                    if sk.get("path"):
+                        print(f"   * Package: {sk['path']}")
             print(f"\n{summary['status']}")
 
 
@@ -1581,6 +1590,26 @@ def get_parser():
     p_handoff.add_argument("--share-triggers", dest="share_triggers", action="store_true",
                            default=False,
                            help="(sync) Also sync triggers.json — it is executable config, opt in knowingly")
+
+    # transcribe: Video / Audio transcription and summarization
+    p_transcribe = subparsers.add_parser(
+        "transcribe",
+        help="AI Video Transcriber: transcribe & summarize video/audio from URL or file",
+        description="Transcribe and summarize video/audio from 30+ platforms or local files using Whisper/LLM."
+    )
+    p_transcribe.add_argument("source", help="URL or path to local media/text file")
+    p_transcribe.add_argument("-l", "--summary-language", default="en", help="Summary output language (default en)")
+    p_transcribe.add_argument("-o", "--output-dir", default=None, help="Output directory for markdown/media")
+    p_transcribe.add_argument("--no-video", dest="keep_video", action="store_false", help="Do not keep downloaded video")
+    p_transcribe.add_argument("--no-llm", action="store_true", help="Skip LLM summary/translation")
+    p_transcribe.add_argument("--whisper-model", default="base", choices=["tiny", "base", "small", "medium", "large"], help="Whisper model size")
+    p_transcribe.add_argument("--video-max-height", type=int, default=720, help="Max video height for download")
+    p_transcribe.add_argument("--api-key", default=None, help="OpenAI-compatible API key")
+    p_transcribe.add_argument("--base-url", default=None, help="OpenAI-compatible base URL")
+    p_transcribe.add_argument("--model", default=None, help="Model ID for summary/translation")
+    p_transcribe.add_argument("--shard", action="store_true", default=True, help="Auto-shard output into NouGen grid")
+    p_transcribe.add_argument("--json", action="store_true", help="JSON output")
+    p_transcribe.add_argument("-q", "--quiet", action="store_true", help="Suppress progress logs")
 
     return parser
 
@@ -1987,6 +2016,81 @@ def cmd_relay(args):
         sys.exit(rc)
 
 
+def cmd_transcribe(args):
+    """AI Video Transcriber: transcribe & summarize video/audio, auto-sharding output into NouGen."""
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    transcriber_dir = repo_root / "tools" / "ai_video_transcriber"
+    if not transcriber_dir.is_dir():
+        print(f"Error: ai_video_transcriber not found at {transcriber_dir}", file=sys.stderr)
+        sys.exit(1)
+    
+    backend_dir = str(transcriber_dir / "backend")
+    if str(transcriber_dir) not in sys.path:
+        sys.path.insert(0, str(transcriber_dir))
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+        
+    import asyncio
+    import transcribe as vt_cli
+    
+    out_dir = args.output_dir or str(Path.home() / ".nougen" / "transcripts")
+    os.makedirs(out_dir, exist_ok=True)
+    
+    # Mirror args to transcribe namespace
+    ns = argparse.Namespace(
+        source=args.source,
+        summary_language=args.summary_language,
+        output_dir=out_dir,
+        keep_video=args.keep_video,
+        no_llm=args.no_llm,
+        whisper_model=args.whisper_model,
+        video_max_height=args.video_max_height,
+        api_key=args.api_key or os.getenv("OPENAI_API_KEY"),
+        base_url=args.base_url or os.getenv("OPENAI_BASE_URL"),
+        model=args.model or os.getenv("SUMMARY_MODEL"),
+        json=args.json,
+        quiet=args.quiet,
+    )
+    
+    try:
+        res = asyncio.run(vt_cli.run(ns))
+    except Exception as e:
+        print(f"Transcription failed: {e}", file=sys.stderr)
+        sys.exit(1)
+        
+    if getattr(args, "shard", True) and res and "files" in res:
+        transcript_content = []
+        for kind, file_path in res["files"].items():
+            if Path(file_path).is_file():
+                try:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        transcript_content.append(f"### {kind.upper()}\n\n" + f.read())
+                except Exception:
+                    pass
+        if transcript_content:
+            full_text = "\n\n".join(transcript_content)
+            title = f"Transcript: {res.get('title', args.source)[:60]}"
+            shards.capture(
+                event_type="KNOWLEDGE",
+                title=title,
+                content=f"# {title}\nSource: {args.source}\nPlatform: {res.get('platform', 'unknown')}\n\n" + full_text,
+                tags=["video", "audio", "transcription", "summary", res.get("platform", "media")],
+                domain_key="media/transcripts",
+                source_uri=args.source
+            )
+            if not args.quiet and not args.json:
+                print(f"🪩 Sharded transcript into NouGen 9-DB cluster ({title})")
+                
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    else:
+        print(f"\n✅ {res.get('title')}")
+        for kind, p in res.get("files", {}).items():
+            print(f"  {kind:12} {p}")
+        if res.get("media"):
+            print(f"  media:       {res['media'].get('path')}")
+
+
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
@@ -2013,7 +2117,7 @@ def main():
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
-        "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr,
+        "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr, "transcribe": cmd_transcribe,
     }
     if args.command in cmds:
         cmds[args.command](args)
