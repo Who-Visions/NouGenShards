@@ -413,12 +413,14 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
             # rewritten.
             title = _redact(item["title"] or "Untitled")
             content = _redact(item["content"] or "")
+            machine_id = os.environ.get("NOUGEN_MACHINE_ID", "blade1tb")
             results.append({
                 "id": f"vault_{vid}_{_stable_hash(item['title'])[:16]}",
                 "event_type": "LOCAL_VAULT",
                 "title": title,
                 "content": content,
-                "tags": json.dumps(["local_vault", path.stem]),
+                "tags": json.dumps(["local_vault", path.stem, f"machine:{machine_id}"]),
+                "machine_id": machine_id,
                 "utility_score": 1.0,
                 "access_count": 0,
                 "file_hash": _stable_hash(item["content"]),

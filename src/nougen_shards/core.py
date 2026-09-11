@@ -953,9 +953,14 @@ def capture(event_type: str, title: str, content: str,
     # before hashing, embedding, indexing, or encryption so neither SQLite nor
     # an embedding blob preserves a recoverable copy of a leaked credential.
     title = redact_content(str(title))
-    content = redact_content(str(content))
-    if tags:
+    machine_id = os.environ.get("NOUGEN_MACHINE_ID", "blade1tb")
+    machine_tag = f"machine:{machine_id}"
+    if tags is None:
+        tags = [machine_tag]
+    else:
         tags = [redact_content(str(tag)) for tag in tags]
+        if not any(t.startswith("machine:") for t in tags):
+            tags.append(machine_tag)
 
     sensitivity = _pv.normalize_sensitivity(sensitivity)
     if not domain_key:
@@ -2378,6 +2383,9 @@ def hydrate(item: Optional[dict]) -> Optional[dict]:
     """
     if not item:
         return item
+    machine_id = os.environ.get("NOUGEN_MACHINE_ID", "blade1tb")
+    if "machine_id" not in item:
+        item["machine_id"] = machine_id
     body = item.get("content")
     if not isinstance(body, str):
         return item

@@ -733,18 +733,39 @@ class WhoVisionsCloudClient(LLMClient):
     Client for Who Visions Hosted Cloud Brain.
     Securely bridges local CLI to remote node for metered inference.
     """
-    def __init__(self, node_url: Optional[str] = None, user_token: Optional[str] = None):
+    def __init__(self, node_url: Optional[str] = None, user_token: Optional[str] = None,
+                 default_model: str = "gemma4:cloud"):
         self.node_url = node_url or os.environ.get("NGS_CLOUD_URL")
         self.user_token = user_token or os.environ.get("NGS_CLOUD_TOKEN")
+        self.default_model = default_model
 
     def is_alive(self) -> bool:
         return bool(self.node_url and self.user_token)
 
     def list_models(self) -> list:
         # Return canonical cloud models
-        return ["whovisions/brain-v1", "openrouter/auto"]
+        return ["gemma4:cloud", "qwen3.5:cloud", "whovisions/brain-v1", "openrouter/auto"]
 
-    def chat(self, model: str, messages: list, stream: bool = False) -> str:
+    def chat(self, model: Optional[str] = None, messages: Optional[list] = None, stream: bool = False) -> str:
+        # Support chat(messages=[...]) or chat(model, messages)
+        if isinstance(model, list) and messages is None:
+            messages = model
+            model = self.default_model
+        elif model is None:
+            model = self.default_model
+        if messages is None:
+            messages = []
+
+        try:
+            import ollama
+            resp = ollama.chat(model=model, messages=messages, stream=stream)
+            if hasattr(resp, "message"):
+                return getattr(resp.message, "content", "") or ""
+            if isinstance(resp, dict):
+                return resp.get("message", {}).get("content", "")
+        except Exception:
+            pass
+
         if not self.is_alive():
             return "Error: Who Visions Cloud not configured. Use: nougen auth set-key cloud <url>,<token>"
         
@@ -774,6 +795,9 @@ class WhoVisionsCloudClient(LLMClient):
 
     def batch_embed(self, model: str, texts: List[str]) -> List[list]:
         return [[] for _ in texts]
+
+
+OllamaCloudClient = WhoVisionsCloudClient
 
 
 def find_best_model_from_list(models: List[str]) -> Optional[ModelBudgetConfig]:
@@ -904,6 +928,17 @@ class OllamaClient(LocalLLMClient):
 
     def chat(self, model: str, messages: list, stream: bool = False,
              manual: bool = False) -> str:
+        if ":cloud" in model or model.endswith("-cloud") or "/cloud" in model:
+            try:
+                import ollama
+                resp = ollama.chat(model=model, messages=messages, stream=stream)
+                if hasattr(resp, "message"):
+                    return getattr(resp.message, "content", "") or ""
+                if isinstance(resp, dict):
+                    return resp.get("message", {}).get("content", "")
+            except Exception as e:
+                return f"Error: {e}"
+
         # VRAM admission gate (operator rule 2026-08-08: EVERY local request
         # checks VRAM first). Returning "Error: ..." makes run_agent fall
         # through to the free cloud roster instead of spilling - spill crashed
