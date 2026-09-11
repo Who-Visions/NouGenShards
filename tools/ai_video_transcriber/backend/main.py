@@ -130,18 +130,18 @@ def _resolve_temp_file(filename: str, allowed_ext: frozenset) -> Path:
     if ext not in allowed_ext:
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext or '(none)'}")
 
+    # 严格遍历 TEMP_DIR 现有文件，使用目录条目自身路径，彻底阻断污点流传播
     resolved_temp = TEMP_DIR.resolve()
-    file_path = (resolved_temp / safe_name).resolve()
+    for entry in os.scandir(resolved_temp):
+        if entry.is_file() and entry.name == safe_name:
+            entry_path = Path(entry.path)
+            try:
+                entry_path.relative_to(resolved_temp)
+            except ValueError:
+                break
+            return entry_path
 
-    # 二次防御：严格验证路径位于 TEMP_DIR 内部
-    try:
-        file_path.relative_to(resolved_temp)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="文件名格式无效")
-
-    if not file_path.is_file():
-        raise HTTPException(status_code=404, detail="文件不存在")
-    return file_path
+    raise HTTPException(status_code=404, detail="文件不存在")
 
 
 def _safe_download_name(raw: str, expected_ext: str) -> Optional[str]:
