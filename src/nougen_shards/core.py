@@ -704,7 +704,7 @@ def _llm_density(content: str) -> Optional[float]:
             preferred = [
                 m.strip()
                 for m in os.getenv(
-                    "NOUGEN_DENSITY_MODELS", "gemma4:cloud,gemma4:e2b-qat,gemma4:e2b,gemma4:e4b,gemma4:31b-cloud"
+                    "NOUGEN_DENSITY_MODELS", "gemma4:e2b-qat,gemma4:e2b,gemma4:e4b,gemma4:31b-cloud"
                 ).split(",")
                 if m.strip()
             ]
@@ -953,14 +953,9 @@ def capture(event_type: str, title: str, content: str,
     # before hashing, embedding, indexing, or encryption so neither SQLite nor
     # an embedding blob preserves a recoverable copy of a leaked credential.
     title = redact_content(str(title))
-    machine_id = os.environ.get("NOUGEN_MACHINE_ID", "blade1tb")
-    machine_tag = f"machine:{machine_id}"
-    if tags is None:
-        tags = [machine_tag]
-    else:
+    content = redact_content(str(content))
+    if tags:
         tags = [redact_content(str(tag)) for tag in tags]
-        if not any(t.startswith("machine:") for t in tags):
-            tags.append(machine_tag)
 
     sensitivity = _pv.normalize_sensitivity(sensitivity)
     if not domain_key:
@@ -1006,10 +1001,57 @@ def capture(event_type: str, title: str, content: str,
     dconn = _get_dedup_connection()
     try:
         _ensure_dedup_index(dconn)
-        if dconn.execute("SELECT 1 FROM hashes WHERE file_hash = ?",
-                         (fhash,)).fetchone():
-            return CaptureResult(captured=False, reason="duplicate",
-                                 error="duplicate: identical content is already in the vault")
+        dup = dconn.execute("SELECT db_index FROM hashes WHERE file_hash = ?",
+                            (fhash,)).fetchone()
+        if dup:
+            # Name the row we are deduplicating AGAINST (blade, 2026-09-07).
+            # A bare "duplicate" with no identity is why /sync/push callers
+            # could not tell "your payload is already durable at row N" from
+            # "your write failed" -- forward_capture inferred the latter and
+            # reported captured:false over four writes that had in fact landed
+            # (24540@db1, 26155@db9, 27509@db4, 30203@db7). Identity turns a
+            # dedup hit into a positive statement about durability.
+            dup_index = dup[0] if not isinstance(dup, sqlite3.Row) else dup["db_index"]
+            dup_id = None
+            # Short-lived READ-ONLY handle, opened and closed here rather than
+            # taken from the shared pool: a dedup answer must not leave a new
+            # file handle on a grid DB it would not otherwise have touched.
+            # (Caught by tmpdir teardown on Windows, which cannot unlink an
+            # open .db -- a leaked handle in a test is a leaked handle in
+            # production too, it just fails somewhere less visible.)
+            dup_conn = None
+            try:
+                dup_path = get_db_path(dup_index)
+                if dup_path.exists():
+                    dup_conn = sqlite3.connect(f"file:{dup_path}?mode=ro", uri=True)
+                    row = dup_conn.execute(
+                        "SELECT id FROM shards WHERE file_hash = ? LIMIT 1",
+                        (fhash,)).fetchone()
+                    if row is not None:
+                        dup_id = row[0]
+            except Exception:  # pylint: disable=broad-except
+                pass  # identity is a bonus; never fail a dedup answer over it
+            finally:
+                if dup_conn is not None:
+                    try:
+                        dup_conn.close()
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+            result = CaptureResult(
+                captured=False, reason="duplicate",
+                error="duplicate: identical content is already in the vault")
+            # NOT `shard_id`/`db_index`: those mean "the row THIS call wrote",
+            # and this call wrote nothing. Claiming them here would let a
+            # caller take credit for someone else's write. Separate keys keep
+            # both facts true at once -- see test_no_silent_failures.py, which
+            # pins "nothing was written, so no id may be claimed".
+            result["existing_db_index"] = dup_index
+            if dup_id is not None:
+                result["existing_shard_id"] = dup_id
+            # `durable` is the fact the caller actually needs: this exact
+            # content IS on disk, whoever put it there.
+            result["durable"] = True
+            return result
 
         target_idx = get_write_index(fhash)
 
@@ -2336,9 +2378,6 @@ def hydrate(item: Optional[dict]) -> Optional[dict]:
     """
     if not item:
         return item
-    machine_id = os.environ.get("NOUGEN_MACHINE_ID", "blade1tb")
-    if "machine_id" not in item:
-        item["machine_id"] = machine_id
     body = item.get("content")
     if not isinstance(body, str):
         return item
@@ -2357,100 +2396,9 @@ def get_shard_by_id(shard_id: int, db_index: int):
     conn = get_connection(db_index)
     try:
         row = conn.execute("SELECT * FROM shards WHERE id = ?", (shard_id,)).fetchone()
-        if not row:
-            return None
-        item = hydrate(dict(row))
-        item["__db_index__"] = db_index
-        return item
+        return hydrate(dict(row)) if row else None
     finally:
         conn.close()
-
-
-def get_shard_by_hash(file_hash: str, allow_prefix: bool = True) -> Optional[dict]:
-    """Retrieves a specific shard by its content-addressed file_hash.
-
-    Supports:
-      - Exact 32-char hex MD5: O(1) indexed probe via dedup_index.db, fallback to cluster DBs.
-      - Unique prefix (>= 8 hex chars): range probe against dedup_index.db. Returns if exactly 1 match.
-      - Returns hydrated shard dict with '__db_index__' injected, or None if not found or ambiguous.
-    """
-    clean_hash = file_hash.strip().lower()
-    if clean_hash.startswith("sha:"):
-        clean_hash = clean_hash[4:].strip()
-
-    if not clean_hash or len(clean_hash) < 8:
-        return None
-
-    target_hash = clean_hash
-    target_db = None
-
-    # 1. Probe dedup_index.db first (fast O(1) B-tree lookup across 200k+ shards)
-    try:
-        dedup_conn = _get_dedup_connection()
-        try:
-            if len(clean_hash) == 32:
-                row = dedup_conn.execute(
-                    "SELECT file_hash, db_index FROM hashes WHERE file_hash = ?",
-                    (clean_hash,)
-                ).fetchone()
-                if row:
-                    target_hash, target_db = row[0], row[1]
-            elif allow_prefix and len(clean_hash) >= 8:
-                try:
-                    next_char = chr(ord(clean_hash[-1]) + 1)
-                    upper_bound = clean_hash[:-1] + next_char
-                    matches = dedup_conn.execute(
-                        "SELECT file_hash, db_index FROM hashes WHERE file_hash >= ? AND file_hash < ? LIMIT 2",
-                        (clean_hash, upper_bound)
-                    ).fetchall()
-                except Exception:
-                    matches = dedup_conn.execute(
-                        "SELECT file_hash, db_index FROM hashes WHERE file_hash LIKE ? LIMIT 2",
-                        (f"{clean_hash}%",)
-                    ).fetchall()
-                if len(matches) == 1:
-                    target_hash, target_db = matches[0][0], matches[0][1]
-                elif len(matches) > 1:
-                    logger.warning("prefix %s is ambiguous (multiple matches in dedup index)", clean_hash)
-                    return None
-        finally:
-            dedup_conn.close()
-    except Exception as exc:
-        logger.debug("dedup index lookup failed for %s: %s", clean_hash, exc)
-
-    # 2. If target_db identified, retrieve directly
-    if target_db is not None:
-        if get_db_path(target_db).exists():
-            conn = get_connection(target_db)
-            try:
-                row = conn.execute("SELECT * FROM shards WHERE file_hash = ?", (target_hash,)).fetchone()
-                if row:
-                    item = hydrate(dict(row))
-                    item["__db_index__"] = target_db
-                    return item
-            finally:
-                conn.close()
-
-    # 3. Fallback: exact lookup across cluster DBs if dedup index missed
-    if len(clean_hash) == 32:
-        for i in range(1, MAX_DB_COUNT + 1):
-            try:
-                if not get_db_path(i).exists():
-                    continue
-                conn = get_connection(i)
-                try:
-                    row = conn.execute("SELECT * FROM shards WHERE file_hash = ?", (clean_hash,)).fetchone()
-                    if row:
-                        item = hydrate(dict(row))
-                        item["__db_index__"] = i
-                        return item
-                finally:
-                    conn.close()
-            except Exception:
-                continue
-
-    return None
-
 
 def locate_shard(shard_id: int) -> List[int]:
     """Returns every cluster DB index holding a shard with this id.
