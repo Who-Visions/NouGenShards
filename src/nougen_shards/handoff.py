@@ -27,7 +27,8 @@ def _resolve_project_root() -> Path:
         return module_root
     try:
         r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                           capture_output=True, text=True, timeout=5, check=False)
+                           capture_output=True, text=True, timeout=5, check=False,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if r.returncode == 0 and r.stdout.strip():
             return Path(r.stdout.strip())
     except OSError:

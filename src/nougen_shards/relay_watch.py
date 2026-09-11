@@ -17,6 +17,9 @@ CATCHUP_HOURS = float(os.environ.get("NOUGEN_RELAY_CATCHUP_H", "12"))
 GOAL_CHARS = 150
 
 
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def _git(*args, timeout=25):
     try:
         res = subprocess.run(
@@ -25,6 +28,8 @@ def _git(*args, timeout=25):
             text=True,
             encoding="utf-8",
             errors="replace",
+            stdin=subprocess.DEVNULL,
+            creationflags=_NO_WINDOW,
             timeout=timeout,
             check=False
         )

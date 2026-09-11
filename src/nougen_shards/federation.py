@@ -289,5 +289,11 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         [local_results, external_results, cloud_results, vault_results], k=60,
         weights=[1.0, lane_weight, lane_weight, lane_weight])
 
+    # Ensure every combined hit carries machine_id attribution
+    default_machine = _os.environ.get("NOUGEN_MACHINE_ID", "blade1tb")
+    for hit in combined:
+        if isinstance(hit, dict) and "machine_id" not in hit:
+            hit["machine_id"] = default_machine
+
     # Ship coverage WITH the rows, never only in a log line.
     return FederatedResult(combined[:limit], lane_failures)

@@ -356,17 +356,23 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
         # runs every N opcodes and a nonzero return aborts the statement with
         # OperationalError('interrupted'). This is the only reliable way to
         # stop a LIKE scan mid-flight from the same thread.
+        #
+        # perf_counter is used rather than monotonic: on Windows, monotonic has
+        # ~15.6ms resolution (system timer tick), so microsecond test budgets
+        # (e.g. 1us in test_timed_out_store_reported_errored_not_silent) would
+        # fail to trigger within fast opcode sweeps (<15ms). perf_counter offers
+        # sub-microsecond resolution across platforms.
         budget = _timeout_s()
-        deadline = time.monotonic() + budget
+        deadline = time.perf_counter() + budget
 
         def _over_budget():
-            return 1 if time.monotonic() > deadline else 0
+            return 1 if time.perf_counter() > deadline else 0
 
         if budget > 0:
             conn.set_progress_handler(_over_budget, 4000)
 
         def _timed_out(exc: sqlite3.OperationalError) -> bool:
-            return "interrupt" in str(exc).lower() or time.monotonic() > deadline
+            return "interrupt" in str(exc).lower() or time.perf_counter() > deadline
 
         try:
             # Prefer the index when one exists. On a large vault this is the whole
@@ -413,12 +419,14 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
             # rewritten.
             title = _redact(item["title"] or "Untitled")
             content = _redact(item["content"] or "")
+            machine_id = os.environ.get("NOUGEN_MACHINE_ID", "blade1tb")
             results.append({
                 "id": f"vault_{vid}_{_stable_hash(item['title'])[:16]}",
                 "event_type": "LOCAL_VAULT",
                 "title": title,
                 "content": content,
-                "tags": json.dumps(["local_vault", path.stem]),
+                "tags": json.dumps(["local_vault", path.stem, f"machine:{machine_id}"]),
+                "machine_id": machine_id,
                 "utility_score": 1.0,
                 "access_count": 0,
                 "file_hash": _stable_hash(item["content"]),

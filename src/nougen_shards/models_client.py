@@ -733,18 +733,39 @@ class WhoVisionsCloudClient(LLMClient):
     Client for Who Visions Hosted Cloud Brain.
     Securely bridges local CLI to remote node for metered inference.
     """
-    def __init__(self, node_url: Optional[str] = None, user_token: Optional[str] = None):
+    def __init__(self, node_url: Optional[str] = None, user_token: Optional[str] = None,
+                 default_model: str = "gemma4:cloud"):
         self.node_url = node_url or os.environ.get("NGS_CLOUD_URL")
         self.user_token = user_token or os.environ.get("NGS_CLOUD_TOKEN")
+        self.default_model = default_model
 
     def is_alive(self) -> bool:
         return bool(self.node_url and self.user_token)
 
     def list_models(self) -> list:
         # Return canonical cloud models
-        return ["whovisions/brain-v1", "openrouter/auto"]
+        return ["gemma4:cloud", "qwen3.5:cloud", "whovisions/brain-v1", "openrouter/auto"]
 
-    def chat(self, model: str, messages: list, stream: bool = False) -> str:
+    def chat(self, model: Optional[str] = None, messages: Optional[list] = None, stream: bool = False) -> str:
+        # Support chat(messages=[...]) or chat(model, messages)
+        if isinstance(model, list) and messages is None:
+            messages = model
+            model = self.default_model
+        elif model is None:
+            model = self.default_model
+        if messages is None:
+            messages = []
+
+        try:
+            import ollama
+            resp = ollama.chat(model=model, messages=messages, stream=stream)
+            if hasattr(resp, "message"):
+                return getattr(resp.message, "content", "") or ""
+            if isinstance(resp, dict):
+                return resp.get("message", {}).get("content", "")
+        except Exception:
+            pass
+
         if not self.is_alive():
             return "Error: Who Visions Cloud not configured. Use: nougen auth set-key cloud <url>,<token>"
         
@@ -904,6 +925,17 @@ class OllamaClient(LocalLLMClient):
 
     def chat(self, model: str, messages: list, stream: bool = False,
              manual: bool = False) -> str:
+        if ":cloud" in model or model.endswith("-cloud") or "/cloud" in model:
+            try:
+                import ollama
+                resp = ollama.chat(model=model, messages=messages, stream=stream)
+                if hasattr(resp, "message"):
+                    return getattr(resp.message, "content", "") or ""
+                if isinstance(resp, dict):
+                    return resp.get("message", {}).get("content", "")
+            except Exception as e:
+                return f"Error: {e}"
+
         # VRAM admission gate (operator rule 2026-08-08: EVERY local request
         # checks VRAM first). Returning "Error: ..." makes run_agent fall
         # through to the free cloud roster instead of spilling - spill crashed
@@ -915,6 +947,36 @@ class OllamaClient(LocalLLMClient):
         _v = check_vram(model, manual=manual)
         if not _v.ok:
             return f"Error: VRAM gate refused local run - {_v.reason}"
+
+        # Cloud models (:cloud) or explicit SDK mode: route directly via native `from ollama import chat`
+        if ":cloud" in model or model.endswith("-cloud") or os.getenv("NOUGEN_USE_OLLAMA_SDK") == "1":
+            try:
+                # Ensure dialable host for Windows (prevent IPv6 [::1] connection issues or 0.0.0.0 bind address)
+                if os.environ.get("OLLAMA_HOST") in ("0.0.0.0", "::", None, ""):
+                    os.environ["OLLAMA_HOST"] = "127.0.0.1:11434"
+                from ollama import chat as ollama_chat
+                resp = ollama_chat(
+                    model=model,
+                    messages=messages,
+                    stream=stream,
+                )
+                if not stream:
+                    content = resp.message.content or ""
+                    if not content.strip() and hasattr(resp.message, "thinking") and resp.message.thinking:
+                        return f"[recovered from reasoning]\n{resp.message.thinking}"
+                    return content
+                full = ""
+                for chunk in resp:
+                    part = chunk.message.content or ""
+                    full += part
+                    sys.stdout.write(part)
+                    sys.stdout.flush()
+                return full
+            except Exception as exc:
+                if ":cloud" in model or model.endswith("-cloud"):
+                    return f"Error: Ollama Cloud execution failed for {model} - {exc}"
+                logger.warning("Native ollama.chat failed (%s), falling back to HTTP: %s", type(exc).__name__, exc)
+
         # keep_alive 0 ONLY for non-resident models: forcing it on the
         # resident would evict IRIS's pinned model after every call.
         payload = {"model": model, "messages": messages, "stream": stream,
@@ -1182,3 +1244,6 @@ def get_best_available_client() -> LocalLLMClient:
     if lm_client.is_alive():
         return lm_client
     return ollama
+
+
+OllamaCloudClient = WhoVisionsCloudClient

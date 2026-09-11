@@ -265,10 +265,97 @@ def consolidate_episodic_data(limit: int = 10) -> Dict[str, Any]:
     }
 
 
+def synthesize_skills_from_invariants(
+    extracted_rules: List[Dict[str, str]],
+    limit: int = 3,
+) -> List[Dict[str, Any]]:
+    """
+    Synthesizes and sandbox-verifies candidate progressive skills directly from
+    semantic invariants consolidated during the dream cycle.
+
+    Groups invariants by subject, builds procedural grounding, registers candidate
+    skills in the progressive registry, and sandbox-verifies them into PILOT tier.
+    """
+    if not extracted_rules:
+        return []
+
+    from .progressive_skills import get_progressive_skill_manager
+
+    manager = get_progressive_skill_manager()
+    evolved_skills: List[Dict[str, Any]] = []
+
+    # Group invariants by subject
+    grouped: Dict[str, List[str]] = {}
+    for item in extracted_rules:
+        if not isinstance(item, dict):
+            continue
+        sub = item.get("subject")
+        pred = item.get("predicate")
+        if not sub or not pred or not isinstance(sub, str) or not isinstance(pred, str):
+            continue
+        sub_clean = sub.strip()
+        pred_clean = pred.strip()
+        if not sub_clean or not pred_clean:
+            continue
+        grouped.setdefault(sub_clean, []).append(pred_clean)
+
+    # Process up to limit subjects
+    for subject, predicates in list(grouped.items())[:limit]:
+        clean_slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", subject.lower()).strip("-")
+        if not clean_slug or len(clean_slug) < 2:
+            clean_slug = "evolved-skill"
+        skill_name = f"evolved-{clean_slug}"
+
+        description = f"Autonomous procedural skill evolved from dream invariants for {subject}."
+        invariants_list = [f"{subject}: {p}" for p in predicates]
+        grounding = (
+            f"Grounding derived from consolidated dream invariants for {subject}:\n"
+            + "\n".join(f"- {p}" for p in predicates)
+        )
+        body = (
+            f"## Operating Procedure for {subject}\n"
+            f"Adhere strictly to verified invariants:\n"
+            + "\n".join(f"1. Ensure {p}." for p in predicates)
+            + "\n2. Verify system state before applying changes.\n"
+            "3. Report pass/fail verification status."
+        )
+
+        try:
+            candidate = manager.register_candidate(
+                name=skill_name,
+                description=description,
+                body=body,
+                grounding=grounding,
+                usage_triggers=[skill_name, subject.lower(), clean_slug],
+                invariants=invariants_list,
+            )
+            # Run virtual verification in sandbox to promote CANDIDATE -> PILOT
+            verified = manager.verify_candidate_sandbox(candidate.name)
+            pkg_path = (manager.skills_dir / candidate.name / "SKILL.md").resolve()
+
+            evolved_skills.append({
+                "name": candidate.name,
+                "tier": candidate.tier.value,
+                "verified": verified,
+                "invariants_count": len(invariants_list),
+                "path": str(pkg_path),
+            })
+        except Exception as exc:
+            evolved_skills.append({
+                "name": skill_name,
+                "tier": "CANDIDATE",
+                "verified": False,
+                "error": str(exc),
+            })
+
+    return evolved_skills
+
+
 def wake() -> Dict[str, Any]:
     """
     Executes the autonomous Dream cycle (REM Sleep).
-    Decays utility scores, extracts SFT pairs, and runs semantic consolidation.
+    Decays utility scores, extracts SFT pairs, runs semantic consolidation,
+    and synthesizes/verifies candidate progressive skills from newly learned invariants.
     """
     # 1. Prune
     core.decay_utility_scores()
@@ -281,6 +368,14 @@ def wake() -> Dict[str, Any]:
     # 3. Perform relational semantic consolidation
     consolidation_results = consolidate_episodic_data(limit=10)
     
+    # 4. Recursively evolve skills from newly extracted semantic invariants
+    evolved_skills = []
+    if consolidation_results.get("rules"):
+        evolved_skills = synthesize_skills_from_invariants(
+            consolidation_results["rules"],
+            limit=3,
+        )
+
     return {
         "experimental": True,
         "pruned": "Applied 0.95x utility decay to all shards.",
@@ -288,6 +383,7 @@ def wake() -> Dict[str, Any]:
         "sft_pairs_generated": len(sft_pairs),
         "parametric_dataset_path": dataset_path,
         "dual_system_consolidation": consolidation_results,
+        "evolved_skills": evolved_skills,
         "complete": consolidation_results["complete"],
         "status": ("Decay applied, SFT dataset exported, and dual-system semantic consolidation completed."
                    if consolidation_results["complete"] else

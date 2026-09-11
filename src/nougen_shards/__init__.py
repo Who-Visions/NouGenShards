@@ -27,6 +27,12 @@ from .history import HistoryEngine, log_event, init_history_db
 from .graph import link_shards, related_shards
 from .gatekeeper import check_mutation_gate
 
+try:
+    from .transcriber import NouGenTranscriber, TranscribeEngine
+except (ImportError, ModuleNotFoundError):
+    NouGenTranscriber = None  # type: ignore[assignment,misc]
+    TranscribeEngine = None  # type: ignore[assignment,misc]
+
 # Read from installed package metadata rather than restated here. The v1.2.0
 # release bumped pyproject.toml and left this line at 1.1.0, so `nougen
 # --version` reported a version that had not shipped for two releases — the one
@@ -61,4 +67,6 @@ __all__ = [
     "link_shards",
     "related_shards",
     "check_mutation_gate",
+    "NouGenTranscriber",
+    "TranscribeEngine",
 ]

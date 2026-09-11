@@ -30,9 +30,11 @@ def _purge_wake_modules():
 
 
 @pytest.fixture()
-def wake(monkeypatch):
+def wake(monkeypatch, tmp_path):
     """The wake package with no adapter importable: the default everywhere."""
     monkeypatch.setenv("NOUGEN_WAKE_ANTIGRAVITY_BIN", "")
+    monkeypatch.setenv("NOUGEN_WAKE_KAEDRA_ENABLED", "")
+    monkeypatch.setenv("KAEDRA_DIR", str(tmp_path / "nonexistent_kaedra"))
     monkeypatch.setattr("shutil.which", lambda *a, **k: None)
     _purge_wake_modules()
     return importlib.import_module("wake")
@@ -56,7 +58,7 @@ def test_status_explains_each_absence(wake):
     """Diagnosable without guessing which runtime is missing."""
     status = wake.status()
     assert status["available"] == []
-    assert set(status["unavailable"]) == {"antigravity"}
+    assert set(status["unavailable"]) == {"antigravity", "kaedra"}
     assert all(isinstance(v, str) and v for v in status["unavailable"].values())
 
 
@@ -118,8 +120,11 @@ def test_target_must_match_an_adapter(wake, monkeypatch):
 
 
 @pytest.fixture()
-def node(monkeypatch):
+def node(monkeypatch, tmp_path):
     """The receiver module, with the wake layer absent (the default node)."""
+    monkeypatch.setenv("NOUGEN_WAKE_ANTIGRAVITY_BIN", "")
+    monkeypatch.setenv("NOUGEN_WAKE_KAEDRA_ENABLED", "")
+    monkeypatch.setenv("KAEDRA_DIR", str(tmp_path / "nonexistent_kaedra"))
     _purge_wake_modules()
     for name in [m for m in sys.modules if m.startswith("nougenmsg_node")]:
         del sys.modules[name]

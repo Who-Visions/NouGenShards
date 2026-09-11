@@ -2,8 +2,9 @@
 Generate the Metameric Memory Engine long-form essay on the local fleet ($0).
 
 Five phases of the 21-module loop, ~1,700 words each, written sequentially
-(one model loaded at a time — 8GB VRAM ceiling). Tries the QB (gemma4:12b)
-first, falls back to gemma4-aggressive:e4b per phase. Output assembles into
+(one model loaded at a time — 8GB VRAM ceiling). Walks NOUGEN_LONGFORM_MODELS
+in order, falling back a step per phase on failure; the list is env-overridable
+and the default carries no 12b build. Output assembles into
 a single markdown draft for the NouGenSite blog.
 """
 import json
