@@ -1,4 +1,4 @@
-﻿"""
+"""
 NouGen Core Media & Audio Transcription Subsystem (Shang Tsung Transcriber).
 
 Bakes audio/video downloading (yt-dlp, 30+ platforms), subtitle extraction,
@@ -12,8 +12,15 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-import yt_dlp
-from faster_whisper import WhisperModel
+try:
+    import yt_dlp
+except ImportError:
+    yt_dlp = None
+
+try:
+    from faster_whisper import WhisperModel
+except ImportError:
+    WhisperModel = None
 
 from . import core as shards
 
@@ -42,6 +49,8 @@ class TranscribeEngine:
         self._model: Optional[WhisperModel] = None
 
     def _get_model(self) -> WhisperModel:
+        if WhisperModel is None:
+            raise RuntimeError("faster-whisper is not installed. Install with: pip install faster-whisper")
         if self._model is None:
             dev = self.device
             c_type = self.compute_type
@@ -139,6 +148,8 @@ class NouGenTranscriber:
             "noplaylist": True,
         }
 
+        if yt_dlp is None:
+            raise RuntimeError("yt-dlp is not installed. Install with: pip install yt-dlp")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             meta = ydl.extract_info(source, download=True)
             title = meta.get("title", "Online Media")

@@ -20,8 +20,12 @@ RUN python -m pip install --upgrade pip setuptools wheel \
 # 复制项目文件
 COPY . .
 
-# 创建临时目录
-RUN mkdir -p temp
+# 创建临时目录并创建非 root 用户运行应用 (Trivy DS-0002)
+RUN mkdir -p temp \
+    && useradd -m -u 1000 appuser \
+    && chown -R appuser:appuser /app
+
+USER appuser
 
 # 设置环境变量
 ENV HOST=0.0.0.0
