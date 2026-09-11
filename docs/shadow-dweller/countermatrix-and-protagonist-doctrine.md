@@ -1,8 +1,8 @@
 # 🌑 SHADOW DWELLER: COUNTERMATRIX & PROTAGONIST DOCTRINE
-**Source Canon**: `shard:12102@db3` × `shard:12438@db4` × `shard:12227@db1` × `shard:12178@db6`  
+**Source Canon**: `shard:12050@db9` × `shard:12102@db3` × `shard:12438@db4` × `shard:12227@db1` × `shard:12178@db6`  
 **Observatory Directive**: Anti-Supergirl 2026 Countermatrix, Protagonist Architecture, and Recursive Action Grammar  
 **Owner / Originator**: Dav3 (Dave Meralus)  
-**Status**: Durable Fleet Canon Specification  
+**Status**: Durable Fleet Canon Specification (Volume 1 Power Ceiling Locked)  
 
 ---
 
@@ -22,30 +22,49 @@ Audiences reject "just fine" blockbuster construction: generic superhero framing
 
 ---
 
-## ⚡ 2. One-Sentence Theatrical Promise
+## 🔒 2. The Volume 1 Power Progression & Ceiling Law (Levels 1 to 3 Only)
+> **Canon Anchor: `shard:12050@db9` (Direct Directive from Dave, 2026-09-11)**
+
+**Present-day Volume 1 Xoah operates strictly at Levels 1 to 3.** Her true abilities do not fully form until Volume 2.
+- **Strictly Prohibited in Volume 1**: Xoah must **NOT** be written as commanding or mastering chronocutting, intentional spacetime tears, black-dust teleportation, causal combat debt manipulation, or deliberate Veil navigation.
+- **Where Volume 1 Protagonist Strength Comes From**:
+  1. Courier instincts, route memorization, urban navigation, and environmental awareness.
+  2. Survival intelligence, street-level hustle, and mortal grit under syndicate pressure.
+  3. Kage Tanak fundamentals: physical blade mechanics, CQC footwork, physical weight, stamina limits, and edge alignment.
+  4. Human nerve, judgment, stubbornness, raw empathy, fallibility, and real mortal choices.
+- **How the Veil Manifests in Volume 1 (Atmospheric / Uncontrolled Mystery)**:
+  - The Veil does NOT act as an active superpower in Vol 1. It haunts the periphery through waking nightmares, sensory echoes, gut-wrenching déjà vu, impossible coincidences, lingering black smoke/dust traces, and unexplained future-self intrusions.
+  - Any spacetime anomalies or temporal blade catches that occur around young Xoah are terrifying, uncontrollable environmental ruptures or external intrusions from older incarnations (SDX/Queen Xoah)—never young Xoah's controlled technique.
+- **The Payoff in Volume 2+**:
+  - The audience must fall in love with young Xoah's mortal grit, sacrifice, and flaws before she ever acquires god-tier temporal power. True chronocutting and conscious causal manipulation are earned in Volume 2 and beyond.
+
+---
+
+## ⚡ 3. One-Sentence Theatrical Promise
 
 > **"To escape a lethal syndicate debt in the neon depths of Atlantis, an underground courier must master a blade that cuts across time—only to discover that the terrifying force hunting her through history is the monster she is destined to become."**
 
 ---
 
-## 🎬 3. The 30-Second Trailer Proof Beats
+## 🎬 4. The 30-Second Trailer Proof Beats
+*(Teaser Note: If a mature temporal sword catch, rift, or future-Xoah appears, frame it as a mystery, future intrusion, or external temporal phenomenon—not Vol 1 Xoah's mastered skill)*
 
 - **00:00 - 00:05 (The Atmosphere & Debt)**:
   - Deep underwater rumble of submerged Old Atlantis. Neon flickering in suffocating rain.
-  - Close-up: **Xoah Oda** wraps bloodied hand bandages around the grip of **Kage Tanak**. Her face is marked by exhaustion and an unyielding predatory gaze.
+  - Close-up: Young **Xoah Oda** wraps bloodied hand bandages around the grip of **Kage Tanak**. Her face is marked by exhaustion, mortal adrenaline, and street hunger.
   - *V.O. (Underground Syndicate Boss)*: "Everyone in the lower wards owes blood to someone, Xoah. But you... you borrowed against tomorrow."
 - **00:05 - 00:12 (The Anomaly)**:
-  - Xoah sprints through a narrow alley. Black dust begins blooming off her heels—not smoke, but physical fragments of broken time.
-  - She stops dead. Total silence. The hair on her neck rises. A spatial tremor shakes the puddles around her boots.
-- **00:12 - 00:20 (The Impossible Cut)**:
+  - Xoah sprints through a narrow alley fleeing syndicate hounds. Black dust blooms off the brickwork—an external temporal distortion she doesn't control.
+  - She stops dead, gasping for breath. The hair on her neck rises. A spatial tremor shakes the puddles around her boots.
+- **00:12 - 00:20 (The Impossible Rupture)**:
   - Xoah spins 180 degrees. Empty alley. Nothing is there.
-  - With savage conviction, she draws Kage Tanak and slashes violently horizontally through **completely empty air**.
-  - A razor-thin iridescent slit tears through the atmosphere, bleeding black smoke.
-- **00:20 - 00:26 (The Causal Payoff)**:
+  - Cornered and frantic, she draws Kage Tanak in a desperate defensive cut—and the air violently fractures around the steel.
+  - An involuntary iridescent slit tears through the atmosphere, bleeding black smoke—an uncontrolled rift erupting from external causal tension.
+- **00:20 - 00:26 (The Causal Intrusion)**:
   - **SMASH CUT** to a gilded, rain-slicked throne room 15 years in the future.
   - A towering, armored figure—**Queen Xoah / SDX**—is mid-execution of a rebel.
   - Without warning, the tear rips open behind her head. **CLANG!**
-  - Queen Xoah spins and parries the arriving blade with millimeter precision. Her eyes lock into the rift, staring directly back into young Xoah's eyes across 15 years.
+  - Queen Xoah spins and parries the arriving young blade with millimeter precision. Her cold eyes lock into the rift, staring directly back into terrified young Xoah's eyes across 15 years.
 - **00:26 - 00:30 (Title & Stinger)**:
   - Title card slams: **SHADOW DWELLER**.
   - *Whispered V.O. (SDX)*: "You always were too slow on the follow-through."
@@ -53,31 +72,25 @@ Audiences reject "just fine" blockbuster construction: generic superhero framing
 
 ---
 
-## ⚔️ 4. Five Demonstrations of Unique Combat Grammar
+## ⚔️ 5. Demonstrations of Action Grammar & Power Arc Progression
 
-### Scene 1: The Alleys of Old Atlantis (Ground-Level Kinetic Realism)
-- **Concept**: Baseline physical combat before the temporal reveal.
-- **Action Grammar**: Raw, brutal CQC using Kage Tanak. No slow-motion wires. Leverages tight physical choreography, environmental weaponization (pipes, rain gutters, neon conduits), and the exhaustion of a runner who cannot afford a hospital visit.
-- **Narrative Function**: Establishes Xoah's grit, human vulnerability, and mortal fear before time begins breaking.
+### Scene 1: The Alleys of Old Atlantis (Volume 1 Baseline Kinetic Realism — Level 1)
+- **Concept**: Pure mortal survival combat without powers.
+- **Action Grammar**: Raw, brutal CQC using Kage Tanak. No slow-motion wires, no temporal cuts. Leverages tight physical choreography, environmental weaponization (pipes, rain gutters, neon conduits), and the exhaustion of a runner who cannot afford a hospital visit.
+- **Narrative Function**: Establishes Xoah's grit, human vulnerability, and mortal fear.
 
-### Scene 2: The Spatial Slipstream (The Veil Dislocation)
-- **Concept**: The blade penetrates space before it penetrates time.
-- **Action Grammar**: Ambushed in a cargo elevator by syndicate enforcers, Xoah slashes forward. The blade enters a small iridescent tear in front of her chest and the tip instantly emerges behind the enforcer standing at the back of the elevator.
-- **Cost**: Every tear draws black necrotic dust into Xoah's veins; her vision stutters and her pulse spikes. She earns victory through physical suffering.
+### Scene 2: The Cargo Elevator Ambush (Volume 1 Level 2 — Courier Reflex & Spatial Echo)
+- **Concept**: Instinctive physical improvisation meeting early uncontrolled Veil echoes.
+- **Action Grammar**: Ambushed in a descending freight elevator, Xoah relies on tight close-quarter grappling and blade redirection. When cornered, an involuntary flicker of black dust momentarily disorients her attacker's depth perception—a sensory anomaly, not a teleport.
+- **Cost**: The echo leaves her nauseous, bleeding from the nose, and terrified of what is happening to her perception.
 
-### Scene 3: The Cross-Era Parry (Temporal Echo Defense)
-- **Concept**: Defending against an attack that was swung five minutes ago.
-- **Action Grammar**: In an abandoned temple vault, Xoah is knocked to the floor. Suddenly, an echoing shockwave ripples through the stones. She doesn't look at the syndicate assassin in front of her—she thrusts her blade upward into the ceiling. 
-- **Payoff**: A strike launched by an enemy in a previous firefight ruptures through the ceiling and clashes against her guard. She isn't just fighting the room; she is holding off the past.
+### Scene 3: The Vault Breach (Volume 1 Level 3 — Peak Mortal Discipline & The Outer Fracture)
+- **Concept**: Xoah pushing mortal blade mechanics to their absolute limit against syndicate heavies.
+- **Action Grammar**: Pure tactical intelligence: severing hydraulic cables, cutting power feeds, and using darkness and silhouette movement. At the climax of the fight, an external temporal shockwave crashes into the chamber from an older version of herself—young Xoah barely parries the collateral blast with her sword, surviving on sheer reflex.
 
-### Scene 4: Chronocutting & Delayed Emergence
-- **Concept**: Planting strikes for future tactical emergence.
-- **Action Grammar**: Facing an impenetrable cybernetic juggernaut whose kinetic shielding reflects all direct strikes, Xoah executes three slashes into open air at precise angles, leaving faint glowing scars in the atmosphere. She retreats, gets beaten, and lures the juggernaut into advancing across the exact coordinates.
-- **Payoff**: As the juggernaut steps forward, the delayed slashes ignite, slicing through the unshielded joints from within the spatial rift.
-
-### Scene 5: The Dual-Self Recursion Duel (Xoah vs X²)
-- **Concept**: Fighting yourself when your opponent knows every reflex you possess.
-- **Action Grammar**: A mirror match where both combatants predict every feint. The fight cannot be won through speed or strength. Xoah must make an irrational, self-destructive choice—allowing herself to be stabbed through the shoulder to lock X²'s blade and force a causal paradox that collapses the arena.
+### Scene 4 & 5: Advanced Causal Combat (Volume 2+ Evolution — Levels 4+)
+- **Chronocutting & Delayed Emergence (Vol 2+)**: Planting strikes into spacetime coordinates that emerge minutes or days later.
+- **The Dual-Self Recursion Duel (Vol 2+)**: High-level deliberate causal manipulation where older and younger incarnations collide, exploiting paradoxes and causal debt.
 
 ---
 
