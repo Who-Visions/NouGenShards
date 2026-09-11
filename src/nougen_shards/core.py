@@ -2396,9 +2396,100 @@ def get_shard_by_id(shard_id: int, db_index: int):
     conn = get_connection(db_index)
     try:
         row = conn.execute("SELECT * FROM shards WHERE id = ?", (shard_id,)).fetchone()
-        return hydrate(dict(row)) if row else None
+        if not row:
+            return None
+        item = hydrate(dict(row))
+        item["__db_index__"] = db_index
+        return item
     finally:
         conn.close()
+
+
+def get_shard_by_hash(file_hash: str, allow_prefix: bool = True) -> Optional[dict]:
+    """Retrieves a specific shard by its content-addressed file_hash.
+
+    Supports:
+      - Exact 32-char hex MD5: O(1) indexed probe via dedup_index.db, fallback to cluster DBs.
+      - Unique prefix (>= 8 hex chars): range probe against dedup_index.db. Returns if exactly 1 match.
+      - Returns hydrated shard dict with '__db_index__' injected, or None if not found or ambiguous.
+    """
+    clean_hash = file_hash.strip().lower()
+    if clean_hash.startswith("sha:"):
+        clean_hash = clean_hash[4:].strip()
+
+    if not clean_hash or len(clean_hash) < 8:
+        return None
+
+    target_hash = clean_hash
+    target_db = None
+
+    # 1. Probe dedup_index.db first (fast O(1) B-tree lookup across 200k+ shards)
+    try:
+        dedup_conn = _get_dedup_connection()
+        try:
+            if len(clean_hash) == 32:
+                row = dedup_conn.execute(
+                    "SELECT file_hash, db_index FROM hashes WHERE file_hash = ?",
+                    (clean_hash,)
+                ).fetchone()
+                if row:
+                    target_hash, target_db = row[0], row[1]
+            elif allow_prefix and len(clean_hash) >= 8:
+                try:
+                    next_char = chr(ord(clean_hash[-1]) + 1)
+                    upper_bound = clean_hash[:-1] + next_char
+                    matches = dedup_conn.execute(
+                        "SELECT file_hash, db_index FROM hashes WHERE file_hash >= ? AND file_hash < ? LIMIT 2",
+                        (clean_hash, upper_bound)
+                    ).fetchall()
+                except Exception:
+                    matches = dedup_conn.execute(
+                        "SELECT file_hash, db_index FROM hashes WHERE file_hash LIKE ? LIMIT 2",
+                        (f"{clean_hash}%",)
+                    ).fetchall()
+                if len(matches) == 1:
+                    target_hash, target_db = matches[0][0], matches[0][1]
+                elif len(matches) > 1:
+                    logger.warning("prefix %s is ambiguous (multiple matches in dedup index)", clean_hash)
+                    return None
+        finally:
+            dedup_conn.close()
+    except Exception as exc:
+        logger.debug("dedup index lookup failed for %s: %s", clean_hash, exc)
+
+    # 2. If target_db identified, retrieve directly
+    if target_db is not None:
+        if get_db_path(target_db).exists():
+            conn = get_connection(target_db)
+            try:
+                row = conn.execute("SELECT * FROM shards WHERE file_hash = ?", (target_hash,)).fetchone()
+                if row:
+                    item = hydrate(dict(row))
+                    item["__db_index__"] = target_db
+                    return item
+            finally:
+                conn.close()
+
+    # 3. Fallback: exact lookup across cluster DBs if dedup index missed
+    if len(clean_hash) == 32:
+        for i in range(1, MAX_DB_COUNT + 1):
+            try:
+                if not get_db_path(i).exists():
+                    continue
+                conn = get_connection(i)
+                try:
+                    row = conn.execute("SELECT * FROM shards WHERE file_hash = ?", (clean_hash,)).fetchone()
+                    if row:
+                        item = hydrate(dict(row))
+                        item["__db_index__"] = i
+                        return item
+                finally:
+                    conn.close()
+            except Exception:
+                continue
+
+    return None
+
 
 def locate_shard(shard_id: int) -> List[int]:
     """Returns every cluster DB index holding a shard with this id.
