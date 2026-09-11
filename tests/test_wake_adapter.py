@@ -56,7 +56,7 @@ def test_status_explains_each_absence(wake):
     """Diagnosable without guessing which runtime is missing."""
     status = wake.status()
     assert status["available"] == []
-    assert set(status["unavailable"]) == {"antigravity"}
+    assert set(status["unavailable"]) == {"antigravity", "kaedra"}
     assert all(isinstance(v, str) and v for v in status["unavailable"].values())
 
 

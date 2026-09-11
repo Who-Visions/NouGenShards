@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import subprocess
 from pathlib import Path
 from typing import Any, Dict
 
 
-KAEDRA_DIR = Path("/Users/kushboygroup/The Observatory/Kaedra")
+KAEDRA_DIR = Path(os.environ.get("KAEDRA_DIR", str(Path.home() / "The Observatory" / "Kaedra")))
+if not KAEDRA_DIR.is_dir() and not os.environ.get("NOUGEN_WAKE_KAEDRA_ENABLED"):
+    raise ImportError(f"kaedra runtime not found at {KAEDRA_DIR}; set KAEDRA_DIR or NOUGEN_WAKE_KAEDRA_ENABLED to enable this adapter")
 
 
 class Adapter:

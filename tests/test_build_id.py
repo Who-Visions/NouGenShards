@@ -64,15 +64,24 @@ def test_changing_the_file_changes_the_id(tmp_path):
     A disk-vs-canonical check cannot distinguish 'reloaded' from 'not
     reloaded'; an id derived from the loaded bytes can.
     """
+    import os
     staged = tmp_path / "nougenmsg_node.py"
     shutil.copy(TOOLS / "nougenmsg_node.py", staged)
     shutil.copy(TOOLS / "_agy_live_delivery.py", tmp_path / "_agy_live_delivery.py")
     read = "import sys;sys.path.insert(0,{!r});import nougenmsg_node as m;print(m.build_id())".format(str(tmp_path))
+    env = {
+        "NOUGEN_AGY_MSG_TOKEN": "t",
+        "PATH": "/usr/bin:/bin",
+        "USERPROFILE": os.environ.get("USERPROFILE", str(tmp_path)),
+        "HOMEDRIVE": os.environ.get("HOMEDRIVE", "C:"),
+        "HOMEPATH": os.environ.get("HOMEPATH", "\\Users"),
+        "SystemRoot": os.environ.get("SystemRoot", "C:\\Windows"),
+    }
     before = subprocess.run([sys.executable, "-c", read], capture_output=True, text=True,
-                            env={"NOUGEN_AGY_MSG_TOKEN": "t", "PATH": "/usr/bin:/bin"}).stdout.strip()
+                            env=env).stdout.strip()
     staged.write_text(staged.read_text() + "\n# a change on disk\n")
     after = subprocess.run([sys.executable, "-c", read], capture_output=True, text=True,
-                           env={"NOUGEN_AGY_MSG_TOKEN": "t", "PATH": "/usr/bin:/bin"}).stdout.strip()
+                           env=env).stdout.strip()
     assert before and after and before != after, (before, after)
 
 

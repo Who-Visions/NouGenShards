@@ -13,7 +13,7 @@ def test_cli_tree_help():
 
 def test_cli_evidence_classes():
     res = subprocess.run([sys.executable, "-m", "nougen_shards.cli", "evidence"],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert res.returncode == 0
     assert "evidence:measured" in res.stdout
     assert "evidence:verified" in res.stdout

@@ -624,28 +624,107 @@ def cmd_add(args):
         print("ℹ️ Shard already exists.")
 
 
-def _cmd_get_legacy(args):
-    """Resolve a shard by CONTENT HASH — a lookup, not a ranked query.
+def cmd_get(args):
+    """Retrieve a specific shard by content hash (sha:...), locator (<id>@db<N>), or ID.
 
-    Why this exists: `<id>@db<n>` is a node-local address that silently
-    resolves to unrelated content on another node, and "cite by phrase" is a
-    RANKED QUERY. Tested 2026-09-08, a phrase citation returned the very shard
-    it was meant to supersede, ranked above it, with no signal to the reader.
-
-    `shards.file_hash` is md5 of the cleaned content -- no node id, no
-    timestamp, no path -- so it is identical on every node that holds the same
-    bytes, is UNIQUE per DB, and is already indexed. It was built for dedup
-    routing and is a content address nobody was pointing at citations.
-    Confirmed independently on two nodes with different corpora before this
-    shipped.
-
-    Accepts a prefix. Ambiguity is reported, never silently resolved to the
+    Accepts a hash or prefix. Ambiguity is reported, never silently resolved to the
     first match -- a citation that quietly picks one of several is worse than
     one that fails.
     """
     from . import core
 
-    wanted = str(args.hash).strip().lower()
+    target = getattr(args, 'hash', None)
+    if target is None:
+        target = getattr(args, 'target', '')
+    target = str(target).strip()
+
+    if not target:
+        print("[!] No target specified. Usage: nougen get <sha:hash|hash|id@dbN|id>", file=sys.stderr)
+        sys.exit(1)
+
+    # 1. Check if target is a locator: e.g. 12159@db6
+    if "@db" in target.lower():
+        parts = target.lower().split("@db")
+        try:
+            shard_id = int(parts[0])
+            db_index = int(parts[1])
+            shard = shards.get_shard_by_id(shard_id, db_index)
+        except ValueError:
+            print(f"[!] Invalid locator format '{target}'. Expected <id>@db<N>", file=sys.stderr)
+            sys.exit(1)
+
+        if not shard:
+            if getattr(args, 'json', False):
+                print(json.dumps({"error": "NOT_FOUND", "target": target}))
+            else:
+                print(f"[!] NOT FOUND: '{target}' does not resolve to any shard in the active grid.")
+            sys.exit(1)
+
+        if getattr(args, 'json', False):
+            if 'embedding' in shard and shard['embedding'] is not None:
+                shard['embedding'] = _embedding_for_json(shard['embedding'])
+            print(json.dumps(shard, indent=2, default=str))
+            return
+
+        db_idx = shard.get('__db_index__') or '?'
+        title = shard.get('title') or '(untitled)'
+        fhash = shard.get('file_hash') or ''
+        created = shard.get('created_at') or ''
+        tags = shard.get('tags') or ''
+        sid = shard.get('id')
+
+        print(f"🪩 Shard [{sid}@db{db_idx}] · {title}")
+        print(f"   Address: sha:{fhash[:12]} ({fhash})")
+        print(f"   Created: {created} | Tags: {tags}")
+        print("─" * 70)
+        print(shard.get('content', ''))
+        return
+
+    # 2. Check if target is a bare integer ID
+    if target.isdigit():
+        shard_id = int(target)
+        dbs = shards.locate_shard(shard_id)
+        if not dbs:
+            shard = None
+        elif len(dbs) == 1:
+            shard = shards.get_shard_by_id(shard_id, dbs[0])
+        else:
+            print(f"[!] Collision: shard id {shard_id} exists in multiple databases: {['db' + str(d) for d in dbs]}.", file=sys.stderr)
+            print(f"    Please specify exact database: nougen get {shard_id}@db{dbs[0]}", file=sys.stderr)
+            sys.exit(1)
+
+        if not shard:
+            if getattr(args, 'json', False):
+                print(json.dumps({"error": "NOT_FOUND", "target": target}))
+            else:
+                print(f"[!] NOT FOUND: '{target}' does not resolve to any shard in the active grid.")
+            sys.exit(1)
+
+        if getattr(args, 'json', False):
+            if 'embedding' in shard and shard['embedding'] is not None:
+                shard['embedding'] = _embedding_for_json(shard['embedding'])
+            print(json.dumps(shard, indent=2, default=str))
+            return
+
+        db_idx = shard.get('__db_index__') or '?'
+        title = shard.get('title') or '(untitled)'
+        fhash = shard.get('file_hash') or ''
+        created = shard.get('created_at') or ''
+        tags = shard.get('tags') or ''
+        sid = shard.get('id')
+
+        print(f"🪩 Shard [{sid}@db{db_idx}] · {title}")
+        print(f"   Address: sha:{fhash[:12]} ({fhash})")
+        print(f"   Created: {created} | Tags: {tags}")
+        print("─" * 70)
+        print(shard.get('content', ''))
+        return
+
+    # 3. Content hash lookup (handles sha: prefix or raw hex)
+    wanted = target.lower()
+    if wanted.startswith("sha:"):
+        wanted = wanted[4:].strip()
+
     if len(wanted) < 6:
         print("Error: give at least 6 hex characters of the content hash.")
         sys.exit(1)
@@ -670,9 +749,12 @@ def _cmd_get_legacy(args):
             hits.append((index,) + tuple(row))
 
     if not hits:
-        print(f"No shard with content hash {wanted}* on this node.")
-        print("A hash is content-derived: absence here means these BYTES are "
-              "not on this node, not that the shard does not exist.")
+        if getattr(args, 'json', False):
+            print(json.dumps({"error": "NOT_FOUND", "target": target}))
+        else:
+            print(f"No shard with content hash {wanted}* on this node.")
+            print("A hash is content-derived: absence here means these BYTES are "
+                  "not on this node, not that the shard does not exist.")
         sys.exit(1)
 
     if len(hits) > 1:
@@ -682,7 +764,31 @@ def _cmd_get_legacy(args):
         sys.exit(1)
 
     index, sid, fhash, ts, title, content, tags = hits[0]
-    print(f"hash    {fhash}")
+
+    if getattr(args, 'json', False):
+        shard = {
+            "id": sid,
+            "file_hash": fhash,
+            "timestamp": ts,
+            "title": title,
+            "content": content,
+            "tags": tags,
+            "__db_index__": index,
+        }
+        print(json.dumps(shard, indent=2, default=str))
+        return
+
+    # When called via CLI target/hash, print content address info conforming to both test suites:
+    # 1) test_cli_get assertions:
+    #    hash {fhash}
+    #    located {sid}@db{index}   (a node-local locator, NOT the address)
+    #    when {ts}
+    #    tags {tags or '-'}
+    #    title {title}
+    # 2) test_content_addressing assertions:
+    #    sha:{target_hash[:12]}
+    #    {content}
+    print(f"hash    {fhash}  (sha:{fhash[:12]})")
     print(f"located {sid}@db{index}   (a node-local locator, NOT the address)")
     print(f"when    {ts}")
     print(f"tags    {tags or '-'}")
@@ -761,76 +867,6 @@ def cmd_search(args):
         # loop requires knowing that "Source:" is what --db wants.
         print(f"  ↳ helpful? nougen mark {res['id']} --worked --db {res['_db_index']}")
         print("-" * 40)
-
-
-def cmd_get(args):
-    """Retrieve a specific shard by content hash (sha:...) or locator (<id>@db<N>)."""
-    target = getattr(args, 'target', '').strip()
-    if not target:
-        print("[!] No target specified. Usage: nougen get <sha:hash|hash|id@dbN|id>", file=sys.stderr)
-        sys.exit(1)
-
-    shard = None
-    # 1. Content hash lookup: 'sha:...' or hex string (>= 8 chars)
-    is_hash = target.lower().startswith("sha:") or (
-        len(target) >= 8 and all(c in "0123456789abcdefABCDEF" for c in target)
-    )
-
-    if is_hash:
-        shard = shards.get_shard_by_hash(target)
-    # 2. Locator with db index: e.g. 12159@db6
-    elif "@db" in target.lower():
-        parts = target.lower().split("@db")
-        try:
-            shard_id = int(parts[0])
-            db_index = int(parts[1])
-            shard = shards.get_shard_by_id(shard_id, db_index)
-        except ValueError:
-            print(f"[!] Invalid locator format '{target}'. Expected <id>@db<N>", file=sys.stderr)
-            sys.exit(1)
-    # 3. Bare integer ID: probe across databases
-    elif target.isdigit():
-        shard_id = int(target)
-        dbs = shards.locate_shard(shard_id)
-        if not dbs:
-            shard = None
-        elif len(dbs) == 1:
-            shard = shards.get_shard_by_id(shard_id, dbs[0])
-        else:
-            print(f"[!] Collision: shard id {shard_id} exists in multiple databases: {['db' + str(d) for d in dbs]}.", file=sys.stderr)
-            print(f"    Please specify exact database: nougen get {shard_id}@db{dbs[0]}", file=sys.stderr)
-            sys.exit(1)
-    else:
-        # Fallback to hash probe
-        shard = shards.get_shard_by_hash(target)
-
-    if not shard:
-        if getattr(args, 'json', False):
-            print(json.dumps({"error": "NOT_FOUND", "target": target}))
-        else:
-            print(f"[!] NOT FOUND: '{target}' does not resolve to any shard in the active grid.")
-        sys.exit(1)
-
-    if getattr(args, 'json', False):
-        if 'embedding' in shard and shard['embedding'] is not None:
-            shard['embedding'] = _embedding_for_json(shard['embedding'])
-        print(json.dumps(shard, indent=2, default=str))
-        return
-
-    # Human-readable format
-    db_idx = shard.get('__db_index__') or '?'
-    title = shard.get('title') or '(untitled)'
-    fhash = shard.get('file_hash') or ''
-    created = shard.get('created_at') or ''
-    tags = shard.get('tags') or ''
-    sid = shard.get('id')
-
-    print(f"🪩 Shard [{sid}@db{db_idx}] · {title}")
-    print(f"   Address: sha:{fhash[:12]} ({fhash})")
-    print(f"   Created: {created} | Tags: {tags}")
-    print("─" * 70)
-    print(shard.get('content', ''))
-
 
 
 def _embedding_for_json(value):
