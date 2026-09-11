@@ -122,18 +122,24 @@ VIDEO_MAX_HEIGHT = int(os.getenv("VIDEO_MAX_HEIGHT", "720"))
 
 def _resolve_temp_file(filename: str, allowed_ext: frozenset) -> Path:
     """校验前端传入的文件名并解析为 temp 目录下的真实路径。"""
-    if "/" in filename or "\\" in filename or ".." in filename:
+    safe_name = os.path.basename(str(filename).replace("\\", "/"))
+    if not safe_name or safe_name != filename or ".." in safe_name:
         raise HTTPException(status_code=400, detail="文件名格式无效")
 
-    ext = Path(filename).suffix.lower()
+    ext = Path(safe_name).suffix.lower()
     if ext not in allowed_ext:
         raise HTTPException(status_code=400, detail=f"不支持的文件类型: {ext or '(none)'}")
 
-    file_path = TEMP_DIR / filename
-    # 二次防御：即使扩展名校验通过，也确认最终路径没跳出 temp
-    if file_path.parent.resolve() != TEMP_DIR.resolve():
+    resolved_temp = TEMP_DIR.resolve()
+    file_path = (resolved_temp / safe_name).resolve()
+
+    # 二次防御：严格验证路径位于 TEMP_DIR 内部
+    try:
+        file_path.relative_to(resolved_temp)
+    except ValueError:
         raise HTTPException(status_code=400, detail="文件名格式无效")
-    if not file_path.exists():
+
+    if not file_path.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
     return file_path
 

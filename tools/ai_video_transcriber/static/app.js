@@ -313,7 +313,6 @@ class VideoTranscriber {
   _saveSettings() {
     const s = {
       baseUrl:  this.modelBaseUrl.value,
-      apiKey:   this.apiKeyInput.value,
       model:    this.modelSelect.value,
       summaryLang: this.summaryLangSel.value,
       keepVideo: this.keepVideo ? this.keepVideo.checked : true,
@@ -327,20 +326,15 @@ class VideoTranscriber {
       if (!raw) return;
       const s = JSON.parse(raw);
       if (s.baseUrl)     this.modelBaseUrl.value = s.baseUrl;
-      if (s.apiKey)      this.apiKeyInput.value  = s.apiKey;
       if (s.summaryLang) this.summaryLangSel.value = s.summaryLang;
       if (this.keepVideo && typeof s.keepVideo === 'boolean') this.keepVideo.checked = s.keepVideo;
       // Model options will be restored after fetching
       this._savedModel = s.model || '';
 
-      // Auto-open settings if credentials were saved
-      if (s.baseUrl || s.apiKey) {
+      // Auto-open settings if baseUrl configured
+      if (s.baseUrl) {
         this.settingsBody.classList.add('open');
         this.settingsToggle.classList.add('open');
-        // Attempt to re-fetch model list silently
-        if (s.baseUrl && s.apiKey) {
-          setTimeout(() => this._fetchModels(true), 400);
-        }
       }
     } catch (_) {}
   }
