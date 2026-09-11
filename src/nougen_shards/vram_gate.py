@@ -151,12 +151,20 @@ def check_vram(model: str, need_gb: float | None = None,
     ):
         return Verdict(True, "vram gate bypassed for test environment")
 
+    # Cloud models (:cloud) run upstream via Ollama Cloud with zero local VRAM cost
+    if ":cloud" in model or model.endswith("-cloud"):
+        return Verdict(True, "cloud-hosted model via Ollama Cloud gateway (0 local VRAM required)")
+
     if manual or os.getenv("NOUGEN_VRAM_MANUAL") == "1":
         evicted = free_card()
         return Verdict(True, f"manual override — card cleared (evicted: "
                              f"{', '.join(evicted) or 'nothing'}); expect spill, "
                              "run serially, IRIS re-pins next cycle",
                        residents=tuple(evicted))
+
+    if ":cloud" in model or model.endswith("-cloud") or "/cloud" in model:
+        return Verdict(True, f"admitted to Ollama Cloud gateway ({model}); zero local VRAM footprint")
+
     need = need_gb if need_gb is not None else MEASURED_LOAD_GB.get(model)
     if need is None:
         return Verdict(False, f"no measured load size for {model!r}; measure via "

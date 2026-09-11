@@ -16,6 +16,7 @@ never diverted by any command here.
 | RELAY BACK | return the baton to its source |
 | RELAY FORWARD | advance the baton to the next destination |
 | CHARGE | do the work: hold context, gather evidence, verify locally before bouncing the baton |
+| LOOT | source extraction primitive: `LOOT <source>` inspects authorized/public sources, recovers structured assets/content, preserves provenance, and returns an inventory. Evidence-gated |
 
 ## Moves (named commands)
 

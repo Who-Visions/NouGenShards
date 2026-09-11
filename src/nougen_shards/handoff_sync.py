@@ -59,6 +59,7 @@ def _git(args: list[str], cwd: Path, timeout: int = 60) -> tuple[int, str, str]:
             text=True,
             timeout=timeout,
             check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
     except FileNotFoundError:
