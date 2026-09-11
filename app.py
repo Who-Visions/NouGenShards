@@ -479,11 +479,14 @@ def substrate_coverage() -> dict:
             # reach, and a caller comparing total_shards against the month
             # histogram must be able to see why they disagree.
             "malformed_timestamps": malformed,
-            # Cache key carries the active vault: a bare "substrate" key is
-            # module-level state shared across tenants, so it would serve one
-            # tenant's counts and DB detail to another.
+            "coverage_scope": "LOCAL_VAULT_COVERAGE",
             "grid": _cached(f"substrate:{core.active_vault_dir()}", _substrate_coverage),
             "vault": str(core.active_vault_dir()),
+            "vault_grid": {
+                "vaults_expected": 3,
+                "peer_vaults": ["blade", "phoebus", "whoart"],
+                "parity_standard": "3_VAULT_SYMMETRIC",
+            },
             # Federated read-through extent (decision 16729): "not found" must
             # be distinguishable from "not mounted" at the federation layer.
             # Cached: enumerating 40+ stores' row counts costs ~3.5s live
@@ -973,9 +976,13 @@ async def verify_token(
                               shard_gateway_token_dash, x_shard_gateway_token, token)
 
 
-async def tenant_vault_context(tenant: tenants.Tenant = Depends(verify_token)):
+async def tenant_vault_context(
+    tenant: tenants.Tenant = Depends(verify_token),
+    x_nougen_lane: Optional[str] = Header(None, alias="X-NouGen-Lane"),
+):
     """Hold the request's ContextVar binding through the complete handler."""
-    tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
+    lane = x_nougen_lane or tenant.lane or "default"
+    tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id, lane=lane)
     try:
         yield tenant
     finally:
@@ -1047,6 +1054,7 @@ def _substrate_coverage() -> dict:
         reason = "local grid is incomplete and no read-through upstream is configured"
 
     return {
+        "coverage_scope": "LOCAL_VAULT_COVERAGE",
         "complete": complete,
         "databases_expected": expected,
         "databases_mounted": len(mounted),
@@ -1107,7 +1115,10 @@ def _redaction_fingerprint() -> str:
 
 
 @app.get("/health")
-async def health(x_ngs_token: str = Header(None)):
+async def health(
+    x_ngs_token: str = Header(None),
+    x_nougen_lane: Optional[str] = Header(None, alias="X-NouGen-Lane"),
+):
     """Generic readiness when open; tenant-local substrate detail when authed.
 
     async def on purpose (2026-09-01). Every heavy endpoint here (/search,
@@ -1182,18 +1193,19 @@ async def health(x_ngs_token: str = Header(None)):
     if not x_ngs_token:
         return result
     return await run_in_threadpool(
-        _health_authed, result, warnings, persistent, x_ngs_token)
+        _health_authed, result, warnings, persistent, x_ngs_token, x_nougen_lane)
 
 
 def _health_authed(result: dict, warnings: list, persistent: bool,
-                   x_ngs_token: str) -> dict:
+                   x_ngs_token: str, x_nougen_lane: Optional[str] = None) -> dict:
     """Vault-touching half of /health; runs in the threadpool by design.
 
     `warnings` is the same list `result["warnings"]` points at, so appends
     here still land in the response -- same aliasing the inline code relied on.
     """
     tenant = _verify_token_sync(x_ngs_token)
-    context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
+    lane = x_nougen_lane or tenant.lane or "default"
+    context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id, lane=lane)
     try:
         # Vault-keyed so the cache cannot hand one tenant another's coverage.
         coverage = _cached(f"substrate:{tenant.vault_dir}", _substrate_coverage)
@@ -1201,7 +1213,21 @@ def _health_authed(result: dict, warnings: list, persistent: bool,
         core.reset_active_vault(context_tokens)
     result.update({
         "tenant_id": tenant.tenant_id,
+        "tenant_lane": lane,
         "total_shards": coverage["shards"],
+        "coverage_scope": "LOCAL_VAULT_COVERAGE",
+        "db_grid": {
+            "scope": "LOCAL_VAULT_COVERAGE",
+            "databases_mounted": coverage["databases_mounted"],
+            "databases_expected": coverage["databases_expected"],
+            "complete": coverage["complete"],
+            "shards": coverage["shards"],
+        },
+        "vault_grid": {
+            "vaults_expected": 3,
+            "peer_vaults": ["blade", "phoebus", "whoart"],
+            "parity_standard": "3_VAULT_SYMMETRIC",
+        },
         "substrate": coverage,
     })
     if not coverage["complete"] and not coverage["read_through"]:
@@ -1229,6 +1255,12 @@ class SearchRequest(BaseModel):
     # a bare "2026-03" is a whole month, "2026-03-14" a whole day.
     since: Optional[str] = None
     until: Optional[str] = None
+
+
+class RecallRequest(BaseModel):
+    query: str
+    limit: int = 10
+    scope: Optional[str] = "local"
 
 
 class CaptureRequest(BaseModel):
@@ -1427,6 +1459,93 @@ def search(req: SearchRequest, response: Response,
             "_db_index": "federation_meta",
         })
     return payload
+
+
+@app.get("/v1/health/local")
+async def local_health():
+    """Local vault health check for 3-vault federation peers."""
+    from dataclasses import asdict
+    from nougen_shards.federation.models import VaultId, NodeIdentity
+    machine_id = os.environ.get("NOUGEN_MACHINE_ID", "local")
+    vault_raw = os.environ.get("NOUGEN_VAULT_ID", "whoart").lower()
+    instance_id = os.environ.get("NOUGEN_INSTANCE_ID", f"{machine_id}-default")
+    try:
+        vid = VaultId(vault_raw)
+    except ValueError:
+        vid = VaultId.WHOART
+
+    coverage = _substrate_coverage()
+    db_present = coverage.get("databases_mounted", 0)
+    db_expected = coverage.get("databases_expected", 9)
+    healthy = db_present == db_expected
+
+    return {
+        "healthy": healthy,
+        "current": True,
+        "vault_id": vid.value,
+        "machine_id": machine_id,
+        "instance_id": instance_id,
+        "db_count": db_present,
+        "db_expected": db_expected,
+        "shard_count": coverage.get("shards", 0),
+        "newest_timestamp": coverage.get("span", {}).get("latest"),
+    }
+
+
+@app.get("/v1/health/fleet")
+async def fleet_health_endpoint(
+    x_nougen_correlation_id: Optional[str] = Header(None, alias="X-NouGen-Correlation-ID"),
+    _tenant: tenants.Tenant = Depends(tenant_vault_context),
+):
+    """Fleet-wide 3-vault symmetric health check."""
+    from dataclasses import asdict
+    from nougen_shards.federation.config import load_vault_peers
+    from nougen_shards.federation.client import FederationClient
+    from nougen_shards.federation.service import FederationService
+
+    token = NODE_TOKEN or ""
+    peers = load_vault_peers()
+    client = FederationClient(token=token)
+    service = FederationService(peers=peers, client=client)
+    result = await service.health(x_nougen_correlation_id)
+    return asdict(result)
+
+
+@app.post("/v1/recall")
+async def recall_endpoint(
+    body: RecallRequest,
+    response: Response,
+    x_nougen_federated_hop: Optional[str] = Header(None, alias="X-NouGen-Federated-Hop"),
+    x_nougen_correlation_id: Optional[str] = Header(None, alias="X-NouGen-Correlation-ID"),
+    _tenant: tenants.Tenant = Depends(tenant_vault_context),
+):
+    """3-vault loop-preventing recall endpoint."""
+    from dataclasses import asdict
+    from nougen_shards.federation.config import load_vault_peers
+    from nougen_shards.federation.client import FederationClient
+    from nougen_shards.federation.service import FederationService
+
+    local_only = (
+        body.scope == "local"
+        or x_nougen_federated_hop in {"1", "true", "local-only"}
+    )
+
+    if local_only:
+        search_req = SearchRequest(query=body.query, limit=body.limit)
+        results = search(search_req, response, _tenant)
+        return {
+            "query": body.query,
+            "hits": results,
+            "federation_fanout_count": 0,
+            "scope": "local",
+        }
+
+    token = NODE_TOKEN or ""
+    peers = load_vault_peers()
+    client = FederationClient(token=token)
+    service = FederationService(peers=peers, client=client)
+    result = await service.recall(body.query, body.limit, x_nougen_correlation_id)
+    return asdict(result)
 
 
 @app.post("/capture")

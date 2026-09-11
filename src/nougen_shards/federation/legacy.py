@@ -2,11 +2,12 @@
 import logging
 import os
 import threading
-from . import core
-from .connectors.sql import query_external_dbs
-from .connectors.cloud import query_cloud_shards
-from .connectors.local_vault import query_local_vaults
-from . import keymaker
+from .. import core
+from .. import tenants
+from ..connectors.sql import query_external_dbs
+from ..connectors.cloud import query_cloud_shards
+from ..connectors.local_vault import query_local_vaults
+from .. import keymaker
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -100,8 +101,17 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     vault_results = []
 
     # Filter tenant access boundaries
-    if core.active_tenant_id() == "owner":
+    tenant_id = core.active_tenant_id()
+    allow_fed = (
+        tenant_id == "owner" or
+        os.environ.get("NOUGEN_TENANT_ALLOW_FEDERATION", "0").strip().lower() in ("1", "true", "yes") or
+        tenants.tenant_allows_federation(tenant_id)
+    )
+    if tenant_id == "owner":
         external_configs = keymaker.list_external_dbs()
+        cloud_configs = keymaker.list_cloud_nodes()
+    elif allow_fed:
+        external_configs = []
         cloud_configs = keymaker.list_cloud_nodes()
     else:
         external_configs = []

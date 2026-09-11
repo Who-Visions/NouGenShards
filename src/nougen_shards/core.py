@@ -121,6 +121,10 @@ _ACTIVE_TENANT_ID: ContextVar[Optional[str]] = ContextVar(
     "nougen_active_tenant_id", default=None)
 
 
+_ACTIVE_TENANT_LANE: ContextVar[Optional[str]] = ContextVar(
+    "nougen_active_tenant_lane", default=None)
+
+
 def active_vault_dir() -> Path:
     """Request-local vault, falling back to the legacy process-wide vault."""
     return _ACTIVE_VAULT_DIR.get() or GLOBAL_DIR
@@ -131,20 +135,38 @@ def active_tenant_id() -> str:
     return _ACTIVE_TENANT_ID.get() or "owner"
 
 
+def active_tenant_lane() -> Optional[str]:
+    """Request-local tenant lane (e.g. claude-client, blade1tb-shards, gemini-studio)."""
+    return _ACTIVE_TENANT_LANE.get()
+
+
 def vault_context_is_set() -> bool:
     return _ACTIVE_VAULT_DIR.get() is not None
 
 
-def bind_active_vault(vault_dir: Path, tenant_id: str) -> tuple[Token, Token]:
-    """Bind a tenant to the current context and return reset tokens."""
-    return (_ACTIVE_VAULT_DIR.set(Path(vault_dir)), _ACTIVE_TENANT_ID.set(tenant_id))
+def bind_active_vault(vault_dir: Path, tenant_id: str, lane: Optional[str] = None) -> tuple:
+    """Bind a tenant and optional lane to the current context and return reset tokens."""
+    tokens = [
+        _ACTIVE_VAULT_DIR.set(Path(vault_dir)),
+        _ACTIVE_TENANT_ID.set(tenant_id),
+    ]
+    if lane is not None:
+        tokens.append(_ACTIVE_TENANT_LANE.set(lane))
+    return tuple(tokens)
 
 
-def reset_active_vault(tokens: tuple[Token, Token]) -> None:
+def reset_active_vault(tokens: tuple) -> None:
     """Undo :func:`bind_active_vault` in the context that created it."""
-    vault_token, tenant_token = tokens
-    _ACTIVE_TENANT_ID.reset(tenant_token)
-    _ACTIVE_VAULT_DIR.reset(vault_token)
+    if len(tokens) >= 3:
+        vault_token, tenant_token, lane_token = tokens[0], tokens[1], tokens[2]
+        if lane_token is not None:
+            _ACTIVE_TENANT_LANE.reset(lane_token)
+        _ACTIVE_TENANT_ID.reset(tenant_token)
+        _ACTIVE_VAULT_DIR.reset(vault_token)
+    elif len(tokens) == 2:
+        vault_token, tenant_token = tokens
+        _ACTIVE_TENANT_ID.reset(tenant_token)
+        _ACTIVE_VAULT_DIR.reset(vault_token)
 
 
 def _ensure_active_vault_dir() -> Path:
