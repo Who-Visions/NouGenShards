@@ -797,9 +797,6 @@ class WhoVisionsCloudClient(LLMClient):
         return [[] for _ in texts]
 
 
-OllamaCloudClient = WhoVisionsCloudClient
-
-
 def find_best_model_from_list(models: List[str]) -> Optional[ModelBudgetConfig]:
     """Helper to select the best available model, preferring custom models over defaults."""
     if not models:
@@ -1249,61 +1246,4 @@ def get_best_available_client() -> LocalLLMClient:
     return ollama
 
 
-class OllamaCloudClient(LLMClient):
-    """Client for Ollama Cloud models (e.g. gemma4:cloud, qwen3.5:cloud).
-    Routes inference upstream via Ollama Cloud gateway with zero local VRAM footprint.
-    """
-    def __init__(self, default_model: str = "gemma4:cloud", host: str = "127.0.0.1:11434"):
-        self.default_model = default_model
-        self.host = host
-        if "OLLAMA_HOST" not in os.environ:
-            os.environ["OLLAMA_HOST"] = self.host
-
-    def is_alive(self) -> bool:
-        try:
-            from ollama import Client
-            c = Client(host=f"http://{self.host}")
-            c.list()
-            return True
-        except Exception:
-            return False
-
-    def list_models(self) -> list:
-        return ["gemma4:cloud", "qwen3.5:cloud"]
-
-    def chat(self, model: Optional[str] = None, messages: Optional[list] = None, stream: bool = False) -> str:
-        target_model = model or self.default_model
-        if messages is None:
-            messages = [{"role": "user", "content": "Hello!"}]
-        try:
-            if os.environ.get("OLLAMA_HOST") in ("0.0.0.0", "::", None, ""):
-                os.environ["OLLAMA_HOST"] = self.host
-            from ollama import chat
-            response = chat(
-                model=target_model,
-                messages=messages,
-                stream=stream,
-            )
-            if not stream:
-                content = response.message.content or ""
-                if not content.strip() and hasattr(response.message, "thinking") and response.message.thinking:
-                    return f"[recovered from reasoning]\n{response.message.thinking}"
-                return content
-            full = ""
-            for chunk in response:
-                part = chunk.message.content or ""
-                full += part
-                sys.stdout.write(part)
-                sys.stdout.flush()
-            return full
-        except Exception as exc:
-            return f"Error: Ollama Cloud execution failed for {target_model} - {exc}"
-
-    def embed(self, model: str, text: str) -> list:
-        return []
-
-    def batch_embed(self, model: str, texts: List[str]) -> List[list]:
-        return [[] for _ in texts]
-
-
-WhoVisionsCloudClient = OllamaCloudClient
+OllamaCloudClient = WhoVisionsCloudClient
