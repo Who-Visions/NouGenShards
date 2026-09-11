@@ -12,8 +12,7 @@ import pytest
 from nougen_shards.triangle_rally import (
     TriangleRallyManager,
     RallyTerminatedError,
-    InvalidReceiverError,
-    DuplicateBatonError
+    InvalidReceiverError
 )
 
 

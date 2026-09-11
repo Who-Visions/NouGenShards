@@ -1,8 +1,5 @@
-import pytest
-import os
 import json
-from pathlib import Path
-from nougen_shards.live_cockpit import LiveCockpit, LiveSession
+from nougen_shards.live_cockpit import LiveCockpit
 
 def test_live_cockpit_discovery(tmp_path):
     # Setup mock session registry

@@ -13,9 +13,8 @@ Implements the continuous 3-node communication loop across fleet machines
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-import json
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 
 class TriangleRallyError(Exception):

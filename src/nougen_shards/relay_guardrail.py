@@ -7,11 +7,10 @@ Ensures that no leg is closed without a verified EvidenceTuple:
 (code_artifact, commit_hash/path, test_result, observer_node).
 """
 import os
-import sys
 import json
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Optional, Tuple
 
 HARDCADE_STRICT_ENV = "HARDCADE_STRICT_EXECUTION"
 RELAY_ROOT = Path(os.environ.get("NOUGEN_RELAY_DIR", Path.home() / ".nougen" / "relay" / ".handoffs"))

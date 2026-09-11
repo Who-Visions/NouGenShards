@@ -15,9 +15,7 @@ import pytest
 from nougen_shards.hardcade_pong import (
     HardcadePongMatch,
     HardcadeSquadProgression,
-    MatchAlreadyClinchedError,
-    InvalidScorerError,
-    ImpossibleScoreError
+    MatchAlreadyClinchedError
 )
 
 
