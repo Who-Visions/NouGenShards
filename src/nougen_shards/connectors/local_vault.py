@@ -369,7 +369,7 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
             return 1 if time.perf_counter() > deadline else 0
 
         if budget > 0:
-            conn.set_progress_handler(_over_budget, 4000)
+            conn.set_progress_handler(_over_budget, 1000)
 
         def _timed_out(exc: sqlite3.OperationalError) -> bool:
             return "interrupt" in str(exc).lower() or time.perf_counter() > deadline

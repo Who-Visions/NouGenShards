@@ -62,6 +62,8 @@ class Tenant:
     tenant_id: str
     label: str
     vault_dir: Path
+    lane: Optional[str] = None
+    allow_federation: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,13 +71,20 @@ class TenantRecord:
     tenant_id: str
     label: str
     token_sha256: str
+    lane: Optional[str] = None
+    allow_federation: bool = False
 
     def as_dict(self) -> dict:
-        return {
+        d = {
             "tenant_id": self.tenant_id,
             "label": self.label,
             "token_sha256": self.token_sha256,
         }
+        if self.lane:
+            d["lane"] = self.lane
+        if self.allow_federation:
+            d["allow_federation"] = self.allow_federation
+        return d
 
 
 def tenants_file() -> Path:
@@ -106,7 +115,17 @@ def _validate_record(raw: object, position: int) -> TenantRecord:
         raise TenantRegistryError(f"tenant {tenant_id!r} must have a non-empty label")
     if not isinstance(digest, str) or not TOKEN_HASH_RE.fullmatch(digest):
         raise TenantRegistryError(f"tenant {tenant_id!r} has an invalid token_sha256")
-    return TenantRecord(tenant_id=tenant_id, label=label.strip(), token_sha256=digest)
+    lane = raw.get("lane")
+    if lane is not None and not isinstance(lane, str):
+        lane = str(lane)
+    allow_fed = bool(raw.get("allow_federation", False))
+    return TenantRecord(
+        tenant_id=tenant_id,
+        label=label.strip(),
+        token_sha256=digest,
+        lane=lane,
+        allow_federation=allow_fed,
+    )
 
 
 def load_registry(path: Optional[Path] = None) -> list[TenantRecord]:
@@ -160,41 +179,67 @@ def resolve_token(token: Optional[str], owner_token: Optional[str], owner_vault_
     if not token:
         return None
     supplied_hash = token_sha256(token)
-    matches: list[tuple[str, str]] = []
+    matches: list[Tenant] = []
 
     if owner_token:
         owner_hash = token_sha256(owner_token)
         if hmac.compare_digest(supplied_hash, owner_hash):
-            matches.append((OWNER_TENANT_ID, "Owner"))
+            matches.append(Tenant(OWNER_TENANT_ID, "Owner", Path(owner_vault_dir), lane="owner", allow_federation=True))
 
     for record in load_registry():
         if hmac.compare_digest(supplied_hash, record.token_sha256):
-            matches.append((record.tenant_id, record.label))
+            matches.append(Tenant(
+                record.tenant_id,
+                record.label,
+                vault_dir_for(record.tenant_id, owner_vault_dir),
+                lane=record.lane,
+                allow_federation=record.allow_federation,
+            ))
 
     # Ambiguous credentials are configuration errors from an authorization
     # perspective: do not let record order decide which vault opens.
     if len(matches) != 1:
         return None
-    tenant_id, label = matches[0]
-    return Tenant(tenant_id, label, vault_dir_for(tenant_id, owner_vault_dir))
+    return matches[0]
 
 
 def tenant_by_id(tenant_id: str, owner_vault_dir: Path) -> Optional[Tenant]:
     """Resolve an already-authenticated tenant id without an owner fallback."""
     if tenant_id == OWNER_TENANT_ID:
-        return Tenant(OWNER_TENANT_ID, "Owner", Path(owner_vault_dir))
+        return Tenant(OWNER_TENANT_ID, "Owner", Path(owner_vault_dir), lane="owner", allow_federation=True)
     for record in load_registry():
         if hmac.compare_digest(record.tenant_id, tenant_id):
-            return Tenant(record.tenant_id, record.label,
-                          vault_dir_for(record.tenant_id, owner_vault_dir))
+            return Tenant(
+                record.tenant_id,
+                record.label,
+                vault_dir_for(record.tenant_id, owner_vault_dir),
+                lane=record.lane,
+                allow_federation=record.allow_federation,
+            )
     return None
+
+
+def tenant_allows_federation(tenant_id: str) -> bool:
+    """True if the tenant is allowed to federate reads across shared cloud nodes."""
+    if tenant_id == OWNER_TENANT_ID:
+        return True
+    for record in load_registry():
+        if hmac.compare_digest(record.tenant_id, tenant_id):
+            return bool(record.allow_federation)
+    return False
 
 
 def credentials_configured(owner_token: Optional[str]) -> bool:
     return bool(owner_token) or bool(load_registry())
 
 
-def mint_tenant(tenant_id: str, label: str, path: Optional[Path] = None) -> str:
+def mint_tenant(
+    tenant_id: str,
+    label: str,
+    path: Optional[Path] = None,
+    lane: Optional[str] = None,
+    allow_federation: bool = False,
+) -> str:
     """Generate a credential, persist only its digest, and return it once."""
     if not TENANT_ID_RE.fullmatch(tenant_id) or tenant_id == OWNER_TENANT_ID:
         raise TenantRegistryError(f"invalid or reserved tenant_id: {tenant_id!r}")
@@ -207,7 +252,13 @@ def mint_tenant(tenant_id: str, label: str, path: Optional[Path] = None) -> str:
         raise TenantRegistryError(f"tenant_id already exists: {tenant_id}")
 
     token = secrets.token_urlsafe(32)
-    records.append(TenantRecord(tenant_id, label.strip(), token_sha256(token)))
+    records.append(TenantRecord(
+        tenant_id=tenant_id,
+        label=label.strip(),
+        token_sha256=token_sha256(token),
+        lane=lane,
+        allow_federation=allow_federation,
+    ))
     payload = {"tenants": [record.as_dict() for record in records]}
 
     registry_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
