@@ -113,6 +113,7 @@ def classify_with_kaedra(text: str) -> dict:
         "prompt": text[:2000],
         "system": KAEDRA_SYSTEM,
         "num_predict": 100,
+        "temperature": 0,
     }).encode("utf-8")
     req = urllib.request.Request(
         KAEDRA_URL, data=body,
@@ -572,7 +573,8 @@ def verify_user_origin(claimed_origin: str, proof: "str | None") -> str:
 
 def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
                       origin: str = "peer", origin_proof: "str | None" = None,
-                      origin_status: "str | None" = None) -> dict:
+                      origin_status: "str | None" = None,
+                      classify_text: "str | None" = None) -> dict:
     """One call: dedup, classify origin, then either bypass or run the content gate.
 
     What both callers use. `message_id` is optional — pass it through from a
@@ -584,6 +586,9 @@ def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
     `origin_status`, if passed, skips the raw-token check and uses this
     value directly — for a caller (relay_watch_node.py) that already
     resolved origin via signature verification instead.
+
+    `classify_text`, if provided, is what gets judged by Kaedra instead of
+    `text`. The full `text` is still what gets delivered upon approval.
     """
     key = _dedup_key(text, source, message_id)
     if _check_and_mark_duplicate(key):
@@ -600,7 +605,8 @@ def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
                 "quarantined": False, "reason_code": "user_origin_proven",
                 "live_delivery": deliver_to_live_sessions(text, source)}
 
-    result = classify_with_kaedra(text)
+    text_to_classify = classify_text if classify_text is not None else text
+    result = classify_with_kaedra(text_to_classify)
     base_origin_field = {"origin": origin_status} if origin_status == "user_claimed_unverified" else {}
     if result["verdict"] != "APPROVE":
         return {**base_origin_field, "attempted": True, "kaedra_approved": False,
