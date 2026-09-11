@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 
@@ -16,13 +17,17 @@ MAX_BYTES = 24000
 
 
 def save(payload):
-    folder = Path(os.environ.get("NOUGEN_CODEX_INBOX", str(Path.home() / ".codex" / "inbox")))
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / ("ping_" + uuid.uuid4().hex + ".json")
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
-    return path
+    default_inbox = os.path.join(os.path.expanduser("~"), ".codex", "inbox")
+    folder_str = os.environ.get("NOUGEN_CODEX_INBOX", default_inbox)
+    os.makedirs(folder_str, exist_ok=True)
+    filename = "ping_" + uuid.uuid4().hex + ".json"
+    file_path = os.path.join(folder_str, filename)
+    tmp_path = file_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    os.replace(tmp_path, file_path)
+    from pathlib import WindowsPath
+    return Path(file_path) if os.name == 'nt' or not sys.platform.startswith('win') else WindowsPath(file_path)
 
 
 def request(payload, pipe=PIPE):
@@ -50,7 +55,7 @@ def native_destination():
     if not thread:
         target = Path(os.environ.get(
             "NOUGEN_CODEX_TARGET_FILE",
-            str(Path.home() / ".nougen" / "codex" / "relay_target.json")))
+            os.path.join(os.path.expanduser("~"), ".nougen", "codex", "relay_target.json")))
         try:
             record = json.loads(target.read_text(encoding="utf-8"))
             thread = str(record.get("thread_id") or "").strip()
@@ -61,7 +66,7 @@ def native_destination():
     except (ValueError, AttributeError) as exc:
         raise OSError("Invalid Codex task target") from exc
     executable = (os.environ.get("NOUGEN_CODEX_CLI", "").strip()
-                  or shutil.which("codex") or str(Path.home() / ".local" / "bin" / "codex"))
+                  or shutil.which("codex") or os.path.join(os.path.expanduser("~"), ".local", "bin", "codex"))
     if not executable or not Path(executable).is_file():
         raise OSError("Codex CLI unavailable")
     return thread, executable

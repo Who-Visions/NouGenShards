@@ -151,6 +151,10 @@ def check_vram(model: str, need_gb: float | None = None,
     ):
         return Verdict(True, "vram gate bypassed for test environment")
 
+    # Cloud models (:cloud) run upstream via Ollama Cloud with zero local VRAM cost
+    if ":cloud" in model or model.endswith("-cloud"):
+        return Verdict(True, "cloud-hosted model via Ollama Cloud gateway (0 local VRAM required)")
+
     if manual or os.getenv("NOUGEN_VRAM_MANUAL") == "1":
         evicted = free_card()
         return Verdict(True, f"manual override — card cleared (evicted: "

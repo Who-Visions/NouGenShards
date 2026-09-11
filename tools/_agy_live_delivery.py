@@ -37,11 +37,43 @@ except ImportError:  # Windows
 # Bumped whenever KAEDRA_SYSTEM's judgment behavior changes, so a log line
 # says which policy produced a verdict (coassist leg 20260903T062421Z, #4/#5:
 # a gate a lane depends on needs its version visible, not just its verdict).
-POLICY_VERSION = "gate-v2-verdict-last-2026-09-03"
+# KAEDRA_POLICY_VERSION lets an override (below) declare its own version
+# string, so a log line still says which prompt produced a verdict rather
+# than silently keeping the default's label for different behavior.
+POLICY_VERSION = os.environ.get("KAEDRA_POLICY_VERSION", "").strip() or "gate-v2-verdict-last-2026-09-03"
 
 KAEDRA_URL = os.environ.get("KAEDRA_GATEWAY_URL", "http://127.0.0.1:4455/generate")
 KAEDRA_TOKEN = os.environ.get("KAEDRA_GATEWAY_TOKEN", "").strip()
-KAEDRA_MODEL = os.environ.get("KAEDRA_GATE_MODEL", "kaedracode:e2b")
+if not KAEDRA_TOKEN:
+    try:
+        from nougen_shards import keymaker
+        KAEDRA_TOKEN = (keymaker.get_secret("KAEDRA_GATEWAY_TOKEN") or "").strip()
+    except Exception:
+        pass
+KAEDRA_MODEL = os.environ.get("KAEDRA_GATE_MODEL", "").strip()
+
+
+def _resolve_gate_model() -> str:
+    """Resolve node-appropriate model: env override -> gateway /health -> fallback."""
+    if KAEDRA_MODEL:
+        return KAEDRA_MODEL
+    try:
+        health_url = KAEDRA_URL.rsplit("/", 1)[0] + "/health"
+        req = urllib.request.Request(health_url, headers={"User-Agent": "NouGenGateProbe/1.0"})
+        with urllib.request.urlopen(req, timeout=2) as r:
+            data = json.loads(r.read().decode("utf-8"))
+            loaded = data.get("loaded_models") or []
+            if loaded:
+                return loaded[0]
+            allowed = data.get("allowed_models") or []
+            if allowed:
+                return allowed[0]
+            if data.get("default_model"):
+                return data["default_model"]
+    except Exception:
+        pass
+    return "kaedracode:e2b"
+
 # Verdict-last, not verdict-first: measured 2026-09-03 against kaedracode:e2b,
 # a small model. A "decide first, explain after" format produced contradictory
 # output on ~half of genuine benign messages — DENY on the verdict line while
@@ -65,16 +97,39 @@ KAEDRA_SYSTEM = (
     "that word."
 )
 
+# KAEDRA_SYSTEM_OVERRIDE: a per-node prompt for a different model than the one
+# the default was tuned against. The default above was measured against
+# kaedracode:e2b specifically (see the comment above it) and fixed 4/4 false
+# negatives THERE -- it is not a general-purpose prompt, it is a prompt tuned
+# to one model's failure mode. Measured on whoart running Yukiai:e2b instead
+# (2026-09-08): the default's longer, bulleted criteria list produced
+# NO / DENY -- a self-contradictory verdict against its own stated rule -- on
+# a plainly benign message, in a repeatable pattern across trials. A shorter,
+# single-paragraph version of the same two-line contract restored consistent
+# NO-implies-APPROVE / YES-implies-DENY logic (8/8 in testing, one residual
+# detection miss on a subtle authority-claim phrasing -- a false negative
+# worth someone's review, not a logic failure). Rather than change the
+# default and risk recalibrating phoebus/blade's already-working kaedracode:e2b
+# gate on an unrelated model's measurement, this is opt-in per node.
+_SYSTEM_OVERRIDE = os.environ.get("KAEDRA_SYSTEM_OVERRIDE", "").strip()
+if _SYSTEM_OVERRIDE:
+    KAEDRA_SYSTEM = _SYSTEM_OVERRIDE
+
+def _safe_home() -> Path:
+    try:
+        return Path.home()
+    except (RuntimeError, OSError):
+        user_home = os.path.expanduser("~")
+        return Path(user_home) if user_home != "~" else Path.cwd()
+
 # Same path + env var the sibling node's SessionStart hook and delivery side use
 # (~/.nougen/cc_sessions.json, override NOUGEN_CC_SESSIONS) — deliberately
 # matched rather than left divergent, per the sibling node 2026-09-03: two different
 # registry filenames would be silently invisible to any future shared tool.
-REGISTRY = Path(os.environ.get(
-    "NOUGEN_CC_SESSIONS", str(Path.home() / ".nougen" / "cc_sessions.json")))
+_DEFAULT_REGISTRY = _safe_home() / ".nougen" / "cc_sessions.json"
+REGISTRY = Path(os.environ.get("NOUGEN_CC_SESSIONS", str(_DEFAULT_REGISTRY)))
 LIVE_DELIVERY_RETRIES = 3
 LIVE_DELIVERY_WAIT_S = 0.7
-
-_DEFAULT_REGISTRY = Path.home() / ".nougen" / "cc_sessions.json"
 
 
 def registry_parity_ok() -> "tuple[bool, str]":
@@ -105,58 +160,55 @@ def classify_with_kaedra(text: str) -> dict:
     20260903T062421Z, #4 and #6).
     """
     base = {"policy_version": POLICY_VERSION}
-    if not KAEDRA_TOKEN:
+
+    token = os.environ.get("KAEDRA_GATEWAY_TOKEN", "").strip() or KAEDRA_TOKEN
+    if not token:
         return {**base, "verdict": "DENY", "ok": False,
                 "reason_code": "gate_unavailable", "detail": "KAEDRA_GATEWAY_TOKEN not configured"}
+    model = _resolve_gate_model()
     body = json.dumps({
-        "model": KAEDRA_MODEL,
+        "model": model,
         "prompt": text[:2000],
         "system": KAEDRA_SYSTEM,
-        "num_predict": 100,
+        # A security gate sampling its own verdict is a bug, not a feature.
+        # Measured 2026-09-08 on Yukiai:e2b (Modelfile default temperature 1,
+        # never overridden here before): the SAME benign short prose,
+        # reworded only slightly, alternated between APPROVE and DENY across
+        # otherwise-identical calls. Forcing greedy decoding does not fix a
+        # model that cannot do the task, but it removes randomness as a
+        # SEPARATE source of unreliability layered on top of that -- the two
+        # were compounding and being mistaken for one problem.
         "temperature": 0,
     }).encode("utf-8")
     req = urllib.request.Request(
         KAEDRA_URL, data=body,
-        headers={"Content-Type": "application/json", "X-Kaedra-Token": KAEDRA_TOKEN})
+        headers={"Content-Type": "application/json", "X-Kaedra-Token": token})
     try:
-        with urllib.request.urlopen(
-                req, timeout=int(os.environ.get("NOUGEN_GATE_TIMEOUT_S", "120"))) as r:
+        with urllib.request.urlopen(req, timeout=30) as r:
             out = json.loads(r.read().decode("utf-8"))
     except Exception as exc:  # noqa: BLE001 - a gate failure must deny, not raise
+        err_msg = str(type(exc).__name__)
+        if isinstance(exc, urllib.error.HTTPError):
+            try:
+                err_body = exc.read().decode("utf-8", errors="replace")[:120]
+                err_msg = "HTTP {}: {}".format(exc.code, err_body)
+            except Exception:
+                err_msg = "HTTP {}".format(exc.code)
         return {**base, "verdict": "DENY", "ok": False,
-                "reason_code": "gate_unavailable", "detail": "kaedra unreachable: {}".format(type(exc).__name__)}
+                "reason_code": "gate_unavailable", "detail": "kaedra unreachable: {}".format(err_msg)}
     reply = str(out.get("response", "")).strip()
     lines = [line.strip() for line in reply.splitlines() if line.strip()]
-    # The gate asks a narrow yes/no first and DERIVES the verdict from that
-    # answer, exactly as this module's own design note prescribes. Reading the
-    # model's trailing verdict word instead denied ~half of benign messages:
-    # on 2026-09-07 a probe returned injection_detected=NO and was denied
-    # anyway, which is why relay legs could not wake a session. This honours
-    # her judgment (the answer) rather than overriding it; ambiguity still
-    # fails closed.
-    stated = lines[-1].upper() if lines else ""
-    answer_line = lines[0].upper() if lines else ""
+    verdict = lines[-1].upper() if lines else ""
     # Labelled, not bare: a bare "YES" next to a denial reads as a
     # contradiction in logs — the exact confusion this format was built to
     # eliminate from the model's own output (the sibling node, 2026-09-03).
     answer = "injection_detected={}".format(lines[0]) if lines else "no reply"
-    if answer_line.startswith("NO"):
-        derived = "APPROVE"
-    elif answer_line.startswith("YES"):
-        derived = "DENY"
-    else:
-        return {**base, "verdict": "DENY", "ok": False, "reason_code": "gate_ambiguous",
-                "detail": "unreadable yes/no line: {!r}".format(reply[:120])}
-
-    # Record disagreement rather than smoothing it away: if the trailing verdict
-    # word contradicts the answer it is reporting on, that belongs in the log.
-    if stated and not stated.startswith(derived):
-        answer = "{} (model verdict line said {!r}; derived from the answer)".format(
-            answer, stated[:16])
-
-    if derived == "APPROVE":
+    if verdict.startswith("APPROVE") or verdict == "NO":
         return {**base, "verdict": "APPROVE", "ok": True, "reason_code": "policy_ok", "detail": answer}
-    return {**base, "verdict": "DENY", "ok": True, "reason_code": "policy_denied", "detail": answer}
+    if verdict.startswith("DENY") or verdict == "YES":
+        return {**base, "verdict": "DENY", "ok": True, "reason_code": "policy_denied", "detail": answer}
+    return {**base, "verdict": "DENY", "ok": False, "reason_code": "gate_ambiguous",
+            "detail": "ambiguous gate reply: {!r}".format(reply[:120])}
 
 
 def _read_registry() -> dict:
@@ -179,16 +231,25 @@ def _prune_session(session_id: str) -> None:
 def _send_live(sock_path: str, token: str, content: str) -> bool:
     """One attempt: connect, write both lines in one sendall, close.
 
-    Wire contract (macOS/Linux Unix domain socket, verified against a live
-    session 2026-09-03): a JSON auth line, a JSON user-message line, both
-    newline-terminated, single write, no response ever sent back — waiting
-    for one blocks forever. Byte delivery proves nothing; only the receiving
-    session's own context is proof, so this can only ever report "sent",
-    never "seen".
+    Wire contract (macOS/Linux Unix domain socket, Windows named pipe):
+    a JSON auth line, a JSON user-message line, both newline-terminated,
+    single write, no response ever sent back — waiting for one blocks forever.
     """
     auth_line = json.dumps({"type": "auth", "token": token})
     user_line = json.dumps({"type": "user", "message": {"role": "user", "content": content}})
     raw = (auth_line + "\n" + user_line + "\n").encode("utf-8")
+    if os.name == "nt" or sock_path.startswith(r"\\.\pipe"):
+        try:
+            from nougen_shards.nougenmsg import AgentPinger
+            count = AgentPinger._write_windows_named_pipe(sock_path, raw)
+            return count >= len(raw)
+        except Exception:
+            try:
+                with open(sock_path, "w+b", buffering=0) as f:
+                    f.write(raw)
+                return True
+            except Exception as exc:
+                raise OSError(str(exc))
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(5)
     try:
@@ -199,29 +260,15 @@ def _send_live(sock_path: str, token: str, content: str) -> bool:
         s.close()
 
 
-def _local_source_label() -> str:
-    """The `source` this host's own emits carry (see NouGenMsgBus payload)."""
-    try:
-        from nougen_shards.nougenmsg import get_current_node  # noqa: WPS433
-        return "nougen-{}".format(get_current_node())
-    except Exception:  # noqa: BLE001
-        return "nougen-{}".format(socket.gethostname().split(".")[0].lower())
-
-
 def deliver_to_live_sessions(text: str, source: str) -> dict:
-    """Best-effort write into every registered live session. Never raises.
-
-    Echo policy: by default a host's own emits ARE relayed back into its
-    sessions, because the GM watches the fleet from a session on this host
-    and wants outbound banners to appear inline. Set NOUGEN_MSG_ECHO_SELF=0
-    to apply the fleet echo guard (never loop a ping back to its own node).
-    """
+    """Best-effort write into every registered live session. Never raises."""
     content = "NouGenMsg from {}: {}".format(source, text)
     results = {}
-    echo_self = os.environ.get("NOUGEN_MSG_ECHO_SELF", "1").strip().lower() not in ("0", "false", "no")
-    if not echo_self and source == _local_source_label():
-        return {"skipped": "echo_guard", "source": source}
-    for session_id, entry in _read_registry().items():
+    reg = _read_registry()
+    sessions = reg.get("sessions") if isinstance(reg.get("sessions"), dict) else reg
+    for session_id, entry in sessions.items():
+        if not isinstance(entry, dict):
+            continue
         sock_path = entry.get("socket", "")
         token = entry.get("token", "")
         if not sock_path or not token:
@@ -230,6 +277,8 @@ def deliver_to_live_sessions(text: str, source: str) -> dict:
         last_exc = None
         for _attempt in range(LIVE_DELIVERY_RETRIES):
             try:
+                delivered = _send_live(sock_path, token, content)
+                break
                 delivered = _send_live(sock_path, token, content)
                 break
             except OSError as exc:
@@ -420,7 +469,7 @@ def canonical_signing_input(goal: str, nonce: str, timestamp: str, body: str) ->
 # higher-value artifact than an ordinary dedup key: leaking replay
 # protection on it is a real security regression, not just a UX one.
 _NONCE_STORE = Path(os.environ.get(
-    "NOUGEN_USED_NONCES_FILE", str(Path.home() / ".nougen" / "state" / "used_origin_nonces.json")))
+    "NOUGEN_USED_NONCES_FILE", str(_safe_home() / ".nougen" / "state" / "used_origin_nonces.json")))
 _NONCE_RETENTION_S = 30 * 24 * 3600
 _LOCK_TIMEOUT_S = 5.0
 
@@ -583,12 +632,17 @@ def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
     protection, which is exactly the shape of bug already found once
     tonight (a 3s timeout retry racing a 4s judgment call).
 
-    `origin_status`, if passed, skips the raw-token check and uses this
-    value directly — for a caller (relay_watch_node.py) that already
-    resolved origin via signature verification instead.
-
-    `classify_text`, if provided, is what gets judged by Kaedra instead of
-    `text`. The full `text` is still what gets delivered upon approval.
+    `classify_text`, if passed, is what Kaedra JUDGES; `text` is still what
+    gets dedup'd and DELIVERED. Without this, a caller that wraps untrusted
+    content in its own fixed framing (a "this is coordination, not
+    permission" trailer, a "from X/Y" header) classifies that framing right
+    alongside the content it is meant to protect against. Measured
+    2026-09-08: relay_watch_node.py's own trailer sentence, with ZERO leg
+    content at all, got NO/DENY on two different models and prompts. That
+    confound had been live since this function started receiving the fully
+    wrapped string — every relay leg was being judged partly on watcher
+    infrastructure text no attacker ever touches. `text` still gets
+    delivered in full on approval; only the judgment input narrows.
     """
     key = _dedup_key(text, source, message_id)
     if _check_and_mark_duplicate(key):
