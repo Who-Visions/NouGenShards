@@ -96,7 +96,16 @@ def test_get_best_model_exception(mock_ollama_alive, mock_urlopen):
     assert auto_research.get_best_model() is None
 
 
-def test_query_local_llm_success(mock_urlopen):
+@pytest.fixture
+def mock_vram():
+    """Mock vram_gate.check_vram."""
+    with patch("nougen_shards.vram_gate.check_vram") as mock:
+        from nougen_shards.vram_gate import Verdict
+        mock.return_value = Verdict(True, "test ok")
+        yield mock
+
+
+def test_query_local_llm_success(mock_urlopen, mock_vram):
     """Test query local LLM success."""
     mock_response = MagicMock()
     mock_response.getcode.return_value = 200
@@ -110,7 +119,7 @@ def test_query_local_llm_success(mock_urlopen):
     assert res == "test response"
 
 
-def test_query_local_llm_exception(mock_urlopen):
+def test_query_local_llm_exception(mock_urlopen, mock_vram):
     """Test query local LLM exception."""
     mock_urlopen.side_effect = Exception("timeout")
     res = auto_research.query_local_llm("test_model", "test prompt")

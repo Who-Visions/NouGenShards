@@ -1,0 +1,48 @@
+Traceback (most recent call last):
+  File "C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\tools\codex_stop_guard.py", line 82, in main
+    messages = module.read_new_messages()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\tools\codex_inbox_hook.py", line 58, in read_new_messages
+    _save_cursor(entries[-1][0])
+  File "C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\tools\codex_inbox_hook.py", line 33, in _save_cursor
+    temporary.write_text(
+  File "C:\Users\super\AppData\Local\Programs\Python\Python311\Lib\pathlib.py", line 1078, in write_text
+    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\super\AppData\Local\Programs\Python\Python311\Lib\pathlib.py", line 1044, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 13] Permission denied: 'C:\\Users\\super\\.codex\\inbox\\.nougen_seen.json.tmp'
+
+Traceback (most recent call last):
+  File "C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\tools\codex_stop_guard.py", line 82, in main
+    messages = module.read_new_messages()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\tools\codex_inbox_hook.py", line 58, in read_new_messages
+    _save_cursor(entries[-1][0])
+  File "C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\tools\codex_inbox_hook.py", line 33, in _save_cursor
+    temporary.write_text(
+  File "C:\Users\super\AppData\Local\Programs\Python\Python311\Lib\pathlib.py", line 1078, in write_text
+    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\super\AppData\Local\Programs\Python\Python311\Lib\pathlib.py", line 1044, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 13] Permission denied: 'C:\\Users\\super\\.codex\\inbox\\.nougen_seen.json.tmp'
+
+Traceback (most recent call last):
+  File "C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\tools\codex_stop_guard.py", line 82, in main
+    messages = module.read_new_messages()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\tools\codex_inbox_hook.py", line 58, in read_new_messages
+    _save_cursor(entries[-1][0])
+  File "C:\Users\super\Watchtower\NouGen\NouGenShards-push-main\tools\codex_inbox_hook.py", line 33, in _save_cursor
+    temporary.write_text(
+  File "C:\Users\super\AppData\Local\Programs\Python\Python311\Lib\pathlib.py", line 1078, in write_text
+    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\super\AppData\Local\Programs\Python\Python311\Lib\pathlib.py", line 1044, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 13] Permission denied: 'C:\\Users\\super\\.codex\\inbox\\.nougen_seen.json.tmp'
+

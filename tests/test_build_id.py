@@ -1,3 +1,5 @@
+from __future__ import annotations
+import os
 """The running process must be able to identify its own build.
 
 Disk-based drift checks answer the wrong question. On 2026-09-03 a node
@@ -8,7 +10,6 @@ that closes that class: the identifier comes from the file the process
 actually loaded, so a reload that never happened cannot be mistaken for one
 that did.
 """
-from __future__ import annotations
 
 import hashlib
 import importlib
@@ -69,10 +70,10 @@ def test_changing_the_file_changes_the_id(tmp_path):
     shutil.copy(TOOLS / "_agy_live_delivery.py", tmp_path / "_agy_live_delivery.py")
     read = "import sys;sys.path.insert(0,{!r});import nougenmsg_node as m;print(m.build_id())".format(str(tmp_path))
     before = subprocess.run([sys.executable, "-c", read], capture_output=True, text=True,
-                            env={"NOUGEN_AGY_MSG_TOKEN": "t", "PATH": "/usr/bin:/bin"}).stdout.strip()
+                            env={**os.environ, "NOUGEN_AGY_MSG_TOKEN": "t"}).stdout.strip()
     staged.write_text(staged.read_text() + "\n# a change on disk\n")
     after = subprocess.run([sys.executable, "-c", read], capture_output=True, text=True,
-                           env={"NOUGEN_AGY_MSG_TOKEN": "t", "PATH": "/usr/bin:/bin"}).stdout.strip()
+                           env={**os.environ, "NOUGEN_AGY_MSG_TOKEN": "t"}).stdout.strip()
     assert before and after and before != after, (before, after)
 
 

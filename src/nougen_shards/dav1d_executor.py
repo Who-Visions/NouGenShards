@@ -82,12 +82,15 @@ def get_agy_version(bin_path: Optional[str], refresh: bool = False) -> str:
     if use_cache and not refresh and bin_path in _VERSION_CACHE:
         return _VERSION_CACHE[bin_path]
 
+    _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if os.name == "nt" else 0
     try:
         res = subprocess.run(
             [bin_path, "--version"],
             capture_output=True,
             text=True,
             timeout=_version_probe_timeout(),
+            stdin=subprocess.DEVNULL,
+            creationflags=_NO_WINDOW,
         )
         raw = (res.stdout or "") or (res.stderr or "")
         line = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
@@ -166,8 +169,9 @@ def run_dav1d_agy(
     version = get_agy_version(bin_path)
     cmd_list = [bin_path] + target_args
 
+    _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if os.name == "nt" else 0
     try:
-        res = subprocess.run(cmd_list, capture_output=True, text=True, timeout=timeout)
+        res = subprocess.run(cmd_list, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
         output = res.stdout if res.stdout else res.stderr
         return {
             "machine": "Dav1d",

@@ -72,6 +72,7 @@ def test_data_endpoints_deny_without_token(client):
 
 def test_deny_by_default_when_unconfigured(client, monkeypatch):
     monkeypatch.setattr(node, "NODE_TOKEN", None)
+    monkeypatch.setattr(node.tenants, "credentials_configured", lambda *a, **k: False)
     assert client.post("/search", json={"query": "x"}, headers=AUTH).status_code == 503
 
 

@@ -73,9 +73,10 @@ def test_mcp_denies_without_token(client):
     assert r.status_code == 401
 
 
-def test_mcp_denies_when_unconfigured(client):
+def test_mcp_denies_when_unconfigured(client, monkeypatch):
     saved = node.NODE_TOKEN
     node.NODE_TOKEN = None
+    monkeypatch.setattr(node.tenants, "credentials_configured", lambda *a, **k: False)
     try:
         r = client.post("/mcp/", json=_rpc("tools/list"), headers=AUTH)
         assert r.status_code == 503

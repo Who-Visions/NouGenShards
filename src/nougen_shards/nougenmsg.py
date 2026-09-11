@@ -455,11 +455,76 @@ class AgentPinger:
         return AgentPinger._OLLAMA_DEFAULTS.get(machine, AgentPinger._OLLAMA_FALLBACK)
 
     @staticmethod
-    def ping_ollama(prompt: str, node: str = "local", model: Optional[str] = None) -> Dict[str, Any]:
-        """Pings local or remote Ollama instance with zero-cost tactical evaluation."""
-        target_model = model or AgentPinger._default_ollama_model(node)
-        url = "http://127.0.0.1:11434/api/generate"
-        
+    def _drop_model_reply(lane: str, model: str, reply: str,
+                          origin: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """Land a model's answer in the inbox as a message FROM that model, so a
+        model lane reads back like any other fleet peer (--inbox, the bridge,
+        the wake daemon) instead of vanishing into the sender's stdout."""
+        if not reply:
+            return None
+        envelope = dict(origin or {})
+        envelope["original_sender"] = f"{lane}:{model}"
+        try:
+            res = AgentPinger.ping_antigravity(reply, domain=f"model:{lane}", origin=envelope)
+            files = res.get("files") or res.get("written_files") or []
+            return files[0] if files else "inbox"
+        except Exception:  # pylint: disable=broad-except
+            return None
+
+    @staticmethod
+    def ping_openrouter(prompt: str, model: Optional[str] = None,
+                        origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Send a message to an OpenRouter model and drop its reply in the inbox.
+
+        Model resolves NOUGEN_MSG_OPENROUTER_MODEL -> explicit arg -> the
+        client's preferred free model. The key comes from the Keymaker via
+        OpenRouterClient (Rule 0.3), never from this file.
+        """
+        try:
+            from .models_client import OpenRouterClient  # pylint: disable=import-outside-toplevel
+        except Exception as exc:  # pylint: disable=broad-except
+            return {"status": "error", "lane": "openrouter", "error": f"client unavailable: {exc}"}
+        try:
+            client = OpenRouterClient()
+            target_model = (os.environ.get("NOUGEN_MSG_OPENROUTER_MODEL", "").strip()
+                            or model or client.preferred_free_model())
+            if not target_model:
+                return {"status": "error", "lane": "openrouter", "error": "no model resolved"}
+            timeout = float(os.environ.get("NOUGEN_MSG_MODEL_TIMEOUT_S", "60"))
+            if hasattr(client, "timeout"):
+                client.timeout = timeout
+            reply = (client.chat(target_model, [{"role": "user", "content": prompt}]) or "").strip()
+            dropped = AgentPinger._drop_model_reply("openrouter", target_model, reply, origin)
+            return {"status": "delivered" if reply else "error", "lane": "openrouter",
+                    "model": target_model, "response": reply, "inbox": dropped}
+        except Exception as exc:  # pylint: disable=broad-except
+            return {"status": "error", "lane": "openrouter", "model": model, "error": str(exc)}
+
+    @staticmethod
+    def ping_ollama(prompt: str, node: str = "local", model: Optional[str] = None,
+                    origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Send a message to an Ollama model (local or on a fleet node) and drop
+        its reply in the inbox as a message from that model.
+
+        Host is DISCOVERED (ollama_host probes the live ports; OLLAMA_HOST is a
+        bind address, not a dial address). Model resolves
+        NOUGEN_MSG_OLLAMA_MODEL -> explicit arg -> per-machine default.
+        """
+        target_model = (os.environ.get("NOUGEN_MSG_OLLAMA_MODEL", "").strip()
+                        or model or AgentPinger._default_ollama_model(node))
+        url = "http://127.0.0.1:11434/api/generate"  # remote-node fallback only
+        try:
+            from .ollama_host import discover_ollama_url  # pylint: disable=import-outside-toplevel
+            base = discover_ollama_url()
+            if base:
+                url = base.rstrip("/") + "/api/generate"
+        except Exception:  # pylint: disable=broad-except
+            pass
+        try:
+            timeout = float(os.environ.get("NOUGEN_MSG_MODEL_TIMEOUT_S", "60"))
+        except ValueError:
+            timeout = 60.0
+
         if node not in ["local", get_current_node()]:
             # The remote command is interpreted by the remote login shell.
             # Keep it entirely constant; caller-controlled JSON travels over
@@ -482,20 +547,27 @@ class AgentPinger:
                     timeout=30,
                 )
                 data = json.loads(res.stdout)
-                return {"node": node, "model": target_model, "response": data.get("response", "").strip()}
+                reply = data.get("response", "").strip()
+                dropped = AgentPinger._drop_model_reply("ollama", target_model, reply, origin)
+                return {"status": "delivered" if reply else "error", "lane": "ollama",
+                        "node": node, "model": target_model, "response": reply, "inbox": dropped}
             except Exception as e:
-                return {"node": node, "model": target_model, "error": str(e)}
-
+                return {"status": "error", "lane": "ollama", "node": node,
+                        "model": target_model, "error": str(e)}
 
         try:
             req_data = json.dumps({"model": target_model, "prompt": prompt, "stream": False}).encode("utf-8")
             req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 res = json.loads(r.read().decode())
-                return {"node": "local", "model": target_model, "response": res.get("response", "").strip()}
-
+                reply = res.get("response", "").strip()
+                dropped = AgentPinger._drop_model_reply("ollama", target_model, reply, origin)
+                return {"status": "delivered" if reply else "error", "lane": "ollama",
+                        "node": "local", "model": target_model, "url": url,
+                        "response": reply, "inbox": dropped}
         except Exception as exc:
-            return {"node": "local", "model": target_model, "error": str(exc)}
+            return {"status": "error", "lane": "ollama", "node": "local",
+                    "model": target_model, "url": url, "error": str(exc)}
 
 
 
@@ -520,11 +592,20 @@ class NouGenMsgBus:
             return ('fleet', 'all')
 
         known_nodes = {'blade', 'whoart', 'phoebus', 'local', 'fleet'}
-        known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'all'}
+        known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'all'}
+        # Model lanes carry the model in the agent slot: '@ollama:gemma4:31b-cloud'
+        # -> ('local', 'ollama:gemma4:31b-cloud'); '@blade:openrouter:nvidia/x'
+        # -> ('blade', 'openrouter:nvidia/x'). live_ping splits family from model.
+        model_lanes = {'ollama', 'openrouter'}
 
         if ':' in raw:
             parts = raw.split(':', 1)
             n, a = parts[0], parts[1]
+            if n in model_lanes:
+                return ('local', raw)
+            fam = a.split(':', 1)[0]
+            if fam in model_lanes:
+                return (n if n in known_nodes else 'local', a)
             return (n if n in known_nodes else 'local', a if a in known_agents else 'all')
 
         if raw in known_nodes:
@@ -586,18 +667,30 @@ class NouGenMsgBus:
         target = target.lower()
         results = {}
         envelope = cls._origin_envelope(origin)
+        # 'ollama:gemma4:31b-cloud' -> family 'ollama', model 'gemma4:31b-cloud'
+        family, _, model = target.partition(":")
+        model = model or None
+        # Model lanes ride on 'all' broadcasts by default (GM 2026-09-08: the
+        # fleet includes its models). NOUGEN_MSG_MODEL_LANES_ON_ALL=0 opts out
+        # for a chatty lane that should not wake a model on every ping.
+        models_on_all = os.environ.get("NOUGEN_MSG_MODEL_LANES_ON_ALL", "1").strip().lower() \
+            not in ("0", "false", "no")
 
-        if target in ["claude", "all"]:
+        if family in ["claude", "all"]:
             results["claude_pipes"] = AgentPinger.ping_claude(text, envelope)
 
-        if target in ["antigravity", "all"]:
+        if family in ["antigravity", "all"]:
             results["antigravity"] = AgentPinger.ping_antigravity(text, origin=envelope)
 
-        if target in ["codex", "all"]:
+        if family in ["codex", "all"]:
             results["codex"] = AgentPinger.ping_codex(text, envelope)
 
-        if target in ["ollama", "all"]:
-            results["ollama"] = AgentPinger.ping_ollama(text, node=node or "local")
+        if family == "ollama" or (family == "all" and models_on_all):
+            results["ollama"] = AgentPinger.ping_ollama(text, node=node or "local",
+                                                       model=model, origin=envelope)
+
+        if family == "openrouter" or (family == "all" and models_on_all):
+            results["openrouter"] = AgentPinger.ping_openrouter(text, model=model, origin=envelope)
 
         return results
 

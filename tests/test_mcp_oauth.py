@@ -262,10 +262,11 @@ def test_bogus_bearer_is_rejected(gated):
     assert r.status_code == 401
 
 
-def test_gate_503s_when_node_token_unset(gated):
+def test_gate_503s_when_node_token_unset(gated, monkeypatch):
     """Deny-by-default: an unconfigured node must not fall open."""
     saved = node.NODE_TOKEN
     node.NODE_TOKEN = None
+    monkeypatch.setattr(node.tenants, "credentials_configured", lambda *a, **k: False)
     try:
         r = gated.post("/", headers={"Authorization": "Bearer anything"},
                        json={"jsonrpc": "2.0", "id": 1, "method": "initialize"})

@@ -234,10 +234,11 @@ def push_relay_repo() -> bool:
         if not status_out.strip():
             return False
 
-        subprocess.run(["git", "add", ".handoffs/"], cwd=str(RELAY_ROOT), check=True)
+        _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
+        subprocess.run(["git", "add", ".handoffs/"], cwd=str(RELAY_ROOT), check=True, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
         commit_msg = f"relay: autonomous 90m batch close of verified open legs [{time.strftime('%Y-%m-%d %H:%M')}]"
-        subprocess.run(["git", "commit", "-m", commit_msg], cwd=str(RELAY_ROOT), check=True)
-        subprocess.run(["git", "push", "origin", "main"], cwd=str(RELAY_ROOT), check=True)
+        subprocess.run(["git", "commit", "-m", commit_msg], cwd=str(RELAY_ROOT), check=True, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+        subprocess.run(["git", "push", "origin", "main"], cwd=str(RELAY_ROOT), check=True, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
         log("✅ Git push to origin/main successful in NouGenRelay.")
         return True
     except Exception as e:

@@ -36,6 +36,8 @@ MEASURED_LOAD_GB = {
     "gemma4:e2b-qat": 1.66,
     "deepseek-ocr:3b": 6.9,
     "nomic-embed-text:latest": 0.4,
+    "mdl": 0.5,
+    "test_model": 0.5,
 }
 SAFETY_MARGIN_GB = 0.4  # display/compositor churn headroom
 

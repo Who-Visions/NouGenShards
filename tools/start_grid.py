@@ -25,8 +25,13 @@ NOUGEN_HOME = _path_env("NOUGEN_HOME", Path.home() / ".nougen")
 _HERE = Path(__file__).resolve()
 _repo_override = os.environ.get("NGS_REPO", "").strip()
 _repo_candidates = ([Path(_repo_override).expanduser()] if _repo_override else [])
-_repo_candidates.extend((_HERE.parent.parent, Path.cwd()))
-REPO = next((p for p in _repo_candidates if (p / "src").is_dir()), _HERE.parent.parent)
+_repo_candidates.extend((
+    Path.cwd(),
+    _HERE.parent.parent,
+    Path.home() / "Watchtower" / "NouGen" / "NouGenShards-push-main",
+    Path.home() / "Watchtower" / "NouGen" / "NouGenShards",
+))
+REPO = next((p for p in _repo_candidates if (p / "app.py").is_file() and (p / "src").is_dir()), _HERE.parent.parent)
 VAULT_DIR = _path_env("NOUGEN_VAULT_DIR", NOUGEN_HOME / "shards")
 SECRETS_DB = _path_env("NOUGEN_SECRETS_DB", NOUGEN_HOME / "secrets" / "shards_secrets.db")
 sys.path.insert(0, str(NOUGEN_HOME / "bin"))
@@ -219,7 +224,7 @@ def _start_node(node_token):
                NGS_NODE_TOKEN=node_token,
                NGS_PORT=PORT,
                NGS_BIND_HOST=BIND,
-               PYTHONPATH=str(REPO / "src"),
+               PYTHONPATH=f"{REPO};{REPO / 'src'};{os.environ.get('PYTHONPATH', '')}".strip(';'),
                # Pin the storage roots the launcher resolved instead of letting the
                # node re-read the ambient env. Two silent-loss incidents came from
                # this gap: a node without NOUGEN_HOME served an EMPTY vault, and on

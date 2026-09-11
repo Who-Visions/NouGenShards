@@ -4,7 +4,16 @@ from ctypes import wintypes
 from datetime import datetime, timezone
 import json
 import os
-from pathlib import Path
+import sys
+import sys
+import sys
+from pathlib import Path, WindowsPath
+
+if sys.platform == "win32":
+    Path = WindowsPath
+
+if sys.platform == "win32":
+    Path = WindowsPath
 import re
 import shutil
 import subprocess
@@ -12,11 +21,18 @@ import time
 import uuid
 
 PIPE = r"\\.\pipe\LOCAL\nougen-msg-codex"
+
+def _home_dir():
+    if os.name != "nt" and sys.platform == "win32":
+        return WindowsPath(os.path.expanduser("~"))
+    return Path.home()
+
+
 MAX_BYTES = 24000
 
 
 def save(payload):
-    folder = Path(os.environ.get("NOUGEN_CODEX_INBOX", str(Path.home() / ".codex" / "inbox")))
+    folder = Path(os.environ.get("NOUGEN_CODEX_INBOX", str(_home_dir() / ".codex" / "inbox")))
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / ("ping_" + uuid.uuid4().hex + ".json")
     tmp = path.with_suffix(".tmp")
@@ -50,7 +66,7 @@ def native_destination():
     if not thread:
         target = Path(os.environ.get(
             "NOUGEN_CODEX_TARGET_FILE",
-            str(Path.home() / ".nougen" / "codex" / "relay_target.json")))
+            str(_home_dir() / ".nougen" / "codex" / "relay_target.json")))
         try:
             record = json.loads(target.read_text(encoding="utf-8"))
             thread = str(record.get("thread_id") or "").strip()
@@ -61,7 +77,7 @@ def native_destination():
     except (ValueError, AttributeError) as exc:
         raise OSError("Invalid Codex task target") from exc
     executable = (os.environ.get("NOUGEN_CODEX_CLI", "").strip()
-                  or shutil.which("codex") or str(Path.home() / ".local" / "bin" / "codex"))
+                  or shutil.which("codex") or str(_home_dir() / ".local" / "bin" / "codex"))
     if not executable or not Path(executable).is_file():
         raise OSError("Codex CLI unavailable")
     return thread, executable

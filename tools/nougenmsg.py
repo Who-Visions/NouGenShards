@@ -19,7 +19,39 @@ if hasattr(sys.stderr, "reconfigure"):
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from nougen_shards.nougenmsg import NouGenMsgBus, get_current_node
+def _import_bus():
+    """Import the bus WITHOUT running nougen_shards/__init__ when possible.
+
+    Measured 2026-09-08 on blade: the pipe write is 10 ms, but importing the
+    package costs ~2.2 s (federation -> sqlalchemy) on every send, so a "live"
+    ping felt like seconds. nougenmsg.py has no top-level package imports and
+    only lazy relative ones (model lanes), so a stub package with __path__ set
+    lets those still resolve. NOUGEN_MSG_FAST_IMPORT=0 restores the plain
+    import; any failure falls back to it too.
+    """
+    fast = os.environ.get("NOUGEN_MSG_FAST_IMPORT", "1").strip().lower() not in ("0", "false", "no")
+    if fast and "nougen_shards" not in sys.modules:
+        import importlib
+        import types
+        pkg_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src", "nougen_shards"))
+        if os.path.isfile(os.path.join(pkg_dir, "nougenmsg.py")):
+            stub = types.ModuleType("nougen_shards")
+            stub.__path__ = [pkg_dir]
+            stub.__package__ = "nougen_shards"
+            sys.modules["nougen_shards"] = stub
+            try:
+                return importlib.import_module("nougen_shards.nougenmsg")
+            except Exception:  # pylint: disable=broad-except
+                sys.modules.pop("nougen_shards", None)
+                sys.modules.pop("nougen_shards.nougenmsg", None)
+    import nougen_shards.nougenmsg as _mod  # pylint: disable=import-outside-toplevel
+    return _mod
+
+
+_bus_mod = _import_bus()
+NouGenMsgBus = _bus_mod.NouGenMsgBus
+get_current_node = _bus_mod.get_current_node
+resolve_session = _bus_mod.resolve_session
 
 def print_help():
     print("""
@@ -87,7 +119,7 @@ def resolve_agent_label() -> str:
     return "claude-cli"
 
 
-def house_style(text: str, node: str, agent: str) -> str:
+def house_style(text: str, node: str, agent: str, session_id: str = "") -> str:
     """Decorate a plain message into the fleet banner format.
 
     Lines already carrying a glyph (first char outside ASCII) or a [TAG] are
@@ -111,28 +143,53 @@ def house_style(text: str, node: str, agent: str) -> str:
 
     # Layout: HEADER (who, when) / SUBJECT (first line) / BODY (status lines,
     # then free text). Rule width is env-tunable for narrow terminals.
+    # Dynamic terminal auto-scaling & textwrap hanging indents (PR #307)
+    import shutil
+    import textwrap
     try:
-        width = int(os.environ.get("NOUGEN_MSG_RULE_WIDTH", "30"))
+        width = int(os.environ.get("NOUGEN_MSG_RULE_WIDTH", "0"))
     except ValueError:
-        width = 30
+        width = 0
+    if not width:
+        cols = shutil.get_terminal_size(fallback=(80, 24)).columns
+        width = max(30, min(cols - 2, 72))
     heavy, light = "━" * width, "─" * width
     stamp = time.strftime("%Y-%m-%d %H:%M %z")
+    # Session id in the header (GM, 2026-09-08 14:10 EDT): two sessions on
+    # one host both built --dry-run in the same hour, each banner just said
+    # "whoart". Host and lane identify a machine; the session identifies who
+    # is typing. Short form only; the full id rides in the payload.
+    sess = resolve_session()
+    who = f"{node.upper()} / {agent.upper()}"
+    if sess:
+        who += f" / sess {str(sess)[:8]}"
 
     status: list[str] = []
     free: list[str] = []
     for line in lines[1:]:
         s = line.strip()
+        if not s:
+            continue
         if ord(s[0]) > 0x7F:
             status.append(s)
             continue
-        key, sep, rest = s.partition(":")
-        k = key.strip().lower()
-        if sep and rest.strip() and k in table:
-            status.append(f"{table[k]} {key.strip()}: {rest.strip()}")
+        # Strip leading list bullets, hashes, or dashes from keys (PR #307)
+        s_clean = s.lstrip('-*#• ').strip()
+        key, sep, rest = s_clean.partition(":")
+        k = key.strip().lower().replace(" ", "").replace("_", "")
+        # Also check direct table keys
+        table_keys = {tbl_k.replace(" ", "").replace("_", ""): tbl_v for tbl_k, tbl_v in table.items()}
+        if sep and rest.strip() and k in table_keys:
+            glyph = table_keys[k]
+            prefix = f"{glyph} {key.strip()}: "
+            sub_indent = " " * max(len(prefix) - 1, 4)
+            wrapped = textwrap.fill(rest.strip(), width=width, initial_indent=prefix, subsequent_indent=sub_indent)
+            status.append(wrapped)
         else:
-            free.append(f"• {s}")
+            wrapped = textwrap.fill(s, width=width, initial_indent="• ", subsequent_indent="  ")
+            free.append(wrapped)
 
-    out = [f"{_BANNER_GLYPH} {node.upper()} / {agent.upper()}  ·  {stamp}", heavy,
+    out = [f"{_BANNER_GLYPH} {who}  ·  {stamp}", heavy,
            f"\U0001F4CC {head}"]
     if status or free:
         out.append(light)
@@ -224,7 +281,9 @@ def main():
         else:
             for m in msgs:
                 ts_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(m.get('timestamp', time.time())))
-                src = m.get('source') or m.get('sender') or 'unknown'
+                # sender is WHO spoke (a model lane sets it to "ollama:<model>");
+                # source is only the host that wrote the file.
+                src = m.get('sender') or m.get('source') or 'unknown'
                 dom = f" [{m.get('domain')}]" if m.get('domain') else ""
                 print(f"  • [{ts_str}] From: @{src}{dom}")
                 print(f"    └─ {m.get('text')}")

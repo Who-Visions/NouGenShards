@@ -49,6 +49,9 @@ def _handoff_module():
     return handoff
 
 
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if os.name == "nt" else 0
+
+
 def _git(args: list[str], cwd: Path, timeout: int = 60) -> tuple[int, str, str]:
     """Run one git command. Bounded, never raises."""
     try:
@@ -59,6 +62,8 @@ def _git(args: list[str], cwd: Path, timeout: int = 60) -> tuple[int, str, str]:
             text=True,
             timeout=timeout,
             check=False,
+            stdin=subprocess.DEVNULL,
+            creationflags=_NO_WINDOW,
         )
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
     except FileNotFoundError:

@@ -41,6 +41,19 @@ import sys
 import time
 from pathlib import Path
 
+if sys.platform == "win32":
+    _orig_popen_init = subprocess.Popen.__init__
+
+    def _windowless_popen_init(self, *args, **kwargs):
+        if "creationflags" not in kwargs:
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        if kwargs.get("stdin") is None:
+            kwargs["stdin"] = subprocess.DEVNULL
+        return _orig_popen_init(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = _windowless_popen_init  # type: ignore[method-assign]
+
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _agy_live_delivery import (  # noqa: E402
     MalformedOriginLines, gate_and_deliver, parse_origin_lines, registry_parity_ok,
