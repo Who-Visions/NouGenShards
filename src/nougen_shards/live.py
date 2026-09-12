@@ -18,38 +18,57 @@ import socket
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-# Fleet Topology Specification
-FLEET_NODES: Dict[str, Dict[str, Any]] = {
-    "apollo": {
-        "name": "Apollo",
-        "role": "heavy inference compute stadium",
-        "stadium": "Razer Blade 2020 Super Max-Q 2080",
-        "ip": "192.168.1.16",
-        "host": "blade.nougenai.com",
-        "alt_ips": ["192.168.1.98", "192.168.1.16"],
-        "ports": [22, 8765, 8766, 11434],
-    },
-    "hyperion": {
-        "name": "Hyperion",
-        "role": "tactical edge compute stadium",
-        "stadium": "ASUS ProArt PX13",
-        "ip": "192.168.1.187",
-        "host": "hyperion.nougenai.com",
-        "alt_ips": ["192.168.1.187", "127.0.0.1"],
-        "ports": [22, 8765, 8766, 11434],
-    },
-    "phoebus": {
-        "name": "Phoebus",
-        "role": "backbone compute stadium",
-        "stadium": "Mac Mini",
-        "ip": "192.168.1.78",
-        "host": "phoebus.nougenai.com",
-        "alt_ips": ["192.168.1.78"],
-        "ports": [22, 8765, 8766, 11434],
-    },
-}
-
+# Default Standard Ports to Probe
 STANDARD_PORTS = [22, 4444, 8765, 8766, 11434]
+
+
+def get_fleet_nodes(home_dir: Optional[Path] = None) -> Dict[str, Dict[str, Any]]:
+    """Resolves fleet node topology dynamically from config or defaults to local node.
+    
+    Any public user can configure their own multi-node fleet in ~/.nougen/nodes.json
+    or via the NOUGEN_FLEET_NODES environment variable (JSON string).
+    Out-of-the-box, it defaults to a clean local-first configuration.
+    """
+    # 1. Environment variable override (JSON string)
+    env_nodes = os.environ.get("NOUGEN_FLEET_NODES")
+    if env_nodes:
+        try:
+            parsed = json.loads(env_nodes)
+            if isinstance(parsed, dict) and parsed:
+                return parsed
+        except Exception:
+            pass
+
+    # 2. Local config file (~/.nougen/nodes.json)
+    h_dir = home_dir or (Path.home() / ".nougen")
+    nodes_file = h_dir / "nodes.json"
+    if nodes_file.exists():
+        try:
+            data = json.loads(nodes_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data:
+                return data
+        except Exception:
+            pass
+
+    # 3. Default standalone local-first node (works out of the box for any user)
+    try:
+        hostname = socket.gethostname()
+    except Exception:
+        hostname = "localhost"
+
+    return {
+        "local": {
+            "name": f"Local Node ({hostname})",
+            "role": "primary compute node",
+            "stadium": hostname,
+            "ip": "127.0.0.1",
+            "host": "localhost",
+            "ports": STANDARD_PORTS,
+        }
+    }
+
+
+FLEET_NODES: Dict[str, Dict[str, Any]] = get_fleet_nodes()
 
 
 class LiveControlPlane:
@@ -64,6 +83,8 @@ class LiveControlPlane:
             alt_relay = Path(__file__).resolve().parents[3] / "NouGenRelay"
             if alt_relay.exists():
                 self.relay_root = alt_relay
+
+        self.fleet_nodes = get_fleet_nodes(self.home_dir)
 
     def probe_tcp_detailed(self, host: str, port: int, timeout: float = 0.5) -> Dict[str, Any]:
         """Probes a TCP endpoint with distinct status codes (LISTENING, CONNECTION_REFUSED, TIMEOUT)."""
@@ -126,7 +147,7 @@ class LiveControlPlane:
 
     def probe_node(self, node_key: str, timeout: float = 0.8) -> Dict[str, Any]:
         """Probes an individual fleet node across its primary IP and host routes."""
-        node_cfg = FLEET_NODES.get(node_key)
+        node_cfg = self.fleet_nodes.get(node_key)
         if not node_cfg:
             return {"node": node_key, "status": "UNKNOWN_NODE", "reachable": False}
 
@@ -144,8 +165,8 @@ class LiveControlPlane:
         return {
             "node": node_key,
             "name": node_cfg["name"],
-            "role": node_cfg["role"],
-            "stadium": node_cfg["stadium"],
+            "role": node_cfg.get("role", "compute node"),
+            "stadium": node_cfg.get("stadium", host_name),
             "ip": primary_ip,
             "host": host_name,
             "state": state,
@@ -161,12 +182,12 @@ class LiveControlPlane:
     def nodes(self, timeout: float = 0.8) -> Dict[str, Any]:
         """Probes all fleet nodes independently, tolerating partial failures."""
         node_results = {}
-        for k in FLEET_NODES:
+        for k in self.fleet_nodes:
             node_results[k] = self.probe_node(k, timeout=timeout)
 
         online_count = sum(1 for n in node_results.values() if n["reachable"])
         return {
-            "total_nodes": len(FLEET_NODES),
+            "total_nodes": len(self.fleet_nodes),
             "online_nodes": online_count,
             "nodes": node_results,
             "timestamp": time.time()
@@ -175,7 +196,7 @@ class LiveControlPlane:
     def ssh(self, timeout: float = 0.8) -> Dict[str, Any]:
         """Reports per-node SSH reachability and reason codes."""
         ssh_results = {}
-        for k, cfg in FLEET_NODES.items():
+        for k, cfg in self.fleet_nodes.items():
             probe = self.probe_tcp_detailed(cfg["ip"], 22, timeout=timeout)
             ssh_results[k] = {
                 "node": k,

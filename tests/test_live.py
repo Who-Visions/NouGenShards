@@ -191,13 +191,27 @@ def test_invariant_9_broadcast_records_per_target_results(tmp_path):
     assert isinstance(b_res["results"], list)
 
 
-def test_invariant_10_all_nodes_independently_represented():
-    """11. All three nodes are independently represented, with partial failure tolerated."""
-    control = LiveControlPlane()
-    nodes_report = control.nodes(timeout=0.1)
+def test_invariant_10_all_nodes_independently_represented(tmp_path):
+    """11. All configured nodes are independently represented, with partial failure tolerated."""
+    # 1. Default local node
+    control_default = LiveControlPlane(home_dir=tmp_path)
+    nodes_default = control_default.nodes(timeout=0.1)
+    assert "local" in nodes_default["nodes"]
+    assert nodes_default["nodes"]["local"]["ip"] == "127.0.0.1"
+
+    # 2. Custom multi-node cluster configured via nodes.json
+    nodes_file = tmp_path / "nodes.json"
+    nodes_file.write_text(json.dumps({
+        "node_a": {"name": "Node Alpha", "ip": "127.0.0.1", "host": "alpha.local"},
+        "node_b": {"name": "Node Beta", "ip": "127.0.0.1", "host": "beta.local"},
+        "node_c": {"name": "Node Gamma", "ip": "127.0.0.1", "host": "gamma.local"}
+    }), encoding="utf-8")
+
+    control_multi = LiveControlPlane(home_dir=tmp_path)
+    nodes_report = control_multi.nodes(timeout=0.1)
 
     assert nodes_report["total_nodes"] == 3
-    for k in ("apollo", "hyperion", "phoebus"):
+    for k in ("node_a", "node_b", "node_c"):
         assert k in nodes_report["nodes"]
         node_info = nodes_report["nodes"][k]
         assert "ip" in node_info
@@ -206,22 +220,27 @@ def test_invariant_10_all_nodes_independently_represented():
         assert "probes" in node_info
 
 
-def test_invariant_11_phoebus_peer_timeout_does_not_break_fleet():
-    """12. Phoebus peer timeout does not mark the entire machine or fleet dead."""
-    control = LiveControlPlane()
+def test_invariant_11_partial_node_port_timeout_does_not_break_fleet(tmp_path):
+    """12. Peer port timeout does not mark the entire node or cluster dead."""
+    nodes_file = tmp_path / "nodes.json"
+    nodes_file.write_text(json.dumps({
+        "remote_worker": {"name": "Remote Worker", "ip": "127.0.0.1", "host": "worker.local"}
+    }), encoding="utf-8")
+
+    control = LiveControlPlane(home_dir=tmp_path)
 
     with patch.object(control, "probe_tcp_detailed") as mock_probe:
-        # Mock phoebus timing out on 8765 but reachable on SSH 22
+        # Mock port 8765 timeout, but port 22 reachable
         def side_effect(host, port, timeout=0.5):
-            if host == FLEET_NODES["phoebus"]["ip"] and port == 8765:
+            if port == 8765:
                 return {"host": host, "port": port, "status": "TIMEOUT", "reachable": False, "latency_ms": 100.0, "reason_code": "CONNECT_TIMEOUT"}
             return {"host": host, "port": port, "status": "LISTENING", "reachable": True, "latency_ms": 5.0, "reason_code": "SOCKET_CONNECTED"}
 
         mock_probe.side_effect = side_effect
 
-        phoebus_node = control.probe_node("phoebus")
-        assert phoebus_node["reachable"] is True  # Survived via SSH probe fallback
-        assert phoebus_node["state"] == "ONLINE"
+        worker_node = control.probe_node("remote_worker")
+        assert worker_node["reachable"] is True  # Survived via SSH probe fallback
+        assert worker_node["state"] == "ONLINE"
 
 
 def test_invariant_12_backward_compatibility():
