@@ -99,8 +99,8 @@ def fetch_twitter_metadata_and_media(url: str) -> Dict[str, Any]:
                     break
 
         return {
-            "title": f"Post by @{data.get("user_name", user)} ({data.get("date", "unknown")})",
-            "channel": f"@{data.get("user_screen_name", user)}",
+            "title": f"Post by @{data.get('user_name', user)} ({data.get('date', 'unknown')})",
+            "channel": f"@{data.get('user_screen_name', user)}",
             "text": data.get("text", ""),
             "published": data.get("date"),
             "video_url": video_url,
@@ -252,7 +252,7 @@ def process_transcription(source: str, dry_run: bool = False, no_shard: bool = F
         f"Identifier: {media_id}",
         f"Ingest Tier: {tier}",
         f"Timestamp: {datetime.now(timezone.utc).isoformat()}",
-        f"Video Stream: {video_url or "N/A"}",
+        f"Video Stream: {video_url or 'N/A'}",
         "Provenance: autonomous media transcription and preservation.",
     ])
 
@@ -325,12 +325,12 @@ def main():
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print(f"✨ NouGenTranscribe: {result["title"]}")
-        print(f"   Platform: {result["platform"]} | ID: {result["media_id"]}")
-        print(f"   Ingest Tier: {result["tier"]}")
+        print(f"✨ NouGenTranscribe: {result['title']}")
+        print(f"   Platform: {result['platform']} | ID: {result['media_id']}")
+        print(f"   Ingest Tier: {result['tier']}")
         if result.get("video_stream"):
-            print(f"   Media Stream: {result["video_stream"]}")
-        print(f"   Status: {result["status"]} (Shards Captured: {result.get("shards_captured", 0)})")
+            print(f"   Media Stream: {result['video_stream']}")
+        print(f"   Status: {result['status']} (Shards Captured: {result.get('shards_captured', 0)})")
         print("   Preview:")
         print("   " + "\n   ".join(result["text_preview"].splitlines()[:5]))
 
