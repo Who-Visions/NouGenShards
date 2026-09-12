@@ -21,11 +21,11 @@ if sys.platform == "win32":
 
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
-from .core import capture, retrieve, mark_shard, compile_recall_packet
-from .federation import federated_retrieve
-from .history import HistoryEngine, log_event, init_history_db
-from .graph import link_shards, related_shards
-from .gatekeeper import check_mutation_gate
+from .core import capture as capture, retrieve as retrieve, mark_shard as mark_shard, compile_recall_packet as compile_recall_packet
+from .federation import federated_retrieve as federated_retrieve
+from .history import HistoryEngine as HistoryEngine, log_event as log_event, init_history_db as init_history_db
+from .graph import link_shards as link_shards, related_shards as related_shards
+from .gatekeeper import check_mutation_gate as check_mutation_gate
 
 try:
     from .transcriber import NouGenTranscriber, TranscribeEngine
