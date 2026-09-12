@@ -1,5 +1,5 @@
 """
-Shadow Dweller Remix Refinery: Creative Compiler & Process Donor Governance Engine.
+Creative Remix Refinery: Creative Compiler & Process Donor Governance Engine.
 Evolves Shard 22489 into an executable compiler:
 HARVEST -> ATOMIZE -> STRIP -> ANCHOR -> MUTATE -> BRAID -> COLLIDE -> SCORE -> PROVE -> SHARD
 """

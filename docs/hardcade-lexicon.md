@@ -4,7 +4,7 @@ Compiled 2026-09-06 by whoart/outpost-1d from GM lexicon legs 205708Z, 205845Z,
 210653Z, 210821Z, 211236Z, 211444Z, 211719Z, 211939Z, 212448Z and the Hardcade
 doctrine payload in 212944Z. Completes leg 20260906T212223Z ("expand lexicon +
 prepare 10 hit combo macros"). Naming sources ratified: SF/FF plus Geese/Rock
-Howard moves (211939Z). Shadow Dweller / VeilVerse lore lanes are lore-only and
+Howard moves (211939Z). Proprietary lore lanes are isolated and
 never diverted by any command here.
 
 ## Base verbs (relay-direction grammar)
@@ -93,7 +93,7 @@ at the right hit index; an implementation that emits PERFECT on any fixture is
 decorative and fails CI. The test data costs nothing — it is the fleet's own
 incident record.
 
-**Namespace rule:** Hardcade command names and VeilVerse/Shadow Dweller canon
+**Namespace rule:** Hardcade command names and proprietary canon
 vocabulary are DISJOINT by rule — operator commands (SHORYUKEN, HADOUKEN…)
 never enter canon naming, which is Greek-coded (Syndicate Twelve) with a seat
 ruling still pending with GM.

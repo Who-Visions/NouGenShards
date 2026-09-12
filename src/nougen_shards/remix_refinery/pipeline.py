@@ -1,5 +1,5 @@
 """
-Full 10-Stage Pipeline for Shadow Dweller Remix Refinery:
+Full 10-Stage Pipeline for Creative Remix Refinery:
 HARVEST -> ATOMIZE -> STRIP -> ANCHOR -> MUTATE -> BRAID -> COLLIDE -> SCORE -> PROVE -> SHARD
 """
 
@@ -98,7 +98,7 @@ class RemixRefineryPipeline:
             independent_donors=independent_sources,
             native_expression=braided_expression,
             scene_applications=scene_applications or [
-                "Shadow Dweller infiltration through Veil resonance perimeter",
+                "Target domain mechanism application example",
                 "Marasa ancestral consultation during temporal threshold collapse",
             ],
             status=status,
