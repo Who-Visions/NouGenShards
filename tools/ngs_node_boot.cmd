@@ -13,6 +13,7 @@ REM It carries the same cross-process locks as node_lane.ps1 and is idempotent,
 REM so the Startup-folder copy and this scheduled task can safely overlap.
 
 setlocal
+set "NGS_PORT=4445"
 set "NGS_ROOT=%~dp0.."
 pushd "%NGS_ROOT%" || exit /b 1
 rem Keep the runtime copy in .nougen synchronized with the checked-in source.
