@@ -24,7 +24,13 @@ from .legacy import (
     FederatedResult,
     _lane_pool_size,
     _lane_executor,
+    core,
+    keymaker,
+    query_external_dbs,
+    query_cloud_shards,
+    query_local_vaults,
 )
+
 
 __all__ = [
     "VaultId",

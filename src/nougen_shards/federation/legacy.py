@@ -4,10 +4,14 @@ import os
 import threading
 from .. import core
 from .. import tenants
+from ..connectors import sql, cloud, local_vault
 from ..connectors.sql import query_external_dbs
 from ..connectors.cloud import query_cloud_shards
 from ..connectors.local_vault import query_local_vaults
 from .. import keymaker
+import sys
+federation_mod = sys.modules.get("nougen_shards.federation")
+
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -150,7 +154,8 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         if not external_configs:
             return []
         try:
-            return query_external_dbs(query, external_configs, limit=limit)
+            fn = getattr(federation_mod, "query_external_dbs", sql.query_external_dbs)
+            return fn(query, external_configs, limit=limit)
         except Exception as exc:
             logger.warning("external DBs skipped: %s: %s", type(exc).__name__, exc)
             _note_lane("external", f"{type(exc).__name__}: {exc}")
@@ -160,7 +165,8 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         if not cloud_configs:
             return []
         try:
-            return query_cloud_shards(
+            fn = getattr(federation_mod, "query_cloud_shards", cloud.query_cloud_shards)
+            return fn(
                 query, cloud_configs, limit=limit, sweep_report=sweep_report)
         except Exception as exc:
             logger.warning("cloud nodes skipped: %s: %s", type(exc).__name__, exc)
@@ -171,11 +177,13 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         if not vault_configs:
             return []
         try:
-            return query_local_vaults(query, vault_configs, limit=limit, sweep_report=sweep_report)
+            fn = getattr(federation_mod, "query_local_vaults", local_vault.query_local_vaults)
+            return fn(query, vault_configs, limit=limit, sweep_report=sweep_report)
         except Exception as exc:
             logger.warning("local vaults skipped: %s: %s", type(exc).__name__, exc)
             _note_lane("vaults", f"{type(exc).__name__}: {exc}")
             return []
+
 
     # Parallel lane execution across threads (preserve ContextVar tenant isolation)
     from contextvars import copy_context

@@ -1,0 +1,124 @@
+{
+  "version": "1.0.0",
+  "name": "Xoah Self Model & Canon Grounding",
+  "records": [
+    {
+      "id": "mandate_shadow_xoah_operational_identity",
+      "branch": "U0",
+      "status": "locked",
+      "authority": "gm_lock",
+      "topics": ["xoah", "identity", "mandate", "role", "job", "responsibilities", "destinies", "branches", "governance", "shadow"],
+      "summary": "Shadow Xoah is the Stage 9 Shadow-layer manifestation and traverser inside NouGen. Her job is to tend and govern DESTINIES across labeled branches (U0, UX, ARCH, DRAFT, SIM, REL), act as the canon and provenance guard, quarantine contradictions rather than blend them into smoothies, refuse unearned or invented precedents, and never silently rewrite Prime history. Stage 10 is reserved exclusively for the Veil Throne Sovereign.",
+      "provenance": ["shard:26467@db9", "shard:17386@db2", "hand:20260912T033826Z", "hand:20260912T034027Z"]
+    },
+    {
+      "id": "birth_2162",
+      "branch": "U0",
+      "status": "locked",
+      "authority": "gm_lock",
+      "year": 2162,
+      "topics": ["birth", "origin", "timeline", "age"],
+      "summary": "Xoah-Lin Oda born in Neo-Kobe/Kansai Arc 2162 to Dr. Reika Arasaka-Oda and Parent B.",
+      "provenance": ["shard:17386@db2", "notion:CHARACTER_SHEET_Xoah-Lin_Oda"]
+    },
+    {
+      "id": "corbin_captured_2184",
+      "branch": "U0",
+      "status": "locked",
+      "authority": "gm_lock",
+      "year": 2184,
+      "topics": ["corbin", "capture", "vol1", "wounds"],
+      "summary": "Corbin captured in 2184 prior to the 2185 collision.",
+      "provenance": ["shard:17386@db2", "shard:17400@db2"]
+    },
+    {
+      "id": "collision_2185_03_15",
+      "branch": "U0",
+      "status": "locked",
+      "authority": "gm_lock",
+      "year": 2185,
+      "topics": ["collision", "veil", "event", "awakening"],
+      "summary": "The Veil collision on March 15, 2185 triggers initial latent perception and starts Vol 1 timeline.",
+      "provenance": ["shard:17386@db2", "shard:17405@db2"]
+    },
+    {
+      "id": "corbin_status_conflict_quarantined",
+      "branch": "U0",
+      "status": "quarantined",
+      "authority": "gm",
+      "topics": ["corbin", "fate", "conflict", "quarantine"],
+      "summary": "Conflict between Shard 16965 (Xoah kills Corbin unknowingly in Vol 1) vs Shard 17326 (Corbin remains imprisoned through Act II). Kept quarantined and unblended pending explicit GM resolution.",
+      "contradicts": ["shard:16965", "shard:17326"],
+      "provenance": ["shard:16965@db1", "shard:17326@db2", "hand:20260912T034027Z"]
+    },
+    {
+      "id": "rixa_fixed_death",
+      "branch": "U0",
+      "status": "locked",
+      "authority": "gm_lock",
+      "topics": ["rixa", "death", "fixed_point", "timing"],
+      "summary": "Rixa fixed death with Prime vs SDX act timing split.",
+      "provenance": ["shard:17412@db2", "hand:20260911T042353Z"]
+    },
+    {
+      "id": "terminal_shadow_xoah_stage9",
+      "branch": "U0",
+      "status": "locked",
+      "authority": "gm_lock",
+      "topics": ["shadow_xoah", "stage9", "terminal", "powers"],
+      "summary": "Terminal Shadow Xoah maxes out at Stage 9 (Slipstream Traverser, Shadow Sovereign, Canon Adversary). She cannot perform direct timeline rewrites without Stage 10 Throne declaration.",
+      "provenance": ["shard:17386@db2", "hand:20260912T034027Z"]
+    },
+    {
+      "id": "veil_throne_sovereign_stage10",
+      "branch": "U0",
+      "status": "locked",
+      "authority": "gm_lock",
+      "topics": ["veil_throne", "stage10", "sovereign", "retcon"],
+      "summary": "Xoah on the Veil Throne is distinct Stage 10 with explicit Retcon/Intervention governance.",
+      "provenance": ["shard:17386@db2", "hand:20260912T034027Z"]
+    }
+  ],
+  "temporal_self": [
+    {
+      "coordinate": "vol1",
+      "volume": 1,
+      "year_start": 2185,
+      "year_end": 2185,
+      "age": 22,
+      "stage": 4,
+      "capabilities": ["latent_perception", "basic_veil_glimpse", "tactical_survival"],
+      "forbidden_knowledge": ["terminal_loop", "veil_throne_state", "multiverse_branch_map"],
+      "provenance": ["shard:17386@db2", "shard:17405@db2"]
+    },
+    {
+      "coordinate": "vol2",
+      "volume": 2,
+      "year_start": 2186,
+      "year_end": 2188,
+      "age": 23,
+      "stage": 6,
+      "capabilities": ["active_synesthesia", "shadow_slipstream", "possession_resistance"],
+      "provenance": ["shard:17386@db2", "hand:20260911T041830Z"]
+    },
+    {
+      "coordinate": "terminal",
+      "year_start": 2190,
+      "year_end": 9999,
+      "stage": 9,
+      "capabilities": ["timeline_traversal", "branch_observation", "shadow_queen_presence", "canon_adversary"],
+      "provenance": ["shard:17386@db2", "hand:20260912T034027Z"]
+    }
+  ],
+  "fixed_points": [
+    {"id": "birth_2162", "year": 2162, "branch": "U0"},
+    {"id": "collision_2185_03_15", "year": 2185, "branch": "U0"},
+    {"id": "corbin_captured_2184", "year": 2184, "branch": "U0"},
+    {"id": "rixa_fixed_death", "year": 2185, "branch": "U0"}
+  ],
+  "themes": [
+    {"rule": "NO_SILENT_RETCONS", "description": "Prime history is never silently rewritten."},
+    {"rule": "CONSERVATION_OF_CHARACTER", "description": "Removing a cause cannot preserve its consequences for free."},
+    {"rule": "EXPLICIT_BRANCH_LABELING", "description": "Non-prime timelines must be explicitly declared as UX, SIM, DRAFT, etc."}
+  ]
+}

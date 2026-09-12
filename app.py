@@ -31,7 +31,7 @@ if os.environ.get("SPACE_ID"):
     os.environ["NOUGEN_HOME"] = "/data"
     os.environ["NOUGEN_VAULT_DIR"] = "/data/.vault"
 
-from nougen_shards import bind_probe, core, history, mcp_oauth, tenants
+from nougen_shards import bind_probe, core, history, locator, machine, mcp_oauth, tenants
 from nougen_shards.federation import federated_retrieve
 from nougen_shards import fd_budget
 from nougen_shards.brain_scan import scan_environment
@@ -252,7 +252,12 @@ def mark_utility(shard_id: int, worked: bool, db_index: int | None = None) -> di
 def node_status() -> dict:
     """Node health: shard count and storage mode."""
     from nougen_shards.brain_scan import redaction as _redaction
+    from nougen_shards import locator, machine
+    current_origin = locator.current_node()
     return {"status": "ignited",
+            "node": current_origin,
+            "origin": current_origin,
+            "machine": machine.host_label(),
             "total_shards": _total_shards(),
             "storage": os.environ.get("NOUGEN_HOME", "default"),
             "redaction_patterns": len(_redaction.SECRET_PATTERNS),
@@ -1161,8 +1166,12 @@ async def health(
             "to unauthenticated callers"
         )
 
+    current_origin = locator.current_node()
     result = {
         "status": "ignited",
+        "node": current_origin,
+        "origin": current_origin,
+        "machine": machine.host_label(),
         "deploy_sha": deploy_sha,
         "storage": os.environ.get("NOUGEN_HOME", "default"),
         "persistent_storage": persistent,
@@ -1212,6 +1221,9 @@ def _health_authed(result: dict, warnings: list, persistent: bool,
     finally:
         core.reset_active_vault(context_tokens)
     result.update({
+        "node": locator.current_node(),
+        "origin": locator.current_node(),
+        "machine": machine.host_label(),
         "tenant_id": tenant.tenant_id,
         "tenant_lane": lane,
         "total_shards": coverage["shards"],
@@ -1971,7 +1983,8 @@ class XoahPressureRequest(BaseModel):
 
 
 class XoahThroneRequest(BaseModel):
-    desired_effect: str
+    desired_effect: Optional[str] = None
+    effect: Optional[str] = None
     target_coordinate: Optional[str] = None
     target_branch: Optional[str] = None
     acting_stage: int = 9
@@ -1979,6 +1992,11 @@ class XoahThroneRequest(BaseModel):
     retcon_intent: bool = False
     actor: Optional[str] = None
     should_register: bool = True
+
+    @property
+    def resolved_effect(self) -> str:
+        return (self.desired_effect or self.effect or "").strip()
+
 
 
 class DestiniesRequest(BaseModel):
@@ -2018,7 +2036,7 @@ def xoah_throne_endpoint(
 ):
     """Run proposed intervention through Shadow Queen Throne governance gates."""
     return throne_governance.evaluate(
-        req.desired_effect,
+        req.resolved_effect,
         target_coordinate=req.target_coordinate,
         target_branch=req.target_branch,
         acting_stage=req.acting_stage,
@@ -2087,9 +2105,11 @@ def xoah_pressure(candidate: str, coordinate: Optional[str] = None, register: bo
 
 @node_mcp.tool()
 @_offloaded
-def xoah_throne(desired_effect: str, target_coordinate: Optional[str] = None, target_branch: Optional[str] = None) -> dict:
+def xoah_throne(desired_effect: Optional[str] = None, effect: Optional[str] = None, target_coordinate: Optional[str] = None, target_branch: Optional[str] = None) -> dict:
     """Run proposed intervention through Shadow Queen Throne governance gates."""
-    return throne_governance.evaluate(desired_effect, target_coordinate=target_coordinate, target_branch=target_branch)
+    resolved = (desired_effect or effect or "").strip()
+    return throne_governance.evaluate(resolved, target_coordinate=target_coordinate, target_branch=target_branch)
+
 
 
 @node_mcp.tool()
@@ -2097,6 +2117,16 @@ def xoah_throne(desired_effect: str, target_coordinate: Optional[str] = None, ta
 def unfinished_destinies(status: Optional[str] = None, trigger: Optional[str] = None, branch: Optional[str] = None, limit: int = 20) -> dict:
     """List unfinished or filtered prospective destinies."""
     return destiny.unfinished_destinies(status=status, trigger=trigger, branch=branch, limit=limit)
+
+
+@node_mcp.tool()
+@_offloaded
+def nougen_translate_response(raw_response: str, mode: str = "human_first", audience: str = "dave", preserve_technical: bool = True) -> dict:
+    """Translate technical infrastructure status/diagnostics into plain human language."""
+    from nougen_shards.human_translation import translate_to_human
+    res = translate_to_human(raw_response, mode=mode, audience=audience, preserve_technical=preserve_technical)
+    return res.as_dict()
+
 
 
 @node_mcp.tool()

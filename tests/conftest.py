@@ -36,6 +36,17 @@ def isolated_secrets_vault(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_tenants_registry(tmp_path_factory, monkeypatch):
+    """Keep tenant registry hermetic by default."""
+    tenants_dir = tmp_path_factory.mktemp("tenants_reg")
+    tenants_file = tenants_dir / "tenants.json"
+    monkeypatch.setenv("NOUGEN_TENANTS_FILE", str(tenants_file))
+    monkeypatch.setenv("NOUGEN_TENANT_VAULT_ROOT", str(tenants_dir / "tenants"))
+    yield tenants_file
+
+
+
+@pytest.fixture(autouse=True)
 def no_network_embed_at_capture(monkeypatch):
     """Keep `capture()` hermetic.
 

@@ -361,7 +361,12 @@ def main():
             print("  (inbox is empty)")
         else:
             for m in msgs:
-                ts_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(m.get('timestamp', time.time())))
+                raw_ts = m.get('timestamp', time.time())
+                try:
+                    ts_val = float(raw_ts)
+                except (ValueError, TypeError):
+                    ts_val = time.time()
+                ts_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts_val))
                 # sender is WHO spoke (a model lane sets it to "ollama:<model>");
                 # source is only the host that wrote the file.
                 src = m.get('sender') or m.get('source') or 'unknown'

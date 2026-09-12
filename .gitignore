@@ -150,7 +150,7 @@ tools/fleet_keys_valid.json
 hf_router_models.json
 
 # Local-only: personal canon/provenance. This repo is PUBLIC - never publish these.
-canon/
+/canon/
 
 # Node runtime state and the vendored cloudflared binary (52 MB)
 .node/

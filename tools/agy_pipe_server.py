@@ -262,6 +262,7 @@ def run_server():
                 written = drop_to_inboxes(msg_obj)
                 print(f"[agy_pipe] Received message: '{msg_obj.get('text', '')[:60]}...' -> Dropped to {len(written)} inboxes", flush=True)
 
+
                 ack = json.dumps({
                     "status": "delivered",
                     "pipe": PIPE_NAME,

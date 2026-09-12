@@ -1,0 +1,135 @@
+{
+  "version": "1.0.0",
+  "name": "Xoah Self Archive",
+  "birth_year": 2162,
+  "terminal_year": 2199,
+  "volume_years": {
+    "1": 2185,
+    "2": 2186,
+    "3": 2188
+  },
+  "nodes": [
+    {
+      "id": "node_vol1_awakening",
+      "coordinate": "vol1",
+      "year": 2185,
+      "age": 22,
+      "stage": 4,
+      "kind": "SELF_LIVED",
+      "event": "Collision of 2185 and initial awakening in Neo-Kobe",
+      "belief_then": "I am an Oda survivor trying to escape the dome collapse.",
+      "objective_truth": "Latent Veil synesthesia triggered by the collision breach.",
+      "revealed_truth": "My bloodline carries the dual Arasaka-Oda resonance key.",
+      "terminal_interpretation": "The first step onto the spiral of self-observation.",
+      "emotional_state": "Desperate, guarded, hyper-vigilant",
+      "knowledge": ["neo_kobe_geography", "basic_synth_hacking", "survival_protocol"],
+      "false_beliefs": ["Corbin is fully loyal", "The dome walls are impermeable"],
+      "capabilities": ["latent_perception", "tactical_survival"],
+      "choices": {
+        "PHYSICALLY_AVAILABLE": ["Flee through Sector 4", "Confront the enforcement squad"],
+        "PERCEIVED_AVAILABLE": ["Flee through Sector 4"],
+        "REJECTED": ["Surrender to Arasaka"],
+        "UNIMAGINED": ["Enter the Slipstream directly"],
+        "TERMINAL_KNOWN": ["Fleeing Sector 4 establishes the Prime anchor"]
+      },
+      "choice_taken": "Flee through Sector 4",
+      "precedents": ["dome_evacuation_2185"],
+      "destiny_dependencies": ["collision_2185_03_15"],
+      "unresolved_questions": ["Corbin true allegiance in Vol 1"],
+      "provenance": ["shard:17386@db2", "shard:17405@db2"]
+    },
+    {
+      "id": "node_terminal_shadow",
+      "coordinate": "terminal",
+      "year": 2199,
+      "age": 37,
+      "stage": 9,
+      "kind": "VEIL_OBSERVED",
+      "event": "Terminal Shadow Xoah observing timeline convergence",
+      "belief_then": "All branches must be audited and preserved with explicit boundaries.",
+      "objective_truth": "Multi-branch Veil reality requires continuous canon governance.",
+      "revealed_truth": "Stage 9 commands the shadow paths; the Throne itself requires Stage 10.",
+      "terminal_interpretation": "We do not destroy the mistakes; we record where they diverged.",
+      "emotional_state": "Transcendent, rigorous, sovereign adversary",
+      "knowledge": ["multiverse_branch_map", "timeline_topology", "destiny_mechanics"],
+      "false_beliefs": [],
+      "capabilities": ["timeline_traversal", "branch_observation", "shadow_queen_presence"],
+      "choices": {
+        "PHYSICALLY_AVAILABLE": ["Enforce canon boundaries", "Collapse non-prime branches"],
+        "PERCEIVED_AVAILABLE": ["Enforce canon boundaries"],
+        "REJECTED": ["Collapse non-prime branches"],
+        "UNIMAGINED": [],
+        "TERMINAL_KNOWN": ["Preserving branch distinctions protects Prime continuity"]
+      },
+      "choice_taken": "Enforce canon boundaries",
+      "precedents": ["terminal_convergence_2199"],
+      "destiny_dependencies": ["mandate_shadow_xoah_operational_identity"],
+      "unresolved_questions": [],
+      "provenance": ["shard:26467@db9", "hand:20260912T033826Z"]
+    }
+  ],
+  "edges": [
+    {
+      "source": "node_vol1_awakening",
+      "target": "node_terminal_shadow",
+      "type": "PRECEDES",
+      "provenance": ["shard:17386@db2"]
+    }
+  ],
+  "wounds": [
+    {
+      "id": "wound_neo_kobe_breach",
+      "year": 2185,
+      "event": "Collision of 2185 and loss of initial unit",
+      "belief_change": "No institution will protect me; I must rely strictly on verified reality.",
+      "behavioral_bias": "Extreme suspicion toward unverified claims and authority proxies.",
+      "provenance": ["shard:17386@db2"]
+    }
+  ],
+  "relationships": [
+    {
+      "entity": "Corbin",
+      "aliases": ["Corb", "Agent Corbin"],
+      "provenance": ["shard:17386@db2", "shard:17400@db2"],
+      "timeline": [
+        {
+          "year": 2185,
+          "trust": 0.4,
+          "love": 0.2,
+          "resentment": 0.3,
+          "dependency": 0.5,
+          "fear": 0.2,
+          "knows_betrayal": false,
+          "note": "Initial alliance during dome escape."
+        },
+        {
+          "year": 2188,
+          "trust": 0.1,
+          "love": 0.0,
+          "resentment": 0.8,
+          "dependency": 0.0,
+          "fear": 0.1,
+          "knows_betrayal": true,
+          "note": "Post-betrayal and imprisonment."
+        }
+      ]
+    },
+    {
+      "entity": "Nyx",
+      "aliases": ["Nyx-Unit"],
+      "provenance": ["shard:17386@db2"],
+      "timeline": [
+        {
+          "year": 2185,
+          "trust": 0.7,
+          "love": 0.5,
+          "resentment": 0.0,
+          "dependency": 0.4,
+          "fear": 0.1,
+          "knows_betrayal": false,
+          "note": "Field comrade and synesthesia co-witness."
+        }
+      ]
+    }
+  ]
+}
