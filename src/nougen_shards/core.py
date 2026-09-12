@@ -11,7 +11,7 @@ import os
 import sqlite3
 import threading as _threading
 import time
-from contextvars import ContextVar, Token, copy_context
+from contextvars import ContextVar, copy_context
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
