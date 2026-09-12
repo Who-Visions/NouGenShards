@@ -67,7 +67,7 @@ def current_node() -> str:
     the value is discovered, never baked in, so a locator minted on a renamed or
     re-imaged host still says where it came from.
     """
-    for var in ("NOUGEN_NODE", "NOUGEN_MACHINE"):
+    for var in ("NOUGEN_NODE", "NOUGEN_NODE_NAME", "NOUGEN_MACHINE"):
         val = (os.environ.get(var) or "").strip()
         if val:
             return val

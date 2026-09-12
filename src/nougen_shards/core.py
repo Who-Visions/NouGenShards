@@ -11,7 +11,7 @@ import os
 import sqlite3
 import threading as _threading
 import time
-from contextvars import ContextVar, Token, copy_context
+from contextvars import ContextVar, copy_context
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -119,6 +119,8 @@ _ACTIVE_VAULT_DIR: ContextVar[Optional[Path]] = ContextVar(
     "nougen_active_vault_dir", default=None)
 _ACTIVE_TENANT_ID: ContextVar[Optional[str]] = ContextVar(
     "nougen_active_tenant_id", default=None)
+_ACTIVE_LANE: ContextVar[Optional[str]] = ContextVar(
+    "nougen_active_lane", default=None)
 
 
 def active_vault_dir() -> Path:
@@ -131,18 +133,30 @@ def active_tenant_id() -> str:
     return _ACTIVE_TENANT_ID.get() or "owner"
 
 
+def active_lane() -> str:
+    """Request-local execution lane."""
+    return _ACTIVE_LANE.get() or "default"
+
+
 def vault_context_is_set() -> bool:
     return _ACTIVE_VAULT_DIR.get() is not None
 
 
-def bind_active_vault(vault_dir: Path, tenant_id: str) -> tuple[Token, Token]:
-    """Bind a tenant to the current context and return reset tokens."""
-    return (_ACTIVE_VAULT_DIR.set(Path(vault_dir)), _ACTIVE_TENANT_ID.set(tenant_id))
+def bind_active_vault(vault_dir: Path, tenant_id: str, lane: Optional[str] = None) -> tuple:
+    """Bind a tenant and optional lane to the current context and return reset tokens."""
+    l_token = _ACTIVE_LANE.set(lane or "default")
+    v_token = _ACTIVE_VAULT_DIR.set(Path(vault_dir))
+    t_token = _ACTIVE_TENANT_ID.set(tenant_id)
+    return (v_token, t_token, l_token)
 
 
-def reset_active_vault(tokens: tuple[Token, Token]) -> None:
+def reset_active_vault(tokens: tuple) -> None:
     """Undo :func:`bind_active_vault` in the context that created it."""
-    vault_token, tenant_token = tokens
+    if len(tokens) == 3:
+        vault_token, tenant_token, lane_token = tokens
+        _ACTIVE_LANE.reset(lane_token)
+    else:
+        vault_token, tenant_token = tokens
     _ACTIVE_TENANT_ID.reset(tenant_token)
     _ACTIVE_VAULT_DIR.reset(vault_token)
 
