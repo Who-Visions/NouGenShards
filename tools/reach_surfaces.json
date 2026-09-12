@@ -145,7 +145,7 @@
       }
     },
     {
-      "name": "Shadow Dweller wiki",
+      "name": "Domain wiki",
       "kind": "http",
       "target": "https://shadow-dweller-wiki.whoentertains.workers.dev/",
       "expect": {

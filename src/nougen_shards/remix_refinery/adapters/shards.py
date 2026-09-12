@@ -26,7 +26,7 @@ class ShardRefineryAdapter:
             raise ValueError(f"Cannot shard candidate with status {candidate.status}: leakage or collision present.")
 
         # Build clean native payload
-        title = f"Shadow Dweller Mechanism: {candidate.candidate_id}"
+        title = f"Remix Mechanism: {candidate.candidate_id}"
         
         content = (
             f"# {title}\n\n"

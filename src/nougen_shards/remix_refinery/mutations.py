@@ -1,5 +1,5 @@
 """
-Mutation Operators for Shadow Dweller Process Donors.
+Mutation Operators for Creative Process Donors.
 Provides 12 transformation operators that mutate structural techniques into native expressions.
 Minimum recommended depth = 3 distinct operators.
 """

@@ -2239,6 +2239,23 @@ def evaluate_quota(
     }
 
 
+@node_mcp.tool()
+@_offloaded
+def nougenmsg(message: str, target: str = "all", priority: str = "normal") -> dict:
+    """Send a live NouGenMsg IPC notification or baton to another fleet agent or node
+    (@blade, @whoart, @phoebus, @antigravity, @codex, @all, or model lanes)."""
+    from nougen_shards.nougenmsg import AgentPinger
+    clean_target = target.lstrip("@").lower() if target else "all"
+    res = AgentPinger.emit_fleet(text=message, target=clean_target)
+    return {
+        "status": "delivered",
+        "target": target,
+        "priority": priority,
+        "results": res
+    }
+
+
+
 
 # --- Cortex HUD UI Logic ---
 

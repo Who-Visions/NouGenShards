@@ -1,6 +1,6 @@
 ---
 name: nougen-cloudflare
-description: Cloudflare for NouGen fleet agents. Use whenever a task mentions Cloudflare, Workers, Workers AI, wrangler, Vectorize, Workflows, Hyperdrive, neurons, the free inference lane, Kaedra cloud fallback, or deploying the Shadow Dweller wiki. Recall the vault shards first, fetch llms.txt only when the shard is older than the question, and route inference through the workers-ai free lane. Not for DNS, WAF, Zero Trust, or Tunnel work.
+description: Cloudflare for NouGen fleet agents. Use whenever a task mentions Cloudflare, Workers, Workers AI, wrangler, Vectorize, Workflows, Hyperdrive, neurons, the free inference lane, Kaedra cloud fallback, or deploying the Domain wiki. Recall the vault shards first, fetch llms.txt only when the shard is older than the question, and route inference through the workers-ai free lane. Not for DNS, WAF, Zero Trust, or Tunnel work.
 ---
 
 # NouGen Cloudflare Lane
@@ -11,7 +11,7 @@ This skill is the doc map, the decision facts, and the two probes that prove it 
 ## When to use / when not to
 
 Use for: picking a Workers AI model, budgeting neurons, wiring tool calling, the
-Kaedra cloud fallback, wrangler deploys of the Shadow Dweller wiki, and any
+Kaedra cloud fallback, wrangler deploys of the Domain wiki, and any
 "should we use Workflows / Vectorize / Hyperdrive" question.
 
 Do not use for: DNS, WAF, Zero Trust, Tunnel, or Pages (the `cloudflare:*` plugin

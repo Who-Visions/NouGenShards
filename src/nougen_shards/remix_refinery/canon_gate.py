@@ -9,7 +9,7 @@ from .models import CollisionReport, MechanismStatus, TransformationScore
 
 
 class CanonGate:
-    """Validates mechanisms against existing Shadow Dweller canon and invariants."""
+    """Validates mechanisms against existing domain canon and invariants."""
 
     CANON_INVARIANTS = [
         "The Veil cannot be bypassed without energetic or physical reciprocity.",
