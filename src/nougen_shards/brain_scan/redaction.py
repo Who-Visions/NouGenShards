@@ -58,7 +58,7 @@ SECRET_PATTERNS = [
     # The rule above requires the label to be followed by [\s:=], so an
     # underscore-joined name like SOME_SECRET_KEY defeated it -- and those are
     # exactly the names this fleet's own keys carry.
-    (re.compile(r'(?i)([A-Za-z0-9]*(?:SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIAL)[A-Za-z0-9_]*\s*[=:]\s*)[\'"]?[A-Za-z0-9_\-+/=.~]{8,}'), r"\1<REDACTED_SECRET>"),
+    (re.compile(r'(?i)(\b[A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIAL)[A-Za-z0-9_]*\s*[=:]\s*)[\'"]?[A-Za-z0-9_\-+/=.~]{8,}'), r"\1<REDACTED_SECRET>"),
     (re.compile(r'(?i)(?:api[_-]?key|secret|token|password|passwd|pwd|auth|credential|access[_-]?key|client[_-]?secret|private[_-]?key|bearer|session[_-]?token|\bpat\b|\bkey\b)[\s:=]+(?:[A-Za-z]{1,12}[\s:=]+){0,3}[\'"]?([A-Za-z0-9_\-+/=.~]{16,})[\'"]?'), "<REDACTED_SECRET>"),
 
     # --- added 2026-09-07 from the cross-node shape audit --------------

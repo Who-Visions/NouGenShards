@@ -12,6 +12,11 @@
       "storage_endswith": ".nougen"
     },
     {
+      "node": "blade-local",
+      "persistent_storage": false,
+      "storage_endswith": "Watchtower\\NouGen"
+    },
+    {
       "node": "ngs-node(default-storage)",
       "storage": "default"
     }
@@ -25,7 +30,7 @@
         "status": [
           200
         ],
-        "node": "fleet-store"
+        "node": "blade-local"
       }
     },
     {
@@ -34,6 +39,7 @@
       "target": "https://shards.nougenai.com/mcp",
       "expect": {
         "status": [
+          200,
           405,
           401,
           400
@@ -58,7 +64,7 @@
         "status": [
           200
         ],
-        "node": "fleet-store"
+        "node": "blade-local"
       }
     },
     {
