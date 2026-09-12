@@ -78,7 +78,10 @@ def load_archive(path: Optional[Path] = None, *, force: bool = False) -> Dict[st
     key = str(p)
     if not force and key in _CACHE:
         return _CACHE[key]
-    data = json.loads(p.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {"nodes": [], "edges": [], "wounds": [], "relationships": [], "birth_year": 2162}
     for node in data.get("nodes", []):
         if not node.get("provenance"):
             raise ValueError(f"self node {node.get('id')!r} has no provenance")

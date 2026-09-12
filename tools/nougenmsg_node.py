@@ -349,6 +349,12 @@ def resolve_port() -> "tuple":
 
 
 def main() -> int:
+    if sys.platform == "win32":
+        try:
+            import asyncio
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        except Exception:
+            pass
     port, source = resolve_port()
     bind = os.environ.get("NOUGEN_AGY_MSG_BIND", "").strip() or DEFAULT_BIND
     print("[nougenmsg_node] build={} node={} bind={}:{} inbox={} port_source={} auth={} kaedra_gate={}".format(
