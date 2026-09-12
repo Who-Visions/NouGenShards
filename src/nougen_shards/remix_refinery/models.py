@@ -1,5 +1,5 @@
 """
-Core Data Models for Shadow Dweller Remix Refinery.
+Core Data Models for Creative Remix Refinery.
 """
 
 from enum import Enum
@@ -48,7 +48,7 @@ class ProcessDonorCard(BaseModel):
 
 
 class CanonAnchor(BaseModel):
-    """Binds abstracted atoms to native Shadow Dweller canon, lore, physics, and wounds."""
+    """Binds abstracted atoms to native target domain canon, lore, and physics."""
     anchor_id: str = Field(default_factory=lambda: f"anchor_{uuid.uuid4().hex[:8]}")
     lineage: str  # e.g., 'Haitian-Japanese', 'Veil physics', 'character wound', 'faction', 'ritual'
     shard_ref: Optional[int] = None
