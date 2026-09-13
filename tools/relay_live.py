@@ -274,6 +274,18 @@ def one_pass(*, dry: bool = False, quiet: bool = False) -> dict:
         if f"{leg['machine']}/{leg['agent']}" in skip:
             skipped.append(leg_id)
             continue
+        
+        # Elevation & live ping suppression:
+        # Skip closed status-only legs that carry no direct targeted ask
+        leg_status = str(leg.get("status") or "").lower()
+        if leg_status != "open":
+            # Check if leg is directed to a specific lane
+            rec = leg_record(repo, leg_id)
+            target = str(rec.get("target") or "").lower()
+            if not (target and target not in ("@all", "all", "local", "?", "")):
+                skipped.append(leg_id)
+                continue
+
         text = render(leg)
         if dry:
             sent.append({"id": leg_id, "dry": True, "text": text})
