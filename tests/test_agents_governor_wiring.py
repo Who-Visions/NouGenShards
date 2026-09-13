@@ -4,7 +4,7 @@ BEFORE any Ollama/OpenRouter/cloud client is ever touched."""
 import pytest
 
 from nougen_shards import agents
-from nougen_shards.coach_governor import CoachGovernor, BudgetExceeded
+from nougen_shards.coach_governor import CoachGovernor
 
 
 AGENT_NAME = "Sharder"  # real roster entry, see agents.ROSTER

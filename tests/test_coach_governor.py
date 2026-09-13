@@ -1,7 +1,6 @@
 """Tests for the ENFORCED coach_governor (vs the advisory-only quota/reasoning
 governors it composes with). Each test maps to a move in
 wargames/coach-governor-hardening.md."""
-import time
 
 import pytest
 
@@ -11,7 +10,6 @@ from nougen_shards.coach_governor import (
     CoachGovernor,
     FanoutExceeded,
     KillSwitchActive,
-    LoopSuspected,
 )
 
 
@@ -39,7 +37,7 @@ def test_lease_reserves_before_caller_work_runs(tmp_path):
     gov.register_scope("m/p/a/t", ceiling=10.0)
     work_ran = []
     with pytest.raises(BudgetExceeded):
-        lease = gov.acquire_lease("m/p/a/t", 20.0)
+        gov.acquire_lease("m/p/a/t", 20.0)
         work_ran.append(True)  # never reached
     assert work_ran == []
     assert gov.status("m/p/a/t")["spent"] == 0.0
