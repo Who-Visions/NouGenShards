@@ -936,8 +936,11 @@ def cmd_mark(args):
 
 def cmd_status(args):
     """Check the status of the Multi-DB cluster."""
+    from . import status_semantics as ss  # pylint: disable=import-outside-toplevel
+
     active = shards.get_active_db_index()
     db_stats = []
+    observations = []
     total_count = 0
     for i in range(1, shards.MAX_DB_COUNT + 1):
         path = shards.get_db_path(i)
@@ -955,11 +958,21 @@ def cmd_status(args):
                 "is_active": i == active
             })
             total_count += count
-        except (sqlite3.Error, OSError):
-            pass
+            observations.append(ss.Observation(
+                f"DB #{i}", "vault", ss.StatusLevel.GREEN, f"{count} shards counted",
+                evidence={"path": str(path)}))
+        except (sqlite3.Error, OSError) as exc:
+            # Used to be a bare `pass`: a failing DB vanished from the report
+            # and the total silently shrank. Name it, and only it.
+            observations.append(ss.Observation(
+                f"DB #{i}", "vault", ss.StatusLevel.RED,
+                f"count failed: {type(exc).__name__}: {exc}",
+                evidence={"path": str(path)}))
         finally:
             if conn is not None:
                 conn.close()
+
+    substrate = ss.aggregate("Local shard substrate", "service", observations)
 
     if getattr(args, 'json', False) is True:
         print(json.dumps({
@@ -967,6 +980,8 @@ def cmd_status(args):
             "total_shards": total_count,
             "max_db_count": shards.MAX_DB_COUNT,
             "active_db": active,
+            "status": substrate.to_dict(),
+            "observations": [o.to_dict() for o in observations],
         }))
         return
 
@@ -974,7 +989,11 @@ def cmd_status(args):
     for db in db_stats:
         status = " (ACTIVE)" if db['is_active'] else ""
         print(f" - DB #{db['index']}: {db['shards']} shards | {db['size_mb']:.2f} MB / 1024 MB{status}")
-    print(f"\nTotal records in memory: {total_count}")
+    for line in ss.render(o for o in observations if o.status is not ss.StatusLevel.GREEN):
+        print(f" {line}")
+    print(f"\n{substrate.line()}")
+    print(f"Total records in memory: {total_count}"
+          + ("" if substrate.status is ss.StatusLevel.GREEN else " (excludes non-green DBs above)"))
 
 
 def cmd_stats(args):

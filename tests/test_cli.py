@@ -210,6 +210,33 @@ class TestCLI(unittest.TestCase):
             self.assertIn("DB #1: 10 shards", fake_out.getvalue())
             self.assertIn("1.00 MB / 1024 MB", fake_out.getvalue())
 
+    @patch('nougen_shards.cli.shards.get_connection')
+    @patch('nougen_shards.cli.shards.get_db_path')
+    @patch('nougen_shards.cli.shards.get_active_db_index', return_value=1)
+    def test_cmd_status_names_a_failing_db_without_reddening_the_substrate(
+            self, mock_active, mock_get_path, mock_get_conn):
+        """A DB that errors used to vanish silently; now it is named, alone."""
+        import sqlite3
+        good, bad = MagicMock(), MagicMock()
+        good.execute.return_value.fetchone.return_value = [10]
+        bad.execute.side_effect = sqlite3.DatabaseError("database disk image is malformed")
+        mock_get_conn.side_effect = lambda idx: good if idx == 1 else bad
+
+        def path_for(idx):
+            m = MagicMock()
+            m.exists.return_value = idx in (1, 2)
+            m.stat.return_value.st_size = 1024 * 1024
+            return m
+        mock_get_path.side_effect = path_for
+
+        with patch('sys.stdout', new=io.StringIO()) as fake_out:
+            cli.cmd_status(MagicMock(json=False))
+        out = fake_out.getvalue()
+        self.assertIn("🔴 DB #2: count failed: DatabaseError", out)
+        self.assertIn("🟡 Local shard substrate: partial: 1/2 verified", out)
+        self.assertNotIn("🔴 Local shard substrate", out)
+        self.assertIn("excludes non-green DBs", out)
+
     def test_cmd_config(self):
         """Test the config command."""
         args = MagicMock()
