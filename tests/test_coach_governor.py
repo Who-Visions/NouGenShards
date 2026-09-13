@@ -89,32 +89,33 @@ def test_fanout_limit_denies_overcommit_and_settle_frees_slot(tmp_path):
 
 
 def test_burn_velocity_loop_detection(tmp_path, monkeypatch):
-    monkeypatch.setenv("NOUGEN_COACH_MAX_BURN_COUNT", "3")
-    monkeypatch.setenv("NOUGEN_COACH_BURN_WINDOW_S", "60")
-    import importlib
+    # Patch the module's own constants directly rather than env + reload:
+    # importlib.reload() mints new class objects (BudgetExceeded,
+    # CoachGovernorError, ...) distinct from the ones any already-imported
+    # module (e.g. agents.py) bound at ITS import time, so `except
+    # CoachGovernorError` there silently stops matching instances raised
+    # from the reloaded module for the rest of the pytest session. Same
+    # effective override, no module-identity poisoning.
     import nougen_shards.coach_governor as cg
-    importlib.reload(cg)
+    monkeypatch.setattr(cg, "MAX_BURN_COUNT", 3)
+    monkeypatch.setattr(cg, "BURN_WINDOW_S", 60.0)
     gov = cg.CoachGovernor(telemetry_path=str(tmp_path / "t.jsonl"))
     gov.register_scope("m/p/a/t", ceiling=1000.0)
     for _ in range(3):
         gov.acquire_lease("m/p/a/t", 5.0).settle(5.0)
     with pytest.raises(cg.LoopSuspected):
         gov.acquire_lease("m/p/a/t", 5.0)
-    importlib.reload(cg)  # restore module-level env-derived constants
 
 
 def test_varied_amounts_do_not_trip_loop_detector(tmp_path, monkeypatch):
-    monkeypatch.setenv("NOUGEN_COACH_MAX_BURN_COUNT", "3")
-    monkeypatch.setenv("NOUGEN_COACH_BURN_WINDOW_S", "60")
-    import importlib
     import nougen_shards.coach_governor as cg
-    importlib.reload(cg)
+    monkeypatch.setattr(cg, "MAX_BURN_COUNT", 3)
+    monkeypatch.setattr(cg, "BURN_WINDOW_S", 60.0)
     gov = cg.CoachGovernor(telemetry_path=str(tmp_path / "t.jsonl"))
     gov.register_scope("m/p/a/t", ceiling=1000.0)
     for amt in (1.0, 5.0, 20.0):
         gov.acquire_lease("m/p/a/t", amt).settle(amt)
     gov.acquire_lease("m/p/a/t", 3.0).settle(3.0)  # not denied: amounts too varied
-    importlib.reload(cg)
 
 
 def test_circuit_levels_progress_with_spend(tmp_path):
