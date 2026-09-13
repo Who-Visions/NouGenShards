@@ -245,7 +245,60 @@ def test_invariant_11_partial_node_port_timeout_does_not_break_fleet(tmp_path):
 
         worker_node = control.probe_node("remote_worker")
         assert worker_node["reachable"] is True  # Survived via SSH probe fallback
-        assert worker_node["state"] == "ONLINE"
+        # Up, but one probed port timed out: degraded, and the port is named.
+        assert worker_node["state"] == "ONLINE_DEGRADED"
+        assert "8765 (CONNECT_TIMEOUT)" in worker_node["reason"]
+
+
+def test_declared_offline_node_is_offline_expected_not_red(tmp_path):
+    """Relay 20260913T162818Z: Blade powered off must not read as a sick machine."""
+    (tmp_path / "nodes.json").write_text(json.dumps({
+        "blade": {"name": "Blade", "ip": "10.0.0.87", "host": "blade.local"}
+    }), encoding="utf-8")
+    (tmp_path / "node_power.json").write_text(json.dumps({
+        "blade": {"state": "offline", "note": "powered off"}
+    }), encoding="utf-8")
+    control = LiveControlPlane(home_dir=tmp_path)
+
+    def timeout(host, port, timeout=0.5):
+        return {"host": host, "port": port, "status": "TIMEOUT", "reachable": False,
+                "latency_ms": 800.0, "reason_code": "CONNECT_TIMEOUT"}
+
+    with patch.object(control, "probe_tcp_detailed", side_effect=timeout):
+        node = control.probe_node("blade")
+        assert node["state"] == "OFFLINE_EXPECTED"
+        assert "powered off" in node["reason"]
+        with patch.object(control, "probe_ports", return_value={}):
+            overview = control.render_overview()
+    fleet_section = overview.split("LOCAL LISTENING")[0]
+    assert "⚪ OFFLINE_EXPECTED" in fleet_section
+    assert "🔴" not in fleet_section
+
+
+def test_undeclared_single_observer_timeout_is_unknown_not_offline(tmp_path):
+    (tmp_path / "nodes.json").write_text(json.dumps({
+        "blade": {"name": "Blade", "ip": "10.0.0.87", "host": "blade.local"}
+    }), encoding="utf-8")
+    control = LiveControlPlane(home_dir=tmp_path)
+    with patch.object(control, "probe_tcp_detailed", side_effect=lambda h, p, timeout=0.5: {
+            "host": h, "port": p, "status": "TIMEOUT", "reachable": False,
+            "latency_ms": 800.0, "reason_code": "CONNECT_TIMEOUT"}):
+        node = control.probe_node("blade")
+    assert node["state"] == "UNKNOWN"
+    assert "cannot prove offline" in node["reason"]
+
+
+def test_live_declare_round_trip(tmp_path, monkeypatch):
+    home = tmp_path / ".nougen"
+    home.mkdir()
+    with patch("nougen_shards.live.LiveControlPlane.__init__", lambda self, *a, **k: setattr(self, "home_dir", home)):
+        out = json.loads(handle_live_command(["declare", "blade", "offline", "powered", "off"]))
+        assert out["declaration"]["state"] == "offline"
+        assert out["declaration"]["note"] == "powered off"
+        assert json.loads((home / "node_power.json").read_text())["blade"]["state"] == "offline"
+        cleared = json.loads(handle_live_command(["declare", "blade", "online"]))
+        assert cleared["declaration"] == "cleared"
+        assert "must be" in handle_live_command(["declare", "blade", "dead"])
 
 
 def test_invariant_12_backward_compatibility():
