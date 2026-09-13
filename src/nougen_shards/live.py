@@ -240,15 +240,19 @@ class LiveControlPlane:
             try:
                 data = json.loads(agy_path.read_text(encoding="utf-8"))
                 for pipe_key, info in data.get("sessions", {}).items():
-                    exists = os.path.exists(pipe_key) if sys.platform != "win32" else True
+                    # The registry key is a session id, not a path: probe the
+                    # recorded endpoint, and never mark a session targetable
+                    # without one (that was a Windows-only unconditional True).
+                    pipe = info.get("endpoint") or info.get("pipe") or pipe_key
+                    exists = os.path.exists(pipe) if sys.platform != "win32" else bool(info.get("endpoint") or info.get("pipe"))
                     sessions.append({
                         "id": info.get("id") or pipe_key,
-                        "node": info.get("node") or "local",
+                        "node": info.get("node") or info.get("machine") or "local",
                         "agent": "antigravity",
                         "transport": "pipe" if sys.platform == "win32" else "unix_socket",
                         "targetable": exists,
                         "dispatchable": exists,
-                        "endpoint": pipe_key,
+                        "endpoint": pipe,
                         "last_heartbeat": info.get("last_seen", time.time())
                     })
             except Exception:

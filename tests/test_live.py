@@ -4,9 +4,7 @@ Covers all 13 test invariants mandated by the /live architecture specification.
 """
 import json
 import socket
-import pytest
 from unittest.mock import patch, MagicMock
-from pathlib import Path
 
 from nougen_shards.live import (
     LiveControlPlane,
@@ -16,6 +14,13 @@ from nougen_shards.live import (
     FLEET_NODES
 )
 from nougen_shards.cli import get_parser
+
+
+def _live_endpoint(tmp_path, name):
+    """An endpoint that really exists, so targetable is proven, not assumed."""
+    p = tmp_path / name
+    p.touch()
+    return str(p)
 
 
 def test_invariant_1_live_appears_in_help_and_parser():
@@ -161,7 +166,7 @@ def test_invariant_8_targeted_send_returns_sent_unverified_or_unreachable(tmp_pa
         "id": "mock-active-sess",
         "machine": "hyperion",
         "agent": "antigravity",
-        "endpoint": r"\\.\pipe\LOCAL\agy-msg-antigravity"
+        "endpoint": _live_endpoint(tmp_path, "agy-msg-antigravity"),
     }
     agy_file = tmp_path / "agy_sessions.json"
     agy_file.write_text(json.dumps({"sessions": {mock_session["id"]: mock_session}}), encoding="utf-8")
@@ -177,8 +182,8 @@ def test_invariant_9_broadcast_records_per_target_results(tmp_path):
     agy_file = tmp_path / "agy_sessions.json"
     agy_file.write_text(json.dumps({
         "sessions": {
-            "sess-1": {"id": "sess-1", "node": "hyperion", "endpoint": "pipe-1"},
-            "sess-2": {"id": "sess-2", "node": "apollo", "endpoint": "pipe-2"}
+            "sess-1": {"id": "sess-1", "node": "hyperion", "endpoint": _live_endpoint(tmp_path, "pipe-1")},
+            "sess-2": {"id": "sess-2", "node": "apollo", "endpoint": str(tmp_path / "gone-pipe-2")}
         }
     }), encoding="utf-8")
 
