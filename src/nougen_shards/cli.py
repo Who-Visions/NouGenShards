@@ -382,6 +382,7 @@ def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen")
                 print("  /models             - List live models available for current provider")
                 print("  /doctor             - Run system and telemetry diagnostics")
                 print("  /handoff [msg]      - Check or publish cross-agent session handoffs")
+                print("  /live [cmd]         - Inspect multi-node control plane (ports, sessions, relays, ssh, send)")
                 print("  /compress           - Summarize and compact current session context")
                 print("  /clear              - Clear conversation memory in current session")
                 print("  /exit               - Exit interactive mode\n")
@@ -420,6 +421,12 @@ def _run_interactive_chat(model, provider, client, persona_name: str = "NouGen")
                 from . import nougen_sandbox
                 res = nougen_sandbox.execute_sandboxed(code_to_run, language="python", trusted=True, bypass_gatekeeper=True)
                 print(f"\n[Execution Result]:\n{res}\n")
+                continue
+
+            if user_input.startswith('/live'):
+                parts = user_input.split()[1:]
+                from .live import handle_live_command
+                print(f"\n{handle_live_command(parts)}\n")
                 continue
 
             if user_input.startswith('/agent'):
@@ -1783,9 +1790,22 @@ def get_parser():
     p_transcribe.add_argument("--json", action="store_true", help="JSON output")
     p_transcribe.add_argument("-q", "--quiet", action="store_true", help="Suppress progress logs")
 
+    p_live = subparsers.add_parser(
+        "live",
+        help="NouGen Unified /live Control Plane & Fleet Operations Aggregator",
+        description="Multi-node control plane (Apollo, Hyperion, Phoebus), sessions, ports, SSH, relays, and message dispatch."
+    )
+    p_live.add_argument("live_args", nargs=argparse.REMAINDER,
+                        help="Subcommands: overview | snapshot | nodes | sessions | ports | ssh | relays | watch | tracker | send | broadcast | reply")
+
     return parser
 
 
+def cmd_live(args):
+    """Execute /live control plane subcommands."""
+    from .live import handle_live_command
+    subargs = getattr(args, "live_args", [])
+    print(handle_live_command(subargs))
 
 
 def keymaker_vault_report() -> list:
@@ -2460,7 +2480,7 @@ def main():
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr,
         "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
-        "transcribe": cmd_transcribe
+        "transcribe": cmd_transcribe, "live": cmd_live
     }
     if args.command in cmds:
         cmds[args.command](args)

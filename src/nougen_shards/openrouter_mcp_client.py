@@ -21,7 +21,10 @@ if not _watchtower_root:
 if _watchtower_root not in sys.path:
     sys.path.append(_watchtower_root)
 # pylint: disable=import-error,wrong-import-position
-from openrouter_guard import call_openrouter
+try:
+    from openrouter_guard import call_openrouter
+except ImportError:
+    call_openrouter = None
 
 # Resolve mcp.config.json from repository root if it exists, otherwise fall back to global path
 _repo_mcp_path = Path(__file__).resolve().parents[2] / "mcp.config.json"

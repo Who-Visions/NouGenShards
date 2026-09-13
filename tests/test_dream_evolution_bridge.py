@@ -1,4 +1,4 @@
-﻿"""Tests for the recursive Dream-to-Evolution bridge.
+"""Tests for the recursive Dream-to-Evolution bridge.
 
 Verifies that semantic invariants consolidated during dream cycles are recursively
 synthesized into progressive skills, sandbox-verified into PILOT tier, and discoverable

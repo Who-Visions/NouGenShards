@@ -55,18 +55,13 @@ except PackageNotFoundError:
             __version__ = "0.0.0+unknown"
 VALERION_ENGINE = "Valerion"
 
-__all__ = [
-    "capture",
-    "retrieve",
-    "mark_shard",
-    "compile_recall_packet",
-    "federated_retrieve",
-    "HistoryEngine",
-    "log_event",
-    "init_history_db",
-    "link_shards",
-    "related_shards",
-    "check_mutation_gate",
-    "NouGenTranscriber",
-    "TranscribeEngine",
-]
+def __getattr__(name: str):
+    """Dynamic submodule resolution so 'from nougen_shards import <submodule>' always works cleanly."""
+    import importlib
+    try:
+        mod = importlib.import_module(f".{name}", __name__)
+        globals()[name] = mod
+        return mod
+    except ImportError:
+        raise AttributeError(f"module '{__name__}' has no attribute '{name}'") from None
+
