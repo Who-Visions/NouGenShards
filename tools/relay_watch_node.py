@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -238,8 +239,16 @@ def announce(leg_id: str, path: Path) -> None:
     # Elevation & Inbox trigger policy:
     # 1. Skip closed status-only legs that carry no ask/unresolved baton
     # 2. Open legs or legs explicitly addressing a target lane continue to drop into INBOX
-    is_open = (status == "open")
-    has_target = bool(record.get("target") and str(record.get("target")).lower() not in ("@all", "all", "local", "?", ""))
+    is_open = (str(status).strip().lower() == "open")
+    # "Addressed" = names a specific lane, in a structured field OR in the goal
+    # text. Records carry no target field today; every lane-addressed leg on
+    # 2026-09-12/13 wrote it in the goal ("[-> @blade ...]"), so a field-only
+    # check would suppress a closed-but-addressed leg. @all/local are
+    # broadcasts, not addresses -- a closed "-> @all" leg is the fan-out noise.
+    _lanes = r"@(blade|phoebus|whoart|antigravity|codex)\b"
+    has_target = bool(re.search(_lanes, str(record.get("goal") or ""), re.IGNORECASE)) or any(
+        re.search(_lanes, str(record.get(k) or ""), re.IGNORECASE)
+        for k in ("target", "to", "lane", "addressed_to"))
     
     if not is_open and not has_target:
         print("[relay_watch] SKIP inbox fanout for closed status-only leg {}".format(leg_id), flush=True)
