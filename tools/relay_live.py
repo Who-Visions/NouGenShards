@@ -31,6 +31,7 @@ import argparse
 import calendar
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -277,12 +278,20 @@ def one_pass(*, dry: bool = False, quiet: bool = False) -> dict:
         
         # Elevation & live ping suppression:
         # Skip closed status-only legs that carry no direct targeted ask
-        leg_status = str(leg.get("status") or "").lower()
+        leg_status = str(leg.get("status") or "").strip().lower()
         if leg_status != "open":
-            # Check if leg is directed to a specific lane
+            # "Addressed" = names a specific lane, in a structured field OR in
+            # the goal text. Records carry no target field today; every
+            # lane-addressed leg on 2026-09-12/13 wrote it in the goal
+            # ("[-> @blade ...]"), so a field-only check would suppress a
+            # closed-but-addressed leg. @all/local are broadcasts, not
+            # addresses -- a closed "-> @all" leg is exactly the fan-out noise.
+            lanes = r"@(blade|phoebus|whoart|antigravity|codex)\b"
             rec = leg_record(repo, leg_id)
-            target = str(rec.get("target") or "").lower()
-            if not (target and target not in ("@all", "all", "local", "?", "")):
+            addressed = bool(re.search(lanes, str(leg.get("goal") or ""), re.IGNORECASE)) or any(
+                re.search(lanes, str(rec.get(k) or ""), re.IGNORECASE)
+                for k in ("target", "to", "lane", "addressed_to"))
+            if not addressed:
                 skipped.append(leg_id)
                 continue
 
