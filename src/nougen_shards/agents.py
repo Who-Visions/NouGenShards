@@ -14,6 +14,10 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 from nougen_shards.gatekeeper import check_mutation_gate
+from nougen_shards.coach_governor import (
+    get_default_governor,
+    CoachGovernorError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +270,37 @@ def run_agent(name: str, prompt: str, model: Optional[str] = None,
 
     target_model = model or spec.default_model
 
+    # Coach Governor: lease-before-spend. Denies BEFORE any model call fires
+    # (local or cloud) rather than after tokens are already burned — this is
+    # the enforcement point quota_governor/reasoning_governor never had.
+    # Estimate amount is prompt length (chars) as a cheap proxy; unit is
+    # caller-defined (see coach_governor.py), settled with the actual
+    # response length once dispatch completes.
+    governor = get_default_governor()
+    scope_path = f"machine/{spec.name}"
+    try:
+        lease = governor.acquire_lease(
+            scope_path, float(len(prompt)), kind="spend",
+            agent=spec.name, model=target_model, task=name,
+        )
+    except CoachGovernorError as exc:
+        logger.warning("coach_governor denied run_agent(%s): %s", spec.name, exc)
+        return f"[coach-governor] Blocked: {exc}"
+
+    try:
+        result = _dispatch_agent(spec, target_model, prompt, model, num_ctx)
+    except Exception:
+        lease.settle(0.0)
+        raise
+    lease.settle(float(len(result)))
+    return result
+
+
+def _dispatch_agent(spec: "AgentSpec", target_model: str, prompt: str,
+                     model: Optional[str], num_ctx: int) -> str:
+    """The actual local-first/cloud-fallback dispatch, gated by run_agent()'s
+    coach_governor lease. Kept as a separate function so the lease's settle()
+    always runs exactly once, on every return path, via the caller's finally."""
     # 1. Local-First: Try local Ollama
     from nougen_shards.models_client import OllamaClient
     local_client = OllamaClient()
