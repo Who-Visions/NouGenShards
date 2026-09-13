@@ -260,3 +260,27 @@ def test_invariant_12_backward_compatibility():
     out_ports = handle_live_command(["ports"])
     data = json.loads(out_ports)
     assert "ports" in data
+
+
+def test_invariant_13_reach_matrix_integration():
+    """14. Reach matrix elevation integrates seamlessly with LiveControlPlane."""
+    control = LiveControlPlane()
+    
+    # Direct method JSON invocation
+    res_json = control.reach_matrix(as_json=True)
+    assert isinstance(res_json, dict)
+    assert "vantage" in res_json
+    assert "summary" in res_json
+    assert "control_ok" in res_json
+
+    # CLI /live matrix table invocation
+    out_table = handle_live_command(["matrix"])
+    assert "reach matrix" in out_table
+    assert "vantage=" in out_table
+
+    # CLI /live reach --json invocation
+    out_json = handle_live_command(["reach", "--json"])
+    data = json.loads(out_json)
+    assert "summary" in data
+    assert "control_ok" in data
+

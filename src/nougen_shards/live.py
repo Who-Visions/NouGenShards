@@ -383,6 +383,42 @@ class LiveControlPlane:
         res["reply_to"] = session_id
         return res
 
+    def reach_matrix(self, as_json: bool = False, capture_shard: bool = False, manifest_path: Optional[str] = None) -> Any:
+        """Evaluates live reachability matrix across all known surfaces (Elevation Matrix, Move 6)."""
+        try:
+            from tools import reach_matrix
+        except ImportError:
+            import importlib.util
+            t_path = Path(__file__).resolve().parents[2] / "tools" / "reach_matrix.py"
+            if t_path.exists():
+                spec = importlib.util.spec_from_file_location("reach_matrix", t_path)
+                reach_matrix = importlib.util.module_from_spec(spec)
+                if spec and spec.loader:
+                    spec.loader.exec_module(reach_matrix)
+            else:
+                return {"error": "reach_matrix tool not found", "exit": 1}
+
+        m_path = manifest_path or os.environ.get("NOUGEN_SURFACES_FILE")
+        if not m_path:
+            cand = self.home_dir / "reach_surfaces.json"
+            if cand.exists():
+                m_path = str(cand)
+            else:
+                cand_tool = Path(__file__).resolve().parents[2] / "tools" / "reach_surfaces.json"
+                if cand_tool.exists():
+                    m_path = str(cand_tool)
+
+        manifest = reach_matrix.load_manifest(m_path) if m_path and os.path.exists(m_path) else {"surfaces": []}
+        token = reach_matrix.node_token()
+        result = reach_matrix.run(manifest, token)
+
+        if capture_shard and token:
+            reach_matrix.capture(result, token)
+
+        if as_json:
+            return result
+        return reach_matrix.table(result)
+
     def snapshot(self) -> Dict[str, Any]:
         """Returns a combined multi-node telemetry snapshot."""
         return {
@@ -454,6 +490,11 @@ def handle_live_command(args: List[str]) -> str:
         return json.dumps(control.watch(), indent=2)
     elif subcmd == "tracker":
         return json.dumps(control.tracker(), indent=2)
+    elif subcmd in ("matrix", "reach"):
+        as_json = "--json" in args
+        capture = "--capture" in args
+        res = control.reach_matrix(as_json=as_json, capture_shard=capture)
+        return json.dumps(res, indent=2) if as_json else str(res)
     elif subcmd == "send" and len(args) >= 3:
         target = args[1]
         msg = " ".join(args[2:])
@@ -471,7 +512,7 @@ def handle_live_command(args: List[str]) -> str:
     else:
         return (
             f"Unknown /live subcommand: {subcmd}.\n"
-            "Available: overview, snapshot, nodes, sessions, ports, ssh, relays, watch, tracker, send, broadcast, reply"
+            "Available: overview, snapshot, nodes, sessions, ports, ssh, relays, watch, tracker, matrix, send, broadcast, reply"
         )
 
 
