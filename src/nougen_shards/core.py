@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading as _threading
 import time
@@ -432,6 +433,21 @@ def init_db(index: int = 1):  # noqa: C901
         # publisher URI, so add it idempotently during normal startup.
         try:
             cursor.execute("ALTER TABLE shards ADD COLUMN source_uri TEXT;")
+        except sqlite3.OperationalError:
+            pass
+
+        # Bi-temporal (memmesh move, schema v4): `timestamp` is EVENT time (when
+        # it happened; original_timestamp wins), learned_utc is when THIS node
+        # stored it. retrieve(as_of=) filters on learned_utc; legacy rows are
+        # NULL and fall back to timestamp, their best available estimate.
+        try:
+            cursor.execute("ALTER TABLE shards ADD COLUMN learned_utc TEXT;")
+        except sqlite3.OperationalError:
+            pass
+
+        # Exact-title lookups: retrieve() pins a shard whose title IS the query.
+        try:
+            cursor.execute("CREATE INDEX IF NOT EXISTS shards_title_nocase ON shards(title COLLATE NOCASE);")
         except sqlite3.OperationalError:
             pass
 
@@ -1134,9 +1150,10 @@ def capture(event_type: str, title: str, content: str,
                 init_db(target_idx)
                 conn = get_connection(target_idx)
                 cursor = conn.execute("""
-                    INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, source_uri, utility_score)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, source_uri_value, utility_score))
+                    INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, source_uri, utility_score, learned_utc)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, source_uri_value, utility_score,
+                      datetime.now(timezone.utc).isoformat(timespec="seconds")))
                 conn.commit()
 
                 # Log CREATED event
@@ -1530,7 +1547,8 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         ing_clause, ing_params = _ingest_filter_sql("s", include_research)
                         cursor = conn.execute(f"""
                             SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
-                                   s.embedding, s.tags, s.domain_key, s.density_score, bm25(shards_fts) as bm25_score
+                                   s.embedding, s.tags, s.domain_key, s.density_score,
+                                   bm25(shards_fts, 5.0, 1.0) as bm25_score  -- a title hit outweighs a body hit
                             FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
                             WHERE {dom_clause}{ing_clause}shards_fts MATCH ?
                             ORDER BY bm25_score ASC, s.id ASC LIMIT ?
@@ -2226,8 +2244,133 @@ def rerank(query: str, items: List[dict], top_k: int) -> List[dict]:
         return items[:top_k]
 
 
+def _to_dt(value, end_of_day: bool = False) -> Optional[datetime]:
+    """ISO string or date -> aware UTC datetime. A bare date means the whole day:
+    its end when used as an upper bound, its start otherwise."""
+    if not value:
+        return None
+    s = str(value).strip().replace("Z", "+00:00")
+    try:
+        if len(s) == 10:
+            d = datetime.fromisoformat(s)
+            d = d.replace(hour=23, minute=59, second=59) if end_of_day else d
+        else:
+            d = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def _norm_title(s) -> str:
+    return re.sub(r"\s+", " ", str(s or "")).strip().casefold()
+
+
+def _title_hit(qnorm: str, title) -> bool:
+    """Known-item match: the query IS the title (case/whitespace-insensitive), or a
+    long query is the start of a longer title (callers paste truncated titles)."""
+    t = _norm_title(title)
+    return bool(qnorm) and (t == qnorm or (len(qnorm) >= 40 and t.startswith(qnorm)))
+
+
+def _title_lane_enabled() -> bool:
+    return os.environ.get("NOUGEN_TITLE_LANE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_research: bool) -> list:
+    """Exact-title lane. Known-item lookups (a title from a handle, a relay leg, a
+    [HELD] line) lost to OR-retry filler and the recency prior: 1 in 5 eligible
+    shards could not be found by their own title (recall_eval, 9/13/2026). This
+    lane makes the exact-title shard a candidate; retrieve's tier sort puts it first."""
+    qnorm = _norm_title(query)
+    if len(qnorm) < 3:
+        return []
+    ing_clause, ing_params = _ingest_filter_sql("s", include_research)
+    dom_clause = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
+    dom_params = () if domain_key in (None, "*") else (domain_key,)
+    pattern = qnorm.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ("%" if len(qnorm) >= 40 else "")
+
+    def scan(i: int) -> list:
+        rows: list = []
+        conn = None
+        try:
+            if not get_db_path(i).exists():
+                return rows
+            conn = get_connection(i)
+            for row in conn.execute(f"""
+                    SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                           s.embedding, s.tags, s.domain_key, s.density_score
+                    FROM shards s WHERE {dom_clause}{ing_clause}s.title LIKE ? ESCAPE '\\'
+                    ORDER BY s.id DESC LIMIT ?""", (*dom_params, *ing_params, pattern, limit)):
+                item = hydrate(dict(row))
+                if _title_hit(qnorm, item.get("title")):
+                    item["_db_index"] = i
+                    item["final_score"] = 1.0
+                    rows.append(item)
+        except (sqlite3.DatabaseError, OSError) as exc:
+            logger.error("title lane: grid DB %s unreadable, skipping it: %s: %s", i, type(exc).__name__, exc)
+        finally:  # get_connection opens a fresh handle per call; an unclosed one locks the file on Windows
+            if conn is not None:
+                conn.close()
+        return rows
+
+    out: list = []
+    for _, rows in _run_db_scans(scan):
+        out.extend(rows)
+    return out[:limit]
+
+
+def _learned_times(items: list) -> dict:
+    """(db, id) -> learned_utc for fused candidates, one query per DB."""
+    by_db: dict = {}
+    for it in items:
+        if isinstance(it.get("_db_index"), int):
+            by_db.setdefault(it["_db_index"], []).append(it.get("id"))
+    out = {}
+    for db, ids in by_db.items():
+        conn = None
+        try:
+            conn = get_connection(db)
+            marks = ",".join("?" * len(ids))
+            for sid, learned in conn.execute(f"SELECT id, learned_utc FROM shards WHERE id IN ({marks})", ids):
+                out[(db, sid)] = learned
+        except (sqlite3.DatabaseError, OSError):
+            continue
+        finally:
+            if conn is not None:
+                conn.close()
+    return out
+
+
+def _apply_filters(items: list, scope: Optional[dict] = None, as_of: Optional[str] = None,
+                   event_after: Optional[str] = None, event_before: Optional[str] = None) -> list:
+    """Scope + bi-temporal filters over fused candidates (EverOS orthogonal
+    retrieval, memmesh bi-temporal). Scope comes from existing tags
+    (via:<agent>/<user>, machine:<host>) plus domain_key as project, so every
+    shard is filterable, distilled or not. as_of = what this node had LEARNED by
+    then; event_* = when the thing itself happened. Unknown times never pass."""
+    from . import distill  # pylint: disable=import-outside-toplevel
+    out = items
+    if scope:
+        out = [it for it in out if distill.scope_matches(it, scope)]
+    if as_of:
+        cut = _to_dt(as_of, end_of_day=True)
+        learned = _learned_times(out)
+        out = [it for it in out
+               if (t := _to_dt(learned.get((it.get("_db_index"), it.get("id"))) or it.get("timestamp")))
+               and cut and t <= cut]
+    if event_after:
+        lo = _to_dt(event_after)
+        out = [it for it in out if (t := _to_dt(it.get("timestamp"))) and lo and t >= lo]
+    if event_before:
+        hi = _to_dt(event_before, end_of_day=True)
+        out = [it for it in out if (t := _to_dt(it.get("timestamp"))) and hi and t <= hi]
+    return out
+
+
 def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None,
-             domain_key: Optional[str] = None, include_research: bool = False) -> list:
+             domain_key: Optional[str] = None, include_research: bool = False,
+             scope: Optional[dict] = None, as_of: Optional[str] = None,
+             event_after: Optional[str] = None, event_before: Optional[str] = None) -> list:
     """
     Advanced Retrieval (Module 21): Runs both keyword (FTS/LIKE) and vector (semantic)
     searches in parallel lanes and merges them using Reciprocal Rank Fusion (RRF).
@@ -2271,7 +2414,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         # here, best-effort, so semantic recall works for every entry point.
         query_embedding = _embed_query(query)
 
-    candidate_limit = max(limit * 2, 20)
+    filtering = bool(scope or as_of or event_after or event_before)
+    # Filters run after fusion, so over-fetch while they are on or they starve recall.
+    candidate_limit = max(limit * 2, 20) * (5 if filtering else 1)
+    use_distill = os.environ.get("NOUGEN_DISTILL_LANES", "1").strip().lower() not in ("0", "false", "no", "off")
 
     def run_parallel_retrieval(active_domain: str) -> list:
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -2287,7 +2433,20 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             keyword_results = future_keyword.result()
             vector_results = future_vector.result()
             
-        return reciprocal_rank_fusion([keyword_results, vector_results], k=60)
+        lanes = [keyword_results, vector_results]
+        if _title_lane_enabled():
+            lanes.append(_title_retrieve(query, candidate_limit, active_domain, include_research))
+        if use_distill:
+            # Sidecar lanes (atoms FTS + entity graph) join the fusion only once a
+            # distillation sidecar exists; before that this is a cheap stat().
+            try:
+                from . import distill  # pylint: disable=import-outside-toplevel
+                if distill.available():
+                    lanes.append(distill.atoms_lane(query, candidate_limit, include_research, active_domain))
+                    lanes.append(distill.graph_lane(query, candidate_limit, include_research, active_domain))
+            except Exception as exc:  # a derived index must never break recall
+                logger.warning("distill lanes skipped: %s: %s", type(exc).__name__, exc)
+        return reciprocal_rank_fusion(lanes, k=60)
 
     if domain_key != "*" and not explicit_domain:
         # Implicit CWD-domain: scoped-plus-global fusion, not scoped-else-
@@ -2328,6 +2487,9 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
                                                 x.get("_db_index", 0),
                                                 x.get("id", 0)))
 
+    if filtering:
+        all_results = _apply_filters(all_results, scope, as_of, event_after, event_before)
+
     # Stage 2: cross-encoder rerank the top RRF candidates (no-op unless enabled).
     if RERANK_ENABLED:
         all_results = rerank(query, all_results[:RERANK_CANDIDATES], len(all_results))
@@ -2364,8 +2526,16 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     # Sort candidates by the tripartite score. Round the score so sub-epsilon
     # temporal-decay jitter can't reorder near-ties run-to-run; exact ties then
     # break deterministically by (_db_index, id).
+    # Known-item tier: a shard whose title IS the query outranks everything else.
+    # RRF flattens rank (k=60: #1 and #20 differ by <30%) and the decay x density
+    # prior then let newer partial matches bury exact titles; the tier restores
+    # the one signal that is unambiguous. Within a tier the tripartite order holds.
+    qnorm = _norm_title(query) if _title_lane_enabled() else ""
+    for item in scored_results:
+        item["_title_exact"] = _title_hit(qnorm, item.get("title"))
     scored_results.sort(
-        key=lambda x: (-round(x["utility_score_tripartite"], 6), x.get("_db_index", 0), x.get("id", 0)))
+        key=lambda x: (not x["_title_exact"], -round(x["utility_score_tripartite"], 6),
+                       x.get("_db_index", 0), x.get("id", 0)))
     
     # Dynamic Thresholding / Drop bottom 50% if we have many candidates
     if scored_results:
@@ -2375,7 +2545,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         else:
             surviving = scored_results
         # Filter anything below dynamic threshold (e.g. 0.05)
-        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.05]
+        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.05 or it["_title_exact"]]
         if not surviving and scored_results:
             surviving = [scored_results[0]]
     else:
@@ -2727,12 +2897,54 @@ def format_shard_when(timestamp: Optional[str]) -> str:
     return f"{local.strftime('%Y-%m-%d %I:%M %p %Z').strip()} ({rel})"
 
 
-def compile_recall_packet(shards: list) -> str:
-    """Synthesis of retrieved experience into a coherent context packet (Module 18)."""
+def _approx_tokens(text: str) -> int:
+    return (len(text) + 3) // 4
+
+
+def compile_recall_packet(shards: list, token_budget: Optional[int] = None, strategy: str = "rank",
+                          held: Optional[set] = None, included: Optional[list] = None) -> str:
+    """Synthesis of retrieved experience into a coherent context packet (Module 18).
+
+    token_budget (absorbed from mraza007/echovault, MIT): cap the packet at
+    ~N tokens (chars/4). Shards arrive ranked, so records are kept in order
+    until the next one would overflow; the first record is truncated rather
+    than dropped. Omissions are stated in the packet, never silent. None keeps
+    the old unbounded behaviour.
+    """
     if not shards:
         return "<!-- NO RELEVANT MEMORY RECALLED -->"
     output = ["=== NOUGENSHARDS RECALL PACKET [BAYESIAN SYNTHESIS] ==="]
-    for s in shards:
+    used = _approx_tokens(output[0])
+    omitted = pre_omitted = 0
+    if held:
+        # cortex-app delta channel: a session never pays twice for tokens it holds.
+        fresh = []
+        for s in shards:
+            if f"{s.get('id')}@{s.get('_db_index')}" in held:
+                line = (f"[HELD] #{s.get('id')} (db {s.get('_db_index')}) "
+                        f"{str(s.get('title', ''))[:80]}; already in your context")
+                output.append(line)
+                used += _approx_tokens(line)
+            else:
+                fresh.append(s)
+        shards = fresh
+    if strategy == "knapsack" and token_budget is not None and shards:
+        # cortex-app knapsack: value by rank (lane scores are not comparable across
+        # lanes), cost by tokens; keep the best value per token, then restore rank
+        # order so the packet still reads best-first.
+        costs = [_approx_tokens(f"{s.get('title', '')}{s.get('content', '')}") + 20 for s in shards]
+        order = sorted(range(len(shards)), key=lambda i: -((1.0 / (i + 1) ** 0.5) / costs[i]))
+        chosen, spent = set(), used
+        for i in order:
+            if spent + costs[i] <= token_budget:
+                chosen.add(i)
+                spent += costs[i]
+        pre_omitted = len(shards) - len(chosen)
+        shards = [s for i, s in enumerate(shards) if i in chosen]
+    for n, s in enumerate(shards):
+        if token_budget is not None and used >= token_budget:
+            omitted = len(shards) - n
+            break
         # Surface the source DB so callers can target this exact shard in the
         # 9-DB grid (mark_utility / link_shards / recall_related take db_index).
         db_idx = s.get("_db_index")
@@ -2745,9 +2957,24 @@ def compile_recall_packet(shards: list) -> str:
             score = f"{float(s['final_score']):.2f}" if s.get("final_score") is not None else "n/a"
         except (TypeError, ValueError):
             score = "n/a"
-        output.append(f"--- RECORD #{shard_id}{db_tag} [Score: {score}] ---")
-        output.append(f"When: {format_shard_when(s.get('timestamp'))}")
-        output.append(f"Title: {s.get('title', '(untitled)')}\n{s.get('content', '')}\n")
+        record = (f"--- RECORD #{shard_id}{db_tag} [Score: {score}] ---\n"
+                  f"When: {format_shard_when(s.get('timestamp'))}\n"
+                  f"Title: {s.get('title', '(untitled)')}\n{s.get('content', '')}\n")
+        cost = _approx_tokens(record)
+        if token_budget is not None and used + cost > token_budget:
+            if n > 0:
+                omitted = len(shards) - n
+                break
+            record = record[:max(0, (token_budget - used) * 4)] + " …[truncated to budget]\n"
+            cost = token_budget - used
+        output.append(record)
+        used += cost
+        if included is not None:
+            included.append(f"{shard_id}@{db_idx}")
+    omitted += pre_omitted
+    if omitted:
+        output.append(f"[BUDGET] {omitted} lower-ranked record(s) omitted at the "
+                      f"{token_budget}-token budget; narrow the query or fetch by id.")
     # "Anghkooey" — "remember" (FROM). Spoken only when recall succeeds:
     # the engine's acknowledgment that a past life was actually surfaced.
     output.append("Anghkooey — NouGenShards remembers.")
