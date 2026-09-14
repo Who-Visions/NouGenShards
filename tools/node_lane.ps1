@@ -138,19 +138,30 @@ switch ($Action) {
             -RedirectStandardOutput $OutLog -RedirectStandardError $ErrLog
         Set-Content -Path $PidFile -Value $proc.Id -Encoding utf8
 
-        # Uvicorn + gradio import takes a few seconds; poll rather than sleep blind.
+        # Uvicorn + gradio import plus recall warm-up can take two minutes
+        # (2026-09-14 on blade: ~40s warm-up, ~120s to the first /health 200), so
+        # the old fixed 15s gate reported healthy starts as failures. Poll until
+        # a deadline taken from env, and stop early if the node process dies.
+        $WaitS = 180
+        $waitSource = 'fallback'
+        if ($env:NGS_HEALTH_WAIT_S) { $WaitS = [int]$env:NGS_HEALTH_WAIT_S; $waitSource = 'NGS_HEALTH_WAIT_S' }
+        $deadline = (Get-Date).AddSeconds($WaitS)
         $ready = $false
-        foreach ($i in 1..30) {
+        while ((Get-Date) -lt $deadline) {
+            if ($proc.HasExited) { break }
             try {
                 $h = Invoke-RestMethod -Uri "$BaseUrl/health" -TimeoutSec 2
                 $ready = $true
                 break
-            } catch { Start-Sleep -Milliseconds 500 }
+            } catch { Start-Sleep -Seconds 1 }
         }
         if ($ready) {
             "node up  pid $($proc.Id)  $BaseUrl  shards=$($h.total_shards)  token_configured=$($h.node_token_configured)"
+        } elseif ($proc.HasExited) {
+            "node process exited (code $($proc.ExitCode)) before answering /health - see $ErrLog"
+            exit 1
         } else {
-            "node did NOT answer /health within 15s - see $ErrLog"
+            "node did NOT answer /health within ${WaitS}s (wait source: $waitSource) - see $ErrLog"
             exit 1
         }
         } finally {
