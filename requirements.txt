@@ -55,9 +55,9 @@ fsspec==2026.7.0
     # via
     #   gradio-client
     #   huggingface-hub
-gradio==6.19.0
+gradio==6.26.0
     # via nougen-shards (pyproject.toml)
-gradio-client==2.5.0
+gradio-client==2.6.1
     # via
     #   gradio
     #   hf-gradio
