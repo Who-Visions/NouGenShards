@@ -85,6 +85,25 @@ def test_tools_answer_from_the_archive(archive):
     assert [w["id"] for w in scars["active_scars"]] == ["w_burn"]
 
 
+def test_rest_routes_match_the_tools(archive):
+    """The fleet connector reaches the node over REST, not MCP."""
+    from fastapi.testclient import TestClient
+
+    client = TestClient(node.app)
+    auth = {"X-NGS-Token": node.NODE_TOKEN}
+    cases = (("/xoah/relationship", {"entity": "Mara", "coordinate": "2175"}, "xoah_relationship"),
+             ("/xoah/then_vs_now", {"coordinate": "2170"}, "xoah_then_vs_now"),
+             ("/xoah/precedents", {"topic": "fire", "coordinate": "2175"}, "xoah_precedents"),
+             ("/xoah/conservation", {"removed_event_id": "n_a"}, "xoah_conservation"),
+             ("/xoah/unwritten", {"query": "episode 7"}, "xoah_unwritten"),
+             ("/xoah/active_scars", {"coordinate": "2175"}, "xoah_active_scars"))
+    for route, body, tool in cases:
+        res = client.post(route, json=body, headers=auth)
+        assert res.status_code == 200, (route, res.text)
+        assert res.json() == _call(tool, **body), route
+    assert client.post("/xoah/unwritten", json={"query": "episode 7"}).status_code in (401, 403)
+
+
 def test_tools_report_archive_absent(tmp_path, monkeypatch):
     monkeypatch.setenv("NOUGEN_SELF_ARCHIVE_PATH", str(tmp_path / "missing.json"))
     for name, kwargs in (("xoah_relationship", {"entity": "Mara", "coordinate": "2175"}),
