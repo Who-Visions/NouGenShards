@@ -69,11 +69,29 @@ def archive_path() -> Path:
 
 _CACHE: Dict[str, Any] = {}
 
+#: A missing archive is an infrastructure fact, not a story fact. It must never
+#: answer UNWRITTEN_SELF: that layer means "the slot exists and the Veil holds no
+#: evidence", which is a claim about canon a missing file cannot make.
+ARCHIVE_ABSENT = "ARCHIVE_ABSENT"
+
+
+def _absent(archive: Dict[str, Any], **extra: Any) -> Optional[Dict[str, Any]]:
+    """The ARCHIVE_ABSENT answer when the archive never loaded, else None."""
+    if archive.get("status") != ARCHIVE_ABSENT:
+        return None
+    return {"layer": ARCHIVE_ABSENT, "path": archive.get("path"),
+            "note": "the self archive file is missing on this node; nothing can be said about canon, "
+                    "including whether a slot is unwritten. Set NOUGEN_SELF_ARCHIVE_PATH or restore canon/xoah_self_archive.json.",
+            **extra}
+
 
 def load_archive(path: Optional[Path] = None, *, force: bool = False) -> Dict[str, Any]:
     """Load + validate. A node without provenance or with an unknown
     provenance kind / choice class / edge type is refused: the archive cannot
-    contain anything it could not cite."""
+    contain anything it could not cite.
+
+    A missing file returns an empty archive tagged status=ARCHIVE_ABSENT (never
+    cached, so a restored file is picked up on the next call)."""
     p = Path(path) if path else archive_path()
     key = str(p)
     if not force and key in _CACHE:
@@ -81,7 +99,11 @@ def load_archive(path: Optional[Path] = None, *, force: bool = False) -> Dict[st
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        data = {"nodes": [], "edges": [], "wounds": [], "relationships": [], "birth_year": 2162}
+        logger.warning("self archive missing at %s; answering %s", p, ARCHIVE_ABSENT)
+        return {"status": ARCHIVE_ABSENT, "path": key, "nodes": [], "edges": [], "wounds": [],
+                "relationships": [], "birth_year": 2162}
+    data["status"] = "PRESENT"
+    data["path"] = key
     for node in data.get("nodes", []):
         if not node.get("provenance"):
             raise ValueError(f"self node {node.get('id')!r} has no provenance")
@@ -149,6 +171,9 @@ def state_at(coordinate: Optional[str], *, archive: Optional[Dict[str, Any]] = N
     year. Returns the node plus active wounds, relationship snapshot, and the
     truth layers. No node at or before the year -> UNWRITTEN_SELF."""
     archive = archive or load_archive()
+    absent = _absent(archive, coordinate=coordinate)
+    if absent:
+        return absent
     year = coordinate_year(archive, coordinate)
     if year is None:
         return {"layer": "UNWRITTEN_SELF", "error": f"coordinate {coordinate!r} not understood; give a year, 'age N', 'Vol N' or 'terminal'"}
@@ -181,6 +206,9 @@ def relationship_at(entity: str, coordinate: Optional[str], *, archive: Optional
     """Temporal relationship state: the last timeline row at or before the
     coordinate. love and trust are separate numbers on purpose."""
     archive = archive or load_archive()
+    absent = _absent(archive, entity=entity)
+    if absent:
+        return absent
     year = coordinate_year(archive, coordinate)
     ent = (entity or "").strip().lower()
     rel = next((r for r in archive["relationships"] if r["entity"].lower() == ent or ent in [a.lower() for a in r.get("aliases", [])]), None)
@@ -255,7 +283,7 @@ def choice_frontier_check(coordinate: Optional[str], candidate: str, *,
     """
     archive = archive or load_archive()
     st = state_at(coordinate, archive=archive)
-    if st.get("layer") == "UNWRITTEN_SELF":
+    if st.get("layer") in ("UNWRITTEN_SELF", ARCHIVE_ABSENT):
         return []
     findings = []
     choices = st.get("choices", {})
@@ -286,6 +314,9 @@ def unwritten(query: str, *, archive: Optional[Dict[str, Any]] = None) -> Option
     """Episode / chapter slots and years with no authored node answer
     UNWRITTEN_SELF: the slot exists, the Veil holds no evidence."""
     archive = archive or load_archive()
+    absent = _absent(archive, slot=query)
+    if absent:
+        return absent
     m = _EPISODE.search(query or "")
     if m:
         ep = int(m.group(1))
@@ -304,6 +335,9 @@ def conservation_check(removed_event_id: str, *, archive: Optional[Dict[str, Any
     downstream that loses its cause (wounds, biases, choices, unlocks) by
     walking CAUSES / TRAUMATIZES / ENABLES / UNLOCKS_* / CLOSES_OPTION edges."""
     archive = archive or load_archive()
+    absent = _absent(archive, removed=removed_event_id)
+    if absent:
+        return {**absent, "error": f"cannot cost {removed_event_id!r}: {ARCHIVE_ABSENT}"}
     ids = {n["id"] for n in archive["nodes"]} | {w["id"] for w in archive["wounds"]}
     if removed_event_id not in ids:
         return {"error": f"{removed_event_id!r} is not an authored node or wound"}
@@ -328,7 +362,7 @@ def then_vs_now(coordinate: Optional[str], *, archive: Optional[Dict[str, Any]] 
     without leaking terminal knowledge into the younger self's state."""
     archive = archive or load_archive()
     st = state_at(coordinate, archive=archive)
-    if st.get("layer") == "UNWRITTEN_SELF":
+    if st.get("layer") in ("UNWRITTEN_SELF", ARCHIVE_ABSENT):
         return st
     return {"coordinate": st["coordinate"], "year": st["year"],
             "then": {"voice": st["voice"], "believed": st["belief_then"], "knew": st["knowledge"], "false_beliefs": st["false_beliefs"]},
