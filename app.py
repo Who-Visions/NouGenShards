@@ -2243,9 +2243,11 @@ def evaluate_quota(
 def nougenmsg(message: str, target: str = "all", priority: str = "normal") -> dict:
     """Send a live NouGenMsg IPC notification or baton to another fleet agent or node
     (@blade, @whoart, @phoebus, @antigravity, @codex, @all, or model lanes)."""
-    from nougen_shards.nougenmsg import AgentPinger
+    # emit_fleet lives on NouGenMsgBus. AgentPinger has no such method, so the
+    # old call raised AttributeError on every node (tests/test_node_nougenmsg_tool.py).
+    from nougen_shards.nougenmsg import NouGenMsgBus
     clean_target = target.lstrip("@").lower() if target else "all"
-    res = AgentPinger.emit_fleet(text=message, target=clean_target)
+    res = NouGenMsgBus.emit_fleet(text=message, target=clean_target)
     return {
         "status": "delivered",
         "target": target,
@@ -2374,9 +2376,9 @@ def fleet_status() -> dict:
 @_offloaded
 def fleet_send(message: str, target: str, priority: str = "high") -> dict:
     """Direct point-to-point dispatch across fleet nodes via live socket or HTTP transport."""
-    from nougen_shards.nougenmsg import AgentPinger
+    from nougen_shards.nougenmsg import NouGenMsgBus  # emit_fleet is NouGenMsgBus's, not AgentPinger's
     clean_target = target.lstrip("@").lower()
-    return AgentPinger.emit_fleet(text=message, target=clean_target)
+    return NouGenMsgBus.emit_fleet(text=message, target=clean_target)
 
 
 @node_mcp.tool()
