@@ -1,4 +1,5 @@
 """Model Context Protocol (MCP) server for NouGenShards — Valerion Engine."""
+import os
 import sqlite3
 from nougen_shards import agents
 from typing import Optional, List
@@ -96,7 +97,10 @@ def capture_experience(event_type: str, title: str, content: str, tags: Optional
     return f"Shard NOT captured: {result.get('error', 'unknown reason')}"
 
 @mcp.tool()
-def recall_memory(query: str, limit: int = 3) -> str:
+def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
+                  agent: Optional[str] = None, user: Optional[str] = None,
+                  machine: Optional[str] = None, project: Optional[str] = None,
+                  as_of: Optional[str] = None) -> str:
     """
     Search for relevant history shards using the federated weighted-relevance retrieval engine.
     This searches local shards, external DBs, and remote cloud nodes.
@@ -109,8 +113,18 @@ def recall_memory(query: str, limit: int = 3) -> str:
     # Without it this tool answered "No relevant shards found" for a timed-out
     # sweep — a positive claim about the substrate that the substrate never
     # made. An agent acting on that will re-derive knowledge it already holds.
+    # Optional: session_id turns on the delta channel (shards this session already
+    # received come back as one-line [HELD] handles) and knapsack packing.
+    # agent/user/machine/project scope the search via tags; as_of = what the vault
+    # had learned by that time. Scoped or as-of queries run on the local grid,
+    # which is where those filters live.
     sweep_report: dict = {}
-    shards_list = federated_retrieve(query, limit=limit, sweep_report=sweep_report)
+    scope = {k: v for k, v in {"agent": agent, "user": user, "machine": machine, "project": project}.items() if v}
+    if scope or as_of:
+        from nougen_shards import core as _core  # pylint: disable=import-outside-toplevel
+        shards_list = _core.retrieve(query, limit=limit, domain_key="*", scope=scope or None, as_of=as_of)
+    else:
+        shards_list = federated_retrieve(query, limit=limit, sweep_report=sweep_report)
     dropped = sweep_report.get("lanes_timed_out") or []
     if not shards_list:
         if dropped:
@@ -120,13 +134,39 @@ def recall_memory(query: str, limit: int = 3) -> str:
                     "Retry, or raise NOUGEN_RECALL_DEADLINE_S; do NOT conclude "
                     "the substrate holds nothing on this query.")
         return "No relevant shards found in the memory substrate."
-    packet = compile_recall_packet(shards_list)
+    budget = os.environ.get("NOUGEN_RECALL_TOKEN_BUDGET", "").strip()
+    token_budget = int(budget) if budget.isdigit() else None
+    if session_id:
+        from nougen_shards import distill as _distill  # pylint: disable=import-outside-toplevel
+        sent: list = []
+        packet = compile_recall_packet(shards_list, token_budget=token_budget or 1200, strategy="knapsack",
+                                       held=_distill.held_keys(session_id), included=sent)
+        _distill.mark_sent(session_id, sent)
+    else:
+        packet = compile_recall_packet(shards_list, token_budget=token_budget)
     if dropped:
         packet += ("\n\n[COVERAGE WARNING] Partial result: "
                    f"{len(dropped)} lane(s) ({', '.join(dropped)}) missed the "
                    f"{sweep_report.get('deadline_s')}s recall deadline. "
                    "Shards below are real; absence below proves nothing.")
     return packet
+
+@mcp.tool()
+def recall_layered(query: str, token_budget: int = 1200) -> str:
+    """
+    Layered recall (TencentDB-Agent-Memory L0-L3): the owner persona (L3) and the
+    matching topic scenes (L2) come first as bootstrap context, then distilled
+    atoms (L1) with shard handles, then raw shards (L0) in whatever budget is left.
+    Needs the distillation sidecar (tools/distill_run.py); without it this falls
+    back to plain shards.
+
+    Args:
+        query: What you are trying to recall.
+        token_budget: Approximate token cap for the whole packet.
+    """
+    from nougen_shards import core as _core, distill as _distill  # pylint: disable=import-outside-toplevel
+    return _distill.layered_context(query, lambda q, **kw: _core.retrieve(q, limit=8), token_budget=token_budget)
+
 
 @mcp.tool()
 def mark_utility(shard_id: int, worked: bool, db_index: Optional[int] = None) -> str:

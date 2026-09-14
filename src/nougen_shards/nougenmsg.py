@@ -820,9 +820,28 @@ class NouGenMsgBus:
         return supported
 
     @classmethod
+    def persona_header(cls, audience: Optional[str] = None) -> str:
+        """One-block style contract for the member being reached (nougen_shards.persona).
+        audience: shard scope tag; default NOUGEN_MSG_AUDIENCE. '' when unset/unresolvable."""
+        scope = audience or os.environ.get("NOUGEN_MSG_AUDIENCE")
+        if not scope:
+            return ""
+        try:
+            from nougen_shards.persona import PersonaStore
+            p = PersonaStore().get_or_build(scope, tz=os.environ.get("NOUGEN_MSG_AUDIENCE_TZ", "UTC"))
+            return f"[persona {p.fingerprint()} {p.audience}@{p.market} tz={p.tz} register={p.register}]"
+        except Exception:
+            return ""
+
+    @classmethod
     def emit_node(cls, node: str, target: str, text: str,
-                  origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Dispatches message specifically to a target node."""
+                  origin: Optional[Dict[str, Any]] = None,
+                  audience: Optional[str] = None) -> Dict[str, Any]:
+        """Dispatches message specifically to a target node.
+        audience: persona scope; when resolvable, a one-line contract header prefixes the body."""
+        header = cls.persona_header(audience)
+        if header and not text.startswith("[persona "):
+            text = header + "\n" + text
         for label, value in (("node", node), ("target", target)):
             if not cls._SAFE_IDENT.fullmatch(str(value or "")):
                 return {node: f"Error: refusing unsafe {label} {value!r}"}
@@ -873,8 +892,12 @@ class NouGenMsgBus:
 
     @classmethod
     def emit_fleet(cls, text: str, target: str = "all",
-                   origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Dispatches message across all nodes in the fleet."""
+                   origin: Optional[Dict[str, Any]] = None,
+                   audience: Optional[str] = None) -> Dict[str, Any]:
+        """Dispatches message across all nodes in the fleet (persona header applied once, here)."""
+        header = cls.persona_header(audience)
+        if header and not text.startswith("[persona "):
+            text = header + "\n" + text
         curr = get_current_node()
         results = {curr: cls.live_ping(target=target, text=text, origin=origin)}
         fleet_nodes = {"blade", "whoart", "phoebus"}
