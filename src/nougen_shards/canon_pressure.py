@@ -496,7 +496,7 @@ def pressure(candidate: str, coordinate: Optional[str] = None, *, register: bool
         coord_str = coordinate or (coord or {}).get("coordinate") or text
         frontier = _sa.choice_frontier_check(coord_str, text, archive=archive)
         st = _sa.state_at(coord_str, archive=archive)
-        if st.get("layer") != "UNWRITTEN_SELF":
+        if st.get("layer") not in ("UNWRITTEN_SELF", _sa.ARCHIVE_ABSENT):
             scars_active = st.get("wounds_active", [])
             experiential.append({"claim": st.get("event"), "kind": st["kind"], "voice": st["voice"],
                                  "node": st["node"], "provenance": st.get("provenance", [])})
