@@ -2110,6 +2110,59 @@ def xoah_throne(desired_effect: Optional[str] = None, effect: Optional[str] = No
     return throne_governance.evaluate(resolved, target_coordinate=target_coordinate, target_branch=target_branch)
 
 
+# Black Glass query surface over the Xoah self archive. Every answer carries its
+# layer (LIVED_TRUTH ... UNWRITTEN_SELF, or ARCHIVE_ABSENT when this node has no
+# archive file) and the provenance of the nodes it cites.
+@node_mcp.tool()
+@_offloaded
+def xoah_relationship(entity: str, coordinate: Optional[str] = None) -> dict:
+    """Relationship state with an entity at a story coordinate; love and trust are separate values."""
+    return self_archive.relationship_at(entity, coordinate)
+
+
+@node_mcp.tool()
+@_offloaded
+def xoah_then_vs_now(coordinate: Optional[str] = None) -> dict:
+    """What Xoah believed and knew then vs what is known now, without leaking terminal knowledge backward."""
+    return self_archive.then_vs_now(coordinate)
+
+
+@node_mcp.tool()
+@_offloaded
+def xoah_precedents(topic: str, coordinate: Optional[str] = None, limit: int = 3) -> dict:
+    """Nearest pressure precedents on a topic at or before a story coordinate."""
+    return {"coordinate": coordinate, "topic": topic,
+            "precedents": self_archive.nearest_precedents(coordinate, topic, limit=limit)}
+
+
+@node_mcp.tool()
+@_offloaded
+def xoah_conservation(removed_event_id: str) -> dict:
+    """Conservation cost of removing a formative event: the downstream wounds, biases and choices that lose their cause."""
+    return self_archive.conservation_check(removed_event_id)
+
+
+@node_mcp.tool()
+@_offloaded
+def xoah_unwritten(query: str) -> dict:
+    """Whether an episode/chapter/year slot is unwritten (UNWRITTEN_SELF) rather than fabricated."""
+    return self_archive.unwritten(query) or {"slot": query, "layer": "AUTHORED"}
+
+
+@node_mcp.tool()
+@_offloaded
+def xoah_active_scars(coordinate: Optional[str] = None) -> dict:
+    """Wounds active at a story coordinate."""
+    archive = self_archive.load_archive()
+    if archive.get("status") == self_archive.ARCHIVE_ABSENT:
+        return {"layer": self_archive.ARCHIVE_ABSENT, "path": archive.get("path"), "coordinate": coordinate}
+    year = self_archive.coordinate_year(archive, coordinate)
+    if year is None:
+        return {"layer": "UNWRITTEN_SELF", "error": f"coordinate {coordinate!r} not understood"}
+    return {"coordinate": coordinate, "year": year,
+            "active_scars": self_archive.active_scars(year, archive=archive)}
+
+
 
 @node_mcp.tool()
 @_offloaded
