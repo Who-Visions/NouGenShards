@@ -255,6 +255,24 @@ class Handler(BaseHTTPRequestHandler):
     def _route(self) -> str:
         return self.path.split("?", 1)[0].rstrip("/") or "/"
 
+    def _discard_body(self) -> None:
+        """Consume an unread request body before answering an early rejection.
+
+        Cloudflare's tunnel reuses origin connections. A 401/404 sent without
+        reading the body leaves it in the socket, and the NEXT request on that
+        connection is parsed as `<old body>POST /msg ...` -> 501, so one
+        unauthenticated POST could break the following authenticated delivery.
+        Bodies over 1 MiB are not read; the connection is closed instead.
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length > 1 << 20:
+            self.close_connection = True
+        elif length > 0:
+            self.rfile.read(length)
+
     def _reject_unauthorized(self) -> bool:
         """Refuse a request that must not proceed. True when already answered.
 
@@ -269,10 +287,12 @@ class Handler(BaseHTTPRequestHandler):
         refusing-mutations rather than refusing-all.
         """
         if AUTH_LATCH and not AUTH_TOKEN:
+            self._discard_body()
             self._send({"error": "unauthorized", "reason":
                         "auth latched required but no token resolved"}, 401)
             return True
         if AUTH_TOKEN and self.headers.get("X-NGS-Token", "") != AUTH_TOKEN:
+            self._discard_body()
             self._send({"error": "unauthorized"}, 401)
             return True
         return False
@@ -295,6 +315,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         if self._route() != "/msg":
+            self._discard_body()
             self._send({"error": "not found", "path": self._route()}, 404)
             return
         if self._reject_unauthorized():
