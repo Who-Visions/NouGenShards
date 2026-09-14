@@ -2708,6 +2708,19 @@ def relay_open_legs(limit: int = 15) -> list:
     return legs
 
 
+def _safe_claims_path(claims_dir: "Path", leg_id: str, suffix: str) -> "Path":
+    """Build a path under claims_dir from a caller-supplied leg_id, rejecting traversal.
+
+    leg_id reaches this from the MCP tool surface unsanitized; resolving and
+    verifying containment (rather than just filtering characters) also covers
+    absolute-path and symlink escapes, not just "../" segments.
+    """
+    candidate = (claims_dir / f"{leg_id}{suffix}").resolve()
+    if claims_dir.resolve() not in candidate.parents:
+        raise ValueError(f"invalid leg_id: {leg_id!r} escapes claims_dir")
+    return candidate
+
+
 @node_mcp.tool()
 @_offloaded
 def relay_claim_leg(leg_id: str, claimed_by: str = "phoebus/antigravity") -> dict:
@@ -2715,7 +2728,7 @@ def relay_claim_leg(leg_id: str, claimed_by: str = "phoebus/antigravity") -> dic
     from pathlib import Path
     claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
-    claim_path = claims_dir / f"{leg_id}__autonomous.json"
+    claim_path = _safe_claims_path(claims_dir, leg_id, "__autonomous.json")
     claim_data = {
         "leg_id": leg_id,
         "claimed_by": claimed_by,
@@ -2775,6 +2788,7 @@ def relay_ack_leg(
     from pathlib import Path
     claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
+    ack_path = _safe_claims_path(claims_dir, leg_id, "__ack.json")
     ack_data = {
         "leg_id": leg_id,
         "status": "closed",
@@ -2786,7 +2800,6 @@ def relay_ack_leg(
             "observer_node": observer_node
         }
     }
-    ack_path = claims_dir / f"{leg_id}__ack.json"
     with open(ack_path, "w", encoding="utf-8") as f:
         json.dump(ack_data, f, indent=2)
     return {"status": "closed", "proof": ack_data}
