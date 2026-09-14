@@ -740,7 +740,7 @@ class NouGenMsgBus:
                 msg_id = envelope.get("id") or f"msg_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
                 with sqlite3.connect(db_path, timeout=5) as conn:
                     conn.execute("""
-                        INSERT OR IGNORE INTO messages 
+                        INSERT OR IGNORE INTO messages
                         (id, timestamp, source_node, source_agent, target_node, target_agent, trigger_source, correlation_id, idempotency_key, text, provenance)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (

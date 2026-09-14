@@ -4,7 +4,6 @@ The origin envelope carries id / trigger_source / correlation_id /
 idempotency_key / reply_to, and live_ping appends each delivery to
 ~/.nougen/messages.db when that ledger exists (it is created out of band).
 """
-import ast
 import sqlite3
 from pathlib import Path
 
