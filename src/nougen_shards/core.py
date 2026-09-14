@@ -429,6 +429,15 @@ def init_db(index: int = 1):  # noqa: C901
         except sqlite3.OperationalError:
             pass
 
+        # Validity window (schema v4, EchoVault): when a shard stops being
+        # true, and when it was last re-confirmed. Both nullable; recall sorts
+        # expired shards below live ones (see _mark_expired).
+        for _col in ("valid_until TEXT", "last_verified TEXT"):
+            try:
+                cursor.execute(f"ALTER TABLE shards ADD COLUMN {_col};")
+            except sqlite3.OperationalError:
+                pass
+
         # Relay provenance (schema v3): older nodes did not retain the
         # publisher URI, so add it idempotently during normal startup.
         try:
@@ -957,7 +966,8 @@ def capture(event_type: str, title: str, content: str,
             sensitivity: Optional[str] = None,
             original_timestamp: Optional[str] = None,
             source_uri: Optional[str] = None,
-            utility: Optional[float] = None) -> bool:
+            utility: Optional[float] = None,
+            valid_until: Optional[str] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants).
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
@@ -1026,6 +1036,7 @@ def capture(event_type: str, title: str, content: str,
             "tags": tags, "domain_key": domain_key,
             "density_score": density_score, "sensitivity": sensitivity,
             "original_timestamp": original_timestamp,
+            "valid_until": valid_until,
         })
         return CaptureResult(fwd)
 
@@ -1119,6 +1130,12 @@ def capture(event_type: str, title: str, content: str,
                     "capture: unparseable original_timestamp %r; "
                     "falling back to now", original_timestamp)
 
+        # Validity window (EchoVault): a shard may declare when it stops being
+        # true. Normalized to UTC ISO so recall can compare it; an unparseable
+        # value is dropped with a warning, never a failed write.
+        valid_until_value = _normalize_iso(valid_until) if valid_until else None
+        verified_now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
         # Encrypt LAST, immediately before the write: the dedup hash, the blob
         # gate, the redactor and the embedder all need the real text, and the
         # AFTER INSERT trigger that feeds shards_fts reads new.content -- so
@@ -1150,10 +1167,10 @@ def capture(event_type: str, title: str, content: str,
                 init_db(target_idx)
                 conn = get_connection(target_idx)
                 cursor = conn.execute("""
-                    INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, source_uri, utility_score, learned_utc)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, source_uri, utility_score, learned_utc, valid_until, last_verified)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, source_uri_value, utility_score,
-                      datetime.now(timezone.utc).isoformat(timespec="seconds")))
+                      datetime.now(timezone.utc).isoformat(timespec="seconds"), valid_until_value, verified_now))
                 conn.commit()
 
                 # Log CREATED event
@@ -1216,6 +1233,26 @@ def capture(event_type: str, title: str, content: str,
                              db_index=target_idx)
     finally:
         dconn.close()
+
+
+def mark_verified(shard_id: int, db_index: int, valid_until: Optional[str] = None) -> bool:
+    """Record that a shard was re-confirmed true now, optionally moving its
+    validity window (EchoVault). Returns False when the row does not exist."""
+    if not get_db_path(db_index).exists():
+        return False
+    init_db(db_index)
+    conn = get_connection(db_index)
+    try:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if valid_until is not None:
+            cur = conn.execute("UPDATE shards SET last_verified = ?, valid_until = ? WHERE id = ?",
+                               (now, _normalize_iso(valid_until), shard_id))
+        else:
+            cur = conn.execute("UPDATE shards SET last_verified = ? WHERE id = ?", (now, shard_id))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
 
 
 # Relevance blend weights (Module 20)
@@ -2319,6 +2356,58 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
     return out[:limit]
 
 
+def _normalize_iso(value) -> Optional[str]:
+    """UTC ISO-8601 'Z' form of a timestamp, or None if it cannot be parsed."""
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        logger.warning("unparseable timestamp %r ignored", value)
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _mark_expired(items: list, now: datetime) -> None:
+    """Flag fused candidates whose ``valid_until`` has passed (EchoVault).
+
+    One query per grid DB, like _learned_times. retrieve() sorts flagged items
+    below every live candidate in the same title tier: a superseded fact stays
+    findable but never outranks a current one. Tier ordering, not a score
+    multiplier, because relevance is min-max normalized per query and a
+    multiplier cannot guarantee the order on a small candidate pool.
+    NOUGEN_VALIDITY_RANK=0 turns it off. A lookup failure leaves items
+    unflagged: a derived signal must never break recall."""
+    if os.environ.get("NOUGEN_VALIDITY_RANK", "1").strip().lower() in ("0", "false", "no", "off"):
+        return
+    by_db: dict = {}
+    for it in items:
+        if isinstance(it.get("_db_index"), int) and it.get("id") is not None:
+            by_db.setdefault(it["_db_index"], []).append(it.get("id"))
+    known: dict = {}
+    for db, ids in by_db.items():
+        conn = None
+        try:
+            conn = get_connection(db)
+            marks = ",".join("?" * len(ids))
+            for sid, until in conn.execute(
+                    f"SELECT id, valid_until FROM shards WHERE valid_until IS NOT NULL AND id IN ({marks})", ids):
+                known[(db, sid)] = until
+        except (sqlite3.DatabaseError, OSError):
+            continue
+        finally:
+            if conn is not None:
+                conn.close()
+    for it in items:
+        norm = _normalize_iso(known.get((it.get("_db_index"), it.get("id"))) or it.get("valid_until"))
+        if norm is None:
+            continue
+        it["valid_until"] = norm
+        it["_expired"] = datetime.fromisoformat(norm.replace("Z", "+00:00")) < now
+
+
 def _learned_times(items: list) -> dict:
     """(db, id) -> learned_utc for fused candidates, one query per DB."""
     by_db: dict = {}
@@ -2509,6 +2598,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
 
     # One reference clock for the whole scoring pass (see _temporal_decay).
     score_now = datetime.now(timezone.utc)
+    _mark_expired(all_results, score_now)
     for item in all_results:
         raw_rel = item.get("rerank_score", item.get("final_score", 0.5))
         if rel_span > 0:
@@ -2534,7 +2624,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     for item in scored_results:
         item["_title_exact"] = _title_hit(qnorm, item.get("title"))
     scored_results.sort(
-        key=lambda x: (not x["_title_exact"], -round(x["utility_score_tripartite"], 6),
+        key=lambda x: (not x["_title_exact"], bool(x.get("_expired")), -round(x["utility_score_tripartite"], 6),
                        x.get("_db_index", 0), x.get("id", 0)))
     
     # Dynamic Thresholding / Drop bottom 50% if we have many candidates
