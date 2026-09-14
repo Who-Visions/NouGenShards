@@ -641,6 +641,7 @@ class NouGenMsgBus:
                               "transport_observed": current})
         session_id = supplied.get("session_id")
         return {
+            "id": supplied.get("id"),
             "session_id": session_id,
             "session_title": supplied.get("session_title"),
             "machine": claimed_machine or current,
@@ -656,6 +657,10 @@ class NouGenMsgBus:
             # so cross-machine provenance was unrecoverable after one hop.
             "original_sender": supplied.get("original_sender") or f"nougen-{current}",
             "relay_path": cls._extend_relay_path(supplied.get("relay_path"), current),
+            "trigger_source": supplied.get("trigger_source") or os.environ.get("NOUGEN_TRIGGER_SOURCE", "direct_dispatch"),
+            "correlation_id": supplied.get("correlation_id"),
+            "idempotency_key": supplied.get("idempotency_key"),
+            "reply_to": supplied.get("reply_to"),
             "timestamp": supplied.get("timestamp") or time.time(),
             "provenance_state": supplied.get("provenance_state") or (
                 "asserted" if session_id else "unknown"),
@@ -725,6 +730,36 @@ class NouGenMsgBus:
         else:
             for lane, call in model_pings:
                 results[lane] = call()
+
+        # Step 3: Append-only persistence to messages.db
+        try:
+            import sqlite3
+            import uuid
+            db_path = os.path.expanduser(os.path.join("~", ".nougen", "messages.db"))
+            if os.path.exists(db_path):
+                msg_id = envelope.get("id") or f"msg_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
+                with sqlite3.connect(db_path, timeout=5) as conn:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO messages
+                        (id, timestamp, source_node, source_agent, target_node, target_agent, trigger_source, correlation_id, idempotency_key, text, provenance)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        msg_id,
+                        envelope.get("timestamp") or time.time(),
+                        envelope.get("machine") or get_current_node(),
+                        envelope.get("original_sender") or envelope.get("lane") or "agent",
+                        node or get_current_node(),
+                        target,
+                        envelope.get("trigger_source") or "direct_dispatch",
+                        envelope.get("correlation_id"),
+                        envelope.get("idempotency_key"),
+                        text,
+                        json.dumps(envelope)
+                    ))
+                    conn.commit()
+        except Exception as e:  # pylint: disable=broad-except
+            # The message is already delivered; a ledger write must not undo that, but it must not vanish silently.
+            print(f"[nougenmsg] messages.db append failed: {e}", file=sys.stderr, flush=True)
 
         return results
 
