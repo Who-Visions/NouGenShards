@@ -665,7 +665,8 @@ class NouGenMsgBus:
 
     @classmethod
     def live_ping(cls, target: str, text: str, node: Optional[str] = None,
-                  origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                  origin: Optional[Dict[str, Any]] = None,
+                  models_async: bool = False) -> Dict[str, Any]:
         target = target.lower()
         results = {}
         envelope = cls._origin_envelope(origin)
@@ -699,12 +700,31 @@ class NouGenMsgBus:
         if family in ["codex", "all", "agents"]:
             results["codex"] = AgentPinger.ping_codex(text, envelope)
 
+        model_pings = []
         if family == "ollama" or (family == "all" and models_on_all):
-            results["ollama"] = AgentPinger.ping_ollama(text, node=node or "local",
-                                                       model=model, origin=envelope)
-
+            model_pings.append(("ollama", lambda: AgentPinger.ping_ollama(
+                text, node=node or "local", model=model, origin=envelope)))
         if family == "openrouter" or (family == "all" and models_on_all):
-            results["openrouter"] = AgentPinger.ping_openrouter(text, model=model, origin=envelope)
+            model_pings.append(("openrouter", lambda: AgentPinger.ping_openrouter(
+                text, model=model, origin=envelope)))
+        if models_async and model_pings:
+            # A model lane waits for the model to ANSWER (NOUGEN_MSG_MODEL_TIMEOUT_S, 60s); its
+            # reply lands in the inbox via _drop_model_reply either way. On 2026-09-14 an @all
+            # node ping took 64.7s here while @phoebus (agent lanes only) took 1.7s.
+            def _run_models(pings=tuple(model_pings)):
+                for lane, call in pings:
+                    try:
+                        call()
+                    except Exception as e:  # pylint: disable=broad-except
+                        print(f"[nougenmsg] background {lane} lane raised: {e}", file=sys.stderr, flush=True)
+            t = threading.Thread(target=_run_models, name="nougenmsg-models", daemon=True)
+            t.start()
+            cls._last_models_thread = t
+            for lane, _ in model_pings:
+                results[lane] = {"queued": True, "via": "model"}
+        else:
+            for lane, call in model_pings:
+                results[lane] = call()
 
         return results
 
@@ -921,7 +941,8 @@ class NouGenMsgBus:
         if header and not text.startswith("[persona "):
             text = header + "\n" + text
         curr = get_current_node()
-        results = {curr: cls.live_ping(target=target, text=text, origin=origin)}
+        results = {curr: cls.live_ping(target=target, text=text, origin=origin,
+                                       models_async=background)}
         fleet_nodes = {"blade", "whoart", "phoebus"}
         # A standalone/external clone has no private fleet to broadcast into;
         # only fan out to the other two boxes when this IS one of them.
