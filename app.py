@@ -2046,6 +2046,69 @@ def xoah_throne_endpoint(
     )
 
 
+class XoahRelationshipRequest(BaseModel):
+    entity: str
+    coordinate: Optional[str] = None
+
+
+class XoahPrecedentsRequest(BaseModel):
+    topic: str
+    coordinate: Optional[str] = None
+    limit: int = 3
+
+
+class XoahConservationRequest(BaseModel):
+    removed_event_id: str
+
+
+class XoahUnwrittenRequest(BaseModel):
+    query: str
+
+
+# REST twins of the Black Glass MCP tools below: the fleet connector worker
+# reaches the node over REST (/xoah/self, /xoah/pressure), not MCP.
+@app.post("/xoah/relationship")
+def xoah_relationship_endpoint(req: XoahRelationshipRequest,
+                               _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """Relationship state with an entity at a story coordinate."""
+    return xoah_relationship.fn(req.entity, req.coordinate)
+
+
+@app.post("/xoah/then_vs_now")
+def xoah_then_vs_now_endpoint(req: XoahSelfRequest,
+                              _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """Then-vs-now knowledge at a story coordinate."""
+    return xoah_then_vs_now.fn(req.coordinate)
+
+
+@app.post("/xoah/precedents")
+def xoah_precedents_endpoint(req: XoahPrecedentsRequest,
+                             _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """Nearest pressure precedents on a topic at or before a coordinate."""
+    return xoah_precedents.fn(req.topic, req.coordinate, req.limit)
+
+
+@app.post("/xoah/conservation")
+def xoah_conservation_endpoint(req: XoahConservationRequest,
+                               _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """Conservation cost of removing a formative event."""
+    return xoah_conservation.fn(req.removed_event_id)
+
+
+@app.post("/xoah/unwritten")
+def xoah_unwritten_endpoint(req: XoahUnwrittenRequest,
+                            _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """Whether a slot is unwritten (UNWRITTEN_SELF) or authored."""
+    return xoah_unwritten.fn(req.query)
+
+
+@app.post("/xoah/active_scars")
+def xoah_active_scars_endpoint(req: XoahSelfRequest,
+                               _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """Wounds active at a story coordinate."""
+    return xoah_active_scars.fn(req.coordinate)
+
+
 @app.get("/destinies")
 @app.post("/destinies")
 def destinies_endpoint(
