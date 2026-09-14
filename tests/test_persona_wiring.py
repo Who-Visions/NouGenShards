@@ -1,5 +1,5 @@
 """persona wiring into coach.py and NouGenMsgBus: opt-in, no-op when unset."""
-import os, sys, sqlite3, json
+import sys, sqlite3, json
 from pathlib import Path
 
 import pytest
@@ -7,7 +7,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import coach  # noqa: E402
 from nougen_shards import nougenmsg as NM  # noqa: E402
-from nougen_shards import persona as P  # noqa: E402
 
 
 @pytest.fixture

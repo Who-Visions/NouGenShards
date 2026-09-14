@@ -138,7 +138,7 @@ class Signals:
                 corrections += 1
         n = len(texts) or 1
         if message_max_words is not None:
-            short = [l for l in lengths if l <= message_max_words]
+            short = [n for n in lengths if n <= message_max_words]
             s.register_evidence = "messages" if short else "none"
             lengths = short          # captures never set the register
         s._n, s._lengths = len(texts), sorted(lengths)
@@ -265,7 +265,7 @@ class Persona:
     def system_prompt(self) -> str:
         """Style contract for any lane addressing this member. Plain English, no owner names."""
         lang = {"en": "English", "ht": "Haitian Creole (read phonetically, answer in kind)"}
-        langs = ", ".join(lang.get(l, l) for l in self.languages) or "English"
+        langs = ", ".join(lang.get(code, code) for code in self.languages) or "English"
         lines = [
             f"You are addressing a {self.role or 'member'} of the '{self.audience}' audience "
             f"in the '{self.market}' market.",
