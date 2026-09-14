@@ -11,7 +11,6 @@ from env with the constant as a logged fallback only.
 """
 
 import os
-import sys
 import time
 import uuid
 from typing import Any, Dict, List, Optional

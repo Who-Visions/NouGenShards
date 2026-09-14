@@ -300,6 +300,34 @@ def get_engine_status():
         "active_db": 9
     }
 
+def get_fleet_telemetry_status():
+    """Return unified 3-layer fleet telemetry and declared intent."""
+    state_file = Path.home() / ".nougen" / "state" / "fleet_telemetry.json"
+    intent_file = Path.home() / ".nougen" / "state" / "fleet_intent.json"
+    
+    telemetry = {}
+    intent = {}
+    
+    if state_file.exists():
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                telemetry = json.load(f)
+        except Exception:
+            pass
+            
+    if intent_file.exists():
+        try:
+            with open(intent_file, "r", encoding="utf-8") as f:
+                intent = json.load(f)
+        except Exception:
+            pass
+            
+    return {
+        "telemetry": telemetry,
+        "declared_intent": intent,
+        "engine": get_engine_status()
+    }
+
 if __name__ == "__main__":
     import sys
     cmd = sys.argv[1] if len(sys.argv) > 1 else "usage"
@@ -308,6 +336,8 @@ if __name__ == "__main__":
         print(json.dumps(search_shards(q)))
     elif cmd == "status":
         print(json.dumps(get_engine_status()))
+    elif cmd == "live":
+        print(json.dumps(get_fleet_telemetry_status()))
     elif cmd == "usage":
         p = sys.argv[2] if len(sys.argv) > 2 else "week"
         s = sys.argv[3] if len(sys.argv) > 3 else "local"

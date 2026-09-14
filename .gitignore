@@ -192,3 +192,8 @@ tools/vertex_image.py
 logs/
 *.orig
 *.rej
+
+# Local developer overrides and backups
+*.local.md
+*.bak*
+bin/ngs-node.sh.bak*
