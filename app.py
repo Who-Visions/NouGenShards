@@ -2354,6 +2354,11 @@ def evaluate_quota(
     }
 
 
+def _msg_fanout_async() -> bool:
+    """Node tools fan out to peers in the background (see NouGenMsgBus.emit_fleet). Env-first."""
+    return os.environ.get("NOUGEN_MSG_FANOUT_ASYNC", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
 @node_mcp.tool()
 @_offloaded
 def nougenmsg(message: str, target: str = "all", priority: str = "normal") -> dict:
@@ -2363,7 +2368,7 @@ def nougenmsg(message: str, target: str = "all", priority: str = "normal") -> di
     # old call raised AttributeError on every node (tests/test_node_nougenmsg_tool.py).
     from nougen_shards.nougenmsg import NouGenMsgBus
     clean_target = target.lstrip("@").lower() if target else "all"
-    res = NouGenMsgBus.emit_fleet(text=message, target=clean_target)
+    res = NouGenMsgBus.emit_fleet(text=message, target=clean_target, background=_msg_fanout_async())
     return {
         "status": "delivered",
         "target": target,
@@ -2494,7 +2499,7 @@ def fleet_send(message: str, target: str, priority: str = "high") -> dict:
     """Direct point-to-point dispatch across fleet nodes via live socket or HTTP transport."""
     from nougen_shards.nougenmsg import NouGenMsgBus  # emit_fleet is NouGenMsgBus's, not AgentPinger's
     clean_target = target.lstrip("@").lower()
-    return NouGenMsgBus.emit_fleet(text=message, target=clean_target)
+    return NouGenMsgBus.emit_fleet(text=message, target=clean_target, background=_msg_fanout_async())
 
 
 @node_mcp.tool()

@@ -9,6 +9,8 @@ import json
 import time
 import shutil
 import subprocess
+import threading
+import sys
 import urllib.request
 import re
 import uuid
@@ -905,8 +907,16 @@ class NouGenMsgBus:
     @classmethod
     def emit_fleet(cls, text: str, target: str = "all",
                    origin: Optional[Dict[str, Any]] = None,
-                   audience: Optional[str] = None) -> Dict[str, Any]:
-        """Dispatches message across all nodes in the fleet (persona header applied once, here)."""
+                   audience: Optional[str] = None,
+                   background: bool = False) -> Dict[str, Any]:
+        """Dispatches message across all nodes in the fleet (persona header applied once, here).
+
+        background=True delivers locally, then hands the SSH fan-out to a daemon thread and
+        reports each peer as {"queued": True}. The MCP node tools use it: peers are reached
+        one at a time over SSH (plus scp for unsafe bodies), which ran 76s on 2026-09-14 while
+        the connector allows its gateway call 20s. It gave up, fell back, and the message
+        arrived twice. Peer failures in the background go to stderr (the node log), not the caller.
+        """
         header = cls.persona_header(audience)
         if header and not text.startswith("[persona "):
             text = header + "\n" + text
@@ -916,6 +926,22 @@ class NouGenMsgBus:
         # A standalone/external clone has no private fleet to broadcast into;
         # only fan out to the other two boxes when this IS one of them.
         nodes = sorted(fleet_nodes - {curr}) if curr in fleet_nodes else []
+        if background and nodes:
+            def _fan_out(peers=tuple(nodes)):
+                for n in peers:
+                    try:
+                        res = cls.emit_node(n, target, text, origin=origin)
+                        bad = {k: v for k, v in (res or {}).items() if isinstance(v, str) and v.startswith("Error")}
+                        if bad:
+                            print(f"[nougenmsg] background fan-out to {n} failed: {bad}", file=sys.stderr, flush=True)
+                    except Exception as e:  # pylint: disable=broad-except
+                        print(f"[nougenmsg] background fan-out to {n} raised: {e}", file=sys.stderr, flush=True)
+            t = threading.Thread(target=_fan_out, name="nougenmsg-fanout", daemon=True)
+            t.start()
+            cls._last_fanout_thread = t  # tests join it; nothing in production waits on it
+            for n in nodes:
+                results[n] = {"queued": True, "via": "ssh"}
+            return results
         for n in nodes:
             try:
                 res = cls.emit_node(n, target, text, origin=origin)
