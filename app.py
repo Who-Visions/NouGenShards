@@ -2523,11 +2523,23 @@ def relay_open_legs(limit: int = 15) -> list:
     return legs
 
 
+def _sanitize_leg_id(leg_id: str) -> str:
+    """Collapse a caller-supplied leg_id to a safe filename component.
+
+    leg_id is interpolated directly into a claims-dir filename; without this,
+    a value like "../../etc/foo" traverses outside claims_dir via Path's
+    non-normalizing "/" operator (arbitrary file write).
+    """
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", leg_id).strip("_")
+    return safe or "leg"
+
+
 @node_mcp.tool()
 @_offloaded
 def relay_claim_leg(leg_id: str, claimed_by: str = "phoebus/antigravity") -> dict:
     """Claim an open relay leg atomically to prevent duplicate swarm execution."""
     from pathlib import Path
+    leg_id = _sanitize_leg_id(leg_id)
     claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
     claim_path = claims_dir / f"{leg_id}__autonomous.json"
@@ -2588,6 +2600,7 @@ def relay_ack_leg(
 ) -> dict:
     """Settle and acknowledge an open relay leg with mandatory Hardcade proof tuple."""
     from pathlib import Path
+    leg_id = _sanitize_leg_id(leg_id)
     claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
     ack_data = {
