@@ -98,16 +98,36 @@ def _ledger(kind: str, **kw) -> None:
         fh.write(json.dumps({"t": datetime.now(timezone.utc).isoformat(timespec="seconds"), "kind": kind, **kw}) + "\n")
 
 
+def persona_contract(audience: str | None = None) -> str:
+    """Style contract for the member/audience being reached (nougen_shards.persona).
+    audience: a shard scope tag such as 'via:claude-app/<user>'; default COACH_AUDIENCE_SCOPE.
+    Returns '' when unset or unresolvable, so every caller is unchanged unless configured."""
+    scope = audience or os.getenv("COACH_AUDIENCE_SCOPE")
+    if not scope:
+        return ""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+        from nougen_shards.persona import PersonaStore
+        p = PersonaStore().get_or_build(scope, tz=os.getenv("COACH_AUDIENCE_TZ", "UTC"))
+        return f"[persona {p.fingerprint()} {p.audience}@{p.market}]\n" + p.system_prompt()
+    except Exception:
+        return ""
+
+
 def _text_only(prompt: str) -> None:
     if re.search(r"data:image/|base64,|[A-Za-z]:\\Users\\", prompt):
         raise ValueError("coach.ask is text only: strip images and local paths (privacy gate); use coach.local for images")
 
 
 def ask(prompts: list[str] | str, lanes: int = 5, max_tokens: int = 2048, force: bool = False, why: str = "",
-        kinds: tuple | None = None) -> list[dict]:
+        kinds: tuple | None = None, audience: str | None = None) -> list[dict]:
     """Fleet majority over <= lanes distinct models. Returns [{lane, model, text}] per prompt x lane.
-    kinds: restrict lanes to route kinds, e.g. ("openrouter", "ollama-cloud", "local")."""
+    kinds: restrict lanes to route kinds, e.g. ("openrouter", "ollama-cloud", "local").
+    audience: persona scope; when resolvable, its contract is prepended to every prompt."""
     ps = [prompts] if isinstance(prompts, str) else list(prompts)
+    contract = persona_contract(audience)
+    if contract:
+        ps = [contract + "\n\n" + p for p in ps]
     if len(ps) > MAX_BATCH:
         raise ValueError(f"batch {len(ps)} > MAX_BATCH {MAX_BATCH}: chunk it, or this is a job for local e2b")
     for p in ps:
@@ -140,8 +160,10 @@ def ask(prompts: list[str] | str, lanes: int = 5, max_tokens: int = 2048, force:
     return out
 
 
-def local(prompt: str, schema: dict | None = None, max_tokens: int = 2048, image_b64: str | None = None) -> str:
-    """Loopback e2b, temperature 0, seed 7, reasoning off; optional JSON schema; images allowed (never leave the box)."""
+def local(prompt: str, schema: dict | None = None, max_tokens: int = 2048, image_b64: str | None = None,
+          audience: str | None = None) -> str:
+    """Loopback e2b, temperature 0, seed 7, reasoning off; optional JSON schema; images allowed (never leave the box).
+    audience: persona scope; when resolvable, its contract rides as the system message."""
     model = os.getenv("COACH_LOCAL_MODEL") or LOCAL["model"]
     try:  # this node may not serve e2b-qat (blade): fall back to an installed gemma4 / persona build
         with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=5) as r:
@@ -153,8 +175,12 @@ def local(prompt: str, schema: dict | None = None, max_tokens: int = 2048, image
     content = [{"type": "text", "text": prompt}]
     if image_b64:
         content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + image_b64}})
+    messages = [{"role": "user", "content": content}]
+    contract = persona_contract(audience)
+    if contract:
+        messages.insert(0, {"role": "system", "content": contract})
     body = {"model": model, "temperature": 0, "seed": 7, "max_tokens": max_tokens, "reasoning_effort": "none",
-            "messages": [{"role": "user", "content": content}]}
+            "messages": messages}
     if schema:
         body["response_format"] = {"type": "json_schema", "json_schema": {"name": "out", "strict": True, "schema": schema}}
     t0 = time.time()
