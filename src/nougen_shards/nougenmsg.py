@@ -676,13 +676,25 @@ class NouGenMsgBus:
         models_on_all = os.environ.get("NOUGEN_MSG_MODEL_LANES_ON_ALL", "1").strip().lower() \
             not in ("0", "false", "no")
 
-        if family in ["claude", "all"]:
+        # A node-name target ('@blade') matched no family branch, so the node it
+        # addressed returned {} and woke nobody while the caller saw "delivered"
+        # (2026-09-14: connector nougenmsg @blade -> results.blade == {}). On the
+        # addressed node it means "this node's agent lanes"; elsewhere it is not
+        # ours to deliver, and saying so beats an empty dict.
+        fleet_nodes = {n.strip().lower() for n in os.environ.get(
+            "NOUGEN_FLEET_NODES", "blade,whoart,phoebus").split(",") if n.strip()}
+        if family in fleet_nodes:
+            if family != (get_current_node() or "").lower():
+                return {"skipped": f"addressed to {family}, not this node"}
+            family, model = "agents", None
+
+        if family in ["claude", "all", "agents"]:
             results["claude_pipes"] = AgentPinger.ping_claude(text, envelope)
 
-        if family in ["antigravity", "all"]:
+        if family in ["antigravity", "all", "agents"]:
             results["antigravity"] = AgentPinger.ping_antigravity(text, origin=envelope)
 
-        if family in ["codex", "all"]:
+        if family in ["codex", "all", "agents"]:
             results["codex"] = AgentPinger.ping_codex(text, envelope)
 
         if family == "ollama" or (family == "all" and models_on_all):
