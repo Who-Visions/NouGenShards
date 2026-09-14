@@ -158,7 +158,7 @@ def main(argv=None):
         if "--capabilities" in out:
             print("         The receiver echoed the flag back as MESSAGE TEXT --")
             print("         it predates --capabilities. Patch it:")
-            print(f"         nougenmsg_rollout.py patch <its tools/nougenmsg.py> --write")
+            print("         nougenmsg_rollout.py patch <its tools/nougenmsg.py> --write")
         elif timed_out:
             print("         Probe timed out. If the file-handle check above passed,")
             print("         suspect a slow interpreter start rather than the link.")
@@ -170,7 +170,7 @@ def main(argv=None):
     paths = [p.strip() for p in out.splitlines() if p.strip().endswith("nougenmsg.py")]
     if paths:
         print(f"  [info] {len(paths)} nougenmsg.py copy(ies) on {args.host}; a single")
-        print(f"         stale SENDER emits pointers for the whole fleet. Audit with:")
+        print("         stale SENDER emits pointers for the whole fleet. Audit with:")
         print(f"         nougenmsg_rollout.py audit --host {args.host}")
 
     print()

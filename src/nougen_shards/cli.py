@@ -2762,11 +2762,11 @@ def cmd_tunnel(args):
                 "status": "online"
             }, indent=2))
         else:
-            print(f"🚇 NouGen Edge Tunnel Active")
+            print("🚇 NouGen Edge Tunnel Active")
             print(f"  • Forwarding:  http://localhost:{res['port']} -> {res['url']}")
             print(f"  • Service:     {res['service']}")
-            print(f"  • Ingress:     Ngrok Shang Tsung Gateway")
-            print(f"\n[Press Ctrl+C to stop tunnel]")
+            print("  • Ingress:     Ngrok Shang Tsung Gateway")
+            print("\n[Press Ctrl+C to stop tunnel]")
         
         # Keep process alive while tunnel is open
         while True:

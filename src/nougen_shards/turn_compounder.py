@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from datetime import datetime, timezone
 
 STATE_FILE = Path.home() / ".nougen" / "state" / "turn_compounding_state.json"
 

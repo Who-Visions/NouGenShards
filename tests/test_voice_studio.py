@@ -1,5 +1,4 @@
 """Tests for wispr voice dictation and studio lighting in NouGen."""
-import pytest
 from nougen_shards import wispr, studio
 
 

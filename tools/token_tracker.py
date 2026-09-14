@@ -1400,7 +1400,7 @@ def print_route_recommendations(invocations):
 
 
 # --- Main Reporting ---
-print(f"\n======================================================================")
+print("\n======================================================================")
 if RANGE_START or RANGE_END:
     print(f"Token usage monitor — range {CUTOFF:%Y-%m-%d} -> {LIMIT_UPPER - timedelta(days=1):%Y-%m-%d}")
     print(f"window: {CUTOFF:%Y-%m-%d %H:%M} -> {LIMIT_UPPER:%Y-%m-%d %H:%M} {NOW:%Z}")
@@ -1413,12 +1413,12 @@ elif COMPARE_N:
 else:
     print(f"Token usage monitor — last {DAYS} day(s)")
     print(f"window: {CUTOFF:%Y-%m-%d %H:%M} -> {NOW:%Y-%m-%d %H:%M} {NOW:%Z}")
-print(f"scope:  [EVIDENCE-SCOPED OBSERVABLE FLOOR | TRUE USAGE >= TRACKED TOTALS]")
-print(f"======================================================================\n")
+print("scope:  [EVIDENCE-SCOPED OBSERVABLE FLOOR | TRUE USAGE >= TRACKED TOTALS]")
+print("======================================================================\n")
 
 # 1. Claude Code report
 c_day, c_model, c_totals, c_files, c_records = parse_claude()
-print(f"--- Claude Code ---")
+print("--- Claude Code ---")
 print(f"Transcripts scanned: {c_files}   Usage records: {c_records}\n")
 hdr = f"{'Day':<12}{'input':>14}{'output':>14}{'cache-read':>16}{'reasoning':>14}"
 print(hdr)
@@ -1432,7 +1432,7 @@ print(f"{'TOTAL':<12}{fmt(ti):>14}{fmt(to):>14}{fmt(tcr):>16}{fmt(trt):>14}\n")
 
 # 2. Antigravity report
 a_day, a_model, a_totals, a_files, a_records, active_cnt, rpc_cnt, est_cnt = parse_antigravity()
-print(f"--- Google Antigravity (Hybrid RPC & Estimation) [! partial - Antigravity retention starts ~2026-05-19; pre-May encrypted] ---")
+print("--- Google Antigravity (Hybrid RPC & Estimation) [! partial - Antigravity retention starts ~2026-05-19; pre-May encrypted] ---")
 print(f"Sessions scanned: {a_files} ({active_cnt} active via RPC + {a_files - active_cnt} fallback from disk)")
 print(f"Invocations tracked: {a_records} ({rpc_cnt} exact via RPC + {est_cnt} estimated fallback)\n")
 hdr_ag = f"{'Day':<12}{'input':>14}{'output':>14}{'cache-read':>16}{'reasoning':>14}"
@@ -1448,7 +1448,7 @@ compute_and_print_split([inv for inv in ALL_INVOCATIONS if inv["source"].startsw
 
 # 3. Codex report
 cx_day, cx_model, cx_totals, cx_files, cx_records = parse_codex()
-print(f"--- OpenAI Codex (Granular Rollout Parsing) ---")
+print("--- OpenAI Codex (Granular Rollout Parsing) ---")
 print(f"Sessions scanned: {cx_files}   Usage events: {cx_records}\n")
 hdr_cx = f"{'Day':<12}{'input':>14}{'output':>14}{'cache-read':>16}{'reasoning':>14}"
 print(hdr_cx)
@@ -1474,7 +1474,7 @@ print()
 
 # 3b. Gemini CLI report (Hybrid Exact & Estimation; pre-May fills here)
 gc_day, gc_model, gc_totals, gc_files, gc_records, gc_exact, gc_est = parse_gemini_cli()
-print(f"--- Gemini CLI (Hybrid Exact & Estimation) ---")
+print("--- Gemini CLI (Hybrid Exact & Estimation) ---")
 print(f"Sessions scanned: {gc_files}   Invocations tracked: {gc_records} ({gc_exact} exact + {gc_est} estimated)\n")
 hdr_gc = f"{'Day':<12}{'input':>14}{'output':>14}{'cache-read':>16}{'reasoning':>14}"
 print(hdr_gc)
@@ -1489,7 +1489,7 @@ compute_and_print_split([inv for inv in ALL_INVOCATIONS if inv["source"] == "Gem
 
 # 3d. Fleet Usage Ledger (forward, exact: local Ollama/Gemma, OpenRouter, HF)
 fl_day, fl_model, fl_totals, fl_records = parse_fleet_usage()
-print(f"--- Fleet Usage Ledger (Local Ollama/Gemma + OpenRouter + HF) ---")
+print("--- Fleet Usage Ledger (Local Ollama/Gemma + OpenRouter + HF) ---")
 print(f"Invocations tracked: {fl_records} (exact, from each lane's API response)\n")
 hdr_fl = f"{'Day':<12}{'input':>14}{'output':>14}{'cache-read':>16}{'reasoning':>14}"
 print(hdr_fl)
@@ -1570,22 +1570,22 @@ if all_models:
     sub_cost = float(os.environ.get("AI_MONTHLY_SUBSCRIPTION_USD", "0") or 0)
     cache_share = (total_cache_reads / grand_total_tokens * 100) if grand_total_tokens else 0
 
-    print(f"\n======================================================================")
-    print(f"API-EQUIVALENT SHADOW BILL  (hypothetical reference, NOT realized savings)")
-    print(f"======================================================================")
+    print("\n======================================================================")
+    print("API-EQUIVALENT SHADOW BILL  (hypothetical reference, NOT realized savings)")
+    print("======================================================================")
     print(f"Realistic cost (cache-reads billed as cache): ${grand_total_cost:,.2f}")
     print(f"COLD-BOOT cost (no cache, every token fresh): ${grand_total_cold:,.2f}")
     print(f"What caching saved vs cold-boot:              ${grand_total_cold - grand_total_cost:,.2f}")
     if used_estimate:
-        print(f"  ~ = model priced from an estimate, not a first-party doc")
+        print("  ~ = model priced from an estimate, not a first-party doc")
     print(f"Cache-reads as share of all tokens:         {cache_share:.1f}%  "
           f"(billed ~10% of input - why naive math inflates)")
     if sub_cost > 0:
         print(f"Your actual subscription spend:             ${sub_cost:,.2f}")
-    print(f"----------------------------------------------------------------------")
-    print(f"This is the price you DIDN'T pay by using flat-rate plans, not a sum")
-    print(f"you earned. Treat it as a usage gauge, not a savings account.")
-    print(f"======================================================================\n")
+    print("----------------------------------------------------------------------")
+    print("This is the price you DIDN'T pay by using flat-rate plans, not a sum")
+    print("you earned. Treat it as a usage gauge, not a savings account.")
+    print("======================================================================\n")
     
     compute_and_print_split(ALL_INVOCATIONS, "Blended Report")
     print_cache_health_report(ALL_INVOCATIONS)

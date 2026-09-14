@@ -1,5 +1,4 @@
 """Tests for destiny store and wake daemon in NouGen."""
-import pytest
 from nougen_shards import destiny, wake_daemon
 
 
@@ -25,9 +24,9 @@ def test_destiny_crud(tmp_path, monkeypatch):
     assert d_get["goal"] == "Reach production autonomy"
 
     # Link
-    l = destiny.link(d["id"], kind="shard", ref="1:100", role="evidence", note="proof shard")
-    assert len(l["links"]) == 1
-    assert l["links"][0]["ref"] == "1:100"
+    link_res = destiny.link(d["id"], kind="shard", ref="1:100", role="evidence", note="proof shard")
+    assert len(link_res["links"]) == 1
+    assert link_res["links"][0]["ref"] == "1:100"
 
     # Update Status
     up = destiny.update_status(d["id"], "fulfilled", actor="test_runner", evidence="verified")

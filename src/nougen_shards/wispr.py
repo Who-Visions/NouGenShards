@@ -6,11 +6,10 @@ Streams live voice dictation into the NouGen shard memory cluster in real-time.
 from __future__ import annotations
 
 import os
-import sys
 import time
 import sqlite3
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 
 DEFAULT_WIN_PATH = Path(os.environ.get("APPDATA", "")) / "Wispr Flow" / "flow.sqlite"
 DEFAULT_MAC_PATH = Path.home() / "Library" / "Application Support" / "Wispr Flow" / "flow.sqlite"

@@ -5,11 +5,10 @@ Separates HOST, NETWORK PATH, and SERVICE facts according to Relay Directive 202
 """
 
 from enum import Enum
-import os
 import json
 import time
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 
 # Stable Node State Vocabulary (Layer 1: Host State)

@@ -1476,8 +1476,7 @@ def search(req: SearchRequest, response: Response,
 @app.get("/v1/health/local")
 async def local_health():
     """Local vault health check for 3-vault federation peers."""
-    from dataclasses import asdict
-    from nougen_shards.federation.models import VaultId, NodeIdentity
+    from nougen_shards.federation.models import VaultId
     machine_id = os.environ.get("NOUGEN_MACHINE_ID", "local")
     vault_raw = os.environ.get("NOUGEN_VAULT_ID", "whoart").lower()
     instance_id = os.environ.get("NOUGEN_INSTANCE_ID", f"{machine_id}-default")
@@ -2137,7 +2136,7 @@ async def ask_xoah(prompt: str) -> dict:
 
 
 # --- Hardcade Quota Alert Ladder & Telemetry Governor ---
-from nougen_shards.quota_governor import QuotaGovernor, QuotaLevel, DenominatorProvenance, RoutingDirective
+from nougen_shards.quota_governor import QuotaGovernor, DenominatorProvenance
 
 _global_quota_governor = QuotaGovernor()
 

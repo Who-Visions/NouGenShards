@@ -7,7 +7,6 @@ vaulted credentials in ~/.nougen/secrets/ngrok.env.
 from __future__ import annotations
 
 import os
-import sys
 import asyncio
 from pathlib import Path
 from typing import Optional, Dict, Any

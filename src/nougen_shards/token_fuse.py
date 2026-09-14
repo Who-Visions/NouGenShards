@@ -10,7 +10,7 @@ import json
 import time
 import threading
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from dataclasses import dataclass, field, asdict
 
 # Default hard token limits (Env configurable)

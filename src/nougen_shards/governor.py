@@ -9,7 +9,6 @@ Prime Directive:
 "Prompting encourages efficiency. The NouGen Governor enforces it."
 """
 
-import os
 import json
 import time
 import threading
@@ -176,7 +175,7 @@ class TokenHypervisor:
                     "is_killed": self.is_killed,
                     "kill_reason": self.kill_reason,
                     "active_children_count": len(self.active_children),
-                    "active_leases": len([l for l in self.leases.values() if l.active])
+                    "active_leases": len([lease for lease in self.leases.values() if lease.active])
                 }, f, indent=2)
         except Exception:
             pass
@@ -226,7 +225,7 @@ class TokenHypervisor:
                 )
 
             current_used = self.accounting.total_billable_tokens
-            reserved_total = sum(l.tokens_reserved for l in self.leases.values() if l.active)
+            reserved_total = sum(lease.tokens_reserved for lease in self.leases.values() if lease.active)
             remaining_headroom = self.config.hard_tokens - (current_used + reserved_total)
 
             if tokens_requested > remaining_headroom:
@@ -335,8 +334,8 @@ class TokenHypervisor:
         with self._lock:
             self.is_killed = True
             self.kill_reason = reason
-            for l in self.leases.values():
-                l.active = False
+            for lease in self.leases.values():
+                lease.active = False
             self.active_children.clear()
             self._create_checkpoint()
             self._save_state()
