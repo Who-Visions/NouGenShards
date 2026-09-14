@@ -442,7 +442,11 @@ def main():
     for flag, field in (("--session-id", "session_id"),
                         ("--session-title", "session_title"),
                         ("--sender", "original_sender"),
-                        ("--lane", "lane")):
+                        ("--lane", "lane"),
+                        ("--trigger-source", "trigger_source"),
+                        ("--correlation-id", "correlation_id"),
+                        ("--idempotency-key", "idempotency_key"),
+                        ("--reply-to", "reply_to")):
         if flag in args:
             idx = args.index(flag)
             if idx + 1 >= len(args):
