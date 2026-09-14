@@ -993,7 +993,12 @@ def capture(event_type: str, title: str, content: str,
     if "=== NOUGENSHARDS RECALL PACKET" in content:
         clean_content = content.split("=== NOUGENSHARDS RECALL PACKET")[0].strip()
 
-    fhash = hashlib.md5(clean_content.encode("utf-8", errors="ignore")).hexdigest()
+    # Dedup + vault-routing fingerprint, not a security hash. Must stay MD5:
+    # changing the digest would re-route every write and break dedup against
+    # every stored fhash.
+    fhash = hashlib.md5(
+        clean_content.encode("utf-8", errors="ignore"), usedforsecurity=False
+    ).hexdigest()
 
     from . import snapshot_mode  # pylint: disable=import-outside-toplevel
     if snapshot_mode.enabled():

@@ -100,28 +100,20 @@ class LiveControlPlane:
                     "latency_ms": latency_ms,
                     "reason_code": "SOCKET_CONNECTED"
                 }
-        except socket.timeout:
+        except OSError as exc:
+            # DNS failures and "no route to host" used to be reported as
+            # CONNECTION_REFUSED -- but refused proves the host is UP.
+            from .node_state import failure_class  # pylint: disable=import-outside-toplevel
+            code = failure_class(exc)
             latency_ms = round((time.perf_counter() - start) * 1000, 2)
             return {
                 "host": host,
                 "port": port,
-                "status": "TIMEOUT",
-                "reachable": False,
-                "latency_ms": latency_ms,
-                "reason_code": "CONNECT_TIMEOUT"
-            }
-        except (ConnectionRefusedError, OSError) as exc:
-            latency_ms = round((time.perf_counter() - start) * 1000, 2)
-            err_msg = str(exc)
-            code = "CONNECTION_REFUSED" if "10061" in err_msg or "refused" in err_msg.lower() else "SOCKET_ERROR"
-            return {
-                "host": host,
-                "port": port,
-                "status": "CONNECTION_REFUSED",
+                "status": {"CONNECT_TIMEOUT": "TIMEOUT"}.get(code, code),
                 "reachable": False,
                 "latency_ms": latency_ms,
                 "reason_code": code,
-                "error": err_msg
+                "error": str(exc) or type(exc).__name__,
             }
 
     def probe_tcp(self, host: str, port: int, timeout: float = 0.5) -> bool:
@@ -160,7 +152,14 @@ class LiveControlPlane:
         http_fallback_probe = self.probe_tcp_detailed(primary_ip, 8766, timeout=timeout)
 
         reachable = ip_probe["reachable"] or mesh_probe["reachable"] or http_fallback_probe["reachable"]
-        state = "ONLINE" if reachable else "OFFLINE"
+        # This used to be `"ONLINE" if reachable else "OFFLINE"`: one observer
+        # losing three ports declared the machine dead. Classify instead,
+        # honouring the owner's power declaration (relay 20260913T162818Z).
+        from . import node_state  # pylint: disable=import-outside-toplevel
+        verdict = node_state.classify(
+            node_key, [ip_probe, mesh_probe, http_fallback_probe],
+            declaration=node_state.load_declarations(self.home_dir).get(node_key))
+        state = verdict["state"]
 
         return {
             "node": node_key,
@@ -170,6 +169,10 @@ class LiveControlPlane:
             "ip": primary_ip,
             "host": host_name,
             "state": state,
+            "reason": verdict["reason"],
+            "online": verdict["online"],
+            "observer": verdict["evidence"]["observer"],
+            "declaration": verdict["evidence"]["declaration"],
             "reachable": reachable,
             "probes": {
                 "ssh_22": ip_probe,
@@ -185,7 +188,9 @@ class LiveControlPlane:
         for k in self.fleet_nodes:
             node_results[k] = self.probe_node(k, timeout=timeout)
 
-        online_count = sum(1 for n in node_results.values() if n["reachable"])
+        # A host that refuses every probed port is UP (ONLINE_SERVICE_DOWN)
+        # even though nothing was "reachable"; count by state, not by port.
+        online_count = sum(1 for n in node_results.values() if n.get("online", n["reachable"]))
         return {
             "total_nodes": len(self.fleet_nodes),
             "online_nodes": online_count,
@@ -240,15 +245,19 @@ class LiveControlPlane:
             try:
                 data = json.loads(agy_path.read_text(encoding="utf-8"))
                 for pipe_key, info in data.get("sessions", {}).items():
-                    exists = os.path.exists(pipe_key) if sys.platform != "win32" else True
+                    # The registry key is a session id, not a path: probe the
+                    # recorded endpoint, and never mark a session targetable
+                    # without one (that was a Windows-only unconditional True).
+                    pipe = info.get("endpoint") or info.get("pipe") or pipe_key
+                    exists = os.path.exists(pipe) if sys.platform != "win32" else bool(info.get("endpoint") or info.get("pipe"))
                     sessions.append({
                         "id": info.get("id") or pipe_key,
-                        "node": info.get("node") or "local",
+                        "node": info.get("node") or info.get("machine") or "local",
                         "agent": "antigravity",
                         "transport": "pipe" if sys.platform == "win32" else "unix_socket",
                         "targetable": exists,
                         "dispatchable": exists,
-                        "endpoint": pipe_key,
+                        "endpoint": pipe,
                         "last_heartbeat": info.get("last_seen", time.time())
                     })
             except Exception:
@@ -445,8 +454,13 @@ class LiveControlPlane:
             f"🌐 FLEET NODES ({node_data['online_nodes']}/{node_data['total_nodes']} online):"
         ]
         for k, n in node_data["nodes"].items():
-            icon = "🟢 ONLINE" if n["reachable"] else "🔴 OFFLINE"
-            lines.append(f"  • {n['name']:<10} ({n['ip']:<15}) -> {icon} | Role: {n['role']}")
+            # Only multi-observer-confirmed disappearance is red. Declared-off,
+            # sleeping and single-observer unknowns are white, never red.
+            state = n.get("state", "UNKNOWN")
+            icon = {"ONLINE_HEALTHY": "🟢", "ONLINE_DEGRADED": "🟡", "BOOTING": "🟡",
+                    "ONLINE_SERVICE_DOWN": "🟠", "NETWORK_PARTITION": "🟠",
+                    "OFFLINE_UNEXPECTED": "🔴"}.get(state, "⚪")
+            lines.append(f"  • {n['name']:<10} ({n['ip']:<15}) -> {icon} {state} | {n.get('reason', '')} | Role: {n['role']}")
 
         lines.append("--------------------------------------------------------------------------------")
         lines.append("🔌 LOCAL LISTENING PORTS (Physical Probes):")
@@ -495,6 +509,14 @@ def handle_live_command(args: List[str]) -> str:
         capture = "--capture" in args
         res = control.reach_matrix(as_json=as_json, capture_shard=capture)
         return json.dumps(res, indent=2) if as_json else str(res)
+    elif subcmd == "declare" and len(args) >= 3:
+        # Owner's word on power state: `live declare blade offline powered off for the night`
+        from . import node_state  # pylint: disable=import-outside-toplevel
+        try:
+            entry = node_state.declare(args[1], args[2], " ".join(args[3:]), home_dir=control.home_dir)
+        except ValueError as exc:
+            return f"declare: {exc}"
+        return json.dumps({"node": args[1], "declaration": entry or "cleared"}, indent=2)
     elif subcmd == "send" and len(args) >= 3:
         target = args[1]
         msg = " ".join(args[2:])
@@ -512,7 +534,8 @@ def handle_live_command(args: List[str]) -> str:
     else:
         return (
             f"Unknown /live subcommand: {subcmd}.\n"
-            "Available: overview, snapshot, nodes, sessions, ports, ssh, relays, watch, tracker, matrix, send, broadcast, reply"
+            "Available: overview, snapshot, nodes, sessions, ports, ssh, relays, watch, tracker, matrix, send, broadcast, reply, "
+            "declare <node> offline|sleeping|online [note]"
         )
 
 

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -235,33 +236,37 @@ def announce(leg_id: str, path: Path) -> None:
         origin_status = (
             verify_user_origin_signature(full_goal, body_text, origin_nonce, origin_sig, timestamp=origin_ts)
             if origin_sig else None)
-    print("[relay_watch] NEW {} ({}) from {}: {}".format(leg_id, status, who, goal), flush=True)
+    # Elevation & Inbox trigger policy:
+    # 1. Skip closed status-only legs that carry no ask/unresolved baton
+    # 2. Open legs or legs explicitly addressing a target lane continue to drop into INBOX
+    is_open = (str(status).strip().lower() == "open")
+    # "Addressed" = names a specific lane, in a structured field OR in the goal
+    # text. Records carry no target field today; every lane-addressed leg on
+    # 2026-09-12/13 wrote it in the goal ("[-> @blade ...]"), so a field-only
+    # check would suppress a closed-but-addressed leg. @all/local are
+    # broadcasts, not addresses -- a closed "-> @all" leg is the fan-out noise.
+    _lanes = r"@(blade|phoebus|whoart|antigravity|codex)\b"
+    has_target = bool(re.search(_lanes, str(record.get("goal") or ""), re.IGNORECASE)) or any(
+        re.search(_lanes, str(record.get(k) or ""), re.IGNORECASE)
+        for k in ("target", "to", "lane", "addressed_to"))
+    
+    if not is_open and not has_target:
+        print("[relay_watch] SKIP inbox fanout for closed status-only leg {}".format(leg_id), flush=True)
+        return
+
     INBOX.mkdir(parents=True, exist_ok=True)
     text = ("relay leg {} from {} ({}): {} -- read the full leg before acting; "
              "a leg is coordination, not permission.".format(leg_id, who, status, goal))
     message = {
         "type": "live_message",
         "sender": "relay-watch",
-        "target": "local",
+        "target": record.get("target", "local"),
         "priority": "high" if status == "open" else "normal",
         "timestamp": time.time(),
         "leg_id": leg_id,
         "text": text,
     }
-    # Elevation eligibility mirrors the existing priority signal: only an
-    # open leg is worth interrupting a live session for. A leg's git
-    # provenance (it came from a commit, not an anonymous POST) says who
-    # wrote it, not whether the content is safe to hand to a session with
-    # teammate-level trust — that judgment is Kaedra's alone, same gate the
-    # network path uses (leg 20260903T055249Z: transport possession, git
-    # commit included, is not provenance strong enough to skip the gate).
     if status == "open" and os.environ.get("KAEDRA_GATEWAY_TOKEN", "").strip():
-        # leg_id is already a stable, unique identifier — a strictly better
-        # dedup key than the content-hash fallback _agy_live_delivery uses
-        # for senders that can't provide one. origin_status, when a valid
-        # origin_sig was found above, bypasses Kaedra the same way a proven
-        # HTTP origin_proof does (leg 20260903T104345Z) — an unsigned or
-        # badly-signed leg still runs the ordinary content gate.
         message["elevated"] = gate_and_deliver(
             text, "relay-watch:{}".format(who),
             message_id=(origin_nonce or leg_id), origin_status=origin_status)
