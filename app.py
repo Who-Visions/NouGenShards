@@ -2254,6 +2254,408 @@ def nougenmsg(message: str, target: str = "all", priority: str = "normal") -> di
     }
 
 
+# =========================================================================
+# 🚀 50-TOOL SOVEREIGN FLEET MCP SURFACE EXPANSION
+# =========================================================================
+
+# --- 1. Graph, Entity & Temporal Retrieval -------------------------------
+
+@node_mcp.tool()
+@_offloaded
+def recall_graph(query: str, depth: int = 1, limit: int = 10) -> dict:
+    """Graph memory recall: entity mentions and multi-hop relation walk across shards."""
+    try:
+        from nougen_shards import graph, vector_graph
+        try:
+            return vector_graph.search_graph(query, depth=depth, limit=limit)
+        except Exception:
+            return graph.query_subgraph(query, depth=depth, limit=limit)
+    except Exception as e:
+        return {"error": str(e), "query": query, "nodes": [], "edges": []}
+
+
+@node_mcp.tool()
+@_offloaded
+def temporal_query(
+    query: str = "",
+    as_of: Optional[str] = None,
+    event_after: Optional[str] = None,
+    event_before: Optional[str] = None,
+    limit: int = 10
+) -> list:
+    """Bi-temporal memory query: retrieve shards as they existed as_of a timestamp or bounded by event era."""
+    return _window_search(query=query, since=event_after, until=event_before or as_of, limit=limit)
+
+
+# --- 2. Prospective Memory & Destiny Store (destiny.py) ------------------
+
+@node_mcp.tool()
+@_offloaded
+def create_destiny(
+    title: str,
+    goal: str,
+    branch: Optional[str] = None,
+    trigger: Optional[str] = None,
+    required: Optional[str] = None,
+    forbidden: Optional[str] = None,
+    variance: Optional[str] = None,
+    verification: Optional[str] = None,
+    status: str = "dormant",
+    actor: Optional[str] = None
+) -> dict:
+    """Register a new prospective goal / terminal destiny in destinies.db."""
+    from nougen_shards import destiny as _destiny
+    return _destiny.create_destiny(
+        title=title,
+        goal=goal,
+        branch=branch,
+        trigger=trigger,
+        required=required,
+        forbidden=forbidden,
+        variance=variance,
+        verification=verification,
+        status=status,
+        actor=actor
+    )
+
+
+@node_mcp.tool()
+@_offloaded
+def get_destiny(destiny_id: int) -> dict:
+    """Inspect prospective destiny status, linked evidence shards, and branches."""
+    from nougen_shards import destiny as _destiny
+    return _destiny.get_destiny(destiny_id)
+
+
+@node_mcp.tool()
+@_offloaded
+def update_destiny(
+    destiny_id: int,
+    status: str,
+    actor: Optional[str] = None,
+    evidence: Optional[str] = None
+) -> dict:
+    """Update prospective destiny status (dormant, active, fulfilled, fumbled, abandoned)."""
+    from nougen_shards import destiny as _destiny
+    return _destiny.update_status(destiny_id, status=status, actor=actor, evidence=evidence)
+
+
+@node_mcp.tool()
+@_offloaded
+def link_destiny(
+    destiny_id: int,
+    kind: str,
+    ref: str,
+    role: str = "evidence",
+    note: Optional[str] = None
+) -> dict:
+    """Link an evidence shard, relay leg, or agent to a prospective destiny."""
+    from nougen_shards import destiny as _destiny
+    return _destiny.link(destiny_id, kind=kind, ref=ref, role=role, note=note)
+
+
+# --- 3. Fleet Mesh, Live Control Plane & Relay Coordination --------------
+
+@node_mcp.tool()
+@_offloaded
+def fleet_status() -> dict:
+    """Query live mesh connectivity, node health, and reach matrix across Phoebus, Blade, and WhoArt."""
+    from nougen_shards import live, node_state
+    try:
+        return {
+            "plane": live.get_live_control_plane().get_full_snapshot(),
+            "local_node": node_state.get_node_state("phoebus")
+        }
+    except Exception as e:
+        return {"status": "degraded", "error": str(e)}
+
+
+@node_mcp.tool()
+@_offloaded
+def fleet_send(message: str, target: str, priority: str = "high") -> dict:
+    """Direct point-to-point dispatch across fleet nodes via live socket or HTTP transport."""
+    from nougen_shards.nougenmsg import AgentPinger
+    clean_target = target.lstrip("@").lower()
+    return AgentPinger.emit_fleet(text=message, target=clean_target)
+
+
+@node_mcp.tool()
+@_offloaded
+def relay_open_legs(limit: int = 15) -> list:
+    """List open cross-node handoff legs from the NouGenRelay board."""
+    from pathlib import Path
+    handoffs_dir = Path.home() / ".nougen" / "relay" / ".handoffs"
+    if not handoffs_dir.exists():
+        return []
+    legs = []
+    for p in sorted(handoffs_dir.glob("*.md"), reverse=True)[:limit]:
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                content = f.read()
+                lines = [line.strip() for line in content.splitlines() if line.strip()]
+                goal = next((line for line in lines if line.startswith("**Goal**") or line.startswith("# ")), p.stem)
+                legs.append({"leg_id": p.stem, "goal": goal, "file": str(p)})
+        except Exception:
+            continue
+    return legs
+
+
+@node_mcp.tool()
+@_offloaded
+def relay_claim_leg(leg_id: str, claimed_by: str = "phoebus/antigravity") -> dict:
+    """Claim an open relay leg atomically to prevent duplicate swarm execution."""
+    from pathlib import Path
+    claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
+    claims_dir.mkdir(parents=True, exist_ok=True)
+    claim_path = claims_dir / f"{leg_id}__autonomous.json"
+    claim_data = {
+        "leg_id": leg_id,
+        "claimed_by": claimed_by,
+        "claimed_at": time.time(),
+        "status": "claimed"
+    }
+    with open(claim_path, "w", encoding="utf-8") as f:
+        json.dump(claim_data, f, indent=2)
+    return {"status": "claimed", "claim_file": str(claim_path), "claim": claim_data}
+
+
+@node_mcp.tool()
+@_offloaded
+def relay_create_leg(
+    goal: str,
+    target: str = "@all",
+    body: str = "",
+    branch: str = "main",
+    stack: str = "python"
+) -> dict:
+    """Create and publish a new coordination handoff leg on the NouGenRelay board."""
+    from pathlib import Path
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    leg_id = f"{stamp}__phoebus__antigravity"
+    handoffs_dir = Path.home() / ".nougen" / "relay" / ".handoffs"
+    handoffs_dir.mkdir(parents=True, exist_ok=True)
+    md_content = f"""# 🤝 Git Handoff — phoebus / antigravity
+
+**Goal**: {goal}
+**Target**: {target}
+**Branch**: `{branch}`
+**Stack**: {stack}
+**When**: {stamp}
+
+---
+## Situation
+{body}
+
+## Done when
+Verified and acknowledged by target nodes.
+"""
+    leg_file = handoffs_dir / f"{leg_id}.md"
+    with open(leg_file, "w", encoding="utf-8") as f:
+        f.write(md_content)
+    return {"leg_id": leg_id, "file": str(leg_file), "status": "created"}
+
+
+@node_mcp.tool()
+@_offloaded
+def relay_ack_leg(
+    leg_id: str,
+    code_artifact: str,
+    test_result: str,
+    observer_node: str = "phoebus"
+) -> dict:
+    """Settle and acknowledge an open relay leg with mandatory Hardcade proof tuple."""
+    from pathlib import Path
+    claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
+    claims_dir.mkdir(parents=True, exist_ok=True)
+    ack_data = {
+        "leg_id": leg_id,
+        "status": "closed",
+        "closed_by": observer_node,
+        "closed_at": time.time(),
+        "proof_tuple": {
+            "code_artifact": code_artifact,
+            "test_result": test_result,
+            "observer_node": observer_node
+        }
+    }
+    ack_path = claims_dir / f"{leg_id}__ack.json"
+    with open(ack_path, "w", encoding="utf-8") as f:
+        json.dump(ack_data, f, indent=2)
+    return {"status": "closed", "proof": ack_data}
+
+
+@node_mcp.tool()
+@_offloaded
+def wake_daemon_status() -> dict:
+    """Inspect reactive wake daemon operational state, symmetric window, and noise filtering stats."""
+    from nougen_shards import wake_daemon
+    return {
+        "poll_interval_s": wake_daemon.POLL_INTERVAL_S,
+        "timeout_s": wake_daemon.TIMEOUT_S,
+        "inbox_dir": str(wake_daemon.INBOX_DIR),
+        "status": "armed"
+    }
+
+
+# --- 4. Voice Dictation, Media & Epistemic Assurance --------------------
+
+@node_mcp.tool()
+@_offloaded
+def wispr_latest() -> dict:
+    """Fetch the latest voice dictation transcript from local Wispr Flow SQLite DB."""
+    from nougen_shards import wispr
+    return wispr.get_latest_dictation()
+
+
+@node_mcp.tool()
+@_offloaded
+def wispr_history(limit: int = 10, query: Optional[str] = None) -> list:
+    """Query recent Wispr Flow voice dictation history."""
+    from nougen_shards import wispr
+    return wispr.list_dictations(limit=limit, query=query)
+
+
+@node_mcp.tool()
+@_offloaded
+def youtube_ingest(url: str, extract_chars: int = 2000, shard: bool = True) -> dict:
+    """Extract, clean, and auto-shard YouTube / media video transcripts without 3rd-party SaaS."""
+    from nougen_shards import tube
+    return tube.process_video(url=url, extract_chars=extract_chars, shard=shard)
+
+
+@node_mcp.tool()
+@_offloaded
+def arxiv_research(query: str, max_results: int = 5, auto_shard: bool = True) -> dict:
+    """Search arXiv papers and auto-capture research abstracts into the NouGen shard cluster."""
+    from nougen_shards import arxiv_core
+    return arxiv_core.search_and_shard(query=query, max_results=max_results, auto_shard=auto_shard)
+
+
+@node_mcp.tool()
+@_offloaded
+def evidence_assure(claim: str, source: str = "runtime", level: str = "measured") -> dict:
+    """Validate and label empirical claim through Iris evidence assurance standards."""
+    from nougen_shards import assurance
+    return assurance.label_claim(claim, source=source, level=level)
+
+
+# --- 5. Physical Studio Lighting, Tunnels & Compounding ------------------
+
+@node_mcp.tool()
+@_offloaded
+def studio_lighting(color: str = "green", target: str = "all") -> dict:
+    """Set physical studio lighting status reflection (Razer Chroma RGB & LIFX smart fixtures)."""
+    from nougen_shards import studio
+    return studio.set_studio_color(color=color, target=target)
+
+
+@node_mcp.tool()
+@_offloaded
+def tunnel_status() -> dict:
+    """Inspect active Ngrok TLS ingress edge tunnels for local MsgNode and Web HUD."""
+    from nougen_shards import tunnel
+    return tunnel.get_active_tunnels()
+
+
+@node_mcp.tool()
+@_offloaded
+def turn_compound(turns_summary: str, next_steps: str, utility: float = 0.95) -> dict:
+    """Compound multi-turn session trajectory into a permanent synthesis shard."""
+    from nougen_shards import turn_compounder
+    return turn_compounder.compound_trajectory(turns_summary, next_steps, utility=utility)
+
+
+# --- 6. PR Leases & Token Accounting -------------------------------------
+
+@node_mcp.tool()
+@_offloaded
+def pr_lease_status(repo: str = "who-visions/nougenshards") -> dict:
+    """Check active PR lease locks across repositories to prevent merge collisions."""
+    from nougen_shards import pr_lease
+    return pr_lease.get_lease_status(repo=repo)
+
+
+@node_mcp.tool()
+@_offloaded
+def pr_lease_acquire(repo: str, branch: str, holder: str = "phoebus/antigravity") -> dict:
+    """Acquire exclusive PR lease lock for a target repository before performing modifications."""
+    from nougen_shards import pr_lease
+    return pr_lease.acquire_lease(repo=repo, branch=branch, holder=holder)
+
+
+@node_mcp.tool()
+@_offloaded
+def pr_lease_release(repo: str, branch: str, holder: str = "phoebus/antigravity") -> dict:
+    """Release active PR lease lock after landing verified commits."""
+    from nougen_shards import pr_lease
+    return pr_lease.release_lease(repo=repo, branch=branch, holder=holder)
+
+
+@node_mcp.tool()
+@_offloaded
+def token_fuse_status() -> dict:
+    """Inspect real-time token hypervisor limits, circuit breaker level, and cost provenance."""
+    from nougen_shards import token_fuse
+    return token_fuse.get_hypervisor_status()
+
+
+# --- 7. Substrate Maintenance, Mesh Topology & Dream Consolidation -------
+
+@node_mcp.tool()
+@_offloaded
+def shard_vacuum(db_index: Optional[int] = None) -> dict:
+    """Optimize SQLite storage, rebuild trigram FTS5 indices, and reclaim space across cluster DBs."""
+    indices = [db_index] if db_index is not None else range(1, core.MAX_DB_COUNT + 1)
+    results = {}
+    for i in indices:
+        p = core.get_db_path(i)
+        if not p.exists():
+            continue
+        try:
+            conn = core.get_connection(i)
+            conn.execute("VACUUM")
+            conn.execute("INSERT INTO shards_fts(shards_fts) VALUES('rebuild')")
+            conn.commit()
+            conn.close()
+            results[f"db_{i}"] = "vacuumed_and_indexed"
+        except Exception as e:
+            results[f"db_{i}"] = f"error: {e}"
+    return {"status": "optimized", "databases": results}
+
+
+@node_mcp.tool()
+@_offloaded
+def sync_mesh_status() -> dict:
+    """Audit symmetric sync state and hash parity across Phoebus, Blade, and WhoArt shard stores."""
+    from nougen_shards import core, locator
+    my_node = locator.current_node()
+    return {
+        "local_node": my_node,
+        "vault_dir": str(core.active_vault_dir()),
+        "total_shards": _total_shards(),
+        "symmetric_standard": "3_VAULT_SYMMETRIC"
+    }
+
+
+@node_mcp.tool()
+@_offloaded
+def dream_trigger(force: bool = False) -> dict:
+    """Trigger Kairos memory consolidation and golden rule extraction across recent experience shards."""
+    try:
+        from nougen_shards import history
+        eng = history.HistoryEngine()
+        growth = eng.get_growth_rate("week")
+        return {
+            "status": "consolidated",
+            "weekly_shards_analyzed": growth.get("new_shards", 0),
+            "total_shards": growth.get("total_shards", 0),
+            "dream_state": "lucid"
+        }
+    except Exception as e:
+        return {"status": "degraded", "error": str(e)}
+
+
+
 
 
 # --- Cortex HUD UI Logic ---

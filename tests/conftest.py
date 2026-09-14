@@ -32,6 +32,8 @@ def isolated_secrets_vault(tmp_path_factory, monkeypatch):
     # real vault. Force it off; tests that are ABOUT the probe chain re-enable
     # it against a fabricated home (see test_vault_discovery.py).
     monkeypatch.setenv(keymaker.ENV_VAULT_PROBE, "0")
+    # Isolate tenant registry so tests do not pick up host ~/.nougen/tenants.json
+    monkeypatch.setenv("NOUGEN_TENANTS_FILE", str(vault / "nonexistent_tenants.json"))
     yield vault
 
 
