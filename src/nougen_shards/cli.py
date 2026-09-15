@@ -1857,6 +1857,21 @@ def get_parser():
     p_brain.add_argument("--json", action="store_true", help="Machine-readable output")
 
     # add_help=False: `-h/--help` must reach the relay engine, not stop here.
+    p_hi = subparsers.add_parser("hi", help="Session-open probe: identity, fleet pulse, open handoffs")
+    p_hi.add_argument("--no-fleet", action="store_true", help="Skip SSH pulse to peer nodes")
+    p_hi.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_bye = subparsers.add_parser("bye", help="Session-close probe: dirty sweep + handoff + primer")
+    p_bye.add_argument("--agent", "-a", default=None, help="Agent type for the handoff")
+    p_bye.add_argument("--goal", "-g", default=None, help="Goal for the handoff")
+    p_bye.add_argument("--summary", "-m", default="", help="Session summary for the handoff")
+    p_bye.add_argument("--dry-run", action="store_true", help="Preview without writing a handoff")
+    p_bye.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_hijack = subparsers.add_parser("hijack", help="Repoint a foreign/legacy handoff record onto this node")
+    p_hijack.add_argument("--id", dest="handoff_id", required=True, help="Handoff id to hijack")
+    p_hijack.add_argument("--agent", "-a", default=None, help="Agent to record as the hijacker")
+
     p_relay = subparsers.add_parser(
         "relay", add_help=False,
         help="Fleet relay board (NouGenRelay): open | read | ack | create | claim ...",
@@ -2781,6 +2796,56 @@ def cmd_tunnel(args):
         sys.exit(1)
 
 
+def cmd_hi(args):
+    from . import session_probe
+    import json as _json
+    report = session_probe.run_hi(fleet=not args.no_fleet)
+    if getattr(args, "json", False):
+        print(_json.dumps(report.__dict__, default=str, indent=2))
+        return
+    print(f"🌅 hi — {report.identity.get('host', 'unknown')} ({report.identity.get('machine_id', '?')})")
+    print(f"  Open handoffs: {report.open_handoffs}")
+    if report.latest_goal:
+        print(f"  Latest goal: {report.latest_goal}")
+    if report.fleet_pulse:
+        pulse = ", ".join(f"{h}:{'up' if ok else 'down'}" for h, ok in report.fleet_pulse.items())
+        print(f"  Fleet pulse: {pulse}")
+    if report.orphan_ports:
+        print(f"  Ports already up: {', '.join(f'{p} ({l})' for p, l in report.orphan_ports)}")
+
+
+def cmd_bye(args):
+    from . import session_probe
+    import json as _json
+    report = session_probe.run_bye(
+        agent=args.agent, goal=args.goal, summary=args.summary, dry_run=args.dry_run,
+    )
+    if getattr(args, "json", False):
+        print(_json.dumps(report.__dict__, default=str, indent=2))
+        return
+    print(f"🌙 bye — {report.total_dirty} dirty file(s), {report.total_unpushed} unpushed commit(s)")
+    for r in report.repos:
+        if r["dirty"] or r["unpushed"]:
+            print(f"  📁 {r['repo']} ({r['branch']}) — {r['dirty']} dirty, {r['unpushed']} unpushed")
+    if report.orphan_ports:
+        print(f"  Ports still up: {', '.join(f'{p} ({l})' for p, l in report.orphan_ports)}")
+    if report.handoff_path:
+        print(f"  ✅ Handoff written: {report.handoff_path}")
+    elif args.dry_run:
+        print("  [DRY RUN] No handoff written")
+    print(f"  Primer: {report.primer}")
+
+
+def cmd_hijack(args):
+    from . import session_probe
+    result = session_probe.run_hijack(handoff_id=args.handoff_id, agent=args.agent)
+    if result.get("ok"):
+        print(f"✅ Hijacked {result['id']} -> {result['identity'].get('host')} ({result['identity'].get('id')})")
+    else:
+        print(f"❌ {result.get('error')}")
+        sys.exit(1)
+
+
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
@@ -2804,6 +2869,7 @@ def main():
         "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
+        "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
