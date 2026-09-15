@@ -554,17 +554,42 @@ def _ollama_url() -> str:
     return raw
 
 
+_MODEL_PREFERENCE = ("e2b", "e4b", "gemma", "llama", "qwen", "phi")   # smallest local first
+
+
+def _pick_model(available: Iterable[str], preferred: str = "", *, allow_cloud: bool = False) -> str:
+    """Pure: choose a classifier model from what the daemon actually serves. An explicit preferred
+    name wins if present; otherwise the first tag matching the preference order; cloud tags
+    (name contains '-cloud') are skipped unless allowed, because member text must stay local."""
+    names = sorted(n for n in available if n and (allow_cloud or "-cloud" not in n))
+    if preferred and preferred in names:
+        return preferred
+    for hint in _MODEL_PREFERENCE:
+        for n in names:
+            if hint in n.lower():
+                return n
+    return names[0] if names else ""
+
+
 def _default_ask(prompt: str) -> str:
-    """Free local lane: ollama /api/generate. Model and timeout from env, fallbacks logged."""
+    """Free local lane: ollama /api/generate. The model is discovered from /api/tags at call time
+    (env NOUGEN_PERSONA_CLASSIFY_MODEL preferred when served); timeout from env, fallback logged."""
     import urllib.request
-    model = os.environ.get("NOUGEN_PERSONA_CLASSIFY_MODEL", "").strip()
-    if not model:
-        model = "gemma4:e4b"
-        _log.debug("NOUGEN_PERSONA_CLASSIFY_MODEL unset; using fallback %s", model)
+    base = _ollama_url()
     timeout = _env_float("NOUGEN_PERSONA_CLASSIFY_TIMEOUT_S", 20.0)
+    with urllib.request.urlopen(base + "/api/tags", timeout=timeout) as r:
+        served = [m.get("name", "") for m in json.load(r).get("models", [])]
+    preferred = os.environ.get("NOUGEN_PERSONA_CLASSIFY_MODEL", "").strip()
+    model = _pick_model(served, preferred, allow_cloud=os.environ.get("NOUGEN_PERSONA_ALLOW_CLOUD", "") == "1")
+    if not model:
+        raise RuntimeError("ollama serves no usable local model")
+    if preferred and model != preferred:
+        _log.warning("NOUGEN_PERSONA_CLASSIFY_MODEL=%r not served; using discovered %r", preferred, model)
+    else:
+        _log.debug("persona classifier model resolved to %r (probe)", model)
     body = json.dumps({"model": model, "prompt": prompt, "stream": False,
                        "options": {"temperature": 0}}).encode()
-    req = urllib.request.Request(_ollama_url() + "/api/generate", data=body,
+    req = urllib.request.Request(base + "/api/generate", data=body,
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r).get("response", "")
@@ -610,7 +635,7 @@ def smart_classify(text: str, registry_path: Optional[Path] = None, *, ask=None,
     try:
         raw = (ask or _default_ask)(prompt)
     except Exception as e:                     # unreachable lane, timeout, bad JSON: degrade, never raise
-        _log.warning("persona model fallback unavailable (%s); keeping lexical answer", e.__class__.__name__)
+        _log.warning("persona model fallback unavailable (%s: %s); keeping lexical answer", e.__class__.__name__, str(e)[:120])
         ib.source = "lexical-lowconf"
         return ib
     aud, lang = _parse_model_pick(raw, keys)
