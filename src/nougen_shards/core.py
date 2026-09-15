@@ -875,9 +875,13 @@ def _embed_query(query: str) -> Optional[np.ndarray]:
         # idle period pays ollama's model (re)load, and a cold-load miss here
         # silently degrades every recall to keyword-only.
         timeout = float(os.environ.get("NOUGEN_QUERY_EMBED_TIMEOUT",
-                                       os.environ.get("NOUGEN_EMBED_TIMEOUT", "3.0")))
+                                       os.environ.get("NOUGEN_EMBED_TIMEOUT", "6.0")))
     except ValueError:
-        timeout = 3.0
+        # A cold nomic-embed-text load measured 2.6 s on an idle GPU on
+        # WhoArt (2026-09-14); under GPU contention it passed 3 s, so 3.0
+        # quietly turned most recalls keyword-only. A down ollama refuses the
+        # connection at once, so only a hung one ever waits the full budget.
+        timeout = 6.0
     try:
         from .embedding_backfill import embed as _embed  # local import: optional dep path
         vec = _embed((query or "")[:4000], model, timeout=timeout)

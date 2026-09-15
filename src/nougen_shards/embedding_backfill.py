@@ -44,6 +44,20 @@ def _normalize_host(h: str) -> str:
 
 
 OLLAMA_HOST = _normalize_host(os.environ.get("OLLAMA_HOST"))
+
+
+def _keep_alive():
+    """How long ollama keeps the embedder loaded after a request.
+
+    Without it ollama evicts the model after its 5-minute default, so nearly
+    every recall after a quiet stretch paid a cold load (2.6 s measured on an
+    idle GPU on WhoArt, 2026-09-14) and blew the query-embedding timeout,
+    silently degrading recall to keyword-only. nomic-embed-text is ~320 MB of
+    VRAM, cheap to keep resident. NOUGEN_EMBED_KEEP_ALIVE takes an ollama
+    duration ("30m", "2h") or seconds as an integer ("-1" pins it forever).
+    """
+    raw = os.environ.get("NOUGEN_EMBED_KEEP_ALIVE", "30m").strip() or "30m"
+    return int(raw) if raw.lstrip("-").isdigit() else raw
 VRAM_CEILING_MIB = int(os.environ.get("NOUGEN_VRAM_CEILING", "6800"))  # pause above this
 VRAM_CHECK_EVERY = int(os.environ.get("NOUGEN_VRAM_CHECK_EVERY", "64"))  # rows between probes
 
@@ -62,7 +76,7 @@ def _vram_used_mib() -> Optional[int]:
 
 def embed(text: str, model: str, timeout: float = 60.0) -> Optional[List[float]]:
     """Single embedding via ollama /api/embed. Returns None on failure."""
-    body = json.dumps({"model": model, "input": text}).encode("utf-8")
+    body = json.dumps({"model": model, "input": text, "keep_alive": _keep_alive()}).encode("utf-8")
     req = urllib.request.Request(
         f"{OLLAMA_HOST}/api/embed", data=body,
         headers={"Content-Type": "application/json"},
@@ -89,7 +103,7 @@ def embed_many(texts: List[str], model: str, timeout: float = 180.0) -> Optional
     Returns None on failure so the caller can fall back to per-text embedding
     rather than dropping the whole batch.
     """
-    body = json.dumps({"model": model, "input": texts}).encode("utf-8")
+    body = json.dumps({"model": model, "input": texts, "keep_alive": _keep_alive()}).encode("utf-8")
     req = urllib.request.Request(
         f"{OLLAMA_HOST}/api/embed", data=body,
         headers={"Content-Type": "application/json"},
