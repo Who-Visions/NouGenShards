@@ -1,9 +1,12 @@
+import ctypes
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -93,6 +96,39 @@ class CodexPipeTests(unittest.TestCase):
                                    'text': 'body', 'timestamp': 0}, 'thread', 'native_ipc')
         self.assertIn('whoart___false_header', result)
         self.assertNotIn('\n> false header', result)
+
+
+@unittest.skipUnless(sys.platform == 'win32', 'named pipe is Windows-only')
+class CodexPipeServeSurvivesBadConnectsTests(unittest.TestCase):
+    """Regression for the WinError 2 fleet bug: a client that drops mid-connect must not
+    take the whole receiver down with it (see relay leg 20260915T033332Z)."""
+
+    def setUp(self):
+        self.thread_id = '00000000-0000-4000-8000-000000000000'
+        # sys.executable (python.exe) only needs to satisfy serve()'s is_file()/.exe check;
+        # the "queue" subprocess call is never exercised by the assertions below.
+        server = threading.Thread(target=codex_pipe.serve, args=(self.thread_id, sys.executable), daemon=True)
+        server.start()
+        for _ in range(50):
+            try:
+                if codex_pipe.request({'op': 'status'})['status'] == 'listening':
+                    break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            self.fail('receiver never reported listening')
+
+    def test_dropped_connect_does_not_kill_the_receiver(self):
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        GENERIC_READ, GENERIC_WRITE, OPEN_EXISTING = 0x80000000, 0x40000000, 3
+        handle = kernel.CreateFileW(codex_pipe.PIPE, GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING, 0, None)
+        self.assertNotEqual(handle, -1, 'could not open the pipe to simulate a dropped client')
+        kernel.CloseHandle(handle)  # connect, then vanish with no data -- never send/receive
+        time.sleep(0.3)
+
+        result = codex_pipe.request({'op': 'status'})
+        self.assertEqual(result['status'], 'listening')
+        self.assertEqual(result['thread'], self.thread_id)
 
 
 if __name__ == '__main__':

@@ -29,8 +29,20 @@ if ($pipeStatus) {
     $pipeStatus | Format-List
     return
 }
-$pipeCodex = Join-Path $env:APPDATA 'npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
-if (-not (Test-Path -LiteralPath $pipeCodex)) { throw "Native Codex executable missing: $pipeCodex" }
+# The npm global root moves with the active Node install (nvm-windows switches it), so it is a
+# runtime probe, not a hardcoded path (Rule 0.2). NOUGEN_CODEX_EXE overrides outright; otherwise
+# ask npm, then fall back to the legacy %APPDATA%\npm location for a pre-nvm install.
+$pipeVendorSuffix = 'node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
+$pipeCodex = if ($env:NOUGEN_CODEX_EXE -and (Test-Path -LiteralPath $env:NOUGEN_CODEX_EXE)) {
+    $env:NOUGEN_CODEX_EXE
+} else {
+    $pipeNpmRoot = try { (& npm root -g 2>$null | Select-Object -First 1).Trim() } catch { $null }
+    $pipeCandidates = @()
+    if ($pipeNpmRoot) { $pipeCandidates += (Join-Path (Split-Path $pipeNpmRoot -Parent) $pipeVendorSuffix) }
+    $pipeCandidates += (Join-Path $env:APPDATA "npm\$pipeVendorSuffix")
+    $pipeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
+if (-not $pipeCodex) { throw "Native Codex executable not found (checked npm root -g and the legacy %APPDATA%\npm path; set NOUGEN_CODEX_EXE to override)" }
 $pipeLogs = Join-Path $env:USERPROFILE '.nougen\logs'
 New-Item -ItemType Directory -Path $pipeLogs -Force | Out-Null
 $pipeArguments = @(('"' + $pipeScript + '"'), 'serve', '--thread', $Thread, '--executable', ('"' + $pipeCodex + '"'))
