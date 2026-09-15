@@ -16,7 +16,20 @@ setlocal
 set "NGS_PORT=4445"
 set "NGS_ROOT=%~dp0.."
 pushd "%NGS_ROOT%" || exit /b 1
-rem Keep the runtime copy in .nougen synchronized with the checked-in source.
+rem Keep the runtime copy synchronized with the checked-in source, at
+rem whatever NOUGEN_HOME the machine already has configured. This used to
+rem hardcode NOUGEN_HOME to %USERPROFILE%\.nougen unconditionally, clobbering
+rem this machine's real (persistent User env var) NOUGEN_HOME of
+rem C:\Users\super\Watchtower\NouGen for the duration of this script. The
+rem sync target (install_grid_supervisor.ps1, same default) followed the
+rem override too, but the two runs never happened at the same moment, so the
+rem override path (~\.nougen\bin\start_grid.py) silently forked from the
+rem synced one and drifted until it threw NameError on import and the
+rem --watch loop died at every boot with no visible failure (2026-09-14,
+rem heartbeat stuck since 2026-09-13T22:34Z). Only fall back to
+rem %USERPROFILE%\.nougen when NOUGEN_HOME is genuinely unset, per Rule 0.2
+rem (env > config > logged fallback, never override a configured value).
+if not defined NOUGEN_HOME set "NOUGEN_HOME=%USERPROFILE%\.nougen"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools\install_grid_supervisor.ps1"
 if errorlevel 1 (
   popd
@@ -28,7 +41,6 @@ rem watcher from starting, so it is swallowed, not fatal like the step above. Th
 rem NOUGEN_NGS_TASK_RETRIGGER_MINS (default 15) forever, so only failures are logged -- a
 rem success line appended on every re-trigger would grow the log without bound.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools\install_ngs_node_task.ps1" 1>nul 2>>"%USERPROFILE%\.nougen\logs\ngs_node_task_install.log"
-set "NOUGEN_HOME=%USERPROFILE%\.nougen"
 set "NGS_REPO=%NGS_ROOT%"
 set "PYTHONW=%LocalAppData%\Programs\Python\Python311\pythonw.exe"
 if not exist "%PYTHONW%" set "PYTHONW=pythonw.exe"
