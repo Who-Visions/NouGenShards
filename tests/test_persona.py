@@ -115,3 +115,71 @@ def test_register_standard_when_only_captures():
     sig = P.Signals.from_texts(["word " * 300, "shard " * 200], message_max_words=60)
     p = P.resolve(sig)
     assert sig.register_evidence == "none" and p.register == "standard"
+
+
+# ---- v2: language-aware scoring + checkable output contract (2026-09-15) ----
+
+def test_language_is_a_scoring_signal():
+    texts = ["Mwen gen yon kesyon pou ou", "Ki jan ou ye jodi a", "Mwen pa konnen sa pou m fè"]
+    p = P.resolve(P.Signals.from_texts(texts))
+    assert p.languages[0] == "ht"
+    aud = next(a for a in P.DEFAULT_AUDIENCES if a.key == p.audience)
+    assert "ht" in aud.languages
+
+
+def test_registry_loads_languages_and_contract(tmp_path: Path):
+    reg = tmp_path / "r.json"
+    reg.write_text('{"markets":[{"key":"m","problem":"p","decides":["x"]}],'
+                   '"audiences":[{"key":"only","market":"m","affinities":[],"channels":[],"values":[],'
+                   '"pains":[],"support":"s","languages":["ht"],"contract":["no-id-numbers"]}]}', encoding="utf-8")
+    p = P.resolve(P.Signals.from_texts(["Mwen gen yon kesyon"]), reg)
+    assert p.contract == ("no-id-numbers",)
+    assert "ID numbers" in p.system_prompt()
+
+
+def _ht_persona():
+    p = P.resolve(P.Signals.from_texts(["Mwen gen yon kesyon", "Ki jan ou ye"]))
+    assert "no-id-numbers" in p.contract, p.audience
+    return p
+
+
+def test_contract_blocks_id_numbers_without_echoing_them():
+    p = _ht_persona()
+    assert P.check_output("Mwen gade sètifika maryaj la.\nSee the marriage certificate.", p) == []
+    v = P.check_output("Nimewo a se A123456789.\nResi a se IOE1234567890.\nSSN 123-45-6789.", p)
+    kinds = " ".join(v)
+    assert "A-number" in kinds and "USCIS receipt" in kinds and "SSN" in kinds
+    for leak in ("123456789", "1234567890", "123-45-6789"):
+        assert leak not in kinds
+
+
+def test_contract_first_language_first_skips_headings():
+    p = _ht_persona()
+    assert P.check_output("# Title\nMwen ap reponn ou.\nI will answer you.", p) == []
+    v = P.check_output("# Title\nI will answer you.\nMwen ap reponn ou.", p)
+    assert any(x.startswith("first-language-first") for x in v)
+
+
+def test_contract_line_cap_is_env_driven(monkeypatch):
+    p = _ht_persona()
+    line = "Mwen gen yon kesyon pou ou jodi a wi wi wi"
+    assert not [x for x in P.check_output(line, p) if x.startswith("one-fact-per-line")]
+    monkeypatch.setenv("NOUGEN_PERSONA_LINE_MAX_WORDS", "5")
+    assert any(x.startswith("one-fact-per-line") for x in P.check_output(line, p))
+
+
+def test_language_weight_is_env_driven(monkeypatch):
+    sig = P.Signals.from_texts(["Mwen gen yon kesyon"])
+    monkeypatch.setenv("NOUGEN_PERSONA_LANG_WEIGHT", "0")
+    off = P.resolve(sig)
+    monkeypatch.setenv("NOUGEN_PERSONA_LANG_WEIGHT", "2")
+    on = P.resolve(sig)
+    assert on.evidence["scores"] != off.evidence["scores"]
+
+
+def test_persona_store_roundtrips_contract(tmp_path: Path):
+    p = _ht_persona()
+    st = P.PersonaStore(tmp_path / "personas.json")
+    st.save("s", p)
+    back = st.load("s")
+    assert back.contract == p.contract and back.fingerprint() == p.fingerprint()
