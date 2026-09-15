@@ -5,7 +5,7 @@ description: Use when working on the Who Visions Archive — Dave's private Ligh
 
 # Who Visions Archive — operator skill
 
-The app lives at `C:\Users\super\Outpost\WhoVisions Photographer fleet`. **Read its README.md first**, because it's the full manual (keys, endpoints, numbers). This skill holds the rules that keep the app working and the traps that have already cost time.
+The app lives at `<workspace-root>/WhoVisions Photographer fleet` (or `Outpost\WhoVisions Photographer fleet`). **Read its README.md first**, because it's the full manual (keys, endpoints, numbers). This skill holds the rules that keep the app working and the traps that have already cost time.
 
 ## Run and verify
 ```

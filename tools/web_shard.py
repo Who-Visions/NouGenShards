@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urldefrag, urljoin, urlparse
 
-os.environ.setdefault("NOUGEN_VAULT_DIR", r"C:\Users\super\.nougen\shards")
+os.environ.setdefault("NOUGEN_VAULT_DIR", str(Path.home() / ".nougen" / "shards"))
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 from nougen_shards.core import capture  # noqa: E402

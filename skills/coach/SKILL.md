@@ -28,7 +28,7 @@ died on the session limit and stalled WhoArt (shard 22757, domain `nougen-coach-
 
 ## Tool
 `NouGen/tools/coach.py`: `check`, `ask "<prompt>" --lanes 5 [--why]`, `local "<prompt>" [--json]`, `ledger [--today]`.
-Library: `from coach import check, ask, local` (path `C:\Users\super\Outpost\NouGen\tools`).
+Library: `from coach import check, ask, local` (path `tools/` or `NouGen/tools`).
 Ledger at `~/.nougen/coach_ledger.jsonl`. Model calls: temperature 0, seed 7, schema-constrained JSON.
 
 ## Habits that cost Dave (do not repeat)
