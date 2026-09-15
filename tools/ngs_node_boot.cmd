@@ -16,13 +16,25 @@ setlocal
 set "NGS_PORT=4445"
 set "NGS_ROOT=%~dp0.."
 pushd "%NGS_ROOT%" || exit /b 1
-rem Keep the runtime copy in .nougen synchronized with the checked-in source.
+rem Resolve ONE runtime home before both the supervisor sync and the launch.
+rem This used to set NOUGEN_HOME only after the sync, so with a different
+rem NOUGEN_HOME in the user env the sync refreshed one home while the watcher
+rem launched a stale copy from another, and --watch died at boot unseen
+rem (2026-09-14). A configured NOUGEN_HOME wins only if it is a real runtime
+rem home: the supervisor imports keymaker_peel from its bin at startup, so a
+rem home without it would crash under pythonw with no trace. Otherwise fall
+rem back to the per-user default and say so. No goto: this file is stored
+rem LF-only, where cmd's label search is unreliable.
+if not defined NGS_HOME_MARKER set "NGS_HOME_MARKER=bin\keymaker_peel.py"
+set "NGS_HOME_FALLBACK=%USERPROFILE%\.nougen"
+if defined NOUGEN_HOME if not exist "%NOUGEN_HOME%\%NGS_HOME_MARKER%" >&2 echo ngs_node_boot: NOUGEN_HOME=%NOUGEN_HOME% lacks %NGS_HOME_MARKER%; using %NGS_HOME_FALLBACK%
+if defined NOUGEN_HOME if not exist "%NOUGEN_HOME%\%NGS_HOME_MARKER%" set "NOUGEN_HOME="
+if not defined NOUGEN_HOME set "NOUGEN_HOME=%NGS_HOME_FALLBACK%"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools\install_grid_supervisor.ps1"
 if errorlevel 1 (
   popd
   exit /b 1
 )
-set "NOUGEN_HOME=%USERPROFILE%\.nougen"
 set "NGS_REPO=%NGS_ROOT%"
 set "PYTHONW=%LocalAppData%\Programs\Python\Python311\pythonw.exe"
 if not exist "%PYTHONW%" set "PYTHONW=pythonw.exe"
