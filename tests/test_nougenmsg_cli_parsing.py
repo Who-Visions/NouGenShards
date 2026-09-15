@@ -55,6 +55,10 @@ def cli(monkeypatch):
 
     monkeypatch.setattr(module, "NouGenMsgBus", StubBus)
     monkeypatch.setattr(module, "get_current_node", lambda: "whoart")
+    # dispatch_node() tries the direct HTTP route before the bus. On a machine
+    # where the target node answers, that would send for real and skip the stub.
+    monkeypatch.setattr(module, "send_direct_http",
+                        lambda *args, **kwargs: (None, "stubbed in tests"))
 
     def run(argv):
         sent.clear()
