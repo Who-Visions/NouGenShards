@@ -14,13 +14,16 @@ REPO = Path(os.environ.get("NOUGEN_RELAY_REPO", Path.home() / "Outpost" / "NouGe
 CACHE = Path(os.environ.get("NOUGEN_RELAY_CACHE", Path.home() / ".nougen" / "state" / "relay_watch.json"))
 MAX_LEGS = int(os.environ.get("NOUGEN_RELAY_MAX", "12"))
 CATCHUP_HOURS = float(os.environ.get("NOUGEN_RELAY_CATCHUP_H", "12"))
+GIT_TIMEOUT_S = float(os.environ.get("NOUGEN_RELAY_GIT_TIMEOUT_S", "25"))
+FETCH_TIMEOUT_S = float(os.environ.get("NOUGEN_RELAY_FETCH_TIMEOUT_S", "20"))
 GOAL_CHARS = 150
 
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def _git(*args, timeout=25):
+def _git(*args, timeout: Optional[float] = None) -> Optional[str]:
+    """stdout of a git call in REPO, or None when git fails or times out."""
     try:
         res = subprocess.run(
             ["git", "-C", str(REPO)] + list(args),
@@ -30,12 +33,12 @@ def _git(*args, timeout=25):
             errors="replace",
             stdin=subprocess.DEVNULL,
             creationflags=_NO_WINDOW,
-            timeout=timeout,
+            timeout=GIT_TIMEOUT_S if timeout is None else timeout,
             check=False
         )
-        return res.stdout
     except Exception:
-        return ""
+        return None
+    return res.stdout if res.returncode == 0 else None
 
 
 def refresh_cache() -> None:
@@ -43,17 +46,21 @@ def refresh_cache() -> None:
     if not REPO.exists():
         return
 
-    _git("fetch", "origin", "main", "--quiet", timeout=20)
-    
+    # A failed fetch is tolerated: the local origin/main is still worth indexing.
+    _git("fetch", "origin", "main", "--quiet", timeout=FETCH_TIMEOUT_S)
+
     # Extract added legs via diff-filter=A
     since = (datetime.now(timezone.utc) - timedelta(hours=CATCHUP_HOURS)).isoformat()
     log_out = _git("log", "--diff-filter=A", "--name-only", f"--since={since}", "--format=%H|%cI|%s", "origin/main", "--", ".handoffs/*.json")
-    
+    if log_out is None:
+        # git failed: keep the last good cache rather than blanking it.
+        return
+
     lines = log_out.strip().splitlines()
     entries = []
     curr_commit = None
     curr_date = None
-    
+
     for line in lines:
         if not line.strip():
             continue
@@ -75,8 +82,11 @@ def refresh_cache() -> None:
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "legs": entries[:MAX_LEGS]
     }
-    with open(CACHE, "w", encoding="utf-8") as f:
+    # Write then rename so a hook reading mid-refresh never sees a torn file.
+    tmp = CACHE.with_suffix(CACHE.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cache_data, f, indent=2)
+    os.replace(tmp, CACHE)
 
 
 def get_new_legs_since(session_watermark: Optional[str] = None) -> List[Dict[str, Any]]:
