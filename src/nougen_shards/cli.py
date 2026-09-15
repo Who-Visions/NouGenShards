@@ -600,6 +600,14 @@ def cmd_models(args):
         if getattr(args, 'json', False) is True:
             print(json.dumps(models))
             return
+        if not getattr(args, 'plain', False):
+            try:
+                from .rich_hud import render_rich_models, is_rich_enabled
+                if is_rich_enabled():
+                    render_rich_models(prov_name, models)
+                    return
+            except Exception:
+                pass
         print(f"{prov_name.capitalize()} Models:")
         for m in models:
             print(f" - {m}")
@@ -869,6 +877,15 @@ def cmd_search(args):
         print(json.dumps(results))
         return
 
+    if not getattr(args, 'plain', False):
+        try:
+            from .rich_hud import render_rich_search_results, is_rich_enabled
+            if is_rich_enabled():
+                render_rich_search_results(args.query, results, sweep_report=sweep_report)
+                return
+        except Exception:
+            pass
+
     print(f"🔍 Found {len(results)} records across the fabric (Ranked by Relevance):\n")
     for res in results:
         header = f"[{res['id']}] Final Score: {res['final_score']:.2f} | " \
@@ -941,7 +958,18 @@ def cmd_mark(args):
 
 
 def cmd_status(args):
-    """Check the status of the Multi-DB cluster."""
+    """Check the status of the Multi-DB cluster with Rich UI by default."""
+    if not getattr(args, 'json', False) and not getattr(args, 'plain', False):
+        try:
+            from .rich_hud import render_rich_dashboard, render_rich_live_hud, is_rich_enabled
+            if getattr(args, 'live', False):
+                render_rich_live_hud()
+                return
+            if is_rich_enabled():
+                render_rich_dashboard()
+                return
+        except Exception:
+            pass
     from . import status_semantics as ss  # pylint: disable=import-outside-toplevel
 
     active = shards.get_active_db_index()
@@ -1033,6 +1061,15 @@ def cmd_stats(args):
         yield f" - Usefulness Δ: {'+' if d >= 0 else ''}{d:.2f}"
         if p["acceleration_rate_pct"] is not None:
             yield f" - Acceleration Rate:   {p['acceleration_rate_pct']:.1f}% expansion"
+
+    if not getattr(args, 'json', False) and not getattr(args, 'plain', False):
+        try:
+            from .rich_hud import render_rich_stats, is_rich_enabled
+            if is_rich_enabled():
+                render_rich_stats(payload)
+                return payload
+        except Exception:
+            pass
 
     return emit(payload, plain, args)
 
@@ -1552,6 +1589,14 @@ def get_parser():
 
     p_status = subparsers.add_parser("status", help="Show cluster health")
     p_status.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_status.add_argument("--plain", action="store_true", help="Plain text output")
+    p_status.add_argument("--live", "-l", action="store_true", help="Launch real-time live interactive substrate HUD")
+
+    p_models = subparsers.add_parser("models", help="List available LLM models for local or cloud providers")
+    p_models.add_argument("--provider", "-p", default="local", help="Provider name (local, google, openrouter, etc.)")
+    p_models.add_argument("--pull", help="Pull a model via Ollama")
+    p_models.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_models.add_argument("--plain", action="store_true", help="Plain text output")
 
     p_usage = subparsers.add_parser("usage", help="Token telemetry from the local usage ledger")
     p_usage.add_argument("--period", default=None,
@@ -1862,6 +1907,28 @@ def keymaker_vault_report() -> list:
 
 def cmd_doctor(args):
     """Verifies installation, database health, and service connectivity (NouGenMorph Engine)."""
+    if not getattr(args, 'json', False) and not getattr(args, 'plain', False):
+        try:
+            from .rich_hud import render_rich_doctor, is_rich_enabled
+            if is_rich_enabled():
+                active = shards.get_active_db_index()
+                found_db = any(shards.get_db_path(i).exists() for i in range(1, shards.MAX_DB_COUNT + 1))
+                p_status = {}
+                for name in ["openai", "anthropic", "google", "openrouter", "local"]:
+                    c = get_client(name)
+                    p_status[name] = c.is_alive() if c else False
+                report = {
+                    "substrate": {"active_index": active, "found": found_db},
+                    "vault": {"path": str(keymaker.DB_PATH.absolute()),
+                              "exists": keymaker.DB_PATH.exists(),
+                              "providers": keymaker.list_providers() if keymaker.DB_PATH.exists() else []},
+                    "connectivity": p_status
+                }
+                render_rich_doctor(report)
+                return
+        except Exception:
+            pass
+
     print("👨‍⚕️ NouGenShards Doctor (NouGenMorph): Running diagnostics...")
     
     # 1. Check Substrate
@@ -2482,11 +2549,11 @@ def cmd_transcribe(args):
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
-        print("🪩 NouGenShards CLI")
+        print("🪩 NouGenShards CLI — Powered by NouGenAi")
         print("┌┐╷┌─┐╷ ╷┌─╴┌─╴┌┐╷┌─┐╷ ╷┌─┐┌─┐╶┬┐┌─┐")
         print("│└┤│ ││ ││╶┐├╴ │└┤└─┐├─┤├─┤├┬┘ ││└─┐")
         print("╵ ╵└─┘└─┘└─┘└─╴╵ ╵└─┘╵ ╵╵ ╵╵└╴╶┴┘└─┘")
-        print(f"  ⚡ Valerion Engine · v{VERSION}")
+        print(f"  ⚡ NouGenMorph Engine · v{VERSION}")
         print()
         get_parser().print_help()
         sys.exit(0)
@@ -2500,7 +2567,7 @@ def main():
     args = parser.parse_args()
     cmds = {
         "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
-        "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
+        "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
