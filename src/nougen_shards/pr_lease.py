@@ -1,7 +1,6 @@
 """PR lease governor + confetti detector.
 
-Phase 1 of the SHANG TSUNG PR-Agent absorption (relay leg
-20260908T025803Z__chatgpt-app__g-whoentertains): stop one coherent objective
+Phase 1 of the SHANG TSUNG PR-Agent absorption: stop one coherent objective
 from spawning one PR per atomic change. One objective -> one branch -> one
 PR; pushes to that branch update the existing PR instead of opening another.
 
