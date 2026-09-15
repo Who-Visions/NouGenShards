@@ -29,7 +29,15 @@ def mock_capture():
         yield mock
 
 
-def test_check_ollama_alive_success():
+@pytest.fixture
+def clean_ollama_env(monkeypatch):
+    """Drop host ollama env so resolution falls back to the default endpoint."""
+    for key in ("NOUGEN_OLLAMA_URL", "NOUGEN_OLLAMA_HOST", "OLLAMA_HOST",
+                "NOUGEN_OLLAMA_PORT", "OLLAMA_PORT"):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_check_ollama_alive_success(clean_ollama_env):
     """Test ollama alive check success."""
     with patch("socket.socket") as mock_sock:
         mock_instance = MagicMock()
@@ -268,3 +276,53 @@ def test_main_search_break(mock_search, mock_get_model, mock_capture):
     # Search should only be called once because it returned >= 3 papers
     assert mock_search.call_count == 1
     assert mock_capture.call_count == 3
+
+
+def test_check_ollama_alive_uses_resolved_url(clean_ollama_env, monkeypatch):
+    """The liveness probe dials the env-resolved endpoint, not a fixed port."""
+    monkeypatch.setenv("NOUGEN_OLLAMA_URL", "http://10.1.2.3:11436")
+    with patch("socket.socket") as mock_sock:
+        assert auto_research.check_ollama_alive() is True
+        mock_sock.return_value.connect.assert_called_once_with(("10.1.2.3", 11436))
+
+
+def test_query_local_llm_timeout_and_url_from_env(clean_ollama_env, monkeypatch,
+                                                  mock_urlopen):
+    """Generate timeout comes from env and the request goes to the resolved base."""
+    monkeypatch.setenv("NOUGEN_OLLAMA_URL", "http://10.1.2.3:11436")
+    monkeypatch.setenv("NOUGEN_OLLAMA_GENERATE_TIMEOUT_S", "7")
+    mock_urlopen.side_effect = Exception("boom")
+    with patch("nougen_shards.vram_gate.check_vram", return_value=MagicMock(ok=True)):
+        auto_research.query_local_llm("test_model", "test prompt")
+    req = mock_urlopen.call_args.args[0]
+    assert req.full_url == "http://10.1.2.3:11436/api/generate"
+    assert mock_urlopen.call_args.kwargs["timeout"] == 7.0
+
+
+@pytest.mark.parametrize("raw", ["abc", "0", "-5"])
+def test_env_float_invalid_falls_back_with_warning(monkeypatch, caplog, raw):
+    """Bad or non-positive timeouts log a warning and use the default."""
+    monkeypatch.setenv("NOUGEN_OLLAMA_GENERATE_TIMEOUT_S", raw)
+    with caplog.at_level("WARNING", logger="nougen_shards.auto_research"):
+        value = auto_research._env_float("NOUGEN_OLLAMA_GENERATE_TIMEOUT_S", 90.0)
+    assert value == 90.0
+    assert "NOUGEN_OLLAMA_GENERATE_TIMEOUT_S" in caplog.text
+
+
+def test_env_float_unset_is_silent_default(monkeypatch, caplog):
+    """An unset variable is the normal case: default, no warning."""
+    monkeypatch.delenv("NOUGEN_OLLAMA_TAGS_TIMEOUT_S", raising=False)
+    with caplog.at_level("WARNING", logger="nougen_shards.auto_research"):
+        assert auto_research._env_float("NOUGEN_OLLAMA_TAGS_TIMEOUT_S", 3.0) == 3.0
+    assert caplog.text == ""
+
+
+def test_search_arxiv_url_and_timeout_from_env(monkeypatch, mock_urlopen):
+    """arXiv base URL and timeout come from env."""
+    monkeypatch.setenv("NOUGEN_ARXIV_API_URL", "http://mirror.test/q")
+    monkeypatch.setenv("NOUGEN_ARXIV_TIMEOUT_S", "4")
+    mock_urlopen.side_effect = Exception("offline")
+    assert auto_research.search_arxiv("graph memory") == []
+    req = mock_urlopen.call_args.args[0]
+    assert req.full_url.startswith("http://mirror.test/q?search_query=")
+    assert mock_urlopen.call_args.kwargs["timeout"] == 4.0
