@@ -29,7 +29,7 @@ tags:
   - Officially elevated historical terms (Shang Tsung, Valerion, Valerian, Matamars, Metameric, TMEM) to **NouGenMorph** across `src/nougen_shards/cli.py`, `src/nougen_shards/core.py`, `src/nougen_shards/dream.py`, and `docs/architecture.md`.
   - Updated CLI descriptions, diagnostics, and documentation to reflect NouGenMorph standard.
 - **Substrate & Shard Persistence:**
-  - Codified NouGenMorph constitutional shard into `C:\Users\super\.nougen\shards`.
+  - Codified NouGenMorph constitutional shard into `~/.nougen/shards`.
 - **Repo Decoupling:**
   - Enforced project isolation: independent application projects decoupled from core NouGenShards memory substrate repository.
 

@@ -31,7 +31,7 @@ if os.environ.get("SPACE_ID"):
     os.environ["NOUGEN_HOME"] = "/data"
     os.environ["NOUGEN_VAULT_DIR"] = "/data/.vault"
 
-from nougen_shards import bind_probe, core, history, locator, machine, mcp_oauth, tenants
+from nougen_shards import agents, bind_probe, core, history, locator, machine, mcp_oauth, tenants
 from nougen_shards.federation import federated_retrieve
 from nougen_shards import fd_budget
 from nougen_shards.brain_scan import scan_environment
@@ -1963,6 +1963,111 @@ def ask_dav1d(
     return run_dav1d_agy(command="agy", args=args, subcommand=subcommand, prompt=prompt)
 
 
+# --- Roster & IRIS Agent Layer ---
+
+class IrisAskRequest(BaseModel):
+    question: str
+    model: Optional[str] = None
+
+
+class AgentAskRequest(BaseModel):
+    name: str
+    prompt: str
+    model: Optional[str] = None
+
+
+@app.post("/iris/ask")
+def iris_ask_endpoint(
+    req: IrisAskRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Ask Iris, the resident AI and research/evidence assurance specialist."""
+    answer = agents.run_agent("Iris", req.question, model=req.model or None)
+    return {"answer": answer, "agent": "Iris", "model": req.model or agents.ROSTER["Iris"].default_model}
+
+
+@app.post("/agents/ask")
+def agent_roster_ask_endpoint(
+    req: AgentAskRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Run a prompt through any agent on the NouGen roster."""
+    answer = agents.run_agent(req.name, req.prompt, model=req.model or None)
+    spec = agents.get_agent(req.name)
+    agent_name = spec.name if spec else req.name
+    default_m = spec.default_model if spec else "unknown"
+    return {"answer": answer, "agent": agent_name, "model": req.model or default_m}
+
+
+@app.get("/agents/roster")
+def agents_roster_endpoint(
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Return the complete NouGen roster and status."""
+    return {
+        "roster_text": agents.list_roster(),
+        "agents": [
+            {
+                "name": spec.name,
+                "role": spec.role,
+                "motto": spec.motto,
+                "default_model": spec.default_model,
+                "engine_functions": spec.engine_functions
+            }
+            for spec in agents.ROSTER.values()
+        ]
+    }
+
+
+@node_mcp.tool()
+@_offloaded
+def ask_iris(question: str, model: str = "") -> str:
+    """
+    Ask Iris, the always-on resident AI on this machine.
+
+    Iris is Airspace: research, evidence and assurance. She separates verified
+    fact from inference, states her caveats, and never promotes or deletes
+    memory on her own - action stays with the operator. She rides the pinned
+    resident model (gemma4:e2b-qat) as a system prompt, so asking her costs no
+    cloud tokens and loads no second model onto the card.
+
+    Use her for: checking a claim against evidence, a second read on something
+    you are about to assert, reachability/uncertainty assessment. She is a
+    local $0 lane - prefer her over a paid route for this class of question.
+
+    Args:
+        question: What to ask her.
+        model: Optional model override. Leave empty to use the resident.
+    """
+    return agents.run_agent("Iris", question, model=model or None)
+
+
+@node_mcp.tool()
+@_offloaded
+def ask_agent(name: str, prompt: str, model: str = "") -> str:
+    """
+    Run a prompt through any agent on the NouGen roster.
+
+    Local-first: tries the resident Ollama model, falling back to cloud only if
+    local is unreachable. The DavOs gatekeeper screens every prompt first.
+
+    Args:
+        name: Roster agent - Sharder, Remember, Kronos, DavOs, Sol-Ai, NouGen,
+            Griot, Rhea, Kaedra or Iris. Case-insensitive.
+        prompt: What to ask.
+        model: Optional model override. Leave empty for the agent default.
+    """
+    return agents.run_agent(name, prompt, model=model or None)
+
+
+@node_mcp.tool()
+@_offloaded
+def list_agents() -> str:
+    """List the NouGen roster: each agent's name, role and default model."""
+    return agents.list_roster()
+
+
+
 # --- Shadow Xoah & Destiny Governance Layer ---
 from nougen_shards import canon_pressure, destiny, self_archive, throne_governance
 
@@ -2244,9 +2349,9 @@ def evaluate_quota(
 def nougenmsg(message: str, target: str = "all", priority: str = "normal") -> dict:
     """Send a live NouGenMsg IPC notification or baton to another fleet agent or node
     (@blade, @whoart, @phoebus, @antigravity, @codex, @all, or model lanes)."""
-    from nougen_shards.nougenmsg import AgentPinger
+    from nougen_shards.nougenmsg import NouGenMsgBus
     clean_target = target.lstrip("@").lower() if target else "all"
-    res = AgentPinger.emit_fleet(text=message, target=clean_target)
+    res = NouGenMsgBus.emit_fleet(text=message, target=clean_target)
     return {
         "status": "delivered",
         "target": target,

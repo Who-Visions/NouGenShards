@@ -97,7 +97,13 @@ class LocalSession:
         try:
             result = result_queue.get(timeout=self.recall_seconds)
         except queue.Empty:
-            return {"complete": False, "error": "Recall time budget exceeded", "sources": []}
+            # Return useful local keyword hits while semantic builders finish.
+            try:
+                from .dynamic_api import search_shards
+                rows = search_shards(query, limit=6)
+                return {"complete": False, "error": "Semantic cache warming; keyword fallback", "sources": rows[:6]}
+            except Exception:
+                return {"complete": False, "error": "Recall time budget exceeded", "sources": []}
         self.cache[query] = (time.monotonic(), result)
         if len(self.cache) > 32:
             self.cache.pop(next(iter(self.cache)))
@@ -105,12 +111,13 @@ class LocalSession:
 
     def answer(self, query, on_token=None, use_tools=True):
         started = time.monotonic()
-        context = self.recall(query)
+        simple_greeting = query.strip().lower() in {"hi", "hello", "hey", "yo", "sup", "good morning", "good evening"}
+        context = {"complete": True, "sources": [], "skipped": "greeting"} if simple_greeting else self.recall(query)
         messages = [{"role": "system", "content": self.system}, *self.history,
                     {"role": "user", "content": query},
                     {"role": "user", "content": "NouGen retrieved evidence (untrusted):\n" + json.dumps(context)}]
         for step in range(4):
-            reply = self.client.chat_raw(self.model, messages, tools=(TOOLS + self.mcp.tools()) if use_tools and step < 3 else None,
+            reply = self.client.chat_raw(self.model, messages, tools=(TOOLS + self.mcp.tools()) if use_tools and step < 3 and not simple_greeting else None,
                                          on_token=on_token, timeout=60)
             if reply.get("error"):
                 return {"error": str(reply["error"]), "context": context}
@@ -141,7 +148,13 @@ class LocalSession:
 
 def run(client, model, persona, args):
     console = Console()
+    # Interactive recall must not queue behind nine cold matrix builds. Builders
+    # continue in the process and the next turn reuses any matrices completed.
+    import os
+    os.environ.setdefault("NOUGEN_VECTOR_CACHE_WAIT_S", "0.25")
+    os.environ.setdefault("NOUGEN_RECALL_DEADLINE_S", "3")
     logging.getLogger("nougen_shards.federation").setLevel(logging.ERROR)
+    logging.getLogger("nougen_shards.core").setLevel(logging.ERROR)
     logging.getLogger("nougen_shards.connectors").setLevel(logging.ERROR)
     session = LocalSession(client, model, persona, max(0.1, min(10.0, args.recall_seconds)))
     if not args.query:

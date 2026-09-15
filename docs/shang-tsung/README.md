@@ -35,6 +35,8 @@ Ten donors in one session. Per-donor docs sit in this folder. Fleet votes and ra
 | 5 Scoped retrieval (agent/user/machine/project from tags) | `core.retrieve(scope=)`, MCP `recall_memory(agent=, user=, machine=, project=)` | built |
 | 6 Bi-temporal | `learned_utc` column (idempotent ALTER in `init_db`, stamped at capture); `retrieve(as_of=, event_after=, event_before=)` | built |
 
+**Distill A/B, 2:32 AM EDT 9/14.** 376 shards distilled (local e2b), 200 scenes. Lanes off → on: MRR 0.624 → **0.665**, body R@10 0.60 → 0.64, title held at 1.00, p50 +44 ms. Lanes stay on. The L3 persona output was empty and needs a better prompt or scene selection.
+
 **Title recall fixed, 12:26 AM EDT 9/14.** Exact-title lookups missed 1 in 3 eligible shards. The keyword lane found them, but per-DB OR fallback flooded the merge and double decay buried old exact hits. The fix: an exact-title lane + tier sort, a NOCASE title index, and 5× bm25 title weight. Result: title R@10 0.68 → **1.00**, overall MRR 0.327 → **0.624**, body unchanged (0.60), p50 +47 ms (`report_20260914T042629Z`).
 
 **Eval correction.** The first golden set was 68% bulk IMPORT/INGEST shards (arxiv), which default recall excludes by design. On eligible shards, body Recall@10 was **0.708**, not 0.28. `recall_eval build` now samples only recall-eligible shards (`--include-research` opts back in).

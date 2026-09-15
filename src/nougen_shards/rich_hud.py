@@ -2,7 +2,7 @@
 """
 rich_hud.py - Cyber-Tactical Rich Terminal UI Dashboard & Suite for NouGenAi / NouGenShards.
 Provides publication-grade visual telemetry and rich formatting across:
-- 9-DB Shard Grid Substrate (C:\\Users\\super\\.nougen\\shards)
+- 9-DB Shard Grid Substrate (~/.nougen/shards)
 - Fleet Topology & Mesh Matrix (Hyperion, Apollo, Phoebus)
 - Live Shard Search Results with Syntax Highlighting & Score Badges
 - Memory Growth, Utility Velocity & Timeline Analytics
@@ -15,6 +15,7 @@ import sys
 import time
 import glob
 import sqlite3
+from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -40,7 +41,7 @@ from rich import box
 
 console = Console()
 
-SHARD_DIR = os.environ.get("NOUGEN_VAULT_DIR", r"C:\Users\super\.nougen\shards")
+SHARD_DIR = os.environ.get("NOUGEN_VAULT_DIR", str(Path.home() / ".nougen" / "shards"))
 MAX_DB_CAPACITY_MB = 1024.0
 
 
@@ -162,7 +163,7 @@ def build_dashboard_renderable(sub_data: Optional[Dict[str, Any]] = None) -> Gro
 
     # 2. Substrate Grid Table
     grid_table = Table(
-        title="🧠 NouGenShards 9-DB Substrate Grid Telemetry (C:\\Users\\super\\.nougen\\shards)",
+        title="🧠 NouGenShards 9-DB Substrate Grid Telemetry (~/.nougen/shards)",
         box=box.ROUNDED,
         header_style="bold bright_cyan",
         show_footer=True,
@@ -425,22 +426,42 @@ def render_rich_doctor(report: Dict[str, Any]):
 
 def render_rich_models(provider: str, models: List[str]):
     """Renders models list table."""
+    best_model_name = None
+    if provider.lower() in ("local", "ollama") and models:
+        try:
+            from .custom_model_resolver import resolve_best_custom_model
+            cfg = resolve_best_custom_model(models)
+            if cfg:
+                best_model_name = cfg.model_name
+        except Exception:
+            pass
+
     table = Table(
         title=f"🤖 Available LLM Models for [{provider.upper()}]",
         box=box.ROUNDED,
         header_style="bold bright_cyan",
         expand=True
     )
-    table.add_column("Index", justify="center", style="dim", width=8)
-    table.add_column("Model Name / Identifier", style="bold bright_white", width=40)
-    table.add_column("Family / Architecture", style="bright_yellow", width=20)
-    table.add_column("Route Type", justify="center", style="bright_green", width=16)
+    table.add_column("Index", justify="center", style="dim", width=6)
+    table.add_column("Model Name / Identifier", style="bold bright_white", width=34)
+    table.add_column("Family / Classification", style="bright_yellow", width=24)
+    table.add_column("Route & Priority", justify="center", style="bright_green", width=26)
 
     for i, m in enumerate(models, 1):
         m_lower = m.lower()
-        if "gemma" in m_lower or "yukiai" in m_lower or "solai" in m_lower:
+        if "yukiai" in m_lower:
+            fam = "Yukiai (Hyperion Player)"
+        elif "solai" in m_lower or "sol-ai" in m_lower:
+            fam = "Sol-Ai (Apollo Player)"
+        elif "keadra" in m_lower:
+            fam = "Keadra (Phoebus Player)"
+        elif "mrs-b" in m_lower or "mrsb" in m_lower:
+            fam = "Mrs. B (Family Matriarch)"
+        elif any(p in m_lower for p in ("dav1d", "dav3", "griot", "rhea", "iris")):
+            fam = "Fleet Persona Fine-Tune"
+        elif "gemma" in m_lower:
             fam = "Gemma 4"
-        elif "claude" in m_lower or "keadra" in m_lower:
+        elif "claude" in m_lower:
             fam = "Anthropic Claude"
         elif "gpt" in m_lower or "openai" in m_lower:
             fam = "OpenAI GPT"
@@ -451,7 +472,18 @@ def render_rich_models(provider: str, models: List[str]):
         else:
             fam = "Custom / OSS"
 
-        route = "Local VRAM" if provider.lower() in ("local", "ollama") else "Cloud API"
+        is_auto = (m == best_model_name)
+        if is_auto:
+            route = "[bold bright_green]★ Auto-Selected (Default)[/]"
+        elif ":cloud" in m_lower or "-cloud" in m_lower:
+            route = "[cyan]Cloud Gateway (0 VRAM)[/]"
+        elif "embed" in m_lower or "bge" in m_lower:
+            route = "[dim]Embedding Only[/]"
+        elif provider.lower() in ("local", "ollama"):
+            route = "[green]Local VRAM[/]"
+        else:
+            route = "[blue]Cloud API[/]"
+
         table.add_row(str(i), m, fam, route)
 
     console.print(table)

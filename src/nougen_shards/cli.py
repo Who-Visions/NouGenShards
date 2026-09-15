@@ -547,19 +547,15 @@ def cmd_chat(args):
     model = args.model
     if not model:
         available = client.list_models() if client else []
-        persona = agents.get_agent(persona_name)
-        # Prioritize persona default model or modern local edge models
-        priority_models = [persona.default_model if persona else None, "gemma4:e2b", "gemma4:e2b-qat", "dav1d:e2b", "sol-ai:e4b"]
-        matched = next((m for m in priority_models if m and m in available), None)
-        if matched:
-            model = matched
+        from .custom_model_resolver import resolve_best_custom_model
+        best_cfg = resolve_best_custom_model(available, persona_hint=persona_name)
+        if best_cfg:
+            model = best_cfg.model_name
         elif available:
             model = available[0]
-        elif persona and persona.default_model:
-            model = persona.default_model
-        elif isinstance(client, LocalLLMClient):
-            model_config = client.find_best_edge_model()
-            model = model_config.model_name if model_config else None
+        else:
+            persona = agents.get_agent(persona_name)
+            model = persona.default_model if (persona and persona.default_model) else "Yukiai:e2b"
 
     if not model:
         print("Error: No model found or configured for this environment.")

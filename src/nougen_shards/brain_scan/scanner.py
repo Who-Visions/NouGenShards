@@ -1,5 +1,6 @@
+import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Iterator
 from .candidate import CandidateFile
 from .registry import (GLOBAL_ROOTS, PROJECT_ROOT_NAMES, PROJECT_FILES, DANGER_ZONES,
                        SKIP_DIRS, SUPPORTED_EXTS, SQLITE_EXTS, SELF_EXCLUDE_DIRS)
@@ -25,6 +26,30 @@ def _is_safe_dir(path: Path) -> bool:
     return True
 
 
+def _safe_walk(root: Path, max_depth: int) -> Iterator[Path]:
+    """Safely yields Path objects under root up to max_depth, ignoring OSError/PermissionError."""
+    try:
+        if not root.exists() or not root.is_dir():
+            return
+    except OSError:
+        return
+
+    root_str = str(root)
+    for dirpath, dirnames, filenames in os.walk(root_str, onerror=lambda err: None):
+        try:
+            rel = os.path.relpath(dirpath, root_str)
+            depth = len(rel.split(os.sep)) if rel != "." else 0
+            if depth > max_depth:
+                dirnames.clear()
+                continue
+            # Filter unsafe directories in-place
+            dirnames[:] = [d for d in dirnames if _is_safe_dir(Path(dirpath) / d)]
+            for fname in filenames:
+                yield Path(dirpath) / fname
+        except (OSError, ValueError):
+            continue
+
+
 def _within_size_budget(path: Path, size_mb: Optional[float]) -> bool:
     """SQLite sources are queried row by row, so their file size is irrelevant.
 
@@ -41,11 +66,14 @@ def _is_safe_file(path: Path) -> bool:
     """A file is safe to scan only if it is a real file (not a symlink, which
     could escape the scanned tree into ~/.ssh etc.) and is not a known
     credential store. Symlinks are skipped outright rather than resolved."""
-    if path.is_symlink():
+    try:
+        if path.is_symlink():
+            return False
+        if path.name.lower() in DANGER_FILES:
+            return False
+        return _is_safe_dir(path.parent)
+    except OSError:
         return False
-    if path.name.lower() in DANGER_FILES:
-        return False
-    return _is_safe_dir(path.parent)
 
 def _safe_size_mb(path: Path) -> Optional[float]:
     """Return file size in MB, or None if it is unreadable (broken symlink,
@@ -81,14 +109,7 @@ def scan_databases(include_generic: bool = False) -> List[CandidateFile]:
     found: List[CandidateFile] = []
     # GLOBAL_ROOTS[0] is Path.home(); walking it would crawl the whole disk.
     for root in GLOBAL_ROOTS[1:]:
-        if not root.exists() or not root.is_dir():
-            continue
-        for p in root.rglob("*"):
-            try:
-                if len(p.relative_to(root).parts) > 6:
-                    continue
-            except ValueError:
-                continue
+        for p in _safe_walk(root, max_depth=6):
             if p.suffix.lower() not in SQLITE_EXTS:
                 continue
             if not p.is_file() or not _is_safe_file(p):
@@ -111,7 +132,7 @@ def scan_environment(project_path: Optional[str] = None, include_unknown: bool =
     # 1. Project Scan
     if project_path:
         root = Path(project_path).resolve()
-        for p in root.rglob("*"):
+        for p in _safe_walk(root, max_depth=8):
             if p.is_file() and p.suffix in SUPPORTED_EXTS and _is_safe_file(p):
                 is_proj_ctx = any(part in PROJECT_ROOT_NAMES for part in p.parts) or p.name in PROJECT_FILES
                 if is_proj_ctx or include_unknown:
@@ -126,15 +147,7 @@ def scan_environment(project_path: Optional[str] = None, include_unknown: bool =
     # We skip Path.home() generic rglob to avoid crawling the whole user disk.
     # We only scan the specific tool directories (GLOBAL_ROOTS[1:]).
     for g_root in GLOBAL_ROOTS[1:]:
-        if not g_root.exists() or not g_root.is_dir(): continue
-        for p in g_root.rglob("*"):
-            # Limit depth relative to g_root to prevent infinite symlinks.
-            # relative_to is safe here because we skip symlinks (no tree escape).
-            try:
-                if len(p.relative_to(g_root).parts) > 5: continue
-            except ValueError:
-                continue
-
+        for p in _safe_walk(g_root, max_depth=5):
             if p.is_file() and p.suffix in SUPPORTED_EXTS and _is_safe_file(p):
                 score = classify_file(p)
                 if score in ["high", "medium"]:
