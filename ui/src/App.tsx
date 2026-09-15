@@ -634,6 +634,36 @@ export default function App() {
     }
   }, [query]);
 
+  // File menu actions. Declared after the loaders they call: a useCallback
+  // dependency array is evaluated at render, so an earlier declaration hits the TDZ.
+  const handleRefresh = useCallback(() => {
+    setFileMenuOpen(false);
+    refreshStatus();
+    runSearch();
+    loadFleet();
+    loadRelay();
+    loadUsage();
+    loadStats();
+  }, [refreshStatus, runSearch, loadFleet, loadRelay, loadUsage, loadStats]);
+
+  // No dedicated scan command exists; engine_status and memory_stats read every database.
+  const handleScan = useCallback(() => {
+    setFileMenuOpen(false);
+    refreshStatus();
+    loadStats();
+  }, [refreshStatus, loadStats]);
+
+  // The relay tab is the activity feed (Team Handoffs).
+  const handleImport = useCallback(() => {
+    setFileMenuOpen(false);
+    setTab('relay');
+  }, []);
+
+  const handleExit = useCallback(() => {
+    setFileMenuOpen(false);
+    handleClose();
+  }, [handleClose]);
+
   // Tab change triggers
   useEffect(() => {
     if (tab === 'tracker') loadUsage();
