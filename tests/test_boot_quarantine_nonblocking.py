@@ -3,11 +3,23 @@ can never hold the node unbound (WhoArt 9/14/2026: 7+ min unbound, 15 GB read).
 Loaded via AST like tests/test_recall_warmup.py, so gradio/network never import."""
 import ast
 import logging
+import os
 import threading
 import time
 from pathlib import Path
 
 import nougen_shards.core as core
+
+_FALLBACK_WAIT_S = 5.0
+
+
+def _wait_s() -> float:
+    """Upper bound for a cross-thread wait. It only caps a hang; nothing asserts on it."""
+    raw = os.environ.get("NOUGEN_TEST_WAIT_S")
+    if raw:
+        return float(raw)
+    logging.getLogger(__name__).info("NOUGEN_TEST_WAIT_S unset; using %.1fs", _FALLBACK_WAIT_S)
+    return _FALLBACK_WAIT_S
 
 
 def _load():
@@ -20,17 +32,21 @@ def _load():
 
 
 def test_returns_at_once_and_warmup_follows_the_heal(monkeypatch):
-    order, done = [], threading.Event()
+    # The heal parks on a gate the test holds, so "startup returned first" is an
+    # ordering fact, not a wall-clock race (a 0.2s cap flaked at 0.205s on CI).
+    order, done, gate = [], threading.Event(), threading.Event()
+    wait_s = _wait_s()
 
     def slow_heal():
-        time.sleep(0.5)
+        gate.wait(wait_s)
         order.append("heal")
         return []
     monkeypatch.setattr(core, "quarantine_malformed_dbs", slow_heal)
-    started = time.perf_counter()
     _load()(then=lambda: (order.append("warmup"), done.set()))
-    assert time.perf_counter() - started < 0.2, "the heal must not block startup"
-    assert done.wait(5)
+    assert order == [], "the heal must not block startup"
+    assert not done.is_set(), "the warm-up must wait for the heal"
+    gate.set()
+    assert done.wait(wait_s)
     assert order == ["heal", "warmup"]
 
 
@@ -41,7 +57,7 @@ def test_warmup_still_runs_when_the_heal_raises(monkeypatch):
         raise OSError("volume gone")
     monkeypatch.setattr(core, "quarantine_malformed_dbs", broken)
     _load()(then=done.set)
-    assert done.wait(5)
+    assert done.wait(_wait_s())
 
 
 def test_lifespan_no_longer_scans_inline():
