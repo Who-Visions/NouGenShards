@@ -310,6 +310,23 @@ def test_key_generation_calls_harden_path_on_key_file(tmp_path, monkeypatch):
     assert os.path.normcase(str(key_file)) in hardened
 
 
+def test_key_generation_logs_when_lock_does_not_take(tmp_path, monkeypatch, caplog):
+    """_harden_path returning False (icacls failed) is reported with the key path."""
+    monkeypatch.delenv(pv.ENV_KEY, raising=False)
+    monkeypatch.setenv(pv.ENV_KEY_FILE, str(tmp_path / "vault" / "private_key.bin"))
+    monkeypatch.setenv(pv.ENV_KEY_SEARCH_PATH, str(tmp_path / "vault"))
+    pv.reset_key_cache()
+    monkeypatch.setattr("nougen_shards.keymaker._harden_path", lambda _p: False)
+    with caplog.at_level("WARNING", logger="nougen_shards.private_vault"):
+        try:
+            pv.load_key(create=True)
+        except pv.PrivateVaultError:
+            pytest.skip("no DPAPI or OS keyring available on this lane")
+    msgs = [rec.getMessage() for rec in caplog.records]
+    assert any("ACL not restricted on data key" in m for m in msgs)
+    assert any("ACL not restricted on recovery key" in m for m in msgs)
+
+
 def _fake_icacls(monkeypatch, result=None, exc=None):
     seen = {}
 
@@ -334,8 +351,10 @@ def test_harden_path_logs_icacls_failure_without_raising(monkeypatch, caplog, tm
     from nougen_shards import keymaker
     _fake_icacls(monkeypatch, result=result, exc=exc)
     with caplog.at_level("WARNING", logger="nougen_shards.keymaker"):
-        keymaker._harden_path(tmp_path / "f")
+        assert keymaker._harden_path(tmp_path / "f") is False
     assert any("icacls" in rec.message for rec in caplog.records)
+    # The path can be derived from service-account data; it must not be logged here.
+    assert not any(str(tmp_path) in rec.getMessage() for rec in caplog.records)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="icacls hardening is Windows-only")
@@ -353,7 +372,7 @@ def test_harden_path_timeout_env_override(monkeypatch, tmp_path):
     from nougen_shards import keymaker
     monkeypatch.setenv("NOUGEN_ICACLS_TIMEOUT_S", "2.5")
     seen = _fake_icacls(monkeypatch, result=subprocess.CompletedProcess(args=[], returncode=0))
-    keymaker._harden_path(tmp_path / "f")
+    assert keymaker._harden_path(tmp_path / "f") is True
     assert seen["timeout"] == 2.5
 
 

@@ -192,9 +192,12 @@ def _write_recovery_key(raw: bytes) -> str:
         ) from exc
     try:
         from .keymaker import _harden_path
-        _harden_path(path)
+        hardened = _harden_path(path)
     except Exception as exc:
         logger.warning("failed to harden ACL on recovery key %s: %s", path, exc)
+    else:
+        if not hardened:
+            logger.warning("ACL not restricted on recovery key %s", path)
     return path
 
 
@@ -220,9 +223,12 @@ def _generate_key() -> bytes:
         fh.write(stored)
     try:
         from .keymaker import _harden_path
-        _harden_path(path)
+        hardened = _harden_path(path)
     except Exception as exc:
         logger.warning("failed to harden ACL on data key %s: %s", path, exc)
+    else:
+        if not hardened:
+            logger.warning("ACL not restricted on data key %s", path)
     return raw
 
 
