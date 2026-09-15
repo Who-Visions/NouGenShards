@@ -1831,13 +1831,12 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     # of raw score - the lanes' score scales are not comparable (trigram-FTS
     # bm25 magnitudes are tiny, so a weighted exact score can sit below a
     # strong fuzzy similarity, and an OR hit covering one token must never
-    # displace an AND hit covering all of them). Score is rounded so
-    # sub-epsilon temporal-decay jitter can't reorder near-ties; bm25 (more
-    # negative == stronger, absent treated as weakest) breaks sub-round ties
-    # by match strength - on small corpora trigram bm25 is ~1e-6 and the
-    # rounding erases it, and falling straight to insertion order picked the
-    # wrong shard; then (_db_index, id) ASC pins true ties so identical
-    # queries never reorder run-to-run.
+    # displace an AND hit covering all of them). Score is exact, not rounded:
+    # decay rescales every score by one shared factor, so exact order holds as
+    # the clock advances, while a decimal grid slid between near-tied shards
+    # and flipped them between calls. bm25 (more negative == stronger, absent
+    # treated as weakest) breaks exact score ties by match strength, then
+    # (_db_index, id) ASC pins true ties so identical queries never reorder.
     def _tier(x):
         if x.get("_fuzzy"):
             return 2
@@ -1845,7 +1844,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
             return 1
         return 0
     results.sort(key=lambda x: (_tier(x),
-                                -round(x.get("final_score", 0.0), 6),
+                                -x.get("final_score", 0.0),
                                 x.get("bm25_score") or 0.0,
                                 x.get("_db_index", 0),
                                 x.get("id", 0)))
@@ -2161,7 +2160,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                     "(embed model changed?)", i, cache["dim"], qdim)
             if not scored:
                 return db_rows
-            scored.sort(key=lambda t: (-round(t[0], 6), t[1]))
+            scored.sort(key=lambda t: (-t[0], t[1]))
             top = scored[:limit]
             placeholders = ",".join("?" for _ in top)
             by_id = {sid: score for score, sid in top}
@@ -2194,9 +2193,10 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     for _i, db_rows in _run_db_scans(_scan_db):
         results.extend(db_rows)
 
-    # Deterministic order: score DESC (rounded so sub-epsilon temporal-decay
-    # jitter doesn't reorder near-ties run-to-run), then (_db_index, id) ASC.
-    results.sort(key=lambda x: (-round(x.get("final_score", 0.0), 6), x.get("_db_index", 0), x.get("id", 0)))
+    # Deterministic order: exact score DESC, then (_db_index, id) ASC. Not
+    # rounded: decay rescales every score by one shared factor, so exact order
+    # holds as the clock advances, while a decimal grid flips near-ties.
+    results.sort(key=lambda x: (-x.get("final_score", 0.0), x.get("_db_index", 0), x.get("id", 0)))
     top_results = results[:limit]
 
     history.log_events([(item["id"], item["_db_index"], "ACCESSED") for item in top_results])
@@ -2265,7 +2265,7 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
     # "vault_x_<hash>"), and Python 3 refuses int<str — one tied score across
     # lanes and the whole federated merge raised TypeError. The tie-break only
     # needs determinism, not numeric order, so lexicographic is sufficient.
-    merged.sort(key=lambda x: (-round(x["final_score"], 6),
+    merged.sort(key=lambda x: (-x["final_score"],
                                str(x.get("_db_index", 0)), str(x.get("id", 0))))
     return merged
 
@@ -2641,9 +2641,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         item["utility_score_tripartite"] = u_shard
         scored_results.append(item)
     
-    # Sort candidates by the tripartite score. Round the score so sub-epsilon
-    # temporal-decay jitter can't reorder near-ties run-to-run; exact ties then
-    # break deterministically by (_db_index, id).
+    # Sort candidates by the exact tripartite score; exact ties break by
+    # (_db_index, id). Do not round: decay rescales every score by one shared
+    # factor, so exact order is stable as the clock advances, but a fixed decimal
+    # grid slides between near-tied shards and flips them between calls.
     # Known-item tier: a shard whose title IS the query outranks everything else.
     # RRF flattens rank (k=60: #1 and #20 differ by <30%) and the decay x density
     # prior then let newer partial matches bury exact titles; the tier restores
@@ -2652,7 +2653,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     for item in scored_results:
         item["_title_exact"] = _title_hit(qnorm, item.get("title"))
     scored_results.sort(
-        key=lambda x: (not x["_title_exact"], bool(x.get("_expired")), -round(x["utility_score_tripartite"], 6),
+        key=lambda x: (not x["_title_exact"], bool(x.get("_expired")), -x["utility_score_tripartite"],
                        x.get("_db_index", 0), x.get("id", 0)))
     
     # Dynamic Thresholding / Drop bottom 50% if we have many candidates

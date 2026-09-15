@@ -53,3 +53,36 @@ def test_density_score_flows_into_retrieve():
     # The column round-trips (present on the row, not dropped by the query).
     row = shards.get_shard_by_id(res[0]["id"], res[0]["_db_index"])
     assert row is not None and "density_score" in row
+
+
+def test_retrieve_order_is_invariant_to_clock_advance(monkeypatch):
+    """Ranking must not depend on when the query runs.
+
+    A shared-clock exponential decay rescales every score by the same factor,
+    so exact-score order cannot change as the clock advances. Rounding scores
+    to a fixed decimal grid broke that: shards captured ~0.3s apart (a slow
+    disk) score ~1e-7 apart, and as the clock moved the grid slid between
+    near-tied neighbours and flipped them. The clock is faked, so this is
+    deterministic rather than timing-dependent.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    class _Clock(datetime):
+        t = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.t.astimezone(tz) if tz else cls.t
+
+    monkeypatch.setattr(shards, "datetime", _Clock)
+
+    for i in range(6):
+        shards.capture("KNOWLEDGE", f"Automation tool {i}",
+                       f"This automation tool number {i} handles pipeline automation.")
+        _Clock.t += timedelta(seconds=0.3)
+
+    first = [(r["_db_index"], r["id"]) for r in shards.retrieve("automation", limit=5)]
+    for step in range(1, 25):
+        _Clock.t += timedelta(seconds=1.7)
+        order = [(r["_db_index"], r["id"]) for r in shards.retrieve("automation", limit=5)]
+        assert order == first, f"order drifted after {step * 1.7:.1f}s of clock advance"
