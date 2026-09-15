@@ -1,17 +1,22 @@
 import os
 import sys
 import json
+import logging
+import math
 import sqlite3
 import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import urlencode
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 
 from . import machine
+
+logger = logging.getLogger(__name__)
 
 # Handoff notes live in <repo>/.handoffs by default. Override with NOUGEN_HANDOFF_DIR
 # so the system works regardless of where it is installed or invoked from.
@@ -38,6 +43,25 @@ def _resolve_project_root() -> Path:
 
 PROJECT_ROOT = _resolve_project_root()
 HANDOFF_DIR = Path(os.environ.get("NOUGEN_HANDOFF_DIR", PROJECT_ROOT / ".handoffs"))
+
+_SPACE_SYNC_TIMEOUT_FALLBACK_S = 30.0
+
+
+def _space_sync_timeout() -> float:
+    """Seconds to wait on the HF Space sync endpoint. NOUGEN_HF_SYNC_TIMEOUT_S wins;
+    an unparsable, non-positive or non-finite value falls back (logged)."""
+    raw = os.environ.get("NOUGEN_HF_SYNC_TIMEOUT_S", "").strip()
+    if not raw:
+        return _SPACE_SYNC_TIMEOUT_FALLBACK_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if math.isfinite(value) and value > 0:
+        return value
+    logger.warning("NOUGEN_HF_SYNC_TIMEOUT_S=%r is not a positive number; using fallback %ss",
+                   raw, _SPACE_SYNC_TIMEOUT_FALLBACK_S)
+    return _SPACE_SYNC_TIMEOUT_FALLBACK_S
 
 _CONSOLE_CONFIGURED = False
 
@@ -1648,7 +1672,7 @@ def push_handoff_to_space(agent: Optional[str] = None, handoff_id: Optional[str]
 
     try:
         req = urllib.request.Request(url, data=req_body, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=_space_sync_timeout()) as resp:
             body = json.loads(resp.read().decode("utf-8"))
             if body.get("status") == "ok":
                 console.print("[bold green]✅ Handoff synced to Space successfully![/bold green]")
@@ -1684,7 +1708,8 @@ def pull_handoff_from_space(agent: Optional[str] = None):
         console.print("[red]Error: HUGGINGFACE_API_KEY not found in vault or environment.[/red]")
         return
 
-    url = f"{space_url}/sync/pull?agent={agent}"
+    # Encode the agent: a label with a space ("Claude Cli") is an invalid request line otherwise.
+    url = f"{space_url}/sync/pull?{urlencode({'agent': agent})}"
 
     headers = {
         "Authorization": f"Bearer {token}"
@@ -1697,7 +1722,7 @@ def pull_handoff_from_space(agent: Optional[str] = None):
 
     try:
         req = urllib.request.Request(url, headers=headers, method="GET")
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=_space_sync_timeout()) as resp:
             data = json.loads(resp.read().decode("utf-8"))
 
             handoff_id = data.get("handoff_id")
