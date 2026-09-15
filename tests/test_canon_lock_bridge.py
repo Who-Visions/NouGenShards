@@ -48,7 +48,7 @@ def _press(text):
 
 
 def test_load_locks_matches_prefixes_only(grid):
-    locks = {l["shard"]: l for l in bridge.load_locks(force=True)}
+    locks = {lk["shard"]: lk for lk in bridge.load_locks(force=True)}
     assert set(locks) == {"101@db3", "102@db3", "104@db3"}
     gm = locks["101@db3"]
     assert gm["authority"] == "gm_lock" and locks["102@db3"]["authority"] == "gm"
