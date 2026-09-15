@@ -44,7 +44,7 @@ def test_parses_log_newest_first_and_skips_non_leg_paths(repo, monkeypatch):
     monkeypatch.setattr(relay_watch, "_git", fake_git({"log": LOG}))
     relay_watch.refresh_cache()
     legs = read_cache()["legs"]
-    assert [l["leg_id"] for l in legs] == ["20260915T100000Z__b", "20260915T090000Z__a"]
+    assert [leg["leg_id"] for leg in legs] == ["20260915T100000Z__b", "20260915T090000Z__a"]
     assert legs[0]["commit"] == "c2"
     assert legs[0]["created_at"] == "2026-09-15T10:00:00+00:00"
     assert legs[1]["path"] == ".handoffs/20260915T090000Z__a.json"
@@ -90,8 +90,8 @@ def test_get_new_legs_since(repo):
     relay_watch.CACHE.parent.mkdir(parents=True)
     legs = [{"leg_id": f"l{i}"} for i in range(1, 5)]
     relay_watch.CACHE.write_text(json.dumps({"legs": legs}), encoding="utf-8")
-    assert [l["leg_id"] for l in relay_watch.get_new_legs_since()] == ["l1", "l2", "l3"]
-    assert [l["leg_id"] for l in relay_watch.get_new_legs_since("l3")] == ["l1", "l2"]
+    assert [leg["leg_id"] for leg in relay_watch.get_new_legs_since()] == ["l1", "l2", "l3"]
+    assert [leg["leg_id"] for leg in relay_watch.get_new_legs_since("l3")] == ["l1", "l2"]
     relay_watch.CACHE.write_text("not json", encoding="utf-8")
     assert relay_watch.get_new_legs_since() == []
     relay_watch.CACHE.unlink()
