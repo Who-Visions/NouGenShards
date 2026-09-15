@@ -31,9 +31,12 @@ Usage:
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import secrets
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # Wire-format marker. Bump the suffix if the envelope ever changes; the AAD below
 # binds it so old ciphertext cannot be silently reinterpreted under a new format.
@@ -188,10 +191,13 @@ def _write_recovery_key(raw: bytes) -> str:
             "Encrypting without a recovery path risks permanent data loss."
         ) from exc
     try:
-        from .keymaker import _harden_path  # type: ignore
-        _harden_path(path)
-    except Exception:
-        pass
+        from .keymaker import _harden_path
+        hardened = _harden_path(path)
+    except Exception as exc:
+        logger.warning("failed to harden ACL on recovery key %s: %s", path, exc)
+    else:
+        if not hardened:
+            logger.warning("ACL not restricted on recovery key %s", path)
     return path
 
 
@@ -216,10 +222,13 @@ def _generate_key() -> bytes:
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(stored)
     try:
-        from .keymaker import _harden_path  # type: ignore
-        _harden_path(path)
-    except Exception:
-        pass
+        from .keymaker import _harden_path
+        hardened = _harden_path(path)
+    except Exception as exc:
+        logger.warning("failed to harden ACL on data key %s: %s", path, exc)
+    else:
+        if not hardened:
+            logger.warning("ACL not restricted on data key %s", path)
     return raw
 
 
