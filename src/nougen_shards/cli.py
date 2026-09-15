@@ -1487,8 +1487,8 @@ def get_parser():
 
 
     """Create the CLI parser."""
-    parser = argparse.ArgumentParser(prog="nougen", description="NouGenShards CLI — Powered by NouGenMorph")
-    parser.add_argument("--version", action="version", version=f"NouGenShards v{VERSION} (NouGenMorph Engine)")
+    parser = argparse.ArgumentParser(prog="nougen", description="NouGenShards CLI — Powered by NouGenAi")
+    parser.add_argument("--version", action="version", version=f"NouGenShards v{VERSION} (Powered by NouGenAi)")
     subparsers = parser.add_subparsers(dest="command")
 
     p_init = subparsers.add_parser("init", help="Bootstrap substrate and onboard")
