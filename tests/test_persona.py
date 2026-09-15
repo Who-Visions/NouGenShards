@@ -285,11 +285,12 @@ def test_ollama_url_bare_bind_host_gets_a_port(monkeypatch):
     assert P._ollama_url() == "http://127.0.0.1:11436"
 
 
-def test_pick_model_is_local_first_and_never_invents():
-    served = ["gemma4:31b-cloud", "gemma4:12b", "gemma4:e2b", "nomic-embed-text:latest"]
-    assert P._pick_model(served) == "gemma4:e2b"
-    assert P._pick_model(served, "gemma4:12b") == "gemma4:12b"
-    assert P._pick_model(served, "gemma4:e4b") == "gemma4:e2b"          # preferred not served: fall through
-    assert P._pick_model(["gemma4:31b-cloud"]) == ""                      # cloud only, not allowed
-    assert P._pick_model(["gemma4:31b-cloud"], allow_cloud=True) == "gemma4:31b-cloud"
+def test_pick_model_custom_first_small_only_never_12b():
+    served = ["gemma4:31b-cloud", "gemma4:12b", "gemma4:e2b", "dav1d:e2b", "sol-ai:e4b", "nomic-embed-text:latest"]
+    assert P._pick_model(served) == "dav1d:e2b"                         # custom fleet model before gemma
+    assert P._pick_model(served, "sol-ai:e4b") == "sol-ai:e4b"           # preferred wins when served
+    assert P._pick_model(served, "gemma4:12b") == "dav1d:e2b"            # 12b is banned even when asked for
+    assert P._pick_model(["gemma4:12b", "gemma4:e4b"]) == "gemma4:e4b"
+    assert P._pick_model(["gemma4:12b"]) == ""                            # nothing allowed: say so
+    assert P._pick_model(["gemma4:31b-cloud"], allow_cloud=True) == ""    # cloud 31b still banned by size
     assert P._pick_model([]) == ""

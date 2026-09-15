@@ -554,21 +554,32 @@ def _ollama_url() -> str:
     return raw
 
 
-_MODEL_PREFERENCE = ("e2b", "e4b", "gemma", "llama", "qwen", "phi")   # smallest local first
+_BANNED_SIZES = ("12b", "27b", "31b")          # GM hard rule 2026-09-15: gemma4 family runs e2b/e4b only on fleet machines
+_SMALL = ("e2b", "e4b")
 
 
 def _pick_model(available: Iterable[str], preferred: str = "", *, allow_cloud: bool = False) -> str:
-    """Pure: choose a classifier model from what the daemon actually serves. An explicit preferred
-    name wins if present; otherwise the first tag matching the preference order; cloud tags
-    (name contains '-cloud') are skipped unless allowed, because member text must stay local."""
-    names = sorted(n for n in available if n and (allow_cloud or "-cloud" not in n))
+    """Pure: choose a classifier model from what the daemon actually serves.
+    Order (GM rule): custom fleet models first (any non-gemma tag at e2b/e4b), then gemma4 e2b/e4b.
+    Never a 12b-class tag. Cloud tags (name contains '-cloud') only when allowed, because member
+    text must stay local. An explicit preferred name wins only if it is served AND allowed."""
+    def ok(n: str) -> bool:
+        low = n.lower()
+        if not n or any(b in low for b in _BANNED_SIZES):
+            return False
+        if "-cloud" in low and not allow_cloud:
+            return False
+        return True
+    names = sorted(n for n in available if ok(n))
     if preferred and preferred in names:
         return preferred
-    for hint in _MODEL_PREFERENCE:
-        for n in names:
-            if hint in n.lower():
-                return n
-    return names[0] if names else ""
+    custom = [n for n in names if not n.lower().startswith("gemma") and any(sz in n.lower() for sz in _SMALL)]
+    if custom:
+        return custom[0]
+    gemma = [n for n in names if n.lower().startswith("gemma4") and any(sz in n.lower() for sz in _SMALL)]
+    if gemma:
+        return gemma[0]
+    return ""
 
 
 def _default_ask(prompt: str) -> str:
