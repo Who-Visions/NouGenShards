@@ -1,4 +1,4 @@
-"""
+r"""
 Antigravity Live Pipe and IPC Bus Adapter (AgyMsgBus).
 
 Provides synchronous Win32 named pipe transport for:
