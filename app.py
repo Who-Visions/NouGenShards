@@ -2145,12 +2145,12 @@ async def xoah_ask_endpoint(
         eval_res = await asyncio.to_thread(throne_governance.evaluate, req.prompt, register=False)
     except Exception as exc:  # pylint: disable=broad-except
         logger.exception("xoah/ask: throne governance failed")
-        errors.append(f"governance: {type(exc).__name__}: {exc}")
+        errors.append(f"governance: {type(exc).__name__}")
     try:
         press_res = await asyncio.to_thread(canon_pressure.pressure, req.prompt, register=False)
     except Exception as exc:  # pylint: disable=broad-except
         logger.exception("xoah/ask: canon pressure failed")
-        errors.append(f"pressure: {type(exc).__name__}: {exc}")
+        errors.append(f"pressure: {type(exc).__name__}")
     system_ctx = (
         f"You are Shadow Xoah (Stage {eval_res.get('acting_stage', 9)}). "
         f"Governance Mode: {eval_res.get('mode', 'OBSERVE')}. "
@@ -2163,7 +2163,7 @@ async def xoah_ask_endpoint(
     except Exception as exc:  # pylint: disable=broad-except
         logger.exception("xoah/ask: rhea failed")
         resp = {"answer": None, "brain": "none"}
-        errors.append(f"rhea: {type(exc).__name__}: {exc}")
+        errors.append(f"rhea: {type(exc).__name__}")
     out = {
         "answer": resp.get("answer"),
         "brain": resp.get("brain"),
