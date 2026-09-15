@@ -1866,6 +1866,9 @@ def get_parser():
     p_bye.add_argument("--goal", "-g", default=None, help="Goal for the handoff")
     p_bye.add_argument("--summary", "-m", default="", help="Session summary for the handoff")
     p_bye.add_argument("--dry-run", action="store_true", help="Preview without writing a handoff")
+    p_bye.add_argument("--publish-leg", action="store_true",
+                       help="Also commit+push a real relay leg for this session close (not just a local handoff)")
+    p_bye.add_argument("--no-shard", action="store_true", help="Skip writing a verified session-close shard")
     p_bye.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_hijack = subparsers.add_parser("hijack", help="Repoint a foreign/legacy handoff record onto this node")
@@ -2832,6 +2835,7 @@ def cmd_bye(args):
     import json as _json
     report = session_probe.run_bye(
         agent=args.agent, goal=args.goal, summary=args.summary, dry_run=args.dry_run,
+        publish_leg=args.publish_leg, write_shard=not args.no_shard,
     )
     if getattr(args, "json", False):
         print(_json.dumps(report.__dict__, default=str, indent=2))
@@ -2846,6 +2850,14 @@ def cmd_bye(args):
         print(f"  ✅ Handoff written: {report.handoff_path}")
     elif args.dry_run:
         print("  [DRY RUN] No handoff written")
+    if report.shard_verified is not None:
+        mark = "✅" if report.shard_verified else "⚠️"
+        print(f"  {mark} Session shard: {report.shard_note}")
+    if report.relay_leg_published is not None:
+        if report.relay_leg_published:
+            print(f"  ✅ Relay leg published: {report.relay_leg_id}")
+        else:
+            print(f"  ⚠️ Relay leg NOT published: {report.relay_leg_id}")
     if report.usage:
         parts = [
             f"{label}: {u.get('total_tokens', 0):,} tok / ${u.get('estimated_cost', 0.0):.2f}"

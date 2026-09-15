@@ -83,6 +83,41 @@ def _repo_git_status(repo: Path) -> Dict:
     }
 
 
+SESSION_DOMAIN = "nougen-session-log"
+
+
+def capture_session_shard(title: str, body: str, tags: List[str],
+                           domain_key: str = SESSION_DOMAIN,
+                           event_type: str = "insight") -> tuple[bool, str]:
+    """Write a hi/bye shard to the canonical vault and confirm it landed by
+    reading it back, instead of trusting core.capture()'s bool alone.
+
+    Merged in from whoart/antigravity's nougen_canon.py (relay leg
+    20260915T005638Z): before this, a probe's session note either went
+    nowhere or landed in whatever .vault the process cwd happened to
+    resolve, silently. core.capture() in this repo returns bool only (no
+    shard id), so verification here is by retrieve() + title match rather
+    than a row-id lookup — same fallback whoart's own probe used when no id
+    came back. MemoryError is caught explicitly: a low-RAM node (whoart:
+    1.5GB free) can capture successfully and then OOM loading vector caches
+    just to confirm it."""
+    try:
+        from . import core
+        ok = core.capture(event_type, title, body, tags=tags, domain_key=domain_key)
+        if not ok:
+            return False, "core.capture() returned False"
+        try:
+            hits = core.retrieve(title, limit=5, domain_key=domain_key)
+        except MemoryError:
+            return False, "captured, but recall ran out of memory while verifying"
+        verified = any(h.get("title") == title for h in hits)
+        return verified, "verified by recall" if verified else "captured but not found on recall"
+    except MemoryError:
+        return False, "MemoryError during capture (low free RAM)"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 def local_time_stamp() -> str:
     """Fresh 12-hour local-time stamp, read from the system clock/tz at call
     time — never cached, never hardcoded to a zone. `%-I`/`%#I` (no leading
@@ -148,6 +183,92 @@ def read_relay(limit: int = 5) -> Dict:
     count_match = re.search(r"(\d+)\s+leg\(s\)\s+waiting", text)
     count = int(count_match.group(1)) if count_match else len(legs)
     return {"armed": True, "count": count, "legs": legs[:limit]}
+
+
+def publish_bye_leg(goal: str, body: str, agent: str,
+                     target_agent: Optional[str] = None, dry_run: bool = False) -> tuple[bool, str]:
+    """Write a real relay leg for this bye — commit + push to the board every
+    lane reads — instead of a loose local-only handoff file.
+
+    Merged in from whoart/antigravity's nougen_canon.py (relay leg
+    20260915T005638Z__whoart__antigravity): a bye that only wrote
+    .handoffs/*.json locally was invisible to every other node. This drives
+    `nougen relay create` in-process (same pattern as read_relay), then
+    commits and pushes the two files it wrote, same as the reference
+    implementation — the relay CLI's `create` only stages files on disk, it
+    does not commit or push on its own."""
+    if dry_run:
+        return True, f"(dry run) would publish: {goal}"
+
+    from . import cli as _cli
+    import tempfile as _tempfile
+
+    registry = _cli.find_relay_registry()
+    if registry is None:
+        return False, "no NouGenRelay registry found"
+
+    stamped = (
+        f"host: {machine.machine_identity().get('host', 'unknown')}\n"
+        f"session_id: {agent} probe {datetime.now().strftime('%Y%m%dT%H%M%S')}\n\n"
+        + body.rstrip() + "\n"
+    )
+    fd, path = _tempfile.mkstemp(suffix=".md", prefix="probe_leg_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(stamped)
+
+        relay_main = _cli._import_relay_main(registry)
+        argv = ["relay", "create", "-g", goal, "-M", path]
+        if target_agent:
+            argv += ["--target-agent", target_agent]
+        buf = io.StringIO()
+        prev_cwd, prev_argv = os.getcwd(), sys.argv
+        os.chdir(registry)
+        sys.argv = argv
+        prev_env = os.environ.get("NOUGEN_AGENT")
+        os.environ["NOUGEN_AGENT"] = agent
+        try:
+            with contextlib.redirect_stdout(buf):
+                relay_main()
+        except SystemExit:
+            pass
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+        finally:
+            sys.argv = prev_argv
+            os.chdir(prev_cwd)
+            if prev_env is None:
+                os.environ.pop("NOUGEN_AGENT", None)
+            else:
+                os.environ["NOUGEN_AGENT"] = prev_env
+
+        text = buf.getvalue()
+        leg_id = None
+        for line in text.splitlines():
+            if "handoff written:" in line:
+                leg_id = line.split("handoff written:", 1)[1].strip().split("/")[-1]
+                leg_id = leg_id[:-len(".md")] if leg_id.endswith(".md") else leg_id
+        if not leg_id:
+            return False, f"relay create did not report a leg id: {text.strip()[-200:]}"
+
+        def _git(*args):
+            return subprocess.run(["git", *args], cwd=registry, capture_output=True,
+                                   text=True, timeout=120, check=False)
+
+        _git("add", f".handoffs/{leg_id}.json", f".handoffs/{leg_id}.md")
+        commit = _git("commit", "-q", "-m", f"handoff({agent}): {goal}"[:200])
+        if commit.returncode != 0:
+            return False, f"{leg_id} written but commit failed: {(commit.stderr or commit.stdout).strip()[-200:]}"
+        _git("pull", "--rebase", "--autostash", "--quiet", "origin", "main")
+        push = _git("push", "-q", "origin", "HEAD:main")
+        if push.returncode != 0:
+            return False, f"{leg_id} committed locally but push failed: {push.stderr.strip()[-200:]}"
+        return True, leg_id
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def pick_next_play(legs: List[Dict], identity: Dict[str, str]) -> Optional[str]:
@@ -230,6 +351,10 @@ class ByeReport:
     handoff_path: Optional[str] = None
     orphan_ports: List[tuple] = field(default_factory=list)
     primer: str = ""
+    shard_verified: Optional[bool] = None
+    shard_note: str = ""
+    relay_leg_published: Optional[bool] = None
+    relay_leg_id: str = ""
 
 
 def run_hi(fleet: bool = True) -> HiReport:
@@ -269,20 +394,25 @@ def run_bye(
     goal: Optional[str] = None,
     summary: str = "",
     dry_run: bool = False,
+    publish_leg: bool = False,
+    write_shard: bool = True,
 ) -> ByeReport:
-    """Session-close probe: sweep dirty repos, write a handoff, hand back a
+    """Session-close probe: sweep dirty repos, write a handoff, capture a
+    verified shard, optionally publish a real relay leg, hand back a
     3-line primer for whoever picks this up next."""
     repos = [_repo_git_status(r) for r in _discover_repos() if r.exists()]
     total_dirty = sum(r["dirty"] for r in repos)
     total_unpushed = sum(r["unpushed"] for r in repos)
     orphan = [(p, label) for p, label in DEV_SERVER_PORTS if _check_port(p)]
+    agent = agent or handoff.detect_current_agent()
+
+    msg = summary or (
+        f"Session closed {local_time_stamp()} with {total_dirty} dirty file(s) across "
+        f"{sum(1 for r in repos if r['dirty'])} repo(s)."
+    )
 
     handoff_path = None
     if not dry_run:
-        msg = summary or (
-            f"Session closed {local_time_stamp()} with {total_dirty} dirty file(s) across "
-            f"{sum(1 for r in repos if r['dirty'])} repo(s)."
-        )
         path = handoff.create_handoff(message=msg, agent=agent, goal=goal)
         handoff_path = str(path) if path else None
 
@@ -293,6 +423,20 @@ def run_bye(
     if orphan:
         primer_bits.append(f"Ports still up: {', '.join(str(p) for p, _ in orphan)}")
     primer = " | ".join(primer_bits) or "Clean handoff — nothing pending."
+
+    shard_verified, shard_note = (None, "")
+    if write_shard and not dry_run:
+        title = f"[bye] {machine.machine_identity().get('host', 'unknown')}: {goal or msg[:80]}"
+        shard_verified, shard_note = capture_session_shard(
+            title=title, body=msg, tags=["bye", "session-close", agent],
+        )
+
+    leg_published, leg_id = (None, "")
+    if publish_leg and not dry_run:
+        leg_published, leg_id = publish_bye_leg(
+            goal=goal or f"[bye] {machine.machine_identity().get('host', 'unknown')}: {msg[:80]}",
+            body=msg, agent=agent,
+        )
 
     try:
         usage = usage_snapshot()
@@ -305,6 +449,10 @@ def run_bye(
         total_dirty=total_dirty,
         total_unpushed=total_unpushed,
         handoff_path=handoff_path,
+        shard_verified=shard_verified,
+        shard_note=shard_note,
+        relay_leg_published=leg_published,
+        relay_leg_id=leg_id,
         orphan_ports=orphan,
         primer=primer,
     )
