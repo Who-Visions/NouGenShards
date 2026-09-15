@@ -2818,6 +2818,13 @@ def cmd_hi(args):
         print(f"    • {leg['who']} — {leg['goal']}  [{leg['id']}]")
     if report.next_play:
         print(f"  ▶ Next play: {report.next_play}")
+    if report.usage:
+        parts = [
+            f"{label}: {u.get('total_tokens', 0):,} tok / ${u.get('estimated_cost', 0.0):.2f}"
+            for label, u in report.usage.items() if u.get("ledger_present")
+        ]
+        if parts:
+            print(f"  Usage (local ledger, shadow cost): {' | '.join(parts)}")
 
 
 def cmd_bye(args):
@@ -2839,6 +2846,13 @@ def cmd_bye(args):
         print(f"  ✅ Handoff written: {report.handoff_path}")
     elif args.dry_run:
         print("  [DRY RUN] No handoff written")
+    if report.usage:
+        parts = [
+            f"{label}: {u.get('total_tokens', 0):,} tok / ${u.get('estimated_cost', 0.0):.2f}"
+            for label, u in report.usage.items() if u.get("ledger_present")
+        ]
+        if parts:
+            print(f"  Usage (local ledger, shadow cost): {' | '.join(parts)}")
     print(f"  Primer: {report.primer}")
 
 

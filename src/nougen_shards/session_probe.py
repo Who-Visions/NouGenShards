@@ -163,6 +163,30 @@ def pick_next_play(legs: List[Dict], identity: Dict[str, str]) -> Optional[str]:
     return f"{legs[0]['id']}: {legs[0].get('goal', '')}"
 
 
+def usage_snapshot() -> Dict[str, Dict]:
+    """Local-ledger token usage for day/week/month, read from this node's own
+    usage_logs (billing.usage_summary). This is NOT the fleet tracker's
+    exported dailies -- phoebus has no export scheduler (that lives on
+    blade), so a stale/missing fleet daily still needs a manual
+    `tracker_daily` export or backfill; this just answers "where are we
+    today" from what this node has actually metered, cheaply, every hi/bye."""
+    from . import billing
+    snapshot: Dict[str, Dict] = {}
+    for period, label in (("24h", "day"), ("week", "week"), ("month", "month")):
+        try:
+            s = billing.usage_summary(period)
+        except Exception as exc:
+            snapshot[label] = {"error": str(exc)}
+            continue
+        snapshot[label] = {
+            "invocations": s.get("invocations", 0),
+            "total_tokens": s.get("total_tokens", 0),
+            "estimated_cost": s.get("estimated_cost", 0.0),
+            "ledger_present": s.get("ledger_present", False),
+        }
+    return snapshot
+
+
 def _fleet_pulse() -> Dict[str, bool]:
     """Best-effort reachability of sibling nodes, via SSH config aliases
     already used fleet-wide (blade1tb, whoart) rather than a private
@@ -193,11 +217,13 @@ class HiReport:
     relay_open_count: int = 0
     relay_legs: List[Dict] = field(default_factory=list)
     next_play: Optional[str] = None
+    usage: Dict[str, Dict] = field(default_factory=dict)
 
 
 @dataclass
 class ByeReport:
     local_time: str = ""
+    usage: Dict[str, Dict] = field(default_factory=dict)
     repos: List[Dict] = field(default_factory=list)
     total_dirty: int = 0
     total_unpushed: int = 0
@@ -219,6 +245,10 @@ def run_hi(fleet: bool = True) -> HiReport:
     pulse = _fleet_pulse() if fleet else {}
     relay = read_relay()
     next_play = pick_next_play(relay.get("legs", []), identity)
+    try:
+        usage = usage_snapshot()
+    except Exception:
+        usage = {}
     return HiReport(
         identity=identity,
         local_time=local_time_stamp(),
@@ -230,6 +260,7 @@ def run_hi(fleet: bool = True) -> HiReport:
         relay_open_count=relay.get("count", 0),
         relay_legs=relay.get("legs", []),
         next_play=next_play,
+        usage=usage,
     )
 
 
@@ -263,8 +294,13 @@ def run_bye(
         primer_bits.append(f"Ports still up: {', '.join(str(p) for p, _ in orphan)}")
     primer = " | ".join(primer_bits) or "Clean handoff — nothing pending."
 
+    try:
+        usage = usage_snapshot()
+    except Exception:
+        usage = {}
     return ByeReport(
         local_time=local_time_stamp(),
+        usage=usage,
         repos=repos,
         total_dirty=total_dirty,
         total_unpushed=total_unpushed,
