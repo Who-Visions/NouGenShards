@@ -7,6 +7,7 @@ Architecture: Valerion 21-step cognitive loop. Weighted multi-signal relevance b
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -223,6 +224,29 @@ def get_active_db_index() -> int:
     return get_routing_index(hashlib.md5(b"default").hexdigest())
 
 
+DEFAULT_SQLITE_TIMEOUT_S = 10.0
+
+
+def sqlite_timeout_s() -> float:
+    """Seconds sqlite waits on a locked vault DB; NOUGEN_SQLITE_TIMEOUT_S overrides.
+
+    Read at connect time so a busy fleet node can raise it without a restart.
+    Anything that is not a positive finite number logs and uses the default.
+    """
+    raw = os.environ.get("NOUGEN_SQLITE_TIMEOUT_S", "").strip()
+    if not raw:
+        return DEFAULT_SQLITE_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value <= 0:
+        logger.warning("NOUGEN_SQLITE_TIMEOUT_S=%r is not a positive number; using %ss",
+                       raw, DEFAULT_SQLITE_TIMEOUT_S)
+        return DEFAULT_SQLITE_TIMEOUT_S
+    return value
+
+
 def get_connection(index: int):
     """Establishes an SQLite connection with WAL enabled (Module 19: Stabilize Reasoning).
 
@@ -239,7 +263,7 @@ def get_connection(index: int):
         conn.row_factory = sqlite3.Row
         return conn
     try:
-        conn = sqlite3.connect(str(path), timeout=10.0)
+        conn = sqlite3.connect(str(path), timeout=sqlite_timeout_s())
     except sqlite3.OperationalError as exc:
         # "unable to open database file" is how the descriptor ceiling shows
         # up: the file is there, the process just cannot open one more. Every
@@ -306,7 +330,7 @@ def quarantine_malformed_dbs() -> list:
         for attempt in range(2):
             reason = None
             try:
-                conn = sqlite3.connect(str(path), timeout=10.0)
+                conn = sqlite3.connect(str(path), timeout=sqlite_timeout_s())
                 try:
                     row = conn.execute("PRAGMA quick_check(1);").fetchone()
                 finally:
@@ -552,7 +576,7 @@ def _get_dedup_connection():
     databases per capture. The per-DB UNIQUE(file_hash) constraint remains
     the authority; this index is a router/cache in front of it.
     """
-    conn = sqlite3.connect(str(get_dedup_path()), timeout=10.0)
+    conn = sqlite3.connect(str(get_dedup_path()), timeout=sqlite_timeout_s())
     mode = get_vault_journal_mode()
     conn.execute(f"PRAGMA journal_mode={mode};")
     conn.execute("""
