@@ -9,7 +9,6 @@ person, character, or story.
 """
 from __future__ import annotations
 
-import pytest
 
 from nougen_shards import canon_pressure as cp
 
