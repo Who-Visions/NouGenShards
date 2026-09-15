@@ -813,6 +813,34 @@ def _start_recall_warmup() -> None:
     _threading.Thread(target=_run, name="nougen-recall-warmup", daemon=True).start()
 
 
+def _start_boot_quarantine(then=None) -> None:
+    """Heal the grid on a daemon thread, then run `then` (the recall warm-up).
+
+    The quick_check pass is O(vault size). It used to run inline in _lifespan,
+    before the node binds its port: on WhoArt (9/14/2026, 6.9 GB grid, ~44 MB/s)
+    it held the node unbound for 7+ minutes and read 15 GB before it was killed,
+    so whoart-vault answered nothing. Off the critical path the node binds in
+    seconds. Ordering is kept where it matters: the warm-up still starts only
+    after the heal. A request that lands on a not-yet-healed DB is covered by
+    the per-DB scan guards, the same fallback core.quarantine_malformed_dbs
+    documents for a file it cannot rename."""
+    import threading as _threading
+
+    def _run():
+        started = time.perf_counter()
+        try:
+            for q in core.quarantine_malformed_dbs():
+                logger.warning("boot quarantine: grid DB %(index)s -> %(moved_to)s "
+                               "(%(reason)s)", q)
+            logger.info("boot quarantine pass done in %.1fs", time.perf_counter() - started)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("boot quarantine skipped: %s: %s", type(exc).__name__, exc)
+        if then is not None:
+            then()
+
+    _threading.Thread(target=_run, name="nougen-boot-quarantine", daemon=True).start()
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
     # Descriptor headroom FIRST: launchd starts this process with a soft
@@ -822,14 +850,10 @@ async def _lifespan(_app):
     # misses its deadline on every query (phoebus, 2026-09-04). The process may
     # raise its own soft limit, so it does - before the warm-up opens anything.
     fd_budget.ensure_fd_headroom()
-    _start_recall_warmup()
-    # Heal the grid before anything scans it: malformed DB files are renamed
-    # aside (kept for forensics) and recreated empty, so healthy indices and
-    # their rows survive instead of a whole-volume wipe. Gated by
-    # NOUGEN_QUARANTINE_MALFORMED_ON_BOOT; see core.quarantine_malformed_dbs.
-    for q in core.quarantine_malformed_dbs():
-        logger.warning("boot quarantine: grid DB %(index)s -> %(moved_to)s "
-                       "(%(reason)s)", q)
+    # Heal the grid (malformed DB files renamed aside and recreated empty; gated by
+    # NOUGEN_QUARANTINE_MALFORMED_ON_BOOT), then warm the recall cache: both on a
+    # daemon thread so the node binds its port now, not after an O(vault) scan.
+    _start_boot_quarantine(then=_start_recall_warmup)
     _seed_upstreams()
     # The streamable-HTTP session manager needs a running task group.
     async with node_mcp.session_manager.run():
