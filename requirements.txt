@@ -156,7 +156,7 @@ pillow==12.3.0
     # via gradio
 pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
     # via cffi
-pydantic==2.13.4
+pydantic==2.13.5
     # via
     #   nougen-shards (pyproject.toml)
     #   fastapi
@@ -165,7 +165,7 @@ pydantic==2.13.4
     #   mcp-types
     #   ollama
     #   openai
-pydantic-core==2.46.4
+pydantic-core==2.46.5
     # via pydantic
 pydub==0.25.1
     # via gradio
