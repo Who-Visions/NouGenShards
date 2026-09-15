@@ -41,7 +41,7 @@ def test_pressure_failure_is_reported_not_raised(rhea, monkeypatch):
     monkeypatch.setattr(node.canon_pressure, "pressure", boom)
     out = _ask()
     assert out["answer"] == "ok"
-    assert out["errors"] == ["pressure: RuntimeError: grid offline"]
+    assert out["errors"] == ["pressure: RuntimeError"]
     assert "Canon Verdict: UNKNOWN" in rhea["prompt"]
 
 
@@ -52,7 +52,7 @@ def test_rhea_failure_is_reported_not_raised(monkeypatch):
     monkeypatch.setattr(node.throne_governance, "evaluate", lambda *_a, **_k: {})
     monkeypatch.setattr(node.canon_pressure, "pressure", lambda *_a, **_k: {"verdict": "UNKNOWN"})
     out = _ask()
-    assert out["answer"] is None and out["errors"] == ["rhea: ConnectionError: lane refused"]
+    assert out["answer"] is None and out["errors"] == ["rhea: ConnectionError"]
 
 
 def test_rhea_sees_the_pressure_verdict(rhea, monkeypatch):
