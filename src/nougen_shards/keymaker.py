@@ -450,21 +450,51 @@ def ingest_secret(key: str, value: str):
         conn.close()
 
 
+# Fallback only; NOUGEN_ICACLS_TIMEOUT_S overrides it at call time.
+_ICACLS_TIMEOUT_DEFAULT_S = 10.0
+
+
 def _harden_path(target_path) -> None:
     """Restrict a file's ACL to the current user only (Windows icacls; no-op elsewhere).
 
     Extracted from the inline block in ingest_service_account so callers outside this
     module (private_vault.py) can lock down key/recovery files the same way, instead
     of importing a name that never existed here.
+
+    Never raises: the caller has already written the file and must keep it, but a
+    lock that did not take is logged as a warning instead of passing silently.
     """
     if os.name != "nt":
         return
     import subprocess  # pylint: disable=import-outside-toplevel
     user = os.environ.get("USERNAME", "")
-    if user:
-        subprocess.run(
+    if not user:
+        logger.warning("USERNAME unset; cannot restrict ACL on %s", target_path)
+        return
+    raw_timeout = os.environ.get("NOUGEN_ICACLS_TIMEOUT_S", "")
+    timeout = _ICACLS_TIMEOUT_DEFAULT_S
+    if raw_timeout:
+        try:
+            timeout = float(raw_timeout)
+            if timeout <= 0:
+                raise ValueError(raw_timeout)
+        except ValueError:
+            logger.warning("NOUGEN_ICACLS_TIMEOUT_S=%r is not a positive number; using %.1fs",
+                           raw_timeout, _ICACLS_TIMEOUT_DEFAULT_S)
+            timeout = _ICACLS_TIMEOUT_DEFAULT_S
+    try:
+        res = subprocess.run(
             ["icacls", str(target_path), "/inheritance:r", "/grant:r", f"{user}:F"],
-            capture_output=True, check=False, timeout=10)
+            capture_output=True, check=False, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("icacls could not run on %s: %s", target_path, exc)
+        return
+    if res.returncode != 0:
+        err = res.stderr
+        if isinstance(err, bytes):
+            err = err.decode(errors="replace")
+        logger.warning("icacls exited %d on %s: %s", res.returncode, target_path,
+                       (err or "").strip())
 
 
 def ingest_service_account(json_data: str):

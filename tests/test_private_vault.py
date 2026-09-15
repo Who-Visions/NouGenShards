@@ -18,7 +18,9 @@ These tests pin the properties that make that safe:
   5. file encryption never deletes an original it could not verify.
 """
 import base64
+import os
 import sqlite3
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -288,6 +290,71 @@ def test_key_generation_hardens_the_key_file(tmp_path, monkeypatch, caplog):
         except pv.PrivateVaultError:
             pytest.skip("no DPAPI or OS keyring available on this lane")
     assert any("harden" in rec.message for rec in caplog.records)
+
+
+def test_key_generation_calls_harden_path_on_key_file(tmp_path, monkeypatch):
+    """Success path: the freshly written data key file is handed to _harden_path."""
+    monkeypatch.delenv(pv.ENV_KEY, raising=False)
+    key_file = tmp_path / "vault" / "private_key.bin"
+    monkeypatch.setenv(pv.ENV_KEY_FILE, str(key_file))
+    monkeypatch.setenv(pv.ENV_KEY_SEARCH_PATH, str(key_file.parent))
+    pv.reset_key_cache()
+
+    calls = []
+    monkeypatch.setattr("nougen_shards.keymaker._harden_path", lambda p: calls.append(str(p)))
+    try:
+        pv.load_key(create=True)
+    except pv.PrivateVaultError:
+        pytest.skip("no DPAPI or OS keyring available on this lane")
+    hardened = {os.path.normcase(os.path.abspath(c)) for c in calls}
+    assert os.path.normcase(str(key_file)) in hardened
+
+
+def _fake_icacls(monkeypatch, result=None, exc=None):
+    seen = {}
+
+    def _run(*args, **kwargs):
+        seen.update(kwargs)
+        if exc is not None:
+            raise exc
+        return result
+
+    monkeypatch.setenv("USERNAME", "someone")
+    monkeypatch.setattr(subprocess, "run", _run)
+    return seen
+
+
+@pytest.mark.skipif(os.name != "nt", reason="icacls hardening is Windows-only")
+@pytest.mark.parametrize("result,exc", [
+    (subprocess.CompletedProcess(args=[], returncode=5, stdout=b"", stderr=b"Access is denied."), None),
+    (None, subprocess.TimeoutExpired(cmd="icacls", timeout=1)),
+])
+def test_harden_path_logs_icacls_failure_without_raising(monkeypatch, caplog, tmp_path, result, exc):
+    """A non-zero exit or a hung icacls used to vanish (check=False); now it warns."""
+    from nougen_shards import keymaker
+    _fake_icacls(monkeypatch, result=result, exc=exc)
+    with caplog.at_level("WARNING", logger="nougen_shards.keymaker"):
+        keymaker._harden_path(tmp_path / "f")
+    assert any("icacls" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="icacls hardening is Windows-only")
+@pytest.mark.parametrize("raw", ["bogus", "0", "-3"])
+def test_harden_path_bad_timeout_env_falls_back(monkeypatch, tmp_path, raw):
+    from nougen_shards import keymaker
+    monkeypatch.setenv("NOUGEN_ICACLS_TIMEOUT_S", raw)
+    seen = _fake_icacls(monkeypatch, result=subprocess.CompletedProcess(args=[], returncode=0))
+    keymaker._harden_path(tmp_path / "f")
+    assert seen["timeout"] == keymaker._ICACLS_TIMEOUT_DEFAULT_S
+
+
+@pytest.mark.skipif(os.name != "nt", reason="icacls hardening is Windows-only")
+def test_harden_path_timeout_env_override(monkeypatch, tmp_path):
+    from nougen_shards import keymaker
+    monkeypatch.setenv("NOUGEN_ICACLS_TIMEOUT_S", "2.5")
+    seen = _fake_icacls(monkeypatch, result=subprocess.CompletedProcess(args=[], returncode=0))
+    keymaker._harden_path(tmp_path / "f")
+    assert seen["timeout"] == 2.5
 
 
 # --- migration --------------------------------------------------------------
