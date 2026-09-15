@@ -514,9 +514,13 @@ def classify_inbound(text: str, registry_path: Optional[Path] = None, *, surface
     strength = min(1.0, top / 6.0)                       # two lexicon hits = full strength
     margin = min(1.0, (top - second) / top) if top > 0 else 0.0
     confidence = round(0.3 * coverage + 0.4 * strength + 0.3 * margin, 3)
+    lex = tuple(k for k, _ in sorted(sig.lexicon.items(), key=lambda t: (-t[1], t[0])))
+    if top <= 0:                                         # nothing matched: say so, never pick alphabetically
+        return Inbound(audience="", market="", language=lang, coverage=coverage,
+                       register=_register(sig.median_words), lexicon=lex, scores=tuple(scored[:4]),
+                       confidence=confidence)
     best = next(a for a in audiences if a.key == scored[0][1])
     market = next((m for m in markets if m.key == best.market), markets[0])
-    lex = tuple(k for k, _ in sorted(sig.lexicon.items(), key=lambda t: (-t[1], t[0])))
     return Inbound(audience=best.key, market=market.key, language=lang, coverage=coverage,
                    register=_register(sig.median_words), lexicon=lex, scores=tuple(scored[:4]),
                    confidence=confidence)
@@ -543,7 +547,11 @@ def _ollama_url() -> str:
         return "http://127.0.0.1:11434"
     if "://" not in raw:
         raw = "http://" + raw
-    return raw.replace("0.0.0.0", "127.0.0.1").rstrip("/")
+    raw = raw.replace("0.0.0.0", "127.0.0.1").rstrip("/")
+    host = raw.split("://", 1)[1]
+    if ":" not in host:                       # bare host (OLLAMA_HOST=0.0.0.0): add the serve port
+        raw = f"{raw}:{_env_int('NOUGEN_OLLAMA_PORT', 11434)}"
+    return raw
 
 
 def _default_ask(prompt: str) -> str:

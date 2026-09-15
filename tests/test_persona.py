@@ -269,3 +269,17 @@ def test_ollama_url_maps_bind_address_to_loopback(monkeypatch):
     monkeypatch.setenv("NOUGEN_OLLAMA_URL", "")
     monkeypatch.setenv("OLLAMA_HOST", "0.0.0.0:11436")
     assert P._ollama_url() == "http://127.0.0.1:11436"
+
+
+def test_no_match_is_reported_empty_not_alphabetical():
+    ib = P.classify_inbound(NOISE)
+    assert ib.audience == "" and ib.market == "" and ib.confidence == 0.0
+
+
+def test_ollama_url_bare_bind_host_gets_a_port(monkeypatch):
+    monkeypatch.setenv("NOUGEN_OLLAMA_URL", "")
+    monkeypatch.setenv("OLLAMA_HOST", "0.0.0.0")
+    monkeypatch.delenv("NOUGEN_OLLAMA_PORT", raising=False)
+    assert P._ollama_url() == "http://127.0.0.1:11434"
+    monkeypatch.setenv("NOUGEN_OLLAMA_PORT", "11436")
+    assert P._ollama_url() == "http://127.0.0.1:11436"
