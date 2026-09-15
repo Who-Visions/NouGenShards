@@ -289,7 +289,7 @@ def cmd_init(args):
 
     quiet = getattr(args, "json", False)
     if not quiet:
-        print("🪩 Initializing Valerion — The Metameric Memory Engine...")
+        print("🪩 Initializing NouGenMorph — The Universal Synthesis & Evolution Engine...")
     shards.init_db(index=1)
     if not quiet:
         print("✅ Created local-first database substrate.")
@@ -563,6 +563,12 @@ def cmd_chat(args):
 
     if not model:
         print("Error: No model found or configured for this environment.")
+        return
+
+    if isinstance(client, OllamaClient):
+        from .local_chat import run
+        persona = agents.get_agent(persona_name)
+        run(client, model, persona.system_prompt if persona else "", args)
         return
 
     if not args.query:
@@ -1385,7 +1391,7 @@ def cmd_ingest(args):
 
 
 def cmd_dream(args):
-    """Executes the Dream cycle (Autonomous Metameric Evolution)."""
+    """Executes the Dream cycle (Autonomous NouGenMorph Evolution)."""
     if args.action == "wake":
         if not getattr(args, 'json', False):
             print("🌌 Entering the Dream State...  [EXPERIMENTAL: exports an SFT dataset; no live weight update]")
@@ -1481,8 +1487,8 @@ def get_parser():
 
 
     """Create the CLI parser."""
-    parser = argparse.ArgumentParser(prog="nougen", description="NouGenShards CLI — Powered by Valerion")
-    parser.add_argument("--version", action="version", version=f"NouGenShards v{VERSION} (Valerion Engine)")
+    parser = argparse.ArgumentParser(prog="nougen", description="NouGenShards CLI — Powered by NouGenMorph")
+    parser.add_argument("--version", action="version", version=f"NouGenShards v{VERSION} (NouGenMorph Engine)")
     subparsers = parser.add_subparsers(dest="command")
 
     p_init = subparsers.add_parser("init", help="Bootstrap substrate and onboard")
@@ -1524,6 +1530,9 @@ def get_parser():
     p_chat.add_argument("query", nargs="?")
     p_chat.add_argument("--model")
     p_chat.add_argument("--provider")
+    p_chat.add_argument("--json", action="store_true", help="Return answer, context and timing as JSON")
+    p_chat.add_argument("--no-tools", action="store_true", help="Use recall without model tool calls")
+    p_chat.add_argument("--recall-seconds", type=float, default=2.0, help="Recall wait budget (default: 2 seconds)")
     p_chat.add_argument("--agent", "-a", default=None,
                         help="Persona to embody (NouGen, Sol-Ai, Rhea, DavOs, Iris, Kaedra, Griot, Kronos)")
 
@@ -1623,7 +1632,7 @@ def get_parser():
     p_doctor = subparsers.add_parser("doctor", help="Check system health")
     p_doctor.add_argument("--json", action="store_true", help="Machine-readable output")
 
-    p_dream = subparsers.add_parser("dream", help="Autonomous Metameric Evolution (TMEM)")
+    p_dream = subparsers.add_parser("dream", help="Autonomous NouGenMorph Evolution (Dream State)")
     p_dream.add_argument("action", choices=["wake"])
     p_dream.add_argument("--json", action="store_true", help="Machine-readable output")
 
@@ -1635,7 +1644,7 @@ def get_parser():
     p_dashboard = subparsers.add_parser("dashboard", help="Launch visual Cortex HUD")
     p_dashboard.add_argument("--port", type=int, default=4444, help="Port to run on")
 
-    p_pr = subparsers.add_parser("pr", help="PR lease governor + confetti detector (Shang Tsung / pr-agent absorption, Phase 1)")
+    p_pr = subparsers.add_parser("pr", help="PR lease governor + confetti detector (NouGenMorph Absorption, Phase 1)")
     pr_sub = p_pr.add_subparsers(dest="pr_action", required=True)
     p_pr_attach = pr_sub.add_parser("attach", help="Fold an objective into the repo's open PR chain (3-5 objectives/PR), or start a new one")
     p_pr_attach.add_argument("--repo", required=True, help="owner/name")
@@ -1852,8 +1861,8 @@ def keymaker_vault_report() -> list:
 
 
 def cmd_doctor(args):
-    """Verifies installation, database health, and service connectivity (Valerion Engine)."""
-    print("👨‍⚕️ NouGenShards Doctor (Valerion): Running diagnostics...")
+    """Verifies installation, database health, and service connectivity (NouGenMorph Engine)."""
+    print("👨‍⚕️ NouGenShards Doctor (NouGenMorph): Running diagnostics...")
     
     # 1. Check Substrate
     print("\n[Substrate]")
@@ -1882,8 +1891,8 @@ def cmd_doctor(args):
         p_status[name] = alive
         print(f" {'✅' if alive else '❌'} {name.capitalize()}")
 
-    # 4. Check Valerion Engine Modules
-    print("\n[Valerion Cognitive Engines]")
+    # 4. Check NouGenMorph Engine Modules
+    print("\n[NouGenMorph Cognitive Engines]")
     try:
         from . import dream, evolution  # noqa: F401 - imported to probe availability for `nougen doctor`
         print(" ✅ Dream State (TMEM): Ready")

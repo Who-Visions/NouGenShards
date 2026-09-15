@@ -1059,7 +1059,8 @@ class OllamaClient(LocalLLMClient):
 
     def chat_raw(self, model: str, messages: list, tools: Optional[list] = None,
                  num_ctx: Optional[int] = None, manual: bool = False,
-                 timeout: Optional[float] = None) -> dict:
+                 timeout: Optional[float] = None, on_token=None,
+                 output_format=None) -> dict:
         """POST /api/chat (stream false) and return the raw JSON dict.
 
         Used by tool-calling loops that need message.tool_calls intact. Same
@@ -1081,8 +1082,11 @@ class OllamaClient(LocalLLMClient):
         options = {"num_predict": int(os.getenv("NOUGEN_NUM_PREDICT", "1400"))}
         if num_ctx:
             options["num_ctx"] = int(num_ctx)
-        payload: dict = {"model": model, "messages": messages, "stream": False,
+        payload: dict = {"model": model, "messages": messages, "stream": on_token is not None,
                          "options": options}
+        if output_format is not None:
+            payload["format"] = output_format
+            options["temperature"] = 0
         if tools:
             payload["tools"] = tools
         if _v.reason != "already resident":
@@ -1092,7 +1096,24 @@ class OllamaClient(LocalLLMClient):
         req.add_header("Content-Type", "application/json")
         try:
             with urllib.request.urlopen(req, timeout=timeout or _HTTP_TIMEOUT) as res:
-                return json.loads(res.read().decode())
+                if on_token is None:
+                    return json.loads(res.read().decode())
+                message = {"role": "assistant", "content": "", "thinking": "", "tool_calls": []}
+                for line in res:
+                    if not line.strip():
+                        continue
+                    chunk = json.loads(line)
+                    if chunk.get("error"):
+                        return {"error": chunk["error"]}
+                    part = chunk.get("message", {})
+                    for field in ("content", "thinking"):
+                        message[field] += part.get(field) or ""
+                    message["tool_calls"].extend(part.get("tool_calls") or [])
+                    if part.get("content"):
+                        on_token(part["content"])
+                    if chunk.get("done"):
+                        return {**chunk, "message": message}
+                return {"error": "Ollama stream ended before completion"}
         except Exception as exc:  # pylint: disable=broad-except
             return {"error": str(exc)}
 
