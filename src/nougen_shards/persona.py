@@ -398,7 +398,7 @@ def check_output(text: str, persona: "Persona") -> list[str]:
     if "first-language-first" in rules and persona.languages:
         first = _first_body_line(text)
         got = _lang_of(first) if first else ""
-        if first and got != persona.languages[0]:
+        if first and got and got != persona.languages[0]:
             v.append(f"first-language-first: opens in {got or 'unknown'}, expected {persona.languages[0]}")
     if "one-fact-per-line" in rules:
         cap = _env_int("NOUGEN_PERSONA_LINE_MAX_WORDS", 40)
