@@ -450,6 +450,23 @@ def ingest_secret(key: str, value: str):
         conn.close()
 
 
+def _harden_path(target_path) -> None:
+    """Restrict a file's ACL to the current user only (Windows icacls; no-op elsewhere).
+
+    Extracted from the inline block in ingest_service_account so callers outside this
+    module (private_vault.py) can lock down key/recovery files the same way, instead
+    of importing a name that never existed here.
+    """
+    if os.name != "nt":
+        return
+    import subprocess  # pylint: disable=import-outside-toplevel
+    user = os.environ.get("USERNAME", "")
+    if user:
+        subprocess.run(
+            ["icacls", str(target_path), "/inheritance:r", "/grant:r", f"{user}:F"],
+            capture_output=True, check=False, timeout=10)
+
+
 def ingest_service_account(json_data: str):
     """
     Ingests a Google Service Account JSON, saves to file, and stores project metadata.
@@ -483,13 +500,7 @@ def ingest_service_account(json_data: str):
                 f_out.write(payload)
 
         # Lock file ACL to the current user only (constitution 0.2 rule 3)
-        if os.name == "nt":
-            import subprocess  # pylint: disable=import-outside-toplevel
-            user = os.environ.get("USERNAME", "")
-            if user:
-                subprocess.run(
-                    ["icacls", str(target_path), "/inheritance:r", "/grant:r", f"{user}:F"],
-                    capture_output=True, check=False, timeout=10)
+        _harden_path(target_path)
 
         # Store metadata in DB
         ingest_secret(f"GCP_SA_{project_id.upper()}", client_email)
