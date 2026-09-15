@@ -44,10 +44,28 @@ from typing import Iterable, Optional
 # --------------------------------------------------------------------------- #
 
 # Haitian Creole markers: orthographically distinctive function words.
-_KREYOL = {"mwen", "ou", "nou", "yo", "li", "se", "pa", "ki", "sa", "nan", "ak", "gen",
-           "pou", "kote", "kijan", "bonjou", "mesi", "wi", "non", "anpil", "tankou", "konnen"}
-_ENGLISH = {"the", "and", "you", "that", "with", "this", "have", "from", "what", "are",
-            "not", "but", "for", "was", "they", "will", "can", "all", "one", "out"}
+_KREYOL = {
+    "ak", "ane", "ankò", "anpil", "ansanm", "anvan", "ap", "apre", "avè", "avèk", "bagay",
+    "bonjou", "byen", "chak", "deja", "demen", "depi", "di", "dola", "dwe", "epi", "fanmi", "frè",
+    "fè", "gade", "gen", "isit", "janm", "jiskaske", "jodi", "jou", "ka", "kapab", "ki", "kijan",
+    "kilè", "kisa", "kiyès", "konn", "konnen", "kote", "kounya", "kounye", "kòb", "lajan", "lakay",
+    "lapolis", "li", "lè", "lòt", "madanm", "manman", "menm", "mesi", "moun", "mwa", "mwen", "nan",
+    "nou", "oblije", "ou", "pa", "paske", "pitit", "pito", "pou", "poukisa", "poutèt", "pral",
+    "rele", "sa", "se", "semèn", "swa", "sè", "sèlman", "tande", "tankou", "te", "timoun",
+    "toujou", "tout", "travay", "tèt", "vini", "vle", "wi", "wè", "yo", "zanmi"
+}
+_ENGLISH = {
+    "about", "after", "again", "all", "also", "and", "any", "are", "be", "because", "been",
+    "before", "but", "came", "can", "come", "could", "day", "did", "do", "does", "ever", "every",
+    "family", "for", "friend", "from", "get", "got", "had", "has", "have", "he", "her", "here",
+    "him", "his", "house", "how", "husband", "if", "in", "into", "is", "it", "just", "know",
+    "made", "make", "me", "money", "month", "my", "need", "never", "not", "of", "one", "only",
+    "our", "out", "over", "people", "police", "said", "say", "she", "should", "so", "some",
+    "still", "tell", "than", "that", "the", "their", "them", "then", "there", "these", "they",
+    "think", "this", "those", "time", "to", "told", "up", "very", "want", "was", "we", "week",
+    "went", "were", "what", "when", "where", "which", "who", "why", "wife", "will", "with", "work",
+    "would", "year", "yes", "you", "your"
+}
 
 # Operator lexicon families -> affinity signal. Generic vocabularies, not one person's.
 LEXICON: dict[str, set[str]] = {
@@ -357,7 +375,7 @@ def _lang_of(text: str) -> str:
     ht, en = len(wset & _KREYOL), len(wset & _ENGLISH)
     if ht and ht >= en:
         return "ht"
-    return "en" if (en or words) else ""
+    return "en" if en else ""     # no markers either way: undecidable, never a violation
 
 
 def _first_body_line(text: str) -> str:

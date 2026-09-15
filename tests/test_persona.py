@@ -194,3 +194,15 @@ def test_language_tie_breaks_toward_audience_order(tmp_path: Path):
     p = P.resolve(sig, reg)
     assert p.languages == ("ht", "en")
     assert P.check_output("Mwen ap reponn ou." + chr(10) + "I will answer you.", p) == []
+
+
+def test_one_liners_detect_after_widening():
+    assert P._lang_of("I called the police.") == "en"
+    assert P._lang_of("Li te rele lapolis.") == "ht"
+    assert P._lang_of("Gade sètifika maryaj la.") == "ht"
+    assert P._lang_of("A123 B456") == ""
+
+
+def test_first_language_first_ignores_undecidable_opening():
+    p = _ht_persona()
+    assert P.check_output("# T" + chr(10) + "2024-09-24, West Palm Beach" + chr(10) + "Mwen te marye.", p) == []
