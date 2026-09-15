@@ -2814,7 +2814,7 @@ def cmd_hi(args):
         pulse = ", ".join(f"{h}:{'up' if ok else 'down'}" for h, ok in report.fleet_pulse.items())
         print(f"  Fleet pulse: {pulse}")
     if report.orphan_ports:
-        print(f"  Ports already up: {', '.join(f'{p} ({l})' for p, l in report.orphan_ports)}")
+        print(f"  Ports already up: {', '.join(f'{p} ({label})' for p, label in report.orphan_ports)}")
     relay_status = "armed" if report.relay_armed else "unreachable"
     print(f"  Relay: {relay_status}, {report.relay_open_count} open leg(s)")
     for leg in report.relay_legs:
@@ -2845,7 +2845,7 @@ def cmd_bye(args):
         if r["dirty"] or r["unpushed"]:
             print(f"  📁 {r['repo']} ({r['branch']}) — {r['dirty']} dirty, {r['unpushed']} unpushed")
     if report.orphan_ports:
-        print(f"  Ports still up: {', '.join(f'{p} ({l})' for p, l in report.orphan_ports)}")
+        print(f"  Ports still up: {', '.join(f'{p} ({label})' for p, label in report.orphan_ports)}")
     if report.handoff_path:
         print(f"  ✅ Handoff written: {report.handoff_path}")
     elif args.dry_run:

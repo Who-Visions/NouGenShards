@@ -70,7 +70,7 @@ def _repo_git_status(repo: Path) -> Dict:
             return ""
 
     porcelain = run(["status", "--porcelain"])
-    changes = [l for l in porcelain.splitlines() if l.strip()]
+    changes = [line for line in porcelain.splitlines() if line.strip()]
     unpushed_raw = run(["rev-list", "--count", "@{u}..HEAD"])
     return {
         "repo": repo.name,
@@ -305,7 +305,7 @@ def pick_next_play(legs: List[Dict], identity: Dict[str, str]) -> Optional[str]:
     host = (identity.get("host") or "").lower()
     for leg in legs:
         goal = leg.get("goal", "")
-        if f"[-> {host}]" in goal.lower() or f"[-> claude-app]" in goal.lower():
+        if f"[-> {host}]" in goal.lower() or "[-> claude-app]" in goal.lower():
             return f"{leg['id']}: {goal}"
     return f"{legs[0]['id']}: {legs[0].get('goal', '')}"
 
