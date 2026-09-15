@@ -7,24 +7,49 @@ Enables agents and operators to:
 """
 from __future__ import annotations
 
+import logging
+import os
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Any, Optional
 
+log = logging.getLogger(__name__)
+
+# Defaults only; NOUGEN_ARXIV_API_URL / NOUGEN_ARXIV_TIMEOUT_S override at call time.
 ARXIV_API_URL = "http://export.arxiv.org/api/query"
+DEFAULT_ARXIV_TIMEOUT_S = 15.0
+
+
+def _arxiv_api_url() -> str:
+    return os.environ.get("NOUGEN_ARXIV_API_URL", "").strip() or ARXIV_API_URL
+
+
+def _arxiv_timeout_s() -> float:
+    raw = os.environ.get("NOUGEN_ARXIV_TIMEOUT_S", "").strip()
+    if not raw:
+        return DEFAULT_ARXIV_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if value <= 0:
+        log.warning("Invalid NOUGEN_ARXIV_TIMEOUT_S value %r; falling back to %ss",
+                    raw, DEFAULT_ARXIV_TIMEOUT_S)
+        return DEFAULT_ARXIV_TIMEOUT_S
+    return value
 
 
 def search_arxiv(query: str, max_results: int = 5) -> list[dict[str, Any]]:
     """Query arXiv API and return structured paper metadata."""
     encoded_query = urllib.parse.quote(query)
-    url = f"{ARXIV_API_URL}?search_query=all:{encoded_query}&start=0&max_results={max_results}&sortBy=relevance&sortOrder=descending"
+    url = f"{_arxiv_api_url()}?search_query=all:{encoded_query}&start=0&max_results={max_results}&sortBy=relevance&sortOrder=descending"
 
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "NouGen-Arxiv-Client/1.0"}
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with urllib.request.urlopen(req, timeout=_arxiv_timeout_s()) as resp:
         xml_data = resp.read().decode("utf-8")
 
     root = ET.fromstring(xml_data)
