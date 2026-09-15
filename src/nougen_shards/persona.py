@@ -57,6 +57,11 @@ LEXICON: dict[str, set[str]] = {
     "business": {"llc", "ein", "invoice", "client", "customer", "revenue", "irs", "tam", "market"},
     "film": {"film", "screenplay", "scene", "shot", "director", "trailer", "cinematic"},
     "streaming": {"twitch", "stream", "overlay", "viewers", "chat", "clip", "vod"},
+    "immigration": {"uscis", "tps", "ead", "i-130", "i-485", "i-765", "i-821", "i-864", "asylum", "green card",
+                    "deport", "deported", "residency", "petition", "biometrics", "immigration", "imigrasyon",
+                    "rezidans", "depote", "lapolis", "avoka"},
+    "family": {"cousin", "kouzen", "mother", "manman", "father", "papa", "wife", "madanm", "husband", "mari",
+               "son", "daughter", "pitit", "family", "fanmi", "brother", "sister", "frè", "sè"},
 }
 
 _IMPERATIVE = re.compile(r"^\s*(make|build|write|run|fix|add|do|ship|leg|shard|relaunch|learn|stop|use|go|check|read)\b", re.I)
