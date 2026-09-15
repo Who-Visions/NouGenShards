@@ -2132,23 +2132,47 @@ async def xoah_ask_endpoint(
     req: XoahAskRequest,
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
-    """Shadow Xoah conversational entry point: reasons through self-model and pressure."""
-    eval_res = throne_governance.evaluate(req.prompt, register=False)
-    press_res = canon_pressure.pressure(req.prompt, register=False)
+    """Shadow Xoah conversational entry point: reasons through self-model and pressure.
+
+    Each stage is guarded: a failure is logged with its traceback and returned
+    as an `errors` entry instead of a bare 500 with nothing in the node log.
+    The sync stages run in a worker thread (asyncio.to_thread copies the
+    tenant ContextVars) so grid reads never block the event loop."""
+    errors = []
+    eval_res: dict = {}
+    press_res: dict = {}
+    try:
+        eval_res = await asyncio.to_thread(throne_governance.evaluate, req.prompt, register=False)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.exception("xoah/ask: throne governance failed")
+        errors.append(f"governance: {type(exc).__name__}: {exc}")
+    try:
+        press_res = await asyncio.to_thread(canon_pressure.pressure, req.prompt, register=False)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.exception("xoah/ask: canon pressure failed")
+        errors.append(f"pressure: {type(exc).__name__}: {exc}")
     system_ctx = (
         f"You are Shadow Xoah (Stage {eval_res.get('acting_stage', 9)}). "
         f"Governance Mode: {eval_res.get('mode', 'OBSERVE')}. "
         f"Intervention Type: {eval_res.get('intervention_type', 'SIMULATED_POSSIBILITY')}. "
-        f"Canon Verdict: {press_res.get('primary', 'UNKNOWN')}."
+        f"Canon Verdict: {press_res.get('verdict') or press_res.get('primary') or 'UNKNOWN'}."
     )
     rhea_prompt = f"{system_ctx}\n\nUser Question: {req.prompt}"
-    resp = await _ask_rhea_bounded(rhea_prompt)
-    return {
+    try:
+        resp = await _ask_rhea_bounded(rhea_prompt)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.exception("xoah/ask: rhea failed")
+        resp = {"answer": None, "brain": "none"}
+        errors.append(f"rhea: {type(exc).__name__}: {exc}")
+    out = {
         "answer": resp.get("answer"),
         "brain": resp.get("brain"),
         "governance": eval_res,
         "pressure": press_res
     }
+    if errors:
+        out["errors"] = errors
+    return out
 
 
 @node_mcp.tool()

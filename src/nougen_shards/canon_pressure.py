@@ -493,14 +493,36 @@ def _move(conn, cid: int, to_state: str, actor: Optional[str], note: Optional[st
 # --------------------------------------------------------------------------- #
 # public API
 # --------------------------------------------------------------------------- #
+def _apply_lock_report(result: Dict[str, Any], report: Dict[str, Any]) -> None:
+    """Fold grid canon-lock hits into a Prime verdict. A lock conflict beats
+    UNKNOWN and a seed-level affirmation; a lock affirmation only upgrades a
+    plain UNKNOWN (never one that is a live disagreement between sources)."""
+    hits = [{"verdict": "FACT_CONFLICT", "record": c["lock"], "evidence": [c["shard"]],
+             "because": f"GM canon lock {c['shard']}: {c['clause']}", "matched": c["matched"],
+             "rule": c["rule"], "source": "grid_lock"} for c in report.get("conflicts", [])]
+    if hits:
+        result["findings"] = [f for f in result["findings"] if f["verdict"] not in ("UNKNOWN", "BRANCH_VALID")] + hits
+    elif (result["primary"] == "UNKNOWN" and report.get("affirmations")
+          and not result["findings"][0].get("disagreement")):
+        a = report["affirmations"][0]
+        result["findings"] = [{"verdict": "BRANCH_VALID", "record": a["lock"], "evidence": [a["shard"]],
+                               "because": f"consistent with GM canon lock {a['shard']}: {a['clause']}",
+                               "matched": a["matched"], "rule": a["rule"], "source": "grid_lock"}]
+    else:
+        return
+    result["findings"].sort(key=lambda f: VERDICT_ORDER.index(f["verdict"]))
+    result["primary"] = result["findings"][0]["verdict"]
+
+
 def pressure(candidate: str, coordinate: Optional[str] = None, *, register: bool = True,
-             actor: Optional[str] = None, model: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+             actor: Optional[str] = None, model: Optional[Dict[str, Any]] = None,
+             locks: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Run one proposed story addition through the pipeline.
 
     Returns verdict (primary + findings), evidence ids, timeline stage,
     dependent canon, quarantined conflicts, confidence, repair options, the
     in-character challenge, and (when registered) the candidate id and its
-    promotion state."""
+    promotion state. `locks` overrides the grid canon-lock read (tests)."""
     model = model or load_self_model()
     text = normalize(candidate or "")
     if len(text.strip()) < 3:
@@ -510,6 +532,17 @@ def pressure(candidate: str, coordinate: Optional[str] = None, *, register: bool
     ranked = rank_authority(records)
     result = classify(model, text, coord, ranked)
     conflicts = quarantined_conflicts(model, ranked)
+    # Grid canon locks live as shards, not in the seed JSON; without this a
+    # claim contradicting a GM lock scored UNKNOWN. Prime only: a declared
+    # branch is its own universe. A failed read logs and never blocks pressure.
+    lock_report: Dict[str, Any] = {"conflicts": [], "affirmations": [], "consulted": 0}
+    if result["branch"] == "U0":
+        try:
+            from . import canon_lock_bridge
+            lock_report = canon_lock_bridge.lock_findings(text, locks=locks)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("canon lock consult skipped: %s: %s", type(exc).__name__, exc)
+        _apply_lock_report(result, lock_report)
     # Self Archive: who she was then. The perceived choice frontier, open scars
     # and nearest decisions under pressure refine the behavior / knowledge
     # verdicts with experiential provenance (access is not ownership).
@@ -577,6 +610,7 @@ def pressure(candidate: str, coordinate: Optional[str] = None, *, register: bool
         "repair_options": cheapest_repair(result, coord),
         "challenge": render_challenge(result, coord, text, conflicts),
         "recalled": [{"id": r["id"], "status": r.get("status"), "authority": r.get("authority")} for r in ranked[:8]],
+        "locks_consulted": lock_report.get("consulted", 0),
     }
     if register:
         now = _now()
