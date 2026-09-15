@@ -171,8 +171,17 @@ def serve(thread, executable):
     print(json.dumps({"status": "listening", "pipe": PIPE, "thread": thread}), flush=True)
     try:
         while True:
-            if not kernel.ConnectNamedPipe(pipe, None) and ctypes.get_last_error() != 535:
-                raise ctypes.WinError(ctypes.get_last_error())
+            if not kernel.ConnectNamedPipe(pipe, None):
+                err = ctypes.get_last_error()
+                if err != 535:  # not ERROR_PIPE_CONNECTED (client beat us to it, harmless)
+                    # A client that dropped mid-connect (broken pipe, no data, timeout, ...) must not
+                    # take the whole receiver down with it: log it, reset the pipe, keep serving. An
+                    # uncaught raise here used to kill the process, closing the pipe out from under
+                    # every later sender, who then saw the misleading "WinError 2: file not found".
+                    print(json.dumps({"status": "connect_error", "error": str(ctypes.WinError(err))}),
+                          file=sys.stderr, flush=True)
+                    kernel.DisconnectNamedPipe(pipe)
+                    continue
             try:
                 incoming = ctypes.create_string_buffer(MAX_BYTES)
                 count = wintypes.DWORD()
