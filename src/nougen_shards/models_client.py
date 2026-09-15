@@ -882,7 +882,10 @@ class OllamaClient(LocalLLMClient):
         payload = {"model": model, "messages": messages, "stream": stream,
                    "options": {"num_predict": int(
                        __import__("os").getenv("NOUGEN_NUM_PREDICT", "1400"))}}
-        if _v.reason != "already resident":
+        keep_alive_env = os.getenv("NOUGEN_KEEP_ALIVE")
+        if keep_alive_env is not None:
+            payload["keep_alive"] = keep_alive_env
+        elif _v.reason != "already resident":
             payload["keep_alive"] = 0
         req = urllib.request.Request(
             f"{self.base_url}/api/chat",
@@ -989,7 +992,10 @@ class OllamaClient(LocalLLMClient):
             options["temperature"] = 0
         if tools:
             payload["tools"] = tools
-        if _v.reason != "already resident":
+        keep_alive_env = os.getenv("NOUGEN_KEEP_ALIVE")
+        if keep_alive_env is not None:
+            payload["keep_alive"] = keep_alive_env
+        elif _v.reason != "already resident":
             payload["keep_alive"] = 0
         req = urllib.request.Request(
             f"{self.base_url}/api/chat", data=json.dumps(payload).encode(), method="POST")

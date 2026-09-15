@@ -1833,16 +1833,14 @@ def _vector_cache_wait_s() -> float:
     Bounded on purpose: a request that cannot get the matrix in time answers
     from the keyword lane (and from the stale matrix if one exists) instead of
     becoming a straggler that outlives its own deadline. Env-first (Rule 0.2).
-    Default 5s: a warm build of one 110MB grid DB is ~0.5s, a cold one a few
-    seconds; anything longer means the process is in trouble and piling on
-    makes it worse.
+    Default 0.25s keeps interactive recall sub-second even during cold matrix builds.
     """
     raw = os.environ.get("NOUGEN_VECTOR_CACHE_WAIT_S", "")
     try:
-        return float(raw) if raw.strip() else 5.0
+        return float(raw) if raw.strip() else 0.25
     except ValueError:
-        logger.warning("NOUGEN_VECTOR_CACHE_WAIT_S=%r is not a number; using 5.0", raw)
-        return 5.0
+        logger.warning("NOUGEN_VECTOR_CACHE_WAIT_S=%r is not a number; using 0.25", raw)
+        return 0.25
 
 
 def _db_write_signature(i: int) -> tuple:

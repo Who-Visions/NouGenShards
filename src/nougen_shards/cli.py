@@ -570,12 +570,13 @@ def cmd_chat(args):
     if not args.query:
         _run_interactive_chat(model, prov_name, client, persona_name=persona_name)
     else:
-        found = federation.federated_retrieve(args.query, limit=3)
+        found = shards.retrieve(args.query, limit=3)
         ctx = shards.compile_recall_packet(found)
         msgs = [{"role": "user", "content": f"{args.query}\n\n{ctx}"}]
-        print(f"[*] Querying {model} ({persona_name})...")
-        resp = client.chat(model, msgs, stream=False)
-        print(f"\n[Response]:\n{resp}")
+        print(f"[*] Querying {model} ({persona_name})...\n")
+        resp = client.chat(model, msgs, stream=True)
+        if resp and not sys.stdout.isatty():
+            print(f"\n[Response]:\n{resp}")
 
 
 def cmd_models(args):

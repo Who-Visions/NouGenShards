@@ -24,7 +24,8 @@ class MCPToolBridge:
         self.loop = None
         self.ready = threading.Event()
         threading.Thread(target=self._start, daemon=True).start()
-        self.ready.wait(8)
+        # Fast non-blocking startup: do not stall the interactive CLI loop
+        self.ready.wait(0.2)
     def _start(self):
         import asyncio
         from .openrouter_mcp_client import MultiMCPBridge
@@ -62,7 +63,8 @@ class LocalSession:
         self.mcp = MCPToolBridge()
         authority = Path.home() / ".nougen" / "AUTHORITY.md"
         try:
-            authority_text = authority.read_text(encoding="utf-8")
+            raw = authority.read_text(encoding="utf-8")
+            authority_text = raw[:2500] if len(raw) > 2500 else raw
         except OSError:
             authority_text = "Canonical authority unavailable; report context degraded."
         self.system = (persona + "\nYou are a helpful NouGen assistant. Lead with the answer; "
@@ -74,8 +76,23 @@ class LocalSession:
         cached = self.cache.get(query)
         if cached and time.monotonic() - cached[0] < 60:
             return cached[1]
-        # One daemon job at a time: slow federation cannot grow an unbounded queue
-        # or keep an interactive CLI alive after the user exits.
+        
+        # Fast-Path: Query high-speed local FTS5 memory grid directly (<5ms)
+        try:
+            from .core import retrieve
+            rows = retrieve(query, limit=6)
+            if rows:
+                sources = [{"ref": f"{s.get('id')}@db{s.get('_db_index', s.get('db', s.get('source_db', '?')))}",
+                            "origin": s.get('source_node', s.get('domain_key', 'local')),
+                            "title": str(s.get('title', ''))[:160],
+                            "content": str(s.get('content', ''))[:900]} for s in rows[:6]]
+                result = {"complete": True, "sources": sources}
+                self.cache[query] = (time.monotonic(), result)
+                return result
+        except Exception:
+            pass
+
+        # Fallback to background federated search if local grid returned empty
         if self.pending and self.pending[0].is_alive():
             return {"complete": False, "error": "Previous recall still running", "sources": []}
         result_queue = queue.Queue(maxsize=1)
