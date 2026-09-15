@@ -2803,7 +2803,7 @@ def cmd_hi(args):
     if getattr(args, "json", False):
         print(_json.dumps(report.__dict__, default=str, indent=2))
         return
-    print(f"🌅 hi — {report.identity.get('host', 'unknown')} ({report.identity.get('machine_id', '?')})")
+    print(f"🌅 hi — {report.identity.get('host', 'unknown')} ({report.identity.get('machine_id', '?')}) — {report.local_time}")
     print(f"  Open handoffs: {report.open_handoffs}")
     if report.latest_goal:
         print(f"  Latest goal: {report.latest_goal}")
@@ -2823,7 +2823,7 @@ def cmd_bye(args):
     if getattr(args, "json", False):
         print(_json.dumps(report.__dict__, default=str, indent=2))
         return
-    print(f"🌙 bye — {report.total_dirty} dirty file(s), {report.total_unpushed} unpushed commit(s)")
+    print(f"🌙 bye — {report.local_time} — {report.total_dirty} dirty file(s), {report.total_unpushed} unpushed commit(s)")
     for r in report.repos:
         if r["dirty"] or r["unpushed"]:
             print(f"  📁 {r['repo']} ({r['branch']}) — {r['dirty']} dirty, {r['unpushed']} unpushed")

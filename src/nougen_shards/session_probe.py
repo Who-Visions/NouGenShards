@@ -17,6 +17,7 @@ import os
 import socket
 import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -78,6 +79,16 @@ def _repo_git_status(repo: Path) -> Dict:
     }
 
 
+def local_time_stamp() -> str:
+    """Fresh 12-hour local-time stamp, read from the system clock/tz at call
+    time — never cached, never hardcoded to a zone. `%-I`/`%#I` (no leading
+    zero) differs by platform, so strip it ourselves for a deterministic
+    format everywhere: 'Mon 2026-09-14 8:54 PM EDT'."""
+    now = datetime.now().astimezone()
+    hour12 = now.strftime("%I").lstrip("0") or "12"
+    return now.strftime(f"%a %Y-%m-%d {hour12}:%M %p %Z")
+
+
 def _check_port(port: int, host: str = "127.0.0.1") -> bool:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -108,6 +119,7 @@ def _fleet_pulse() -> Dict[str, bool]:
 @dataclass
 class HiReport:
     identity: Dict[str, str]
+    local_time: str = ""
     open_handoffs: int = 0
     latest_goal: Optional[str] = None
     fleet_pulse: Dict[str, bool] = field(default_factory=dict)
@@ -116,6 +128,7 @@ class HiReport:
 
 @dataclass
 class ByeReport:
+    local_time: str = ""
     repos: List[Dict] = field(default_factory=list)
     total_dirty: int = 0
     total_unpushed: int = 0
@@ -134,6 +147,7 @@ def run_hi(fleet: bool = True) -> HiReport:
     pulse = _fleet_pulse() if fleet else {}
     return HiReport(
         identity=identity,
+        local_time=local_time_stamp(),
         open_handoffs=open_count,
         latest_goal=latest_goal,
         fleet_pulse=pulse,
@@ -157,7 +171,7 @@ def run_bye(
     handoff_path = None
     if not dry_run:
         msg = summary or (
-            f"Session closed with {total_dirty} dirty file(s) across "
+            f"Session closed {local_time_stamp()} with {total_dirty} dirty file(s) across "
             f"{sum(1 for r in repos if r['dirty'])} repo(s)."
         )
         path = handoff.create_handoff(message=msg, agent=agent, goal=goal)
@@ -172,6 +186,7 @@ def run_bye(
     primer = " | ".join(primer_bits) or "Clean handoff — nothing pending."
 
     return ByeReport(
+        local_time=local_time_stamp(),
         repos=repos,
         total_dirty=total_dirty,
         total_unpushed=total_unpushed,
