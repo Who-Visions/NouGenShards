@@ -13,15 +13,19 @@ hijack — force a foreign/legacy handoff or shard record to point at this
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import os
+import re
 import socket
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import handoff, machine
+from . import handoff, machine, relay_watch
 
 # Repos this probe sweeps for dirty state. Override with NOUGEN_PROBE_REPOS
 # (":"-separated absolute paths). Falls back to this repo plus any sibling
@@ -98,6 +102,67 @@ def _check_port(port: int, host: str = "127.0.0.1") -> bool:
         return False
 
 
+_LEG_RE = re.compile(
+    r"^\s*•\s*(?P<who>\S+)\s+—\s+(?P<goal>.+?)\n\s*id\s+(?P<id>\S+)", re.MULTILINE,
+)
+
+
+def read_relay(limit: int = 5) -> Dict:
+    """Arms the relay pipe (registry cache refresh) and reads the open board
+    by driving `nougen relay open` in-process — same plumbing as `cmd_relay`,
+    captured instead of printed, so hi/bye get structured legs without
+    re-implementing the NouGenRelay registry client."""
+    from . import cli as _cli  # local import: cli imports this module too
+
+    registry = _cli.find_relay_registry()
+    if registry is None:
+        return {"armed": False, "error": "no NouGenRelay registry found", "count": 0, "legs": []}
+
+    try:
+        relay_watch.refresh_cache()
+    except Exception:
+        pass
+
+    relay_main = _cli._import_relay_main(registry)
+    buf = io.StringIO()
+    prev_cwd = os.getcwd()
+    prev_argv = sys.argv
+    os.chdir(registry)
+    sys.argv = ["relay", "open"]
+    try:
+        with contextlib.redirect_stdout(buf):
+            relay_main()
+    except SystemExit:
+        pass
+    except Exception as exc:
+        return {"armed": True, "error": str(exc), "count": 0, "legs": []}
+    finally:
+        sys.argv = prev_argv
+        os.chdir(prev_cwd)
+
+    text = buf.getvalue()
+    legs = [
+        {"who": m.group("who"), "goal": m.group("goal").strip(), "id": m.group("id")}
+        for m in _LEG_RE.finditer(text)
+    ]
+    count_match = re.search(r"(\d+)\s+leg\(s\)\s+waiting", text)
+    count = int(count_match.group(1)) if count_match else len(legs)
+    return {"armed": True, "count": count, "legs": legs[:limit]}
+
+
+def pick_next_play(legs: List[Dict], identity: Dict[str, str]) -> Optional[str]:
+    """Heuristic, not a decision: surface the most actionable-looking open
+    leg so the session has a starting point, never an auto-pilot pick."""
+    if not legs:
+        return None
+    host = (identity.get("host") or "").lower()
+    for leg in legs:
+        goal = leg.get("goal", "")
+        if f"[-> {host}]" in goal.lower() or f"[-> claude-app]" in goal.lower():
+            return f"{leg['id']}: {goal}"
+    return f"{legs[0]['id']}: {legs[0].get('goal', '')}"
+
+
 def _fleet_pulse() -> Dict[str, bool]:
     """Best-effort reachability of sibling nodes, via SSH config aliases
     already used fleet-wide (blade1tb, whoart) rather than a private
@@ -124,6 +189,10 @@ class HiReport:
     latest_goal: Optional[str] = None
     fleet_pulse: Dict[str, bool] = field(default_factory=dict)
     orphan_ports: List[tuple] = field(default_factory=list)
+    relay_armed: bool = False
+    relay_open_count: int = 0
+    relay_legs: List[Dict] = field(default_factory=list)
+    next_play: Optional[str] = None
 
 
 @dataclass
@@ -138,13 +207,18 @@ class ByeReport:
 
 
 def run_hi(fleet: bool = True) -> HiReport:
-    """Session-open probe. Read-only — never writes a handoff."""
+    """Session-open probe — NouGen Live boot: arms the relay pipe, reads the
+    open board, reads local handoffs, pulses peer nodes, and surfaces one
+    candidate next play. Read-only — never writes a handoff, never replies
+    or acks on its own; a human or a later explicit action does that."""
     identity = machine.machine_identity()
     feed = handoff.handoff_feed(limit=25)
     open_count = sum(1 for h in feed if h.get("live_status") not in ("complete", "acknowledged"))
     latest_goal = feed[0].get("goal") if feed else None
     orphan = [(p, label) for p, label in DEV_SERVER_PORTS if _check_port(p)]
     pulse = _fleet_pulse() if fleet else {}
+    relay = read_relay()
+    next_play = pick_next_play(relay.get("legs", []), identity)
     return HiReport(
         identity=identity,
         local_time=local_time_stamp(),
@@ -152,6 +226,10 @@ def run_hi(fleet: bool = True) -> HiReport:
         latest_goal=latest_goal,
         fleet_pulse=pulse,
         orphan_ports=orphan,
+        relay_armed=relay.get("armed", False),
+        relay_open_count=relay.get("count", 0),
+        relay_legs=relay.get("legs", []),
+        next_play=next_play,
     )
 
 

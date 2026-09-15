@@ -2812,6 +2812,12 @@ def cmd_hi(args):
         print(f"  Fleet pulse: {pulse}")
     if report.orphan_ports:
         print(f"  Ports already up: {', '.join(f'{p} ({l})' for p, l in report.orphan_ports)}")
+    relay_status = "armed" if report.relay_armed else "unreachable"
+    print(f"  Relay: {relay_status}, {report.relay_open_count} open leg(s)")
+    for leg in report.relay_legs:
+        print(f"    • {leg['who']} — {leg['goal']}  [{leg['id']}]")
+    if report.next_play:
+        print(f"  ▶ Next play: {report.next_play}")
 
 
 def cmd_bye(args):
