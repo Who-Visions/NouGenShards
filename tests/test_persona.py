@@ -193,5 +193,4 @@ def test_language_tie_breaks_toward_audience_order(tmp_path: Path):
     sig = P.Signals.from_texts(["I will answer you", "Mwen ap reponn ou"])   # one line each: a tie
     p = P.resolve(sig, reg)
     assert p.languages == ("ht", "en")
-    assert P.check_output("Mwen ap reponn ou.
-I will answer you.", p) == []
+    assert P.check_output("Mwen ap reponn ou." + chr(10) + "I will answer you.", p) == []
