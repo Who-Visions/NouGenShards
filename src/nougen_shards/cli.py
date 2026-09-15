@@ -1868,6 +1868,29 @@ def get_parser():
     p_live.add_argument("live_args", nargs=argparse.REMAINDER,
                         help="Subcommands: overview | snapshot | nodes | sessions | ports | ssh | relays | watch | tracker | send | broadcast | reply")
 
+    p_algo = subparsers.add_parser(
+        "algo",
+        help="Canonical Algorithms & Data Structures Engine (TheAlgorithms/Python)",
+        description="High-performance data structures, search algorithms, graph traversal, and compression."
+    )
+    algo_subs = p_algo.add_subparsers(dest="algo_action")
+
+    p_algo_list = algo_subs.add_parser("list", help="List algorithms by category")
+    p_algo_list.add_argument("--category", help="Category filter (searches, graphs, sorting, compression, dp)")
+    p_algo_list.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_algo_info = algo_subs.add_parser("info", help="Show details, complexity, and implementation code for an algorithm")
+    p_algo_info.add_argument("target", help="Algorithm key or name (e.g. dijkstra, bk_tree, trie, lzw_compression)")
+    p_algo_info.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_algo_bench = algo_subs.add_parser("benchmark", help="Run algorithm micro-benchmark")
+    p_algo_bench.add_argument("target", nargs="?", default="levenshtein", help="Algorithm key")
+    p_algo_bench.add_argument("--iterations", type=int, default=500, help="Iteration count (default 500)")
+    p_algo_bench.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_algo_ingest = algo_subs.add_parser("ingest", help="Ingest canonical algorithm knowledge shards into memory grid DB 5")
+    p_algo_ingest.add_argument("--json", action="store_true", help="Machine-readable output")
+
     return parser
 
 
@@ -1876,6 +1899,63 @@ def cmd_live(args):
     from .live import handle_live_command
     subargs = getattr(args, "live_args", [])
     print(handle_live_command(subargs))
+
+
+def cmd_algo(args):
+    """Canonical Algorithms & Data Structures CLI."""
+    from .algorithms import list_algorithms, get_algorithm, benchmark_algorithm, ingest_algorithm_shards
+    action = getattr(args, "algo_action", None) or "list"
+
+    if action == "list":
+        cat = getattr(args, "category", None)
+        algos = list_algorithms(cat)
+        if getattr(args, "json", False):
+            print(json.dumps(algos, indent=2))
+        else:
+            print(f"📐 Canonical Algorithms ({cat or 'All Categories'}):")
+            for a in algos:
+                print(f"  • {a['key']:20} {a['name']:32} [{a['category']:16}] {a['time_complexity']:14} {a['space_complexity']}")
+    elif action == "info":
+        target = getattr(args, "target", "")
+        if not target:
+            print("Error: Specify algorithm name or key.")
+            return
+        info = get_algorithm(target)
+        if not info:
+            print(f"Error: Algorithm '{target}' not found in catalog.")
+            return
+        if getattr(args, "json", False):
+            print(json.dumps(info, indent=2))
+        else:
+            print(f"📐 {info['name']} ({info['key']})")
+            print(f"  Category:         {info['category']}")
+            print(f"  Time Complexity:  {info['time_complexity']}")
+            print(f"  Space Complexity: {info['space_complexity']}")
+            print(f"\nDescription:\n  {info['description']}")
+            if info.get("code"):
+                print(f"\nCanonical Implementation:\n{info['code']}")
+    elif action in ("benchmark", "run", "bench"):
+        target = getattr(args, "target", "levenshtein")
+        iters = getattr(args, "iterations", 500)
+        res = benchmark_algorithm(target, iterations=iters)
+        if getattr(args, "json", False):
+            print(json.dumps(res, indent=2))
+        else:
+            if "error" in res:
+                print(f"Error: {res['error']}")
+            else:
+                print(f"⚡ Benchmark for {res['algorithm']}:")
+                print(f"  Iterations:       {res['iterations']}")
+                print(f"  Elapsed:          {res['elapsed_ms']} ms")
+                print(f"  Throughput:       {res['ops_per_sec']:,} ops/sec")
+                print(f"  Complexity:       {res['time_complexity']}")
+    elif action == "ingest":
+        count = ingest_algorithm_shards()
+        if getattr(args, "json", False):
+            print(json.dumps({"ingested": count, "target_db": 5}))
+        else:
+            print(f"✅ Ingested {count} canonical algorithm shards into memory grid DB 5.")
+
 
 
 def keymaker_vault_report() -> list:
@@ -2572,7 +2652,7 @@ def main():
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr,
         "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
-        "transcribe": cmd_transcribe, "live": cmd_live
+        "transcribe": cmd_transcribe, "live": cmd_live, "algo": cmd_algo
     }
     if args.command in cmds:
         cmds[args.command](args)

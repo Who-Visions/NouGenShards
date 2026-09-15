@@ -138,6 +138,35 @@ TOOLS = [
                 "additionalProperties": False
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_algorithm_info",
+            "description": "Lookup canonical algorithm implementation, time/space complexity, and code from TheAlgorithms catalog.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Algorithm name or key (e.g. 'dijkstra', 'lzw_compression', 'bk_tree')"}
+                },
+                "required": ["name"],
+                "additionalProperties": False
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_algorithms",
+            "description": "List canonical algorithms available in the engine (searches, data_structures, graphs, compression, sorting, dp).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "description": "Optional category filter"}
+                },
+                "additionalProperties": False
+            }
+        }
     }
 ]
 
@@ -350,9 +379,23 @@ class LocalSession:
                         else:
                             max_lines = min(int(args.get("max_lines", 50)), 200)
                             lines = p.read_text(encoding="utf-8", errors="replace").splitlines()[:max_lines]
-                            result = {"path": str(p), "lines_read": len(lines), "content": "\n".join(lines)}
+                            result = {"path": str(p), "lines": lines}
                     except Exception as e:
-                        result = {"error": f"File read failed: {e}"}
+                        result = {"error": f"Read failed: {e}"}
+                elif name == 'get_algorithm_info':
+                    try:
+                        from .algorithms import get_algorithm
+                        info = get_algorithm(args.get('name', ''))
+                        result = info if info else {"error": f"Algorithm '{args.get('name')}' not found"}
+                    except Exception as e:
+                        result = {"error": f"Algorithm lookup failed: {e}"}
+                elif name == 'list_algorithms':
+                    try:
+                        from .algorithms import list_algorithms
+                        cat = args.get('category')
+                        result = {"algorithms": list_algorithms(cat)}
+                    except Exception as e:
+                        result = {"error": f"Algorithm list failed: {e}"}
                 elif name in {t['function']['name'] for t in self.mcp.tools()}:
                     result = self.mcp.call(name, args)
                 else:
@@ -488,6 +531,53 @@ def render_search_table(console: Console, query: str, session: LocalSession):
         console.print(f"[red]Search failed:[/] {e}")
 
 
+def render_algorithms_table(console: Console, category: Optional[str] = None):
+    """Renders canonical algorithms from TheAlgorithms catalog in a Rich Table."""
+    try:
+        from .algorithms import list_algorithms
+        algos = list_algorithms(category)
+        table = Table(title=f"📐 Canonical Algorithms ({category or 'All Categories'})", box=box.ROUNDED, header_style="bold bright_cyan")
+        table.add_column("Key / ID", style="bold bright_yellow", width=18)
+        table.add_column("Algorithm Name", style="bold white", width=26)
+        table.add_column("Category", style="dim cyan", width=16)
+        table.add_column("Time", style="bright_green", width=14)
+        table.add_column("Space", style="dim", width=12)
+
+        for a in algos:
+            table.add_row(a.get("key", "-"), a.get("name", "-"), a.get("category", "-"), a.get("time_complexity", "-"), a.get("space_complexity", "-"))
+
+        console.print(table)
+        console.print("[dim]Use [bold cyan]/algo info <key>[/] to inspect code, or [bold cyan]/algo run <key>[/] to benchmark.[/dim]")
+    except Exception as e:
+        console.print(f"[red]Failed to list algorithms:[/] {e}")
+
+
+def render_algorithm_detail(console: Console, key: str):
+    """Renders details and code for a specific algorithm."""
+    try:
+        from .algorithms import get_algorithm
+        from rich.syntax import Syntax
+        info = get_algorithm(key)
+        if not info:
+            console.print(f"[red]Algorithm '{key}' not found in catalog.[/red]")
+            return
+
+        panel = Panel.fit(
+            f"[bold cyan]Category:[/] {info.get('category')}  |  "
+            f"[bold cyan]Time Complexity:[/] [bold green]{info.get('time_complexity')}[/]  |  "
+            f"[bold cyan]Space Complexity:[/] {info.get('space_complexity')}\n\n"
+            f"[white]{info.get('description')}[/]",
+            title=f"📐 {info.get('name')}",
+            border_style="cyan"
+        )
+        console.print(panel)
+        code = info.get("code", "")
+        if code:
+            console.print(Syntax(code, "python", theme="monokai", line_numbers=True))
+    except Exception as e:
+        console.print(f"[red]Algorithm detail error:[/] {e}")
+
+
 def run(client, model, persona, args):
     console = _make_console()
     os.environ.setdefault("NOUGEN_VECTOR_CACHE_WAIT_S", "0.25")
@@ -505,6 +595,7 @@ def run(client, model, persona, args):
         table.add_row("/relay create <goal>", "Create a new relay handoff baton into the stream")
         table.add_row("/fleet, /peers, /nodes", "Probe live fleet nodes (Apollo, Hyperion, Phoebus) & ports")
         table.add_row("/sessions", "Inspect live agent sessions (Claude Code, Antigravity, Yukiai)")
+        table.add_row("/algo [list|info|run]", "TheAlgorithms canonical catalog, code & micro-benchmarks")
         table.add_row("/vram, /gpu", "Check real-time GPU VRAM headroom & resident models")
         table.add_row("/status, /hud", "Display 9-DB shard capacity & compute mesh state")
         table.add_row("/models", "List installed Ollama models with auto-selection tags")
@@ -521,7 +612,7 @@ def run(client, model, persona, args):
     if not args.query:
         console.print(Panel.fit(
             f"[bold cyan]NouGen Local[/bold cyan]  [white]{model}[/white]\n"
-            "[dim]Recall-first memory  |  MCP tools  |  /relay  |  /fleet  |  /vram  |  /status  |  /models  |  /help  |  /exit[/dim]",
+            "[dim]Recall-first memory  |  MCP tools  |  /relay  |  /fleet  |  /algo  |  /vram  |  /status  |  /help  |  /exit[/dim]",
             border_style="cyan", padding=(0, 2)))
 
     while True:
@@ -576,6 +667,56 @@ def run(client, model, persona, args):
                     console.print(t)
                 except Exception as e:
                     console.print(f"[red]Sessions error:[/] {e}")
+                continue
+            if query in ('/algo', '/algos', 'algo', 'algos') or query.startswith('/algo '):
+                parts = query.split(maxsplit=2)
+                sub = parts[1].strip().lower() if len(parts) > 1 else ""
+                arg = parts[2].strip() if len(parts) > 2 else ""
+
+                if not sub or sub in ("list", "all"):
+                    render_algorithms_table(console, category=arg if arg else None)
+                elif sub in ("info", "view", "code"):
+                    render_algorithm_detail(console, arg or "binary_search")
+                elif sub in ("run", "bench", "benchmark"):
+                    try:
+                        from .algorithms import benchmark_algorithm
+                        target = arg or "levenshtein"
+                        res = benchmark_algorithm(target)
+                        console.print(Panel.fit(
+                            f"[bold cyan]Algorithm:[/] {res.get('algorithm')}  |  [bold green]{res.get('ops_per_sec'):,} ops/sec[/]\n"
+                            f"[dim]Iterations: {res.get('iterations')}  |  Elapsed: {res.get('elapsed_ms')} ms  |  Complexity: {res.get('time_complexity')}[/dim]",
+                            title="⚡ Algorithm Micro-Benchmark",
+                            border_style="bright_green"
+                        ))
+                    except Exception as e:
+                        console.print(f"[red]Benchmark failed:[/] {e}")
+                elif sub == "ingest":
+                    try:
+                        from .algorithms import ingest_algorithm_shards
+                        count = ingest_algorithm_shards()
+                        console.print(f"✅ Ingested [bold cyan]{count}[/bold cyan] canonical algorithm shards into memory grid DB 5.")
+                    except Exception as e:
+                        console.print(f"[red]Ingest failed:[/] {e}")
+                elif sub == "search":
+                    try:
+                        from .algorithms import BKTree, list_algorithms
+                        tree = BKTree()
+                        for a in list_algorithms():
+                            tree.add(a['key'], a)
+                            tree.add(a['name'], a)
+                        matches = tree.search(arg, max_distance=3)
+                        t = Table(title=f"📐 Algorithm Matches for: '{arg}'", box=box.ROUNDED, header_style="bold bright_cyan")
+                        t.add_column("Key / ID", style="bold bright_yellow", width=18)
+                        t.add_column("Algorithm", style="bold white", width=26)
+                        t.add_column("Distance", justify="center", width=10)
+                        for term, dist, payload in matches:
+                            if payload:
+                                t.add_row(payload.get('key', term), payload.get('name', term), str(dist))
+                        console.print(t)
+                    except Exception as e:
+                        console.print(f"[red]Algorithm search failed:[/] {e}")
+                else:
+                    render_algorithm_detail(console, sub)
                 continue
             if query in ('/vram', '/gpu', 'vram', 'gpu'):
                 render_vram_panel(console)
