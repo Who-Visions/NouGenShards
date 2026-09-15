@@ -82,6 +82,14 @@ LEXICON: dict[str, set[str]] = {
                     "rezidans", "depote", "lapolis", "avoka"},
     "family": {"cousin", "kouzen", "mother", "manman", "father", "papa", "wife", "madanm", "husband", "mari",
                "son", "daughter", "pitit", "family", "fanmi", "brother", "sister", "frè", "sè"},
+    "legal": {"attorney", "counsel", "retainer", "hearing", "judge", "motion", "filing", "affidavit",
+              "exhibit", "declaration", "deposition", "court", "docket", "avoka", "tribinal"},
+    "commerce": {"invoice", "quote", "estimate", "purchase order", "vendor", "supplier", "delivery",
+                 "shipment", "receipt", "payment due", "net 30", "sku", "wholesale"},
+    "government": {"department", "agency", "office", "notice", "application", "form", "appointment",
+                   "case number", "processing", "eligibility", "benefits", "renewal", "permit"},
+    "story-world": {"realm", "throne", "prophecy", "oath", "kingdom", "oracle", "veil", "sigil", "relic",
+                    "sworn", "chronicle", "elder", "spell", "quest"},
 }
 
 _IMPERATIVE = re.compile(r"^\s*(make|build|write|run|fix|add|do|ship|leg|shard|relaunch|learn|stop|use|go|check|read)\b", re.I)
@@ -209,6 +217,10 @@ DEFAULT_MARKETS: tuple[Market, ...] = (
     Market("immigrant-family-records",
            "one safe place for a family's immigration, work and identity papers, in the language the family speaks",
            ("what gets filed", "what stays local", "what the lawyer sees")),
+    Market("correspondence", "one message that lands right with whoever is on the other end",
+           ("tone", "formality", "what must be attached")),
+    Market("in-world-fiction", "characters that speak from inside their own world",
+           ("voice", "canon constraints", "what the character can know")),
 )
 
 DEFAULT_AUDIENCES: tuple[Audience, ...] = (
@@ -245,6 +257,25 @@ DEFAULT_AUDIENCES: tuple[Audience, ...] = (
              "point to the scan, never type the number",
              languages=("ht", "es", "fr"),
              contract=("no-id-numbers", "first-language-first", "one-fact-per-line")),
+    Audience("attorney", "correspondence", ("legal",), ("email", "phone"),
+             ("dates, exhibits and deadlines that match the record",), ("a fact stated without its document",),
+             "formal, dated, one matter per message; name every attachment"),
+    Audience("client", "correspondence", ("business",), ("email", "sms", "phone"),
+             ("clear scope, price and timing",), ("surprises after the quote",),
+             "plain, warm, specific; confirm next step and date"),
+    Audience("vendor", "correspondence", ("commerce",), ("email", "phone"),
+             ("exact quantities, part numbers and dates",), ("ambiguous orders",),
+             "short, itemized, reference the order or invoice number"),
+    Audience("government-office", "correspondence", ("government",), ("mail", "portal", "phone"),
+             ("every required field, nothing extra",), ("missing form fields", "informal tone"),
+             "formal, reference the case or notice, answer only what is asked"),
+    Audience("family-member", "correspondence", ("family",), ("whatsapp", "phone", "sms"),
+             ("being heard", "their own language"), ("lecturing", "jargon"),
+             "first language first, warm, short, one thing at a time"),
+    Audience("in-world-character", "in-world-fiction", ("story-world", "canon"), ("page", "screen", "voice"),
+             ("voice that never breaks", "knowing only what the character can know"),
+             ("modern idiom leaking in", "narrator knowledge in dialogue"),
+             "stay in voice; no out-of-world references; canon before invention"),
 )
 
 
@@ -426,11 +457,9 @@ def segment_test(sig: Signals, audience: Audience) -> SegmentTest:
     )
 
 
-def resolve(sig: Signals, registry_path: Optional[Path] = None) -> Persona:
-    """Deterministic: score every audience by affinity + channel overlap, pick the max, tie-break by key."""
-    markets, audiences = load_registry(registry_path)
+def _score_audiences(sig: Signals, audiences: tuple[Audience, ...], lang_w: int) -> list[tuple[float, str]]:
+    """Deterministic audience scores: affinity*3 + tag*2 + channel + language*lang_w, sorted desc then key."""
     scored: list[tuple[float, str]] = []
-    lang_w = _env_int("NOUGEN_PERSONA_LANG_WEIGHT", 2)
     for a in audiences:
         aff = sum(sig.lexicon.get(f, 0) for f in a.affinities)
         tagh = sum(sig.tags.get(f, 0) for f in a.affinities)
@@ -438,6 +467,160 @@ def resolve(sig: Signals, registry_path: Optional[Path] = None) -> Persona:
         lang = sum(sig.languages.get(code, 0) for code in a.languages)
         scored.append((aff * 3 + tagh * 2 + chan + lang * lang_w, a.key))
     scored.sort(key=lambda t: (-t[0], t[1]))
+    return scored
+
+
+# --------------------------------------------------------------------------- #
+# Inbound: classify what is COMING IN (who writes, in what language, to which
+# audience it belongs) with a confidence, so a lane can decide whether the
+# lexical answer is enough or a free-fleet model should be asked (GM doctrine
+# 2026-09-15: persona is the target-audience layer for every outgoing message).
+# --------------------------------------------------------------------------- #
+@dataclass
+class Inbound:
+    audience: str
+    market: str
+    language: str                 # "ht" | "en" | "" (undecidable)
+    coverage: float               # share of words that are known language markers
+    register: str
+    lexicon: tuple[str, ...]
+    scores: tuple[tuple[float, str], ...]   # top 4 (score, audience)
+    confidence: float             # 0..1, lexical only
+    source: str = "lexical"       # "lexical" | "model" | "lexical-lowconf"
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+def _language_coverage(text: str) -> tuple[str, float]:
+    words = _WORD.findall(text.lower())
+    if not words:
+        return "", 0.0
+    wset = set(words)
+    ht, en = len(wset & _KREYOL), len(wset & _ENGLISH)
+    hits = sum(1 for w in words if w in _KREYOL or w in _ENGLISH)
+    lang = "ht" if (ht and ht >= en) else ("en" if en else "")
+    return lang, round(min(1.0, hits / len(words) * 3), 3)   # one marker per three words = full coverage
+
+
+def classify_inbound(text: str, registry_path: Optional[Path] = None, *, surfaces: Iterable[str] = (),
+                     tags: Iterable[str] = ()) -> Inbound:
+    """Pure and deterministic: no clock, no model, no network."""
+    markets, audiences = load_registry(registry_path)
+    sig = Signals.from_texts([text], surfaces=surfaces, tags=tags)
+    scored = _score_audiences(sig, audiences, _env_int("NOUGEN_PERSONA_LANG_WEIGHT", 2))
+    top, second = scored[0][0], (scored[1][0] if len(scored) > 1 else 0.0)
+    lang, coverage = _language_coverage(text)
+    strength = min(1.0, top / 6.0)                       # two lexicon hits = full strength
+    margin = min(1.0, (top - second) / top) if top > 0 else 0.0
+    confidence = round(0.3 * coverage + 0.4 * strength + 0.3 * margin, 3)
+    best = next(a for a in audiences if a.key == scored[0][1])
+    market = next((m for m in markets if m.key == best.market), markets[0])
+    lex = tuple(k for k, _ in sorted(sig.lexicon.items(), key=lambda t: (-t[1], t[0])))
+    return Inbound(audience=best.key, market=market.key, language=lang, coverage=coverage,
+                   register=_register(sig.median_words), lexicon=lex, scores=tuple(scored[:4]),
+                   confidence=confidence)
+
+
+def _env_float(name: str, fallback: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            _log.warning("%s=%r is not a number; using fallback %s", name, raw, fallback)
+    else:
+        _log.debug("%s unset; using fallback %s", name, fallback)
+    return fallback
+
+
+def _ollama_url() -> str:
+    """Env first (NOUGEN_OLLAMA_URL, then OLLAMA_HOST), constant last and logged. A bind address
+    (0.0.0.0) is not dialable; it is mapped to loopback."""
+    raw = os.environ.get("NOUGEN_OLLAMA_URL", "").strip() or os.environ.get("OLLAMA_HOST", "").strip()
+    if not raw:
+        _log.debug("NOUGEN_OLLAMA_URL/OLLAMA_HOST unset; using fallback http://127.0.0.1:11434")
+        return "http://127.0.0.1:11434"
+    if "://" not in raw:
+        raw = "http://" + raw
+    return raw.replace("0.0.0.0", "127.0.0.1").rstrip("/")
+
+
+def _default_ask(prompt: str) -> str:
+    """Free local lane: ollama /api/generate. Model and timeout from env, fallbacks logged."""
+    import urllib.request
+    model = os.environ.get("NOUGEN_PERSONA_CLASSIFY_MODEL", "").strip()
+    if not model:
+        model = "gemma4:e4b"
+        _log.debug("NOUGEN_PERSONA_CLASSIFY_MODEL unset; using fallback %s", model)
+    timeout = _env_float("NOUGEN_PERSONA_CLASSIFY_TIMEOUT_S", 20.0)
+    body = json.dumps({"model": model, "prompt": prompt, "stream": False,
+                       "options": {"temperature": 0}}).encode()
+    req = urllib.request.Request(_ollama_url() + "/api/generate", data=body,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r).get("response", "")
+
+
+_MODEL_LANGS = {"en", "ht", "es", "fr"}
+
+
+def _parse_model_pick(raw: str, keys: set[str]) -> tuple[str, str]:
+    """Accept {"audience": key, "language": code} or a bare key token. Anything not in the
+    registry is ignored: the model may choose among known audiences, never invent one."""
+    aud, lang = "", ""
+    m = re.search(r"\{.*?\}", raw or "", re.S)
+    if m:
+        try:
+            d = json.loads(m.group(0))
+            aud = str(d.get("audience", "")).strip()
+            lang = str(d.get("language", "")).strip().lower()
+        except (ValueError, AttributeError):
+            pass
+    if not aud:
+        for tok in re.findall(r"[a-z][a-z0-9-]+", (raw or "").lower()):
+            if tok in keys:
+                aud = tok
+                break
+    return (aud if aud in keys else ""), (lang if lang in _MODEL_LANGS else "")
+
+
+def smart_classify(text: str, registry_path: Optional[Path] = None, *, ask=None,
+                   min_confidence: Optional[float] = None, surfaces: Iterable[str] = (),
+                   tags: Iterable[str] = ()) -> Inbound:
+    """Lexical first; below the confidence floor, ask a model to pick from the registry.
+    The model can only choose an existing audience key; on any failure the lexical answer stands."""
+    ib = classify_inbound(text, registry_path, surfaces=surfaces, tags=tags)
+    floor = _env_float("NOUGEN_PERSONA_MIN_CONFIDENCE", 0.5) if min_confidence is None else min_confidence
+    if ib.confidence >= floor:
+        return ib
+    markets, audiences = load_registry(registry_path)
+    keys = {a.key for a in audiences}
+    prompt = ("Classify the sender/audience of the message below. Reply with one line of JSON: "
+              '{"audience": <one of ' + ", ".join(sorted(keys)) + '>, "language": <en|ht|es|fr>}.\n'
+              "MESSAGE:\n" + text[:4000])
+    try:
+        raw = (ask or _default_ask)(prompt)
+    except Exception as e:                     # unreachable lane, timeout, bad JSON: degrade, never raise
+        _log.warning("persona model fallback unavailable (%s); keeping lexical answer", e.__class__.__name__)
+        ib.source = "lexical-lowconf"
+        return ib
+    aud, lang = _parse_model_pick(raw, keys)
+    if not aud:
+        ib.source = "lexical-lowconf"
+        return ib
+    best = next(a for a in audiences if a.key == aud)
+    ib.audience, ib.source = aud, "model"
+    ib.market = next((m.key for m in markets if m.key == best.market), ib.market)
+    if lang:
+        ib.language = lang
+    return ib
+
+
+def resolve(sig: Signals, registry_path: Optional[Path] = None) -> Persona:
+    """Deterministic: score every audience by affinity + channel overlap, pick the max, tie-break by key."""
+    markets, audiences = load_registry(registry_path)
+    scored = _score_audiences(sig, audiences, _env_int("NOUGEN_PERSONA_LANG_WEIGHT", 2))
     best_key = scored[0][1]
     best = next(a for a in audiences if a.key == best_key)
     secondary = tuple(k for s, k in scored[1:] if s > 0)[:2]
@@ -608,12 +791,22 @@ def _main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--registry", type=Path)
     ap.add_argument("--rebuild", action="store_true", help="ignore the persona cache for --scope")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--classify", action="store_true",
+                    help="classify the inbound text(s) instead of resolving a persona; JSON out")
+    ap.add_argument("--smart", action="store_true",
+                    help="with --classify: below the confidence floor, ask the free local model lane")
     ap.add_argument("--check", type=Path,
                     help="output file to lint against the resolved persona's contract; exit 1 on violations")
     a = ap.parse_args(argv)
     texts = list(a.text)
     if a.file:
         texts += Path(a.file).read_text(encoding="utf-8").splitlines()
+    if a.classify:
+        text = "\n".join(texts)
+        ib = smart_classify(text, a.registry, surfaces=a.surface) if a.smart \
+            else classify_inbound(text, a.registry, surfaces=a.surface)
+        print(json.dumps(ib.as_dict(), indent=1, default=list))
+        return 0
     if a.scope:
         p = PersonaStore().get_or_build(a.scope, rebuild=a.rebuild, tz=a.tz, role=a.role, audience_size=a.size)
     else:

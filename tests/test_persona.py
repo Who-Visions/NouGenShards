@@ -206,3 +206,66 @@ def test_one_liners_detect_after_widening():
 def test_first_language_first_ignores_undecidable_opening():
     p = _ht_persona()
     assert P.check_output("# T" + chr(10) + "2024-09-24, West Palm Beach" + chr(10) + "Mwen te marye.", p) == []
+
+
+# ---- v3: inbound classification, confidence, fleet fallback, registry growth ----
+
+FLEET = "relay the leg to the lane, shard it, then probe the swarm workers"
+NOISE = "ok"
+
+
+def test_classify_inbound_is_deterministic():
+    a, b = P.classify_inbound(FLEET), P.classify_inbound(FLEET)
+    assert a == b and a.audience == "fleet-operator" and a.source == "lexical"
+
+
+def test_confidence_separates_clear_from_ambiguous():
+    assert P.classify_inbound(FLEET).confidence >= 0.5
+    assert P.classify_inbound(NOISE).confidence < 0.5
+
+
+def test_smart_classify_asks_model_only_below_floor():
+    calls = []
+
+    def fake(prompt):
+        calls.append(prompt)
+        return '{"audience": "attorney", "language": "en"}'
+    hi = P.smart_classify(FLEET, ask=fake)
+    assert hi.source == "lexical" and calls == []
+    lo = P.smart_classify(NOISE, ask=fake)
+    assert lo.source == "model" and lo.audience == "attorney" and lo.market == "correspondence" and len(calls) == 1
+    assert "attorney" in calls[0] and "fleet-operator" in calls[0]   # the model picks from the registry list
+
+
+def test_smart_classify_ignores_unknown_model_key():
+    lo = P.smart_classify(NOISE, ask=lambda _: '{"audience": "grand-vizier", "language": "xx"}')
+    assert lo.source == "lexical-lowconf" and lo.audience == P.classify_inbound(NOISE).audience
+
+
+def test_smart_classify_degrades_when_model_lane_fails():
+    def boom(_):
+        raise ConnectionError("no lane")
+    lo = P.smart_classify(NOISE, ask=boom)
+    assert lo.source == "lexical-lowconf"
+
+
+def test_confidence_floor_is_env_driven(monkeypatch):
+    calls = []
+    monkeypatch.setenv("NOUGEN_PERSONA_MIN_CONFIDENCE", "1.5")
+    P.smart_classify(FLEET, ask=lambda p: calls.append(p) or "fleet-operator")
+    assert len(calls) == 1
+
+
+def test_correspondence_and_in_world_archetypes():
+    attorney = "Please find attached the signed retainer and the affidavit; counsel will file the motion before the hearing."
+    gov = "The department office sent a notice about your application form; the agency requires an appointment for processing."
+    world = "The oracle spoke of the throne beyond the veil, an oath sworn in the old realm under the elder's sigil."
+    assert P.classify_inbound(attorney).audience == "attorney"
+    assert P.classify_inbound(gov).audience == "government-office"
+    assert P.classify_inbound(world).audience == "in-world-character"
+
+
+def test_ollama_url_maps_bind_address_to_loopback(monkeypatch):
+    monkeypatch.setenv("NOUGEN_OLLAMA_URL", "")
+    monkeypatch.setenv("OLLAMA_HOST", "0.0.0.0:11436")
+    assert P._ollama_url() == "http://127.0.0.1:11436"
