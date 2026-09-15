@@ -11,6 +11,9 @@ an analytics store. Tracker metrics (Phase 6) can read the same file.
 from __future__ import annotations
 
 import json
+import logging
+import math
+import os
 import re
 import shutil
 import subprocess
@@ -20,7 +23,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_STATE_PATH = Path.home() / ".nougen" / "pr_lease_state.json"
+DEFAULT_GH_TIMEOUT_S = 30.0
+
+
+def _gh_timeout_s() -> float:
+    """Seconds to wait on `gh pr list`; NOUGEN_GH_TIMEOUT_S overrides."""
+    raw = os.environ.get("NOUGEN_GH_TIMEOUT_S", "").strip()
+    if not raw:
+        return DEFAULT_GH_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value <= 0:
+        logger.warning("NOUGEN_GH_TIMEOUT_S=%r is not a positive number; using %ss",
+                       raw, DEFAULT_GH_TIMEOUT_S)
+        return DEFAULT_GH_TIMEOUT_S
+    return value
 
 
 def _now() -> str:
@@ -226,7 +248,7 @@ def _gh_pr_list(repo: str, limit: int = 50) -> list[dict]:
             "--state", "open",
             "--json", "number,title,author,headRefName,createdAt,additions,deletions",
         ],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=_gh_timeout_s(),
     )
     if out.returncode != 0:
         raise RuntimeError(f"gh pr list failed: {out.stderr.strip()}")
