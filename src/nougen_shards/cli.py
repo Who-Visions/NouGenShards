@@ -1413,6 +1413,31 @@ def cmd_router(args):
                 print(f" - {k}: {v}")
 
 
+def cmd_backfill(args):
+    """Backfill this node's own vault natively (GM order 2026-09-15): machine tags, embeddings."""
+    import json as _json
+    if args.what == "machine":
+        from . import machine_backfill as mb
+        r = mb.run(args.vault, args.execute, args.force, args.tag)
+        if args.json:
+            print(_json.dumps(r, indent=1))
+        else:
+            for d in r["dbs"]:
+                print(f'{d["db"]}: total {d["total"]} mine {d["mine"]} other {d["other_host"]} '
+                      f'untagged {d["untagged"]} written {d["written"]}')
+            print(f'{"WROTE" if r["execute"] else "DRY RUN"} {r["tag"]}: {r["written"]} written, '
+                  f'{r["untagged"]} still untagged of {r["total"]} in {r["seconds"]}s')
+        return
+    from . import embedding_backfill as eb
+    argv = ["--vault", eb_vault] if (eb_vault := (args.vault or os.environ.get("NOUGEN_VAULT_DIR", ""))) else []
+    model = args.model or os.environ.get("NOUGEN_EMBED_MODEL", "").strip()
+    if model:
+        argv += ["--model", model]
+    if args.execute:
+        argv.append("--execute")
+    eb._main(argv)
+
+
 def cmd_db(args):
     """Manages external database connections."""
     if args.action == "link":
@@ -1792,6 +1817,15 @@ def get_parser():
     p_db.add_argument("--title", default="title", help="Title column name")
     p_db.add_argument("--content", default="content", help="Content column name")
     p_db.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_backfill = subparsers.add_parser("backfill", help="Backfill this node's vault: machine tags, embeddings")
+    p_backfill.add_argument("what", choices=["machine", "embeddings"], help="what to backfill")
+    p_backfill.add_argument("--vault", help="vault dir (default NOUGEN_VAULT_DIR)")
+    p_backfill.add_argument("--execute", action="store_true", help="write; default is a dry run")
+    p_backfill.add_argument("--force", action="store_true", help="machine: rewrite another host's tag to this host")
+    p_backfill.add_argument("--tag", help="machine: override the tag (default machine:<discovered host>)")
+    p_backfill.add_argument("--model", help="embeddings: embed model (default NOUGEN_EMBED_MODEL, then discovered)")
+    p_backfill.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_node = subparsers.add_parser("node", help="Manage remote cloud nodes")
     p_node.add_argument("action", choices=["link", "list", "push", "pull"])
@@ -2902,7 +2936,7 @@ def main():
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack,
-        "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
+        "db": cmd_db, "backfill": cmd_backfill, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr,
