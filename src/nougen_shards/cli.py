@@ -2872,7 +2872,7 @@ def cmd_hijack(args):
     from . import session_probe
     result = session_probe.run_hijack(handoff_id=args.handoff_id, agent=args.agent)
     if result.get("ok"):
-        print(f"✅ Hijacked {result['id']} -> {result['identity'].get('host')} ({result['identity'].get('id')})")
+        print(f"✅ Hijacked {result['id']} -> {result['identity'].get('host')} ({result['identity'].get('machine_id')})")
     else:
         print(f"❌ {result.get('error')}")
         sys.exit(1)
