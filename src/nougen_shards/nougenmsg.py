@@ -9,6 +9,8 @@ import json
 import time
 import shutil
 import subprocess
+import threading
+import sys
 import urllib.request
 import re
 import uuid
@@ -639,6 +641,7 @@ class NouGenMsgBus:
                               "transport_observed": current})
         session_id = supplied.get("session_id")
         return {
+            "id": supplied.get("id"),
             "session_id": session_id,
             "session_title": supplied.get("session_title"),
             "machine": claimed_machine or current,
@@ -654,6 +657,10 @@ class NouGenMsgBus:
             # so cross-machine provenance was unrecoverable after one hop.
             "original_sender": supplied.get("original_sender") or f"nougen-{current}",
             "relay_path": cls._extend_relay_path(supplied.get("relay_path"), current),
+            "trigger_source": supplied.get("trigger_source") or os.environ.get("NOUGEN_TRIGGER_SOURCE", "direct_dispatch"),
+            "correlation_id": supplied.get("correlation_id"),
+            "idempotency_key": supplied.get("idempotency_key"),
+            "reply_to": supplied.get("reply_to"),
             "timestamp": supplied.get("timestamp") or time.time(),
             "provenance_state": supplied.get("provenance_state") or (
                 "asserted" if session_id else "unknown"),
@@ -663,7 +670,8 @@ class NouGenMsgBus:
 
     @classmethod
     def live_ping(cls, target: str, text: str, node: Optional[str] = None,
-                  origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                  origin: Optional[Dict[str, Any]] = None,
+                  models_async: bool = False) -> Dict[str, Any]:
         target = target.lower()
         results = {}
         envelope = cls._origin_envelope(origin)
@@ -676,21 +684,82 @@ class NouGenMsgBus:
         models_on_all = os.environ.get("NOUGEN_MSG_MODEL_LANES_ON_ALL", "1").strip().lower() \
             not in ("0", "false", "no")
 
-        if family in ["claude", "all"]:
+        # A node-name target ('@blade') matched no family branch, so the node it
+        # addressed returned {} and woke nobody while the caller saw "delivered"
+        # (2026-09-14: connector nougenmsg @blade -> results.blade == {}). On the
+        # addressed node it means "this node's agent lanes"; elsewhere it is not
+        # ours to deliver, and saying so beats an empty dict.
+        fleet_nodes = {n.strip().lower() for n in os.environ.get(
+            "NOUGEN_FLEET_NODES", "blade,whoart,phoebus").split(",") if n.strip()}
+        if family in fleet_nodes:
+            if family != (get_current_node() or "").lower():
+                return {"skipped": f"addressed to {family}, not this node"}
+            family, model = "agents", None
+
+        if family in ["claude", "all", "agents"]:
             results["claude_pipes"] = AgentPinger.ping_claude(text, envelope)
 
-        if family in ["antigravity", "all"]:
+        if family in ["antigravity", "all", "agents"]:
             results["antigravity"] = AgentPinger.ping_antigravity(text, origin=envelope)
 
-        if family in ["codex", "all"]:
+        if family in ["codex", "all", "agents"]:
             results["codex"] = AgentPinger.ping_codex(text, envelope)
 
+        model_pings = []
         if family == "ollama" or (family == "all" and models_on_all):
-            results["ollama"] = AgentPinger.ping_ollama(text, node=node or "local",
-                                                       model=model, origin=envelope)
-
+            model_pings.append(("ollama", lambda: AgentPinger.ping_ollama(
+                text, node=node or "local", model=model, origin=envelope)))
         if family == "openrouter" or (family == "all" and models_on_all):
-            results["openrouter"] = AgentPinger.ping_openrouter(text, model=model, origin=envelope)
+            model_pings.append(("openrouter", lambda: AgentPinger.ping_openrouter(
+                text, model=model, origin=envelope)))
+        if models_async and model_pings:
+            # A model lane waits for the model to ANSWER (NOUGEN_MSG_MODEL_TIMEOUT_S, 60s); its
+            # reply lands in the inbox via _drop_model_reply either way. On 2026-09-14 an @all
+            # node ping took 64.7s here while @phoebus (agent lanes only) took 1.7s.
+            def _run_models(pings=tuple(model_pings)):
+                for lane, call in pings:
+                    try:
+                        call()
+                    except Exception as e:  # pylint: disable=broad-except
+                        print(f"[nougenmsg] background {lane} lane raised: {e}", file=sys.stderr, flush=True)
+            t = threading.Thread(target=_run_models, name="nougenmsg-models", daemon=True)
+            t.start()
+            cls._last_models_thread = t
+            for lane, _ in model_pings:
+                results[lane] = {"queued": True, "via": "model"}
+        else:
+            for lane, call in model_pings:
+                results[lane] = call()
+
+        # Step 3: Append-only persistence to messages.db
+        try:
+            import sqlite3
+            import uuid
+            db_path = os.path.expanduser(os.path.join("~", ".nougen", "messages.db"))
+            if os.path.exists(db_path):
+                msg_id = envelope.get("id") or f"msg_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
+                with sqlite3.connect(db_path, timeout=5) as conn:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO messages
+                        (id, timestamp, source_node, source_agent, target_node, target_agent, trigger_source, correlation_id, idempotency_key, text, provenance)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        msg_id,
+                        envelope.get("timestamp") or time.time(),
+                        envelope.get("machine") or get_current_node(),
+                        envelope.get("original_sender") or envelope.get("lane") or "agent",
+                        node or get_current_node(),
+                        target,
+                        envelope.get("trigger_source") or "direct_dispatch",
+                        envelope.get("correlation_id"),
+                        envelope.get("idempotency_key"),
+                        text,
+                        json.dumps(envelope)
+                    ))
+                    conn.commit()
+        except Exception as e:  # pylint: disable=broad-except
+            # The message is already delivered; a ledger write must not undo that, but it must not vanish silently.
+            print(f"[nougenmsg] messages.db append failed: {e}", file=sys.stderr, flush=True)
 
         return results
 
@@ -893,17 +962,42 @@ class NouGenMsgBus:
     @classmethod
     def emit_fleet(cls, text: str, target: str = "all",
                    origin: Optional[Dict[str, Any]] = None,
-                   audience: Optional[str] = None) -> Dict[str, Any]:
-        """Dispatches message across all nodes in the fleet (persona header applied once, here)."""
+                   audience: Optional[str] = None,
+                   background: bool = False) -> Dict[str, Any]:
+        """Dispatches message across all nodes in the fleet (persona header applied once, here).
+
+        background=True delivers locally, then hands the SSH fan-out to a daemon thread and
+        reports each peer as {"queued": True}. The MCP node tools use it: peers are reached
+        one at a time over SSH (plus scp for unsafe bodies), which ran 76s on 2026-09-14 while
+        the connector allows its gateway call 20s. It gave up, fell back, and the message
+        arrived twice. Peer failures in the background go to stderr (the node log), not the caller.
+        """
         header = cls.persona_header(audience)
         if header and not text.startswith("[persona "):
             text = header + "\n" + text
         curr = get_current_node()
-        results = {curr: cls.live_ping(target=target, text=text, origin=origin)}
+        results = {curr: cls.live_ping(target=target, text=text, origin=origin,
+                                       models_async=background)}
         fleet_nodes = {"blade", "whoart", "phoebus"}
         # A standalone/external clone has no private fleet to broadcast into;
         # only fan out to the other two boxes when this IS one of them.
         nodes = sorted(fleet_nodes - {curr}) if curr in fleet_nodes else []
+        if background and nodes:
+            def _fan_out(peers=tuple(nodes)):
+                for n in peers:
+                    try:
+                        res = cls.emit_node(n, target, text, origin=origin)
+                        bad = {k: v for k, v in (res or {}).items() if isinstance(v, str) and v.startswith("Error")}
+                        if bad:
+                            print(f"[nougenmsg] background fan-out to {n} failed: {bad}", file=sys.stderr, flush=True)
+                    except Exception as e:  # pylint: disable=broad-except
+                        print(f"[nougenmsg] background fan-out to {n} raised: {e}", file=sys.stderr, flush=True)
+            t = threading.Thread(target=_fan_out, name="nougenmsg-fanout", daemon=True)
+            t.start()
+            cls._last_fanout_thread = t  # tests join it; nothing in production waits on it
+            for n in nodes:
+                results[n] = {"queued": True, "via": "ssh"}
+            return results
         for n in nodes:
             try:
                 res = cls.emit_node(n, target, text, origin=origin)

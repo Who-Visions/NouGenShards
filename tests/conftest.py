@@ -10,6 +10,8 @@ The accident was doing the isolating. This makes it explicit: every test gets it
 own empty secrets vault, so no test can read, mutate, or leak real credentials.
 A test that wants a specific location can still set the env var itself.
 """
+import os
+
 import pytest
 
 from nougen_shards import keymaker
@@ -32,6 +34,8 @@ def isolated_secrets_vault(tmp_path_factory, monkeypatch):
     # real vault. Force it off; tests that are ABOUT the probe chain re-enable
     # it against a fabricated home (see test_vault_discovery.py).
     monkeypatch.setenv(keymaker.ENV_VAULT_PROBE, "0")
+    # Isolate tenant registry so tests do not pick up host ~/.nougen/tenants.json
+    monkeypatch.setenv("NOUGEN_TENANTS_FILE", str(vault / "nonexistent_tenants.json"))
     yield vault
 
 
@@ -49,3 +53,55 @@ def no_network_embed_at_capture(monkeypatch):
     stubs the embedder, which is what the tests in test_audit_fixes.py do.
     """
     monkeypatch.setenv("NOUGEN_EMBED_AT_CAPTURE", "0")
+
+
+class _HomePath:
+    """`os.path` for one module, with `~` pointing at a throwaway home."""
+
+    def __init__(self, real, home):
+        self._real = real
+        self._home = str(home)
+
+    def expanduser(self, path):
+        path = os.fspath(path)
+        if path == "~" or path.startswith("~/") or path.startswith("~" + os.sep):
+            return self._home + path[1:]
+        return self._real.expanduser(path)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class _HomeOs:
+    """`os` for one module: everything real except `path.expanduser`."""
+
+    def __init__(self, real, home):
+        self._real = real
+        self.path = _HomePath(real.path, home)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+@pytest.fixture(autouse=True)
+def isolated_msg_home(tmp_path_factory, monkeypatch):
+    """Keep NouGenMsg's `~/...` writes out of the operator's real inboxes.
+
+    `nougen_shards.nougenmsg` resolves its inboxes inline with
+    `os.path.expanduser("~/...")`: ~/.nougen/agy_inbox, ~/.gemini/config/inbox,
+    ~/.codex/inbox, the claude inbox and the session registry. A test that
+    mocks only the transport still reaches `_drop_model_reply` ->
+    `ping_antigravity`, which wrote real inbox files. On 2026-09-14 the
+    shell-injection fixtures (sender `ollama:model"; rm -rf /`) landed in the
+    live agy and Antigravity inboxes, where hooks surfaced them to live sessions.
+
+    Scoped to that module on purpose. Redirecting HOME suite-wide would break
+    the tests that shell out to git, and patching the global `os.path` would
+    reach every module. Tests that patch `nougenmsg.os.path.expanduser`
+    themselves still win.
+    """
+    import os as real_os
+    from nougen_shards import nougenmsg
+    home = tmp_path_factory.mktemp("msg_home")
+    monkeypatch.setattr(nougenmsg, "os", _HomeOs(real_os, home))
+    yield home

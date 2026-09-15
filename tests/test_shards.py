@@ -380,3 +380,55 @@ def test_retrieve_invokes_reranker_when_enabled(setup_test_env, monkeypatch):
     monkeypatch.setattr(shards, "rerank", lambda q, items, k: (called.setdefault("hit", True), items[:k])[1])
     shards.retrieve("alpha")
     assert called.get("hit") is True
+
+
+def test_capture_stores_validity_window(setup_test_env):
+    from nougen_shards import core as c
+    res = c.capture("insight", "validity probe alpha", "door code valid until rotation, probe alpha",
+                    valid_until="2020-01-01T00:00:00Z", domain_key="validity-test")
+    assert res["captured"]
+    conn = c.get_connection(res["db_index"])
+    try:
+        row = conn.execute("SELECT valid_until, last_verified FROM shards WHERE id = ?",
+                           (res["shard_id"],)).fetchone()
+    finally:
+        conn.close()
+    assert row[0].startswith("2020-01-01") and row[1]
+
+
+def test_expired_shard_sorts_below_live_twin(setup_test_env):
+    from nougen_shards import core as c
+    old = c.capture("insight", "zebra gate schedule (superseded)",
+                    "zebra gate schedule zebra gate schedule opens at 6am zebra gate",
+                    valid_until="2020-01-01", domain_key="validity-test")
+    cur = c.capture("insight", "zebra gate schedule (current)",
+                    "zebra gate schedule now opens at 7am",
+                    domain_key="validity-test")
+    assert old["captured"] and cur["captured"]
+    top = c.retrieve("zebra gate schedule opens", limit=1, domain_key="validity-test")
+    assert top and top[0]["title"] == "zebra gate schedule (current)"
+    both = {r["title"]: r for r in c.retrieve("zebra gate schedule opens", limit=5, domain_key="validity-test")}
+    if "zebra gate schedule (superseded)" in both:
+        assert both["zebra gate schedule (superseded)"].get("_expired") is True
+    assert not both["zebra gate schedule (current)"].get("_expired")
+
+
+def test_validity_rank_can_be_disabled(setup_test_env, monkeypatch):
+    from nougen_shards import core as c
+    monkeypatch.setenv("NOUGEN_VALIDITY_RANK", "0")
+    items = [{"_db_index": 1, "id": 1, "valid_until": "2020-01-01"}]
+    c._mark_expired(items, c.datetime.now(c.timezone.utc))
+    assert "_expired" not in items[0]
+
+
+def test_mark_verified_moves_window(setup_test_env):
+    from nougen_shards import core as c
+    res = c.capture("insight", "validity probe beta", "probe beta body text", domain_key="validity-test")
+    assert c.mark_verified(res["shard_id"], res["db_index"], valid_until="2099-12-31")
+    conn = c.get_connection(res["db_index"])
+    try:
+        until = conn.execute("SELECT valid_until FROM shards WHERE id = ?", (res["shard_id"],)).fetchone()[0]
+    finally:
+        conn.close()
+    assert until.startswith("2099-12-31")
+    assert c.mark_verified(999999, res["db_index"]) is False

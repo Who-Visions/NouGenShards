@@ -30,6 +30,10 @@ from . import arxiv_core
 from . import viz_core
 from . import tube
 from . import evidence
+from . import destiny
+from . import wake_daemon
+from . import wispr
+from . import studio
 
 from nougen_shards import __version__ as VERSION  # single source: pyproject
 
@@ -94,6 +98,187 @@ if sys.platform == "win32":
             sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
     except (AttributeError, ValueError):
         pass
+
+
+def cmd_destiny(args):
+    """Destiny store: prospective memory and goal graph for the NouGen grid."""
+    action = getattr(args, "destiny_action", "list")
+    is_json = getattr(args, "json", False)
+
+    if action == "create":
+        res = destiny.create_destiny(
+            title=args.title,
+            goal=args.goal,
+            branch=getattr(args, "branch", None),
+            trigger=getattr(args, "trigger", None),
+            required_events=getattr(args, "required", None),
+            forbidden_outcomes=getattr(args, "forbidden", None),
+            acceptable_variance=getattr(args, "variance", None),
+            verification=getattr(args, "verification", None),
+            confidence=getattr(args, "confidence", None),
+            deadline=getattr(args, "deadline", None),
+            supersedes=getattr(args, "supersedes", None),
+            status=getattr(args, "status", "dormant"),
+            actor=getattr(args, "actor", None)
+        )
+        if is_json:
+            print(json.dumps(res, indent=2))
+        else:
+            if "error" in res:
+                print(f"❌ Failed to create destiny: {res['error']}")
+            else:
+                print(f"✨ Created Destiny #{res['id']}: [{res['branch']}] {res['title']}")
+                print(f"  • Status:       {res['status']}")
+                print(f"  • Goal:         {res['goal']}")
+                if res.get('trigger'):
+                    print(f"  • Trigger:      {res['trigger']}")
+                if res.get('verification'):
+                    print(f"  • Verification: {res['verification']}")
+
+    elif action == "get":
+        res = destiny.get_destiny(args.id)
+        if is_json:
+            print(json.dumps(res, indent=2))
+        else:
+            if "error" in res:
+                print(f"❌ {res['error']}")
+            else:
+                print(f"✨ Destiny #{res['id']}: [{res['branch']}] {res['title']}")
+                print(f"  • Status:       {res['status']}")
+                print(f"  • Goal:         {res['goal']}")
+                if res.get('trigger'):
+                    print(f"  • Trigger:      {res['trigger']}")
+                if res.get('verification'):
+                    print(f"  • Verification: {res['verification']}")
+                if res.get('links'):
+                    print("  • Links:")
+                    for lnk in res['links']:
+                        print(f"    - [{lnk['kind']}] {lnk['ref']} ({lnk['role']})")
+                if res.get('events'):
+                    print("  • Event History:")
+                    for ev in res['events']:
+                        print(f"    - {ev['created_utc']}: {ev['from_status']} -> {ev['to_status']} by {ev['actor'] or 'unknown'} ({ev['evidence']})")
+
+    elif action == "update":
+        res = destiny.update_status(args.id, args.to_status, actor=getattr(args, "actor", None), evidence=getattr(args, "evidence", None))
+        if is_json:
+            print(json.dumps(res, indent=2))
+        else:
+            if "error" in res:
+                print(f"❌ Failed to update destiny: {res['error']}")
+            else:
+                print(f"✨ Destiny #{res['id']} updated to {res['status']}")
+
+    elif action == "link":
+        res = destiny.link(args.id, args.kind, args.ref, role=getattr(args, "role", "evidence"), note=getattr(args, "note", None))
+        if is_json:
+            print(json.dumps(res, indent=2))
+        else:
+            if "error" in res:
+                print(f"❌ Failed to link: {res['error']}")
+            else:
+                print(f"✨ Linked {args.kind} '{args.ref}' to Destiny #{args.id} as {args.role}")
+
+    elif action == "search":
+        res = destiny.search_destinies(args.query, limit=getattr(args, "limit", 20), include_finished=getattr(args, "all", False))
+        if is_json:
+            print(json.dumps(res, indent=2))
+        else:
+            print(f"🔍 Destinies matching '{args.query}' ({res['count']} results):")
+            for d in res.get("destinies", []):
+                print(f"  • #{d['id']:<4} [{d['status']:<9}] [{d['branch']}] {d['title']}")
+                print(f"    Goal: {d['goal'][:100]}")
+
+    elif action == "evolve":
+        res = destiny.evolve_report(since_utc=getattr(args, "since", None), limit=getattr(args, "limit", 50))
+        if is_json:
+            print(json.dumps(res, indent=2))
+        else:
+            print("🧬 Destiny Evolve Raw Material Report:")
+            print(f"  Status Counts: {res.get('status_counts')}")
+            print(f"  Terminal Events: {len(res.get('terminal_events', []))}")
+            for ev in res.get("terminal_events", [])[:10]:
+                print(f"  • #{ev['destiny_id']} '{ev['title']}' -> {ev['to_status']} ({ev['evidence']})")
+
+    else:  # list / unfinished
+        res = destiny.unfinished_destinies(
+            status=getattr(args, "status", None),
+            trigger=getattr(args, "trigger", None),
+            branch=getattr(args, "branch", None),
+            limit=getattr(args, "limit", 20)
+        )
+        if is_json:
+            print(json.dumps(res, indent=2))
+        else:
+            print(f"✨ Active/Unfinished Destinies ({res['count']} of {res['total']}):")
+            for d in res.get("destinies", []):
+                print(f"  • #{d['id']:<4} [{d['status']:<9}] [{d['branch']}] {d['title']}")
+                print(f"    Goal: {d['goal'][:100]}")
+
+
+
+def cmd_wispr(args):
+    """Wispr Flow Voice Dictation Ingestion."""
+    action = getattr(args, "wispr_action", "latest")
+    if action == "watch":
+        wispr.watch_and_shard(interval_s=getattr(args, "interval", 1.0), auto_shard=not getattr(args, "no_shard", False))
+    elif action == "list":
+        rows = wispr.list_transcripts(limit=getattr(args, "limit", 10))
+        if getattr(args, "json", False):
+            print(json.dumps(rows, indent=2))
+        else:
+            print(f"🎙️  Wispr Flow Transcripts ({len(rows)} recent):")
+            for r in rows:
+                print(f"  • [{r.get('timestamp')}] {r.get('formattedText') or r.get('asrText')}")
+    else:  # latest
+        row = wispr.get_latest_transcript()
+        if getattr(args, "json", False):
+            print(json.dumps(row, indent=2))
+        else:
+            if not row or "error" in row:
+                print("[!] No Wispr transcripts found or DB inaccessible.")
+            else:
+                print(f"🎙️  Latest Wispr Transcript [{row.get('timestamp')}]:")
+                print(f"    {row.get('formattedText') or row.get('asrText')}")
+
+
+def cmd_studio(args):
+    """Studio & Hardware Peripherals Lighting Control."""
+    target = getattr(args, "target", "all")
+    color = getattr(args, "color", "green")
+    is_json = getattr(args, "json", False)
+    
+    results = {}
+    if target in ("all", "razer"):
+        rz = studio.RazerController()
+        connected = rz.connect()
+        if connected:
+            rz.set_status_color(color)
+            results["razer"] = {"status": "ok", "color": color}
+        else:
+            results["razer"] = {"status": "offline", "message": "Razer Synapse not reachable"}
+            
+    if target in ("all", "lifx"):
+        lx = studio.LIFXController()
+        if lx.is_configured():
+            res = lx.set_color(selector="all", color=color)
+            results["lifx"] = res
+        else:
+            results["lifx"] = {"status": "unconfigured", "message": "LIFX_TOKEN not set"}
+            
+    if is_json:
+        print(json.dumps(results, indent=2))
+    else:
+        print(f"💡 Studio Lighting Command -> {color.upper()}:")
+        for dev, info in results.items():
+            print(f"  • {dev.upper()}: {info.get('status', 'sent')}")
+
+def cmd_wake(args):
+    """NouGen Wake Daemon: reactive idle wake detection for fleet IPC messaging."""
+    timeout = getattr(args, "timeout", 600)
+    interval = getattr(args, "interval", 2.0)
+    code = wake_daemon.run_wake_loop(timeout_s=timeout, interval_s=interval, verbose=True)
+    sys.exit(code)
 
 def cmd_pr(args):
     from . import pr_lease
@@ -1672,6 +1857,24 @@ def get_parser():
     p_brain.add_argument("--json", action="store_true", help="Machine-readable output")
 
     # add_help=False: `-h/--help` must reach the relay engine, not stop here.
+    p_hi = subparsers.add_parser("hi", help="Session-open probe: identity, fleet pulse, open handoffs")
+    p_hi.add_argument("--no-fleet", action="store_true", help="Skip SSH pulse to peer nodes")
+    p_hi.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_bye = subparsers.add_parser("bye", help="Session-close probe: dirty sweep + handoff + primer")
+    p_bye.add_argument("--agent", "-a", default=None, help="Agent type for the handoff")
+    p_bye.add_argument("--goal", "-g", default=None, help="Goal for the handoff")
+    p_bye.add_argument("--summary", "-m", default="", help="Session summary for the handoff")
+    p_bye.add_argument("--dry-run", action="store_true", help="Preview without writing a handoff")
+    p_bye.add_argument("--publish-leg", action="store_true",
+                       help="Also commit+push a real relay leg for this session close (not just a local handoff)")
+    p_bye.add_argument("--no-shard", action="store_true", help="Skip writing a verified session-close shard")
+    p_bye.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_hijack = subparsers.add_parser("hijack", help="Repoint a foreign/legacy handoff record onto this node")
+    p_hijack.add_argument("--id", dest="handoff_id", required=True, help="Handoff id to hijack")
+    p_hijack.add_argument("--agent", "-a", default=None, help="Agent to record as the hijacker")
+
     p_relay = subparsers.add_parser(
         "relay", add_help=False,
         help="Fleet relay board (NouGenRelay): open | read | ack | create | claim ...",
@@ -1789,6 +1992,13 @@ def get_parser():
     p_evidence.add_argument("evidence_action", choices=["classes", "require"], default="classes", nargs="?")
     p_evidence.add_argument("--tags", default="", help="Comma-separated tags to validate")
 
+    # tunnel: Ngrok secure ingress connector
+    p_tunnel = subparsers.add_parser("tunnel", help="Start secure edge tunnel for local ports (Ngrok)")
+    p_tunnel.add_argument("port", type=int, help="Local port to forward (e.g. 8766 for MsgNode, 3000 for Whovisions)")
+    p_tunnel.add_argument("--service", default="generic", help="Service label (e.g. msgnode, whovisions, mcp)")
+    p_tunnel.add_argument("--domain", default=None, help="Custom Ngrok reserved domain")
+    p_tunnel.add_argument("--json", action="store_true", help="JSON output")
+
     # transcribe: Video / Audio transcription and summarization
     p_transcribe = subparsers.add_parser(
         "transcribe",
@@ -1816,6 +2026,87 @@ def get_parser():
     )
     p_live.add_argument("live_args", nargs=argparse.REMAINDER,
                         help="Subcommands: overview | snapshot | nodes | sessions | ports | ssh | relays | watch | tracker | send | broadcast | reply")
+
+    # destiny store
+    p_destiny = subparsers.add_parser("destiny", help="Prospective memory & goal graph store (destinies.db)")
+    destiny_sub = p_destiny.add_subparsers(dest="destiny_action")
+    
+    p_destiny_list = destiny_sub.add_parser("list", help="List unfinished/active destinies")
+    p_destiny_list.add_argument("--status", choices=list(destiny.STATUSES), default=None)
+    p_destiny_list.add_argument("--trigger", default=None)
+    p_destiny_list.add_argument("--branch", default=None)
+    p_destiny_list.add_argument("--limit", type=int, default=20)
+    p_destiny_list.add_argument("--json", action="store_true")
+
+    p_destiny_create = destiny_sub.add_parser("create", help="Create a target destiny")
+    p_destiny_create.add_argument("--title", required=True, help="Title of the destiny")
+    p_destiny_create.add_argument("--goal", required=True, help="Terminal goal")
+    p_destiny_create.add_argument("--branch", default=None, help="Branch label (U0, UX, ARCH, etc.)")
+    p_destiny_create.add_argument("--trigger", default=None, help="Activation trigger")
+    p_destiny_create.add_argument("--required", default=None, help="Required events (JSON or semi-colon list)")
+    p_destiny_create.add_argument("--forbidden", default=None, help="Forbidden outcomes")
+    p_destiny_create.add_argument("--variance", default=None, help="Acceptable variance")
+    p_destiny_create.add_argument("--verification", default=None, help="Verification standard")
+    p_destiny_create.add_argument("--status", choices=["dormant", "active"], default="dormant")
+    p_destiny_create.add_argument("--actor", default=None)
+    p_destiny_create.add_argument("--json", action="store_true")
+
+    p_destiny_get = destiny_sub.add_parser("get", help="Get destiny by ID")
+    p_destiny_get.add_argument("id", type=int, help="Destiny ID")
+    p_destiny_get.add_argument("--json", action="store_true")
+
+    p_destiny_update = destiny_sub.add_parser("update", help="Update destiny status")
+    p_destiny_update.add_argument("id", type=int, help="Destiny ID")
+    p_destiny_update.add_argument("to_status", choices=list(destiny.STATUSES), help="Target status")
+    p_destiny_update.add_argument("--actor", default=None)
+    p_destiny_update.add_argument("--evidence", default=None)
+    p_destiny_update.add_argument("--json", action="store_true")
+
+    p_destiny_link = destiny_sub.add_parser("link", help="Link shard, relay leg, agent, or destiny")
+    p_destiny_link.add_argument("id", type=int, help="Destiny ID")
+    p_destiny_link.add_argument("--kind", choices=list(destiny.LINK_KINDS), required=True)
+    p_destiny_link.add_argument("--ref", required=True, help="Reference identifier")
+    p_destiny_link.add_argument("--role", choices=list(destiny.LINK_ROLES), default="evidence")
+    p_destiny_link.add_argument("--note", default=None)
+    p_destiny_link.add_argument("--json", action="store_true")
+
+    p_destiny_search = destiny_sub.add_parser("search", help="Search destinies")
+    p_destiny_search.add_argument("query", help="Search query")
+    p_destiny_search.add_argument("--all", action="store_true", help="Include finished/failed")
+    p_destiny_search.add_argument("--limit", type=int, default=20)
+    p_destiny_search.add_argument("--json", action="store_true")
+
+    p_destiny_evolve = destiny_sub.add_parser("evolve", help="Evolve report on terminal destiny events")
+    p_destiny_evolve.add_argument("--since", default=None)
+    p_destiny_evolve.add_argument("--limit", type=int, default=50)
+    p_destiny_evolve.add_argument("--json", action="store_true")
+
+    # wake daemon
+    p_wake = subparsers.add_parser("wake", help="Run NouGen reactive idle wake daemon for fleet IPC messaging")
+    p_wake.add_argument("--timeout", type=float, default=600.0, help="Max idle seconds before recycle")
+    p_wake.add_argument("--interval", type=float, default=2.0, help="Poll interval in seconds")
+
+    
+    # wispr voice dictation
+    p_wispr = subparsers.add_parser("wispr", help="Wispr Flow voice dictation ingestion & live stream")
+    wispr_sub = p_wispr.add_subparsers(dest="wispr_action")
+    
+    p_wispr_latest = wispr_sub.add_parser("latest", help="Get latest Wispr transcript")
+    p_wispr_latest.add_argument("--json", action="store_true")
+    
+    p_wispr_list = wispr_sub.add_parser("list", help="List recent Wispr transcripts")
+    p_wispr_list.add_argument("--limit", type=int, default=10)
+    p_wispr_list.add_argument("--json", action="store_true")
+    
+    p_wispr_watch = wispr_sub.add_parser("watch", help="Live stream dictations into NouGen shards")
+    p_wispr_watch.add_argument("--interval", type=float, default=1.0)
+    p_wispr_watch.add_argument("--no-shard", action="store_true", help="Do not auto-shard transcripts")
+
+    # studio lighting
+    p_studio = subparsers.add_parser("studio", help="Physical studio telemetry & RGB lighting (Razer / LIFX)")
+    p_studio.add_argument("color", nargs="?", default="green", help="Target status color (green, yellow, orange, red, blue, purple, cyan, white)")
+    p_studio.add_argument("--target", choices=["all", "razer", "lifx"], default="all", help="Hardware target")
+    p_studio.add_argument("--json", action="store_true")
 
     return parser
 
@@ -2470,6 +2761,123 @@ def cmd_transcribe(args):
             print(f"  media:       {res['media'].get('path')}")
 
 
+def cmd_tunnel(args):
+    """Starts an ephemeral or custom edge tunnel via Ngrok."""
+    from . import tunnel
+    import time
+    try:
+        res = tunnel.start_tunnel(
+            port=args.port,
+            service_name=args.service,
+            domain=args.domain
+        )
+        if args.json:
+            print(json.dumps({
+                "url": res["url"],
+                "port": res["port"],
+                "service": res["service"],
+                "domain": res["domain"],
+                "status": "online"
+            }, indent=2))
+        else:
+            print("🚇 NouGen Edge Tunnel Active")
+            print(f"  • Forwarding:  http://localhost:{res['port']} -> {res['url']}")
+            print(f"  • Service:     {res['service']}")
+            print("  • Ingress:     Ngrok Shang Tsung Gateway")
+            print("\n[Press Ctrl+C to stop tunnel]")
+        
+        # Keep process alive while tunnel is open
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n🚇 Tunnel terminated.")
+    except Exception as exc:
+        if args.json:
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"❌ Failed to start tunnel: {exc}")
+        sys.exit(1)
+
+
+def cmd_hi(args):
+    from . import session_probe
+    import json as _json
+    report = session_probe.run_hi(fleet=not args.no_fleet)
+    if getattr(args, "json", False):
+        print(_json.dumps(report.__dict__, default=str, indent=2))
+        return
+    print(f"🌅 hi — {report.identity.get('host', 'unknown')} ({report.identity.get('machine_id', '?')}) — {report.local_time}")
+    print(f"  Open handoffs: {report.open_handoffs}")
+    if report.latest_goal:
+        print(f"  Latest goal: {report.latest_goal}")
+    if report.fleet_pulse:
+        pulse = ", ".join(f"{h}:{'up' if ok else 'down'}" for h, ok in report.fleet_pulse.items())
+        print(f"  Fleet pulse: {pulse}")
+    if report.orphan_ports:
+        print(f"  Ports already up: {', '.join(f'{p} ({label})' for p, label in report.orphan_ports)}")
+    relay_status = "armed" if report.relay_armed else "unreachable"
+    print(f"  Relay: {relay_status}, {report.relay_open_count} open leg(s)")
+    for leg in report.relay_legs:
+        print(f"    • {leg['who']} — {leg['goal']}  [{leg['id']}]")
+    if report.next_play:
+        print(f"  ▶ Next play: {report.next_play}")
+    if report.usage:
+        parts = [
+            f"{label}: {u.get('total_tokens', 0):,} tok / ${u.get('estimated_cost', 0.0):.2f}"
+            for label, u in report.usage.items() if u.get("ledger_present")
+        ]
+        if parts:
+            print(f"  Usage (local ledger, shadow cost): {' | '.join(parts)}")
+
+
+def cmd_bye(args):
+    from . import session_probe
+    import json as _json
+    report = session_probe.run_bye(
+        agent=args.agent, goal=args.goal, summary=args.summary, dry_run=args.dry_run,
+        publish_leg=args.publish_leg, write_shard=not args.no_shard,
+    )
+    if getattr(args, "json", False):
+        print(_json.dumps(report.__dict__, default=str, indent=2))
+        return
+    print(f"🌙 bye — {report.local_time} — {report.total_dirty} dirty file(s), {report.total_unpushed} unpushed commit(s)")
+    for r in report.repos:
+        if r["dirty"] or r["unpushed"]:
+            print(f"  📁 {r['repo']} ({r['branch']}) — {r['dirty']} dirty, {r['unpushed']} unpushed")
+    if report.orphan_ports:
+        print(f"  Ports still up: {', '.join(f'{p} ({label})' for p, label in report.orphan_ports)}")
+    if report.handoff_path:
+        print(f"  ✅ Handoff written: {report.handoff_path}")
+    elif args.dry_run:
+        print("  [DRY RUN] No handoff written")
+    if report.shard_verified is not None:
+        mark = "✅" if report.shard_verified else "⚠️"
+        print(f"  {mark} Session shard: {report.shard_note}")
+    if report.relay_leg_published is not None:
+        if report.relay_leg_published:
+            print(f"  ✅ Relay leg published: {report.relay_leg_id}")
+        else:
+            print(f"  ⚠️ Relay leg NOT published: {report.relay_leg_id}")
+    if report.usage:
+        parts = [
+            f"{label}: {u.get('total_tokens', 0):,} tok / ${u.get('estimated_cost', 0.0):.2f}"
+            for label, u in report.usage.items() if u.get("ledger_present")
+        ]
+        if parts:
+            print(f"  Usage (local ledger, shadow cost): {' | '.join(parts)}")
+    print(f"  Primer: {report.primer}")
+
+
+def cmd_hijack(args):
+    from . import session_probe
+    result = session_probe.run_hijack(handoff_id=args.handoff_id, agent=args.agent)
+    if result.get("ok"):
+        print(f"✅ Hijacked {result['id']} -> {result['identity'].get('host')} ({result['identity'].get('machine_id')})")
+    else:
+        print(f"❌ {result.get('error')}")
+        sys.exit(1)
+
+
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
@@ -2493,13 +2901,14 @@ def main():
         "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
+        "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr,
         "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
-        "transcribe": cmd_transcribe, "live": cmd_live
+        "transcribe": cmd_transcribe, "live": cmd_live, "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio
     }
     if args.command in cmds:
         cmds[args.command](args)

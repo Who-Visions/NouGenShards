@@ -80,8 +80,17 @@ function Start-Tunnel {
 }
 
 function Sync-Worker($url) {
+    # The canonical front door (named tunnel) is what the worker should hold; a random
+    # quick-tunnel hostname dies with its cloudflared process, and deploying it from a
+    # stale local checkout can also regress the live worker code. Refuse by default;
+    # opt back in only on purpose with NOUGEN_ALLOW_QUICK_GATEWAY=1.
+    $canonical = if ($env:NOUGEN_GATEWAY_CANONICAL) { $env:NOUGEN_GATEWAY_CANONICAL } else { 'https://shards.nougenai.com' }
+    if ($url -match '\.trycloudflare\.com' -and $env:NOUGEN_ALLOW_QUICK_GATEWAY -ne '1') {
+        Log "quick tunnel $url is local-only; worker stays on canonical $canonical (set NOUGEN_ALLOW_QUICK_GATEWAY=1 to override)"
+        return $false
+    }
     # Only touch the worker when the URL actually changed - deploys aren't free.
-    $known = if (Test-Path $StateFile) { (Get-Content $StateFile -Raw).Trim() } else { '' }
+    $known = if (Test-Path $StateFile) { (Get-Content $StateFile -Raw).Trim().TrimStart([char]0xFEFF) } else { '' }
     if ($known -eq $url) { return $false }
 
     Log "URL changed: '$known' -> '$url'  (updating worker)"

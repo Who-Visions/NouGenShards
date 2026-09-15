@@ -2,7 +2,6 @@
 Dispatch WhoArt Elevation Directives to Phoebus & Blade.
 """
 
-import os
 import sys
 import json
 import datetime

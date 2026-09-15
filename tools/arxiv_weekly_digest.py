@@ -6,10 +6,8 @@ input is the daily digests only — no outside knowledge.
 Dynamic per Rule 0.2: vault/model/URL env-resolved with probes.
 """
 import os
-import re
 import sys
 import json
-import glob
 import argparse
 import datetime
 import urllib.request

@@ -3,7 +3,7 @@ Reversed Hooks Lane for NouGenShards.
 Intercepts and compacts message history into high-signal Semantic Anchors.
 """
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 def extract_invariants(messages: List[Dict[str, Any]]) -> str:
     """
@@ -64,9 +64,14 @@ def inject_semantic_anchors(messages: List[Dict[str, Any]]) -> List[Dict[str, An
     
     return system_msgs + [compact_anchor] + recent_msgs
 
-def pre_tool_use_hook(message_payload: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def pre_tool_use_hook(message_payload: List[Dict[str, Any]], tool_name: Optional[str] = None, tool_args: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """
-    Main entry point for Play 2: Pointer Compaction.
-    Intercepts the history buffer before serialization.
+    Main entry point for Play 2: Pointer Compaction and Governor Pre-Tool Gate.
+    Intercepts the history buffer before serialization and checks TokenHypervisor loop/budget bounds.
     """
+    if tool_name:
+        from .governor import TokenHypervisor
+        gov = TokenHypervisor.get_instance()
+        gov.record_tool_call(tool_name, tool_args or {})
+
     return inject_semantic_anchors(message_payload)
