@@ -213,6 +213,10 @@ class LocalSession:
     def __init__(self, client, model, persona="", recall_seconds=2.0):
         os.environ.setdefault("NOUGEN_VECTOR_CACHE_WAIT_S", "0.25")
         os.environ.setdefault("NOUGEN_RECALL_DEADLINE_S", "3")
+        # Interactive turns are seconds apart; without this, chat_raw's default
+        # keep_alive=0 unloads the model after every reply, so each turn pays a
+        # full cold-load from disk (measured 18-34s/turn on e2b-qat).
+        os.environ.setdefault("NOUGEN_KEEP_ALIVE", "10m")
         logging.getLogger("nougen_shards.federation").setLevel(logging.ERROR)
         logging.getLogger("nougen_shards.core").setLevel(logging.ERROR)
         logging.getLogger("nougen_shards.connectors").setLevel(logging.ERROR)
