@@ -183,3 +183,15 @@ def test_persona_store_roundtrips_contract(tmp_path: Path):
     st.save("s", p)
     back = st.load("s")
     assert back.contract == p.contract and back.fingerprint() == p.fingerprint()
+
+
+def test_language_tie_breaks_toward_audience_order(tmp_path: Path):
+    reg = tmp_path / "r.json"
+    reg.write_text('{"markets":[{"key":"m","problem":"p","decides":["x"]}],'
+                   '"audiences":[{"key":"only","market":"m","affinities":[],"channels":[],"values":[],'
+                   '"pains":[],"support":"s","languages":["ht","en"],"contract":["first-language-first"]}]}', encoding="utf-8")
+    sig = P.Signals.from_texts(["I will answer you", "Mwen ap reponn ou"])   # one line each: a tie
+    p = P.resolve(sig, reg)
+    assert p.languages == ("ht", "en")
+    assert P.check_output("Mwen ap reponn ou.
+I will answer you.", p) == []

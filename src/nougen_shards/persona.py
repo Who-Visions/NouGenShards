@@ -426,7 +426,9 @@ def resolve(sig: Signals, registry_path: Optional[Path] = None) -> Persona:
     market = next((m for m in markets if m.key == best.market), markets[0])
     def _ranked(c: Counter) -> tuple[str, ...]:   # stable: count desc, then key; insertion order never leaks
         return tuple(k for k, _ in sorted(c.items(), key=lambda t: (-t[1], t[0])))
-    langs, lex = _ranked(sig.languages), _ranked(sig.lexicon)
+    pref = list(best.languages)      # ties in observed language counts break toward the audience's declared order
+    langs = tuple(sorted(sig.languages, key=lambda k: (-sig.languages[k], pref.index(k) if k in pref else len(pref), k)))
+    lex = _ranked(sig.lexicon)
     chans = _ranked(sig.surfaces) or best.channels
     peaks = tuple(h for h, _ in sorted(sig.active_hours.most_common(3), key=lambda t: (-t[1], t[0])))
     return Persona(
