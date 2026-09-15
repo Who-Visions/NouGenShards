@@ -1,7 +1,7 @@
 """Native hi/bye/hijack session probes — the cross-platform, node-agnostic
 successor to Yuki-Ai's Windows-only hi_probe.py / bye_probe.py / yuki_hijack.py.
 
-Where those scripts hardcode C:\\Users\\super\\Outpost paths and a private
+Where those scripts hardcode %USERPROFILE%\\Outpost paths and a private
 antigravity_memory.db, these probes read NOUGEN_HOME / repo discovery and
 reuse this package's own handoff, machine, and relay plumbing — so the same
 `nougen hi` / `nougen bye` works unmodified on phoebus, blade, or whoart.
@@ -95,16 +95,32 @@ def capture_session_shard(title: str, body: str, tags: List[str],
     Merged in from whoart/antigravity's nougen_canon.py (relay leg
     20260915T005638Z): before this, a probe's session note either went
     nowhere or landed in whatever .vault the process cwd happened to
-    resolve, silently. core.capture() in this repo returns bool only (no
-    shard id), so verification here is by retrieve() + title match rather
-    than a row-id lookup — same fallback whoart's own probe used when no id
-    came back. MemoryError is caught explicitly: a low-RAM node (whoart:
-    1.5GB free) can capture successfully and then OOM loading vector caches
-    just to confirm it."""
+    resolve, silently. core.capture() returns a CaptureResult (a dict with
+    shard_id and db_index), so the write is verified by reading that one row
+    back by primary key -- exact, and cheap. Verifying by recall instead loads
+    the vector caches for the whole grid, and on a low-RAM node (whoart:
+    1.5 GB free, 2026-09-14) that raised MemoryError after a successful write.
+    A CaptureResult is a non-empty dict, so it must never be read as a bool:
+    a failed or duplicate write is truthy. Recall is the fallback only when no
+    id comes back."""
     try:
         from . import core
-        ok = core.capture(event_type, title, body, tags=tags, domain_key=domain_key)
-        if not ok:
+        res = core.capture(event_type, title, body, tags=tags, domain_key=domain_key)
+        if hasattr(res, "get"):
+            written, durable = bool(res.get("captured")), bool(res.get("durable"))
+            if not (written or durable):
+                return False, f"capture did not write: {res.get('reason') or res.get('error') or 'unknown'}"
+            sid = res.get("shard_id") or res.get("existing_shard_id")
+            db = res.get("db_index") or res.get("existing_db_index")
+            if sid and db:
+                row = core.get_shard_by_id(int(sid), int(db))
+                # A fresh write must carry this title; a duplicate is the
+                # already-durable row, which may have been captured under
+                # another title.
+                ok = bool(row) and (row.get("title") == title if written else True)
+                label = "verified by row id" if ok else "row missing or title differs"
+                return ok, f"{sid}@db{db} {label}"
+        elif not res:
             return False, "core.capture() returned False"
         try:
             hits = core.retrieve(title, limit=5, domain_key=domain_key)
@@ -125,7 +141,12 @@ def local_time_stamp() -> str:
     format everywhere: 'Mon 2026-09-14 8:54 PM EDT'."""
     now = datetime.now().astimezone()
     hour12 = now.strftime("%I").lstrip("0") or "12"
-    return now.strftime(f"%a %Y-%m-%d {hour12}:%M %p %Z")
+    # Windows spells the zone out ("Eastern Daylight Time") where macOS and
+    # Linux print "EDT"; take the initials so every node stamps the same way.
+    tz = now.strftime("%Z")
+    if " " in tz:
+        tz = "".join(word[0] for word in tz.split() if word[:1].isalpha())
+    return now.strftime(f"%a %Y-%m-%d {hour12}:%M %p ") + tz
 
 
 def _check_port(port: int, host: str = "127.0.0.1") -> bool:
@@ -259,11 +280,16 @@ def publish_bye_leg(goal: str, body: str, agent: str,
         commit = _git("commit", "-q", "-m", f"handoff({agent}): {goal}"[:200])
         if commit.returncode != 0:
             return False, f"{leg_id} written but commit failed: {(commit.stderr or commit.stdout).strip()[-200:]}"
-        _git("pull", "--rebase", "--autostash", "--quiet", "origin", "main")
-        push = _git("push", "-q", "origin", "HEAD:main")
-        if push.returncode != 0:
-            return False, f"{leg_id} committed locally but push failed: {push.stderr.strip()[-200:]}"
-        return True, leg_id
+        # The board's main moves constantly (the policy sweep and every other
+        # lane push to it), so one pull-then-push loses the race; whoart's
+        # first real bye run stranded its leg locally that way.
+        push = None
+        for _attempt in range(3):
+            _git("pull", "--rebase", "--autostash", "--quiet", "origin", "main")
+            push = _git("push", "-q", "origin", "HEAD:main")
+            if push.returncode == 0:
+                return True, leg_id
+        return False, f"{leg_id} committed locally but push failed 3 times: {push.stderr.strip()[-200:]}"
     finally:
         try:
             os.unlink(path)
