@@ -262,6 +262,34 @@ def test_bad_env_key_is_rejected_loudly(monkeypatch):
         pv.load_key()
 
 
+def test_harden_path_exists_on_keymaker():
+    """Regression: keymaker._harden_path did not exist, so every call from
+    private_vault raised ImportError, silently swallowed by `except Exception: pass`
+    -- the data key and recovery key were never ACL-hardened on Windows.
+    """
+    from nougen_shards import keymaker
+    assert callable(keymaker._harden_path)
+
+
+def test_key_generation_hardens_the_key_file(tmp_path, monkeypatch, caplog):
+    """A hardening failure must be logged, not swallowed silently."""
+    monkeypatch.delenv(pv.ENV_KEY, raising=False)
+    monkeypatch.setenv(pv.ENV_KEY_FILE, str(tmp_path / "vault" / "private_key.bin"))
+    monkeypatch.setenv(pv.ENV_KEY_SEARCH_PATH, str(tmp_path / "vault"))
+    pv.reset_key_cache()
+
+    def _boom(_path):
+        raise RuntimeError("icacls unavailable")
+
+    monkeypatch.setattr("nougen_shards.keymaker._harden_path", _boom)
+    with caplog.at_level("WARNING"):
+        try:
+            pv.load_key(create=True)
+        except pv.PrivateVaultError:
+            pytest.skip("no DPAPI or OS keyring available on this lane")
+    assert any("harden" in rec.message for rec in caplog.records)
+
+
 # --- migration --------------------------------------------------------------
 
 def test_migration_adds_sensitivity_columns_and_is_idempotent(tmp_path):
