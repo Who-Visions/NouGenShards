@@ -2014,13 +2014,28 @@ def xoah_self_endpoint(
     return self_archive.state_at(req.coordinate)
 
 
+def _xoah_guarded(stage: str, fn, *args, **kwargs):
+    """Run one Xoah REST stage; on failure log the traceback and answer 503 with a
+    structured body instead of a bare 500 with nothing in the node log. #379 gave
+    /xoah/ask this; /xoah/pressure and /xoah/throne were still unguarded (fleet
+    verification, 9/14/2026 10:58 PM EDT: xoah_pressure threw a bare 500)."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.exception("xoah/%s failed", stage)
+        from fastapi.responses import JSONResponse  # pylint: disable=import-outside-toplevel
+        return JSONResponse(status_code=503, content={
+            "verdict": "UNAVAILABLE", "errors": [f"{stage}: {type(exc).__name__}"]})
+
+
 @app.post("/xoah/pressure")
 def xoah_pressure_endpoint(
     req: XoahPressureRequest,
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
     """Evaluate candidate story addition against canon pressure."""
-    return canon_pressure.pressure(
+    return _xoah_guarded(
+        "pressure", canon_pressure.pressure,
         req.candidate,
         coordinate=req.coordinate,
         register=req.should_register,
@@ -2034,7 +2049,8 @@ def xoah_throne_endpoint(
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
     """Run proposed intervention through Shadow Queen Throne governance gates."""
-    return throne_governance.evaluate(
+    return _xoah_guarded(
+        "throne", throne_governance.evaluate,
         req.resolved_effect,
         target_coordinate=req.target_coordinate,
         target_branch=req.target_branch,
