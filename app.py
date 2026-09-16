@@ -2676,12 +2676,7 @@ def relay_ack_leg(
 def wake_daemon_status() -> dict:
     """Inspect reactive wake daemon operational state, symmetric window, and noise filtering stats."""
     from nougen_shards import wake_daemon
-    return {
-        "poll_interval_s": wake_daemon.POLL_INTERVAL_S,
-        "timeout_s": wake_daemon.TIMEOUT_S,
-        "inbox_dir": str(wake_daemon.INBOX_DIR),
-        "status": "armed"
-    }
+    return wake_daemon.status()
 
 
 # --- 4. Voice Dictation, Media & Epistemic Assurance --------------------
