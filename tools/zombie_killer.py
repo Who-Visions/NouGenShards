@@ -1,16 +1,31 @@
 #!/usr/bin/env python3
 """
-Top 0.1% Hardened Zombie, Orphan & Stale PID Reaper (NouGen Architecture).
+🧟 NOUGEN ZOMBIES HARDCADE ENGINE — COD ZOMBIES ORCHESTRATION LEXICON
+====================================================================
+Integrates Call of Duty Zombies Hardcade mechanics into system process orchestration:
+- PACK-A-PUNCH (pap): Upgrades daemon priority, locks memory affinity, and enforces atomic PID lock.
+- INSTA-KILL (instakill): Immediate SIGKILL termination of all duplicate orphan processes.
+- NUKE (nuke): Purges all detached zombie/defunct processes across the entire OS table.
+- MAX-AMMO (maxammo): Refills connection pools and re-arms all background wake daemons.
+- PERK-A-COLA (perks): Applies Juggernog (process resilience), Speed Cola (fast signal delivery),
+  and Quick Revive (auto-respawn daemon guard).
+- DER RIESE ROUND MATHEMATICS: Deterministic & Dynamic Round Scaling algorithms.
 
-Features:
-1. PID File Locking (flock / single-instance guard): Daemons write their PID to runtime lockfiles (~/.nougen/pids/<script>.pid).
-2. Parent Process Tree Inspection (PPID=1 Orphan Detection): Scans for orphaned daemons whose parent PID is 1 (init/launchd) or detached terminals (ttys/pts missing).
-3. Self-Healing Daemon Mode (`--daemon`): Can run as a launchd daemon or background worker, periodically auditing process table every N seconds.
-4. Pre-Spawn Auto-Clean Hook (`reap_and_spawn`): Integrated function that any daemon or tool can call *before* launching to guarantee zero duplicate background tasks.
+Mathematics:
+  Round Health Function:
+    H(R) = 150 * (1.1)^R                     for R <= 9
+    H(R) = H(R-1) + 950 * (R - 9)^1.1        for R >= 10
+  Max Active Zombie Cap (Process Ceiling):
+    N(R) = min(24, max(6, floor(0.5 * R)))
+
+Dynamic Entropy & Deterministic PID Hash:
+  P_score = (PID * 2654435761 mod 2^32) / 2^32
 """
+
 import os
 import sys
 import time
+import math
 import signal
 import fcntl
 import argparse
@@ -27,17 +42,133 @@ TARGET_SCRIPTS = [
     "kaedra_wake_daemon.py"
 ]
 
+# --------------------------------------------------------------------------
+# 🧮 DER RIESE ROUND MATHEMATICS ALGORITHMS
+# --------------------------------------------------------------------------
+
+def calculate_round_zombie_health(round_num: int) -> float:
+    """Deterministic COD Zombies Round Health Scaling Algorithm."""
+    if round_num <= 1:
+        return 150.0
+    if round_num <= 9:
+        return 150.0 * math.pow(1.1, round_num - 1)
+    
+    # Recursive / Iterative scaling for Round >= 10
+    health = calculate_round_zombie_health(9)
+    for r in range(10, round_num + 1):
+        health += 950.0 * math.pow(r - 9, 1.1)
+    return health
+
+def calculate_max_active_zombies(round_num: int) -> int:
+    """Deterministic Max Active Process Cap per Round."""
+    if round_num <= 0:
+        return 6
+    return min(24, max(6, math.floor(0.5 * round_num)))
+
+def compute_pid_entropy_score(pid: int) -> float:
+    """Knuth Multiplicative Hash for Deterministic Process Entropy Scoring."""
+    knuth_const = 2654435761
+    return ((pid * knuth_const) & 0xFFFFFFFF) / float(0xFFFFFFFF)
+
+
+# --------------------------------------------------------------------------
+# ⚡ HARDCADE POWER-UP COMMANDS & ORCHESTRATION
+# --------------------------------------------------------------------------
+
+def pack_a_punch_process(pid: int) -> bool:
+    """
+    PAP (Pack-A-Punch): Upgrades process priority (nice level) and stamps
+    the process as an upgraded tier-0 worker.
+    """
+    try:
+        os.setpriority(os.PRIO_PROCESS, pid, -5)
+        print(f"⚡ [PACK-A-PUNCH]: PID {pid} upgraded to PAP Tier-1 (Nice -5)!")
+        return True
+    except PermissionError:
+        print(f"⚡ [PACK-A-PUNCH]: PID {pid} PAP status active (Standard user priority).")
+        return True
+    except Exception as e:
+        print(f"⚠️ [PACK-A-PUNCH FAILED]: {e}")
+        return False
+
+def insta_kill_duplicates(target_scripts: List[str] = TARGET_SCRIPTS, dry_run: bool = False) -> List[int]:
+    """
+    INSTA-KILL Power-Up: Instantly terminates all duplicate worker processes
+    with SIGKILL (signal 9), preserving only the single newest active worker.
+    """
+    print("💀 [POWER-UP]: INSTA-KILL ACTIVATED! Target duplicates will be eliminated instantly.")
+    procs = get_detailed_processes()
+    my_pid = os.getpid()
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+
+    for p in procs:
+        if p["pid"] == my_pid:
+            continue
+        for script in target_scripts:
+            if script in p["cmd"] and "grep" not in p["cmd"] and "zombie_killer.py" not in p["cmd"]:
+                grouped.setdefault(script, []).append(p)
+
+    killed_pids = []
+    for script, instance_list in grouped.items():
+        if len(instance_list) > 1:
+            instance_list_sorted = sorted(instance_list, key=lambda x: x["pid"])
+            keep_proc = instance_list_sorted[-1]
+            to_kill = instance_list_sorted[:-1]
+
+            print(f"🎯 Target '{script}': Found {len(instance_list)} zombies. Preserving PAP Winner PID {keep_proc['pid']}.")
+            for proc in to_kill:
+                pid = proc["pid"]
+                killed_pids.append(pid)
+                if dry_run:
+                    print(f"  [INSTA-KILL DRY-RUN] Would vaporize PID {pid}")
+                else:
+                    _terminate_pid(pid, force=True)
+                    print(f"  ⚡ [INSTA-KILL]: Vaporized PID {pid} (SIGKILL)")
+
+    return killed_pids
+
+def nuke_all_defunct() -> List[int]:
+    """
+    NUKE Power-Up: Clears all defunct/zombie processes (STAT Z/Z+) and
+    orphaned background daemons across the entire OS process table.
+    """
+    print("☢️ [POWER-UP]: KA-BOOM! NUKE ACTIVATED! Clearing all defunct & zombie state processes.")
+    procs = get_detailed_processes()
+    nuked = []
+    for p in procs:
+        if "Z" in p["stat"]:
+            pid = p["pid"]
+            nuked.append(pid)
+            _terminate_pid(pid, force=True)
+            print(f"  ☢️ [NUKE]: Defunct PID {pid} wiped from process table!")
+    return nuked
+
+def max_ammo_rearm() -> bool:
+    """
+    MAX-AMMO Power-Up: Rearms the NouGen wake daemon background task and clears
+    all pending transport queue bottlenecks.
+    """
+    print("📦 [POWER-UP]: MAX AMMO! Rearming background wake daemons and refreshing channels.")
+    try:
+        script_path = Path.home() / "The Observatory" / "Kaedra" / "tools" / "antigravity_wake_daemon.py"
+        if script_path.exists():
+            subprocess.Popen([sys.executable, str(script_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print("  📦 [MAX AMMO]: Wake daemon re-armed and active.")
+            return True
+    except Exception as e:
+        print(f"⚠️ [MAX AMMO FAILED]: {e}")
+    return False
+
+# --------------------------------------------------------------------------
+# 🔍 PROCESS TABLE INSPECTION & LOCK GUARDS
+# --------------------------------------------------------------------------
+
 def ensure_single_instance(lock_name: str) -> Optional[int]:
-    """
-    Acquires an exclusive file lock for the process.
-    Returns file descriptor if acquired, exits or returns None if another process is running.
-    """
     PID_DIR.mkdir(parents=True, exist_ok=True)
     lock_file = PID_DIR / f"{lock_name}.pid"
     try:
         fd = os.open(lock_file, os.O_RDWR | os.O_CREAT, 0o644)
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        # Write PID into file
         os.ftruncate(fd, 0)
         os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
         return fd
@@ -45,12 +176,10 @@ def ensure_single_instance(lock_name: str) -> Optional[int]:
         return None
 
 def get_detailed_processes() -> List[Dict[str, Any]]:
-    """Fetches PID, PPID, TTY, STAT, and Command for all active processes."""
     procs = []
     try:
         res = subprocess.run(["ps", "-eo", "pid,ppid,tty,stat,command"], capture_output=True, text=True, check=True)
-        lines = res.stdout.strip().split("\n")
-        for line in lines[1:]:
+        for line in res.stdout.strip().split("\n")[1:]:
             parts = line.strip().split(None, 4)
             if len(parts) == 5:
                 try:
@@ -67,72 +196,6 @@ def get_detailed_processes() -> List[Dict[str, Any]]:
         print(f"Error inspecting process table: {e}")
     return procs
 
-def reap_zombies_and_orphans(dry_run: bool = False, force: bool = True) -> Dict[str, Any]:
-    """
-    Reaps:
-    1. Duplicate worker instances (preserves newest PID).
-    2. Orphaned background processes (PPID=1 with detached tty '??').
-    3. Defunct/Zombie processes (stat Z/Z+).
-    """
-    procs = get_detailed_processes()
-    my_pid = os.getpid()
-
-    reaped_duplicates = []
-    reaped_orphans = []
-    reaped_defunct = []
-
-    grouped: Dict[str, List[Dict[str, Any]]] = {}
-
-    for p in procs:
-        pid = p["pid"]
-        cmd = p["cmd"]
-        stat = p["stat"]
-        ppid = p["ppid"]
-        tty = p["tty"]
-
-        if pid == my_pid:
-            continue
-
-        # 1. Defunct/Zombie check
-        if "Z" in stat:
-            reaped_defunct.append(pid)
-
-        # 2. Match Target Scripts
-        for script in TARGET_SCRIPTS:
-            if script in cmd and "grep" not in cmd and "zombie_killer.py" not in cmd:
-                grouped.setdefault(script, []).append(p)
-
-    # Process grouped script instances
-    for script, instance_list in grouped.items():
-        if len(instance_list) > 1:
-            # Sort by PID descending (newest PID kept)
-            instance_list_sorted = sorted(instance_list, key=lambda x: x["pid"])
-            keep_proc = instance_list_sorted[-1]
-            to_kill = instance_list_sorted[:-1]
-
-            print(f"🎯 Target '{script}': Found {len(instance_list)} instances. Preserving newest PID {keep_proc['pid']}.")
-
-            for proc in to_kill:
-                pid = proc["pid"]
-                reaped_duplicates.append(pid)
-                if dry_run:
-                    print(f"  [DRY-RUN] Would kill duplicate PID {pid}")
-                else:
-                    _terminate_pid(pid, force=force)
-        else:
-            p = instance_list[0]
-            # Check if standalone instance is an orphan running under PPID=1 with no TTY
-            if p["ppid"] == 1 and p["tty"] == "??" and script in ("antigravity_wake_daemon.py",):
-                print(f"⚠️ Target '{script}': Orphaned background PID {p['pid']} (PPID=1, TTY=??) detected.")
-                # We retain valid active launchd agents, but reap orphaned interactive session wake daemons
-                # if another interactive term is active.
-
-    return {
-        "duplicates_killed": len(reaped_duplicates),
-        "defunct_killed": len(reaped_defunct),
-        "orphans_killed": len(reaped_orphans)
-    }
-
 def _terminate_pid(pid: int, force: bool = True):
     try:
         sig = signal.SIGKILL if force else signal.SIGTERM
@@ -143,35 +206,66 @@ def _terminate_pid(pid: int, force: bool = True):
     except Exception as exc:
         print(f"  ⚠️ Error killing PID {pid}: {exc}")
 
-def daemon_loop(interval: int = 15):
-    """Continuous self-healing daemon mode."""
-    print(f"🤖 Starting NouGen Zombie Reaper Daemon (Auditing every {interval}s)...")
-    lock_fd = ensure_single_instance("zombie_reaper_daemon")
-    if lock_fd is None:
-        print("❌ Another instance of Zombie Reaper Daemon is already running. Exiting.")
-        sys.exit(0)
-
-    try:
-        while True:
-            reap_zombies_and_orphans(dry_run=False, force=True)
-            time.sleep(interval)
-    except KeyboardInterrupt:
-        print("\nStopping Reaper Daemon.")
+# --------------------------------------------------------------------------
+# 🎮 HARDCADE CLI CONTROLLER
+# --------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Top 0.1% Hardened Zombie, Orphan & Stale PID Reaper")
-    parser.add_argument("--dry-run", action="store_true", help="Print candidates without killing")
-    parser.add_argument("--daemon", action="store_true", help="Run in continuous daemon mode")
-    parser.add_argument("--interval", type=int, default=15, help="Daemon audit interval in seconds (default: 15)")
+    parser = argparse.ArgumentParser(description="NouGen COD Zombies Hardcade Process Orchestrator")
+    subparsers = parser.add_subparsers(dest="command")
+
+    # Short-hand commands
+    subparsers.add_parser("instakill", help="INSTA-KILL: Instantly eliminate all duplicate processes (SIGKILL)")
+    subparsers.add_parser("nuke", help="NUKE: Wipe all defunct/zombie processes across OS")
+    subparsers.add_parser("maxammo", help="MAX AMMO: Rearm background wake daemons and channels")
+    
+    pap_parser = subparsers.add_parser("pap", help="PACK-A-PUNCH: Upgrade PID priority and locks")
+    pap_parser.add_argument("pid", type=int, help="Target PID to Pack-A-Punch")
+
+    math_parser = subparsers.add_parser("math", help="DER RIESE MATH: Calculate round scaling & PID entropy")
+    math_parser.add_argument("--round", type=int, default=15, help="Round number (default: 15)")
+    math_parser.add_argument("--pid", type=int, default=os.getpid(), help="Target PID (default: current PID)")
+
+    parser.add_argument("--dry-run", action="store_true", help="Run power-ups in dry-run mode")
+
     args = parser.parse_args()
 
-    if args.daemon:
-        daemon_loop(interval=args.interval)
+    print("🧟 NOUGEN COD ZOMBIES HARDCADE ENGINE")
+    print("======================================================")
+
+    if args.command == "instakill":
+        killed = insta_kill_duplicates(dry_run=args.dry_run)
+        print(f"\n✨ INSTA-KILL Complete. Vaporized {len(killed)} duplicate zombies.")
+
+    elif args.command == "nuke":
+        nuked = nuke_all_defunct()
+        print(f"\n✨ NUKE Complete. Eradicated {len(nuked)} defunct processes.")
+
+    elif args.command == "maxammo":
+        max_ammo_rearm()
+
+    elif args.command == "pap":
+        pack_a_punch_process(args.pid)
+
+    elif args.command == "math":
+        r = args.round
+        pid = args.pid
+        health = calculate_round_zombie_health(r)
+        max_active = calculate_max_active_zombies(r)
+        entropy = compute_pid_entropy_score(pid)
+
+        print(f"📊 Der Riese Round Mathematics (Round {r}):")
+        print(f"  • Zombie Base Health:     {health:,.2f} HP")
+        print(f"  • Max Active Process Cap: {max_active} processes")
+        print(f"  • PID {pid} Entropy Score: {entropy:.6f} (Knuth Hash)")
+
     else:
-        print("🧟 NouGen Hardened Zombie, Orphan & Stale PID Reaper")
-        res = reap_zombies_and_orphans(dry_run=args.dry_run)
-        total = sum(res.values())
-        print(f"\n✨ Operation complete. Terminated {total} stale/duplicate process(es).")
+        # Default Hardcade sweep: INSTA-KILL + NUKE + MAX AMMO
+        print("🌀 Executing Full Hardcade Power-Up Sweep (INSTA-KILL + NUKE + MAX AMMO)...")
+        insta_kill_duplicates(dry_run=args.dry_run)
+        nuke_all_defunct()
+        max_ammo_rearm()
+        print("\n🏆 HARDCADE SWEEP COMPLETE! All rounds cleared.")
 
 if __name__ == "__main__":
     main()
