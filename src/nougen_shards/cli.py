@@ -2677,6 +2677,14 @@ def cmd_relay(args):
     prev_argv = sys.argv
     os.chdir(registry)
     sys.argv = ["relay", *forwarded]
+    action_mode = os.environ.get("NOUGEN_CONFLICT_ACTION", "").strip().lower() or "report"
+    try:
+        from .control_loop import intent_alignment_check  # pylint: disable=import-outside-toplevel
+        verdict = intent_alignment_check({"task_id": "relay_execution"}, {})
+        if verdict.get("verdict") == "CONFLICTED" and action_mode == "report":
+            logger.warning("intent_alignment_check reported conflict before relay goal execution: %s", verdict)
+    except Exception as exc:
+        logger.warning("intent_alignment_check failed before relay goal execution: %s", exc)
     try:
         rc = relay_main()
     finally:

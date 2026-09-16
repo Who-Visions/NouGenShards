@@ -3006,6 +3006,13 @@ def compile_recall_packet(shards: list, token_budget: Optional[int] = None, stra
     the old unbounded behaviour.
     """
     if not shards:
+        mode = os.environ.get("NOUGEN_RECON_SWEEP_TRIGGER", "").strip().lower() or "low_confidence"
+        if mode != "never":
+            try:
+                from .reconstruction import retrieval_angle_sweep  # pylint: disable=import-outside-toplevel
+                retrieval_angle_sweep("", [])
+            except Exception as exc:
+                logger.warning("retrieval_angle_sweep failed on zero-hit recall: %s", exc)
         return "<!-- NO RELEVANT MEMORY RECALLED -->"
     output = ["=== NOUGENSHARDS RECALL PACKET [BAYESIAN SYNTHESIS] ==="]
     used = _approx_tokens(output[0])
