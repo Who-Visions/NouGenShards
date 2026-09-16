@@ -56,16 +56,15 @@ def no_network_embed_at_capture(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def isolate_vram_gate(monkeypatch):
-    """Isolate `NOUGEN_VRAM_GATE` so host environment settings do not bypass or leak into tests.
+def no_host_vram_gate(monkeypatch):
+    """Keep the host's VRAM gate setting out of the suite.
 
-    `vram_gate.check_vram()` checks `PYTEST_CURRENT_TEST` to bypass the VRAM check
-    unless `NOUGEN_VRAM_GATE=1` is explicitly set in the host environment. If the host
-    has `NOUGEN_VRAM_GATE=1` set, unit tests checking unmeasured models fail.
-    Default it to 0 for all tests unless a test explicitly monkeypatches it.
+    `vram_gate.admit()` is bypassed under pytest unless NOUGEN_VRAM_GATE is "1".
+    An operator box that sets that var in its user environment would otherwise
+    turn every mocked local-model call into a real gate refusal. A test that is
+    about the gate opts back in with `monkeypatch.setenv("NOUGEN_VRAM_GATE", "1")`.
     """
-    monkeypatch.setenv("NOUGEN_VRAM_GATE", "0")
-
+    monkeypatch.delenv("NOUGEN_VRAM_GATE", raising=False)
 
 
 class _HomePath:
