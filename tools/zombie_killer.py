@@ -206,11 +206,11 @@ def _terminate_pid(pid: int, force: bool = True):
     except Exception as exc:
         print(f"  ⚠️ Error killing PID {pid}: {exc}")
 
-# --------------------------------------------------------------------------
-# 🎮 HARDCADE CLI CONTROLLER
-# --------------------------------------------------------------------------
-
 def main():
+    # Ensure UTF-8 safe stdout for terminal rendering across all OS/locale environments
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(description="NouGen COD Zombies Hardcade Process Orchestrator")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -230,16 +230,16 @@ def main():
 
     args = parser.parse_args()
 
-    print("🧟 NOUGEN COD ZOMBIES HARDCADE ENGINE")
+    print("🧟 ── NOUGEN COD ZOMBIES HARDCADE ENGINE ── ⚡")
     print("======================================================")
 
     if args.command == "instakill":
         killed = insta_kill_duplicates(dry_run=args.dry_run)
-        print(f"\n✨ INSTA-KILL Complete. Vaporized {len(killed)} duplicate zombies.")
+        print(f"\n✨ INSTA-KILL Complete! Eliminated {len(killed)} duplicate background processes.")
 
     elif args.command == "nuke":
         nuked = nuke_all_defunct()
-        print(f"\n✨ NUKE Complete. Eradicated {len(nuked)} defunct processes.")
+        print(f"\n✨ NUKE Complete! Wiped {len(nuked)} defunct processes cleanly from system.")
 
     elif args.command == "maxammo":
         max_ammo_rearm()
@@ -254,18 +254,17 @@ def main():
         max_active = calculate_max_active_zombies(r)
         entropy = compute_pid_entropy_score(pid)
 
-        print(f"📊 Der Riese Round Mathematics (Round {r}):")
+        print(f"📊 Round Scaling Statistics (Round {r}):")
         print(f"  • Zombie Base Health:     {health:,.2f} HP")
         print(f"  • Max Active Process Cap: {max_active} processes")
-        print(f"  • PID {pid} Entropy Score: {entropy:.6f} (Knuth Hash)")
+        print(f"  • PID {pid} Entropy Score: {entropy:.6f} (Deterministic Hash)")
 
     else:
-        # Default Hardcade sweep: INSTA-KILL + NUKE + MAX AMMO
-        print("🌀 Executing Full Hardcade Power-Up Sweep (INSTA-KILL + NUKE + MAX AMMO)...")
+        print("🌀 Running Full System Power-Up Sweep (INSTA-KILL + NUKE + MAX AMMO)...")
         insta_kill_duplicates(dry_run=args.dry_run)
         nuke_all_defunct()
         max_ammo_rearm()
-        print("\n🏆 HARDCADE SWEEP COMPLETE! All rounds cleared.")
+        print("\n🏆 SYSTEM CLEAN & ARMED! All processes running at peak performance.")
 
 if __name__ == "__main__":
     main()
