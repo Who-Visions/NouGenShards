@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 850 1100" width="850" height="1100">
+  <rect width="850" height="1100" fill="#ffffff"/>
+  <!-- Outer Rounded Border -->
+  <rect x="40" y="40" width="770" height="1020" rx="28" fill="none" stroke="#111111" stroke-width="4"/>
+  <rect x="55" y="55" width="740" height="990" rx="20" fill="none" stroke="#333333" stroke-width="1.5" stroke-dasharray="6,6"/>
+  
+  <!-- Header Banner -->
+  <text x="425" y="140" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="bold" text-anchor="middle" fill="#111111" letter-spacing="2">MY FIRST ENGLISH COLORING BOOK</text>
+  <text x="425" y="180" font-family="Arial, Helvetica, sans-serif" font-size="22" font-style="italic" text-anchor="middle" fill="#444444">with Mrs. B · ESOL Early Literacy Edition</text>
+  
+  <!-- Decorative Floral Corners -->
+  <path d="M 75 75 Q 110 75 110 110 Q 75 110 75 75 Z" fill="none" stroke="#111111" stroke-width="2.5"/>
+  <path d="M 775 75 Q 740 75 740 110 Q 775 110 775 75 Z" fill="none" stroke="#111111" stroke-width="2.5"/>
+  <path d="M 75 1025 Q 110 1025 110 990 Q 75 990 75 1025 Z" fill="none" stroke="#111111" stroke-width="2.5"/>
+  <path d="M 775 1025 Q 740 1025 740 990 Q 775 990 775 1025 Z" fill="none" stroke="#111111" stroke-width="2.5"/>
+
+  <!-- Center Mascot / Star Badge -->
+  <g transform="translate(425, 340)">
+    <circle cx="0" cy="0" r="90" fill="none" stroke="#111111" stroke-width="3.5"/>
+    <circle cx="0" cy="0" r="82" fill="none" stroke="#333333" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <!-- Cute Open Book Icon -->
+    <path d="M -50 -20 Q 0 -35 0 25 Q 0 -35 50 -20 L 50 35 Q 0 20 0 75 Q 0 20 -50 35 Z" fill="none" stroke="#111111" stroke-width="3.5"/>
+    <path d="M 0 25 L 0 75" stroke="#111111" stroke-width="3.5"/>
+    <!-- Pencil -->
+    <path d="M -15 -45 L 15 -45 L 0 -70 Z" fill="none" stroke="#111111" stroke-width="2.5"/>
+  </g>
+
+  <!-- Dedication Box -->
+  <rect x="150" y="520" width="550" height="240" rx="16" fill="none" stroke="#111111" stroke-width="3"/>
+  <text x="425" y="575" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="bold" text-anchor="middle" fill="#111111">THIS BOOK BELONGS TO:</text>
+  
+  <!-- Writing Lines -->
+  <line x1="200" y1="640" x2="650" y2="640" stroke="#111111" stroke-width="2.5"/>
+  <line x1="200" y1="675" x2="650" y2="675" stroke="#999999" stroke-width="1.5" stroke-dasharray="5,5"/>
+  <line x1="200" y1="710" x2="650" y2="710" stroke="#111111" stroke-width="2.5"/>
+
+  <!-- Encouragement Note -->
+  <text x="425" y="830" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="bold" text-anchor="middle" fill="#111111">"Speak, Color, and Grow Every Day!"</text>
+  <text x="425" y="865" font-family="Arial, Helvetica, sans-serif" font-size="16" text-anchor="middle" fill="#555555">Mrs. Faustine B. Meralus, M.Ed. (Mrs. B)</text>
+  
+  <text x="425" y="990" font-family="Arial, Helvetica, sans-serif" font-size="13" text-anchor="middle" fill="#888888">Who Visions · LearnWithMrsB.com · Palm Beach County, FL</text>
+</svg>
