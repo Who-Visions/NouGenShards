@@ -453,7 +453,7 @@ def init_db(index: int = 1):  # noqa: C901
         except sqlite3.OperationalError:
             pass
 
-        # Validity window (schema v4, EchoVault): when a shard stops being
+        # Validity window (schema v4, Toujou): when a shard stops being
         # true, and when it was last re-confirmed. Both nullable; recall sorts
         # expired shards below live ones (see _mark_expired).
         for _col in ("valid_until TEXT", "last_verified TEXT"):
@@ -1158,7 +1158,7 @@ def capture(event_type: str, title: str, content: str,
                     "capture: unparseable original_timestamp %r; "
                     "falling back to now", original_timestamp)
 
-        # Validity window (EchoVault): a shard may declare when it stops being
+        # Validity window (Toujou): a shard may declare when it stops being
         # true. Normalized to UTC ISO so recall can compare it; an unparseable
         # value is dropped with a warning, never a failed write.
         valid_until_value = _normalize_iso(valid_until) if valid_until else None
@@ -1265,7 +1265,7 @@ def capture(event_type: str, title: str, content: str,
 
 def mark_verified(shard_id: int, db_index: int, valid_until: Optional[str] = None) -> bool:
     """Record that a shard was re-confirmed true now, optionally moving its
-    validity window (EchoVault). Returns False when the row does not exist."""
+    validity window (Toujou). Returns False when the row does not exist."""
     if not get_db_path(db_index).exists():
         return False
     init_db(db_index)
@@ -2399,7 +2399,7 @@ def _normalize_iso(value) -> Optional[str]:
 
 
 def _mark_expired(items: list, now: datetime) -> None:
-    """Flag fused candidates whose ``valid_until`` has passed (EchoVault).
+    """Flag fused candidates whose ``valid_until`` has passed (Toujou: nou gen toujou, we still have it).
 
     One query per grid DB, like _learned_times. retrieve() sorts flagged items
     below every live candidate in the same title tier: a superseded fact stays
