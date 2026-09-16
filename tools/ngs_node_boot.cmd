@@ -22,6 +22,12 @@ if errorlevel 1 (
   popd
   exit /b 1
 )
+rem Re-assert the task's own trigger config (logon + recurring, no time limit) so it cannot
+rem silently drift back to logon-only. Best-effort: a failure here must not block this boot's
+rem watcher from starting, so it is swallowed, not fatal like the step above. This fires every
+rem NOUGEN_NGS_TASK_RETRIGGER_MINS (default 15) forever, so only failures are logged -- a
+rem success line appended on every re-trigger would grow the log without bound.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools\install_ngs_node_task.ps1" 1>nul 2>>"%USERPROFILE%\.nougen\logs\ngs_node_task_install.log"
 set "NOUGEN_HOME=%USERPROFILE%\.nougen"
 set "NGS_REPO=%NGS_ROOT%"
 set "PYTHONW=%LocalAppData%\Programs\Python\Python311\pythonw.exe"
