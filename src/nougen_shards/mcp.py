@@ -582,6 +582,106 @@ def transcribe_media(source: str, language: str = "", whisper_model: str = "base
     }, indent=2)
 
 
+# --- Cloudflare Edge Fleet Operations ---
+
+@mcp.tool()
+def cf_status() -> str:
+    """
+    Get live status of Cloudflare Edge Substrate, active workers count, storage, and fleet MCP gateway health.
+    """
+    import json
+    from . import cloudflare
+    try:
+        cf = cloudflare.CloudflareClient()
+        ping_res = cf.ping()
+        d1s = cf.list_d1()
+        kvs = cf.list_kv()
+        r2s = cf.list_r2()
+        return json.dumps({
+            "account": ping_res["account_name"],
+            "account_id": ping_res["account_id"],
+            "token_valid": ping_res["token_valid"],
+            "api_latency_ms": ping_res["api_latency_ms"],
+            "active_workers": ping_res["active_workers"],
+            "storage": {
+                "d1_databases": len(d1s),
+                "kv_namespaces": len(kvs),
+                "r2_buckets": len(r2s)
+            },
+            "gateway": {
+                "url": ping_res["gateway_url"],
+                "status": ping_res["gateway_status"],
+                "latency_ms": ping_res.get("gateway_latency_ms")
+            }
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def cf_list_workers() -> str:
+    """
+    List all active Cloudflare Workers deployed across the NouGen fleet orbit.
+    """
+    import json
+    from . import cloudflare
+    try:
+        cf = cloudflare.CloudflareClient()
+        workers = cf.list_workers()
+        return json.dumps([{
+            "id": w.id,
+            "modified_on": w.modified_on,
+            "usage_model": w.usage_model,
+            "routes": w.routes
+        } for w in workers], indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def cf_deploy_worker(directory_path: str = "") -> str:
+    """
+    Auto-detect and deploy a Cloudflare Worker directly from its directory with zero-config.
+    Verifies JavaScript/Node syntax before upload and returns live ETag and URL.
+
+    Args:
+        directory_path: Absolute or relative path to the worker project directory. Defaults to current directory.
+    """
+    import json
+    from pathlib import Path
+    from . import cloudflare
+    try:
+        cf = cloudflare.CloudflareClient()
+        target = Path(directory_path) if directory_path else Path.cwd()
+        res = cf.auto_deploy(target)
+        return json.dumps({
+            "status": "success",
+            "worker_name": res.get("worker_name"),
+            "entry_point": res.get("entry_point"),
+            "etag": res.get("result", {}).get("etag", "live"),
+            "live_url": f"https://{res.get('worker_name')}.whoentertains.workers.dev"
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)})
+
+
+@mcp.tool()
+def cf_run_ai(prompt: str, model: str = "@cf/meta/llama-3.1-8b-instruct") -> str:
+    """
+    Execute zero-VRAM Cloudflare Workers AI edge model inference directly from NouGen.
+
+    Args:
+        prompt: User instruction or query for the edge model.
+        model: Model identifier (e.g. '@cf/meta/llama-3.1-8b-instruct', '@cf/qwen/qwen3-30b-a3b-fp8', '@cf/google/gemma-4-26b-a4b-it').
+    """
+    from . import cloudflare
+    try:
+        cf = cloudflare.CloudflareClient()
+        return cf.run_ai(prompt, model=model)
+    except Exception as e:
+        return f"Workers AI Error: {e}"
+
+
 def main():
 
     """Main entry point for the MCP server."""
