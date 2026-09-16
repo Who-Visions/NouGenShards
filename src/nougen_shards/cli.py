@@ -388,6 +388,9 @@ def get_client(provider: str):
         return HuggingFaceClient()
     if provider in ["openrouter", "or"]:
         return OpenRouterClient()
+    if provider in ["cloudflare", "cf", "workers-ai", "workers_ai"]:
+        from .workers_ai_client import WorkersAiClient
+        return WorkersAiClient()
     if provider in ["whovisions", "cloud"]:
         # Load cloud config from vault
         creds = keymaker.get_secret("NGS_CLOUD_CREDENTIALS")
@@ -414,6 +417,9 @@ def cmd_auth(args):
             "hf": "HUGGINGFACE_API_KEY",
             "openrouter": "OPENROUTER_API_KEY",
             "or": "OPENROUTER_API_KEY",
+            "cloudflare": "CLOUDFLARE_API_TOKEN_NOUGEN_FULL",
+            "cf": "CLOUDFLARE_API_TOKEN_NOUGEN_FULL",
+            "workers-ai": "CLOUDFLARE_API_TOKEN_NOUGEN_FULL",
             "cloud": "NGS_CLOUD_CREDENTIALS"
         }
         provider = args.provider.lower()
@@ -1179,6 +1185,13 @@ def cmd_status(args):
     print(f"\n{substrate.line()}")
     print(f"Total records in memory: {total_count}"
           + ("" if substrate.status is ss.StatusLevel.GREEN else " (excludes non-green DBs above)"))
+    try:
+        from . import cloudflare
+        cf = cloudflare.CloudflareClient()
+        p = cf.ping()
+        print(f"⛅ Cloudflare Edge: {p['active_workers']} workers in orbit | Gateway: {p['gateway_status']} ({p.get('gateway_latency_ms', '?')} ms)")
+    except Exception:
+        pass
 
 
 def cmd_stats(args):
@@ -2108,7 +2121,228 @@ def get_parser():
     p_studio.add_argument("--target", choices=["all", "razer", "lifx"], default="all", help="Hardware target")
     p_studio.add_argument("--json", action="store_true")
 
+    # cloudflare fleet
+    p_cf = subparsers.add_parser("cf", help="Cloudflare Fleet Engine: deploy, secrets, D1, KV, R2, and Workers AI")
+    p_cf.add_argument("cf_args", nargs=argparse.REMAINDER, help="Arguments passed to tools/wrangler_fleet.py")
+
     return parser
+
+
+def cmd_cf(args):
+    """Execute native Cloudflare fleet manager operations."""
+    from . import cloudflare
+    subargs = getattr(args, "cf_args", [])
+    
+    try:
+        cf = cloudflare.CloudflareClient()
+    except Exception as e:
+        print(f"❌ Cloudflare Auth Error: {e}", file=sys.stderr)
+        print("💡 Set CLOUDFLARE_API_TOKEN_NOUGEN_FULL in Keymaker via 'nougen auth set-key cf <token>'", file=sys.stderr)
+        sys.exit(1)
+
+    sub = subargs[0].lower() if subargs else "status"
+
+    if sub in ("status", "info"):
+        print("=== ⛅ NouGen Cloudflare Edge Substrate ===")
+        print(f"  Account: {cf.account_name} ({cf.account_id})")
+        workers = cf.list_workers()
+        print(f"  Workers: {len(workers)} deployed in orbit")
+        d1s = cf.list_d1()
+        kvs = cf.list_kv()
+        r2s = cf.list_r2()
+        print(f"  Storage: {len(d1s)} D1 DBs | {len(kvs)} KV Namespaces | {len(r2s)} R2 Buckets")
+        
+        # Intelligent local context detection
+        local_info = cf.inspect_directory(Path.cwd())
+        if local_info["is_worker"]:
+            print("\n📁 Current Directory Worker Context:")
+            print(f"  • Worker Name:    {local_info['worker_name']}")
+            print(f"  • Config File:    {local_info['config_file']}")
+            print(f"  • Entry Point:    {local_info['entry_file']} ({'exists' if local_info['entry_exists'] else 'MISSING'})")
+            print(f"  • Compat Date:    {local_info['compatibility_date']}")
+            live_status = "Deployed (Orbit)" if local_info["live_deployed"] else "Not Deployed to Cloudflare"
+            print(f"  • Live Status:    {live_status}")
+            if any(local_info["bindings"].values()):
+                b_str = ", ".join(f"{k}: {len(v) if isinstance(v, list) else v}" for k, v in local_info["bindings"].items() if v)
+                print(f"  • Bindings:       {b_str}")
+            print("  💡 Tip: run 'nougen cf deploy' to build and publish this worker.")
+        else:
+            print("\n💡 Tip: run 'nougen cf --help' or 'nougen cf list' for active workers.")
+        return
+
+    if sub in ("list", "workers"):
+        workers = cf.list_workers()
+        print(f"⚡ Active Cloudflare Workers ({len(workers)}):")
+        for w in workers:
+            print(f"  • {w.id:<26} | modified: {w.modified_on} | usage: {w.usage_model}")
+        return
+
+    if sub in ("inspect", "check"):
+        target = Path(subargs[1]) if len(subargs) > 1 else Path.cwd()
+        info = cf.inspect_directory(target)
+        print(f"🔎 Inspection Report: {info['directory']}")
+        print(f"  • Is Worker Project: {info['is_worker']}")
+        print(f"  • Worker Name:       {info['worker_name']}")
+        print(f"  • Config File:       {info['config_file'] or 'none'}")
+        print(f"  • Entry Point:       {info['entry_file']} ({'OK' if info['entry_exists'] else 'NOT FOUND'})")
+        print(f"  • Live Deployed:     {info['live_deployed']}")
+        print(f"  • Bindings:          {json.dumps(info['bindings'])}")
+        return
+
+    if sub == "ping":
+        print("📡 Pinging Cloudflare Edge & Gateway...")
+        res = cf.ping()
+        print(f"  • Account:         {res['account_name']} ({res['account_id']})")
+        print(f"  • Token Valid:     {'✅ Yes' if res['token_valid'] else '❌ No'}")
+        print(f"  • API Latency:     {res['api_latency_ms']} ms")
+        print(f"  • Active Workers:  {res['active_workers']}")
+        print(f"  • Fleet Gateway:   {res['gateway_status']} ({res.get('gateway_latency_ms', '?')} ms)")
+        print(f"  • Gateway URL:     {res['gateway_url']}")
+        return
+
+    if sub in ("secrets", "secret"):
+        if len(subargs) < 2:
+            local = cf.inspect_directory(Path.cwd())
+            if local["is_worker"]:
+                w_name = local["worker_name"]
+            else:
+                print("Usage: nougen cf secrets <worker_name>")
+                return
+        else:
+            w_name = subargs[1]
+
+        secrets = cf.list_secrets(w_name)
+        print(f"🔐 Secrets for Worker [{w_name}] ({len(secrets)} found):")
+        for s in secrets:
+            print(f"  • {s.name:<30} (type: {s.type})")
+        return
+
+    if sub in ("secret-set", "set-secret"):
+        if len(subargs) < 4:
+            print("Usage: nougen cf secret-set <worker_name> <key> <val>")
+            return
+        w_name, key, val = subargs[1], subargs[2], subargs[3]
+        if cf.put_secret(w_name, key, val):
+            print(f"✅ Secret [{key}] stored on [{w_name}].")
+        else:
+            print(f"❌ Failed to store secret [{key}].")
+        return
+
+    if sub in ("sync-secrets", "sync_secrets"):
+        if len(subargs) < 2:
+            local = cf.inspect_directory(Path.cwd())
+            if local["is_worker"]:
+                w_name = local["worker_name"]
+            else:
+                print("Usage: nougen cf sync-secrets <worker_name> [keys...]")
+                return
+        else:
+            w_name = subargs[1]
+
+        explicit_keys = subargs[2:] if len(subargs) > 2 else None
+        print(f"🔐 Syncing Keymaker secrets to Cloudflare Worker [{w_name}]...")
+        result = cf.sync_secrets(w_name, explicit_keys)
+        for k in result["synced"]:
+            print(f"  ✅ Synced: {k}")
+        for k in result["missing"]:
+            print(f"  ⚠️ Missing in Keymaker vault: {k}")
+        print(f"Done: {len(result['synced'])} synced, {len(result['missing'])} missing.")
+        return
+
+    if sub == "deploy":
+        target = Path(subargs[1]) if len(subargs) > 1 and not subargs[1].startswith("--") else Path.cwd()
+        name_override = None
+        if "--name" in subargs:
+            idx = subargs.index("--name")
+            if idx + 1 < len(subargs):
+                name_override = subargs[idx + 1]
+
+        print(f"🚀 Auto-deploying worker from: {target.resolve()}...")
+        try:
+            res = cf.auto_deploy(target, worker_name_override=name_override)
+            etag = res.get("result", {}).get("etag", "live")
+            print(f"✅ Deployed [{res['worker_name']}] successfully! (ETag: {etag})")
+            print(f"  • Entry Point: {res['entry_point']}")
+            print(f"  • Live URL:    https://{res['worker_name']}.whoentertains.workers.dev")
+        except Exception as e:
+            print(f"❌ Deploy failed: {e}")
+            sys.exit(1)
+        return
+
+    if sub == "ai":
+        ai_sub = subargs[1].lower() if len(subargs) > 1 else "run"
+        if ai_sub == "models":
+            models = cf.list_ai_models()
+            print("🤖 Cloudflare Workers AI Model Catalogue (Free Tier):")
+            for m in models:
+                print(f"  • {m['id']:<42} | {m['task']:<24} | {m['speed']:<10} | {m['neurons_per_m']} N/M")
+            return
+        if ai_sub == "embed":
+            text = " ".join(subargs[2:]) if len(subargs) > 2 else "NouGen Fleet Substrate"
+            print(f"🔮 Computing zero-VRAM embedding for: '{text[:50]}'...")
+            emb = cf.embed_ai(text)
+            dim = len(emb[0]) if emb else 0
+            print(f"✅ Generated {dim}-dimensional vector on Cloudflare Edge.")
+            return
+
+        # Default: run prompt
+        model = "@cf/meta/llama-3.1-8b-instruct"
+        prompt_args = subargs[1:]
+        if "--model" in prompt_args:
+            m_idx = prompt_args.index("--model")
+            if m_idx + 1 < len(prompt_args):
+                model = prompt_args[m_idx + 1]
+                prompt_args = prompt_args[:m_idx] + prompt_args[m_idx + 2:]
+        if prompt_args and prompt_args[0] == "run":
+            prompt_args = prompt_args[1:]
+
+        prompt = " ".join(prompt_args) if prompt_args else "Explain NouGen fleet architecture in 2 sentences."
+        print(f"🤖 Workers AI [{model}]:\n'{prompt}'\n")
+        try:
+            resp = cf.run_ai(prompt, model=model)
+            print(f"--- Output ---\n{resp}\n--------------")
+        except Exception as e:
+            print(f"❌ Workers AI error: {e}")
+        return
+
+    if sub == "d1":
+        d1_sub = subargs[1] if len(subargs) > 1 else "list"
+        if d1_sub == "query" and len(subargs) >= 4:
+            db_name = subargs[2]
+            sql = " ".join(subargs[3:])
+            print(f"🗄️ Executing D1 SQL on [{db_name}]: {sql}")
+            res = cf.query_d1(db_name, sql)
+            print(json.dumps(res, indent=2))
+            return
+        dbs = cf.list_d1()
+        print(f"🗄️ Cloudflare D1 Databases ({len(dbs)}):")
+        if not dbs:
+            print("  (No D1 databases created yet)")
+        for d in dbs:
+            print(f"  • {d.get('name'):<20} (uuid: {d.get('uuid')})")
+        return
+
+    if sub == "kv":
+        kvs = cf.list_kv()
+        print(f"📦 Cloudflare KV Namespaces ({len(kvs)}):")
+        if not kvs:
+            print("  (No KV namespaces created yet)")
+        for k in kvs:
+            print(f"  • {k.get('title'):<20} (id: {k.get('id')})")
+        return
+
+    if sub == "r2":
+        buckets = cf.list_r2()
+        print(f"🪣 Cloudflare R2 Buckets ({len(buckets)}):")
+        if not buckets:
+            print("  (No R2 buckets created yet)")
+        for b in buckets:
+            print(f"  • {b.get('name'):<20} (created: {b.get('creation_date', '')[:10]})")
+        return
+
+    print(f"Unknown cf subcommand: {sub}.")
+    print("Available subcommands:")
+    print("  status | list | inspect | ping | deploy | secrets | secret-set | sync-secrets | ai | d1 | kv | r2")
 
 
 def cmd_live(args):
@@ -2182,6 +2416,22 @@ def cmd_doctor(args):
     except ImportError as e:
         print(f" ❌ Engine Modules missing: {e}")
 
+    # 5. Check Cloudflare Edge Substrate & Fleet Gateway
+    print("\n[Cloudflare Edge Substrate]")
+    cf_diag = {}
+    try:
+        from . import cloudflare
+        cf_client = cloudflare.CloudflareClient()
+        ping_res = cf_client.ping()
+        cf_diag = ping_res
+        print(f" ✅ Cloudflare Account: {ping_res['account_name']} ({ping_res['account_id'][:10]}...)")
+        print(f" ✅ Active Workers: {ping_res['active_workers']} deployed in orbit")
+        print(f" ✅ Fleet MCP Gateway: {ping_res['gateway_status']} ({ping_res.get('gateway_latency_ms', '?')} ms)")
+        print(f" ✅ Workers AI Edge: Ready (API latency: {ping_res['api_latency_ms']} ms)")
+    except Exception as e:
+        cf_diag = {"error": str(e)}
+        print(f" ⚠️ Cloudflare Edge Substrate: {e}")
+
     if getattr(args, 'json', False):
         import json
         print("\n[JSON Output]")
@@ -2190,7 +2440,8 @@ def cmd_doctor(args):
             "vault": {"path": str(keymaker.DB_PATH.absolute()),
                       "exists": keymaker.DB_PATH.exists(),
                       "providers": keymaker.list_providers() if keymaker.DB_PATH.exists() else []},
-            "connectivity": p_status
+            "connectivity": p_status,
+            "cloudflare_edge": cf_diag
         }
         print(json.dumps(report, indent=2))
 
@@ -2889,6 +3140,9 @@ def main():
         print()
         get_parser().print_help()
         sys.exit(0)
+    if sys.argv[1] == "cf":
+        cmd_cf(argparse.Namespace(command="cf", cf_args=sys.argv[2:]))
+        return
     if sys.argv[1] == "relay":
         # Pure pass-through: argparse (3.13+) refuses to let a REMAINDER
         # positional swallow a leading option, so `nougen relay --help` and
@@ -2908,7 +3162,8 @@ def main():
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr,
         "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
-        "transcribe": cmd_transcribe, "live": cmd_live, "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio
+        "transcribe": cmd_transcribe, "live": cmd_live, "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
+        "cf": cmd_cf
     }
     if args.command in cmds:
         cmds[args.command](args)

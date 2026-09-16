@@ -33,6 +33,8 @@ except (ImportError, ModuleNotFoundError):
     NouGenTranscriber = None  # type: ignore[assignment,misc]
     TranscribeEngine = None  # type: ignore[assignment,misc]
 
+from .cloudflare import CloudflareClient, WorkerInfo, SecretInfo
+
 # Read from installed package metadata rather than restated here. The v1.2.0
 # release bumped pyproject.toml and left this line at 1.1.0, so `nougen
 # --version` reported a version that had not shipped for two releases — the one
