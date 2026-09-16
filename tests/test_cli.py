@@ -384,6 +384,22 @@ class TestRelaySubcommand(unittest.TestCase):
             with patch.dict(os.environ, {"NOUGEN_RELAY_DIR": str(bare), "FLEET_RELAY_DIR": str(good)}):
                 self.assertEqual(cli.find_relay_registry(), good)
 
+    def test_cmd_open(self):
+        args = argparse.Namespace(open_args=["status"])
+        with patch("nougen_shards.cli.cmd_open") as mock_cmd:
+            cli.cmd_open(args)
+            mock_cmd.assert_called_once_with(args)
+
+    def test_cmd_open_execution(self):
+        args = argparse.Namespace(open_args=["status"])
+        with patch.dict("sys.modules", {"nougen_open": MagicMock(), "nougen_open.cli": MagicMock()}):
+            import sys
+            mock_open_main = sys.modules["nougen_open.cli"].main
+            cli.cmd_open(args)
+            mock_open_main.assert_called_once_with(["status"])
+
 
 if __name__ == '__main__':
     unittest.main()
+
+
