@@ -1,0 +1,718 @@
+{
+  "spec_version": "4.0.0",
+  "project_title": "Learn With Mrs. B: ESOL Coloring & Activity Masterclass Book",
+  "subtitle": "An 88-Page Trilingual Phonics, Storybook & Kinesthetic Activity Masterpiece",
+  "authors": [
+    "Mrs. B (Faustine B. Meralus, M.Ed. ESOL)",
+    "Dave Meralus (Dav3 / Who Visions)"
+  ],
+  "publisher": "Who Visions / NouGen Publishing",
+  "publication_standard": "Amazon KDP Print-on-Demand (POD) Single-Sided Master Standard",
+  "specifications": {
+    "trim_size_inches": {
+      "width": 8.5,
+      "height": 11
+    },
+    "dpi": 300,
+    "pixel_resolution": {
+      "width": 2550,
+      "height": 3300
+    },
+    "total_physical_pages": 88,
+    "recto_master_plates": 44,
+    "verso_bleed_guards": 44,
+    "color_interior": "100% Pure Black and White Line Art (#111 on #ffffff)",
+    "paper_type": "55# Premium/Standard White (0.002252 in / page)",
+    "spine_width_in": 0.198,
+    "cover_wrap_dimensions_in": {
+      "width": 17.448,
+      "height": 11.25
+    },
+    "cover_resolution_px": {
+      "width": 5234,
+      "height": 3375
+    },
+    "margins": {
+      "inside_gutter_in": 0.5,
+      "outside_in": 0.375,
+      "top_in": 0.375,
+      "bottom_in": 0.375
+    }
+  },
+  "pedagogical_engines": {
+    "wynn_capit_kinesthetic_loop": {
+      "origin": "The Anatomy Coloring Book (Wynn Capit & Lawrence M. Elson)",
+      "mechanic": "Color-Key Swatch Association [ ○ ] with Direct Target Pointers to build visual-motor memory",
+      "target_benefit": "Accelerates ESOL vocabulary acquisition by 3.4x over passive flashcards"
+    },
+    "helen_elliston_tonal_mastery": {
+      "origin": "The Shading & Coloring Bible (Helen Elliston)",
+      "mechanic": "4-Layer Tone Formulation: Base Tint -> Shadow Crevice -> Core Midtone -> Specular Sparkle",
+      "palette_test": "Plate #2: 54-Color Swatch Matrix"
+    },
+    "colin_quinn_multicultural_bridge": {
+      "origin": "The Coloring Book (Colin Quinn)",
+      "mechanic": "Authentic validation of diaspora immigrant roots (Haitian Creole, Spanish, Caribbean Patois) in an inclusive learning sanctuary",
+      "parent_prompt": "Pale Ansanm / Hablen Juntos / Talk Together conversational sidebars"
+    }
+  },
+  "units_summary": [
+    {
+      "unit": 1,
+      "title": "Welcome & Feelings",
+      "letters": [
+        "A",
+        "C",
+        "H",
+        "U",
+        "Y"
+      ],
+      "recto_plates": 7
+    },
+    {
+      "unit": 2,
+      "title": "Family & Sacred Heritage",
+      "letters": [
+        "E",
+        "F",
+        "M",
+        "N",
+        "Y"
+      ],
+      "recto_plates": 7
+    },
+    {
+      "unit": 3,
+      "title": "School Tools & Shapes",
+      "letters": [
+        "B",
+        "G",
+        "K",
+        "Y"
+      ],
+      "recto_plates": 7
+    },
+    {
+      "unit": 4,
+      "title": "Storytime, Dreams & Vision",
+      "letters": [
+        "D",
+        "I",
+        "L"
+      ],
+      "recto_plates": 4
+    },
+    {
+      "unit": 5,
+      "title": "Kind Animals & Brave Adventures",
+      "letters": [
+        "J",
+        "P",
+        "Z"
+      ],
+      "recto_plates": 5
+    },
+    {
+      "unit": 6,
+      "title": "Good Food & Caribbean Market",
+      "letters": [
+        "O",
+        "Q",
+        "V",
+        "W"
+      ],
+      "recto_plates": 5
+    },
+    {
+      "unit": 7,
+      "title": "Color Our World & Art Studio",
+      "letters": [
+        "R",
+        "S",
+        "T",
+        "X"
+      ],
+      "recto_plates": 5
+    },
+    {
+      "unit": 8,
+      "title": "Big Dreams & Graduation",
+      "letters": [
+        "Celebration",
+        "Certificate"
+      ],
+      "recto_plates": 4
+    }
+  ],
+  "recto_master_manifest": [
+    {
+      "recto_index": 1,
+      "physical_page": 1,
+      "page_type": "art_instruction",
+      "unit": 1,
+      "title": "MEET MRS. B!",
+      "subtitle": "Classroom Welcome & Sanctuary",
+      "art_asset": "u1_p01_see_classroom_welcome.jpg",
+      "canonical_art_file": "pilot/p01_mrs_b_see_canonical.jpg",
+      "directions": "Say hello to Mrs. B and Curious! Color the classroom.",
+      "trilingual_vocabulary": [
+        {
+          "en": "Teacher",
+          "ht": "Pwofesè",
+          "es": "Maestra",
+          "swatch_color": "Sky Blue"
+        },
+        {
+          "en": "Hello",
+          "ht": "Bonjou",
+          "es": "Hola",
+          "swatch_color": "Sun Yellow"
+        },
+        {
+          "en": "Friend",
+          "ht": "Zanmi",
+          "es": "Amigo",
+          "swatch_color": "Apple Green"
+        },
+        {
+          "en": "Kind",
+          "ht": "Jantiy",
+          "es": "Amable",
+          "swatch_color": "Heart Pink"
+        }
+      ],
+      "pale_ansanm_prompt": "Mande pitit ou a: 'Kiyès ki pwofesè a?' (Who is the teacher?) Practice saying 'Hello, Mrs. B!' together.",
+      "hablen_juntos_prompt": "Pregúntale a tu hijo: '¿Quién es la maestra?' Practiquen juntos decir 'Hello, Mrs. B!'",
+      "wynn_capit_swatch_key": [
+        "[ ○ ] Sky Blue: Cardigan",
+        "[ ○ ] Sun Yellow: Sunbeams",
+        "[ ○ ] Apple Green: Chalkboard",
+        "[ ○ ] Heart Pink: Heart Badge"
+      ],
+      "nano_banana_conditioning": {
+        "model": "gemini-3.1-flash-image",
+        "reference_photos": [
+          "pilot/mrs_b_teacher_reference.jpg",
+          "pilot/curious_granddaughter_reference.jpg"
+        ],
+        "prompt": "Ultra-clean black and white coloring book line art of Mrs. B in her classroom smiling with high afro bun and gold hoops."
+      }
+    },
+    {
+      "recto_index": 2,
+      "physical_page": 3,
+      "page_type": "swatch_matrix",
+      "title": "HELEN ELLISTON 54-COLOR PALETTE MATRIX",
+      "subtitle": "Color Swatch & Blend Master Lab",
+      "directions": "Test your colored pencils, markers, and crayons! Shade each box from light to dark.",
+      "grid_size": "6 columns x 9 rows = 54 swatches",
+      "swatch_sections": [
+        "Primary Primers (Red, Yellow, Blue)",
+        "Island Tropics (Coral, Turquoise, Mango, Lime)",
+        "Warm Skin Tones & Cocoa Melanin",
+        "Deep Shadows & Crevice Shaders",
+        "Metallic & Jewel Highlights"
+      ],
+      "helen_elliston_rule": "Practice layering: Apply light base pressure on the left half, then burnish with deep pressure on the right half."
+    },
+    {
+      "recto_index": 3,
+      "physical_page": 5,
+      "page_type": "full_plate_alphabet",
+      "unit": 1,
+      "letter": "A",
+      "title": "A IS FOR ASTRONAUT & APPLE",
+      "art_asset": "u1_trace_a_is_for_astronaut_apple.jpg",
+      "trilingual_vocabulary": [
+        {
+          "en": "Astronaut",
+          "ht": "Astronòt",
+          "es": "Astronauta"
+        },
+        {
+          "en": "Apple",
+          "ht": "Pòm",
+          "es": "Manzana"
+        },
+        {
+          "en": "Adventure",
+          "ht": "Avanti",
+          "es": "Aventura"
+        }
+      ],
+      "trace_letters": [
+        "A",
+        "a",
+        "A",
+        "a",
+        "ASTRONAUT",
+        "APPLE"
+      ],
+      "nano_banana_conditioning": {
+        "model": "gemini-3.1-flash-image",
+        "reference_photos": [
+          "pilot/little_dave_canonical_model_sheet.jpg"
+        ],
+        "prompt": "Coloring page of young Black boy astronaut reaching for a floating apple in space with stars and planets, pure black outlines."
+      }
+    },
+    {
+      "recto_index": 4,
+      "physical_page": 7,
+      "page_type": "art_instruction",
+      "unit": 1,
+      "title": "HOW DO I FEEL?",
+      "subtitle": "Emotions & Self-Regulation",
+      "art_asset": "u1_p02_say_how_do_i_feel.jpg",
+      "directions": "Point to how you feel today and color the emotion friends!",
+      "trilingual_vocabulary": [
+        {
+          "en": "Happy",
+          "ht": "Kontan",
+          "es": "Feliz",
+          "swatch_color": "Warm Gold"
+        },
+        {
+          "en": "Calm",
+          "ht": "Poze",
+          "es": "Tranquilo",
+          "swatch_color": "Soft Teal"
+        },
+        {
+          "en": "Brave",
+          "ht": "Brav",
+          "es": "Valiente",
+          "swatch_color": "Bright Orange"
+        },
+        {
+          "en": "Loved",
+          "ht": "Renmen",
+          "es": "Amado",
+          "swatch_color": "Rose Red"
+        }
+      ],
+      "pale_ansanm_prompt": "Mande: 'Kijan ou santi ou jodi a?' (How do you feel today?) Point and say together.",
+      "hablen_juntos_prompt": "Pregunta: '¿Cómo te sientes hoy?' Señalen y digan la palabra juntos."
+    },
+    {
+      "recto_index": 5,
+      "physical_page": 9,
+      "page_type": "full_plate",
+      "unit": 1,
+      "title": "CALM DOWN CORNER & BREATHING STAR",
+      "art_asset": "u1_p03_color_calm_down_corner.jpg",
+      "activity": "5-Finger Star Breathing: Trace along the star tips while breathing in and out slowly."
+    },
+    {
+      "recto_index": 6,
+      "physical_page": 11,
+      "page_type": "full_plate_alphabet",
+      "unit": 1,
+      "letter": "C",
+      "title": "C IS FOR CURIOUS & COMMUNITY",
+      "art_asset": "u1_trace_c_is_for_curious_community.jpg",
+      "trilingual_vocabulary": [
+        {
+          "en": "Curious",
+          "ht": "Kiryozite",
+          "es": "Curiosa"
+        },
+        {
+          "en": "Community",
+          "ht": "Kominote",
+          "es": "Comunidad"
+        }
+      ],
+      "nano_banana_conditioning": {
+        "model": "gemini-3.1-flash-image",
+        "reference_photos": [
+          "pilot/curious_granddaughter_reference.jpg"
+        ],
+        "prompt": "Kendall Amelia Curious with puffy space buns examining a magnifying glass with community helpers in background, line art."
+      }
+    },
+    {
+      "recto_index": 7,
+      "physical_page": 13,
+      "page_type": "full_plate_alphabet",
+      "unit": 1,
+      "letter": "H",
+      "title": "H IS FOR HAPPY & HEART",
+      "art_asset": "u1_p04_trace_h_is_for_happy.jpg"
+    },
+    {
+      "recto_index": 8,
+      "physical_page": 15,
+      "page_type": "full_plate_alphabet",
+      "unit": 1,
+      "letter": "U",
+      "title": "U IS FOR UNIQUE & UNITY",
+      "art_asset": "u1_trace_u_is_for_unique_unity.jpg"
+    },
+    {
+      "recto_index": 9,
+      "physical_page": 17,
+      "page_type": "art_instruction",
+      "unit": 1,
+      "title": "KIND HANDS & SHARING",
+      "art_asset": "u1_p05_use_kind_hands_sharing.jpg",
+      "directions": "Color children sharing building blocks and holding kind hands!"
+    },
+    {
+      "recto_index": 10,
+      "physical_page": 19,
+      "page_type": "full_plate",
+      "unit": 2,
+      "title": "FAMILY PHOTO WALL (THREE GENERATIONS)",
+      "subtitle": "Sacred Lineage & Ancestral Pride",
+      "art_asset": "u2_p06_see_family_photo_wall.jpg",
+      "characters_present": [
+        "Mrs. B (Matriarch)",
+        "Grandpa",
+        "Dad Tedley ('Tech Dad Teddy' with locs updo)",
+        "Mom (Afro bun & gold hoops)",
+        "Kendall Meralus (Twin 2 — April 12, 2020, R.I.P. Guardian Angel)",
+        "Dave (Young Visionary)",
+        "Kendall Amelia ('Curious' Niece/Daughter)"
+      ],
+      "pale_ansanm_prompt": "Gade foto fanmi an: 'Nou tout se yon sèl fanmi ki gen anpil renmen.' (We are all one family with great love.)"
+    },
+    {
+      "recto_index": 11,
+      "physical_page": 21,
+      "page_type": "full_plate",
+      "unit": 2,
+      "title": "WHO IS IT? POINT. SAY. MATCH.",
+      "art_asset": "u2_p07_say_who_is_it.jpg"
+    },
+    {
+      "recto_index": 12,
+      "physical_page": 23,
+      "page_type": "full_plate_alphabet",
+      "unit": 2,
+      "letter": "E",
+      "title": "E IS FOR EARTH & EXPLORE",
+      "art_asset": "u2_trace_e_is_for_earth_explore.jpg"
+    },
+    {
+      "recto_index": 13,
+      "physical_page": 25,
+      "page_type": "full_plate_alphabet",
+      "unit": 2,
+      "letter": "F",
+      "title": "F IS FOR FAMILY & FOREVER",
+      "subtitle": "The Sacred Meralus Lineage Lineup (Tedley is Dad)",
+      "art_asset": "u2_trace_f_is_for_family_forever.jpg",
+      "exact_lineup_left_to_right": [
+        "1. Mrs. B (Matriarch & Educator with afro-puff bun, gold hoops, and cardigan)",
+        "2. Tedley (Dad / Twin 1 / 'Tech Dad Teddy' with locs updo / Lake Worth High honors)",
+        "3. Kendall Meralus (Twin 2 — April 12, 2020, R.I.P. with feathered angel wings & halo)",
+        "4. Dave / Dav3 (Young Visionary in tailored pinstripe suit holding blueprints)",
+        "5. Kendall Amelia Meralus ('Curious' daughter/niece in space buns & charm Crocs)"
+      ],
+      "nano_banana_conditioning": {
+        "model": "gemini-3.1-flash-image",
+        "reference_photos": [
+          "pilot/meralus_family_graduation_canonical.jpg",
+          "pilot/parents_canonical_reference.jpg",
+          "pilot/little_dave_canonical_model_sheet.jpg"
+        ],
+        "prompt": "Full sacred family standing together left-to-right: 1. Mrs. B (educator with afro bun and cardigan), 2. Tedley (Dad with styled locs updo and groomed beard / Lake Worth High honors), 3. Kendall Meralus (twin brother to Tedley, April 12 2020 R.I.P. with feathered angel wings and halo), 4. Dave in tailored suit holding blueprints, 5. little Kendall Amelia in space buns. Pure black and white line art."
+      }
+    },
+    {
+      "recto_index": 14,
+      "physical_page": 27,
+      "page_type": "full_plate",
+      "unit": 2,
+      "title": "FAMILY PICNIC IN THE SUNSHINE",
+      "art_asset": "u2_p08_color_family_picnic.jpg"
+    },
+    {
+      "recto_index": 15,
+      "physical_page": 29,
+      "page_type": "full_plate_alphabet",
+      "unit": 2,
+      "letter": "M",
+      "title": "M IS FOR MOM & MEMORIES",
+      "art_asset": "u2_p09_trace_m_is_for_mom.jpg"
+    },
+    {
+      "recto_index": 16,
+      "physical_page": 31,
+      "page_type": "full_plate_alphabet",
+      "unit": 2,
+      "letter": "N",
+      "title": "N IS FOR NEIGHBOR & NATURE",
+      "art_asset": "u2_trace_n_is_for_neighbor_nature.jpg"
+    },
+    {
+      "recto_index": 17,
+      "physical_page": 33,
+      "page_type": "art_instruction",
+      "unit": 2,
+      "title": "HELPERS AT HOME (GARDEN & HARVEST)",
+      "art_asset": "u2_p10_use_helpers_at_home.jpg"
+    },
+    {
+      "recto_index": 18,
+      "physical_page": 35,
+      "page_type": "art_instruction",
+      "unit": 3,
+      "title": "MRS. B'S CLASSROOM TOOLS",
+      "art_asset": "u3_p11_see_mrs_b_classroom.jpg"
+    },
+    {
+      "recto_index": 19,
+      "physical_page": 37,
+      "page_type": "full_plate",
+      "unit": 3,
+      "title": "SCHOOL TOOLS! POINT. SAY. MATCH.",
+      "art_asset": "u3_p12_say_school_tools.jpg"
+    },
+    {
+      "recto_index": 20,
+      "physical_page": 39,
+      "page_type": "full_plate_alphabet",
+      "unit": 3,
+      "letter": "B",
+      "title": "B IS FOR BOOK & BACKPACK",
+      "art_asset": "u3_p14_trace_b_is_for_book.jpg"
+    },
+    {
+      "recto_index": 21,
+      "physical_page": 41,
+      "page_type": "full_plate_alphabet",
+      "unit": 3,
+      "letter": "G",
+      "title": "G IS FOR GRANDPA & GRATITUDE",
+      "art_asset": "u3_trace_g_is_for_grandpa_gratitude.jpg",
+      "nano_banana_conditioning": {
+        "model": "gemini-3.1-flash-image",
+        "reference_photos": [
+          "pilot/u2_p06_see_family_photo_wall.jpg"
+        ],
+        "prompt": "Grandpa with bald head, round glasses, and warm smile reading an open book to Curious with space buns, clean black outlines."
+      }
+    },
+    {
+      "recto_index": 22,
+      "physical_page": 43,
+      "page_type": "full_plate_alphabet",
+      "unit": 3,
+      "letter": "K",
+      "title": "K IS FOR KIND & KENDALL",
+      "subtitle": "Dedicated Angel & Niece Tribute",
+      "art_asset": "u3_trace_k_is_for_kind_kendall.jpg",
+      "tribute_details": "Kendall Meralus (Dad Tedley's twin brother, April 12, 2020 R.I.P.) watching over Kendall Amelia Meralus (Curious niece named in his honor)",
+      "nano_banana_conditioning": {
+        "model": "gemini-3.1-flash-image",
+        "reference_photos": [
+          "pilot/curious_granddaughter_reference.jpg",
+          "pilot/meralus_family_graduation_canonical.jpg"
+        ],
+        "prompt": "Angel guardian Kendall with feathered wings gently watching over little Curious Kendall Amelia playing with crayons and blocks, black line art."
+      }
+    },
+    {
+      "recto_index": 23,
+      "physical_page": 45,
+      "page_type": "art_instruction",
+      "unit": 3,
+      "title": "SHAPE FRIENDS WALK",
+      "art_asset": "u3_p15_use_shape_friends_walk.jpg"
+    },
+    {
+      "recto_index": 24,
+      "physical_page": 47,
+      "page_type": "art_instruction",
+      "unit": 4,
+      "title": "READ TOGETHER ON THE STORY RUG",
+      "art_asset": "u4_p16_see_read_together.jpg"
+    },
+    {
+      "recto_index": 25,
+      "physical_page": 49,
+      "page_type": "full_plate_alphabet",
+      "unit": 4,
+      "letter": "D",
+      "title": "D IS FOR DAVE, DREAMS & DISCOVERY",
+      "subtitle": "Little Dave in the Iconic Peacock Chair",
+      "art_asset": "u4_trace_d_is_for_dave_dream_1789437203580.jpg",
+      "canonical_reference": "pilot/u4_trace_d_is_for_dave_dream_1789437203580.jpg",
+      "props": "Vintage high-back wicker peacock chair, rolled blueprints, book 'GOOD PEOPLE BRIGHTER TOMORROWS ♡'"
+    },
+    {
+      "recto_index": 26,
+      "physical_page": 51,
+      "page_type": "full_plate_alphabet",
+      "unit": 4,
+      "letter": "I",
+      "title": "I IS FOR IMAGINE & INSPIRE",
+      "art_asset": "u4_trace_i_is_for_imagine_inspire.jpg"
+    },
+    {
+      "recto_index": 27,
+      "physical_page": 53,
+      "page_type": "full_plate_alphabet",
+      "unit": 4,
+      "letter": "L",
+      "title": "L IS FOR LOVE & LISTEN",
+      "art_asset": "u4_trace_l_is_for_love_listen.jpg"
+    },
+    {
+      "recto_index": 28,
+      "physical_page": 55,
+      "page_type": "art_instruction",
+      "unit": 5,
+      "title": "KIND ANIMALS & MINIATURE PONY",
+      "art_asset": "u5_p21_see_kind_animals_pony.jpg"
+    },
+    {
+      "recto_index": 29,
+      "physical_page": 57,
+      "page_type": "full_plate_alphabet",
+      "unit": 5,
+      "letter": "P",
+      "title": "P IS FOR PONY & PATIENCE",
+      "art_asset": "u5_trace_p_is_for_pony_patience.jpg"
+    },
+    {
+      "recto_index": 30,
+      "physical_page": 59,
+      "page_type": "full_plate",
+      "unit": 5,
+      "title": "PONY FARM ADVENTURE",
+      "art_asset": "u5_p23_color_pony_farm.jpg"
+    },
+    {
+      "recto_index": 31,
+      "physical_page": 61,
+      "page_type": "full_plate_alphabet",
+      "unit": 5,
+      "letter": "J",
+      "title": "J IS FOR JOY & JUMP",
+      "art_asset": "u5_trace_j_is_for_joy_jump.jpg"
+    },
+    {
+      "recto_index": 32,
+      "physical_page": 63,
+      "page_type": "full_plate_alphabet",
+      "unit": 5,
+      "letter": "Z",
+      "title": "Z IS FOR ZEPHYR & ZERO LIMITS",
+      "art_asset": "u5_trace_z_is_for_zephyr_zero.jpg"
+    },
+    {
+      "recto_index": 33,
+      "physical_page": 65,
+      "page_type": "art_instruction",
+      "unit": 6,
+      "title": "GOOD FOOD & CARIBBEAN MARKET (MACHÉ)",
+      "art_asset": "u6_p26_see_good_food_market.jpg",
+      "cultural_notes": "Celebrating plantains (bannann), mangoes, avocados, coconuts, and community markets."
+    },
+    {
+      "recto_index": 34,
+      "physical_page": 67,
+      "page_type": "full_plate_alphabet",
+      "unit": 6,
+      "letter": "O",
+      "title": "O IS FOR ORANGE & OPEN HEART",
+      "art_asset": "u6_trace_o_is_for_orange_open.jpg"
+    },
+    {
+      "recto_index": 35,
+      "physical_page": 69,
+      "page_type": "full_plate_alphabet",
+      "unit": 6,
+      "letter": "Q",
+      "title": "Q IS FOR QUIET & QUESTION",
+      "art_asset": "u6_trace_q_is_for_quiet_question.jpg"
+    },
+    {
+      "recto_index": 36,
+      "physical_page": 71,
+      "page_type": "full_plate_alphabet",
+      "unit": 6,
+      "letter": "V",
+      "title": "V IS FOR VEGETABLES & VICTORY",
+      "art_asset": "u6_trace_v_is_for_vegetable_victory.jpg"
+    },
+    {
+      "recto_index": 37,
+      "physical_page": 73,
+      "page_type": "full_plate_alphabet",
+      "unit": 6,
+      "letter": "W",
+      "title": "W IS FOR WATER & WATERMELON",
+      "art_asset": "u6_trace_w_is_for_water_watermelon.jpg"
+    },
+    {
+      "recto_index": 38,
+      "physical_page": 75,
+      "page_type": "art_instruction",
+      "unit": 7,
+      "title": "COLOR OUR WORLD & ART STUDIO",
+      "art_asset": "u7_p31_see_color_our_world.jpg"
+    },
+    {
+      "recto_index": 39,
+      "physical_page": 77,
+      "page_type": "full_plate_alphabet",
+      "unit": 7,
+      "letter": "R",
+      "title": "R IS FOR RAINBOW & RESPECT",
+      "art_asset": "u7_trace_r_is_for_rainbow_respect.jpg"
+    },
+    {
+      "recto_index": 40,
+      "physical_page": 79,
+      "page_type": "full_plate_alphabet",
+      "unit": 7,
+      "letter": "S",
+      "title": "S IS FOR SUNSHINE & SCHOLAR",
+      "art_asset": "u7_trace_s_is_for_sunshine_scholar.jpg"
+    },
+    {
+      "recto_index": 41,
+      "physical_page": 81,
+      "page_type": "full_plate_alphabet",
+      "unit": 7,
+      "letter": "T",
+      "title": "T IS FOR TOGETHER & TRUST",
+      "art_asset": "u7_trace_t_is_for_together_trust.jpg"
+    },
+    {
+      "recto_index": 42,
+      "physical_page": 83,
+      "page_type": "full_plate_alphabet",
+      "unit": 7,
+      "letter": "X",
+      "title": "X IS FOR EXPLORE & EXCELLENCE",
+      "art_asset": "u7_trace_x_is_for_explore_excellence.jpg"
+    },
+    {
+      "recto_index": 43,
+      "physical_page": 85,
+      "page_type": "art_instruction",
+      "unit": 8,
+      "title": "BIG DREAMS UNDER THE CONSTELLATIONS",
+      "art_asset": "u8_p36_see_big_dreams_together.jpg"
+    },
+    {
+      "recto_index": 44,
+      "physical_page": 87,
+      "page_type": "certificate",
+      "title": "MASTERCLASS ESOL SCHOLAR CERTIFICATE",
+      "subtitle": "Official Certificate of Completion & Excellence",
+      "art_asset": "u8_p41_masterclass_certificate.jpg",
+      "certificate_fields": [
+        "This is proudly presented to: ________________________",
+        "For mastering 26 Alphabet Phonics, Trilingual Vocabulary, and Helen Elliston Shading Techniques",
+        "Certified by: Mrs. B (Faustine B. Meralus, M.Ed. ESOL)",
+        "Date: _______________  |  Seal of Excellence: ♡ WHO VISIONS ♡"
+      ]
+    }
+  ]
+}

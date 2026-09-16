@@ -1,0 +1,194 @@
+{
+  "manifest_version": "3.0.0",
+  "project": "Learn With Mrs. B: ESOL Coloring & Activity Masterclass",
+  "canonical_authority": "C:\\Users\\super\\.nougen\\AUTHORITY.md",
+  "shard_grid_provenance": {
+    "root": "C:\\Users\\super\\.nougen\\shards",
+    "primary_shards": [
+      3234,
+      3246,
+      22344,
+      23807,
+      23808,
+      23809
+    ]
+  },
+  "rendering_engine": {
+    "engine": "Nano Banana (Google Gemini Flash Image)",
+    "models": [
+      "gemini-3.1-flash-image",
+      "gemini-2.5-flash-image"
+    ],
+    "style_rules": [
+      "100% Pure Black and White Line Art (#111 on #fff)",
+      "Zero Grayscale Fills, Zero Halftones, Zero Charcoal Shading",
+      "Multimodal ImagePaths Photo-Conditioning Required (No Text-Only Approximation)",
+      "Continuous Enclosed Contour Outlines for Crayons/Markers (1.5pt - 3.5pt)"
+    ]
+  },
+  "characters": {
+    "mrs_b": {
+      "name": "Mrs. B (Faustine B. Meralus, M.Ed. ESOL)",
+      "role": "Beloved Master Math & ESOL Educator, Matriarch & Masterclass Host",
+      "tagline": "Kind People Change Big Futures \u2661",
+      "motto": "A Kinder Mind. A Brighter World. Together.",
+      "core_pillars": "People \u00b7 Places \u00b7 Things \u00b7 Bigger Tomorrows",
+      "credentials": {
+        "experience": "25+ Years Teaching",
+        "specialization": "Master Math & K-12 Reading Educator",
+        "philosophy": "Believes in Every Learner, Creates Safe Encouraging Spaces, Helps Students Build Confidence"
+      },
+      "visual_dna": {
+        "hair": "Shoulder-length rich chocolate brown layered wavy/curly hair with natural volume",
+        "eyes": "Warm, deep expressive brown eyes with kind maternal radiance",
+        "jewelry": "Classic medium gold hoop earrings and gold wristwatch",
+        "face": "Warm, approachable, supportive, radiant smile (Happy, Joyful, Encouraging, Thoughtful)",
+        "outfits": {
+          "classroom_everyday": {
+            "top": "Red, berry, burgundy, and cream geometric floral patterned blouse",
+            "bottom": "Tailored black high-waisted wide-leg dress trousers with black belt and gold buckle",
+            "prop": "Vibrant blue binder titled 'Students People Progress Brighter Futures \u2661'"
+          },
+          "professional_meetings": {
+            "top": "Tailored cream structured blazer over a black scoop-neck top",
+            "bottom": "Tailored black dress trousers",
+            "accessory": "School lanyard with heart ID badge 'B \u2661'",
+            "prop": "Dark leather portfolio / tablet"
+          },
+          "casual_events": {
+            "top": "Black graphic t-shirt with bold white lettering 'Math People Progress \u2661'",
+            "bottom": "Medium-wash classic blue denim jeans with brown leather belt",
+            "shoes": "Comfortable leather flats"
+          },
+          "cozy_at_home": {
+            "top": "Chunky open cream knit cardigan over a soft white scoop-neck top",
+            "bottom": "Heather grey drawstring lounge sweatpants",
+            "prop": "White ceramic mug printed with 'Teach Encourage Believe \u2661'"
+          }
+        },
+        "classroom_props": [
+          "Book stack: Math, Reading, Students, Brighter Futures",
+          "Laptop with Heart symbol (\u2661)",
+          "Spiral Planner: 'Plan Teach Support Grow \u2661'",
+          "Classroom Globe and Potted Plant",
+          "Pencil and marker supply cup",
+          "ID Badge 'B \u2661'"
+        ],
+        "settings": [
+          "Classroom with chalkboard 'Welcome! A+', teacher desk, laptop, open workbook, and globe",
+          "One-on-One Tutoring Table with young student and wall art 'Small Steps Big Futures \u2661'"
+        ]
+      },
+      "canonical_reference_asset": "assets/mrs_b_character_reference_sheet.jpg",
+      "shard_id": 23807
+    },
+    "curious_kendall_amelia": {
+      "name": "Kendall Amelia Meralus ('Curious')",
+      "role": "Enthusiastic Student, Niece, Young Co-Explorer",
+      "visual_dna": {
+        "hair": "Twin puffy afro space buns tied with bead hairbands",
+        "attire": "Heart-print pinafore dress over a soft pastel t-shirt, frilly ankle socks",
+        "footwear": "Turquoise & lavender Crocs with star and heart charms",
+        "accessories": "Small yellow crossbody explorer pouch with colored pencils sticking out",
+        "expression": "Wide joyful eyes, curious smile, energetic body language"
+      },
+      "canonical_reference_asset": "pilot/curious_granddaughter_reference.jpg",
+      "shard_id": 23808
+    },
+    "little_dave": {
+      "name": "Little Dave / Dav3 ('Young Visionary')",
+      "role": "Dreamer, Architect & Young Scholar",
+      "visual_dna": {
+        "hair": "Crisp geometric taper fade haircut with sharp lineup",
+        "attire": "Tailored charcoal grey pinstripe 2-piece suit, crisp white collared dress shirt, patterned necktie",
+        "props": "Architectural blueprints rolled up, hardbound book titled 'GOOD PEOPLE BRIGHTER TOMORROWS \u2661'",
+        "setting_icon": "Iconic vintage high-back wicker peacock chair",
+        "expression": "Thoughtful, dignified, ambitious visionary gaze"
+      },
+      "canonical_reference_asset": "pilot/little_dave_canonical_model_sheet.jpg",
+      "shard_id": 23808
+    },
+    "kendall_meralus_rip": {
+      "name": "Kendall Meralus (Twin 2 \u2014 April 12, 2020, R.I.P.)",
+      "role": "Beloved Twin Brother to Tedley (Dad), Uncle to Dave & Kendall Amelia, Son to Mrs. B, Guardian Angel",
+      "lineage_relation": "Twin brother to Tedley Meralus (Dad); Uncle to Dave and Kendall Amelia",
+      "visual_dna": {
+        "hair": "Clean, smooth low fade haircut",
+        "celestial_elements": "Feathered angel wings spreading gently from back, delicate glowing halo above head",
+        "attire": "Crisp dress shirt with heart memorial ribbon badge",
+        "expression": "Serene, peaceful, protective guardian smile full of eternal love"
+      },
+      "canonical_reference_asset": "pilot/meralus_family_graduation_canonical.jpg",
+      "shard_id": 22344
+    },
+    "mom_radiant": {
+      "name": "Mom (Matriarch)",
+      "role": "Mother & Foundation",
+      "visual_dna": {
+        "hair": "Radiant curly afro bun",
+        "jewelry": "Classic gold hoop earrings",
+        "attire": "Elegant floral blouse",
+        "expression": "Warm, loving, proud maternal smile"
+      },
+      "canonical_reference_asset": "pilot/parents_canonical_reference.jpg",
+      "shard_id": 23807
+    },
+    "grandpa": {
+      "name": "Grandpa Meralus",
+      "role": "Elder, Storyteller & Anchor",
+      "visual_dna": {
+        "hair": "Bald crown with neat silver side hair",
+        "facial_hair": "Classic gentleman mustache",
+        "eyewear": "Round wireframe reading spectacles perched on nose",
+        "attire": "Cozy knit button-up cardigan over collared shirt",
+        "props": "Open leather-bound storybook on lap",
+        "expression": "Gentle, wise grandfatherly smile"
+      },
+      "canonical_reference_asset": "pilot/u2_p06_see_family_photo_wall.jpg",
+      "shard_id": 23809
+    },
+    "dad_tedley": {
+      "name": "Tedley Meralus (Dad / 'Tech Dad Teddy')",
+      "role": "Father, Patriarch, Tech Mentor & Twin 1",
+      "lineage_relation": "Father to Dave Meralus & Kendall Amelia; Twin brother to Kendall Meralus (R.I.P.); Son to Mrs. B",
+      "visual_dna": {
+        "hair": "Styled locs neatly tied into an updo bun",
+        "facial_hair": "Groomed full beard and mustache",
+        "academic_honors": "Lake Worth High graduation cap, honors gown and medal (in academic & family milestone plates)",
+        "attire": "Smart collared button-down shirt / tech blazer / graduation gown",
+        "expression": "Wise, proud, supportive, dignified father and mentor"
+      },
+      "canonical_reference_asset": "pilot/parents_canonical_reference.jpg",
+      "graduation_reference_asset": "pilot/meralus_family_graduation_canonical.jpg",
+      "shard_id": 23807
+    }
+  },
+  "community_helpers_lineage": {
+    "franchise": "NouGenArt Community Helpers",
+    "core_motto": "Kinder Minds \u2022 Safer Communities \u2022 Brighter Tomorrows",
+    "characters": {
+      "kam_the_police_helper": {
+        "name": "Kam",
+        "role": "Junior Community Helper / Police Officer",
+        "motto": "Kind. Brave. Helpful. That's Kam!",
+        "dna": {
+          "hair": "High afro puff double buns, naturally textured curls",
+          "face": "Big expressive dark eyes, warm bright smile, small stud earrings",
+          "uniform": "Navy blue tactical helper uniform, KAM name badge, chest star badge, shoulder-mounted radio with coiled cord, utility duty belt, cargo pockets, black boots, police service cap with center star",
+          "mascot": "Smiling Traffic Safety Cone with cute cartoon eyes and friendly smile",
+          "themes": [
+            "Community Safety",
+            "Helping Neighbors",
+            "Brave Kindness",
+            "Civic Pride",
+            "Safe Kids Strong Communities"
+          ]
+        },
+        "canonical_assets": [
+          "assets/kam_police_helper_coloring_master.jpg",
+          "assets/kam_police_helper_color_and_lineart_sheet.jpg"
+        ]
+      }
+    }
+  }
+}

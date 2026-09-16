@@ -579,9 +579,26 @@ class OpenRouterClient(OpenAIClient):
         # The roster IS the full live set of free OpenRouter models.
         return self.get_free_models()
 
+    def _inject_persona(self, messages: list) -> list:
+        """Inject deterministic system persona if no system role is present in messages."""
+        if any(m.get("role") == "system" for m in messages if isinstance(m, dict)):
+            return list(messages)
+        try:
+            from .persona import Signals, resolve as resolve_persona
+            user_texts = [m.get("content", "") for m in messages if isinstance(m, dict) and m.get("role") == "user"]
+            sig = Signals.from_texts(user_texts, surfaces=["openrouter", "terminal"], tz="America/New_York", role="fleet-operator")
+            pers = resolve_persona(sig)
+            sys_prompt = pers.system_prompt()
+            if sys_prompt:
+                return [{"role": "system", "content": sys_prompt}] + list(messages)
+        except Exception:
+            pass
+        return list(messages)
+
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:
             return "Error: OR Key missing."
+        messages = self._inject_persona(messages)
         payload = {"model": model, "messages": messages, "stream": stream}
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
@@ -610,6 +627,7 @@ class OpenRouterClient(OpenAIClient):
         if not self.api_key:
             return {"content": "Error: OR Key missing.", "model": "unknown"}
 
+        messages = self._inject_persona(messages)
         bounded_models = self.bounded_fallback_models(model, fallback_models)
         payload = {
             "model": model,
