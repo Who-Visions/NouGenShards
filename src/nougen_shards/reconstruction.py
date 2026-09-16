@@ -28,6 +28,69 @@ log = logging.getLogger(__name__)
 # Config (env -> logged fallback)
 # --------------------------------------------------------------------------
 
+@dataclass
+class FactSnapshot:
+    canonical_key: str
+    as_of: str
+    machine_values: Dict[str, float]
+    total: float
+    completeness_state: str
+    expected_machines: List[str]
+    provenance_ids: List[str]
+    is_exact: bool = True
+    canonical: bool = True
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def resolve_fact_snapshot(records: Sequence[dict], canonical_key: str,
+                          expected_machines: Optional[Sequence[str]] = None) -> Optional[FactSnapshot]:
+    """Supersession resolver for FACT_SNAPSHOT rollups.
+    
+    Newer same-scope snapshot outranks stale historical rollups.
+    Completeness gate: missing machine != zero. Blade-only does not satisfy fleet scope.
+    """
+    expected = list(expected_machines or ["blade1tb", "phoebus", "whoart"])
+    candidates = []
+    for r in records:
+        if r.get("canonical_key") != canonical_key and r.get("key") != canonical_key:
+            continue
+        as_of = r.get("as_of") or r.get("date") or r.get("timestamp") or ""
+        m_vals = r.get("machine_values", {})
+        if not m_vals and "total" in r:
+            continue
+        missing = [m for m in expected if m not in m_vals]
+        state = "complete" if not missing else ("partial" if m_vals else "incomplete")
+        tot = r.get("total", sum(m_vals.values()))
+        candidates.append({
+            "as_of": as_of,
+            "machine_values": m_vals,
+            "total": tot,
+            "completeness_state": state,
+            "expected_machines": expected,
+            "provenance_ids": r.get("provenance_ids", [r.get("key", "")]),
+            "is_exact": r.get("is_exact", True),
+            "canonical": r.get("canonical", True),
+        })
+    if not candidates:
+        return None
+    # Sort by as_of timestamp descending (newest outranks stale)
+    candidates.sort(key=lambda c: c["as_of"], reverse=True)
+    best = candidates[0]
+    return FactSnapshot(
+        canonical_key=canonical_key,
+        as_of=best["as_of"],
+        machine_values=best["machine_values"],
+        total=best["total"],
+        completeness_state=best["completeness_state"],
+        expected_machines=best["expected_machines"],
+        provenance_ids=best["provenance_ids"],
+        is_exact=best["is_exact"],
+        canonical=best["canonical"],
+    )
+
+
 _DEFAULT_ANGLES = "verbatim,keyword,alias,time_window,association,relay"
 _DEFAULT_WEIGHTS = {"lexical": 0.45, "entity": 0.30, "temporal": 0.15, "state": 0.10, "kind": 0.10}
 _STATE_FACTOR = {"live": 1.0, "superseded": 0.3, "retracted": 0.0}
