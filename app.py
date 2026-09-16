@@ -2441,6 +2441,88 @@ def nougenmsg(message: str, target: str = "all", priority: str = "normal") -> di
     }
 
 
+def _nougenmsg_inbox_dirs() -> list:
+    """Every local NouGenMsg inbox directory. Env-first (NOUGEN_MSG_INBOX_DIRS, os.pathsep-separated);
+    fallback is the set the bus writes to on this machine (claude, agy, gemini, codex)."""
+    raw = os.environ.get("NOUGEN_MSG_INBOX_DIRS", "").strip()
+    if raw:
+        dirs = [d.strip() for d in raw.split(os.pathsep) if d.strip()]
+    else:
+        home = os.path.expanduser("~")
+        dirs = [os.path.join(home, ".nougen", "claude_inbox"), os.path.join(home, ".nougen", "agy_inbox"),
+                os.path.join(home, ".gemini", "config", "inbox"), os.path.join(home, ".codex", "inbox")]
+    return [d for d in dirs if os.path.isdir(d)]
+
+
+def _nougenmsg_read(target: Optional[str] = None, limit: int = 10) -> dict:
+    """Newest-first NouGenMsg envelopes across all local inbox dirs, deduped by message identity,
+    optionally filtered to a target/destination substring. Read-only."""
+    import glob as _glob, json as _json, time as _time
+    from datetime import datetime as _dt, timezone as _tz
+    limit = max(1, min(int(limit or 10), int(os.environ.get("NOUGEN_MSG_INBOX_MAX", "50"))))
+    want = (target or "").lstrip("@").strip().lower()
+    if want in ("", "all", "@all"):
+        want = ""
+    files = []
+    for d in _nougenmsg_inbox_dirs():
+        files.extend(_glob.glob(os.path.join(d, "*.json")))
+    files.sort(key=os.path.getmtime, reverse=True)
+    out, seen, scanned = [], set(), 0
+    for f in files:
+        if len(out) >= limit:
+            break
+        scanned += 1
+        try:
+            with open(f, "r", encoding="utf-8") as fh:
+                raw = _json.load(fh)
+        except Exception:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        ident = raw.get("message_id") or raw.get("id") or "|".join(str(raw.get(k, "")) for k in ("source", "sender", "text", "content", "timestamp"))
+        if ident in seen:
+            continue
+        seen.add(ident)
+        dest = str(raw.get("target") or raw.get("destination") or "all").lstrip("@").lower()
+        if want and want not in dest and dest not in want and dest != "all":
+            continue
+        sender = raw.get("sender") or raw.get("source") or "unknown"
+        sdict = sender if isinstance(sender, dict) else {}
+        ts = raw.get("timestamp") or os.path.getmtime(f)
+        try:
+            created = raw.get("created_utc") or _dt.fromtimestamp(float(ts), tz=_tz.utc).isoformat()
+        except Exception:
+            created = str(ts)
+        out.append({
+            "id": raw.get("message_id") or raw.get("id") or os.path.splitext(os.path.basename(f))[0],
+            "created_utc": created,
+            "origin_machine": sdict.get("node") or (sender if isinstance(sender, str) else "unknown"),
+            "origin_agent": sdict.get("agent") or raw.get("agent") or "unknown-agent",
+            "destination": dest,
+            "priority": raw.get("priority") or "normal",
+            "message_type": raw.get("type") or "live_message",
+            "body": raw.get("text") or raw.get("content") or raw.get("body") or "",
+            "correlation_id": raw.get("correlation_id") or raw.get("leg_id"),
+            "file": os.path.basename(f),
+        })
+    return {"complete": True, "node": NODE_NAME if "NODE_NAME" in globals() else os.environ.get("NOUGEN_NODE_NAME", "blade"),
+            "target": target or "all", "scanned": scanned, "returned": len(out), "messages": out}
+
+
+@node_mcp.tool()
+@_offloaded
+def nougenmsg_latest(limit: int = 10) -> dict:
+    """Read the newest inter-agent messages from the NouGenMsg bus on this node, newest first."""
+    return _nougenmsg_read(None, limit)
+
+
+@node_mcp.tool()
+@_offloaded
+def nougenmsg_inbox(target: Optional[str] = None, limit: int = 10) -> dict:
+    """Read NouGenMsg messages addressed to a specific agent, lane, node, or audience (e.g. @blade, claude-cli, antigravity)."""
+    return _nougenmsg_read(target, limit)
+
+
 # =========================================================================
 # 🚀 50-TOOL SOVEREIGN FLEET MCP SURFACE EXPANSION
 # =========================================================================
