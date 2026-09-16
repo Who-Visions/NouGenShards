@@ -224,3 +224,30 @@ def test_fact_snapshot_supersession_resolver():
     assert resolved.completeness_state == "complete"
     assert resolved.provenance_ids == ["shard_new"]
 
+
+def test_compile_retrieval_intent():
+    from nougen_shards.reconstruction import compile_retrieval_intent
+
+    intent = compile_retrieval_intent("what is the total ytd token usage across all machines")
+    assert intent.metric_namespace == "token_usage"
+    assert intent.scope == "fleet"
+    assert intent.temporal_period == "YTD"
+    assert intent.temporal_year == 2026
+    assert intent.canonical_key == "token_usage:fleet:YTD:2026"
+    assert set(intent.expected_machines) == {"blade1tb", "phoebus", "whoart"}
+
+
+def test_reciprocal_rank_fusion_deterministic():
+    from nougen_shards.reconstruction import reciprocal_rank_fusion
+
+    lanes = {
+        "lexical": [{"id": "doc_a", "score": 0.9}, {"id": "doc_b", "score": 0.8}],
+        "entity": [{"id": "doc_b", "score": 0.95}, {"id": "doc_c", "score": 0.7}],
+    }
+
+    fused = reciprocal_rank_fusion(lanes, k=60)
+    assert len(fused) == 3
+    # doc_b is rank 2 in lexical (1/(60+2)) and rank 1 in entity (1/(60+1)) -> highest total
+    assert fused[0]["id"] == "doc_b"
+
+
