@@ -608,7 +608,7 @@ class NouGenMsgBus:
             return ('fleet', 'all')
 
         known_nodes = {'blade', 'whoart', 'phoebus', 'local', 'fleet'}
-        known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'all'}
+        known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'agents', 'all'}
         # Model lanes carry the model in the agent slot: '@ollama:gemma4:31b-cloud'
         # -> ('local', 'ollama:gemma4:31b-cloud'); '@blade:openrouter:nvidia/x'
         # -> ('blade', 'openrouter:nvidia/x'). live_ping splits family from model.

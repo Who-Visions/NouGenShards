@@ -2033,7 +2033,8 @@ def get_parser():
 
     p_msg = subparsers.add_parser("msg", help="Live fleet IPC messaging & socket broadcast")
     p_msg.add_argument("message", nargs="?", default="", help="Message text to send")
-    p_msg.add_argument("--to", dest="target", default="all", help="Target node or agent")
+    p_msg.add_argument("--to", dest="target", default="all",
+                        help="Target node or agent family, e.g. fleet:agents")
     p_msg.add_argument("--peers", action="store_true", help="List reachable fleet peers")
     p_msg.add_argument("--dry-run", action="store_true",
                         help="Resolve the target and print what would be sent, without sending it")
