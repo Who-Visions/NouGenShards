@@ -2125,6 +2125,12 @@ def get_parser():
     p_cf = subparsers.add_parser("cf", help="Cloudflare Fleet Engine: deploy, secrets, D1, KV, R2, and Workers AI")
     p_cf.add_argument("cf_args", nargs=argparse.REMAINDER, help="Arguments passed to tools/wrangler_fleet.py")
 
+    # process supervisor & zombie killer
+    p_sweep = subparsers.add_parser("sweep", aliases=["zombies"], help="Dynamic process supervisor & zombie killer")
+    p_sweep.add_argument("--kill", "-k", "-Kill", action="store_true", help="Surgically terminate confirmed dead-parent zombies")
+    p_sweep.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_sweep.add_argument("--verbose", "-v", action="store_true", help="Show suspicious non-dev orphans")
+
     return parser
 
 
@@ -2343,6 +2349,17 @@ def cmd_cf(args):
     print(f"Unknown cf subcommand: {sub}.")
     print("Available subcommands:")
     print("  status | list | inspect | ping | deploy | secrets | secret-set | sync-secrets | ai | d1 | kv | r2")
+
+
+def cmd_sweep(args):
+    """Dynamic process supervisor and zombie killer."""
+    from . import zombie_killer
+    hunter = zombie_killer.ZombieHunter()
+    res = hunter.sweep(kill=getattr(args, "kill", False))
+    if getattr(args, "json", False):
+        print(json.dumps(res, indent=2))
+    else:
+        print(zombie_killer.ZombieHunter.render_report(res, verbose=getattr(args, "verbose", False)))
 
 
 def cmd_live(args):
@@ -3163,7 +3180,7 @@ def main():
         "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
         "transcribe": cmd_transcribe, "live": cmd_live, "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
-        "cf": cmd_cf
+        "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep
     }
     if args.command in cmds:
         cmds[args.command](args)
