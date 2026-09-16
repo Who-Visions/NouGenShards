@@ -5,24 +5,62 @@ Fetches papers and indexes them as memory shards.
 """
 
 import sys
+import os
 import json
+import logging
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 import socket
+from . import ollama_host
 from .core import capture
+
+log = logging.getLogger(__name__)
 
 # UTF-8 terminal protection
 if sys.platform == "win32":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
 
-def check_ollama_alive() -> bool:
-    """Check if the local Ollama instance is alive."""
+# Defaults only; NOUGEN_OLLAMA_PROBE_TIMEOUT_S, NOUGEN_OLLAMA_TAGS_TIMEOUT_S,
+# NOUGEN_OLLAMA_GENERATE_TIMEOUT_S, NOUGEN_ARXIV_API_URL and NOUGEN_ARXIV_TIMEOUT_S
+# override at call time. The ollama endpoint itself comes from ollama_host.
+_PROBE_TIMEOUT_S = 0.5
+_TAGS_TIMEOUT_S = 3.0
+_GENERATE_TIMEOUT_S = 90.0
+_ARXIV_TIMEOUT_S = 10.0
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
+
+
+def _env_float(name: str, default: float) -> float:
+    """Positive float from env, else a logged fallback to ``default``."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
     try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if value <= 0:
+        log.warning("Invalid %s value %r; falling back to %ss", name, raw, default)
+        return default
+    return value
+
+
+def _ollama_endpoint() -> tuple[str, int]:
+    """Host and port of the resolved ollama client URL."""
+    parsed = urllib.parse.urlsplit(ollama_host.resolve_ollama_url(log=False))
+    port = parsed.port or (443 if parsed.scheme == "https" else ollama_host.default_port())
+    return parsed.hostname or ollama_host.DEFAULT_CLIENT_HOST, port
+
+
+def check_ollama_alive() -> bool:
+    """Check if the resolved Ollama instance is alive."""
+    try:
+        host, port = _ollama_endpoint()
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.5)
-        s.connect(("127.0.0.1", 11434))
+        s.settimeout(_env_float("NOUGEN_OLLAMA_PROBE_TIMEOUT_S", _PROBE_TIMEOUT_S))
+        s.connect((host, port))
         s.close()
         return True
     except Exception:
@@ -36,8 +74,9 @@ def get_best_model() -> Optional[str]:
         return None
     try:
         from .models_client import find_best_model_from_list
-        req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=3) as r:
+        req = urllib.request.Request(ollama_host.api("/api/tags"), method="GET")
+        timeout = _env_float("NOUGEN_OLLAMA_TAGS_TIMEOUT_S", _TAGS_TIMEOUT_S)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             if r.getcode() == 200:
                 data = json.loads(r.read().decode("utf-8"))
                 models = [m["name"] for m in data.get("models", [])]
@@ -62,10 +101,11 @@ def query_local_llm(model: str, prompt: str) -> str:
         }
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            "http://127.0.0.1:11434/api/generate", data=body, method="POST"
+            ollama_host.api("/api/generate"), data=body, method="POST"
         )
         req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=90) as r:
+        timeout = _env_float("NOUGEN_OLLAMA_GENERATE_TIMEOUT_S", _GENERATE_TIMEOUT_S)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             if r.getcode() == 200:
                 res = json.loads(r.read().decode("utf-8"))
                 return res.get("response", "").strip()
@@ -99,11 +139,13 @@ def search_arxiv(query_str: str, max_results: int = 3) -> list:
     """Queries the arXiv API directly and returns parsed paper dictionaries."""
     print(f"[*] Querying arXiv API for: '{query_str}'...")
     safe_query = urllib.parse.quote(query_str)
-    url = f"https://export.arxiv.org/api/query?search_query={safe_query}&max_results={max_results}"
+    base = os.environ.get("NOUGEN_ARXIV_API_URL", "").strip() or ARXIV_API_URL
+    url = f"{base}?search_query={safe_query}&max_results={max_results}"
 
     try:
         req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=10) as r:
+        timeout = _env_float("NOUGEN_ARXIV_TIMEOUT_S", _ARXIV_TIMEOUT_S)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             if r.getcode() == 200:
                 xml_data = r.read()
                 root = ET.fromstring(xml_data)
