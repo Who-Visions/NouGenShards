@@ -214,3 +214,20 @@ def test_natural_language_aliases_resolve_same_snapshot_and_today_is_fresh(tmp_p
     )
     assert stale["status"] == "cannot_determine"
     assert stale["rejected"][0]["reason"] == "scope_mismatch:temporal_scope"
+
+
+def test_query_filters_scope_before_ambiguity_resolution(tmp_path):
+    index = CanonicalFactIndex(tmp_path / "facts.sqlite")
+    blade_only = snapshot(machines=("blade1tb",))
+    blade_only["canonical_key"] = "token_usage:blade:YTD:2026"
+    fleet = snapshot()
+    index.put(blade_only)
+    index.put(fleet)
+
+    result = index.resolve_query(
+        "all machine tokens ytd", expected_machines=["blade1tb", "phoebus", "whoart"],
+        expected_entities=["fleet", "token_usage"],
+    )
+    assert result["status"] == "complete"
+    assert result["snapshot"]["canonical_key"] == "token_usage:fleet:YTD:2026"
+    assert any(item["reason"] == "scope_mismatch:expected_machines" for item in result["rejected"])

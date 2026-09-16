@@ -327,31 +327,57 @@ class CanonicalFactIndex:
                     "candidates": [], "rejected": [], "coverage": {"complete": False},
                     "lanes_queried": ["canonical_fact_index:structured_query"], "failed_lanes": []}
 
-        top_score = ranked[0]["score"]
-        top_keys = {item["canonical_key"] for item in ranked if item["score"] == top_score}
-        if len(top_keys) != 1:
-            return {"status": "ambiguous", "query": query, "snapshot": None,
-                    "candidates": [{"canonical_key": item["canonical_key"],
-                                    "snapshot_id": item["snapshot_id"], "score": item["score"]}
-                                   for item in ranked],
-                    "rejected": [], "coverage": {"complete": False},
-                    "lanes_queried": ["canonical_fact_index:structured_query"], "failed_lanes": []}
-
-        canonical_key = next(iter(top_keys))
         if "today" in query_terms:
             local_today = (date.fromisoformat(as_of[:10]) if as_of else
                            datetime.now(ZoneInfo("America/New_York")).date())
             date_filter = local_today.isoformat()
         else:
             date_filter = as_of
-        result = self.resolve(
-            canonical_key, expected_machines=expected_machines,
-            expected_entities=expected_entities,
-            scope=scope,
-            temporal_scope={"as_of": date_filter} if "today" in query_terms else None,
-            as_of=date_filter if "today" in query_terms else as_of,
-        )
+
+        by_key = {}
+        for item in ranked:
+            current = by_key.get(item["canonical_key"])
+            if current is None or item["score"] > current["score"]:
+                by_key[item["canonical_key"]] = item
+        scoped = []
+        rejected = []
+        for key, item in by_key.items():
+            result = self.resolve(
+                key, expected_machines=expected_machines,
+                expected_entities=expected_entities, scope=scope,
+                temporal_scope={"as_of": date_filter} if "today" in query_terms else None,
+                as_of=date_filter if "today" in query_terms else as_of,
+            )
+            if result["status"] == "complete":
+                scoped.append({"key": key, "score": item["score"], "result": result})
+            else:
+                rejected.extend({**entry, "canonical_key": key} for entry in result.get("rejected", []))
+                if not result.get("rejected"):
+                    rejected.append({"canonical_key": key, "reason": result["status"]})
+
+        if not scoped:
+            return {"status": "cannot_determine", "query": query, "snapshot": None,
+                    "candidates": [{"canonical_key": key, "score": item["score"]}
+                                   for key, item in by_key.items()],
+                    "rejected": rejected, "coverage": {"complete": False},
+                    "lanes_queried": ["canonical_fact_index:structured_query", "canonical_fact_index"],
+                    "failed_lanes": []}
+        scoped.sort(key=lambda item: item["score"], reverse=True)
+        winning_score = scoped[0]["score"]
+        winners = [item for item in scoped if item["score"] == winning_score]
+        if len(winners) != 1:
+            return {"status": "ambiguous", "query": query, "snapshot": None,
+                    "candidates": [{"canonical_key": item["key"], "score": item["score"],
+                                    "snapshot_id": item["result"]["snapshot"]["snapshot_id"]}
+                                   for item in winners],
+                    "rejected": rejected, "coverage": {"complete": False},
+                    "lanes_queried": ["canonical_fact_index:structured_query", "canonical_fact_index"],
+                    "failed_lanes": []}
+
+        winner = winners[0]
+        result = winner["result"]
         result["query"] = query
-        result["query_match"] = {"canonical_key": canonical_key, "score": top_score}
+        result["query_match"] = {"canonical_key": winner["key"], "score": winner["score"]}
+        result["rejected"].extend(rejected)
         result["lanes_queried"] = ["canonical_fact_index:structured_query", "canonical_fact_index"]
         return result
