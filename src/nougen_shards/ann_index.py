@@ -22,6 +22,8 @@ import sqlite3
 import numpy as np
 
 DIM = int(os.environ.get("NOUGEN_EMBED_DIM", "768"))
+# Fallback wait for a build's read-only opens when NOUGEN_SQLITE_TIMEOUT_S is unset.
+BUILD_TIMEOUT_S = 30.0
 _CACHE = {}  # vault_str -> (matrix(np.memmap), labels list, dim) | None
 
 
@@ -33,7 +35,7 @@ def _paths(base):
 def build(vault=None) -> dict:
     """Read every embedding from the 9 DBs into one contiguous float32 matrix and
     persist it (+ a label->(db,id) sidecar). Returns a small report dict."""
-    from .core import GLOBAL_DIR, get_db_path, MAX_DB_COUNT
+    from .core import GLOBAL_DIR, get_db_path, MAX_DB_COUNT, sqlite_timeout_s
 
     base = vault if vault is not None else GLOBAL_DIR
     vecs = []
@@ -43,13 +45,16 @@ def build(vault=None) -> dict:
         if not os.path.exists(str(db)):
             continue
         # Read-only + busy timeout so a concurrent backfill/WAL writer can't fail
-        # the build; skip (don't crash on) a DB that still errors.
+        # the build; skip (don't crash on) a DB that still errors. The wait comes
+        # from NOUGEN_SQLITE_TIMEOUT_S (same knob as every other vault open), with
+        # a longer fallback than a single read because a build scans all 9 DBs.
+        timeout_s = sqlite_timeout_s(default=BUILD_TIMEOUT_S)
         try:
-            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=30.0)
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=timeout_s)
         except sqlite3.Error:
             continue
         try:
-            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute(f"PRAGMA busy_timeout={int(timeout_s * 1000)}")
             cur = conn.execute("SELECT id, embedding FROM shards WHERE embedding IS NOT NULL")
             for sid, blob in cur:
                 if not blob or (isinstance(blob, (bytes, bytearray)) and bytes(blob[:1]) == b"["):

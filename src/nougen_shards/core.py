@@ -227,23 +227,35 @@ def get_active_db_index() -> int:
 DEFAULT_SQLITE_TIMEOUT_S = 10.0
 
 
-def sqlite_timeout_s() -> float:
+def sqlite_timeout_s(default: float | None = None) -> float:
     """Seconds sqlite waits on a locked vault DB; NOUGEN_SQLITE_TIMEOUT_S overrides.
 
     Read at connect time so a busy fleet node can raise it without a restart.
     Anything that is not a positive finite number logs and uses the default.
+
+    `default` lets a caller that legitimately waits longer than a normal read
+    (a whole-vault scan behind a WAL writer, say) keep its own fallback while
+    still honouring the same env var; it must itself be a positive finite
+    number, or the module default stands.
     """
+    fallback = DEFAULT_SQLITE_TIMEOUT_S
+    if default is not None:
+        if math.isfinite(default) and default > 0:
+            fallback = float(default)
+        else:
+            logger.warning("sqlite_timeout_s(default=%r) is not a positive number; using %ss",
+                           default, DEFAULT_SQLITE_TIMEOUT_S)
     raw = os.environ.get("NOUGEN_SQLITE_TIMEOUT_S", "").strip()
     if not raw:
-        return DEFAULT_SQLITE_TIMEOUT_S
+        return fallback
     try:
         value = float(raw)
     except ValueError:
         value = math.nan
     if not math.isfinite(value) or value <= 0:
         logger.warning("NOUGEN_SQLITE_TIMEOUT_S=%r is not a positive number; using %ss",
-                       raw, DEFAULT_SQLITE_TIMEOUT_S)
-        return DEFAULT_SQLITE_TIMEOUT_S
+                       raw, fallback)
+        return fallback
     return value
 
 
