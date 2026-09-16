@@ -20,22 +20,25 @@ TARGET_SCRIPTS = [
     "kaedra_wake_daemon.py"
 ]
 
-def get_running_processes() -> List[Tuple[int, float, str]]:
-    """Returns list of (pid, start_time_epoch, command_str)."""
+def get_running_processes() -> List[Tuple[int, str]]:
+    """Returns list of (pid, command_str)."""
     procs = []
     try:
-        res = subprocess.run(["ps", "-eo", "pid,etime,command"], capture_output=True, text=True, check=True)
+        res = subprocess.run(["ps", "-eo", "pid,command"], capture_output=True, text=True, check=True)
         for line in res.stdout.strip().split("\n")[1:]:
-            parts = line.strip().split(None, 2)
-            if len(parts) == 3:
-                pid = int(parts[0])
-                cmd = parts[2]
-                procs.append((pid, cmd))
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2:
+                try:
+                    pid = int(parts[0])
+                    cmd = parts[1]
+                    procs.append((pid, cmd))
+                except ValueError:
+                    pass
     except Exception as e:
         print(f"Error fetching processes: {e}")
     return procs
 
-def reap_duplicates(dry_run: bool = False) -> Dict[str, List[int]]:
+def reap_duplicates(dry_run: bool = False, force: bool = True) -> Dict[str, List[int]]:
     """Identifies and terminates duplicate running instances of target scripts."""
     procs = get_running_processes()
     grouped: Dict[str, List[int]] = {}
@@ -61,8 +64,9 @@ def reap_duplicates(dry_run: bool = False) -> Dict[str, List[int]]:
                 else:
                     try:
                         print(f"  ⚡ Terminating duplicate PID {pid}...")
-                        os.kill(pid, signal.SIGTERM)
-                        time.sleep(0.1)
+                        sig = signal.SIGKILL if force else signal.SIGTERM
+                        os.kill(pid, sig)
+                        time.sleep(0.05)
                     except ProcessLookupError:
                         pass
                     except Exception as exc:
