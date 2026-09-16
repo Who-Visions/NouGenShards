@@ -1674,6 +1674,36 @@ def cmd_tenant(args):
     print("Save this token now; it is stored only as a SHA-256 hash and cannot be shown again.")
 
 
+def cmd_facts(args):
+    """Index and resolve structured canonical fact snapshots."""
+    from .canonical_facts import CanonicalFactIndex
+
+    index = CanonicalFactIndex(args.index, create=args.facts_action == "index")
+    if args.facts_action == "index":
+        try:
+            snapshot = json.loads(Path(args.input).read_text(encoding="utf-8"))
+            snapshot_id = index.put(snapshot)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(json.dumps({"status": "rejected", "error": str(exc)}), file=sys.stderr)
+            raise SystemExit(2) from exc
+        print(json.dumps({"status": "indexed", "snapshot_id": snapshot_id}, indent=2))
+        return
+
+    try:
+        scope = json.loads(args.scope) if args.scope else None
+        if scope is not None and not isinstance(scope, dict):
+            raise ValueError("--scope must be a JSON object")
+        receipt = index.resolve_query(
+            args.query, expected_machines=args.machine,
+            expected_entities=args.entity or None, scope=scope,
+            as_of=args.as_of,
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(json.dumps({"status": "rejected", "error": str(exc)}), file=sys.stderr)
+        raise SystemExit(2) from exc
+    print(json.dumps(receipt, indent=2, sort_keys=True))
+
+
 def get_parser():
 
 
@@ -2100,6 +2130,20 @@ def get_parser():
     p_destiny_evolve.add_argument("--since", default=None)
     p_destiny_evolve.add_argument("--limit", type=int, default=50)
     p_destiny_evolve.add_argument("--json", action="store_true")
+
+    # Structured canonical fact snapshots (separate from free-form shard recall).
+    p_facts = subparsers.add_parser("facts", help="Index/resolve structured canonical fact snapshots")
+    facts_sub = p_facts.add_subparsers(dest="facts_action", required=True)
+    p_facts_index = facts_sub.add_parser("index", help="Append a validated FACT_SNAPSHOT JSON file")
+    p_facts_index.add_argument("--index", required=True, help="Explicit SQLite fact-index path")
+    p_facts_index.add_argument("--input", required=True, help="Snapshot JSON file")
+    p_facts_resolve = facts_sub.add_parser("resolve", help="Resolve newest complete snapshot from natural language")
+    p_facts_resolve.add_argument("query")
+    p_facts_resolve.add_argument("--index", required=True, help="SQLite fact-index path")
+    p_facts_resolve.add_argument("--machine", action="append", required=True, help="Expected machine; repeat for fleet scope")
+    p_facts_resolve.add_argument("--entity", action="append", default=[], help="Expected canonical entity; repeat as needed")
+    p_facts_resolve.add_argument("--scope", help="Additional exact JSON scope filter")
+    p_facts_resolve.add_argument("--as-of", help="Reference date/time; 'today' queries require an exact date match")
 
     # wake daemon
     p_wake = subparsers.add_parser("wake", help="Run NouGen reactive idle wake daemon for fleet IPC messaging")
@@ -3228,7 +3272,8 @@ def main():
         "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
         "transcribe": cmd_transcribe, "live": cmd_live, "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
-        "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep, "open": cmd_open
+        "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep, "open": cmd_open,
+        "facts": cmd_facts,
     }
     if args.command in cmds:
         cmds[args.command](args)
