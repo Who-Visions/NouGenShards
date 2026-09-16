@@ -56,6 +56,14 @@ def cli(monkeypatch):
     monkeypatch.setattr(module, "NouGenMsgBus", StubBus)
     monkeypatch.setattr(module, "get_current_node", lambda: "whoart")
 
+    # dispatch_node tries a direct HTTP post before it ever reaches the bus, so
+    # the StubBus above cannot see a remote send on a machine where the peer
+    # answers: the parse assertions read an empty dict, and the test emits real
+    # fleet traffic. Report the http route unreachable so dispatch falls back to
+    # the stubbed emit_node, the way it does on an isolated runner.
+    monkeypatch.setattr(module, "send_direct_http",
+                        lambda *a, **k: (None, "http route stubbed out in tests"))
+
     def run(argv):
         sent.clear()
         monkeypatch.setattr("sys.argv", ["nougenmsg.py"] + argv)
