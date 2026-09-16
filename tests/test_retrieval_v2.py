@@ -1,13 +1,23 @@
 from datetime import datetime, timezone
+import json
 
 import pytest
 
 from nougen_shards.retrieval_v2 import (
     ArtifactCandidate,
     CanonicalEntity,
+    QueryCoverage,
+    QueryFlags,
+    QueryReceipt,
+    QueryState,
+    RecoveryAction,
+    append_state_transition,
     compile_intent,
     derive_followups,
+    index_tags,
+    next_recovery_action,
     normalize_query,
+    parse_tag,
     reciprocal_rank_fusion,
 )
 
@@ -98,3 +108,114 @@ def test_followups_are_stable_deduplicated_and_bounded():
     assert derive_followups(missing_entities=["a"], budget=0) == []
     with pytest.raises(ValueError, match="budget"):
         derive_followups(budget=-1)
+
+
+@pytest.mark.parametrize(("changes", "expected"), [
+    (
+        {"completeness": "PARTIAL", "flags": QueryFlags(missing_expected_nodes=True, retryable=True)},
+        RecoveryAction.CONTINUE_FEDERATION,
+    ),
+    (
+        {"conflict": "CONFLICTED", "flags": QueryFlags(traceable=True)},
+        RecoveryAction.TRACE_PROVENANCE,
+    ),
+    (
+        {"freshness": "STALE", "canonical_key": "tokens:fleet:YTD:2026"},
+        RecoveryAction.REFRESH_CANONICAL,
+    ),
+    (
+        {"retrieval": "NO_HIT", "coverage": QueryCoverage(False)},
+        RecoveryAction.EXPAND_RETRIEVAL,
+    ),
+    (
+        {"retrieval": "NO_HIT", "coverage": QueryCoverage(True), "completeness": "COMPLETE",
+         "flags": QueryFlags(deeper_search_available=True)},
+        RecoveryAction.DRIFT_RECURSE,
+    ),
+    ({"pagination": "LOOP_DETECTED"}, RecoveryAction.REPARTITION_QUERY),
+    (
+        {"availability": "TIMEOUT", "flags": QueryFlags(failover_available=True)},
+        RecoveryAction.FAILOVER,
+    ),
+    (
+        {"truth_quality": "ESTIMATED", "flags": QueryFlags(exact_source_available=True)},
+        RecoveryAction.RECONCILE,
+    ),
+    ({"canonicality": "SUPERSEDED"}, RecoveryAction.FOLLOW_SUPERSESSION),
+    ({}, RecoveryAction.STOP_WITH_EXPLICIT_STATE),
+])
+def test_recovery_action_is_deterministic_by_axis(changes, expected):
+    assert next_recovery_action(QueryState(**changes)) is expected
+
+
+def test_recovery_precedence_prefers_missing_federated_nodes():
+    state = QueryState(
+        completeness="PARTIAL",
+        conflict="CONFLICTED",
+        flags=QueryFlags(missing_expected_nodes=True, retryable=True, traceable=True),
+    )
+    assert next_recovery_action(state) is RecoveryAction.CONTINUE_FEDERATION
+
+
+@pytest.mark.parametrize("changes", [
+    {"completeness": "PARTIAL", "coverage": QueryCoverage(True)},
+    {"completeness": "COMPLETE", "coverage": QueryCoverage(False)},
+    {"truth_quality": "UNKNOWN", "flags": QueryFlags(exact=True)},
+    {"freshness": "EXPIRED", "flags": QueryFlags(current=True)},
+    {"coverage": QueryCoverage(True, ("blade",), ())},
+    {"reason_codes": ("missing_nodes",)},
+])
+def test_contradictory_state_is_rejected(changes):
+    with pytest.raises(ValueError):
+        QueryState(**changes)
+
+
+def test_receipt_exposes_full_state_and_recovery_action():
+    state = QueryState(
+        status="DEGRADED",
+        completeness="PARTIAL",
+        coverage=QueryCoverage(False, ("blade", "phoebus"), ("phoebus",)),
+        flags=QueryFlags(missing_expected_nodes=True, retryable=True),
+        reason_codes=("federation.missing_expected_nodes",),
+    )
+    receipt = QueryReceipt("PARTIAL", ("phoebus",), ("blade",), state=state)
+    result = receipt.to_dict()
+    assert result["state"]["completeness"] == "PARTIAL"
+    assert result["state"]["coverage"]["missing_nodes"] == ["blade"]
+    assert result["state"]["recovery"] == "CONTINUE_FEDERATION"
+    assert result["state"]["reason_codes"] == ("federation.missing_expected_nodes",)
+
+
+def test_namespaced_tag_parser_preserves_legacy_tags():
+    assert parse_tag("machine:phoebus").namespace == "machine"
+    assert parse_tag("machine:phoebus").value == "phoebus"
+    assert parse_tag("legacy-tag").namespace is None
+    assert index_tags(["machine:phoebus", "machine:blade", "legacy-tag", "machine:phoebus"]) == {
+        "free": ("legacy-tag",),
+        "machine": ("blade", "phoebus"),
+    }
+
+
+def test_state_transitions_append_as_jsonl(tmp_path):
+    path = tmp_path / "history.jsonl"
+    partial = QueryState(
+        status="DEGRADED",
+        completeness="PARTIAL",
+        coverage=QueryCoverage(False, ("phoebus", "blade"), ("phoebus",)),
+        flags=QueryFlags(missing_expected_nodes=True, retryable=True),
+    )
+    complete = QueryState(
+        status="SUCCESS",
+        completeness="COMPLETE",
+        coverage=QueryCoverage(True, ("phoebus", "blade"), ("phoebus", "blade")),
+    )
+    append_state_transition(path, partial, recorded_at="2026-09-16T23:00:00Z")
+    append_state_transition(
+        path, complete, previous=partial, outcome="federation resumed", recorded_at="2026-09-16T23:00:01Z"
+    )
+    lines = path.read_text(encoding="utf-8").splitlines()
+    events = [json.loads(line) for line in lines]
+    assert len(events) == 2
+    assert events[0]["recovery"] == "CONTINUE_FEDERATION"
+    assert events[1]["previous"]["completeness"] == "PARTIAL"
+    assert events[1]["current"]["completeness"] == "COMPLETE"
