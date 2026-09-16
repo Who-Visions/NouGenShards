@@ -194,3 +194,33 @@ def test_sweep_trigger_default_low_confidence(monkeypatch, vaults, cfg):
     assert should_sweep(miss, cfg) is True
     monkeypatch.setenv("NOUGEN_RECON_SWEEP_TRIGGER", "never")
     assert should_sweep(miss, cfg) is False
+
+
+def test_fact_snapshot_supersession_resolver():
+    from nougen_shards.reconstruction import resolve_fact_snapshot, FactSnapshot
+
+    records = [
+        {
+            "canonical_key": "token_usage:fleet:YTD:2026",
+            "as_of": "2026-09-14T00:00:00Z",
+            "machine_values": {"blade1tb": 34.513, "phoebus": 10.0, "whoart": 10.981},
+            "total": 55.494,
+            "provenance_ids": ["shard_old"],
+        },
+        {
+            "canonical_key": "token_usage:fleet:YTD:2026",
+            "as_of": "2026-09-16T18:00:00Z",
+            "machine_values": {"blade1tb": 40.0, "phoebus": 12.5, "whoart": 15.0},
+            "total": 67.5,
+            "provenance_ids": ["shard_new"],
+        }
+    ]
+
+    resolved = resolve_fact_snapshot(records, "token_usage:fleet:YTD:2026")
+    assert resolved is not None
+    assert isinstance(resolved, FactSnapshot)
+    assert resolved.as_of == "2026-09-16T18:00:00Z"
+    assert resolved.total == 67.5
+    assert resolved.completeness_state == "complete"
+    assert resolved.provenance_ids == ["shard_new"]
+
