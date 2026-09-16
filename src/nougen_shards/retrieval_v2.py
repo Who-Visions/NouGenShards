@@ -92,6 +92,7 @@ class QueryState:
     """Machine-readable result state; prose is supplementary, never a control input."""
 
     status: str = "NOT_RUN"
+    observation: str = "UNOBSERVED"
     completeness: str = "UNKNOWN"
     conflict: str = "UNKNOWN"
     freshness: str = "UNKNOWN"
@@ -108,12 +109,26 @@ class QueryState:
 
     def __post_init__(self) -> None:
         _check_enum("status", self.status, {"NOT_RUN", "SUCCESS", "DEGRADED", "FAILURE"})
-        _check_enum("completeness", self.completeness, {"COMPLETE", "PARTIAL", "UNKNOWN"})
+        _check_enum("observation", self.observation, {
+            "OBSERVED", "UNOBSERVED", "UNREAD", "DEFERRED", "SKIPPED", "DISCOVERED",
+            "REQUESTED", "FETCHED", "PARSED", "INDEXED",
+        })
+        _check_enum("completeness", self.completeness, {
+            "COMPLETE", "PARTIAL", "EMPTY", "TRUNCATED", "PAGINATED", "EXHAUSTED",
+            "INDETERMINATE", "COVERAGE_UNKNOWN", "UNKNOWN",
+        })
         _check_enum("conflict", self.conflict, {"CLEAR", "CONFLICTED", "UNKNOWN"})
-        _check_enum("freshness", self.freshness, {"CURRENT", "STALE", "EXPIRED", "UNKNOWN"})
+        _check_enum("freshness", self.freshness, {
+            "LIVE", "CURRENT", "FRESH", "AGING", "STALE", "EXPIRED", "SUPERSEDED",
+            "FUTURE_DATED", "LATE_ARRIVING", "UNKNOWN",
+        })
         _check_enum("retrieval", self.retrieval, {"HIT", "NO_HIT", "ERROR", "NOT_RUN"})
         _check_enum("pagination", self.pagination, {"COMPLETE", "CONTINUING", "STALLED", "LOOP_DETECTED", "NOT_APPLICABLE"})
-        _check_enum("availability", self.availability, {"AVAILABLE", "TIMEOUT", "UNAVAILABLE", "UNKNOWN"})
+        _check_enum("availability", self.availability, {
+            "AVAILABLE", "UNAVAILABLE", "UNKNOWN", "UNREACHABLE", "DEGRADED", "INTERMITTENT",
+            "TIMEOUT", "RATE_LIMITED", "AUTH_FAILED", "PERMISSION_DENIED", "CIRCUIT_OPEN",
+            "MAINTENANCE",
+        })
         _check_enum("truth_quality", self.truth_quality, {"EXACT", "ESTIMATED", "UNKNOWN"})
         _check_enum("canonicality", self.canonicality, {"CURRENT", "SUPERSEDED", "UNKNOWN"})
         if self.coverage.complete and self.completeness == "PARTIAL":
@@ -122,7 +137,7 @@ class QueryState:
             raise ValueError("COMPLETE completeness requires complete coverage")
         if self.flags.exact is True and self.truth_quality != "EXACT":
             raise ValueError("exact flag requires truth_quality=EXACT")
-        if self.flags.current is True and self.freshness in {"EXPIRED", "STALE"}:
+        if self.flags.current is True and self.freshness in {"EXPIRED", "STALE", "FUTURE_DATED"}:
             raise ValueError("current flag conflicts with stale or expired freshness")
         if self.coverage.complete and self.coverage.missing_nodes:
             raise ValueError("complete coverage cannot have missing expected nodes")

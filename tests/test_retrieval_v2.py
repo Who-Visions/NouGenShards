@@ -157,6 +157,17 @@ def test_recovery_precedence_prefers_missing_federated_nodes():
     assert next_recovery_action(state) is RecoveryAction.CONTINUE_FEDERATION
 
 
+@pytest.mark.parametrize("state", [
+    QueryState(availability="AUTH_FAILED"),
+    QueryState(availability="CIRCUIT_OPEN"),
+    QueryState(observation="INDEXED"),
+    QueryState(completeness="TRUNCATED"),
+    QueryState(freshness="LATE_ARRIVING"),
+])
+def test_state_axes_accept_architecture_lock_values(state):
+    assert isinstance(state, QueryState)
+
+
 @pytest.mark.parametrize("changes", [
     {"completeness": "PARTIAL", "coverage": QueryCoverage(True)},
     {"completeness": "COMPLETE", "coverage": QueryCoverage(False)},
