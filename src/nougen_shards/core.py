@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import re
+import socket
 import sqlite3
 import threading as _threading
 import time
@@ -450,6 +451,12 @@ def init_db(index: int = 1):  # noqa: C901
 
         try:
             cursor.execute("ALTER TABLE shards ADD COLUMN enc INTEGER DEFAULT 0;")
+        except sqlite3.OperationalError:
+            pass
+
+        # Machine provenance (schema v3): stamps which node (hostname) wrote the shard.
+        try:
+            cursor.execute("ALTER TABLE shards ADD COLUMN machine TEXT DEFAULT '';")
         except sqlite3.OperationalError:
             pass
 
@@ -1195,10 +1202,10 @@ def capture(event_type: str, title: str, content: str,
                 init_db(target_idx)
                 conn = get_connection(target_idx)
                 cursor = conn.execute("""
-                    INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, source_uri, utility_score, learned_utc, valid_until, last_verified)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, source_uri, utility_score, learned_utc, valid_until, last_verified, machine)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, source_uri_value, utility_score,
-                      datetime.now(timezone.utc).isoformat(timespec="seconds"), valid_until_value, verified_now))
+                      datetime.now(timezone.utc).isoformat(timespec="seconds"), valid_until_value, verified_now, socket.gethostname()))
                 conn.commit()
 
                 # Log CREATED event

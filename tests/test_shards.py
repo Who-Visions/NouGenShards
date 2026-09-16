@@ -432,3 +432,19 @@ def test_mark_verified_moves_window(setup_test_env):
         conn.close()
     assert until.startswith("2099-12-31")
     assert c.mark_verified(999999, res["db_index"]) is False
+
+
+def test_capture_stamps_machine_hostname(setup_test_env):
+    """Verify capture() stamps the local machine hostname on the shard row."""
+    import socket
+    res = shards.capture("note", "Machine Test", "Testing machine provenance")
+    assert res.captured is True
+    
+    conn = shards.get_connection(res.db_index)
+    try:
+        row = conn.execute("SELECT machine FROM shards WHERE id = ?", (res.shard_id,)).fetchone()
+        assert row is not None
+        assert row[0] == socket.gethostname()
+    finally:
+        conn.close()
+

@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Callable, List
 
 # Bump this when adding a migration. Stored per-DB in PRAGMA user_version.
-TARGET_SCHEMA_VERSION = 2
+TARGET_SCHEMA_VERSION = 3
 
 # Indexes skipped because a DB lacks their columns. Reported, not hidden.
 SKIPPED_INDEXES: List[str] = []
@@ -166,9 +166,42 @@ def _apply_v2(conn) -> None:
     SKIPPED_INDEXES.extend(_create_indexes(conn, _SHARD_INDEXES_V2))
 
 
+# v3 -- machine provenance: stamps which fleet node (hostname) originated each
+# shard. Existing rows default to '' (empty); the backfill script stamps them
+# with the node's hostname after the migration runs. New shards written by
+# capture() are stamped at insert time automatically.
+_SHARD_COLUMNS_V3 = [
+    ("machine", "TEXT DEFAULT ''"),
+]
+
+_SHARD_INDEXES_V3 = [
+    ("idx_shards_machine", "CREATE INDEX IF NOT EXISTS idx_shards_machine ON shards (machine)"),
+]
+
+
+def _plan_v3(conn) -> List[str]:
+    if not _table_exists(conn, "shards"):
+        return ["CREATE TABLE shards (full base schema)"]
+    ops = _ensure_columns(conn, "shards", _SHARD_COLUMNS_V3)
+    have_idx = _indexes(conn, "shards")
+    for name, _ddl in _SHARD_INDEXES_V3:
+        if name not in have_idx:
+            ops.append(f"CREATE INDEX {name}")
+    return ops
+
+
+def _apply_v3(conn) -> None:
+    have = _columns(conn, "shards")
+    for col, ddl in _SHARD_COLUMNS_V3:
+        if col not in have:
+            conn.execute(f"ALTER TABLE shards ADD COLUMN {col} {ddl}")
+    SKIPPED_INDEXES.extend(_create_indexes(conn, _SHARD_INDEXES_V3))
+
+
 MIGRATIONS: List[Migration] = [
     Migration(1, "baseline-columns-indexes-versioning", _plan_v1, _apply_v1),
     Migration(2, "sensitivity-classification-for-encrypted-shards", _plan_v2, _apply_v2),
+    Migration(3, "machine-provenance-column", _plan_v3, _apply_v3),
 ]
 
 
