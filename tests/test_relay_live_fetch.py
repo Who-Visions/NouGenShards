@@ -60,3 +60,35 @@ def test_fetch_reports_timeout_when_retries_exhausted(rl, monkeypatch, tmp_path)
 
     monkeypatch.setattr(rl, "_git", always_hang)
     assert rl.fetch(tmp_path) == "git error TimeoutExpired"
+
+
+def test_git_timeout_kills_child_tree_before_raising(rl, monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh")
+
+    class HangingGit:
+        pid = 4321
+        returncode = None
+
+        def communicate(self, timeout):
+            if not calls:
+                calls.append(("communicate", timeout))
+                raise subprocess.TimeoutExpired("git fetch", timeout)
+            calls.append(("drained", timeout))
+            return "", ""
+
+        def kill(self):
+            calls.append(("kill", self.pid))
+
+    monkeypatch.setattr(rl.subprocess, "Popen", lambda *a, **kw: HangingGit())
+    monkeypatch.setattr(rl.os, "name", "nt")
+    monkeypatch.setattr(rl.shutil, "which", lambda name: r"C:\Windows\System32\taskkill.exe")
+    monkeypatch.setattr(rl.subprocess, "run", lambda cmd, **kw: calls.append(("tree-kill", cmd)))
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        rl._git(tmp_path, "fetch", timeout=2)
+
+    assert calls[0] == ("communicate", 2)
+    assert calls[1][0] == "tree-kill"
+    assert calls[1][1][-4:] == ["/PID", "4321", "/T", "/F"]
+    assert calls[2][0] == "drained"
