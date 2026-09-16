@@ -366,7 +366,7 @@ def destiny_readiness(destiny: dict, *, first_action: Optional[str] = None,
     env = environment or {}
     checklist = {
         "decide": bool(destiny.get("goal")) and bool(destiny.get("verification")),
-        "commit": any(l.get("kind") == "agent" for l in links),
+        "commit": any(link.get("kind") == "agent" for link in links),
         "act": bool(first_action),
         "focus": destiny.get("status") in {"active", "dormant"} and not destiny.get("superseded_by"),
         "environment": (all(str(v).upper() == "GREEN" for v in env.values()) if env else None),
