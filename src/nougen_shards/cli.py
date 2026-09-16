@@ -3190,7 +3190,35 @@ def main():
     if sys.argv[1] == "open":
         cmd_open(argparse.Namespace(command="open", open_args=sys.argv[2:]))
         return
+
     parser = get_parser()
+
+    # Known subcommands list
+    known_cmds = {
+        "init", "add", "get", "search", "assure", "chat",
+        "auth", "mark", "status", "ctx", "config", "connect", "hook", "ingest",
+        "hi", "bye", "hijack", "db", "node", "stats", "router",
+        "doctor", "brain", "dream", "evolve", "dashboard", "handoff", "usage",
+        "tenant", "relay", "pr", "tree", "tube", "arxiv",
+        "viz", "msg", "evidence", "transcribe", "live", "tunnel", "destiny", "wake", "wispr", "studio",
+        "cf", "sweep", "zombies", "open"
+    }
+
+    # Dynamic second-reflex: If first argument is not a flag (-h, --version, etc) and not a known subcommand,
+    # automatically interpret `nougen <query>` as `nougen search "<query>"`
+    if sys.argv[1] not in known_cmds and not sys.argv[1].startswith("-"):
+        query_str = " ".join(sys.argv[1:])
+        cmd_search(argparse.Namespace(
+            command="search",
+            query=query_str,
+            semantic=False,
+            provider=None,
+            json=False,
+            domain=None,
+            dual=True
+        ))
+        return
+
     args = parser.parse_args()
     cmds = {
         "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
