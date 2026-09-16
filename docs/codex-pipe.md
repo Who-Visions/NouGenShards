@@ -45,7 +45,7 @@ envelope establishes receiver-side arrival only when its sender, target, thread,
 and marker all match.
 
 ```sh
-python tools/codex_roundtrip_audit.py \
+python3 tools/codex_roundtrip_audit.py \
   --marker 'UNIQUE-ROUNDTRIP-MARKER' \
   --thread '<intended Codex thread UUID>' \
   --agy-transcript "$HOME/.gemini/antigravity/brain/<agy-session>/.system_generated/logs/transcript_full.jsonl"
