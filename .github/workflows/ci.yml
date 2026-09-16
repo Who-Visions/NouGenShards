@@ -92,3 +92,11 @@ jobs:
         # Shell-expanded single-level glob (test files are flat in dist/test/),
         # avoiding node's version-dependent "**" glob support.
         run: node --test dist/test/*.test.js
+      - name: Install desktop UI dependencies
+        working-directory: .
+        run: npm ci --ignore-scripts
+      - name: Type-check desktop UI
+        # The root tsconfig.json covers ui/src, which the ts/ build never sees.
+        # Reuses the compiler ts/ just installed so the version lives in one place.
+        working-directory: .
+        run: ts/node_modules/.bin/tsc --noEmit -p tsconfig.json
