@@ -225,7 +225,7 @@ starlette==1.6.0
     #   gradio
     #   mcp
     #   sse-starlette
-tomlkit==0.14.0
+tomlkit==0.15.1
     # via gradio
 tqdm==4.68.3
     # via
