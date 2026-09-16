@@ -91,6 +91,75 @@ def resolve_fact_snapshot(records: Sequence[dict], canonical_key: str,
     )
 
 
+@dataclass
+class RetrievalIntent:
+    normalized_query: str
+    canonical_key: Optional[str]
+    metric_namespace: str
+    temporal_period: Optional[str]
+    temporal_year: Optional[int]
+    scope: str
+    expected_machines: List[str]
+    entities: List[str]
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def compile_retrieval_intent(query: str, now_year: int = 2026,
+                             expected_machines: Optional[Sequence[str]] = None) -> RetrievalIntent:
+    """Phase 1 Deterministic Typed Query Compiler for Retrieval Engine v2 (ZANGIEF 720).
+    
+    Parses intent, metric namespace, scope, and canonical key deterministically.
+    """
+    n = query.lower().strip()
+    expected = list(expected_machines or ["blade1tb", "phoebus", "whoart"])
+    
+    metric = "unknown"
+    if any(term in n for term in ("token", "tokens", "usage", "ytd")):
+        metric = "token_usage"
+    
+    scope = "fleet" if any(term in n for term in ("all-machine", "all machine", "fleet", "three-machine", "blade phoebus whoart")) else "local"
+    
+    year = now_year if any(term in n for term in ("ytd", "this year", str(now_year))) else None
+    period = "YTD" if "ytd" in n or "this year" in n else None
+    
+    key = None
+    if metric != "unknown" and period and year:
+        key = f"{metric}:{scope}:{period}:{year}"
+        
+    entities = [m for m in expected if m in n]
+    
+    return RetrievalIntent(
+        normalized_query=n,
+        canonical_key=key,
+        metric_namespace=metric,
+        temporal_period=period,
+        temporal_year=year,
+        scope=scope,
+        expected_machines=expected if scope == "fleet" else (entities or ["blade1tb"]),
+        entities=entities,
+    )
+
+
+def reciprocal_rank_fusion(lanes: Dict[str, List[dict]], k: int = 60) -> List[dict]:
+    """Phase 4 Reciprocal Rank Fusion (RRF) algorithm.
+    
+    Combines ranked candidate lists across hybrid lanes deterministically using RRF k=60.
+    """
+    scores: Dict[str, float] = {}
+    cand_map: Dict[str, dict] = {}
+    
+    for lane_name in sorted(lanes.keys()):
+        for rank, c in enumerate(lanes[lane_name], start=1):
+            cid = c.get("id") or c.get("key") or str(c)
+            cand_map[cid] = c
+            scores[cid] = scores.get(cid, 0.0) + (1.0 / (k + rank))
+            
+    sorted_ids = sorted(scores.keys(), key=lambda cid: (-scores[cid], cid))
+    return [cand_map[cid] for cid in sorted_ids]
+
+
 _DEFAULT_ANGLES = "verbatim,keyword,alias,time_window,association,relay"
 _DEFAULT_WEIGHTS = {"lexical": 0.45, "entity": 0.30, "temporal": 0.15, "state": 0.10, "kind": 0.10}
 _STATE_FACTOR = {"live": 1.0, "superseded": 0.3, "retracted": 0.0}
