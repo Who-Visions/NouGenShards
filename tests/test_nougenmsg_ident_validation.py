@@ -65,6 +65,30 @@ def test_legitimate_identifiers_pass_validation(value):
     assert NouGenMsgBus._SAFE_IDENT.fullmatch(value), value
 
 
+def test_fleet_agents_destination_keeps_the_agent_only_family():
+    assert NouGenMsgBus.parse_destination("fleet:agents") == ("fleet", "agents")
+
+
+def test_agent_only_family_does_not_call_model_lanes(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(AgentPinger, "ping_claude",
+                        lambda *args, **kwargs: calls.append("claude") or {"status": "saved"})
+    monkeypatch.setattr(AgentPinger, "ping_antigravity",
+                        lambda *args, **kwargs: calls.append("antigravity") or {"status": "saved"})
+    monkeypatch.setattr(AgentPinger, "ping_codex",
+                        lambda *args, **kwargs: calls.append("codex") or {"status": "saved"})
+    monkeypatch.setattr(AgentPinger, "ping_ollama",
+                        lambda *args, **kwargs: calls.append("ollama") or {"status": "called"})
+    monkeypatch.setattr(AgentPinger, "ping_openrouter",
+                        lambda *args, **kwargs: calls.append("openrouter") or {"status": "called"})
+
+    result = NouGenMsgBus.live_ping(target="agents", text="bounded agent broadcast")
+
+    assert set(result) == {"claude_pipes", "antigravity", "codex"}
+    assert calls == ["claude", "antigravity", "codex"]
+
+
 def test_remote_ollama_payload_is_stdin_not_remote_shell(monkeypatch):
     """Prompt and model must never be interpolated into the ssh command."""
     calls = []
