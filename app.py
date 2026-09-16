@@ -31,7 +31,7 @@ if os.environ.get("SPACE_ID"):
     os.environ["NOUGEN_HOME"] = "/data"
     os.environ["NOUGEN_VAULT_DIR"] = "/data/.vault"
 
-from nougen_shards import bind_probe, core, history, locator, machine, mcp_oauth, tenants
+from nougen_shards import bind_probe, core, history, mcp_oauth, tenants
 from nougen_shards.federation import federated_retrieve
 from nougen_shards import fd_budget
 from nougen_shards.brain_scan import scan_environment
@@ -251,17 +251,9 @@ def mark_utility(shard_id: int, worked: bool, db_index: int | None = None) -> di
 @_offloaded
 def node_status() -> dict:
     """Node health: shard count and storage mode."""
-    from nougen_shards.brain_scan import redaction as _redaction
-    from nougen_shards import locator, machine
-    current_origin = locator.current_node()
     return {"status": "ignited",
-            "node": current_origin,
-            "origin": current_origin,
-            "machine": machine.host_label(),
             "total_shards": _total_shards(),
-            "storage": os.environ.get("NOUGEN_HOME", "default"),
-            "redaction_patterns": len(_redaction.SECRET_PATTERNS),
-            "redaction_fingerprint": _redaction.pattern_fingerprint()}
+            "storage": os.environ.get("NOUGEN_HOME", "default")}
 
 
 def _window_search(query: str = "", since: Optional[str] = None,
@@ -484,14 +476,11 @@ def substrate_coverage() -> dict:
             # reach, and a caller comparing total_shards against the month
             # histogram must be able to see why they disagree.
             "malformed_timestamps": malformed,
-            "coverage_scope": "LOCAL_VAULT_COVERAGE",
+            # Cache key carries the active vault: a bare "substrate" key is
+            # module-level state shared across tenants, so it would serve one
+            # tenant's counts and DB detail to another.
             "grid": _cached(f"substrate:{core.active_vault_dir()}", _substrate_coverage),
             "vault": str(core.active_vault_dir()),
-            "vault_grid": {
-                "vaults_expected": 3,
-                "peer_vaults": ["blade", "phoebus", "whoart"],
-                "parity_standard": "3_VAULT_SYMMETRIC",
-            },
             # Federated read-through extent (decision 16729): "not found" must
             # be distinguishable from "not mounted" at the federation layer.
             # Cached: enumerating 40+ stores' row counts costs ~3.5s live
@@ -813,34 +802,6 @@ def _start_recall_warmup() -> None:
     _threading.Thread(target=_run, name="nougen-recall-warmup", daemon=True).start()
 
 
-def _start_boot_quarantine(then=None) -> None:
-    """Heal the grid on a daemon thread, then run `then` (the recall warm-up).
-
-    The quick_check pass is O(vault size). It used to run inline in _lifespan,
-    before the node binds its port: on WhoArt (9/14/2026, 6.9 GB grid, ~44 MB/s)
-    it held the node unbound for 7+ minutes and read 15 GB before it was killed,
-    so whoart-vault answered nothing. Off the critical path the node binds in
-    seconds. Ordering is kept where it matters: the warm-up still starts only
-    after the heal. A request that lands on a not-yet-healed DB is covered by
-    the per-DB scan guards, the same fallback core.quarantine_malformed_dbs
-    documents for a file it cannot rename."""
-    import threading as _threading
-
-    def _run():
-        started = time.perf_counter()
-        try:
-            for q in core.quarantine_malformed_dbs():
-                logger.warning("boot quarantine: grid DB %(index)s -> %(moved_to)s "
-                               "(%(reason)s)", q)
-            logger.info("boot quarantine pass done in %.1fs", time.perf_counter() - started)
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.warning("boot quarantine skipped: %s: %s", type(exc).__name__, exc)
-        if then is not None:
-            then()
-
-    _threading.Thread(target=_run, name="nougen-boot-quarantine", daemon=True).start()
-
-
 @contextlib.asynccontextmanager
 async def _lifespan(_app):
     # Descriptor headroom FIRST: launchd starts this process with a soft
@@ -850,10 +811,14 @@ async def _lifespan(_app):
     # misses its deadline on every query (phoebus, 2026-09-04). The process may
     # raise its own soft limit, so it does - before the warm-up opens anything.
     fd_budget.ensure_fd_headroom()
-    # Heal the grid (malformed DB files renamed aside and recreated empty; gated by
-    # NOUGEN_QUARANTINE_MALFORMED_ON_BOOT), then warm the recall cache: both on a
-    # daemon thread so the node binds its port now, not after an O(vault) scan.
-    _start_boot_quarantine(then=_start_recall_warmup)
+    _start_recall_warmup()
+    # Heal the grid before anything scans it: malformed DB files are renamed
+    # aside (kept for forensics) and recreated empty, so healthy indices and
+    # their rows survive instead of a whole-volume wipe. Gated by
+    # NOUGEN_QUARANTINE_MALFORMED_ON_BOOT; see core.quarantine_malformed_dbs.
+    for q in core.quarantine_malformed_dbs():
+        logger.warning("boot quarantine: grid DB %(index)s -> %(moved_to)s "
+                       "(%(reason)s)", q)
     _seed_upstreams()
     # The streamable-HTTP session manager needs a running task group.
     async with node_mcp.session_manager.run():
@@ -1005,13 +970,9 @@ async def verify_token(
                               shard_gateway_token_dash, x_shard_gateway_token, token)
 
 
-async def tenant_vault_context(
-    tenant: tenants.Tenant = Depends(verify_token),
-    x_nougen_lane: Optional[str] = Header(None, alias="X-NouGen-Lane"),
-):
+async def tenant_vault_context(tenant: tenants.Tenant = Depends(verify_token)):
     """Hold the request's ContextVar binding through the complete handler."""
-    lane = x_nougen_lane or tenant.lane or "default"
-    tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id, lane=lane)
+    tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
     try:
         yield tenant
     finally:
@@ -1083,7 +1044,6 @@ def _substrate_coverage() -> dict:
         reason = "local grid is incomplete and no read-through upstream is configured"
 
     return {
-        "coverage_scope": "LOCAL_VAULT_COVERAGE",
         "complete": complete,
         "databases_expected": expected,
         "databases_mounted": len(mounted),
@@ -1114,40 +1074,8 @@ def _total_shards() -> int:
     return _substrate_coverage()["shards"]
 
 
-def _vault_journal_mode() -> str:
-    """Journal mode this process would open vault DBs with."""
-    try:
-        from nougen_shards.core import get_vault_journal_mode
-        return get_vault_journal_mode()
-    except Exception:                       # pragma: no cover - health must not 500
-        # Pre-#253 code has no such function. That absence is itself the
-        # answer: the node cannot configure journal mode at all, so it is on
-        # WAL unconditionally.
-        return "unavailable (pre-#253)"
-
-
-def _redaction_count() -> int:
-    """Pattern count of the redaction module THIS process imported."""
-    try:
-        from nougen_shards.brain_scan import redaction
-        return len(redaction.SECRET_PATTERNS)
-    except Exception:                       # pragma: no cover - health must not 500
-        return -1
-
-
-def _redaction_fingerprint() -> str:
-    try:
-        from nougen_shards.brain_scan import redaction
-        return redaction.pattern_fingerprint()
-    except Exception:                       # pragma: no cover
-        return "unavailable"
-
-
 @app.get("/health")
-async def health(
-    x_ngs_token: str = Header(None),
-    x_nougen_lane: Optional[str] = Header(None, alias="X-NouGen-Lane"),
-):
+async def health(x_ngs_token: str = Header(None)):
     """Generic readiness when open; tenant-local substrate detail when authed.
 
     async def on purpose (2026-09-01). Every heavy endpoint here (/search,
@@ -1190,32 +1118,14 @@ async def health(
             "to unauthenticated callers"
         )
 
-    current_origin = locator.current_node()
     result = {
         "status": "ignited",
-        "node": current_origin,
-        "origin": current_origin,
-        "machine": machine.host_label(),
         "deploy_sha": deploy_sha,
         "storage": os.environ.get("NOUGEN_HOME", "default"),
         "persistent_storage": persistent,
         "node_token_configured": node_token_ok,
         "tenant_registry_configured": registry_configured,
         "hud_auth_configured": hud_auth_ok,
-        # Which redaction code this node is ACTUALLY RUNNING. Not which
-        # commit is on main -- see pattern_fingerprint's docstring. Count and
-        # fingerprint only; the module path is deployment topology and stays
-        # off the public view.
-        "redaction_patterns": _redaction_count(),
-        "redaction_fingerprint": _redaction_fingerprint(),
-        # Which SQLite journal mode this node's vault ACTUALLY uses. #253 made
-        # this configurable because forcing WAL on object-storage mounts causes
-        # corruption and spurious quarantines -- but configurable is not the
-        # same as configured, and the default is still WAL. Publishing it is
-        # what makes "is this node on a safe mode for its mount?" a measurement
-        # rather than an inference; #255 was narrowed to a network-backed
-        # volume, and the last question nobody could answer was this one.
-        "vault_journal_mode": _vault_journal_mode(),
         "api_docs_public": _serve_docs and _network_exposed,
         "public_ready": auth_configured and hud_auth_ok,
         "warnings": warnings,
@@ -1226,44 +1136,26 @@ async def health(
     if not x_ngs_token:
         return result
     return await run_in_threadpool(
-        _health_authed, result, warnings, persistent, x_ngs_token, x_nougen_lane)
+        _health_authed, result, warnings, persistent, x_ngs_token)
 
 
 def _health_authed(result: dict, warnings: list, persistent: bool,
-                   x_ngs_token: str, x_nougen_lane: Optional[str] = None) -> dict:
+                   x_ngs_token: str) -> dict:
     """Vault-touching half of /health; runs in the threadpool by design.
 
     `warnings` is the same list `result["warnings"]` points at, so appends
     here still land in the response -- same aliasing the inline code relied on.
     """
     tenant = _verify_token_sync(x_ngs_token)
-    lane = x_nougen_lane or tenant.lane or "default"
-    context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id, lane=lane)
+    context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
     try:
         # Vault-keyed so the cache cannot hand one tenant another's coverage.
         coverage = _cached(f"substrate:{tenant.vault_dir}", _substrate_coverage)
     finally:
         core.reset_active_vault(context_tokens)
     result.update({
-        "node": locator.current_node(),
-        "origin": locator.current_node(),
-        "machine": machine.host_label(),
         "tenant_id": tenant.tenant_id,
-        "tenant_lane": lane,
         "total_shards": coverage["shards"],
-        "coverage_scope": "LOCAL_VAULT_COVERAGE",
-        "db_grid": {
-            "scope": "LOCAL_VAULT_COVERAGE",
-            "databases_mounted": coverage["databases_mounted"],
-            "databases_expected": coverage["databases_expected"],
-            "complete": coverage["complete"],
-            "shards": coverage["shards"],
-        },
-        "vault_grid": {
-            "vaults_expected": 3,
-            "peer_vaults": ["blade", "phoebus", "whoart"],
-            "parity_standard": "3_VAULT_SYMMETRIC",
-        },
         "substrate": coverage,
     })
     if not coverage["complete"] and not coverage["read_through"]:
@@ -1291,12 +1183,6 @@ class SearchRequest(BaseModel):
     # a bare "2026-03" is a whole month, "2026-03-14" a whole day.
     since: Optional[str] = None
     until: Optional[str] = None
-
-
-class RecallRequest(BaseModel):
-    query: str
-    limit: int = 10
-    scope: Optional[str] = "local"
 
 
 class CaptureRequest(BaseModel):
@@ -1497,92 +1383,6 @@ def search(req: SearchRequest, response: Response,
     return payload
 
 
-@app.get("/v1/health/local")
-async def local_health():
-    """Local vault health check for 3-vault federation peers."""
-    from nougen_shards.federation.models import VaultId
-    machine_id = os.environ.get("NOUGEN_MACHINE_ID", "local")
-    vault_raw = os.environ.get("NOUGEN_VAULT_ID", "whoart").lower()
-    instance_id = os.environ.get("NOUGEN_INSTANCE_ID", f"{machine_id}-default")
-    try:
-        vid = VaultId(vault_raw)
-    except ValueError:
-        vid = VaultId.WHOART
-
-    coverage = _substrate_coverage()
-    db_present = coverage.get("databases_mounted", 0)
-    db_expected = coverage.get("databases_expected", 9)
-    healthy = db_present == db_expected
-
-    return {
-        "healthy": healthy,
-        "current": True,
-        "vault_id": vid.value,
-        "machine_id": machine_id,
-        "instance_id": instance_id,
-        "db_count": db_present,
-        "db_expected": db_expected,
-        "shard_count": coverage.get("shards", 0),
-        "newest_timestamp": coverage.get("span", {}).get("latest"),
-    }
-
-
-@app.get("/v1/health/fleet")
-async def fleet_health_endpoint(
-    x_nougen_correlation_id: Optional[str] = Header(None, alias="X-NouGen-Correlation-ID"),
-    _tenant: tenants.Tenant = Depends(tenant_vault_context),
-):
-    """Fleet-wide 3-vault symmetric health check."""
-    from dataclasses import asdict
-    from nougen_shards.federation.config import load_vault_peers
-    from nougen_shards.federation.client import FederationClient
-    from nougen_shards.federation.service import FederationService
-
-    token = NODE_TOKEN or ""
-    peers = load_vault_peers()
-    client = FederationClient(token=token)
-    service = FederationService(peers=peers, client=client)
-    result = await service.health(x_nougen_correlation_id)
-    return asdict(result)
-
-
-@app.post("/v1/recall")
-async def recall_endpoint(
-    body: RecallRequest,
-    response: Response,
-    x_nougen_federated_hop: Optional[str] = Header(None, alias="X-NouGen-Federated-Hop"),
-    x_nougen_correlation_id: Optional[str] = Header(None, alias="X-NouGen-Correlation-ID"),
-    _tenant: tenants.Tenant = Depends(tenant_vault_context),
-):
-    """3-vault loop-preventing recall endpoint."""
-    from dataclasses import asdict
-    from nougen_shards.federation.config import load_vault_peers
-    from nougen_shards.federation.client import FederationClient
-    from nougen_shards.federation.service import FederationService
-
-    local_only = (
-        body.scope == "local"
-        or x_nougen_federated_hop in {"1", "true", "local-only"}
-    )
-
-    if local_only:
-        search_req = SearchRequest(query=body.query, limit=body.limit)
-        results = search(search_req, response, _tenant)
-        return {
-            "query": body.query,
-            "hits": results,
-            "federation_fanout_count": 0,
-            "scope": "local",
-        }
-
-    token = NODE_TOKEN or ""
-    peers = load_vault_peers()
-    client = FederationClient(token=token)
-    service = FederationService(peers=peers, client=client)
-    result = await service.recall(body.query, body.limit, x_nougen_correlation_id)
-    return asdict(result)
-
-
 @app.post("/capture")
 def capture_shard(req: CaptureRequest,
                   _tenant: tenants.Tenant = Depends(tenant_vault_context)):
@@ -1673,10 +1473,8 @@ def sync_push(req: SyncPushRequest,
         # ALREADY-DURABLE one. snapshot_mode.forward_capture read that counter
         # and reported captured:false over writes that had landed. A skip is
         # not a failure unless we say which kind it is.
-        # `ok or {}` threw away reason/durable on every falsy CaptureResult,
-        # which is exactly the case a caller needs them for.
-        entry = {"reason": ok.get("reason") if isinstance(ok, dict) else None,
-                 "durable": bool(ok) or bool(ok.get("durable"))
+        entry = {"reason": (ok or {}).get("reason") if isinstance(ok, dict) else None,
+                 "durable": bool(ok) or bool((ok or {}).get("durable"))
                  if isinstance(ok, dict) else bool(ok)}
         if isinstance(ok, dict):
             # A fresh write reports shard_id/db_index; a dedup hit reports
@@ -1691,20 +1489,6 @@ def sync_push(req: SyncPushRequest,
                 if ok.get(src) is not None and entry.get(dst) is None:
                     entry[dst] = ok[src]
                     entry["id_is_preexisting"] = True
-        if isinstance(ok, dict) and ok.get("reason") == "error":
-            # A write FAULT (locked grid DB, every DB quarantined, exhausted
-            # targets) is not a malformed row. Tallying it under
-            # skipped_malformed made forward_capture tell every lane its
-            # payload arrived without title/content, while blade's log said
-            # "database is locked" (2026-09-08, three lanes lost captures).
-            err_msg = ok.get("error") or "capture failed"
-            entry["error"] = err_msg
-            results.append(entry)
-            errored += 1
-            errors.append({"title": (s.get("title") or "")[:80], "error": err_msg})
-            logger.error("sync_push: shard %r not written: %s",
-                         (s.get("title") or "")[:80], err_msg)
-            continue
         results.append(entry)
         if ok:
             count += 1
@@ -2006,8 +1790,7 @@ class XoahPressureRequest(BaseModel):
 
 
 class XoahThroneRequest(BaseModel):
-    desired_effect: Optional[str] = None
-    effect: Optional[str] = None
+    desired_effect: str
     target_coordinate: Optional[str] = None
     target_branch: Optional[str] = None
     acting_stage: int = 9
@@ -2015,11 +1798,6 @@ class XoahThroneRequest(BaseModel):
     retcon_intent: bool = False
     actor: Optional[str] = None
     should_register: bool = True
-
-    @property
-    def resolved_effect(self) -> str:
-        return (self.desired_effect or self.effect or "").strip()
-
 
 
 class DestiniesRequest(BaseModel):
@@ -2038,28 +1816,13 @@ def xoah_self_endpoint(
     return self_archive.state_at(req.coordinate)
 
 
-def _xoah_guarded(stage: str, fn, *args, **kwargs):
-    """Run one Xoah REST stage; on failure log the traceback and answer 503 with a
-    structured body instead of a bare 500 with nothing in the node log. #379 gave
-    /xoah/ask this; /xoah/pressure and /xoah/throne were still unguarded (fleet
-    verification, 9/14/2026 10:58 PM EDT: xoah_pressure threw a bare 500)."""
-    try:
-        return fn(*args, **kwargs)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.exception("xoah/%s failed", stage)
-        from fastapi.responses import JSONResponse  # pylint: disable=import-outside-toplevel
-        return JSONResponse(status_code=503, content={
-            "verdict": "UNAVAILABLE", "errors": [f"{stage}: {type(exc).__name__}"]})
-
-
 @app.post("/xoah/pressure")
 def xoah_pressure_endpoint(
     req: XoahPressureRequest,
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
     """Evaluate candidate story addition against canon pressure."""
-    return _xoah_guarded(
-        "pressure", canon_pressure.pressure,
+    return canon_pressure.pressure(
         req.candidate,
         coordinate=req.coordinate,
         register=req.should_register,
@@ -2073,9 +1836,8 @@ def xoah_throne_endpoint(
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
     """Run proposed intervention through Shadow Queen Throne governance gates."""
-    return _xoah_guarded(
-        "throne", throne_governance.evaluate,
-        req.resolved_effect,
+    return throne_governance.evaluate(
+        req.desired_effect,
         target_coordinate=req.target_coordinate,
         target_branch=req.target_branch,
         acting_stage=req.acting_stage,
@@ -2084,69 +1846,6 @@ def xoah_throne_endpoint(
         actor=req.actor,
         register=req.should_register
     )
-
-
-class XoahRelationshipRequest(BaseModel):
-    entity: str
-    coordinate: Optional[str] = None
-
-
-class XoahPrecedentsRequest(BaseModel):
-    topic: str
-    coordinate: Optional[str] = None
-    limit: int = 3
-
-
-class XoahConservationRequest(BaseModel):
-    removed_event_id: str
-
-
-class XoahUnwrittenRequest(BaseModel):
-    query: str
-
-
-# REST twins of the Black Glass MCP tools below: the fleet connector worker
-# reaches the node over REST (/xoah/self, /xoah/pressure), not MCP.
-@app.post("/xoah/relationship")
-def xoah_relationship_endpoint(req: XoahRelationshipRequest,
-                               _tenant: tenants.Tenant = Depends(tenant_vault_context)):
-    """Relationship state with an entity at a story coordinate."""
-    return xoah_relationship.fn(req.entity, req.coordinate)
-
-
-@app.post("/xoah/then_vs_now")
-def xoah_then_vs_now_endpoint(req: XoahSelfRequest,
-                              _tenant: tenants.Tenant = Depends(tenant_vault_context)):
-    """Then-vs-now knowledge at a story coordinate."""
-    return xoah_then_vs_now.fn(req.coordinate)
-
-
-@app.post("/xoah/precedents")
-def xoah_precedents_endpoint(req: XoahPrecedentsRequest,
-                             _tenant: tenants.Tenant = Depends(tenant_vault_context)):
-    """Nearest pressure precedents on a topic at or before a coordinate."""
-    return xoah_precedents.fn(req.topic, req.coordinate, req.limit)
-
-
-@app.post("/xoah/conservation")
-def xoah_conservation_endpoint(req: XoahConservationRequest,
-                               _tenant: tenants.Tenant = Depends(tenant_vault_context)):
-    """Conservation cost of removing a formative event."""
-    return xoah_conservation.fn(req.removed_event_id)
-
-
-@app.post("/xoah/unwritten")
-def xoah_unwritten_endpoint(req: XoahUnwrittenRequest,
-                            _tenant: tenants.Tenant = Depends(tenant_vault_context)):
-    """Whether a slot is unwritten (UNWRITTEN_SELF) or authored."""
-    return xoah_unwritten.fn(req.query)
-
-
-@app.post("/xoah/active_scars")
-def xoah_active_scars_endpoint(req: XoahSelfRequest,
-                               _tenant: tenants.Tenant = Depends(tenant_vault_context)):
-    """Wounds active at a story coordinate."""
-    return xoah_active_scars.fn(req.coordinate)
 
 
 @app.get("/destinies")
@@ -2172,47 +1871,23 @@ async def xoah_ask_endpoint(
     req: XoahAskRequest,
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
-    """Shadow Xoah conversational entry point: reasons through self-model and pressure.
-
-    Each stage is guarded: a failure is logged with its traceback and returned
-    as an `errors` entry instead of a bare 500 with nothing in the node log.
-    The sync stages run in a worker thread (asyncio.to_thread copies the
-    tenant ContextVars) so grid reads never block the event loop."""
-    errors = []
-    eval_res: dict = {}
-    press_res: dict = {}
-    try:
-        eval_res = await asyncio.to_thread(throne_governance.evaluate, req.prompt, register=False)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.exception("xoah/ask: throne governance failed")
-        errors.append(f"governance: {type(exc).__name__}")
-    try:
-        press_res = await asyncio.to_thread(canon_pressure.pressure, req.prompt, register=False)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.exception("xoah/ask: canon pressure failed")
-        errors.append(f"pressure: {type(exc).__name__}")
+    """Shadow Xoah conversational entry point: reasons through self-model and pressure."""
+    eval_res = throne_governance.evaluate(req.prompt, register=False)
+    press_res = canon_pressure.pressure(req.prompt, register=False)
     system_ctx = (
         f"You are Shadow Xoah (Stage {eval_res.get('acting_stage', 9)}). "
         f"Governance Mode: {eval_res.get('mode', 'OBSERVE')}. "
         f"Intervention Type: {eval_res.get('intervention_type', 'SIMULATED_POSSIBILITY')}. "
-        f"Canon Verdict: {press_res.get('verdict') or press_res.get('primary') or 'UNKNOWN'}."
+        f"Canon Verdict: {press_res.get('primary', 'UNKNOWN')}."
     )
     rhea_prompt = f"{system_ctx}\n\nUser Question: {req.prompt}"
-    try:
-        resp = await _ask_rhea_bounded(rhea_prompt)
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.exception("xoah/ask: rhea failed")
-        resp = {"answer": None, "brain": "none"}
-        errors.append(f"rhea: {type(exc).__name__}")
-    out = {
+    resp = await _ask_rhea_bounded(rhea_prompt)
+    return {
         "answer": resp.get("answer"),
         "brain": resp.get("brain"),
         "governance": eval_res,
         "pressure": press_res
     }
-    if errors:
-        out["errors"] = errors
-    return out
 
 
 @node_mcp.tool()
@@ -2231,64 +1906,9 @@ def xoah_pressure(candidate: str, coordinate: Optional[str] = None, register: bo
 
 @node_mcp.tool()
 @_offloaded
-def xoah_throne(desired_effect: Optional[str] = None, effect: Optional[str] = None, target_coordinate: Optional[str] = None, target_branch: Optional[str] = None) -> dict:
+def xoah_throne(desired_effect: str, target_coordinate: Optional[str] = None, target_branch: Optional[str] = None) -> dict:
     """Run proposed intervention through Shadow Queen Throne governance gates."""
-    resolved = (desired_effect or effect or "").strip()
-    return throne_governance.evaluate(resolved, target_coordinate=target_coordinate, target_branch=target_branch)
-
-
-# Black Glass query surface over the Xoah self archive. Every answer carries its
-# layer (LIVED_TRUTH ... UNWRITTEN_SELF, or ARCHIVE_ABSENT when this node has no
-# archive file) and the provenance of the nodes it cites.
-@node_mcp.tool()
-@_offloaded
-def xoah_relationship(entity: str, coordinate: Optional[str] = None) -> dict:
-    """Relationship state with an entity at a story coordinate; love and trust are separate values."""
-    return self_archive.relationship_at(entity, coordinate)
-
-
-@node_mcp.tool()
-@_offloaded
-def xoah_then_vs_now(coordinate: Optional[str] = None) -> dict:
-    """What Xoah believed and knew then vs what is known now, without leaking terminal knowledge backward."""
-    return self_archive.then_vs_now(coordinate)
-
-
-@node_mcp.tool()
-@_offloaded
-def xoah_precedents(topic: str, coordinate: Optional[str] = None, limit: int = 3) -> dict:
-    """Nearest pressure precedents on a topic at or before a story coordinate."""
-    return {"coordinate": coordinate, "topic": topic,
-            "precedents": self_archive.nearest_precedents(coordinate, topic, limit=limit)}
-
-
-@node_mcp.tool()
-@_offloaded
-def xoah_conservation(removed_event_id: str) -> dict:
-    """Conservation cost of removing a formative event: the downstream wounds, biases and choices that lose their cause."""
-    return self_archive.conservation_check(removed_event_id)
-
-
-@node_mcp.tool()
-@_offloaded
-def xoah_unwritten(query: str) -> dict:
-    """Whether an episode/chapter/year slot is unwritten (UNWRITTEN_SELF) rather than fabricated."""
-    return self_archive.unwritten(query) or {"slot": query, "layer": "AUTHORED"}
-
-
-@node_mcp.tool()
-@_offloaded
-def xoah_active_scars(coordinate: Optional[str] = None) -> dict:
-    """Wounds active at a story coordinate."""
-    archive = self_archive.load_archive()
-    if archive.get("status") == self_archive.ARCHIVE_ABSENT:
-        return {"layer": self_archive.ARCHIVE_ABSENT, "path": archive.get("path"), "coordinate": coordinate}
-    year = self_archive.coordinate_year(archive, coordinate)
-    if year is None:
-        return {"layer": "UNWRITTEN_SELF", "error": f"coordinate {coordinate!r} not understood"}
-    return {"coordinate": coordinate, "year": year,
-            "active_scars": self_archive.active_scars(year, archive=archive)}
-
+    return throne_governance.evaluate(desired_effect, target_coordinate=target_coordinate, target_branch=target_branch)
 
 
 @node_mcp.tool()
@@ -2299,16 +1919,6 @@ def unfinished_destinies(status: Optional[str] = None, trigger: Optional[str] = 
 
 
 @node_mcp.tool()
-@_offloaded
-def nougen_translate_response(raw_response: str, mode: str = "human_first", audience: str = "dave", preserve_technical: bool = True) -> dict:
-    """Translate technical infrastructure status/diagnostics into plain human language."""
-    from nougen_shards.human_translation import translate_to_human
-    res = translate_to_human(raw_response, mode=mode, audience=audience, preserve_technical=preserve_technical)
-    return res.as_dict()
-
-
-
-@node_mcp.tool()
 async def ask_xoah(prompt: str) -> dict:
     """Ask Shadow Xoah (Stage 9 Traverser / Stage 10 Throne Sovereign)."""
     req = XoahAskRequest(prompt=prompt)
@@ -2316,7 +1926,7 @@ async def ask_xoah(prompt: str) -> dict:
 
 
 # --- Hardcade Quota Alert Ladder & Telemetry Governor ---
-from nougen_shards.quota_governor import QuotaGovernor, DenominatorProvenance
+from nougen_shards.quota_governor import QuotaGovernor, QuotaLevel, DenominatorProvenance, RoutingDirective
 
 _global_quota_governor = QuotaGovernor()
 
@@ -2416,509 +2026,6 @@ def evaluate_quota(
         "percent_used": alert.percent_used,
         "provenance": alert.provenance.value
     }
-
-
-def _msg_fanout_async() -> bool:
-    """Node tools fan out to peers in the background (see NouGenMsgBus.emit_fleet). Env-first."""
-    return os.environ.get("NOUGEN_MSG_FANOUT_ASYNC", "1").strip().lower() not in ("0", "false", "no", "off")
-
-
-@node_mcp.tool()
-@_offloaded
-def nougenmsg(message: str, target: str = "all", priority: str = "normal") -> dict:
-    """Send a live NouGenMsg IPC notification or baton to another fleet agent or node
-    (@blade, @whoart, @phoebus, @antigravity, @codex, @all, or model lanes)."""
-    # emit_fleet lives on NouGenMsgBus. AgentPinger has no such method, so the
-    # old call raised AttributeError on every node (tests/test_node_nougenmsg_tool.py).
-    from nougen_shards.nougenmsg import NouGenMsgBus
-    clean_target = target.lstrip("@").lower() if target else "all"
-    res = NouGenMsgBus.emit_fleet(text=message, target=clean_target, background=_msg_fanout_async())
-    return {
-        "status": "delivered",
-        "target": target,
-        "priority": priority,
-        "results": res
-    }
-
-
-def _nougenmsg_inbox_dirs() -> list:
-    """Every local NouGenMsg inbox directory. Env-first (NOUGEN_MSG_INBOX_DIRS, os.pathsep-separated);
-    fallback is the set the bus writes to on this machine (claude, agy, gemini, codex)."""
-    raw = os.environ.get("NOUGEN_MSG_INBOX_DIRS", "").strip()
-    if raw:
-        dirs = [d.strip() for d in raw.split(os.pathsep) if d.strip()]
-    else:
-        home = os.path.expanduser("~")
-        dirs = [os.path.join(home, ".nougen", "claude_inbox"), os.path.join(home, ".nougen", "agy_inbox"),
-                os.path.join(home, ".gemini", "config", "inbox"), os.path.join(home, ".codex", "inbox")]
-    return [d for d in dirs if os.path.isdir(d)]
-
-
-def _nougenmsg_read(target: Optional[str] = None, limit: int = 10) -> dict:
-    """Newest-first NouGenMsg envelopes across all local inbox dirs, deduped by message identity,
-    optionally filtered to a target/destination substring. Read-only."""
-    import glob as _glob, json as _json, time as _time
-    from datetime import datetime as _dt, timezone as _tz
-    limit = max(1, min(int(limit or 10), int(os.environ.get("NOUGEN_MSG_INBOX_MAX", "50"))))
-    want = (target or "").lstrip("@").strip().lower()
-    if want in ("", "all", "@all"):
-        want = ""
-    files = []
-    for d in _nougenmsg_inbox_dirs():
-        files.extend(_glob.glob(os.path.join(d, "*.json")))
-    files.sort(key=os.path.getmtime, reverse=True)
-    out, seen, scanned = [], set(), 0
-    for f in files:
-        if len(out) >= limit:
-            break
-        scanned += 1
-        try:
-            with open(f, "r", encoding="utf-8") as fh:
-                raw = _json.load(fh)
-        except Exception:
-            continue
-        if not isinstance(raw, dict):
-            continue
-        ident = raw.get("message_id") or raw.get("id") or "|".join(str(raw.get(k, "")) for k in ("source", "sender", "text", "content", "timestamp"))
-        if ident in seen:
-            continue
-        seen.add(ident)
-        dest = str(raw.get("target") or raw.get("destination") or "all").lstrip("@").lower()
-        if want and want not in dest and dest not in want and dest != "all":
-            continue
-        sender = raw.get("sender") or raw.get("source") or "unknown"
-        sdict = sender if isinstance(sender, dict) else {}
-        ts = raw.get("timestamp") or os.path.getmtime(f)
-        try:
-            created = raw.get("created_utc") or _dt.fromtimestamp(float(ts), tz=_tz.utc).isoformat()
-        except Exception:
-            created = str(ts)
-        out.append({
-            "id": raw.get("message_id") or raw.get("id") or os.path.splitext(os.path.basename(f))[0],
-            "created_utc": created,
-            "origin_machine": sdict.get("node") or (sender if isinstance(sender, str) else "unknown"),
-            "origin_agent": sdict.get("agent") or raw.get("agent") or "unknown-agent",
-            "destination": dest,
-            "priority": raw.get("priority") or "normal",
-            "message_type": raw.get("type") or "live_message",
-            "body": raw.get("text") or raw.get("content") or raw.get("body") or "",
-            "correlation_id": raw.get("correlation_id") or raw.get("leg_id"),
-            "file": os.path.basename(f),
-        })
-    return {"complete": True, "node": NODE_NAME if "NODE_NAME" in globals() else os.environ.get("NOUGEN_NODE_NAME", "blade"),
-            "target": target or "all", "scanned": scanned, "returned": len(out), "messages": out}
-
-
-@node_mcp.tool()
-@_offloaded
-def nougenmsg_latest(limit: int = 10) -> dict:
-    """Read the newest inter-agent messages from the NouGenMsg bus on this node, newest first."""
-    return _nougenmsg_read(None, limit)
-
-
-@node_mcp.tool()
-@_offloaded
-def nougenmsg_inbox(target: Optional[str] = None, limit: int = 10) -> dict:
-    """Read NouGenMsg messages addressed to a specific agent, lane, node, or audience (e.g. @blade, claude-cli, antigravity)."""
-    return _nougenmsg_read(target, limit)
-
-
-# =========================================================================
-# 🚀 50-TOOL SOVEREIGN FLEET MCP SURFACE EXPANSION
-# =========================================================================
-
-# --- 1. Graph, Entity & Temporal Retrieval -------------------------------
-
-@node_mcp.tool()
-@_offloaded
-def recall_graph(query: str, depth: int = 1, limit: int = 10) -> dict:
-    """Graph memory recall: entity mentions and multi-hop relation walk across shards."""
-    try:
-        from nougen_shards import graph, vector_graph
-        try:
-            return vector_graph.search_graph(query, depth=depth, limit=limit)
-        except Exception:
-            return graph.query_subgraph(query, depth=depth, limit=limit)
-    except Exception as e:
-        return {"error": str(e), "query": query, "nodes": [], "edges": []}
-
-
-@node_mcp.tool()
-@_offloaded
-def temporal_query(
-    query: str = "",
-    as_of: Optional[str] = None,
-    event_after: Optional[str] = None,
-    event_before: Optional[str] = None,
-    limit: int = 10
-) -> list:
-    """Bi-temporal memory query: retrieve shards as they existed as_of a timestamp or bounded by event era."""
-    return _window_search(query=query, since=event_after, until=event_before or as_of, limit=limit)
-
-
-# --- 2. Prospective Memory & Destiny Store (destiny.py) ------------------
-
-@node_mcp.tool()
-@_offloaded
-def create_destiny(
-    title: str,
-    goal: str,
-    branch: Optional[str] = None,
-    trigger: Optional[str] = None,
-    required: Optional[str] = None,
-    forbidden: Optional[str] = None,
-    variance: Optional[str] = None,
-    verification: Optional[str] = None,
-    status: str = "dormant",
-    actor: Optional[str] = None
-) -> dict:
-    """Register a new prospective goal / terminal destiny in destinies.db."""
-    from nougen_shards import destiny as _destiny
-    return _destiny.create_destiny(
-        title=title,
-        goal=goal,
-        branch=branch,
-        trigger=trigger,
-        required=required,
-        forbidden=forbidden,
-        variance=variance,
-        verification=verification,
-        status=status,
-        actor=actor
-    )
-
-
-@node_mcp.tool()
-@_offloaded
-def get_destiny(destiny_id: int) -> dict:
-    """Inspect prospective destiny status, linked evidence shards, and branches."""
-    from nougen_shards import destiny as _destiny
-    return _destiny.get_destiny(destiny_id)
-
-
-@node_mcp.tool()
-@_offloaded
-def update_destiny(
-    destiny_id: int,
-    status: str,
-    actor: Optional[str] = None,
-    evidence: Optional[str] = None
-) -> dict:
-    """Update prospective destiny status (dormant, active, fulfilled, fumbled, abandoned)."""
-    from nougen_shards import destiny as _destiny
-    return _destiny.update_status(destiny_id, status=status, actor=actor, evidence=evidence)
-
-
-@node_mcp.tool()
-@_offloaded
-def link_destiny(
-    destiny_id: int,
-    kind: str,
-    ref: str,
-    role: str = "evidence",
-    note: Optional[str] = None
-) -> dict:
-    """Link an evidence shard, relay leg, or agent to a prospective destiny."""
-    from nougen_shards import destiny as _destiny
-    return _destiny.link(destiny_id, kind=kind, ref=ref, role=role, note=note)
-
-
-# --- 3. Fleet Mesh, Live Control Plane & Relay Coordination --------------
-
-@node_mcp.tool()
-@_offloaded
-def fleet_status() -> dict:
-    """Query live mesh connectivity, node health, and reach matrix across Phoebus, Blade, and WhoArt."""
-    from nougen_shards import live, node_state
-    try:
-        return {
-            "plane": live.get_live_control_plane().get_full_snapshot(),
-            "local_node": node_state.get_node_state("phoebus")
-        }
-    except Exception as e:
-        return {"status": "degraded", "error": str(e)}
-
-
-@node_mcp.tool()
-@_offloaded
-def fleet_send(message: str, target: str, priority: str = "high") -> dict:
-    """Direct point-to-point dispatch across fleet nodes via live socket or HTTP transport."""
-    from nougen_shards.nougenmsg import NouGenMsgBus  # emit_fleet is NouGenMsgBus's, not AgentPinger's
-    clean_target = target.lstrip("@").lower()
-    return NouGenMsgBus.emit_fleet(text=message, target=clean_target, background=_msg_fanout_async())
-
-
-@node_mcp.tool()
-@_offloaded
-def relay_open_legs(limit: int = 15) -> list:
-    """List open cross-node handoff legs from the NouGenRelay board."""
-    from pathlib import Path
-    handoffs_dir = Path.home() / ".nougen" / "relay" / ".handoffs"
-    if not handoffs_dir.exists():
-        return []
-    legs = []
-    for p in sorted(handoffs_dir.glob("*.md"), reverse=True)[:limit]:
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                content = f.read()
-                lines = [line.strip() for line in content.splitlines() if line.strip()]
-                goal = next((line for line in lines if line.startswith("**Goal**") or line.startswith("# ")), p.stem)
-                legs.append({"leg_id": p.stem, "goal": goal, "file": str(p)})
-        except Exception:
-            continue
-    return legs
-
-
-@node_mcp.tool()
-@_offloaded
-def relay_claim_leg(leg_id: str, claimed_by: str = "phoebus/antigravity") -> dict:
-    """Claim an open relay leg atomically to prevent duplicate swarm execution."""
-    from pathlib import Path
-    claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
-    claims_dir.mkdir(parents=True, exist_ok=True)
-    claim_path = claims_dir / f"{leg_id}__autonomous.json"
-    claim_data = {
-        "leg_id": leg_id,
-        "claimed_by": claimed_by,
-        "claimed_at": time.time(),
-        "status": "claimed"
-    }
-    with open(claim_path, "w", encoding="utf-8") as f:
-        json.dump(claim_data, f, indent=2)
-    return {"status": "claimed", "claim_file": str(claim_path), "claim": claim_data}
-
-
-@node_mcp.tool()
-@_offloaded
-def relay_create_leg(
-    goal: str,
-    target: str = "@all",
-    body: str = "",
-    branch: str = "main",
-    stack: str = "python"
-) -> dict:
-    """Create and publish a new coordination handoff leg on the NouGenRelay board."""
-    from pathlib import Path
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    leg_id = f"{stamp}__phoebus__antigravity"
-    handoffs_dir = Path.home() / ".nougen" / "relay" / ".handoffs"
-    handoffs_dir.mkdir(parents=True, exist_ok=True)
-    md_content = f"""# 🤝 Git Handoff — phoebus / antigravity
-
-**Goal**: {goal}
-**Target**: {target}
-**Branch**: `{branch}`
-**Stack**: {stack}
-**When**: {stamp}
-
----
-## Situation
-{body}
-
-## Done when
-Verified and acknowledged by target nodes.
-"""
-    leg_file = handoffs_dir / f"{leg_id}.md"
-    with open(leg_file, "w", encoding="utf-8") as f:
-        f.write(md_content)
-    return {"leg_id": leg_id, "file": str(leg_file), "status": "created"}
-
-
-@node_mcp.tool()
-@_offloaded
-def relay_ack_leg(
-    leg_id: str,
-    code_artifact: str,
-    test_result: str,
-    observer_node: str = "phoebus"
-) -> dict:
-    """Settle and acknowledge an open relay leg with mandatory Hardcade proof tuple."""
-    from pathlib import Path
-    claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
-    claims_dir.mkdir(parents=True, exist_ok=True)
-    ack_data = {
-        "leg_id": leg_id,
-        "status": "closed",
-        "closed_by": observer_node,
-        "closed_at": time.time(),
-        "proof_tuple": {
-            "code_artifact": code_artifact,
-            "test_result": test_result,
-            "observer_node": observer_node
-        }
-    }
-    ack_path = claims_dir / f"{leg_id}__ack.json"
-    with open(ack_path, "w", encoding="utf-8") as f:
-        json.dump(ack_data, f, indent=2)
-    return {"status": "closed", "proof": ack_data}
-
-
-@node_mcp.tool()
-@_offloaded
-def wake_daemon_status() -> dict:
-    """Inspect reactive wake daemon operational state, symmetric window, and noise filtering stats."""
-    from nougen_shards import wake_daemon
-    return wake_daemon.status()
-
-
-# --- 4. Voice Dictation, Media & Epistemic Assurance --------------------
-
-@node_mcp.tool()
-@_offloaded
-def wispr_latest() -> dict:
-    """Fetch the latest voice dictation transcript from local Wispr Flow SQLite DB."""
-    from nougen_shards import wispr
-    return wispr.get_latest_dictation()
-
-
-@node_mcp.tool()
-@_offloaded
-def wispr_history(limit: int = 10, query: Optional[str] = None) -> list:
-    """Query recent Wispr Flow voice dictation history."""
-    from nougen_shards import wispr
-    return wispr.list_dictations(limit=limit, query=query)
-
-
-@node_mcp.tool()
-@_offloaded
-def youtube_ingest(url: str, extract_chars: int = 2000, shard: bool = True) -> dict:
-    """Extract, clean, and auto-shard YouTube / media video transcripts without 3rd-party SaaS."""
-    from nougen_shards import tube
-    return tube.process_video(url=url, extract_chars=extract_chars, shard=shard)
-
-
-@node_mcp.tool()
-@_offloaded
-def arxiv_research(query: str, max_results: int = 5, auto_shard: bool = True) -> dict:
-    """Search arXiv papers and auto-capture research abstracts into the NouGen shard cluster."""
-    from nougen_shards import arxiv_core
-    return arxiv_core.search_and_shard(query=query, max_results=max_results, auto_shard=auto_shard)
-
-
-@node_mcp.tool()
-@_offloaded
-def evidence_assure(claim: str, source: str = "runtime", level: str = "measured") -> dict:
-    """Validate and label empirical claim through Iris evidence assurance standards."""
-    from nougen_shards import assurance
-    return assurance.label_claim(claim, source=source, level=level)
-
-
-# --- 5. Physical Studio Lighting, Tunnels & Compounding ------------------
-
-@node_mcp.tool()
-@_offloaded
-def studio_lighting(color: str = "green", target: str = "all") -> dict:
-    """Set physical studio lighting status reflection (Razer Chroma RGB & LIFX smart fixtures)."""
-    from nougen_shards import studio
-    return studio.set_studio_color(color=color, target=target)
-
-
-@node_mcp.tool()
-@_offloaded
-def tunnel_status() -> dict:
-    """Inspect active Ngrok TLS ingress edge tunnels for local MsgNode and Web HUD."""
-    from nougen_shards import tunnel
-    return tunnel.get_active_tunnels()
-
-
-@node_mcp.tool()
-@_offloaded
-def turn_compound(turns_summary: str, next_steps: str, utility: float = 0.95) -> dict:
-    """Compound multi-turn session trajectory into a permanent synthesis shard."""
-    from nougen_shards import turn_compounder
-    return turn_compounder.compound_trajectory(turns_summary, next_steps, utility=utility)
-
-
-# --- 6. PR Leases & Token Accounting -------------------------------------
-
-@node_mcp.tool()
-@_offloaded
-def pr_lease_status(repo: str = "who-visions/nougenshards") -> dict:
-    """Check active PR lease locks across repositories to prevent merge collisions."""
-    from nougen_shards import pr_lease
-    return pr_lease.get_lease_status(repo=repo)
-
-
-@node_mcp.tool()
-@_offloaded
-def pr_lease_acquire(repo: str, branch: str, holder: str = "phoebus/antigravity") -> dict:
-    """Acquire exclusive PR lease lock for a target repository before performing modifications."""
-    from nougen_shards import pr_lease
-    return pr_lease.acquire_lease(repo=repo, branch=branch, holder=holder)
-
-
-@node_mcp.tool()
-@_offloaded
-def pr_lease_release(repo: str, branch: str, holder: str = "phoebus/antigravity") -> dict:
-    """Release active PR lease lock after landing verified commits."""
-    from nougen_shards import pr_lease
-    return pr_lease.release_lease(repo=repo, branch=branch, holder=holder)
-
-
-@node_mcp.tool()
-@_offloaded
-def token_fuse_status() -> dict:
-    """Inspect real-time token hypervisor limits, circuit breaker level, and cost provenance."""
-    from nougen_shards import token_fuse
-    return token_fuse.get_hypervisor_status()
-
-
-# --- 7. Substrate Maintenance, Mesh Topology & Dream Consolidation -------
-
-@node_mcp.tool()
-@_offloaded
-def shard_vacuum(db_index: Optional[int] = None) -> dict:
-    """Optimize SQLite storage, rebuild trigram FTS5 indices, and reclaim space across cluster DBs."""
-    indices = [db_index] if db_index is not None else range(1, core.MAX_DB_COUNT + 1)
-    results = {}
-    for i in indices:
-        p = core.get_db_path(i)
-        if not p.exists():
-            continue
-        try:
-            conn = core.get_connection(i)
-            conn.execute("VACUUM")
-            conn.execute("INSERT INTO shards_fts(shards_fts) VALUES('rebuild')")
-            conn.commit()
-            conn.close()
-            results[f"db_{i}"] = "vacuumed_and_indexed"
-        except Exception as e:
-            results[f"db_{i}"] = f"error: {e}"
-    return {"status": "optimized", "databases": results}
-
-
-@node_mcp.tool()
-@_offloaded
-def sync_mesh_status() -> dict:
-    """Audit symmetric sync state and hash parity across Phoebus, Blade, and WhoArt shard stores."""
-    from nougen_shards import core, locator
-    my_node = locator.current_node()
-    return {
-        "local_node": my_node,
-        "vault_dir": str(core.active_vault_dir()),
-        "total_shards": _total_shards(),
-        "symmetric_standard": "3_VAULT_SYMMETRIC"
-    }
-
-
-@node_mcp.tool()
-@_offloaded
-def dream_trigger(force: bool = False) -> dict:
-    """Trigger Kairos memory consolidation and golden rule extraction across recent experience shards."""
-    try:
-        from nougen_shards import history
-        eng = history.HistoryEngine()
-        growth = eng.get_growth_rate("week")
-        return {
-            "status": "consolidated",
-            "weekly_shards_analyzed": growth.get("new_shards", 0),
-            "total_shards": growth.get("total_shards", 0),
-            "dream_state": "lucid"
-        }
-    except Exception as e:
-        return {"status": "degraded", "error": str(e)}
-
-
 
 
 
