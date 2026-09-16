@@ -32,3 +32,27 @@ The native queue command was checked against the installed CLI help. The broader
 session interface is described in https://developers.openai.com/codex/app-server/.
 No new model process, remote listener, fleet deployment, or permission bypass is
 configured by this adapter.
+
+## Auditing a live round trip
+
+`tools/codex_roundtrip_audit.py` is a read-only evidence checker. It takes a
+unique message marker, the intended Codex thread UUID, the Antigravity session's
+`transcript_full.jsonl`, and the Codex inbox archive. It reports these gates
+separately: model consumed the marker, native `codex_pipe.deliver()` was invoked
+for the intended thread, the adapter emitted `queue_accepted: true`, and a
+matching Codex payload was archived. An optional `--codex-received` JSON
+envelope establishes receiver-side arrival only when its sender, target, thread,
+and marker all match.
+
+```sh
+python tools/codex_roundtrip_audit.py \
+  --marker 'UNIQUE-ROUNDTRIP-MARKER' \
+  --thread '<intended Codex thread UUID>' \
+  --agy-transcript "$HOME/.gemini/antigravity/brain/<agy-session>/.system_generated/logs/transcript_full.jsonl"
+```
+
+Exit 0 means the active Codex receipt was supplied and matched. Exit 2 means
+the observed chain is incomplete or only queued. A hand-written ACK file,
+transport echo, or inbox write cannot satisfy the native-adapter and receiver
+gates by itself. The tool never sends traffic or mutates inboxes, shards, or
+daemons; its output is evidence, not a cryptographic attestation.
