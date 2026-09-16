@@ -23,7 +23,7 @@ audioop-lts==0.2.2 ; python_full_version >= '3.13'
     # via gradio
 brotli==1.2.0
     # via gradio
-certifi==2026.6.17
+certifi==2026.7.22
     # via
     #   httpcore
     #   httpx
