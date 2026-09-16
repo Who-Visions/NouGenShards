@@ -2043,6 +2043,13 @@ def get_parser():
     # destiny store
     p_destiny = subparsers.add_parser("destiny", help="Prospective memory & goal graph store (destinies.db)")
     destiny_sub = p_destiny.add_subparsers(dest="destiny_action")
+
+    p_open = subparsers.add_parser(
+        "open",
+        help="OpenRouter Free Fleet Worker Engine (NouGenOpen)",
+        description="Dedicated OpenRouter Free Fleet Worker Engine with Keymaker API key auto-resolution and zero-cost multi-model fallback."
+    )
+    p_open.add_argument("open_args", nargs=argparse.REMAINDER, help="Subcommands: status | ask [prompt] [--model MODEL] [--system SYSTEM]")
     
     p_destiny_list = destiny_sub.add_parser("list", help="List unfinished/active destinies")
     p_destiny_list.add_argument("--status", choices=list(destiny.STATUSES), default=None)
@@ -3146,6 +3153,20 @@ def cmd_hijack(args):
         sys.exit(1)
 
 
+def cmd_open(args):
+    """Forward to the NouGenOpen CLI (OpenRouter Free Fleet Engine)."""
+    try:
+        from nougen_open.cli import main as open_main
+    except ImportError:
+        print("[FATAL] nougen_open package not installed. Install with `pip install -e NouGenOpen`.", file=sys.stderr)
+        sys.exit(1)
+    
+    forwarded = list(getattr(args, "open_args", None) or [])
+    if forwarded[:1] == ["--"]:
+        forwarded = forwarded[1:]
+    open_main(forwarded)
+
+
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
@@ -3166,7 +3187,38 @@ def main():
         # `nougen relay -h` would die here instead of reaching the engine.
         cmd_relay(argparse.Namespace(command="relay", relay_args=sys.argv[2:]))
         return
+    if sys.argv[1] == "open":
+        cmd_open(argparse.Namespace(command="open", open_args=sys.argv[2:]))
+        return
+
     parser = get_parser()
+
+    # Known subcommands list
+    known_cmds = {
+        "init", "add", "get", "search", "assure", "chat",
+        "auth", "mark", "status", "ctx", "config", "connect", "hook", "ingest",
+        "hi", "bye", "hijack", "db", "node", "stats", "router",
+        "doctor", "brain", "dream", "evolve", "dashboard", "handoff", "usage",
+        "tenant", "relay", "pr", "tree", "tube", "arxiv",
+        "viz", "msg", "evidence", "transcribe", "live", "tunnel", "destiny", "wake", "wispr", "studio",
+        "cf", "sweep", "zombies", "open"
+    }
+
+    # Dynamic second-reflex: If first argument is not a flag (-h, --version, etc) and not a known subcommand,
+    # automatically interpret `nougen <query>` as `nougen search "<query>"`
+    if sys.argv[1] not in known_cmds and not sys.argv[1].startswith("-"):
+        query_str = " ".join(sys.argv[1:])
+        cmd_search(argparse.Namespace(
+            command="search",
+            query=query_str,
+            semantic=False,
+            provider=None,
+            json=False,
+            domain=None,
+            dual=True
+        ))
+        return
+
     args = parser.parse_args()
     cmds = {
         "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
@@ -3180,7 +3232,7 @@ def main():
         "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
         "transcribe": cmd_transcribe, "live": cmd_live, "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
-        "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep
+        "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep, "open": cmd_open
     }
     if args.command in cmds:
         cmds[args.command](args)
