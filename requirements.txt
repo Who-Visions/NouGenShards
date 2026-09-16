@@ -262,7 +262,7 @@ typing-extensions==4.15.0
     #   starlette
     #   typing-inspection
     #   uvicorn
-typing-inspection==0.4.2
+typing-inspection==0.4.4
     # via
     #   fastapi
     #   mcp
