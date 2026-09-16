@@ -1,10 +1,8 @@
 """Unit tests for NouGen Dynamic Process Supervisor & Zombie Killer."""
-import os
-import sys
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-from nougen_shards.zombie_killer import ZombieHunter, ZombieProcess
+from nougen_shards.zombie_killer import ZombieHunter
 
 
 class TestZombieKiller(unittest.TestCase):
