@@ -11,7 +11,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional
 from zoneinfo import ZoneInfo
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -249,7 +249,6 @@ def extract_temporal_mentions(text: str, anchor: Optional[int | datetime],
             normalized_end: Optional[int] = None
             precision = "date"
             confidence = 1.0
-            is_relative = kind == "relative"
             if kind == "iso":
                 try:
                     if "T" in raw or " " in raw:
