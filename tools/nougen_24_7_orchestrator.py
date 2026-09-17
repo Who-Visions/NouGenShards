@@ -13,12 +13,10 @@ Continuously runs the complete lifecycle loop:
 """
 
 import os
-import sys
 import time
 import socket
 import logging
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 
 # Setup logging
@@ -29,7 +27,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("NouGen24_7")
 
-WORKSPACE_ROOT = Path(r"~\Outpost\NouGen")
+WORKSPACE_ROOT = Path.home() / "Outpost" / "NouGen"
 PYTHON_EXE = WORKSPACE_ROOT / ".venv" / "Scripts" / "python.exe"
 
 NODES = {
@@ -54,9 +52,12 @@ def run_cycle():
     cycle_start = time.time()
     logger.info("=== STARTING AUTONOMOUS 24/7 NOUGEN CYCLE ===")
 
+    NOWIN = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
     # 1. RELAY PULSE, PULL, AUTO-ACK & CLAIM SCHEDULE
     try:
         logger.info("[1/7] Syncing Relay Fleet: Pulling, Acknowledging & Scheduling...")
+        silent_env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
         # 1a. Pull incoming handoffs from fleet
         subprocess.run(
             [str(PYTHON_EXE), "-m", "nougen_relay.cli", "pull"],
@@ -65,7 +66,10 @@ def run_cycle():
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=15
+            timeout=15,
+            creationflags=NOWIN,
+            stdin=subprocess.DEVNULL,
+            env=silent_env,
         )
         # 1b. Policy auto-ack for status legs
         policy_res = subprocess.run(
@@ -75,7 +79,10 @@ def run_cycle():
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=15
+            timeout=15,
+            creationflags=NOWIN,
+            stdin=subprocess.DEVNULL,
+            env=silent_env,
         )
         if policy_res.stdout and "policy applied" in policy_res.stdout:
             logger.info(f"Relay Policy: {policy_res.stdout.strip().splitlines()[-1]}")
@@ -88,7 +95,10 @@ def run_cycle():
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=15
+            timeout=15,
+            creationflags=NOWIN,
+            stdin=subprocess.DEVNULL,
+            env=silent_env,
         )
         if sched_res.stdout and sched_res.stdout.strip():
             last_line = sched_res.stdout.strip().splitlines()[-1]
@@ -102,7 +112,9 @@ def run_cycle():
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=15
+            timeout=15,
+            creationflags=NOWIN,
+            stdin=subprocess.DEVNULL,
         )
         if res.stdout and res.stdout.strip():
             logger.info(f"Inbox output:\n{res.stdout.strip()}")
@@ -113,11 +125,12 @@ def run_cycle():
     try:
         if not ping_node("whoart-local", "127.0.0.1", 4444, timeout=0.5):
             logger.warning("[!] Port 4444 dead! Reviving NouGen NGS Node (whoart)...")
-            cmd_path = Path(r"~\.nougen\bin\whoart_node_main.cmd")
+            cmd_path = Path.home() / ".nougen" / "bin" / "whoart_node_main.cmd"
             if cmd_path.exists():
                 subprocess.Popen(
                     ["cmd.exe", "/c", str(cmd_path)],
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, "DETACHED_PROCESS", 0)
+                    creationflags=NOWIN,
+                    stdin=subprocess.DEVNULL,
                 )
                 logger.info("[*] Dispatched whoart_node_main.cmd supervisor")
     except Exception as e:
@@ -133,9 +146,9 @@ def run_cycle():
     except Exception as e:
         logger.warning(f"Substrate check error: {e}")
 
-    # 3. BUILD & SCOREBOARD TEST SUITE
+    # 4. BUILD & SCOREBOARD TEST SUITE
     try:
-        logger.info("[3/6] Running Behavioral & Emoji Math Unit Tests...")
+        logger.info("[4/7] Running Behavioral & Emoji Math Unit Tests...")
         test_res = subprocess.run(
             [
                 str(PYTHON_EXE), "-m", "pytest",
@@ -149,16 +162,19 @@ def run_cycle():
             cwd=str(WORKSPACE_ROOT),
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=30,
+            creationflags=NOWIN,
+            stdin=subprocess.DEVNULL,
         )
         logger.info(f"Scoreboard: {test_res.stdout.strip().splitlines()[-1] if test_res.stdout else 'Completed'}")
     except Exception as e:
+        logger.warning(f"Test suite error: {e}")
         logger.warning(f"Test suite error: {e}")
 
     # 4. DREAM & CONSOLIDATION PASS
     try:
         logger.info("[4/6] Checking Dream State & Invariant Synthesis...")
-        dream_sft = Path(r"~\.nougen\shards\dream_sft.jsonl")
+        dream_sft = Path.home() / ".nougen" / "shards" / "dream_sft.jsonl"
         if dream_sft.exists():
             size_kb = dream_sft.stat().st_size / 1024
             logger.info(f"Dream SFT Dataset Live: {dream_sft} ({size_kb:.1f} KB)")
@@ -168,7 +184,7 @@ def run_cycle():
     # 5. OPENSKILL EVOLUTION SYNC
     try:
         logger.info("[5/6] Checking OpenSkill Contracts...")
-        skill_path = Path(r"~\.nougen\shards\skills\emergent_behavioral_compiler_and_dynamic_glyph_discovery\SKILL.md")
+        skill_path = Path.home() / ".nougen" / "shards" / "skills" / "emergent_behavioral_compiler_and_dynamic_glyph_discovery" / "SKILL.md"
         if skill_path.exists():
             logger.info(f"OpenSkill Contract Active: {skill_path.name} (v3.0.0)")
     except Exception as e:
