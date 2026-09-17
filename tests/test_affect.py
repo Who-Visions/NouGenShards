@@ -1,15 +1,10 @@
 """Unit tests for nougen_shards.affect deterministic emotion + persona engine."""
-import pytest
 from nougen_shards.affect import (
-    SCALE,
     AffectVector,
     CharacterMind,
     EmotionState,
     Observation,
-    PersonaBlend,
-    classify_emotion,
     decay_toward_baseline,
-    expression_from_emotion,
     normalize_persona_weights,
     resolve_character,
     update_emotion,

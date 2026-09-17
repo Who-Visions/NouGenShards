@@ -37,7 +37,7 @@ import statistics
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 # --------------------------------------------------------------------------- #
 # Signal extraction (pure, lexical, deterministic)

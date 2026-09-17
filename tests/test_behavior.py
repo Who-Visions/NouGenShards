@@ -1,16 +1,7 @@
 """Unit tests for nougen_shards.behavior Behavioral Compiler."""
-import pytest
 from nougen_shards.behavior import (
-    BehavioralState,
-    CompiledBehavior,
-    EpistemicState,
-    IntentDescriptor,
-    RelationshipContext,
-    SemanticObservation,
-    TaskRequirements,
     compile_behavior,
     infer_semantic_observation,
-    synthesize_target_behavior,
 )
 
 

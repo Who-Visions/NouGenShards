@@ -4,12 +4,9 @@ Verifies donor method registry, late interaction MaxSim, deterministic RRF fusio
 and end-to-end evidence-locked cascade execution.
 """
 
-import pytest
 from nougen_shards.arxiv_retrieval_donors import (
     CANONICAL_DONORS,
-    AnswerPacket,
     ArxivCascadeRetriever,
-    ArxivDonorMethod,
     DonorCategory,
 )
 

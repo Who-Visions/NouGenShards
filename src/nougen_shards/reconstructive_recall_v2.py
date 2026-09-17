@@ -7,11 +7,10 @@ conflict-at-write gating, and staged pulse retrieval with absolute evidence lock
 from __future__ import annotations
 
 import hashlib
-import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 class SourceType(str, Enum):

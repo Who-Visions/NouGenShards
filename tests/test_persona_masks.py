@@ -1,9 +1,7 @@
 """Unit tests for the 20-pack composable behavioral masks in nougen_shards.persona."""
-import pytest
 from nougen_shards.persona import (
     BEHAVIORAL_MASKS,
     PERSONAS,
-    MaskBlend,
     list_masks,
     get_mask,
     blend,
@@ -116,7 +114,7 @@ def test_blend_custom_unknown_mask():
 
 def test_20_pack_emotions_exist():
     """Verify all 20 spectrum emotions exist with full metadata."""
-    from nougen_shards.persona import EMOTIONS, list_emotions, get_emotion, resolve_emotion
+    from nougen_shards.persona import EMOTIONS, list_emotions, get_emotion
 
     emotions = list_emotions()
     assert len(emotions) == 20

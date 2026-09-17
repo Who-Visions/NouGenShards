@@ -14,19 +14,17 @@ Key Invariants:
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
+import re
 import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence
 
 from nougen_shards.retrieval_v2 import (
     ArtifactCandidate,
-    CanonicalEntity,
     MultiAxisStateVector,
     OrthogonalFlags,
     QueryReceipt,
@@ -34,7 +32,6 @@ from nougen_shards.retrieval_v2 import (
     compile_retrieval_intent,
     create_query_receipt,
     next_recovery_action,
-    reciprocal_rank_fusion,
 )
 
 

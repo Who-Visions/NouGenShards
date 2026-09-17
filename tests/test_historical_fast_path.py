@@ -7,7 +7,6 @@ import time
 import pytest
 from nougen_shards.historical_fast_path import (
     FastPathIntent,
-    FastPathResult,
     HistoricalFastPathStore,
 )
 

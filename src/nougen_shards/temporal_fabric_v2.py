@@ -7,14 +7,11 @@ Millisecond lifecycle tracking, bitemporal truth, Hybrid Logical Clocks (HLC), a
 
 from __future__ import annotations
 
-import calendar
-import hashlib
-import json
 import re
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional
 
 
 # ============================================================

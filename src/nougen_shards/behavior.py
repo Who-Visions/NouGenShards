@@ -37,9 +37,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from dataclasses import asdict, dataclass, field
-from typing import Any, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from nougen_shards.emoji_math import EmojiVector
 
 
 SCALE = 10_000
@@ -351,7 +353,6 @@ def synthesize_target_behavior(obs: SemanticObservation) -> BehavioralState:
     # Specialized task-specific modulations
     if "verification" in task_type or "debug" in task_type:
         technical_depth = max(technical_depth, 8500)
-        precision_req = max(t.precision_requirement_bp, 9000)
         skepticism = max(skepticism, 8000)
         verification_pressure = max(verification_pressure, 9000)
         playfulness = min(playfulness, 3000)

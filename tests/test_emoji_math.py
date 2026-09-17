@@ -1,7 +1,5 @@
 """Unit tests for nougen_shards.emoji_math vector algebra and interaction calculus."""
-import pytest
 from nougen_shards.emoji_math import (
-    SCALE,
     EmojiVector,
     apply_task_modulation,
 )
@@ -208,7 +206,6 @@ def test_contradiction_and_compatibility_filtering():
 def test_unified_canonical_behavior_state_projection():
     """Verify CanonicalBehaviorState projects identically across NL directives, emoji envelopes, and telemetry."""
     from nougen_shards.behavior import (
-        BehavioralState,
         SemanticObservation,
         TaskRequirements,
         IntentDescriptor,

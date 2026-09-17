@@ -86,7 +86,7 @@ def audit_assets() -> dict:
         result["alphabet_plates"]["total"] = len(trace_files)
         result["alphabet_plates"]["found_letters"] = sorted(found)
         result["alphabet_plates"]["missing_letters"] = [
-            l for l in ALPHABET if l not in found
+            letter_item for letter_item in ALPHABET if letter_item not in found
         ]
 
     # Unit SEE master plates
@@ -411,6 +411,7 @@ def project_status() -> dict:
         "project": "Learn With Mrs. B: ESOL Coloring & Activity Masterclass",
         "publisher": kdp.get("publisher", "Who Visions / NouGen Publishing"),
         "author": kdp.get("primary_author", {}).get("name", "Mrs. B"),
+        "lineage": lineage,
         "status": {
             "svgs_complete": audit["svgs"]["content_pages"] >= 40,
             "alphabet_complete": len(audit["alphabet_plates"]["missing_letters"]) == 0,

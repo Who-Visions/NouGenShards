@@ -1,6 +1,5 @@
 """Unit tests for the Learn With Mrs. B project engine (nougen_shards.mrsb)."""
 
-import pytest
 from nougen_shards import mrsb
 
 

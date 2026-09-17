@@ -8,11 +8,10 @@ deterministic retrieval cascade.
 from __future__ import annotations
 
 import hashlib
-import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class DonorCategory(str, Enum):
@@ -185,7 +184,6 @@ class ArxivCascadeRetriever:
 
         for doc_id, data in corpus.items():
             content = data.get("content", "").lower()
-            tokens = content.split()
             # Lexical match
             if any(q in content for q in query_tokens):
                 lexical_hits.append(doc_id)

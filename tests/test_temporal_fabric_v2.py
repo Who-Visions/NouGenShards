@@ -1,6 +1,5 @@
 """Unit tests for nougen_shards.temporal_fabric_v2 (Temporal Fabric v2)."""
 from datetime import datetime, timezone
-import pytest
 from nougen_shards.temporal_fabric_v2 import (
     HLCTracker,
     HybridLogicalClock,

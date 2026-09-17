@@ -1,8 +1,6 @@
 """Verify OpenRouterClient and model lanes dynamically inject persona.py system prompts."""
 
-from unittest.mock import MagicMock, patch
 from nougen_shards.models_client import OpenRouterClient
-from nougen_shards.persona import Signals, resolve
 
 
 def test_openrouter_injects_persona():

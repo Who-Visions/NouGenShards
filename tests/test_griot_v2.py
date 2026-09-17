@@ -1,10 +1,7 @@
 """Unit tests for nougen_shards.griot_v2 (HURRICANE KICK Griot v2 Golden Tests)."""
-from datetime import datetime, timezone
-import pytest
 from nougen_shards.griot_v2 import (
     CompoundShardRef,
     EpistemicClass,
-    GriotPacket,
     gather_griot_archive,
     infer_epistemic_class,
 )
