@@ -8,10 +8,11 @@ Millisecond lifecycle tracking, bitemporal truth, Hybrid Logical Clocks (HLC), a
 from __future__ import annotations
 
 import re
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 
 # ============================================================
@@ -71,6 +72,11 @@ class HybridLogicalClock:
         return f"{self.physical_ms}:{self.logical_counter}:{self.node_id}:{self.event_id}"
 
 
+class ClockDriftError(ValueError):
+    """Raised when incoming remote HLC exceeds physical clock drift threshold."""
+    pass
+
+
 class HLCTracker:
     """Thread-safe Hybrid Logical Clock tracker ensuring monotonicity across node turns."""
 
@@ -78,24 +84,85 @@ class HLCTracker:
         self.node_id = node_id
         self._last_physical_ms = 0
         self._counter = 0
+        self._lock = threading.Lock()
 
     def now(self, event_id: str = "") -> HybridLogicalClock:
-        curr_ms = int(time.time() * 1000)
-        if curr_ms > self._last_physical_ms:
-            self._last_physical_ms = curr_ms
-            self._counter = 0
-        else:
-            self._counter += 1
-        return HybridLogicalClock(
-            physical_ms=self._last_physical_ms,
-            logical_counter=self._counter,
-            node_id=self.node_id,
-            event_id=event_id,
-        )
+        """Generate a monotonic Hybrid Logical Clock timestamp for a local event."""
+        with self._lock:
+            curr_ms = int(time.time() * 1000)
+            if curr_ms > self._last_physical_ms:
+                self._last_physical_ms = curr_ms
+                self._counter = 0
+            else:
+                self._counter += 1
+            return HybridLogicalClock(
+                physical_ms=self._last_physical_ms,
+                logical_counter=self._counter,
+                node_id=self.node_id,
+                event_id=event_id,
+            )
+
+    def receive_hlc(
+        self,
+        remote_physical_ms: int,
+        remote_counter: int,
+        remote_node_id: str,
+        event_id: str = "",
+        max_drift_ms: int = 60000,
+    ) -> HybridLogicalClock:
+        """Merge a remote HLC message into local clock state with drift validation."""
+        with self._lock:
+            local_curr_ms = int(time.time() * 1000)
+            if remote_physical_ms - local_curr_ms > max_drift_ms:
+                raise ClockDriftError(
+                    f"Remote clock drift {remote_physical_ms - local_curr_ms}ms exceeds max {max_drift_ms}ms"
+                )
+
+            max_phys = max(self._last_physical_ms, remote_physical_ms, local_curr_ms)
+            if max_phys == self._last_physical_ms == remote_physical_ms:
+                self._counter = max(self._counter, remote_counter) + 1
+            elif max_phys == self._last_physical_ms:
+                self._counter += 1
+            elif max_phys == remote_physical_ms:
+                self._counter = remote_counter + 1
+            else:
+                self._counter = 0
+            self._last_physical_ms = max_phys
+
+            return HybridLogicalClock(
+                physical_ms=self._last_physical_ms,
+                logical_counter=self._counter,
+                node_id=self.node_id,
+                event_id=event_id or f"recv:{remote_node_id}",
+            )
 
 
 # Global HLC instance
 GLOBAL_HLC = HLCTracker()
+
+
+def record_lifecycle_event(
+    shard_id: int,
+    event_type: str,
+    envelope: TemporalEnvelope,
+    payload: Optional[Dict[str, Any]] = None,
+    tracker: Optional[HLCTracker] = None,
+) -> Dict[str, Any]:
+    """Record an append-only bitemporal lifecycle event with an immutable HLC anchor."""
+    hlc_tracker = tracker or GLOBAL_HLC
+    clock = hlc_tracker.now(event_id=f"shard:{shard_id}:{event_type}")
+    return {
+        "shard_id": shard_id,
+        "event_type": event_type,
+        "hlc_key": clock.key,
+        "physical_ms": clock.physical_ms,
+        "logical_counter": clock.logical_counter,
+        "node_id": clock.node_id,
+        "envelope_created_at_ms": envelope.created_at_ms,
+        "envelope_migrated_at_ms": envelope.migrated_at_ms,
+        "envelope_ai_touched_at_ms": envelope.ai_touched_at_ms,
+        "payload": payload or {},
+    }
 
 
 # ============================================================
@@ -134,18 +201,21 @@ def extract_temporal_mentions(
     # 1. ISO format: YYYY-MM-DD
     for m in re.finditer(r"\b(20\d\d)-(\d{1,2})-(\d{1,2})\b", text):
         year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        dt = datetime(year, month, day, 0, 0, 0, tzinfo=timezone.utc)
-        dt_end = dt + timedelta(days=1) - timedelta(milliseconds=1)
-        mentions.append(TemporalMention(
-            raw_text=m.group(0),
-            char_start=m.start(),
-            char_end=m.end(),
-            normalized_start_ms=int(dt.timestamp() * 1000),
-            normalized_end_ms=int(dt_end.timestamp() * 1000),
-            semantic_role="event_date",
-            anchor_ms=anchor_ms,
-            confidence=1.0,
-        ))
+        try:
+            dt = datetime(year, month, day, 0, 0, 0, tzinfo=timezone.utc)
+            dt_end = dt + timedelta(days=1) - timedelta(milliseconds=1)
+            mentions.append(TemporalMention(
+                raw_text=m.group(0),
+                char_start=m.start(),
+                char_end=m.end(),
+                normalized_start_ms=int(dt.timestamp() * 1000),
+                normalized_end_ms=int(dt_end.timestamp() * 1000),
+                semantic_role="event_date",
+                anchor_ms=anchor_ms,
+                confidence=1.0,
+            ))
+        except ValueError:
+            pass
 
     # 2. Month Day: "Nov 26", "November 26, 2025"
     month_regex = r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,\s*(20\d\d))?\b"

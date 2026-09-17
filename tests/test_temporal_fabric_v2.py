@@ -1,10 +1,14 @@
 """Unit tests for nougen_shards.temporal_fabric_v2 (Temporal Fabric v2)."""
+import concurrent.futures
+import pytest
 from datetime import datetime, timezone
 from nougen_shards.temporal_fabric_v2 import (
+    ClockDriftError,
     HLCTracker,
     HybridLogicalClock,
     TemporalEnvelope,
     extract_temporal_mentions,
+    record_lifecycle_event,
     route_temporal_query,
 )
 
@@ -53,6 +57,52 @@ def test_hybrid_logical_clock_deterministic_ordering():
     assert t_blade < t_whoart  # 'blade1tb' < 'whoart' alphabetically
 
 
+def test_hlc_concurrent_monotonicity():
+    """Verify thread-safe concurrent HLC generation produces strictly unique, monotonic clocks."""
+    tracker = HLCTracker(node_id="whoart")
+    num_threads = 10
+    clocks_per_thread = 50
+
+    def generate_clocks():
+        return [tracker.now() for _ in range(clocks_per_thread)]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [executor.submit(generate_clocks) for _ in range(num_threads)]
+        all_clocks = []
+        for f in concurrent.futures.as_completed(futures):
+            all_clocks.extend(f.result())
+
+    assert len(all_clocks) == num_threads * clocks_per_thread
+    # Ensure all (physical_ms, logical_counter) pairs are unique
+    keys = {f"{c.physical_ms}:{c.logical_counter}" for c in all_clocks}
+    assert len(keys) == len(all_clocks)
+
+
+def test_hlc_receive_and_drift():
+    """Verify Lamport clock merge and drift rejection on remote HLC messages."""
+    tracker = HLCTracker(node_id="whoart")
+    local_clock = tracker.now()
+
+    # Normal remote receive
+    merged = tracker.receive_hlc(
+        remote_physical_ms=local_clock.physical_ms,
+        remote_counter=local_clock.logical_counter + 5,
+        remote_node_id="blade1tb",
+    )
+    assert merged.physical_ms >= local_clock.physical_ms
+    assert merged.logical_counter > local_clock.logical_counter
+
+    # Excessive drift raises ClockDriftError
+    future_ms = int(datetime.now(timezone.utc).timestamp() * 1000) + 120000  # 2 mins ahead
+    with pytest.raises(ClockDriftError):
+        tracker.receive_hlc(
+            remote_physical_ms=future_ms,
+            remote_counter=0,
+            remote_node_id="apollo",
+            max_drift_ms=60000,
+        )
+
+
 def test_inline_temporal_mention_extraction_with_anchors():
     """Verify extraction of absolute dates and preserved relative anchors."""
     anchor = datetime(2026, 9, 16, 12, 0, 0, tzinfo=timezone.utc)
@@ -77,9 +127,39 @@ def test_inline_temporal_mention_extraction_with_anchors():
     assert "11-28" in datetime.fromtimestamp(m_mon.normalized_start_ms / 1000.0, tz=timezone.utc).isoformat()
 
 
+def test_invalid_calendar_date_graceful():
+    """Verify invalid calendar dates like 2026-02-31 do not raise exceptions."""
+    text = "Check invalid date 2026-02-31 and valid date 2026-03-01."
+    mentions = extract_temporal_mentions(text)
+    # Only valid date should be returned
+    assert len(mentions) == 1
+    assert mentions[0].raw_text == "2026-03-01"
+
+
+def test_record_lifecycle_event():
+    """Verify recording append-only bitemporal lifecycle events."""
+    env = TemporalEnvelope(
+        created_at_ms=1700000000000,
+        migrated_at_ms=1720000000000,
+        ai_touched_at_ms=1730000000000,
+    )
+    event = record_lifecycle_event(
+        shard_id=24329,
+        event_type="AI_TOUCH",
+        envelope=env,
+        payload={"model": "gemma4", "action": "reconstructive_audit"},
+    )
+    assert event["shard_id"] == 24329
+    assert event["event_type"] == "AI_TOUCH"
+    assert event["node_id"] == "whoart"
+    assert "shard:24329:AI_TOUCH" in event["hlc_key"]
+    assert event["envelope_created_at_ms"] == 1700000000000
+
+
 def test_temporal_query_routing():
     """Verify accurate dimension routing for temporal queries."""
     assert route_temporal_query("When did the breach happen?") == "event_at_ms"
     assert route_temporal_query("When was this shard touched by AI?") == "ai_touched_at_ms"
     assert route_temporal_query("When was the legacy data migrated?") == "migrated_at_ms"
     assert route_temporal_query("When was this document created?") == "created_at_ms"
+
