@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _COMPLETENESS = {"complete", "partial", "unknown"}
 
 
@@ -158,6 +158,27 @@ def _terms(value: str) -> set[str]:
     return {term[:-1] if term.endswith("s") and len(term) > 3 else term for term in terms}
 
 
+def _term_groups(data: Mapping[str, Any]) -> dict[str, set[str]]:
+    searchable = " ".join([
+        str(data.get("intent", "")), str(data.get("canonical_key", "")),
+        str(data.get("metric_namespace", "")), " ".join(data.get("entities", [])),
+        " ".join(data.get("scope", {}).get("expected_machines", [])),
+        str(data.get("temporal", {}).get("period", "")),
+        str(data.get("temporal", {}).get("year", "")),
+    ])
+    groups = {"@text": _terms(searchable)}
+    aliases = [alias for values in data.get("aliases", {}).values()
+               if isinstance(values, list) for alias in values if isinstance(alias, str)]
+    extra = data.get("query_aliases", [])
+    if isinstance(extra, list):
+        aliases.extend(alias for alias in extra if isinstance(alias, str))
+    for alias in aliases:
+        normalized = " ".join(sorted(_terms(alias)))
+        if normalized:
+            groups[f"alias:{normalized}"] = _terms(alias)
+    return {group: terms for group, terms in groups.items() if terms}
+
+
 class CanonicalFactIndex:
     """Small append-only SQLite index; caller owns the path and its backups."""
 
@@ -177,8 +198,34 @@ class CanonicalFactIndex:
                     scope_json TEXT NOT NULL,
                     snapshot_json TEXT NOT NULL
                 )""")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_fact_key_asof ON fact_snapshots(canonical_key, as_of DESC, version DESC)")
-                conn.execute("PRAGMA user_version = 1")
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(fact_snapshots)")}
+                if "as_of_ts" not in columns:
+                    conn.execute("ALTER TABLE fact_snapshots ADD COLUMN as_of_ts REAL")
+                if "event_at_ts" not in columns:
+                    conn.execute("ALTER TABLE fact_snapshots ADD COLUMN event_at_ts REAL")
+                conn.execute("""CREATE INDEX IF NOT EXISTS idx_fact_history_seek
+                    ON fact_snapshots(canonical_key, scope_json, as_of_ts DESC,
+                                      version DESC, event_at_ts DESC)""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS canonical_current (
+                    canonical_key TEXT NOT NULL,
+                    scope_json TEXT NOT NULL,
+                    snapshot_id TEXT NOT NULL,
+                    as_of_ts REAL NOT NULL,
+                    version INTEGER NOT NULL,
+                    event_at_ts REAL NOT NULL,
+                    PRIMARY KEY(canonical_key, scope_json)
+                ) WITHOUT ROWID""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS fact_query_terms (
+                    canonical_key TEXT NOT NULL,
+                    group_key TEXT NOT NULL,
+                    term TEXT NOT NULL,
+                    PRIMARY KEY(canonical_key, group_key, term)
+                ) WITHOUT ROWID""")
+                conn.execute("""CREATE INDEX IF NOT EXISTS idx_fact_terms_lookup
+                    ON fact_query_terms(term, canonical_key, group_key)""")
+                if conn.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+                    self._backfill_v2(conn)
+                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         else:
             if not self.path.is_file():
                 raise FileNotFoundError(f"fact index does not exist: {self.path}")
@@ -186,6 +233,8 @@ class CanonicalFactIndex:
                 exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fact_snapshots'").fetchone()
                 if not exists:
                     raise ValueError(f"not a canonical fact index: {self.path}")
+                if conn.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+                    raise ValueError("fact index needs migration; run `nougen facts migrate --index PATH` once")
 
     def _connect(self) -> sqlite3.Connection:
         if self.read_only:
@@ -195,6 +244,34 @@ class CanonicalFactIndex:
         conn.row_factory = sqlite3.Row
         return conn
 
+    @staticmethod
+    def _backfill_v2(conn: sqlite3.Connection) -> None:
+        """Build current pointers and query postings once for a v1 index."""
+        rows = conn.execute("SELECT snapshot_id, canonical_key, snapshot_json FROM fact_snapshots").fetchall()
+        for row in rows:
+            data = json.loads(row["snapshot_json"])
+            temporal = data["temporal"]
+            as_of_ts = _time_key(temporal["as_of"])
+            event_at_ts = _time_key(temporal["event_at"])
+            scope_json = _canonical_json(data["scope"])
+            conn.execute("UPDATE fact_snapshots SET as_of_ts=?, event_at_ts=? WHERE snapshot_id=?",
+                         (as_of_ts, event_at_ts, row["snapshot_id"]))
+            current = conn.execute("""SELECT as_of_ts, version, event_at_ts FROM canonical_current
+                WHERE canonical_key=? AND scope_json=?""", (row["canonical_key"], scope_json)).fetchone()
+            rank = (as_of_ts, data["version"], event_at_ts)
+            if current is None or rank > (current["as_of_ts"], current["version"], current["event_at_ts"]):
+                conn.execute("""INSERT INTO canonical_current
+                    (canonical_key, scope_json, snapshot_id, as_of_ts, version, event_at_ts)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(canonical_key, scope_json) DO UPDATE SET
+                    snapshot_id=excluded.snapshot_id, as_of_ts=excluded.as_of_ts,
+                    version=excluded.version, event_at_ts=excluded.event_at_ts""",
+                    (row["canonical_key"], scope_json, row["snapshot_id"], as_of_ts,
+                     data["version"], event_at_ts))
+            for group, terms in _term_groups(data).items():
+                conn.executemany("INSERT OR IGNORE INTO fact_query_terms VALUES (?, ?, ?)",
+                                 [(row["canonical_key"], group, term) for term in terms])
+
     def put(self, snapshot: Mapping[str, Any]) -> str:
         if self.read_only:
             raise PermissionError("fact index was opened read-only")
@@ -202,13 +279,32 @@ class CanonicalFactIndex:
         body = _canonical_json(data)
         snapshot_id = hashlib.sha256(body.encode("utf-8")).hexdigest()
         temporal = data["temporal"]
+        scope_json = _canonical_json(data["scope"])
+        as_of_ts = _time_key(temporal["as_of"])
+        event_at_ts = _time_key(temporal["event_at"])
         with self._connect() as conn:
             conn.execute("""INSERT OR IGNORE INTO fact_snapshots
-                (snapshot_id, canonical_key, as_of, event_at, captured_at, version, scope_json, snapshot_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", (
-                    snapshot_id, data["canonical_key"], temporal["as_of"], temporal["event_at"],
-                    temporal["captured_at"], data["version"], _canonical_json(data["scope"]), body,
-                ))
+                (snapshot_id, canonical_key, as_of, event_at, captured_at, version, scope_json,
+                 snapshot_json, as_of_ts, event_at_ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
+                snapshot_id, data["canonical_key"], temporal["as_of"], temporal["event_at"],
+                temporal["captured_at"], data["version"], scope_json, body, as_of_ts, event_at_ts,
+            ))
+            current = conn.execute("""SELECT as_of_ts, version, event_at_ts FROM canonical_current
+                WHERE canonical_key=? AND scope_json=?""", (data["canonical_key"], scope_json)).fetchone()
+            rank = (as_of_ts, data["version"], event_at_ts)
+            if current is None or rank > (current["as_of_ts"], current["version"], current["event_at_ts"]):
+                conn.execute("""INSERT INTO canonical_current
+                    (canonical_key, scope_json, snapshot_id, as_of_ts, version, event_at_ts)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(canonical_key, scope_json) DO UPDATE SET
+                    snapshot_id=excluded.snapshot_id, as_of_ts=excluded.as_of_ts,
+                    version=excluded.version, event_at_ts=excluded.event_at_ts""",
+                    (data["canonical_key"], scope_json, snapshot_id, as_of_ts,
+                     data["version"], event_at_ts))
+            for group, terms in _term_groups(data).items():
+                conn.executemany("INSERT OR IGNORE INTO fact_query_terms VALUES (?, ?, ?)",
+                                 [(data["canonical_key"], group, term) for term in terms])
         return snapshot_id
 
     def resolve(self, canonical_key: str, *, expected_machines: Sequence[str],
@@ -216,17 +312,38 @@ class CanonicalFactIndex:
                 scope: Optional[Mapping[str, Any]] = None,
                 temporal_scope: Optional[Mapping[str, Any]] = None,
                 as_of: Optional[str] = None) -> dict:
-        """Resolve only complete exact-scope snapshots and return a full receipt."""
+        """Resolve a complete snapshot without expanding same-scope history."""
         expected = sorted(set(expected_machines))
         if not expected:
             raise ValueError("expected_machines must not be empty")
         if as_of is not None:
             as_of = _iso(as_of, "as_of")
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT snapshot_id, snapshot_json FROM fact_snapshots WHERE canonical_key=? ORDER BY as_of DESC, version DESC, captured_at DESC",
-                (canonical_key,),
-            ).fetchall()
+            scopes = conn.execute("""SELECT scope_json, snapshot_id FROM canonical_current
+                WHERE canonical_key=?""", (canonical_key,)).fetchall()
+            use_filtered_history = bool(scope) or bool(
+                temporal_scope and set(temporal_scope) - {"as_of"})
+            if use_filtered_history:
+                rows = conn.execute("""SELECT snapshot_id, snapshot_json FROM fact_snapshots
+                    WHERE canonical_key=? ORDER BY as_of_ts DESC, version DESC, event_at_ts DESC""",
+                    (canonical_key,)).fetchall()
+                scopes = []
+            else:
+                rows = []
+            for indexed_scope in scopes:
+                if as_of is None:
+                    row = conn.execute("SELECT snapshot_id, snapshot_json FROM fact_snapshots WHERE snapshot_id=?",
+                                       (indexed_scope["snapshot_id"],)).fetchone()
+                else:
+                    row = conn.execute("""SELECT snapshot_id, snapshot_json FROM fact_snapshots
+                        WHERE canonical_key=? AND scope_json=? AND as_of_ts<=?
+                        ORDER BY as_of_ts DESC, version DESC, event_at_ts DESC LIMIT 1""",
+                        (canonical_key, indexed_scope["scope_json"], _time_key(as_of))).fetchone()
+                if row is None and as_of is not None:
+                    row = conn.execute("SELECT snapshot_id, snapshot_json FROM fact_snapshots WHERE snapshot_id=?",
+                                       (indexed_scope["snapshot_id"],)).fetchone()
+                if row is not None:
+                    rows.append(row)
 
         candidates, rejected = [], []
         for row in rows:
@@ -259,20 +376,19 @@ class CanonicalFactIndex:
                                  "present_machines": [], "complete": False},
                     "lanes_queried": ["canonical_fact_index"], "failed_lanes": []}
 
-        # Newest event-time/as-of wins; capture time cannot make old facts current.
+        # The index supplies one winner per scope; age does not grow the result set.
         candidates.sort(key=lambda item: (
             _time_key(item["snapshot"]["temporal"]["as_of"]),
             item["snapshot"]["version"],
             _time_key(item["snapshot"]["temporal"]["event_at"]),
         ), reverse=True)
         winner = candidates[0]
-        for stale in candidates[1:]:
-            rejected.append({"snapshot_id": stale["snapshot_id"],
-                             "reason": "superseded_by_newer_same_scope"})
         winner["snapshot"]["snapshot_id"] = winner["snapshot_id"]
         return {"status": "complete", "canonical_key": canonical_key,
-                "snapshot": winner["snapshot"], "candidates": [c["snapshot_id"] for c in candidates],
+                "snapshot": winner["snapshot"], "candidates": [winner["snapshot_id"]],
                 "rejected": rejected,
+                "resolution_mode": "indexed_as_of" if as_of else "indexed_current",
+                "history_policy": "winner_per_scope",
                 "coverage": {"expected_machines": expected,
                              "expected_entities": sorted(set(expected_entities or [])),
                              "present_machines": expected, "complete": True},
@@ -294,34 +410,15 @@ class CanonicalFactIndex:
         if not query_terms:
             raise ValueError("query must contain searchable words")
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT snapshot_id, canonical_key, snapshot_json FROM fact_snapshots"
-            ).fetchall()
-
-        ranked = []
-        for row in rows:
-            data = json.loads(row["snapshot_json"])
-            aliases = [alias for values in data.get("aliases", {}).values()
-                       if isinstance(values, list) for alias in values if isinstance(alias, str)]
-            aliases.extend(data.get("query_aliases", []))
-            alias_scores = []
-            for alias in aliases:
-                alias_terms = _terms(alias)
-                if alias_terms:
-                    alias_scores.append(len(query_terms & alias_terms) / len(query_terms))
-            searchable = " ".join([
-                data.get("intent", ""), data.get("canonical_key", ""),
-                data.get("metric_namespace", ""), " ".join(data.get("entities", [])),
-                " ".join(data["scope"].get("expected_machines", [])),
-                str(data["temporal"].get("period", "")), str(data["temporal"].get("year", "")),
-            ])
-            text_score = len(query_terms & _terms(searchable)) / len(query_terms)
-            score = max(alias_scores + [text_score])
-            ranked.append({"snapshot_id": row["snapshot_id"], "canonical_key": row["canonical_key"],
-                           "snapshot": data, "score": score})
-
-        ranked.sort(key=lambda item: item["score"], reverse=True)
-        ranked = [item for item in ranked if item["score"] >= 0.5]
+            placeholders = ",".join("?" for _ in query_terms)
+            matches = conn.execute(f"""SELECT canonical_key, MAX(matched) AS matched FROM (
+                SELECT canonical_key, group_key, COUNT(DISTINCT term) AS matched
+                FROM fact_query_terms WHERE term IN ({placeholders})
+                GROUP BY canonical_key, group_key
+            ) GROUP BY canonical_key ORDER BY matched DESC""", sorted(query_terms)).fetchall()
+        ranked = [{"canonical_key": row["canonical_key"],
+                   "score": row["matched"] / len(query_terms)}
+                  for row in matches if row["matched"] / len(query_terms) >= 0.5]
         if not ranked:
             return {"status": "cannot_determine", "query": query, "snapshot": None,
                     "candidates": [], "rejected": [], "coverage": {"complete": False},

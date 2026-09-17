@@ -1676,9 +1676,13 @@ def cmd_tenant(args):
 
 def cmd_facts(args):
     """Index and resolve structured canonical fact snapshots."""
-    from .canonical_facts import CanonicalFactIndex
+    from .canonical_facts import CanonicalFactIndex, SCHEMA_VERSION
 
-    index = CanonicalFactIndex(args.index, create=args.facts_action == "index")
+    index = CanonicalFactIndex(args.index, create=args.facts_action in ("index", "migrate"))
+    if args.facts_action == "migrate":
+        print(json.dumps({"status": "migrated", "index": str(index.path),
+                          "schema_version": SCHEMA_VERSION}))
+        return
     if args.facts_action == "index":
         try:
             snapshot = json.loads(Path(args.input).read_text(encoding="utf-8"))
@@ -2134,6 +2138,8 @@ def get_parser():
     # Structured canonical fact snapshots (separate from free-form shard recall).
     p_facts = subparsers.add_parser("facts", help="Index/resolve structured canonical fact snapshots")
     facts_sub = p_facts.add_subparsers(dest="facts_action", required=True)
+    p_facts_migrate = facts_sub.add_parser("migrate", help="Backfill current pointers and query postings")
+    p_facts_migrate.add_argument("--index", required=True, help="Explicit SQLite fact-index path")
     p_facts_index = facts_sub.add_parser("index", help="Append a validated FACT_SNAPSHOT JSON file")
     p_facts_index.add_argument("--index", required=True, help="Explicit SQLite fact-index path")
     p_facts_index.add_argument("--input", required=True, help="Snapshot JSON file")

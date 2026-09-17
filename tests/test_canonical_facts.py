@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 import pytest
 
@@ -90,7 +91,7 @@ def test_index_is_append_only_idempotent_and_resolves_latest_as_of(tmp_path):
     index = CanonicalFactIndex(tmp_path / "facts.sqlite")
     older = snapshot(as_of="2026-09-14", captured_at="2026-09-16T11:00:00-04:00", version=9)
     newer = snapshot(as_of="2026-09-16", captured_at="2026-09-16T09:00:00-04:00", version=1)
-    old_id = index.put(older)
+    index.put(older)
     new_id = index.put(newer)
 
     assert index.put(newer) == new_id
@@ -98,11 +99,22 @@ def test_index_is_append_only_idempotent_and_resolves_latest_as_of(tmp_path):
     assert result["status"] == "complete"
     assert result["snapshot"]["snapshot_id"] == new_id
     assert result["snapshot"]["temporal"]["as_of"] == "2026-09-16"
-    assert {r["snapshot_id"] for r in result["rejected"]} == {old_id}
-    assert result["rejected"][0]["reason"] == "superseded_by_newer_same_scope"
+    assert result["candidates"] == [new_id]
+    assert result["rejected"] == []
 
     with index._connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM fact_snapshots").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM canonical_current").fetchone()[0] == 1
+        plan = conn.execute("""EXPLAIN QUERY PLAN SELECT snapshot_id FROM fact_snapshots
+            WHERE canonical_key=? AND scope_json=? AND as_of_ts<=?
+            ORDER BY as_of_ts DESC, version DESC, event_at_ts DESC LIMIT 1""",
+            ("token_usage:fleet:YTD:2026", json.dumps({"expected_entities": ["fleet", "token_usage"],
+             "expected_machines": ["blade1tb", "phoebus", "whoart"]}, sort_keys=True,
+             separators=(",", ":")), 1789603200)).fetchall()
+        assert any("idx_fact_history_seek" in row["detail"] for row in plan)
+        posting_plan = conn.execute("""EXPLAIN QUERY PLAN SELECT canonical_key FROM fact_query_terms
+            WHERE term IN (?, ?)""", ("fleet", "token")).fetchall()
+        assert any("idx_fact_terms_lookup" in row["detail"] for row in posting_plan)
 
 
 def test_blade_only_never_satisfies_fleet_and_receipt_explains_why(tmp_path):
@@ -163,6 +175,49 @@ def test_read_only_open_does_not_create_missing_index(tmp_path):
     with pytest.raises(FileNotFoundError, match="does not exist"):
         CanonicalFactIndex(path, create=False)
     assert not path.exists()
+
+
+def test_v1_migration_backfills_current_pointer_and_query_postings(tmp_path):
+    path = tmp_path / "legacy.sqlite"
+    data = snapshot(as_of="2025-11-30")
+    body = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    import hashlib
+    snapshot_id = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    with sqlite3.connect(path) as conn:
+        conn.execute("""CREATE TABLE fact_snapshots (
+            snapshot_id TEXT PRIMARY KEY, canonical_key TEXT NOT NULL, as_of TEXT NOT NULL,
+            event_at TEXT NOT NULL, captured_at TEXT NOT NULL, version INTEGER NOT NULL,
+            scope_json TEXT NOT NULL, snapshot_json TEXT NOT NULL)""")
+        conn.execute("INSERT INTO fact_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (
+            snapshot_id, data["canonical_key"], data["temporal"]["as_of"],
+            data["temporal"]["event_at"], data["temporal"]["captured_at"], data["version"],
+            json.dumps(data["scope"], sort_keys=True, separators=(",", ":")), body,
+        ))
+        conn.execute("PRAGMA user_version = 1")
+
+    index = CanonicalFactIndex(path)
+    receipt = index.resolve_query("all machine tokens ytd", expected_machines=["blade1tb", "phoebus", "whoart"])
+    assert receipt["status"] == "complete"
+    assert receipt["snapshot"]["temporal"]["as_of"] == "2025-11-30"
+    with index._connect() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM fact_query_terms").fetchone()[0] > 0
+
+
+def test_historical_lookup_uses_index_and_does_not_return_entire_history(tmp_path):
+    index = CanonicalFactIndex(tmp_path / "history.sqlite")
+    old = snapshot(as_of="2025-11-30", version=1)
+    current = snapshot(as_of="2026-09-16", version=2)
+    old_id = index.put(old)
+    current_id = index.put(current)
+
+    old_result = index.resolve("token_usage:fleet:YTD:2026", expected_machines=["blade1tb", "phoebus", "whoart"],
+                               as_of="2025-11-30")
+    now_result = index.resolve("token_usage:fleet:YTD:2026", expected_machines=["blade1tb", "phoebus", "whoart"])
+    assert old_result["snapshot"]["snapshot_id"] == old_id
+    assert now_result["snapshot"]["snapshot_id"] == current_id
+    assert old_result["candidates"] == [old_id]
+    assert now_result["candidates"] == [current_id]
 
 
 def test_facts_cli_indexes_then_resolves_with_receipt(tmp_path, capsys):
