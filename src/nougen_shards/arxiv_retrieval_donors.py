@@ -1,26 +1,27 @@
-"""ArXiv 0.01% Retrieval Donors & Multi-Stage Hybrid Cascade Engine.
+"""Evidence-grounded retrieval donor notes and a deterministic cascade baseline.
 
-Integrates verified engineering methods from top SOTA preprints and papers
-(ColBERTv2, G-Retriever, ColGraphRAG, MRAgent, Agent Zero Memory) into NouGen's
-deterministic retrieval cascade.
+The papers below are design donors, not implementations shipped by this module.
+This baseline has lexical, character-ngram, and entity lanes with RRF. It does
+not implement embedding-based ColBERT MaxSim or graph PCST optimization.
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
+
+from .retrieval_v2 import ArtifactCandidate, reciprocal_rank_fusion
 
 
 class DonorCategory(str, Enum):
     LATE_INTERACTION = "LATE_INTERACTION"
     SUBGRAPH_EXTRACTION = "SUBGRAPH_EXTRACTION"
-    DENSE_SPARSE_FUSION = "DENSE_SPARSE_FUSION"
     ACTIVE_RECONSTRUCTION = "ACTIVE_RECONSTRUCTION"
-    TRIPLE_STORE_ARCHITECTURE = "TRIPLE_STORE_ARCHITECTURE"
-    ABSENCE_VERIFICATION = "ABSENCE_VERIFICATION"
+    PROVENANCE_LOCK = "PROVENANCE_LOCK"
 
 
 @dataclass(frozen=True)
@@ -28,64 +29,59 @@ class ArxivDonorMethod:
     arxiv_id: str
     title: str
     primary_category: DonorCategory
-    applicability_bps: int  # 0 to 10,000 basis points
-    latency_cost_bps: int
     nougen_component: str
-    failure_modes: List[str]
-    deterministic_controls: List[str]
+    evidence: str
+    integration_status: str
+    limitation: str
 
 
-# Canonical 0.01% Donor Matrix
+# Paper-backed design donors. Applicability is qualitative until measured on a
+# NouGen benchmark; these records intentionally carry no invented percentages.
 CANONICAL_DONORS: List[ArxivDonorMethod] = [
     ArxivDonorMethod(
         arxiv_id="2112.01488",
         title="ColBERTv2: Effective and Efficient Retrieval via Lightweight Late Interaction",
         primary_category=DonorCategory.LATE_INTERACTION,
-        applicability_bps=9500,
-        latency_cost_bps=1200,
         nougen_component="retrieval_v2.late_interaction",
-        failure_modes=["High index size if uncompressed", "Out-of-vocabulary token skew"],
-        deterministic_controls=["Residual centroid quantization", "MaxSim token alignment"]
+        evidence="Token-level multi-vector late interaction with residual compression.",
+        integration_status="DESIGN_ONLY",
+        limitation="This module has no token embeddings; its lexical scorer is not ColBERT MaxSim.",
     ),
     ArxivDonorMethod(
         arxiv_id="2402.07630",
         title="G-Retriever: Retrieval-Augmented Generation for Textual Graph Understanding and Question Answering",
         primary_category=DonorCategory.SUBGRAPH_EXTRACTION,
-        applicability_bps=9200,
-        latency_cost_bps=1800,
         nougen_component="retrieval_v2.graph_subgraph",
-        failure_modes=["Whole-graph explosion", "Disconnected subgraph hallucination"],
-        deterministic_controls=["Prize-collecting Steiner tree subgraph pruning", "Strict edge provenance"]
+        evidence="Textual graph retrieval framed as prize-collecting Steiner tree optimization.",
+        integration_status="NOT_APPLICABLE_TO_TEXT_ONLY_CASCADE",
+        limitation="The cascade input has no scored graph edges or PCST solver.",
     ),
     ArxivDonorMethod(
         arxiv_id="2607.16208",
-        title="ColGraphRAG: Late Interaction Graph Retrieval-Augmented Generation",
+        title="ColGraphRAG: Late-Interaction Evidence Retrieval for Multimodal GraphRAG",
         primary_category=DonorCategory.SUBGRAPH_EXTRACTION,
-        applicability_bps=9600,
-        latency_cost_bps=2200,
         nougen_component="retrieval_v2.hybrid_cascade",
-        failure_modes=["Double latency penalty on sparse graphs", "Entity aliasing"],
-        deterministic_controls=["Token-to-node late interaction", "Monotonic depth bounding"]
+        evidence="Late-interaction ranking of graph-linked visual evidence; text/table retrieval unchanged.",
+        integration_status="NOT_APPLICABLE_TO_TEXT_ONLY_CASCADE",
+        limitation="The paper studies multimodal image nodes; this cascade only accepts text.",
     ),
     ArxivDonorMethod(
         arxiv_id="2606.06036",
         title="MRAgent: Memory is Reconstructed, Not Retrieved",
         primary_category=DonorCategory.ACTIVE_RECONSTRUCTION,
-        applicability_bps=9800,
-        latency_cost_bps=2500,
         nougen_component="reconstructive_recall_v2",
-        failure_modes=["Runaway query expansion", "Contradiction propagation"],
-        deterministic_controls=["Cue-Tag-Content graph", "Bounded expansion budgets"]
+        evidence="Cue-Tag-Content associative graph with active, iteratively pruned reconstruction.",
+        integration_status="PARTIAL_EXISTING_PROTOTYPE",
+        limitation="Bounded expansion exists in reconstruction.py; this cascade does not invoke it.",
     ),
     ArxivDonorMethod(
         arxiv_id="2608.29606",
-        title="Agent Zero Memory: Evidence-Locked Triple Store Architecture",
-        primary_category=DonorCategory.TRIPLE_STORE_ARCHITECTURE,
-        applicability_bps=9900,
-        latency_cost_bps=1500,
+        title="Agent Zero Memory: Provenance-Aware Long-Term Memory for LLM Agents",
+        primary_category=DonorCategory.PROVENANCE_LOCK,
         nougen_component="nougen_shards.multi_store",
-        failure_modes=["Unopened citation hallucination", "Inter-store synchronization drift"],
-        deterministic_controls=["Evidence lock", "Multi-store parallel angle sweep"]
+        evidence="Parallel episodic, associative, and documentary memories with citation-locked reading.",
+        integration_status="PARTIAL_EXISTING_PRIMITIVES",
+        limitation="Federated lanes exist; this module only cites content it reads from its supplied corpus.",
     )
 ]
 
@@ -108,53 +104,42 @@ class AnswerPacket:
     abstention_reason: Optional[str] = None
     query_receipt_sha: str = ""
     total_latency_ms: int = 0
+    evidence_hashes: Dict[str, str] = field(default_factory=dict)
 
 
 class ArxivCascadeRetriever:
-    """Multi-stage hybrid cascade retriever utilizing top donor methods."""
+    """A small, deterministic sparse retrieval baseline.
+
+    The donor papers motivate explicit retrieval lanes, bounded evidence, and
+    provenance discipline. Expensive neural/graph operators remain out of scope.
+    """
 
     def __init__(self, donors: Optional[List[ArxivDonorMethod]] = None):
         self.donors = donors or CANONICAL_DONORS
 
-    def late_interaction_maxsim(self, query_tokens: List[str], doc_tokens: List[str]) -> int:
-        """Approximated ColBERT token-level late interaction MaxSim score in basis points (0-10000)."""
-        if not query_tokens or not doc_tokens:
-            return 0
-        total_sim = 0
-        for q in query_tokens:
-            q_norm = q.lower().strip()
-            max_s = 0
-            for d in doc_tokens:
-                d_norm = d.lower().strip()
-                if q_norm == d_norm:
-                    sim = 10000
-                elif q_norm in d_norm or d_norm in q_norm:
-                    common_len = min(len(q_norm), len(d_norm))
-                    max_len = max(len(q_norm), len(d_norm))
-                    sim = (common_len * 10000 // max_len) if max_len > 0 else 0
-                else:
-                    sim = 0
-                if sim > max_s:
-                    max_s = sim
-            total_sim += max_s
-        return total_sim // len(query_tokens)
+    @staticmethod
+    def _tokens(text: str) -> List[str]:
+        return re.findall(r"[\w]+", text.casefold(), flags=re.UNICODE)
 
-    def reciprocal_rank_fusion(self, rank_lists: Dict[str, List[str]], k: int = 60) -> List[Tuple[str, int]]:
-        """Deterministic RRF combining multi-lane outputs into integer basis point scores."""
-        scores: Dict[str, float] = {}
-        for lane, doc_ids in rank_lists.items():
-            for rank, doc_id in enumerate(doc_ids):
-                scores[doc_id] = scores.get(doc_id, 0.0) + (1.0 / (k + rank + 1))
+    @staticmethod
+    def _ngrams(tokens: List[str], n: int = 3) -> set[str]:
+        compact = " ".join(tokens)
+        return {compact[i:i + n] for i in range(max(0, len(compact) - n + 1))}
 
-        # Normalize to basis points (0-10000)
-        max_score = max(scores.values()) if scores else 1.0
-        normalized = [
-            (doc_id, int((score / max_score) * 10000))
-            for doc_id, score in scores.items()
-        ]
-        # Deterministic sort: score desc, then doc_id asc
-        normalized.sort(key=lambda x: (-x[1], x[0]))
-        return normalized
+    @staticmethod
+    def _overlap(query: set[str], document: set[str]) -> float:
+        return len(query & document) / len(query) if query else 0.0
+
+    @staticmethod
+    def reciprocal_rank_fusion(rank_lists: Dict[str, List[str]], k: int = 60) -> List[Tuple[str, float]]:
+        """Use Retrieval v2's canonical deterministic rank fusion implementation."""
+        lanes = {
+            lane: [ArtifactCandidate(doc_id, doc_id, lane, 1.0 / rank)
+                   for rank, doc_id in enumerate(dict.fromkeys(ids), 1)]
+            for lane, ids in rank_lists.items()
+        }
+        return [(candidate.candidate_id, score)
+                for candidate, score in reciprocal_rank_fusion(lanes, k=k)]
 
     def execute_cascade(
         self,
@@ -163,43 +148,56 @@ class ArxivCascadeRetriever:
         fast_path_hit: Optional[Dict[str, Any]] = None
     ) -> AnswerPacket:
         t0 = time.perf_counter_ns()
-        query_tokens = query.lower().split()
+        query_tokens = self._tokens(query)
+        query_terms = set(query_tokens)
 
         # Step 1: Fast path guard
-        if fast_path_hit:
-            receipt = hashlib.sha256(f"FAST:{query}:{fast_path_hit.get('artifact_id')}".encode("utf-8")).hexdigest()
+        if self._valid_fast_path(fast_path_hit):
+            content = fast_path_hit["content"]
+            artifact_id = fast_path_hit["artifact_id"]
+            content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            receipt = hashlib.sha256(
+                f"FAST:{query}:{artifact_id}:{content_hash}".encode("utf-8")
+            ).hexdigest()
             t1 = time.perf_counter_ns()
             return AnswerPacket(
                 query=query,
-                primary_answer=str(fast_path_hit.get("content", fast_path_hit)),
-                grounded_evidence_ids=[fast_path_hit.get("artifact_id", "fast_pk")],
+                primary_answer=content,
+                grounded_evidence_ids=[artifact_id],
                 query_receipt_sha=receipt,
-                total_latency_ms=(t1 - t0) // 1_000_000
+                total_latency_ms=(t1 - t0) // 1_000_000,
+                evidence_hashes={artifact_id: content_hash},
             )
 
         # Step 2: Multi-lane parallel candidate generation
-        lexical_hits = []
-        sparse_hits = []
-        graph_hits = []
+        lane_scores: Dict[str, Dict[str, float]] = {"lexical": {}, "trigram": {}, "entity": {}}
+        document_tokens: Dict[str, set[str]] = {}
+        document_ngrams: Dict[str, set[str]] = {}
 
         for doc_id, data in corpus.items():
-            content = data.get("content", "").lower()
-            # Lexical match
-            if any(q in content for q in query_tokens):
-                lexical_hits.append(doc_id)
-            # Trigram / sparse match
-            if any(q[:3] in content for q in query_tokens if len(q) >= 3):
-                sparse_hits.append(doc_id)
-            # Graph / entity match
-            if data.get("entities") and any(e.lower() in query.lower() for e in data.get("entities", [])):
-                graph_hits.append(doc_id)
+            content = data.get("content", "")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            tokens = set(self._tokens(content))
+            document_tokens[doc_id] = tokens
+            document_ngrams[doc_id] = self._ngrams(self._tokens(content))
+            lexical_score = self._overlap(query_terms, tokens)
+            if lexical_score:
+                lane_scores["lexical"][doc_id] = lexical_score
+            trigram_score = self._overlap(self._ngrams(query_tokens), document_ngrams[doc_id])
+            if trigram_score >= 0.25:
+                lane_scores["trigram"][doc_id] = trigram_score
+            entity_tokens = set(self._tokens(" ".join(str(e) for e in data.get("entities", []))))
+            entity_score = self._overlap(query_terms, entity_tokens)
+            if entity_score:
+                lane_scores["entity"][doc_id] = entity_score
 
         # Step 3: Deterministic RRF Fusion
-        fused = self.reciprocal_rank_fusion({
-            "lexical": lexical_hits,
-            "sparse": sparse_hits,
-            "graph": graph_hits
-        })
+        ranked_lanes = {
+            lane: [doc_id for doc_id, _ in sorted(scores.items(), key=lambda item: (-item[1], item[0]))]
+            for lane, scores in lane_scores.items()
+        }
+        fused = self.reciprocal_rank_fusion(ranked_lanes)
 
         if not fused:
             t1 = time.perf_counter_ns()
@@ -213,24 +211,28 @@ class ArxivCascadeRetriever:
                 total_latency_ms=(t1 - t0) // 1_000_000
             )
 
-        # Step 4: Late Interaction MaxSim Reranking on Top-K
+        # Step 4: Cheap lexical coverage reranking; not embedding-based MaxSim.
         top_candidates = fused[:10]
         reranked = []
         for doc_id, rrf_score in top_candidates:
-            doc_data = corpus[doc_id]
-            doc_tokens = doc_data.get("content", "").split()
-            late_score = self.late_interaction_maxsim(query_tokens, doc_tokens)
-            combined_score = (rrf_score * 4000 + late_score * 6000) // 10000
-            reranked.append((doc_id, combined_score))
+            lexical_score = self._overlap(query_terms, document_tokens[doc_id])
+            entity_score = lane_scores["entity"].get(doc_id, 0.0)
+            score = max(lexical_score, entity_score)
+            reranked.append((doc_id, score, rrf_score))
 
-        reranked.sort(key=lambda x: (-x[1], x[0]))
-        best_doc_id = reranked[0][0]
+        reranked.sort(key=lambda x: (-x[1], -x[2], x[0]))
+        best_doc_id, best_score, _ = reranked[0]
+        if best_score < 0.6:
+            return self._abstain(query, "LOW_EVIDENCE_OVERLAP", t0)
+        if len(reranked) > 1 and best_score == reranked[1][1]:
+            return self._abstain(query, "AMBIGUOUS_TOP_EVIDENCE", t0)
         best_data = corpus[best_doc_id]
 
         # Step 5: Evidence Grounding Lock (only cite opened documents)
         grounded_ids = [best_doc_id]
-        answer_text = f"Synthesized from {best_doc_id}: {best_data.get('content')}"
-        receipt = hashlib.sha256(f"{query}:{best_doc_id}:{reranked[0][1]}".encode("utf-8")).hexdigest()
+        answer_text = f"Synthesized from {best_doc_id}: {best_data['content']}"
+        content_hash = hashlib.sha256(best_data["content"].encode("utf-8")).hexdigest()
+        receipt = hashlib.sha256(f"{query}:{best_doc_id}:{content_hash}:{best_score:.6f}".encode("utf-8")).hexdigest()
         t1 = time.perf_counter_ns()
 
         return AnswerPacket(
@@ -238,5 +240,24 @@ class ArxivCascadeRetriever:
             primary_answer=answer_text,
             grounded_evidence_ids=grounded_ids,
             query_receipt_sha=receipt,
-            total_latency_ms=(t1 - t0) // 1_000_000
+            total_latency_ms=(t1 - t0) // 1_000_000,
+            evidence_hashes={best_doc_id: content_hash},
         )
+
+    @staticmethod
+    def _valid_fast_path(hit: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(hit, dict) or hit.get("opened") is not True:
+            return False
+        artifact_id, content = hit.get("artifact_id"), hit.get("content")
+        if not isinstance(artifact_id, str) or not artifact_id.strip() or not isinstance(content, str):
+            return False
+        expected = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        return bool(content.strip()) and hit.get("provenance_sha") == expected
+
+    @staticmethod
+    def _abstain(query: str, reason: str, started_ns: int) -> AnswerPacket:
+        elapsed = (time.perf_counter_ns() - started_ns) // 1_000_000
+        receipt = hashlib.sha256(f"ABSTAIN:{query}:{reason}".encode("utf-8")).hexdigest()
+        return AnswerPacket(query=query, primary_answer="", grounded_evidence_ids=[],
+                            abstention_reason=reason, query_receipt_sha=receipt,
+                            total_latency_ms=elapsed)

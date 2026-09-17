@@ -4,6 +4,8 @@ Verifies donor method registry, late interaction MaxSim, deterministic RRF fusio
 and end-to-end evidence-locked cascade execution.
 """
 
+import hashlib
+
 from nougen_shards.arxiv_retrieval_donors import (
     CANONICAL_DONORS,
     ArxivCascadeRetriever,
@@ -16,25 +18,24 @@ def test_canonical_donors_matrix():
     categories = {d.primary_category for d in CANONICAL_DONORS}
     assert DonorCategory.LATE_INTERACTION in categories
     assert DonorCategory.SUBGRAPH_EXTRACTION in categories
-    assert DonorCategory.TRIPLE_STORE_ARCHITECTURE in categories
+    assert DonorCategory.PROVENANCE_LOCK in categories
     for d in CANONICAL_DONORS:
-        assert 0 <= d.applicability_bps <= 10000
-        assert len(d.failure_modes) > 0
-        assert len(d.deterministic_controls) > 0
+        assert d.arxiv_id
+        assert d.evidence
+        assert d.integration_status
+        assert d.limitation
+    agent_zero = next(d for d in CANONICAL_DONORS if d.arxiv_id == "2608.29606")
+    assert "Provenance-Aware Long-Term Memory" in agent_zero.title
+    assert "DESIGN_ONLY" in {
+        d.integration_status for d in CANONICAL_DONORS if d.arxiv_id == "2112.01488"
+    }
 
 
-def test_late_interaction_maxsim():
+def test_sparse_candidate_lanes_use_exact_tokens_not_substrings():
     retriever = ArxivCascadeRetriever()
-    q_tokens = ["neural", "manifold"]
-    doc_match = ["neural", "manifold", "geometry", "expansion"]
-    doc_mismatch = ["unrelated", "database", "index"]
-
-    score_match = retriever.late_interaction_maxsim(q_tokens, doc_match)
-    score_mismatch = retriever.late_interaction_maxsim(q_tokens, doc_mismatch)
-
-    assert score_match > 8000
-    assert score_mismatch < 2000
-    assert score_match > score_mismatch
+    corpus = {"d1": {"content": "concatenate strings safely"}}
+    result = retriever.execute_cascade("cat retrieval", corpus)
+    assert result.abstention_reason == "ZERO_CANDIDATES_ACROSS_ALL_LANES"
 
 
 def test_deterministic_rrf():
@@ -50,9 +51,11 @@ def test_deterministic_rrf():
     top_docs = [x[0] for x in fused[:2]]
     assert "doc_A" in top_docs
     assert "doc_B" in top_docs
-    # Scores must be strictly between 0 and 10000
-    for doc_id, score in fused:
-        assert 0 <= score <= 10000
+    assert all(score > 0 for _, score in fused)
+    assert fused == retriever.reciprocal_rank_fusion(dict(reversed(list(rank_lists.items()))), k=60)
+    assert retriever.reciprocal_rank_fusion({"lane": ["doc_A", "doc_A"]}) == [
+        ("doc_A", 1 / 61)
+    ]
 
 
 def test_end_to_end_cascade_execution():
@@ -87,7 +90,53 @@ def test_end_to_end_cascade_execution():
     res_fast = retriever.execute_cascade(
         "direct fast query",
         corpus,
-        fast_path_hit={"artifact_id": "fast_001", "content": "Instant result"}
+        fast_path_hit={
+            "artifact_id": "fast_001",
+            "content": "Instant result",
+            "opened": True,
+            "provenance_sha": hashlib.sha256(b"Instant result").hexdigest(),
+        },
     )
     assert res_fast.grounded_evidence_ids == ["fast_001"]
     assert "Instant result" in res_fast.primary_answer
+    assert res_fast.evidence_hashes == {"fast_001": hashlib.sha256(b"Instant result").hexdigest()}
+    changed = retriever.execute_cascade(
+        "direct fast query",
+        corpus,
+        fast_path_hit={
+            "artifact_id": "fast_001",
+            "content": "Changed result",
+            "opened": True,
+            "provenance_sha": hashlib.sha256(b"Changed result").hexdigest(),
+        },
+    )
+    assert changed.query_receipt_sha != res_fast.query_receipt_sha
+
+
+def test_unopened_or_hash_mismatched_fast_path_cannot_bypass_retrieval():
+    retriever = ArxivCascadeRetriever()
+    corpus = {"doc": {"content": "ordinary indexed text"}}
+    unopened = retriever.execute_cascade(
+        "unmatched phrase", corpus,
+        fast_path_hit={"artifact_id": "fast", "content": "fabricated", "opened": False},
+    )
+    mismatched = retriever.execute_cascade(
+        "unmatched phrase", corpus,
+        fast_path_hit={"artifact_id": "fast", "content": "fabricated", "opened": True,
+                       "provenance_sha": "0" * 64},
+    )
+    assert unopened.abstention_reason == "ZERO_CANDIDATES_ACROSS_ALL_LANES"
+    assert mismatched.abstention_reason == "ZERO_CANDIDATES_ACROSS_ALL_LANES"
+
+
+def test_weak_and_ambiguous_matches_abstain():
+    retriever = ArxivCascadeRetriever()
+    weak = retriever.execute_cascade("ordinary rareterm", {
+        "doc": {"content": "ordinary content with unrelated detail"}
+    })
+    ambiguous = retriever.execute_cascade("shared phrase", {
+        "a": {"content": "shared phrase in alpha"},
+        "b": {"content": "shared phrase in beta"},
+    })
+    assert weak.abstention_reason == "LOW_EVIDENCE_OVERLAP"
+    assert ambiguous.abstention_reason == "AMBIGUOUS_TOP_EVIDENCE"
