@@ -1,27 +1,31 @@
 """
 griot_v2.py
 
-NouGen Griot v2 — Archive-Oriented Memory & Retrieval Engine.
-Fixes 28 archive/retrieval failure classes (HURRICANE KICK Architecture).
+NouGen Griot v2 — Archive-Oriented Memory & Retrieval Planner.
+Implements a bounded local FTS lane and explicit evidence/coverage envelope.
+This is not the complete 28-class HURRICANE KICK implementation.
 
 Key Invariants:
-1. Coverage Honesty: Never returns clean failures=[] or COMPLETE when underlying federation/vault nodes fail or timeout.
+1. Coverage Honesty: No remote node is considered healthy without a caller-supplied probe receipt.
 2. Compound Shard IDs: Always `{shard_id}@db{db_index}`.
 3. Truncation Transparency: Exposes total candidates, returned count, and truncation flags.
 4. Epistemic Typing: Distinguishes verified telemetry, user canon, process donors, external papers, model inferences.
-5. Absence Proof: NOT_FOUND is strictly guarded; incomplete federation returns CANNOT_DETERMINE.
+5. Absence Proof: Incomplete configured coverage remains PARTIAL; a local FTS miss is not global absence.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
 import time
+from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
+from urllib.parse import quote
 
 from nougen_shards.retrieval_v2 import (
     ArtifactCandidate,
@@ -32,6 +36,7 @@ from nougen_shards.retrieval_v2 import (
     compile_retrieval_intent,
     create_query_receipt,
     next_recovery_action,
+    reciprocal_rank_fusion,
 )
 
 
@@ -87,6 +92,7 @@ class NodeCoverageStatus:
 @dataclass(frozen=True)
 class GriotCoverageMatrix:
     nodes: tuple[NodeCoverageStatus, ...]
+    vault_dbs_expected: tuple[int, ...]
     vault_dbs_scanned: tuple[int, ...]
     is_fully_covered: bool
     failures: tuple[str, ...]
@@ -110,6 +116,7 @@ class GriotArtifact:
     epistemic_class: str
     score: float
     created_at_utc: str
+    content_sha256: str
     tags: tuple[str, ...] = field(default_factory=tuple)
     is_superseded: bool = False
     superseded_by: Optional[str] = None
@@ -176,89 +183,122 @@ def gather_griot_archive(
     query: str,
     now: Optional[datetime] = None,
     simulated_node_failures: Optional[Dict[str, str]] = None,
+    node_statuses: Optional[Sequence[NodeCoverageStatus]] = None,
     max_top_k: int = 20,
     vault_dbs_dir: Optional[Path] = None,
 ) -> GriotPacket:
     """Execute Griot v2 archive gathering with coverage honesty and multi-axis state resolution."""
     start_time = time.time()
     intent = compile_retrieval_intent(query, now=now)
-    sim_failures = simulated_node_failures or {}
 
-    # Evaluate federation nodes
+    if max_top_k < 0:
+        raise ValueError("max_top_k must be non-negative")
+
+    # This planner has no implicit network client: only caller-supplied probe receipts count.
     nodes_coverage = []
     failures_list = []
-    
+    supplied_statuses = {status.node_name: status for status in (node_statuses or ())}
+    simulated_failures = simulated_node_failures or {}
     fleet_nodes = ("whoart", "blade1tb", "phoebus")
     for node in fleet_nodes:
-        if node in sim_failures:
-            err = sim_failures[node]
+        if node in simulated_failures:
+            err = simulated_failures[node]
             status_code = 502 if "502" in err else 504
-            nodes_coverage.append(NodeCoverageStatus(
+            status = NodeCoverageStatus(
                 node_name=node,
                 attempted=True,
                 succeeded=False,
                 status_code=status_code,
                 error_message=err,
-            ))
-            failures_list.append(f"{node}: {err}")
+            )
+        elif node in supplied_statuses:
+            status = supplied_statuses[node]
         else:
-            nodes_coverage.append(NodeCoverageStatus(
+            status = NodeCoverageStatus(
                 node_name=node,
-                attempted=True,
-                succeeded=True,
-                status_code=200,
-            ))
+                attempted=False,
+                succeeded=False,
+                status_code=0,
+                error_message="no probe receipt supplied",
+            )
+        nodes_coverage.append(status)
+        if not status.attempted:
+            failures_list.append(f"{node}: not probed")
+        elif not status.succeeded or not 200 <= status.status_code < 300:
+            failures_list.append(f"{node}: {status.error_message or 'probe failed'}")
 
-    is_fully_covered = len(failures_list) == 0
-
-    # Query local 9-DB vault grid
-    v_dir = vault_dbs_dir or Path(r"C:\Users\super\.nougen\shards")
+    # Query every expected local DB. Missing or unreadable stores are coverage failures.
+    v_dir = vault_dbs_dir or (Path.home() / ".nougen" / "shards")
+    expected_dbs = tuple(range(1, 10))
     scanned_dbs = []
     candidate_records: list[GriotArtifact] = []
+    ranked_lanes: Dict[str, List[ArtifactCandidate]] = {}
+    candidate_total = 0
+    words = [w for w in re.findall(r"\w+", intent.normalized_query, flags=re.UNICODE) if len(w) > 2]
+    match_query = " OR ".join(f'"{word}"' for word in words[:4])
+    where_clauses = ["shards_fts MATCH ?"]
+    query_params: list[str] = [match_query]
+    if intent.temporal.period != "ALL_TIME" and intent.temporal.start_utc and intent.temporal.end_utc:
+        where_clauses.extend(("julianday(s.timestamp) >= julianday(?)", "julianday(s.timestamp) <= julianday(?)"))
+        query_params.extend((intent.temporal.start_utc, intent.temporal.end_utc))
+    where_sql = " AND ".join(where_clauses)
 
-    for i in range(1, 10):
+    for i in expected_dbs:
         db_path = v_dir / f"nougen_shards_{i}.db"
         if not db_path.exists():
+            failures_list.append(f"vault_db_{i}: expected database missing")
             continue
-        scanned_dbs.append(i)
-        
         try:
-            conn = sqlite3.connect(str(db_path), timeout=2.0)
-            cur = conn.cursor()
-            # Perform query across shards_fts and shards
-            words = [w for w in re.findall(r"\w+", intent.normalized_query) if len(w) > 2]
-            if words:
-                match_query = " OR ".join(words[:4])
-                cur.execute(
-                    "SELECT s.id, s.title, s.content, s.tags, s.created_at "
-                    "FROM shards s "
-                    "JOIN shards_fts f ON s.id = f.rowid "
-                    "WHERE shards_fts MATCH ? LIMIT 30",
-                    (match_query,)
-                )
-                rows = cur.fetchall()
-                for row in rows:
-                    shard_id, title, content, tags_json, created_at = row
-                    try:
-                        tags = json.loads(tags_json) if tags_json else []
-                    except Exception:
-                        tags = []
-                    
-                    compound_id = f"{shard_id}@db{i}"
-                    ep_class = infer_epistemic_class(title, tags)
-                    
-                    candidate_records.append(GriotArtifact(
-                        compound_id=compound_id,
-                        title=title,
-                        content=content[:500],
-                        epistemic_class=ep_class,
-                        score=1.0,
-                        created_at_utc=str(created_at),
-                        tags=tuple(tags),
-                    ))
-            conn.close()
+            db_uri = f"file:{quote(str(db_path))}?mode=ro"
+            with closing(sqlite3.connect(db_uri, uri=True, timeout=2.0)) as conn:
+                cur = conn.cursor()
+                if match_query:
+                    cur.execute(
+                        "SELECT COUNT(DISTINCT s.id) "
+                        "FROM shards s JOIN shards_fts f ON s.id = f.rowid "
+                        f"WHERE {where_sql}",
+                        query_params,
+                    )
+                    candidate_total += int(cur.fetchone()[0])
+                    cur.execute(
+                        "SELECT s.id, s.title, s.content, s.tags, s.timestamp, "
+                        "bm25(shards_fts) AS rank "
+                        "FROM shards s JOIN shards_fts f ON s.id = f.rowid "
+                        f"WHERE {where_sql} "
+                        "ORDER BY rank ASC, s.id ASC LIMIT ?",
+                        [*query_params, max_top_k],
+                    )
+                    rows = cur.fetchall()
+                    lane = f"db{i}_fts_bm25"
+                    ranked_lanes[lane] = []
+                    for shard_id, title, content, tags_json, created_at, rank in rows:
+                        try:
+                            tags = json.loads(tags_json) if tags_json else []
+                        except (TypeError, json.JSONDecodeError):
+                            tags = []
+                        compound_id = f"{shard_id}@db{i}"
+                        candidate_records.append(GriotArtifact(
+                            compound_id=compound_id,
+                            title=title or "",
+                            content=content or "",
+                            epistemic_class=infer_epistemic_class(title or "", tags),
+                            score=-float(rank),
+                            created_at_utc=str(created_at or ""),
+                            content_sha256=hashlib.sha256((content or "").encode("utf-8")).hexdigest(),
+                            tags=tuple(str(tag) for tag in tags),
+                        ))
+                        ranked_lanes[lane].append(ArtifactCandidate(
+                            candidate_id=compound_id,
+                            title=title or "",
+                            lane=lane,
+                            raw_score=-float(rank),
+                            snippet=(content or "")[:150],
+                            provenance_source=f"local_db_{i}",
+                            db_index=i,
+                        ))
+                scanned_dbs.append(i)
         except Exception as e:
-            failures_list.append(f"vault_db_{i}: {str(e)}")
+            failures_list.append(f"vault_db_{i}: {type(e).__name__}: {e}")
 
     # Deduplicate candidates by content/compound ID
     unique_artifacts: dict[str, GriotArtifact] = {}
@@ -266,18 +306,31 @@ def gather_griot_archive(
         if a.compound_id not in unique_artifacts:
             unique_artifacts[a.compound_id] = a
 
-    candidate_total = len(unique_artifacts)
-    sorted_artifacts = list(unique_artifacts.values())[:max_top_k]
+    fused = reciprocal_rank_fusion(ranked_lanes, top_n=max_top_k)
+    sorted_artifacts = [
+        GriotArtifact(
+            **{**asdict(unique_artifacts[candidate.candidate_id]), "score": fused_score}
+        )
+        for candidate, fused_score in fused
+    ]
     returned_count = len(sorted_artifacts)
     is_truncated = candidate_total > returned_count
 
     # Resolve Multi-Axis State Vector
-    completeness = "COMPLETE" if is_fully_covered and candidate_total > 0 else ("PARTIAL" if not is_fully_covered else "COMPLETE")
+    is_fully_covered = (
+        all(
+            status.attempted and status.succeeded and 200 <= status.status_code < 300
+            for status in nodes_coverage
+        )
+        and set(scanned_dbs) == set(expected_dbs)
+    )
+    completeness = "COMPLETE" if is_fully_covered else "PARTIAL"
     retrieval_status = "HIT" if candidate_total > 0 else "NO_HIT"
     availability_status = "AVAILABLE" if is_fully_covered else "DEGRADED"
 
     coverage_matrix = GriotCoverageMatrix(
         nodes=tuple(nodes_coverage),
+        vault_dbs_expected=expected_dbs,
         vault_dbs_scanned=tuple(scanned_dbs),
         is_fully_covered=is_fully_covered,
         failures=tuple(failures_list),
@@ -306,7 +359,7 @@ def gather_griot_archive(
         ArtifactCandidate(
             candidate_id=a.compound_id,
             title=a.title,
-            lane="fts_bm25",
+            lane="local_db_rrf",
             raw_score=a.score,
             snippet=a.content[:150],
         )
