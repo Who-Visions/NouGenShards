@@ -15,10 +15,11 @@ from pathlib import Path
 from typing import Optional
 
 # Canonical project paths
-PROJECT_DIR = Path.home() / "Outpost" / "NouGen" / "projects" / "learn-with-mrs-b"
+_DEFAULT_PROJECT_DIR = Path(__file__).resolve().parents[2] / "projects" / "learn-with-mrs-b"
+PROJECT_DIR = Path(os.environ.get("NOUGEN_MRSB_DIR", _DEFAULT_PROJECT_DIR if _DEFAULT_PROJECT_DIR.exists() else Path.home() / "Outpost" / "NouGen" / "projects" / "learn-with-mrs-b"))
 PILOT_DIR = PROJECT_DIR / "pilot"
 ASSETS_DIR = PROJECT_DIR / "assets"
-SHARD_DIR = Path.home() / ".nougen" / "shards"
+SHARD_DIR = Path(os.environ.get("NOUGEN_VAULT_DIR", Path.home() / ".nougen" / "shards"))
 
 # Spec files
 LINEAGE_MANIFEST = PROJECT_DIR / "mrs_b_character_lineage_manifest.json"
@@ -253,6 +254,18 @@ def recall_shards(query: str, limit: int = 5) -> list:
             pass
     # Sort all results across cluster DBs by recency (highest ID first)
     results.sort(key=lambda r: r.get("id", 0), reverse=True)
+    if not results and LINEAGE_MANIFEST.exists():
+        manifest = get_lineage()
+        for k, v in manifest.get("characters", {}).items():
+            if not terms or any(t.lower() in json.dumps(v).lower() for t in terms) or any(t.lower() in k.lower() for t in terms):
+                results.append({
+                    "db": "manifest_fallback",
+                    "id": 1,
+                    "title": f"Mrs. B Character DNA: {v.get('name', k)}",
+                    "domain_key": "learn_with_mrs_b",
+                    "tags": "character_dna,pedagogy,esol",
+                    "snippet": f"Mrs. B Character DNA - {v.get('name', k)}: {str(v)[:250]}",
+                })
     return results[:limit]
 
 
