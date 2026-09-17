@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence, get_args
 from zoneinfo import ZoneInfo
 
 
@@ -65,11 +65,26 @@ class RecoveryAction(str, Enum):
 class QueryFlags:
     """Orthogonal properties; axes below remain the authoritative state."""
 
+    observed: bool | None = None
+    complete: bool | None = None
+    canonical: bool | None = None
+    validated: bool | None = None
+    reconciled: bool | None = None
+    estimated: bool | None = None
+    stale: bool | None = None
+    partial: bool | None = None
+    conflicted: bool | None = None
+    superseded: bool | None = None
     missing_expected_nodes: bool = False
+    missing_expected_entities: bool = False
+    missing_expected_dates: bool = False
+    provenance_incomplete: bool = False
     retryable: bool = False
+    recoverable: bool = False
     traceable: bool = False
     deeper_search_available: bool = False
     failover_available: bool = False
+    continuation_available: bool = False
     exact_source_available: bool = False
     exact: bool | None = None
     current: bool | None = None
@@ -87,20 +102,118 @@ class QueryCoverage:
         return tuple(node for node in self.expected_nodes if node not in observed)
 
 
+Availability = Literal[
+    "AVAILABLE", "UNAVAILABLE", "UNKNOWN", "UNREACHABLE", "DEGRADED", "INTERMITTENT", "TIMEOUT",
+    "RATE_LIMITED", "AUTH_FAILED", "PERMISSION_DENIED", "CIRCUIT_OPEN", "MAINTENANCE",
+]
+Observation = Literal[
+    "OBSERVED", "UNOBSERVED", "UNREAD", "DEFERRED", "SKIPPED", "DISCOVERED", "REQUESTED", "FETCHED",
+    "PARSED", "INDEXED",
+]
+Completeness = Literal[
+    "COMPLETE", "PARTIAL", "EMPTY", "TRUNCATED", "PAGINATED", "EXHAUSTED", "INDETERMINATE",
+    "COVERAGE_UNKNOWN", "UNKNOWN",
+]
+Freshness = Literal[
+    "LIVE", "CURRENT", "FRESH", "AGING", "STALE", "EXPIRED", "SUPERSEDED", "FUTURE_DATED",
+    "LATE_ARRIVING", "UNKNOWN",
+]
+TruthQuality = Literal[
+    "EXACT", "OBSERVED_EXACT", "ESTIMATED", "DERIVED", "INFERRED", "RECONCILED", "PROJECTED",
+    "APPROXIMATE", "UNKNOWN", "DISPUTED", "CONTRADICTED",
+]
+Validation = Literal[
+    "VALID", "UNVALIDATED", "VALIDATING", "INVALID", "SCHEMA_MISMATCH", "CHECKSUM_MISMATCH",
+    "RANGE_INVALID", "SEMANTICALLY_INVALID", "DUPLICATE", "POSSIBLE_DUPLICATE",
+]
+Canonicality = Literal[
+    "CANONICAL", "NON_CANONICAL", "CANDIDATE", "HISTORICAL", "SUPERSEDED", "AMENDED", "RETRACTED",
+    "ORPHANED", "CURRENT", "UNKNOWN",
+]
+Computation = Literal[
+    "RAW", "NORMALIZED", "AGGREGATED", "MATERIALIZED", "CACHED", "RECOMPUTED", "RECONCILED",
+    "ESTIMATED", "BACKFILLED",
+]
+Provenance = Literal[
+    "PROVEN", "TRACEABLE", "PARTIALLY_TRACEABLE", "SOURCE_MISSING", "SOURCE_UNAVAILABLE", "UNVERIFIED",
+    "ORPHANED",
+]
+Federation = Literal[
+    "FEDERATION_COMPLETE", "FEDERATION_PARTIAL", "NODE_MISSING", "NODE_DEFERRED", "NODE_FAILED",
+    "NODE_STALE", "NODE_DIVERGED", "FAILOVER_ACTIVE", "FAILOVER_EXHAUSTED",
+]
+Retrieval = Literal[
+    "EXACT_HIT", "CANONICAL_HIT", "LEXICAL_HIT", "SEMANTIC_HIT", "GRAPH_HIT", "HYBRID_HIT", "RERANKED",
+    "RECURSIVE_HIT", "FALLBACK_HIT", "CACHE_HIT", "NO_HIT", "HIT", "ERROR", "NOT_RUN",
+]
+Conflict = Literal[
+    "CONSISTENT", "CONFLICTED", "DIVERGENT", "AMBIGUOUS", "MULTIPLE_CANDIDATES", "RESOLVED_BY_RECENCY",
+    "RESOLVED_BY_PROVENANCE", "RESOLVED_BY_CANONICALITY", "UNRESOLVED", "CLEAR", "UNKNOWN",
+]
+Execution = Literal[
+    "PENDING", "RUNNING", "RETRYING", "BACKING_OFF", "FAILING_OVER", "COMPLETE", "FAILED", "CANCELLED",
+    "BUDGET_EXHAUSTED",
+]
+Pagination = Literal[
+    "NOT_REQUIRED", "ACTIVE", "CONTINUATION_AVAILABLE", "EXHAUSTED", "STALLED", "LOOP_DETECTED",
+    "CURSOR_INVALID", "COMPLETE", "CONTINUING", "NOT_APPLICABLE",
+]
+Anomaly = Literal[
+    "NORMAL", "OUTLIER", "SPIKE", "DROP", "GAP", "COUNTER_RESET", "NEGATIVE_DELTA", "DUPLICATE_COHORT",
+    "IDENTITY_DRIFT", "CLOCK_DRIFT", "IMPOSSIBLE_VALUE",
+]
+Confidence = Literal["CERTAIN", "HIGH", "MEDIUM", "LOW", "INSUFFICIENT"]
+
+_AXIS_VALUES = {
+    "availability": set(get_args(Availability)),
+    "observation": set(get_args(Observation)),
+    "completeness": set(get_args(Completeness)),
+    "freshness": set(get_args(Freshness)),
+    "truth_quality": set(get_args(TruthQuality)),
+    "validation": set(get_args(Validation)),
+    "canonicality": set(get_args(Canonicality)),
+    "computation": set(get_args(Computation)),
+    "provenance": set(get_args(Provenance)),
+    "federation": set(get_args(Federation)),
+    "retrieval": set(get_args(Retrieval)),
+    "conflict": set(get_args(Conflict)),
+    "execution": set(get_args(Execution)),
+    "pagination": set(get_args(Pagination)),
+    "anomaly": set(get_args(Anomaly)),
+    "confidence": set(get_args(Confidence)),
+}
+_REASON_CODES = {
+    "EXPECTED_NODE_NOT_QUERIED", "EXPECTED_ENTITY_MISSING", "EXPECTED_DATE_MISSING",
+    "SUBREQUEST_BUDGET_EXHAUSTED", "LATENCY_BUDGET_EXHAUSTED", "TOKEN_BUDGET_EXHAUSTED",
+    "NODE_TIMEOUT", "NODE_5XX", "AUTH_FAILURE", "RATE_LIMIT", "CURSOR_STALLED", "CURSOR_LOOP",
+    "SOURCE_LATE", "SOURCE_STALE", "SOURCE_SUPERSEDED", "SOURCE_CONFLICT", "PROVENANCE_MISSING",
+    "SNAPSHOT_STALE", "SNAPSHOT_INCOMPLETE", "CANONICAL_POINTER_MISSING", "CHECKSUM_FAILURE",
+    "SCHEMA_VERSION_MISMATCH", "ALIAS_UNRESOLVED", "TEMPORAL_AMBIGUITY", "SCOPE_AMBIGUITY",
+    "METRIC_AMBIGUITY", "RETRIEVAL_CONFIDENCE_LOW",
+}
+
+
 @dataclass(frozen=True)
 class QueryState:
     """Machine-readable result state; prose is supplementary, never a control input."""
 
     status: str = "NOT_RUN"
-    observation: str = "UNOBSERVED"
-    completeness: str = "UNKNOWN"
-    conflict: str = "UNKNOWN"
-    freshness: str = "UNKNOWN"
-    retrieval: str = "NOT_RUN"
-    pagination: str = "NOT_APPLICABLE"
-    availability: str = "UNKNOWN"
-    truth_quality: str = "UNKNOWN"
-    canonicality: str = "UNKNOWN"
+    observation: Observation = "UNOBSERVED"
+    completeness: Completeness = "UNKNOWN"
+    conflict: Conflict = "UNKNOWN"
+    freshness: Freshness = "UNKNOWN"
+    retrieval: Retrieval = "NOT_RUN"
+    pagination: Pagination = "NOT_APPLICABLE"
+    availability: Availability = "UNKNOWN"
+    truth_quality: TruthQuality = "UNKNOWN"
+    validation: Validation = "UNVALIDATED"
+    canonicality: Canonicality = "UNKNOWN"
+    computation: Computation = "RAW"
+    provenance: Provenance = "UNVERIFIED"
+    federation: Federation = "FEDERATION_PARTIAL"
+    execution: Execution = "PENDING"
+    anomaly: Anomaly = "NORMAL"
+    confidence: Confidence = "INSUFFICIENT"
     flags: QueryFlags = field(default_factory=QueryFlags)
     reason_codes: tuple[str, ...] = ()
     evidence: tuple[Mapping[str, Any], ...] = ()
@@ -109,40 +222,24 @@ class QueryState:
 
     def __post_init__(self) -> None:
         _check_enum("status", self.status, {"NOT_RUN", "SUCCESS", "DEGRADED", "FAILURE"})
-        _check_enum("observation", self.observation, {
-            "OBSERVED", "UNOBSERVED", "UNREAD", "DEFERRED", "SKIPPED", "DISCOVERED",
-            "REQUESTED", "FETCHED", "PARSED", "INDEXED",
-        })
-        _check_enum("completeness", self.completeness, {
-            "COMPLETE", "PARTIAL", "EMPTY", "TRUNCATED", "PAGINATED", "EXHAUSTED",
-            "INDETERMINATE", "COVERAGE_UNKNOWN", "UNKNOWN",
-        })
-        _check_enum("conflict", self.conflict, {"CLEAR", "CONFLICTED", "UNKNOWN"})
-        _check_enum("freshness", self.freshness, {
-            "LIVE", "CURRENT", "FRESH", "AGING", "STALE", "EXPIRED", "SUPERSEDED",
-            "FUTURE_DATED", "LATE_ARRIVING", "UNKNOWN",
-        })
-        _check_enum("retrieval", self.retrieval, {"HIT", "NO_HIT", "ERROR", "NOT_RUN"})
-        _check_enum("pagination", self.pagination, {"COMPLETE", "CONTINUING", "STALLED", "LOOP_DETECTED", "NOT_APPLICABLE"})
-        _check_enum("availability", self.availability, {
-            "AVAILABLE", "UNAVAILABLE", "UNKNOWN", "UNREACHABLE", "DEGRADED", "INTERMITTENT",
-            "TIMEOUT", "RATE_LIMITED", "AUTH_FAILED", "PERMISSION_DENIED", "CIRCUIT_OPEN",
-            "MAINTENANCE",
-        })
-        _check_enum("truth_quality", self.truth_quality, {"EXACT", "ESTIMATED", "UNKNOWN"})
-        _check_enum("canonicality", self.canonicality, {"CURRENT", "SUPERSEDED", "UNKNOWN"})
+        for name, allowed in _AXIS_VALUES.items():
+            _check_enum(name, getattr(self, name), allowed)
         if self.coverage.complete and self.completeness == "PARTIAL":
             raise ValueError("complete coverage conflicts with PARTIAL completeness")
         if self.completeness == "COMPLETE" and not self.coverage.complete:
             raise ValueError("COMPLETE completeness requires complete coverage")
-        if self.flags.exact is True and self.truth_quality != "EXACT":
-            raise ValueError("exact flag requires truth_quality=EXACT")
+        if self.flags.exact is True and self.truth_quality not in {"EXACT", "OBSERVED_EXACT"}:
+            raise ValueError("exact flag requires an exact truth_quality")
         if self.flags.current is True and self.freshness in {"EXPIRED", "STALE", "FUTURE_DATED"}:
             raise ValueError("current flag conflicts with stale or expired freshness")
         if self.coverage.complete and self.coverage.missing_nodes:
             raise ValueError("complete coverage cannot have missing expected nodes")
-        if any(not isinstance(code, str) or "." not in code for code in self.reason_codes):
-            raise ValueError("reason_codes must be namespaced, e.g. federation.missing_nodes")
+        if any(
+            not isinstance(code, str)
+            or (code not in _REASON_CODES and not re.fullmatch(r"[a-z][a-z0-9_-]*\.[a-z][a-z0-9_.-]*", code))
+            for code in self.reason_codes
+        ):
+            raise ValueError("reason_codes must be known machine codes or namespaced legacy codes")
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -159,23 +256,28 @@ def _check_enum(name: str, value: str, allowed: set[str]) -> None:
 def next_recovery_action(state: QueryState) -> RecoveryAction:
     """Select the first applicable recovery in the relay's fixed precedence."""
     flags = state.flags
-    if state.completeness == "PARTIAL" and flags.missing_expected_nodes and flags.retryable:
+    if (state.completeness in {"PARTIAL", "COVERAGE_UNKNOWN", "INDETERMINATE"}
+            and (flags.missing_expected_nodes or flags.missing_expected_entities or flags.missing_expected_dates)
+            and (flags.retryable or flags.recoverable)):
         return RecoveryAction.CONTINUE_FEDERATION
-    if state.conflict == "CONFLICTED" and flags.traceable:
+    if state.conflict in {"CONFLICTED", "DIVERGENT", "AMBIGUOUS", "MULTIPLE_CANDIDATES", "UNRESOLVED"} and flags.traceable:
         return RecoveryAction.TRACE_PROVENANCE
-    if state.freshness == "STALE" and state.canonical_key:
+    if state.freshness in {"AGING", "STALE", "EXPIRED", "SUPERSEDED", "LATE_ARRIVING"} and state.canonical_key:
         return RecoveryAction.REFRESH_CANONICAL
     if state.retrieval == "NO_HIT" and not state.coverage.complete:
         return RecoveryAction.EXPAND_RETRIEVAL
     if state.retrieval == "NO_HIT" and state.coverage.complete and flags.deeper_search_available:
         return RecoveryAction.DRIFT_RECURSE
-    if state.pagination in {"STALLED", "LOOP_DETECTED"}:
+    if state.pagination in {"STALLED", "LOOP_DETECTED", "CURSOR_INVALID"}:
         return RecoveryAction.REPARTITION_QUERY
-    if state.availability == "TIMEOUT" and flags.failover_available:
+    if state.availability in {
+        "TIMEOUT", "UNAVAILABLE", "UNREACHABLE", "RATE_LIMITED", "AUTH_FAILED", "PERMISSION_DENIED",
+        "CIRCUIT_OPEN",
+    } and flags.failover_available:
         return RecoveryAction.FAILOVER
-    if state.truth_quality == "ESTIMATED" and flags.exact_source_available:
+    if state.truth_quality in {"ESTIMATED", "DERIVED", "INFERRED", "PROJECTED", "APPROXIMATE", "DISPUTED"} and flags.exact_source_available:
         return RecoveryAction.RECONCILE
-    if state.canonicality == "SUPERSEDED":
+    if state.canonicality in {"SUPERSEDED", "AMENDED", "RETRACTED", "ORPHANED"}:
         return RecoveryAction.FOLLOW_SUPERSESSION
     return RecoveryAction.STOP_WITH_EXPLICIT_STATE
 

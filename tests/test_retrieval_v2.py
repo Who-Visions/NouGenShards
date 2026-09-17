@@ -168,6 +168,54 @@ def test_state_axes_accept_architecture_lock_values(state):
     assert isinstance(state, QueryState)
 
 
+@pytest.mark.parametrize(("axis", "value"), [
+    ("availability", "MAINTENANCE"),
+    ("observation", "INDEXED"),
+    ("completeness", "COVERAGE_UNKNOWN"),
+    ("freshness", "LATE_ARRIVING"),
+    ("truth_quality", "CONTRADICTED"),
+    ("validation", "CHECKSUM_MISMATCH"),
+    ("canonicality", "ORPHANED"),
+    ("computation", "BACKFILLED"),
+    ("provenance", "SOURCE_UNAVAILABLE"),
+    ("federation", "NODE_DIVERGED"),
+    ("retrieval", "RECURSIVE_HIT"),
+    ("conflict", "RESOLVED_BY_PROVENANCE"),
+    ("execution", "BUDGET_EXHAUSTED"),
+    ("pagination", "CURSOR_INVALID"),
+    ("anomaly", "IDENTITY_DRIFT"),
+    ("confidence", "INSUFFICIENT"),
+])
+def test_every_architecture_axis_is_typed_and_serialized(axis, value):
+    state = QueryState(**{axis: value})
+    assert getattr(state, axis) == value
+    assert state.to_dict()[axis] == value
+
+
+@pytest.mark.parametrize(("state", "expected"), [
+    (
+        QueryState(completeness="COVERAGE_UNKNOWN", flags=QueryFlags(
+            missing_expected_dates=True, recoverable=True)),
+        RecoveryAction.CONTINUE_FEDERATION,
+    ),
+    (
+        QueryState(conflict="DIVERGENT", provenance="PARTIALLY_TRACEABLE",
+                   flags=QueryFlags(traceable=True)),
+        RecoveryAction.TRACE_PROVENANCE,
+    ),
+    (
+        QueryState(availability="AUTH_FAILED", flags=QueryFlags(failover_available=True)),
+        RecoveryAction.FAILOVER,
+    ),
+    (
+        QueryState(truth_quality="APPROXIMATE", flags=QueryFlags(exact_source_available=True)),
+        RecoveryAction.RECONCILE,
+    ),
+])
+def test_recovery_dispatcher_handles_expanded_axes(state, expected):
+    assert next_recovery_action(state) is expected
+
+
 @pytest.mark.parametrize("changes", [
     {"completeness": "PARTIAL", "coverage": QueryCoverage(True)},
     {"completeness": "COMPLETE", "coverage": QueryCoverage(False)},
@@ -179,6 +227,16 @@ def test_state_axes_accept_architecture_lock_values(state):
 def test_contradictory_state_is_rejected(changes):
     with pytest.raises(ValueError):
         QueryState(**changes)
+
+
+@pytest.mark.parametrize(("axis", "value"), [
+    ("validation", "MOSTLY_VALID"),
+    ("federation", "SOMEHOW_COMPLETE"),
+    ("confidence", "PRETTY_SURE"),
+])
+def test_unknown_axis_values_are_rejected(axis, value):
+    with pytest.raises(ValueError, match=f"invalid {axis}"):
+        QueryState(**{axis: value})
 
 
 def test_receipt_exposes_full_state_and_recovery_action():
