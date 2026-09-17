@@ -7,6 +7,8 @@ and SHA-256 receipts match.
 
 from nougen_shards.architecture_gauntlet import (
     GauntletRegistry,
+    arbitrate_cross_domain_conflict,
+    arbitrate_epistemic_authority,
 )
 
 
@@ -20,6 +22,7 @@ def test_gauntlet_full_50_suite_completeness():
     assert report["unique_domains"] >= 12
     assert report["mandatory_q50_falsifier_present"] is True
     assert len(report["receipt_fingerprint"]) == 64
+    assert report["preimage_length_bytes"] > 5000
 
 
 def test_every_single_question_has_substantive_content():
@@ -54,6 +57,49 @@ def test_q4_and_q7_strict_resolution():
     assert "Override Cap = 0 bps" in q7.evidence_and_math
 
 
+def test_behavioral_q4_cross_domain_arbitration():
+    """Verify runtime Q4 conflict resolution across versions, bridges, and quarantine."""
+    # 1. Supersession
+    a1 = {"id": "fact_1", "domain": "doc", "as_of_ms": 1000}
+    a2 = {"id": "fact_2", "domain": "doc", "as_of_ms": 2000, "supersedes": "fact_1"}
+    status, payload = arbitrate_cross_domain_conflict(a1, a2)
+    assert status == "VERSIONED"
+    assert payload["id"] == "fact_2"
+
+    # 2. Bridge Merge
+    doc_fact = {"id": "df1", "domain": "finance", "as_of_ms": 1000}
+    telemetry_fact = {"id": "tf1", "domain": "telemetry", "as_of_ms": 1000}
+    status, payload = arbitrate_cross_domain_conflict(
+        doc_fact, telemetry_fact, relational_bridges={("finance", "telemetry")}
+    )
+    assert status == "MERGED"
+    assert payload["bridge"] is True
+
+    # 3. Unbridged Quarantine
+    status, payload = arbitrate_cross_domain_conflict(doc_fact, telemetry_fact, relational_bridges=set())
+    assert status == "QUARANTINED"
+    assert payload["reason"] == "unbridged_contradiction"
+
+
+def test_behavioral_q7_epistemic_authority_gating():
+    """Verify runtime Q7 epistemic authority: 10 inferences cannot override 1 canon telemetry."""
+    canon = {"id": "tel_1", "tier": "VERIFIED_TELEMETRY", "value": "1829_passed"}
+    inferences = [{"id": f"inf_{i}", "tier": "MODEL_INFERENCE", "value": "maybe_100_failed"} for i in range(10)]
+
+    evidence_pool = [canon] + inferences
+    decision = arbitrate_epistemic_authority(evidence_pool)
+
+    assert decision["status"] == "CANON_ACCEPTED"
+    assert decision["confidence_bps"] == 10000
+    assert decision["winner"]["id"] == "tel_1"
+    assert decision["overridden_count"] == 10
+
+    # Inferences only capped at 1,000 bps
+    inf_only_decision = arbitrate_epistemic_authority(inferences)
+    assert inf_only_decision["status"] == "INFERENCE_CAPPED"
+    assert inf_only_decision["confidence_bps"] <= 1000
+
+
 def test_q49_and_q50_benchmarks_and_falsifiers():
     registry = GauntletRegistry()
 
@@ -67,3 +113,4 @@ def test_q49_and_q50_benchmarks_and_falsifiers():
     assert "Central NouGen Falsification Protocol" in q50.hypothesis
     assert "180-day" in q50.hypothesis
     assert "Monolith_2M" in q50.evidence_and_math
+

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -540,14 +540,91 @@ class GauntletRegistry:
         is_complete = total_questions == 50
         domains = {ans.domain for ans in self.answers.values()}
 
+        # Full preimage containing question text, domain, hypothesis, math, implementation, and falsifier
+        preimage = "".join(
+            f"{k}|{v.question_text}|{v.domain}|{v.hypothesis}|{v.evidence_and_math}|{v.implementation_consequence}|{v.falsifier}\n"
+            for k, v in sorted(self.answers.items())
+        )
+
         report = {
             "total_questions_answered": total_questions,
             "is_complete_50_50": is_complete,
             "unique_domains": len(domains),
             "domains": sorted(list(domains)),
             "mandatory_q50_falsifier_present": 50 in self.answers,
-            "receipt_fingerprint": hashlib.sha256(
-                "".join(f"{k}:{v.hypothesis}:{v.falsifier}" for k, v in sorted(self.answers.items())).encode("utf-8")
-            ).hexdigest()
+            "preimage_length_bytes": len(preimage.encode("utf-8")),
+            "receipt_fingerprint": hashlib.sha256(preimage.encode("utf-8")).hexdigest(),
         }
         return is_complete, report
+
+
+# ============================================================
+# BEHAVIORAL ARBITRATION ENGINES (Q4 & Q7)
+# ============================================================
+
+def arbitrate_cross_domain_conflict(
+    assertion_a: Dict[str, Any],
+    assertion_b: Dict[str, Any],
+    relational_bridges: Optional[set[Tuple[str, str]]] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Arbitrates contradiction between two provenanced assertions (Q4).
+
+    Returns (status, payload) where status is 'VERSIONED', 'MERGED', or 'QUARANTINED'.
+    """
+    # 1. Monotonic temporal supersession
+    if assertion_b.get("supersedes") == assertion_a.get("id") and assertion_b.get("as_of_ms", 0) > assertion_a.get("as_of_ms", 0):
+        return "VERSIONED", assertion_b
+    if assertion_a.get("supersedes") == assertion_b.get("id") and assertion_a.get("as_of_ms", 0) > assertion_b.get("as_of_ms", 0):
+        return "VERSIONED", assertion_a
+
+    # 2. Domain check & Relational bridge
+    dom_a = assertion_a.get("domain", "")
+    dom_b = assertion_b.get("domain", "")
+    bridges = relational_bridges or set()
+    if dom_a != dom_b and ((dom_a, dom_b) in bridges or (dom_b, dom_a) in bridges):
+        return "MERGED", {"primary": assertion_a, "secondary": assertion_b, "bridge": True}
+
+    # 3. Default safe quarantine
+    return "QUARANTINED", {"conflict": [assertion_a, assertion_b], "reason": "unbridged_contradiction"}
+
+
+def arbitrate_epistemic_authority(
+    evidence_list: list[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Arbitrates epistemic authority between canonical telemetry and model inferences (Q7).
+
+    Authority hierarchy:
+      VERIFIED_TELEMETRY = 10,000 bps (immutable)
+      DOC_AUTHORITY      = 7,000 bps
+      HUMAN_CONFIRMATION = 5,000 bps
+      MODEL_INFERENCE    = 1,000 bps (capped at max 1,000 regardless of count N)
+    """
+    canon_items = [e for e in evidence_list if e.get("tier") == "VERIFIED_TELEMETRY"]
+    if canon_items:
+        return {
+            "winner": canon_items[0],
+            "confidence_bps": 10000,
+            "status": "CANON_ACCEPTED",
+            "overridden_count": len(evidence_list) - len(canon_items),
+        }
+
+    doc_items = [e for e in evidence_list if e.get("tier") == "DOC_AUTHORITY"]
+    if doc_items:
+        return {
+            "winner": doc_items[0],
+            "confidence_bps": 7000,
+            "status": "DOC_ACCEPTED",
+            "overridden_count": len(evidence_list) - len(doc_items),
+        }
+
+    inference_items = [e for e in evidence_list if e.get("tier") == "MODEL_INFERENCE"]
+    if inference_items:
+        capped_bps = min(1000, len(inference_items) * 200)
+        return {
+            "winner": inference_items[0],
+            "confidence_bps": capped_bps,
+            "status": "INFERENCE_CAPPED",
+            "inference_count": len(inference_items),
+        }
+
+    return {"winner": None, "confidence_bps": 0, "status": "NO_EVIDENCE"}
