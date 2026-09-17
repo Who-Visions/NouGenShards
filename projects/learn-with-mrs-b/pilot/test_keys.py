@@ -3,7 +3,7 @@ import urllib.request
 import json
 
 def test_openai():
-    p = r"C:\Users\super\Outpost\Yuki-Ai\.env"
+    p = r"~\Outpost\Yuki-Ai\.env"
     if not os.path.exists(p):
         return
     with open(p, "r", errors="ignore") as f:

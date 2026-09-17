@@ -3,7 +3,7 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-pilot_dir = Path(r"c:\Users\super\Outpost\NouGen\projects\learn-with-mrs-b\pilot")
+pilot_dir = Path(r"~\Outpost\NouGen\projects\learn-with-mrs-b\pilot")
 
 sequence = [
     "00_cover", "00_dedication", "00_swatch_grid",
@@ -79,7 +79,7 @@ print(f"\nAudit Summary: {report['passed']}/{report['total_pages']} Passed, {rep
 print(f"Master PDF: {pdf_path.name} ({report['pdf_size_bytes']:,} bytes)")
 
 # Ingest Shard
-sys.path.insert(0, r"c:\Users\super\Outpost\NouGen\src")
+sys.path.insert(0, r"~\Outpost\NouGen\src")
 from nougen_shards import capture
 
 shard_title = "QA Audit: Learn with Mrs. B 44-Page KDP Master Bundle Verification"

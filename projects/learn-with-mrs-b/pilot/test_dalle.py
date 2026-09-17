@@ -2,7 +2,7 @@ import urllib.request
 import json
 
 key = ""
-with open(r"C:\Users\super\Outpost\Yuki-Ai\.env") as f:
+with open(r"~\Outpost\Yuki-Ai\.env") as f:
     for line in f:
         if line.startswith("OPENAI_API_KEY="):
             key = line.split("=", 1)[1].strip().strip('"').strip("'")

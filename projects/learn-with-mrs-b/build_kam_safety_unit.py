@@ -9,8 +9,8 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
 
-ASSETS_DIR = r"C:\Users\super\Outpost\NouGen\projects\learn-with-mrs-b\assets"
-OUTPUT_PDF = r"C:\Users\super\Outpost\NouGen\projects\learn-with-mrs-b\kam_police_safety_unit_booklet.pdf"
+ASSETS_DIR = r"~\Outpost\NouGen\projects\learn-with-mrs-b\assets"
+OUTPUT_PDF = r"~\Outpost\NouGen\projects\learn-with-mrs-b\kam_police_safety_unit_booklet.pdf"
 
 PAGE_WIDTH, PAGE_HEIGHT = letter # 8.5 x 11 inches (612 x 792 pt)
 

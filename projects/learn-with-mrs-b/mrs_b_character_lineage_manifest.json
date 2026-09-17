@@ -1,9 +1,9 @@
 {
   "manifest_version": "3.0.0",
   "project": "Learn With Mrs. B: ESOL Coloring & Activity Masterclass",
-  "canonical_authority": "C:\\Users\\super\\.nougen\\AUTHORITY.md",
+  "canonical_authority": "~\\.nougen\\AUTHORITY.md",
   "shard_grid_provenance": {
-    "root": "C:\\Users\\super\\.nougen\\shards",
+    "root": "~\\.nougen\\shards",
     "primary_shards": [
       3234,
       3246,

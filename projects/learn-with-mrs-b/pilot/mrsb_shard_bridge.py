@@ -4,7 +4,7 @@ mrsb_shard_bridge.py - NouGenMorph Dynamic Shard Recall & Lineage Bridge
 for "Learn With Mrs. B: ESOL Coloring & Activity Masterclass".
 
 Provides direct, high-speed SQLite and FTS5 dynamic queries into:
-- Canonical Shard Grid (C:\Users\super\.nougen\shards)
+- Canonical Shard Grid (~\.nougen\shards)
 - Canonical Character DNA & Lineage Locks (Tedley = Dad, Kendall R.I.P., Little Dave, etc.)
 - Trilingual Vocabulary (English / Haitian Creole / Spanish)
 - Wynn Capit Kinesthetic Color-Key Swatches
@@ -18,7 +18,7 @@ import glob
 import json
 import sqlite3
 
-SHARD_DIR = r"C:\Users\super\.nougen\shards"
+SHARD_DIR = r"~\.nougen\shards"
 PILOT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(PILOT_DIR) if os.path.basename(PILOT_DIR) == "pilot" else PILOT_DIR
 

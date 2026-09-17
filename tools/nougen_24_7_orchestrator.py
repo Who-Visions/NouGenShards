@@ -29,7 +29,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("NouGen24_7")
 
-WORKSPACE_ROOT = Path(r"C:\Users\super\Outpost\NouGen")
+WORKSPACE_ROOT = Path(r"~\Outpost\NouGen")
 PYTHON_EXE = WORKSPACE_ROOT / ".venv" / "Scripts" / "python.exe"
 
 NODES = {
@@ -113,7 +113,7 @@ def run_cycle():
     try:
         if not ping_node("whoart-local", "127.0.0.1", 4444, timeout=0.5):
             logger.warning("[!] Port 4444 dead! Reviving NouGen NGS Node (whoart)...")
-            cmd_path = Path(r"C:\Users\super\.nougen\bin\whoart_node_main.cmd")
+            cmd_path = Path(r"~\.nougen\bin\whoart_node_main.cmd")
             if cmd_path.exists():
                 subprocess.Popen(
                     ["cmd.exe", "/c", str(cmd_path)],
@@ -158,7 +158,7 @@ def run_cycle():
     # 4. DREAM & CONSOLIDATION PASS
     try:
         logger.info("[4/6] Checking Dream State & Invariant Synthesis...")
-        dream_sft = Path(r"C:\Users\super\.nougen\shards\dream_sft.jsonl")
+        dream_sft = Path(r"~\.nougen\shards\dream_sft.jsonl")
         if dream_sft.exists():
             size_kb = dream_sft.stat().st_size / 1024
             logger.info(f"Dream SFT Dataset Live: {dream_sft} ({size_kb:.1f} KB)")
@@ -168,7 +168,7 @@ def run_cycle():
     # 5. OPENSKILL EVOLUTION SYNC
     try:
         logger.info("[5/6] Checking OpenSkill Contracts...")
-        skill_path = Path(r"C:\Users\super\.nougen\shards\skills\emergent_behavioral_compiler_and_dynamic_glyph_discovery\SKILL.md")
+        skill_path = Path(r"~\.nougen\shards\skills\emergent_behavioral_compiler_and_dynamic_glyph_discovery\SKILL.md")
         if skill_path.exists():
             logger.info(f"OpenSkill Contract Active: {skill_path.name} (v3.0.0)")
     except Exception as e:

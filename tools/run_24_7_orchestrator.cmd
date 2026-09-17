@@ -1,6 +1,6 @@
 @echo off
-set "WORKSPACE=C:\Users\super\Outpost\NouGen"
-set "LOG=C:\Users\super\.nougen\logs\orchestrator.log"
+set "WORKSPACE=%USERPROFILE%\Outpost\NouGen"
+set "LOG=%USERPROFILE%\.nougen\logs\orchestrator.log"
 set "PYTHONUNBUFFERED=1"
 cd /d "%WORKSPACE%" || exit /b 1
 echo [%date% %time%] NouGen 24/7 Orchestrator starting >> "%LOG%"

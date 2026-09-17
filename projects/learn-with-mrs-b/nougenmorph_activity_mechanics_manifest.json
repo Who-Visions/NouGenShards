@@ -1,6 +1,6 @@
 {
   "manifest_name": "NouGenMorph Educational Fuel Shard Manifest",
-  "archive_source": "C:\\Users\\super\\Downloads\\Educational Materials - Activity Books, Coloring Books, and Puzzlers",
+  "archive_source": "~\\Downloads\\Educational Materials - Activity Books, Coloring Books, and Puzzlers",
   "total_volumes_scanned": 140,
   "ingested_into_nougen_grid": true,
   "shard_provenance": "Captured via nougen_shards.cli",

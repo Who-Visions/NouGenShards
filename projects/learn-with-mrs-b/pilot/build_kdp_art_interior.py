@@ -442,7 +442,7 @@ def compile_88page_master_pdf():
         print(f"Note: {PDF_OUT} currently open in viewer ({e}). Master available at {MASTER_PDF_OUT}")
         
     # Copy to brain artifact path
-    brain_dir = r"C:\Users\super\.gemini\antigravity-ide\brain\b500ad19-4964-4ee3-a626-b96e947bb825"
+    brain_dir = r"~\.gemini\antigravity-ide\brain\b500ad19-4964-4ee3-a626-b96e947bb825"
     if os.path.exists(brain_dir):
         brain_pdf = os.path.join(brain_dir, "learn-with-mrs-b-kdp-88page-interior.pdf")
         try:

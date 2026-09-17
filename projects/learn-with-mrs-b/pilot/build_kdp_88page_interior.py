@@ -10,7 +10,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-OUT = Path(r"c:\Users\super\Outpost\NouGen\projects\learn-with-mrs-b\pilot")
+OUT = Path(r"~\Outpost\NouGen\projects\learn-with-mrs-b\pilot")
 
 def get_browser():
     candidates = [

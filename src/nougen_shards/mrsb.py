@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Optional
 
 # Canonical project paths
-PROJECT_DIR = Path(r"C:\Users\super\Outpost\NouGen\projects\learn-with-mrs-b")
+PROJECT_DIR = Path.home() / "Outpost" / "NouGen" / "projects" / "learn-with-mrs-b"
 PILOT_DIR = PROJECT_DIR / "pilot"
 ASSETS_DIR = PROJECT_DIR / "assets"
-SHARD_DIR = Path(r"C:\Users\super\.nougen\shards")
+SHARD_DIR = Path.home() / ".nougen" / "shards"
 
 # Spec files
 LINEAGE_MANIFEST = PROJECT_DIR / "mrs_b_character_lineage_manifest.json"
