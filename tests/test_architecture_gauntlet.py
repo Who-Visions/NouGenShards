@@ -66,16 +66,25 @@ def test_behavioral_q4_cross_domain_arbitration():
     assert status == "VERSIONED"
     assert payload["id"] == "fact_2"
 
-    # 2. Bridge Merge
-    doc_fact = {"id": "df1", "domain": "finance", "as_of_ms": 1000}
-    telemetry_fact = {"id": "tf1", "domain": "telemetry", "as_of_ms": 1000}
+    # 2. Bridge Merge (compatible payloads)
+    doc_fact = {"id": "df1", "domain": "finance", "as_of_ms": 1000, "status": "active"}
+    telemetry_fact = {"id": "tf1", "domain": "telemetry", "as_of_ms": 1000, "ping_ms": 42}
     status, payload = arbitrate_cross_domain_conflict(
         doc_fact, telemetry_fact, relational_bridges={("finance", "telemetry")}
     )
     assert status == "MERGED"
     assert payload["bridge"] is True
 
-    # 3. Unbridged Quarantine
+    # 3. Bridge Merge Conflict (conflicting scalar values on shared key)
+    doc_conf = {"id": "df2", "domain": "finance", "value": 100}
+    tel_conf = {"id": "tf2", "domain": "telemetry", "value": 200}
+    status_conf, payload_conf = arbitrate_cross_domain_conflict(
+        doc_conf, tel_conf, relational_bridges={("finance", "telemetry")}
+    )
+    assert status_conf == "MERGE_CONFLICT_QUARANTINED"
+    assert "payload_value_mismatch" in payload_conf["reason"]
+
+    # 4. Unbridged Quarantine
     status, payload = arbitrate_cross_domain_conflict(doc_fact, telemetry_fact, relational_bridges=set())
     assert status == "QUARANTINED"
     assert payload["reason"] == "unbridged_contradiction"
@@ -98,6 +107,30 @@ def test_behavioral_q7_epistemic_authority_gating():
     inf_only_decision = arbitrate_epistemic_authority(inferences)
     assert inf_only_decision["status"] == "INFERENCE_CAPPED"
     assert inf_only_decision["confidence_bps"] <= 1000
+
+
+def test_behavioral_q7_top_tier_telemetry_conflict_and_supersession():
+    """Verify order-independent resolution of contradictory top-tier telemetry."""
+    tel_old = {"id": "t_old", "tier": "VERIFIED_TELEMETRY", "value": "failed", "as_of_ms": 1000}
+    tel_new = {"id": "t_new", "tier": "VERIFIED_TELEMETRY", "value": "passed", "as_of_ms": 2000}
+
+    # Order-independent temporal supersession: newer timestamp wins
+    dec_forward = arbitrate_epistemic_authority([tel_old, tel_new])
+    dec_reverse = arbitrate_epistemic_authority([tel_new, tel_old])
+    assert dec_forward["status"] == "CANON_SUPERSEDED"
+    assert dec_forward["winner"]["id"] == "t_new"
+    assert dec_reverse["status"] == "CANON_SUPERSEDED"
+    assert dec_reverse["winner"]["id"] == "t_new"
+
+    # Equi-temporal contradiction drops confidence to 0 (order-independent quarantine)
+    tel_eq1 = {"id": "te1", "tier": "VERIFIED_TELEMETRY", "value": "passed", "as_of_ms": 1000}
+    tel_eq2 = {"id": "te2", "tier": "VERIFIED_TELEMETRY", "value": "failed", "as_of_ms": 1000}
+    eq_dec1 = arbitrate_epistemic_authority([tel_eq1, tel_eq2])
+    eq_dec2 = arbitrate_epistemic_authority([tel_eq2, tel_eq1])
+    assert eq_dec1["status"] == "TELEMETRY_CONFLICT_QUARANTINED"
+    assert eq_dec1["confidence_bps"] == 0
+    assert eq_dec2["status"] == "TELEMETRY_CONFLICT_QUARANTINED"
+    assert eq_dec2["confidence_bps"] == 0
 
 
 def test_q49_and_q50_benchmarks_and_falsifiers():

@@ -569,7 +569,11 @@ def arbitrate_cross_domain_conflict(
 ) -> Tuple[str, Dict[str, Any]]:
     """Arbitrates contradiction between two provenanced assertions (Q4).
 
-    Returns (status, payload) where status is 'VERSIONED', 'MERGED', or 'QUARANTINED'.
+    Returns (status, payload) where status is:
+      - 'VERSIONED': Monotonic temporal supersession
+      - 'MERGED': Cross-domain assertion with explicit relational bridge and compatible payloads
+      - 'MERGE_CONFLICT_QUARANTINED': Bridged pair with conflicting unresolvable scalar values
+      - 'QUARANTINED': Unbridged conflicting assertions
     """
     # 1. Monotonic temporal supersession
     if assertion_b.get("supersedes") == assertion_a.get("id") and assertion_b.get("as_of_ms", 0) > assertion_a.get("as_of_ms", 0):
@@ -582,6 +586,14 @@ def arbitrate_cross_domain_conflict(
     dom_b = assertion_b.get("domain", "")
     bridges = relational_bridges or set()
     if dom_a != dom_b and ((dom_a, dom_b) in bridges or (dom_b, dom_a) in bridges):
+        # Validate payload compatibility for shared keys
+        val_a = assertion_a.get("value")
+        val_b = assertion_b.get("value")
+        if val_a is not None and val_b is not None and val_a != val_b:
+            return "MERGE_CONFLICT_QUARANTINED", {
+                "conflict": [assertion_a, assertion_b],
+                "reason": f"payload_value_mismatch: {val_a} != {val_b}",
+            }
         return "MERGED", {"primary": assertion_a, "secondary": assertion_b, "bridge": True}
 
     # 3. Default safe quarantine
@@ -598,9 +610,34 @@ def arbitrate_epistemic_authority(
       DOC_AUTHORITY      = 7,000 bps
       HUMAN_CONFIRMATION = 5,000 bps
       MODEL_INFERENCE    = 1,000 bps (capped at max 1,000 regardless of count N)
+
+    Top-tier conflict rule:
+      If multiple contradictory VERIFIED_TELEMETRY items exist, order-independent resolution:
+      - Strictly newer timestamp (as_of_ms) wins (CANON_SUPERSEDED).
+      - Equi-temporal contradiction drops confidence to 0 (TELEMETRY_CONFLICT_QUARANTINED).
     """
     canon_items = [e for e in evidence_list if e.get("tier") == "VERIFIED_TELEMETRY"]
     if canon_items:
+        # Check if all canon items agree
+        values = {e.get("value") for e in canon_items if "value" in e}
+        if len(values) > 1:
+            # Multiple conflicting canon items: check monotonic timestamps
+            sorted_canon = sorted(canon_items, key=lambda x: x.get("as_of_ms", 0), reverse=True)
+            if sorted_canon[0].get("as_of_ms", 0) > sorted_canon[1].get("as_of_ms", 0):
+                return {
+                    "winner": sorted_canon[0],
+                    "confidence_bps": 10000,
+                    "status": "CANON_SUPERSEDED",
+                    "overridden_count": len(evidence_list) - 1,
+                }
+            # Equi-temporal or un-timestamped contradictory canon -> QUARANTINE with 0 bps
+            return {
+                "winner": None,
+                "confidence_bps": 0,
+                "status": "TELEMETRY_CONFLICT_QUARANTINED",
+                "conflicting_items": canon_items,
+            }
+
         return {
             "winner": canon_items[0],
             "confidence_bps": 10000,
