@@ -200,8 +200,9 @@ def test_v1_migration_backfills_current_pointer_and_query_postings(tmp_path):
     assert receipt["status"] == "complete"
     assert receipt["snapshot"]["temporal"]["as_of"] == "2025-11-30"
     with index._connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
         assert conn.execute("SELECT COUNT(*) FROM fact_query_terms").fetchone()[0] > 0
+        assert conn.execute("SELECT as_of_ms FROM fact_snapshots").fetchone()[0] is not None
 
 
 def test_historical_lookup_uses_index_and_does_not_return_entire_history(tmp_path):
@@ -218,6 +219,16 @@ def test_historical_lookup_uses_index_and_does_not_return_entire_history(tmp_pat
     assert now_result["snapshot"]["snapshot_id"] == current_id
     assert old_result["candidates"] == [old_id]
     assert now_result["candidates"] == [current_id]
+
+    with index._connect() as conn:
+        scope_json = json.dumps({"expected_entities": ["fleet", "token_usage"],
+                                 "expected_machines": ["blade1tb", "phoebus", "whoart"]},
+                                sort_keys=True, separators=(",", ":"))
+        plan = conn.execute("""EXPLAIN QUERY PLAN SELECT snapshot_id FROM fact_snapshots
+            WHERE canonical_key=? AND scope_json=? AND as_of_ms<=?
+            ORDER BY as_of_ms DESC, version DESC, event_at_ms DESC, captured_at_ms DESC LIMIT 1""",
+            ("token_usage:fleet:YTD:2026", scope_json, 1764460800000)).fetchall()
+        assert any("idx_fact_history_ms" in row["detail"] for row in plan)
 
 
 def test_facts_cli_indexes_then_resolves_with_receipt(tmp_path, capsys):

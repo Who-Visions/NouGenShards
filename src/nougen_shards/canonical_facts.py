@@ -16,7 +16,9 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-SCHEMA_VERSION = 2
+from .temporal_fabric import to_epoch_ms
+
+SCHEMA_VERSION = 3
 _COMPLETENESS = {"complete", "partial", "unknown"}
 
 
@@ -196,7 +198,10 @@ class CanonicalFactIndex:
                     captured_at TEXT NOT NULL,
                     version INTEGER NOT NULL,
                     scope_json TEXT NOT NULL,
-                    snapshot_json TEXT NOT NULL
+                    snapshot_json TEXT NOT NULL,
+                    as_of_ms INTEGER,
+                    event_at_ms INTEGER,
+                    captured_at_ms INTEGER
                 )""")
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(fact_snapshots)")}
                 if "as_of_ts" not in columns:
@@ -206,6 +211,12 @@ class CanonicalFactIndex:
                 conn.execute("""CREATE INDEX IF NOT EXISTS idx_fact_history_seek
                     ON fact_snapshots(canonical_key, scope_json, as_of_ts DESC,
                                       version DESC, event_at_ts DESC)""")
+                for column in ("as_of_ms", "event_at_ms", "captured_at_ms"):
+                    if column not in columns:
+                        conn.execute(f"ALTER TABLE fact_snapshots ADD COLUMN {column} INTEGER")
+                conn.execute("""CREATE INDEX IF NOT EXISTS idx_fact_history_ms
+                    ON fact_snapshots(canonical_key, scope_json, as_of_ms DESC,
+                                      version DESC, event_at_ms DESC, captured_at_ms DESC)""")
                 conn.execute("""CREATE TABLE IF NOT EXISTS canonical_current (
                     canonical_key TEXT NOT NULL,
                     scope_json TEXT NOT NULL,
@@ -213,8 +224,15 @@ class CanonicalFactIndex:
                     as_of_ts REAL NOT NULL,
                     version INTEGER NOT NULL,
                     event_at_ts REAL NOT NULL,
+                    as_of_ms INTEGER,
+                    event_at_ms INTEGER,
+                    captured_at_ms INTEGER,
                     PRIMARY KEY(canonical_key, scope_json)
                 ) WITHOUT ROWID""")
+                current_columns = {row[1] for row in conn.execute("PRAGMA table_info(canonical_current)")}
+                for column in ("as_of_ms", "event_at_ms", "captured_at_ms"):
+                    if column not in current_columns:
+                        conn.execute(f"ALTER TABLE canonical_current ADD COLUMN {column} INTEGER")
                 conn.execute("""CREATE TABLE IF NOT EXISTS fact_query_terms (
                     canonical_key TEXT NOT NULL,
                     group_key TEXT NOT NULL,
@@ -223,8 +241,11 @@ class CanonicalFactIndex:
                 ) WITHOUT ROWID""")
                 conn.execute("""CREATE INDEX IF NOT EXISTS idx_fact_terms_lookup
                     ON fact_query_terms(term, canonical_key, group_key)""")
-                if conn.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+                if version < 2:
                     self._backfill_v2(conn)
+                if version < 3:
+                    self._backfill_v3(conn)
                 conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         else:
             if not self.path.is_file():
@@ -272,6 +293,20 @@ class CanonicalFactIndex:
                 conn.executemany("INSERT OR IGNORE INTO fact_query_terms VALUES (?, ?, ?)",
                                  [(row["canonical_key"], group, term) for term in terms])
 
+    @staticmethod
+    def _backfill_v3(conn: sqlite3.Connection) -> None:
+        """Add integer-millisecond keys without rewriting source ISO timestamps."""
+        rows = conn.execute("SELECT snapshot_id, as_of, event_at, captured_at FROM fact_snapshots").fetchall()
+        for row in rows:
+            values = (to_epoch_ms(row["as_of"]), to_epoch_ms(row["event_at"]),
+                      to_epoch_ms(row["captured_at"]), row["snapshot_id"])
+            conn.execute("""UPDATE fact_snapshots SET as_of_ms=?, event_at_ms=?, captured_at_ms=?
+                WHERE snapshot_id=?""", values)
+        conn.execute("""UPDATE canonical_current SET
+            as_of_ms=(SELECT as_of_ms FROM fact_snapshots WHERE snapshot_id=canonical_current.snapshot_id),
+            event_at_ms=(SELECT event_at_ms FROM fact_snapshots WHERE snapshot_id=canonical_current.snapshot_id),
+            captured_at_ms=(SELECT captured_at_ms FROM fact_snapshots WHERE snapshot_id=canonical_current.snapshot_id)""")
+
     def put(self, snapshot: Mapping[str, Any]) -> str:
         if self.read_only:
             raise PermissionError("fact index was opened read-only")
@@ -282,26 +317,33 @@ class CanonicalFactIndex:
         scope_json = _canonical_json(data["scope"])
         as_of_ts = _time_key(temporal["as_of"])
         event_at_ts = _time_key(temporal["event_at"])
+        as_of_ms = to_epoch_ms(temporal["as_of"])
+        event_at_ms = to_epoch_ms(temporal["event_at"])
+        captured_at_ms = to_epoch_ms(temporal["captured_at"])
         with self._connect() as conn:
             conn.execute("""INSERT OR IGNORE INTO fact_snapshots
                 (snapshot_id, canonical_key, as_of, event_at, captured_at, version, scope_json,
-                 snapshot_json, as_of_ts, event_at_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
+                 snapshot_json, as_of_ts, event_at_ts, as_of_ms, event_at_ms, captured_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
                 snapshot_id, data["canonical_key"], temporal["as_of"], temporal["event_at"],
                 temporal["captured_at"], data["version"], scope_json, body, as_of_ts, event_at_ts,
+                as_of_ms, event_at_ms, captured_at_ms,
             ))
             current = conn.execute("""SELECT as_of_ts, version, event_at_ts FROM canonical_current
                 WHERE canonical_key=? AND scope_json=?""", (data["canonical_key"], scope_json)).fetchone()
             rank = (as_of_ts, data["version"], event_at_ts)
             if current is None or rank > (current["as_of_ts"], current["version"], current["event_at_ts"]):
                 conn.execute("""INSERT INTO canonical_current
-                    (canonical_key, scope_json, snapshot_id, as_of_ts, version, event_at_ts)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (canonical_key, scope_json, snapshot_id, as_of_ts, version, event_at_ts,
+                     as_of_ms, event_at_ms, captured_at_ms)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(canonical_key, scope_json) DO UPDATE SET
                     snapshot_id=excluded.snapshot_id, as_of_ts=excluded.as_of_ts,
-                    version=excluded.version, event_at_ts=excluded.event_at_ts""",
+                    version=excluded.version, event_at_ts=excluded.event_at_ts,
+                    as_of_ms=excluded.as_of_ms, event_at_ms=excluded.event_at_ms,
+                    captured_at_ms=excluded.captured_at_ms""",
                     (data["canonical_key"], scope_json, snapshot_id, as_of_ts,
-                     data["version"], event_at_ts))
+                     data["version"], event_at_ts, as_of_ms, event_at_ms, captured_at_ms))
             for group, terms in _term_groups(data).items():
                 conn.executemany("INSERT OR IGNORE INTO fact_query_terms VALUES (?, ?, ?)",
                                  [(data["canonical_key"], group, term) for term in terms])
@@ -336,9 +378,10 @@ class CanonicalFactIndex:
                                        (indexed_scope["snapshot_id"],)).fetchone()
                 else:
                     row = conn.execute("""SELECT snapshot_id, snapshot_json FROM fact_snapshots
-                        WHERE canonical_key=? AND scope_json=? AND as_of_ts<=?
-                        ORDER BY as_of_ts DESC, version DESC, event_at_ts DESC LIMIT 1""",
-                        (canonical_key, indexed_scope["scope_json"], _time_key(as_of))).fetchone()
+                    WHERE canonical_key=? AND scope_json=? AND as_of_ms<=?
+                        ORDER BY as_of_ms DESC, version DESC, event_at_ms DESC, captured_at_ms DESC
+                        LIMIT 1""",
+                        (canonical_key, indexed_scope["scope_json"], to_epoch_ms(as_of))).fetchone()
                 if row is None and as_of is not None:
                     row = conn.execute("SELECT snapshot_id, snapshot_json FROM fact_snapshots WHERE snapshot_id=?",
                                        (indexed_scope["snapshot_id"],)).fetchone()

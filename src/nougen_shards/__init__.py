@@ -26,6 +26,8 @@ from .federation import federated_retrieve as federated_retrieve
 from .history import HistoryEngine as HistoryEngine, log_event as log_event, init_history_db as init_history_db
 from .graph import link_shards as link_shards, related_shards as related_shards
 from .gatekeeper import check_mutation_gate as check_mutation_gate
+from .temporal_fabric import TemporalEnvelope as TemporalEnvelope, TemporalFabric as TemporalFabric
+from .temporal_fabric import extract_temporal_mentions as extract_temporal_mentions
 
 try:
     from .transcriber import NouGenTranscriber, TranscribeEngine
@@ -66,4 +68,3 @@ def __getattr__(name: str):
         return mod
     except ImportError:
         raise AttributeError(f"module '{__name__}' has no attribute '{name}'") from None
-
