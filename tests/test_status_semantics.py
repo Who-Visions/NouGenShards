@@ -4,6 +4,7 @@ from nougen_shards.status_semantics import (
     StatusLevel as S,
     aggregate,
     classify_node,
+    classify_node_dimensions,
     classify_shards_status,
     classify_tool_error,
     render,
@@ -27,6 +28,24 @@ def test_probe_failure_with_unknown_backend_is_probe_red_shards_unknown():
         "🔴 Shard health probe: endpoint check failed",
         "⚪ Shards: not established by this probe",
     ]
+
+
+def test_probe_success_reconciles_node_origin_and_blade_confirmed():
+    # FLASH KICK live node proof reconciliation test
+    probe, shards = classify_shards_status({
+        "up": True, "health_up": True, "mcp_up": True,
+        "configured": True, "origin": "blade1tb", "blade_confirmed": True})
+    assert probe.status is S.GREEN
+    assert shards.status is S.GREEN
+    assert shards.confidence == 1.0
+
+    # Auto-reconciliation test when origin is blade1tb but blade_confirmed was omitted
+    probe_auto, shards_auto = classify_shards_status({
+        "up": True, "health_up": True, "mcp_up": True,
+        "configured": True, "node": "blade1tb"})
+    assert probe_auto.status is S.GREEN
+    assert shards_auto.status is S.GREEN
+    assert probe_auto.evidence["blade_confirmed"] is True
 
 
 def test_tool_registration_mismatch_is_orange_not_bus_down():
@@ -90,50 +109,64 @@ def test_telemetry_record_carries_required_fields():
     assert d["status"] == "RED"
 
 
-def test_flash_kick_blade_origin_reconciliation():
-    from nougen_shards.status_semantics import reconcile_origin_identity, classify_shards_status
-    raw_payload = {
-        "up": True, "health_up": True, "mcp_up": True,
-        "configured": True, "origin": "unknown", "blade_confirmed": False
-    }
-    witness = {"node": "blade", "blade_confirmed": True}
-    reconciled = reconcile_origin_identity(raw_payload, witness)
-    assert reconciled["blade_confirmed"] is True
-    assert reconciled["origin"] == "blade"
-
-    probe, shards = classify_shards_status(raw_payload, witness_evidence=witness)
-    assert probe.status is S.GREEN
-    assert probe.evidence["blade_confirmed"] is True
-    assert probe.evidence["origin"] == "blade"
-
-
-def test_flash_kick_phoebus_multidimensional_state_isolation():
-    from nougen_shards.status_semantics import classify_node_dimensions, NodeDimensions
-
-    # Phoebus state: vault UP, message route TIMEOUT/UNKNOWN, service UP
-    dims = classify_node_dimensions(
-        "phoebus",
-        vault_status=S.GREEN,
-        msg_status=S.UNKNOWN,
-        service_status=S.GREEN,
-        vault_reason="federation fanout succeeded",
-        msg_reason="direct probe timed out",
-        timestamps={"vault": NOW, "msg": NOW - 60},
-        evidence={"fanout.phoebus": "ok", "msg.route": "timeout"}
+def test_flash_kick_phoebus_multidimensional_node_state():
+    # FLASH KICK Phoebus directive: regression test the exact mixed state
+    # phoebus vault=UP, phoebus msg=TIMEOUT, whoart vault=UP, blade federated recall=TIMEOUT
+    phoebus = classify_node_dimensions(
+        node="phoebus",
+        vault_ok=True,
+        msg_ok=False,
+        msg_error="NouGenMsg route timed out",
     )
-    assert isinstance(dims, NodeDimensions)
-    assert dims.vault is S.GREEN
-    assert dims.msg is S.UNKNOWN  # Not collapsed into RED or offline
-    assert dims.service is S.GREEN
+    assert phoebus.vault_status is S.GREEN
+    assert phoebus.msg_status is S.ORANGE
+    assert phoebus.identity_confirmed is True
 
-    obs_list = dims.aggregate_observations()
-    vault_obs = next(o for o in obs_list if o.reported_scope == "vault")
-    msg_obs = next(o for o in obs_list if o.reported_scope == "message_route")
+    whoart = classify_node_dimensions(
+        node="whoart",
+        vault_ok=True,
+        msg_ok=True,
+    )
+    assert whoart.vault_status is S.GREEN
+    assert whoart.msg_status is S.GREEN
 
-    assert vault_obs.status is S.GREEN
-    assert msg_obs.status is S.UNKNOWN
-    # Ensure vault success does not falsely turn message route GREEN
-    assert msg_obs.status != S.GREEN
-    # Ensure message timeout does not falsely turn vault RED
-    assert vault_obs.status != S.RED
+    blade = classify_node_dimensions(
+        node="blade",
+        vault_ok=False,
+        vault_error="federated recall TIMEOUT",
+        msg_ok=True,
+    )
+    assert blade.vault_status is S.RED
+    assert blade.msg_status is S.GREEN
+
+    # Verify no dimension collapses into a false unified status
+    assert phoebus.vault_status != phoebus.msg_status
+    assert blade.vault_status != blade.msg_status
+
+
+def test_whoart_401_auth_degraded_never_offline():
+    # Downstream Directive Requirement: 401 on shard lane is LIVE_AUTH_DEGRADED, never OFFLINE
+    whoart = classify_node_dimensions(
+        node="whoart",
+        vault_ok=False,
+        vault_error="gateway 401: Invalid node token",
+        msg_ok=True,
+        execution_live=True,
+    )
+    assert whoart.shard_auth_valid is False
+    assert whoart.derived_state == "LIVE_AUTH_DEGRADED"
+    assert whoart.derived_state != "OFFLINE_CONFIRMED"
+
+
+def test_tracker_stale_never_overrides_recent_relay_liveness():
+    # Tracker stale (e.g. 5 days old) with active relay message -> LIVE_TRACKER_STALE
+    node = classify_node_dimensions(
+        node="whoart",
+        vault_ok=True,
+        msg_ok=True,
+        tracker_fresh=False,
+        relay_live=True,
+    )
+    assert node.derived_state == "LIVE_TRACKER_STALE"
+    assert node.derived_state != "OFFLINE_CONFIRMED"
 

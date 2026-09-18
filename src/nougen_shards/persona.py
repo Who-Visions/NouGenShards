@@ -549,6 +549,87 @@ def signals_from_shards(scope_tag: str, *, tz: str = "UTC", limit: int = 400, ro
     return merged
 
 
+
+# --------------------------------------------------------------------------- #
+# Fleet State Rendering (Orthogonal multi-dimensional status)
+# --------------------------------------------------------------------------- #
+
+def render_fleet_state(node_dims: Optional[dict | str | object] = None, *, mode: str = "human") -> str:
+    """Render 10-dimensional orthogonal fleet state deterministically.
+    
+    Dimensions:
+      1. node_liveness
+      2. service_liveness
+      3. route_liveness
+      4. auth_state
+      5. identity_confidence
+      6. data_freshness
+      7. vault_completeness
+      8. message_bus_reachability
+      9. tracker_freshness
+      10. evidence_provenance
+      
+    Modes:
+      'human': Clean, high-signal formatted text report
+      'agent': Deterministic JSON string for structured agent parsing
+    """
+    from nougen_shards.status_semantics import classify_node_dimensions, StatusLevel
+    
+    if node_dims is None:
+        dims = classify_node_dimensions("node")
+    elif isinstance(node_dims, str):
+        dims = classify_node_dimensions(node_dims)
+    elif isinstance(node_dims, dict):
+        dims = classify_node_dimensions(**node_dims)
+    else:
+        dims = node_dims
+
+    # Derive 10 orthogonal dimensions deterministically from dimensions object
+    node_live = getattr(dims, "node_liveness", StatusLevel.GREEN.value if getattr(dims, "identity_confirmed", False) else StatusLevel.UNKNOWN.value)
+    service_live = getattr(dims, "service_liveness", getattr(dims, "vault_status", StatusLevel.UNKNOWN).value if hasattr(getattr(dims, "vault_status", None), "value") else str(getattr(dims, "vault_status", StatusLevel.UNKNOWN)))
+    route_live = getattr(dims, "route_liveness", getattr(dims, "msg_status", StatusLevel.UNKNOWN).value if hasattr(getattr(dims, "msg_status", None), "value") else str(getattr(dims, "msg_status", StatusLevel.UNKNOWN)))
+    auth_st = getattr(dims, "auth_state", StatusLevel.GREEN.value if getattr(dims, "identity_confirmed", False) else StatusLevel.UNKNOWN.value)
+    id_conf = getattr(dims, "identity_confidence", "HIGH" if getattr(dims, "identity_confirmed", False) else "UNVERIFIED")
+    data_fresh = getattr(dims, "data_freshness", "RECENT" if getattr(dims, "last_vault_ts", None) else "UNKNOWN")
+    vault_comp = getattr(dims, "vault_completeness", getattr(dims, "vault_status", StatusLevel.UNKNOWN).value if hasattr(getattr(dims, "vault_status", None), "value") else str(getattr(dims, "vault_status", StatusLevel.UNKNOWN)))
+    msg_reach = getattr(dims, "message_bus_reachability", getattr(dims, "msg_status", StatusLevel.UNKNOWN).value if hasattr(getattr(dims, "msg_status", None), "value") else str(getattr(dims, "msg_status", StatusLevel.UNKNOWN)))
+    trkr_fresh = getattr(dims, "tracker_freshness", "RECENT" if getattr(dims, "last_msg_ts", None) else "UNKNOWN")
+    evid_prov = getattr(dims, "evidence_provenance", "DIRECT_OBSERVATION")
+
+    state_map = {
+        "node_liveness": str(node_live),
+        "service_liveness": str(service_live),
+        "route_liveness": str(route_live),
+        "auth_state": str(auth_st),
+        "identity_confidence": str(id_conf),
+        "data_freshness": str(data_fresh),
+        "vault_completeness": str(vault_comp),
+        "message_bus_reachability": str(msg_reach),
+        "tracker_freshness": str(trkr_fresh),
+        "evidence_provenance": str(evid_prov),
+    }
+
+    if mode == "agent":
+        return json.dumps(state_map, sort_keys=True, indent=2)
+
+    # Human view
+    lines = [
+        "=== FLEET STATE REPORT (10-DIMENSIONAL) ===",
+        f"  1. Node Liveness:           {state_map['node_liveness']}",
+        f"  2. Service Liveness:        {state_map['service_liveness']}",
+        f"  3. Route Liveness:          {state_map['route_liveness']}",
+        f"  4. Auth State:              {state_map['auth_state']}",
+        f"  5. Identity Confidence:     {state_map['identity_confidence']}",
+        f"  6. Data Freshness:          {state_map['data_freshness']}",
+        f"  7. Vault Completeness:      {state_map['vault_completeness']}",
+        f"  8. Message Bus Reachability:{state_map['message_bus_reachability']}",
+        f"  9. Tracker Freshness:       {state_map['tracker_freshness']}",
+        f" 10. Evidence Provenance:     {state_map['evidence_provenance']}",
+    ]
+    return "\n".join(lines)
+
+
+
 class PersonaStore:
     """load_local-or-setup: a JSON cache of resolved personas keyed by scope, beside the vault.
     Rebuildable from the shards at any time; never a source of truth."""

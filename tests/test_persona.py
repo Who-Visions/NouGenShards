@@ -206,3 +206,20 @@ def test_one_liners_detect_after_widening():
 def test_first_language_first_ignores_undecidable_opening():
     p = _ht_persona()
     assert P.check_output("# T" + chr(10) + "2024-09-24, West Palm Beach" + chr(10) + "Mwen te marye.", p) == []
+
+
+def test_render_fleet_state_orthogonal_dimensions():
+    # Human mode
+    human_report = P.render_fleet_state(mode="human")
+    assert "=== FLEET STATE REPORT (10-DIMENSIONAL) ===" in human_report
+    assert "1. Node Liveness:" in human_report
+    assert "10. Evidence Provenance:" in human_report
+
+    # Agent mode
+    agent_report = P.render_fleet_state(mode="agent")
+    import json
+    parsed = json.loads(agent_report)
+    assert len(parsed) == 10
+    assert "node_liveness" in parsed
+    assert "evidence_provenance" in parsed
+
