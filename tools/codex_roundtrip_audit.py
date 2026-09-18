@@ -70,14 +70,16 @@ def _transcript_evidence(path: Path, marker: str, thread: str) -> tuple[bool, bo
     return model_consumed, adapter_invoked, queue_receipt
 
 
-def _archived_payload(archive_dir: Path, marker: str) -> bool:
+def _archived_payload(archive_dir: Path, marker: str, thread: str) -> bool:
     try:
         for path in archive_dir.glob("ping_*.json"):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
             except (OSError, json.JSONDecodeError):
                 continue
+            addressed_thread = payload.get("thread_id") or payload.get("target_session_id") or payload.get("thread")
             if (isinstance(payload, dict) and payload.get("target") == "codex"
+                    and (addressed_thread is None or addressed_thread == thread)
                     and _contains(payload, marker)):
                 return True
     except OSError:
@@ -103,7 +105,7 @@ def _receiver_envelope(path: Path | None, marker: str, thread: str) -> bool:
 def audit_roundtrip(marker: str, thread: str, transcript: Path,
                     archive_dir: Path, receiver_envelope: Path | None = None) -> dict[str, Any]:
     consumed, invoked, accepted = _transcript_evidence(transcript, marker, thread)
-    archived = _archived_payload(archive_dir, marker)
+    archived = _archived_payload(archive_dir, marker, thread)
     received = _receiver_envelope(receiver_envelope, marker, thread)
     queued = consumed and invoked and accepted and archived
 

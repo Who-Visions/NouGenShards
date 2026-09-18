@@ -81,3 +81,15 @@ def test_receiver_envelope_must_match_target_thread_and_marker(tmp_path):
         "thread_id": "wrong-thread", "correlation_marker": MARKER}), encoding="utf-8")
     result = audit.audit_roundtrip(MARKER, THREAD, transcript, archive, receiver)
     assert not result["active_codex_receipt"]
+
+
+def test_wrong_thread_archived_payload_is_rejected(tmp_path):
+    transcript, archive = seed_native_queue(tmp_path)
+    (archive / "ping_wrong_thread.json").write_text(json.dumps({
+        "source": "phoebus/antigravity", "target": "codex", "thread_id": "wrong-thread-id",
+        "text": MARKER}), encoding="utf-8")
+    (archive / "ping_test.json").unlink()
+    result = audit.audit_roundtrip(MARKER, THREAD, transcript, archive)
+    assert not result["archived_codex_payload"]
+    assert result["status"] == "incomplete"
+
