@@ -138,8 +138,10 @@ class ArxivCascadeRetriever:
                    for rank, doc_id in enumerate(dict.fromkeys(ids), 1)]
             for lane, ids in rank_lists.items()
         }
-        return [(candidate.candidate_id, score)
-                for candidate, score in reciprocal_rank_fusion(lanes, k=k)]
+        return [
+            (candidate.candidate_id if hasattr(candidate, "candidate_id") else str(candidate), score)
+            for candidate, score in reciprocal_rank_fusion(lanes, k=k)
+        ]
 
     def execute_cascade(
         self,
