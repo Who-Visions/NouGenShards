@@ -1817,12 +1817,27 @@ def xoah_self_endpoint(
 
 
 @app.post("/xoah/pressure")
+def _xoah_guarded(name: str, fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:
+        import logging
+        logging.getLogger("ngs").error(f"xoah/{name} failed: {exc}", exc_info=True)
+        return JSONResponse(
+            status_code=503,
+            content={"verdict": "UNAVAILABLE", "errors": [f"{name}: {type(exc).__name__}"]}
+        )
+
+
+@app.post("/xoah/pressure")
 def xoah_pressure_endpoint(
     req: XoahPressureRequest,
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
     """Evaluate candidate story addition against canon pressure."""
-    return canon_pressure.pressure(
+    return _xoah_guarded(
+        "pressure",
+        canon_pressure.pressure,
         req.candidate,
         coordinate=req.coordinate,
         register=req.should_register,
@@ -1836,7 +1851,9 @@ def xoah_throne_endpoint(
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
     """Run proposed intervention through Shadow Queen Throne governance gates."""
-    return throne_governance.evaluate(
+    return _xoah_guarded(
+        "throne",
+        throne_governance.evaluate,
         req.desired_effect,
         target_coordinate=req.target_coordinate,
         target_branch=req.target_branch,
@@ -1872,22 +1889,46 @@ async def xoah_ask_endpoint(
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
     """Shadow Xoah conversational entry point: reasons through self-model and pressure."""
-    eval_res = throne_governance.evaluate(req.prompt, register=False)
-    press_res = canon_pressure.pressure(req.prompt, register=False)
+    errors = []
+    try:
+        eval_res = throne_governance.evaluate(req.prompt, register=False)
+    except Exception as exc:
+        eval_res = {}
+        errors.append(f"throne: {type(exc).__name__}")
+
+    try:
+        press_res = canon_pressure.pressure(req.prompt, register=False)
+    except Exception as exc:
+        press_res = {}
+        errors.append(f"pressure: {type(exc).__name__}")
+
+    canon_v = press_res.get("verdict") or press_res.get("primary") or "UNKNOWN"
     system_ctx = (
         f"You are Shadow Xoah (Stage {eval_res.get('acting_stage', 9)}). "
         f"Governance Mode: {eval_res.get('mode', 'OBSERVE')}. "
         f"Intervention Type: {eval_res.get('intervention_type', 'SIMULATED_POSSIBILITY')}. "
-        f"Canon Verdict: {press_res.get('primary', 'UNKNOWN')}."
+        f"Canon Verdict: {canon_v}."
     )
     rhea_prompt = f"{system_ctx}\n\nUser Question: {req.prompt}"
-    resp = await _ask_rhea_bounded(rhea_prompt)
-    return {
-        "answer": resp.get("answer"),
-        "brain": resp.get("brain"),
+    
+    answer = None
+    brain = None
+    try:
+        resp = await _ask_rhea_bounded(rhea_prompt)
+        answer = resp.get("answer")
+        brain = resp.get("brain")
+    except Exception as exc:
+        errors.append(f"rhea: {type(exc).__name__}")
+
+    res = {
+        "answer": answer,
+        "brain": brain,
         "governance": eval_res,
         "pressure": press_res
     }
+    if errors:
+        res["errors"] = errors
+    return res
 
 
 @node_mcp.tool()
