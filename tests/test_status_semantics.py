@@ -142,3 +142,31 @@ def test_flash_kick_phoebus_multidimensional_node_state():
     # Verify no dimension collapses into a false unified status
     assert phoebus.vault_status != phoebus.msg_status
     assert blade.vault_status != blade.msg_status
+
+
+def test_whoart_401_auth_degraded_never_offline():
+    # Downstream Directive Requirement: 401 on shard lane is LIVE_AUTH_DEGRADED, never OFFLINE
+    whoart = classify_node_dimensions(
+        node="whoart",
+        vault_ok=False,
+        vault_error="gateway 401: Invalid node token",
+        msg_ok=True,
+        execution_live=True,
+    )
+    assert whoart.shard_auth_valid is False
+    assert whoart.derived_state == "LIVE_AUTH_DEGRADED"
+    assert whoart.derived_state != "OFFLINE_CONFIRMED"
+
+
+def test_tracker_stale_never_overrides_recent_relay_liveness():
+    # Tracker stale (e.g. 5 days old) with active relay message -> LIVE_TRACKER_STALE
+    node = classify_node_dimensions(
+        node="whoart",
+        vault_ok=True,
+        msg_ok=True,
+        tracker_fresh=False,
+        relay_live=True,
+    )
+    assert node.derived_state == "LIVE_TRACKER_STALE"
+    assert node.derived_state != "OFFLINE_CONFIRMED"
+

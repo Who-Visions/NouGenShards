@@ -210,10 +210,33 @@ class NodeDimensions:
     identity_confirmed: bool
     last_vault_ts: Optional[float] = None
     last_msg_ts: Optional[float] = None
+    # Extended orthogonal fields
+    execution_live: Optional[bool] = None
+    relay_live: Optional[bool] = None
+    shard_auth_valid: Optional[bool] = None
+    tracker_fresh: Optional[bool] = None
+
+    @property
+    def derived_state(self) -> str:
+        """Derive node state deterministically from evidence dimensions."""
+        if self.execution_live or self.relay_live or self.msg_status == StatusLevel.GREEN:
+            if self.shard_auth_valid is False or self.vault_status == StatusLevel.RED:
+                return "LIVE_AUTH_DEGRADED"
+            if self.tracker_fresh is False:
+                return "LIVE_TRACKER_STALE"
+            if self.vault_status == StatusLevel.YELLOW:
+                return "LIVE_RECALL_PARTIAL"
+            return "LIVE"
+        if self.vault_status == StatusLevel.GREEN:
+            return "LIVE_DEGRADED_TRANSPORT"
+        if self.vault_status == StatusLevel.RED and self.msg_status in (StatusLevel.RED, StatusLevel.ORANGE):
+            return "OFFLINE_CONFIRMED"
+        return "UNKNOWN_INSUFFICIENT_EVIDENCE"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "node": self.node,
+            "derived_state": self.derived_state,
             "vault_status": self.vault_status.value,
             "vault_reason": self.vault_reason,
             "msg_status": self.msg_status.value,
@@ -221,6 +244,10 @@ class NodeDimensions:
             "identity_confirmed": self.identity_confirmed,
             "last_vault_ts": self.last_vault_ts,
             "last_msg_ts": self.last_msg_ts,
+            "execution_live": self.execution_live,
+            "relay_live": self.relay_live,
+            "shard_auth_valid": self.shard_auth_valid,
+            "tracker_fresh": self.tracker_fresh,
         }
 
 
@@ -233,12 +260,17 @@ def classify_node_dimensions(
     identity_confirmed: Optional[bool] = None,
     last_vault_ts: Optional[float] = None,
     last_msg_ts: Optional[float] = None,
+    execution_live: Optional[bool] = None,
+    relay_live: Optional[bool] = None,
+    shard_auth_valid: Optional[bool] = None,
+    tracker_fresh: Optional[bool] = None,
 ) -> NodeDimensions:
     """Classify node status along distinct dimensions: vault vs msg bus vs identity.
 
     Guarantees:
     - Vault UP does not collapse msg status into GREEN.
     - Msg TIMEOUT/UNKNOWN does not turn a reachable vault RED or node offline.
+    - A 401 on shard lane sets shard_auth_valid=False and derived_state=LIVE_AUTH_DEGRADED, never OFFLINE.
     """
     if vault_ok is True:
         v_status = StatusLevel.GREEN
@@ -261,7 +293,11 @@ def classify_node_dimensions(
         m_reason = "nougenmsg route not tested"
 
     id_confirmed = identity_confirmed if identity_confirmed is not None else (
-        bool(vault_ok or msg_ok) and node.lower() in ("blade", "blade1tb", "phoebus", "whoart")
+        bool(vault_ok or msg_ok or execution_live or relay_live) and node.lower() in ("blade", "blade1tb", "phoebus", "whoart")
+    )
+
+    s_auth = shard_auth_valid if shard_auth_valid is not None else (
+        False if (vault_error and "401" in str(vault_error)) else True if vault_ok else None
     )
 
     return NodeDimensions(
@@ -273,4 +309,9 @@ def classify_node_dimensions(
         identity_confirmed=id_confirmed,
         last_vault_ts=last_vault_ts,
         last_msg_ts=last_msg_ts,
+        execution_live=execution_live if execution_live is not None else (True if id_confirmed else None),
+        relay_live=relay_live,
+        shard_auth_valid=s_auth,
+        tracker_fresh=tracker_fresh,
     )
+
