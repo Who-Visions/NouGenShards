@@ -7,8 +7,8 @@
 # should any manual start, so both paths get identical config.
 set -euo pipefail
 
-REPO="/Users/kushboygroup/The Observatory/NouGen/nougenshards"
-ENV_FILE="/Users/kushboygroup/The Observatory/.env"
+REPO="${HOME}/The Observatory/NouGen/nougenshards"
+ENV_FILE="${HOME}/The Observatory/.env"
 
 # Load NGS_* config (token, port, HUD credentials) without echoing values.
 #
