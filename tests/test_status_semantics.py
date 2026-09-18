@@ -4,6 +4,7 @@ from nougen_shards.status_semantics import (
     StatusLevel as S,
     aggregate,
     classify_node,
+    classify_node_dimensions,
     classify_shards_status,
     classify_tool_error,
     render,
@@ -106,3 +107,38 @@ def test_telemetry_record_carries_required_fields():
               "confidence", "status", "last_verified_at"):
         assert k in d
     assert d["status"] == "RED"
+
+
+def test_flash_kick_phoebus_multidimensional_node_state():
+    # FLASH KICK Phoebus directive: regression test the exact mixed state
+    # phoebus vault=UP, phoebus msg=TIMEOUT, whoart vault=UP, blade federated recall=TIMEOUT
+    phoebus = classify_node_dimensions(
+        node="phoebus",
+        vault_ok=True,
+        msg_ok=False,
+        msg_error="NouGenMsg route timed out",
+    )
+    assert phoebus.vault_status is S.GREEN
+    assert phoebus.msg_status is S.ORANGE
+    assert phoebus.identity_confirmed is True
+
+    whoart = classify_node_dimensions(
+        node="whoart",
+        vault_ok=True,
+        msg_ok=True,
+    )
+    assert whoart.vault_status is S.GREEN
+    assert whoart.msg_status is S.GREEN
+
+    blade = classify_node_dimensions(
+        node="blade",
+        vault_ok=False,
+        vault_error="federated recall TIMEOUT",
+        msg_ok=True,
+    )
+    assert blade.vault_status is S.RED
+    assert blade.msg_status is S.GREEN
+
+    # Verify no dimension collapses into a false unified status
+    assert phoebus.vault_status != phoebus.msg_status
+    assert blade.vault_status != blade.msg_status

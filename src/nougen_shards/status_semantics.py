@@ -198,3 +198,79 @@ def classify_node(node: str, heartbeat_age_s: Optional[float],
     return Observation(node, "node", StatusLevel.GREEN,
                        f"heartbeat {int(heartbeat_age_s)}s ago",
                        evidence={"heartbeat_age_s": heartbeat_age_s}, observer=observer)
+
+
+@dataclass
+class NodeDimensions:
+    node: str
+    vault_status: StatusLevel
+    vault_reason: str
+    msg_status: StatusLevel
+    msg_reason: str
+    identity_confirmed: bool
+    last_vault_ts: Optional[float] = None
+    last_msg_ts: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "node": self.node,
+            "vault_status": self.vault_status.value,
+            "vault_reason": self.vault_reason,
+            "msg_status": self.msg_status.value,
+            "msg_reason": self.msg_reason,
+            "identity_confirmed": self.identity_confirmed,
+            "last_vault_ts": self.last_vault_ts,
+            "last_msg_ts": self.last_msg_ts,
+        }
+
+
+def classify_node_dimensions(
+    node: str,
+    vault_ok: Optional[bool] = None,
+    msg_ok: Optional[bool] = None,
+    vault_error: Optional[str] = None,
+    msg_error: Optional[str] = None,
+    identity_confirmed: Optional[bool] = None,
+    last_vault_ts: Optional[float] = None,
+    last_msg_ts: Optional[float] = None,
+) -> NodeDimensions:
+    """Classify node status along distinct dimensions: vault vs msg bus vs identity.
+
+    Guarantees:
+    - Vault UP does not collapse msg status into GREEN.
+    - Msg TIMEOUT/UNKNOWN does not turn a reachable vault RED or node offline.
+    """
+    if vault_ok is True:
+        v_status = StatusLevel.GREEN
+        v_reason = "vault reachable"
+    elif vault_ok is False:
+        v_status = StatusLevel.RED if vault_error else StatusLevel.YELLOW
+        v_reason = vault_error or "vault unreachable or timed out"
+    else:
+        v_status = StatusLevel.UNKNOWN
+        v_reason = "vault reachability not tested"
+
+    if msg_ok is True:
+        m_status = StatusLevel.GREEN
+        m_reason = "nougenmsg route active"
+    elif msg_ok is False:
+        m_status = StatusLevel.ORANGE
+        m_reason = msg_error or "nougenmsg route timed out or unverified"
+    else:
+        m_status = StatusLevel.UNKNOWN
+        m_reason = "nougenmsg route not tested"
+
+    id_confirmed = identity_confirmed if identity_confirmed is not None else (
+        bool(vault_ok or msg_ok) and node.lower() in ("blade", "blade1tb", "phoebus", "whoart")
+    )
+
+    return NodeDimensions(
+        node=node,
+        vault_status=v_status,
+        vault_reason=v_reason,
+        msg_status=m_status,
+        msg_reason=m_reason,
+        identity_confirmed=id_confirmed,
+        last_vault_ts=last_vault_ts,
+        last_msg_ts=last_msg_ts,
+    )
