@@ -29,6 +29,24 @@ def test_probe_failure_with_unknown_backend_is_probe_red_shards_unknown():
     ]
 
 
+def test_probe_success_reconciles_node_origin_and_blade_confirmed():
+    # FLASH KICK live node proof reconciliation test
+    probe, shards = classify_shards_status({
+        "up": True, "health_up": True, "mcp_up": True,
+        "configured": True, "origin": "blade1tb", "blade_confirmed": True})
+    assert probe.status is S.GREEN
+    assert shards.status is S.GREEN
+    assert shards.confidence == 1.0
+
+    # Auto-reconciliation test when origin is blade1tb but blade_confirmed was omitted
+    probe_auto, shards_auto = classify_shards_status({
+        "up": True, "health_up": True, "mcp_up": True,
+        "configured": True, "node": "blade1tb"})
+    assert probe_auto.status is S.GREEN
+    assert shards_auto.status is S.GREEN
+    assert probe_auto.evidence["blade_confirmed"] is True
+
+
 def test_tool_registration_mismatch_is_orange_not_bus_down():
     reg, bus = classify_tool_error("nougenmsg_latest", "unknown tool", "NouGenMsg bus")
     assert reg.status is S.ORANGE

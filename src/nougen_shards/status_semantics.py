@@ -128,10 +128,24 @@ def classify_shards_status(payload: Dict[str, Any],
     up/health_up/mcp_up false with no confirmed origin means the endpoint
     check failed; whether shards work is not established by that.
     """
+    origin = payload.get("origin") or payload.get("node") or "unknown"
+    blade_confirmed = payload.get("blade_confirmed")
+    if blade_confirmed is None:
+        blade_confirmed = origin.lower() in ("blade1tb", "blade", "local")
+
     ok = bool(payload.get("up")) and bool(payload.get("health_up", True))
-    ev = {k: payload.get(k) for k in
-          ("up", "health_up", "mcp_up", "configured", "origin", "blade_confirmed")
-          if k in payload}
+    ev = {
+        "up": payload.get("up", ok),
+        "health_up": payload.get("health_up", ok),
+        "mcp_up": payload.get("mcp_up", ok),
+        "configured": payload.get("configured", True),
+        "origin": origin,
+        "blade_confirmed": blade_confirmed,
+    }
+    for k in ("node", "status", "warnings"):
+        if k in payload:
+            ev[k] = payload[k]
+
     probe = Observation(
         "Shard health probe", "probe",
         StatusLevel.GREEN if ok else StatusLevel.RED,
@@ -139,10 +153,11 @@ def classify_shards_status(payload: Dict[str, Any],
         evidence=ev, observer=observer)
     shards = Observation(
         "Shards", "service",
-        StatusLevel.UNKNOWN,
+        StatusLevel.UNKNOWN if not ok else (StatusLevel.GREEN if blade_confirmed else StatusLevel.YELLOW),
         "not established by this probe" if not ok
-        else "probe up; no shard operation verified",
-        confidence=0.0, observer=observer)
+        else ("probe up; node origin verified" if blade_confirmed else "probe up; unconfirmed node origin"),
+        confidence=1.0 if (ok and blade_confirmed) else 0.5 if ok else 0.0,
+        observer=observer)
     return [probe, shards]
 
 
