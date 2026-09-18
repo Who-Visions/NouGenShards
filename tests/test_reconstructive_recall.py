@@ -194,3 +194,60 @@ def test_sweep_trigger_default_low_confidence(monkeypatch, vaults, cfg):
     assert should_sweep(miss, cfg) is True
     monkeypatch.setenv("NOUGEN_RECON_SWEEP_TRIGGER", "never")
     assert should_sweep(miss, cfg) is False
+
+
+def test_fact_snapshot_supersession_resolver():
+    from nougen_shards.reconstruction import resolve_fact_snapshot, FactSnapshot
+
+    records = [
+        {
+            "canonical_key": "token_usage:fleet:YTD:2026",
+            "as_of": "2026-09-14T00:00:00Z",
+            "machine_values": {"blade1tb": 34.513, "phoebus": 10.0, "whoart": 10.981},
+            "total": 55.494,
+            "provenance_ids": ["shard_old"],
+        },
+        {
+            "canonical_key": "token_usage:fleet:YTD:2026",
+            "as_of": "2026-09-16T18:00:00Z",
+            "machine_values": {"blade1tb": 40.0, "phoebus": 12.5, "whoart": 15.0},
+            "total": 67.5,
+            "provenance_ids": ["shard_new"],
+        }
+    ]
+
+    resolved = resolve_fact_snapshot(records, "token_usage:fleet:YTD:2026")
+    assert resolved is not None
+    assert isinstance(resolved, FactSnapshot)
+    assert resolved.as_of == "2026-09-16T18:00:00Z"
+    assert resolved.total == 67.5
+    assert resolved.completeness_state == "complete"
+    assert resolved.provenance_ids == ["shard_new"]
+
+
+def test_compile_retrieval_intent():
+    from nougen_shards.reconstruction import compile_retrieval_intent
+
+    intent = compile_retrieval_intent("what is the total ytd token usage across all machines")
+    assert intent.metric_namespace == "token_usage"
+    assert intent.scope == "fleet"
+    assert intent.temporal_period == "YTD"
+    assert intent.temporal_year == 2026
+    assert intent.canonical_key == "token_usage:fleet:YTD:2026"
+    assert set(intent.expected_machines) == {"blade1tb", "phoebus", "whoart"}
+
+
+def test_reciprocal_rank_fusion_deterministic():
+    from nougen_shards.reconstruction import reciprocal_rank_fusion
+
+    lanes = {
+        "lexical": [{"id": "doc_a", "score": 0.9}, {"id": "doc_b", "score": 0.8}],
+        "entity": [{"id": "doc_b", "score": 0.95}, {"id": "doc_c", "score": 0.7}],
+    }
+
+    fused = reciprocal_rank_fusion(lanes, k=60)
+    assert len(fused) == 3
+    # doc_b is rank 2 in lexical (1/(60+2)) and rank 1 in entity (1/(60+1)) -> highest total
+    assert fused[0]["id"] == "doc_b"
+
+

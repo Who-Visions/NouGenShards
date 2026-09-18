@@ -32,6 +32,8 @@ import calendar
 import json
 import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -139,10 +141,55 @@ def _git(repo: Path, *args: str, timeout: float) -> subprocess.CompletedProcess:
     # and pop a visible Windows Terminal window per call (~2/sec on 2026-09-06,
     # which made the machine unusable). DEVNULL also stops git/GCM from ever
     # blocking on an interactive credential prompt.
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=timeout,
-                          stdin=subprocess.DEVNULL, env=_ssh_env(repo),
-                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    cmd = ["git", "-C", str(repo), *args]
+    windows = os.name == "nt"
+    kwargs = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "stdin": subprocess.DEVNULL,
+        "env": _ssh_env(repo),
+    }
+    if windows:
+        kwargs["creationflags"] = (getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                                   | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+    else:
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # git owns ssh.exe; killing only git leaves ssh holding our captured
+        # stdout/stderr handles open. Popen.communicate then waits far beyond
+        # its timeout. Kill this exact process tree before re-raising so the
+        # relay loop can retry and keep its receive cadence.
+        try:
+            if windows:
+                taskkill = shutil.which(os.environ.get("NOUGEN_TASKKILL_EXE", "taskkill.exe"))
+                if taskkill:
+                    kill_timeout = _env_float("NOUGEN_RELAY_LIVE_KILL_TIMEOUT_S", 10)
+                    subprocess.run([taskkill, "/PID", str(proc.pid), "/T", "/F"],
+                                   capture_output=True, text=True, timeout=kill_timeout,
+                                   stdin=subprocess.DEVNULL,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+                else:
+                    proc.kill()
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
+        except (OSError, subprocess.SubprocessError):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.communicate(timeout=_env_float("NOUGEN_RELAY_LIVE_KILL_TIMEOUT_S", 10))
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def fetch(repo: Path) -> str:
