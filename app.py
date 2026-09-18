@@ -16,6 +16,7 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 from fastapi import FastAPI, Header, HTTPException, Depends, Response, Query
+from fastapi.responses import JSONResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import gradio as gr
