@@ -112,9 +112,22 @@ def classify(node: str, probes: Iterable[Dict[str, Any]],
                 "declaration": declaration or None, "failure_classes": classes}
 
     def out(state: NodeState, reason: str, confidence: float) -> Dict[str, Any]:
+        # `online` is intentionally tri-state. A single observer's timeout,
+        # DNS failure, or unknown route is not evidence that the host is down.
+        # Keep the richer `state` as the authority and reserve False for
+        # explicitly offline/sleeping states supported by owner or witness data.
+        online: Optional[bool]
+        if state in ONLINE_STATES or state is NodeState.NETWORK_PARTITION:
+            online = True
+        elif state in (NodeState.OFFLINE_EXPECTED, NodeState.OFFLINE_UNEXPECTED,
+                       NodeState.SLEEPING):
+            online = False
+        else:
+            online = None
         return {"node": node, "state": state.value, "reason": reason,
                 "confidence": confidence, "evidence": evidence,
-                "online": state in ONLINE_STATES, "timestamp": time.time()}
+                "online": online, "telemetry_available": True,
+                "timestamp": time.time()}
 
     declared = (declaration or {}).get("state")
     if up:
