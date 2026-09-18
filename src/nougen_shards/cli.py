@@ -6,6 +6,9 @@ import sqlite3
 import os
 import numpy as np
 from pathlib import Path
+import logging
+
+logger = logging.getLogger("nougen_shards.cli")
 from . import core as shards
 from . import keymaker
 from .models_client import (
