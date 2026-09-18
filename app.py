@@ -119,6 +119,13 @@ def recall_memory(query: str, limit: int = 5) -> list:
     return out
 
 
+@node_mcp.tool()
+@_offloaded
+def search(query: str, limit: int = 5) -> list:
+    """Search memory shards across the fleet. Alias for recall_memory to support standard MCP connectors."""
+    return recall_memory(query=query, limit=limit)
+
+
 # A stored timestamp is only usable for era math if it is ISO-shaped.
 # Anchored at the start only: full ISO strings carry time and offset after the
 # month, and this is the exact prefix the window contract compares on.
@@ -2493,15 +2500,47 @@ def _nougenmsg_read(target: Optional[str] = None, limit: int = 10) -> dict:
             created = raw.get("created_utc") or _dt.fromtimestamp(float(ts), tz=_tz.utc).isoformat()
         except Exception:
             created = str(ts)
+
+        # Dynamic, intuitive, and deterministic machine & agent resolution:
+        origin_m = sdict.get("node") or raw.get("origin_machine") or raw.get("node") or raw.get("machine")
+        origin_a = sdict.get("agent") or raw.get("origin_agent") or raw.get("agent")
+
+        # Extract provenance from leg_id if envelope was wrapped by a watcher or bus (e.g. 20260917T...__chatgpt-app__g-whoentertains)
+        leg = str(raw.get("leg_id") or raw.get("correlation_id") or "")
+        if "__" in leg:
+            parts = leg.split("__")
+            if len(parts) >= 3:
+                origin_m = origin_m or parts[1]
+                origin_a = origin_a or parts[2]
+            elif len(parts) == 2:
+                origin_m = origin_m or parts[1]
+
+        # Extract from text clue if still unresolved (e.g. "from chatgpt-app/g-whoentertains")
+        body_text = str(raw.get("text") or raw.get("content") or raw.get("body") or "")
+        if (not origin_m or not origin_a) and "from " in body_text:
+            try:
+                import re as _re
+                m = _re.search(r"\bfrom\s+([a-zA-Z0-9_\-\.]+)/([a-zA-Z0-9_\-\.]+)", body_text)
+                if m:
+                    origin_m = origin_m or m.group(1)
+                    origin_a = origin_a or m.group(2)
+            except Exception:
+                pass
+
+        if not origin_m:
+            origin_m = sender if isinstance(sender, str) and sender != "unknown" else "unknown-node"
+        if not origin_a:
+            origin_a = raw.get("from") or ("relay-watch" if sender == "relay-watch" else "unknown-agent")
+
         out.append({
             "id": raw.get("message_id") or raw.get("id") or os.path.splitext(os.path.basename(f))[0],
             "created_utc": created,
-            "origin_machine": sdict.get("node") or (sender if isinstance(sender, str) else "unknown"),
-            "origin_agent": sdict.get("agent") or raw.get("agent") or "unknown-agent",
+            "origin_machine": origin_m,
+            "origin_agent": origin_a,
             "destination": dest,
             "priority": raw.get("priority") or "normal",
             "message_type": raw.get("type") or "live_message",
-            "body": raw.get("text") or raw.get("content") or raw.get("body") or "",
+            "body": body_text,
             "correlation_id": raw.get("correlation_id") or raw.get("leg_id"),
             "file": os.path.basename(f),
         })
