@@ -77,6 +77,7 @@ jobs:
           *.ico filter=lfs diff=lfs merge=lfs -text
           *.icns filter=lfs diff=lfs merge=lfs -text
           *.webp filter=lfs diff=lfs merge=lfs -text
+          *.pdf filter=lfs diff=lfs merge=lfs -text
           EOF
           # Bake the source sha into the snapshot; /health reports it, and the
           # verify step below waits for it - proving the NEW build booted.
