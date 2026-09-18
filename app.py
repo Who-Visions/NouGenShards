@@ -2610,10 +2610,6 @@ def dream_trigger(force: bool = False) -> dict:
         return {"status": "degraded", "error": str(e)}
 
 
-
-
->>>>>>> origin/main
-
 # --- Cortex HUD UI Logic ---
 
 
