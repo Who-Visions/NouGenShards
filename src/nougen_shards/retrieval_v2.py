@@ -419,10 +419,10 @@ def compile_intent(
     entities: Sequence[CanonicalEntity] = (),
 ) -> RetrievalIntent:
     """Compile common high-value language using deterministic rules only."""
+    if now is not None and now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
     if now is None:
         now = datetime.now(ZoneInfo(timezone))
-    elif now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo(timezone))
     local_now = now.astimezone(ZoneInfo(timezone))
     normalized = normalize_query(query)
     folded = normalized.casefold()
