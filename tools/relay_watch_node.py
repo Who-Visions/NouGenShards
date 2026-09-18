@@ -257,9 +257,19 @@ def announce(leg_id: str, path: Path) -> None:
     INBOX.mkdir(parents=True, exist_ok=True)
     text = ("relay leg {} from {} ({}): {} -- read the full leg before acting; "
              "a leg is coordination, not permission.".format(leg_id, who, status, goal))
+    # Deterministically derive origin machine & agent from who string (e.g. chatgpt-app/g-whoentertains)
+    origin_parts = str(who).split("/") if "/" in str(who) else [str(who), "relay-watch"]
+    msg_origin_node = origin_parts[0].strip() or "unknown-node"
+    msg_origin_agent = origin_parts[1].strip() or "unknown-agent"
+
     message = {
         "type": "live_message",
-        "sender": "relay-watch",
+        "sender": {
+            "node": msg_origin_node,
+            "agent": msg_origin_agent
+        },
+        "origin_machine": msg_origin_node,
+        "origin_agent": msg_origin_agent,
         "target": record.get("target", "local"),
         "priority": "high" if status == "open" else "normal",
         "timestamp": time.time(),

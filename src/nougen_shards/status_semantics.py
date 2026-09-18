@@ -121,17 +121,108 @@ def render(observations: Iterable[Observation]) -> List[str]:
 
 # --- classifiers for the concrete incidents in the directive -------------
 
+@dataclass
+class NodeDimensions:
+    """Multi-dimensional node state to prevent cross-dimensional status collapse."""
+    node: str
+    vault: StatusLevel = StatusLevel.UNKNOWN
+    msg: StatusLevel = StatusLevel.UNKNOWN
+    service: StatusLevel = StatusLevel.UNKNOWN
+    identity_confirmed: bool = False
+    vault_reason: str = ""
+    msg_reason: str = ""
+    service_reason: str = ""
+    timestamps: Dict[str, float] = field(default_factory=dict)
+    evidence: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "node": self.node,
+            "vault": self.vault.value,
+            "msg": self.msg.value,
+            "service": self.service.value,
+            "identity_confirmed": self.identity_confirmed,
+            "vault_reason": self.vault_reason,
+            "msg_reason": self.msg_reason,
+            "service_reason": self.service_reason,
+            "timestamps": self.timestamps,
+            "evidence": self.evidence,
+        }
+
+    def aggregate_observations(self, observer: Optional[str] = None) -> List[Observation]:
+        """Convert dimensions into decoupled observations that prevent cross-contamination."""
+        obs = [
+            Observation(f"{self.node} vault", "vault", self.vault,
+                        self.vault_reason or f"vault is {self.vault.value.lower()}",
+                        evidence={"timestamps": self.timestamps, **self.evidence},
+                        observer=observer),
+            Observation(f"{self.node} message route", "message_route", self.msg,
+                        self.msg_reason or f"message route is {self.msg.value.lower()}",
+                        evidence={"timestamps": self.timestamps, **self.evidence},
+                        observer=observer),
+            Observation(f"{self.node} services", "service", self.service,
+                        self.service_reason or f"services are {self.service.value.lower()}",
+                        evidence={"timestamps": self.timestamps, **self.evidence},
+                        observer=observer),
+        ]
+        return obs
+
+
+def classify_node_dimensions(
+    node: str,
+    *,
+    vault_status: Optional[StatusLevel] = None,
+    msg_status: Optional[StatusLevel] = None,
+    service_status: Optional[StatusLevel] = None,
+    identity_confirmed: bool = False,
+    vault_reason: str = "",
+    msg_reason: str = "",
+    service_reason: str = "",
+    timestamps: Optional[Dict[str, float]] = None,
+    evidence: Optional[Dict[str, Any]] = None,
+    observer: Optional[str] = None,
+) -> NodeDimensions:
+    """Classify a node preserving separate dimensions without false collapses."""
+    return NodeDimensions(
+        node=node,
+        vault=vault_status or StatusLevel.UNKNOWN,
+        msg=msg_status or StatusLevel.UNKNOWN,
+        service=service_status or StatusLevel.UNKNOWN,
+        identity_confirmed=identity_confirmed,
+        vault_reason=vault_reason,
+        msg_reason=msg_reason,
+        service_reason=service_reason,
+        timestamps=timestamps or {},
+        evidence=evidence or {},
+    )
+
+
+def reconcile_origin_identity(payload: Dict[str, Any],
+                              witness_evidence: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Derive confirmed node identity from authenticated/liveness evidence."""
+    reconciled = dict(payload)
+    if witness_evidence:
+        if witness_evidence.get("blade_confirmed") or witness_evidence.get("node") == "blade":
+            reconciled["blade_confirmed"] = True
+            reconciled["origin"] = witness_evidence.get("node", "blade")
+        elif witness_evidence.get("origin") and witness_evidence.get("origin") != "unknown":
+            reconciled["origin"] = witness_evidence["origin"]
+    return reconciled
+
+
 def classify_shards_status(payload: Dict[str, Any],
-                           observer: Optional[str] = None) -> List[Observation]:
+                           observer: Optional[str] = None,
+                           witness_evidence: Optional[Dict[str, Any]] = None) -> List[Observation]:
     """`shards_status` is a health PROBE. Its failure is the probe's, not the shards'.
 
     up/health_up/mcp_up false with no confirmed origin means the endpoint
     check failed; whether shards work is not established by that.
     """
-    ok = bool(payload.get("up")) and bool(payload.get("health_up", True))
-    ev = {k: payload.get(k) for k in
+    reconciled = reconcile_origin_identity(payload, witness_evidence)
+    ok = bool(reconciled.get("up")) and bool(reconciled.get("health_up", True))
+    ev = {k: reconciled.get(k) for k in
           ("up", "health_up", "mcp_up", "configured", "origin", "blade_confirmed")
-          if k in payload}
+          if k in reconciled}
     probe = Observation(
         "Shard health probe", "probe",
         StatusLevel.GREEN if ok else StatusLevel.RED,

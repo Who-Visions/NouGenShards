@@ -88,3 +88,52 @@ def test_telemetry_record_carries_required_fields():
               "confidence", "status", "last_verified_at"):
         assert k in d
     assert d["status"] == "RED"
+
+
+def test_flash_kick_blade_origin_reconciliation():
+    from nougen_shards.status_semantics import reconcile_origin_identity, classify_shards_status
+    raw_payload = {
+        "up": True, "health_up": True, "mcp_up": True,
+        "configured": True, "origin": "unknown", "blade_confirmed": False
+    }
+    witness = {"node": "blade", "blade_confirmed": True}
+    reconciled = reconcile_origin_identity(raw_payload, witness)
+    assert reconciled["blade_confirmed"] is True
+    assert reconciled["origin"] == "blade"
+
+    probe, shards = classify_shards_status(raw_payload, witness_evidence=witness)
+    assert probe.status is S.GREEN
+    assert probe.evidence["blade_confirmed"] is True
+    assert probe.evidence["origin"] == "blade"
+
+
+def test_flash_kick_phoebus_multidimensional_state_isolation():
+    from nougen_shards.status_semantics import classify_node_dimensions, NodeDimensions
+
+    # Phoebus state: vault UP, message route TIMEOUT/UNKNOWN, service UP
+    dims = classify_node_dimensions(
+        "phoebus",
+        vault_status=S.GREEN,
+        msg_status=S.UNKNOWN,
+        service_status=S.GREEN,
+        vault_reason="federation fanout succeeded",
+        msg_reason="direct probe timed out",
+        timestamps={"vault": NOW, "msg": NOW - 60},
+        evidence={"fanout.phoebus": "ok", "msg.route": "timeout"}
+    )
+    assert isinstance(dims, NodeDimensions)
+    assert dims.vault is S.GREEN
+    assert dims.msg is S.UNKNOWN  # Not collapsed into RED or offline
+    assert dims.service is S.GREEN
+
+    obs_list = dims.aggregate_observations()
+    vault_obs = next(o for o in obs_list if o.reported_scope == "vault")
+    msg_obs = next(o for o in obs_list if o.reported_scope == "message_route")
+
+    assert vault_obs.status is S.GREEN
+    assert msg_obs.status is S.UNKNOWN
+    # Ensure vault success does not falsely turn message route GREEN
+    assert msg_obs.status != S.GREEN
+    # Ensure message timeout does not falsely turn vault RED
+    assert vault_obs.status != S.RED
+
