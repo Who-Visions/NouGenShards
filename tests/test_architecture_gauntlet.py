@@ -22,7 +22,8 @@ def test_gauntlet_full_50_suite_completeness():
     assert report["unique_domains"] >= 12
     assert report["mandatory_q50_falsifier_present"] is True
     assert len(report["receipt_fingerprint"]) == 64
-    assert report["preimage_length_bytes"] > 5000
+    assert report["preimage_length_bytes"] == 29486
+    assert report["receipt_fingerprint"] == "a8411535303a86bd6e6baa112647b229f990336ce3163465a5bd4d601598d7b4"
 
 
 def test_every_single_question_has_substantive_content():
@@ -66,25 +67,72 @@ def test_behavioral_q4_cross_domain_arbitration():
     assert status == "VERSIONED"
     assert payload["id"] == "fact_2"
 
-    # 2. Bridge Merge (compatible payloads)
-    doc_fact = {"id": "df1", "domain": "finance", "as_of_ms": 1000, "status": "active"}
-    telemetry_fact = {"id": "tf1", "domain": "telemetry", "as_of_ms": 1000, "ping_ms": 42}
+    # 2. Bridge Merge (validated compatible payloads)
+    doc_fact = {
+        "id": "df1",
+        "domain": "finance",
+        "entity_id": "acme",
+        "fact_key": "revenue",
+        "value": 100,
+        "as_of_ms": 1000,
+    }
+    telemetry_fact = {
+        "id": "tf1",
+        "domain": "telemetry",
+        "entity_id": "acme",
+        "fact_key": "revenue",
+        "value": 100,
+        "as_of_ms": 1000,
+    }
+    bridge = ("finance", "telemetry")
     status, payload = arbitrate_cross_domain_conflict(
-        doc_fact, telemetry_fact, relational_bridges={("finance", "telemetry")}
+        doc_fact,
+        telemetry_fact,
+        relational_bridges={bridge},
+        bridge_validators={
+            bridge: lambda left, right: (
+                left.get("entity_id") == right.get("entity_id")
+                and left.get("fact_key") == right.get("fact_key")
+                and left.get("value") == right.get("value")
+            )
+        },
     )
     assert status == "MERGED"
     assert payload["bridge"] is True
 
-    # 3. Bridge Merge Conflict (conflicting scalar values on shared key)
-    doc_conf = {"id": "df2", "domain": "finance", "value": 100}
-    tel_conf = {"id": "tf2", "domain": "telemetry", "value": 200}
-    status_conf, payload_conf = arbitrate_cross_domain_conflict(
-        doc_conf, tel_conf, relational_bridges={("finance", "telemetry")}
+    reverse_bridge = ("telemetry", "finance")
+    reverse_status, _ = arbitrate_cross_domain_conflict(
+        doc_fact,
+        telemetry_fact,
+        relational_bridges={bridge},
+        bridge_validators={
+            reverse_bridge: lambda left, right: (
+                left.get("domain") == "telemetry"
+                and right.get("domain") == "finance"
+                and left.get("value") == right.get("value")
+            )
+        },
     )
-    assert status_conf == "MERGE_CONFLICT_QUARANTINED"
-    assert "payload_value_mismatch" in payload_conf["reason"]
+    assert reverse_status == "MERGED"
 
-    # 4. Unbridged Quarantine
+    # A bridge declaration alone is not proof that this pair is compatible.
+    status, payload = arbitrate_cross_domain_conflict(
+        doc_fact, telemetry_fact, relational_bridges={bridge}
+    )
+    assert status == "QUARANTINED"
+    assert payload["reason"] == "bridge_validation_required"
+
+    conflicting_telemetry = {**telemetry_fact, "value": 200}
+    status, payload = arbitrate_cross_domain_conflict(
+        doc_fact,
+        conflicting_telemetry,
+        relational_bridges={bridge},
+        bridge_validators={bridge: lambda left, right: left["value"] == right["value"]},
+    )
+    assert status == "QUARANTINED"
+    assert payload["reason"] == "bridge_validation_failed"
+
+    # 3. Unbridged Quarantine
     status, payload = arbitrate_cross_domain_conflict(doc_fact, telemetry_fact, relational_bridges=set())
     assert status == "QUARANTINED"
     assert payload["reason"] == "unbridged_contradiction"
@@ -132,6 +180,24 @@ def test_behavioral_q7_top_tier_telemetry_conflict_and_supersession():
     assert eq_dec2["status"] == "TELEMETRY_CONFLICT_QUARANTINED"
     assert eq_dec2["confidence_bps"] == 0
 
+    # Conflicts without usable timestamps cannot be ordered safely.
+    untimed = [
+        {"id": "u1", "tier": "VERIFIED_TELEMETRY", "value": "passed"},
+        {"id": "u2", "tier": "VERIFIED_TELEMETRY", "value": "failed"},
+    ]
+    untimed_decision = arbitrate_epistemic_authority(untimed)
+    assert untimed_decision["status"] == "TELEMETRY_CONFLICT_QUARANTINED"
+    assert untimed_decision["winner"] is None
+    assert untimed_decision["confidence_bps"] == 0
+
+    newer_without_claim = [
+        {"id": "old", "tier": "VERIFIED_TELEMETRY", "value": "failed", "as_of_ms": 1000},
+        {"id": "new", "tier": "VERIFIED_TELEMETRY", "as_of_ms": 2000},
+    ]
+    incomplete = arbitrate_epistemic_authority(newer_without_claim)
+    assert incomplete["status"] == "TELEMETRY_CONFLICT_QUARANTINED"
+    assert incomplete["winner"] is None
+
 
 def test_q49_and_q50_benchmarks_and_falsifiers():
     registry = GauntletRegistry()
@@ -146,4 +212,3 @@ def test_q49_and_q50_benchmarks_and_falsifiers():
     assert "Central NouGen Falsification Protocol" in q50.hypothesis
     assert "180-day" in q50.hypothesis
     assert "Monolith_2M" in q50.evidence_and_math
-
