@@ -31,6 +31,7 @@ from nougen_shards.retrieval_v2 import (
     ArtifactCandidate,
     MultiAxisStateVector,
     OrthogonalFlags,
+    QueryCoverage,
     QueryReceipt,
     RetrievalIntent,
     compile_retrieval_intent,
@@ -309,9 +310,11 @@ def gather_griot_archive(
     fused = reciprocal_rank_fusion(ranked_lanes, top_n=max_top_k)
     sorted_artifacts = [
         GriotArtifact(
-            **{**asdict(unique_artifacts[candidate.candidate_id]), "score": fused_score}
+            **{**asdict(unique_artifacts[cid]), "score": fused_score}
         )
         for candidate, fused_score in fused
+        for cid in [candidate.candidate_id if hasattr(candidate, "candidate_id") else str(candidate)]
+        if cid in unique_artifacts
     ]
     returned_count = len(sorted_artifacts)
     is_truncated = candidate_total > returned_count
@@ -352,6 +355,11 @@ def gather_griot_archive(
         availability=availability_status,
         canonical_key=intent.canonical_key,
         flags=flags,
+        coverage=QueryCoverage(
+            complete=is_fully_covered,
+            expected_nodes=fleet_nodes,
+            observed_nodes=tuple(s.node_name for s in nodes_coverage if s.succeeded),
+        ),
     )
 
     # Compile fused candidate models for receipt
