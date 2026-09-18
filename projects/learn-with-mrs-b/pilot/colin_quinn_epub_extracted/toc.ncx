@@ -1,0 +1,117 @@
+<?xml version='1.0' encoding='utf-8'?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1" xml:lang="eng">
+  <head>
+    <meta content="6fa57820-95bc-4457-9a4e-290fca271806" name="dtb:uid"/>
+    <meta content="2" name="dtb:depth"/>
+    <meta content="calibre (1.12.0)" name="dtb:generator"/>
+    <meta content="0" name="dtb:totalPageCount"/>
+    <meta content="0" name="dtb:maxPageNumber"/>
+  </head>
+  <docTitle>
+    <text>The Coloring Book: A Comedian Solves Race Relations in America</text>
+  </docTitle>
+  <navMap>
+    <navPoint class="chapter" id="num_1" playOrder="1">
+      <navLabel>
+        <text>Title Page</text>
+      </navLabel>
+      <content src="text/part0000.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_2" playOrder="2">
+      <navLabel>
+        <text>Welcome</text>
+      </navLabel>
+      <content src="text/part0001.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_3" playOrder="3">
+      <navLabel>
+        <text>Dedication</text>
+      </navLabel>
+      <content src="text/part0002.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_4" playOrder="4">
+      <navLabel>
+        <text>Introduction: Park Slope Rainbow</text>
+      </navLabel>
+      <content src="text/part0003.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_5" playOrder="5">
+      <navLabel>
+        <text>I. Dashiki Red, Black &amp; Green</text>
+      </navLabel>
+      <content src="text/part0004.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_6" playOrder="6">
+      <navLabel>
+        <text>II. Muscle Car Chrome</text>
+      </navLabel>
+      <content src="text/part0005.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_7" playOrder="7">
+      <navLabel>
+        <text>III. Picante Papaya</text>
+      </navLabel>
+      <content src="text/part0006.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_8" playOrder="8">
+      <navLabel>
+        <text>IV. Smoked Salmon Pink</text>
+      </navLabel>
+      <content src="text/part0007.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_9" playOrder="9">
+      <navLabel>
+        <text>V. Paddy Wagon Green</text>
+      </navLabel>
+      <content src="text/part0008.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_10" playOrder="10">
+      <navLabel>
+        <text>VI. Quiet Ochre</text>
+      </navLabel>
+      <content src="text/part0009.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_11" playOrder="11">
+      <navLabel>
+        <text>VII. Endless Desert</text>
+      </navLabel>
+      <content src="text/part0010.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_12" playOrder="12">
+      <navLabel>
+        <text>VIII. Blood Blue</text>
+      </navLabel>
+      <content src="text/part0011.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_13" playOrder="13">
+      <navLabel>
+        <text>IX. Ellis Island Indigo</text>
+      </navLabel>
+      <content src="text/part0012_split_000.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_14" playOrder="14">
+      <navLabel>
+        <text>Conclusion: Future Fuchsia</text>
+      </navLabel>
+      <content src="text/part0013.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_15" playOrder="15">
+      <navLabel>
+        <text>Acknowledgments</text>
+      </navLabel>
+      <content src="text/part0014.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_16" playOrder="16">
+      <navLabel>
+        <text>Newsletters</text>
+      </navLabel>
+      <content src="text/part0015.html"/>
+    </navPoint>
+    <navPoint class="chapter" id="num_17" playOrder="17">
+      <navLabel>
+        <text>Copyright</text>
+      </navLabel>
+      <content src="text/part0017.html"/>
+    </navPoint>
+  </navMap>
+</ncx>

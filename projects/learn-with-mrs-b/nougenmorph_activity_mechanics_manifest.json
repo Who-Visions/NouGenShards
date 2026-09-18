@@ -1,0 +1,39 @@
+{
+  "manifest_name": "NouGenMorph Educational Fuel Shard Manifest",
+  "archive_source": "~\\Downloads\\Educational Materials - Activity Books, Coloring Books, and Puzzlers",
+  "total_volumes_scanned": 140,
+  "ingested_into_nougen_grid": true,
+  "shard_provenance": "Captured via nougen_shards.cli",
+  "pedagogical_modules": {
+    "module_1_rebus_syntax": {
+      "name": "Rebus Early Reader Decoding",
+      "inspiration": "Rebuses for Readers Archive",
+      "mechanic": "Combining pictorial icons with phonetic text to scaffold English reading for immigrant & bilingual children.",
+      "application_in_mrs_b": "Unit 1 Feelings, Unit 3 School Tools, and Unit 4 Storytime."
+    },
+    "module_2_alphabet_dot_connect": {
+      "name": "Kinesthetic Alphabet & Number Dot-to-Dot",
+      "inspiration": "Alphabet Connect the Dots & Advanced Dot-to-Dot",
+      "mechanic": "Sequential tracing connecting letter paths (A -> B -> C -> D) to reveal iconic objects.",
+      "application_in_mrs_b": "Tracing pages across all 8 units."
+    },
+    "module_3_junior_micro_word_search": {
+      "name": "Thematic Junior Micro Word Searches",
+      "inspiration": "100 Thematic Word Search Puzzles Junior",
+      "mechanic": "4x4 and 5x5 constrained word grids featuring target trilingual vocabulary pairs.",
+      "application_in_mrs_b": "Activity pages in Units 2, 5, 6, and 7."
+    },
+    "module_4_maze_pathfinding": {
+      "name": "Motor Coordination Mazes & Walkabouts",
+      "inspiration": "Amazing Mazes & Dover Activity Series",
+      "mechanic": "Pathfinding challenges that navigate characters through school, garden, and neighborhood markets.",
+      "application_in_mrs_b": "Unit 2 Garden Walk, Unit 3 Shape Friends Walk, Unit 6 Caribbean Market."
+    },
+    "module_5_offline_engagement": {
+      "name": "1-Minute Parent-Child Living Room Prompts",
+      "inspiration": "101 Offline Activities You Can Do With Your Child & 52 Boredom Busters",
+      "mechanic": "Actionable, conversational oral exercises bridging English and Haitian Creole.",
+      "application_in_mrs_b": "Footer 'Pale Ansanm / Hablen Juntos' prompts on every single recto plate."
+    }
+  }
+}

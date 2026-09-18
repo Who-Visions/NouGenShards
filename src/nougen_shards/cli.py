@@ -37,6 +37,7 @@ from . import destiny
 from . import wake_daemon
 from . import wispr
 from . import studio
+from . import mrsb
 
 from nougen_shards import __version__ as VERSION  # single source: pyproject
 
@@ -2191,7 +2192,23 @@ def get_parser():
     p_sweep.add_argument("--json", action="store_true", help="Machine-readable output")
     p_sweep.add_argument("--verbose", "-v", action="store_true", help="Show suspicious non-dev orphans")
 
+    # Learn With Mrs. B project engine
+    p_mrsb = subparsers.add_parser("mrsb", help="Learn With Mrs. B: ESOL Coloring Book production engine")
+    p_mrsb.add_argument("mrsb_action", nargs="?", default="status",
+                        choices=["status", "audit", "lineage", "recall", "recurse", "build", "kdp"],
+                        help="Action to perform (default: status)")
+    p_mrsb.add_argument("--character", "-c", help="Character key for lineage lookup (e.g. mrs_b, little_dave, kam_the_police_helper)")
+    p_mrsb.add_argument("--query", "-q", default="Mrs. B", help="Search query for shard recall")
+    p_mrsb.add_argument("--limit", "-n", type=int, default=5, help="Max results for recall")
+    p_mrsb.add_argument("--unit", "-u", type=int, default=None, help="Unit number (1-8) for recursive lesson ledger")
+    p_mrsb.add_argument("--json", action="store_true", help="Machine-readable JSON output")
+
     return parser
+
+
+def cmd_mrsb(args):
+    """Learn With Mrs. B project engine: audit, lineage, recall, recurse, build, kdp."""
+    mrsb.cli_handler(args)
 
 
 def cmd_cf(args):
@@ -3290,7 +3307,7 @@ def main():
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
         "transcribe": cmd_transcribe, "live": cmd_live, "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
         "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep, "open": cmd_open,
-        "facts": cmd_facts,
+        "facts": cmd_facts, "mrsb": cmd_mrsb,
     }
     if args.command in cmds:
         cmds[args.command](args)

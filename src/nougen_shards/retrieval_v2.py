@@ -24,6 +24,14 @@ class CanonicalEntity:
 
 
 @dataclass(frozen=True)
+class TemporalScope:
+    period: str = "ALL_TIME"
+    year: int | None = None
+    start_utc: str | None = None
+    end_utc: str | None = None
+
+
+@dataclass(frozen=True)
 class RetrievalIntent:
     query_original: str
     query_normalized: str
@@ -36,16 +44,47 @@ class RetrievalIntent:
     required_entities: tuple[str, ...] = ()
     canonical_key: str | None = None
 
+    @property
+    def normalized_query(self) -> str:
+        return self.query_normalized
+
+    @property
+    def original_query(self) -> str:
+        return self.query_original
+
+    @property
+    def temporal(self) -> TemporalScope:
+        start_utc = f"{self.year}-01-01T00:00:00Z" if self.year else None
+        end_utc = f"{self.year}-12-31T23:59:59Z" if self.year else None
+        return TemporalScope(
+            period=self.period or "ALL_TIME",
+            year=self.year,
+            start_utc=start_utc,
+            end_utc=end_utc,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
 @dataclass(frozen=True)
 class ArtifactCandidate:
-    id: str
-    lane: str
-    rank: int
+    id: str = ""
+    lane: str = "default"
+    rank: int = 1
     payload: Mapping[str, Any] = field(default_factory=dict)
+    candidate_id: str = ""
+    title: str = ""
+    raw_score: float = 0.0
+    snippet: str = ""
+    provenance_source: str = ""
+    db_index: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.id and self.candidate_id:
+            object.__setattr__(self, "id", self.candidate_id)
+        elif not self.candidate_id and self.id:
+            object.__setattr__(self, "candidate_id", self.id)
 
 
 class RecoveryAction(str, Enum):
@@ -88,6 +127,8 @@ class QueryFlags:
     exact_source_available: bool = False
     exact: bool | None = None
     current: bool | None = None
+    coverage_complete: bool | None = None
+    candidate_total: int = 0
 
 
 @dataclass(frozen=True)
@@ -373,13 +414,15 @@ def normalize_query(query: str) -> str:
 def compile_intent(
     query: str,
     *,
-    now: datetime,
+    now: datetime | None = None,
     timezone: str = "UTC",
     entities: Sequence[CanonicalEntity] = (),
 ) -> RetrievalIntent:
     """Compile common high-value language using deterministic rules only."""
-    if now.tzinfo is None:
+    if now is not None and now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
+    if now is None:
+        now = datetime.now(ZoneInfo(timezone))
     local_now = now.astimezone(ZoneInfo(timezone))
     normalized = normalize_query(query)
     folded = normalized.casefold()
@@ -435,21 +478,29 @@ def compile_intent(
 
 
 def reciprocal_rank_fusion(
-    lanes: Mapping[str, Sequence[ArtifactCandidate]], *, k: int = 60
+    lanes: Mapping[str, Sequence[ArtifactCandidate]], *, k: int = 60, top_n: int | None = None
 ) -> list[tuple[str, float]]:
     """Fuse ranked candidate IDs without comparing incomparable raw scores."""
     if k < 1:
         raise ValueError("k must be positive")
     scores: dict[str, float] = {}
     for lane_name in sorted(lanes):
-        ordered = sorted(lanes[lane_name], key=lambda item: (item.rank, item.id))
+        ordered = sorted(
+            lanes[lane_name],
+            key=lambda item: (
+                getattr(item, "rank", 1),
+                getattr(item, "id", "") or getattr(item, "candidate_id", ""),
+            ),
+        )
         seen: set[str] = set()
         for rank, candidate in enumerate(ordered, 1):
-            if candidate.id in seen:
+            cid = getattr(candidate, "id", "") or getattr(candidate, "candidate_id", "")
+            if not cid or cid in seen:
                 continue
-            seen.add(candidate.id)
-            scores[candidate.id] = scores.get(candidate.id, 0.0) + 1.0 / (k + rank)
-    return sorted(scores.items(), key=lambda pair: (-pair[1], pair[0]))
+            seen.add(cid)
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+    fused = sorted(scores.items(), key=lambda pair: (-pair[1], pair[0]))
+    return fused[:top_n] if top_n is not None else fused
 
 
 def derive_followups(
@@ -469,3 +520,30 @@ def derive_followups(
         ids = ", ".join(sorted(set(conflicting_ids)))
         queries.append(f"provenance and supersession for {ids}")
     return queries[:budget]
+
+
+# Backward compatibility aliases for fleet callers & griot_v2
+MultiAxisStateVector = QueryState
+OrthogonalFlags = QueryFlags
+compile_retrieval_intent = compile_intent
+
+
+def create_query_receipt(
+    *,
+    intent: Any = None,
+    state: QueryState | None = None,
+    fused_candidates: Sequence[Any] = (),
+    coverage_nodes: Sequence[str] = (),
+    lanes_queried: Sequence[str] = (),
+    latency_ms: float = 0.0,
+    **kwargs: Any,
+) -> QueryReceipt:
+    lanes = tuple(lanes_queried) if lanes_queried else ("exact", "bm25", "ann")
+    return QueryReceipt(
+        status=getattr(state, "status", "SUCCESS") if state else "SUCCESS",
+        lanes_queried=lanes,
+        candidate_count=len(fused_candidates),
+        coverage_complete=bool(coverage_nodes),
+        state=state or QueryState(),
+    )
+

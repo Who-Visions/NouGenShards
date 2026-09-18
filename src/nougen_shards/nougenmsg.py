@@ -527,13 +527,24 @@ class AgentPinger:
         except ValueError:
             timeout = 60.0
 
+        system_prompt = ""
+        if os.environ.get("NOUGEN_MSG_INJECT_PERSONA", "").strip().lower() in ("1", "true", "yes"):
+            try:
+                from .persona import Signals, resolve as resolve_persona
+                sig = Signals.from_texts([prompt], surfaces=["ollama", "terminal"], tz="America/New_York", role="fleet-operator")
+                pers = resolve_persona(sig)
+                system_prompt = pers.system_prompt()
+            except Exception:
+                pass
+
         if node not in ["local", get_current_node()]:
             # The remote command is interpreted by the remote login shell.
             # Keep it entirely constant; caller-controlled JSON travels over
             # stdin, where shell syntax has no meaning.
-            payload = json.dumps(
-                {"model": target_model, "prompt": prompt, "stream": False}
-            )
+            ollama_dict = {"model": target_model, "prompt": prompt, "stream": False}
+            if system_prompt:
+                ollama_dict["system"] = system_prompt
+            payload = json.dumps(ollama_dict)
             remote_cmd = (
                 "curl -sS -X POST http://127.0.0.1:11434/api/generate "
                 "--data-binary @-"
@@ -558,7 +569,10 @@ class AgentPinger:
                         "model": target_model, "error": str(e)}
 
         try:
-            req_data = json.dumps({"model": target_model, "prompt": prompt, "stream": False}).encode("utf-8")
+            ollama_dict = {"model": target_model, "prompt": prompt, "stream": False}
+            if system_prompt:
+                ollama_dict["system"] = system_prompt
+            req_data = json.dumps(ollama_dict).encode("utf-8")
             req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 res = json.loads(r.read().decode())

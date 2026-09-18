@@ -31,9 +31,26 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-CLAIMS_DIR = Path(os.environ.get("NOUGEN_RELAY_LOCAL_DIR") or (
-    Path.home() / "Watchtower" / "NouGen" / "NouGenRelay" / ".handoffs")) / "claims"
-AGENT = os.environ.get("NOUGEN_AGENT", "unknown-agent")
+def _resolve_claims_dir() -> Path:
+    env_dir = os.environ.get("NOUGEN_RELAY_LOCAL_DIR") or os.environ.get("NOUGEN_RELAY_DIR")
+    if env_dir and Path(env_dir).exists():
+        p = Path(env_dir)
+        return (p / ".handoffs" / "claims") if not p.name.endswith(".handoffs") else (p / "claims")
+    candidates = [
+        Path.home() / "Outpost" / "NouGenRelay" / ".handoffs" / "claims",
+        Path.home() / "Watchtower" / "NouGen" / "NouGenRelay" / ".handoffs" / "claims",
+        Path(__file__).resolve().parents[1] / ".handoffs" / "claims",
+    ]
+    for c in candidates:
+        try:
+            if c.parent.is_dir() or c.is_dir():
+                return c
+        except OSError:
+            continue
+    return Path.home() / "Outpost" / "NouGenRelay" / ".handoffs" / "claims"
+
+CLAIMS_DIR = _resolve_claims_dir()
+AGENT = os.environ.get("NOUGEN_AGENT", "antigravity")
 MACHINE = os.environ.get("COMPUTERNAME", socket.gethostname()).lower()
 TTL_HOURS = float(os.environ.get("NOUGEN_CLAIM_TTL_HOURS", 8))
 

@@ -2959,6 +2959,58 @@ def dream_trigger(force: bool = False) -> dict:
 
 
 
+# --- Learn With Mrs. B MCP Tools ---
+
+
+@node_mcp.tool()
+@_offloaded
+def mrsb_audit() -> dict:
+    """Audit all Learn With Mrs. B production assets: SVGs, alphabet plates, PDFs, character refs, manifests."""
+    from nougen_shards import mrsb
+    return mrsb.audit_assets()
+
+
+@node_mcp.tool()
+@_offloaded
+def mrsb_status() -> dict:
+    """Get comprehensive project status for Learn With Mrs. B: KDP readiness, character roster, pricing, ISBN."""
+    from nougen_shards import mrsb
+    return mrsb.project_status()
+
+
+@node_mcp.tool()
+@_offloaded
+def mrsb_lineage() -> dict:
+    """Return the canonical Meralus family lineage manifest with all character visual DNA."""
+    from nougen_shards import mrsb
+    return mrsb.get_lineage()
+
+
+@node_mcp.tool()
+@_offloaded
+def mrsb_character(character_key: str = "mrs_b") -> dict:
+    """Get visual DNA for a specific character (mrs_b, little_dave, curious_kendall_amelia, dad_tedley, kam_the_police_helper, etc)."""
+    from nougen_shards import mrsb
+    dna = mrsb.get_character_dna(character_key)
+    if not dna:
+        return {"error": f"Character '{character_key}' not found", "available": mrsb.list_characters()}
+    return dna
+
+
+@node_mcp.tool()
+@_offloaded
+def mrsb_recall(query: str = "Mrs. B ESOL", limit: int = 5) -> list:
+    """Search the NouGen shard grid for memories related to the Learn With Mrs. B project."""
+    from nougen_shards import mrsb
+    return mrsb.recall_shards(query, limit)
+
+
+@node_mcp.tool()
+@_offloaded
+def mrsb_recurse(unit: Optional[int] = None) -> dict:
+    """Return the 4-stage recursive lesson ledger (setup, echo, inversion, payoff) for Units 1-8."""
+    from nougen_shards import mrsb
+    return mrsb.get_recursion_map(unit)
 
 
 # --- Cortex HUD UI Logic ---
