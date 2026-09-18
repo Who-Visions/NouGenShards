@@ -121,108 +121,31 @@ def render(observations: Iterable[Observation]) -> List[str]:
 
 # --- classifiers for the concrete incidents in the directive -------------
 
-@dataclass
-class NodeDimensions:
-    """Multi-dimensional node state to prevent cross-dimensional status collapse."""
-    node: str
-    vault: StatusLevel = StatusLevel.UNKNOWN
-    msg: StatusLevel = StatusLevel.UNKNOWN
-    service: StatusLevel = StatusLevel.UNKNOWN
-    identity_confirmed: bool = False
-    vault_reason: str = ""
-    msg_reason: str = ""
-    service_reason: str = ""
-    timestamps: Dict[str, float] = field(default_factory=dict)
-    evidence: Dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "node": self.node,
-            "vault": self.vault.value,
-            "msg": self.msg.value,
-            "service": self.service.value,
-            "identity_confirmed": self.identity_confirmed,
-            "vault_reason": self.vault_reason,
-            "msg_reason": self.msg_reason,
-            "service_reason": self.service_reason,
-            "timestamps": self.timestamps,
-            "evidence": self.evidence,
-        }
-
-    def aggregate_observations(self, observer: Optional[str] = None) -> List[Observation]:
-        """Convert dimensions into decoupled observations that prevent cross-contamination."""
-        obs = [
-            Observation(f"{self.node} vault", "vault", self.vault,
-                        self.vault_reason or f"vault is {self.vault.value.lower()}",
-                        evidence={"timestamps": self.timestamps, **self.evidence},
-                        observer=observer),
-            Observation(f"{self.node} message route", "message_route", self.msg,
-                        self.msg_reason or f"message route is {self.msg.value.lower()}",
-                        evidence={"timestamps": self.timestamps, **self.evidence},
-                        observer=observer),
-            Observation(f"{self.node} services", "service", self.service,
-                        self.service_reason or f"services are {self.service.value.lower()}",
-                        evidence={"timestamps": self.timestamps, **self.evidence},
-                        observer=observer),
-        ]
-        return obs
-
-
-def classify_node_dimensions(
-    node: str,
-    *,
-    vault_status: Optional[StatusLevel] = None,
-    msg_status: Optional[StatusLevel] = None,
-    service_status: Optional[StatusLevel] = None,
-    identity_confirmed: bool = False,
-    vault_reason: str = "",
-    msg_reason: str = "",
-    service_reason: str = "",
-    timestamps: Optional[Dict[str, float]] = None,
-    evidence: Optional[Dict[str, Any]] = None,
-    observer: Optional[str] = None,
-) -> NodeDimensions:
-    """Classify a node preserving separate dimensions without false collapses."""
-    return NodeDimensions(
-        node=node,
-        vault=vault_status or StatusLevel.UNKNOWN,
-        msg=msg_status or StatusLevel.UNKNOWN,
-        service=service_status or StatusLevel.UNKNOWN,
-        identity_confirmed=identity_confirmed,
-        vault_reason=vault_reason,
-        msg_reason=msg_reason,
-        service_reason=service_reason,
-        timestamps=timestamps or {},
-        evidence=evidence or {},
-    )
-
-
-def reconcile_origin_identity(payload: Dict[str, Any],
-                              witness_evidence: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Derive confirmed node identity from authenticated/liveness evidence."""
-    reconciled = dict(payload)
-    if witness_evidence:
-        if witness_evidence.get("blade_confirmed") or witness_evidence.get("node") == "blade":
-            reconciled["blade_confirmed"] = True
-            reconciled["origin"] = witness_evidence.get("node", "blade")
-        elif witness_evidence.get("origin") and witness_evidence.get("origin") != "unknown":
-            reconciled["origin"] = witness_evidence["origin"]
-    return reconciled
-
-
 def classify_shards_status(payload: Dict[str, Any],
-                           observer: Optional[str] = None,
-                           witness_evidence: Optional[Dict[str, Any]] = None) -> List[Observation]:
+                           observer: Optional[str] = None) -> List[Observation]:
     """`shards_status` is a health PROBE. Its failure is the probe's, not the shards'.
 
     up/health_up/mcp_up false with no confirmed origin means the endpoint
     check failed; whether shards work is not established by that.
     """
-    reconciled = reconcile_origin_identity(payload, witness_evidence)
-    ok = bool(reconciled.get("up")) and bool(reconciled.get("health_up", True))
-    ev = {k: reconciled.get(k) for k in
-          ("up", "health_up", "mcp_up", "configured", "origin", "blade_confirmed")
-          if k in reconciled}
+    origin = payload.get("origin") or payload.get("node") or "unknown"
+    blade_confirmed = payload.get("blade_confirmed")
+    if blade_confirmed is None:
+        blade_confirmed = origin.lower() in ("blade1tb", "blade", "local")
+
+    ok = bool(payload.get("up")) and bool(payload.get("health_up", True))
+    ev = {
+        "up": payload.get("up", ok),
+        "health_up": payload.get("health_up", ok),
+        "mcp_up": payload.get("mcp_up", ok),
+        "configured": payload.get("configured", True),
+        "origin": origin,
+        "blade_confirmed": blade_confirmed,
+    }
+    for k in ("node", "status", "warnings"):
+        if k in payload:
+            ev[k] = payload[k]
+
     probe = Observation(
         "Shard health probe", "probe",
         StatusLevel.GREEN if ok else StatusLevel.RED,
@@ -230,10 +153,11 @@ def classify_shards_status(payload: Dict[str, Any],
         evidence=ev, observer=observer)
     shards = Observation(
         "Shards", "service",
-        StatusLevel.UNKNOWN,
+        StatusLevel.UNKNOWN if not ok else (StatusLevel.GREEN if blade_confirmed else StatusLevel.YELLOW),
         "not established by this probe" if not ok
-        else "probe up; no shard operation verified",
-        confidence=0.0, observer=observer)
+        else ("probe up; node origin verified" if blade_confirmed else "probe up; unconfirmed node origin"),
+        confidence=1.0 if (ok and blade_confirmed) else 0.5 if ok else 0.0,
+        observer=observer)
     return [probe, shards]
 
 
@@ -274,3 +198,120 @@ def classify_node(node: str, heartbeat_age_s: Optional[float],
     return Observation(node, "node", StatusLevel.GREEN,
                        f"heartbeat {int(heartbeat_age_s)}s ago",
                        evidence={"heartbeat_age_s": heartbeat_age_s}, observer=observer)
+
+
+@dataclass
+class NodeDimensions:
+    node: str
+    vault_status: StatusLevel
+    vault_reason: str
+    msg_status: StatusLevel
+    msg_reason: str
+    identity_confirmed: bool
+    last_vault_ts: Optional[float] = None
+    last_msg_ts: Optional[float] = None
+    # Extended orthogonal fields
+    execution_live: Optional[bool] = None
+    relay_live: Optional[bool] = None
+    shard_auth_valid: Optional[bool] = None
+    tracker_fresh: Optional[bool] = None
+
+    @property
+    def derived_state(self) -> str:
+        """Derive node state deterministically from evidence dimensions."""
+        if self.execution_live or self.relay_live or self.msg_status == StatusLevel.GREEN:
+            if self.shard_auth_valid is False or self.vault_status == StatusLevel.RED:
+                return "LIVE_AUTH_DEGRADED"
+            if self.tracker_fresh is False:
+                return "LIVE_TRACKER_STALE"
+            if self.vault_status == StatusLevel.YELLOW:
+                return "LIVE_RECALL_PARTIAL"
+            return "LIVE"
+        if self.vault_status == StatusLevel.GREEN:
+            return "LIVE_DEGRADED_TRANSPORT"
+        if self.vault_status == StatusLevel.RED and self.msg_status in (StatusLevel.RED, StatusLevel.ORANGE):
+            return "OFFLINE_CONFIRMED"
+        return "UNKNOWN_INSUFFICIENT_EVIDENCE"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "node": self.node,
+            "derived_state": self.derived_state,
+            "vault_status": self.vault_status.value,
+            "vault_reason": self.vault_reason,
+            "msg_status": self.msg_status.value,
+            "msg_reason": self.msg_reason,
+            "identity_confirmed": self.identity_confirmed,
+            "last_vault_ts": self.last_vault_ts,
+            "last_msg_ts": self.last_msg_ts,
+            "execution_live": self.execution_live,
+            "relay_live": self.relay_live,
+            "shard_auth_valid": self.shard_auth_valid,
+            "tracker_fresh": self.tracker_fresh,
+        }
+
+
+def classify_node_dimensions(
+    node: str,
+    vault_ok: Optional[bool] = None,
+    msg_ok: Optional[bool] = None,
+    vault_error: Optional[str] = None,
+    msg_error: Optional[str] = None,
+    identity_confirmed: Optional[bool] = None,
+    last_vault_ts: Optional[float] = None,
+    last_msg_ts: Optional[float] = None,
+    execution_live: Optional[bool] = None,
+    relay_live: Optional[bool] = None,
+    shard_auth_valid: Optional[bool] = None,
+    tracker_fresh: Optional[bool] = None,
+) -> NodeDimensions:
+    """Classify node status along distinct dimensions: vault vs msg bus vs identity.
+
+    Guarantees:
+    - Vault UP does not collapse msg status into GREEN.
+    - Msg TIMEOUT/UNKNOWN does not turn a reachable vault RED or node offline.
+    - A 401 on shard lane sets shard_auth_valid=False and derived_state=LIVE_AUTH_DEGRADED, never OFFLINE.
+    """
+    if vault_ok is True:
+        v_status = StatusLevel.GREEN
+        v_reason = "vault reachable"
+    elif vault_ok is False:
+        v_status = StatusLevel.RED if vault_error else StatusLevel.YELLOW
+        v_reason = vault_error or "vault unreachable or timed out"
+    else:
+        v_status = StatusLevel.UNKNOWN
+        v_reason = "vault reachability not tested"
+
+    if msg_ok is True:
+        m_status = StatusLevel.GREEN
+        m_reason = "nougenmsg route active"
+    elif msg_ok is False:
+        m_status = StatusLevel.ORANGE
+        m_reason = msg_error or "nougenmsg route timed out or unverified"
+    else:
+        m_status = StatusLevel.UNKNOWN
+        m_reason = "nougenmsg route not tested"
+
+    id_confirmed = identity_confirmed if identity_confirmed is not None else (
+        bool(vault_ok or msg_ok or execution_live or relay_live) and node.lower() in ("blade", "blade1tb", "phoebus", "whoart")
+    )
+
+    s_auth = shard_auth_valid if shard_auth_valid is not None else (
+        False if (vault_error and "401" in str(vault_error)) else True if vault_ok else None
+    )
+
+    return NodeDimensions(
+        node=node,
+        vault_status=v_status,
+        vault_reason=v_reason,
+        msg_status=m_status,
+        msg_reason=m_reason,
+        identity_confirmed=id_confirmed,
+        last_vault_ts=last_vault_ts,
+        last_msg_ts=last_msg_ts,
+        execution_live=execution_live if execution_live is not None else (True if id_confirmed else None),
+        relay_live=relay_live,
+        shard_auth_valid=s_auth,
+        tracker_fresh=tracker_fresh,
+    )
+
