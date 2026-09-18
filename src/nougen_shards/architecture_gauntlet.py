@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -566,14 +566,15 @@ def arbitrate_cross_domain_conflict(
     assertion_a: Dict[str, Any],
     assertion_b: Dict[str, Any],
     relational_bridges: Optional[set[Tuple[str, str]]] = None,
+    bridge_validators: Optional[
+        Mapping[Tuple[str, str], Callable[[Dict[str, Any], Dict[str, Any]], bool]]
+    ] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """Arbitrates contradiction between two provenanced assertions (Q4).
 
-    Returns (status, payload) where status is:
-      - 'VERSIONED': Monotonic temporal supersession
-      - 'MERGED': Cross-domain assertion with explicit relational bridge and compatible payloads
-      - 'MERGE_CONFLICT_QUARANTINED': Bridged pair with conflicting unresolvable scalar values
-      - 'QUARANTINED': Unbridged conflicting assertions
+    A declared domain bridge permits a merge only when its validator accepts this
+    assertion pair. Returns (status, payload) where status is 'VERSIONED',
+    'MERGED', or 'QUARANTINED'.
     """
     # 1. Monotonic temporal supersession
     if assertion_b.get("supersedes") == assertion_a.get("id") and assertion_b.get("as_of_ms", 0) > assertion_a.get("as_of_ms", 0):
@@ -585,16 +586,26 @@ def arbitrate_cross_domain_conflict(
     dom_a = assertion_a.get("domain", "")
     dom_b = assertion_b.get("domain", "")
     bridges = relational_bridges or set()
-    if dom_a != dom_b and ((dom_a, dom_b) in bridges or (dom_b, dom_a) in bridges):
-        # Validate payload compatibility for shared keys
-        val_a = assertion_a.get("value")
-        val_b = assertion_b.get("value")
-        if val_a is not None and val_b is not None and val_a != val_b:
-            return "MERGE_CONFLICT_QUARANTINED", {
+    bridge = (dom_a, dom_b)
+    reverse_bridge = (dom_b, dom_a)
+    if dom_a != dom_b and (bridge in bridges or reverse_bridge in bridges):
+        validators = bridge_validators or {}
+        validator = validators.get(bridge)
+        validation_pair = (assertion_a, assertion_b)
+        if validator is None:
+            validator = validators.get(reverse_bridge)
+            validation_pair = (assertion_b, assertion_a)
+        if validator is None:
+            return "QUARANTINED", {
                 "conflict": [assertion_a, assertion_b],
-                "reason": f"payload_value_mismatch: {val_a} != {val_b}",
+                "reason": "bridge_validation_required",
             }
-        return "MERGED", {"primary": assertion_a, "secondary": assertion_b, "bridge": True}
+        if validator(*validation_pair) is True:
+            return "MERGED", {"primary": assertion_a, "secondary": assertion_b, "bridge": True}
+        return "QUARANTINED", {
+            "conflict": [assertion_a, assertion_b],
+            "reason": "bridge_validation_failed",
+        }
 
     # 3. Default safe quarantine
     return "QUARANTINED", {"conflict": [assertion_a, assertion_b], "reason": "unbridged_contradiction"}
@@ -618,24 +629,33 @@ def arbitrate_epistemic_authority(
     """
     canon_items = [e for e in evidence_list if e.get("tier") == "VERIFIED_TELEMETRY"]
     if canon_items:
-        # Check if all canon items agree
-        values = {e.get("value") for e in canon_items if "value" in e}
-        if len(values) > 1:
-            # Multiple conflicting canon items: check monotonic timestamps
-            sorted_canon = sorted(canon_items, key=lambda x: x.get("as_of_ms", 0), reverse=True)
-            if sorted_canon[0].get("as_of_ms", 0) > sorted_canon[1].get("as_of_ms", 0):
-                return {
-                    "winner": sorted_canon[0],
-                    "confidence_bps": 10000,
-                    "status": "CANON_SUPERSEDED",
-                    "overridden_count": len(evidence_list) - 1,
-                }
-            # Equi-temporal or un-timestamped contradictory canon -> QUARANTINE with 0 bps
+        values = [item.get("value", item.get("claim")) for item in canon_items]
+        if len(canon_items) > 1 and (
+            any(value is None for value in values)
+            or any(value != values[0] for value in values[1:])
+        ):
+            timestamps = [item.get("as_of_ms") for item in canon_items]
+            if all(value is not None for value in values) and all(
+                isinstance(timestamp, int) and not isinstance(timestamp, bool)
+                for timestamp in timestamps
+            ):
+                newest_timestamp = max(timestamps)
+                newest_items = [
+                    item for item in canon_items if item.get("as_of_ms") == newest_timestamp
+                ]
+                if len(newest_items) == 1 and newest_timestamp > min(timestamps):
+                    return {
+                        "winner": newest_items[0],
+                        "confidence_bps": 10000,
+                        "status": "CANON_SUPERSEDED",
+                        "overridden_count": len(evidence_list) - 1,
+                    }
             return {
                 "winner": None,
                 "confidence_bps": 0,
                 "status": "TELEMETRY_CONFLICT_QUARANTINED",
                 "conflicting_items": canon_items,
+                "overridden_count": 0,
             }
 
         return {
