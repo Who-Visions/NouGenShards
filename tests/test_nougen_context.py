@@ -108,3 +108,94 @@ def test_execute_sandboxed_javascript():
         assert result == "hello from js"
     else:
         pytest.skip("Neither Node.js nor Bun available for testing JS sandbox.")
+
+
+def test_html_content_extractor():
+    """Test zero-dependency HTML parser."""
+    html = """
+    <html>
+      <head><title>Test Page Title</title></head>
+      <body>
+        <h1>Main Heading</h1>
+        <p>This is a paragraph with <a href="https://example.com">a link</a>.</p>
+        <script>console.log('ignore');</script>
+        <h2>Sub Heading</h2>
+        <ul><li>Item 1</li><li>Item 2</li></ul>
+      </body>
+    </html>
+    """
+    parser = nougen_context._HTMLContentExtractor()
+    parser.feed(html)
+    assert parser.title == "Test Page Title"
+    assert len(parser.headings) == 2
+    assert "H1: Main Heading" in parser.headings[0]
+    assert "https://example.com" in parser.links
+    md = parser.get_markdown()
+    assert "# Main Heading" in md
+    assert "Item 1" in md
+    assert "ignore" not in md
+
+
+def test_analyze_file_python(tmp_path):
+    """Test sandboxed AST analysis of Python code."""
+    nougen_context.init_context_db(clean_slate=True)
+    code_file = tmp_path / "sample.py"
+    code_file.write_text(
+        "import os, sys\n"
+        "class Pilot:\n"
+        "    pass\n"
+        "def fly(dest):\n"
+        "    return dest\n",
+        encoding="utf-8"
+    )
+    res = nougen_context.analyze_file(str(code_file), query="dest")
+    assert res["name"] == "sample.py"
+    assert "Pilot" in res["ast"]["classes"]
+    assert "fly" in res["ast"]["functions"]
+    assert "os" in res["ast"]["imports"]
+    assert len(res["query_matches"]) > 0
+
+
+def test_checkpoint_and_restore_session():
+    """Test session snapshot and restore capabilities."""
+    nougen_context.init_context_db(clean_slate=True)
+    nougen_context.log_event("TEST_EVENT", "First important finding")
+    nougen_context.log_event("TEST_EVENT", "Second important finding")
+
+    # Save checkpoint
+    saved = nougen_context.checkpoint_session("v1-alpha")
+    assert saved["status"] == "checkpoint_saved"
+    assert saved["events_count"] == 2
+
+    # Check list
+    cps = nougen_context.list_checkpoints()
+    assert len(cps) == 1
+    assert cps[0]["label"] == "v1-alpha"
+
+    # Add a third event
+    nougen_context.log_event("TEST_EVENT", "Third finding that will be wiped on restore")
+    events = nougen_context.search_events("finding", limit=10)
+    assert len(events) == 3
+
+    # Restore checkpoint
+    restored = nougen_context.restore_session("v1-alpha")
+    assert restored["status"] == "checkpoint_restored"
+    assert restored["events_restored"] == 2
+
+    # Verify only 2 events remain
+    events_after = nougen_context.search_events("finding", limit=10)
+    assert len(events_after) == 2
+
+
+def test_batch_execute_sandboxed():
+    """Test batch execution in sandbox."""
+    commands = [
+        {"label": "py_step", "code": "print('result_alpha')", "language": "python"},
+        {"label": "py_step2", "code": "print('result_beta')", "language": "python"}
+    ]
+    res = nougen_sandbox.batch_execute_sandboxed(commands, queries=["alpha", "beta"])
+    assert res["total_commands"] == 2
+    assert len(res["steps"]) == 2
+    assert res["steps"][0]["status"] == "ok"
+    assert "result_alpha" in res["query_matches"]["alpha"][0]
+    assert "result_beta" in res["query_matches"]["beta"][0]
