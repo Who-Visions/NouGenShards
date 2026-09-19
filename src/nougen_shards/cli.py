@@ -1334,6 +1334,90 @@ def cmd_ctx(args):
             print(f"✅ Context event #{event['id']} promoted to durable memory.")
         else:
             print("ℹ️ Shard already exists.")
+    elif args.action == "web":
+        if not args.input:
+            print("Error: Usage: nougen ctx web <url> [--tags <label>]")
+            return
+        res = nougen_context.fetch_and_index_web(args.input, label=args.tags)
+        if "error" in res:
+            print(f"❌ {res['error']}")
+            return
+        print(f"✅ Web indexed: {res['title']}")
+        print(f"Handle: {res['handle']} ({res['total_length_bytes']} bytes)")
+        print(f"Summary: {res['summary']}")
+        if res.get("headings"):
+            print("Headings:")
+            for h in res["headings"][:5]:
+                print(f"  {h}")
+    elif args.action == "analyze":
+        if not args.input:
+            print("Error: Usage: nougen ctx analyze <file_path> [--query <term>]")
+            return
+        query_val = getattr(args, "query", None)
+        res = nougen_context.analyze_file(args.input, query=query_val)
+        if "error" in res:
+            print(f"❌ {res['error']}")
+            return
+        print(f"📄 {res['name']} ({res['total_lines']} lines, {res['size_bytes']} bytes)")
+        if "ast" in res:
+            ast_info = res["ast"]
+            if ast_info.get("syntax_valid"):
+                print(f"Classes: {', '.join(ast_info['classes']) or 'None'}")
+                print(f"Functions: {', '.join(ast_info['functions'][:10]) or 'None'}")
+                print(f"Imports: {', '.join(ast_info['imports'][:8]) or 'None'}")
+            else:
+                print(f"Syntax Error: {ast_info.get('syntax_error')}")
+        elif "json_schema" in res:
+            print(f"JSON Schema: {json.dumps(res['json_schema'])}")
+        if res.get("query_matches"):
+            print("Query matches:")
+            for m in res["query_matches"][:5]:
+                print(f"  {m}")
+    elif args.action == "checkpoint":
+        if not args.input:
+            print("Error: Usage: nougen ctx checkpoint <label>")
+            return
+        res = nougen_context.checkpoint_session(args.input)
+        print(f"✅ Checkpoint '{res['label']}' saved ({res['events_count']} events).")
+    elif args.action == "restore":
+        if not args.input:
+            print("Error: Usage: nougen ctx restore <label>")
+            return
+        res = nougen_context.restore_session(args.input)
+        if "error" in res:
+            print(f"❌ {res['error']}")
+            return
+        print(f"✅ Checkpoint '{res['label']}' restored ({res['events_restored']} events).")
+    elif args.action == "checkpoints":
+        rows = nougen_context.list_checkpoints()
+        if not rows:
+            print("No saved checkpoints.")
+            return
+        print("Session Checkpoints:")
+        for r in rows:
+            print(f"- {r['label']} ({r['events_count']} events, {r['timestamp']})")
+    elif args.action == "ask":
+        if not args.input:
+            print("Error: Usage: nougen ctx ask <prompt> [--tags <context_handle>]")
+            return
+        model_val = getattr(args, "model", None)
+        print(f"[*] Querying Ollama (model: {model_val or 'auto-local'})...")
+        res = nougen_context.query_ollama(args.input, context_handle=args.tags, model=model_val)
+        if res.get("status") == "success":
+            print(f"\n[{res['model']}]:\n{res['response']}")
+        else:
+            print(f"❌ {res.get('error')}")
+    elif args.action == "synthesize":
+        if not args.input:
+            print("Error: Usage: nougen ctx synthesize <handle> [--query <instruction>]")
+            return
+        instr = getattr(args, "query", None) or "Summarize the core findings and key action items."
+        res = nougen_context.synthesize_sandbox(args.input, instruction=instr)
+        if res.get("status") == "synthesized":
+            print(f"✅ Synthesized {args.input} using {res['model']}:")
+            print(res["summary"])
+        else:
+            print(f"❌ Synthesis failed: {res.get('error')}")
 
 
 def resolve_router_model() -> str:
@@ -1791,9 +1875,11 @@ def get_parser():
     p_stats.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_ctx = subparsers.add_parser("ctx", help="Context layer")
-    p_ctx.add_argument("action", choices=["init", "execute", "search", "get", "promote"])
+    p_ctx.add_argument("action", choices=["init", "execute", "search", "get", "promote", "web", "analyze", "checkpoint", "restore", "checkpoints", "ask", "synthesize"])
     p_ctx.add_argument("input", nargs="?")
-    p_ctx.add_argument("--tags", help="Tags for promoted shard")
+    p_ctx.add_argument("--tags", help="Tags for promoted shard, label for web/checkpoint, or context_handle for ask")
+    p_ctx.add_argument("--query", help="Query keyword for file analyze or search")
+    p_ctx.add_argument("--model", help="Specific Ollama model name (e.g. gemma4:e2b-qat, Yukiai:e2b)")
     p_ctx.add_argument("--limit", type=int, default=5, help="Max results for ctx search")
 
     # router
