@@ -3246,7 +3246,7 @@ class _TokenGatedMCP:
             tenant = None
             if supplied:
                 try:
-                    tenant = tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+                    tenant = _resolve_tenant_credential(supplied)
                     if tenant is None:
                         issued_tenant_id = mcp_oauth.issued_token_tenant(supplied)
                         if issued_tenant_id:
