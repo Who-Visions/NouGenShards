@@ -36,7 +36,11 @@ from nougen_shards.federation import federated_retrieve
 from nougen_shards import fd_budget
 from nougen_shards.brain_scan import scan_environment
 
+# NGS_NODE_TOKEN remains the operator credential.  A fleet peer receives its
+# own independently-rotatable token so enrolling it never requires replacing
+# the operator's credential on a running public node.
 NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN") or os.environ.get("SHARD_GATEWAY_TOKEN")
+FLEET_PEER_TOKEN = os.environ.get("NGS_FLEET_PEER_TOKEN")
 
 
 # --- Remote MCP server (mobile / Claude-app connector) ---
@@ -951,7 +955,13 @@ def _credentials_configured() -> bool:
 
 def _resolve_tenant_credential(supplied: Optional[str]) -> Optional[tenants.Tenant]:
     try:
-        return tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+        tenant = tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+        # A peer token deliberately resolves to the owner vault: federation
+        # reads must see the node's shared substrate, whereas normal tenant
+        # credentials are isolated into their own vault directories.
+        if tenant is None and FLEET_PEER_TOKEN:
+            tenant = tenants.resolve_token(supplied, FLEET_PEER_TOKEN, core.GLOBAL_DIR)
+        return tenant
     except tenants.RegistryUnreadableError as exc:
         # Distinct from a malformed registry ON PURPOSE. "Tenant registry is
         # invalid" is a claim about configuration; this box is simply out of a
