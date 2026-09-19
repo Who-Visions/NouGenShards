@@ -77,9 +77,16 @@ def _archived_payload(archive_dir: Path, marker: str, thread: str) -> bool:
                 payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
             except (OSError, json.JSONDecodeError):
                 continue
-            addressed_thread = payload.get("thread_id") or payload.get("target_session_id") or payload.get("thread")
-            if (isinstance(payload, dict) and payload.get("target") == "codex"
-                    and (addressed_thread is None or addressed_thread == thread)
+            if not isinstance(payload, dict):
+                continue
+            addressed_threads = (
+                payload.get("thread_id"),
+                payload.get("target_session_id"),
+                payload.get("thread"),
+            )
+            if (payload.get("target") == "codex"
+                    and any(isinstance(value, str) and value == thread
+                            for value in addressed_threads)
                     and _contains(payload, marker)):
                 return True
     except OSError:

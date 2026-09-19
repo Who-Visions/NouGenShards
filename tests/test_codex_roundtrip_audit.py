@@ -24,7 +24,8 @@ def seed_native_queue(tmp_path):
     ]
     transcript.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
     (archive / "ping_test.json").write_text(json.dumps({
-        "source": "phoebus/antigravity", "target": "codex", "text": MARKER}), encoding="utf-8")
+        "source": "phoebus/antigravity", "target": "codex", "thread_id": THREAD,
+        "text": MARKER}), encoding="utf-8")
     return transcript, archive
 
 
@@ -93,3 +94,21 @@ def test_wrong_thread_archived_payload_is_rejected(tmp_path):
     assert not result["archived_codex_payload"]
     assert result["status"] == "incomplete"
 
+
+def test_unbound_archived_payload_is_rejected(tmp_path):
+    transcript, archive = seed_native_queue(tmp_path)
+    (archive / "ping_test.json").write_text(json.dumps({
+        "source": "phoebus/antigravity", "target": "codex", "text": MARKER
+    }), encoding="utf-8")
+    result = audit.audit_roundtrip(MARKER, THREAD, transcript, archive)
+    assert not result["archived_codex_payload"]
+    assert result["status"] == "incomplete"
+
+
+def test_non_object_archived_payload_is_ignored(tmp_path):
+    transcript, archive = seed_native_queue(tmp_path)
+    (archive / "ping_test.json").write_text(json.dumps([
+        {"target": "codex", "thread_id": THREAD, "text": MARKER}
+    ]), encoding="utf-8")
+    result = audit.audit_roundtrip(MARKER, THREAD, transcript, archive)
+    assert not result["archived_codex_payload"]
