@@ -501,3 +501,113 @@ def list_checkpoints() -> list:
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+
+def query_ollama(
+    prompt: str,
+    system: Optional[str] = None,
+    context_handle: Optional[str] = None,
+    model: Optional[str] = None,
+    timeout: int = 35
+) -> dict:
+    """Natively query Ollama (local first on GPU, cloud fallback) to accelerate context synthesis."""
+    import os
+    from . import ollama_host
+
+    endpoint = ollama_host.resolve_ollama_url()
+    target_models = [model] if model else ["gemma4:e2b-qat", "Yukiai:e2b", "gemma2:2b", "mrs-b:latest"]
+
+    full_prompt = prompt
+    if context_handle:
+        data = fetch_sandbox(context_handle)
+        if data:
+            full_prompt = f"Context from sandbox ({context_handle}):\n{data[:10000]}\n\nTask/Question:\n{prompt}"
+
+    for candidate in target_models:
+        payload = {
+            "model": candidate,
+            "prompt": full_prompt,
+            "stream": False,
+            "options": {"num_ctx": 32768, "temperature": 0.2}
+        }
+        if system:
+            payload["system"] = system
+
+        req = urllib.request.Request(
+            f"{endpoint.rstrip('/')}/api/generate",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                res = json.loads(response.read().decode("utf-8"))
+                reply = res.get("response", "").strip()
+                if "<channel|>" in reply:
+                    reply = reply.split("<channel|>")[-1].strip()
+                elif "<|channel|>" in reply:
+                    reply = reply.split("<|channel|>")[-1].strip()
+
+                log_event(
+                    "OLLAMA_ACCELERATION",
+                    f"Ollama ({candidate}) assisted on: {prompt[:100]}",
+                    metadata={"model": candidate, "tokens": res.get("eval_count", 0), "handle": context_handle}
+                )
+                return {
+                    "status": "success",
+                    "model": candidate,
+                    "response": reply,
+                    "tokens_eval": res.get("eval_count", 0),
+                    "endpoint": endpoint
+                }
+        except Exception:
+            continue
+
+    # Cloud fallback if env configured
+    cloud_url = os.environ.get("NOUGEN_OLLAMA_CLOUD_URL") or os.environ.get("OLLAMA_CLOUD_URL")
+    if cloud_url:
+        try:
+            req = urllib.request.Request(
+                f"{cloud_url.rstrip('/')}/api/generate",
+                data=json.dumps({
+                    "model": model or "gemma4:31b",
+                    "prompt": full_prompt,
+                    "stream": False
+                }).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                res = json.loads(response.read().decode("utf-8"))
+                return {
+                    "status": "success",
+                    "model": "cloud:" + (model or "gemma4:31b"),
+                    "response": res.get("response", "").strip(),
+                    "endpoint": cloud_url
+                }
+        except Exception:
+            pass
+
+    return {
+        "status": "unavailable",
+        "error": "Ollama local and cloud endpoints did not respond.",
+        "attempted_models": target_models
+    }
+
+
+def synthesize_sandbox(handle: str, instruction: str = "Summarize the core findings and key action items.") -> dict:
+    """Uses Ollama to intelligently synthesize raw sandbox data and stores summary back to sandbox."""
+    res = query_ollama(instruction, context_handle=handle)
+    if res.get("status") == "success":
+        summary = res["response"]
+        data = fetch_sandbox(handle) or ""
+        store_sandbox(handle, data, summary=summary)
+        return {
+            "status": "synthesized",
+            "handle": handle,
+            "model": res["model"],
+            "summary": summary
+        }
+    return {
+        "status": "fallback",
+        "handle": handle,
+        "error": res.get("error", "Ollama synthesis unavailable")
+    }

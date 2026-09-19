@@ -424,6 +424,39 @@ def restore_session(label: str) -> str:
         return f"Error: {res['error']}"
     return f"Checkpoint '{res['label']}' restored ({res['events_restored']} events restored)."
 
+
+@mcp.tool()
+def ask_ollama_sandboxed(prompt: str, handle: Optional[str] = None, model: Optional[str] = None) -> str:
+    """
+    Accelerate context reasoning with Ollama (local GPU VRAM first, cloud API fallback).
+    Never loads raw sandbox data into conversation window tokens.
+
+    Args:
+        prompt: Question, instructions, or analysis task.
+        handle: Optional sandbox handle (e.g. 'web:url', 'file:path') to feed as private context.
+        model: Specific model (e.g. 'Yukiai:e2b', 'gemma4:e2b-qat').
+    """
+    res = nougen_context.query_ollama(prompt, context_handle=handle, model=model)
+    if res.get("status") == "success":
+        return f"[{res['model']}]:\n{res['response']}"
+    return f"Error: {res.get('error', 'Ollama query failed')}"
+
+
+@mcp.tool()
+def synthesize_sandbox(handle: str, instruction: Optional[str] = None) -> str:
+    """
+    Intelligently synthesize large sandbox data with local Ollama GPU worker and save summary back into sandbox.
+
+    Args:
+        handle: Sandbox handle (e.g. 'web:url', 'file:path').
+        instruction: Optional instruction for synthesis.
+    """
+    instr = instruction or "Summarize the core findings, technical details, and action items."
+    res = nougen_context.synthesize_sandbox(handle, instruction=instr)
+    if res.get("status") == "synthesized":
+        return f"✅ Synthesized {res['handle']} using {res['model']}:\n\n{res['summary']}"
+    return f"Error: {res.get('error', 'Synthesis failed')}"
+
 # --- Brain Recon Layer ---
 
 @mcp.tool()

@@ -1396,6 +1396,28 @@ def cmd_ctx(args):
         print("Session Checkpoints:")
         for r in rows:
             print(f"- {r['label']} ({r['events_count']} events, {r['timestamp']})")
+    elif args.action == "ask":
+        if not args.input:
+            print("Error: Usage: nougen ctx ask <prompt> [--tags <context_handle>]")
+            return
+        model_val = getattr(args, "model", None)
+        print(f"[*] Querying Ollama (model: {model_val or 'auto-local'})...")
+        res = nougen_context.query_ollama(args.input, context_handle=args.tags, model=model_val)
+        if res.get("status") == "success":
+            print(f"\n[{res['model']}]:\n{res['response']}")
+        else:
+            print(f"❌ {res.get('error')}")
+    elif args.action == "synthesize":
+        if not args.input:
+            print("Error: Usage: nougen ctx synthesize <handle> [--query <instruction>]")
+            return
+        instr = getattr(args, "query", None) or "Summarize the core findings and key action items."
+        res = nougen_context.synthesize_sandbox(args.input, instruction=instr)
+        if res.get("status") == "synthesized":
+            print(f"✅ Synthesized {args.input} using {res['model']}:")
+            print(res["summary"])
+        else:
+            print(f"❌ Synthesis failed: {res.get('error')}")
 
 
 def resolve_router_model() -> str:
@@ -1853,10 +1875,11 @@ def get_parser():
     p_stats.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_ctx = subparsers.add_parser("ctx", help="Context layer")
-    p_ctx.add_argument("action", choices=["init", "execute", "search", "get", "promote", "web", "analyze", "checkpoint", "restore", "checkpoints"])
+    p_ctx.add_argument("action", choices=["init", "execute", "search", "get", "promote", "web", "analyze", "checkpoint", "restore", "checkpoints", "ask", "synthesize"])
     p_ctx.add_argument("input", nargs="?")
-    p_ctx.add_argument("--tags", help="Tags for promoted shard or label for web/checkpoint")
+    p_ctx.add_argument("--tags", help="Tags for promoted shard, label for web/checkpoint, or context_handle for ask")
     p_ctx.add_argument("--query", help="Query keyword for file analyze or search")
+    p_ctx.add_argument("--model", help="Specific Ollama model name (e.g. gemma4:e2b-qat, Yukiai:e2b)")
     p_ctx.add_argument("--limit", type=int, default=5, help="Max results for ctx search")
 
     # router

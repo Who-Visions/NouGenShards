@@ -199,3 +199,37 @@ def test_batch_execute_sandboxed():
     assert res["steps"][0]["status"] == "ok"
     assert "result_alpha" in res["query_matches"]["alpha"][0]
     assert "result_beta" in res["query_matches"]["beta"][0]
+
+
+def test_query_ollama_and_synthesize(monkeypatch):
+    """Test native Ollama acceleration and sandbox synthesis with mocked HTTP response."""
+    nougen_context.init_context_db(clean_slate=True)
+    nougen_context.store_sandbox("test_handle", "raw telemetry data about space treaty")
+
+    class MockResponse:
+        def __init__(self, data):
+            self.data = data
+        def read(self):
+            return self.data
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    import json
+    def mock_urlopen(req, timeout=35):
+        payload = json.dumps({"response": "Executive synthesis: space treaty valid", "eval_count": 42}).encode("utf-8")
+        return MockResponse(payload)
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    res = nougen_context.query_ollama("Summarize", context_handle="test_handle")
+    assert res["status"] == "success"
+    assert "space treaty valid" in res["response"]
+    assert res["tokens_eval"] == 42
+
+    # Test synthesize_sandbox
+    synth = nougen_context.synthesize_sandbox("test_handle")
+    assert synth["status"] == "synthesized"
+    assert "space treaty valid" in synth["summary"]
