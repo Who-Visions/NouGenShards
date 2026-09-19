@@ -13,8 +13,7 @@ for k, v in rows:
     if any(term in k.upper() for term in ("GOOGLE", "GEMINI", "KG", "SEARCH", "API_KEY")):
         try:
             val = _unprotect(v)
-            masked = val[:8] + "..." + val[-4:] if len(val) > 12 else "***"
-            print(f"  - {k}: {masked} (length {len(val)})")
+            print(f"  - {k}: present (length {len(val)})")
         except Exception as e:
             print(f"  - {k}: decrypt failed ({e})")
 
