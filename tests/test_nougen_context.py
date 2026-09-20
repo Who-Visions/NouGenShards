@@ -233,3 +233,22 @@ def test_query_ollama_and_synthesize(monkeypatch):
     synth = nougen_context.synthesize_sandbox("test_handle")
     assert synth["status"] == "synthesized"
     assert "space treaty valid" in synth["summary"]
+
+
+def test_fetch_blocks_file_scheme_and_private_hosts(monkeypatch):
+    from nougen_shards import nougen_context as nc
+    monkeypatch.delenv("NOUGEN_CONTEXT_ALLOW_PRIVATE_HOSTS", raising=False)
+    for url in ("file:///C:/Windows/win.ini", "ftp://example.com/x", "http://127.0.0.1:4444/health",
+                "http://169.254.169.254/latest/meta-data", "http://10.0.0.5/", "http://[::1]/"):
+        res = nc.fetch_and_index_web(url)
+        assert "error" in res and res["error"].startswith("blocked"), url
+
+
+def test_redirect_to_internal_host_is_refused(monkeypatch):
+    import urllib.error
+    import pytest
+    from nougen_shards import nougen_context as nc
+    monkeypatch.delenv("NOUGEN_CONTEXT_ALLOW_PRIVATE_HOSTS", raising=False)
+    handler = nc._CheckedRedirect()
+    with pytest.raises(urllib.error.URLError):
+        handler.redirect_request(None, None, 302, "Found", {}, "http://127.0.0.1:4444/health")
