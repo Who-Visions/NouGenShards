@@ -47,6 +47,12 @@ def test_dead_decider_never_drops_the_fact():
     assert r["action"] == "ADD" and "decider_failed" in r["guards"]
 
 
+def test_supersede_of_identical_restatement_becomes_none():
+    nb = [{"id": "2", "text": "Name is Dave", "status": "candidate"}]
+    r = consolidate("Name is Dave", nb, dec("SUPERSEDE", "2"))
+    assert r["action"] == "NONE" and "supersede_of_identical_fact" in r["guards"]
+
+
 # ---- capture wiring ----
 from nougen_shards import consolidate as C
 

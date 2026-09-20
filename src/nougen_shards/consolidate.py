@@ -52,6 +52,11 @@ def _overlap(a: str, b: str) -> int:
     return len(_tokens(a) & _tokens(b))
 
 
+def _jaccard(a: str, b: str) -> float:
+    ta, tb = _tokens(a), _tokens(b)
+    return len(ta & tb) / len(ta | tb) if ta and tb else 0.0
+
+
 def build_prompt(new_fact: str, neighbours: List[Dict[str, Any]]) -> str:
     lines = [f'- id={n["id"]}: {n["text"]}' for n in neighbours]
     return (
@@ -98,6 +103,9 @@ def consolidate(new_fact: str, neighbours: List[Dict[str, Any]], decide: Decider
     target = str(d["target_id"]) if d.get("target_id") is not None else None
     reason = str(d.get("reason", ""))
 
+    if action == "SUPERSEDE" and target in ids and _jaccard(new_fact, ids[target]["text"]) >= 0.8             and not RETRACTION_CUE.search(new_fact):
+        guards.append("supersede_of_identical_fact")      # a restatement is a duplicate, not an update
+        action, target = "NONE", None
     if action == "SUPERSEDE" and target not in ids:        # hallucinated id
         guards.append("target_not_in_neighbours")
         action, target = "REVIEW", None
