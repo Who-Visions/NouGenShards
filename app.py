@@ -1916,7 +1916,7 @@ def rhea_brain(req: RheaBrainRequest,
 
 
 # --- Dav1d Execution Layer ---
-from nougen_shards.dav1d_executor import run_dav1d_agy
+from nougen_shards.dav1d_executor import ask_dav1d_persona, run_dav1d_agy
 
 
 class Dav1dExecRequest(BaseModel):
@@ -1942,6 +1942,21 @@ def dav1d_exec_endpoint(
     )
 
 
+class Dav1dAskRequest(BaseModel):
+    prompt: str
+    model: Optional[str] = None
+    timeout: int = 90
+
+
+@app.post("/dav1d/ask")
+def dav1d_ask_endpoint(
+    req: Dav1dAskRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Dav1d persona route: dav1d:e2b on ollama, AGY as labeled fallback."""
+    return ask_dav1d_persona(req.prompt, model=req.model, timeout=req.timeout)
+
+
 @app.post("/dav1d/agy")
 def dav1d_agy_endpoint(
     req: Dav1dExecRequest,
@@ -1963,12 +1978,14 @@ def dav1d_exec(
     command: str = "agy",
     subcommand: str = "mcp list",
     args: Optional[List[str]] = None,
-    prompt: str = ""
+    prompt: str = "",
+    timeout: int = 30
 ) -> dict:
     """Dav1d Execution Layer: Execute bounded AGY CLI operations and toolchain actions
     on Dav1d. Griot reasons/retrieves; Dav1d executes.
     Returns verifiable runtime evidence (machine, host, engine, version, exit_code, output)."""
-    return run_dav1d_agy(command=command, args=args, subcommand=subcommand, prompt=prompt)
+    return run_dav1d_agy(command=command, args=args, subcommand=subcommand, prompt=prompt,
+                         timeout=timeout)
 
 
 @node_mcp.tool()
@@ -1991,16 +2008,16 @@ def agy_ask(
 @_offloaded
 def ask_dav1d(
     prompt: str,
-    subcommand: str = "mcp list",
-    args: Optional[List[str]] = None
+    model: Optional[str] = None,
+    timeout: int = 90,
 ) -> dict:
-    """Canonical Dav1d connector alias.
+    """Ask Dav1d, blade's anchor persona (dav1d:e2b on the local ollama lane).
 
-    The fleet connector calls this name. Keep it on the same bounded executor
-    as ``agy_ask`` so the remote surface cannot silently fall back to a
-    simulated response or gain a second, less-safe execution path.
+    The reply carries host/engine/model/status. engine "ollama" is the persona;
+    engine "agy-cli" (with a `fallback` reason) means ollama could not answer and
+    the bounded AGY layer did. Raw AGY subcommands stay on ``dav1d_exec``.
     """
-    return run_dav1d_agy(command="agy", args=args, subcommand=subcommand, prompt=prompt)
+    return ask_dav1d_persona(prompt, model=model, timeout=timeout)
 
 
 # --- Shadow Xoah & Destiny Governance Layer ---
