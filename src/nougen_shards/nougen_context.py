@@ -7,9 +7,11 @@ import re
 import urllib.request
 from html.parser import HTMLParser
 from datetime import datetime, timezone
+import os
 from typing import Optional
 
-NOUGEN_CONTEXT_DIR = Path.home() / ".nougen" / "context"
+NOUGEN_VAULT_DIR = Path(os.environ.get("NOUGEN_VAULT_DIR", Path.home() / ".nougen" / "shards")).resolve()
+NOUGEN_CONTEXT_DIR = Path(os.environ.get("NOUGEN_CONTEXT_DIR", NOUGEN_VAULT_DIR / "context")).resolve()
 SESSION_DB_PATH = str(NOUGEN_CONTEXT_DIR / "session.db")
 
 def _utc_now_iso() -> str:
@@ -61,6 +63,29 @@ def _ensure_schema(conn):
     """)
     conn.commit()
 
+
+def _migrate_legacy_if_needed():
+    """Migrates existing session.db from legacy ~/.nougen/context to canonical ~/.nougen/shards/context once."""
+    session_file = Path(SESSION_DB_PATH)
+    marker = session_file.parent / ".legacy_migrated"
+    if marker.exists():
+        return
+    if not session_file.exists():
+        legacy_db = Path.home() / ".nougen" / "context" / "session.db"
+        if legacy_db.exists() and legacy_db.resolve() != session_file.resolve():
+            try:
+                import shutil
+                session_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(legacy_db, session_file)
+            except Exception:
+                pass
+    try:
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except Exception:
+        pass
+
+_migrate_legacy_if_needed()
 
 def get_context_connection():
     """Establishes an SQLite connection for the session context with WAL enabled."""
