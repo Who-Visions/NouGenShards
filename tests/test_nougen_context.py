@@ -129,7 +129,7 @@ def test_html_content_extractor():
     assert parser.title == "Test Page Title"
     assert len(parser.headings) == 2
     assert "H1: Main Heading" in parser.headings[0]
-    assert "https://example.com" in parser.links
+    assert any(link == "https://example.com" for link in parser.links)
     md = parser.get_markdown()
     assert "# Main Heading" in md
     assert "Item 1" in md
