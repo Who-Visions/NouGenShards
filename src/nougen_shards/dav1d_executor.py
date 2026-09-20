@@ -132,6 +132,11 @@ def run_dav1d_agy(
     else:
         target_args = ["mcp", "list"]
 
+    # agy 1.2.x has no `version` subcommand (it rejects it as a stray prompt argument);
+    # the allow-list keeps the word for callers, the binary needs the flag.
+    if target_args and target_args[0].lower() == "version":
+        target_args[0] = "--version"
+
     # Security check: verify first token is in allowed subcommands or flags
     first_tok = target_args[0].lower() if target_args else ""
     if first_tok.startswith("-"):
@@ -167,7 +172,10 @@ def run_dav1d_agy(
     cmd_list = [bin_path] + target_args
 
     try:
-        res = subprocess.run(cmd_list, capture_output=True, text=True, timeout=timeout)
+        # stdin closed: agy reads stdin for prompts, and a hidden gateway process
+        # has no usable stdin, so --print would block until the timeout.
+        res = subprocess.run(cmd_list, capture_output=True, text=True, timeout=timeout,
+                             stdin=subprocess.DEVNULL)
         output = res.stdout if res.stdout else res.stderr
         return {
             "machine": "Dav1d",
@@ -202,3 +210,92 @@ def run_dav1d_agy(
             "exit_code": 1,
             "error": str(exc)
         }
+
+
+# --- Dav1d persona route (ollama first, AGY labeled fallback) ---
+
+_PERSONA_DEFAULT_MODEL = "dav1d:e2b"
+
+
+def _persona_timeout(timeout: Optional[int]) -> float:
+    """Seconds for the persona call: caller value, else env, else 90."""
+    if timeout:
+        return float(timeout)
+    try:
+        return float(os.environ.get("NOUGEN_DAV1D_PERSONA_TIMEOUT_SEC", "90"))
+    except ValueError:
+        return 90.0
+
+
+def resolve_persona_model(host: str, model: Optional[str] = None) -> str:
+    """Pick Dav1d's model: caller > NOUGEN_AGENT_MODEL_DAV1D > served custom dav1d tag.
+
+    Discovered from /api/tags so a renamed tag needs no code change; the constant
+    is only the fallback when the probe fails.
+    """
+    import json
+    import urllib.request
+
+    if model and model.strip():
+        return model.strip()
+    env = os.environ.get("NOUGEN_AGENT_MODEL_DAV1D", "").strip()
+    if env:
+        return env
+    try:
+        with urllib.request.urlopen(host + "/api/tags", timeout=5) as resp:
+            names = [m.get("name", "") for m in json.load(resp).get("models", [])]
+        for name in names:
+            if name.lower().startswith("dav1d:") and "pre-selfid" not in name:
+                return name
+    except Exception as exc:
+        logger.warning("dav1d persona: /api/tags probe failed (%s); using %s", exc, _PERSONA_DEFAULT_MODEL)
+    return _PERSONA_DEFAULT_MODEL
+
+
+def ask_dav1d_persona(
+    prompt: str,
+    model: Optional[str] = None,
+    timeout: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Answer as Dav1d on the local ollama lane (persona baked into the Modelfile).
+
+    Falls back to the AGY layer only when ollama cannot answer, and the reply says so
+    (engine agy-cli), so the caller can always tell which Dav1d spoke.
+    """
+    import json
+    import urllib.request
+    from nougen_shards.agents import OLLAMA_HOST
+
+    host_label = _get_host_label()
+    limit = _persona_timeout(timeout)
+    chosen = resolve_persona_model(OLLAMA_HOST, model)
+    body = json.dumps({
+        "model": chosen,
+        "stream": False,
+        "think": False,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    req = urllib.request.Request(
+        OLLAMA_HOST + "/api/chat", data=body, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=limit) as resp:
+            data = json.load(resp)
+        answer = ((data.get("message") or {}).get("content") or "").strip()
+        if answer:
+            return {
+                "machine": "Dav1d",
+                "host": host_label,
+                "engine": "ollama",
+                "model": chosen,
+                "status": "success",
+                "exit_code": 0,
+                "output": answer,
+            }
+        reason = "empty answer from ollama"
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+    logger.warning("dav1d persona via ollama failed (%s); falling back to AGY", reason)
+    res = run_dav1d_agy(command="agy", prompt=prompt, timeout=int(limit))
+    res["fallback"] = f"ollama persona {chosen} failed: {reason}"
+    return res
