@@ -108,3 +108,169 @@ def test_execute_sandboxed_javascript():
         assert result == "hello from js"
     else:
         pytest.skip("Neither Node.js nor Bun available for testing JS sandbox.")
+
+
+def test_html_content_extractor():
+    """Test zero-dependency HTML parser."""
+    html = """
+    <html>
+      <head><title>Test Page Title</title></head>
+      <body>
+        <h1>Main Heading</h1>
+        <p>This is a paragraph with <a href="https://example.com">a link</a>.</p>
+        <script>console.log('ignore');</script>
+        <h2>Sub Heading</h2>
+        <ul><li>Item 1</li><li>Item 2</li></ul>
+      </body>
+    </html>
+    """
+    parser = nougen_context._HTMLContentExtractor()
+    parser.feed(html)
+    assert parser.title == "Test Page Title"
+    assert len(parser.headings) == 2
+    assert "H1: Main Heading" in parser.headings[0]
+    assert any(link == "https://example.com" for link in parser.links)
+    md = parser.get_markdown()
+    assert "# Main Heading" in md
+    assert "Item 1" in md
+    assert "ignore" not in md
+
+
+def test_analyze_file_python(tmp_path):
+    """Test sandboxed AST analysis of Python code."""
+    nougen_context.init_context_db(clean_slate=True)
+    code_file = tmp_path / "sample.py"
+    code_file.write_text(
+        "import os, sys\n"
+        "class Pilot:\n"
+        "    pass\n"
+        "def fly(dest):\n"
+        "    return dest\n",
+        encoding="utf-8"
+    )
+    res = nougen_context.analyze_file(str(code_file), query="dest")
+    assert res["name"] == "sample.py"
+    assert "Pilot" in res["ast"]["classes"]
+    assert "fly" in res["ast"]["functions"]
+    assert "os" in res["ast"]["imports"]
+    assert len(res["query_matches"]) > 0
+
+
+def test_checkpoint_and_restore_session():
+    """Test session snapshot and restore capabilities."""
+    nougen_context.init_context_db(clean_slate=True)
+    nougen_context.log_event("TEST_EVENT", "First important finding")
+    nougen_context.log_event("TEST_EVENT", "Second important finding")
+
+    # Save checkpoint
+    saved = nougen_context.checkpoint_session("v1-alpha")
+    assert saved["status"] == "checkpoint_saved"
+    assert saved["events_count"] == 2
+
+    # Check list
+    cps = nougen_context.list_checkpoints()
+    assert len(cps) == 1
+    assert cps[0]["label"] == "v1-alpha"
+
+    # Add a third event
+    nougen_context.log_event("TEST_EVENT", "Third finding that will be wiped on restore")
+    events = nougen_context.search_events("finding", limit=10)
+    assert len(events) == 3
+
+    # Restore checkpoint
+    restored = nougen_context.restore_session("v1-alpha")
+    assert restored["status"] == "checkpoint_restored"
+    assert restored["events_restored"] == 2
+
+    # Verify only 2 events remain
+    events_after = nougen_context.search_events("finding", limit=10)
+    assert len(events_after) == 2
+
+
+def test_batch_execute_sandboxed():
+    """Test batch execution in sandbox."""
+    commands = [
+        {"label": "py_step", "code": "print('result_alpha')", "language": "python"},
+        {"label": "py_step2", "code": "print('result_beta')", "language": "python"}
+    ]
+    res = nougen_sandbox.batch_execute_sandboxed(commands, queries=["alpha", "beta"])
+    assert res["total_commands"] == 2
+    assert len(res["steps"]) == 2
+    assert res["steps"][0]["status"] == "ok"
+    assert "result_alpha" in res["query_matches"]["alpha"][0]
+    assert "result_beta" in res["query_matches"]["beta"][0]
+
+
+def test_query_ollama_and_synthesize(monkeypatch):
+    """Test native Ollama acceleration and sandbox synthesis with mocked HTTP response."""
+    nougen_context.init_context_db(clean_slate=True)
+    nougen_context.store_sandbox("test_handle", "raw telemetry data about space treaty")
+
+    class MockResponse:
+        def __init__(self, data):
+            self.data = data
+        def read(self):
+            return self.data
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    import json
+    def mock_urlopen(req, timeout=35):
+        payload = json.dumps({"response": "Executive synthesis: space treaty valid", "eval_count": 42}).encode("utf-8")
+        return MockResponse(payload)
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    res = nougen_context.query_ollama("Summarize", context_handle="test_handle")
+    assert res["status"] == "success"
+    assert "space treaty valid" in res["response"]
+    assert res["tokens_eval"] == 42
+
+    # Test synthesize_sandbox
+    synth = nougen_context.synthesize_sandbox("test_handle")
+    assert synth["status"] == "synthesized"
+    assert "space treaty valid" in synth["summary"]
+
+
+def test_fetch_blocks_file_scheme_and_private_hosts(monkeypatch):
+    from nougen_shards import nougen_context as nc
+    monkeypatch.delenv("NOUGEN_CONTEXT_ALLOW_PRIVATE_HOSTS", raising=False)
+    for url in ("file:///C:/Windows/win.ini", "ftp://example.com/x", "http://127.0.0.1:4444/health",
+                "http://169.254.169.254/latest/meta-data", "http://10.0.0.5/", "http://[::1]/"):
+        res = nc.fetch_and_index_web(url)
+        assert "error" in res and res["error"].startswith("blocked"), url
+
+
+def test_redirect_to_internal_host_is_refused(monkeypatch):
+    import urllib.error
+    import pytest
+    from nougen_shards import nougen_context as nc
+    monkeypatch.delenv("NOUGEN_CONTEXT_ALLOW_PRIVATE_HOSTS", raising=False)
+    handler = nc._CheckedRedirect()
+    with pytest.raises(urllib.error.URLError):
+        handler.redirect_request(None, None, 302, "Found", {}, "http://127.0.0.1:4444/health")
+
+
+def test_cloud_fallback_requires_explicit_model(monkeypatch):
+    """No silent off-box send and no banned default tag: cloud is skipped unless a model is named."""
+    import urllib.request
+    from urllib.parse import urlparse
+    from nougen_shards import nougen_context as nc
+    seen = []
+
+    def fake_urlopen(req, timeout=None):
+        seen.append(req.full_url if hasattr(req, "full_url") else str(req))
+        raise OSError("down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("NOUGEN_OLLAMA_CLOUD_URL", "https://cloud.example.invalid")
+    monkeypatch.delenv("NOUGEN_OLLAMA_CLOUD_MODEL", raising=False)
+    res = nc.query_ollama("hello")
+    assert res["status"] == "unavailable"
+    assert not any(urlparse(u).hostname == "cloud.example.invalid" for u in seen)
+    monkeypatch.setenv("NOUGEN_OLLAMA_CLOUD_MODEL", "some-cloud-tag")
+    nc.query_ollama("hello")
+    assert any(urlparse(u).hostname == "cloud.example.invalid" for u in seen)
