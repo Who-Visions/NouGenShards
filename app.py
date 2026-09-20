@@ -2122,7 +2122,7 @@ class XoahUnwrittenRequest(BaseModel):
     query: str
 
 
-# REST twins of the Black Glass MCP tools below: the fleet connector worker
+# REST twins of the self-archive MCP tools below: the fleet connector worker
 # reaches the node over REST (/xoah/self, /xoah/pressure), not MCP.
 @app.post("/xoah/relationship")
 def xoah_relationship_endpoint(req: XoahRelationshipRequest,
@@ -2254,7 +2254,7 @@ def xoah_throne(desired_effect: Optional[str] = None, effect: Optional[str] = No
     return throne_governance.evaluate(resolved, target_coordinate=target_coordinate, target_branch=target_branch)
 
 
-# Black Glass query surface over the Xoah self archive. Every answer carries its
+# Query surface over the self archive. Every answer carries its
 # layer (LIVED_TRUTH ... UNWRITTEN_SELF, or ARCHIVE_ABSENT when this node has no
 # archive file) and the provenance of the nodes it cites.
 @node_mcp.tool()

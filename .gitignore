@@ -197,3 +197,6 @@ logs/
 *.local.md
 *.bak*
 bin/ngs-node.sh.bak*
+
+# Personal/product working data never belongs in the public tree.
+/projects/
