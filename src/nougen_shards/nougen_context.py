@@ -623,12 +623,15 @@ def query_ollama(
 
     # Cloud fallback if env configured
     cloud_url = os.environ.get("NOUGEN_OLLAMA_CLOUD_URL") or os.environ.get("OLLAMA_CLOUD_URL")
-    if cloud_url:
+    # No hardcoded default model: the old gemma4:31b default is a banned large tag (Rule 0.4) and it
+    # silently shipped context off-box. The operator must name the cloud model explicitly.
+    cloud_model = model or os.environ.get("NOUGEN_OLLAMA_CLOUD_MODEL")
+    if cloud_url and cloud_model:
         try:
             req = urllib.request.Request(
                 f"{cloud_url.rstrip('/')}/api/generate",
                 data=json.dumps({
-                    "model": model or "gemma4:31b",
+                    "model": cloud_model,
                     "prompt": full_prompt,
                     "stream": False
                 }).encode("utf-8"),
@@ -638,7 +641,7 @@ def query_ollama(
                 res = json.loads(response.read().decode("utf-8"))
                 return {
                     "status": "success",
-                    "model": "cloud:" + (model or "gemma4:31b"),
+                    "model": "cloud:" + cloud_model,
                     "response": res.get("response", "").strip(),
                     "endpoint": cloud_url
                 }
