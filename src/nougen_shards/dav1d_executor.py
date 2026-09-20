@@ -153,7 +153,11 @@ def run_dav1d_agy(
     # Normalize arguments
     target_args: List[str] = []
     if prompt:
-        target_args = ["--print", prompt]
+        # agy has no stdin prompt mode and headless -p blocks on a permission prompt
+        # unless --dangerously-skip-permissions is set (never done here, and it hung
+        # every caller until timeout). Prompts go to the local persona instead, so no
+        # caller text is ever placed on an agy command line.
+        return ask_dav1d_persona(prompt, timeout=timeout)
     elif args and len(args) > 0:
         target_args = [str(a) for a in args]
     elif subcommand:
@@ -256,7 +260,7 @@ def run_dav1d_agy(
         }
 
 
-# --- Dav1d persona route (ollama first, AGY labeled fallback) ---
+# --- Dav1d persona route (ollama; an explicit error when it is down) ---
 
 _PERSONA_DEFAULT_MODEL = "dav1d:e2b"
 
@@ -303,8 +307,8 @@ def ask_dav1d_persona(
 ) -> Dict[str, Any]:
     """Answer as Dav1d on the local ollama lane (persona baked into the Modelfile).
 
-    Falls back to the AGY layer only when ollama cannot answer, and the reply says so
-    (engine agy-cli), so the caller can always tell which Dav1d spoke.
+    When ollama cannot answer the reply is an explicit error, never a silent swap to
+    another engine, so the caller can always tell which Dav1d spoke.
     """
     import json
     import urllib.request
@@ -340,6 +344,12 @@ def ask_dav1d_persona(
     except Exception as exc:
         reason = type(exc).__name__  # detail stays in the log, never in the response
         logger.warning("dav1d persona via ollama failed: %s", exc)
-    res = run_dav1d_agy(command="agy", prompt=prompt, timeout=int(limit))
-    res["fallback"] = f"ollama persona {chosen} failed: {reason}"
-    return res
+    return {
+        "machine": "Dav1d",
+        "host": host_label,
+        "engine": "ollama",
+        "model": chosen,
+        "status": "error",
+        "exit_code": 1,
+        "error": f"persona lane unavailable: {reason}",
+    }
