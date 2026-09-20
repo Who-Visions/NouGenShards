@@ -38,6 +38,9 @@ from .brain_scan import scan_environment, run_import
 from .history import HistoryEngine
 from .federation import federated_retrieve
 
+# ~32k chars per recall packet unless NOUGEN_RECALL_TOKEN_BUDGET says otherwise ("0" = unbounded).
+DEFAULT_RECALL_TOKEN_BUDGET = 8000
+
 
 def _server_instructions() -> str:
     """Standing instructions handed to every client at connection.
@@ -134,8 +137,14 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
                     "Retry, or raise NOUGEN_RECALL_DEADLINE_S; do NOT conclude "
                     "the substrate holds nothing on this query.")
         return "No relevant shards found in the memory substrate."
+    # Unbounded used to be the default; one 994k-char screenplay shard then
+    # filled a 2-hit recall and the MCP transport timed out (WhoArt, 2026-09-20).
+    # Bounded by default, "0" restores the old unbounded packet on purpose.
     budget = os.environ.get("NOUGEN_RECALL_TOKEN_BUDGET", "").strip()
-    token_budget = int(budget) if budget.isdigit() else None
+    if budget.isdigit():
+        token_budget = int(budget) or None
+    else:
+        token_budget = DEFAULT_RECALL_TOKEN_BUDGET
     if session_id:
         from nougen_shards import distill as _distill  # pylint: disable=import-outside-toplevel
         sent: list = []

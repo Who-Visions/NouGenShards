@@ -5,7 +5,11 @@
       "args": ["-m", "nougen_shards.mcp"],
       "env": {
         "PYTHONPATH": "src",
-        "NOUGEN_VAULT_DIR": ".vault"
+        "PYTHONIOENCODING": "utf-8",
+        "NOUGEN_VAULT_DIR": "~/.nougen/shards",
+        "NOUGEN_RECALL_TOKEN_BUDGET": "8000",
+        "NOUGEN_RECALL_DEADLINE_S": "8",
+        "NOUGEN_SQLITE_TIMEOUT_S": "30"
       }
     },
     "ollama": {
