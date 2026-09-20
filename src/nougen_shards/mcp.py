@@ -1,4 +1,5 @@
 """Model Context Protocol (MCP) server for NouGenShards — Valerion Engine."""
+import json
 import os
 import sqlite3
 from nougen_shards import agents
@@ -337,7 +338,7 @@ def fetch_web_sandboxed(url: str, label: Optional[str] = None) -> str:
     if "error" in res:
         return f"Error: {res['error']}"
     headings_summary = "\n".join(f"- {h}" for h in res.get("headings", [])[:8])
-    links_summary = "\n".join(f"- {l}" for l in res.get("key_links", [])[:8])
+    links_summary = "\n".join(f"- {link}" for link in res.get("key_links", [])[:8])
     return (
         f"✅ Successfully indexed '{res['title']}' into NouGen Context (Handle: {res['handle']})\n"
         f"Summary: {res['summary']}\n\n"
