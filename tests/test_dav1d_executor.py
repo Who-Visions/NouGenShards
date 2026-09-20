@@ -113,3 +113,24 @@ def test_dav1d_persona_falls_back_to_agy_labeled(monkeypatch):
 def test_dav1d_executor_rejects_unlisted_flag():
     res = run_dav1d_agy(args=["--dangerously-skip-permissions", "--print", "x"])
     assert res["status"] == "rejected"
+
+
+def test_smuggled_flag_after_allowed_subcommand_is_rejected():
+    from nougen_shards.dav1d_executor import run_dav1d_agy
+
+    out = run_dav1d_agy(args=["mcp", "add", "--command", "/bin/sh"])
+    assert out["status"] == "rejected"
+    assert "--command" in out["error"]
+
+
+def test_control_characters_in_arguments_are_rejected():
+    from nougen_shards.dav1d_executor import _reject_unsafe_args
+
+    assert _reject_unsafe_args(["--print", "a\x00b"], prompt_index=1)
+    assert _reject_unsafe_args(["mcp", "list"]) == ""
+
+
+def test_prompt_may_start_with_dash_but_not_carry_control_bytes():
+    from nougen_shards.dav1d_executor import _reject_unsafe_args
+
+    assert _reject_unsafe_args(["--print", "-not a flag, a prompt"], prompt_index=1) == ""

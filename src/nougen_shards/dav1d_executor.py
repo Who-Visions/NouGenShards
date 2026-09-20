@@ -113,6 +113,31 @@ def _get_host_label() -> str:
     return os.environ.get("NOUGEN_HOST_LABEL", "Blade Node (Stadium)")
 
 
+_MAX_ARG_LEN = 32768
+
+
+def _reject_unsafe_args(target_args: List[str], prompt_index: Optional[int] = None) -> str:
+    """Validate EVERY argv token, not just the first.
+
+    The first-token allowlist alone let a caller smuggle extra flags
+    (e.g. ``["mcp", "add", "--command", "/bin/sh"]``) into the child process.
+    Rules: no NUL/control characters, bounded length, and any token starting
+    with ``-`` must be an allowed flag. The free-text prompt (the value after
+    ``--print``) is exempt from the flag rule only, never from the character
+    and length rules.
+    """
+    for i, tok in enumerate(target_args):
+        if len(tok) > _MAX_ARG_LEN:
+            return f"argument {i} exceeds {_MAX_ARG_LEN} characters"
+        if any(ord(c) < 32 and c not in "\n\t" for c in tok) or "\x00" in tok:
+            return f"argument {i} contains control characters"
+        if i == 0 or i == prompt_index:
+            continue
+        if tok.startswith("-") and tok.lower() not in ALLOWED_FLAGS:
+            return f"flag '{tok}' not in bounded allowlist"
+    return ""
+
+
 def run_dav1d_agy(
     command: str = "agy",
     args: Optional[List[str]] = None,
@@ -157,6 +182,19 @@ def run_dav1d_agy(
             "status": "rejected",
             "exit_code": 1,
             "error": f"'{first_tok}' not in bounded allowlist ({', '.join(sorted(ALLOWED_SUBCOMMANDS | ALLOWED_FLAGS))})"
+        }
+
+    bad = _reject_unsafe_args(target_args, prompt_index=1 if prompt else None)
+    if bad:
+        return {
+            "machine": "Dav1d",
+            "host": host_label,
+            "engine": "agy-cli",
+            "version": _VERSION_UNKNOWN,
+            "command": " ".join(target_args[:1]),
+            "status": "rejected",
+            "exit_code": 1,
+            "error": bad,
         }
 
     bin_path = resolve_agy_binary()
