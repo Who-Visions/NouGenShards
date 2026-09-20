@@ -107,4 +107,9 @@ def test_dav1d_persona_falls_back_to_agy_labeled(monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", boom)
     monkeypatch.setattr(ex, "run_dav1d_agy", lambda **k: {"engine": "agy-cli", "status": "success"})
     res = ex.ask_dav1d_persona("status?")
-    assert res["engine"] == "agy-cli" and "ollama down" in res["fallback"]
+    assert res["engine"] == "agy-cli" and res["fallback"].endswith("OSError")
+
+
+def test_dav1d_executor_rejects_unlisted_flag():
+    res = run_dav1d_agy(args=["--dangerously-skip-permissions", "--print", "x"])
+    assert res["status"] == "rejected"

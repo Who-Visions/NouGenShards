@@ -18,6 +18,10 @@ ALLOWED_SUBCOMMANDS = {
     "mcp", "changelog", "models", "agent", "agents", "help", "version", "--version", "-v"
 }
 
+# Leading flags a caller may pass. --print is what the prompt path builds; anything
+# else (e.g. --dangerously-skip-permissions) is refused rather than forwarded to agy.
+ALLOWED_FLAGS = {"--version", "-v", "--help", "-h", "--print"}
+
 # Version is resolved at call time (env -> live probe -> labeled fallback), never
 # pinned in source. A constant here drifted from 1.1.17 to 1.1.18 within a day and the
 # stale value was reported to the fleet as runtime evidence.
@@ -140,8 +144,10 @@ def run_dav1d_agy(
     # Security check: verify first token is in allowed subcommands or flags
     first_tok = target_args[0].lower() if target_args else ""
     if first_tok.startswith("-"):
-        pass  # allow flags like --version, --print
-    elif first_tok not in ALLOWED_SUBCOMMANDS:
+        allowed = first_tok in ALLOWED_FLAGS
+    else:
+        allowed = first_tok in ALLOWED_SUBCOMMANDS
+    if not allowed:
         return {
             "machine": "Dav1d",
             "host": host_label,
@@ -150,7 +156,7 @@ def run_dav1d_agy(
             "command": " ".join([command] + target_args),
             "status": "rejected",
             "exit_code": 1,
-            "error": f"Subcommand '{first_tok}' not in bounded allowlist ({', '.join(sorted(ALLOWED_SUBCOMMANDS))})"
+            "error": f"'{first_tok}' not in bounded allowlist ({', '.join(sorted(ALLOWED_SUBCOMMANDS | ALLOWED_FLAGS))})"
         }
 
     bin_path = resolve_agy_binary()
@@ -208,7 +214,7 @@ def run_dav1d_agy(
             "command": " ".join(cmd_list),
             "status": "error",
             "exit_code": 1,
-            "error": str(exc)
+            "error": type(exc).__name__
         }
 
 
@@ -294,8 +300,8 @@ def ask_dav1d_persona(
             }
         reason = "empty answer from ollama"
     except Exception as exc:
-        reason = f"{type(exc).__name__}: {exc}"
-    logger.warning("dav1d persona via ollama failed (%s); falling back to AGY", reason)
+        reason = type(exc).__name__  # detail stays in the log, never in the response
+        logger.warning("dav1d persona via ollama failed: %s", exc)
     res = run_dav1d_agy(command="agy", prompt=prompt, timeout=int(limit))
     res["fallback"] = f"ollama persona {chosen} failed: {reason}"
     return res
