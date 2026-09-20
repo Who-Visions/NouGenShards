@@ -44,7 +44,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-OLLAMA = os.environ.get("NOUGEN_OLLAMA_URL", "http://localhost:11434")
+OLLAMA = os.environ.get("NOUGEN_OLLAMA_URL", "http://127.0.0.1:11434")
 LOCAL_MODEL = os.environ.get("NOUGEN_HEARTBEAT_MODEL", "gemma4:e2b-qat")
 UA = {"User-Agent": "nougen-fleet-heartbeat/1.0"}
 

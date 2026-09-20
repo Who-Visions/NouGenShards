@@ -4,8 +4,8 @@ import json, os, sys, time, urllib.request, glob, datetime, subprocess
 
 from nougen_shards.brain_scan.redaction import redact_content
 
-OLLAMA = "http://localhost:11434/v1/chat/completions"
-TAGS = "http://localhost:11434/api/tags"
+OLLAMA = "http://127.0.0.1:11434/v1/chat/completions"
+TAGS = "http://127.0.0.1:11434/api/tags"
 HOME = os.path.expanduser("~")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(HOME, ".nougen", "dreams",
@@ -176,7 +176,7 @@ def _is_resident(model):
     """True if `model` is currently pinned in Ollama (e.g. by IRIS)."""
     try:
         with urllib.request.urlopen(
-                "http://localhost:11434/api/ps", timeout=10) as r:
+                "http://127.0.0.1:11434/api/ps", timeout=10) as r:
             return model in {m.get("name") for m in
                              json.loads(r.read()).get("models", [])}
     except Exception:
