@@ -121,3 +121,67 @@ def consolidate(new_fact: str, neighbours: List[Dict[str, Any]], decide: Decider
         return {"action": "SUPERSEDE", "supersedes": target, "as_of_ms": int(time.time() * 1000),
                 "reason": reason, "guards": guards}
     return {"action": action, "supersedes": None, "reason": reason, "guards": guards}
+
+
+# --------------------------------------------------------------------------- #
+# capture wiring
+# --------------------------------------------------------------------------- #
+MAX_FACT_CHARS = 4000          # bigger bodies are documents, not facts; never consolidated
+_LOCK_TAGS = {"canon-lock", "locked", "canon"}
+
+
+def enabled(flag: "bool | None" = None) -> bool:
+    """Opt-in: explicit argument wins, else NOUGEN_CONSOLIDATE=1."""
+    import os
+    if flag is not None:
+        return bool(flag)
+    return os.environ.get("NOUGEN_CONSOLIDATE", "").strip() in ("1", "true", "yes")
+
+
+def _status_from_tags(tags: List[str]) -> str:
+    return "locked" if any(str(t).lower() in _LOCK_TAGS for t in (tags or [])) else "candidate"
+
+
+def neighbours_from_hits(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out = []
+    for h in hits or []:
+        tags = h.get("tags") or []
+        if isinstance(tags, str):
+            try:
+                tags = json.loads(tags)
+            except ValueError:
+                tags = []
+        text = f'{h.get("title", "")}: {str(h.get("content", ""))[:400]}'
+        out.append({"id": f'{h.get("id")}@db{h.get("_db_index")}', "text": text,
+                    "status": _status_from_tags(tags)})
+    return out
+
+
+def consolidation_tags(title: str, content: str, tags: List[str], retrieve_fn: Callable[..., list],
+                       decide: "Decider | None" = None, limit: int = 5) -> List[str]:
+    """Extra tags for a capture about to be written. NEVER raises and never blocks:
+    any failure returns [] and the shard is written exactly as before.
+
+    SUPERSEDE -> ``supersedes:<id@dbN>``; CONFLICT/REVIEW -> ``consolidate:<action>`` and
+    ``consolidate-target:<id>``; ADD/NONE add nothing (exact duplicates are already dropped by
+    capture's content hash). The write still happens in every case (append-only history); the tags are what recall/bridges key on."""
+    try:
+        if len(content or "") > MAX_FACT_CHARS:
+            return []
+        hits = retrieve_fn(f"{title} {(content or '')[:300]}", limit=limit)
+        nb = neighbours_from_hits(hits)
+        if not nb:
+            return []
+        res = consolidate(f"{title}: {content}", nb, decide or ollama_decider(timeout=10.0),
+                          new_status=_status_from_tags(tags))
+    except Exception:  # pylint: disable=broad-except
+        return []
+    act = res["action"]
+    if act == "SUPERSEDE":
+        return [f'supersedes:{res["supersedes"]}']
+    if act in ("CONFLICT", "REVIEW"):
+        extra = [f"consolidate:{act.lower()}"]
+        if res.get("target"):
+            extra.append(f'consolidate-target:{res["target"]}')
+        return extra
+    return []

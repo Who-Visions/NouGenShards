@@ -45,3 +45,52 @@ def test_dead_decider_never_drops_the_fact():
         raise RuntimeError("ollama down")
     r = consolidate("Likes sushi", PIZZA, boom)
     assert r["action"] == "ADD" and "decider_failed" in r["guards"]
+
+
+# ---- capture wiring ----
+from nougen_shards import consolidate as C
+
+
+def _hits():
+    return [{"id": 7, "_db_index": 3, "title": "pref", "content": "Likes pizza", "tags": '["x"]'},
+            {"id": 9, "_db_index": 1, "title": "lock", "content": "Veil is a dark matter sea", "tags": ["canon-lock"]}]
+
+
+def test_tags_supersede_marker_uses_id_at_db():
+    tags = C.consolidation_tags("pref", "I no longer like pizza, pasta now", [], lambda q, limit=5: _hits(),
+                                decide=lambda f, n: {"action": "ADD", "target_id": None, "reason": ""})
+    assert tags == ["supersedes:7@db3"]
+
+
+def test_tags_conflict_against_canon_lock():
+    tags = C.consolidation_tags("veil", "The Veil is not dark matter", ["draft"], lambda q, limit=5: _hits(),
+                                decide=lambda f, n: {"action": "SUPERSEDE", "target_id": "9@db1", "reason": ""})
+    assert tags == ["consolidate:conflict", "consolidate-target:9@db1"]
+
+
+def test_tags_never_raise_and_skip_documents():
+    def boom(q, limit=5):
+        raise RuntimeError("retrieve down")
+    assert C.consolidation_tags("t", "c", [], boom) == []
+    assert C.consolidation_tags("t", "x" * 5000, [], lambda q, limit=5: _hits()) == []
+    assert C.consolidation_tags("t", "c", [], lambda q, limit=5: []) == []
+
+
+def test_enabled_flag_and_env(monkeypatch):
+    monkeypatch.delenv("NOUGEN_CONSOLIDATE", raising=False)
+    assert C.enabled() is False and C.enabled(True) is True
+    monkeypatch.setenv("NOUGEN_CONSOLIDATE", "1")
+    assert C.enabled() is True and C.enabled(False) is False
+
+
+def test_capture_stamps_tags_and_still_writes(tmp_path, monkeypatch):
+    import sqlite3
+    from nougen_shards import core
+    monkeypatch.setattr(core, "GLOBAL_DIR", tmp_path)   # vault path binds at import; env is too late
+    monkeypatch.setattr(C, "consolidation_tags", lambda *a, **k: ["supersedes:7@db3"])
+    assert core.capture("KNOWLEDGE", "wired-capture-test", "I no longer like pizza", tags=["t"], consolidate=True)
+    found = []
+    for db in tmp_path.glob("nougen_shards_*.db"):
+        found += sqlite3.connect(db).execute("select tags from shards where title='wired-capture-test'").fetchall()
+    assert list(tmp_path.glob("nougen_shards_*.db")), "write must land in tmp_path, not the real vault"
+    assert found and "supersedes:7@db3" in found[0][0]
