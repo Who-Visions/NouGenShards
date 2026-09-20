@@ -192,7 +192,8 @@ def _relay_feed(args: dict, only_open: bool) -> dict:
     from nougen_shards import handoff
     limit = _limit(args)
     # Open filtering happens after the read, so fetch a wider window first.
-    feed = handoff.handoff_feed(limit=limit * (4 if only_open else 1)) or []
+    fetch_limit = limit * (4 if only_open else 1)
+    feed = handoff.handoff_feed(limit=fetch_limit) or []
     legs = []
     for leg in feed:
         live = str(leg.get("live_status") or leg.get("status") or "open").lower()
@@ -204,7 +205,11 @@ def _relay_feed(args: dict, only_open: bool) -> dict:
                      "timestamp": leg.get("timestamp"), "live_status": live})
         if len(legs) >= limit:
             break
-    return {"legs": legs}
+    # The local handoff API has no cursor. If the fetch filled its window,
+    # callers must not infer that the filtered result is exhaustive.
+    complete = len(feed) < fetch_limit
+    return {"legs": legs, "complete": complete, "scanned": len(feed),
+            "next_cursor": None if complete else "local-feed-window"}
 
 
 def _relay_latest(args: dict) -> dict:

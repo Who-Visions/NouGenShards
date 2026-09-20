@@ -19,7 +19,8 @@ def test_single_observer_timeout_is_unknown_not_offline():
     r = ns.classify("blade", TIMEOUTS, observer="phoebus")
     assert r["state"] == "UNKNOWN"
     assert "one observer cannot prove offline" in r["reason"]
-    assert r["online"] is False
+    assert r["online"] is None
+    assert r["telemetry_available"] is True
 
 
 def test_powered_off_by_owner_is_offline_expected():
@@ -45,6 +46,7 @@ def test_witness_that_can_see_it_makes_a_partition():
                     witnesses=[{"observer": "whoart", "reachable": True}])
     assert r["state"] == "NETWORK_PARTITION"
     assert "whoart" in r["reason"]
+    assert r["online"] is True
 
 
 def test_independent_observers_agreeing_is_offline_unexpected():

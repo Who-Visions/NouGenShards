@@ -75,6 +75,19 @@ def test_relay_open_filters_closed_legs(monkeypatch):
     assert [leg["id"] for leg in latest["legs"]] == ["leg-1", "leg-2"]
     opened = kt.dispatch("relay_open", {})
     assert [leg["id"] for leg in opened["legs"]] == ["leg-2", "leg-3"]
+    assert opened["complete"] is True
+
+
+def test_relay_open_marks_full_window_partial(monkeypatch):
+    from nougen_shards import handoff
+    # _limit() clamps to this ceiling (default 5); raise it so limit=25 -> a 100-row fetch window.
+    monkeypatch.setenv("NOUGEN_KAEDRA_TOOL_LIMIT", "25")
+    feed = [{"id": str(i), "live_status": "open", "goal": "g"} for i in range(100)]
+    monkeypatch.setattr(handoff, "handoff_feed", lambda agent=None, limit=25: feed[:limit])
+    out = kt.dispatch("relay_open", {"limit": 25})
+    assert out["complete"] is False
+    assert out["scanned"] == 100
+    assert out["next_cursor"] == "local-feed-window"
 
 
 def test_reach_state_unavailable_when_module_missing(monkeypatch):

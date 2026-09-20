@@ -216,6 +216,9 @@ def test_invariant_10_all_nodes_independently_represented(tmp_path):
     nodes_report = control_multi.nodes(timeout=0.1)
 
     assert nodes_report["total_nodes"] == 3
+    assert nodes_report["telemetry_available"] is True
+    assert nodes_report["probe_sweep_complete"] is True
+    assert nodes_report["complete"] is True
     for k in ("node_a", "node_b", "node_c"):
         assert k in nodes_report["nodes"]
         node_info = nodes_report["nodes"][k]
@@ -223,6 +226,31 @@ def test_invariant_10_all_nodes_independently_represented(tmp_path):
         assert "state" in node_info
         assert "reachable" in node_info
         assert "probes" in node_info
+
+
+def test_node_probe_exception_keeps_fleet_telemetry_and_marks_only_that_node_unknown(tmp_path):
+    nodes_file = tmp_path / "nodes.json"
+    nodes_file.write_text(json.dumps({
+        "node_a": {"name": "Node Alpha", "ip": "127.0.0.1", "host": "alpha.local"},
+        "node_b": {"name": "Node Beta", "ip": "127.0.0.1", "host": "beta.local"},
+    }), encoding="utf-8")
+    control = LiveControlPlane(home_dir=tmp_path)
+
+    with patch.object(control, "probe_node", side_effect=[RuntimeError("probe exploded"), {
+        "node": "node_b", "name": "Node Beta", "state": "ONLINE_HEALTHY",
+        "online": True, "reachable": True, "probes": {},
+    }]):
+        report = control.nodes()
+
+    assert report["telemetry_available"] is True
+    assert report["probe_sweep_complete"] is False
+    assert report["complete"] is False
+    assert report["probe_failures"] == ["node_a"]
+    assert report["nodes"]["node_a"]["state"] == "UNKNOWN"
+    assert report["nodes"]["node_a"]["online"] is None
+    assert report["nodes"]["node_a"]["reachable"] is None
+    assert report["online_nodes"] == 1
+    assert report["nodes"]["node_b"]["state"] == "ONLINE_HEALTHY"
 
 
 def test_invariant_11_partial_node_port_timeout_does_not_break_fleet(tmp_path):
@@ -341,4 +369,3 @@ def test_invariant_13_reach_matrix_integration():
     data = json.loads(out_json)
     assert "summary" in data
     assert "control_ok" in data
-
