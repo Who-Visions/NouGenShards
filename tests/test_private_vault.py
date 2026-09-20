@@ -37,6 +37,20 @@ TEST_KEY_B64 = base64.b64encode(b"\x11" * 32).decode("ascii")
 
 
 @pytest.fixture(autouse=True)
+def _no_os_secret_store(monkeypatch):
+    """Never reach the real OS secret store from this module.
+
+    On a clean macOS or Windows machine the Keychain/DPAPI call blocks on a
+    prompt, and it would write a real key into the runner's login keychain.
+    Custody is stubbed; these tests prove vault behaviour, not the OS wrapper
+    (keymaker has its own tests).
+    """
+    import nougen_shards.keymaker as km
+    monkeypatch.setattr(km, "_protect", lambda value, key=None: value)
+    monkeypatch.setattr(km, "_unprotect", lambda stored: stored)
+
+
+@pytest.fixture(autouse=True)
 def _key(monkeypatch):
     monkeypatch.setenv(pv.ENV_KEY, TEST_KEY_B64)
     pv.reset_key_cache()
