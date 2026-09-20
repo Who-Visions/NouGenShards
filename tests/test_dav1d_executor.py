@@ -97,7 +97,7 @@ def test_dav1d_persona_answers_from_ollama(monkeypatch):
     assert res["engine"] == "ollama" and res["model"] == "dav1d:e2b" and res["output"] == "alive"
 
 
-def test_dav1d_persona_falls_back_to_agy_labeled(monkeypatch):
+def test_dav1d_persona_reports_error_when_ollama_down(monkeypatch):
     from nougen_shards import dav1d_executor as ex
 
     def boom(*a, **k):
@@ -105,9 +105,18 @@ def test_dav1d_persona_falls_back_to_agy_labeled(monkeypatch):
 
     monkeypatch.setenv("NOUGEN_AGENT_MODEL_DAV1D", "dav1d:e2b")
     monkeypatch.setattr("urllib.request.urlopen", boom)
-    monkeypatch.setattr(ex, "run_dav1d_agy", lambda **k: {"engine": "agy-cli", "status": "success"})
     res = ex.ask_dav1d_persona("status?")
-    assert res["engine"] == "agy-cli" and res["fallback"].endswith("OSError")
+    assert res["status"] == "error" and res["engine"] == "ollama"
+    assert "ollama down" not in str(res)
+
+
+def test_dav1d_exec_prompt_goes_to_persona_never_agy(monkeypatch):
+    from nougen_shards import dav1d_executor as ex
+
+    monkeypatch.setattr(ex, "ask_dav1d_persona", lambda p, **k: {"engine": "ollama", "output": p})
+    monkeypatch.setattr("nougen_shards.dav1d_executor.subprocess.run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("agy must not run")))
+    assert run_dav1d_agy(prompt="--dangerously-skip-permissions hi")["engine"] == "ollama"
 
 
 def test_dav1d_executor_rejects_unlisted_flag():
