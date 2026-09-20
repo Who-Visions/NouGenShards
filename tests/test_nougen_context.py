@@ -257,6 +257,7 @@ def test_redirect_to_internal_host_is_refused(monkeypatch):
 def test_cloud_fallback_requires_explicit_model(monkeypatch):
     """No silent off-box send and no banned default tag: cloud is skipped unless a model is named."""
     import urllib.request
+    from urllib.parse import urlparse
     from nougen_shards import nougen_context as nc
     seen = []
 
@@ -269,7 +270,7 @@ def test_cloud_fallback_requires_explicit_model(monkeypatch):
     monkeypatch.delenv("NOUGEN_OLLAMA_CLOUD_MODEL", raising=False)
     res = nc.query_ollama("hello")
     assert res["status"] == "unavailable"
-    assert not any("cloud.example.invalid" in u for u in seen)
+    assert not any(urlparse(u).hostname == "cloud.example.invalid" for u in seen)
     monkeypatch.setenv("NOUGEN_OLLAMA_CLOUD_MODEL", "some-cloud-tag")
     nc.query_ollama("hello")
-    assert any("cloud.example.invalid" in u for u in seen)
+    assert any(urlparse(u).hostname == "cloud.example.invalid" for u in seen)
