@@ -13,7 +13,10 @@ REM It carries the same cross-process locks as node_lane.ps1 and is idempotent,
 REM so the Startup-folder copy and this scheduled task can safely overlap.
 
 setlocal
-set "NGS_PORT=4445"
+rem The shared gateway and node_lane health checks target 4444.  Running this
+rem watcher on 4445 created a false-green scheduled task while the real write
+rem origin stayed down and the edge returned 502.
+set "NGS_PORT=4444"
 set "NGS_ROOT=%~dp0.."
 pushd "%NGS_ROOT%" || exit /b 1
 rem Resolve ONE runtime home before both the supervisor sync and the launch.
