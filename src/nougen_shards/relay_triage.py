@@ -35,7 +35,10 @@ LABELS = (CLOSED, ECHO_OWN, AUTO_NOTE, OTHER_LANE, NEEDS_OWNER, ACTIONABLE, STAT
 # Labels a node should show the operator; everything else is safe to collapse.
 SURFACE = frozenset({ACTIONABLE, NEEDS_OWNER, UNKNOWN})
 
-_TERMINAL = {"complete", "completed", "done", "dead_letter", "closed", "released", "superseded"}
+_TERMINAL = {"complete", "completed", "done", "closed", "released", "superseded"}
+# "dead_letter" is a delivery outcome, not proof the work happened: an automatic
+# daemon can dead-letter a leg whose ask was never done. Never treat it as closed.
+_UNPROVEN = {"dead_letter"}
 _ADDRESS = re.compile(r"->\s*@([A-Za-z0-9_.-]+)|\[\s*([A-Za-z0-9_.-]+)\s+DIRECT\s*\]", re.I)
 _BROADCAST = {"all", "fleet", "everyone", "*"}
 _OWNER_ASK = re.compile(
@@ -116,6 +119,8 @@ def classify(leg: Mapping[str, Any], me: Optional[str] = None, *,
 
     if status in _TERMINAL:
         return Verdict(CLOSED, "R1-terminal-state", f"state={status}")
+    if status in _UNPROVEN:
+        return Verdict(UNKNOWN, "R1b-dead-letter", "dead_letter is not evidence the work was done; check it")
     if _authored_by(leg, node):
         return Verdict(ECHO_OWN, "R2-authored-by-me", "goal tag or host footer names this node")
     if agent == "outpost" or goal.lstrip().lower().startswith("[auto]"):

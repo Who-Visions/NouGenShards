@@ -19,7 +19,6 @@ def label(item, me="nodea"):
 
 def test_terminal_state_is_closed_whatever_the_goal():
     assert label(leg("IMPLEMENT the thing", status="complete")) == rt.CLOSED
-    assert label(leg("[NouGenMsg -> @nodea] do it", status="dead_letter")) == rt.CLOSED
 
 
 def test_own_leg_is_echo_by_goal_tag_or_host_footer():
@@ -98,3 +97,8 @@ def test_summarize_counts_every_label():
     counts = rt.summarize(rows)
     assert set(counts) == set(rt.LABELS)
     assert counts[rt.ACTIONABLE] == 1 and counts[rt.CLOSED] == 1
+
+
+def test_dead_letter_is_not_closed_and_surfaces():
+    v = rt.classify(leg("IMPLEMENT the thing", status="dead_letter"), "nodea", now=NOW)
+    assert v.label == rt.UNKNOWN and v.rule == "R1b-dead-letter" and v.surface()
