@@ -113,7 +113,24 @@ _STOP = frozenset(
     "got going one all any some more most such only own same too can did does doing how why yes yeah "
     "okay right well let's thing things kind sort stuff know think mean say said says gonna wanna".split()
 )
-_NEG = re.compile(r"\b(no|not|never|actually|wrong|isn't|doesn't|don't|wasn't|nope|incorrect)\b", re.I)
+_NEG_WORDS = frozenset("no not never wrong isn't doesn't don't wasn't nope incorrect false".split())
+_CORRECTION = re.compile(r"(let me correct|correct that|that's not (right|true)|that is not (right|true)|"
+                         r"scratch that|i take that back|not true)", re.I)
+
+
+def _negated_near(utt: str, cue_terms: set, cue_text: str, window: int = 4) -> bool:
+    """True if the utterance negates something about the cue: a negation word (not already in the cue's own
+    wording) within `window` tokens of a cue term, or an explicit correction phrase."""
+    if _CORRECTION.search(utt):
+        return True
+    toks = re.findall(r"[a-z][a-z'\-]*", utt.lower())
+    own = set(re.findall(r"[a-z][a-z'\-]*", cue_text.lower()))
+    for i, t in enumerate(toks):
+        if t in _NEG_WORDS and t not in own:
+            near = " ".join(toks[max(0, i - window): i + window + 1])
+            if set(_terms(near)) & cue_terms:
+                return True
+    return False
 
 
 def _terms(text: str) -> list[str]:
@@ -324,7 +341,7 @@ class OllamaCandidateGenerator:
         t0 = time.perf_counter()
         body = json.dumps({"model": self.model, "stream": False, "keep_alive": self.cfg.keep_alive,
                            "messages": [{"role": "user", "content": "ok"}], "think": False,
-                           "options": {"num_predict": 1}}).encode()
+                           "options": {"num_predict": 1, "num_ctx": 2048}}).encode()   # same num_ctx as real calls (else reload)
         self._t("POST", self._base + "/api/chat", {"Content-Type": "application/json"}, body, 120.0)
         return (time.perf_counter() - t0) * 1000
 
@@ -449,6 +466,7 @@ class QLive:
         self._gen: Optional[tuple] = None        # in-flight generation: (future, hits, tail, submitted_turn)
         self._cands: list[Candidate] = []        # carried candidates
         self._last_topic: set[str] = set()
+        self._shown_counts: Counter = Counter()
         self._last_call_ms = {"retrieval": 0.0, "generation": 0.0}
 
     # -- observe what was actually said about the standing cue
@@ -461,12 +479,12 @@ class QLive:
         topic_now = set(self.state.top_terms(5))
         shifted = _jaccard(self._last_topic, topic_now) < 0.3 if self._last_topic else False
         cue.age += 1
-        # a negation only counts if it is NOT part of the cue's own wording (reading "it doesn't know" is not a
-        # contradiction of "it doesn't know")
-        new_neg = {m.lower() for m in _NEG.findall(utt)} - {m.lower() for m in _NEG.findall(cue.text)}
-        if overlap >= 0.35 and not new_neg:
+        # contradiction needs a negation near the cue's own terms (or a correction phrase); a "not" in an
+        # unrelated clause, or one that is part of the cue's own wording, is not a contradiction
+        negated = _negated_near(utt, cue_terms, cue.text)
+        if overlap >= 0.35 and not negated:
             status = "used"
-        elif overlap >= 0.2 and new_neg:
+        elif overlap >= 0.2 and negated:
             status = "contradicted"
         elif overlap < 0.1 and shifted:
             status = "moved_past"
@@ -480,6 +498,7 @@ class QLive:
         self.state.kind_weight[cue.kind] = min(1.4, max(0.6, k + delta))
         if status == "contradicted":
             self.state.suppressed |= cue_terms & utt_terms
+        self._shown_counts[cue.text.lower()] = 10 ** 6   # retired for good: never offered again
         self.cue = None   # retired: a stale cue never stays on screen
         return status
 
@@ -581,7 +600,8 @@ class QLive:
                 pass
             self._harvest_generation()
         # copies, so filtering a carried candidate's citations never rewrites the stored original
-        live = [Candidate(**asdict(c)) for c in self._cands if self.turn - c.turn <= self.cfg.carry_turns]
+        live = [Candidate(**asdict(c)) for c in self._cands if self.turn - c.turn <= self.cfg.carry_turns
+                and self._shown_counts[c.text.lower()] < self.cfg.stale_after_turns]
         # a carried candidate may only cite shards that are in the CURRENT memory view (provenance stays true)
         cur_refs = {h.ref for h in hits}
         for c in live:
@@ -660,6 +680,7 @@ class QLive:
             self.cue = Cue(text=best.text, why_now=best.why or f"follows topic: {' '.join(terms[:3])}",
                            shards=best.shards, kind=best.kind, confidence=conf, mode=mode, issued_turn=self.turn)
             self.state.shown.append(set(_terms(best.text)))
+            self._shown_counts[best.text.lower()] += 1
         else:
             self.cue = None
 

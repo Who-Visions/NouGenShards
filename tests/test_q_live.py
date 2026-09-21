@@ -358,3 +358,43 @@ def test_reading_a_cue_that_contains_a_negation_is_use_not_contradiction():
     out = ql.on_utterance("when it doesn't know the answer it says so, that is the rule")
     assert out["previous_cue_outcome"] == "used" and dp is not None
     ql.close()
+
+
+def test_a_negation_in_an_unrelated_clause_is_not_a_contradiction():
+    ql = make()
+    ql.on_utterance("talk about the gateway search latency fix")
+    ql.cue.text = "The gateway search latency fix matters."
+    out = ql.on_utterance("the gateway search latency fix matters, and separately a dog is a pet, not a wolf today")
+    assert out["previous_cue_outcome"] == "used"
+
+
+def test_an_explicit_correction_is_a_contradiction():
+    ql = make()
+    ql.on_utterance("talk about the gateway search latency fix")
+    ql.cue.text = "The gateway search latency fix always worked."
+    out = ql.on_utterance("actually no, let me correct that, the gateway search latency fix did not always work")
+    assert out["previous_cue_outcome"] == "contradicted"
+
+
+def test_a_retired_cue_is_never_offered_again():
+    ql = make()
+    first = ql.on_utterance("the gateway search latency fix")["display_prompt"]["text"]
+    ql.cue.text = first
+    out = ql.on_utterance("so " + first.lower())                # spoken: the cue is used and retired
+    assert out["previous_cue_outcome"] == "used"
+    for line in ["gateway latency fix again", "search latency gateway scan", "the fix for gateway latency"]:
+        nxt = ql.on_utterance(line)["display_prompt"]
+        assert nxt is None or nxt["text"] != first
+    ql.close()
+
+
+def test_no_cue_is_shown_more_than_the_stale_window():
+    ql = make()
+    shown = []
+    for line in ["gateway search latency fix", "gateway latency fix again", "the search latency scan",
+                 "gateway latency once more", "and the fix", "gateway again", "latency fix"]:
+        dp = ql.on_utterance(line)["display_prompt"]
+        if dp and dp["mode"] == "memory":
+            shown.append(dp["text"])
+    assert all(shown.count(t) <= ql.cfg.stale_after_turns for t in set(shown))
+    ql.close()
