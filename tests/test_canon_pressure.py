@@ -128,3 +128,35 @@ def test_fixed_point_missing_provenance_does_not_crash():
 
 def test_short_candidate_is_rejected():
     assert "error" in cp.pressure("hi", register=False, model=_model())
+
+
+# --- relevance gate: the ask_xoah engineering-question false positive --------
+# A lock whose contradiction pattern is a common word ("fix") fired on an
+# engineering question that never mentioned its subject. Synthetic fixture.
+_BRIDGE_LOCK = {
+    "id": "bridge_fell", "status": "locked", "authority": "gm_lock",
+    "topics": ["bridge"], "statement": "The east bridge fell before the story begins.",
+    "contradicts": [r"\b(fix|repair|rebuild)\w*"], "provenance": ["shard:2@db1"],
+}
+
+
+def test_engineering_question_does_not_draw_fact_conflict():
+    out = cp.pressure("How do I fix the flaky pytest in the relay watcher branch?",
+                      register=False, model=_model(records=[dict(_BRIDGE_LOCK)]))
+    assert out["verdict"] != "FACT_CONFLICT"
+    assert all(f["verdict"] != "FACT_CONFLICT" for f in out["findings"])
+
+
+def test_on_topic_contradiction_still_fires():
+    out = cp.pressure("In this scene the crew repairs the east bridge overnight.",
+                      register=False, model=_model(records=[dict(_BRIDGE_LOCK)]))
+    assert out["verdict"] == "FACT_CONFLICT"
+
+
+def test_topicless_record_falls_back_to_statement_words():
+    rec = {k: v for k, v in _BRIDGE_LOCK.items() if k != "topics"}
+    off = cp.pressure("Please fix the failing deploy script today.", register=False,
+                      model=_model(records=[dict(rec)]))
+    on = cp.pressure("They fix the fallen bridge with rope.", register=False,
+                     model=_model(records=[dict(rec)]))
+    assert off["verdict"] != "FACT_CONFLICT" and on["verdict"] == "FACT_CONFLICT"
