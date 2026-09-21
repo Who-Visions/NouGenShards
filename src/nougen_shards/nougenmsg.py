@@ -238,18 +238,17 @@ class AgentPinger:
                 registry = json.load(f)
         except (OSError, ValueError):
             registry = {}
+        # Both registry shapes can coexist in one file: blade nests {"sessions":
+        # {socket: entry}}, phoebus keeps {session_id: {socket, token, ...}} at the
+        # top level. An EMPTY nested "sessions" key used to mask every top-level
+        # entry (registered:0 with a live session registered), so merge the two.
+        sessions = {}
         raw_sessions = registry.get("sessions")
         if isinstance(raw_sessions, dict):
-            sessions = raw_sessions  # blade shape (nougenmsg_register.py): {socket: entry}
-        else:
-            # phoebus shape (nougenmsg_wake.py): {session_id: {socket, token, ...}} at the
-            # top level. Before 2026-09-03 this branch fell through to {}, the loop
-            # never ran, and phoebus reported registered:0 over a healthy registry
-            # while every live cc-msg fell back to the inbox drain.
-            sessions = {}
-            for sid, entry in registry.items():
-                if isinstance(entry, dict) and entry.get("token") and entry.get("socket"):
-                    sessions[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
+            sessions.update(raw_sessions)
+        for sid, entry in registry.items():
+            if sid != "sessions" and isinstance(entry, dict) and entry.get("token") and entry.get("socket"):
+                sessions[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
         delivered, pruned, errors = [], [], []
         for sock, entry in list(sessions.items()):
             token = str((entry or {}).get("token") or "")
