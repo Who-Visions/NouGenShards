@@ -16,6 +16,7 @@ from .model import BaseRates, Config, Event, Snapshot, Window
 from .score import classify, features, score_pair
 from .receipt import build_receipt, seal, verify
 from .engine import detect
+from .learning import recalibrate, reward
 
 __all__ = ["BaseRates", "Config", "Event", "Snapshot", "Window", "classify", "features",
-           "score_pair", "build_receipt", "seal", "verify", "detect"]
+           "score_pair", "build_receipt", "seal", "verify", "detect", "recalibrate", "reward"]
