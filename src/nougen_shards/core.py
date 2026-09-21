@@ -1343,6 +1343,13 @@ FUZZY_TRIGGER = os.environ.get("NOUGEN_FUZZY_TRIGGER", "empty").strip().lower()
 NO_FUZZY: ContextVar[bool] = ContextVar("nougen_no_fuzzy", default=False)
 
 
+#: Per-request fast local mode for live callers (NouGen Q): answer from the local exact keyword/FTS index
+#: only. No schema-upgrade sweep, no query embedding, no vector lane, no RRF, no remote lanes. Measured
+#: 2026-09-21: keyword-only 0.83s p50 / 0.88s max vs hybrid 2.0s p50 / 29.9s max (vector-cache lock stalls).
+#: It is PARTIAL coverage by construction; the caller must say so (see X-NouGen-Lanes-Skipped in app.py).
+FAST_LOCAL: ContextVar[bool] = ContextVar("nougen_fast_local", default=False)
+
+
 def _fuzzy_should_run(results: list, limit: int) -> bool:
     """Whether the deferred fuzzy lane runs, per FUZZY_TRIGGER (and the per-request NO_FUZZY opt-out)."""
     if NO_FUZZY.get():
@@ -2521,6 +2528,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     When NOUGEN_RERANK=1, a cross-encoder reranks the top RRF candidates (Stage 2).
     """
     import concurrent.futures
+
+    if FAST_LOCAL.get():
+        # Same global-domain keyword sweep the app uses as its own fallback (app.py search()).
+        return _keyword_retrieve(query, limit, None, domain_key or "*", include_research)[:limit]
 
     # Ensure all existing shard databases are schema-upgraded to the current
     # version before querying. Per-DB guard for the same reason as the fan-outs

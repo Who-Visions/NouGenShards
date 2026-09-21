@@ -259,14 +259,22 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     executor = _lane_executor()
     try:
         f_local = executor.submit(copy_context().run, _timed("local", _fetch_local))
-        f_external = executor.submit(copy_context().run, _timed("external", _fetch_external))
-        f_cloud = executor.submit(copy_context().run, _timed("cloud", _fetch_cloud))
-        f_vaults = executor.submit(copy_context().run, _timed("vaults", _fetch_vaults))
+        if core.FAST_LOCAL.get():
+            # Live-speaking fast path: local exact index only. The other lanes are SKIPPED, not failed, so no
+            # deadline trailer; the skip is reported so callers can say coverage is partial.
+            f_external = f_cloud = f_vaults = None
+            if sweep_report is not None:
+                sweep_report["fast_local"] = True
+                sweep_report["lanes_skipped"] = ["external", "cloud", "vaults"]
+        else:
+            f_external = executor.submit(copy_context().run, _timed("external", _fetch_external))
+            f_cloud = executor.submit(copy_context().run, _timed("cloud", _fetch_cloud))
+            f_vaults = executor.submit(copy_context().run, _timed("vaults", _fetch_vaults))
 
         local_results = _lane_result(f_local, "local", [])
-        external_results = _lane_result(f_external, "external", [])
-        cloud_results = _lane_result(f_cloud, "cloud", [])
-        vault_results = _lane_result(f_vaults, "vaults", [])
+        external_results = _lane_result(f_external, "external", []) if f_external is not None else []
+        cloud_results = _lane_result(f_cloud, "cloud", []) if f_cloud is not None else []
+        vault_results = _lane_result(f_vaults, "vaults", []) if f_vaults is not None else []
     finally:
         # Deliberately NOT shutdown(): the pool is shared and long-lived.
         # Stragglers keep running on it and free their slot when they finish,

@@ -1310,6 +1310,9 @@ class SearchRequest(BaseModel):
     until: Optional[str] = None
     # False skips the typo-tolerant fuzzy lane (exact/FTS lanes still run). Default keeps behaviour unchanged.
     fuzzy: bool = True
+    # True answers from the local exact keyword index only (no vector lane, no remote vaults): sub-second,
+    # PARTIAL coverage, reported via X-NouGen-Lanes-Skipped. For live callers (NouGen Q). Default off.
+    fast: bool = False
 
 
 class RecallRequest(BaseModel):
@@ -1416,6 +1419,7 @@ def search(req: SearchRequest, response: Response,
     fetch = min(limit * 5, 250) if bounded else limit
     sweep_report: dict = {}
     _no_fuzzy_token = core.NO_FUZZY.set(not req.fuzzy)
+    _fast_token = core.FAST_LOCAL.set(bool(req.fast))
     try:
         # Federated, not core.retrieve: a remote caller must see the same corpus a
         # local CLI caller does. core.retrieve reads only nougen_shards_1..9.db,
@@ -1434,6 +1438,7 @@ def search(req: SearchRequest, response: Response,
             results = []
     finally:
         core.NO_FUZZY.reset(_no_fuzzy_token)
+        core.FAST_LOCAL.reset(_fast_token)
 
     if bounded:
         results, held_back = _era_filter(results, req.since, req.until)
@@ -1462,6 +1467,10 @@ def search(req: SearchRequest, response: Response,
     # could not distinguish the two. Lane drops therefore raise the same trailer
     # and are additionally reported in headers, for clients that read the
     # envelope rather than the rows.
+    if sweep_report.get("fast_local"):
+        skipped = sweep_report.get("lanes_skipped") or []
+        response.headers["X-NouGen-Fast-Path"] = "local-keyword-only"
+        response.headers["X-NouGen-Lanes-Skipped"] = ",".join(skipped)
     lanes = sweep_report.get("lanes") or {}
     if lanes:
         # Healthy timings matter as much as failures: a deadline can only be
