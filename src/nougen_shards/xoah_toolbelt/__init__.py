@@ -13,5 +13,9 @@ model interpretation; receipts match Decision Plane / SYNCHRON patterns
 from .types import (CanonKind, CanonPacket, CanonRecord, Capability, Provenance, Scene,
                     TimelineEntry, ToolReceipt)
 
+from .packet import PacketUnavailable, load_packet, packet_from_dict
+from .tools import power_ceiling, scene_pressure_test, scene_receipt, timeline_trace
+
 __all__ = ["CanonKind", "CanonPacket", "CanonRecord", "Capability", "Provenance", "Scene",
-           "TimelineEntry", "ToolReceipt"]
+           "TimelineEntry", "ToolReceipt", "PacketUnavailable", "load_packet", "packet_from_dict",
+           "power_ceiling", "scene_pressure_test", "scene_receipt", "timeline_trace"]
