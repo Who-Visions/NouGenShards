@@ -35,10 +35,45 @@ def test_case_a_backfilled_evidence_is_penalised():
     assert pen["dates_chosen_after_the_fact"] > 0 and back["score"] < clean
 
 
-def test_unknown_base_rates_score_as_common_not_rare():
+def test_unknown_base_rates_score_as_common_and_the_gap_is_named():
+    # review repro 1: empty BaseRates used to zero the score with no reason
+    # and review round 2: it must not then surface as weak_convergence (0.695)
     s = Snapshot(AS_OF, (SOLAR, ANGKOR), (), BaseRates())
     r = score_pair(SOLAR, ANGKOR, s, CFG)
-    assert r["features"]["rarity"] == 0.0
+    assert r["rejected"] == "no base-rate evidence" and r["score"] == 0.0
+    assert detect(s) == []
+    [rec] = detect(s, include_rejected=True)
+    assert rec["evidence_gaps"] == ["base_rates_unknown"] and rec["rejected"] == "no base-rate evidence"
+    assert rec["base_rate"]["known"] is False
+
+
+def test_malformed_window_date_does_not_kill_detect():
+    # review round 2, repro 2: Window('broken', 'nope', ...) raised in window_hits
+    from nougen_shards.synchron import Window
+    from .fixtures import EQUINOX, RATES
+    s = Snapshot(AS_OF, (SOLAR, ANGKOR), (Window("broken", "nope", "2026-09-30"), EQUINOX), RATES)
+    [rec] = detect(s)
+    assert "malformed_window:broken" in rec["evidence_gaps"]
+    assert rec["temporal_evidence"]["windows"] == ["equinox"]
+
+
+def test_malformed_canonical_date_does_not_kill_detect():
+    # review repro 2
+    bad = ANGKOR.__class__(**{**ANGKOR.__dict__, "canonical_date": "sept 22nd"})
+    [rec] = detect(snap(SOLAR, bad))
+    assert "malformed_canonical_date:angkor-equinox" in rec["evidence_gaps"]
+
+
+def test_year_boundary_window_matches_across_new_year():
+    # review repro 3: Dec 28 - Jan 3 never matched
+    from nougen_shards.synchron import Window
+    from nougen_shards.synchron.score import calendar
+    from .fixtures import ms
+    nye = Window("new year", "2026-12-28", "2027-01-03", "anniversary")
+    for day in ("2026-12-30", "2027-01-02"):
+        e = MOTO.__class__(**{**MOTO.__dict__, "canonical_date": "1999-" + day[5:]})
+        s = Snapshot(ms(day + "T12:00:00"), (MOTO, e), (nye,), BaseRates())
+        assert calendar(e, MOTO, s) == (1.0, ["new year"]), day
 
 
 def test_same_source_is_never_a_candidate():

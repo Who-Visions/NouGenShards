@@ -18,6 +18,16 @@ def _canon(obj) -> bytes:
                       default=str).encode("utf-8")
 
 
+def _bad_date(iso: str) -> bool:
+    from .score import _safe_d
+    return _safe_d(iso) is None
+
+
+def _bad_windows(snap: Snapshot):
+    from .score import bad_windows
+    return bad_windows(snap)
+
+
 def _r(x: float) -> float:
     return round(float(x), 6)
 
@@ -39,6 +49,11 @@ def build_receipt(a: Event, b: Event, result: Dict, snap: Snapshot, cfg: Config)
         "semantic_bridge": sorted(a.terms() & b.terms()),
         "base_rate": ev["base_rate"],
         "disconfirming_checks": [{**p, "penalty": _r(p["penalty"])} for p in result["penalties"]],
+        "evidence_gaps": sorted(
+            (["base_rates_unknown"] if not ev["base_rate"]["known"] else [])
+            + [f"malformed_canonical_date:{e.event_id}" for e in (first, later)
+               if e.canonical_date and _bad_date(e.canonical_date)]
+            + [f"malformed_window:{n}" for n in _bad_windows(snap)]),
         "why_it_matters": sorted(set(first.explicit_user_intent + later.explicit_user_intent)),
         "provenance": [e.provenance_hash for e in (first, later)],
         "determinism": {
