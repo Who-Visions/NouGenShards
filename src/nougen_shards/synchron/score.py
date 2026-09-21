@@ -68,6 +68,20 @@ def _d(iso: str) -> date:
     return date.fromisoformat(iso[:10])
 
 
+def _safe_d(iso: Optional[str]) -> Optional[date]:
+    """A malformed date is missing evidence, not a crash (review repro 2)."""
+    try:
+        return _d(iso) if iso else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _md_in(md: Tuple[int, int], start: date, end: date) -> bool:
+    """Month-day membership that wraps the year (Dec 28 - Jan 3; repro 3)."""
+    s, e = (start.month, start.day), (end.month, end.day)
+    return s <= md <= e if s <= e else (md >= s or md <= e)
+
+
 def _as_of_date(snap: Snapshot) -> date:
     return datetime.fromtimestamp(snap.as_of_ms / 1000, tz=timezone.utc).date()
 
@@ -82,10 +96,9 @@ def window_hits(ev: Event, snap: Snapshot) -> List[str]:
         if not _d(w.start) <= today <= _d(w.end):
             continue
         about = w.name.lower() in ev.terms() or any(w.name.lower() in c.lower() for c in ev.concepts)
-        if ev.canonical_date:
-            cd = _d(ev.canonical_date)
-            md = (cd.month, cd.day)
-            about = about or (_d(w.start).timetuple()[1:3] <= md <= _d(w.end).timetuple()[1:3])
+        cd = _safe_d(ev.canonical_date)
+        if cd is not None:
+            about = about or _md_in((cd.month, cd.day), _d(w.start), _d(w.end))
         if about:
             hits.append(w.name)
     return hits
@@ -110,13 +123,18 @@ def _max_link(a: Event, b: Event, rates: BaseRates) -> Tuple[float, Optional[str
             p = (rates.pair(x, y) + 1) / (n + 2)  # Laplace: never 0, never 1
             if best is None or p > best:
                 best, key = p, f"{x}->{y}"
-    return (1.0 if best is None else best), key  # unknown => assume common
+    return best, key  # None => no base-rate data for any link
 
 
 def rarity(a: Event, b: Event, rates: BaseRates) -> Tuple[float, Dict]:
     p, link = _max_link(a, b, rates)
+    if p is None:
+        # Unknown is scored as common for RARITY (never rare by absence), but it
+        # is not evidence of density either -- the receipt names the gap instead
+        # of silently multiplying the score by zero (review repro 1).
+        return 0.0, {"p_b_given_a": None, "link": None, "revision": rates.revision, "known": False}
     return clamp(-math.log10(p) / 6.0), {"p_b_given_a": round(p, 6), "link": link,
-                                        "revision": rates.revision}
+                                        "revision": rates.revision, "known": True}
 
 
 def bridge(sem: float, cfg: Config) -> float:
@@ -156,7 +174,9 @@ def penalties(a: Event, b: Event, f: Dict, snap: Snapshot, cfg: Config) -> List[
     return [
         {"check": "caused_by_first_query", "penalty": clamp(shared_query_fraction(a, b))},
         {"check": "common_this_time_of_year", "penalty": clamp(seasonal)},
-        {"check": "densely_linked_in_corpus", "penalty": clamp(f["_evidence"]["base_rate"]["p_b_given_a"])},
+        {"check": "densely_linked_in_corpus",
+         "penalty": clamp(f["_evidence"]["base_rate"]["p_b_given_a"] or 0.0),
+         "known": f["_evidence"]["base_rate"]["known"]},
         {"check": "dates_chosen_after_the_fact", "penalty": 0.5 * backfilled / 2},
         {"check": "would_appear_anyway_popular", "penalty": clamp(popular)},
     ]
