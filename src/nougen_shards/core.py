@@ -1337,8 +1337,16 @@ FUZZY_MAX_ROWS = int(os.environ.get("NOUGEN_FUZZY_MAX_ROWS", "4000")) or (1 << 6
 FUZZY_TRIGGER = os.environ.get("NOUGEN_FUZZY_TRIGGER", "empty").strip().lower()
 
 
+#: Per-request opt-out of the fuzzy lane. Exact-title callers (the recursive cron canary) gain nothing
+#: from a typo-tolerant scan, and on a miss it costs ~20s (4000 rows x every missed db, pure Python).
+#: A ContextVar so it rides federation's copy_context() into the lane threads without signature changes.
+NO_FUZZY: ContextVar[bool] = ContextVar("nougen_no_fuzzy", default=False)
+
+
 def _fuzzy_should_run(results: list, limit: int) -> bool:
-    """Whether the deferred fuzzy lane runs, per FUZZY_TRIGGER."""
+    """Whether the deferred fuzzy lane runs, per FUZZY_TRIGGER (and the per-request NO_FUZZY opt-out)."""
+    if NO_FUZZY.get():
+        return False
     if FUZZY_TRIGGER == "underfilled":
         return len(results) < limit
     return not results

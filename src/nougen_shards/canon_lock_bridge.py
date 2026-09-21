@@ -120,8 +120,11 @@ def load_locks(shards_dir: Optional[Path] = None, *, force: bool = False) -> Lis
         return hit[1]
     pfx = prefixes()
     limit = _env_int("NOUGEN_CANON_LOCK_LIMIT", DEFAULT_LIMIT)
-    where = " OR ".join("upper(ltrim(title)) LIKE ?" for _ in pfx)
-    params = [f"{p}%" for p in pfx]
+    tag_like = '%"canon-lock"%'
+    digest_like = '%"canon-digest"%'
+    where_pfx = " OR ".join("upper(ltrim(title)) LIKE ?" for _ in pfx)
+    where = f"({where_pfx} OR tags LIKE ?)"
+    params = [f"{p}%" for p in pfx] + [tag_like]
     locks: List[Dict[str, Any]] = []
     for db in sorted(shards_dir.glob("nougen_shards_*.db")):
         if len(locks) >= limit:
@@ -130,13 +133,21 @@ def load_locks(shards_dir: Optional[Path] = None, *, force: bool = False) -> Lis
         label = f"db{m.group(1)}" if m else db.stem
         try:
             with contextlib.closing(sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)) as conn:
-                rows = conn.execute(
-                    f"SELECT id, title, content FROM shards WHERE {where} ORDER BY id DESC LIMIT ?",
-                    params + [limit - len(locks)]).fetchall()
+                try:
+                    rows = conn.execute(
+                        f"SELECT id, title, content, tags FROM shards WHERE {where} AND (tags IS NULL OR tags NOT LIKE ?) ORDER BY id DESC LIMIT ?",
+                        params + [digest_like, limit - len(locks)]).fetchall()
+                except sqlite3.OperationalError as op_err:
+                    if "no such column: tags" in str(op_err):
+                        rows = conn.execute(
+                            f"SELECT id, title, content, NULL as tags FROM shards WHERE {where_pfx} ORDER BY id DESC LIMIT ?",
+                            [f"{p}%" for p in pfx] + [limit - len(locks)]).fetchall()
+                    else:
+                        raise
         except sqlite3.Error as exc:
             logger.warning("canon lock read skipped %s: %s", db.name, exc)
             continue
-        for row_id, title, content in rows:
+        for row_id, title, content, _tags in rows:
             title = title or ""
             locks.append({
                 "id": f"lock:{row_id}@{label}",

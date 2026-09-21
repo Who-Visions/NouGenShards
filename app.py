@@ -1298,6 +1298,8 @@ class SearchRequest(BaseModel):
     # a bare "2026-03" is a whole month, "2026-03-14" a whole day.
     since: Optional[str] = None
     until: Optional[str] = None
+    # False skips the typo-tolerant fuzzy lane (exact/FTS lanes still run). Default keeps behaviour unchanged.
+    fuzzy: bool = True
 
 
 class RecallRequest(BaseModel):
@@ -1403,6 +1405,7 @@ def search(req: SearchRequest, response: Response,
     # the result set down to a handful of in-era rows.
     fetch = min(limit * 5, 250) if bounded else limit
     sweep_report: dict = {}
+    _no_fuzzy_token = core.NO_FUZZY.set(not req.fuzzy)
     try:
         # Federated, not core.retrieve: a remote caller must see the same corpus a
         # local CLI caller does. core.retrieve reads only nougen_shards_1..9.db,
@@ -1419,6 +1422,8 @@ def search(req: SearchRequest, response: Response,
         except Exception:
             logger.exception("search: keyword fallback also failed; returning []")
             results = []
+    finally:
+        core.NO_FUZZY.reset(_no_fuzzy_token)
 
     if bounded:
         results, held_back = _era_filter(results, req.since, req.until)
