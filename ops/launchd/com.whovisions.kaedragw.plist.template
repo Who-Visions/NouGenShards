@@ -9,7 +9,7 @@
          the fleet .env because launchd starts us with an empty environment. -->
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/kushboygroup/The Observatory/NouGen/nougenshards/bin/kaedra-gateway.sh</string>
+        <string>__REPO__/bin/kaedra-gateway.sh</string>
     </array>
 
     <key>RunAtLoad</key>
@@ -28,12 +28,12 @@
     <integer>30</integer>
 
     <key>WorkingDirectory</key>
-    <string>/Users/kushboygroup/The Observatory/NouGen/nougenshards</string>
+    <string>__REPO__</string>
 
     <key>StandardOutPath</key>
-    <string>/Users/kushboygroup/The Observatory/NouGen/nougenshards/logs/kaedra-gw.out.log</string>
+    <string>__REPO__/logs/kaedra-gw.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/kushboygroup/The Observatory/NouGen/nougenshards/logs/kaedra-gw.err.log</string>
+    <string>__REPO__/logs/kaedra-gw.err.log</string>
 
     <key>ProcessType</key>
     <string>Background</string>

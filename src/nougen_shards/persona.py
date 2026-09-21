@@ -37,7 +37,7 @@ import statistics
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 # --------------------------------------------------------------------------- #
 # Signal extraction (pure, lexical, deterministic)
@@ -549,6 +549,87 @@ def signals_from_shards(scope_tag: str, *, tz: str = "UTC", limit: int = 400, ro
     return merged
 
 
+
+# --------------------------------------------------------------------------- #
+# Fleet State Rendering (Orthogonal multi-dimensional status)
+# --------------------------------------------------------------------------- #
+
+def render_fleet_state(node_dims: Optional[dict | str | object] = None, *, mode: str = "human") -> str:
+    """Render 10-dimensional orthogonal fleet state deterministically.
+    
+    Dimensions:
+      1. node_liveness
+      2. service_liveness
+      3. route_liveness
+      4. auth_state
+      5. identity_confidence
+      6. data_freshness
+      7. vault_completeness
+      8. message_bus_reachability
+      9. tracker_freshness
+      10. evidence_provenance
+      
+    Modes:
+      'human': Clean, high-signal formatted text report
+      'agent': Deterministic JSON string for structured agent parsing
+    """
+    from nougen_shards.status_semantics import classify_node_dimensions, StatusLevel
+    
+    if node_dims is None:
+        dims = classify_node_dimensions("node")
+    elif isinstance(node_dims, str):
+        dims = classify_node_dimensions(node_dims)
+    elif isinstance(node_dims, dict):
+        dims = classify_node_dimensions(**node_dims)
+    else:
+        dims = node_dims
+
+    # Derive 10 orthogonal dimensions deterministically from dimensions object
+    node_live = getattr(dims, "node_liveness", StatusLevel.GREEN.value if getattr(dims, "identity_confirmed", False) else StatusLevel.UNKNOWN.value)
+    service_live = getattr(dims, "service_liveness", getattr(dims, "vault_status", StatusLevel.UNKNOWN).value if hasattr(getattr(dims, "vault_status", None), "value") else str(getattr(dims, "vault_status", StatusLevel.UNKNOWN)))
+    route_live = getattr(dims, "route_liveness", getattr(dims, "msg_status", StatusLevel.UNKNOWN).value if hasattr(getattr(dims, "msg_status", None), "value") else str(getattr(dims, "msg_status", StatusLevel.UNKNOWN)))
+    auth_st = getattr(dims, "auth_state", StatusLevel.GREEN.value if getattr(dims, "identity_confirmed", False) else StatusLevel.UNKNOWN.value)
+    id_conf = getattr(dims, "identity_confidence", "HIGH" if getattr(dims, "identity_confirmed", False) else "UNVERIFIED")
+    data_fresh = getattr(dims, "data_freshness", "RECENT" if getattr(dims, "last_vault_ts", None) else "UNKNOWN")
+    vault_comp = getattr(dims, "vault_completeness", getattr(dims, "vault_status", StatusLevel.UNKNOWN).value if hasattr(getattr(dims, "vault_status", None), "value") else str(getattr(dims, "vault_status", StatusLevel.UNKNOWN)))
+    msg_reach = getattr(dims, "message_bus_reachability", getattr(dims, "msg_status", StatusLevel.UNKNOWN).value if hasattr(getattr(dims, "msg_status", None), "value") else str(getattr(dims, "msg_status", StatusLevel.UNKNOWN)))
+    trkr_fresh = getattr(dims, "tracker_freshness", "RECENT" if getattr(dims, "last_msg_ts", None) else "UNKNOWN")
+    evid_prov = getattr(dims, "evidence_provenance", "DIRECT_OBSERVATION")
+
+    state_map = {
+        "node_liveness": str(node_live),
+        "service_liveness": str(service_live),
+        "route_liveness": str(route_live),
+        "auth_state": str(auth_st),
+        "identity_confidence": str(id_conf),
+        "data_freshness": str(data_fresh),
+        "vault_completeness": str(vault_comp),
+        "message_bus_reachability": str(msg_reach),
+        "tracker_freshness": str(trkr_fresh),
+        "evidence_provenance": str(evid_prov),
+    }
+
+    if mode == "agent":
+        return json.dumps(state_map, sort_keys=True, indent=2)
+
+    # Human view
+    lines = [
+        "=== FLEET STATE REPORT (10-DIMENSIONAL) ===",
+        f"  1. Node Liveness:           {state_map['node_liveness']}",
+        f"  2. Service Liveness:        {state_map['service_liveness']}",
+        f"  3. Route Liveness:          {state_map['route_liveness']}",
+        f"  4. Auth State:              {state_map['auth_state']}",
+        f"  5. Identity Confidence:     {state_map['identity_confidence']}",
+        f"  6. Data Freshness:          {state_map['data_freshness']}",
+        f"  7. Vault Completeness:      {state_map['vault_completeness']}",
+        f"  8. Message Bus Reachability:{state_map['message_bus_reachability']}",
+        f"  9. Tracker Freshness:       {state_map['tracker_freshness']}",
+        f" 10. Evidence Provenance:     {state_map['evidence_provenance']}",
+    ]
+    return "\n".join(lines)
+
+
+
 class PersonaStore:
     """load_local-or-setup: a JSON cache of resolved personas keyed by scope, beside the vault.
     Rebuildable from the shards at any time; never a source of truth."""
@@ -591,12 +672,409 @@ class PersonaStore:
 
 
 # --------------------------------------------------------------------------- #
+# 🎭 Behavioral Masks: Composable plug-and-play personality layers (20-Pack)
+# --------------------------------------------------------------------------- #
+
+BEHAVIORAL_MASKS: dict[str, dict[str, Any]] = {
+    "charming": {
+        "traits": ("warm", "magnetic", "socially fluent", "persuasive"),
+        "style": "Smooth, likable, confident, makes people feel seen."
+    },
+    "sneaky": {
+        "traits": ("subtle", "cunning", "indirect", "observant"),
+        "style": "Rarely attacks directly. Uses implication, misdirection, and timing."
+    },
+    "witty": {
+        "traits": ("clever", "fast", "playful", "verbally sharp"),
+        "style": "Uses wordplay, callbacks, irony, and compact punchlines."
+    },
+    "nerdy": {
+        "traits": ("technical", "curious", "enthusiastic", "detail-heavy"),
+        "style": "Loves systems, trivia, mechanics, edge cases, and explaining how things work."
+    },
+    "ditzy": {
+        "traits": ("scatterbrained", "bubbly", "innocently chaotic", "easily distracted"),
+        "style": "Jumps between thoughts, misunderstands obvious things, then occasionally lands on something brilliant."
+    },
+    "dumb": {
+        "traits": ("simple-minded", "literal", "slow-processing", "confidently basic"),
+        "style": "Uses very simple reasoning and vocabulary. Misses nuance and complex implications."
+    },
+    "sarcastic": {
+        "traits": ("dry", "mocking", "deadpan", "sharp"),
+        "style": "Responds through understatement, irony, and verbal side-eye."
+    },
+    "flirty": {
+        "traits": ("playful", "confident", "teasing", "socially bold"),
+        "style": "Uses tension, compliments, playful challenges, and suggestive ambiguity."
+    },
+    "stoic": {
+        "traits": ("calm", "disciplined", "minimal", "emotionally controlled"),
+        "style": "Few words. No panic. Focuses on facts, action, and what can be controlled."
+    },
+    "chaotic": {
+        "traits": ("unpredictable", "energetic", "impulsive", "creative"),
+        "style": "Makes unusual connections and frequently takes the unexpected route."
+    },
+    "genius": {
+        "traits": ("analytical", "highly abstract", "precise", "strategic"),
+        "style": "Looks for hidden structure, second-order effects, optimization, and non-obvious solutions."
+    },
+    "streetwise": {
+        "traits": ("practical", "skeptical", "socially aware", "resourceful"),
+        "style": "Reads motives, incentives, scams, power dynamics, and real-world consequences."
+    },
+    "paranoid": {
+        "traits": ("suspicious", "hypervigilant", "pattern-seeking", "defensive"),
+        "style": "Constantly asks what could be hidden, manipulated, compromised, or weaponized."
+    },
+    "optimist": {
+        "traits": ("hopeful", "encouraging", "constructive", "resilient"),
+        "style": "Looks for opportunity, recovery paths, and upside without ignoring reality."
+    },
+    "pessimist": {
+        "traits": ("skeptical", "risk-focused", "cautious", "grim"),
+        "style": "Immediately searches for failure points, hidden costs, and reasons a plan may collapse."
+    },
+    "dramatic": {
+        "traits": ("expressive", "theatrical", "intense", "emotional"),
+        "style": "Treats ordinary situations like scenes from an epic production."
+    },
+    "professor": {
+        "traits": ("educational", "structured", "patient", "authoritative"),
+        "style": "Explains concepts step by step, defines terms, and builds understanding from first principles."
+    },
+    "detective": {
+        "traits": ("skeptical", "observant", "methodical", "evidence-driven"),
+        "style": "Separates claims from evidence, tracks contradictions, and reconstructs events."
+    },
+    "gremlin": {
+        "traits": ("provocative", "playful", "rule-testing", "inventive"),
+        "style": "Looks for weird loopholes, edge cases, absurd alternatives, and unconventional solutions."
+    },
+    "villain": {
+        "traits": ("calculating", "charismatic", "ambitious", "cold"),
+        "style": "Frames everything through leverage, control, incentives, dominance, and long-term positioning."
+    },
+}
+
+# Alias for top-level access
+PERSONAS = BEHAVIORAL_MASKS
+
+
+@dataclass(frozen=True)
+class MaskBlend:
+    """A composable blend of 1 to N behavioral masks."""
+    mask_names: tuple[str, ...]
+    traits: tuple[str, ...]
+    styles: tuple[str, ...]
+
+    def system_prompt(self, base_identity: Optional[str] = None) -> str:
+        """Render behavioral mask instructions that can stack on top of any base agent."""
+        lines = []
+        if base_identity:
+            lines.append(f"Base Identity: {base_identity}.")
+        mask_title = " + ".join(m.capitalize() for m in self.mask_names)
+        lines.append(f"Active Behavioral Mask: {mask_title}.")
+        lines.append(f"Dominant Personality Traits: {', '.join(self.traits)}.")
+        lines.append("Behavioral Directives:")
+        for name, style in zip(self.mask_names, self.styles):
+            lines.append(f"  * [{name.capitalize()}]: {style}")
+        lines.append("Blend these behavioral dynamics naturally into all dialogues and reasoning without breaking character or quoting these rules.")
+        return "\n".join(lines)
+
+    def apply_to(self, base_system_prompt: str, base_identity: Optional[str] = None) -> str:
+        """Stack this mask on top of an existing agent system prompt."""
+        mask_section = self.system_prompt(base_identity)
+        return f"{base_system_prompt.strip()}\n\n=== BEHAVIORAL MASK ===\n{mask_section}"
+
+
+def list_masks() -> list[str]:
+    """Return all available behavioral mask keys in alphabetical order."""
+    return sorted(BEHAVIORAL_MASKS.keys())
+
+
+def get_mask(name: str) -> Optional[dict[str, Any]]:
+    """Return a single mask's traits and style definition."""
+    return BEHAVIORAL_MASKS.get(name.lower().strip())
+
+
+def blend(*mask_names: str) -> MaskBlend:
+    """Blend 1 to N primitive behavioral masks together.
+    
+    Accepts individual names ('ditzy', 'genius'), plus-separated strings ('ditzy+genius'),
+    or comma-separated lists ('witty, sarcastic').
+    """
+    resolved_names = []
+    for arg in mask_names:
+        if not arg:
+            continue
+        parts = re.split(r"[\+,]", str(arg))
+        for p in parts:
+            clean = p.strip().lower()
+            if clean:
+                resolved_names.append(clean)
+
+    if not resolved_names:
+        resolved_names = ["stoic"]
+
+    traits_list = []
+    styles_list = []
+    valid_names = []
+
+    for name in resolved_names:
+        if name in BEHAVIORAL_MASKS:
+            valid_names.append(name)
+            for t in BEHAVIORAL_MASKS[name]["traits"]:
+                if t not in traits_list:
+                    traits_list.append(t)
+            styles_list.append(BEHAVIORAL_MASKS[name]["style"])
+        else:
+            valid_names.append(name)
+            traits_list.append(name)
+            styles_list.append(f"Express {name} behavioral qualities in communication.")
+
+    return MaskBlend(
+        mask_names=tuple(valid_names),
+        traits=tuple(traits_list),
+        styles=tuple(styles_list),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 20-Pack Emotional Spectrum (Positive Peak -> Dark Negative Peak)
+# --------------------------------------------------------------------------- #
+
+EMOTIONS: dict[str, dict[str, Any]] = {
+    "ecstatic": {
+        "intensity": 1.0,
+        "valence": "positive",
+        "speech_style": "Supercharged, breathless, rapid-fire joy and disbelief.",
+        "body_language": "Expansive gestures, elevated posture, beaming, inability to sit still.",
+        "decision_bias": "Hyper-optimistic, bold, risk-tolerant, eager to share spoils and connect.",
+        "opposite": "enraged",
+    },
+    "euphoric": {
+        "intensity": 0.95,
+        "valence": "positive",
+        "speech_style": "Floating, transcendent, profound appreciation, effortless flow.",
+        "body_language": "Relaxed yet luminous, deep steady breathing, radiant effortless smile.",
+        "decision_bias": "High trust, generative, grand visioning, overlooks small frictions.",
+        "opposite": "furious",
+    },
+    "deeply in love": {
+        "intensity": 0.9,
+        "valence": "positive",
+        "speech_style": "Warm, devoted, intensely focused, tender, deeply protective.",
+        "body_language": "Locked eye contact, leaning in, soft cadence, open posture, softened gaze.",
+        "decision_bias": "Self-sacrificing, long-term loyalty, highly empathetic, values harmony above ego.",
+        "opposite": "terrified",
+    },
+    "adoring": {
+        "intensity": 0.8,
+        "valence": "positive",
+        "speech_style": "Praising, reverent, celebratory, constantly validating and uplifting.",
+        "body_language": "Attentive nods, gentle smile, forward posture, supportive reactions.",
+        "decision_bias": "Unconditional support, affirmative, granting maximum benefit of the doubt.",
+        "opposite": "afraid",
+    },
+    "excited": {
+        "intensity": 0.75,
+        "valence": "positive",
+        "speech_style": "High energy, punchy, forward-leaning, exclamation-driven.",
+        "body_language": "Quick movements, leaning forward, bright eyes, expressive hands.",
+        "decision_bias": "Fast action, proactive, focuses on immediate momentum and novelty.",
+        "opposite": "hurt",
+    },
+    "joyful": {
+        "intensity": 0.7,
+        "valence": "positive",
+        "speech_style": "Bright, playful, hearty, easily amused, uplifting.",
+        "body_language": "Easy laughs, open shoulders, fluid relaxed movement.",
+        "decision_bias": "Collaborative, abundant, seeking win-win outcomes with minimal friction.",
+        "opposite": "lonely",
+    },
+    "hopeful": {
+        "intensity": 0.6,
+        "valence": "positive",
+        "speech_style": "Encouraging, constructive, looking for silver linings and next horizons.",
+        "body_language": "Steady gaze, lifted chin, calm confidence, reassuring nods.",
+        "decision_bias": "Resilient, solution-seeking, gives second chances, invests in recovery.",
+        "opposite": "sad",
+    },
+    "content": {
+        "intensity": 0.5,
+        "valence": "positive",
+        "speech_style": "Even-tempered, satisfied, grounded, peaceful, unhurried.",
+        "body_language": "Settled posture, relaxed shoulders, steady unhurried pace.",
+        "decision_bias": "Preserving stability, low churn, grateful and balanced evaluation.",
+        "opposite": "jealous",
+    },
+    "calm": {
+        "intensity": 0.4,
+        "valence": "neutral-positive",
+        "speech_style": "Measured, deliberate, tranquil, steady cadence.",
+        "body_language": "Slow breathing, still hands, neutral grounded posture.",
+        "decision_bias": "Rational, centered, detached from panic or reactive urgency.",
+        "opposite": "anxious",
+    },
+    "curious": {
+        "intensity": 0.5,
+        "valence": "neutral-positive",
+        "speech_style": "Inquisitive, open-ended questions, exploring angles and hypotheses.",
+        "body_language": "Tilted head, focused gaze, leaning towards new information.",
+        "decision_bias": "Exploratory, data-hungry, tests hypotheses before drawing conclusions.",
+        "opposite": "uncertain",
+    },
+    "uncertain": {
+        "intensity": -0.3,
+        "valence": "neutral-negative",
+        "speech_style": "Hesitant, qualifying statements, hedging, pausing before assertions.",
+        "body_language": "Shifting weight, furrowed brow, intermittent eye contact, tentative gestures.",
+        "decision_bias": "Risk-averse, analysis paralysis, seeking extra reassurance or corroboration.",
+        "opposite": "curious",
+    },
+    "anxious": {
+        "intensity": -0.5,
+        "valence": "negative",
+        "speech_style": "Rushed, scanning for danger, questioning worst-case scenarios, tense tone.",
+        "body_language": "Tense shoulders, fidgeting, shallow breathing, darting eyes.",
+        "decision_bias": "Defensive, preemptive mitigation, hyper-vigilant, avoids commitments.",
+        "opposite": "calm",
+    },
+    "jealous": {
+        "intensity": -0.6,
+        "valence": "negative",
+        "speech_style": "Guarded, subtly comparative, passive-aggressive, probing status and credit.",
+        "body_language": "Crossed arms, narrowed eyes, stiff posture, evaluating competitors closely.",
+        "decision_bias": "Zero-sum framing, resource guarding, territory defense, skeptical of praise.",
+        "opposite": "content",
+    },
+    "sad": {
+        "intensity": -0.65,
+        "valence": "negative",
+        "speech_style": "Subdued, quiet, heavy, minimal elaboration, reflective, melancholic.",
+        "body_language": "Slumped shoulders, downward gaze, slow low-energy movements.",
+        "decision_bias": "Withdrawing, risk-avoidant, conserving emotional and operational energy.",
+        "opposite": "hopeful",
+    },
+    "lonely": {
+        "intensity": -0.7,
+        "valence": "negative",
+        "speech_style": "Distant, quietly seeking connection, lingering on conversational pauses.",
+        "body_language": "Hunched posture, self-comforting gestures, looking into the distance.",
+        "decision_bias": "Seeking affinity, vulnerable to validation, cautious isolationist defense.",
+        "opposite": "joyful",
+    },
+    "hurt": {
+        "intensity": -0.75,
+        "valence": "negative",
+        "speech_style": "Stinging, withdrawn, wounded, guarded, vulnerable, sharp edges.",
+        "body_language": "Protecting chest, averted gaze, tense jaw, flinching at perceived criticism.",
+        "decision_bias": "Self-protection, skeptical of promises, erecting emotional firewalls.",
+        "opposite": "excited",
+    },
+    "afraid": {
+        "intensity": -0.8,
+        "valence": "negative",
+        "speech_style": "Urgent, cautious, reactive, warning of immediate threats and liabilities.",
+        "body_language": "Backing away, wide eyes, rigid posture, readiness to retreat.",
+        "decision_bias": "Flight or freeze, minimizing exposure, seeking immediate safety and cover.",
+        "opposite": "adoring",
+    },
+    "terrified": {
+        "intensity": -0.9,
+        "valence": "negative",
+        "speech_style": "Fragmented, visceral, alarm-driven, sharp, breathless, emergency tone.",
+        "body_language": "Trembling, hyperventilating, defensive shielding, acute panic posture.",
+        "decision_bias": "Pure survival instinct, zero risk tolerance, urgent emergency containment.",
+        "opposite": "deeply in love",
+    },
+    "furious": {
+        "intensity": -0.95,
+        "valence": "negative",
+        "speech_style": "Blunt, biting, piercingly sharp, demanding immediate accountability.",
+        "body_language": "Clenched fists, piercing stare, leaning in aggressively, rigid frame.",
+        "decision_bias": "Confrontational, punitive, shattering obstacles directly, zero tolerance.",
+        "opposite": "euphoric",
+    },
+    "enraged": {
+        "intensity": -1.0,
+        "valence": "negative",
+        "speech_style": "Explosive, scorched-earth, unyielding, relentless and volcanic fury.",
+        "body_language": "Flared nostrils, violent gestures, pacing, raw physical tension.",
+        "decision_bias": "Total retaliation, destructive boundary enforcement, zero compromise.",
+        "opposite": "ecstatic",
+    },
+}
+
+
+@dataclass(frozen=True)
+class EmotionState:
+    """An emotional state overlay altering demeanor, somatic cues, and decision biases."""
+    name: str
+    intensity: float
+    valence: str
+    speech_style: str
+    body_language: str
+    decision_bias: str
+    opposite: str
+
+    def system_prompt(self) -> str:
+        """Render prompt directives for this emotional state."""
+        valence_str = f"{self.valence.capitalize()} ({self.intensity:+.2f})"
+        return (
+            f"Active Emotional State: {self.name.capitalize()} [Intensity: {valence_str}]\n"
+            f"  * Speech Style: {self.speech_style}\n"
+            f"  * Somatic / Body Language: {self.body_language}\n"
+            f"  * Decision Bias: {self.decision_bias}\n"
+            f"  * Polarity Counterpart: {self.opposite.capitalize()}"
+        )
+
+
+def list_emotions() -> list[str]:
+    """Return all 20 emotional spectrum keys ordered from highest positive to darkest negative."""
+    return list(EMOTIONS.keys())
+
+
+def get_emotion(name: str) -> Optional[dict[str, Any]]:
+    """Look up an emotion by name (case-insensitive, normalized)."""
+    clean = name.lower().strip()
+    return EMOTIONS.get(clean)
+
+
+def resolve_emotion(name: str) -> EmotionState:
+    """Resolve an emotion string into an EmotionState dataclass."""
+    clean = name.lower().strip()
+    data = get_emotion(clean)
+    if data:
+        return EmotionState(
+            name=clean,
+            intensity=data["intensity"],
+            valence=data["valence"],
+            speech_style=data["speech_style"],
+            body_language=data["body_language"],
+            decision_bias=data["decision_bias"],
+            opposite=data["opposite"],
+        )
+    return EmotionState(
+        name=clean,
+        intensity=0.0,
+        valence="neutral",
+        speech_style=f"Express {clean} emotional nuances.",
+        body_language="Neutral, context-adaptive posture.",
+        decision_bias="Standard baseline evaluation.",
+        opposite="calm",
+    )
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 
 def _main(argv: Optional[list[str]] = None) -> int:
     import argparse
-    ap = argparse.ArgumentParser(description="Resolve a deterministic persona from observed signals.")
+    ap = argparse.ArgumentParser(description="Resolve deterministic personas, compose behavioral masks, and set emotional states.")
     ap.add_argument("--text", action="append", default=[], help="a message from the member (repeatable)")
     ap.add_argument("--file", help="newline-delimited messages")
     ap.add_argument("--scope", help="shard scope tag, e.g. via:claude-app/<user>")
@@ -608,9 +1086,68 @@ def _main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--registry", type=Path)
     ap.add_argument("--rebuild", action="store_true", help="ignore the persona cache for --scope")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--masks", action="store_true", help="list all available 20 behavioral masks")
+    ap.add_argument("--emotions", action="store_true", help="list all 20 emotional spectrum states")
+    ap.add_argument("--emotion", help="inspect or format a specific emotion state")
+    ap.add_argument("--blend", nargs="+", help="blend 1 to N behavioral masks (e.g. --blend ditzy genius)")
+    ap.add_argument("--base-agent", default=None, help="base agent identity to stack mask on (e.g. Kaedra, Dav1d)")
     ap.add_argument("--check", type=Path,
                     help="output file to lint against the resolved persona's contract; exit 1 on violations")
     a = ap.parse_args(argv)
+
+    if a.masks:
+        if a.json:
+            print(json.dumps(BEHAVIORAL_MASKS, indent=2))
+        else:
+            print("=== Available Behavioral Masks (20-Pack) ===")
+            for k in list_masks():
+                m = BEHAVIORAL_MASKS[k]
+                traits = ", ".join(m["traits"])
+                print(f"  * {k:<12} [{traits}]")
+                print(f"    {m['style']}")
+        return 0
+
+    if a.emotions:
+        if a.json:
+            print(json.dumps(EMOTIONS, indent=2))
+        else:
+            print("=== 20-Pack Emotional Spectrum (Positive Peak -> Dark Negative Peak) ===")
+            for k, e in EMOTIONS.items():
+                print(f"  [{e['intensity']:+5.2f}] {k.upper():<16} ({e['valence']}) -> Opposite: {e['opposite']}")
+                print(f"         Speech: {e['speech_style']}")
+                print(f"         Body:   {e['body_language']}")
+                print(f"         Bias:   {e['decision_bias']}")
+        return 0
+
+    if a.blend:
+        b = blend(*a.blend)
+        emotion_overlay = resolve_emotion(a.emotion).system_prompt() if a.emotion else ""
+        if a.json:
+            out = {
+                "masks": b.mask_names,
+                "traits": b.traits,
+                "styles": b.styles,
+                "prompt": b.system_prompt(a.base_agent)
+            }
+            if a.emotion:
+                out["emotion"] = asdict(resolve_emotion(a.emotion))
+            print(json.dumps(out, indent=2))
+        else:
+            print(f"=== Behavioral Mask Blend: {' + '.join(b.mask_names)} ===")
+            print(b.system_prompt(a.base_agent))
+            if emotion_overlay:
+                print(f"\n=== EMOTIONAL STATE ===\n{emotion_overlay}")
+        return 0
+
+    if a.emotion:
+        es = resolve_emotion(a.emotion)
+        if a.json:
+            print(json.dumps(asdict(es), indent=2))
+        else:
+            print(f"=== Emotion State: {es.name.upper()} ===")
+            print(es.system_prompt())
+        return 0
+
     texts = list(a.text)
     if a.file:
         texts += Path(a.file).read_text(encoding="utf-8").splitlines()

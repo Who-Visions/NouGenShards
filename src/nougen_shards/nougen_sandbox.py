@@ -33,7 +33,19 @@ def execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10
                 "Set NOUGEN_ENABLE_SANDBOX=1 to enable it.")
 
     # Create temp file for code
-    suffix = ".js" if language in ["javascript", "typescript"] else ".py"
+    if language in ["javascript", "typescript"]:
+        suffix = ".js"
+    elif language == "python":
+        suffix = ".py"
+    elif language in ["powershell", "ps1"] or (language == "shell" and os.name == 'nt'):
+        suffix = ".ps1"
+    elif language in ["shell", "bash", "sh"]:
+        suffix = ".sh"
+    elif language in ["cmd", "bat"]:
+        suffix = ".bat"
+    else:
+        suffix = ".tmp"
+
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, mode='w', encoding='utf-8') as f:
         f.write(code)
         temp_path = f.name
@@ -50,6 +62,15 @@ def execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10
         elif language == "python":
             runtime = sys.executable
             cmd = [runtime, temp_path]
+        elif language in ["powershell", "ps1"] or (language == "shell" and os.name == 'nt'):
+            cmd = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", temp_path]
+        elif language in ["shell", "bash", "sh"]:
+            runtime = shutil.which("bash") or shutil.which("sh")
+            if not runtime:
+                return "Error: Shell runtime (bash/sh) not found."
+            cmd = [runtime, temp_path]
+        elif language in ["cmd", "bat"]:
+            cmd = ["cmd.exe", "/c", temp_path]
         else:
             return f"Error: Unsupported language '{language}'"
 
@@ -97,3 +118,43 @@ def execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10
 def _is_tool_available(name):
     """Checks if a command-line tool is available."""
     return shutil.which(name) is not None
+
+
+def batch_execute_sandboxed(commands: list, queries: list = None) -> dict:
+    """Executes multiple sandboxed commands, aggregates results, and extracts query matches."""
+    results = []
+    aggregated_lines = []
+
+    for item in commands:
+        label = item.get("label", "step")
+        code = item.get("code", "")
+        lang = item.get("language", "python")
+        timeout = item.get("timeout", 10)
+
+        out = execute_sandboxed(code, language=lang, timeout=timeout, trusted=True, bypass_gatekeeper=False)
+        is_err = "Error:" in out or "Execution failed" in out
+        preview = out[:250].replace("\r", "")
+        results.append({
+            "label": label,
+            "language": lang,
+            "status": "error" if is_err else "ok",
+            "preview": preview
+        })
+        aggregated_lines.append(f"=== [{label}] ({lang}) ===")
+        aggregated_lines.append(out)
+
+    full_output = "\n".join(aggregated_lines)
+    query_matches = {}
+    if queries:
+        all_lines = full_output.splitlines()
+        for q in queries:
+            q_clean = q.strip().lower()
+            matched = [line.strip() for line in all_lines if q_clean in line.lower()]
+            query_matches[q] = matched[:15]
+
+    return {
+        "steps": results,
+        "query_matches": query_matches,
+        "total_commands": len(commands),
+        "output_bytes": len(full_output)
+    }

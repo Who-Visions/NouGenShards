@@ -36,7 +36,11 @@ from nougen_shards.federation import federated_retrieve
 from nougen_shards import fd_budget
 from nougen_shards.brain_scan import scan_environment
 
+# NGS_NODE_TOKEN remains the operator credential.  A fleet peer receives its
+# own independently-rotatable token so enrolling it never requires replacing
+# the operator's credential on a running public node.
 NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN") or os.environ.get("SHARD_GATEWAY_TOKEN")
+FLEET_PEER_TOKEN = os.environ.get("NGS_FLEET_PEER_TOKEN")
 
 
 # --- Remote MCP server (mobile / Claude-app connector) ---
@@ -117,6 +121,13 @@ def recall_memory(query: str, limit: int = 5) -> list:
     if sweep_report.get("lanes_timed_out"):
         out.append(_deadline_trailer(sweep_report))
     return out
+
+
+@node_mcp.tool()
+@_offloaded
+def search(query: str, limit: int = 5) -> list:
+    """Search memory shards across the fleet. Alias for recall_memory to support standard MCP connectors."""
+    return recall_memory(query=query, limit=limit)
 
 
 # A stored timestamp is only usable for era math if it is ISO-shaped.
@@ -944,7 +955,13 @@ def _credentials_configured() -> bool:
 
 def _resolve_tenant_credential(supplied: Optional[str]) -> Optional[tenants.Tenant]:
     try:
-        return tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+        tenant = tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+        # A peer token deliberately resolves to the owner vault: federation
+        # reads must see the node's shared substrate, whereas normal tenant
+        # credentials are isolated into their own vault directories.
+        if tenant is None and FLEET_PEER_TOKEN:
+            tenant = tenants.resolve_token(supplied, FLEET_PEER_TOKEN, core.GLOBAL_DIR)
+        return tenant
     except tenants.RegistryUnreadableError as exc:
         # Distinct from a malformed registry ON PURPOSE. "Tenant registry is
         # invalid" is a claim about configuration; this box is simply out of a
@@ -1899,7 +1916,7 @@ def rhea_brain(req: RheaBrainRequest,
 
 
 # --- Dav1d Execution Layer ---
-from nougen_shards.dav1d_executor import run_dav1d_agy
+from nougen_shards.dav1d_executor import ask_dav1d_persona, run_dav1d_agy
 
 
 class Dav1dExecRequest(BaseModel):
@@ -1925,6 +1942,21 @@ def dav1d_exec_endpoint(
     )
 
 
+class Dav1dAskRequest(BaseModel):
+    prompt: str
+    model: Optional[str] = None
+    timeout: int = 90
+
+
+@app.post("/dav1d/ask")
+def dav1d_ask_endpoint(
+    req: Dav1dAskRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Dav1d persona route: dav1d:e2b on ollama, AGY as labeled fallback."""
+    return ask_dav1d_persona(req.prompt, model=req.model, timeout=req.timeout)
+
+
 @app.post("/dav1d/agy")
 def dav1d_agy_endpoint(
     req: Dav1dExecRequest,
@@ -1946,12 +1978,14 @@ def dav1d_exec(
     command: str = "agy",
     subcommand: str = "mcp list",
     args: Optional[List[str]] = None,
-    prompt: str = ""
+    prompt: str = "",
+    timeout: int = 30
 ) -> dict:
     """Dav1d Execution Layer: Execute bounded AGY CLI operations and toolchain actions
     on Dav1d. Griot reasons/retrieves; Dav1d executes.
     Returns verifiable runtime evidence (machine, host, engine, version, exit_code, output)."""
-    return run_dav1d_agy(command=command, args=args, subcommand=subcommand, prompt=prompt)
+    return run_dav1d_agy(command=command, args=args, subcommand=subcommand, prompt=prompt,
+                         timeout=timeout)
 
 
 @node_mcp.tool()
@@ -1974,16 +2008,16 @@ def agy_ask(
 @_offloaded
 def ask_dav1d(
     prompt: str,
-    subcommand: str = "mcp list",
-    args: Optional[List[str]] = None
+    model: Optional[str] = None,
+    timeout: int = 90,
 ) -> dict:
-    """Canonical Dav1d connector alias.
+    """Ask Dav1d, blade's anchor persona (dav1d:e2b on the local ollama lane).
 
-    The fleet connector calls this name. Keep it on the same bounded executor
-    as ``agy_ask`` so the remote surface cannot silently fall back to a
-    simulated response or gain a second, less-safe execution path.
+    The reply carries host/engine/model/status. engine "ollama" is the persona;
+    engine "agy-cli" (with a `fallback` reason) means ollama could not answer and
+    the bounded AGY layer did. Raw AGY subcommands stay on ``dav1d_exec``.
     """
-    return run_dav1d_agy(command="agy", args=args, subcommand=subcommand, prompt=prompt)
+    return ask_dav1d_persona(prompt, model=model, timeout=timeout)
 
 
 # --- Shadow Xoah & Destiny Governance Layer ---
@@ -2105,7 +2139,7 @@ class XoahUnwrittenRequest(BaseModel):
     query: str
 
 
-# REST twins of the Black Glass MCP tools below: the fleet connector worker
+# REST twins of the self-archive MCP tools below: the fleet connector worker
 # reaches the node over REST (/xoah/self, /xoah/pressure), not MCP.
 @app.post("/xoah/relationship")
 def xoah_relationship_endpoint(req: XoahRelationshipRequest,
@@ -2237,7 +2271,7 @@ def xoah_throne(desired_effect: Optional[str] = None, effect: Optional[str] = No
     return throne_governance.evaluate(resolved, target_coordinate=target_coordinate, target_branch=target_branch)
 
 
-# Black Glass query surface over the Xoah self archive. Every answer carries its
+# Query surface over the self archive. Every answer carries its
 # layer (LIVED_TRUTH ... UNWRITTEN_SELF, or ARCHIVE_ABSENT when this node has no
 # archive file) and the provenance of the nodes it cites.
 @node_mcp.tool()
@@ -2441,6 +2475,120 @@ def nougenmsg(message: str, target: str = "all", priority: str = "normal") -> di
     }
 
 
+def _nougenmsg_inbox_dirs() -> list:
+    """Every local NouGenMsg inbox directory. Env-first (NOUGEN_MSG_INBOX_DIRS, os.pathsep-separated);
+    fallback is the set the bus writes to on this machine (claude, agy, gemini, codex)."""
+    raw = os.environ.get("NOUGEN_MSG_INBOX_DIRS", "").strip()
+    if raw:
+        dirs = [d.strip() for d in raw.split(os.pathsep) if d.strip()]
+    else:
+        home = os.path.expanduser("~")
+        dirs = [os.path.join(home, ".nougen", "claude_inbox"), os.path.join(home, ".nougen", "agy_inbox"),
+                os.path.join(home, ".gemini", "config", "inbox"), os.path.join(home, ".codex", "inbox")]
+    return [d for d in dirs if os.path.isdir(d)]
+
+
+def _nougenmsg_read(target: Optional[str] = None, limit: int = 10) -> dict:
+    """Newest-first NouGenMsg envelopes across all local inbox dirs, deduped by message identity,
+    optionally filtered to a target/destination substring. Read-only."""
+    import glob as _glob, json as _json, time as _time
+    from datetime import datetime as _dt, timezone as _tz
+    limit = max(1, min(int(limit or 10), int(os.environ.get("NOUGEN_MSG_INBOX_MAX", "50"))))
+    want = (target or "").lstrip("@").strip().lower()
+    if want in ("", "all", "@all"):
+        want = ""
+    files = []
+    for d in _nougenmsg_inbox_dirs():
+        files.extend(_glob.glob(os.path.join(d, "*.json")))
+    files.sort(key=os.path.getmtime, reverse=True)
+    out, seen, scanned = [], set(), 0
+    for f in files:
+        if len(out) >= limit:
+            break
+        scanned += 1
+        try:
+            with open(f, "r", encoding="utf-8") as fh:
+                raw = _json.load(fh)
+        except Exception:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        ident = raw.get("message_id") or raw.get("id") or "|".join(str(raw.get(k, "")) for k in ("source", "sender", "text", "content", "timestamp"))
+        if ident in seen:
+            continue
+        seen.add(ident)
+        dest = str(raw.get("target") or raw.get("destination") or "all").lstrip("@").lower()
+        if want and want not in dest and dest not in want and dest != "all":
+            continue
+        sender = raw.get("sender") or raw.get("source") or "unknown"
+        sdict = sender if isinstance(sender, dict) else {}
+        ts = raw.get("timestamp") or os.path.getmtime(f)
+        try:
+            created = raw.get("created_utc") or _dt.fromtimestamp(float(ts), tz=_tz.utc).isoformat()
+        except Exception:
+            created = str(ts)
+
+        # Dynamic, intuitive, and deterministic machine & agent resolution:
+        origin_m = sdict.get("node") or raw.get("origin_machine") or raw.get("node") or raw.get("machine")
+        origin_a = sdict.get("agent") or raw.get("origin_agent") or raw.get("agent")
+
+        # Extract provenance from leg_id if envelope was wrapped by a watcher or bus (e.g. 20260917T...__chatgpt-app__g-whoentertains)
+        leg = str(raw.get("leg_id") or raw.get("correlation_id") or "")
+        if "__" in leg:
+            parts = leg.split("__")
+            if len(parts) >= 3:
+                origin_m = origin_m or parts[1]
+                origin_a = origin_a or parts[2]
+            elif len(parts) == 2:
+                origin_m = origin_m or parts[1]
+
+        # Extract from text clue if still unresolved (e.g. "from chatgpt-app/g-whoentertains")
+        body_text = str(raw.get("text") or raw.get("content") or raw.get("body") or "")
+        if (not origin_m or not origin_a) and "from " in body_text:
+            try:
+                import re as _re
+                m = _re.search(r"\bfrom\s+([a-zA-Z0-9_\-\.]+)/([a-zA-Z0-9_\-\.]+)", body_text)
+                if m:
+                    origin_m = origin_m or m.group(1)
+                    origin_a = origin_a or m.group(2)
+            except Exception:
+                pass
+
+        if not origin_m:
+            origin_m = sender if isinstance(sender, str) and sender != "unknown" else "unknown-node"
+        if not origin_a:
+            origin_a = raw.get("from") or ("relay-watch" if sender == "relay-watch" else "unknown-agent")
+
+        out.append({
+            "id": raw.get("message_id") or raw.get("id") or os.path.splitext(os.path.basename(f))[0],
+            "created_utc": created,
+            "origin_machine": origin_m,
+            "origin_agent": origin_a,
+            "destination": dest,
+            "priority": raw.get("priority") or "normal",
+            "message_type": raw.get("type") or "live_message",
+            "body": body_text,
+            "correlation_id": raw.get("correlation_id") or raw.get("leg_id"),
+            "file": os.path.basename(f),
+        })
+    return {"complete": True, "node": NODE_NAME if "NODE_NAME" in globals() else os.environ.get("NOUGEN_NODE_NAME", "blade"),
+            "target": target or "all", "scanned": scanned, "returned": len(out), "messages": out}
+
+
+@node_mcp.tool()
+@_offloaded
+def nougenmsg_latest(limit: int = 10) -> dict:
+    """Read the newest inter-agent messages from the NouGenMsg bus on this node, newest first."""
+    return _nougenmsg_read(None, limit)
+
+
+@node_mcp.tool()
+@_offloaded
+def nougenmsg_inbox(target: Optional[str] = None, limit: int = 10) -> dict:
+    """Read NouGenMsg messages addressed to a specific agent, lane, node, or audience (e.g. @blade, claude-cli, antigravity)."""
+    return _nougenmsg_read(target, limit)
+
+
 # =========================================================================
 # 🚀 50-TOOL SOVEREIGN FLEET MCP SURFACE EXPANSION
 # =========================================================================
@@ -2587,6 +2735,19 @@ def relay_open_legs(limit: int = 15) -> list:
     return legs
 
 
+def _safe_claims_path(claims_dir: "Path", leg_id: str, suffix: str) -> "Path":
+    """Build a path under claims_dir from a caller-supplied leg_id, rejecting traversal.
+
+    leg_id reaches this from the MCP tool surface unsanitized; resolving and
+    verifying containment (rather than just filtering characters) also covers
+    absolute-path and symlink escapes, not just "../" segments.
+    """
+    candidate = (claims_dir / f"{leg_id}{suffix}").resolve()
+    if claims_dir.resolve() not in candidate.parents:
+        raise ValueError(f"invalid leg_id: {leg_id!r} escapes claims_dir")
+    return candidate
+
+
 @node_mcp.tool()
 @_offloaded
 def relay_claim_leg(leg_id: str, claimed_by: str = "phoebus/antigravity") -> dict:
@@ -2594,7 +2755,7 @@ def relay_claim_leg(leg_id: str, claimed_by: str = "phoebus/antigravity") -> dic
     from pathlib import Path
     claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
-    claim_path = claims_dir / f"{leg_id}__autonomous.json"
+    claim_path = _safe_claims_path(claims_dir, leg_id, "__autonomous.json")
     claim_data = {
         "leg_id": leg_id,
         "claimed_by": claimed_by,
@@ -2654,6 +2815,7 @@ def relay_ack_leg(
     from pathlib import Path
     claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
+    ack_path = _safe_claims_path(claims_dir, leg_id, "__ack.json")
     ack_data = {
         "leg_id": leg_id,
         "status": "closed",
@@ -2665,7 +2827,6 @@ def relay_ack_leg(
             "observer_node": observer_node
         }
     }
-    ack_path = claims_dir / f"{leg_id}__ack.json"
     with open(ack_path, "w", encoding="utf-8") as f:
         json.dump(ack_data, f, indent=2)
     return {"status": "closed", "proof": ack_data}
@@ -2838,6 +2999,58 @@ def dream_trigger(force: bool = False) -> dict:
 
 
 
+# --- Learn With Mrs. B MCP Tools ---
+
+
+@node_mcp.tool()
+@_offloaded
+def mrsb_audit() -> dict:
+    """Audit all Learn With Mrs. B production assets: SVGs, alphabet plates, PDFs, character refs, manifests."""
+    from nougen_shards import mrsb
+    return mrsb.audit_assets()
+
+
+@node_mcp.tool()
+@_offloaded
+def mrsb_status() -> dict:
+    """Get comprehensive project status for Learn With Mrs. B: KDP readiness, character roster, pricing, ISBN."""
+    from nougen_shards import mrsb
+    return mrsb.project_status()
+
+
+@node_mcp.tool()
+@_offloaded
+def mrsb_lineage() -> dict:
+    """Return the canonical Meralus family lineage manifest with all character visual DNA."""
+    from nougen_shards import mrsb
+    return mrsb.get_lineage()
+
+
+@node_mcp.tool()
+@_offloaded
+def mrsb_character(character_key: str = "mrs_b") -> dict:
+    """Get visual DNA for a specific character (mrs_b, little_dave, curious_kendall_amelia, dad_tedley, kam_the_police_helper, etc)."""
+    from nougen_shards import mrsb
+    dna = mrsb.get_character_dna(character_key)
+    if not dna:
+        return {"error": f"Character '{character_key}' not found", "available": mrsb.list_characters()}
+    return dna
+
+
+@node_mcp.tool()
+@_offloaded
+def mrsb_recall(query: str = "Mrs. B ESOL", limit: int = 5) -> list:
+    """Search the NouGen shard grid for memories related to the Learn With Mrs. B project."""
+    from nougen_shards import mrsb
+    return mrsb.recall_shards(query, limit)
+
+
+@node_mcp.tool()
+@_offloaded
+def mrsb_recurse(unit: Optional[int] = None) -> dict:
+    """Return the 4-stage recursive lesson ledger (setup, echo, inversion, payoff) for Units 1-8."""
+    from nougen_shards import mrsb
+    return mrsb.get_recursion_map(unit)
 
 
 # --- Cortex HUD UI Logic ---
@@ -3063,7 +3276,7 @@ class _TokenGatedMCP:
             tenant = None
             if supplied:
                 try:
-                    tenant = tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+                    tenant = _resolve_tenant_credential(supplied)
                     if tenant is None:
                         issued_tenant_id = mcp_oauth.issued_token_tenant(supplied)
                         if issued_tenant_id:

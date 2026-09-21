@@ -1,6 +1,6 @@
 """Canon Pressure Engine: Terminal Shadow Xoah as canon adversary.
 
-Every proposed Xoah / VeilVerse story addition enters a pipeline:
+Every proposed story addition enters a pipeline:
 normalize drift -> resolve story coordinate -> recall canon records (topic +
 time window) -> rank authority / corrections -> scan fixed-point dependencies
 -> classify -> render a cited, first-person challenge -> name the cheapest

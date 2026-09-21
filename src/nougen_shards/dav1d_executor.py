@@ -18,6 +18,10 @@ ALLOWED_SUBCOMMANDS = {
     "mcp", "changelog", "models", "agent", "agents", "help", "version", "--version", "-v"
 }
 
+# Leading flags a caller may pass. --print is what the prompt path builds; anything
+# else (e.g. --dangerously-skip-permissions) is refused rather than forwarded to agy.
+ALLOWED_FLAGS = {"--version", "-v", "--help", "-h", "--print"}
+
 # Version is resolved at call time (env -> live probe -> labeled fallback), never
 # pinned in source. A constant here drifted from 1.1.17 to 1.1.18 within a day and the
 # stale value was reported to the fleet as runtime evidence.
@@ -109,6 +113,31 @@ def _get_host_label() -> str:
     return os.environ.get("NOUGEN_HOST_LABEL", "Blade Node (Stadium)")
 
 
+_MAX_ARG_LEN = 32768
+
+
+def _reject_unsafe_args(target_args: List[str], prompt_index: Optional[int] = None) -> str:
+    """Validate EVERY argv token, not just the first.
+
+    The first-token allowlist alone let a caller smuggle extra flags
+    (e.g. ``["mcp", "add", "--command", "/bin/sh"]``) into the child process.
+    Rules: no NUL/control characters, bounded length, and any token starting
+    with ``-`` must be an allowed flag. The free-text prompt (the value after
+    ``--print``) is exempt from the flag rule only, never from the character
+    and length rules.
+    """
+    for i, tok in enumerate(target_args):
+        if len(tok) > _MAX_ARG_LEN:
+            return f"argument {i} exceeds {_MAX_ARG_LEN} characters"
+        if any(ord(c) < 32 and c not in "\n\t" for c in tok) or "\x00" in tok:
+            return f"argument {i} contains control characters"
+        if i == 0 or i == prompt_index:
+            continue
+        if tok.startswith("-") and tok.lower() not in ALLOWED_FLAGS:
+            return f"flag '{tok}' not in bounded allowlist"
+    return ""
+
+
 def run_dav1d_agy(
     command: str = "agy",
     args: Optional[List[str]] = None,
@@ -124,7 +153,11 @@ def run_dav1d_agy(
     # Normalize arguments
     target_args: List[str] = []
     if prompt:
-        target_args = ["--print", prompt]
+        # agy has no stdin prompt mode and headless -p blocks on a permission prompt
+        # unless --dangerously-skip-permissions is set (never done here, and it hung
+        # every caller until timeout). Prompts go to the local persona instead, so no
+        # caller text is ever placed on an agy command line.
+        return ask_dav1d_persona(prompt, timeout=timeout)
     elif args and len(args) > 0:
         target_args = [str(a) for a in args]
     elif subcommand:
@@ -132,11 +165,18 @@ def run_dav1d_agy(
     else:
         target_args = ["mcp", "list"]
 
+    # agy 1.2.x has no `version` subcommand (it rejects it as a stray prompt argument);
+    # the allow-list keeps the word for callers, the binary needs the flag.
+    if target_args and target_args[0].lower() == "version":
+        target_args[0] = "--version"
+
     # Security check: verify first token is in allowed subcommands or flags
     first_tok = target_args[0].lower() if target_args else ""
     if first_tok.startswith("-"):
-        pass  # allow flags like --version, --print
-    elif first_tok not in ALLOWED_SUBCOMMANDS:
+        allowed = first_tok in ALLOWED_FLAGS
+    else:
+        allowed = first_tok in ALLOWED_SUBCOMMANDS
+    if not allowed:
         return {
             "machine": "Dav1d",
             "host": host_label,
@@ -145,7 +185,20 @@ def run_dav1d_agy(
             "command": " ".join([command] + target_args),
             "status": "rejected",
             "exit_code": 1,
-            "error": f"Subcommand '{first_tok}' not in bounded allowlist ({', '.join(sorted(ALLOWED_SUBCOMMANDS))})"
+            "error": f"'{first_tok}' not in bounded allowlist ({', '.join(sorted(ALLOWED_SUBCOMMANDS | ALLOWED_FLAGS))})"
+        }
+
+    bad = _reject_unsafe_args(target_args, prompt_index=1 if prompt else None)
+    if bad:
+        return {
+            "machine": "Dav1d",
+            "host": host_label,
+            "engine": "agy-cli",
+            "version": _VERSION_UNKNOWN,
+            "command": " ".join(target_args[:1]),
+            "status": "rejected",
+            "exit_code": 1,
+            "error": bad,
         }
 
     bin_path = resolve_agy_binary()
@@ -167,7 +220,10 @@ def run_dav1d_agy(
     cmd_list = [bin_path] + target_args
 
     try:
-        res = subprocess.run(cmd_list, capture_output=True, text=True, timeout=timeout)
+        # stdin closed: agy reads stdin for prompts, and a hidden gateway process
+        # has no usable stdin, so --print would block until the timeout.
+        res = subprocess.run(cmd_list, capture_output=True, text=True, timeout=timeout,
+                             stdin=subprocess.DEVNULL)
         output = res.stdout if res.stdout else res.stderr
         return {
             "machine": "Dav1d",
@@ -200,5 +256,100 @@ def run_dav1d_agy(
             "command": " ".join(cmd_list),
             "status": "error",
             "exit_code": 1,
-            "error": str(exc)
+            "error": type(exc).__name__
         }
+
+
+# --- Dav1d persona route (ollama; an explicit error when it is down) ---
+
+_PERSONA_DEFAULT_MODEL = "dav1d:e2b"
+
+
+def _persona_timeout(timeout: Optional[int]) -> float:
+    """Seconds for the persona call: caller value, else env, else 90."""
+    if timeout:
+        return float(timeout)
+    try:
+        return float(os.environ.get("NOUGEN_DAV1D_PERSONA_TIMEOUT_SEC", "90"))
+    except ValueError:
+        return 90.0
+
+
+def resolve_persona_model(host: str, model: Optional[str] = None) -> str:
+    """Pick Dav1d's model: caller > NOUGEN_AGENT_MODEL_DAV1D > served custom dav1d tag.
+
+    Discovered from /api/tags so a renamed tag needs no code change; the constant
+    is only the fallback when the probe fails.
+    """
+    import json
+    import urllib.request
+
+    if model and model.strip():
+        return model.strip()
+    env = os.environ.get("NOUGEN_AGENT_MODEL_DAV1D", "").strip()
+    if env:
+        return env
+    try:
+        with urllib.request.urlopen(host + "/api/tags", timeout=5) as resp:
+            names = [m.get("name", "") for m in json.load(resp).get("models", [])]
+        for name in names:
+            if name.lower().startswith("dav1d:") and "pre-selfid" not in name:
+                return name
+    except Exception as exc:
+        logger.warning("dav1d persona: /api/tags probe failed (%s); using %s", exc, _PERSONA_DEFAULT_MODEL)
+    return _PERSONA_DEFAULT_MODEL
+
+
+def ask_dav1d_persona(
+    prompt: str,
+    model: Optional[str] = None,
+    timeout: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Answer as Dav1d on the local ollama lane (persona baked into the Modelfile).
+
+    When ollama cannot answer the reply is an explicit error, never a silent swap to
+    another engine, so the caller can always tell which Dav1d spoke.
+    """
+    import json
+    import urllib.request
+    from nougen_shards.agents import OLLAMA_HOST
+
+    host_label = _get_host_label()
+    limit = _persona_timeout(timeout)
+    chosen = resolve_persona_model(OLLAMA_HOST, model)
+    body = json.dumps({
+        "model": chosen,
+        "stream": False,
+        "think": False,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    req = urllib.request.Request(
+        OLLAMA_HOST + "/api/chat", data=body, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=limit) as resp:
+            data = json.load(resp)
+        answer = ((data.get("message") or {}).get("content") or "").strip()
+        if answer:
+            return {
+                "machine": "Dav1d",
+                "host": host_label,
+                "engine": "ollama",
+                "model": chosen,
+                "status": "success",
+                "exit_code": 0,
+                "output": answer,
+            }
+        reason = "empty answer from ollama"
+    except Exception as exc:
+        reason = type(exc).__name__  # detail stays in the log, never in the response
+        logger.warning("dav1d persona via ollama failed: %s", exc)
+    return {
+        "machine": "Dav1d",
+        "host": host_label,
+        "engine": "ollama",
+        "model": chosen,
+        "status": "error",
+        "exit_code": 1,
+        "error": f"persona lane unavailable: {reason}",
+    }

@@ -97,6 +97,18 @@ def test_mcp_accepts_query_param_token(client):
     assert r.status_code == 401
 
 
+def test_mcp_accepts_dedicated_fleet_peer_token(client):
+    peer_token = "dedicated-mcp-peer-token"
+    saved = node.FLEET_PEER_TOKEN
+    node.FLEET_PEER_TOKEN = peer_token
+    try:
+        r = client.post("/mcp/", json=_rpc("tools/list"),
+                        headers={**MCP_HEADERS, "X-NGS-Token": peer_token})
+        assert r.status_code == 200
+    finally:
+        node.FLEET_PEER_TOKEN = saved
+
+
 # --- protocol ----------------------------------------------------------------
 
 def test_mcp_initialize(client):

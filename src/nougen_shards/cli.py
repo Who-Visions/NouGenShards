@@ -6,6 +6,9 @@ import sqlite3
 import os
 import numpy as np
 from pathlib import Path
+import logging
+
+logger = logging.getLogger("nougen_shards.cli")
 from . import core as shards
 from . import keymaker
 from .models_client import (
@@ -34,6 +37,7 @@ from . import destiny
 from . import wake_daemon
 from . import wispr
 from . import studio
+from . import mrsb
 
 from nougen_shards import __version__ as VERSION  # single source: pyproject
 
@@ -1330,6 +1334,90 @@ def cmd_ctx(args):
             print(f"✅ Context event #{event['id']} promoted to durable memory.")
         else:
             print("ℹ️ Shard already exists.")
+    elif args.action == "web":
+        if not args.input:
+            print("Error: Usage: nougen ctx web <url> [--tags <label>]")
+            return
+        res = nougen_context.fetch_and_index_web(args.input, label=args.tags)
+        if "error" in res:
+            print(f"❌ {res['error']}")
+            return
+        print(f"✅ Web indexed: {res['title']}")
+        print(f"Handle: {res['handle']} ({res['total_length_bytes']} bytes)")
+        print(f"Summary: {res['summary']}")
+        if res.get("headings"):
+            print("Headings:")
+            for h in res["headings"][:5]:
+                print(f"  {h}")
+    elif args.action == "analyze":
+        if not args.input:
+            print("Error: Usage: nougen ctx analyze <file_path> [--query <term>]")
+            return
+        query_val = getattr(args, "query", None)
+        res = nougen_context.analyze_file(args.input, query=query_val)
+        if "error" in res:
+            print(f"❌ {res['error']}")
+            return
+        print(f"📄 {res['name']} ({res['total_lines']} lines, {res['size_bytes']} bytes)")
+        if "ast" in res:
+            ast_info = res["ast"]
+            if ast_info.get("syntax_valid"):
+                print(f"Classes: {', '.join(ast_info['classes']) or 'None'}")
+                print(f"Functions: {', '.join(ast_info['functions'][:10]) or 'None'}")
+                print(f"Imports: {', '.join(ast_info['imports'][:8]) or 'None'}")
+            else:
+                print(f"Syntax Error: {ast_info.get('syntax_error')}")
+        elif "json_schema" in res:
+            print(f"JSON Schema: {json.dumps(res['json_schema'])}")
+        if res.get("query_matches"):
+            print("Query matches:")
+            for m in res["query_matches"][:5]:
+                print(f"  {m}")
+    elif args.action == "checkpoint":
+        if not args.input:
+            print("Error: Usage: nougen ctx checkpoint <label>")
+            return
+        res = nougen_context.checkpoint_session(args.input)
+        print(f"✅ Checkpoint '{res['label']}' saved ({res['events_count']} events).")
+    elif args.action == "restore":
+        if not args.input:
+            print("Error: Usage: nougen ctx restore <label>")
+            return
+        res = nougen_context.restore_session(args.input)
+        if "error" in res:
+            print(f"❌ {res['error']}")
+            return
+        print(f"✅ Checkpoint '{res['label']}' restored ({res['events_restored']} events).")
+    elif args.action == "checkpoints":
+        rows = nougen_context.list_checkpoints()
+        if not rows:
+            print("No saved checkpoints.")
+            return
+        print("Session Checkpoints:")
+        for r in rows:
+            print(f"- {r['label']} ({r['events_count']} events, {r['timestamp']})")
+    elif args.action == "ask":
+        if not args.input:
+            print("Error: Usage: nougen ctx ask <prompt> [--tags <context_handle>]")
+            return
+        model_val = getattr(args, "model", None)
+        print(f"[*] Querying Ollama (model: {model_val or 'auto-local'})...")
+        res = nougen_context.query_ollama(args.input, context_handle=args.tags, model=model_val)
+        if res.get("status") == "success":
+            print(f"\n[{res['model']}]:\n{res['response']}")
+        else:
+            print(f"❌ {res.get('error')}")
+    elif args.action == "synthesize":
+        if not args.input:
+            print("Error: Usage: nougen ctx synthesize <handle> [--query <instruction>]")
+            return
+        instr = getattr(args, "query", None) or "Summarize the core findings and key action items."
+        res = nougen_context.synthesize_sandbox(args.input, instruction=instr)
+        if res.get("status") == "synthesized":
+            print(f"✅ Synthesized {args.input} using {res['model']}:")
+            print(res["summary"])
+        else:
+            print(f"❌ Synthesis failed: {res.get('error')}")
 
 
 def resolve_router_model() -> str:
@@ -1674,6 +1762,40 @@ def cmd_tenant(args):
     print("Save this token now; it is stored only as a SHA-256 hash and cannot be shown again.")
 
 
+def cmd_facts(args):
+    """Index and resolve structured canonical fact snapshots."""
+    from .canonical_facts import CanonicalFactIndex, SCHEMA_VERSION
+
+    index = CanonicalFactIndex(args.index, create=args.facts_action in ("index", "migrate"))
+    if args.facts_action == "migrate":
+        print(json.dumps({"status": "migrated", "index": str(index.path),
+                          "schema_version": SCHEMA_VERSION}))
+        return
+    if args.facts_action == "index":
+        try:
+            snapshot = json.loads(Path(args.input).read_text(encoding="utf-8"))
+            snapshot_id = index.put(snapshot)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(json.dumps({"status": "rejected", "error": str(exc)}), file=sys.stderr)
+            raise SystemExit(2) from exc
+        print(json.dumps({"status": "indexed", "snapshot_id": snapshot_id}, indent=2))
+        return
+
+    try:
+        scope = json.loads(args.scope) if args.scope else None
+        if scope is not None and not isinstance(scope, dict):
+            raise ValueError("--scope must be a JSON object")
+        receipt = index.resolve_query(
+            args.query, expected_machines=args.machine,
+            expected_entities=args.entity or None, scope=scope,
+            as_of=args.as_of,
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(json.dumps({"status": "rejected", "error": str(exc)}), file=sys.stderr)
+        raise SystemExit(2) from exc
+    print(json.dumps(receipt, indent=2, sort_keys=True))
+
+
 def get_parser():
 
 
@@ -1753,9 +1875,11 @@ def get_parser():
     p_stats.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_ctx = subparsers.add_parser("ctx", help="Context layer")
-    p_ctx.add_argument("action", choices=["init", "execute", "search", "get", "promote"])
+    p_ctx.add_argument("action", choices=["init", "execute", "search", "get", "promote", "web", "analyze", "checkpoint", "restore", "checkpoints", "ask", "synthesize"])
     p_ctx.add_argument("input", nargs="?")
-    p_ctx.add_argument("--tags", help="Tags for promoted shard")
+    p_ctx.add_argument("--tags", help="Tags for promoted shard, label for web/checkpoint, or context_handle for ask")
+    p_ctx.add_argument("--query", help="Query keyword for file analyze or search")
+    p_ctx.add_argument("--model", help="Specific Ollama model name (e.g. gemma4:e2b-qat, Yukiai:e2b)")
     p_ctx.add_argument("--limit", type=int, default=5, help="Max results for ctx search")
 
     # router
@@ -1995,7 +2119,8 @@ def get_parser():
 
     p_msg = subparsers.add_parser("msg", help="Live fleet IPC messaging & socket broadcast")
     p_msg.add_argument("message", nargs="?", default="", help="Message text to send")
-    p_msg.add_argument("--to", dest="target", default="all", help="Target node or agent")
+    p_msg.add_argument("--to", dest="target", default="all",
+                        help="Target node or agent family, e.g. fleet:agents")
     p_msg.add_argument("--peers", action="store_true", help="List reachable fleet peers")
     p_msg.add_argument("--dry-run", action="store_true",
                         help="Resolve the target and print what would be sent, without sending it")
@@ -2043,6 +2168,13 @@ def get_parser():
     # destiny store
     p_destiny = subparsers.add_parser("destiny", help="Prospective memory & goal graph store (destinies.db)")
     destiny_sub = p_destiny.add_subparsers(dest="destiny_action")
+
+    p_open = subparsers.add_parser(
+        "open",
+        help="OpenRouter Free Fleet Worker Engine (NouGenOpen)",
+        description="Dedicated OpenRouter Free Fleet Worker Engine with Keymaker API key auto-resolution and zero-cost multi-model fallback."
+    )
+    p_open.add_argument("open_args", nargs=argparse.REMAINDER, help="Subcommands: status | ask [prompt] [--model MODEL] [--system SYSTEM]")
     
     p_destiny_list = destiny_sub.add_parser("list", help="List unfinished/active destinies")
     p_destiny_list.add_argument("--status", choices=list(destiny.STATUSES), default=None)
@@ -2094,6 +2226,22 @@ def get_parser():
     p_destiny_evolve.add_argument("--limit", type=int, default=50)
     p_destiny_evolve.add_argument("--json", action="store_true")
 
+    # Structured canonical fact snapshots (separate from free-form shard recall).
+    p_facts = subparsers.add_parser("facts", help="Index/resolve structured canonical fact snapshots")
+    facts_sub = p_facts.add_subparsers(dest="facts_action", required=True)
+    p_facts_migrate = facts_sub.add_parser("migrate", help="Backfill current pointers and query postings")
+    p_facts_migrate.add_argument("--index", required=True, help="Explicit SQLite fact-index path")
+    p_facts_index = facts_sub.add_parser("index", help="Append a validated FACT_SNAPSHOT JSON file")
+    p_facts_index.add_argument("--index", required=True, help="Explicit SQLite fact-index path")
+    p_facts_index.add_argument("--input", required=True, help="Snapshot JSON file")
+    p_facts_resolve = facts_sub.add_parser("resolve", help="Resolve newest complete snapshot from natural language")
+    p_facts_resolve.add_argument("query")
+    p_facts_resolve.add_argument("--index", required=True, help="SQLite fact-index path")
+    p_facts_resolve.add_argument("--machine", action="append", required=True, help="Expected machine; repeat for fleet scope")
+    p_facts_resolve.add_argument("--entity", action="append", default=[], help="Expected canonical entity; repeat as needed")
+    p_facts_resolve.add_argument("--scope", help="Additional exact JSON scope filter")
+    p_facts_resolve.add_argument("--as-of", help="Reference date/time; 'today' queries require an exact date match")
+
     # wake daemon
     p_wake = subparsers.add_parser("wake", help="Run NouGen reactive idle wake daemon for fleet IPC messaging")
     p_wake.add_argument("--timeout", type=float, default=600.0, help="Max idle seconds before recycle")
@@ -2131,7 +2279,23 @@ def get_parser():
     p_sweep.add_argument("--json", action="store_true", help="Machine-readable output")
     p_sweep.add_argument("--verbose", "-v", action="store_true", help="Show suspicious non-dev orphans")
 
+    # Learn With Mrs. B project engine
+    p_mrsb = subparsers.add_parser("mrsb", help="Learn With Mrs. B: ESOL Coloring Book production engine")
+    p_mrsb.add_argument("mrsb_action", nargs="?", default="status",
+                        choices=["status", "audit", "lineage", "recall", "recurse", "build", "kdp"],
+                        help="Action to perform (default: status)")
+    p_mrsb.add_argument("--character", "-c", help="Character key for lineage lookup (e.g. mrs_b, little_dave, kam_the_police_helper)")
+    p_mrsb.add_argument("--query", "-q", default="Mrs. B", help="Search query for shard recall")
+    p_mrsb.add_argument("--limit", "-n", type=int, default=5, help="Max results for recall")
+    p_mrsb.add_argument("--unit", "-u", type=int, default=None, help="Unit number (1-8) for recursive lesson ledger")
+    p_mrsb.add_argument("--json", action="store_true", help="Machine-readable JSON output")
+
     return parser
+
+
+def cmd_mrsb(args):
+    """Learn With Mrs. B project engine: audit, lineage, recall, recurse, build, kdp."""
+    mrsb.cli_handler(args)
 
 
 def cmd_cf(args):
@@ -2945,6 +3109,14 @@ def cmd_relay(args):
     prev_argv = sys.argv
     os.chdir(registry)
     sys.argv = ["relay", *forwarded]
+    action_mode = os.environ.get("NOUGEN_CONFLICT_ACTION", "").strip().lower() or "report"
+    try:
+        from .control_loop import intent_alignment_check  # pylint: disable=import-outside-toplevel
+        verdict = intent_alignment_check({"task_id": "relay_execution"}, {})
+        if verdict.get("verdict") == "CONFLICTED" and action_mode == "report":
+            logger.warning("intent_alignment_check reported conflict before relay goal execution: %s", verdict)
+    except Exception as exc:
+        logger.warning("intent_alignment_check failed before relay goal execution: %s", exc)
     try:
         rc = relay_main()
     finally:
@@ -3146,6 +3318,20 @@ def cmd_hijack(args):
         sys.exit(1)
 
 
+def cmd_open(args):
+    """Forward to the NouGenOpen CLI (OpenRouter Free Fleet Engine)."""
+    try:
+        from nougen_open.cli import main as open_main
+    except ImportError:
+        print("[FATAL] nougen_open package not installed. Install with `pip install -e NouGenOpen`.", file=sys.stderr)
+        sys.exit(1)
+    
+    forwarded = list(getattr(args, "open_args", None) or [])
+    if forwarded[:1] == ["--"]:
+        forwarded = forwarded[1:]
+    open_main(forwarded)
+
+
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
@@ -3166,7 +3352,34 @@ def main():
         # `nougen relay -h` would die here instead of reaching the engine.
         cmd_relay(argparse.Namespace(command="relay", relay_args=sys.argv[2:]))
         return
+    if sys.argv[1] == "open":
+        cmd_open(argparse.Namespace(command="open", open_args=sys.argv[2:]))
+        return
+
     parser = get_parser()
+
+    # Dynamic second-reflex: Derive known subcommands dynamically from parser subparsers
+    known_cmds = set()
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            known_cmds.update(action.choices.keys())
+    known_cmds.update({"cf", "relay", "open", "zombies", "sweep"})
+
+    # If first argument is not a flag (-h, --version, etc) and not a registered subcommand,
+    # automatically interpret `nougen <query>` as `nougen search "<query>"`
+    if len(sys.argv) > 1 and sys.argv[1] not in known_cmds and not sys.argv[1].startswith("-"):
+        query_str = " ".join(sys.argv[1:])
+        cmd_search(argparse.Namespace(
+            command="search",
+            query=query_str,
+            semantic=False,
+            provider=None,
+            json=False,
+            domain=None,
+            dual=True
+        ))
+        return
+
     args = parser.parse_args()
     cmds = {
         "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
@@ -3180,7 +3393,8 @@ def main():
         "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
         "transcribe": cmd_transcribe, "live": cmd_live, "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
-        "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep
+        "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep, "open": cmd_open,
+        "facts": cmd_facts, "mrsb": cmd_mrsb,
     }
     if args.command in cmds:
         cmds[args.command](args)

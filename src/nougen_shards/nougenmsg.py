@@ -238,18 +238,17 @@ class AgentPinger:
                 registry = json.load(f)
         except (OSError, ValueError):
             registry = {}
+        # Both registry shapes can coexist in one file: blade nests {"sessions":
+        # {socket: entry}}, phoebus keeps {session_id: {socket, token, ...}} at the
+        # top level. An EMPTY nested "sessions" key used to mask every top-level
+        # entry (registered:0 with a live session registered), so merge the two.
+        sessions = {}
         raw_sessions = registry.get("sessions")
         if isinstance(raw_sessions, dict):
-            sessions = raw_sessions  # blade shape (nougenmsg_register.py): {socket: entry}
-        else:
-            # phoebus shape (nougenmsg_wake.py): {session_id: {socket, token, ...}} at the
-            # top level. Before 2026-09-03 this branch fell through to {}, the loop
-            # never ran, and phoebus reported registered:0 over a healthy registry
-            # while every live cc-msg fell back to the inbox drain.
-            sessions = {}
-            for sid, entry in registry.items():
-                if isinstance(entry, dict) and entry.get("token") and entry.get("socket"):
-                    sessions[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
+            sessions.update(raw_sessions)
+        for sid, entry in registry.items():
+            if sid != "sessions" and isinstance(entry, dict) and entry.get("token") and entry.get("socket"):
+                sessions[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
         delivered, pruned, errors = [], [], []
         for sock, entry in list(sessions.items()):
             token = str((entry or {}).get("token") or "")
@@ -527,13 +526,24 @@ class AgentPinger:
         except ValueError:
             timeout = 60.0
 
+        system_prompt = ""
+        if os.environ.get("NOUGEN_MSG_INJECT_PERSONA", "").strip().lower() in ("1", "true", "yes"):
+            try:
+                from .persona import Signals, resolve as resolve_persona
+                sig = Signals.from_texts([prompt], surfaces=["ollama", "terminal"], tz="America/New_York", role="fleet-operator")
+                pers = resolve_persona(sig)
+                system_prompt = pers.system_prompt()
+            except Exception:
+                pass
+
         if node not in ["local", get_current_node()]:
             # The remote command is interpreted by the remote login shell.
             # Keep it entirely constant; caller-controlled JSON travels over
             # stdin, where shell syntax has no meaning.
-            payload = json.dumps(
-                {"model": target_model, "prompt": prompt, "stream": False}
-            )
+            ollama_dict = {"model": target_model, "prompt": prompt, "stream": False}
+            if system_prompt:
+                ollama_dict["system"] = system_prompt
+            payload = json.dumps(ollama_dict)
             remote_cmd = (
                 "curl -sS -X POST http://127.0.0.1:11434/api/generate "
                 "--data-binary @-"
@@ -558,7 +568,10 @@ class AgentPinger:
                         "model": target_model, "error": str(e)}
 
         try:
-            req_data = json.dumps({"model": target_model, "prompt": prompt, "stream": False}).encode("utf-8")
+            ollama_dict = {"model": target_model, "prompt": prompt, "stream": False}
+            if system_prompt:
+                ollama_dict["system"] = system_prompt
+            req_data = json.dumps(ollama_dict).encode("utf-8")
             req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 res = json.loads(r.read().decode())
@@ -594,7 +607,7 @@ class NouGenMsgBus:
             return ('fleet', 'all')
 
         known_nodes = {'blade', 'whoart', 'phoebus', 'local', 'fleet'}
-        known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'all'}
+        known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'agents', 'all'}
         # Model lanes carry the model in the agent slot: '@ollama:gemma4:31b-cloud'
         # -> ('local', 'ollama:gemma4:31b-cloud'); '@blade:openrouter:nvidia/x'
         # -> ('blade', 'openrouter:nvidia/x'). live_ping splits family from model.
