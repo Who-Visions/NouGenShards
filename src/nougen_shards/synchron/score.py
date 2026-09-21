@@ -93,15 +93,22 @@ def window_hits(ev: Event, snap: Snapshot) -> List[str]:
     today = _as_of_date(snap)
     hits = []
     for w in snap.windows:
-        if not _d(w.start) <= today <= _d(w.end):
+        ws, we = _safe_d(w.start), _safe_d(w.end)
+        if ws is None or we is None:
+            continue  # malformed window: named by bad_windows(), never a crash
+        if not ws <= today <= we:
             continue
         about = w.name.lower() in ev.terms() or any(w.name.lower() in c.lower() for c in ev.concepts)
         cd = _safe_d(ev.canonical_date)
         if cd is not None:
-            about = about or _md_in((cd.month, cd.day), _d(w.start), _d(w.end))
+            about = about or _md_in((cd.month, cd.day), ws, we)
         if about:
             hits.append(w.name)
     return hits
+
+
+def bad_windows(snap: Snapshot) -> List[str]:
+    return sorted(w.name for w in snap.windows if _safe_d(w.start) is None or _safe_d(w.end) is None)
 
 
 def calendar(a: Event, b: Event, snap: Snapshot) -> Tuple[float, List[str]]:
@@ -202,6 +209,10 @@ def score_pair(a: Event, b: Event, snap: Snapshot, cfg: Config) -> Dict:
         rejected = "insufficient receipts"
     elif f["semantic"] < cfg.min_semantic:
         rejected = "noise"
+    elif not f["_evidence"]["base_rate"]["known"]:
+        # Rarity and density are unmeasurable, so two of the five disconfirming
+        # checks cannot run. "Use corpus counts, not vibes": no counts, no claim.
+        rejected = "no base-rate evidence"
     pens = penalties(a, b, f, snap, cfg)
     final = raw
     for p in pens:

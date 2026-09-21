@@ -37,12 +37,24 @@ def test_case_a_backfilled_evidence_is_penalised():
 
 def test_unknown_base_rates_score_as_common_and_the_gap_is_named():
     # review repro 1: empty BaseRates used to zero the score with no reason
+    # and review round 2: it must not then surface as weak_convergence (0.695)
     s = Snapshot(AS_OF, (SOLAR, ANGKOR), (), BaseRates())
     r = score_pair(SOLAR, ANGKOR, s, CFG)
-    assert r["features"]["rarity"] == 0.0 and r["score"] > 0.0
-    [rec] = detect(s)
-    assert rec["evidence_gaps"] == ["base_rates_unknown"]
+    assert r["rejected"] == "no base-rate evidence" and r["score"] == 0.0
+    assert detect(s) == []
+    [rec] = detect(s, include_rejected=True)
+    assert rec["evidence_gaps"] == ["base_rates_unknown"] and rec["rejected"] == "no base-rate evidence"
     assert rec["base_rate"]["known"] is False
+
+
+def test_malformed_window_date_does_not_kill_detect():
+    # review round 2, repro 2: Window('broken', 'nope', ...) raised in window_hits
+    from nougen_shards.synchron import Window
+    from .fixtures import EQUINOX, RATES
+    s = Snapshot(AS_OF, (SOLAR, ANGKOR), (Window("broken", "nope", "2026-09-30"), EQUINOX), RATES)
+    [rec] = detect(s)
+    assert "malformed_window:broken" in rec["evidence_gaps"]
+    assert rec["temporal_evidence"]["windows"] == ["equinox"]
 
 
 def test_malformed_canonical_date_does_not_kill_detect():
