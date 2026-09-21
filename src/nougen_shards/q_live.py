@@ -464,6 +464,7 @@ class QLive:
         self._ret_error: Optional[RetrievalResult] = None
         self._ret_error_at: float = -1e9
         self._gen: Optional[tuple] = None        # in-flight generation: (future, hits, tail, submitted_turn)
+        self._gen_waited = False                 # a stalled call may cost ONE wait, not one per turn
         self._cands: list[Candidate] = []        # carried candidates
         self._last_topic: set[str] = set()
         self._shown_counts: Counter = Counter()
@@ -590,8 +591,10 @@ class QLive:
             fut = self._pool.submit(self._timed_generate, self.state.tail(), " ".join(terms[:3]), list(hits),
                                     self.cfg.n_candidates)
             self._gen = (fut, list(hits), self.state.tail(), self.turn)
+            self._gen_waited = False
         has_live = any(self.turn - c.turn <= self.cfg.carry_turns for c in self._cands)
-        if self._gen is not None and not has_live:   # only block when there is nothing to show
+        if self._gen is not None and not has_live and not self._gen_waited:
+            self._gen_waited = True   # block only when there is nothing to show, and only once per in-flight call
             try:
                 self._gen[0].result(timeout=self.cfg.cue_budget_s)
             except FutureTimeout:

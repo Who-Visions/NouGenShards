@@ -398,3 +398,15 @@ def test_no_cue_is_shown_more_than_the_stale_window():
             shown.append(dp["text"])
     assert all(shown.count(t) <= ql.cfg.stale_after_turns for t in set(shown))
     ql.close()
+
+
+def test_a_stalled_model_costs_one_wait_not_one_per_turn():
+    def stalled(tail, topic, hits, n):
+        time.sleep(3.0)
+        return fake_generator(tail, topic, hits, n)
+    ql = QLive(retriever=fake_retriever(), generator=stalled, cfg=QConfig(retrieve_grace_s=0.25, cue_budget_s=0.3))
+    first = ql.on_utterance("gateway search latency fix")
+    assert first["latency_ms"] >= 250                             # the one budgeted wait
+    later = [ql.on_utterance(f"gateway latency fix number {i}")["latency_ms"] for i in range(4)]
+    assert max(later) < 150, later                                # the stuck call never blocks another turn
+    ql.close()
