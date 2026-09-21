@@ -194,6 +194,25 @@ def pull(root: Path) -> str:
     return "ok"
 
 
+def scrub(obj):
+    """Make every string in a leg record encodable as UTF-8.
+
+    A leg can carry half of an emoji: 20260919T233524Z's goal was cut at ~100
+    UTF-16 units by its writer, leaving a lone high surrogate. json.loads
+    accepts that, but print() and every UTF-8 encode raise
+    UnicodeEncodeError, which killed this daemon on that leg. Valid pairs are
+    rejoined; a lone half becomes U+FFFD. Display text only changes -- the
+    file on disk is untouched.
+    """
+    if isinstance(obj, str):
+        return obj.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    if isinstance(obj, dict):
+        return {k: scrub(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [scrub(v) for v in obj]
+    return obj
+
+
 def legs(root: Path) -> dict:
     """Map of leg id to path for every record in the registry."""
     return {p.stem: p for p in (root / HANDOFF_DIRNAME).glob(LEG_GLOB)}
@@ -224,7 +243,7 @@ def _shadow_triage(record: dict) -> None:
 def announce(leg_id: str, path: Path) -> None:
     """Print a new leg and drop it into the node's message inbox."""
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = scrub(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError):
         record = {}
     _shadow_triage(dict(record, id=record.get("id") or leg_id))
