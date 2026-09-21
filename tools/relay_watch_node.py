@@ -199,12 +199,35 @@ def legs(root: Path) -> dict:
     return {p.stem: p for p in (root / HANDOFF_DIRNAME).glob(LEG_GLOB)}
 
 
+def _shadow_triage(record: dict) -> None:
+    """Opt-in (NOUGEN_RELAY_TRIAGE=shadow): log rule vs model labels for a leg.
+
+    Records only -- delivery below is unchanged. Runs on a daemon thread
+    because a CPU-only model call can take tens of seconds and must never
+    stall the watch loop.
+    """
+    if os.environ.get("NOUGEN_RELAY_TRIAGE", "").strip().lower() != "shadow":
+        return
+    import threading
+
+    def run() -> None:
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+            from nougen_shards.relay_triage_model import shadow
+            shadow(record, log=Path.home() / ".nougen" / "logs" / "relay_triage_shadow.jsonl")
+        except Exception as exc:
+            print("[relay_watch] triage shadow failed: {}".format(type(exc).__name__), flush=True)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def announce(leg_id: str, path: Path) -> None:
     """Print a new leg and drop it into the node's message inbox."""
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         record = {}
+    _shadow_triage(dict(record, id=record.get("id") or leg_id))
     goal = str(record.get("goal") or "(no goal)")[:GOAL_CHARS]
     who = "{}/{}".format(record.get("machine", "?"), record.get("agent", "?"))
     status = record.get("status", "?")
