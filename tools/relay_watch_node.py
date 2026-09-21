@@ -284,12 +284,25 @@ def announce(leg_id: str, path: Path) -> None:
             message_id=(origin_nonce or leg_id), origin_status=origin_status)
     # Always notify the configured Codex task with safe relay metadata. The
     # full leg remains untrusted and must be inspected before any action.
-    message["codex_live"] = deliver_to_codex(
-        "NouGen relay event (metadata only; body withheld).\n"
-        "Leg: {}\nFrom: {}\nStatus: {}\n"
-        "Inspect the full relay record before acting.".format(leg_id, who, status),
-        origin={"original_sender": "relay-watch:{}".format(who)},
-    )
+    # Delivery is strictly best-effort: a broken live pipe must never prevent
+    # the durable local inbox record below from being written.
+    clean = lambda value: re.sub(r"[^A-Za-z0-9_.:/@+-]", "_", str(value))[:180] or "unknown"
+    safe_leg, safe_who, safe_status = clean(leg_id), clean(who), clean(status)
+    try:
+        message["codex_live"] = deliver_to_codex(
+            "NouGen relay event (metadata only; body withheld).\n"
+            "Leg: {}\nFrom: {}\nStatus: {}\n"
+            "Inspect the full relay record before acting.".format(
+                safe_leg, safe_who, safe_status),
+            origin={"original_sender": "relay-watch:{}".format(safe_who)},
+        )
+    except Exception as exc:  # noqa: BLE001 - preserve inbox on any adapter failure
+        message["codex_live"] = {
+            "status": "error",
+            "pipe_delivered": False,
+            "delivery_verified": False,
+            "error": "{}: {}".format(type(exc).__name__, str(exc)[:160]),
+        }
     inbox_file = INBOX / "msg_{}_relay-watch.json".format(int(time.time() * 1000))
     inbox_file.write_text(json.dumps(message, indent=2), encoding="utf-8")
 
