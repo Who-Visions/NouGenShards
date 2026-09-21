@@ -263,6 +263,26 @@ def _declared_branch(candidate: str, model: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+_STOP = frozenset("that this with from have been were they them their there what when where which "
+                  "will would could should about into over under after before while".split())
+
+
+def _topic_relevant(rec: Dict[str, Any], candidate: str) -> bool:
+    """Does the candidate touch what this record is ABOUT?
+
+    Contradiction patterns alone are not enough: an engineering question
+    containing "fix" or "survives" used to draw a FACT_CONFLICT from an
+    unrelated lock whose pattern happened to match. A record's topics decide
+    relevance; a record with no topics falls back to its statement's content
+    words. Same gate as xoah_toolbelt.pressure.relevant (#477)."""
+    low, toks = candidate.lower(), _tokens(candidate)
+    topics = [str(t).lower() for t in rec.get("topics") or []]
+    if topics:
+        return any((t in low) if " " in t else (t in toks) for t in topics)
+    words = {w for w in _tokens(_statement(rec)) if len(w) >= 4 and w not in _STOP}
+    return bool(words & toks)
+
+
 def classify(model: Dict[str, Any], candidate: str, coord: Optional[Dict[str, Any]],
              records: List[Dict[str, Any]]) -> Dict[str, Any]:
     findings: List[Dict[str, Any]] = []
@@ -271,7 +291,7 @@ def classify(model: Dict[str, Any], candidate: str, coord: Optional[Dict[str, An
     # FACT_CONFLICT: a locked / corrected record whose contradiction patterns fire
     for rec in records:
         hits = _matches(rec.get("contradicts", []), candidate)
-        if hits and STATUS_RANK.get(rec.get("status"), 0) >= 2:
+        if hits and STATUS_RANK.get(rec.get("status"), 0) >= 2 and _topic_relevant(rec, candidate):
             findings.append({"verdict": "FACT_CONFLICT", "record": rec.get("id"), "evidence": rec.get("provenance", []),
                              "because": _statement(rec), "matched": hits,
                              "supersedes": rec.get("supersedes")})
