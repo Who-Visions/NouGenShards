@@ -196,8 +196,13 @@ HTTP_ROUTE_FALLBACK_TIMEOUT_S = 15.0     # fallback only; NOUGEN_MSG_HTTP_TIMEOU
 ROUTE_CHOICES = ("auto", "http", "ssh")
 
 
-def _route_port() -> tuple:
-    for key in ("NOUGEN_MSG_PORT", "NOUGEN_AGY_MSG_PORT"):
+def _route_port(node: str = "") -> tuple:
+    """Per-node port first (receivers differ: whoart 8766, phoebus 8765), then global."""
+    keys = []
+    if node:
+        keys.append("NOUGEN_NODE_{}_PORT".format(node.upper().replace("-", "_")))
+    keys += ["NOUGEN_MSG_PORT", "NOUGEN_AGY_MSG_PORT"]
+    for key in keys:
         raw = os.environ.get(key, "").strip()
         if raw.isdigit():
             return int(raw), key
@@ -229,7 +234,7 @@ def send_direct_http(node: str, target: str, text: str, origin: dict) -> tuple:
     ip, ip_key = _route_node_ip(node)
     if not ip:
         return None, "{} unset".format(ip_key)
-    port, port_source = _route_port()
+    port, port_source = _route_port(node)
     raw_timeout = os.environ.get("NOUGEN_MSG_HTTP_TIMEOUT_S", "").strip()
     timeout = float(raw_timeout) if raw_timeout else HTTP_ROUTE_FALLBACK_TIMEOUT_S
     build_envelope = getattr(NouGenMsgBus, "_origin_envelope", None)
@@ -378,8 +383,23 @@ def main():
             idx = sys.argv.index("--target")
             if idx + 1 < len(sys.argv):
                 target = sys.argv[idx + 1]
-        archived = NouGenMsgBus.clear_inbox(target=target)
+        if "--force-all" not in sys.argv:
+            print("[REFUSED] Bulk clear can hide unconsumed messages. Pass --force-all, or ACK an exact message id.")
+            return
+        archived = NouGenMsgBus.clear_inbox(target=target, confirmed=True)
         print(f"[OK] Archived {archived} message(s) from {target} inbox.")
+        return
+
+    if "--ack-message" in sys.argv:
+        idx = sys.argv.index("--ack-message")
+        if idx + 1 >= len(sys.argv):
+            print("[REFUSED] --ack-message requires an exact message id")
+            return
+        from nougen_shards.codex_pipe import acknowledge
+        receipt = acknowledge(
+            sys.argv[idx + 1], consumer=os.environ.get("NOUGEN_AGENT", "codex"),
+            thread=os.environ.get("CODEX_THREAD_ID") or None)
+        print(json.dumps(receipt, indent=2))
         return
 
     # Parse arguments
