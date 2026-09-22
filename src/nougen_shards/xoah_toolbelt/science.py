@@ -36,32 +36,46 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .types import CanonPacket, Provenance, ToolReceipt, receipt
 
-VERDICTS = ("EXCLUDED_O1", "CONFLICTS_WITH_CANON_RULING", "SUPPORTED_BY_REAL_SCIENCE",
+# Blade's six verdicts, plus two this engine adds (review of #483):
+#   CONTRADICTS_REAL_SCIENCE -- a matched fact's own contradiction pattern fired
+#   CANNOT_EVALUATE          -- empty ledger or contentless claim: unmeasured,
+#                               which must never read as "no match"
+VERDICTS = ("CANNOT_EVALUATE", "EXCLUDED_O1", "CONTRADICTS_REAL_SCIENCE",
+            "CONFLICTS_WITH_CANON_RULING", "SUPPORTED_BY_REAL_SCIENCE",
             "PARTIAL_MATCH_ONLY", "CONTESTED_ONLY", "NO_REAL_SCIENCE_MATCH")
 # strongest first; a joined label resolves to the weakest (highest index) part
 LAYERS = ("real", "historical", "extrapolation", "contested", "speculative")
 DEFAULT_LABELS = {"R": "real", "H": "historical", "E": "extrapolation", "R~": "contested",
                   "E-": "speculative"}
 DEFAULT_SOURCE = "default:blade_legend(DRAFT_sun_backlore_veil_science.md:6-33)"
-MIN_OVERLAP = 2  # a fact is relevant only when it shares >= 2 content words with the claim
+MIN_OVERLAP = 2        # a fact is RELEVANT when it shares >= 2 content words with the claim
+SUPPORT_COVERAGE = 0.5  # ...but SUPPORTS it only if the claim covers >= half the fact's words
 _STOP = frozenset(
-    "the and that this with from have been were they them their there what when where which "
-    "will would could should about into over under after before while than then also very "
-    "only just more most some such like does into onto its it's".split())
+    "the and are was were for but not you she her his him has had its our out who how why "
+    "all any can did get got one two may yes use that this with from have been they them "
+    "their there what when where which will would could should about into over under after "
+    "before while than then also very only just more most some such like does onto is it".split())
 
 
 def content_words(text: str) -> frozenset:
-    return frozenset(w for w in re.findall(r"[a-z0-9][a-z0-9'-]+", (text or "").lower())
-                     if len(w) >= 4 and w not in _STOP)
+    """Lower-case words of 3+ letters, possessives stripped ("sun's" -> "sun"),
+    stopwords removed. 3-letter words matter here: sun, gas, ion, ice."""
+    out = set()
+    for w in re.findall(r"[a-z0-9][a-z0-9'-]*", (text or "").lower()):
+        w = re.sub(r"'s?$", "", w)
+        if len(w) >= 3 and w not in _STOP:
+            out.add(w)
+    return frozenset(out)
 
 
 @dataclass(frozen=True)
 class Fact:
     id: str
     statement: str
-    label: str                      # R | R~ | H
+    label: str                      # R | R~ | H | E | E- (joinable: R/R~)
     keywords: Tuple[str, ...] = ()  # optional extra match terms
     provenance: Tuple[Provenance, ...] = ()
+    contradicts: Tuple[str, ...] = ()  # regexes a claim matching this fact must NOT say
 
     def words(self) -> frozenset:
         return content_words(self.statement) | {k.lower() for k in self.keywords}
@@ -144,7 +158,8 @@ def ledger_from_dict(d: Dict[str, Any]) -> ScienceLedger:
         revision=str(d["revision"]),
         labels=labels,
         facts=tuple(Fact(f["id"], f["statement"], _label(f.get("label"), lm),
-                         tuple(f.get("keywords", ())), _need(f, "fact"))
+                         tuple(f.get("keywords", ())), _need(f, "fact"),
+                         tuple(f.get("contradicts", ())))
                     for f in d.get("facts", ())),
         rulings=tuple(Ruling(r["id"], r["statement"], tuple(r.get("topics", ())),
                              tuple(r.get("contradicts", ())), _need(r, "ruling"))
@@ -187,13 +202,17 @@ def _rx(pattern: str, text: str) -> bool:
         return pattern.lower() in text.lower()
 
 
-def _matches(facts: Iterable[Fact], claim_words: frozenset) -> List[Dict[str, Any]]:
+def _matches(facts: Iterable[Fact], claim_words: frozenset, claim: str) -> List[Dict[str, Any]]:
     rows = []
     for f in facts:
-        shared = sorted(f.words() & claim_words)
+        fw = f.words()
+        shared = sorted(fw & claim_words)
         if len(shared) >= MIN_OVERLAP:
+            coverage = len(shared) / max(len(fw), 1)
             rows.append({"id": f.id, "label": f.label, "statement": f.statement,
-                         "matched_tokens": shared, "sources": [p.cite() for p in f.provenance]})
+                         "matched_tokens": shared, "coverage": round(coverage, 3),
+                         "contradicted_by": [c for c in f.contradicts if _rx(c, claim)],
+                         "sources": [p.cite() for p in f.provenance]})
     return sorted(rows, key=lambda r: (-len(r["matched_tokens"]), r["id"]))
 
 
@@ -208,6 +227,13 @@ def science_sandbox(ledger: ScienceLedger, claim: str, scene_context: Optional[s
               "label_map_source": ledger.label_map()[1]}
     rev = packet or CanonPacket(revision=f"science:{ledger.revision}")
 
+    if not ledger.facts and not ledger.rulings and not ledger.exclusions:
+        return receipt("xoah_science_sandbox", rev, inputs, "CANNOT_EVALUATE",
+                       [{"missing": "ledger", "detail": "empty science ledger: nothing was measured"}])
+    if not content_words(claim):
+        return receipt("xoah_science_sandbox", rev, inputs, "CANNOT_EVALUATE",
+                       [{"missing": "claim_content", "detail": "claim has no content words to test"}])
+
     excluded = [e for e in ledger.exclusions if _rx(e.pattern, claim)]
     if excluded:
         return receipt("xoah_science_sandbox", rev, inputs, "EXCLUDED_O1",
@@ -215,7 +241,7 @@ def science_sandbox(ledger: ScienceLedger, claim: str, scene_context: Optional[s
                        [p for e in excluded for p in e.provenance], ["ruling"])
 
     lmap, lmap_source = ledger.label_map()
-    matched = _matches(ledger.facts, words)
+    matched = _matches(ledger.facts, words, claim)
     layers = {name: [m for m in matched if layer_of(m["label"], lmap) == name] for name in LAYERS}
     low = text.lower()
     relevant_rulings = [r for r in ledger.rulings
@@ -232,11 +258,17 @@ def science_sandbox(ledger: ScienceLedger, claim: str, scene_context: Optional[s
                 timeline_rows.append({"fact_id": e.fact_id, "route": e.route, "order": e.order,
                                       "matched_tokens": shared})
 
-    if contradictions:
+    science_contradictions = [m for m in matched
+                              if m["contradicted_by"] and layer_of(m["label"], lmap) != "speculative"]
+    supporting = [m for m in layers["real"] if m["coverage"] >= SUPPORT_COVERAGE]
+    if science_contradictions:
+        verdict = "CONTRADICTS_REAL_SCIENCE"
+    elif contradictions:
         verdict = "CONFLICTS_WITH_CANON_RULING"
-    elif layers["real"]:
+    elif supporting:
         verdict = "SUPPORTED_BY_REAL_SCIENCE"
-    elif layers["historical"] or layers["extrapolation"]:
+    elif layers["real"] or layers["historical"] or layers["extrapolation"]:
+        # real facts that only brush the claim (low coverage) are partial, not support
         verdict = "PARTIAL_MATCH_ONLY"
     elif layers["contested"]:
         verdict = "CONTESTED_ONLY"
@@ -249,6 +281,11 @@ def science_sandbox(ledger: ScienceLedger, claim: str, scene_context: Optional[s
                                                  for r in relevant_rulings],
                    "timeline_rows": timeline_rows},
         "contradictions": contradictions,
+        "science_contradictions": [{"fact": m["id"], "matched": m["contradicted_by"],
+                                    "sources": m["sources"]} for m in science_contradictions],
+        "support_basis": "topical overlap + coverage; a claim can only be refuted by a fact's own "
+                         "contradiction patterns, so SUPPORTED means 'consistent with and about', "
+                         "not 'proven by'",
         "claim_tokens": sorted(words),
         "fiction_layer": "whatever the claim asserts beyond the matched facts is fiction, not science",
         "min_overlap": MIN_OVERLAP,

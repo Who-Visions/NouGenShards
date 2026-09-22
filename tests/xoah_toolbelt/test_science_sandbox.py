@@ -56,9 +56,45 @@ def test_every_verdict_is_reachable(claim, verdict):
     assert science_sandbox(LEDGER, claim).verdict == verdict
 
 
-def test_verdict_names_match_the_lore_side_tool():
-    assert set(VERDICTS) == {"SUPPORTED_BY_REAL_SCIENCE", "PARTIAL_MATCH_ONLY", "CONTESTED_ONLY",
-                             "CONFLICTS_WITH_CANON_RULING", "EXCLUDED_O1", "NO_REAL_SCIENCE_MATCH"}
+def test_verdict_names_are_blades_six_plus_two_engine_additions():
+    blade = {"SUPPORTED_BY_REAL_SCIENCE", "PARTIAL_MATCH_ONLY", "CONTESTED_ONLY",
+             "CONFLICTS_WITH_CANON_RULING", "EXCLUDED_O1", "NO_REAL_SCIENCE_MATCH"}
+    assert blade <= set(VERDICTS)
+    assert set(VERDICTS) - blade == {"CONTRADICTS_REAL_SCIENCE", "CANNOT_EVALUATE"}
+
+
+# --- review of #483 (phoebus/claude-app) -------------------------------------
+ORBIT = ledger_from_dict({"revision": "orbit-1", "facts": [
+    {"id": "f-orbit", "label": "R", "statement": "Earth orbits the Sun once every year.",
+     "contradicts": [r"\bsun (orbits|circles|goes around) (the )?earth\b"],
+     "provenance": P("fact: heliocentric orbit")}],
+    "rulings": [{"id": "rule-sun", "statement": "The Sun is never sentient in the fiction.",
+                 "topics": ["sun"], "contradicts": [r"\b(sentient|thinks|wills)\b"],
+                 "provenance": P("ruling: non-sentient sun")}]})
+
+
+def test_reversed_claim_contradicts_instead_of_being_supported():
+    r = science_sandbox(ORBIT, "The Sun orbits the Earth every year.")
+    assert r.verdict == "CONTRADICTS_REAL_SCIENCE"
+    assert r.findings[0]["science_contradictions"][0]["fact"] == "f-orbit"
+    assert science_sandbox(ORBIT, "Earth orbits the Sun once every year.").verdict == "SUPPORTED_BY_REAL_SCIENCE"
+
+
+def test_fiction_brushing_two_real_words_is_partial_not_supported():
+    # shares 'solar' + 'core' with a 5-word fact: relevant, but coverage < 0.5
+    r = science_sandbox(LEDGER, "Her solar heart has a molten core of pure longing.")
+    assert r.verdict == "PARTIAL_MATCH_ONLY"
+
+
+def test_empty_ledger_and_contentless_claim_cannot_evaluate():
+    empty = ledger_from_dict({"revision": "e", "facts": []})
+    assert science_sandbox(empty, "The Veil draws on solar fusion.").verdict == "CANNOT_EVALUATE"
+    assert science_sandbox(LEDGER, "It is what it is.").verdict == "CANNOT_EVALUATE"
+
+
+def test_three_letter_and_possessive_topics_are_reachable():
+    # 'sun' (3 letters) and "sun's" (possessive) must reach a single-word ruling topic
+    assert science_sandbox(ORBIT, "The sun's core thinks in slow tides.").verdict == "CONFLICTS_WITH_CANON_RULING"
 
 
 def test_layers_show_matched_tokens_and_cite_sources():
