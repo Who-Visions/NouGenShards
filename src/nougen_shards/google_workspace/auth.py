@@ -194,9 +194,17 @@ def _persist_credentials(creds) -> None:
         "scopes": list(creds.scopes or []),
     }
     path = token_path()
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    data = json.dumps(payload, indent=2).encode("utf-8")
+    # Create with 0600 from the moment the file exists - not write-then-chmod,
+    # which leaves the refresh_token/client_secret readable at the process
+    # umask for the window between creation and the permission fixup.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.chmod(path, 0o600)
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+    try:
+        os.chmod(path, 0o600)  # in case the file pre-existed with looser perms
     except OSError:
         pass  # best-effort on platforms without POSIX perms (Windows)
 
