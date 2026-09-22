@@ -39,7 +39,7 @@ colorama==0.4.6
     #   nougen-shards (pyproject.toml)
     #   click
     #   tqdm
-cryptography==50.0.0
+cryptography==50.0.1
     # via
     #   nougen-shards (pyproject.toml)
     #   pyjwt
