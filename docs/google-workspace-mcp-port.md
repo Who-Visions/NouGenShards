@@ -5,7 +5,7 @@ Ported as a native NouGen module — not vendored, not a wrapper around upstream
 
 ## What was ported
 
-`C:\Users\super\Outpost\NouGen\src\nougen_shards\google_workspace\`
+`src/nougen_shards/google_workspace/`
 
 | File | Scope |
 |---|---|
@@ -16,7 +16,7 @@ Ported as a native NouGen module — not vendored, not a wrapper around upstream
 | `drive.py` | `search_files`, `get_file_metadata`, `download_file_content`, `upload_file`, `create_folder` |
 | `server.py` | Standalone MCP server (`python -m nougen_shards.google_workspace.server`) registering all 17 tools with NouGen's exact `MCPServer`/`FastMCP` compat shim and `@mcp.tool()` pattern from `nougen_shards/mcp.py` |
 
-`C:\Users\super\Outpost\NouGen\pyproject.toml` — added `google-api-python-client>=2.100`, `google-auth>=2.25`, `google-auth-oauthlib>=1.2`, `google-auth-httplib2>=0.2` to `[project.dependencies]`. No other dependency lines touched.
+`pyproject.toml` — added `google-api-python-client>=2.100`, `google-auth>=2.25`, `google-auth-oauthlib>=1.2`, `google-auth-httplib2>=0.2` to `[project.dependencies]`. No other dependency lines touched.
 
 ### Why standalone server.py, not registered into nougen_shards/mcp.py
 
@@ -42,9 +42,9 @@ Per upstream's README tool counts, these services exist upstream but are out of 
 - **Tasks** (6 tools) — `gtasks/tasks_tools.py`
 - Also present upstream but out of scope for this port: Contacts (`gcontacts/`), Apps Script (`gappsscript/`), Custom Search (`gsearch/`)
 
-## Existing Google OAuth config in ~\.nougen
+## Existing Google OAuth config in ~/.nougen
 
-Checked `C:\Users\super\.nougen\auth-import\` and `C:\Users\super\.nougen\shards\` (filenames only, no values read) for anything matching `google|oauth|client_secret|gmail|calendar|drive`. **Nothing found.** No existing Google OAuth client config or token cache is present on this box — Dave needs to supply a client from scratch.
+Checked `~/.nougen/auth-import/` and `~/.nougen/shards/` (filenames only, no values read) for anything matching `google|oauth|client_secret|gmail|calendar|drive`. **Nothing found.** No existing Google OAuth client config or token cache is present on this box — Dave needs to supply a client from scratch.
 
 ## What Dave needs to supply to finish wiring this up
 
@@ -63,7 +63,7 @@ Checked `C:\Users\super\.nougen\auth-import\` and `C:\Users\super\.nougen\shards
 
 4. **Install the new dependencies** (they're now in `pyproject.toml` but need an actual `pip install`):
    ```
-   pip install -e "C:\Users\super\Outpost\NouGen"
+   pip install -e .
    ```
 
 5. **One-time interactive auth to mint the first refresh token**:
