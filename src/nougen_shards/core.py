@@ -1014,7 +1014,8 @@ def capture(event_type: str, title: str, content: str,
             original_timestamp: Optional[str] = None,
             source_uri: Optional[str] = None,
             utility: Optional[float] = None,
-            valid_until: Optional[str] = None) -> bool:
+            valid_until: Optional[str] = None,
+            consolidate: Optional[bool] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants).
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
@@ -1043,6 +1044,14 @@ def capture(event_type: str, title: str, content: str,
     content = redact_content(str(content))
     if tags:
         tags = [redact_content(str(tag)) for tag in tags]
+
+    # Opt-in write-time consolidation (consolidate.py): tags a fact that supersedes,
+    # conflicts with, or duplicates a neighbour. Never blocks or alters the write.
+    from . import consolidate as _cons  # pylint: disable=import-outside-toplevel
+    if _cons.enabled(consolidate):
+        tags = list(tags or []) + _cons.consolidation_tags(
+            title, content, list(tags or []),
+            lambda q, limit=5: retrieve(q, limit=limit, domain_key=domain_key))
 
     sensitivity = _pv.normalize_sensitivity(sensitivity)
     if not domain_key:

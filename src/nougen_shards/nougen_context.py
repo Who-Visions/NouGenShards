@@ -17,6 +17,31 @@ from typing import Optional
 NOUGEN_CONTEXT_DIR = Path.home() / ".nougen" / "context"
 SESSION_DB_PATH = str(NOUGEN_CONTEXT_DIR / "session.db")
 
+
+def _migrate_legacy_if_needed():
+    """Copy session.db from legacy ~/.nougen/context to the canonical shards/context once."""
+    session_file = Path(SESSION_DB_PATH)
+    marker = session_file.parent / ".legacy_migrated"
+    if marker.exists():
+        return
+    if not session_file.exists():
+        legacy_db = Path.home() / ".nougen" / "context" / "session.db"
+        if legacy_db.exists() and legacy_db.resolve() != session_file.resolve():
+            try:
+                import shutil
+                session_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(legacy_db, session_file)
+            except Exception:
+                pass
+    try:
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except Exception:
+        pass
+
+
+_migrate_legacy_if_needed()
+
 def _utc_now_iso() -> str:
     """UTC timestamp as '...Z'. Note: isoformat() on a tz-aware UTC datetime
     already yields '...+00:00'; appending 'Z' produced the invalid '...+00:00Z'

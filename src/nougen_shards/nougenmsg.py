@@ -14,6 +14,7 @@ import sys
 import urllib.request
 import re
 import uuid
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 _SESSION_VARS = ("NOUGEN_SESSION", "CLAUDE_CODE_SESSION_ID")
@@ -66,6 +67,46 @@ _KNOWN_FLEET_HOSTS = {
     "whoart": ("proart", "whoart"),
     "blade": ("blade1tb", "blade"),
 }
+
+_DEFAULT_COACH_ROUTES = {
+    "hyperion": "whoart",
+    "apollo": "blade",
+    "phoebus": "phoebus",
+}
+
+
+def fleet_identity_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Resolve coach aliases to physical transport nodes from nodes.json."""
+    coach_to_machine = dict(_DEFAULT_COACH_ROUTES)
+    machine_to_coach = {machine: coach for coach, machine in coach_to_machine.items()}
+    path = Path.home() / ".nougen" / "nodes.json"
+    try:
+        configured = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        configured = {}
+    for key, cfg in configured.items() if isinstance(configured, dict) else ():
+        if not isinstance(cfg, dict):
+            continue
+        coach = str(cfg.get("coach") or cfg.get("name") or key).strip().lower()
+        machine = str(cfg.get("transport_node") or "").strip().lower()
+        if not machine:
+            continue
+        coach_to_machine[coach] = machine
+        coach_to_machine[str(key).strip().lower()] = machine
+        machine_to_coach[machine] = coach
+    return coach_to_machine, machine_to_coach
+
+
+def normalize_fleet_node(value: str) -> str:
+    """Translate a coach identity (Hyperion) into its transport box (WhoArt)."""
+    normalized = (value or "").strip().lower()
+    return fleet_identity_maps()[0].get(normalized, normalized)
+
+
+def coach_for_machine(value: str) -> str:
+    """Return the coach assigned to a physical transport node."""
+    normalized = normalize_fleet_node(value)
+    return fleet_identity_maps()[1].get(normalized, normalized)
 
 
 def get_current_node() -> str:
@@ -606,7 +647,8 @@ class NouGenMsgBus:
         if not raw or raw == 'all':
             return ('fleet', 'all')
 
-        known_nodes = {'blade', 'whoart', 'phoebus', 'local', 'fleet'}
+        coach_routes, _ = fleet_identity_maps()
+        known_nodes = {'blade', 'whoart', 'phoebus', 'local', 'fleet', *coach_routes}
         known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'agents', 'all'}
         # Model lanes carry the model in the agent slot: '@ollama:gemma4:31b-cloud'
         # -> ('local', 'ollama:gemma4:31b-cloud'); '@blade:openrouter:nvidia/x'
@@ -620,11 +662,11 @@ class NouGenMsgBus:
                 return ('local', raw)
             fam = a.split(':', 1)[0]
             if fam in model_lanes:
-                return (n if n in known_nodes else 'local', a)
-            return (n if n in known_nodes else 'local', a if a in known_agents else 'all')
+                return (normalize_fleet_node(n) if n in known_nodes else 'local', a)
+            return (normalize_fleet_node(n) if n in known_nodes else 'local', a if a in known_agents else 'all')
 
         if raw in known_nodes:
-            return (raw, 'all')
+            return (normalize_fleet_node(raw), 'all')
         if raw in known_agents:
             return ('local', raw)
 
@@ -658,6 +700,7 @@ class NouGenMsgBus:
             "session_id": session_id,
             "session_title": supplied.get("session_title"),
             "machine": claimed_machine or current,
+            "coach": supplied.get("coach") or coach_for_machine(claimed_machine or current),
             "transport_machine": current,
             "lane": supplied.get("lane"),
             "transport": supplied.get("transport") or "nougenmsg",
@@ -690,6 +733,7 @@ class NouGenMsgBus:
         envelope = cls._origin_envelope(origin)
         # 'ollama:gemma4:31b-cloud' -> family 'ollama', model 'gemma4:31b-cloud'
         family, _, model = target.partition(":")
+        family = normalize_fleet_node(family)
         model = model or None
         # Model lanes ride on 'all' broadcasts by default (GM 2026-09-08: the
         # fleet includes its models). NOUGEN_MSG_MODEL_LANES_ON_ALL=0 opts out
@@ -702,7 +746,7 @@ class NouGenMsgBus:
         # (2026-09-14: connector nougenmsg @blade -> results.blade == {}). On the
         # addressed node it means "this node's agent lanes"; elsewhere it is not
         # ours to deliver, and saying so beats an empty dict.
-        fleet_nodes = {n.strip().lower() for n in os.environ.get(
+        fleet_nodes = {normalize_fleet_node(n) for n in os.environ.get(
             "NOUGEN_FLEET_NODES", "blade,whoart,phoebus").split(",") if n.strip()}
         if family in fleet_nodes:
             if family != (get_current_node() or "").lower():
@@ -1124,8 +1168,10 @@ class NouGenMsgBus:
         return messages
 
     @classmethod
-    def clear_inbox(cls, target: str = "antigravity") -> int:
-        """Archives or deletes all read messages from inbox across all directories."""
+    def clear_inbox(cls, target: str = "antigravity", confirmed: bool = False) -> int:
+        """Bulk archive is destructive to unread state and requires confirmation."""
+        if not confirmed:
+            raise ValueError("bulk inbox clearing requires confirmed=True; prefer exact message ACK")
         inbox_dirs = (
             [
                 os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),

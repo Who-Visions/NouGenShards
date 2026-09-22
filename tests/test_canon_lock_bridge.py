@@ -117,3 +117,69 @@ def test_lock_read_failure_never_breaks_pressure(grid, monkeypatch):
         raise RuntimeError("grid offline")
     monkeypatch.setattr(bridge, "lock_findings", boom)
     assert _press("Tovan was born in 2150.")["verdict"] == "UNKNOWN"
+
+
+# --- tag selector + digest veto (WhoArt finding 2026-09-19: locks with label titles were invisible) ---
+TAGGED = [
+    (201, "Harbor charter: tide gates", "1. The harbor has 3 tide gates.\n2. The ferry never sails at night.\n",
+     '["harbor", "canon-lock"]'),
+    (202, "GM CANON LOCK: the mayor is Ilse Varr", "", '["canon-lock", "canon-digest"]'),
+    (203, "Audit of the tide-gate lock", "1. The harbor has 9 tide gates.\n", '["canon-digest"]'),
+    (204, "Untagged note", "1. The harbor has 7 tide gates.\n", '["notes"]'),
+    (205, "GM CANON LOCK: the lighthouse has one lamp", "", None),
+]
+
+
+def _tagged_grid(dirpath, name="nougen_shards_5.db"):
+    conn = sqlite3.connect(dirpath / name)
+    conn.execute("CREATE TABLE shards (id INTEGER PRIMARY KEY, title TEXT, content TEXT, tags TEXT)")
+    conn.executemany("INSERT INTO shards (id, title, content, tags) VALUES (?,?,?,?)", TAGGED)
+    conn.commit()
+    conn.close()
+    return dirpath
+
+
+@pytest.fixture
+def tagged(tmp_path, monkeypatch):
+    _tagged_grid(tmp_path)
+    monkeypatch.setenv("NOUGEN_CANON_LOCK_DIR", str(tmp_path))
+    monkeypatch.delenv("NOUGEN_CANON_LOCK_TAGS", raising=False)
+    monkeypatch.delenv("NOUGEN_CANON_DIGEST_TAGS", raising=False)
+    bridge._CACHE.clear()
+    return tmp_path
+
+
+def test_tag_selects_a_lock_whose_title_has_no_prefix(tagged):
+    locks = {lk["shard"]: lk for lk in bridge.load_locks(force=True)}
+    assert "201@db5" in locks and locks["201@db5"]["selected_by"] == "tag"
+    assert locks["205@db5"]["selected_by"] == "prefix"  # NULL tags still load by prefix
+    assert "204@db5" not in locks  # untagged, no prefix
+
+
+def test_tag_selected_lock_uses_numbered_clauses_not_its_label_title(tagged):
+    lock = next(lk for lk in bridge.load_locks(force=True) if lk["shard"] == "201@db5")
+    assert lock["clauses"] == ["The harbor has 3 tide gates.", "The ferry never sails at night."]
+
+
+def test_digest_tag_always_wins_even_over_a_lock_prefix(tagged):
+    shards = {lk["shard"] for lk in bridge.load_locks(force=True)}
+    assert "202@db5" not in shards  # prefix + canon-lock tag, but vetoed by canon-digest
+    assert "203@db5" not in shards  # digest, no lock marker at all
+
+
+def test_tag_env_override_and_veto_override(tagged, monkeypatch):
+    monkeypatch.setenv("NOUGEN_CANON_LOCK_TAGS", "notes")
+    monkeypatch.setenv("NOUGEN_CANON_DIGEST_TAGS", "no-such-veto")
+    bridge._CACHE.clear()
+    shards = {lk["shard"] for lk in bridge.load_locks(force=True)}
+    assert "204@db5" in shards and "202@db5" in shards and "201@db5" not in shards
+
+
+def test_tag_lock_is_enforced_by_check(tagged):
+    locks = bridge.load_locks(force=True)
+    out = bridge.check("The harbor has 9 tide gates.", locks)
+    assert any(c["shard"] == "201@db5" and c["rule"] == "number_mismatch" for c in out["conflicts"])
+
+
+def test_grid_without_a_tags_column_still_loads_by_prefix(grid):
+    assert {lk["shard"] for lk in bridge.load_locks(force=True)} == {"101@db3", "102@db3", "104@db3"}
