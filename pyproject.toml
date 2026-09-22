@@ -42,6 +42,12 @@ dependencies = [
     # 42.0 is the floor for the AESGCM aead API this uses; 50.0.0 floor clears
     # CVE-2026-69247 (trivy HIGH) and stops a recompile drifting back to it.
     "cryptography>=50.0.0",
+    # Native Google Workspace port (src/nougen_shards/google_workspace/):
+    # Gmail/Calendar/Drive tools ported from taylorwilsdon/google_workspace_mcp.
+    "google-api-python-client>=2.100",
+    "google-auth>=2.25",
+    "google-auth-oauthlib>=1.2",
+    "google-auth-httplib2>=0.2",
 ]
 
 [project.optional-dependencies]
