@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 VAULT = Path(os.environ.get("NOUGEN_VAULT_DIR") or Path.home() / ".nougen" / "shards").expanduser()
-RELAY = Path(os.environ.get("NOUGEN_RELAY_CLONE", r"C:\Users\super\Outpost\NouGenRelay"))
+RELAY = Path(os.environ.get("NOUGEN_RELAY_CLONE", str(Path.home() / "Outpost" / "NouGenRelay")))
 OLLAMA = os.environ.get("OLLAMA_HOST_URL", "http://127.0.0.1:11434")
 MODEL = os.environ.get("YUKI_MODEL", "Yukiai:e2b")
 

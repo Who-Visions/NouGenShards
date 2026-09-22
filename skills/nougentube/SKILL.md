@@ -21,8 +21,8 @@ that as a thin shard that cites the existing ones.
 ## 2. Ingest (verbatim, era-stamped)
 
 ```
-cd C:\Users\super\Outpost\NouGen
-set NOUGEN_VAULT_DIR=C:\Users\super\.nougen\shards     # never rely on cwd resolution
+cd %USERPROFILE%\Outpost\NouGen
+set NOUGEN_VAULT_DIR=%USERPROFILE%\.nougen\shards     # never rely on cwd resolution
 python tools\nougentube.py <url-or-playlist> [--dry-run] [--limit N]
 ```
 - Captures at the video's TRUE publish date (`original_timestamp`), tagged `tube:<id>`, split at

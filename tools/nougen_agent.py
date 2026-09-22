@@ -29,8 +29,8 @@ from pathlib import Path
 HOME = Path.home()
 VAULT = Path(os.environ.get("NOUGEN_VAULT_DIR") or HOME / ".nougen" / "shards").expanduser()
 os.environ["NOUGEN_VAULT_DIR"] = str(VAULT)          # pin BEFORE nougen_shards is ever imported
-RELAY = Path(os.environ.get("NOUGEN_RELAY_CLONE", r"C:\Users\super\Outpost\NouGenRelay"))
-NOUGEN_SRC = Path(os.environ.get("NOUGEN_SRC", r"C:\Users\super\Outpost\NouGen\src"))
+RELAY = Path(os.environ.get("NOUGEN_RELAY_CLONE", str(Path.home() / "Outpost" / "NouGenRelay")))
+NOUGEN_SRC = Path(os.environ.get("NOUGEN_SRC", str(Path(__file__).resolve().parents[1] / "src")))
 OLLAMA = "http://127.0.0.1:11434"
 EASTERN_NOTE = "America/New_York"
 MAX_OUT = 3500                                        # chars of any tool result handed to the model
