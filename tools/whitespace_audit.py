@@ -37,7 +37,17 @@ MIN_TARGET = 24            # px, WCAG 2.5.8 minimum target size
 
 SPACING_RE = re.compile(r"(margin(?:-[a-z]+)?|padding(?:-[a-z]+)?|gap|row-gap|column-gap)\s*:\s*([^;}]+)")
 RAW_PX_RE = re.compile(r"(?<![\w.-])(\d*\.?\d+)px")
-PICTO = re.compile("[🀀-🫿☀-☄☇-⛿✀-➿⭐⭕︎️‍󠀠-󠁿]")  # emoji + pictographs; keeps the UI stars U+2605/2606, arrows and letters of every script
+# Emoji + pictographs, as separate non-adjacent alternatives (not one mixed
+# character class) so no range's endpoints can be misread as overlapping.
+# Keeps the UI stars U+2605/2606, arrows and letters of every script.
+PICTO = re.compile(
+    "[\U0001F000-\U0001FAFF]"      # mahjong/dominoes through extended-A pictographs
+    "|[☀-☄]|[☇-⛿]"  # misc symbols, minus the kept UI stars 2605/2606
+    "|[✀-➿]"              # dingbats
+    "|[⭐⭕]"               # star, heavy circle
+    "|[︎️‍]"         # variation selectors, ZWJ
+    "|[\U000E0020-\U000E007F]"      # tag characters (emoji flag sequences)
+)
 
 
 def _res(level: str, name: str, detail: str) -> dict:

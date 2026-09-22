@@ -6,11 +6,9 @@ fuzzy keyword retrieval, prefix auto-completion, graph traversal, and payload co
 from __future__ import annotations
 
 import heapq
-import math
-import os
 import time
 from collections import defaultdict, deque
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 # =====================================================================

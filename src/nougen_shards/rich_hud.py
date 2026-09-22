@@ -13,7 +13,6 @@ Provides publication-grade visual telemetry and rich formatting across:
 import os
 import sys
 import time
-import glob
 import sqlite3
 from pathlib import Path
 from datetime import datetime
@@ -33,10 +32,7 @@ from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from rich.layout import Layout
 from rich.live import Live
-from rich.syntax import Syntax
-from rich.columns import Columns
 from rich import box
 
 console = Console()

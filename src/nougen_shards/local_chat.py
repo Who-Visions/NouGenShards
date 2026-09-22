@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 from rich.console import Console
 from rich.live import Live
@@ -464,7 +464,6 @@ def render_fleet_nodes_table(console: Console):
             stadium = p.get("stadium", "-")[:25]
             ip = p.get("ip", "-")
             state = p.get("state", "UNKNOWN")
-            online = p.get("online", False)
 
             if "ONLINE" in state:
                 state_badge = f"[green]{state}[/green]"
@@ -752,7 +751,7 @@ def run(client, model, persona, args):
                     try:
                         from .core import capture
                         title = content[:40] + ("..." if len(content) > 40 else "")
-                        ok = capture("KNOWLEDGE", title, content, ["cli", "interactive"])
+                        capture("KNOWLEDGE", title, content, ["cli", "interactive"])
                         console.print(f"✅ Shard captured to substrate: [bold cyan]{title}[/]")
                     except Exception as e:
                         console.print(f"[red]Capture failed:[/] {e}")

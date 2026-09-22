@@ -2039,7 +2039,11 @@ def iris_ask_endpoint(
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
     """Ask Iris, the resident AI and research/evidence assurance specialist."""
-    answer = agents.run_agent("Iris", req.question, model=req.model or None)
+    try:
+        answer = agents.run_agent("Iris", req.question, model=req.model or None)
+    except Exception:
+        logging.exception("iris_ask_endpoint: run_agent failed")
+        raise HTTPException(status_code=502, detail="Iris dispatch failed")
     return {"answer": answer, "agent": "Iris", "model": req.model or agents.ROSTER["Iris"].default_model}
 
 
@@ -2049,7 +2053,11 @@ def agent_roster_ask_endpoint(
     _tenant: tenants.Tenant = Depends(tenant_vault_context)
 ):
     """Run a prompt through any agent on the NouGen roster."""
-    answer = agents.run_agent(req.name, req.prompt, model=req.model or None)
+    try:
+        answer = agents.run_agent(req.name, req.prompt, model=req.model or None)
+    except Exception:
+        logging.exception("agent_roster_ask_endpoint: run_agent failed for %s", req.name)
+        raise HTTPException(status_code=502, detail=f"Agent '{req.name}' dispatch failed")
     spec = agents.get_agent(req.name)
     agent_name = spec.name if spec else req.name
     default_m = spec.default_model if spec else "unknown"

@@ -1,14 +1,10 @@
 """Tests for Dynamic & Deterministic Custom Ollama Model Resolver."""
-import pytest
-from unittest.mock import patch
 from nougen_shards.custom_model_resolver import (
     resolve_best_custom_model,
     score_model,
-    detect_node_identity,
     is_embedding_model,
     is_custom_user_model,
-    estimate_custom_model_vram_gb,
-    ModelBudgetConfig
+    estimate_custom_model_vram_gb
 )
 
 

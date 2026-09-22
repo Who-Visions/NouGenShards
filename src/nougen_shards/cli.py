@@ -13,8 +13,7 @@ from . import core as shards
 from . import keymaker
 from .models_client import (
     get_best_available_client, OllamaClient,
-    OpenAIClient, AnthropicClient, GeminiClient, LocalLLMClient,
-    HuggingFaceClient, OpenRouterClient, WhoVisionsCloudClient
+    OpenAIClient, AnthropicClient, GeminiClient, HuggingFaceClient, OpenRouterClient, WhoVisionsCloudClient
 )
 from . import nougen_context
 from . import nougen_sandbox

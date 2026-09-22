@@ -135,7 +135,7 @@ def main(argv=None) -> int:
                 src, text, links, title = res
                 pages[url] = {"src": src, "text": text, "title": title}
                 for l in links:
-                    l = canonical(l.split("?")[0] if "ollama.com" in l else l)
+                    l = canonical(l.split("?")[0] if urlparse(l).hostname == "ollama.com" else l)
                     if in_scope(l):
                         if l not in seen:
                             seen.add(l)
