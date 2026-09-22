@@ -197,3 +197,4 @@ logs/
 *.local.md
 *.bak*
 bin/ngs-node.sh.bak*
+~/
