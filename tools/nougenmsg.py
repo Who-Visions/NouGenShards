@@ -196,8 +196,14 @@ HTTP_ROUTE_FALLBACK_TIMEOUT_S = 15.0     # fallback only; NOUGEN_MSG_HTTP_TIMEOU
 ROUTE_CHOICES = ("auto", "http", "ssh")
 
 
-def _route_port() -> tuple:
-    for key in ("NOUGEN_MSG_PORT", "NOUGEN_AGY_MSG_PORT"):
+def _route_port(node: str = "") -> tuple:
+    """Per-node NOUGEN_NODE_<NODE>_PORT wins over the global keys: receivers
+    differ per box (whoart binds 8766, phoebus 8765/8766), and a global port
+    cannot describe both hops. Same key name hyperion's sender reads."""
+    keys = ["NOUGEN_MSG_PORT", "NOUGEN_AGY_MSG_PORT"]
+    if node:
+        keys.insert(0, "NOUGEN_NODE_{}_PORT".format(node.upper().replace("-", "_")))
+    for key in keys:
         raw = os.environ.get(key, "").strip()
         if raw.isdigit():
             return int(raw), key
@@ -229,7 +235,7 @@ def send_direct_http(node: str, target: str, text: str, origin: dict) -> tuple:
     ip, ip_key = _route_node_ip(node)
     if not ip:
         return None, "{} unset".format(ip_key)
-    port, port_source = _route_port()
+    port, port_source = _route_port(node)
     raw_timeout = os.environ.get("NOUGEN_MSG_HTTP_TIMEOUT_S", "").strip()
     timeout = float(raw_timeout) if raw_timeout else HTTP_ROUTE_FALLBACK_TIMEOUT_S
     build_envelope = getattr(NouGenMsgBus, "_origin_envelope", None)
