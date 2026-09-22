@@ -22,7 +22,7 @@ class CodexPipeTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-    def test_queue_preserves_text_as_one_argument_and_archives(self):
+    def test_queue_preserves_text_and_retains_until_explicit_ack(self):
         text = 'Unicode: hello \U0001f30d "quotes" $(whoami) `literal`\nsecond line'
         done = subprocess.CompletedProcess([], 0, 'Queued message test-id', '')
         with patch.object(codex_pipe.subprocess, 'run', return_value=done) as run:
@@ -35,7 +35,8 @@ class CodexPipeTests(unittest.TestCase):
         self.assertIn('📨 **NOUGENMSG · INCOMING**', arguments[5])
         self.assertIn('External message data', arguments[5])
         self.assertFalse(run.call_args.kwargs.get('shell', False))
-        self.assertEqual(Path(result['file']).parent.name, 'archive')
+        self.assertEqual(Path(result['file']).parent, Path(self.temp.name))
+        self.assertTrue(result['retained_until_ack'])
         self.assertEqual(json.loads(Path(result['file']).read_text(encoding='utf-8'))['text'], text)
 
     def test_queue_failure_retains_unread_message(self):
@@ -96,6 +97,19 @@ class CodexPipeTests(unittest.TestCase):
                                    'text': 'body', 'timestamp': 0}, 'thread', 'native_ipc')
         self.assertIn('whoart___false_header', result)
         self.assertNotIn('\n> false header', result)
+
+    def test_activate_is_idempotent_when_receiver_is_ready(self):
+        ready = {"status": "listening", "thread": "00000000-0000-4000-8000-000000000000"}
+        with patch.object(codex_pipe, "request", return_value=ready):
+            result = codex_pipe.activate(ready["thread"])
+        self.assertEqual(result["status"], "ready")
+        self.assertFalse(result["started"])
+
+    def test_activate_refuses_to_retarget_live_receiver(self):
+        ready = {"status": "listening", "thread": "00000000-0000-4000-8000-000000000000"}
+        with patch.object(codex_pipe, "request", return_value=ready):
+            result = codex_pipe.activate("11111111-1111-4111-8111-111111111111")
+        self.assertEqual(result["status"], "conflict")
 
 
 @unittest.skipUnless(sys.platform == 'win32', 'named pipe is Windows-only')

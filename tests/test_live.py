@@ -50,6 +50,35 @@ def test_invariant_2_live_returns_combined_snapshot(tmp_path):
     assert "timestamp" in snap
 
 
+def test_bare_live_activates_before_rendering(monkeypatch):
+    monkeypatch.setattr("nougen_shards.codex_pipe.activate", lambda: {
+        "status": "ready", "receiver": {"thread": "thread-1"}})
+    out = handle_live_command([])
+    assert "NOUGENLIVE ACTIVATION: CODEX_WAKE=READY" in out
+    assert "NOUGEN FLEET CONTROL PLANE (/live)" in out
+
+
+def test_pending_messages_and_relays_render_inline_without_mutation(tmp_path, monkeypatch):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    msg = inbox / "ping_one.json"
+    msg.write_text(json.dumps({"source": "nougen-whoart", "text": "wake inline", "timestamp": 1}), encoding="utf-8")
+    handoffs = tmp_path / ".handoffs"
+    handoffs.mkdir()
+    relay = handoffs / "leg.json"
+    relay.write_text(json.dumps({"id": "leg-1", "machine": "blade", "agent": "apollo",
+                                 "target": "codex", "status": "open", "goal": "inspect this"}), encoding="utf-8")
+    monkeypatch.setenv("NOUGEN_CODEX_INBOX", str(inbox))
+    control = LiveControlPlane(home_dir=tmp_path, relay_root=tmp_path)
+
+    rendered = control.render_pending_inline()
+
+    assert "wake inline" in rendered
+    assert "leg-1" in rendered
+    assert "not claimed or acknowledged" in rendered
+    assert msg.exists() and relay.exists()
+
+
 def test_invariant_3_sessions_distinguishes_configured_vs_alive(tmp_path):
     """3. /live sessions does not treat configured peers as measured alive."""
     cc_file = tmp_path / "cc_sessions.json"
@@ -101,6 +130,13 @@ def test_invariant_4_ports_proves_listening_refused_timeout():
         res_refused = control.probe_tcp_detailed("127.0.0.1", 80)
         assert res_refused["status"] == "CONNECTION_REFUSED"
         assert res_refused["reachable"] is False
+
+        # Windows mDNS/IPv6 resolution can surface invalid flowinfo as an
+        # OverflowError; telemetry must degrade, never crash the cockpit.
+        mock_conn.side_effect = OverflowError("flowinfo must be 0-1048575")
+        res_flowinfo = control.probe_tcp_detailed("peer.local", 8765)
+        assert res_flowinfo["status"] == "SOCKET_ERROR"
+        assert res_flowinfo["reachable"] is False
 
 
 def test_invariant_5_ssh_reports_per_node_proof():
@@ -250,6 +286,34 @@ def test_invariant_11_partial_node_port_timeout_does_not_break_fleet(tmp_path):
         assert "8765 (CONNECT_TIMEOUT)" in worker_node["reason"]
 
 
+def test_coach_machine_identity_and_locality_are_dynamic(tmp_path, monkeypatch):
+    (tmp_path / "nodes.json").write_text(json.dumps({
+        "hyperion": {
+            "coach": "Hyperion", "machine": "WhoArt", "aliases": ["whoart"],
+            "ip": "10.0.0.99", "host": "whoart.local", "health_ports": [22, 8766],
+        }
+    }), encoding="utf-8")
+    monkeypatch.setattr(socket, "gethostname", lambda: "WhoArt")
+    control = LiveControlPlane(home_dir=tmp_path)
+
+    def listening(host, port, timeout=0.5):
+        return {"host": host, "port": port, "status": "LISTENING", "reachable": True,
+                "latency_ms": 1.0, "reason_code": "SOCKET_CONNECTED"}
+
+    with patch.object(control, "probe_tcp_detailed", side_effect=listening):
+        node = control.probe_node("hyperion")
+
+    assert node["coach"] == "Hyperion"
+    assert node["machine"] == "WhoArt"
+    assert node["is_local"] is True
+    assert node["ip"] == "127.0.0.1"
+    assert set(node["probes"]) == {"22", "8766"}
+
+    with patch.object(control, "probe_tcp_detailed", side_effect=listening), \
+         patch.object(control, "probe_ports", return_value={}):
+        assert "Hyperion @ WhoArt (Local)" in control.render_overview()
+
+
 def test_declared_offline_node_is_offline_expected_not_red(tmp_path):
     """Relay 20260913T162818Z: Blade powered off must not read as a sick machine."""
     (tmp_path / "nodes.json").write_text(json.dumps({
@@ -341,4 +405,3 @@ def test_invariant_13_reach_matrix_integration():
     data = json.loads(out_json)
     assert "summary" in data
     assert "control_ok" in data
-

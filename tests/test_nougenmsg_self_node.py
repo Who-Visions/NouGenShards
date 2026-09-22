@@ -42,3 +42,23 @@ def test_fleet_nodes_env_override(monkeypatch):
     monkeypatch.setattr(m, "get_current_node", lambda: "newbox")
     res = m.NouGenMsgBus.live_ping(target="newbox", text="hi")
     assert "claude_pipes" in res
+
+
+def test_coach_alias_targets_physical_machine(monkeypatch):
+    calls = []
+    _stub_pingers(monkeypatch, calls)
+    monkeypatch.setattr(m, "get_current_node", lambda: "whoart")
+    res = m.NouGenMsgBus.live_ping(target="hyperion", text="hi")
+    assert set(res) == {"claude_pipes", "antigravity", "codex"}
+
+
+def test_parse_destination_normalizes_coach_alias():
+    assert m.NouGenMsgBus.parse_destination("@hyperion:codex") == ("whoart", "codex")
+    assert m.NouGenMsgBus.parse_destination("@apollo") == ("blade", "all")
+
+
+def test_origin_envelope_carries_coach_and_machine(monkeypatch):
+    monkeypatch.setattr(m, "get_current_node", lambda: "whoart")
+    envelope = m.NouGenMsgBus._origin_envelope()
+    assert envelope["machine"] == "whoart"
+    assert envelope["coach"] == "hyperion"
