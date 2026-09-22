@@ -194,7 +194,7 @@ mcp.registerTool(
     inputSchema: {
       event_type: z.string(),
       description: z.string(),
-      metadata: z.record(z.any()).optional(),
+      metadata: z.record(z.string(), z.any()).optional(),
     },
   },
   async ({ event_type, description, metadata }) => {

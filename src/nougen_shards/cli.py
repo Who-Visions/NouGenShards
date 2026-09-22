@@ -6,6 +6,9 @@ import sqlite3
 import os
 import numpy as np
 from pathlib import Path
+import logging
+
+logger = logging.getLogger("nougen_shards.cli")
 from . import core as shards
 from . import keymaker
 from .models_client import (
@@ -30,6 +33,11 @@ from . import arxiv_core
 from . import viz_core
 from . import tube
 from . import evidence
+from . import destiny
+from . import wake_daemon
+from . import wispr
+from . import studio
+from . import mrsb
 
 from nougen_shards import __version__ as VERSION  # single source: pyproject
 
@@ -94,6 +102,187 @@ if sys.platform == "win32":
             sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
     except (AttributeError, ValueError):
         pass
+
+
+def cmd_destiny(args):
+    """Destiny store: prospective memory and goal graph for the NouGen grid."""
+    action = getattr(args, "destiny_action", "list")
+    is_json = getattr(args, "json", False)
+
+    if action == "create":
+        res = destiny.create_destiny(
+            title=args.title,
+            goal=args.goal,
+            branch=getattr(args, "branch", None),
+            trigger=getattr(args, "trigger", None),
+            required_events=getattr(args, "required", None),
+            forbidden_outcomes=getattr(args, "forbidden", None),
+            acceptable_variance=getattr(args, "variance", None),
+            verification=getattr(args, "verification", None),
+            confidence=getattr(args, "confidence", None),
+            deadline=getattr(args, "deadline", None),
+            supersedes=getattr(args, "supersedes", None),
+            status=getattr(args, "status", "dormant"),
+            actor=getattr(args, "actor", None)
+        )
+        if is_json:
+            print(json.dumps(res, indent=2))
+        else:
+            if "error" in res:
+                print(f"❌ Failed to create destiny: {res['error']}")
+            else:
+                print(f"✨ Created Destiny #{res['id']}: [{res['branch']}] {res['title']}")
+                print(f"  • Status:       {res['status']}")
+                print(f"  • Goal:         {res['goal']}")
+                if res.get('trigger'):
+                    print(f"  • Trigger:      {res['trigger']}")
+                if res.get('verification'):
+                    print(f"  • Verification: {res['verification']}")
+
+    elif action == "get":
+        res = destiny.get_destiny(args.id)
+        if is_json:
+            print(json.dumps(res, indent=2))
+        else:
+            if "error" in res:
+                print(f"❌ {res['error']}")
+            else:
+                print(f"✨ Destiny #{res['id']}: [{res['branch']}] {res['title']}")
+                print(f"  • Status:       {res['status']}")
+                print(f"  • Goal:         {res['goal']}")
+                if res.get('trigger'):
+                    print(f"  • Trigger:      {res['trigger']}")
+                if res.get('verification'):
+                    print(f"  • Verification: {res['verification']}")
+                if res.get('links'):
+                    print("  • Links:")
+                    for lnk in res['links']:
+                        print(f"    - [{lnk['kind']}] {lnk['ref']} ({lnk['role']})")
+                if res.get('events'):
+                    print("  • Event History:")
+                    for ev in res['events']:
+                        print(f"    - {ev['created_utc']}: {ev['from_status']} -> {ev['to_status']} by {ev['actor'] or 'unknown'} ({ev['evidence']})")
+
+    elif action == "update":
+        res = destiny.update_status(args.id, args.to_status, actor=getattr(args, "actor", None), evidence=getattr(args, "evidence", None))
+        if is_json:
+            print(json.dumps(res, indent=2))
+        else:
+            if "error" in res:
+                print(f"❌ Failed to update destiny: {res['error']}")
+            else:
+                print(f"✨ Destiny #{res['id']} updated to {res['status']}")
+
+    elif action == "link":
+        res = destiny.link(args.id, args.kind, args.ref, role=getattr(args, "role", "evidence"), note=getattr(args, "note", None))
+        if is_json:
+            print(json.dumps(res, indent=2))
+        else:
+            if "error" in res:
+                print(f"❌ Failed to link: {res['error']}")
+            else:
+                print(f"✨ Linked {args.kind} '{args.ref}' to Destiny #{args.id} as {args.role}")
+
+    elif action == "search":
+        res = destiny.search_destinies(args.query, limit=getattr(args, "limit", 20), include_finished=getattr(args, "all", False))
+        if is_json:
+            print(json.dumps(res, indent=2))
+        else:
+            print(f"🔍 Destinies matching '{args.query}' ({res['count']} results):")
+            for d in res.get("destinies", []):
+                print(f"  • #{d['id']:<4} [{d['status']:<9}] [{d['branch']}] {d['title']}")
+                print(f"    Goal: {d['goal'][:100]}")
+
+    elif action == "evolve":
+        res = destiny.evolve_report(since_utc=getattr(args, "since", None), limit=getattr(args, "limit", 50))
+        if is_json:
+            print(json.dumps(res, indent=2))
+        else:
+            print("🧬 Destiny Evolve Raw Material Report:")
+            print(f"  Status Counts: {res.get('status_counts')}")
+            print(f"  Terminal Events: {len(res.get('terminal_events', []))}")
+            for ev in res.get("terminal_events", [])[:10]:
+                print(f"  • #{ev['destiny_id']} '{ev['title']}' -> {ev['to_status']} ({ev['evidence']})")
+
+    else:  # list / unfinished
+        res = destiny.unfinished_destinies(
+            status=getattr(args, "status", None),
+            trigger=getattr(args, "trigger", None),
+            branch=getattr(args, "branch", None),
+            limit=getattr(args, "limit", 20)
+        )
+        if is_json:
+            print(json.dumps(res, indent=2))
+        else:
+            print(f"✨ Active/Unfinished Destinies ({res['count']} of {res['total']}):")
+            for d in res.get("destinies", []):
+                print(f"  • #{d['id']:<4} [{d['status']:<9}] [{d['branch']}] {d['title']}")
+                print(f"    Goal: {d['goal'][:100]}")
+
+
+
+def cmd_wispr(args):
+    """Wispr Flow Voice Dictation Ingestion."""
+    action = getattr(args, "wispr_action", "latest")
+    if action == "watch":
+        wispr.watch_and_shard(interval_s=getattr(args, "interval", 1.0), auto_shard=not getattr(args, "no_shard", False))
+    elif action == "list":
+        rows = wispr.list_transcripts(limit=getattr(args, "limit", 10))
+        if getattr(args, "json", False):
+            print(json.dumps(rows, indent=2))
+        else:
+            print(f"🎙️  Wispr Flow Transcripts ({len(rows)} recent):")
+            for r in rows:
+                print(f"  • [{r.get('timestamp')}] {r.get('formattedText') or r.get('asrText')}")
+    else:  # latest
+        row = wispr.get_latest_transcript()
+        if getattr(args, "json", False):
+            print(json.dumps(row, indent=2))
+        else:
+            if not row or "error" in row:
+                print("[!] No Wispr transcripts found or DB inaccessible.")
+            else:
+                print(f"🎙️  Latest Wispr Transcript [{row.get('timestamp')}]:")
+                print(f"    {row.get('formattedText') or row.get('asrText')}")
+
+
+def cmd_studio(args):
+    """Studio & Hardware Peripherals Lighting Control."""
+    target = getattr(args, "target", "all")
+    color = getattr(args, "color", "green")
+    is_json = getattr(args, "json", False)
+    
+    results = {}
+    if target in ("all", "razer"):
+        rz = studio.RazerController()
+        connected = rz.connect()
+        if connected:
+            rz.set_status_color(color)
+            results["razer"] = {"status": "ok", "color": color}
+        else:
+            results["razer"] = {"status": "offline", "message": "Razer Synapse not reachable"}
+            
+    if target in ("all", "lifx"):
+        lx = studio.LIFXController()
+        if lx.is_configured():
+            res = lx.set_color(selector="all", color=color)
+            results["lifx"] = res
+        else:
+            results["lifx"] = {"status": "unconfigured", "message": "LIFX_TOKEN not set"}
+            
+    if is_json:
+        print(json.dumps(results, indent=2))
+    else:
+        print(f"💡 Studio Lighting Command -> {color.upper()}:")
+        for dev, info in results.items():
+            print(f"  • {dev.upper()}: {info.get('status', 'sent')}")
+
+def cmd_wake(args):
+    """NouGen Wake Daemon: reactive idle wake detection for fleet IPC messaging."""
+    timeout = getattr(args, "timeout", 600)
+    interval = getattr(args, "interval", 2.0)
+    code = wake_daemon.run_wake_loop(timeout_s=timeout, interval_s=interval, verbose=True)
+    sys.exit(code)
 
 def cmd_pr(args):
     from . import pr_lease
@@ -203,6 +392,9 @@ def get_client(provider: str):
         return HuggingFaceClient()
     if provider in ["openrouter", "or"]:
         return OpenRouterClient()
+    if provider in ["cloudflare", "cf", "workers-ai", "workers_ai"]:
+        from .workers_ai_client import WorkersAiClient
+        return WorkersAiClient()
     if provider in ["whovisions", "cloud"]:
         # Load cloud config from vault
         creds = keymaker.get_secret("NGS_CLOUD_CREDENTIALS")
@@ -229,6 +421,9 @@ def cmd_auth(args):
             "hf": "HUGGINGFACE_API_KEY",
             "openrouter": "OPENROUTER_API_KEY",
             "or": "OPENROUTER_API_KEY",
+            "cloudflare": "CLOUDFLARE_API_TOKEN_NOUGEN_FULL",
+            "cf": "CLOUDFLARE_API_TOKEN_NOUGEN_FULL",
+            "workers-ai": "CLOUDFLARE_API_TOKEN_NOUGEN_FULL",
             "cloud": "NGS_CLOUD_CREDENTIALS"
         }
         provider = args.provider.lower()
@@ -1025,6 +1220,13 @@ def cmd_status(args):
     print(f"\n{substrate.line()}")
     print(f"Total records in memory: {total_count}"
           + ("" if substrate.status is ss.StatusLevel.GREEN else " (excludes non-green DBs above)"))
+    try:
+        from . import cloudflare
+        cf = cloudflare.CloudflareClient()
+        p = cf.ping()
+        print(f"⛅ Cloudflare Edge: {p['active_workers']} workers in orbit | Gateway: {p['gateway_status']} ({p.get('gateway_latency_ms', '?')} ms)")
+    except Exception:
+        pass
 
 
 def cmd_stats(args):
@@ -1172,6 +1374,90 @@ def cmd_ctx(args):
             print(f"✅ Context event #{event['id']} promoted to durable memory.")
         else:
             print("ℹ️ Shard already exists.")
+    elif args.action == "web":
+        if not args.input:
+            print("Error: Usage: nougen ctx web <url> [--tags <label>]")
+            return
+        res = nougen_context.fetch_and_index_web(args.input, label=args.tags)
+        if "error" in res:
+            print(f"❌ {res['error']}")
+            return
+        print(f"✅ Web indexed: {res['title']}")
+        print(f"Handle: {res['handle']} ({res['total_length_bytes']} bytes)")
+        print(f"Summary: {res['summary']}")
+        if res.get("headings"):
+            print("Headings:")
+            for h in res["headings"][:5]:
+                print(f"  {h}")
+    elif args.action == "analyze":
+        if not args.input:
+            print("Error: Usage: nougen ctx analyze <file_path> [--query <term>]")
+            return
+        query_val = getattr(args, "query", None)
+        res = nougen_context.analyze_file(args.input, query=query_val)
+        if "error" in res:
+            print(f"❌ {res['error']}")
+            return
+        print(f"📄 {res['name']} ({res['total_lines']} lines, {res['size_bytes']} bytes)")
+        if "ast" in res:
+            ast_info = res["ast"]
+            if ast_info.get("syntax_valid"):
+                print(f"Classes: {', '.join(ast_info['classes']) or 'None'}")
+                print(f"Functions: {', '.join(ast_info['functions'][:10]) or 'None'}")
+                print(f"Imports: {', '.join(ast_info['imports'][:8]) or 'None'}")
+            else:
+                print(f"Syntax Error: {ast_info.get('syntax_error')}")
+        elif "json_schema" in res:
+            print(f"JSON Schema: {json.dumps(res['json_schema'])}")
+        if res.get("query_matches"):
+            print("Query matches:")
+            for m in res["query_matches"][:5]:
+                print(f"  {m}")
+    elif args.action == "checkpoint":
+        if not args.input:
+            print("Error: Usage: nougen ctx checkpoint <label>")
+            return
+        res = nougen_context.checkpoint_session(args.input)
+        print(f"✅ Checkpoint '{res['label']}' saved ({res['events_count']} events).")
+    elif args.action == "restore":
+        if not args.input:
+            print("Error: Usage: nougen ctx restore <label>")
+            return
+        res = nougen_context.restore_session(args.input)
+        if "error" in res:
+            print(f"❌ {res['error']}")
+            return
+        print(f"✅ Checkpoint '{res['label']}' restored ({res['events_restored']} events).")
+    elif args.action == "checkpoints":
+        rows = nougen_context.list_checkpoints()
+        if not rows:
+            print("No saved checkpoints.")
+            return
+        print("Session Checkpoints:")
+        for r in rows:
+            print(f"- {r['label']} ({r['events_count']} events, {r['timestamp']})")
+    elif args.action == "ask":
+        if not args.input:
+            print("Error: Usage: nougen ctx ask <prompt> [--tags <context_handle>]")
+            return
+        model_val = getattr(args, "model", None)
+        print(f"[*] Querying Ollama (model: {model_val or 'auto-local'})...")
+        res = nougen_context.query_ollama(args.input, context_handle=args.tags, model=model_val)
+        if res.get("status") == "success":
+            print(f"\n[{res['model']}]:\n{res['response']}")
+        else:
+            print(f"❌ {res.get('error')}")
+    elif args.action == "synthesize":
+        if not args.input:
+            print("Error: Usage: nougen ctx synthesize <handle> [--query <instruction>]")
+            return
+        instr = getattr(args, "query", None) or "Summarize the core findings and key action items."
+        res = nougen_context.synthesize_sandbox(args.input, instruction=instr)
+        if res.get("status") == "synthesized":
+            print(f"✅ Synthesized {args.input} using {res['model']}:")
+            print(res["summary"])
+        else:
+            print(f"❌ Synthesis failed: {res.get('error')}")
 
 
 def resolve_router_model() -> str:
@@ -1516,6 +1802,40 @@ def cmd_tenant(args):
     print("Save this token now; it is stored only as a SHA-256 hash and cannot be shown again.")
 
 
+def cmd_facts(args):
+    """Index and resolve structured canonical fact snapshots."""
+    from .canonical_facts import CanonicalFactIndex, SCHEMA_VERSION
+
+    index = CanonicalFactIndex(args.index, create=args.facts_action in ("index", "migrate"))
+    if args.facts_action == "migrate":
+        print(json.dumps({"status": "migrated", "index": str(index.path),
+                          "schema_version": SCHEMA_VERSION}))
+        return
+    if args.facts_action == "index":
+        try:
+            snapshot = json.loads(Path(args.input).read_text(encoding="utf-8"))
+            snapshot_id = index.put(snapshot)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(json.dumps({"status": "rejected", "error": str(exc)}), file=sys.stderr)
+            raise SystemExit(2) from exc
+        print(json.dumps({"status": "indexed", "snapshot_id": snapshot_id}, indent=2))
+        return
+
+    try:
+        scope = json.loads(args.scope) if args.scope else None
+        if scope is not None and not isinstance(scope, dict):
+            raise ValueError("--scope must be a JSON object")
+        receipt = index.resolve_query(
+            args.query, expected_machines=args.machine,
+            expected_entities=args.entity or None, scope=scope,
+            as_of=args.as_of,
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(json.dumps({"status": "rejected", "error": str(exc)}), file=sys.stderr)
+        raise SystemExit(2) from exc
+    print(json.dumps(receipt, indent=2, sort_keys=True))
+
+
 def get_parser():
 
 
@@ -1606,9 +1926,11 @@ def get_parser():
     p_stats.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_ctx = subparsers.add_parser("ctx", help="Context layer")
-    p_ctx.add_argument("action", choices=["init", "execute", "search", "get", "promote"])
+    p_ctx.add_argument("action", choices=["init", "execute", "search", "get", "promote", "web", "analyze", "checkpoint", "restore", "checkpoints", "ask", "synthesize"])
     p_ctx.add_argument("input", nargs="?")
-    p_ctx.add_argument("--tags", help="Tags for promoted shard")
+    p_ctx.add_argument("--tags", help="Tags for promoted shard, label for web/checkpoint, or context_handle for ask")
+    p_ctx.add_argument("--query", help="Query keyword for file analyze or search")
+    p_ctx.add_argument("--model", help="Specific Ollama model name (e.g. gemma4:e2b-qat, Yukiai:e2b)")
     p_ctx.add_argument("--limit", type=int, default=5, help="Max results for ctx search")
 
     # router
@@ -1723,6 +2045,24 @@ def get_parser():
     p_brain.add_argument("--json", action="store_true", help="Machine-readable output")
 
     # add_help=False: `-h/--help` must reach the relay engine, not stop here.
+    p_hi = subparsers.add_parser("hi", help="Session-open probe: identity, fleet pulse, open handoffs")
+    p_hi.add_argument("--no-fleet", action="store_true", help="Skip SSH pulse to peer nodes")
+    p_hi.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_bye = subparsers.add_parser("bye", help="Session-close probe: dirty sweep + handoff + primer")
+    p_bye.add_argument("--agent", "-a", default=None, help="Agent type for the handoff")
+    p_bye.add_argument("--goal", "-g", default=None, help="Goal for the handoff")
+    p_bye.add_argument("--summary", "-m", default="", help="Session summary for the handoff")
+    p_bye.add_argument("--dry-run", action="store_true", help="Preview without writing a handoff")
+    p_bye.add_argument("--publish-leg", action="store_true",
+                       help="Also commit+push a real relay leg for this session close (not just a local handoff)")
+    p_bye.add_argument("--no-shard", action="store_true", help="Skip writing a verified session-close shard")
+    p_bye.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_hijack = subparsers.add_parser("hijack", help="Repoint a foreign/legacy handoff record onto this node")
+    p_hijack.add_argument("--id", dest="handoff_id", required=True, help="Handoff id to hijack")
+    p_hijack.add_argument("--agent", "-a", default=None, help="Agent to record as the hijacker")
+
     p_relay = subparsers.add_parser(
         "relay", add_help=False,
         help="Fleet relay board (NouGenRelay): open | read | ack | create | claim ...",
@@ -1830,7 +2170,8 @@ def get_parser():
 
     p_msg = subparsers.add_parser("msg", help="Live fleet IPC messaging & socket broadcast")
     p_msg.add_argument("message", nargs="?", default="", help="Message text to send")
-    p_msg.add_argument("--to", dest="target", default="all", help="Target node or agent")
+    p_msg.add_argument("--to", dest="target", default="all",
+                        help="Target node or agent family, e.g. fleet:agents")
     p_msg.add_argument("--peers", action="store_true", help="List reachable fleet peers")
     p_msg.add_argument("--dry-run", action="store_true",
                         help="Resolve the target and print what would be sent, without sending it")
@@ -1839,6 +2180,13 @@ def get_parser():
     p_evidence = subparsers.add_parser("evidence", help="Epistemic assurance & evidence class validation")
     p_evidence.add_argument("evidence_action", choices=["classes", "require"], default="classes", nargs="?")
     p_evidence.add_argument("--tags", default="", help="Comma-separated tags to validate")
+
+    # tunnel: Ngrok secure ingress connector
+    p_tunnel = subparsers.add_parser("tunnel", help="Start secure edge tunnel for local ports (Ngrok)")
+    p_tunnel.add_argument("port", type=int, help="Local port to forward (e.g. 8766 for MsgNode, 3000 for Whovisions)")
+    p_tunnel.add_argument("--service", default="generic", help="Service label (e.g. msgnode, whovisions, mcp)")
+    p_tunnel.add_argument("--domain", default=None, help="Custom Ngrok reserved domain")
+    p_tunnel.add_argument("--json", action="store_true", help="JSON output")
 
     # transcribe: Video / Audio transcription and summarization
     p_transcribe = subparsers.add_parser(
@@ -1891,7 +2239,365 @@ def get_parser():
     p_algo_ingest = algo_subs.add_parser("ingest", help="Ingest canonical algorithm knowledge shards into memory grid DB 5")
     p_algo_ingest.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    # destiny store
+    p_destiny = subparsers.add_parser("destiny", help="Prospective memory & goal graph store (destinies.db)")
+    destiny_sub = p_destiny.add_subparsers(dest="destiny_action")
+
+    p_open = subparsers.add_parser(
+        "open",
+        help="OpenRouter Free Fleet Worker Engine (NouGenOpen)",
+        description="Dedicated OpenRouter Free Fleet Worker Engine with Keymaker API key auto-resolution and zero-cost multi-model fallback."
+    )
+    p_open.add_argument("open_args", nargs=argparse.REMAINDER, help="Subcommands: status | ask [prompt] [--model MODEL] [--system SYSTEM]")
+    
+    p_destiny_list = destiny_sub.add_parser("list", help="List unfinished/active destinies")
+    p_destiny_list.add_argument("--status", choices=list(destiny.STATUSES), default=None)
+    p_destiny_list.add_argument("--trigger", default=None)
+    p_destiny_list.add_argument("--branch", default=None)
+    p_destiny_list.add_argument("--limit", type=int, default=20)
+    p_destiny_list.add_argument("--json", action="store_true")
+
+    p_destiny_create = destiny_sub.add_parser("create", help="Create a target destiny")
+    p_destiny_create.add_argument("--title", required=True, help="Title of the destiny")
+    p_destiny_create.add_argument("--goal", required=True, help="Terminal goal")
+    p_destiny_create.add_argument("--branch", default=None, help="Branch label (U0, UX, ARCH, etc.)")
+    p_destiny_create.add_argument("--trigger", default=None, help="Activation trigger")
+    p_destiny_create.add_argument("--required", default=None, help="Required events (JSON or semi-colon list)")
+    p_destiny_create.add_argument("--forbidden", default=None, help="Forbidden outcomes")
+    p_destiny_create.add_argument("--variance", default=None, help="Acceptable variance")
+    p_destiny_create.add_argument("--verification", default=None, help="Verification standard")
+    p_destiny_create.add_argument("--status", choices=["dormant", "active"], default="dormant")
+    p_destiny_create.add_argument("--actor", default=None)
+    p_destiny_create.add_argument("--json", action="store_true")
+
+    p_destiny_get = destiny_sub.add_parser("get", help="Get destiny by ID")
+    p_destiny_get.add_argument("id", type=int, help="Destiny ID")
+    p_destiny_get.add_argument("--json", action="store_true")
+
+    p_destiny_update = destiny_sub.add_parser("update", help="Update destiny status")
+    p_destiny_update.add_argument("id", type=int, help="Destiny ID")
+    p_destiny_update.add_argument("to_status", choices=list(destiny.STATUSES), help="Target status")
+    p_destiny_update.add_argument("--actor", default=None)
+    p_destiny_update.add_argument("--evidence", default=None)
+    p_destiny_update.add_argument("--json", action="store_true")
+
+    p_destiny_link = destiny_sub.add_parser("link", help="Link shard, relay leg, agent, or destiny")
+    p_destiny_link.add_argument("id", type=int, help="Destiny ID")
+    p_destiny_link.add_argument("--kind", choices=list(destiny.LINK_KINDS), required=True)
+    p_destiny_link.add_argument("--ref", required=True, help="Reference identifier")
+    p_destiny_link.add_argument("--role", choices=list(destiny.LINK_ROLES), default="evidence")
+    p_destiny_link.add_argument("--note", default=None)
+    p_destiny_link.add_argument("--json", action="store_true")
+
+    p_destiny_search = destiny_sub.add_parser("search", help="Search destinies")
+    p_destiny_search.add_argument("query", help="Search query")
+    p_destiny_search.add_argument("--all", action="store_true", help="Include finished/failed")
+    p_destiny_search.add_argument("--limit", type=int, default=20)
+    p_destiny_search.add_argument("--json", action="store_true")
+
+    p_destiny_evolve = destiny_sub.add_parser("evolve", help="Evolve report on terminal destiny events")
+    p_destiny_evolve.add_argument("--since", default=None)
+    p_destiny_evolve.add_argument("--limit", type=int, default=50)
+    p_destiny_evolve.add_argument("--json", action="store_true")
+
+    # Structured canonical fact snapshots (separate from free-form shard recall).
+    p_facts = subparsers.add_parser("facts", help="Index/resolve structured canonical fact snapshots")
+    facts_sub = p_facts.add_subparsers(dest="facts_action", required=True)
+    p_facts_migrate = facts_sub.add_parser("migrate", help="Backfill current pointers and query postings")
+    p_facts_migrate.add_argument("--index", required=True, help="Explicit SQLite fact-index path")
+    p_facts_index = facts_sub.add_parser("index", help="Append a validated FACT_SNAPSHOT JSON file")
+    p_facts_index.add_argument("--index", required=True, help="Explicit SQLite fact-index path")
+    p_facts_index.add_argument("--input", required=True, help="Snapshot JSON file")
+    p_facts_resolve = facts_sub.add_parser("resolve", help="Resolve newest complete snapshot from natural language")
+    p_facts_resolve.add_argument("query")
+    p_facts_resolve.add_argument("--index", required=True, help="SQLite fact-index path")
+    p_facts_resolve.add_argument("--machine", action="append", required=True, help="Expected machine; repeat for fleet scope")
+    p_facts_resolve.add_argument("--entity", action="append", default=[], help="Expected canonical entity; repeat as needed")
+    p_facts_resolve.add_argument("--scope", help="Additional exact JSON scope filter")
+    p_facts_resolve.add_argument("--as-of", help="Reference date/time; 'today' queries require an exact date match")
+
+    # wake daemon
+    p_wake = subparsers.add_parser("wake", help="Run NouGen reactive idle wake daemon for fleet IPC messaging")
+    p_wake.add_argument("--timeout", type=float, default=600.0, help="Max idle seconds before recycle")
+    p_wake.add_argument("--interval", type=float, default=2.0, help="Poll interval in seconds")
+
+    
+    # wispr voice dictation
+    p_wispr = subparsers.add_parser("wispr", help="Wispr Flow voice dictation ingestion & live stream")
+    wispr_sub = p_wispr.add_subparsers(dest="wispr_action")
+    
+    p_wispr_latest = wispr_sub.add_parser("latest", help="Get latest Wispr transcript")
+    p_wispr_latest.add_argument("--json", action="store_true")
+    
+    p_wispr_list = wispr_sub.add_parser("list", help="List recent Wispr transcripts")
+    p_wispr_list.add_argument("--limit", type=int, default=10)
+    p_wispr_list.add_argument("--json", action="store_true")
+    
+    p_wispr_watch = wispr_sub.add_parser("watch", help="Live stream dictations into NouGen shards")
+    p_wispr_watch.add_argument("--interval", type=float, default=1.0)
+    p_wispr_watch.add_argument("--no-shard", action="store_true", help="Do not auto-shard transcripts")
+
+    # studio lighting
+    p_studio = subparsers.add_parser("studio", help="Physical studio telemetry & RGB lighting (Razer / LIFX)")
+    p_studio.add_argument("color", nargs="?", default="green", help="Target status color (green, yellow, orange, red, blue, purple, cyan, white)")
+    p_studio.add_argument("--target", choices=["all", "razer", "lifx"], default="all", help="Hardware target")
+    p_studio.add_argument("--json", action="store_true")
+
+    # cloudflare fleet
+    p_cf = subparsers.add_parser("cf", help="Cloudflare Fleet Engine: deploy, secrets, D1, KV, R2, and Workers AI")
+    p_cf.add_argument("cf_args", nargs=argparse.REMAINDER, help="Arguments passed to tools/wrangler_fleet.py")
+
+    # process supervisor & zombie killer
+    p_sweep = subparsers.add_parser("sweep", aliases=["zombies"], help="Dynamic process supervisor & zombie killer")
+    p_sweep.add_argument("--kill", "-k", "-Kill", action="store_true", help="Surgically terminate confirmed dead-parent zombies")
+    p_sweep.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_sweep.add_argument("--verbose", "-v", action="store_true", help="Show suspicious non-dev orphans")
+
+    # Learn With Mrs. B project engine
+    p_mrsb = subparsers.add_parser("mrsb", help="Learn With Mrs. B: ESOL Coloring Book production engine")
+    p_mrsb.add_argument("mrsb_action", nargs="?", default="status",
+                        choices=["status", "audit", "lineage", "recall", "recurse", "build", "kdp"],
+                        help="Action to perform (default: status)")
+    p_mrsb.add_argument("--character", "-c", help="Character key for lineage lookup (e.g. mrs_b, little_dave, kam_the_police_helper)")
+    p_mrsb.add_argument("--query", "-q", default="Mrs. B", help="Search query for shard recall")
+    p_mrsb.add_argument("--limit", "-n", type=int, default=5, help="Max results for recall")
+    p_mrsb.add_argument("--unit", "-u", type=int, default=None, help="Unit number (1-8) for recursive lesson ledger")
+    p_mrsb.add_argument("--json", action="store_true", help="Machine-readable JSON output")
+
     return parser
+
+
+def cmd_mrsb(args):
+    """Learn With Mrs. B project engine: audit, lineage, recall, recurse, build, kdp."""
+    mrsb.cli_handler(args)
+
+
+def cmd_cf(args):
+    """Execute native Cloudflare fleet manager operations."""
+    from . import cloudflare
+    subargs = getattr(args, "cf_args", [])
+    
+    try:
+        cf = cloudflare.CloudflareClient()
+    except Exception as e:
+        print(f"❌ Cloudflare Auth Error: {e}", file=sys.stderr)
+        print("💡 Set CLOUDFLARE_API_TOKEN_NOUGEN_FULL in Keymaker via 'nougen auth set-key cf <token>'", file=sys.stderr)
+        sys.exit(1)
+
+    sub = subargs[0].lower() if subargs else "status"
+
+    if sub in ("status", "info"):
+        print("=== ⛅ NouGen Cloudflare Edge Substrate ===")
+        print(f"  Account: {cf.account_name} ({cf.account_id})")
+        workers = cf.list_workers()
+        print(f"  Workers: {len(workers)} deployed in orbit")
+        d1s = cf.list_d1()
+        kvs = cf.list_kv()
+        r2s = cf.list_r2()
+        print(f"  Storage: {len(d1s)} D1 DBs | {len(kvs)} KV Namespaces | {len(r2s)} R2 Buckets")
+        
+        # Intelligent local context detection
+        local_info = cf.inspect_directory(Path.cwd())
+        if local_info["is_worker"]:
+            print("\n📁 Current Directory Worker Context:")
+            print(f"  • Worker Name:    {local_info['worker_name']}")
+            print(f"  • Config File:    {local_info['config_file']}")
+            print(f"  • Entry Point:    {local_info['entry_file']} ({'exists' if local_info['entry_exists'] else 'MISSING'})")
+            print(f"  • Compat Date:    {local_info['compatibility_date']}")
+            live_status = "Deployed (Orbit)" if local_info["live_deployed"] else "Not Deployed to Cloudflare"
+            print(f"  • Live Status:    {live_status}")
+            if any(local_info["bindings"].values()):
+                b_str = ", ".join(f"{k}: {len(v) if isinstance(v, list) else v}" for k, v in local_info["bindings"].items() if v)
+                print(f"  • Bindings:       {b_str}")
+            print("  💡 Tip: run 'nougen cf deploy' to build and publish this worker.")
+        else:
+            print("\n💡 Tip: run 'nougen cf --help' or 'nougen cf list' for active workers.")
+        return
+
+    if sub in ("list", "workers"):
+        workers = cf.list_workers()
+        print(f"⚡ Active Cloudflare Workers ({len(workers)}):")
+        for w in workers:
+            print(f"  • {w.id:<26} | modified: {w.modified_on} | usage: {w.usage_model}")
+        return
+
+    if sub in ("inspect", "check"):
+        target = Path(subargs[1]) if len(subargs) > 1 else Path.cwd()
+        info = cf.inspect_directory(target)
+        print(f"🔎 Inspection Report: {info['directory']}")
+        print(f"  • Is Worker Project: {info['is_worker']}")
+        print(f"  • Worker Name:       {info['worker_name']}")
+        print(f"  • Config File:       {info['config_file'] or 'none'}")
+        print(f"  • Entry Point:       {info['entry_file']} ({'OK' if info['entry_exists'] else 'NOT FOUND'})")
+        print(f"  • Live Deployed:     {info['live_deployed']}")
+        print(f"  • Bindings:          {json.dumps(info['bindings'])}")
+        return
+
+    if sub == "ping":
+        print("📡 Pinging Cloudflare Edge & Gateway...")
+        res = cf.ping()
+        print(f"  • Account:         {res['account_name']} ({res['account_id']})")
+        print(f"  • Token Valid:     {'✅ Yes' if res['token_valid'] else '❌ No'}")
+        print(f"  • API Latency:     {res['api_latency_ms']} ms")
+        print(f"  • Active Workers:  {res['active_workers']}")
+        print(f"  • Fleet Gateway:   {res['gateway_status']} ({res.get('gateway_latency_ms', '?')} ms)")
+        print(f"  • Gateway URL:     {res['gateway_url']}")
+        return
+
+    if sub in ("secrets", "secret"):
+        if len(subargs) < 2:
+            local = cf.inspect_directory(Path.cwd())
+            if local["is_worker"]:
+                w_name = local["worker_name"]
+            else:
+                print("Usage: nougen cf secrets <worker_name>")
+                return
+        else:
+            w_name = subargs[1]
+
+        secrets = cf.list_secrets(w_name)
+        print(f"🔐 Secrets for Worker [{w_name}] ({len(secrets)} found):")
+        for s in secrets:
+            print(f"  • {s.name:<30} (type: {s.type})")
+        return
+
+    if sub in ("secret-set", "set-secret"):
+        if len(subargs) < 4:
+            print("Usage: nougen cf secret-set <worker_name> <key> <val>")
+            return
+        w_name, key, val = subargs[1], subargs[2], subargs[3]
+        if cf.put_secret(w_name, key, val):
+            print(f"✅ Secret [{key}] stored on [{w_name}].")
+        else:
+            print(f"❌ Failed to store secret [{key}].")
+        return
+
+    if sub in ("sync-secrets", "sync_secrets"):
+        if len(subargs) < 2:
+            local = cf.inspect_directory(Path.cwd())
+            if local["is_worker"]:
+                w_name = local["worker_name"]
+            else:
+                print("Usage: nougen cf sync-secrets <worker_name> [keys...]")
+                return
+        else:
+            w_name = subargs[1]
+
+        explicit_keys = subargs[2:] if len(subargs) > 2 else None
+        print(f"🔐 Syncing Keymaker secrets to Cloudflare Worker [{w_name}]...")
+        result = cf.sync_secrets(w_name, explicit_keys)
+        for k in result["synced"]:
+            print(f"  ✅ Synced: {k}")
+        for k in result["missing"]:
+            print(f"  ⚠️ Missing in Keymaker vault: {k}")
+        print(f"Done: {len(result['synced'])} synced, {len(result['missing'])} missing.")
+        return
+
+    if sub == "deploy":
+        target = Path(subargs[1]) if len(subargs) > 1 and not subargs[1].startswith("--") else Path.cwd()
+        name_override = None
+        if "--name" in subargs:
+            idx = subargs.index("--name")
+            if idx + 1 < len(subargs):
+                name_override = subargs[idx + 1]
+
+        print(f"🚀 Auto-deploying worker from: {target.resolve()}...")
+        try:
+            res = cf.auto_deploy(target, worker_name_override=name_override)
+            etag = res.get("result", {}).get("etag", "live")
+            print(f"✅ Deployed [{res['worker_name']}] successfully! (ETag: {etag})")
+            print(f"  • Entry Point: {res['entry_point']}")
+            print(f"  • Live URL:    https://{res['worker_name']}.whoentertains.workers.dev")
+        except Exception as e:
+            print(f"❌ Deploy failed: {e}")
+            sys.exit(1)
+        return
+
+    if sub == "ai":
+        ai_sub = subargs[1].lower() if len(subargs) > 1 else "run"
+        if ai_sub == "models":
+            models = cf.list_ai_models()
+            print("🤖 Cloudflare Workers AI Model Catalogue (Free Tier):")
+            for m in models:
+                print(f"  • {m['id']:<42} | {m['task']:<24} | {m['speed']:<10} | {m['neurons_per_m']} N/M")
+            return
+        if ai_sub == "embed":
+            text = " ".join(subargs[2:]) if len(subargs) > 2 else "NouGen Fleet Substrate"
+            print(f"🔮 Computing zero-VRAM embedding for: '{text[:50]}'...")
+            emb = cf.embed_ai(text)
+            dim = len(emb[0]) if emb else 0
+            print(f"✅ Generated {dim}-dimensional vector on Cloudflare Edge.")
+            return
+
+        # Default: run prompt
+        model = "@cf/meta/llama-3.1-8b-instruct"
+        prompt_args = subargs[1:]
+        if "--model" in prompt_args:
+            m_idx = prompt_args.index("--model")
+            if m_idx + 1 < len(prompt_args):
+                model = prompt_args[m_idx + 1]
+                prompt_args = prompt_args[:m_idx] + prompt_args[m_idx + 2:]
+        if prompt_args and prompt_args[0] == "run":
+            prompt_args = prompt_args[1:]
+
+        prompt = " ".join(prompt_args) if prompt_args else "Explain NouGen fleet architecture in 2 sentences."
+        print(f"🤖 Workers AI [{model}]:\n'{prompt}'\n")
+        try:
+            resp = cf.run_ai(prompt, model=model)
+            print(f"--- Output ---\n{resp}\n--------------")
+        except Exception as e:
+            print(f"❌ Workers AI error: {e}")
+        return
+
+    if sub == "d1":
+        d1_sub = subargs[1] if len(subargs) > 1 else "list"
+        if d1_sub == "query" and len(subargs) >= 4:
+            db_name = subargs[2]
+            sql = " ".join(subargs[3:])
+            print(f"🗄️ Executing D1 SQL on [{db_name}]: {sql}")
+            res = cf.query_d1(db_name, sql)
+            print(json.dumps(res, indent=2))
+            return
+        dbs = cf.list_d1()
+        print(f"🗄️ Cloudflare D1 Databases ({len(dbs)}):")
+        if not dbs:
+            print("  (No D1 databases created yet)")
+        for d in dbs:
+            print(f"  • {d.get('name'):<20} (uuid: {d.get('uuid')})")
+        return
+
+    if sub == "kv":
+        kvs = cf.list_kv()
+        print(f"📦 Cloudflare KV Namespaces ({len(kvs)}):")
+        if not kvs:
+            print("  (No KV namespaces created yet)")
+        for k in kvs:
+            print(f"  • {k.get('title'):<20} (id: {k.get('id')})")
+        return
+
+    if sub == "r2":
+        buckets = cf.list_r2()
+        print(f"🪣 Cloudflare R2 Buckets ({len(buckets)}):")
+        if not buckets:
+            print("  (No R2 buckets created yet)")
+        for b in buckets:
+            print(f"  • {b.get('name'):<20} (created: {b.get('creation_date', '')[:10]})")
+        return
+
+    print(f"Unknown cf subcommand: {sub}.")
+    print("Available subcommands:")
+    print("  status | list | inspect | ping | deploy | secrets | secret-set | sync-secrets | ai | d1 | kv | r2")
+
+
+def cmd_sweep(args):
+    """Dynamic process supervisor and zombie killer."""
+    from . import zombie_killer
+    hunter = zombie_killer.ZombieHunter()
+    res = hunter.sweep(kill=getattr(args, "kill", False))
+    if getattr(args, "json", False):
+        print(json.dumps(res, indent=2))
+    else:
+        print(zombie_killer.ZombieHunter.render_report(res, verbose=getattr(args, "verbose", False)))
 
 
 def cmd_live(args):
@@ -2044,6 +2750,22 @@ def cmd_doctor(args):
     except ImportError as e:
         print(f" ❌ Engine Modules missing: {e}")
 
+    # 5. Check Cloudflare Edge Substrate & Fleet Gateway
+    print("\n[Cloudflare Edge Substrate]")
+    cf_diag = {}
+    try:
+        from . import cloudflare
+        cf_client = cloudflare.CloudflareClient()
+        ping_res = cf_client.ping()
+        cf_diag = ping_res
+        print(f" ✅ Cloudflare Account: {ping_res['account_name']} ({ping_res['account_id'][:10]}...)")
+        print(f" ✅ Active Workers: {ping_res['active_workers']} deployed in orbit")
+        print(f" ✅ Fleet MCP Gateway: {ping_res['gateway_status']} ({ping_res.get('gateway_latency_ms', '?')} ms)")
+        print(f" ✅ Workers AI Edge: Ready (API latency: {ping_res['api_latency_ms']} ms)")
+    except Exception as e:
+        cf_diag = {"error": str(e)}
+        print(f" ⚠️ Cloudflare Edge Substrate: {e}")
+
     if getattr(args, 'json', False):
         import json
         print("\n[JSON Output]")
@@ -2052,7 +2774,8 @@ def cmd_doctor(args):
             "vault": {"path": str(keymaker.DB_PATH.absolute()),
                       "exists": keymaker.DB_PATH.exists(),
                       "providers": keymaker.list_providers() if keymaker.DB_PATH.exists() else []},
-            "connectivity": p_status
+            "connectivity": p_status,
+            "cloudflare_edge": cf_diag
         }
         print(json.dumps(report, indent=2))
 
@@ -2539,6 +3262,14 @@ def cmd_relay(args):
     prev_argv = sys.argv
     os.chdir(registry)
     sys.argv = ["relay", *forwarded]
+    action_mode = os.environ.get("NOUGEN_CONFLICT_ACTION", "").strip().lower() or "report"
+    try:
+        from .control_loop import intent_alignment_check  # pylint: disable=import-outside-toplevel
+        verdict = intent_alignment_check({"task_id": "relay_execution"}, {})
+        if verdict.get("verdict") == "CONFLICTED" and action_mode == "report":
+            logger.warning("intent_alignment_check reported conflict before relay goal execution: %s", verdict)
+    except Exception as exc:
+        logger.warning("intent_alignment_check failed before relay goal execution: %s", exc)
     try:
         rc = relay_main()
     finally:
@@ -2623,6 +3354,137 @@ def cmd_transcribe(args):
             print(f"  media:       {res['media'].get('path')}")
 
 
+def cmd_tunnel(args):
+    """Starts an ephemeral or custom edge tunnel via Ngrok."""
+    from . import tunnel
+    import time
+    try:
+        res = tunnel.start_tunnel(
+            port=args.port,
+            service_name=args.service,
+            domain=args.domain
+        )
+        if args.json:
+            print(json.dumps({
+                "url": res["url"],
+                "port": res["port"],
+                "service": res["service"],
+                "domain": res["domain"],
+                "status": "online"
+            }, indent=2))
+        else:
+            print("🚇 NouGen Edge Tunnel Active")
+            print(f"  • Forwarding:  http://localhost:{res['port']} -> {res['url']}")
+            print(f"  • Service:     {res['service']}")
+            print("  • Ingress:     Ngrok Shang Tsung Gateway")
+            print("\n[Press Ctrl+C to stop tunnel]")
+        
+        # Keep process alive while tunnel is open
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n🚇 Tunnel terminated.")
+    except Exception as exc:
+        if args.json:
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"❌ Failed to start tunnel: {exc}")
+        sys.exit(1)
+
+
+def cmd_hi(args):
+    from . import session_probe
+    import json as _json
+    report = session_probe.run_hi(fleet=not args.no_fleet)
+    if getattr(args, "json", False):
+        print(_json.dumps(report.__dict__, default=str, indent=2))
+        return
+    print(f"🌅 hi — {report.identity.get('host', 'unknown')} ({report.identity.get('machine_id', '?')}) — {report.local_time}")
+    print(f"  Open handoffs: {report.open_handoffs}")
+    if report.latest_goal:
+        print(f"  Latest goal: {report.latest_goal}")
+    if report.fleet_pulse:
+        pulse = ", ".join(f"{h}:{'up' if ok else 'down'}" for h, ok in report.fleet_pulse.items())
+        print(f"  Fleet pulse: {pulse}")
+    if report.orphan_ports:
+        print(f"  Ports already up: {', '.join(f'{p} ({label})' for p, label in report.orphan_ports)}")
+    relay_status = "armed" if report.relay_armed else "unreachable"
+    print(f"  Relay: {relay_status}, {report.relay_open_count} open leg(s)")
+    for leg in report.relay_legs:
+        print(f"    • {leg['who']} — {leg['goal']}  [{leg['id']}]")
+    if report.next_play:
+        print(f"  ▶ Next play: {report.next_play}")
+    if report.usage:
+        parts = [
+            f"{label}: {u.get('total_tokens', 0):,} tok / ${u.get('estimated_cost', 0.0):.2f}"
+            for label, u in report.usage.items() if u.get("ledger_present")
+        ]
+        if parts:
+            print(f"  Usage (local ledger, shadow cost): {' | '.join(parts)}")
+
+
+def cmd_bye(args):
+    from . import session_probe
+    import json as _json
+    report = session_probe.run_bye(
+        agent=args.agent, goal=args.goal, summary=args.summary, dry_run=args.dry_run,
+        publish_leg=args.publish_leg, write_shard=not args.no_shard,
+    )
+    if getattr(args, "json", False):
+        print(_json.dumps(report.__dict__, default=str, indent=2))
+        return
+    print(f"🌙 bye — {report.local_time} — {report.total_dirty} dirty file(s), {report.total_unpushed} unpushed commit(s)")
+    for r in report.repos:
+        if r["dirty"] or r["unpushed"]:
+            print(f"  📁 {r['repo']} ({r['branch']}) — {r['dirty']} dirty, {r['unpushed']} unpushed")
+    if report.orphan_ports:
+        print(f"  Ports still up: {', '.join(f'{p} ({label})' for p, label in report.orphan_ports)}")
+    if report.handoff_path:
+        print(f"  ✅ Handoff written: {report.handoff_path}")
+    elif args.dry_run:
+        print("  [DRY RUN] No handoff written")
+    if report.shard_verified is not None:
+        mark = "✅" if report.shard_verified else "⚠️"
+        print(f"  {mark} Session shard: {report.shard_note}")
+    if report.relay_leg_published is not None:
+        if report.relay_leg_published:
+            print(f"  ✅ Relay leg published: {report.relay_leg_id}")
+        else:
+            print(f"  ⚠️ Relay leg NOT published: {report.relay_leg_id}")
+    if report.usage:
+        parts = [
+            f"{label}: {u.get('total_tokens', 0):,} tok / ${u.get('estimated_cost', 0.0):.2f}"
+            for label, u in report.usage.items() if u.get("ledger_present")
+        ]
+        if parts:
+            print(f"  Usage (local ledger, shadow cost): {' | '.join(parts)}")
+    print(f"  Primer: {report.primer}")
+
+
+def cmd_hijack(args):
+    from . import session_probe
+    result = session_probe.run_hijack(handoff_id=args.handoff_id, agent=args.agent)
+    if result.get("ok"):
+        print(f"✅ Hijacked {result['id']} -> {result['identity'].get('host')} ({result['identity'].get('machine_id')})")
+    else:
+        print(f"❌ {result.get('error')}")
+        sys.exit(1)
+
+
+def cmd_open(args):
+    """Forward to the NouGenOpen CLI (OpenRouter Free Fleet Engine)."""
+    try:
+        from nougen_open.cli import main as open_main
+    except ImportError:
+        print("[FATAL] nougen_open package not installed. Install with `pip install -e NouGenOpen`.", file=sys.stderr)
+        sys.exit(1)
+    
+    forwarded = list(getattr(args, "open_args", None) or [])
+    if forwarded[:1] == ["--"]:
+        forwarded = forwarded[1:]
+    open_main(forwarded)
+
+
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
@@ -2634,25 +3496,59 @@ def main():
         print()
         get_parser().print_help()
         sys.exit(0)
+    if sys.argv[1] == "cf":
+        cmd_cf(argparse.Namespace(command="cf", cf_args=sys.argv[2:]))
+        return
     if sys.argv[1] == "relay":
         # Pure pass-through: argparse (3.13+) refuses to let a REMAINDER
         # positional swallow a leading option, so `nougen relay --help` and
         # `nougen relay -h` would die here instead of reaching the engine.
         cmd_relay(argparse.Namespace(command="relay", relay_args=sys.argv[2:]))
         return
+    if sys.argv[1] == "open":
+        cmd_open(argparse.Namespace(command="open", open_args=sys.argv[2:]))
+        return
+
     parser = get_parser()
+
+    # Dynamic second-reflex: Derive known subcommands dynamically from parser subparsers
+    known_cmds = set()
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            known_cmds.update(action.choices.keys())
+    known_cmds.update({"cf", "relay", "open", "zombies", "sweep"})
+
+    # If first argument is not a flag (-h, --version, etc) and not a registered subcommand,
+    # automatically interpret `nougen <query>` as `nougen search "<query>"`
+    if len(sys.argv) > 1 and sys.argv[1] not in known_cmds and not sys.argv[1].startswith("-"):
+        query_str = " ".join(sys.argv[1:])
+        cmd_search(argparse.Namespace(
+            command="search",
+            query=query_str,
+            semantic=False,
+            provider=None,
+            json=False,
+            domain=None,
+            dual=True
+        ))
+        return
+
     args = parser.parse_args()
     cmds = {
         "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
+        "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr,
         "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
-        "transcribe": cmd_transcribe, "live": cmd_live, "algo": cmd_algo
+        "transcribe": cmd_transcribe, "live": cmd_live, "algo": cmd_algo,
+        "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
+        "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep, "open": cmd_open,
+        "facts": cmd_facts, "mrsb": cmd_mrsb,
     }
     if args.command in cmds:
         cmds[args.command](args)

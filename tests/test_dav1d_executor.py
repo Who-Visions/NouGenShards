@@ -60,3 +60,86 @@ def test_dav1d_executor_rejected_subcommand():
     assert res["status"] == "rejected"
     assert res["exit_code"] == 1
     assert "not in bounded allowlist" in res["error"]
+
+
+def test_dav1d_executor_version_word_becomes_flag(monkeypatch):
+    """agy 1.2.x rejects a bare `version`; the executor must send --version."""
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="agy 0.0.0\n", stderr="")
+
+    monkeypatch.setattr("nougen_shards.dav1d_executor.resolve_agy_binary", lambda: "agy-fake")
+    monkeypatch.setattr("nougen_shards.dav1d_executor.subprocess.run", fake_run)
+    monkeypatch.setenv("NOUGEN_AGY_VERSION", "test")
+    res = run_dav1d_agy(subcommand="version")
+    assert seen["cmd"] == ["agy-fake", "--version"]
+    assert res["status"] == "success"
+
+
+def test_dav1d_persona_answers_from_ollama(monkeypatch):
+    import io
+    import json
+    from nougen_shards import dav1d_executor as ex
+
+    def fake_urlopen(req, timeout=None):
+        url = req if isinstance(req, str) else req.full_url
+        if url.endswith("/api/tags"):
+            return io.BytesIO(json.dumps({"models": [{"name": "dav1d:e2b-pre-selfid"}, {"name": "dav1d:e2b"}]}).encode())
+        payload = json.loads(req.data)
+        assert payload["model"] == "dav1d:e2b" and payload["think"] is False
+        return io.BytesIO(json.dumps({"message": {"content": "alive"}}).encode())
+
+    monkeypatch.delenv("NOUGEN_AGENT_MODEL_DAV1D", raising=False)
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    res = ex.ask_dav1d_persona("status?")
+    assert res["engine"] == "ollama" and res["model"] == "dav1d:e2b" and res["output"] == "alive"
+
+
+def test_dav1d_persona_reports_error_when_ollama_down(monkeypatch):
+    from nougen_shards import dav1d_executor as ex
+
+    def boom(*a, **k):
+        raise OSError("ollama down")
+
+    monkeypatch.setenv("NOUGEN_AGENT_MODEL_DAV1D", "dav1d:e2b")
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    res = ex.ask_dav1d_persona("status?")
+    assert res["status"] == "error" and res["engine"] == "ollama"
+    assert "ollama down" not in str(res)
+
+
+def test_dav1d_exec_prompt_goes_to_persona_never_agy(monkeypatch):
+    from nougen_shards import dav1d_executor as ex
+
+    monkeypatch.setattr(ex, "ask_dav1d_persona", lambda p, **k: {"engine": "ollama", "output": p})
+    monkeypatch.setattr("nougen_shards.dav1d_executor.subprocess.run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("agy must not run")))
+    assert run_dav1d_agy(prompt="--dangerously-skip-permissions hi")["engine"] == "ollama"
+
+
+def test_dav1d_executor_rejects_unlisted_flag():
+    res = run_dav1d_agy(args=["--dangerously-skip-permissions", "--print", "x"])
+    assert res["status"] == "rejected"
+
+
+def test_smuggled_flag_after_allowed_subcommand_is_rejected():
+    from nougen_shards.dav1d_executor import run_dav1d_agy
+
+    out = run_dav1d_agy(args=["mcp", "add", "--command", "/bin/sh"])
+    assert out["status"] == "rejected"
+    assert "--command" in out["error"]
+
+
+def test_control_characters_in_arguments_are_rejected():
+    from nougen_shards.dav1d_executor import _reject_unsafe_args
+
+    assert _reject_unsafe_args(["--print", "a\x00b"], prompt_index=1)
+    assert _reject_unsafe_args(["mcp", "list"]) == ""
+
+
+def test_prompt_may_start_with_dash_but_not_carry_control_bytes():
+    from nougen_shards.dav1d_executor import _reject_unsafe_args
+
+    assert _reject_unsafe_args(["--print", "-not a flag, a prompt"], prompt_index=1) == ""

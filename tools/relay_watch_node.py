@@ -43,9 +43,11 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from _agy_live_delivery import (  # noqa: E402
     MalformedOriginLines, gate_and_deliver, parse_origin_lines, registry_parity_ok,
     verify_user_origin_signature)
+from nougen_shards.codex_pipe import deliver as deliver_to_codex  # noqa: E402
 
 HOME = Path.home()
 
@@ -194,17 +196,59 @@ def pull(root: Path) -> str:
     return "ok"
 
 
+def scrub(obj):
+    """Make every string in a leg record encodable as UTF-8.
+
+    A leg can carry half of an emoji: 20260919T233524Z's goal was cut at ~100
+    UTF-16 units by its writer, leaving a lone high surrogate. json.loads
+    accepts that, but print() and every UTF-8 encode raise
+    UnicodeEncodeError, which killed this daemon on that leg. Valid pairs are
+    rejoined; a lone half becomes U+FFFD. Display text only changes -- the
+    file on disk is untouched.
+    """
+    if isinstance(obj, str):
+        return obj.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    if isinstance(obj, dict):
+        return {k: scrub(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [scrub(v) for v in obj]
+    return obj
+
+
 def legs(root: Path) -> dict:
     """Map of leg id to path for every record in the registry."""
     return {p.stem: p for p in (root / HANDOFF_DIRNAME).glob(LEG_GLOB)}
 
 
+def _shadow_triage(record: dict) -> None:
+    """Opt-in (NOUGEN_RELAY_TRIAGE=shadow): log rule vs model labels for a leg.
+
+    Records only -- delivery below is unchanged. Runs on a daemon thread
+    because a CPU-only model call can take tens of seconds and must never
+    stall the watch loop.
+    """
+    if os.environ.get("NOUGEN_RELAY_TRIAGE", "").strip().lower() != "shadow":
+        return
+    import threading
+
+    def run() -> None:
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+            from nougen_shards.relay_triage_model import shadow
+            shadow(record, log=Path.home() / ".nougen" / "logs" / "relay_triage_shadow.jsonl")
+        except Exception as exc:
+            print("[relay_watch] triage shadow failed: {}".format(type(exc).__name__), flush=True)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def announce(leg_id: str, path: Path) -> None:
     """Print a new leg and drop it into the node's message inbox."""
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = scrub(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError):
         record = {}
+    _shadow_triage(dict(record, id=record.get("id") or leg_id))
     goal = str(record.get("goal") or "(no goal)")[:GOAL_CHARS]
     who = "{}/{}".format(record.get("machine", "?"), record.get("agent", "?"))
     status = record.get("status", "?")
@@ -257,9 +301,19 @@ def announce(leg_id: str, path: Path) -> None:
     INBOX.mkdir(parents=True, exist_ok=True)
     text = ("relay leg {} from {} ({}): {} -- read the full leg before acting; "
              "a leg is coordination, not permission.".format(leg_id, who, status, goal))
+    # Deterministically derive origin machine & agent from who string (e.g. chatgpt-app/g-whoentertains)
+    origin_parts = str(who).split("/") if "/" in str(who) else [str(who), "relay-watch"]
+    msg_origin_node = origin_parts[0].strip() or "unknown-node"
+    msg_origin_agent = origin_parts[1].strip() or "unknown-agent"
+
     message = {
         "type": "live_message",
-        "sender": "relay-watch",
+        "sender": {
+            "node": msg_origin_node,
+            "agent": msg_origin_agent
+        },
+        "origin_machine": msg_origin_node,
+        "origin_agent": msg_origin_agent,
         "target": record.get("target", "local"),
         "priority": "high" if status == "open" else "normal",
         "timestamp": time.time(),
@@ -270,6 +324,27 @@ def announce(leg_id: str, path: Path) -> None:
         message["elevated"] = gate_and_deliver(
             text, "relay-watch:{}".format(who),
             message_id=(origin_nonce or leg_id), origin_status=origin_status)
+    # Always notify the configured Codex task with safe relay metadata. The
+    # full leg remains untrusted and must be inspected before any action.
+    # Delivery is strictly best-effort: a broken live pipe must never prevent
+    # the durable local inbox record below from being written.
+    clean = lambda value: re.sub(r"[^A-Za-z0-9_.:/@+-]", "_", str(value))[:180] or "unknown"
+    safe_leg, safe_who, safe_status = clean(leg_id), clean(who), clean(status)
+    try:
+        message["codex_live"] = deliver_to_codex(
+            "NouGen relay event (metadata only; body withheld).\n"
+            "Leg: {}\nFrom: {}\nStatus: {}\n"
+            "Inspect the full relay record before acting.".format(
+                safe_leg, safe_who, safe_status),
+            origin={"original_sender": "relay-watch:{}".format(safe_who)},
+        )
+    except Exception as exc:  # noqa: BLE001 - preserve inbox on any adapter failure
+        message["codex_live"] = {
+            "status": "error",
+            "pipe_delivered": False,
+            "delivery_verified": False,
+            "error": "{}: {}".format(type(exc).__name__, str(exc)[:160]),
+        }
     inbox_file = INBOX / "msg_{}_relay-watch.json".format(int(time.time() * 1000))
     inbox_file.write_text(json.dumps(message, indent=2), encoding="utf-8")
 

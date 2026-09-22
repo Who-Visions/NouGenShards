@@ -7,8 +7,10 @@ Architecture: NouGenMorph 21-step cognitive loop. Weighted multi-signal relevanc
 import hashlib
 import json
 import logging
+import math
 import os
 import re
+import socket
 import sqlite3
 import threading as _threading
 import time
@@ -223,6 +225,41 @@ def get_active_db_index() -> int:
     return get_routing_index(hashlib.md5(b"default").hexdigest())
 
 
+DEFAULT_SQLITE_TIMEOUT_S = 10.0
+
+
+def sqlite_timeout_s(default: float | None = None) -> float:
+    """Seconds sqlite waits on a locked vault DB; NOUGEN_SQLITE_TIMEOUT_S overrides.
+
+    Read at connect time so a busy fleet node can raise it without a restart.
+    Anything that is not a positive finite number logs and uses the default.
+
+    `default` lets a caller that legitimately waits longer than a normal read
+    (a whole-vault scan behind a WAL writer, say) keep its own fallback while
+    still honouring the same env var; it must itself be a positive finite
+    number, or the module default stands.
+    """
+    fallback = DEFAULT_SQLITE_TIMEOUT_S
+    if default is not None:
+        if math.isfinite(default) and default > 0:
+            fallback = float(default)
+        else:
+            logger.warning("sqlite_timeout_s(default=%r) is not a positive number; using %ss",
+                           default, DEFAULT_SQLITE_TIMEOUT_S)
+    raw = os.environ.get("NOUGEN_SQLITE_TIMEOUT_S", "").strip()
+    if not raw:
+        return fallback
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value <= 0:
+        logger.warning("NOUGEN_SQLITE_TIMEOUT_S=%r is not a positive number; using %ss",
+                       raw, fallback)
+        return fallback
+    return value
+
+
 def get_connection(index: int):
     """Establishes an SQLite connection with WAL enabled (Module 19: Stabilize Reasoning).
 
@@ -239,7 +276,7 @@ def get_connection(index: int):
         conn.row_factory = sqlite3.Row
         return conn
     try:
-        conn = sqlite3.connect(str(path), timeout=10.0)
+        conn = sqlite3.connect(str(path), timeout=sqlite_timeout_s())
     except sqlite3.OperationalError as exc:
         # "unable to open database file" is how the descriptor ceiling shows
         # up: the file is there, the process just cannot open one more. Every
@@ -306,7 +343,7 @@ def quarantine_malformed_dbs() -> list:
         for attempt in range(2):
             reason = None
             try:
-                conn = sqlite3.connect(str(path), timeout=10.0)
+                conn = sqlite3.connect(str(path), timeout=sqlite_timeout_s())
                 try:
                     row = conn.execute("PRAGMA quick_check(1);").fetchone()
                 finally:
@@ -429,6 +466,21 @@ def init_db(index: int = 1):  # noqa: C901
         except sqlite3.OperationalError:
             pass
 
+        # Machine provenance (schema v3): stamps which node (hostname) wrote the shard.
+        try:
+            cursor.execute("ALTER TABLE shards ADD COLUMN machine TEXT DEFAULT '';")
+        except sqlite3.OperationalError:
+            pass
+
+        # Validity window (schema v4, Toujou): when a shard stops being
+        # true, and when it was last re-confirmed. Both nullable; recall sorts
+        # expired shards below live ones (see _mark_expired).
+        for _col in ("valid_until TEXT", "last_verified TEXT"):
+            try:
+                cursor.execute(f"ALTER TABLE shards ADD COLUMN {_col};")
+            except sqlite3.OperationalError:
+                pass
+
         # Relay provenance (schema v3): older nodes did not retain the
         # publisher URI, so add it idempotently during normal startup.
         try:
@@ -543,7 +595,7 @@ def _get_dedup_connection():
     databases per capture. The per-DB UNIQUE(file_hash) constraint remains
     the authority; this index is a router/cache in front of it.
     """
-    conn = sqlite3.connect(str(get_dedup_path()), timeout=10.0)
+    conn = sqlite3.connect(str(get_dedup_path()), timeout=sqlite_timeout_s())
     mode = get_vault_journal_mode()
     conn.execute(f"PRAGMA journal_mode={mode};")
     conn.execute("""
@@ -866,9 +918,13 @@ def _embed_query(query: str) -> Optional[np.ndarray]:
         # idle period pays ollama's model (re)load, and a cold-load miss here
         # silently degrades every recall to keyword-only.
         timeout = float(os.environ.get("NOUGEN_QUERY_EMBED_TIMEOUT",
-                                       os.environ.get("NOUGEN_EMBED_TIMEOUT", "3.0")))
+                                       os.environ.get("NOUGEN_EMBED_TIMEOUT", "6.0")))
     except ValueError:
-        timeout = 3.0
+        # A cold nomic-embed-text load measured 2.6 s on an idle GPU on
+        # WhoArt (2026-09-14); under GPU contention it passed 3 s, so 3.0
+        # quietly turned most recalls keyword-only. A down ollama refuses the
+        # connection at once, so only a hung one ever waits the full budget.
+        timeout = 6.0
     try:
         from .embedding_backfill import embed as _embed  # local import: optional dep path
         vec = _embed((query or "")[:4000], model, timeout=timeout)
@@ -957,7 +1013,9 @@ def capture(event_type: str, title: str, content: str,
             sensitivity: Optional[str] = None,
             original_timestamp: Optional[str] = None,
             source_uri: Optional[str] = None,
-            utility: Optional[float] = None) -> bool:
+            utility: Optional[float] = None,
+            valid_until: Optional[str] = None,
+            consolidate: Optional[bool] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants).
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
@@ -986,6 +1044,14 @@ def capture(event_type: str, title: str, content: str,
     content = redact_content(str(content))
     if tags:
         tags = [redact_content(str(tag)) for tag in tags]
+
+    # Opt-in write-time consolidation (consolidate.py): tags a fact that supersedes,
+    # conflicts with, or duplicates a neighbour. Never blocks or alters the write.
+    from . import consolidate as _cons  # pylint: disable=import-outside-toplevel
+    if _cons.enabled(consolidate):
+        tags = list(tags or []) + _cons.consolidation_tags(
+            title, content, list(tags or []),
+            lambda q, limit=5: retrieve(q, limit=limit, domain_key=domain_key))
 
     sensitivity = _pv.normalize_sensitivity(sensitivity)
     if not domain_key:
@@ -1026,6 +1092,7 @@ def capture(event_type: str, title: str, content: str,
             "tags": tags, "domain_key": domain_key,
             "density_score": density_score, "sensitivity": sensitivity,
             "original_timestamp": original_timestamp,
+            "valid_until": valid_until,
         })
         return CaptureResult(fwd)
 
@@ -1119,6 +1186,12 @@ def capture(event_type: str, title: str, content: str,
                     "capture: unparseable original_timestamp %r; "
                     "falling back to now", original_timestamp)
 
+        # Validity window (Toujou): a shard may declare when it stops being
+        # true. Normalized to UTC ISO so recall can compare it; an unparseable
+        # value is dropped with a warning, never a failed write.
+        valid_until_value = _normalize_iso(valid_until) if valid_until else None
+        verified_now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
         # Encrypt LAST, immediately before the write: the dedup hash, the blob
         # gate, the redactor and the embedder all need the real text, and the
         # AFTER INSERT trigger that feeds shards_fts reads new.content -- so
@@ -1150,10 +1223,10 @@ def capture(event_type: str, title: str, content: str,
                 init_db(target_idx)
                 conn = get_connection(target_idx)
                 cursor = conn.execute("""
-                    INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, source_uri, utility_score, learned_utc)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO shards (timestamp, event_type, title, content, tags, file_hash, embedding, domain_key, density_score, sensitivity, enc, source_uri, utility_score, learned_utc, valid_until, last_verified, machine)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (timestamp, event_type, title, stored_content, tags_str, fhash, emb_blob, domain_key, density_score, sensitivity, enc_flag, source_uri_value, utility_score,
-                      datetime.now(timezone.utc).isoformat(timespec="seconds")))
+                      datetime.now(timezone.utc).isoformat(timespec="seconds"), valid_until_value, verified_now, socket.gethostname()))
                 conn.commit()
 
                 # Log CREATED event
@@ -1216,6 +1289,26 @@ def capture(event_type: str, title: str, content: str,
                              db_index=target_idx)
     finally:
         dconn.close()
+
+
+def mark_verified(shard_id: int, db_index: int, valid_until: Optional[str] = None) -> bool:
+    """Record that a shard was re-confirmed true now, optionally moving its
+    validity window (Toujou). Returns False when the row does not exist."""
+    if not get_db_path(db_index).exists():
+        return False
+    init_db(db_index)
+    conn = get_connection(db_index)
+    try:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if valid_until is not None:
+            cur = conn.execute("UPDATE shards SET last_verified = ?, valid_until = ? WHERE id = ?",
+                               (now, _normalize_iso(valid_until), shard_id))
+        else:
+            cur = conn.execute("UPDATE shards SET last_verified = ? WHERE id = ?", (now, shard_id))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
 
 
 # Relevance blend weights (Module 20)
@@ -1766,13 +1859,12 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
     # of raw score - the lanes' score scales are not comparable (trigram-FTS
     # bm25 magnitudes are tiny, so a weighted exact score can sit below a
     # strong fuzzy similarity, and an OR hit covering one token must never
-    # displace an AND hit covering all of them). Score is rounded so
-    # sub-epsilon temporal-decay jitter can't reorder near-ties; bm25 (more
-    # negative == stronger, absent treated as weakest) breaks sub-round ties
-    # by match strength - on small corpora trigram bm25 is ~1e-6 and the
-    # rounding erases it, and falling straight to insertion order picked the
-    # wrong shard; then (_db_index, id) ASC pins true ties so identical
-    # queries never reorder run-to-run.
+    # displace an AND hit covering all of them). Score is exact, not rounded:
+    # decay rescales every score by one shared factor, so exact order holds as
+    # the clock advances, while a decimal grid slid between near-tied shards
+    # and flipped them between calls. bm25 (more negative == stronger, absent
+    # treated as weakest) breaks exact score ties by match strength, then
+    # (_db_index, id) ASC pins true ties so identical queries never reorder.
     def _tier(x):
         if x.get("_fuzzy"):
             return 2
@@ -1780,7 +1872,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
             return 1
         return 0
     results.sort(key=lambda x: (_tier(x),
-                                -round(x.get("final_score", 0.0), 6),
+                                -x.get("final_score", 0.0),
                                 x.get("bm25_score") or 0.0,
                                 x.get("_db_index", 0),
                                 x.get("id", 0)))
@@ -2094,7 +2186,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                     "(embed model changed?)", i, cache["dim"], qdim)
             if not scored:
                 return db_rows
-            scored.sort(key=lambda t: (-round(t[0], 6), t[1]))
+            scored.sort(key=lambda t: (-t[0], t[1]))
             top = scored[:limit]
             placeholders = ",".join("?" for _ in top)
             by_id = {sid: score for score, sid in top}
@@ -2127,9 +2219,10 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     for _i, db_rows in _run_db_scans(_scan_db):
         results.extend(db_rows)
 
-    # Deterministic order: score DESC (rounded so sub-epsilon temporal-decay
-    # jitter doesn't reorder near-ties run-to-run), then (_db_index, id) ASC.
-    results.sort(key=lambda x: (-round(x.get("final_score", 0.0), 6), x.get("_db_index", 0), x.get("id", 0)))
+    # Deterministic order: exact score DESC, then (_db_index, id) ASC. Not
+    # rounded: decay rescales every score by one shared factor, so exact order
+    # holds as the clock advances, while a decimal grid flips near-ties.
+    results.sort(key=lambda x: (-x.get("final_score", 0.0), x.get("_db_index", 0), x.get("id", 0)))
     top_results = results[:limit]
 
     history.log_events([(item["id"], item["_db_index"], "ACCESSED") for item in top_results])
@@ -2198,7 +2291,7 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
     # "vault_x_<hash>"), and Python 3 refuses int<str — one tied score across
     # lanes and the whole federated merge raised TypeError. The tie-break only
     # needs determinism, not numeric order, so lexicographic is sufficient.
-    merged.sort(key=lambda x: (-round(x["final_score"], 6),
+    merged.sort(key=lambda x: (-x["final_score"],
                                str(x.get("_db_index", 0)), str(x.get("id", 0))))
     return merged
 
@@ -2315,6 +2408,58 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
     for _, rows in _run_db_scans(scan):
         out.extend(rows)
     return out[:limit]
+
+
+def _normalize_iso(value) -> Optional[str]:
+    """UTC ISO-8601 'Z' form of a timestamp, or None if it cannot be parsed."""
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        logger.warning("unparseable timestamp %r ignored", value)
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _mark_expired(items: list, now: datetime) -> None:
+    """Flag fused candidates whose ``valid_until`` has passed (Toujou: nou gen toujou, we still have it).
+
+    One query per grid DB, like _learned_times. retrieve() sorts flagged items
+    below every live candidate in the same title tier: a superseded fact stays
+    findable but never outranks a current one. Tier ordering, not a score
+    multiplier, because relevance is min-max normalized per query and a
+    multiplier cannot guarantee the order on a small candidate pool.
+    NOUGEN_VALIDITY_RANK=0 turns it off. A lookup failure leaves items
+    unflagged: a derived signal must never break recall."""
+    if os.environ.get("NOUGEN_VALIDITY_RANK", "1").strip().lower() in ("0", "false", "no", "off"):
+        return
+    by_db: dict = {}
+    for it in items:
+        if isinstance(it.get("_db_index"), int) and it.get("id") is not None:
+            by_db.setdefault(it["_db_index"], []).append(it.get("id"))
+    known: dict = {}
+    for db, ids in by_db.items():
+        conn = None
+        try:
+            conn = get_connection(db)
+            marks = ",".join("?" * len(ids))
+            for sid, until in conn.execute(
+                    f"SELECT id, valid_until FROM shards WHERE valid_until IS NOT NULL AND id IN ({marks})", ids):
+                known[(db, sid)] = until
+        except (sqlite3.DatabaseError, OSError):
+            continue
+        finally:
+            if conn is not None:
+                conn.close()
+    for it in items:
+        norm = _normalize_iso(known.get((it.get("_db_index"), it.get("id"))) or it.get("valid_until"))
+        if norm is None:
+            continue
+        it["valid_until"] = norm
+        it["_expired"] = datetime.fromisoformat(norm.replace("Z", "+00:00")) < now
 
 
 def _learned_times(items: list) -> dict:
@@ -2507,6 +2652,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
 
     # One reference clock for the whole scoring pass (see _temporal_decay).
     score_now = datetime.now(timezone.utc)
+    _mark_expired(all_results, score_now)
     for item in all_results:
         raw_rel = item.get("rerank_score", item.get("final_score", 0.5))
         if rel_span > 0:
@@ -2521,9 +2667,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         item["utility_score_tripartite"] = u_shard
         scored_results.append(item)
     
-    # Sort candidates by the tripartite score. Round the score so sub-epsilon
-    # temporal-decay jitter can't reorder near-ties run-to-run; exact ties then
-    # break deterministically by (_db_index, id).
+    # Sort candidates by the exact tripartite score; exact ties break by
+    # (_db_index, id). Do not round: decay rescales every score by one shared
+    # factor, so exact order is stable as the clock advances, but a fixed decimal
+    # grid slides between near-tied shards and flips them between calls.
     # Known-item tier: a shard whose title IS the query outranks everything else.
     # RRF flattens rank (k=60: #1 and #20 differ by <30%) and the decay x density
     # prior then let newer partial matches bury exact titles; the tier restores
@@ -2532,7 +2679,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     for item in scored_results:
         item["_title_exact"] = _title_hit(qnorm, item.get("title"))
     scored_results.sort(
-        key=lambda x: (not x["_title_exact"], -round(x["utility_score_tripartite"], 6),
+        key=lambda x: (not x["_title_exact"], bool(x.get("_expired")), -x["utility_score_tripartite"],
                        x.get("_db_index", 0), x.get("id", 0)))
     
     # Dynamic Thresholding / Drop bottom 50% if we have many candidates
@@ -2910,6 +3057,13 @@ def compile_recall_packet(shards: list, token_budget: Optional[int] = None, stra
     the old unbounded behaviour.
     """
     if not shards:
+        mode = os.environ.get("NOUGEN_RECON_SWEEP_TRIGGER", "").strip().lower() or "low_confidence"
+        if mode != "never":
+            try:
+                from .reconstruction import retrieval_angle_sweep  # pylint: disable=import-outside-toplevel
+                retrieval_angle_sweep("", [])
+            except Exception as exc:
+                logger.warning("retrieval_angle_sweep failed on zero-hit recall: %s", exc)
         return "<!-- NO RELEVANT MEMORY RECALLED -->"
     output = ["=== NOUGENSHARDS RECALL PACKET [BAYESIAN SYNTHESIS] ==="]
     used = _approx_tokens(output[0])

@@ -14,6 +14,16 @@ updates:
     cooldown:
       default-days: 5
       semver-major-days: 3
+    # gradio pins gradio-client exactly, so bumping one alone breaks the
+    # Space build (2026-09-10, #316). Move them in one PR.
+    groups:
+      gradio:
+        patterns: ["gradio", "gradio-client"]
+    # gradio (through 6.28.0) requires tomlkit<0.15.0, so 0.15.x can never
+    # resolve in the Space requirements job (#419). Lift when gradio lifts the cap.
+    ignore:
+      - dependency-name: "tomlkit"
+        versions: [">=0.15.0"]
   - package-ecosystem: npm
     directory: /
     schedule:

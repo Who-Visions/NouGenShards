@@ -28,8 +28,7 @@ def get_graph_db_path():
 
 def get_graph_connection():
     """SQLite connection to the graph store, WAL-enabled (Module 19)."""
-    conn = sqlite3.connect(str(get_graph_db_path()), timeout=10.0)
-    from . import core  # pylint: disable=import-outside-toplevel
+    conn = sqlite3.connect(str(get_graph_db_path()), timeout=core.sqlite_timeout_s())
     mode = core.get_vault_journal_mode()
     conn.execute(f"PRAGMA journal_mode={mode};")
     conn.row_factory = sqlite3.Row

@@ -1,4 +1,5 @@
 """Model Context Protocol (MCP) server for NouGenShards — Valerion Engine."""
+import json
 import os
 import sqlite3
 from nougen_shards import agents
@@ -37,6 +38,9 @@ from .brain_scan import scan_environment, run_import
 
 from .history import HistoryEngine
 from .federation import federated_retrieve
+
+# ~32k chars per recall packet unless NOUGEN_RECALL_TOKEN_BUDGET says otherwise ("0" = unbounded).
+DEFAULT_RECALL_TOKEN_BUDGET = 8000
 
 
 def _server_instructions() -> str:
@@ -135,7 +139,13 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
                     "the substrate holds nothing on this query.")
         return "No relevant shards found in the memory substrate."
     budget = os.environ.get("NOUGEN_RECALL_TOKEN_BUDGET", "").strip()
-    token_budget = int(budget) if budget.isdigit() else None
+    # Unbounded used to be the default; one 994k-char screenplay shard then
+    # filled a 2-hit recall and the MCP transport timed out (WhoArt, 2026-09-20).
+    # Bounded by default, "0" restores the old unbounded packet on purpose.
+    if budget.isdigit():
+        token_budget = int(budget) or None
+    else:
+        token_budget = DEFAULT_RECALL_TOKEN_BUDGET
     if session_id:
         from nougen_shards import distill as _distill  # pylint: disable=import-outside-toplevel
         sent: list = []
@@ -315,13 +325,147 @@ def promote_context_to_shard(event_id: int, tags: Optional[List[str]] = None) ->
 @mcp.tool()
 def execute_sandboxed_code(code: str, language: str = "python") -> str:
     """
-    Execute Python or Node.js code in a sandboxed environment.
+    Execute Python, Node.js, PowerShell, or shell code in a sandboxed environment.
 
     Args:
         code: The script source code to execute.
-        language: Runtime to use — 'python' (default), 'javascript', or 'typescript'.
+        language: Runtime to use — 'python' (default), 'javascript', 'typescript', 'powershell', 'shell', or 'cmd'.
     """
     return nougen_sandbox.execute_sandboxed(code, language=language)
+
+
+@mcp.tool()
+def fetch_web_sandboxed(url: str, label: Optional[str] = None) -> str:
+    """
+    Natively fetch, extract, and index a web page into NouGen Context without polluting prompt context.
+
+    Args:
+        url: The web URL to fetch.
+        label: Optional descriptive label for indexing.
+    """
+    res = nougen_context.fetch_and_index_web(url, label=label)
+    if "error" in res:
+        return f"Error: {res['error']}"
+    headings_summary = "\n".join(f"- {h}" for h in res.get("headings", [])[:8])
+    links_summary = "\n".join(f"- {link}" for link in res.get("key_links", [])[:8])
+    return (
+        f"✅ Successfully indexed '{res['title']}' into NouGen Context (Handle: {res['handle']})\n"
+        f"Summary: {res['summary']}\n\n"
+        f"Headings:\n{headings_summary}\n\n"
+        f"Key Links:\n{links_summary}\n\n"
+        f"Length: {res['total_length_bytes']} bytes stored in sandbox."
+    )
+
+
+@mcp.tool()
+def analyze_file_sandboxed(file_path: str, query: Optional[str] = None) -> str:
+    """
+    Analyze a file in the sandbox (AST classes/functions, JSON schema, pattern matches) without reading raw file into context.
+
+    Args:
+        file_path: Absolute or relative path to file on disk.
+        query: Optional string/keyword to filter matching lines.
+    """
+    res = nougen_context.analyze_file(file_path, query=query)
+    if "error" in res:
+        return f"Error: {res['error']}"
+    out = [f"📄 {res['name']} ({res['total_lines']} lines, {res['size_bytes']} bytes)"]
+    if "ast" in res:
+        ast_data = res["ast"]
+        if ast_data.get("syntax_valid"):
+            out.append(f"Classes: {', '.join(ast_data['classes']) or 'None'}")
+            out.append(f"Functions: {', '.join(ast_data['functions'][:15]) or 'None'}")
+            out.append(f"Imports: {', '.join(ast_data['imports'][:12]) or 'None'}")
+        else:
+            out.append(f"Syntax Error: {ast_data.get('syntax_error')}")
+    elif "json_schema" in res:
+        js = res["json_schema"]
+        out.append(f"JSON Structure: {json.dumps(js)}")
+    if "query_matches" in res:
+        out.append(f"Matches for '{query}':")
+        out.extend(res["query_matches"])
+    return "\n".join(out)
+
+
+@mcp.tool()
+def batch_execute_sandboxed(commands: List[dict], queries: Optional[List[str]] = None) -> str:
+    """
+    Run multiple sandboxed commands/scripts, index output in sandbox, and extract query matches.
+
+    Args:
+        commands: List of dicts, each with 'label', 'code', and optional 'language' ('python'|'javascript'|'powershell'|'shell').
+        queries: Optional keywords to extract matching lines across all outputs.
+    """
+    res = nougen_sandbox.batch_execute_sandboxed(commands, queries=queries)
+    summary_lines = ["--- BATCH EXECUTION SUMMARY ---"]
+    for s in res.get("steps", []):
+        summary_lines.append(f"[{s['status'].upper()}] {s['label']} ({s['language']}): {s['preview'][:100]}")
+    if res.get("query_matches"):
+        summary_lines.append("\n--- QUERY MATCHES ---")
+        for q, matches in res["query_matches"].items():
+            summary_lines.append(f"Matches for '{q}':")
+            for m in matches:
+                summary_lines.append(f"  {m}")
+    return "\n".join(summary_lines)
+
+
+@mcp.tool()
+def checkpoint_session(label: str) -> str:
+    """
+    Snapshot active session working set and events into a named checkpoint.
+
+    Args:
+        label: Name for the checkpoint.
+    """
+    res = nougen_context.checkpoint_session(label)
+    return f"Checkpoint '{res['label']}' saved with {res['events_count']} events at {res['timestamp']}."
+
+
+@mcp.tool()
+def restore_session(label: str) -> str:
+    """
+    Restore session state from a named checkpoint.
+
+    Args:
+        label: Name of the checkpoint to restore.
+    """
+    res = nougen_context.restore_session(label)
+    if "error" in res:
+        return f"Error: {res['error']}"
+    return f"Checkpoint '{res['label']}' restored ({res['events_restored']} events restored)."
+
+
+@mcp.tool()
+def ask_ollama_sandboxed(prompt: str, handle: Optional[str] = None, model: Optional[str] = None) -> str:
+    """
+    Accelerate context reasoning with Ollama (local GPU VRAM first, cloud API fallback).
+    Never loads raw sandbox data into conversation window tokens.
+
+    Args:
+        prompt: Question, instructions, or analysis task.
+        handle: Optional sandbox handle (e.g. 'web:url', 'file:path') to feed as private context.
+        model: Specific model (e.g. 'Yukiai:e2b', 'gemma4:e2b-qat').
+    """
+    res = nougen_context.query_ollama(prompt, context_handle=handle, model=model)
+    if res.get("status") == "success":
+        return f"[{res['model']}]:\n{res['response']}"
+    return f"Error: {res.get('error', 'Ollama query failed')}"
+
+
+@mcp.tool()
+def synthesize_sandbox(handle: str, instruction: Optional[str] = None) -> str:
+    """
+    Intelligently synthesize large sandbox data with local Ollama GPU worker and save summary back into sandbox.
+
+    Args:
+        handle: Sandbox handle (e.g. 'web:url', 'file:path').
+        instruction: Optional instruction for synthesis.
+    """
+    instr = instruction or "Summarize the core findings, technical details, and action items."
+    res = nougen_context.synthesize_sandbox(handle, instruction=instr)
+    if res.get("status") == "synthesized":
+        return f"✅ Synthesized {res['handle']} using {res['model']}:\n\n{res['summary']}"
+    return f"Error: {res.get('error', 'Synthesis failed')}"
 
 # --- Brain Recon Layer ---
 
@@ -580,6 +724,106 @@ def transcribe_media(source: str, language: str = "", whisper_model: str = "base
         "transcript_file": res.get("transcript_file"),
         "text_preview": res.get("text", "")[:500] + ("..." if len(res.get("text", "")) > 500 else ""),
     }, indent=2)
+
+
+# --- Cloudflare Edge Fleet Operations ---
+
+@mcp.tool()
+def cf_status() -> str:
+    """
+    Get live status of Cloudflare Edge Substrate, active workers count, storage, and fleet MCP gateway health.
+    """
+    import json
+    from . import cloudflare
+    try:
+        cf = cloudflare.CloudflareClient()
+        ping_res = cf.ping()
+        d1s = cf.list_d1()
+        kvs = cf.list_kv()
+        r2s = cf.list_r2()
+        return json.dumps({
+            "account": ping_res["account_name"],
+            "account_id": ping_res["account_id"],
+            "token_valid": ping_res["token_valid"],
+            "api_latency_ms": ping_res["api_latency_ms"],
+            "active_workers": ping_res["active_workers"],
+            "storage": {
+                "d1_databases": len(d1s),
+                "kv_namespaces": len(kvs),
+                "r2_buckets": len(r2s)
+            },
+            "gateway": {
+                "url": ping_res["gateway_url"],
+                "status": ping_res["gateway_status"],
+                "latency_ms": ping_res.get("gateway_latency_ms")
+            }
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def cf_list_workers() -> str:
+    """
+    List all active Cloudflare Workers deployed across the NouGen fleet orbit.
+    """
+    import json
+    from . import cloudflare
+    try:
+        cf = cloudflare.CloudflareClient()
+        workers = cf.list_workers()
+        return json.dumps([{
+            "id": w.id,
+            "modified_on": w.modified_on,
+            "usage_model": w.usage_model,
+            "routes": w.routes
+        } for w in workers], indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def cf_deploy_worker(directory_path: str = "") -> str:
+    """
+    Auto-detect and deploy a Cloudflare Worker directly from its directory with zero-config.
+    Verifies JavaScript/Node syntax before upload and returns live ETag and URL.
+
+    Args:
+        directory_path: Absolute or relative path to the worker project directory. Defaults to current directory.
+    """
+    import json
+    from pathlib import Path
+    from . import cloudflare
+    try:
+        cf = cloudflare.CloudflareClient()
+        target = Path(directory_path) if directory_path else Path.cwd()
+        res = cf.auto_deploy(target)
+        return json.dumps({
+            "status": "success",
+            "worker_name": res.get("worker_name"),
+            "entry_point": res.get("entry_point"),
+            "etag": res.get("result", {}).get("etag", "live"),
+            "live_url": f"https://{res.get('worker_name')}.whoentertains.workers.dev"
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)})
+
+
+@mcp.tool()
+def cf_run_ai(prompt: str, model: str = "@cf/meta/llama-3.1-8b-instruct") -> str:
+    """
+    Execute zero-VRAM Cloudflare Workers AI edge model inference directly from NouGen.
+
+    Args:
+        prompt: User instruction or query for the edge model.
+        model: Model identifier (e.g. '@cf/meta/llama-3.1-8b-instruct', '@cf/qwen/qwen3-30b-a3b-fp8', '@cf/google/gemma-4-26b-a4b-it').
+    """
+    from . import cloudflare
+    try:
+        cf = cloudflare.CloudflareClient()
+        return cf.run_ai(prompt, model=model)
+    except Exception as e:
+        return f"Workers AI Error: {e}"
 
 
 def main():

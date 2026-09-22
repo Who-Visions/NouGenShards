@@ -1,3 +1,4 @@
+import fnmatch
 import os
 from pathlib import Path
 from typing import List, Optional, Iterator
@@ -83,6 +84,62 @@ def _safe_size_mb(path: Path) -> Optional[float]:
     except OSError:
         return None
 
+MEMORYIGNORE = ".memoryignore"
+
+
+def _load_ignore(path: Path) -> List[str]:
+    """Patterns from one ignore file; missing or unreadable means none."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    return [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
+
+
+def _ignore_patterns(root: Path) -> List[str]:
+    """Global patterns first, then the root's own ``.memoryignore``.
+
+    The global file is ``NOUGEN_MEMORYIGNORE`` when set, else
+    ``~/.nougen/.memoryignore``. Later patterns win, so a project file can
+    re-include (``!name``) what the global file excludes, as in gitignore.
+    """
+    global_file = os.environ.get("NOUGEN_MEMORYIGNORE") or str(Path.home() / ".nougen" / MEMORYIGNORE)
+    return _load_ignore(Path(global_file)) + _load_ignore(root / MEMORYIGNORE)
+
+
+def _is_memoryignored(path: Path, root: Path, patterns: List[str]) -> bool:
+    """gitignore-style match: ``# comment``, ``dir/``, globs, ``!negation``.
+
+    A pattern without a slash matches any path component; one with a slash
+    matches the path relative to the scan root; a trailing slash matches
+    directories only. The last matching pattern decides.
+    """
+    if not patterns:
+        return False
+    try:
+        rel = path.relative_to(root).as_posix()
+    except ValueError:
+        rel = path.as_posix()
+    parts = rel.split("/")
+    ignored = False
+    for raw in patterns:
+        negate = raw.startswith("!")
+        pat = raw[1:] if negate else raw
+        dir_only = pat.endswith("/")
+        pat = pat.strip("/")
+        if not pat:
+            continue
+        if dir_only:
+            hit = any(fnmatch.fnmatch(part, pat) for part in parts[:-1])
+        elif "/" in pat:
+            hit = fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(rel, pat + "/*")
+        else:
+            hit = any(fnmatch.fnmatch(part, pat) for part in parts)
+        if hit:
+            ignored = not negate
+    return ignored
+
+
 def _root_tool_name(root: Path, path: Path) -> str:
     """Names the source tool for a database outside the known dot-directories.
 
@@ -109,8 +166,11 @@ def scan_databases(include_generic: bool = False) -> List[CandidateFile]:
     found: List[CandidateFile] = []
     # GLOBAL_ROOTS[0] is Path.home(); walking it would crawl the whole disk.
     for root in GLOBAL_ROOTS[1:]:
+        ignore = _ignore_patterns(root)
         for p in _safe_walk(root, max_depth=6):
             if p.suffix.lower() not in SQLITE_EXTS:
+                continue
+            if _is_memoryignored(p, root, ignore):
                 continue
             if not p.is_file() or not _is_safe_file(p):
                 continue
@@ -132,8 +192,10 @@ def scan_environment(project_path: Optional[str] = None, include_unknown: bool =
     # 1. Project Scan
     if project_path:
         root = Path(project_path).resolve()
+        ignore = _ignore_patterns(root)
         for p in _safe_walk(root, max_depth=8):
-            if p.is_file() and p.suffix in SUPPORTED_EXTS and _is_safe_file(p):
+            if (p.is_file() and p.suffix in SUPPORTED_EXTS and _is_safe_file(p)
+                    and not _is_memoryignored(p, root, ignore)):
                 is_proj_ctx = any(part in PROJECT_ROOT_NAMES for part in p.parts) or p.name in PROJECT_FILES
                 if is_proj_ctx or include_unknown:
                     score = classify_file(p)
@@ -147,8 +209,10 @@ def scan_environment(project_path: Optional[str] = None, include_unknown: bool =
     # We skip Path.home() generic rglob to avoid crawling the whole user disk.
     # We only scan the specific tool directories (GLOBAL_ROOTS[1:]).
     for g_root in GLOBAL_ROOTS[1:]:
+        g_ignore = _ignore_patterns(g_root)
         for p in _safe_walk(g_root, max_depth=5):
-            if p.is_file() and p.suffix in SUPPORTED_EXTS and _is_safe_file(p):
+            if (p.is_file() and p.suffix in SUPPORTED_EXTS and _is_safe_file(p)
+                    and not _is_memoryignored(p, g_root, g_ignore)):
                 score = classify_file(p)
                 if score in ["high", "medium"]:
                     tool = detect_tool(p)

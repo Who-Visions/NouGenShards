@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import os
 import asyncio
@@ -10,7 +10,6 @@ from typing import Optional
 import aiofiles
 import uuid
 import json
-import re
 import openai
 
 from video_processor import VideoProcessor
@@ -21,7 +20,7 @@ from pipeline import (
     MEDIA_MIME,
     NO_SPEECH_NOTICE,
     UPLOAD_ALLOWED_EXT,
-    VIDEO_EXT,
+    is_heif_container,
     media_kind as _media_kind,
     sanitize_title_for_filename as _sanitize_title_for_filename,
     transcribed_speech as _transcribed_speech,
@@ -494,6 +493,13 @@ async def _enqueue_upload_job(
         except Exception:
             pass
         raise HTTPException(status_code=400, detail="Empty file")
+
+    # Reject hostile HEIF-family containers before any media/native decoder is
+    # invoked.  Extension allow-lists alone cannot distinguish a renamed image.
+    with open(dest, "rb") as uploaded:
+        if is_heif_container(uploaded.read(32)):
+            dest.unlink(missing_ok=True)
+            raise HTTPException(status_code=415, detail="HEIF/HEIC uploads are not supported")
 
     video_title = _sanitize_title_for_filename(Path(safe_name).stem) or "upload"
     source_label = f"upload:{safe_name}"

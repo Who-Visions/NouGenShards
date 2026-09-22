@@ -10,7 +10,6 @@ from pathlib import Path
 
 def check_dependencies():
     """检查依赖是否安装"""
-    import sys
     required_packages = {
         "fastapi": "fastapi",
         "uvicorn": "uvicorn", 
@@ -105,9 +104,9 @@ def main():
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", 8000))
     
-    print(f"\n🌐 启动服务器...")
+    print("\n🌐 启动服务器...")
     print(f"   地址: http://localhost:{port}")
-    print(f"   按 Ctrl+C 停止服务")
+    print("   按 Ctrl+C 停止服务")
     print("=" * 50)
     
     try:

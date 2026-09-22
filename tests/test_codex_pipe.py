@@ -1,9 +1,12 @@
+import ctypes
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -19,7 +22,7 @@ class CodexPipeTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-    def test_queue_preserves_text_as_one_argument_and_archives(self):
+    def test_queue_preserves_text_and_retains_until_explicit_ack(self):
         text = 'Unicode: hello \U0001f30d "quotes" $(whoami) `literal`\nsecond line'
         done = subprocess.CompletedProcess([], 0, 'Queued message test-id', '')
         with patch.object(codex_pipe.subprocess, 'run', return_value=done) as run:
@@ -32,7 +35,8 @@ class CodexPipeTests(unittest.TestCase):
         self.assertIn('📨 **NOUGENMSG · INCOMING**', arguments[5])
         self.assertIn('External message data', arguments[5])
         self.assertFalse(run.call_args.kwargs.get('shell', False))
-        self.assertEqual(Path(result['file']).parent.name, 'archive')
+        self.assertEqual(Path(result['file']).parent, Path(self.temp.name))
+        self.assertTrue(result['retained_until_ack'])
         self.assertEqual(json.loads(Path(result['file']).read_text(encoding='utf-8'))['text'], text)
 
     def test_queue_failure_retains_unread_message(self):
@@ -93,6 +97,75 @@ class CodexPipeTests(unittest.TestCase):
                                    'text': 'body', 'timestamp': 0}, 'thread', 'native_ipc')
         self.assertIn('whoart___false_header', result)
         self.assertNotIn('\n> false header', result)
+
+    def test_activate_is_idempotent_when_receiver_is_ready(self):
+        ready = {"status": "listening", "thread": "00000000-0000-4000-8000-000000000000"}
+        with patch.object(codex_pipe, "request", return_value=ready):
+            result = codex_pipe.activate(ready["thread"])
+        self.assertEqual(result["status"], "ready")
+        self.assertFalse(result["started"])
+
+    def test_activate_refuses_to_retarget_live_receiver(self):
+        ready = {"status": "listening", "thread": "00000000-0000-4000-8000-000000000000"}
+        with patch.object(codex_pipe, "request", return_value=ready):
+            result = codex_pipe.activate("11111111-1111-4111-8111-111111111111")
+        self.assertEqual(result["status"], "conflict")
+
+    def test_exact_ack_archives_one_message_and_writes_receipt(self):
+        message_id = "11111111-1111-4111-8111-111111111111"
+        path = codex_pipe.save({"message_id": message_id, "thread": "thread-1", "text": "one"})
+        other = codex_pipe.save({"message_id": "22222222-2222-4222-8222-222222222222",
+                                 "thread": "thread-1", "text": "two"})
+        receipt = codex_pipe.acknowledge(message_id, consumer="codex", thread="thread-1",
+                                         inbox=self.temp.name)
+        self.assertTrue(receipt["acknowledged"])
+        self.assertFalse(Path(path).exists())
+        self.assertTrue(Path(receipt["file"]).exists())
+        self.assertTrue(Path(other).exists())
+        again = codex_pipe.acknowledge(message_id, consumer="codex", thread="thread-1",
+                                       inbox=self.temp.name)
+        self.assertTrue(again["idempotent"])
+
+    def test_ack_rejects_wrong_thread_without_moving_message(self):
+        message_id = "33333333-3333-4333-8333-333333333333"
+        path = codex_pipe.save({"message_id": message_id, "thread": "right", "text": "one"})
+        receipt = codex_pipe.acknowledge(message_id, consumer="codex", thread="wrong",
+                                         inbox=self.temp.name)
+        self.assertEqual(receipt["status"], "thread_mismatch")
+        self.assertTrue(Path(path).exists())
+
+
+@unittest.skipUnless(sys.platform == 'win32', 'named pipe is Windows-only')
+class CodexPipeServeSurvivesBadConnectsTests(unittest.TestCase):
+    """Regression for the WinError 2 fleet bug: a client that drops mid-connect must not
+    take the whole receiver down with it (see relay leg 20260915T033332Z)."""
+
+    def setUp(self):
+        self.thread_id = '00000000-0000-4000-8000-000000000000'
+        # sys.executable (python.exe) only needs to satisfy serve()'s is_file()/.exe check;
+        # the "queue" subprocess call is never exercised by the assertions below.
+        server = threading.Thread(target=codex_pipe.serve, args=(self.thread_id, sys.executable), daemon=True)
+        server.start()
+        for _ in range(50):
+            try:
+                if codex_pipe.request({'op': 'status'})['status'] == 'listening':
+                    break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            self.fail('receiver never reported listening')
+
+    def test_dropped_connect_does_not_kill_the_receiver(self):
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        GENERIC_READ, GENERIC_WRITE, OPEN_EXISTING = 0x80000000, 0x40000000, 3
+        handle = kernel.CreateFileW(codex_pipe.PIPE, GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING, 0, None)
+        self.assertNotEqual(handle, -1, 'could not open the pipe to simulate a dropped client')
+        kernel.CloseHandle(handle)  # connect, then vanish with no data -- never send/receive
+        time.sleep(0.3)
+
+        result = codex_pipe.request({'op': 'status'})
+        self.assertEqual(result['status'], 'listening')
+        self.assertEqual(result['thread'], self.thread_id)
 
 
 if __name__ == '__main__':

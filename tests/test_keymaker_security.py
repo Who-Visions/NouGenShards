@@ -7,6 +7,7 @@ import importlib
 import os
 import sqlite3
 import stat
+import sys
 
 import pytest
 
@@ -15,6 +16,11 @@ import pytest
 def km(tmp_path, monkeypatch):
     monkeypatch.setenv("NOUGEN_VAULT_DIR", str(tmp_path / "vault"))
     monkeypatch.setenv("NOUGEN_ALLOW_PLAINTEXT_VAULT", "1")
+    # The escape hatch only applies when `import keyring` fails. CI has no
+    # keyring, but a macOS dev box does, so `_protect` wrote these fixtures
+    # into the operator's real login Keychain (and failed there with -25244).
+    # Make the import fail so every host takes the same path as CI.
+    monkeypatch.setitem(sys.modules, "keyring", None)
     import nougen_shards.keymaker as keymaker
     importlib.reload(keymaker)
     yield keymaker

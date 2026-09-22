@@ -1,7 +1,6 @@
 import os
 import openai
 import logging
-from typing import Optional
 
 from llm_sanitize import strip_llm_artifacts
 
@@ -582,7 +581,6 @@ class Summarizer:
         将原始转录文本智能分割成合适大小的块
         策略：先提取纯文本，按句子和段落自然分割
         """
-        import re
         
         # 1. 先提取纯文本内容（移除时间戳、标题等）
         pure_text = self._extract_pure_text(text)

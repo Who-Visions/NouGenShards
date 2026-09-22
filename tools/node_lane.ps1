@@ -131,6 +131,10 @@ switch ($Action) {
         $env:NGS_BIND_HOST    = if ($env:NGS_BIND_HOST) { $env:NGS_BIND_HOST } else { '0.0.0.0' }
         $env:NOUGEN_VAULT_DIR = $VaultDir
         $env:NOUGEN_SECRETS_VAULT_DIR = $SecretsDir
+        # Recall latency bounds (2026-09-20): a query embed stalled by GPU contention with a
+        # resident generation model burned the full 6s default and a matrix-build wait burned 5s.
+        if (-not $env:NOUGEN_QUERY_EMBED_TIMEOUT)   { $env:NOUGEN_QUERY_EMBED_TIMEOUT   = '2.5' }
+        if (-not $env:NOUGEN_VECTOR_CACHE_WAIT_S)   { $env:NOUGEN_VECTOR_CACHE_WAIT_S   = '1' }
         $env:PYTHONPATH       = Join-Path $Root 'src'
 
         $proc = Start-Process -FilePath $Python -ArgumentList 'tools\ngs_node_serve.py' `
@@ -138,19 +142,30 @@ switch ($Action) {
             -RedirectStandardOutput $OutLog -RedirectStandardError $ErrLog
         Set-Content -Path $PidFile -Value $proc.Id -Encoding utf8
 
-        # Uvicorn + gradio import takes a few seconds; poll rather than sleep blind.
+        # Uvicorn + gradio import plus recall warm-up can take two minutes
+        # (2026-09-14 on blade: ~40s warm-up, ~120s to the first /health 200), so
+        # the old fixed 15s gate reported healthy starts as failures. Poll until
+        # a deadline taken from env, and stop early if the node process dies.
+        $WaitS = 180
+        $waitSource = 'fallback'
+        if ($env:NGS_HEALTH_WAIT_S) { $WaitS = [int]$env:NGS_HEALTH_WAIT_S; $waitSource = 'NGS_HEALTH_WAIT_S' }
+        $deadline = (Get-Date).AddSeconds($WaitS)
         $ready = $false
-        foreach ($i in 1..30) {
+        while ((Get-Date) -lt $deadline) {
+            if ($proc.HasExited) { break }
             try {
                 $h = Invoke-RestMethod -Uri "$BaseUrl/health" -TimeoutSec 2
                 $ready = $true
                 break
-            } catch { Start-Sleep -Milliseconds 500 }
+            } catch { Start-Sleep -Seconds 1 }
         }
         if ($ready) {
             "node up  pid $($proc.Id)  $BaseUrl  shards=$($h.total_shards)  token_configured=$($h.node_token_configured)"
+        } elseif ($proc.HasExited) {
+            "node process exited (code $($proc.ExitCode)) before answering /health - see $ErrLog"
+            exit 1
         } else {
-            "node did NOT answer /health within 15s - see $ErrLog"
+            "node did NOT answer /health within ${WaitS}s (wait source: $waitSource) - see $ErrLog"
             exit 1
         }
         } finally {

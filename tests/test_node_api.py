@@ -75,6 +75,19 @@ def test_deny_by_default_when_unconfigured(client, monkeypatch):
     assert client.post("/search", json={"query": "x"}, headers=AUTH).status_code == 503
 
 
+def test_fleet_peer_token_resolves_to_owner_vault(client, monkeypatch):
+    """A federation credential must retain access to the shared node substrate."""
+    peer_token = "dedicated-fleet-peer-token"
+    monkeypatch.setattr(node, "FLEET_PEER_TOKEN", peer_token)
+
+    tenant = node._resolve_tenant_credential(peer_token)
+
+    assert tenant is not None
+    assert tenant.tenant_id == "owner"
+    assert tenant.vault_dir == core.GLOBAL_DIR
+    assert node._resolve_tenant_credential("wrong-token") is None
+
+
 def test_capture_search_roundtrip(client):
     r = client.post("/capture", json={
         "title": "Cloud automation shard",

@@ -80,8 +80,17 @@ function Start-Tunnel {
 }
 
 function Sync-Worker($url) {
+    # The canonical front door (named tunnel) is what the worker should hold; a random
+    # quick-tunnel hostname dies with its cloudflared process, and deploying it from a
+    # stale local checkout can also regress the live worker code. Refuse by default;
+    # opt back in only on purpose with NOUGEN_ALLOW_QUICK_GATEWAY=1.
+    $canonical = if ($env:NOUGEN_GATEWAY_CANONICAL) { $env:NOUGEN_GATEWAY_CANONICAL } else { 'https://shards.nougenai.com' }
+    if ($url -match '\.trycloudflare\.com' -and $env:NOUGEN_ALLOW_QUICK_GATEWAY -ne '1') {
+        Log "quick tunnel $url is local-only; worker stays on canonical $canonical (set NOUGEN_ALLOW_QUICK_GATEWAY=1 to override)"
+        return $false
+    }
     # Only touch the worker when the URL actually changed - deploys aren't free.
-    $known = if (Test-Path $StateFile) { (Get-Content $StateFile -Raw).Trim() } else { '' }
+    $known = if (Test-Path $StateFile) { (Get-Content $StateFile -Raw).Trim().TrimStart([char]0xFEFF) } else { '' }
     if ($known -eq $url) { return $false }
 
     Log "URL changed: '$known' -> '$url'  (updating worker)"
@@ -101,6 +110,33 @@ function Sync-Worker($url) {
     return $true
 }
 
+function Invoke-GatewayProbe {
+    # gateway_probe.py logs "NouGen vault resolved to ..." on STDERR. Under
+    # PowerShell 5.1 with $ErrorActionPreference = 'Stop', `2>&1` turns that
+    # stderr line into a terminating NativeCommandError and the tick dies at
+    # this call, so every tick that reached auth verification aborted before
+    # its verdict line (observed 2026-09-20; probably since the probe grew its
+    # vault-resolved log). Capture both streams via a temp file instead.
+    $tmp = [System.IO.Path]::GetTempFileName()
+    try {
+        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+        $pinfo.FileName = $Python
+        $pinfo.Arguments = '"' + (Join-Path $PSScriptRoot 'gateway_probe.py') + '"'
+        $pinfo.RedirectStandardOutput = $true
+        $pinfo.RedirectStandardError = $true
+        $pinfo.UseShellExecute = $false
+        $pinfo.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($pinfo)
+        $out = $proc.StandardOutput.ReadToEnd()
+        [void]$proc.StandardError.ReadToEnd()
+        $proc.WaitForExit()
+        $lines = @($out -split "`r?`n" | Where-Object { $_.Trim() })
+        if ($lines.Count -gt 0) { return $lines[-1] }
+        return ''
+    } catch { return "SKIPPED probe launch failed: $($_.Exception.Message)" }
+    finally { Remove-Item $tmp -ErrorAction SilentlyContinue }
+}
+
 function Assert-GatewayAuth {
     # Re-pointing the URL is not the same as the gateway working. /health is
     # UNAUTHENTICATED, so shards_status reads green while every real call
@@ -116,7 +152,7 @@ function Assert-GatewayAuth {
     # 178k shards. It now runs on EVERY tick.
     param([string]$Context = 'tick')
 
-    $probe = & $Python (Join-Path $PSScriptRoot 'gateway_probe.py') 2>&1 | Select-Object -Last 1
+    $probe = Invoke-GatewayProbe
     if ($probe -match '^OK') { return 'ok' }
 
     # AUTH-OK-NO-DATA means the whole OAuth chain passed and the node behind the
@@ -164,9 +200,35 @@ function Assert-GatewayAuth {
         $tok | & npx --yes wrangler@latest secret put SHARD_GATEWAY_TOKEN --name nougen-fleet-mcp 2>&1 |
             Select-Object -Last 1 | ForEach-Object { Log $_ }
     } finally { Pop-Location }
-    $probe2 = & $Python (Join-Path $PSScriptRoot 'gateway_probe.py') 2>&1 | Select-Object -Last 1
+    $probe2 = Invoke-GatewayProbe
     Log "probe after token re-put: $probe2"
     if ($probe2 -match '^OK') { return 'ok' } else { return 'failed' }
+}
+
+function Test-NamedTunnel {
+    # The quick-tunnel checks above never look at the NAMED tunnel that the
+    # fleet actually dials (blade.nougenai.com). On 2026-09-19 that tunnel
+    # failed 199/199 requests (cloudflared proxied to a localhost origin that
+    # resolved to ::1 while uvicorn listened on 127.0.0.1 only) and this
+    # supervisor logged "healthy" all night because shards.nougenai.com is
+    # answered by the HF Space. Probe the named hostname on every tick; on
+    # failure restart the cloudflared Windows service once (bounded: one
+    # restart per tick) and say RED loudly either way.
+    $named = if ($env:NOUGEN_NAMED_TUNNEL_URL) { $env:NOUGEN_NAMED_TUNNEL_URL } else { 'https://blade.nougenai.com' }
+    if ($named -eq 'off') { return 'skipped' }
+    $ok = $false
+    try { $ok = (Invoke-WebRequest "$named/health" -TimeoutSec 10 -UseBasicParsing).StatusCode -eq 200 } catch { $ok = $false }
+    if ($ok) { return 'ok' }
+    Log "RED - named tunnel $named/health is NOT answering 200 (the fleet dials this, not the quick tunnel)"
+    $svc = Get-Service -Name 'cloudflared' -ErrorAction SilentlyContinue
+    if ($svc -and $env:NOUGEN_NAMED_TUNNEL_RESTART -ne '0') {
+        Log "restarting cloudflared service once (NOUGEN_NAMED_TUNNEL_RESTART=0 disables)"
+        try { Restart-Service -Name 'cloudflared' -Force -ErrorAction Stop; Start-Sleep -Seconds 12 } catch { Log "restart failed: $($_.Exception.Message)" }
+        try { $ok = (Invoke-WebRequest "$named/health" -TimeoutSec 10 -UseBasicParsing).StatusCode -eq 200 } catch { $ok = $false }
+        if ($ok) { Log "named tunnel recovered after restart"; return 'ok' }
+        Log "RED - still failing after restart; if 127.0.0.1:$Port/health is 200 the tunnel origin is wrong (use http://127.0.0.1:$Port, not localhost)"
+    }
+    return 'red'
 }
 
 function Tick {
@@ -181,11 +243,14 @@ function Tick {
     }
     if (-not $url) { Log "no tunnel URL yet"; return }
 
+    # 3b. the named tunnel the fleet actually dials
+    $namedState = Test-NamedTunnel
+
     # 4. keep the worker pointed at it
     if (-not (Sync-Worker $url)) {
         # URL unchanged is NOT the same as working: verify auth before claiming health.
         switch (Assert-GatewayAuth) {
-            'ok'         { Log "healthy - node up, tunnel up, worker current and AUTHENTICATED ($url)" }
+            'ok'         { if ($namedState -eq 'red') { Log "DEGRADED - auth ok but NAMED tunnel RED ($url)" } else { Log "healthy - node up, tunnel up, named tunnel $namedState, worker current and AUTHENTICATED ($url)" } }
             'unverified' { Log "node up, tunnel up, worker current ($url) - auth UNVERIFIED from this host" }
             'nodata'     { Log "gateway AUTHENTICATED but its node returned no data - worker current ($url)" }
             default      { Log "DEGRADED - node up, tunnel up, worker points at $url but authenticated calls FAIL" }

@@ -32,6 +32,8 @@ import calendar
 import json
 import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -96,6 +98,39 @@ def save_cursor(data: dict) -> None:
     os.replace(tmp, p)
 
 
+_SSH_CMD_CACHE: dict[str, str] = {}
+
+
+def _ssh_env(repo: Path) -> dict | None:
+    """Env for git children with SSH connect/keepalive limits added.
+
+    The repo's core.sshCommand set BatchMode but no ConnectTimeout or
+    ServerAliveInterval, so a stalled GitHub handshake hung until the 40 s
+    subprocess timeout killed git and the pass logged "git error
+    TimeoutExpired" (2026-09-14 04:40Z and 06:21Z; healthy fetches take 3-5 s).
+    The limits make a stall fail fast so the retry in fetch() gets a clean
+    second attempt. An explicit GIT_SSH_COMMAND in the env is left alone."""
+    if os.environ.get("GIT_SSH_COMMAND"):
+        return None
+    key = str(repo)
+    if key not in _SSH_CMD_CACHE:
+        base = "ssh"
+        try:
+            r = subprocess.run(["git", "-C", key, "config", "--get", "core.sshCommand"],
+                               capture_output=True, text=True, timeout=10,
+                               stdin=subprocess.DEVNULL,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            base = r.stdout.strip() or base
+        except (OSError, subprocess.SubprocessError):
+            pass
+        connect = int(_env_float("NOUGEN_RELAY_LIVE_SSH_CONNECT_S", 10))
+        alive = int(_env_float("NOUGEN_RELAY_LIVE_SSH_KEEPALIVE_S", 5))
+        count = int(_env_float("NOUGEN_RELAY_LIVE_SSH_KEEPALIVE_COUNT", 3))
+        _SSH_CMD_CACHE[key] = (f"{base} -o ConnectTimeout={connect}"
+                               f" -o ServerAliveInterval={alive} -o ServerAliveCountMax={count}")
+    return {**os.environ, "GIT_SSH_COMMAND": _SSH_CMD_CACHE[key]}
+
+
 def _git(repo: Path, *args: str, timeout: float) -> subprocess.CompletedProcess:
     """Always decode git output as UTF-8. Leg bodies carry curly quotes and
     arrows; with the console codepage (cp1252 on Windows) the reader thread
@@ -106,10 +141,55 @@ def _git(repo: Path, *args: str, timeout: float) -> subprocess.CompletedProcess:
     # and pop a visible Windows Terminal window per call (~2/sec on 2026-09-06,
     # which made the machine unusable). DEVNULL also stops git/GCM from ever
     # blocking on an interactive credential prompt.
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=timeout,
-                          stdin=subprocess.DEVNULL,
-                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    cmd = ["git", "-C", str(repo), *args]
+    windows = os.name == "nt"
+    kwargs = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "stdin": subprocess.DEVNULL,
+        "env": _ssh_env(repo),
+    }
+    if windows:
+        kwargs["creationflags"] = (getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                                   | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+    else:
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # git owns ssh.exe; killing only git leaves ssh holding our captured
+        # stdout/stderr handles open. Popen.communicate then waits far beyond
+        # its timeout. Kill this exact process tree before re-raising so the
+        # relay loop can retry and keep its receive cadence.
+        try:
+            if windows:
+                taskkill = shutil.which(os.environ.get("NOUGEN_TASKKILL_EXE", "taskkill.exe"))
+                if taskkill:
+                    kill_timeout = _env_float("NOUGEN_RELAY_LIVE_KILL_TIMEOUT_S", 10)
+                    subprocess.run([taskkill, "/PID", str(proc.pid), "/T", "/F"],
+                                   capture_output=True, text=True, timeout=kill_timeout,
+                                   stdin=subprocess.DEVNULL,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+                else:
+                    proc.kill()
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
+        except (OSError, subprocess.SubprocessError):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.communicate(timeout=_env_float("NOUGEN_RELAY_LIVE_KILL_TIMEOUT_S", 10))
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def fetch(repo: Path) -> str:
@@ -119,8 +199,15 @@ def fetch(repo: Path) -> str:
     if os.environ.get("NOUGEN_RELAY_LIVE_FETCH", "1") == "0":
         return "skipped"
     timeout = _env_float("NOUGEN_RELAY_LIVE_GIT_TIMEOUT_S", 40)
+    retries = max(0, int(_env_float("NOUGEN_RELAY_LIVE_FETCH_RETRIES", 1)))
     try:
-        r = _git(repo, "fetch", "--quiet", timeout=timeout)
+        for attempt in range(retries + 1):
+            try:
+                r = _git(repo, "fetch", "--quiet", timeout=timeout)
+                break
+            except subprocess.TimeoutExpired:
+                if attempt >= retries:
+                    raise
         if r.returncode != 0:
             return f"git fetch rc={r.returncode}: {(r.stderr or r.stdout).strip()[:160]}"
         heads = _git(repo, "rev-parse", "HEAD", "@{u}", timeout=timeout)

@@ -9,9 +9,12 @@ import json
 import time
 import shutil
 import subprocess
+import threading
+import sys
 import urllib.request
 import re
 import uuid
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 _SESSION_VARS = ("NOUGEN_SESSION", "CLAUDE_CODE_SESSION_ID")
@@ -64,6 +67,46 @@ _KNOWN_FLEET_HOSTS = {
     "whoart": ("proart", "whoart"),
     "blade": ("blade1tb", "blade"),
 }
+
+_DEFAULT_COACH_ROUTES = {
+    "hyperion": "whoart",
+    "apollo": "blade",
+    "phoebus": "phoebus",
+}
+
+
+def fleet_identity_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Resolve coach aliases to physical transport nodes from nodes.json."""
+    coach_to_machine = dict(_DEFAULT_COACH_ROUTES)
+    machine_to_coach = {machine: coach for coach, machine in coach_to_machine.items()}
+    path = Path.home() / ".nougen" / "nodes.json"
+    try:
+        configured = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        configured = {}
+    for key, cfg in configured.items() if isinstance(configured, dict) else ():
+        if not isinstance(cfg, dict):
+            continue
+        coach = str(cfg.get("coach") or cfg.get("name") or key).strip().lower()
+        machine = str(cfg.get("transport_node") or "").strip().lower()
+        if not machine:
+            continue
+        coach_to_machine[coach] = machine
+        coach_to_machine[str(key).strip().lower()] = machine
+        machine_to_coach[machine] = coach
+    return coach_to_machine, machine_to_coach
+
+
+def normalize_fleet_node(value: str) -> str:
+    """Translate a coach identity (Hyperion) into its transport box (WhoArt)."""
+    normalized = (value or "").strip().lower()
+    return fleet_identity_maps()[0].get(normalized, normalized)
+
+
+def coach_for_machine(value: str) -> str:
+    """Return the coach assigned to a physical transport node."""
+    normalized = normalize_fleet_node(value)
+    return fleet_identity_maps()[1].get(normalized, normalized)
 
 
 def get_current_node() -> str:
@@ -236,18 +279,17 @@ class AgentPinger:
                 registry = json.load(f)
         except (OSError, ValueError):
             registry = {}
+        # Both registry shapes can coexist in one file: blade nests {"sessions":
+        # {socket: entry}}, phoebus keeps {session_id: {socket, token, ...}} at the
+        # top level. An EMPTY nested "sessions" key used to mask every top-level
+        # entry (registered:0 with a live session registered), so merge the two.
+        sessions = {}
         raw_sessions = registry.get("sessions")
         if isinstance(raw_sessions, dict):
-            sessions = raw_sessions  # blade shape (nougenmsg_register.py): {socket: entry}
-        else:
-            # phoebus shape (nougenmsg_wake.py): {session_id: {socket, token, ...}} at the
-            # top level. Before 2026-09-03 this branch fell through to {}, the loop
-            # never ran, and phoebus reported registered:0 over a healthy registry
-            # while every live cc-msg fell back to the inbox drain.
-            sessions = {}
-            for sid, entry in registry.items():
-                if isinstance(entry, dict) and entry.get("token") and entry.get("socket"):
-                    sessions[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
+            sessions.update(raw_sessions)
+        for sid, entry in registry.items():
+            if sid != "sessions" and isinstance(entry, dict) and entry.get("token") and entry.get("socket"):
+                sessions[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
         delivered, pruned, errors = [], [], []
         for sock, entry in list(sessions.items()):
             token = str((entry or {}).get("token") or "")
@@ -525,13 +567,24 @@ class AgentPinger:
         except ValueError:
             timeout = 60.0
 
+        system_prompt = ""
+        if os.environ.get("NOUGEN_MSG_INJECT_PERSONA", "").strip().lower() in ("1", "true", "yes"):
+            try:
+                from .persona import Signals, resolve as resolve_persona
+                sig = Signals.from_texts([prompt], surfaces=["ollama", "terminal"], tz="America/New_York", role="fleet-operator")
+                pers = resolve_persona(sig)
+                system_prompt = pers.system_prompt()
+            except Exception:
+                pass
+
         if node not in ["local", get_current_node()]:
             # The remote command is interpreted by the remote login shell.
             # Keep it entirely constant; caller-controlled JSON travels over
             # stdin, where shell syntax has no meaning.
-            payload = json.dumps(
-                {"model": target_model, "prompt": prompt, "stream": False}
-            )
+            ollama_dict = {"model": target_model, "prompt": prompt, "stream": False}
+            if system_prompt:
+                ollama_dict["system"] = system_prompt
+            payload = json.dumps(ollama_dict)
             remote_cmd = (
                 "curl -sS -X POST http://127.0.0.1:11434/api/generate "
                 "--data-binary @-"
@@ -556,7 +609,10 @@ class AgentPinger:
                         "model": target_model, "error": str(e)}
 
         try:
-            req_data = json.dumps({"model": target_model, "prompt": prompt, "stream": False}).encode("utf-8")
+            ollama_dict = {"model": target_model, "prompt": prompt, "stream": False}
+            if system_prompt:
+                ollama_dict["system"] = system_prompt
+            req_data = json.dumps(ollama_dict).encode("utf-8")
             req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 res = json.loads(r.read().decode())
@@ -591,8 +647,9 @@ class NouGenMsgBus:
         if not raw or raw == 'all':
             return ('fleet', 'all')
 
-        known_nodes = {'blade', 'whoart', 'phoebus', 'local', 'fleet'}
-        known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'all'}
+        coach_routes, _ = fleet_identity_maps()
+        known_nodes = {'blade', 'whoart', 'phoebus', 'local', 'fleet', *coach_routes}
+        known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'agents', 'all'}
         # Model lanes carry the model in the agent slot: '@ollama:gemma4:31b-cloud'
         # -> ('local', 'ollama:gemma4:31b-cloud'); '@blade:openrouter:nvidia/x'
         # -> ('blade', 'openrouter:nvidia/x'). live_ping splits family from model.
@@ -605,11 +662,11 @@ class NouGenMsgBus:
                 return ('local', raw)
             fam = a.split(':', 1)[0]
             if fam in model_lanes:
-                return (n if n in known_nodes else 'local', a)
-            return (n if n in known_nodes else 'local', a if a in known_agents else 'all')
+                return (normalize_fleet_node(n) if n in known_nodes else 'local', a)
+            return (normalize_fleet_node(n) if n in known_nodes else 'local', a if a in known_agents else 'all')
 
         if raw in known_nodes:
-            return (raw, 'all')
+            return (normalize_fleet_node(raw), 'all')
         if raw in known_agents:
             return ('local', raw)
 
@@ -639,9 +696,11 @@ class NouGenMsgBus:
                               "transport_observed": current})
         session_id = supplied.get("session_id")
         return {
+            "id": supplied.get("id"),
             "session_id": session_id,
             "session_title": supplied.get("session_title"),
             "machine": claimed_machine or current,
+            "coach": supplied.get("coach") or coach_for_machine(claimed_machine or current),
             "transport_machine": current,
             "lane": supplied.get("lane"),
             "transport": supplied.get("transport") or "nougenmsg",
@@ -654,6 +713,10 @@ class NouGenMsgBus:
             # so cross-machine provenance was unrecoverable after one hop.
             "original_sender": supplied.get("original_sender") or f"nougen-{current}",
             "relay_path": cls._extend_relay_path(supplied.get("relay_path"), current),
+            "trigger_source": supplied.get("trigger_source") or os.environ.get("NOUGEN_TRIGGER_SOURCE", "direct_dispatch"),
+            "correlation_id": supplied.get("correlation_id"),
+            "idempotency_key": supplied.get("idempotency_key"),
+            "reply_to": supplied.get("reply_to"),
             "timestamp": supplied.get("timestamp") or time.time(),
             "provenance_state": supplied.get("provenance_state") or (
                 "asserted" if session_id else "unknown"),
@@ -663,12 +726,14 @@ class NouGenMsgBus:
 
     @classmethod
     def live_ping(cls, target: str, text: str, node: Optional[str] = None,
-                  origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                  origin: Optional[Dict[str, Any]] = None,
+                  models_async: bool = False) -> Dict[str, Any]:
         target = target.lower()
         results = {}
         envelope = cls._origin_envelope(origin)
         # 'ollama:gemma4:31b-cloud' -> family 'ollama', model 'gemma4:31b-cloud'
         family, _, model = target.partition(":")
+        family = normalize_fleet_node(family)
         model = model or None
         # Model lanes ride on 'all' broadcasts by default (GM 2026-09-08: the
         # fleet includes its models). NOUGEN_MSG_MODEL_LANES_ON_ALL=0 opts out
@@ -676,21 +741,82 @@ class NouGenMsgBus:
         models_on_all = os.environ.get("NOUGEN_MSG_MODEL_LANES_ON_ALL", "1").strip().lower() \
             not in ("0", "false", "no")
 
-        if family in ["claude", "all"]:
+        # A node-name target ('@blade') matched no family branch, so the node it
+        # addressed returned {} and woke nobody while the caller saw "delivered"
+        # (2026-09-14: connector nougenmsg @blade -> results.blade == {}). On the
+        # addressed node it means "this node's agent lanes"; elsewhere it is not
+        # ours to deliver, and saying so beats an empty dict.
+        fleet_nodes = {normalize_fleet_node(n) for n in os.environ.get(
+            "NOUGEN_FLEET_NODES", "blade,whoart,phoebus").split(",") if n.strip()}
+        if family in fleet_nodes:
+            if family != (get_current_node() or "").lower():
+                return {"skipped": f"addressed to {family}, not this node"}
+            family, model = "agents", None
+
+        if family in ["claude", "all", "agents"]:
             results["claude_pipes"] = AgentPinger.ping_claude(text, envelope)
 
-        if family in ["antigravity", "all"]:
+        if family in ["antigravity", "all", "agents"]:
             results["antigravity"] = AgentPinger.ping_antigravity(text, origin=envelope)
 
-        if family in ["codex", "all"]:
+        if family in ["codex", "all", "agents"]:
             results["codex"] = AgentPinger.ping_codex(text, envelope)
 
+        model_pings = []
         if family == "ollama" or (family == "all" and models_on_all):
-            results["ollama"] = AgentPinger.ping_ollama(text, node=node or "local",
-                                                       model=model, origin=envelope)
-
+            model_pings.append(("ollama", lambda: AgentPinger.ping_ollama(
+                text, node=node or "local", model=model, origin=envelope)))
         if family == "openrouter" or (family == "all" and models_on_all):
-            results["openrouter"] = AgentPinger.ping_openrouter(text, model=model, origin=envelope)
+            model_pings.append(("openrouter", lambda: AgentPinger.ping_openrouter(
+                text, model=model, origin=envelope)))
+        if models_async and model_pings:
+            # A model lane waits for the model to ANSWER (NOUGEN_MSG_MODEL_TIMEOUT_S, 60s); its
+            # reply lands in the inbox via _drop_model_reply either way. On 2026-09-14 an @all
+            # node ping took 64.7s here while @phoebus (agent lanes only) took 1.7s.
+            def _run_models(pings=tuple(model_pings)):
+                for lane, call in pings:
+                    try:
+                        call()
+                    except Exception as e:  # pylint: disable=broad-except
+                        print(f"[nougenmsg] background {lane} lane raised: {e}", file=sys.stderr, flush=True)
+            t = threading.Thread(target=_run_models, name="nougenmsg-models", daemon=True)
+            t.start()
+            cls._last_models_thread = t
+            for lane, _ in model_pings:
+                results[lane] = {"queued": True, "via": "model"}
+        else:
+            for lane, call in model_pings:
+                results[lane] = call()
+
+        # Step 3: Append-only persistence to messages.db
+        try:
+            import sqlite3
+            import uuid
+            db_path = os.path.expanduser(os.path.join("~", ".nougen", "messages.db"))
+            if os.path.exists(db_path):
+                msg_id = envelope.get("id") or f"msg_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
+                with sqlite3.connect(db_path, timeout=5) as conn:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO messages
+                        (id, timestamp, source_node, source_agent, target_node, target_agent, trigger_source, correlation_id, idempotency_key, text, provenance)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        msg_id,
+                        envelope.get("timestamp") or time.time(),
+                        envelope.get("machine") or get_current_node(),
+                        envelope.get("original_sender") or envelope.get("lane") or "agent",
+                        node or get_current_node(),
+                        target,
+                        envelope.get("trigger_source") or "direct_dispatch",
+                        envelope.get("correlation_id"),
+                        envelope.get("idempotency_key"),
+                        text,
+                        json.dumps(envelope)
+                    ))
+                    conn.commit()
+        except Exception as e:  # pylint: disable=broad-except
+            # The message is already delivered; a ledger write must not undo that, but it must not vanish silently.
+            print(f"[nougenmsg] messages.db append failed: {e}", file=sys.stderr, flush=True)
 
         return results
 
@@ -881,10 +1007,13 @@ class NouGenMsgBus:
                 text = pointer
             remote_cmd = f'{base} "{text}"'
 
+        # The remote --target all fan-out also delivers to OLLAMA and OPENROUTER
+        # and takes 24-27 s (measured blade/whoart 2026-09-21). At 20 s every
+        # such send was killed after delivery and reported as a timeout.
         try:
             output = cls._ssh_capture(
                 ["ssh", *cls._SSH_OPTS, node, remote_cmd],
-                timeout=float(os.environ.get("NOUGEN_MSG_SEND_TIMEOUT_S", "20")),
+                timeout=float(os.environ.get("NOUGEN_MSG_SEND_TIMEOUT_S", "90")),
             )
             return {node: output.strip()}
         except Exception as e:
@@ -893,17 +1022,42 @@ class NouGenMsgBus:
     @classmethod
     def emit_fleet(cls, text: str, target: str = "all",
                    origin: Optional[Dict[str, Any]] = None,
-                   audience: Optional[str] = None) -> Dict[str, Any]:
-        """Dispatches message across all nodes in the fleet (persona header applied once, here)."""
+                   audience: Optional[str] = None,
+                   background: bool = False) -> Dict[str, Any]:
+        """Dispatches message across all nodes in the fleet (persona header applied once, here).
+
+        background=True delivers locally, then hands the SSH fan-out to a daemon thread and
+        reports each peer as {"queued": True}. The MCP node tools use it: peers are reached
+        one at a time over SSH (plus scp for unsafe bodies), which ran 76s on 2026-09-14 while
+        the connector allows its gateway call 20s. It gave up, fell back, and the message
+        arrived twice. Peer failures in the background go to stderr (the node log), not the caller.
+        """
         header = cls.persona_header(audience)
         if header and not text.startswith("[persona "):
             text = header + "\n" + text
         curr = get_current_node()
-        results = {curr: cls.live_ping(target=target, text=text, origin=origin)}
+        results = {curr: cls.live_ping(target=target, text=text, origin=origin,
+                                       models_async=background)}
         fleet_nodes = {"blade", "whoart", "phoebus"}
         # A standalone/external clone has no private fleet to broadcast into;
         # only fan out to the other two boxes when this IS one of them.
         nodes = sorted(fleet_nodes - {curr}) if curr in fleet_nodes else []
+        if background and nodes:
+            def _fan_out(peers=tuple(nodes)):
+                for n in peers:
+                    try:
+                        res = cls.emit_node(n, target, text, origin=origin)
+                        bad = {k: v for k, v in (res or {}).items() if isinstance(v, str) and v.startswith("Error")}
+                        if bad:
+                            print(f"[nougenmsg] background fan-out to {n} failed: {bad}", file=sys.stderr, flush=True)
+                    except Exception as e:  # pylint: disable=broad-except
+                        print(f"[nougenmsg] background fan-out to {n} raised: {e}", file=sys.stderr, flush=True)
+            t = threading.Thread(target=_fan_out, name="nougenmsg-fanout", daemon=True)
+            t.start()
+            cls._last_fanout_thread = t  # tests join it; nothing in production waits on it
+            for n in nodes:
+                results[n] = {"queued": True, "via": "ssh"}
+            return results
         for n in nodes:
             try:
                 res = cls.emit_node(n, target, text, origin=origin)
@@ -1014,8 +1168,10 @@ class NouGenMsgBus:
         return messages
 
     @classmethod
-    def clear_inbox(cls, target: str = "antigravity") -> int:
-        """Archives or deletes all read messages from inbox across all directories."""
+    def clear_inbox(cls, target: str = "antigravity", confirmed: bool = False) -> int:
+        """Bulk archive is destructive to unread state and requires confirmation."""
+        if not confirmed:
+            raise ValueError("bulk inbox clearing requires confirmed=True; prefer exact message ACK")
         inbox_dirs = (
             [
                 os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),

@@ -199,3 +199,9 @@ projects/learn-with-mrs-b/pilot/*.pdf
 
 # Independent Projects (Separate repositories/workspaces)
 projects/
+
+# Local developer overrides and backups
+*.local.md
+*.bak*
+bin/ngs-node.sh.bak*
+~/

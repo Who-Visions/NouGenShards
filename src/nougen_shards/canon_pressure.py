@@ -1,6 +1,6 @@
 """Canon Pressure Engine: Terminal Shadow Xoah as canon adversary.
 
-Every proposed Xoah / VeilVerse story addition enters a pipeline:
+Every proposed story addition enters a pipeline:
 normalize drift -> resolve story coordinate -> recall canon records (topic +
 time window) -> rank authority / corrections -> scan fixed-point dependencies
 -> classify -> render a cited, first-person challenge -> name the cheapest
@@ -29,6 +29,18 @@ needs an explicit override record; a casual sentence cannot promote.
 Env (logged fallbacks): NOUGEN_CANON_SEED_PATH (self-model JSON),
 NOUGEN_CANON_DB (candidate / override store), NOUGEN_XOAH_RENDER_LLM=1 (polish
 the challenge on the free lane; default off).
+
+Self-model record field contract (records, fixed_points, capabilities_by_stage,
+unearned entries, themes all follow this): "statement" is the prose a finding's
+"because" is built from (a record written with "summary" instead still works,
+via _statement(), but "statement" is the documented field). "contradicts" /
+"affirms" / "breaks_if" / "violates_if" / "patterns" are lists of regex or
+plain-substring PATTERNS matched against the candidate text, not shard
+reference strings: a value like "shard:16965" will never match a sentence
+about the story and the record will never fire. To make a locked fact
+enforceable, its contradicts list needs the phrasing a contradicting claim
+would actually use (e.g. "corbin (survives|is alive|escapes)"), not the id of
+the shard that locked it.
 """
 from __future__ import annotations
 
@@ -80,6 +92,20 @@ def normalize(text: str) -> str:
 
 def _tokens(text: str) -> set:
     return {t for t in re.findall(r"[a-z0-9']+", (text or "").lower()) if len(t) > 2}
+
+
+def _statement(rec: Dict[str, Any]) -> str:
+    """A record's prose, from either field name the seed data uses.
+
+    2026-09-14 fault: the production seed (canon/xoah_self_model.json,
+    local-only) was hand-authored with "summary" instead of "statement" on
+    every record and fixed_point. recall_records() already read statement
+    via .get() so token-overlap recall degraded silently; but classify()
+    indexed rec["statement"] directly, so the one time a conflict pattern
+    DID fire it raised KeyError inside the request handler (the intermittent
+    ask_xoah 500). Accept either key so a schema-drifted seed degrades to a
+    blank reason instead of crashing the endpoint."""
+    return rec.get("statement") or rec.get("summary") or ""
 
 
 # --------------------------------------------------------------------------- #
@@ -237,6 +263,26 @@ def _declared_branch(candidate: str, model: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+_STOP = frozenset("that this with from have been were they them their there what when where which "
+                  "will would could should about into over under after before while".split())
+
+
+def _topic_relevant(rec: Dict[str, Any], candidate: str) -> bool:
+    """Does the candidate touch what this record is ABOUT?
+
+    Contradiction patterns alone are not enough: an engineering question
+    containing "fix" or "survives" used to draw a FACT_CONFLICT from an
+    unrelated lock whose pattern happened to match. A record's topics decide
+    relevance; a record with no topics falls back to its statement's content
+    words. Same gate as xoah_toolbelt.pressure.relevant (#477)."""
+    low, toks = candidate.lower(), _tokens(candidate)
+    topics = [str(t).lower() for t in rec.get("topics") or []]
+    if topics:
+        return any((t in low) if " " in t else (t in toks) for t in topics)
+    words = {w for w in _tokens(_statement(rec)) if len(w) >= 4 and w not in _STOP}
+    return bool(words & toks)
+
+
 def classify(model: Dict[str, Any], candidate: str, coord: Optional[Dict[str, Any]],
              records: List[Dict[str, Any]]) -> Dict[str, Any]:
     findings: List[Dict[str, Any]] = []
@@ -245,44 +291,44 @@ def classify(model: Dict[str, Any], candidate: str, coord: Optional[Dict[str, An
     # FACT_CONFLICT: a locked / corrected record whose contradiction patterns fire
     for rec in records:
         hits = _matches(rec.get("contradicts", []), candidate)
-        if hits and STATUS_RANK.get(rec.get("status"), 0) >= 2:
-            findings.append({"verdict": "FACT_CONFLICT", "record": rec["id"], "evidence": rec["provenance"],
-                             "because": rec["statement"], "matched": hits,
+        if hits and STATUS_RANK.get(rec.get("status"), 0) >= 2 and _topic_relevant(rec, candidate):
+            findings.append({"verdict": "FACT_CONFLICT", "record": rec.get("id"), "evidence": rec.get("provenance", []),
+                             "because": _statement(rec), "matched": hits,
                              "supersedes": rec.get("supersedes")})
 
     # CAUSAL_DESTINY_CONFLICT: fixed points and their dependents
     for fp in model.get("fixed_points", []):
         hits = _matches(fp.get("breaks_if", []), candidate)
         if hits:
-            findings.append({"verdict": "CAUSAL_DESTINY_CONFLICT", "record": fp["id"], "evidence": fp["provenance"],
-                             "because": fp["statement"], "matched": hits, "dependents": fp.get("dependents", [])})
+            findings.append({"verdict": "CAUSAL_DESTINY_CONFLICT", "record": fp.get("id"), "evidence": fp.get("provenance", []),
+                             "because": _statement(fp), "matched": hits, "dependents": fp.get("dependents", [])})
 
     if coord:
         # KNOWLEDGE_CONFLICT: she could not know it then
         hits = _matches(coord.get("forbidden_knowledge", []), candidate)
         if hits:
-            findings.append({"verdict": "KNOWLEDGE_CONFLICT", "record": coord["coordinate"], "evidence": coord["provenance"],
+            findings.append({"verdict": "KNOWLEDGE_CONFLICT", "record": coord.get("coordinate"), "evidence": coord.get("provenance", []),
                              "because": f"at {coord['coordinate']} she knows: {', '.join(coord.get('knowledge', [])[:4]) or 'nothing recorded'}",
                              "matched": hits})
         # STAGE_CONFLICT: capability beyond her stage
         for cap in model.get("capabilities_by_stage", []):
             if _matches(cap.get("patterns", []), candidate) and coord.get("stage") is not None and cap.get("min_stage", 0) > coord["stage"]:
-                findings.append({"verdict": "STAGE_CONFLICT", "record": cap["id"], "evidence": cap["provenance"],
-                                 "because": f"{cap['statement']} (needs stage {cap['min_stage']}, she is stage {coord['stage']} at {coord['coordinate']})",
+                findings.append({"verdict": "STAGE_CONFLICT", "record": cap.get("id"), "evidence": cap.get("provenance", []),
+                                 "because": f"{_statement(cap)} (needs stage {cap.get('min_stage')}, she is stage {coord['stage']} at {coord['coordinate']})",
                                  "matched": cap.get("patterns", [])})
         # BEHAVIOR_CONFLICT: could, but would not (no earning event)
         for beh in coord.get("unearned", []):
             hits = _matches(beh.get("patterns", []), candidate)
             if hits and not _matches(beh.get("earned_if", []), candidate):
-                findings.append({"verdict": "BEHAVIOR_CONFLICT", "record": coord["coordinate"], "evidence": coord["provenance"],
-                                 "because": beh["statement"], "matched": hits, "earning_event": beh.get("earning_event")})
+                findings.append({"verdict": "BEHAVIOR_CONFLICT", "record": coord.get("coordinate"), "evidence": coord.get("provenance", []),
+                                 "because": _statement(beh), "matched": hits, "earning_event": beh.get("earning_event")})
 
     # THEME_CONFLICT: anti-canon and tonal rules
     for th in model.get("themes", []):
         hits = _matches(th.get("violates_if", []), candidate)
         if hits:
-            findings.append({"verdict": "THEME_CONFLICT", "record": th["id"], "evidence": th["provenance"],
-                             "because": th["statement"], "matched": hits})
+            findings.append({"verdict": "THEME_CONFLICT", "record": th.get("id"), "evidence": th.get("provenance", []),
+                             "because": _statement(th), "matched": hits})
 
     # QUARANTINE: a FACT_CONFLICT raised by a record that sits in a conflict
     # group where another member AFFIRMS the candidate is not a verdict, it is
@@ -315,10 +361,10 @@ def classify(model: Dict[str, Any], candidate: str, coord: Optional[Dict[str, An
         rec = affirmed[0]
         deeper = next((r for r in records if r.get("kind") == "layered" and r.get("year") == rec.get("year")), None)
         if deeper:
-            layered_truth = {"surface": rec["statement"], "deeper": deeper["statement"],
-                             "evidence": list(rec["provenance"]) + list(deeper["provenance"])}
-        findings.append({"verdict": "BRANCH_VALID", "record": rec["id"], "evidence": rec["provenance"],
-                         "because": f"consistent with locked record {rec['id']}: {rec['statement']}", "matched": rec.get("affirms", [])})
+            layered_truth = {"surface": _statement(rec), "deeper": _statement(deeper),
+                             "evidence": list(rec.get("provenance", [])) + list(deeper.get("provenance", []))}
+        findings.append({"verdict": "BRANCH_VALID", "record": rec.get("id"), "evidence": rec.get("provenance", []),
+                         "because": f"consistent with locked record {rec.get('id')}: {_statement(rec)}", "matched": rec.get("affirms", [])})
 
     if branch:
         # A declared non-Prime branch is its own universe: Prime stays clean and
@@ -467,14 +513,36 @@ def _move(conn, cid: int, to_state: str, actor: Optional[str], note: Optional[st
 # --------------------------------------------------------------------------- #
 # public API
 # --------------------------------------------------------------------------- #
+def _apply_lock_report(result: Dict[str, Any], report: Dict[str, Any]) -> None:
+    """Fold grid canon-lock hits into a Prime verdict. A lock conflict beats
+    UNKNOWN and a seed-level affirmation; a lock affirmation only upgrades a
+    plain UNKNOWN (never one that is a live disagreement between sources)."""
+    hits = [{"verdict": "FACT_CONFLICT", "record": c["lock"], "evidence": [c["shard"]],
+             "because": f"GM canon lock {c['shard']}: {c['clause']}", "matched": c["matched"],
+             "rule": c["rule"], "source": "grid_lock"} for c in report.get("conflicts", [])]
+    if hits:
+        result["findings"] = [f for f in result["findings"] if f["verdict"] not in ("UNKNOWN", "BRANCH_VALID")] + hits
+    elif (result["primary"] == "UNKNOWN" and report.get("affirmations")
+          and not result["findings"][0].get("disagreement")):
+        a = report["affirmations"][0]
+        result["findings"] = [{"verdict": "BRANCH_VALID", "record": a["lock"], "evidence": [a["shard"]],
+                               "because": f"consistent with GM canon lock {a['shard']}: {a['clause']}",
+                               "matched": a["matched"], "rule": a["rule"], "source": "grid_lock"}]
+    else:
+        return
+    result["findings"].sort(key=lambda f: VERDICT_ORDER.index(f["verdict"]))
+    result["primary"] = result["findings"][0]["verdict"]
+
+
 def pressure(candidate: str, coordinate: Optional[str] = None, *, register: bool = True,
-             actor: Optional[str] = None, model: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+             actor: Optional[str] = None, model: Optional[Dict[str, Any]] = None,
+             locks: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Run one proposed story addition through the pipeline.
 
     Returns verdict (primary + findings), evidence ids, timeline stage,
     dependent canon, quarantined conflicts, confidence, repair options, the
     in-character challenge, and (when registered) the candidate id and its
-    promotion state."""
+    promotion state. `locks` overrides the grid canon-lock read (tests)."""
     model = model or load_self_model()
     text = normalize(candidate or "")
     if len(text.strip()) < 3:
@@ -484,6 +552,17 @@ def pressure(candidate: str, coordinate: Optional[str] = None, *, register: bool
     ranked = rank_authority(records)
     result = classify(model, text, coord, ranked)
     conflicts = quarantined_conflicts(model, ranked)
+    # Grid canon locks live as shards, not in the seed JSON; without this a
+    # claim contradicting a GM lock scored UNKNOWN. Prime only: a declared
+    # branch is its own universe. A failed read logs and never blocks pressure.
+    lock_report: Dict[str, Any] = {"conflicts": [], "affirmations": [], "consulted": 0}
+    if result["branch"] == "U0":
+        try:
+            from . import canon_lock_bridge
+            lock_report = canon_lock_bridge.lock_findings(text, locks=locks)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("canon lock consult skipped: %s: %s", type(exc).__name__, exc)
+        _apply_lock_report(result, lock_report)
     # Self Archive: who she was then. The perceived choice frontier, open scars
     # and nearest decisions under pressure refine the behavior / knowledge
     # verdicts with experiential provenance (access is not ownership).
@@ -496,7 +575,7 @@ def pressure(candidate: str, coordinate: Optional[str] = None, *, register: bool
         coord_str = coordinate or (coord or {}).get("coordinate") or text
         frontier = _sa.choice_frontier_check(coord_str, text, archive=archive)
         st = _sa.state_at(coord_str, archive=archive)
-        if st.get("layer") != "UNWRITTEN_SELF":
+        if st.get("layer") not in ("UNWRITTEN_SELF", _sa.ARCHIVE_ABSENT):
             scars_active = st.get("wounds_active", [])
             experiential.append({"claim": st.get("event"), "kind": st["kind"], "voice": st["voice"],
                                  "node": st["node"], "provenance": st.get("provenance", [])})
@@ -551,6 +630,7 @@ def pressure(candidate: str, coordinate: Optional[str] = None, *, register: bool
         "repair_options": cheapest_repair(result, coord),
         "challenge": render_challenge(result, coord, text, conflicts),
         "recalled": [{"id": r["id"], "status": r.get("status"), "authority": r.get("authority")} for r in ranked[:8]],
+        "locks_consulted": lock_report.get("consulted", 0),
     }
     if register:
         now = _now()

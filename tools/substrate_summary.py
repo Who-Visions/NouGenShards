@@ -64,7 +64,7 @@ def get_db_stats(db_path: Path):
             rows = row[0] or 0
             avg_utility = row[1] or 0.0
         conn.close()
-    except Exception as e:
+    except Exception:
         # DB might be locked or uninitialized
         pass
         

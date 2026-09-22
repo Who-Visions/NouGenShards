@@ -112,3 +112,41 @@ def test_confirm_import(tmp_path):
     assert result.files_scanned == 1
     assert result.records_parsed == 1
     assert result.shards_created == 1
+
+
+def _note(p):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("# note\nsome remembered context\n")
+
+
+def test_memoryignore_skips_matching_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOUGEN_MEMORYIGNORE", str(tmp_path / "no-global-file"))
+    proj = tmp_path / "proj"
+    _note(proj / "keep.md")
+    _note(proj / "secret" / "notes.md")
+    _note(proj / "plan.draft.md")
+    (proj / ".memoryignore").write_text("# private material\nsecret/\n*.draft.md\n")
+    found = {c.path.name for c in scanner.scan_environment(str(proj), include_unknown=True)}
+    assert "keep.md" in found
+    assert "notes.md" not in found and "plan.draft.md" not in found
+
+
+def test_memoryignore_project_file_overrides_global(tmp_path, monkeypatch):
+    global_file = tmp_path / "global.memoryignore"
+    global_file.write_text("*.md\n")
+    monkeypatch.setenv("NOUGEN_MEMORYIGNORE", str(global_file))
+    proj = tmp_path / "proj"
+    _note(proj / "keep.md")
+    _note(proj / "drop.md")
+    (proj / ".memoryignore").write_text("!keep.md\n")
+    found = {c.path.name for c in scanner.scan_environment(str(proj), include_unknown=True)}
+    assert "keep.md" in found and "drop.md" not in found
+
+
+def test_memoryignore_absent_changes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOUGEN_MEMORYIGNORE", str(tmp_path / "no-global-file"))
+    proj = tmp_path / "proj"
+    _note(proj / "a.md")
+    _note(proj / "sub" / "b.md")
+    found = {c.path.name for c in scanner.scan_environment(str(proj), include_unknown=True)}
+    assert {"a.md", "b.md"} <= found

@@ -450,6 +450,53 @@ def ingest_secret(key: str, value: str):
         conn.close()
 
 
+# Fallback only; NOUGEN_ICACLS_TIMEOUT_S overrides it at call time.
+_ICACLS_TIMEOUT_DEFAULT_S = 10.0
+
+
+def _harden_path(target_path) -> bool:
+    """Restrict a file's ACL to the current user only (Windows icacls; no-op elsewhere).
+
+    Extracted from the inline block in ingest_service_account so callers outside this
+    module (private_vault.py) can lock down key/recovery files the same way, instead
+    of importing a name that never existed here.
+
+    Never raises: the caller has already written the file and must keep it. Returns
+    False when a lock was attempted and did not take. The reason is logged here
+    without the path, because ingest_service_account derives the path from
+    service-account data; callers with a non-sensitive path log it themselves.
+    """
+    if os.name != "nt":
+        return True
+    import subprocess  # pylint: disable=import-outside-toplevel
+    user = os.environ.get("USERNAME", "")
+    if not user:
+        logger.warning("USERNAME unset; cannot restrict file ACL")
+        return False
+    raw_timeout = os.environ.get("NOUGEN_ICACLS_TIMEOUT_S", "")
+    timeout = _ICACLS_TIMEOUT_DEFAULT_S
+    if raw_timeout:
+        try:
+            timeout = float(raw_timeout)
+            if timeout <= 0:
+                raise ValueError(raw_timeout)
+        except ValueError:
+            logger.warning("NOUGEN_ICACLS_TIMEOUT_S=%r is not a positive number; using %.1fs",
+                           raw_timeout, _ICACLS_TIMEOUT_DEFAULT_S)
+            timeout = _ICACLS_TIMEOUT_DEFAULT_S
+    try:
+        res = subprocess.run(
+            ["icacls", str(target_path), "/inheritance:r", "/grant:r", f"{user}:F"],
+            capture_output=True, check=False, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("icacls could not run: %s", type(exc).__name__)
+        return False
+    if res.returncode != 0:
+        logger.warning("icacls exited %d; file ACL not restricted", res.returncode)
+        return False
+    return True
+
+
 def ingest_service_account(json_data: str):
     """
     Ingests a Google Service Account JSON, saves to file, and stores project metadata.
@@ -483,13 +530,7 @@ def ingest_service_account(json_data: str):
                 f_out.write(payload)
 
         # Lock file ACL to the current user only (constitution 0.2 rule 3)
-        if os.name == "nt":
-            import subprocess  # pylint: disable=import-outside-toplevel
-            user = os.environ.get("USERNAME", "")
-            if user:
-                subprocess.run(
-                    ["icacls", str(target_path), "/inheritance:r", "/grant:r", f"{user}:F"],
-                    capture_output=True, check=False, timeout=10)
+        _harden_path(target_path)
 
         # Store metadata in DB
         ingest_secret(f"GCP_SA_{project_id.upper()}", client_email)
