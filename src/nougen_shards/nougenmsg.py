@@ -1166,8 +1166,10 @@ class NouGenMsgBus:
         return messages
 
     @classmethod
-    def clear_inbox(cls, target: str = "antigravity") -> int:
-        """Archives or deletes all read messages from inbox across all directories."""
+    def clear_inbox(cls, target: str = "antigravity", confirmed: bool = False) -> int:
+        """Bulk archive is destructive to unread state and requires confirmation."""
+        if not confirmed:
+            raise ValueError("bulk inbox clearing requires confirmed=True; prefer exact message ACK")
         inbox_dirs = (
             [
                 os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),

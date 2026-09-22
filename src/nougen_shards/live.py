@@ -326,6 +326,7 @@ class LiveControlPlane:
                 continue
             messages.append({
                 "file": path.name,
+                "message_id": data.get("message_id"),
                 "source": data.get("source") or data.get("origin", {}).get("original_sender") or "unknown",
                 "timestamp": data.get("timestamp"),
                 "text": str(data.get("text") or "")[:1000],
@@ -366,7 +367,8 @@ class LiveControlPlane:
         ]
         for item in msgs["messages"]:
             body = " ".join(item["text"].split())
-            lines.append(f"  • [{item['source']}] {body}")
+            ident = item.get("message_id") or f"legacy:{item['file']}"
+            lines.append(f"  • {ident} [{item['source']}] {body}")
         if msgs["retained"] > msgs["shown"]:
             lines.append(f"  … {msgs['retained'] - msgs['shown']} more retained (nougen live inbox)")
         lines.extend([
@@ -630,6 +632,11 @@ def handle_live_command(args: List[str]) -> str:
         return json.dumps(control.sessions(), indent=2)
     elif subcmd == "inbox":
         return control.render_pending_inline()
+    elif subcmd == "ack-msg" and len(args) >= 2:
+        from . import codex_pipe  # pylint: disable=import-outside-toplevel
+        return json.dumps(codex_pipe.acknowledge(
+            args[1], consumer=os.environ.get("NOUGEN_AGENT", "codex"),
+            thread=os.environ.get("CODEX_THREAD_ID") or None), indent=2)
     elif subcmd == "ssh":
         return json.dumps(control.ssh(), indent=2)
     elif subcmd == "relays":

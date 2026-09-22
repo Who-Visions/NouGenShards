@@ -111,6 +111,29 @@ class CodexPipeTests(unittest.TestCase):
             result = codex_pipe.activate("11111111-1111-4111-8111-111111111111")
         self.assertEqual(result["status"], "conflict")
 
+    def test_exact_ack_archives_one_message_and_writes_receipt(self):
+        message_id = "11111111-1111-4111-8111-111111111111"
+        path = codex_pipe.save({"message_id": message_id, "thread": "thread-1", "text": "one"})
+        other = codex_pipe.save({"message_id": "22222222-2222-4222-8222-222222222222",
+                                 "thread": "thread-1", "text": "two"})
+        receipt = codex_pipe.acknowledge(message_id, consumer="codex", thread="thread-1",
+                                         inbox=self.temp.name)
+        self.assertTrue(receipt["acknowledged"])
+        self.assertFalse(Path(path).exists())
+        self.assertTrue(Path(receipt["file"]).exists())
+        self.assertTrue(Path(other).exists())
+        again = codex_pipe.acknowledge(message_id, consumer="codex", thread="thread-1",
+                                       inbox=self.temp.name)
+        self.assertTrue(again["idempotent"])
+
+    def test_ack_rejects_wrong_thread_without_moving_message(self):
+        message_id = "33333333-3333-4333-8333-333333333333"
+        path = codex_pipe.save({"message_id": message_id, "thread": "right", "text": "one"})
+        receipt = codex_pipe.acknowledge(message_id, consumer="codex", thread="wrong",
+                                         inbox=self.temp.name)
+        self.assertEqual(receipt["status"], "thread_mismatch")
+        self.assertTrue(Path(path).exists())
+
 
 @unittest.skipUnless(sys.platform == 'win32', 'named pipe is Windows-only')
 class CodexPipeServeSurvivesBadConnectsTests(unittest.TestCase):
