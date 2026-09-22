@@ -53,6 +53,7 @@ Checked `~/.nougen/auth-import/` and `~/.nougen/shards/` (filenames only, no val
    - Application type: **Desktop app** (simplest for the refresh-token/local-server flow `auth.run_interactive_auth_flow` uses), or "Web application" if a fixed redirect URI is preferred.
    - Enable APIs: **Gmail API**, **Google Calendar API**, **Google Drive API** (APIs & Services → Library).
    - Download the client JSON, or copy the Client ID + Client Secret directly.
+   - **OAuth consent screen publishing status matters**: a freshly created client defaults to **Testing**, which only allows sign-in from Google accounts explicitly added as test users (APIs & Services → OAuth consent screen → Test users) and expires refresh tokens after 7 days. Either add the account(s) that will run `auth mint` as test users, or push the consent screen to **Production** (may require verification if scopes are sensitive/restricted) for unattended long-lived refresh tokens.
 
 2. **Redirect URI** (only matters for the Web application client type; Desktop app clients use a dynamic loopback and don't need one registered): `http://localhost:8765/oauth2callback` (also overridable via `NOUGEN_GOOGLE_REDIRECT_URI`).
 
@@ -70,7 +71,7 @@ Checked `~/.nougen/auth-import/` and `~/.nougen/shards/` (filenames only, no val
    ```
    python -m nougen_shards.google_workspace.auth mint
    ```
-   This opens a browser, walks through consent, and writes the token cache (including `refresh_token`) to `NOUGEN_GOOGLE_TOKEN_DIR/token.json` (or the fallback path above). After this, all tools work unattended via `auth.get_credentials()`, which refreshes silently.
+   This opens the system's default browser, walks through Google's real consent screen (sign-in + "this app wants access" approval), and writes the token cache (including `refresh_token`) to `NOUGEN_GOOGLE_TOKEN_DIR/token.json` (or the fallback path above). After this, all tools work unattended via `auth.get_credentials()`, which refreshes silently. Requires a GUI/browser on the machine running this — won't complete headless/SSH-only without port-forwarding the loopback callback. If the account signing in isn't a test user on a **Testing**-status client (step 1), consent will be blocked or the resulting refresh token will silently expire after 7 days.
 
 6. **Launch the server** once credentials exist:
    ```
