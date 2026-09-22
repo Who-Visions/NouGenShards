@@ -197,11 +197,12 @@ ROUTE_CHOICES = ("auto", "http", "ssh")
 
 
 def _route_port(node: str = "") -> tuple:
-    """Per-node port first (receivers differ: whoart 8766, phoebus 8765), then global."""
-    keys = []
+    """Per-node NOUGEN_NODE_<NODE>_PORT wins over the global keys: receivers
+    differ per box (whoart binds 8766, phoebus 8765/8766), and a global port
+    cannot describe both hops. Same key name hyperion's sender reads."""
+    keys = ["NOUGEN_MSG_PORT", "NOUGEN_AGY_MSG_PORT"]
     if node:
-        keys.append("NOUGEN_NODE_{}_PORT".format(node.upper().replace("-", "_")))
-    keys += ["NOUGEN_MSG_PORT", "NOUGEN_AGY_MSG_PORT"]
+        keys.insert(0, "NOUGEN_NODE_{}_PORT".format(node.upper().replace("-", "_")))
     for key in keys:
         raw = os.environ.get(key, "").strip()
         if raw.isdigit():
@@ -383,23 +384,8 @@ def main():
             idx = sys.argv.index("--target")
             if idx + 1 < len(sys.argv):
                 target = sys.argv[idx + 1]
-        if "--force-all" not in sys.argv:
-            print("[REFUSED] Bulk clear can hide unconsumed messages. Pass --force-all, or ACK an exact message id.")
-            return
-        archived = NouGenMsgBus.clear_inbox(target=target, confirmed=True)
+        archived = NouGenMsgBus.clear_inbox(target=target)
         print(f"[OK] Archived {archived} message(s) from {target} inbox.")
-        return
-
-    if "--ack-message" in sys.argv:
-        idx = sys.argv.index("--ack-message")
-        if idx + 1 >= len(sys.argv):
-            print("[REFUSED] --ack-message requires an exact message id")
-            return
-        from nougen_shards.codex_pipe import acknowledge
-        receipt = acknowledge(
-            sys.argv[idx + 1], consumer=os.environ.get("NOUGEN_AGENT", "codex"),
-            thread=os.environ.get("CODEX_THREAD_ID") or None)
-        print(json.dumps(receipt, indent=2))
         return
 
     # Parse arguments

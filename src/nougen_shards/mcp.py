@@ -1,4 +1,5 @@
 """Model Context Protocol (MCP) server for NouGenShards — Valerion Engine."""
+import json
 import os
 import sqlite3
 from nougen_shards import agents
@@ -37,9 +38,6 @@ from .brain_scan import scan_environment, run_import
 
 from .history import HistoryEngine
 from .federation import federated_retrieve
-
-# ~32k chars per recall packet unless NOUGEN_RECALL_TOKEN_BUDGET says otherwise ("0" = unbounded).
-DEFAULT_RECALL_TOKEN_BUDGET = 8000
 
 
 def _server_instructions() -> str:
@@ -137,14 +135,8 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
                     "Retry, or raise NOUGEN_RECALL_DEADLINE_S; do NOT conclude "
                     "the substrate holds nothing on this query.")
         return "No relevant shards found in the memory substrate."
-    # Unbounded used to be the default; one 994k-char screenplay shard then
-    # filled a 2-hit recall and the MCP transport timed out (WhoArt, 2026-09-20).
-    # Bounded by default, "0" restores the old unbounded packet on purpose.
     budget = os.environ.get("NOUGEN_RECALL_TOKEN_BUDGET", "").strip()
-    if budget.isdigit():
-        token_budget = int(budget) or None
-    else:
-        token_budget = DEFAULT_RECALL_TOKEN_BUDGET
+    token_budget = int(budget) if budget.isdigit() else None
     if session_id:
         from nougen_shards import distill as _distill  # pylint: disable=import-outside-toplevel
         sent: list = []
@@ -346,7 +338,7 @@ def fetch_web_sandboxed(url: str, label: Optional[str] = None) -> str:
     if "error" in res:
         return f"Error: {res['error']}"
     headings_summary = "\n".join(f"- {h}" for h in res.get("headings", [])[:8])
-    links_summary = "\n".join(f"- {l}" for l in res.get("key_links", [])[:8])
+    links_summary = "\n".join(f"- {link}" for link in res.get("key_links", [])[:8])
     return (
         f"✅ Successfully indexed '{res['title']}' into NouGen Context (Handle: {res['handle']})\n"
         f"Summary: {res['summary']}\n\n"

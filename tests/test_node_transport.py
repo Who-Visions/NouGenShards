@@ -137,3 +137,27 @@ def test_inbox_path_strips_any_directory_part(receiver):
 def test_inbox_path_accepts_a_plain_name(receiver):
     resolved = receiver.inbox_path("msg_1_claude-cli.json")
     assert resolved.parent == receiver.INBOX.resolve()
+
+
+# 20260919T233524Z: goal cut mid-emoji by its writer -> lone high surrogate.
+LONE = "Fix relay (created/edited/deleted)\n\n" + chr(0xD83D)
+
+
+def test_scrub_makes_lone_surrogates_encodable(watch):
+    out = watch.scrub({"goal": LONE, "nested": [LONE], "n": 3})
+    out["goal"].encode("utf-8")
+    out["nested"][0].encode("utf-8")
+    assert out["goal"].endswith(chr(0xFFFD)) and out["n"] == 3
+    # a valid pair (as json.loads can leave it) is rejoined, not replaced
+    assert watch.scrub(chr(0xD83D) + chr(0xDE80)) == chr(0x1F680)
+
+
+def test_announce_survives_a_lone_surrogate_goal(watch, tmp_path, monkeypatch, capsys):
+    import json as _json
+    monkeypatch.delenv("KAEDRA_GATEWAY_TOKEN", raising=False)
+    leg = tmp_path / "20260919T233524Z__claude-app__g.json"
+    leg.write_text(_json.dumps({"id": leg.stem, "machine": "claude-app", "agent": "g",
+                                "status": "open", "goal": LONE}), encoding="utf-8")
+    watch.announce(leg.stem, leg)  # raised UnicodeEncodeError before the fix
+    written = list((tmp_path / "inbox").glob("*.json"))
+    assert written and chr(0xFFFD) in _json.loads(written[0].read_text())["text"]

@@ -201,6 +201,7 @@ class LiveControlPlane:
             "state": state,
             "reason": verdict["reason"],
             "online": verdict["online"],
+            "telemetry_available": True,
             "observer": verdict["evidence"]["observer"],
             "declaration": verdict["evidence"]["declaration"],
             "reachable": reachable,
@@ -209,17 +210,49 @@ class LiveControlPlane:
         }
 
     def nodes(self, timeout: float = 0.8) -> Dict[str, Any]:
-        """Probes all fleet nodes independently, tolerating partial failures."""
+        """Probe every configured node independently and preserve a row on errors."""
         node_results = {}
         for k in self.fleet_nodes:
-            node_results[k] = self.probe_node(k, timeout=timeout)
+            try:
+                node_results[k] = self.probe_node(k, timeout=timeout)
+            except Exception as exc:
+                # A collector exception is a telemetry failure, not proof that
+                # the remote node is offline. Keep the fleet snapshot usable
+                # and make the missing evidence explicit for this node.
+                cfg = self.fleet_nodes.get(k, {})
+                from . import node_state  # pylint: disable=import-outside-toplevel
+                node_results[k] = {
+                    "node": k,
+                    "name": cfg.get("name", k),
+                    "role": cfg.get("role", "compute node"),
+                    "stadium": cfg.get("stadium", cfg.get("host", k)),
+                    "ip": cfg.get("ip"),
+                    "host": cfg.get("host"),
+                    "state": node_state.NodeState.UNKNOWN.value,
+                    "reason": f"telemetry probe raised {type(exc).__name__}; node state not established",
+                    "online": None,
+                    "telemetry_available": True,
+                    "observer": node_state.observer_name(),
+                    "declaration": None,
+                    "reachable": None,
+                    "probes": {},
+                    "probe_error": type(exc).__name__,
+                    "timestamp": time.time(),
+                }
 
         # A host that refuses every probed port is UP (ONLINE_SERVICE_DOWN)
         # even though nothing was "reachable"; count by state, not by port.
         online_count = sum(1 for n in node_results.values() if n.get("online", n["reachable"]))
+        probe_failures = [k for k, node in node_results.items() if node.get("probe_error")]
+        unknown_nodes = sum(1 for node in node_results.values() if node.get("online") is None)
         return {
             "total_nodes": len(self.fleet_nodes),
             "online_nodes": online_count,
+            "unknown_nodes": unknown_nodes,
+            "telemetry_available": True,
+            "probe_sweep_complete": not probe_failures,
+            "complete": not probe_failures and unknown_nodes == 0,
+            "probe_failures": probe_failures,
             "nodes": node_results,
             "timestamp": time.time()
         }
@@ -580,7 +613,8 @@ class LiveControlPlane:
             "================================================================================",
             "🛰️  NOUGEN FLEET CONTROL PLANE (/live)",
             "================================================================================",
-            f"🌐 FLEET NODES ({node_data['online_nodes']}/{node_data['total_nodes']} online):"
+            f"🌐 FLEET NODES ({node_data['online_nodes']} confirmed online, "
+            f"{node_data['unknown_nodes']} unknown / {node_data['total_nodes']} total):"
         ]
         for k, n in node_data["nodes"].items():
             # Only multi-observer-confirmed disappearance is red. Declared-off,

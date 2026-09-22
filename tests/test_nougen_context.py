@@ -129,7 +129,7 @@ def test_html_content_extractor():
     assert parser.title == "Test Page Title"
     assert len(parser.headings) == 2
     assert "H1: Main Heading" in parser.headings[0]
-    assert "https://example.com" in parser.links
+    assert any(link == "https://example.com" for link in parser.links)
     md = parser.get_markdown()
     assert "# Main Heading" in md
     assert "Item 1" in md
@@ -233,3 +233,44 @@ def test_query_ollama_and_synthesize(monkeypatch):
     synth = nougen_context.synthesize_sandbox("test_handle")
     assert synth["status"] == "synthesized"
     assert "space treaty valid" in synth["summary"]
+
+
+def test_fetch_blocks_file_scheme_and_private_hosts(monkeypatch):
+    from nougen_shards import nougen_context as nc
+    monkeypatch.delenv("NOUGEN_CONTEXT_ALLOW_PRIVATE_HOSTS", raising=False)
+    for url in ("file:///C:/Windows/win.ini", "ftp://example.com/x", "http://127.0.0.1:4444/health",
+                "http://169.254.169.254/latest/meta-data", "http://10.0.0.5/", "http://[::1]/"):
+        res = nc.fetch_and_index_web(url)
+        assert "error" in res and res["error"].startswith("blocked"), url
+
+
+def test_redirect_to_internal_host_is_refused(monkeypatch):
+    import urllib.error
+    import pytest
+    from nougen_shards import nougen_context as nc
+    monkeypatch.delenv("NOUGEN_CONTEXT_ALLOW_PRIVATE_HOSTS", raising=False)
+    handler = nc._CheckedRedirect()
+    with pytest.raises(urllib.error.URLError):
+        handler.redirect_request(None, None, 302, "Found", {}, "http://127.0.0.1:4444/health")
+
+
+def test_cloud_fallback_requires_explicit_model(monkeypatch):
+    """No silent off-box send and no banned default tag: cloud is skipped unless a model is named."""
+    import urllib.request
+    from urllib.parse import urlparse
+    from nougen_shards import nougen_context as nc
+    seen = []
+
+    def fake_urlopen(req, timeout=None):
+        seen.append(req.full_url if hasattr(req, "full_url") else str(req))
+        raise OSError("down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("NOUGEN_OLLAMA_CLOUD_URL", "https://cloud.example.invalid")
+    monkeypatch.delenv("NOUGEN_OLLAMA_CLOUD_MODEL", raising=False)
+    res = nc.query_ollama("hello")
+    assert res["status"] == "unavailable"
+    assert not any(urlparse(u).hostname == "cloud.example.invalid" for u in seen)
+    monkeypatch.setenv("NOUGEN_OLLAMA_CLOUD_MODEL", "some-cloud-tag")
+    nc.query_ollama("hello")
+    assert any(urlparse(u).hostname == "cloud.example.invalid" for u in seen)

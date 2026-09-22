@@ -19,6 +19,11 @@ updates:
     groups:
       gradio:
         patterns: ["gradio", "gradio-client"]
+    # gradio (through 6.28.0) requires tomlkit<0.15.0, so 0.15.x can never
+    # resolve in the Space requirements job (#419). Lift when gradio lifts the cap.
+    ignore:
+      - dependency-name: "tomlkit"
+        versions: [">=0.15.0"]
   - package-ecosystem: npm
     directory: /
     schedule:

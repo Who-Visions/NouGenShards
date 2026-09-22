@@ -31,7 +31,12 @@ VAULT_DIR = _path_env("NOUGEN_VAULT_DIR", NOUGEN_HOME / "shards")
 SECRETS_DB = _path_env("NOUGEN_SECRETS_DB", NOUGEN_HOME / "secrets" / "shards_secrets.db")
 sys.path.insert(0, str(NOUGEN_HOME / "bin"))
 import keymaker_peel  # noqa: E402
-PORT = os.environ.get("NGS_PORT", "4445")
+# 4444 is the primary node port everywhere else (node_lane.ps1, ngs_node_boot.cmd,
+# gateway_supervisor.ps1, tunnel_lane.ps1, bin/ngs-node.sh, the tunnel ingress).
+# This defaulted to 4445 (the standby port; highway_lane.ps1 sets it explicitly),
+# so two launchers disagreed and the tunnel pointed at an empty port for a night
+# (2026-09-19/20, 322/322 proxied requests 502). One default, env still wins.
+PORT = os.environ.get("NGS_PORT", "4444")
 BIND = os.environ.get("NGS_BIND_HOST", "127.0.0.1")
 _cloudflared_override = os.environ.get("NOUGEN_CLOUDFLARED_EXE", "").strip()
 _cloudflared_candidates = ([Path(_cloudflared_override)] if _cloudflared_override else [])

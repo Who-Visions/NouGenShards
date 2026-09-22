@@ -3,16 +3,44 @@ from pathlib import Path
 import sqlite3
 import json
 import ast
+import ipaddress
+import os
 import re
+import socket
+import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from html.parser import HTMLParser
 from datetime import datetime, timezone
-import os
 from typing import Optional
 
-NOUGEN_VAULT_DIR = Path(os.environ.get("NOUGEN_VAULT_DIR", Path.home() / ".nougen" / "shards")).resolve()
-NOUGEN_CONTEXT_DIR = Path(os.environ.get("NOUGEN_CONTEXT_DIR", NOUGEN_VAULT_DIR / "context")).resolve()
+NOUGEN_CONTEXT_DIR = Path.home() / ".nougen" / "context"
 SESSION_DB_PATH = str(NOUGEN_CONTEXT_DIR / "session.db")
+
+
+def _migrate_legacy_if_needed():
+    """Copy session.db from legacy ~/.nougen/context to the canonical shards/context once."""
+    session_file = Path(SESSION_DB_PATH)
+    marker = session_file.parent / ".legacy_migrated"
+    if marker.exists():
+        return
+    if not session_file.exists():
+        legacy_db = Path.home() / ".nougen" / "context" / "session.db"
+        if legacy_db.exists() and legacy_db.resolve() != session_file.resolve():
+            try:
+                import shutil
+                session_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(legacy_db, session_file)
+            except Exception:
+                pass
+    try:
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except Exception:
+        pass
+
+
+_migrate_legacy_if_needed()
 
 def _utc_now_iso() -> str:
     """UTC timestamp as '...Z'. Note: isoformat() on a tz-aware UTC datetime
@@ -63,29 +91,6 @@ def _ensure_schema(conn):
     """)
     conn.commit()
 
-
-def _migrate_legacy_if_needed():
-    """Migrates existing session.db from legacy ~/.nougen/context to canonical ~/.nougen/shards/context once."""
-    session_file = Path(SESSION_DB_PATH)
-    marker = session_file.parent / ".legacy_migrated"
-    if marker.exists():
-        return
-    if not session_file.exists():
-        legacy_db = Path.home() / ".nougen" / "context" / "session.db"
-        if legacy_db.exists() and legacy_db.resolve() != session_file.resolve():
-            try:
-                import shutil
-                session_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(legacy_db, session_file)
-            except Exception:
-                pass
-    try:
-        session_file.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch()
-    except Exception:
-        pass
-
-_migrate_legacy_if_needed()
 
 def get_context_connection():
     """Establishes an SQLite connection for the session context with WAL enabled."""
@@ -343,19 +348,73 @@ class _HTMLContentExtractor(HTMLParser):
         return re.sub(r"\n{3,}", "\n\n", raw).strip()
 
 
+_ALLOWED_FETCH_SCHEMES = ("http", "https")
+
+
+def _max_fetch_bytes() -> int:
+    """Response size cap. Env NOUGEN_CONTEXT_MAX_FETCH_BYTES overrides; 5 MB fallback."""
+    try:
+        return max(1, int(os.environ.get("NOUGEN_CONTEXT_MAX_FETCH_BYTES", "")))
+    except ValueError:
+        return 5_000_000
+
+
+def _validate_fetch_url(url: str) -> Optional[str]:
+    """Return an error string if `url` must not be fetched, else None.
+
+    http(s) only (urllib would otherwise happily read file:// and ftp://), and hosts that resolve to
+    loopback/private/link-local/reserved space are refused so an MCP caller cannot use this tool to
+    read local files or reach internal services (the shard gateway, cloud metadata).
+    NOUGEN_CONTEXT_ALLOW_PRIVATE_HOSTS=1 opts out for trusted local use.
+    """
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _ALLOWED_FETCH_SCHEMES or not parsed.hostname:
+        return f"blocked: only http(s) URLs with a host are allowed (got scheme {scheme!r})"
+    if os.environ.get("NOUGEN_CONTEXT_ALLOW_PRIVATE_HOSTS") == "1":
+        return None
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, parsed.port or (443 if scheme == "https" else 80),
+                                   type=socket.SOCK_STREAM)
+    except OSError as exc:
+        return f"blocked: cannot resolve host ({exc})"
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified):
+            return f"blocked: {parsed.hostname} resolves to a non-public address"
+    return None
+
+
+class _CheckedRedirect(urllib.request.HTTPRedirectHandler):
+    """Re-validate every redirect hop so a public URL cannot bounce the fetch to an internal one."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        err = _validate_fetch_url(newurl)
+        if err:
+            raise urllib.error.URLError(err)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch_and_index_web(url: str, label: Optional[str] = None, timeout: int = 15) -> dict:
     """Natively fetches, extracts, indexes and sandboxes a web page without polluting context."""
+    blocked = _validate_fetch_url(url)
+    if blocked:
+        return {"error": blocked, "url": url}
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NouGenContext/2.0 (Valerion Engine)"}
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.build_opener(_CheckedRedirect).open(req, timeout=timeout) as resp:
             content_type = resp.headers.get("Content-Type", "")
             charset = "utf-8"
             if "charset=" in content_type:
                 charset = content_type.split("charset=")[-1].split(";")[0].strip()
-            raw_bytes = resp.read()
+            cap = _max_fetch_bytes()
+            raw_bytes = resp.read(cap + 1)
+            if len(raw_bytes) > cap:
+                return {"error": f"blocked: response exceeds {cap} bytes", "url": url}
             html_text = raw_bytes.decode(charset, errors="replace")
     except Exception as exc:
         return {"error": f"Failed to fetch {url}: {exc}", "url": url}
@@ -589,12 +648,15 @@ def query_ollama(
 
     # Cloud fallback if env configured
     cloud_url = os.environ.get("NOUGEN_OLLAMA_CLOUD_URL") or os.environ.get("OLLAMA_CLOUD_URL")
-    if cloud_url:
+    # No hardcoded default model: the old gemma4:31b default is a banned large tag (Rule 0.4) and it
+    # silently shipped context off-box. The operator must name the cloud model explicitly.
+    cloud_model = model or os.environ.get("NOUGEN_OLLAMA_CLOUD_MODEL")
+    if cloud_url and cloud_model:
         try:
             req = urllib.request.Request(
                 f"{cloud_url.rstrip('/')}/api/generate",
                 data=json.dumps({
-                    "model": model or "gemma4:31b",
+                    "model": cloud_model,
                     "prompt": full_prompt,
                     "stream": False
                 }).encode("utf-8"),
@@ -604,7 +666,7 @@ def query_ollama(
                 res = json.loads(response.read().decode("utf-8"))
                 return {
                     "status": "success",
-                    "model": "cloud:" + (model or "gemma4:31b"),
+                    "model": "cloud:" + cloud_model,
                     "response": res.get("response", "").strip(),
                     "endpoint": cloud_url
                 }
