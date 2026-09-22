@@ -963,10 +963,13 @@ class NouGenMsgBus:
                 text = pointer
             remote_cmd = f'{base} "{text}"'
 
+        # The remote --target all fan-out also delivers to OLLAMA and OPENROUTER
+        # and takes 24-27 s (measured blade/whoart 2026-09-21). At 20 s every
+        # such send was killed after delivery and reported as a timeout.
         try:
             output = cls._ssh_capture(
                 ["ssh", *cls._SSH_OPTS, node, remote_cmd],
-                timeout=float(os.environ.get("NOUGEN_MSG_SEND_TIMEOUT_S", "20")),
+                timeout=float(os.environ.get("NOUGEN_MSG_SEND_TIMEOUT_S", "90")),
             )
             return {node: output.strip()}
         except Exception as e:
