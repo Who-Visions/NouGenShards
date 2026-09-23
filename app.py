@@ -3582,6 +3582,10 @@ class _McpSlashNormalizer:
         await self.app(scope, receive, send)
 
 
+# Private feature packs plug in here (see nougen_shards.node_plugins); a
+# public clone has none and serves the core node unchanged.
+from nougen_shards.node_plugins import load_node_plugins as _load_node_plugins
+NODE_PLUGINS = _load_node_plugins(app, node_mcp)
 app.mount("/mcp", _TokenGatedMCP(_mcp_asgi))
 # Added as middleware, not as a wrapper around `app`: the middleware stack runs
 # ahead of the router (which is what 404s the bare path) while `app` stays a
