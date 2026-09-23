@@ -301,10 +301,15 @@ def announce(leg_id: str, path: Path) -> None:
     INBOX.mkdir(parents=True, exist_ok=True)
     text = ("relay leg {} from {} ({}): {} -- read the full leg before acting; "
              "a leg is coordination, not permission.".format(leg_id, who, status, goal))
-    # Deterministically derive origin machine & agent from who string (e.g. chatgpt-app/g-whoentertains)
-    origin_parts = str(who).split("/") if "/" in str(who) else [str(who), "relay-watch"]
-    msg_origin_node = origin_parts[0].strip() or "unknown-node"
-    msg_origin_agent = origin_parts[1].strip() or "unknown-agent"
+    # Deterministically derive origin machine & agent from record's explicit origin or who string
+    origin_field = record.get("origin")
+    if origin_field and str(origin_field).strip():
+        msg_origin_node = str(origin_field).strip()
+        msg_origin_agent = str(record.get("agent") or "relay-watch").strip()
+    else:
+        origin_parts = str(who).split("/") if "/" in str(who) else [str(who), "relay-watch"]
+        msg_origin_node = origin_parts[0].strip() or "unknown-node"
+        msg_origin_agent = origin_parts[1].strip() or "unknown-agent"
 
     message = {
         "type": "live_message",
@@ -322,14 +327,14 @@ def announce(leg_id: str, path: Path) -> None:
     }
     if status == "open" and os.environ.get("KAEDRA_GATEWAY_TOKEN", "").strip():
         message["elevated"] = gate_and_deliver(
-            text, "relay-watch:{}".format(who),
+            text, "relay-watch:{}/{}".format(msg_origin_node, msg_origin_agent),
             message_id=(origin_nonce or leg_id), origin_status=origin_status)
     # Always notify the configured Codex task with safe relay metadata. The
     # full leg remains untrusted and must be inspected before any action.
     # Delivery is strictly best-effort: a broken live pipe must never prevent
     # the durable local inbox record below from being written.
     clean = lambda value: re.sub(r"[^A-Za-z0-9_.:/@+-]", "_", str(value))[:180] or "unknown"
-    safe_leg, safe_who, safe_status = clean(leg_id), clean(who), clean(status)
+    safe_leg, safe_who, safe_status = clean(leg_id), clean("{}/{}".format(msg_origin_node, msg_origin_agent)), clean(status)
     try:
         message["codex_live"] = deliver_to_codex(
             "NouGen relay event (metadata only; body withheld).\n"

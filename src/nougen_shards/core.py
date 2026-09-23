@@ -1284,9 +1284,17 @@ def capture(event_type: str, title: str, content: str,
             "INSERT OR IGNORE INTO hashes (file_hash, db_index) VALUES (?, ?)",
             (fhash, target_idx))
         dconn.commit()
+        shard_id = int(cursor.lastrowid or 0)
+        if tags and any(str(tag).strip().lower() in {"goal", "intent", "destiny"} for tag in tags):
+            try:
+                from . import destiny  # pylint: disable=import-outside-toplevel
+                destiny.create_from_shard(shard_id, target_idx, title, content,
+                                          tags=tags, sensitivity=sensitivity)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.error("shard %s:%s stored but destiny auto-create failed: %s",
+                             target_idx, shard_id, exc)
         return CaptureResult(captured=True, reason="written",
-                             shard_id=int(cursor.lastrowid or 0),
-                             db_index=target_idx)
+                             shard_id=shard_id, db_index=target_idx)
     finally:
         dconn.close()
 
