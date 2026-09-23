@@ -179,7 +179,7 @@ python-multipart==0.0.32
     # via
     #   gradio
     #   mcp
-pytz==2026.2
+pytz==2026.3.post1
     # via
     #   gradio
     #   pandas
