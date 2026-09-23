@@ -78,10 +78,23 @@ def test_hlc_concurrent_monotonicity():
     assert len(keys) == len(all_clocks)
 
 
-def test_hlc_receive_and_drift():
-    """Verify Lamport clock merge and drift rejection on remote HLC messages."""
+def test_hlc_receive_and_drift(monkeypatch):
+    """Verify Lamport clock merge and drift rejection on remote HLC messages.
+
+    receive_hlc() reads its own time.time() internally; if the wall clock
+    ticks a millisecond between local_clock = tracker.now() and the
+    receive_hlc() call below, local_curr_ms becomes the max and the merge
+    takes the physical-advance branch, resetting logical_counter to 0 --
+    a race in the test, not in the tracker (found on CI py3.12, reproduced
+    5/5 locally on phoebus otherwise). Pin the physical clock so the merge
+    is forced onto the "remote_physical_ms == self._last_physical_ms"
+    branch deterministically.
+    """
+    import nougen_shards.temporal_fabric_v2 as tfv2
+
     tracker = HLCTracker(node_id="whoart")
     local_clock = tracker.now()
+    monkeypatch.setattr(tfv2.time, "time", lambda: local_clock.physical_ms / 1000)
 
     # Normal remote receive
     merged = tracker.receive_hlc(
