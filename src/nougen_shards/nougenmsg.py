@@ -14,7 +14,12 @@ import sys
 import urllib.request
 import re
 import uuid
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
+
+# Every child (ssh, scp) spawns windowless: a console child of a console-less
+# parent (MCP server, hook, pythonw) otherwise opens a terminal window.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 _SESSION_VARS = ("NOUGEN_SESSION", "CLAUDE_CODE_SESSION_ID")
 
@@ -67,6 +72,46 @@ _KNOWN_FLEET_HOSTS = {
     "blade": ("blade1tb", "blade"),
 }
 
+_DEFAULT_COACH_ROUTES = {
+    "hyperion": "whoart",
+    "apollo": "blade",
+    "phoebus": "phoebus",
+}
+
+
+def fleet_identity_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Resolve coach aliases to physical transport nodes from nodes.json."""
+    coach_to_machine = dict(_DEFAULT_COACH_ROUTES)
+    machine_to_coach = {machine: coach for coach, machine in coach_to_machine.items()}
+    path = Path.home() / ".nougen" / "nodes.json"
+    try:
+        configured = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        configured = {}
+    for key, cfg in configured.items() if isinstance(configured, dict) else ():
+        if not isinstance(cfg, dict):
+            continue
+        coach = str(cfg.get("coach") or cfg.get("name") or key).strip().lower()
+        machine = str(cfg.get("transport_node") or "").strip().lower()
+        if not machine:
+            continue
+        coach_to_machine[coach] = machine
+        coach_to_machine[str(key).strip().lower()] = machine
+        machine_to_coach[machine] = coach
+    return coach_to_machine, machine_to_coach
+
+
+def normalize_fleet_node(value: str) -> str:
+    """Translate a coach identity (Hyperion) into its transport box (WhoArt)."""
+    normalized = (value or "").strip().lower()
+    return fleet_identity_maps()[0].get(normalized, normalized)
+
+
+def coach_for_machine(value: str) -> str:
+    """Return the coach assigned to a physical transport node."""
+    normalized = normalize_fleet_node(value)
+    return fleet_identity_maps()[1].get(normalized, normalized)
+
 
 def get_current_node() -> str:
     """Which of Dave's three fleet boxes this is, or "standalone" for
@@ -93,6 +138,16 @@ def get_current_node() -> str:
             return node
     return "standalone"
 
+def _live_pipe_names() -> List[str]:
+    """Named pipes the kernel holds right now (empty off Windows)."""
+    if os.name != "nt":
+        return []
+    try:
+        return ["\\\\.\\pipe\\" + n for n in os.listdir("\\\\.\\pipe\\")]
+    except OSError:
+        return glob.glob(r"\\.\pipe\LOCAL\*")
+
+
 class AgentPinger:
     """Delivers live pings directly into agent context, named pipes, and session inboxes."""
 
@@ -106,24 +161,11 @@ class AgentPinger:
                 + glob.glob("/tmp/nougen-*.sock")
             ))
 
-        candidates: List[str] = []
-        try:
-            command = (
-                "[System.IO.Directory]::GetFiles('\\\\.\\pipe\\') | "
-                "Where-Object { $_ -match 'cc-msg|claude' }"
-            )
-            timeout_s = float(os.environ.get("NOUGEN_PIPE_DISCOVERY_TIMEOUT_S", "5"))
-            result = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-Command", command],
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                timeout=timeout_s,
-                check=False,
-            )
-            candidates.extend(line.strip() for line in result.stdout.splitlines())
-        except (OSError, subprocess.SubprocessError, ValueError):
-            pass
-
+        # Read the kernel pipe table in-process. This used to shell out to
+        # powershell.exe, which popped a Windows Terminal tab on every
+        # invocation (WT as default console host ignores CREATE_NO_WINDOW
+        # for some launch paths) and cost ~1s of PowerShell startup.
+        candidates: List[str] = list(_live_pipe_names())
         candidates.extend(glob.glob(r"\\.\pipe\LOCAL\cc-msg-*"))
         allowed = re.compile(r"^\\\\\.\\pipe\\(?:LOCAL\\)?(?:cc-msg|claude)[-\\\w.]*$", re.I)
         return sorted({pipe for pipe in candidates if pipe and allowed.fullmatch(pipe)})
@@ -238,18 +280,17 @@ class AgentPinger:
                 registry = json.load(f)
         except (OSError, ValueError):
             registry = {}
+        # Both registry shapes can coexist in one file: blade nests {"sessions":
+        # {socket: entry}}, phoebus keeps {session_id: {socket, token, ...}} at the
+        # top level. An EMPTY nested "sessions" key used to mask every top-level
+        # entry (registered:0 with a live session registered), so merge the two.
+        sessions = {}
         raw_sessions = registry.get("sessions")
         if isinstance(raw_sessions, dict):
-            sessions = raw_sessions  # blade shape (nougenmsg_register.py): {socket: entry}
-        else:
-            # phoebus shape (nougenmsg_wake.py): {session_id: {socket, token, ...}} at the
-            # top level. Before 2026-09-03 this branch fell through to {}, the loop
-            # never ran, and phoebus reported registered:0 over a healthy registry
-            # while every live cc-msg fell back to the inbox drain.
-            sessions = {}
-            for sid, entry in registry.items():
-                if isinstance(entry, dict) and entry.get("token") and entry.get("socket"):
-                    sessions[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
+            sessions.update(raw_sessions)
+        for sid, entry in registry.items():
+            if sid != "sessions" and isinstance(entry, dict) and entry.get("token") and entry.get("socket"):
+                sessions[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
         delivered, pruned, errors = [], [], []
         for sock, entry in list(sessions.items()):
             token = str((entry or {}).get("token") or "")
@@ -552,6 +593,7 @@ class AgentPinger:
             try:
                 res = subprocess.run(
                     ["ssh", "--", node, remote_cmd],
+                    creationflags=_NO_WINDOW,
                     input=payload,
                     capture_output=True,
                     text=True,
@@ -607,7 +649,8 @@ class NouGenMsgBus:
         if not raw or raw == 'all':
             return ('fleet', 'all')
 
-        known_nodes = {'blade', 'whoart', 'phoebus', 'local', 'fleet'}
+        coach_routes, _ = fleet_identity_maps()
+        known_nodes = {'blade', 'whoart', 'phoebus', 'local', 'fleet', *coach_routes}
         known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'agents', 'all'}
         # Model lanes carry the model in the agent slot: '@ollama:gemma4:31b-cloud'
         # -> ('local', 'ollama:gemma4:31b-cloud'); '@blade:openrouter:nvidia/x'
@@ -621,11 +664,11 @@ class NouGenMsgBus:
                 return ('local', raw)
             fam = a.split(':', 1)[0]
             if fam in model_lanes:
-                return (n if n in known_nodes else 'local', a)
-            return (n if n in known_nodes else 'local', a if a in known_agents else 'all')
+                return (normalize_fleet_node(n) if n in known_nodes else 'local', a)
+            return (normalize_fleet_node(n) if n in known_nodes else 'local', a if a in known_agents else 'all')
 
         if raw in known_nodes:
-            return (raw, 'all')
+            return (normalize_fleet_node(raw), 'all')
         if raw in known_agents:
             return ('local', raw)
 
@@ -659,6 +702,7 @@ class NouGenMsgBus:
             "session_id": session_id,
             "session_title": supplied.get("session_title"),
             "machine": claimed_machine or current,
+            "coach": supplied.get("coach") or coach_for_machine(claimed_machine or current),
             "transport_machine": current,
             "lane": supplied.get("lane"),
             "transport": supplied.get("transport") or "nougenmsg",
@@ -691,6 +735,7 @@ class NouGenMsgBus:
         envelope = cls._origin_envelope(origin)
         # 'ollama:gemma4:31b-cloud' -> family 'ollama', model 'gemma4:31b-cloud'
         family, _, model = target.partition(":")
+        family = normalize_fleet_node(family)
         model = model or None
         # Model lanes ride on 'all' broadcasts by default (GM 2026-09-08: the
         # fleet includes its models). NOUGEN_MSG_MODEL_LANES_ON_ALL=0 opts out
@@ -703,7 +748,7 @@ class NouGenMsgBus:
         # (2026-09-14: connector nougenmsg @blade -> results.blade == {}). On the
         # addressed node it means "this node's agent lanes"; elsewhere it is not
         # ours to deliver, and saying so beats an empty dict.
-        fleet_nodes = {n.strip().lower() for n in os.environ.get(
+        fleet_nodes = {normalize_fleet_node(n) for n in os.environ.get(
             "NOUGEN_FLEET_NODES", "blade,whoart,phoebus").split(",") if n.strip()}
         if family in fleet_nodes:
             if family != (get_current_node() or "").lower():
@@ -814,6 +859,7 @@ class NouGenMsgBus:
         try:
             cp = subprocess.run(["scp", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", local, f"{node}:{remote_rel}"],
                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                creationflags=_NO_WINDOW,
                                 timeout=float(os.environ.get("NOUGEN_MSG_SHIP_TIMEOUT_S", "60")))
         except (OSError, subprocess.SubprocessError) as exc:
             return None, f"Error: body shipping failed, {type(exc).__name__}"
@@ -877,7 +923,8 @@ class NouGenMsgBus:
         try:
             with os.fdopen(fd, "wb") as sink:
                 subprocess.run(argv, stdout=sink, stderr=subprocess.STDOUT,
-                               stdin=subprocess.DEVNULL, timeout=timeout)
+                               stdin=subprocess.DEVNULL, timeout=timeout,
+                               creationflags=_NO_WINDOW)
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 return fh.read()
         finally:
@@ -964,10 +1011,13 @@ class NouGenMsgBus:
                 text = pointer
             remote_cmd = f'{base} "{text}"'
 
+        # The remote --target all fan-out also delivers to OLLAMA and OPENROUTER
+        # and takes 24-27 s (measured blade/whoart 2026-09-21). At 20 s every
+        # such send was killed after delivery and reported as a timeout.
         try:
             output = cls._ssh_capture(
                 ["ssh", *cls._SSH_OPTS, node, remote_cmd],
-                timeout=float(os.environ.get("NOUGEN_MSG_SEND_TIMEOUT_S", "20")),
+                timeout=float(os.environ.get("NOUGEN_MSG_SEND_TIMEOUT_S", "90")),
             )
             return {node: output.strip()}
         except Exception as e:
@@ -1026,24 +1076,20 @@ class NouGenMsgBus:
         """Discovers active local pipes and session inboxes across agents."""
         curr = get_current_node()
         claude_pipes = AgentPinger._discover_claude_endpoints()
-        agy_pipes: List[str] = []
+        # Liveness comes from the kernel pipe table only. The registry and the
+        # default pipe name are claims: listing them unverified is how
+        # --peers reported Antigravity "active" while no server held the pipe.
+        live = set(_live_pipe_names())
+        agy_pipes = sorted(p for p in live if re.search(r"\\agy-msg-", p, re.I))
         agy_reg = os.path.expanduser(os.path.join("~", ".nougen", "agy_sessions.json"))
+        stale_agy: List[str] = []
         if os.path.exists(agy_reg):
             try:
                 with open(agy_reg, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    sessions = data.get("sessions") or {}
-                    for pipe_k in sessions.keys():
-                        if pipe_k not in agy_pipes:
-                            agy_pipes.append(pipe_k)
+                    sessions = (json.load(f) or {}).get("sessions") or {}
+                stale_agy = sorted(k for k in sessions if k not in live)
             except Exception:
                 pass
-        if not agy_pipes:
-            candidates = glob.glob(r"\\.\pipe\LOCAL\agy-msg-*")
-            if candidates:
-                agy_pipes.extend(candidates)
-            elif os.name == "nt":
-                agy_pipes.append(r"\\.\pipe\LOCAL\agy-msg-antigravity")
 
         try:
             from .codex_pipe import request as codex_request
@@ -1064,7 +1110,51 @@ class NouGenMsgBus:
             "codex_pipe": codex_pipe,
             "antigravity_inbox_unread": gemini_messages,
             "codex_inbox_unread": codex_messages,
-            "nodes_reachable": ["whoart", "blade", "phoebus"]
+            "antigravity_stale_registry": stale_agy,
+            **cls._probe_nodes(curr),
+        }
+
+    @staticmethod
+    def _probe_nodes(curr: str) -> Dict[str, List[str]]:
+        """TCP-probe each fleet node's NouGenMsg receiver instead of listing a constant.
+
+        Host: NOUGEN_NODE_<NODE>_IP, else <node>.local (mDNS); this node dials
+        loopback. Port NOUGEN_MSG_PORT, timeout NOUGEN_MSG_PROBE_TIMEOUT_S.
+        """
+        import socket
+        from concurrent.futures import ThreadPoolExecutor
+        port = int(os.environ.get("NOUGEN_MSG_PORT", "8766"))
+        timeout = float(os.environ.get("NOUGEN_MSG_PROBE_TIMEOUT_S", "1.5"))
+        nodes = sorted(set(fleet_identity_maps()[0].values()) | {curr})
+
+        def host_for(node: str) -> str:
+            if node == curr:
+                return "127.0.0.1"
+            return os.environ.get(f"NOUGEN_NODE_{node.upper()}_IP") or f"{node}.local"
+
+        def up(node: str) -> bool:
+            # Resolve IPv4 first: create_connection on an mDNS name tries the
+            # AAAA answer before falling back, which cost ~6s per call to
+            # whoart.local (measured 2026-09-23) while its A record came back
+            # in 0.13s.
+            try:
+                addrs = [ai[4] for ai in socket.getaddrinfo(
+                    host_for(node), port, socket.AF_INET, socket.SOCK_STREAM)]
+            except OSError:
+                addrs = []
+            for addr in addrs or [(host_for(node), port)]:
+                try:
+                    with socket.create_connection(addr, timeout=timeout):
+                        return True
+                except OSError:
+                    continue
+            return False
+
+        with ThreadPoolExecutor(max_workers=max(1, len(nodes))) as pool:
+            status = dict(zip(nodes, pool.map(up, nodes)))
+        return {
+            "nodes_reachable": [n for n in nodes if status[n]],
+            "nodes_unreachable": [n for n in nodes if not status[n]],
         }
 
     @classmethod
@@ -1122,8 +1212,10 @@ class NouGenMsgBus:
         return messages
 
     @classmethod
-    def clear_inbox(cls, target: str = "antigravity") -> int:
-        """Archives or deletes all read messages from inbox across all directories."""
+    def clear_inbox(cls, target: str = "antigravity", confirmed: bool = False) -> int:
+        """Bulk archive is destructive to unread state and requires confirmation."""
+        if not confirmed:
+            raise ValueError("bulk inbox clearing requires confirmed=True; prefer exact message ACK")
         inbox_dirs = (
             [
                 os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),

@@ -75,7 +75,7 @@ AUTO_RESOLVE_RULES = [
     },
     {
         "keywords": ["insert resident ollama as free first-pass relay processor"],
-        "note": "Implemented: local Ollama running on localhost:11434 with 12 resident models (gemma4:e2b-qat, solai:e2b, mrs-b) serving as zero-cost local inspection worker.",
+        "note": "Implemented: local Ollama running on 127.0.0.1:11434 with 12 resident models (gemma4:e2b-qat, solai:e2b, mrs-b) serving as zero-cost local inspection worker.",
     },
     {
         "keywords": ["decide canonical keymaker secrets store", "agent_secrets.db vs shards_secrets.db"],

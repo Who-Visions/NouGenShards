@@ -1,6 +1,6 @@
 """
-The Dream State (Autonomous Metameric Evolution).
-Implementation of TMEM and offline dual-system semantic consolidation.
+The Dream State (Autonomous NouGenMorph Evolution).
+Implementation of NouGenMorph and offline dual-system semantic consolidation.
 """
 
 import json

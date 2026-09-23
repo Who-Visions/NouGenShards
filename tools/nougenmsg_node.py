@@ -45,6 +45,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import uuid
 import os
 import queue
 import socket
@@ -223,11 +225,51 @@ def _maybe_wake(msg: dict, verdict: dict) -> dict:
     return _wake_dispatch(target, str(msg.get("text", "")), msg)
 
 
+MESSAGE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
+
+
+def assign_message_id(msg: dict) -> str:
+    """Give every message the id cc-msg senders already get back.
+
+    A sender-supplied id is kept when it is filename-safe (it rides in the
+    inbox file name); anything else is replaced, never trusted into a path.
+    """
+    mid = str(msg.get("message_id") or "")
+    if not MESSAGE_ID_RE.match(mid):
+        mid = uuid.uuid4().hex
+    msg["message_id"] = mid
+    return mid
+
+
+def receipt_state(message_id: str) -> dict:
+    """Where a message is now: the read receipt, observed not self-reported.
+
+    Consumers read inbox FILES (the /pop drain is auth-latched) and mark them
+    processed by moving them to archive/ or renaming to *.processed. So
+    'unread' = still in the inbox as .json, 'read' = archived or processed,
+    'unknown' = no file carries this id on this node.
+    """
+    if not MESSAGE_ID_RE.match(message_id or ""):
+        return {"message_id": message_id, "state": "unknown", "reason": "malformed id"}
+    pattern = "msg_*_{}_*.json".format(message_id)
+    for path in INBOX.glob(pattern):
+        return {"message_id": message_id, "state": "unread", "file": path.name}
+    for path in list(INBOX.glob(pattern + ".processed")) + list(
+            (INBOX / "archive").glob(pattern + "*")):
+        return {"message_id": message_id, "state": "read", "file": path.name}
+    return {"message_id": message_id, "state": "unknown"}
+
+
 def record(msg: dict) -> Path:
     """Persist one message to the inbox and the last-message state file."""
     INBOX.mkdir(parents=True, exist_ok=True)
     STATE.parent.mkdir(parents=True, exist_ok=True)
-    filename = "msg_{}_{}.json".format(int(time.time() * 1000), safe_sender(msg.get("sender")))
+    if not MESSAGE_ID_RE.match(str(msg.get("message_id") or "")):
+        assign_message_id(msg)  # direct callers (relay_watch, tests) skip do_POST
+    # id BEFORE the sender: consumers match on the sender suffix
+    # (agy_inbox_reap globs msg_*relay-watch.json), so that must stay last.
+    filename = "msg_{}_{}_{}.json".format(int(time.time() * 1000), msg["message_id"],
+                                          safe_sender(msg.get("sender")))
     path = inbox_path(filename)
     path.write_text(json.dumps(msg, indent=2), encoding="utf-8")
     STATE.write_text(json.dumps(msg, indent=2), encoding="utf-8")
@@ -303,6 +345,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"status": "online", "service": "agy-msg", "node": NODE,
                         "timestamp": time.time(), "pending_messages": PENDING.qsize(),
                         "ok": True, "transport": "http"})
+        elif route.startswith("/msg/"):
+            if self._reject_unauthorized():   # receipts reveal traffic: same gate as /pop
+                return
+            self._send(receipt_state(route[len("/msg/"):]))
         elif route == "/pop":
             if self._reject_unauthorized():   # /pop MUTATES: read-and-destroy
                 return
@@ -335,6 +381,7 @@ class Handler(BaseHTTPRequestHandler):
         msg.setdefault("priority", "normal")
         msg.setdefault("timestamp", time.time())
         msg["target"] = msg.get("target") or NODE
+        assign_message_id(msg)
         path = record(msg)  # inbox write always happens — covers a session that's asleep
 
         elevated = {"attempted": False}
@@ -357,6 +404,8 @@ class Handler(BaseHTTPRequestHandler):
         # already reach — not a secret, but not free either. A checker holding
         # the token gets it cheaply; a scanner does not.
         self._send({"delivered": True, "method": "http", "node": NODE, "file": path.name,
+                    "message_id": msg["message_id"], "in_reply_to": msg.get("in_reply_to"),
+                    "receipt": "/msg/{}".format(msg["message_id"]),
                     "build": build_id(),
                     "elevated": elevated})
 

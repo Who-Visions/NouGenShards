@@ -828,38 +828,53 @@ def get_handoff_files(agent: Optional[str] = None) -> List[Path]:
     if not HANDOFF_DIR.exists():
         return []
 
+    candidates: List[Path] = []
+    # Search all json files in HANDOFF_DIR and subfolders
+    candidates.extend(HANDOFF_DIR.glob("*.json"))
+    for folder in AGENT_FOLDERS.values():
+        subdir = HANDOFF_DIR / folder
+        if subdir.exists():
+            candidates.extend(subdir.glob("*.json"))
+
+    import re
     files = []
-    if agent and agent.lower() in AGENT_FOLDERS:
-        agent_dir = HANDOFF_DIR / AGENT_FOLDERS[agent.lower()]
-        if agent_dir.exists():
-            files.extend(agent_dir.glob("handoff_*.json"))
-    else:
-        # Search all subdirectories plus root
-        files.extend(HANDOFF_DIR.glob("handoff_*.json"))
-        for folder in AGENT_FOLDERS.values():
-            subdir = HANDOFF_DIR / folder
-            if subdir.exists():
-                files.extend(subdir.glob("handoff_*.json"))
+    for p in candidates:
+        name = p.name
+        # Ignore non-handoff / usage files
+        if name.startswith("usage_") or name in ("package.json", "manifest.json", "tsconfig.json"):
+            continue
+        if name.startswith("handoff_") or name.startswith("baton_") or re.match(r"^\d{8}T\d{6}Z__", name):
+            if agent:
+                ag = agent.lower()
+                if ag in name.lower() or (p.parent.name.lower() == AGENT_FOLDERS.get(ag, "").lower()):
+                    files.append(p)
+            else:
+                files.append(p)
 
     return sorted(files, key=_handoff_sort_key, reverse=True)
 
 
 def _handoff_sort_key(path: Path) -> tuple:
-    """Order records by when they were WRITTEN, not when the file was touched.
+    """Order records by when they were WRITTEN (ISO-8601 timestamp), not mtime.
 
-    File mtimes describe this clone, not the fleet. A fresh clone stamps every
-    record with the checkout time, `handoff sync` restamps whatever it pulled,
-    and any write — an ack, a checkpoint — jumps that record to the front. So
-    the "latest handoff" could change without a single new handoff existing,
-    and two machines running `handoff read` against the same registry could
-    legitimately disagree about which record is newest.
-
-    The record's own timestamp is the same on every machine. mtime stays as the
-    tiebreaker for records that predate the field or carry an unparseable one,
-    so ordering degrades rather than raising.
+    Extracts timestamp from payload (timestamp, created_utc, when, created_at)
+    or from filename (YYYYMMDDTHHMMSSZ). Uses mtime only as a fallback tiebreaker.
     """
+    import re
     data = _read_handoff(path)
-    stamp = str((data or {}).get("timestamp") or "")
+    stamp = ""
+    if data and isinstance(data, dict):
+        stamp = str(data.get("timestamp") or data.get("created_utc") or data.get("when") or data.get("created_at") or "")
+
+    if not stamp:
+        m = re.search(r"(\d{8}T\d{6}Z)", path.name)
+        if m:
+            stamp = m.group(1)
+        else:
+            m_date = re.search(r"(\d{4}-\d{2}-\d{2})", path.name)
+            if m_date:
+                stamp = m_date.group(1)
+
     try:
         mtime = path.stat().st_mtime
     except OSError:

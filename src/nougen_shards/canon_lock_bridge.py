@@ -23,6 +23,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
 
 DEFAULT_PREFIXES = "GM CANON LOCK,CANON LOCK,CANON INVARIANT"
+# A lock may also be selected by tag, so a lock whose title is a plain label is not invisible.
+# A digest tag always wins: summaries and audits about locks must never be read as locks.
+DEFAULT_TAGS = "canon-lock"
+DEFAULT_DIGEST_TAGS = "canon-digest"
 DEFAULT_LIMIT = 500
 DEFAULT_MIN_OVERLAP = 2
 DEFAULT_TTL_S = 300.0
@@ -73,6 +77,25 @@ def prefixes() -> List[str]:
     return sorted(out, key=len, reverse=True)
 
 
+def _tag_list(env_key: str, default: str) -> List[str]:
+    raw = os.environ.get(env_key, "").strip() or default
+    return sorted({t.strip().lower() for t in raw.split(",") if t.strip()})
+
+
+def tags() -> List[str]:
+    """Tags that mark a shard as a canon lock (NOUGEN_CANON_LOCK_TAGS)."""
+    return _tag_list("NOUGEN_CANON_LOCK_TAGS", DEFAULT_TAGS)
+
+
+def digest_tags() -> List[str]:
+    """Tags that veto a lock, even one with a lock prefix (NOUGEN_CANON_DIGEST_TAGS)."""
+    return _tag_list("NOUGEN_CANON_DIGEST_TAGS", DEFAULT_DIGEST_TAGS)
+
+
+def _has_tags_column(conn: sqlite3.Connection) -> bool:
+    return any(row[1] == "tags" for row in conn.execute("PRAGMA table_info(shards)"))
+
+
 def lock_dir() -> Optional[Path]:
     """Shard grid directory: NOUGEN_CANON_LOCK_DIR, else the node's (tenant-aware) shard dir."""
     override = os.environ.get("NOUGEN_CANON_LOCK_DIR", "").strip()
@@ -86,19 +109,31 @@ def lock_dir() -> Optional[Path]:
         return None
 
 
+def _has_prefix(title: str, pfx: List[str]) -> bool:
+    upper = (title or "").strip().upper()
+    return any(upper.startswith(pre) for pre in pfx)
+
+
 def _clauses(title: str, content: Optional[str], pfx: List[str]) -> List[str]:
     body = (title or "").strip()
     upper = body.upper()
+    matched = False
     for pre in pfx:
         if upper.startswith(pre):
             body = body[len(pre):].strip()
+            matched = True
             break
     body = _SEP_LEAD.sub("", _DATE_LEAD.sub("", body).strip()).strip()
-    found = [c.strip() for c in body.split(";")]
+    found = [c.strip() for c in body.split(";")] if matched else []
+    numbered = []
     for line in (content or "").splitlines():
         m = _NUMBERED.match(line)
         if m:
-            found.append(m.group(1).strip())
+            numbered.append(m.group(1).strip())
+    found.extend(numbered)
+    if not matched and not numbered:
+        # Tag-selected with a plain label title and no numbered clauses: the title is all we have.
+        found = [c.strip() for c in body.split(";")]
     seen: Set[str] = set()
     out = []
     for c in found:
@@ -119,12 +154,10 @@ def load_locks(shards_dir: Optional[Path] = None, *, force: bool = False) -> Lis
     if not force and hit and time.monotonic() - hit[0] < ttl:
         return hit[1]
     pfx = prefixes()
+    lock_tags, veto_tags = tags(), digest_tags()
     limit = _env_int("NOUGEN_CANON_LOCK_LIMIT", DEFAULT_LIMIT)
-    tag_like = '%"canon-lock"%'
-    digest_like = '%"canon-digest"%'
-    where_pfx = " OR ".join("upper(ltrim(title)) LIKE ?" for _ in pfx)
-    where = f"({where_pfx} OR tags LIKE ?)"
-    params = [f"{p}%" for p in pfx] + [tag_like]
+    title_where = " OR ".join("upper(ltrim(title)) LIKE ?" for _ in pfx)
+    title_params = [f"{p}%" for p in pfx]
     locks: List[Dict[str, Any]] = []
     for db in sorted(shards_dir.glob("nougen_shards_*.db")):
         if len(locks) >= limit:
@@ -133,27 +166,28 @@ def load_locks(shards_dir: Optional[Path] = None, *, force: bool = False) -> Lis
         label = f"db{m.group(1)}" if m else db.stem
         try:
             with contextlib.closing(sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)) as conn:
-                try:
-                    rows = conn.execute(
-                        f"SELECT id, title, content, tags FROM shards WHERE {where} AND (tags IS NULL OR tags NOT LIKE ?) ORDER BY id DESC LIMIT ?",
-                        params + [digest_like, limit - len(locks)]).fetchall()
-                except sqlite3.OperationalError as op_err:
-                    if "no such column: tags" in str(op_err):
-                        rows = conn.execute(
-                            f"SELECT id, title, content, NULL as tags FROM shards WHERE {where_pfx} ORDER BY id DESC LIMIT ?",
-                            [f"{p}%" for p in pfx] + [limit - len(locks)]).fetchall()
-                    else:
-                        raise
+                if _has_tags_column(conn):
+                    tag_where = " OR ".join("tags LIKE ?" for _ in lock_tags)
+                    veto_where = " OR ".join("tags LIKE ?" for _ in veto_tags)
+                    sql = (f"SELECT id, title, content FROM shards WHERE ({title_where} OR {tag_where}) "
+                           f"AND NOT COALESCE({veto_where}, 0) ORDER BY id DESC LIMIT ?")
+                    params = (title_params + [f'%"{t}"%' for t in lock_tags]
+                              + [f'%"{t}"%' for t in veto_tags] + [limit - len(locks)])
+                else:  # older grid without a tags column: title prefixes only
+                    sql = f"SELECT id, title, content FROM shards WHERE {title_where} ORDER BY id DESC LIMIT ?"
+                    params = title_params + [limit - len(locks)]
+                rows = conn.execute(sql, params).fetchall()
         except sqlite3.Error as exc:
             logger.warning("canon lock read skipped %s: %s", db.name, exc)
             continue
-        for row_id, title, content, _tags in rows:
+        for row_id, title, content in rows:
             title = title or ""
             locks.append({
                 "id": f"lock:{row_id}@{label}",
                 "shard": f"{row_id}@{label}",
                 "title": title,
                 "authority": "gm_lock" if title.strip().upper().startswith("GM ") else "gm",
+                "selected_by": "prefix" if _has_prefix(title, pfx) else "tag",
                 "clauses": _clauses(title, content, pfx),
             })
     _CACHE[key] = (time.monotonic(), locks)

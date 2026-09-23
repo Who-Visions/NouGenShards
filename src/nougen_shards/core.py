@@ -1,7 +1,7 @@
 """
-Valerion Core — NouGenShards Memory Substrate.
+NouGenMorph Core — NouGenShards Memory Substrate.
 Logic: SQLite + FTS5 + BM25 + Trigram (n-gram) + Vector Embeddings + Weighted Relevance Reranking.
-Architecture: Valerion 21-step cognitive loop. Weighted multi-signal relevance blend (BM25 + semantic + usefulness prior).
+Architecture: NouGenMorph 21-step cognitive loop. Weighted multi-signal relevance blend (BM25 + semantic + usefulness prior).
 """
 # pylint: disable=duplicate-code
 import hashlib
@@ -1014,7 +1014,8 @@ def capture(event_type: str, title: str, content: str,
             original_timestamp: Optional[str] = None,
             source_uri: Optional[str] = None,
             utility: Optional[float] = None,
-            valid_until: Optional[str] = None) -> bool:
+            valid_until: Optional[str] = None,
+            consolidate: Optional[bool] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants).
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
@@ -1043,6 +1044,14 @@ def capture(event_type: str, title: str, content: str,
     content = redact_content(str(content))
     if tags:
         tags = [redact_content(str(tag)) for tag in tags]
+
+    # Opt-in write-time consolidation (consolidate.py): tags a fact that supersedes,
+    # conflicts with, or duplicates a neighbour. Never blocks or alters the write.
+    from . import consolidate as _cons  # pylint: disable=import-outside-toplevel
+    if _cons.enabled(consolidate):
+        tags = list(tags or []) + _cons.consolidation_tags(
+            title, content, list(tags or []),
+            lambda q, limit=5: retrieve(q, limit=limit, domain_key=domain_key))
 
     sensitivity = _pv.normalize_sensitivity(sensitivity)
     if not domain_key:
@@ -1341,6 +1350,13 @@ FUZZY_TRIGGER = os.environ.get("NOUGEN_FUZZY_TRIGGER", "empty").strip().lower()
 #: from a typo-tolerant scan, and on a miss it costs ~20s (4000 rows x every missed db, pure Python).
 #: A ContextVar so it rides federation's copy_context() into the lane threads without signature changes.
 NO_FUZZY: ContextVar[bool] = ContextVar("nougen_no_fuzzy", default=False)
+
+
+#: Per-request fast local mode for live callers (NouGen Q): answer from the local exact keyword/FTS index
+#: only. No schema-upgrade sweep, no query embedding, no vector lane, no RRF, no remote lanes. Measured
+#: 2026-09-21: keyword-only 0.83s p50 / 0.88s max vs hybrid 2.0s p50 / 29.9s max (vector-cache lock stalls).
+#: It is PARTIAL coverage by construction; the caller must say so (see X-NouGen-Lanes-Skipped in app.py).
+FAST_LOCAL: ContextVar[bool] = ContextVar("nougen_fast_local", default=False)
 
 
 def _fuzzy_should_run(results: list, limit: int) -> bool:
@@ -1950,12 +1966,40 @@ def _db_write_signature(i: int) -> tuple:
     return tuple(sig)
 
 
+def _prune_deleted(conn, entry: dict) -> dict:
+    """Drop deleted rows from a cache entry without re-reading embeddings.
+
+    A delete shrinks the embedded-row count, which used to force a full
+    reload of the DB's matrix. The e2e canary writes then deletes a shard
+    every cycle, so each cycle paid the cold rebuild (measured 2026-09-23:
+    ~38s cold vs ~2s warm across 9 grid DBs) and missed the 20s recall
+    deadline. An id-only scan is cheap; the blobs stay in memory.
+    """
+    live = {row[0] for row in conn.execute(
+        "SELECT id FROM shards WHERE embedding IS NOT NULL AND id <= ?",
+        (entry["max_id"],))}
+    keep = [k for k, sid in enumerate(entry["ids"]) if sid in live]
+    legacy = [row for row in entry["legacy"] if row[0] in live]
+    pruned = dict(entry)
+    pruned.update({
+        "ids": [entry["ids"][k] for k in keep],
+        "ts": [entry["ts"][k] for k in keep],
+        "dom": [entry["dom"][k] for k in keep],
+        "etype": [entry["etype"][k] for k in keep],
+        "util": entry["util"][keep],
+        "matrix": entry["matrix"][keep],
+        "legacy": legacy,
+    })
+    pruned["n_embedded"] = len(pruned["ids"]) + len(legacy)
+    return pruned
+
+
 def _vector_cache_entry(i: int, conn) -> Optional[dict]:
     """Return the (fresh) cache entry for DB i, loading or refreshing as needed.
 
     Refresh strategy: the grid is append-mostly. On a signature change, rows
     with id > the cached max are fetched and appended; a shrink in embedded-row
-    count forces a full reload. An embedding UPDATEd in place (backfill re-run)
+    count prunes the deleted ids in place (see _prune_deleted). An embedding UPDATEd in place (backfill re-run)
     stays stale until the next full reload - logged, accepted: the alternative
     is re-reading the full table per capture, which is the cost this cache
     exists to kill.
@@ -1997,6 +2041,8 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
             "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM shards WHERE embedding IS NOT NULL"
         ).fetchone()
         n_embedded, max_id = int(count[0]), int(count[1])
+        if entry is not None and n_embedded < entry["n_embedded"] and len(entry["ids"]):
+            entry = _prune_deleted(conn, entry)
         since_id = 0
         if entry is not None and n_embedded >= entry["n_embedded"] and len(entry["ids"]):
             since_id = entry["max_id"]  # append-only fast path
@@ -2521,6 +2567,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     When NOUGEN_RERANK=1, a cross-encoder reranks the top RRF candidates (Stage 2).
     """
     import concurrent.futures
+
+    if FAST_LOCAL.get():
+        # Same global-domain keyword sweep the app uses as its own fallback (app.py search()).
+        return _keyword_retrieve(query, limit, None, domain_key or "*", include_research)[:limit]
 
     # Ensure all existing shard databases are schema-upgraded to the current
     # version before querying. Per-DB guard for the same reason as the fan-outs

@@ -131,6 +131,10 @@ switch ($Action) {
         $env:NGS_BIND_HOST    = if ($env:NGS_BIND_HOST) { $env:NGS_BIND_HOST } else { '0.0.0.0' }
         $env:NOUGEN_VAULT_DIR = $VaultDir
         $env:NOUGEN_SECRETS_VAULT_DIR = $SecretsDir
+        # Recall latency bounds (2026-09-20): a query embed stalled by GPU contention with a
+        # resident generation model burned the full 6s default and a matrix-build wait burned 5s.
+        if (-not $env:NOUGEN_QUERY_EMBED_TIMEOUT)   { $env:NOUGEN_QUERY_EMBED_TIMEOUT   = '2.5' }
+        if (-not $env:NOUGEN_VECTOR_CACHE_WAIT_S)   { $env:NOUGEN_VECTOR_CACHE_WAIT_S   = '1' }
         $env:PYTHONPATH       = Join-Path $Root 'src'
 
         $proc = Start-Process -FilePath $Python -ArgumentList 'tools\ngs_node_serve.py' `

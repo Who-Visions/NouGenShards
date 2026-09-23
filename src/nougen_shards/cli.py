@@ -13,8 +13,7 @@ from . import core as shards
 from . import keymaker
 from .models_client import (
     get_best_available_client, OllamaClient,
-    OpenAIClient, AnthropicClient, GeminiClient, LocalLLMClient,
-    HuggingFaceClient, OpenRouterClient, WhoVisionsCloudClient
+    OpenAIClient, AnthropicClient, GeminiClient, HuggingFaceClient, OpenRouterClient, WhoVisionsCloudClient
 )
 from . import nougen_context
 from . import nougen_sandbox
@@ -484,7 +483,7 @@ def cmd_init(args):
 
     quiet = getattr(args, "json", False)
     if not quiet:
-        print("🪩 Initializing Valerion — The Metameric Memory Engine...")
+        print("🪩 Initializing NouGenMorph — The Universal Synthesis & Evolution Engine...")
     shards.init_db(index=1)
     if not quiet:
         print("✅ Created local-first database substrate.")
@@ -742,33 +741,36 @@ def cmd_chat(args):
     model = args.model
     if not model:
         available = client.list_models() if client else []
-        persona = agents.get_agent(persona_name)
-        # Prioritize persona default model or modern local edge models
-        priority_models = [persona.default_model if persona else None, "gemma4:e2b", "gemma4:e2b-qat", "dav1d:e2b", "sol-ai:e4b"]
-        matched = next((m for m in priority_models if m and m in available), None)
-        if matched:
-            model = matched
+        from .custom_model_resolver import resolve_best_custom_model
+        best_cfg = resolve_best_custom_model(available, persona_hint=persona_name)
+        if best_cfg:
+            model = best_cfg.model_name
         elif available:
             model = available[0]
-        elif persona and persona.default_model:
-            model = persona.default_model
-        elif isinstance(client, LocalLLMClient):
-            model_config = client.find_best_edge_model()
-            model = model_config.model_name if model_config else None
+        else:
+            persona = agents.get_agent(persona_name)
+            model = persona.default_model if (persona and persona.default_model) else "Yukiai:e2b"
 
     if not model:
         print("Error: No model found or configured for this environment.")
         return
 
+    if isinstance(client, OllamaClient):
+        from .local_chat import run
+        persona = agents.get_agent(persona_name)
+        run(client, model, persona.system_prompt if persona else "", args)
+        return
+
     if not args.query:
         _run_interactive_chat(model, prov_name, client, persona_name=persona_name)
     else:
-        found = federation.federated_retrieve(args.query, limit=3)
+        found = shards.retrieve(args.query, limit=3)
         ctx = shards.compile_recall_packet(found)
         msgs = [{"role": "user", "content": f"{args.query}\n\n{ctx}"}]
-        print(f"[*] Querying {model} ({persona_name})...")
-        resp = client.chat(model, msgs, stream=False)
-        print(f"\n[Response]:\n{resp}")
+        print(f"[*] Querying {model} ({persona_name})...\n")
+        resp = client.chat(model, msgs, stream=True)
+        if resp and not sys.stdout.isatty():
+            print(f"\n[Response]:\n{resp}")
 
 
 def cmd_models(args):
@@ -789,6 +791,14 @@ def cmd_models(args):
         if getattr(args, 'json', False) is True:
             print(json.dumps(models))
             return
+        if not getattr(args, 'plain', False):
+            try:
+                from .rich_hud import render_rich_models, is_rich_enabled
+                if is_rich_enabled():
+                    render_rich_models(prov_name, models)
+                    return
+            except Exception:
+                pass
         print(f"{prov_name.capitalize()} Models:")
         for m in models:
             print(f" - {m}")
@@ -1058,6 +1068,15 @@ def cmd_search(args):
         print(json.dumps(results))
         return
 
+    if not getattr(args, 'plain', False):
+        try:
+            from .rich_hud import render_rich_search_results, is_rich_enabled
+            if is_rich_enabled():
+                render_rich_search_results(args.query, results, sweep_report=sweep_report)
+                return
+        except Exception:
+            pass
+
     print(f"🔍 Found {len(results)} records across the fabric (Ranked by Relevance):\n")
     for res in results:
         header = f"[{res['id']}] Final Score: {res['final_score']:.2f} | " \
@@ -1130,7 +1149,18 @@ def cmd_mark(args):
 
 
 def cmd_status(args):
-    """Check the status of the Multi-DB cluster."""
+    """Check the status of the Multi-DB cluster with Rich UI by default."""
+    if not getattr(args, 'json', False) and not getattr(args, 'plain', False):
+        try:
+            from .rich_hud import render_rich_dashboard, render_rich_live_hud, is_rich_enabled
+            if getattr(args, 'live', False):
+                render_rich_live_hud()
+                return
+            if is_rich_enabled():
+                render_rich_dashboard()
+                return
+        except Exception:
+            pass
     from . import status_semantics as ss  # pylint: disable=import-outside-toplevel
 
     active = shards.get_active_db_index()
@@ -1229,6 +1259,15 @@ def cmd_stats(args):
         yield f" - Usefulness Δ: {'+' if d >= 0 else ''}{d:.2f}"
         if p["acceleration_rate_pct"] is not None:
             yield f" - Acceleration Rate:   {p['acceleration_rate_pct']:.1f}% expansion"
+
+    if not getattr(args, 'json', False) and not getattr(args, 'plain', False):
+        try:
+            from .rich_hud import render_rich_stats, is_rich_enabled
+            if is_rich_enabled():
+                render_rich_stats(payload)
+                return payload
+        except Exception:
+            pass
 
     return emit(payload, plain, args)
 
@@ -1334,6 +1373,90 @@ def cmd_ctx(args):
             print(f"✅ Context event #{event['id']} promoted to durable memory.")
         else:
             print("ℹ️ Shard already exists.")
+    elif args.action == "web":
+        if not args.input:
+            print("Error: Usage: nougen ctx web <url> [--tags <label>]")
+            return
+        res = nougen_context.fetch_and_index_web(args.input, label=args.tags)
+        if "error" in res:
+            print(f"❌ {res['error']}")
+            return
+        print(f"✅ Web indexed: {res['title']}")
+        print(f"Handle: {res['handle']} ({res['total_length_bytes']} bytes)")
+        print(f"Summary: {res['summary']}")
+        if res.get("headings"):
+            print("Headings:")
+            for h in res["headings"][:5]:
+                print(f"  {h}")
+    elif args.action == "analyze":
+        if not args.input:
+            print("Error: Usage: nougen ctx analyze <file_path> [--query <term>]")
+            return
+        query_val = getattr(args, "query", None)
+        res = nougen_context.analyze_file(args.input, query=query_val)
+        if "error" in res:
+            print(f"❌ {res['error']}")
+            return
+        print(f"📄 {res['name']} ({res['total_lines']} lines, {res['size_bytes']} bytes)")
+        if "ast" in res:
+            ast_info = res["ast"]
+            if ast_info.get("syntax_valid"):
+                print(f"Classes: {', '.join(ast_info['classes']) or 'None'}")
+                print(f"Functions: {', '.join(ast_info['functions'][:10]) or 'None'}")
+                print(f"Imports: {', '.join(ast_info['imports'][:8]) or 'None'}")
+            else:
+                print(f"Syntax Error: {ast_info.get('syntax_error')}")
+        elif "json_schema" in res:
+            print(f"JSON Schema: {json.dumps(res['json_schema'])}")
+        if res.get("query_matches"):
+            print("Query matches:")
+            for m in res["query_matches"][:5]:
+                print(f"  {m}")
+    elif args.action == "checkpoint":
+        if not args.input:
+            print("Error: Usage: nougen ctx checkpoint <label>")
+            return
+        res = nougen_context.checkpoint_session(args.input)
+        print(f"✅ Checkpoint '{res['label']}' saved ({res['events_count']} events).")
+    elif args.action == "restore":
+        if not args.input:
+            print("Error: Usage: nougen ctx restore <label>")
+            return
+        res = nougen_context.restore_session(args.input)
+        if "error" in res:
+            print(f"❌ {res['error']}")
+            return
+        print(f"✅ Checkpoint '{res['label']}' restored ({res['events_restored']} events).")
+    elif args.action == "checkpoints":
+        rows = nougen_context.list_checkpoints()
+        if not rows:
+            print("No saved checkpoints.")
+            return
+        print("Session Checkpoints:")
+        for r in rows:
+            print(f"- {r['label']} ({r['events_count']} events, {r['timestamp']})")
+    elif args.action == "ask":
+        if not args.input:
+            print("Error: Usage: nougen ctx ask <prompt> [--tags <context_handle>]")
+            return
+        model_val = getattr(args, "model", None)
+        print(f"[*] Querying Ollama (model: {model_val or 'auto-local'})...")
+        res = nougen_context.query_ollama(args.input, context_handle=args.tags, model=model_val)
+        if res.get("status") == "success":
+            print(f"\n[{res['model']}]:\n{res['response']}")
+        else:
+            print(f"❌ {res.get('error')}")
+    elif args.action == "synthesize":
+        if not args.input:
+            print("Error: Usage: nougen ctx synthesize <handle> [--query <instruction>]")
+            return
+        instr = getattr(args, "query", None) or "Summarize the core findings and key action items."
+        res = nougen_context.synthesize_sandbox(args.input, instruction=instr)
+        if res.get("status") == "synthesized":
+            print(f"✅ Synthesized {args.input} using {res['model']}:")
+            print(res["summary"])
+        else:
+            print(f"❌ Synthesis failed: {res.get('error')}")
 
 
 def resolve_router_model() -> str:
@@ -1587,7 +1710,7 @@ def cmd_ingest(args):
 
 
 def cmd_dream(args):
-    """Executes the Dream cycle (Autonomous Metameric Evolution)."""
+    """Executes the Dream cycle (Autonomous NouGenMorph Evolution)."""
     if args.action == "wake":
         if not getattr(args, 'json', False):
             print("🌌 Entering the Dream State...  [EXPERIMENTAL: exports an SFT dataset; no live weight update]")
@@ -1717,8 +1840,8 @@ def get_parser():
 
 
     """Create the CLI parser."""
-    parser = argparse.ArgumentParser(prog="nougen", description="NouGenShards CLI — Powered by Valerion")
-    parser.add_argument("--version", action="version", version=f"NouGenShards v{VERSION} (Valerion Engine)")
+    parser = argparse.ArgumentParser(prog="nougen", description="NouGenShards CLI — Powered by NouGenAi")
+    parser.add_argument("--version", action="version", version=f"NouGenShards v{VERSION} (Powered by NouGenAi)")
     subparsers = parser.add_subparsers(dest="command")
 
     p_init = subparsers.add_parser("init", help="Bootstrap substrate and onboard")
@@ -1760,6 +1883,9 @@ def get_parser():
     p_chat.add_argument("query", nargs="?")
     p_chat.add_argument("--model")
     p_chat.add_argument("--provider")
+    p_chat.add_argument("--json", action="store_true", help="Return answer, context and timing as JSON")
+    p_chat.add_argument("--no-tools", action="store_true", help="Use recall without model tool calls")
+    p_chat.add_argument("--recall-seconds", type=float, default=2.0, help="Recall wait budget (default: 2 seconds)")
     p_chat.add_argument("--agent", "-a", default=None,
                         help="Persona to embody (NouGen, Sol-Ai, Rhea, DavOs, Iris, Kaedra, Griot, Kronos)")
 
@@ -1779,6 +1905,14 @@ def get_parser():
 
     p_status = subparsers.add_parser("status", help="Show cluster health")
     p_status.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_status.add_argument("--plain", action="store_true", help="Plain text output")
+    p_status.add_argument("--live", "-l", action="store_true", help="Launch real-time live interactive substrate HUD")
+
+    p_models = subparsers.add_parser("models", help="List available LLM models for local or cloud providers")
+    p_models.add_argument("--provider", "-p", default="local", help="Provider name (local, google, openrouter, etc.)")
+    p_models.add_argument("--pull", help="Pull a model via Ollama")
+    p_models.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_models.add_argument("--plain", action="store_true", help="Plain text output")
 
     p_usage = subparsers.add_parser("usage", help="Token telemetry from the local usage ledger")
     p_usage.add_argument("--period", default=None,
@@ -1791,9 +1925,11 @@ def get_parser():
     p_stats.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_ctx = subparsers.add_parser("ctx", help="Context layer")
-    p_ctx.add_argument("action", choices=["init", "execute", "search", "get", "promote"])
+    p_ctx.add_argument("action", choices=["init", "execute", "search", "get", "promote", "web", "analyze", "checkpoint", "restore", "checkpoints", "ask", "synthesize"])
     p_ctx.add_argument("input", nargs="?")
-    p_ctx.add_argument("--tags", help="Tags for promoted shard")
+    p_ctx.add_argument("--tags", help="Tags for promoted shard, label for web/checkpoint, or context_handle for ask")
+    p_ctx.add_argument("--query", help="Query keyword for file analyze or search")
+    p_ctx.add_argument("--model", help="Specific Ollama model name (e.g. gemma4:e2b-qat, Yukiai:e2b)")
     p_ctx.add_argument("--limit", type=int, default=5, help="Max results for ctx search")
 
     # router
@@ -1859,7 +1995,36 @@ def get_parser():
     p_doctor = subparsers.add_parser("doctor", help="Check system health")
     p_doctor.add_argument("--json", action="store_true", help="Machine-readable output")
 
-    p_dream = subparsers.add_parser("dream", help="Autonomous Metameric Evolution (TMEM)")
+    p_wishlist = subparsers.add_parser(
+        "wishlist", help="Track the canonical 100-item resilience/context wishlist "
+                        "(leg 20260910T202128Z, rebroadcast 20260923T174020Z)")
+    p_wishlist_sub = p_wishlist.add_subparsers(dest="wishlist_command")
+
+    p_wl_list = p_wishlist_sub.add_parser("list", help="List items, optionally filtered")
+    p_wl_list.add_argument("--phase", type=int, choices=[1, 2, 3, 4], help="Filter to one execution phase")
+    p_wl_list.add_argument("--category", choices=list("ABCDEF"), help="Filter to one category letter")
+    p_wl_list.add_argument("--status", choices=["open", "in_progress", "landed", "verified"],
+                           help="Filter to one status")
+    p_wl_list.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_wl_show = p_wishlist_sub.add_parser("show", help="Show one item in full, with its tracking record")
+    p_wl_show.add_argument("item_id", type=int)
+    p_wl_show.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_wl_mark = p_wishlist_sub.add_parser(
+        "mark", help="Set an item's status. landed/verified REQUIRE --evidence "
+                    "(no completion stamp without live verification).")
+    p_wl_mark.add_argument("item_id", type=int)
+    p_wl_mark.add_argument("--status", required=True, choices=["open", "in_progress", "landed", "verified"])
+    p_wl_mark.add_argument("--evidence", action="append", default=[],
+                          help="A citation: shard id, leg id, PR#, or commit sha. Repeatable.")
+    p_wl_mark.add_argument("--owner", help="machine/agent claiming or completing this item")
+    p_wl_mark.add_argument("--note", default="", help="Free-text context")
+
+    p_wl_progress = p_wishlist_sub.add_parser("progress", help="Progress summary by phase and category")
+    p_wl_progress.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_dream = subparsers.add_parser("dream", help="Autonomous NouGenMorph Evolution (Dream State)")
     p_dream.add_argument("action", choices=["wake"])
     p_dream.add_argument("--json", action="store_true", help="Machine-readable output")
 
@@ -1871,7 +2036,7 @@ def get_parser():
     p_dashboard = subparsers.add_parser("dashboard", help="Launch visual Cortex HUD")
     p_dashboard.add_argument("--port", type=int, default=4444, help="Port to run on")
 
-    p_pr = subparsers.add_parser("pr", help="PR lease governor + confetti detector (Shang Tsung / pr-agent absorption, Phase 1)")
+    p_pr = subparsers.add_parser("pr", help="PR lease governor + confetti detector (NouGenMorph Absorption, Phase 1)")
     pr_sub = p_pr.add_subparsers(dest="pr_action", required=True)
     p_pr_attach = pr_sub.add_parser("attach", help="Fold an objective into the repo's open PR chain (3-5 objectives/PR), or start a new one")
     p_pr_attach.add_argument("--repo", required=True, help="owner/name")
@@ -2078,6 +2243,29 @@ def get_parser():
     )
     p_live.add_argument("live_args", nargs=argparse.REMAINDER,
                         help="Subcommands: overview | snapshot | nodes | sessions | ports | ssh | relays | watch | tracker | send | broadcast | reply")
+
+    p_algo = subparsers.add_parser(
+        "algo",
+        help="Canonical Algorithms & Data Structures Engine (TheAlgorithms/Python)",
+        description="High-performance data structures, search algorithms, graph traversal, and compression."
+    )
+    algo_subs = p_algo.add_subparsers(dest="algo_action")
+
+    p_algo_list = algo_subs.add_parser("list", help="List algorithms by category")
+    p_algo_list.add_argument("--category", help="Category filter (searches, graphs, sorting, compression, dp)")
+    p_algo_list.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_algo_info = algo_subs.add_parser("info", help="Show details, complexity, and implementation code for an algorithm")
+    p_algo_info.add_argument("target", help="Algorithm key or name (e.g. dijkstra, bk_tree, trie, lzw_compression)")
+    p_algo_info.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_algo_bench = algo_subs.add_parser("benchmark", help="Run algorithm micro-benchmark")
+    p_algo_bench.add_argument("target", nargs="?", default="levenshtein", help="Algorithm key")
+    p_algo_bench.add_argument("--iterations", type=int, default=500, help="Iteration count (default 500)")
+    p_algo_bench.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_algo_ingest = algo_subs.add_parser("ingest", help="Ingest canonical algorithm knowledge shards into memory grid DB 5")
+    p_algo_ingest.add_argument("--json", action="store_true", help="Machine-readable output")
 
     # destiny store
     p_destiny = subparsers.add_parser("destiny", help="Prospective memory & goal graph store (destinies.db)")
@@ -2447,6 +2635,63 @@ def cmd_live(args):
     print(handle_live_command(subargs))
 
 
+def cmd_algo(args):
+    """Canonical Algorithms & Data Structures CLI."""
+    from .algorithms import list_algorithms, get_algorithm, benchmark_algorithm, ingest_algorithm_shards
+    action = getattr(args, "algo_action", None) or "list"
+
+    if action == "list":
+        cat = getattr(args, "category", None)
+        algos = list_algorithms(cat)
+        if getattr(args, "json", False):
+            print(json.dumps(algos, indent=2))
+        else:
+            print(f"📐 Canonical Algorithms ({cat or 'All Categories'}):")
+            for a in algos:
+                print(f"  • {a['key']:20} {a['name']:32} [{a['category']:16}] {a['time_complexity']:14} {a['space_complexity']}")
+    elif action == "info":
+        target = getattr(args, "target", "")
+        if not target:
+            print("Error: Specify algorithm name or key.")
+            return
+        info = get_algorithm(target)
+        if not info:
+            print(f"Error: Algorithm '{target}' not found in catalog.")
+            return
+        if getattr(args, "json", False):
+            print(json.dumps(info, indent=2))
+        else:
+            print(f"📐 {info['name']} ({info['key']})")
+            print(f"  Category:         {info['category']}")
+            print(f"  Time Complexity:  {info['time_complexity']}")
+            print(f"  Space Complexity: {info['space_complexity']}")
+            print(f"\nDescription:\n  {info['description']}")
+            if info.get("code"):
+                print(f"\nCanonical Implementation:\n{info['code']}")
+    elif action in ("benchmark", "run", "bench"):
+        target = getattr(args, "target", "levenshtein")
+        iters = getattr(args, "iterations", 500)
+        res = benchmark_algorithm(target, iterations=iters)
+        if getattr(args, "json", False):
+            print(json.dumps(res, indent=2))
+        else:
+            if "error" in res:
+                print(f"Error: {res['error']}")
+            else:
+                print(f"⚡ Benchmark for {res['algorithm']}:")
+                print(f"  Iterations:       {res['iterations']}")
+                print(f"  Elapsed:          {res['elapsed_ms']} ms")
+                print(f"  Throughput:       {res['ops_per_sec']:,} ops/sec")
+                print(f"  Complexity:       {res['time_complexity']}")
+    elif action == "ingest":
+        count = ingest_algorithm_shards()
+        if getattr(args, "json", False):
+            print(json.dumps({"ingested": count, "target_db": 5}))
+        else:
+            print(f"✅ Ingested {count} canonical algorithm shards into memory grid DB 5.")
+
+
+
 def keymaker_vault_report() -> list:
     """Doctor lines for the Keymaker secrets vault.
 
@@ -2471,9 +2716,132 @@ def keymaker_vault_report() -> list:
     ]
 
 
+def cmd_wishlist(args):
+    """Track the canonical 100-item resilience/context wishlist.
+
+    The wishlist text lives in wishlist.py, verbatim from the rebroadcast --
+    this command never edits it. What this command manages is the tracking
+    layer: which items are open/in_progress/landed/verified, by whom, with
+    what evidence. landed/verified are refused without at least one
+    citation, per the wishlist's own doctrine (item 86, item 40).
+    """
+    from . import wishlist as wl  # pylint: disable=import-outside-toplevel
+
+    sub = getattr(args, "wishlist_command", None)
+    if sub is None:
+        print("usage: nougen wishlist {list,show,mark,progress}")
+        return
+
+    state = wl.load_state()
+
+    if sub == "list":
+        rows = []
+        for item_id, item in sorted(wl.ITEMS.items()):
+            if args.phase and item.phase != args.phase:
+                continue
+            if args.category and item.category != args.category:
+                continue
+            rec = state.get(item_id)
+            if args.status and rec.status.value != args.status:
+                continue
+            rows.append({"id": item_id, "category": item.category, "phase": item.phase,
+                        "status": rec.status.value, "text": item.text,
+                        "owner": rec.owner, "evidence": rec.evidence})
+        if args.json:
+            print(json.dumps(rows, indent=2))
+        else:
+            for r in rows:
+                owner = f" [{r['owner']}]" if r["owner"] else ""
+                print(f"{r['id']:>3}. [{r['category']}/P{r['phase']}] ({r['status']}){owner} {r['text']}")
+            print(f"\n{len(rows)} item(s)")
+        return
+
+    if sub == "show":
+        if args.item_id not in wl.ITEMS:
+            print(f"no such item: {args.item_id}")
+            raise SystemExit(1)
+        item = wl.ITEMS[args.item_id]
+        rec = state.get(args.item_id)
+        doc = {"id": item.id, "category": item.category, "category_name": item.category_name,
+              "phase": item.phase, "text": item.text, **rec.to_dict()}
+        if args.json:
+            print(json.dumps(doc, indent=2))
+        else:
+            print(f"#{item.id} [{item.category} — {item.category_name}] phase {item.phase}")
+            print(f"  {item.text}")
+            print(f"  status: {rec.status.value}")
+            if rec.owner:
+                print(f"  owner: {rec.owner}")
+            if rec.evidence:
+                print(f"  evidence: {', '.join(rec.evidence)}")
+            if rec.note:
+                print(f"  note: {rec.note}")
+            if rec.updated_at:
+                print(f"  updated: {rec.updated_at}")
+        return
+
+    if sub == "mark":
+        if args.item_id not in wl.ITEMS:
+            print(f"no such item: {args.item_id}")
+            raise SystemExit(1)
+        try:
+            rec = state.mark(args.item_id, wl.ItemStatus(args.status), evidence=args.evidence,
+                            owner=args.owner, note=args.note)
+        except ValueError as exc:
+            print(f"refused: {exc}")
+            raise SystemExit(1) from exc
+        wl.save_state(state)
+        print(f"#{args.item_id} -> {rec.status.value}" + (f" [{rec.owner}]" if rec.owner else ""))
+        return
+
+    if sub == "progress":
+        by_phase = wl.progress_by_phase(state)
+        by_cat = wl.progress_by_category(state)
+        if args.json:
+            print(json.dumps({"by_phase": by_phase, "by_category": by_cat}, indent=2))
+            return
+        print("By phase (execution order: 1 -> 2 -> 3 -> 4):")
+        for phase in (1, 2, 3, 4):
+            p = by_phase[phase]
+            done = p["landed"] + p["verified"]
+            print(f"  Phase {phase}: {done}/{p['total']} landed/verified "
+                 f"({p['in_progress']} in progress, {p['open']} open)")
+        print("\nBy category:")
+        for letter, name in wl.CATEGORIES.items():
+            c = by_cat[letter]
+            done = c["landed"] + c["verified"]
+            print(f"  {letter} ({name}): {done}/{c['total']}")
+        return
+
+    print(f"unknown wishlist subcommand: {sub!r}")
+    raise SystemExit(1)
+
+
 def cmd_doctor(args):
-    """Verifies installation, database health, and service connectivity (Valerion Engine)."""
-    print("👨‍⚕️ NouGenShards Doctor (Valerion): Running diagnostics...")
+    """Verifies installation, database health, and service connectivity (NouGenMorph Engine)."""
+    if not getattr(args, 'json', False) and not getattr(args, 'plain', False):
+        try:
+            from .rich_hud import render_rich_doctor, is_rich_enabled
+            if is_rich_enabled():
+                active = shards.get_active_db_index()
+                found_db = any(shards.get_db_path(i).exists() for i in range(1, shards.MAX_DB_COUNT + 1))
+                p_status = {}
+                for name in ["openai", "anthropic", "google", "openrouter", "local"]:
+                    c = get_client(name)
+                    p_status[name] = c.is_alive() if c else False
+                report = {
+                    "substrate": {"active_index": active, "found": found_db},
+                    "vault": {"path": str(keymaker.DB_PATH.absolute()),
+                              "exists": keymaker.DB_PATH.exists(),
+                              "providers": keymaker.list_providers() if keymaker.DB_PATH.exists() else []},
+                    "connectivity": p_status
+                }
+                render_rich_doctor(report)
+                return
+        except Exception:
+            pass
+
+    print("👨‍⚕️ NouGenShards Doctor (NouGenMorph): Running diagnostics...")
     
     # 1. Check Substrate
     print("\n[Substrate]")
@@ -2502,8 +2870,8 @@ def cmd_doctor(args):
         p_status[name] = alive
         print(f" {'✅' if alive else '❌'} {name.capitalize()}")
 
-    # 4. Check Valerion Engine Modules
-    print("\n[Valerion Cognitive Engines]")
+    # 4. Check NouGenMorph Engine Modules
+    print("\n[NouGenMorph Cognitive Engines]")
     try:
         from . import dream, evolution  # noqa: F401 - imported to probe availability for `nougen doctor`
         print(" ✅ Dream State (TMEM): Ready")
@@ -3249,11 +3617,11 @@ def cmd_open(args):
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
-        print("🪩 NouGenShards CLI")
+        print("🪩 NouGenShards CLI — Powered by NouGenAi")
         print("┌┐╷┌─┐╷ ╷┌─╴┌─╴┌┐╷┌─┐╷ ╷┌─┐┌─┐╶┬┐┌─┐")
         print("│└┤│ ││ ││╶┐├╴ │└┤└─┐├─┤├─┤├┬┘ ││└─┐")
         print("╵ ╵└─┘└─┘└─┘└─╴╵ ╵└─┘╵ ╵╵ ╵╵└╴╶┴┘└─┘")
-        print(f"  ⚡ Valerion Engine · v{VERSION}")
+        print(f"  ⚡ NouGenMorph Engine · v{VERSION}")
         print()
         get_parser().print_help()
         sys.exit(0)
@@ -3297,16 +3665,17 @@ def main():
     args = parser.parse_args()
     cmds = {
         "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
-        "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "ctx": cmd_ctx,
+        "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
-        "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
+        "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr,
         "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
-        "transcribe": cmd_transcribe, "live": cmd_live, "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
+        "transcribe": cmd_transcribe, "live": cmd_live, "algo": cmd_algo,
+        "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
         "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep, "open": cmd_open,
         "facts": cmd_facts, "mrsb": cmd_mrsb,
     }

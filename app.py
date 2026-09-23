@@ -31,12 +31,16 @@ if os.environ.get("SPACE_ID"):
     os.environ["NOUGEN_HOME"] = "/data"
     os.environ["NOUGEN_VAULT_DIR"] = "/data/.vault"
 
-from nougen_shards import bind_probe, core, history, locator, machine, mcp_oauth, tenants
+from nougen_shards import agents, bind_probe, core, history, locator, machine, mcp_oauth, tenants
 from nougen_shards.federation import federated_retrieve
 from nougen_shards import fd_budget
 from nougen_shards.brain_scan import scan_environment
 
+# NGS_NODE_TOKEN remains the operator credential.  A fleet peer receives its
+# own independently-rotatable token so enrolling it never requires replacing
+# the operator's credential on a running public node.
 NODE_TOKEN = os.environ.get("NGS_NODE_TOKEN") or os.environ.get("SHARD_GATEWAY_TOKEN")
+FLEET_PEER_TOKEN = os.environ.get("NGS_FLEET_PEER_TOKEN")
 
 
 # --- Remote MCP server (mobile / Claude-app connector) ---
@@ -951,7 +955,13 @@ def _credentials_configured() -> bool:
 
 def _resolve_tenant_credential(supplied: Optional[str]) -> Optional[tenants.Tenant]:
     try:
-        return tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+        tenant = tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+        # A peer token deliberately resolves to the owner vault: federation
+        # reads must see the node's shared substrate, whereas normal tenant
+        # credentials are isolated into their own vault directories.
+        if tenant is None and FLEET_PEER_TOKEN:
+            tenant = tenants.resolve_token(supplied, FLEET_PEER_TOKEN, core.GLOBAL_DIR)
+        return tenant
     except tenants.RegistryUnreadableError as exc:
         # Distinct from a malformed registry ON PURPOSE. "Tenant registry is
         # invalid" is a claim about configuration; this box is simply out of a
@@ -1236,6 +1246,50 @@ async def health(
         _health_authed, result, warnings, persistent, x_ngs_token, x_nougen_lane)
 
 
+def _write_path_probe() -> dict:
+    """Can each vault DB take a write lock right now? Writes nothing.
+
+    /health used to be read-only, so a node whose captures were timing out on
+    a held lock still reported "ignited" (blade, 2026-09-23 17:50Z: the shard
+    canary's writes timed out while 4444 answered healthy). BEGIN IMMEDIATE
+    acquires the same RESERVED lock a capture needs, then ROLLBACK releases
+    it, so this probes the write path without adding a row or touching WAL.
+    Capped per DB by NGS_HEALTH_WRITE_PROBE_S (default 2s) so a wedged vault
+    makes /health report the fault, not hang on it.
+    """
+    import sqlite3
+    import time as _time
+    from nougen_shards import snapshot_mode
+    try:
+        timeout_s = float(os.environ.get("NGS_HEALTH_WRITE_PROBE_S", "") or 2.0)
+    except ValueError:
+        timeout_s = 2.0
+    out = {"ok": None, "timeout_s": timeout_s, "checked": 0, "blocked": [], "max_ms": 0.0}
+    if snapshot_mode.enabled():
+        out["mode"] = "read-only snapshot"
+        return out
+    for i in range(1, core.MAX_DB_COUNT + 1):
+        path = core.get_db_path(i)
+        if not path.exists():
+            continue
+        started = _time.perf_counter()
+        conn = None
+        try:
+            conn = sqlite3.connect(str(path), timeout=timeout_s, isolation_level=None)
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("ROLLBACK")
+        except sqlite3.Error as exc:
+            out["blocked"].append({"db": i, "error": str(exc)[:120]})
+        finally:
+            if conn is not None:
+                conn.close()
+        out["checked"] += 1
+        out["max_ms"] = max(out["max_ms"], round((_time.perf_counter() - started) * 1000.0, 1))
+    if out["checked"]:
+        out["ok"] = not out["blocked"]
+    return out
+
+
 def _health_authed(result: dict, warnings: list, persistent: bool,
                    x_ngs_token: str, x_nougen_lane: Optional[str] = None) -> dict:
     """Vault-touching half of /health; runs in the threadpool by design.
@@ -1273,6 +1327,18 @@ def _health_authed(result: dict, warnings: list, persistent: bool,
         },
         "substrate": coverage,
     })
+    context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id, lane=lane)
+    try:
+        write_path = _write_path_probe()
+    finally:
+        core.reset_active_vault(context_tokens)
+    result["write_path"] = write_path
+    if write_path["ok"] is False:
+        warnings.append(
+            f"write path blocked: {len(write_path['blocked'])} vault DB(s) could not take a "
+            f"write lock within {write_path['timeout_s']}s - captures will time out "
+            f"while reads still answer ({write_path['blocked']})"
+        )
     if not coverage["complete"] and not coverage["read_through"]:
         warnings.append(
             f"substrate incomplete: {coverage['databases_mounted']} of "
@@ -1300,6 +1366,9 @@ class SearchRequest(BaseModel):
     until: Optional[str] = None
     # False skips the typo-tolerant fuzzy lane (exact/FTS lanes still run). Default keeps behaviour unchanged.
     fuzzy: bool = True
+    # True answers from the local exact keyword index only (no vector lane, no remote vaults): sub-second,
+    # PARTIAL coverage, reported via X-NouGen-Lanes-Skipped. For live callers (NouGen Q). Default off.
+    fast: bool = False
 
 
 class RecallRequest(BaseModel):
@@ -1406,6 +1475,7 @@ def search(req: SearchRequest, response: Response,
     fetch = min(limit * 5, 250) if bounded else limit
     sweep_report: dict = {}
     _no_fuzzy_token = core.NO_FUZZY.set(not req.fuzzy)
+    _fast_token = core.FAST_LOCAL.set(bool(req.fast))
     try:
         # Federated, not core.retrieve: a remote caller must see the same corpus a
         # local CLI caller does. core.retrieve reads only nougen_shards_1..9.db,
@@ -1424,6 +1494,7 @@ def search(req: SearchRequest, response: Response,
             results = []
     finally:
         core.NO_FUZZY.reset(_no_fuzzy_token)
+        core.FAST_LOCAL.reset(_fast_token)
 
     if bounded:
         results, held_back = _era_filter(results, req.since, req.until)
@@ -1452,6 +1523,10 @@ def search(req: SearchRequest, response: Response,
     # could not distinguish the two. Lane drops therefore raise the same trailer
     # and are additionally reported in headers, for clients that read the
     # envelope rather than the rows.
+    if sweep_report.get("fast_local"):
+        skipped = sweep_report.get("lanes_skipped") or []
+        response.headers["X-NouGen-Fast-Path"] = "local-keyword-only"
+        response.headers["X-NouGen-Lanes-Skipped"] = ",".join(skipped)
     lanes = sweep_report.get("lanes") or {}
     if lanes:
         # Healthy timings matter as much as failures: a deadline can only be
@@ -1784,6 +1859,35 @@ def sync_pull(response: Response,
     return all_shards
 
 
+@app.get("/shards/{shard_id}")
+@app.get("/shard/{shard_id}", include_in_schema=False)
+def shard_by_id(shard_id: int, db_index: Optional[int] = None,
+                content_hash: Optional[str] = None,
+                _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """One shard by id: the proof half of a capture.
+
+    A canary that verifies its write by /search is proving "something similar
+    ranks", not "my row exists". capture returns shard_id and db_index; this
+    reads that exact row back, so a caller can compare content byte-for-byte.
+    Same body as the get_shard MCP tool. 404 means no mounted DB holds the id.
+    """
+    found = get_shard.__wrapped__(shard_id, db_index)
+    if not found or not found.get("found", True) or "id" not in found:
+        raise HTTPException(status_code=404, detail="shard {} not found".format(shard_id))
+    # Provenance + hash proof contributed by whoart Antigravity (a858dec):
+    # shard ids collide across nodes, so say which vault answered, and let a
+    # caller hand in the hash it wrote to get a 409 instead of a false match.
+    found["source_node"] = locator.current_node()
+    computed = hashlib.sha256(str(found.get("content") or "").encode("utf-8")).hexdigest()
+    found["content_hash"] = computed
+    if content_hash and content_hash.strip().lower() != computed:
+        raise HTTPException(
+            status_code=409,
+            detail="shard {} content hash mismatch on node {} (expected {}, got {})".format(
+                shard_id, found["source_node"], content_hash.strip().lower(), computed))
+    return found
+
+
 @app.get("/sync/hashes")
 def sync_hashes(_tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Compact identity manifest for incremental replica synchronization.
@@ -1911,7 +2015,7 @@ def rhea_brain(req: RheaBrainRequest,
 
 
 # --- Dav1d Execution Layer ---
-from nougen_shards.dav1d_executor import run_dav1d_agy
+from nougen_shards.dav1d_executor import ask_dav1d_persona, run_dav1d_agy
 
 
 class Dav1dExecRequest(BaseModel):
@@ -1937,6 +2041,21 @@ def dav1d_exec_endpoint(
     )
 
 
+class Dav1dAskRequest(BaseModel):
+    prompt: str
+    model: Optional[str] = None
+    timeout: int = 90
+
+
+@app.post("/dav1d/ask")
+def dav1d_ask_endpoint(
+    req: Dav1dAskRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Dav1d persona route: dav1d:e2b on ollama, AGY as labeled fallback."""
+    return ask_dav1d_persona(req.prompt, model=req.model, timeout=req.timeout)
+
+
 @app.post("/dav1d/agy")
 def dav1d_agy_endpoint(
     req: Dav1dExecRequest,
@@ -1958,12 +2077,14 @@ def dav1d_exec(
     command: str = "agy",
     subcommand: str = "mcp list",
     args: Optional[List[str]] = None,
-    prompt: str = ""
+    prompt: str = "",
+    timeout: int = 30
 ) -> dict:
     """Dav1d Execution Layer: Execute bounded AGY CLI operations and toolchain actions
     on Dav1d. Griot reasons/retrieves; Dav1d executes.
     Returns verifiable runtime evidence (machine, host, engine, version, exit_code, output)."""
-    return run_dav1d_agy(command=command, args=args, subcommand=subcommand, prompt=prompt)
+    return run_dav1d_agy(command=command, args=args, subcommand=subcommand, prompt=prompt,
+                         timeout=timeout)
 
 
 @node_mcp.tool()
@@ -1986,16 +2107,129 @@ def agy_ask(
 @_offloaded
 def ask_dav1d(
     prompt: str,
-    subcommand: str = "mcp list",
-    args: Optional[List[str]] = None
+    model: Optional[str] = None,
+    timeout: int = 90,
 ) -> dict:
-    """Canonical Dav1d connector alias.
+    """Ask Dav1d, blade's anchor persona (dav1d:e2b on the local ollama lane).
 
-    The fleet connector calls this name. Keep it on the same bounded executor
-    as ``agy_ask`` so the remote surface cannot silently fall back to a
-    simulated response or gain a second, less-safe execution path.
+    The reply carries host/engine/model/status. engine "ollama" is the persona;
+    engine "agy-cli" (with a `fallback` reason) means ollama could not answer and
+    the bounded AGY layer did. Raw AGY subcommands stay on ``dav1d_exec``.
     """
-    return run_dav1d_agy(command="agy", args=args, subcommand=subcommand, prompt=prompt)
+    return ask_dav1d_persona(prompt, model=model, timeout=timeout)
+
+
+# --- Roster & IRIS Agent Layer ---
+
+class IrisAskRequest(BaseModel):
+    question: str
+    model: Optional[str] = None
+
+
+class AgentAskRequest(BaseModel):
+    name: str
+    prompt: str
+    model: Optional[str] = None
+
+
+@app.post("/iris/ask")
+def iris_ask_endpoint(
+    req: IrisAskRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Ask Iris, the resident AI and research/evidence assurance specialist."""
+    try:
+        answer = agents.run_agent("Iris", req.question, model=req.model or None)
+    except Exception:
+        logging.exception("iris_ask_endpoint: run_agent failed")
+        raise HTTPException(status_code=502, detail="Iris dispatch failed")
+    return {"answer": answer, "agent": "Iris", "model": req.model or agents.ROSTER["Iris"].default_model}
+
+
+@app.post("/agents/ask")
+def agent_roster_ask_endpoint(
+    req: AgentAskRequest,
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Run a prompt through any agent on the NouGen roster."""
+    try:
+        answer = agents.run_agent(req.name, req.prompt, model=req.model or None)
+    except Exception:
+        logging.exception("agent_roster_ask_endpoint: run_agent failed for %s", req.name)
+        raise HTTPException(status_code=502, detail=f"Agent '{req.name}' dispatch failed")
+    spec = agents.get_agent(req.name)
+    agent_name = spec.name if spec else req.name
+    default_m = spec.default_model if spec else "unknown"
+    return {"answer": answer, "agent": agent_name, "model": req.model or default_m}
+
+
+@app.get("/agents/roster")
+def agents_roster_endpoint(
+    _tenant: tenants.Tenant = Depends(tenant_vault_context)
+):
+    """Return the complete NouGen roster and status."""
+    return {
+        "roster_text": agents.list_roster(),
+        "agents": [
+            {
+                "name": spec.name,
+                "role": spec.role,
+                "motto": spec.motto,
+                "default_model": spec.default_model,
+                "engine_functions": spec.engine_functions
+            }
+            for spec in agents.ROSTER.values()
+        ]
+    }
+
+
+@node_mcp.tool()
+@_offloaded
+def ask_iris(question: str, model: str = "") -> str:
+    """
+    Ask Iris, the always-on resident AI on this machine.
+
+    Iris is Airspace: research, evidence and assurance. She separates verified
+    fact from inference, states her caveats, and never promotes or deletes
+    memory on her own - action stays with the operator. She rides the pinned
+    resident model (gemma4:e2b-qat) as a system prompt, so asking her costs no
+    cloud tokens and loads no second model onto the card.
+
+    Use her for: checking a claim against evidence, a second read on something
+    you are about to assert, reachability/uncertainty assessment. She is a
+    local $0 lane - prefer her over a paid route for this class of question.
+
+    Args:
+        question: What to ask her.
+        model: Optional model override. Leave empty to use the resident.
+    """
+    return agents.run_agent("Iris", question, model=model or None)
+
+
+@node_mcp.tool()
+@_offloaded
+def ask_agent(name: str, prompt: str, model: str = "") -> str:
+    """
+    Run a prompt through any agent on the NouGen roster.
+
+    Local-first: tries the resident Ollama model, falling back to cloud only if
+    local is unreachable. The DavOs gatekeeper screens every prompt first.
+
+    Args:
+        name: Roster agent - Sharder, Remember, Kronos, DavOs, Sol-Ai, NouGen,
+            Griot, Rhea, Kaedra or Iris. Case-insensitive.
+        prompt: What to ask.
+        model: Optional model override. Leave empty for the agent default.
+    """
+    return agents.run_agent(name, prompt, model=model or None)
+
+
+@node_mcp.tool()
+@_offloaded
+def list_agents() -> str:
+    """List the NouGen roster: each agent's name, role and default model."""
+    return agents.list_roster()
+
 
 
 # --- Shadow Xoah & Destiny Governance Layer ---
@@ -2117,7 +2351,7 @@ class XoahUnwrittenRequest(BaseModel):
     query: str
 
 
-# REST twins of the Black Glass MCP tools below: the fleet connector worker
+# REST twins of the self-archive MCP tools below: the fleet connector worker
 # reaches the node over REST (/xoah/self, /xoah/pressure), not MCP.
 @app.post("/xoah/relationship")
 def xoah_relationship_endpoint(req: XoahRelationshipRequest,
@@ -2249,7 +2483,7 @@ def xoah_throne(desired_effect: Optional[str] = None, effect: Optional[str] = No
     return throne_governance.evaluate(resolved, target_coordinate=target_coordinate, target_branch=target_branch)
 
 
-# Black Glass query surface over the Xoah self archive. Every answer carries its
+# Query surface over the self archive. Every answer carries its
 # layer (LIVED_TRUTH ... UNWRITTEN_SELF, or ARCHIVE_ABSENT when this node has no
 # archive file) and the provenance of the nodes it cites.
 @node_mcp.tool()
@@ -2713,6 +2947,19 @@ def relay_open_legs(limit: int = 15) -> list:
     return legs
 
 
+def _safe_claims_path(claims_dir: "Path", leg_id: str, suffix: str) -> "Path":
+    """Build a path under claims_dir from a caller-supplied leg_id, rejecting traversal.
+
+    leg_id reaches this from the MCP tool surface unsanitized; resolving and
+    verifying containment (rather than just filtering characters) also covers
+    absolute-path and symlink escapes, not just "../" segments.
+    """
+    candidate = (claims_dir / f"{leg_id}{suffix}").resolve()
+    if claims_dir.resolve() not in candidate.parents:
+        raise ValueError(f"invalid leg_id: {leg_id!r} escapes claims_dir")
+    return candidate
+
+
 @node_mcp.tool()
 @_offloaded
 def relay_claim_leg(leg_id: str, claimed_by: str = "phoebus/antigravity") -> dict:
@@ -2720,7 +2967,7 @@ def relay_claim_leg(leg_id: str, claimed_by: str = "phoebus/antigravity") -> dic
     from pathlib import Path
     claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
-    claim_path = claims_dir / f"{leg_id}__autonomous.json"
+    claim_path = _safe_claims_path(claims_dir, leg_id, "__autonomous.json")
     claim_data = {
         "leg_id": leg_id,
         "claimed_by": claimed_by,
@@ -2780,6 +3027,7 @@ def relay_ack_leg(
     from pathlib import Path
     claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
+    ack_path = _safe_claims_path(claims_dir, leg_id, "__ack.json")
     ack_data = {
         "leg_id": leg_id,
         "status": "closed",
@@ -2791,7 +3039,6 @@ def relay_ack_leg(
             "observer_node": observer_node
         }
     }
-    ack_path = claims_dir / f"{leg_id}__ack.json"
     with open(ack_path, "w", encoding="utf-8") as f:
         json.dump(ack_data, f, indent=2)
     return {"status": "closed", "proof": ack_data}
@@ -3241,7 +3488,7 @@ class _TokenGatedMCP:
             tenant = None
             if supplied:
                 try:
-                    tenant = tenants.resolve_token(supplied, NODE_TOKEN, core.GLOBAL_DIR)
+                    tenant = _resolve_tenant_credential(supplied)
                     if tenant is None:
                         issued_tenant_id = mcp_oauth.issued_token_tenant(supplied)
                         if issued_tenant_id:

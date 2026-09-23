@@ -75,6 +75,19 @@ def test_deny_by_default_when_unconfigured(client, monkeypatch):
     assert client.post("/search", json={"query": "x"}, headers=AUTH).status_code == 503
 
 
+def test_fleet_peer_token_resolves_to_owner_vault(client, monkeypatch):
+    """A federation credential must retain access to the shared node substrate."""
+    peer_token = "dedicated-fleet-peer-token"
+    monkeypatch.setattr(node, "FLEET_PEER_TOKEN", peer_token)
+
+    tenant = node._resolve_tenant_credential(peer_token)
+
+    assert tenant is not None
+    assert tenant.tenant_id == "owner"
+    assert tenant.vault_dir == core.GLOBAL_DIR
+    assert node._resolve_tenant_credential("wrong-token") is None
+
+
 def test_capture_search_roundtrip(client):
     r = client.post("/capture", json={
         "title": "Cloud automation shard",
@@ -324,3 +337,61 @@ def test_federated_read_token_falls_back_to_env(monkeypatch, tmp_path):
     assert sent.get("token") == "env-token-value", (
         "federated read must fall back to NGS_NODE_TOKEN from the environment "
         "when the keymaker store is empty")
+
+
+def test_health_write_path_probe_ok(client):
+    body = client.get("/health", headers=AUTH).json()
+    wp = body["write_path"]
+    assert wp["ok"] is True and wp["checked"] >= 1 and wp["blocked"] == []
+    assert not any("write path blocked" in w for w in body["warnings"])
+
+
+def test_health_write_path_probe_reports_held_lock(client, tmp_path, monkeypatch):
+    # A second connection holds the RESERVED lock a capture needs: reads still
+    # answer, so the old /health stayed "ignited" while every write timed out.
+    import sqlite3
+    monkeypatch.setenv("NGS_HEALTH_WRITE_PROBE_S", "0.2")
+    holder = sqlite3.connect(str(tmp_path / "node_api_1.db"), isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")
+    try:
+        body = client.get("/health", headers=AUTH).json()
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    assert body["status"] == "ignited"          # contract for routers unchanged
+    assert body["write_path"]["ok"] is False
+    assert body["write_path"]["blocked"][0]["db"] == 1
+    assert any("write path blocked" in w for w in body["warnings"])
+
+
+def test_unauthenticated_health_does_not_probe_writes(client):
+    assert "write_path" not in client.get("/health").json()
+
+
+def test_shard_by_id_proves_the_exact_write(client):
+    cap = client.post("/capture", headers=AUTH, json={
+        "title": "canary by id", "content": "canary-body-7f3a exact bytes"}).json()
+    assert cap["captured"] is True
+    got = client.get(f"/shards/{cap['shard_id']}", headers=AUTH,
+                     params={"db_index": cap.get("db_index")})
+    assert got.status_code == 200
+    assert got.json()["content"] == "canary-body-7f3a exact bytes"
+
+
+def test_shard_by_id_404_and_auth(client):
+    assert client.get("/shards/987654", headers=AUTH).status_code == 404
+    assert client.get("/shards/1").status_code in (401, 403)
+
+
+def test_shard_by_id_hash_proof_and_provenance(client):
+    import hashlib
+    body = "canary-hash-body 91c"
+    cap = client.post("/capture", headers=AUTH, json={"title": "hash canary", "content": body}).json()
+    sid, dbi = cap["shard_id"], cap.get("db_index")
+    good = hashlib.sha256(body.encode()).hexdigest()
+    ok = client.get(f"/shards/{sid}", headers=AUTH, params={"db_index": dbi, "content_hash": good})
+    assert ok.status_code == 200
+    assert ok.json()["content_hash"] == good and ok.json()["source_node"]
+    bad = client.get(f"/shards/{sid}", headers=AUTH, params={"db_index": dbi, "content_hash": "0" * 64})
+    assert bad.status_code == 409
+    assert client.get(f"/shard/{sid}", headers=AUTH, params={"db_index": dbi}).status_code == 200

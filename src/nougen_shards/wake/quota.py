@@ -4,6 +4,7 @@ Inspects account /usage, /status, or quota error strings (e.g., "Resets in 2h57m
 and automatically schedules a durable WakeTicket to ping agents back up when limits reset.
 """
 
+import os
 import re
 import sys
 import json
@@ -16,7 +17,39 @@ from typing import Dict, Any, Optional, List
 from nougen_shards.nougenmsg import NouGenMsgBus, get_current_node
 
 DEFAULT_TICKET_DIR = Path.home() / ".nougen" / "wake_tickets"
-RELAY_WAKE_DIR = Path.home() / "Outpost" / "NouGenRelay" / ".relay" / "wake"
+
+# Same precedence the rest of the codebase uses to find the registry
+# (cli.RELAY_DIR_ENV_VARS, relay_guardrail.RELAY_ROOT).
+RELAY_DIR_ENV_VARS = ("NOUGEN_RELAY_DIR", "FLEET_RELAY_DIR")
+CANONICAL_RELAY_DIR = Path.home() / ".nougen" / "relay"
+
+
+def relay_wake_dir() -> Path:
+    """Where the wake daemon actually looks for tickets.
+
+    This used to be hard-coded to ``~/Outpost/NouGenRelay/.relay/wake``, a path
+    that does not exist on phoebus, while ``wake_daemon`` watches
+    ``~/.nougen/relay/.relay/wake``. The mirror was guarded by ``is_dir()``, so
+    every quota wake ticket was silently dropped on the floor -- the writer
+    wrote to a dead path and the reader watched a live one.
+
+    ``NOUGEN_RELAY_DIR`` may point at either the registry root or the
+    ``.handoffs`` directory inside it (relay_guardrail uses the latter form),
+    so both are accepted.
+    """
+    for var in RELAY_DIR_ENV_VARS:
+        raw = os.environ.get(var)
+        if raw:
+            root = Path(raw).expanduser()
+            if root.name == ".handoffs":
+                root = root.parent
+            return root / ".relay" / "wake"
+    return CANONICAL_RELAY_DIR / ".relay" / "wake"
+
+
+#: Back-compat module attribute. Resolved at import; call ``relay_wake_dir()``
+#: if the environment can change after import.
+RELAY_WAKE_DIR = relay_wake_dir()
 
 
 class QuotaWakeParser:
@@ -178,14 +211,26 @@ class NouGenWakeEngine:
         ticket_file = self.ticket_dir / f"{ticket_id}.json"
         ticket_file.write_text(json.dumps(ticket, indent=2), encoding="utf-8")
 
-        # Mirror to NouGenRelay wake dir if present
+        # Mirror to the NouGenRelay wake dir the daemon actually watches.
+        # Create it rather than skipping: a missing directory is not evidence
+        # that nobody wants the ticket. The outcome is recorded on the ticket
+        # so a dropped mirror is observable instead of silent.
+        wake_dir = relay_wake_dir()
+        mirror: Dict[str, Any] = {"path": str(wake_dir), "written": False, "error": None}
         try:
-            if RELAY_WAKE_DIR.is_dir():
-                relay_file = RELAY_WAKE_DIR / f"{ticket_id}.wake.json"
-                relay_file.write_text(json.dumps(ticket, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+            wake_dir.mkdir(parents=True, exist_ok=True)
+            relay_file = wake_dir / f"{ticket_id}.wake.json"
+            relay_file.write_text(json.dumps(ticket, indent=2), encoding="utf-8")
+            mirror["written"] = True
+        except OSError as exc:
+            # Never fail ticket creation because the mirror failed -- the local
+            # ticket is still durable -- but say so rather than swallowing it.
+            mirror["error"] = f"{type(exc).__name__}: {exc}"
+            print(f"[nougen-wake] relay mirror failed for {ticket_id}: {mirror['error']}",
+                  file=sys.stderr)
 
+        ticket["relay_mirror"] = mirror
+        ticket_file.write_text(json.dumps(ticket, indent=2), encoding="utf-8")
         return ticket
 
     def list_tickets(self, status: Optional[str] = None) -> List[Dict[str, Any]]:

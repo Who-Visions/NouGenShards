@@ -22,7 +22,7 @@ import urllib.request
 from pathlib import Path
 
 PROFILE_VERSION = 1
-DEFAULT_OLLAMA = "http://localhost:11434"
+DEFAULT_OLLAMA = "http://127.0.0.1:11434"
 
 # Presence-only. Same contract as tools/bootstrap.py: names, never values.
 CREDENTIAL_NAMES = (

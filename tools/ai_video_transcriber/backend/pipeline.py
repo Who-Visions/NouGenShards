@@ -28,6 +28,17 @@ UPLOAD_ALLOWED_EXT = frozenset(
     {".txt", ".mp3", ".mp4", ".m4a", ".wav", ".webm", ".mkv", ".ogg", ".flac"}
 )
 
+# ISO-BMFF image brands that identify HEIF/HEIC-family containers.  These are
+# intentionally rejected even when a caller gives the file a video extension:
+# the upload boundary must not rely on a filename before handing bytes to a
+# native media decoder.
+HEIF_BRANDS = frozenset({b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1"})
+
+
+def is_heif_container(header: bytes) -> bool:
+    """Return whether an ISO-BMFF header identifies a HEIF-family image."""
+    return len(header) >= 12 and header[4:8] == b"ftyp" and header[8:12] in HEIF_BRANDS
+
 NO_SPEECH_NOTICE = (
     "_No speech detected in this video — transcript, summary and translation "
     "are unavailable._"
