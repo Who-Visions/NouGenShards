@@ -1684,44 +1684,6 @@ def capture_shard(req: CaptureRequest,
     return {"status": "ok", **dict(result)}
 
 
-@app.get("/shard/{shard_id}")
-@app.get("/shards/{shard_id}")
-def get_shard_endpoint(
-    shard_id: int,
-    db_index: Optional[int] = Query(None),
-    _tenant: tenants.Tenant = Depends(tenant_vault_context),
-):
-    """Fetch ONE shard's full record by id and optional db_index.
-
-    Returns the decrypted, hydrated shard content, metadata, timestamps, and db_index.
-    Answers 404 if not found across mounted databases in the active vault.
-    """
-    indexes = [db_index] if db_index else list(range(1, core.MAX_DB_COUNT + 1))
-    for i in indexes:
-        if not core.get_db_path(i).exists():
-            continue
-        conn = None
-        try:
-            conn = core.get_connection(i)
-            row = conn.execute("SELECT * FROM shards WHERE id = ?", (shard_id,)).fetchone()
-            if row is None:
-                continue
-            item = core.hydrate(dict(row))
-            item["_db_index"] = i
-            return _json_safe(item)
-        except Exception as exc:
-            logger.error("get_shard_endpoint: DB %s error: %s", i, exc)
-            continue
-        finally:
-            if conn is not None:
-                conn.close()
-
-    raise HTTPException(
-        status_code=404,
-        detail=f"Shard id {shard_id} not found across cluster DBs ({indexes}).",
-    )
-
-
 @app.post("/sync/push")
 def sync_push(req: SyncPushRequest,
               _tenant: tenants.Tenant = Depends(tenant_vault_context)):
@@ -1898,7 +1860,9 @@ def sync_pull(response: Response,
 
 
 @app.get("/shards/{shard_id}")
+@app.get("/shard/{shard_id}", include_in_schema=False)
 def shard_by_id(shard_id: int, db_index: Optional[int] = None,
+                content_hash: Optional[str] = None,
                 _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """One shard by id: the proof half of a capture.
 
@@ -1910,6 +1874,17 @@ def shard_by_id(shard_id: int, db_index: Optional[int] = None,
     found = get_shard.__wrapped__(shard_id, db_index)
     if not found or not found.get("found", True) or "id" not in found:
         raise HTTPException(status_code=404, detail="shard {} not found".format(shard_id))
+    # Provenance + hash proof contributed by whoart Antigravity (a858dec):
+    # shard ids collide across nodes, so say which vault answered, and let a
+    # caller hand in the hash it wrote to get a 409 instead of a false match.
+    found["source_node"] = locator.current_node()
+    computed = hashlib.sha256(str(found.get("content") or "").encode("utf-8")).hexdigest()
+    found["content_hash"] = computed
+    if content_hash and content_hash.strip().lower() != computed:
+        raise HTTPException(
+            status_code=409,
+            detail="shard {} content hash mismatch on node {} (expected {}, got {})".format(
+                shard_id, found["source_node"], content_hash.strip().lower(), computed))
     return found
 
 

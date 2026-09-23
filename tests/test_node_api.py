@@ -381,3 +381,17 @@ def test_shard_by_id_proves_the_exact_write(client):
 def test_shard_by_id_404_and_auth(client):
     assert client.get("/shards/987654", headers=AUTH).status_code == 404
     assert client.get("/shards/1").status_code in (401, 403)
+
+
+def test_shard_by_id_hash_proof_and_provenance(client):
+    import hashlib
+    body = "canary-hash-body 91c"
+    cap = client.post("/capture", headers=AUTH, json={"title": "hash canary", "content": body}).json()
+    sid, dbi = cap["shard_id"], cap.get("db_index")
+    good = hashlib.sha256(body.encode()).hexdigest()
+    ok = client.get(f"/shards/{sid}", headers=AUTH, params={"db_index": dbi, "content_hash": good})
+    assert ok.status_code == 200
+    assert ok.json()["content_hash"] == good and ok.json()["source_node"]
+    bad = client.get(f"/shards/{sid}", headers=AUTH, params={"db_index": dbi, "content_hash": "0" * 64})
+    assert bad.status_code == 409
+    assert client.get(f"/shard/{sid}", headers=AUTH, params={"db_index": dbi}).status_code == 200
