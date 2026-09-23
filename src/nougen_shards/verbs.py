@@ -5,8 +5,7 @@ Provides non-overlapping authority definition across Memory, Coordination,
 Observability, Intent, Execution, and Learning planes.
 """
 from __future__ import annotations
-import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 
 PLANES: Dict[str, Dict[str, Any]] = {
     "memory": {
