@@ -66,22 +66,43 @@ def resolve_origin_host() -> str:
         return ""
 
 
-_KNOWN_FLEET_HOSTS = {
-    "phoebus": ("phoebus", "kushboygroups-mac-mini"),
-    "whoart": ("proart", "whoart"),
-    "blade": ("blade1tb", "blade"),
-}
+def fleet_hosts_path() -> Path:
+    """Where this machine's fleet map lives. Public code ships no fleet names:
+    a box without this file is "standalone" and routes only to itself."""
+    override = os.environ.get("NOUGEN_FLEET_HOSTS_FILE", "").strip()
+    return Path(override).expanduser() if override else Path.home() / ".nougen" / "fleet_hosts.json"
 
-_DEFAULT_COACH_ROUTES = {
-    "hyperion": "whoart",
-    "apollo": "blade",
-    "phoebus": "phoebus",
-}
+
+def _load_fleet_hosts() -> Dict[str, Any]:
+    """{"nodes": {node: {"host_patterns": [...]}}, "coach_routes": {coach: node}}"""
+    try:
+        data = json.loads(fleet_hosts_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _known_fleet_hosts() -> Dict[str, Tuple[str, ...]]:
+    nodes = _load_fleet_hosts().get("nodes") or {}
+    out: Dict[str, Tuple[str, ...]] = {}
+    for node, cfg in nodes.items() if isinstance(nodes, dict) else ():
+        pats = cfg.get("host_patterns") if isinstance(cfg, dict) else None
+        name = str(node).strip().lower()
+        if name:
+            out[name] = tuple(str(p).strip().lower() for p in (pats or [name]) if str(p).strip())
+    return out
+
+
+def _default_coach_routes() -> Dict[str, str]:
+    routes = _load_fleet_hosts().get("coach_routes") or {}
+    if not isinstance(routes, dict):
+        return {}
+    return {str(k).strip().lower(): str(v).strip().lower() for k, v in routes.items() if str(k).strip() and str(v).strip()}
 
 
 def fleet_identity_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
     """Resolve coach aliases to physical transport nodes from nodes.json."""
-    coach_to_machine = dict(_DEFAULT_COACH_ROUTES)
+    coach_to_machine = _default_coach_routes()
     machine_to_coach = {machine: coach for coach, machine in coach_to_machine.items()}
     path = Path.home() / ".nougen" / "nodes.json"
     try:
@@ -114,26 +135,22 @@ def coach_for_machine(value: str) -> str:
 
 
 def get_current_node() -> str:
-    """Which of Dave's three fleet boxes this is, or "standalone" for
-    everyone else.
+    """Which fleet node this box is, or "standalone".
 
-    NouGenShards is a public repo. The old version of this function assumed
-    every non-Windows box was phoebus and every Windows box was blade —
-    meaning a stranger cloning this on Ubuntu got branded "phoebus" in their
-    own logs, and a Windows contributor got branded "blade". An explicit
-    `NOUGEN_FLEET_NODE` override always wins (for a fleet box whose hostname
-    doesn't match the patterns below); otherwise this only ever returns one
-    of the three names when the actual hostname matches a known fleet
-    pattern, and "standalone" for everything else.
+    Fleet names come only from the local fleet_hosts.json (see
+    fleet_hosts_path); public code carries none, so a fresh clone is always
+    "standalone". `NOUGEN_FLEET_NODE` overrides the hostname match when it
+    names a node in that file.
     """
     override = os.environ.get("NOUGEN_FLEET_NODE", "").strip().lower()
-    if override in _KNOWN_FLEET_HOSTS:
+    known = _known_fleet_hosts()
+    if override in known:
         return override
 
     host = resolve_origin_host()
     if not host and os.name == "nt":
         host = os.environ.get("COMPUTERNAME", "").lower()
-    for node, patterns in _KNOWN_FLEET_HOSTS.items():
+    for node, patterns in known.items():
         if any(p in host for p in patterns):
             return node
     return "standalone"
