@@ -18,8 +18,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import urllib.request
 
-from ..types import (ChoiceSpec, DecisionReceipt, DecisionRequest, DecisionValue, NoulSpec,
-                     ScoreSpec)
+from ..types import ChoiceSpec, DecisionReceipt, DecisionRequest, DecisionValue, ScoreSpec
 from . import _http
 from .base import STATE_CHARS, receipt
 
