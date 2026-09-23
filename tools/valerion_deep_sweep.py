@@ -106,8 +106,6 @@ def main():
             duplicates_found += 1
             # Sort: highest utility first, then latest timestamp
             occurrences.sort(key=lambda x: (x[2], x[3] or ""), reverse=True)
-            # The first one is the winner
-            winner = occurrences[0]
             # Delete the losers (only when --confirm; otherwise count would-remove)
             for loser in occurrences[1:]:
                 db_index, shard_id, _, _ = loser

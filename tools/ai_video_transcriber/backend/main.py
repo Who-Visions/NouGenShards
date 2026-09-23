@@ -70,7 +70,7 @@ def load_tasks():
         if TASKS_FILE.exists():
             with open(TASKS_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
-    except:
+    except Exception:
         pass
     return {}
 

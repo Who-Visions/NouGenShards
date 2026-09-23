@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
-import os
 import socket
 import sys
 import urllib.request
@@ -144,7 +143,7 @@ def main() -> int:
     try:
         result = send_http(host, DEFAULT_PORT, payload)
         delivered = result.get("delivered", False) or result.get("ok", False)
-    except Exception as http_err:
+    except Exception:
         # 2. Fallback to Named Pipe on Windows
         if sys.platform == "win32" and host == DEFAULT_LOCAL_HOST:
             delivered = send_pipe("LOCAL\\agy-msg", payload)

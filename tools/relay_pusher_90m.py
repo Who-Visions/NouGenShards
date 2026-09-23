@@ -27,7 +27,7 @@ sys.path.insert(0, str(NOUGEN_ROOT / "src"))
 sys.path.insert(0, str(RELAY_ROOT / "src"))
 
 try:
-    from nougen_shards.nougenmsg import NouGenMsgBus, get_current_node
+    from nougen_shards.nougenmsg import NouGenMsgBus
 except ImportError:
     NouGenMsgBus = None
 

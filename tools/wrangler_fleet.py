@@ -75,7 +75,6 @@ def list_workers(account_id: str, token: str):
     scripts = res.get("result", [])
     print(f"⚡ Cloudflare Workers ({len(scripts)} active on account):")
     for s in scripts:
-        created = (s.get("created_on") or "")[:19].replace("T", " ")
         modified = (s.get("modified_on") or "")[:19].replace("T", " ")
         usage_model = s.get("usage_model", "bundled")
         print(f"  • {s.get('id'):<25} | modified: {modified} | usage: {usage_model}")
@@ -198,7 +197,7 @@ def main():
     if args.status:
         print("=== Cloudflare Fleet Status ===")
         print(f"Account: {account_name} ({account_id})")
-        print(f"Token:   Valid (Keymaker DPAPI Vault)")
+        print("Token:   Valid (Keymaker DPAPI Vault)")
         return
 
     if args.list:
