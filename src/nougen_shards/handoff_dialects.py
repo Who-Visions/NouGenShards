@@ -176,6 +176,25 @@ def active_claims(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [r for r in records if r["dialect"] == "claim" and r["status"] == "held"]
 
 
+def _scope_token(path: str) -> str:
+    return path.strip().strip("/\\").replace("\\", "/").lower()
+
+
+def _paths_overlap(a: List[str], b: List[str]) -> List[str]:
+    """Paths two scopes share, prefix-aware: a claim on `aistudio/` covers
+    `aistudio/src/app.ts`. Mirrors NouGenQ git_handoff `_scopes_overlap`, which
+    already matched this way, so the converged view no longer reports two
+    claims over one tree as disjoint."""
+    hits = set()
+    for x in filter(None, map(_scope_token, a or [])):
+        for y in filter(None, map(_scope_token, b or [])):
+            if x == y or x.startswith(y + "/"):
+                hits.add(x)
+            elif y.startswith(x + "/"):
+                hits.add(y)
+    return sorted(hits)
+
+
 def conflicting_scopes(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Pairs of held claims from different machines over a shared path."""
     held = active_claims(records)
@@ -185,7 +204,7 @@ def conflicting_scopes(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             a, b = held[i], held[j]
             if a["machine"] == b["machine"]:
                 continue
-            overlap = sorted(set(a["scope"] or []) & set(b["scope"] or []))
+            overlap = _paths_overlap(a["scope"], b["scope"])
             if overlap:
                 clashes.append({"machines": sorted((a["machine"], b["machine"])),
                                 "paths": overlap, "ids": [a["id"], b["id"]]})
