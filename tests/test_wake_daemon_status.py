@@ -28,7 +28,7 @@ def test_unusable_env_falls_back(monkeypatch, raw):
 
 
 def test_status_reports_resolved_settings(monkeypatch, tmp_path):
-    monkeypatch.setattr(wake_daemon, "WATCH_DIRS", [tmp_path])
+    monkeypatch.setattr(wake_daemon, "watch_dirs", lambda: [tmp_path])
     monkeypatch.setenv(wake_daemon.ENV_TIMEOUT_S, "42")
     monkeypatch.delenv(wake_daemon.ENV_POLL_INTERVAL_S, raising=False)
     assert wake_daemon.status() == {
@@ -40,7 +40,7 @@ def test_status_reports_resolved_settings(monkeypatch, tmp_path):
 
 
 def test_zero_timeout_returns_without_sleeping(monkeypatch, tmp_path):
-    monkeypatch.setattr(wake_daemon, "WATCH_DIRS", [tmp_path])
+    monkeypatch.setattr(wake_daemon, "watch_dirs", lambda: [tmp_path])
 
     def no_sleep(_seconds):
         pytest.fail("time.sleep called with a zero timeout")
@@ -52,7 +52,7 @@ def test_zero_timeout_returns_without_sleeping(monkeypatch, tmp_path):
 def test_loop_uses_env_settings_when_args_omitted(monkeypatch, tmp_path):
     # Fake clock: each sleep advances it, so the loop ends on the env timeout
     # with no dependence on real wall-clock speed.
-    monkeypatch.setattr(wake_daemon, "WATCH_DIRS", [tmp_path])
+    monkeypatch.setattr(wake_daemon, "watch_dirs", lambda: [tmp_path])
     monkeypatch.setenv(wake_daemon.ENV_TIMEOUT_S, "0.05")
     monkeypatch.setenv(wake_daemon.ENV_POLL_INTERVAL_S, "0.01")
     clock = [1000.0]
