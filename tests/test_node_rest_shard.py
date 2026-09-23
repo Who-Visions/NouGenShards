@@ -53,6 +53,17 @@ def test_get_shard_rest_endpoint_returns_captured_shard(client):
     assert shard_data["title"] == "Rest Endpoint Shard Test"
     assert shard_data["content"] == "Body content for direct REST ID verification test."
     assert shard_data["_db_index"] == db_idx
+    assert "source_node" in shard_data
+    assert "content_hash" in shard_data
+    correct_hash = shard_data["content_hash"]
+
+    # Match verification
+    get_res_match = client.get(f"/shard/{shard_id}?content_hash={correct_hash}", headers=AUTH)
+    assert get_res_match.status_code == 200
+
+    # Mismatch verification (409 Conflict)
+    get_res_mismatch = client.get(f"/shard/{shard_id}?content_hash=badhash123", headers=AUTH)
+    assert get_res_mismatch.status_code == 409
 
     get_res_plural = client.get(f"/shards/{shard_id}?db_index={db_idx}", headers=AUTH)
     assert get_res_plural.status_code == 200

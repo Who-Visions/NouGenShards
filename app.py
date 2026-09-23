@@ -1675,12 +1675,14 @@ def capture_shard(req: CaptureRequest,
 def get_shard_endpoint(
     shard_id: int,
     db_index: Optional[int] = Query(None),
+    content_hash: Optional[str] = Query(None),
     _tenant: tenants.Tenant = Depends(tenant_vault_context),
 ):
     """Fetch ONE shard's full record by id and optional db_index.
 
-    Returns the decrypted, hydrated shard content, metadata, timestamps, and db_index.
-    Answers 404 if not found across mounted databases in the active vault.
+    Returns the decrypted, hydrated shard content, metadata, timestamps, db_index,
+    source_node provenance, and SHA-256 content_hash.
+    Answers 404 if not found or if the supplied content_hash mismatches.
     """
     indexes = [db_index] if db_index else list(range(1, core.MAX_DB_COUNT + 1))
     for i in indexes:
@@ -1694,7 +1696,23 @@ def get_shard_endpoint(
                 continue
             item = core.hydrate(dict(row))
             item["_db_index"] = i
+            item["source_node"] = locator.current_node()
+            raw_content = item.get("content") or ""
+            computed_hash = hashlib.sha256(raw_content.encode("utf-8")).hexdigest()
+            item["content_hash"] = computed_hash
+
+            if content_hash and content_hash.strip().lower() != computed_hash.lower():
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Shard {shard_id} content hash mismatch on node {item['source_node']} "
+                        f"(expected {content_hash}, got {computed_hash})"
+                    ),
+                )
+
             return _json_safe(item)
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.error("get_shard_endpoint: DB %s error: %s", i, exc)
             continue
