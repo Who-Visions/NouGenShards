@@ -17,10 +17,11 @@ never RED.
 
 from __future__ import annotations
 
+import itertools
 import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 
 class StatusLevel(str, Enum):
@@ -314,4 +315,184 @@ def classify_node_dimensions(
         shard_auth_valid=s_auth,
         tracker_fresh=tracker_fresh,
     )
+
+
+# =============================================================================
+# Context Mode state (wishlist items 26, 47 -- leg 20260910T202128Z, rebroadcast
+# 20260923T174020Z, category C "NouGen Context Mode enforcement")
+#
+# This is a DIFFERENT axis from StatusLevel above. StatusLevel answers "is this
+# COMPONENT healthy" (GREEN/YELLOW/ORANGE/RED/UNKNOWN, scoped per-probe).
+# ContextState answers "how complete is the MEMORY the current task is
+# reasoning from" -- a single fleet-wide judgment a task makes once, not a
+# per-component health reading. A vault can be individually YELLOW (stale)
+# while context_state is still FULL, if that vault wasn't required for this
+# task; and every required vault can individually be GREEN while
+# context_state is DEGRADED, if one of them just hasn't been reached yet this
+# turn. The two must never be conflated into one enum -- that conflation is
+# exactly the "false green" pattern items 21-40 exist to prevent.
+# =============================================================================
+
+class ContextState(str, Enum):
+    FULL = "full"                # every required source answered and is current
+    DEGRADED = "degraded"        # at least one required source failed, timed out,
+                                  # or answered stale; reasoning continues on what's left
+    LOCAL_ONLY = "local_only"    # no remote/fleet source reachable at all; only this
+                                  # node's own local evidence is in hand
+    UNAVAILABLE = "unavailable"  # no source answered, local or remote; nothing to reason from
+
+
+@dataclass(frozen=True)
+class RequiredSource:
+    """One thing the current task declared it needs before reasoning.
+    ``is_local`` distinguishes 'this node's own vault' from a fleet peer, so
+    LOCAL_ONLY can be told apart from DEGRADED and from UNAVAILABLE."""
+    name: str
+    is_local: bool
+    answered: bool
+    reason: str = ""
+
+
+def derive_context_state(required: Sequence[RequiredSource]) -> "ContextReceipt":
+    """The single, honest judgment a task makes about its own memory
+    completeness before reasoning (item 41: 'make Context Mode mandatory
+    before substantive fleet work'; item 60: 'expose a compact Context Mode
+    receipt showing sources consulted and completeness').
+
+    Deliberately conservative in the direction the wishlist demands:
+    - Zero required sources is NOT full-by-default -- it is unavailable.
+      A task that declares nothing required has not proven anything.
+    - Any missing required source means DEGRADED at best, never FULL,
+      regardless of how many others answered.
+    """
+    if not required:
+        return ContextReceipt(ContextState.UNAVAILABLE, tuple(), tuple(),
+                              "no required sources declared -- nothing to reason from")
+
+    answered = [r for r in required if r.answered]
+    missing = [r for r in required if not r.answered]
+    local_answered = [r for r in answered if r.is_local]
+    remote_answered = [r for r in answered if not r.is_local]
+
+    if not answered:
+        state = ContextState.UNAVAILABLE
+    elif not missing:
+        state = ContextState.FULL
+    elif remote_answered:
+        state = ContextState.DEGRADED
+    elif local_answered:
+        state = ContextState.LOCAL_ONLY
+    else:
+        state = ContextState.UNAVAILABLE
+
+    reason = _context_state_reason(state, answered, missing)
+    return ContextReceipt(state, tuple(r.name for r in answered), tuple(r.name for r in missing), reason)
+
+
+def _context_state_reason(state: ContextState, answered: List[RequiredSource],
+                          missing: List[RequiredSource]) -> str:
+    if state is ContextState.FULL:
+        return f"all {len(answered)} required source(s) answered"
+    if state is ContextState.UNAVAILABLE:
+        return "no required source answered" if answered or missing else "no required sources declared"
+    names = ", ".join(f"{r.name} ({r.reason})" if r.reason else r.name for r in missing)
+    if state is ContextState.LOCAL_ONLY:
+        return f"only local source(s) answered; no remote source reachable -- missing: {names}"
+    return f"{len(answered)}/{len(answered) + len(missing)} required source(s) answered -- missing: {names}"
+
+
+@dataclass(frozen=True)
+class ContextReceipt:
+    """Item 60's 'compact Context Mode receipt': exactly what a consuming
+    lane needs to decide whether to trust a conclusion drawn under it --
+    never more, never a vague summary in place of the actual source list."""
+    state: ContextState
+    sources_answered: tuple
+    sources_missing: tuple
+    reason: str
+
+    @property
+    def exhaustive_recall_permitted(self) -> bool:
+        """Item 48: 'in degraded mode, prohibit claims of exhaustive recall.'"""
+        return self.state is ContextState.FULL
+
+    @property
+    def absence_conclusions_permitted(self) -> bool:
+        """Item 49: 'in degraded mode, prohibit absence conclusions.' Absence
+        can only be asserted from a context that saw everything required."""
+        return self.state is ContextState.FULL
+
+    @property
+    def destructive_edits_permitted(self) -> bool:
+        """Item 50: 'in degraded mode, prohibit destructive canon or
+        infrastructure edits based on missing evidence.'"""
+        return self.state is ContextState.FULL
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "context_state": self.state.value,
+            "sources_answered": list(self.sources_answered),
+            "sources_missing": list(self.sources_missing),
+            "reason": self.reason,
+            "exhaustive_recall_permitted": self.exhaustive_recall_permitted,
+            "absence_conclusions_permitted": self.absence_conclusions_permitted,
+            "destructive_edits_permitted": self.destructive_edits_permitted,
+        }
+
+
+# =============================================================================
+# Health generation IDs (wishlist item 39: "Add health generation IDs so
+# stale responses can be detected.")
+#
+# A monotonic counter a health-reporting process bumps every time it takes a
+# fresh full sweep. Consumers compare the generation stamped on a cached
+# response against the process's CURRENT generation: if they differ, the
+# response predates the most recent sweep and must not be presented as
+# current, even if its own status field still says GREEN. This is the
+# "stale health cache versus live read failure" distinction (item 36) made
+# checkable, not just described.
+# =============================================================================
+
+_generation_counter = itertools.count(1)
+
+
+class HealthGeneration:
+    """Not a singleton by force -- callers that want one process-wide counter
+    hold one instance; tests construct their own to stay isolated."""
+
+    def __init__(self, start: int = 0):
+        self._value = start
+
+    @property
+    def value(self) -> int:
+        return self._value
+
+    def bump(self) -> int:
+        """Call this at the start of every fresh full health sweep."""
+        self._value += 1
+        return self._value
+
+
+def stamp_generation(observation: Observation, generation: int) -> Observation:
+    """Attach a generation id to an existing Observation's evidence without
+    otherwise touching it -- generation is provenance metadata, not a status
+    signal, so it never changes .status or .reason."""
+    ev = dict(observation.evidence)
+    ev["health_generation"] = generation
+    return Observation(observation.observed_component, observation.reported_scope,
+                       observation.status, observation.reason, ev, observation.confidence,
+                       observation.last_verified_at, observation.observer)
+
+
+def is_stale_generation(observation: Observation, current_generation: int) -> bool:
+    """True if this observation was stamped by an earlier sweep than the
+    current one -- callers should treat it as evidence, never as a live
+    reading, regardless of its own .status. An observation never stamped
+    with a generation at all cannot be judged stale by this check (it
+    predates generation tracking, or the caller never stamped it) -- that is
+    a caller bug to fix, not something this function should guess at."""
+    stamped = observation.evidence.get("health_generation")
+    if stamped is None:
+        return False
+    return stamped < current_generation
 
