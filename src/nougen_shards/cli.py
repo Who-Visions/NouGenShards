@@ -2363,7 +2363,68 @@ def get_parser():
     p_mrsb.add_argument("--unit", "-u", type=int, default=None, help="Unit number (1-8) for recursive lesson ledger")
     p_mrsb.add_argument("--json", action="store_true", help="Machine-readable JSON output")
 
+    # HARDCade CRON OUT temporal operator
+    p_cron = subparsers.add_parser("cron", aliases=["cron-out"], help="HARDCade CRON OUT: Temporal Deployment Operator")
+    p_cron.add_argument("cron_action", nargs="?", default="status",
+                        choices=["status", "parse", "adapters"],
+                        help="Action to perform (default: status)")
+    p_cron.add_argument("query", nargs="?", default="", help="Natural speech or task reference to parse")
+    p_cron.add_argument("--json", action="store_true", help="Machine-readable JSON output")
+
     return parser
+
+
+def cmd_cron(args):
+    """HARDCade CRON OUT temporal deployment operator."""
+    from . import cron_out
+    action = getattr(args, "cron_action", "status") or "status"
+    query = getattr(args, "query", "") or ""
+
+    if action == "parse" or query:
+        text_to_parse = query if query else "Cron out tracker reconciliation every hour."
+        spec = cron_out.parse_cron_out_command(text_to_parse)
+        if getattr(args, "json", False):
+            print(spec.to_json())
+        else:
+            print("=== ⏳ HARDCade CRON OUT Spec ===")
+            print(f"  • Schedule ID: {spec.schedule_id}")
+            print(f"  • Task Ref:    {spec.task.ref}")
+            print(f"  • Type:        {spec.schedule.type}")
+            print(f"  • Cadence:     {spec.schedule.every}")
+            print(f"  • Overlap:     {spec.execution.overlap.value}")
+            print(f"  • Lease Req:   {spec.governance.lease_required}")
+            print(f"  • Timezone:    {spec.schedule.timezone}")
+        return
+
+    if action == "adapters":
+        adapters = [
+            "LocalCronAdapter (crontab/launchd)",
+            "FleetNativeSchedulerAdapter (TaskScheduler / systemd)",
+            "CloudflareWorkerSchedulerAdapter (wrangler.toml triggers)",
+        ]
+        if getattr(args, "json", False):
+            print(json.dumps({"adapters": adapters}, indent=2))
+        else:
+            print("=== ⚙️ CRON OUT Target Adapters ===")
+            for a in adapters:
+                print(f"  • {a}")
+        return
+
+    status_payload = {
+        "status": "active",
+        "operator": "HARDCade CRON OUT",
+        "authority": "Dave authorial/operator lock",
+        "supported_states": [s.value for s in cron_out.CronOutState],
+        "overlap_policies": [p.value for p in cron_out.OverlapPolicy],
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(status_payload, indent=2))
+    else:
+        print("=== ⏳ HARDCade CRON OUT Temporal Operator ===")
+        print("  • Status: Active")
+        print("  • Short Law: 'Make time responsible for calling it again.'")
+        print("  • States: MANUAL → PROVEN → CRONNED → ARMED → DUE → LEASED → RUNNING → RECEIPTED → SLEEPING")
+        print("  💡 Tip: run 'nougen cron parse \"Cron out the tracker reconciliation every hour.\"'")
 
 
 def cmd_mrsb(args):
@@ -3547,7 +3608,7 @@ def main():
         "transcribe": cmd_transcribe, "live": cmd_live, "algo": cmd_algo,
         "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
         "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep, "open": cmd_open,
-        "facts": cmd_facts, "mrsb": cmd_mrsb,
+        "facts": cmd_facts, "mrsb": cmd_mrsb, "cron": cmd_cron, "cron-out": cmd_cron,
     }
     if args.command in cmds:
         cmds[args.command](args)
