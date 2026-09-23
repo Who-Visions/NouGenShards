@@ -210,9 +210,104 @@ def _route_port(node: str = "") -> tuple:
     return HTTP_ROUTE_FALLBACK_PORT, "fallback"
 
 
+NODE_IP_CACHE = os.path.join(os.path.expanduser("~"), ".nougen", "state", "node_ips.json")
+RESOLVE_TIMEOUT_S = 3.0
+
+
+def _ssh_config_hostnames(node: str) -> list:
+    """HostName values for every ~/.ssh/config Host block naming `node` as an
+    alias. That file is where each box's real mDNS name already lives
+    (blade -> blade1tb.local, phoebus -> KushBoyGroups-Mac-mini.local)."""
+    path = os.path.join(os.path.expanduser("~"), ".ssh", "config")
+    found, in_block = [], False
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                parts = line.strip().split()
+                if len(parts) < 2 or parts[0].startswith("#"):
+                    continue
+                word = parts[0].lower()
+                if word == "host":
+                    in_block = node.lower() in (p.lower() for p in parts[1:])
+                elif word == "hostname" and in_block:
+                    found.append(parts[1])
+    except OSError:
+        pass
+    return found
+
+
+def _resolve_ipv4(name: str) -> str:
+    """getaddrinfo with a hard wall-clock cap: an mDNS miss on Windows can
+    block far longer than any send should wait."""
+    import concurrent.futures
+    import socket
+
+    def _lookup() -> str:
+        for info in socket.getaddrinfo(name, None, socket.AF_INET, socket.SOCK_STREAM):
+            return info[4][0]
+        return ""
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(_lookup).result(timeout=RESOLVE_TIMEOUT_S) or ""
+    except Exception:
+        return ""
+    finally:
+        pool.shutdown(wait=False)
+
+
+def _node_ip_cache(update: dict = None) -> dict:
+    try:
+        with open(NODE_IP_CACHE, encoding="utf-8") as fh:
+            cache = json.load(fh)
+        if not isinstance(cache, dict):
+            cache = {}
+    except (OSError, ValueError):
+        cache = {}
+    if update:
+        cache.update(update)
+        try:
+            os.makedirs(os.path.dirname(NODE_IP_CACHE), exist_ok=True)
+            tmp = NODE_IP_CACHE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(cache, fh, indent=1, sort_keys=True)
+            os.replace(tmp, NODE_IP_CACHE)
+        except OSError:
+            pass
+    return cache
+
+
 def _route_node_ip(node: str) -> tuple:
+    """Where to POST for `node`, resolved in failsafe order:
+
+    1. NOUGEN_NODE_<NODE>_IP        explicit pin, always wins
+    2. live DNS/mDNS                ssh-config HostName(s), <node>, <node>.local
+    3. last-known-good cache        ~/.nougen/state/node_ips.json
+
+    DHCP moves the fleet's addresses, so a pinned IP goes stale silently; a
+    live lookup follows the box. The cache is the failsafe for the moments
+    mDNS does not answer (it drops out on hotspot and some Wi-Fi) - a stale
+    address still fails loudly at the POST, and the caller falls back to ssh.
+    The second return value names which rung answered, for the route report.
+    """
     key = "NOUGEN_NODE_{}_IP".format(node.upper().replace("-", "_"))
-    return os.environ.get(key, "").strip() or None, key
+    pinned = os.environ.get(key, "").strip()
+    if pinned:
+        return pinned, key
+    candidates = _ssh_config_hostnames(node) + [node, node + ".local"]
+    seen = set()
+    for name in candidates:
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        ip = _resolve_ipv4(name)
+        if ip and not ip.startswith("127."):
+            _node_ip_cache({node.lower(): {"ip": ip, "via": name, "ts": int(time.time())}})
+            return ip, "resolved:{}".format(name)
+    cached = _node_ip_cache().get(node.lower())
+    if isinstance(cached, dict) and cached.get("ip"):
+        return cached["ip"], "cache:{}".format(cached.get("via", "?"))
+    return None, "{} unset; no dns/mdns/cache answer".format(key)
 
 
 def _route_token() -> str:
@@ -234,7 +329,7 @@ def send_direct_http(node: str, target: str, text: str, origin: dict) -> tuple:
 
     ip, ip_key = _route_node_ip(node)
     if not ip:
-        return None, "{} unset".format(ip_key)
+        return None, ip_key
     port, port_source = _route_port(node)
     raw_timeout = os.environ.get("NOUGEN_MSG_HTTP_TIMEOUT_S", "").strip()
     timeout = float(raw_timeout) if raw_timeout else HTTP_ROUTE_FALLBACK_TIMEOUT_S
