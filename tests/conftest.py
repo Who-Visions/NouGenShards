@@ -118,3 +118,11 @@ def isolated_msg_home(tmp_path_factory, monkeypatch):
     home = tmp_path_factory.mktemp("msg_home")
     monkeypatch.setattr(nougenmsg, "os", _HomeOs(real_os, home))
     yield home
+
+
+@pytest.fixture(autouse=True)
+def _fleet_hosts_fixture(monkeypatch):
+    """Fleet names are local config, not code; tests read a fixture map so
+    they neither depend on nor touch the developer's ~/.nougen/fleet_hosts.json."""
+    from pathlib import Path
+    monkeypatch.setenv("NOUGEN_FLEET_HOSTS_FILE", str(Path(__file__).parent / "fixtures" / "fleet_hosts.json"))

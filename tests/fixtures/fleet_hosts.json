@@ -1,0 +1,8 @@
+{
+  "nodes": {
+    "phoebus": {"host_patterns": ["phoebus"]},
+    "whoart": {"host_patterns": ["whoart"]},
+    "blade": {"host_patterns": ["blade"]}
+  },
+  "coach_routes": {"hyperion": "whoart", "apollo": "blade", "phoebus": "phoebus"}
+}
