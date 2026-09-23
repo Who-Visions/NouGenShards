@@ -172,13 +172,20 @@ def find_legacy_stores(roots=None) -> list:
     canonical = resolve_secrets_vault_dir().resolve()
     if roots is None:
         home = Path.home()
-        roots = [home / "Watchtower", home]
+        roots = [home / "Watchtower", home / ".nougen" / "secrets", home]
     seen, found = set(), []
     for root in roots:
+        if not Path(root).exists():
+            continue
         try:
-            candidates = list(Path(root).glob(f"*/{_LEGACY_VAULT_DIRNAME}/{DB_FILENAME}"))
-            candidates += list(Path(root).glob(f"*/*/{_LEGACY_VAULT_DIRNAME}/{DB_FILENAME}"))
-            candidates += list(Path(root).glob(f"*/{DB_FILENAME}"))
+            candidates: list = []
+            for db_name in (DB_FILENAME, "agent_secrets.db"):
+                candidates += list(Path(root).glob(f"*/{_LEGACY_VAULT_DIRNAME}/{db_name}"))
+                candidates += list(Path(root).glob(f"*/*/{_LEGACY_VAULT_DIRNAME}/{db_name}"))
+                candidates += list(Path(root).glob(f"*/{db_name}"))
+                direct = Path(root) / db_name
+                if direct.is_file():
+                    candidates.append(direct)
         except OSError:
             continue
         for path in candidates:
@@ -251,13 +258,15 @@ def _probe_store(db_path: Path) -> Optional[dict]:
 
 def candidate_stores() -> list:
     """Every location this deployment might keep the secrets DB, in trust
-    order: explicit env, then the user-anchored convention, then legacy
-    strays surfaced by find_legacy_stores(). Deduplicated, order-preserving."""
+    order: explicit env, then user-anchored convention, Watchtower, and legacy strays."""
     ordered = []
     explicit = os.getenv(ENV_SECRETS_VAULT, "").strip()
     if explicit:
-        ordered.append(Path(explicit) / DB_FILENAME)
-    ordered.append(Path.home() / ".nougen" / "secrets" / DB_FILENAME)
+        for db_name in (DB_FILENAME, "agent_secrets.db"):
+            ordered.append(Path(explicit) / db_name)
+    for db_name in (DB_FILENAME, "agent_secrets.db"):
+        ordered.append(Path.home() / ".nougen" / "secrets" / db_name)
+        ordered.append(Path.home() / "Watchtower" / db_name)
     ordered.extend(find_legacy_stores())
     seen, out = set(), []
     for path in ordered:
@@ -688,19 +697,13 @@ def _read_secret_row(db_path: Path, key: str) -> Optional[str]:
 def get_secret(key: str) -> Optional[str]:
     """Retrieves a secret value by key, via probe-chain discovery.
 
-    Reads are pinned to the ACTIVE store from resolve_secrets_store(). When
-    the key is absent there but PRESENT in another live store, the vaults
-    have diverged -- the answer is not a silent None (which reads exactly
-    like "never ingested") but whatever NOUGEN_VAULT_DIVERGENCE dictates:
-
-        warn  (default) -> log the divergence loudly, return None
-        error           -> raise VaultDivergenceError
-        adopt           -> return the value, READ-ONLY: nothing is ever
-                           written to any store by adoption
-
-    With NOUGEN_VAULT_PROBE=0 discovery is off and this reads exactly one
-    deterministic location (the hermetic-test mode).
+    Checks environment variables first (Rule 0.0: env -> config -> runtime probe),
+    then queries the active secrets vault, alias fallbacks, and live candidate stores.
     """
+    env_val = os.getenv(key) or os.getenv(f"NOUGEN_{key}")
+    if env_val:
+        return env_val.strip()
+
     if not _probe_enabled():
         return _read_secret_row(DB_PATH, key)
 
@@ -735,23 +738,48 @@ def get_secret(key: str) -> Optional[str]:
             return found
         logger.warning(msg)
     # Check canonical fallback aliases for common typo/drift pairs (Defect O11)
-    # Allows callers to use either the canonical name or the legacy typo name interchangeably.
     canonical_aliases = {
-        "ARLAI_API_KEY": ["ARLIAI_API_KEY"],
-        "ARLIAI_API_KEY": ["ARLAI_API_KEY"],
+        "ARLAI_API_KEY": ["ARLIAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
+        "ARLIAI_API_KEY": ["ARLAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
         "OLLAMA_MRSB_OLLAMA_KEY": ["OLLAMA_MRSB_OLLAMAA_KEY"],
         "OLLAMA_MRSB_OLLAMAA_KEY": ["OLLAMA_MRSB_OLLAMA_KEY"],
-        "OPENROUTER_API_KEY": ["OPENROUTER_OPENROUTER_OPENROUTER_API_KEY"],
+        "OPENROUTER_API_KEY": [
+            "OPENROUTER_KEY_WHOENTERTAINS_GMAIL_COM",
+            "OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM",
+            "OPENROUTER_KEY_AIWITHDAV3_GMAIL_COM",
+            "OPENROUTER_KEY_NOUGENAI_GMAIL_COM",
+            "OPENROUTER_WHOENTERTAINS",
+            "OPENROUTER_DAVEMERALUS",
+            "OPENROUTER_NOUGENAI",
+            "OPENROUTER_OPENROUTER_OPENROUTER_API_KEY",
+            "OPENROUTER_KEY_UNASSIGNED",
+            "OpenRouter_key_unlabeled",
+            "WhoE_openr_2",
+            "WhoE_openr_3",
+            "WhoE_openr_4"
+        ],
         "OPENROUTER_OPENROUTER_OPENROUTER_API_KEY": ["OPENROUTER_API_KEY"],
         "OPENROUTER_KEY_EATSRUGER_GMAIL_COM": ["OPENROUTER_KEY_EATSUGER_GMAIL_COM"],
         "OPENROUTER_KEY_EATSUGER_GMAIL_COM": ["OPENROUTER_KEY_EATSRUGER_GMAIL_COM"],
         "OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM": ["OPENROUTER_DAVEMERALUS"],
         "OPENROUTER_DAVEMERALUS": ["OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM"],
+        "GEMINI_API_KEY": ["GOOGLE_API_KEY", "GEMINI_API_KEY_FALLBACK", "GEMINI_API_KEY_FALLBACK_2"],
+        "GOOGLE_API_KEY": ["GEMINI_API_KEY", "GEMINI_API_KEY_FALLBACK"],
+        "HUGGINGFACE_API_KEY": ["HUGGINGFACE_API_TOKEN", "HF_SPACE_API_KEY", "HUGGINGFACE_KEY_WHOENTERTAINS_GMAIL_COM", "Agy_HF_Api"],
+        "HUGGINGFACE_API_TOKEN": ["HUGGINGFACE_API_KEY", "HF_SPACE_API_KEY", "HUGGINGFACE_KEY_WHOENTERTAINS_GMAIL_COM"],
     }
     for alias in canonical_aliases.get(key, []):
         alias_val = _read_secret_row(resolution["active"], alias)
         if alias_val is not None:
             return alias_val
+
+    # If still not found and looking for generic prefix, probe matching active keys
+    if key == "OPENROUTER_API_KEY":
+        for k in list_providers():
+            if k.startswith("OPENROUTER_KEY_") or k.startswith("WhoE_openr_") or k.startswith("OPENROUTER_"):
+                val = _read_secret_row(resolution["active"], k)
+                if val:
+                    return val
 
     return None
 
