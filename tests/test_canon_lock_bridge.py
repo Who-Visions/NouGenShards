@@ -56,6 +56,24 @@ def test_load_locks_matches_prefixes_only(grid):
     assert "Tovan is a lighthouse engineer, not a smuggler." in gm["clauses"]
 
 
+def test_load_locks_matches_tag_and_honours_digest_exclusion(tmp_path, monkeypatch):
+    conn = sqlite3.connect(tmp_path / "nougen_shards_4.db")
+    conn.execute("CREATE TABLE shards (id INTEGER PRIMARY KEY, title TEXT, content TEXT, tags TEXT)")
+    conn.executemany("INSERT INTO shards (id, title, content, tags) VALUES (?,?,?,?)", [
+        (201, "VeilVerse special title", "Clause A", '["canon-lock"]'),
+        (202, "VeilVerse digest title", "Clause B", '["canon-lock", "canon-digest"]'),
+        (203, "Untagged non-lock title", "Clause C", '["other-tag"]')
+    ])
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("NOUGEN_CANON_LOCK_DIR", str(tmp_path))
+    bridge._CACHE.clear()
+    locks = {lk["shard"]: lk for lk in bridge.load_locks(force=True)}
+    assert "201@db4" in locks
+    assert "202@db4" not in locks  # excluded by canon-digest tag
+    assert "203@db4" not in locks
+
+
 def test_contradicting_a_gm_lock_is_a_fact_conflict(grid):
     out = _press("Tovan was born in 2150.")
     assert out["verdict"] == "FACT_CONFLICT"
