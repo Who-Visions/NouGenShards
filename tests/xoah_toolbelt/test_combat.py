@@ -204,3 +204,55 @@ def test_a_firearm_fight_is_still_one_language():
         roots.update(b.roots)
         assert len(b.roots) >= 2
     assert "gun_kata" in roots and len(roots) >= 4   # not a gun-only sequence
+
+
+# --- NouGenFight app requirements (leg 030205Z) -----------------------------------
+def test_canon_snapshot_is_carried_into_the_export():
+    s = Situation(level=2, canon_snapshot="locks@030006Z")
+    doc = json.loads(XoahCombatEngine.to_json(XoahCombatEngine(4).fight(s, 8), s, 4))
+    assert doc["canon_snapshot"] == "locks@030006Z" and doc["engine"].startswith("nougenfight")
+
+
+def test_conflict_report_names_what_was_refused_and_why():
+    eng = XoahCombatEngine(3)
+    eng.fight(Situation(level=2, weapon=Weapon.KAGE_TANAK, range=Range.MID), beats=8)
+    rep = eng.report()
+    assert rep and all({"beat", "action", "refused"} <= set(r) for r in rep)
+    # Vol 1 must show the Veil lockout as a refusal, not silently omit it
+    assert any("Veil mechanics locked out" in r["refused"] or "needs level 9" in r["refused"]
+               for r in rep)
+
+
+def test_clean_generation_reports_no_conflict_for_a_legal_action():
+    eng = XoahCombatEngine(3)
+    eng.fight(Situation(level=9, weapon=Weapon.KAGE_TANAK, range=Range.MID), beats=8)
+    assert not any(r["action"] == "nonlocal line" for r in eng.report())
+
+
+def test_provenance_export_never_invents_lineage():
+    eng = XoahCombatEngine(6)
+    beats = eng.fight(Situation(level=2, range=Range.MID), beats=8)
+    g = eng.provenance(beats)
+    # the stock catalogue ships no lineage: every action must land in unsourced
+    assert g["edges"] == [] and g["unsourced"] and g["roots_used"]
+
+
+def test_provenance_export_carries_supplied_lineage():
+    taught = tuple(
+        c.Action(a.name, a.beat, a.roots, a.ranges, a.mechanics, a.min_level,
+                 a.arrests_by_contact, a.ends_exposed, a.weapon_in_frame, a.downward,
+                 a.to_range, a.needs_weapon, a.veil,
+                 {"teacher": "blackglass-instructor-01", "curriculum": "bg-core"}, a.safety)
+        for a in CATALOGUE)
+    eng = XoahCombatEngine(6, catalogue=taught)
+    g = eng.provenance(eng.fight(Situation(level=2, range=Range.MID), beats=8))
+    assert g["unsourced"] == [] and g["edges"]
+    assert {e["relation"] for e in g["edges"]} == {"teacher", "curriculum"}
+
+
+def test_fatigue_rises_and_shifts_the_pull_toward_economy():
+    fresh = c.situation_weights(Situation(fatigue=0.0, range=Range.CLOSE))
+    spent = c.situation_weights(Situation(fatigue=0.9, range=Range.CLOSE))
+    assert spent[Root.GOJU_RYU] > fresh[Root.GOJU_RYU] and spent[Root.WUSHU] < fresh[Root.WUSHU]
+    beats = XoahCombatEngine(2).fight(Situation(level=2, range=Range.MID), beats=16)
+    assert len(beats) == 16  # fatigue accumulates without breaking the loop

@@ -136,7 +136,9 @@ class Situation:
     intent: Intent = Intent.ESCAPE
     range: Range = Range.MID
     injury: float = 0.0                  # 0 fresh .. 1 barely standing
+    fatigue: float = 0.0                 # 0 fresh .. 1 spent; rises with every beat
     fear: float = 0.2                    # emotional state; under fear she gets MORE precise
+    canon_snapshot: str = "unversioned"  # the canon revision this fight was generated against
     env: Environment = field(default_factory=Environment)
     opponent: Opponent = field(default_factory=Opponent)
 
@@ -148,7 +150,13 @@ class Situation:
 # --------------------------------------------------------------------------- actions
 @dataclass(frozen=True)
 class Action:
-    """A Xoah-native action. ``roots`` are weights, NOT a style label."""
+    """A Xoah-native action. ``roots`` are weights, NOT a style label.
+
+    ``lineage`` is an open map the Blackglass lane fills (teacher, curriculum,
+    lesson, rival, cohort, orthodox form, Xoah mutation, MPF/Syndicate
+    mutation, future callback). The engine never invents lineage; it only
+    carries and exports whatever canon supplies.
+    """
     name: str
     beat: Beat
     roots: Mapping[Root, float]
@@ -162,6 +170,7 @@ class Action:
     to_range: Optional[Range] = None     # range transition this action causes
     needs_weapon: Tuple[Weapon, ...] = ()  # empty = any
     veil: bool = False                   # uses Veil mechanics (augments, never replaces)
+    lineage: Mapping[str, str] = field(default_factory=dict)  # teacher/curriculum/rival/... supplied by the Blackglass lane
     safety: str = "standard"             # stunt metadata: standard | fall | blade-contact | wire | ground
 
     def trace(self) -> List[str]:
@@ -338,6 +347,10 @@ def situation_weights(s: Situation) -> Dict[Root, float]:
         w[Root.GUN_KATA] += 0.2       # multi-opponent spatial awareness
     if s.intent in (Intent.ESCAPE, Intent.REACH_OBJECTIVE, Intent.STALL):
         w[Root.NINJUTSU] += 0.3
+    if s.fatigue > 0.5:
+        w[Root.GOJU_RYU] += 0.2       # economy and rooted power when she is spent
+        w[Root.WUSHU] -= 0.15         # rotation is the first thing fatigue takes
+        w[Root.BJJ] += 0.1
     if s.fear > 0.6:
         w[Root.KENJUTSU] += 0.2       # under fear she becomes more precise, not louder
     w[Root.TIRE_MACHET] += 0.15       # culturally sovereign: always present
@@ -394,10 +407,23 @@ class XoahCombatEngine:
         self.seed = seed
         self.catalogue = tuple(catalogue)
         self.memory = memory
+        self.conflicts: List[Dict[str, str]] = []   # every refusal, with its reason
+
+    def report(self) -> List[Dict[str, str]]:
+        """Canon conflicts encountered while generating: what was refused and
+        why. A fight that generated cleanly returns []."""
+        return list(self.conflicts)
 
     def _pick(self, rng: random.Random, beat: Beat, s: Situation, recent: List[str]) -> Action:
         sw = situation_weights(s)
-        pool = [a for a in self.catalogue if a.beat == beat and allowed(a, s)[0]]
+        pool = []
+        for a in (x for x in self.catalogue if x.beat == beat):
+            ok, why = allowed(a, s)
+            if ok:
+                pool.append(a)
+            elif why:
+                self.conflicts.append({"beat": beat.value, "action": a.name, "refused": why,
+                                       "range": s.range.value, "level": str(s.level)})
         if not pool:
             reasons = [allowed(a, s)[1] for a in self.catalogue if a.beat == beat]
             raise CanonViolation(f"no legal {beat.value} action: " + "; ".join(reasons))
@@ -406,6 +432,7 @@ class XoahCombatEngine:
 
     def fight(self, s: Situation, beats: int = 8) -> List[BeatOut]:
         rng = random.Random(self.seed)
+        self.conflicts = []
         out: List[BeatOut] = []
         recent: List[str] = []
         state = s
@@ -428,7 +455,8 @@ class XoahCombatEngine:
                 a.veil))
             recent = (recent + [a.name])[-self.memory:]
             injury = min(1.0, state.injury + (0.1 if beat == Beat.COLLISION and a.ends_exposed else 0.0))
-            state = Situation(state.level, state.weapon, state.intent, after, injury, state.fear,
+            state = Situation(state.level, state.weapon, state.intent, after, injury,
+                              min(1.0, state.fatigue + 0.04), state.fear, state.canon_snapshot,
                               state.env, state.opponent)
             i += 1
             pos += 1
@@ -445,7 +473,8 @@ class XoahCombatEngine:
                     g.veil))
                 recent = (recent + [g.name])[-self.memory:]
                 state = Situation(state.level, state.weapon, state.intent, gafter, state.injury,
-                                  state.fear, state.env, state.opponent)
+                                  min(1.0, state.fatigue + 0.04), state.fear, state.canon_snapshot,
+                                  state.env, state.opponent)
                 i += 1
                 pos += 1  # skip REDIRECT; the sweep already redirected
         return out
@@ -453,8 +482,8 @@ class XoahCombatEngine:
     # ------------------------------------------------------------------ output
     @staticmethod
     def to_json(beats: Sequence[BeatOut], s: Situation, seed: int) -> str:
-        doc = {"engine": "xoah-combat-0.1", "seed": seed, "situation": asdict(s),
-               "beats": [asdict(b) for b in beats]}
+        doc = {"engine": "nougenfight-0.1", "seed": seed, "canon_snapshot": s.canon_snapshot,
+               "situation": asdict(s), "beats": [asdict(b) for b in beats]}
         return json.dumps(doc, indent=1, default=str, sort_keys=True)
 
     @staticmethod
@@ -467,6 +496,25 @@ class XoahCombatEngine:
             lines.append(f"   {b.mechanics}")
             lines.append(f"   camera: {b.camera}")
         return "\n".join(lines)
+
+    def provenance(self, beats: Sequence[BeatOut]) -> Dict[str, object]:
+        """Trace every generated behaviour back through the lineage canon
+        supplies. Nodes carry only what the Blackglass lane authored; a beat
+        whose action has no lineage is listed under ``unsourced`` rather than
+        given an invented teacher."""
+        by_name = {a.name: a for a in self.catalogue}
+        edges, unsourced = [], []
+        for b in beats:
+            a = by_name.get(b.action)
+            lin = dict(a.lineage) if a and a.lineage else {}
+            if not lin:
+                unsourced.append(b.action)
+                continue
+            for relation, target in sorted(lin.items()):
+                edges.append({"beat": b.beat, "action": b.action, "relation": relation,
+                              "target": target, "roots": b.roots})
+        return {"edges": edges, "unsourced": sorted(set(unsourced)),
+                "roots_used": sorted({r for b in beats for r in b.roots})}
 
     @staticmethod
     def fingerprint(beats: Sequence[BeatOut]) -> str:
