@@ -15,6 +15,7 @@ Key Invariants:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import re
@@ -180,6 +181,77 @@ def infer_epistemic_class(title: str, tags: Sequence[str]) -> str:
     return EpistemicClass.MODEL_INFERENCE
 
 
+def _scan_single_vault_db(
+    i: int,
+    db_path: Path,
+    match_query: str,
+    where_sql: str,
+    query_params: list[str],
+    has_temporal: bool,
+    max_top_k: int,
+) -> tuple[int, bool, int, list[tuple], Optional[str]]:
+    """Scan a single SQLite shard database concurrently.
+
+    Returns:
+        (db_index, success, candidate_count, rows, error_message)
+    """
+    if not db_path.exists():
+        return (i, False, 0, [], "expected database missing")
+    try:
+        db_uri = f"file:{quote(str(db_path))}?mode=ro"
+        with closing(sqlite3.connect(db_uri, uri=True, timeout=2.0)) as conn:
+            cur = conn.cursor()
+            if not match_query:
+                return (i, True, 0, [], None)
+
+            # Fast count path: if no temporal range is specified, count directly from shards_fts (100x+ faster)
+            if not has_temporal:
+                cur.execute("SELECT count(*) FROM shards_fts WHERE shards_fts MATCH ?", [match_query])
+                cand_count = int(cur.fetchone()[0])
+                cur.execute(
+                    "SELECT rowid, bm25(shards_fts) AS rank "
+                    "FROM shards_fts WHERE shards_fts MATCH ? "
+                    "ORDER BY rank ASC, rowid ASC LIMIT ?",
+                    [match_query, max_top_k],
+                )
+                top_f = cur.fetchall()
+                if top_f:
+                    ids = [r[0] for r in top_f]
+                    placeholders = ",".join("?" * len(ids))
+                    cur.execute(
+                        f"SELECT id, title, content, tags, timestamp FROM shards WHERE id IN ({placeholders})",
+                        ids,
+                    )
+                    shards_map = {r[0]: r for r in cur.fetchall()}
+                    rows = []
+                    for rowid, rank in top_f:
+                        if rowid in shards_map:
+                            s_id, title, content, tags_json, created_at = shards_map[rowid]
+                            rows.append((s_id, title, content, tags_json, created_at, rank))
+                else:
+                    rows = []
+            else:
+                cur.execute(
+                    "SELECT COUNT(DISTINCT s.id) "
+                    "FROM shards s JOIN shards_fts f ON s.id = f.rowid "
+                    f"WHERE {where_sql}",
+                    query_params,
+                )
+                cand_count = int(cur.fetchone()[0])
+                cur.execute(
+                    "SELECT s.id, s.title, s.content, s.tags, s.timestamp, "
+                    "bm25(shards_fts) AS rank "
+                    "FROM shards s JOIN shards_fts f ON s.id = f.rowid "
+                    f"WHERE {where_sql} "
+                    "ORDER BY rank ASC, s.id ASC LIMIT ?",
+                    [*query_params, max_top_k],
+                )
+                rows = cur.fetchall()
+            return (i, True, cand_count, rows, None)
+    except Exception as e:
+        return (i, False, 0, [], f"{type(e).__name__}: {e}")
+
+
 def gather_griot_archive(
     query: str,
     now: Optional[datetime] = None,
@@ -244,62 +316,59 @@ def gather_griot_archive(
         query_params.extend((intent.temporal.start_utc, intent.temporal.end_utc))
     where_sql = " AND ".join(where_clauses)
 
-    for i in expected_dbs:
-        db_path = v_dir / f"nougen_shards_{i}.db"
-        if not db_path.exists():
-            failures_list.append(f"vault_db_{i}: expected database missing")
+    has_temporal = bool(intent.temporal.period != "ALL_TIME" and intent.temporal.start_utc and intent.temporal.end_utc)
+
+    with ThreadPoolExecutor(max_workers=len(expected_dbs)) as pool:
+        futures = [
+            pool.submit(
+                _scan_single_vault_db,
+                i,
+                v_dir / f"nougen_shards_{i}.db",
+                match_query,
+                where_sql,
+                query_params,
+                has_temporal,
+                max_top_k,
+            )
+            for i in expected_dbs
+        ]
+        db_results = [f.result() for f in futures]
+    db_results.sort(key=lambda r: r[0])
+
+    for i, success, cand_count, rows, err_msg in db_results:
+        if not success:
+            failures_list.append(f"vault_db_{i}: {err_msg}")
             continue
-        try:
-            db_uri = f"file:{quote(str(db_path))}?mode=ro"
-            with closing(sqlite3.connect(db_uri, uri=True, timeout=2.0)) as conn:
-                cur = conn.cursor()
-                if match_query:
-                    cur.execute(
-                        "SELECT COUNT(DISTINCT s.id) "
-                        "FROM shards s JOIN shards_fts f ON s.id = f.rowid "
-                        f"WHERE {where_sql}",
-                        query_params,
-                    )
-                    candidate_total += int(cur.fetchone()[0])
-                    cur.execute(
-                        "SELECT s.id, s.title, s.content, s.tags, s.timestamp, "
-                        "bm25(shards_fts) AS rank "
-                        "FROM shards s JOIN shards_fts f ON s.id = f.rowid "
-                        f"WHERE {where_sql} "
-                        "ORDER BY rank ASC, s.id ASC LIMIT ?",
-                        [*query_params, max_top_k],
-                    )
-                    rows = cur.fetchall()
-                    lane = f"db{i}_fts_bm25"
-                    ranked_lanes[lane] = []
-                    for shard_id, title, content, tags_json, created_at, rank in rows:
-                        try:
-                            tags = json.loads(tags_json) if tags_json else []
-                        except (TypeError, json.JSONDecodeError):
-                            tags = []
-                        compound_id = f"{shard_id}@db{i}"
-                        candidate_records.append(GriotArtifact(
-                            compound_id=compound_id,
-                            title=title or "",
-                            content=content or "",
-                            epistemic_class=infer_epistemic_class(title or "", tags),
-                            score=-float(rank),
-                            created_at_utc=str(created_at or ""),
-                            content_sha256=hashlib.sha256((content or "").encode("utf-8")).hexdigest(),
-                            tags=tuple(str(tag) for tag in tags),
-                        ))
-                        ranked_lanes[lane].append(ArtifactCandidate(
-                            candidate_id=compound_id,
-                            title=title or "",
-                            lane=lane,
-                            raw_score=-float(rank),
-                            snippet=(content or "")[:150],
-                            provenance_source=f"local_db_{i}",
-                            db_index=i,
-                        ))
-                scanned_dbs.append(i)
-        except Exception as e:
-            failures_list.append(f"vault_db_{i}: {type(e).__name__}: {e}")
+        scanned_dbs.append(i)
+        if match_query:
+            candidate_total += cand_count
+            lane = f"db{i}_fts_bm25"
+            ranked_lanes[lane] = []
+            for shard_id, title, content, tags_json, created_at, rank in rows:
+                try:
+                    tags = json.loads(tags_json) if tags_json else []
+                except (TypeError, json.JSONDecodeError):
+                    tags = []
+                compound_id = f"{shard_id}@db{i}"
+                candidate_records.append(GriotArtifact(
+                    compound_id=compound_id,
+                    title=title or "",
+                    content=content or "",
+                    epistemic_class=infer_epistemic_class(title or "", tags),
+                    score=-float(rank),
+                    created_at_utc=str(created_at or ""),
+                    content_sha256=hashlib.sha256((content or "").encode("utf-8")).hexdigest(),
+                    tags=tuple(str(tag) for tag in tags),
+                ))
+                ranked_lanes[lane].append(ArtifactCandidate(
+                    candidate_id=compound_id,
+                    title=title or "",
+                    lane=lane,
+                    raw_score=-float(rank),
+                    snippet=(content or "")[:150],
+                    provenance_source=f"local_db_{i}",
+                    db_index=i,
+                ))
 
     # Deduplicate candidates by content/compound ID
     unique_artifacts: dict[str, GriotArtifact] = {}
