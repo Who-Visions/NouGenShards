@@ -37,3 +37,11 @@ def test_a_three_arg_pack_receives_node_helpers():
     report = load_node_plugins("A", "M", eps=[_EP("canon", register)], ctx={"offloaded": "deco"})
     assert got == {"offloaded": "deco"}
     assert report == [{"plugin": "canon", "status": "loaded"}]
+
+
+def test_a_duplicated_entry_point_registers_once():
+    calls = []
+    ep = _EP("canon", lambda a, m: calls.append(1))
+    report = load_node_plugins("A", "M", eps=[ep, _EP("canon", ep._fn)])
+    assert calls == [1]
+    assert report == [{"plugin": "canon", "status": "loaded"}]

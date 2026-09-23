@@ -35,7 +35,14 @@ def load_node_plugins(app: Any, mcp: Any, eps: Optional[Iterable[Any]] = None,
     (``loaded`` or ``failed: <error>``)."""
     found = list(eps) if eps is not None else list(entry_points(group=GROUP))
     report = []
+    seen = set()
     for ep in found:
+        # An editable install can list the same entry point twice (blade,
+        # 2026-09-23); registering it twice would double every route and tool.
+        key = (ep.name, getattr(ep, "value", None))
+        if key in seen:
+            continue
+        seen.add(key)
         try:
             register = ep.load()
             if _wants_ctx(register):
