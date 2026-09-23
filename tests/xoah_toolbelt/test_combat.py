@@ -5,7 +5,7 @@ import pytest
 
 from nougen_shards.xoah_toolbelt import combat as c
 from nougen_shards.xoah_toolbelt.combat import (CATALOGUE, Beat, CanonViolation, Environment,
-                                                 Intent, Range, Root, Situation, Weapon,
+                                                 Intent, Opponent, Range, Root, Situation, Weapon,
                                                  XoahCombatEngine, allowed)
 
 VOL1 = Situation(level=2, weapon=Weapon.KAGE_TANAK, intent=Intent.ESCAPE, range=Range.MID,
@@ -164,3 +164,43 @@ def test_json_and_screenplay_outputs():
 def test_invalid_level_rejected():
     with pytest.raises(ValueError):
         Situation(level=10)
+
+
+# --- eighth system: Gun Kata (lock 030006Z) ---------------------------------------
+def test_gun_kata_is_a_weighted_layer_not_a_gun_mode():
+    # every firearm action still traces to multiple roots; none is pure gun_kata
+    guns = [a for a in CATALOGUE if Root.GUN_KATA in a.roots]
+    assert guns
+    for a in guns:
+        assert len(a.trace()) >= 2, a.name
+        assert a.roots[Root.GUN_KATA] < 1.0
+
+
+def test_firearm_state_pulls_toward_gun_kata_without_silencing_the_others():
+    blade = c.situation_weights(Situation(weapon=Weapon.KAGE_TANAK, range=Range.CLOSE))
+    gun = c.situation_weights(Situation(weapon=Weapon.FIREARM, range=Range.CLOSE))
+    assert gun[Root.GUN_KATA] > blade[Root.GUN_KATA]
+    assert gun[Root.TIRE_MACHET] > 0.2 and gun[Root.GOJU_RYU] > 0.2  # still one nervous system
+
+
+def test_multiple_opponents_raise_gun_kata_spatial_pull():
+    one = c.situation_weights(Situation(range=Range.CHAOS, opponent=Opponent(count=1)))
+    many = c.situation_weights(Situation(range=Range.CHAOS, opponent=Opponent(count=4)))
+    assert many[Root.GUN_KATA] > one[Root.GUN_KATA]
+
+
+def test_firearm_actions_require_the_firearm_and_keep_it_in_frame():
+    shot = next(a for a in CATALOGUE if a.name == "angle-controlled shot")
+    assert not allowed(shot, Situation(weapon=Weapon.KAGE_TANAK, range=Range.MID))[0]
+    assert allowed(shot, Situation(weapon=Weapon.FIREARM, range=Range.MID))[0]
+    assert shot.weapon_in_frame and shot.safety == "blank-fire"
+
+
+def test_a_firearm_fight_is_still_one_language():
+    s = Situation(level=2, weapon=Weapon.FIREARM, range=Range.CLOSE,
+                  opponent=Opponent(count=3), env=Environment(terrain="market", crowd_density=0.8))
+    roots = set()
+    for b in XoahCombatEngine(11).fight(s, beats=16):
+        roots.update(b.roots)
+        assert len(b.roots) >= 2
+    assert "gun_kata" in roots and len(roots) >= 4   # not a gun-only sequence

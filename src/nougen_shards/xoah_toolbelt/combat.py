@@ -1,10 +1,11 @@
 """Xoah deterministic combat-choreography engine (owner leg 20260923T025341Z).
 
-Turns the locked seven-system combat core into scene-aware fight beats.
+Turns the locked eight-system combat core into scene-aware fight beats.
 
-Design law, from the canon locks (five-system 024859Z, seven-system 025115Z):
+Design law, from the canon locks (five-system 024859Z, seven-system 025115Z,
+eight-system 030006Z):
   * ONE combat identity. There is no style selection. Every action carries a
-    ROOT-WEIGHT VECTOR over the seven systems; the situation shifts the
+    ROOT-WEIGHT VECTOR over the eight systems; the situation shifts the
     weights; the chosen action is Xoah-native and traces to several roots at
     once. A beat that could be labelled "the karate move" is a bug.
   * The movement FINGERPRINT (remix v0.1) is enforced as guardrails that
@@ -15,6 +16,11 @@ Design law, from the canon locks (five-system 024859Z, seven-system 025115Z):
     locked level; Vol 1 (Level 1-3) can never emit it.
   * BJJ is survival geometry on clinch/ground collapse, biased to escape,
     reversal and weapon recovery -- never sport grappling.
+  * Gun Kata is a weighted layer in the same nervous system, never a "gun
+    mode": predictive spatial geometry, angle control, close-range firearm
+    retention, and seamless firearm/empty-hand/blade transitions. Fictional
+    cinematic grammar transformed into VeilVerse-native choreography via a
+    Blackglass lineage; it is not framed as a validated real-world doctrine.
 
 Deterministic: same seed + same situation = byte-identical fight. No lore
 beyond the locked system names lives here; scene text is the caller's.
@@ -38,6 +44,7 @@ class Root(str, Enum):
     WUSHU = "wushu"                  # rotational flow, extended silhouette
     NINJUTSU = "ninjutsu"            # evasion, misdirection, terrain exploitation
     BJJ = "bjj"                      # survival geometry when the fight collapses
+    GUN_KATA = "gun_kata"            # close-range firearm geometry, Blackglass lineage
 
 
 class Range(str, Enum):
@@ -56,6 +63,7 @@ class Weapon(str, Enum):
     STAFF = "staff"
     EMPTY_HAND = "empty_hand"
     IMPROVISED = "improvised"
+    FIREARM = "firearm"
 
 
 class Intent(str, Enum):
@@ -88,10 +96,10 @@ SENTENCE: Tuple[Beat, ...] = (Beat.READ, Beat.BAIT, Beat.ANGLE, Beat.STRIKE, Bea
 RANGE_MAP: Dict[Range, Tuple[Root, ...]] = {
     Range.LONG: (Root.WUSHU, Root.KARATE, Root.KENJUTSU),
     Range.MID: (Root.KENJUTSU, Root.TIRE_MACHET, Root.KARATE),
-    Range.CLOSE: (Root.GOJU_RYU, Root.TIRE_MACHET, Root.NINJUTSU),
-    Range.CLINCH: (Root.GOJU_RYU, Root.BJJ, Root.NINJUTSU),
+    Range.CLOSE: (Root.GOJU_RYU, Root.TIRE_MACHET, Root.NINJUTSU, Root.GUN_KATA),
+    Range.CLINCH: (Root.GOJU_RYU, Root.BJJ, Root.NINJUTSU, Root.GUN_KATA),
     Range.GROUND: (Root.BJJ,),
-    Range.CHAOS: (Root.NINJUTSU, Root.TIRE_MACHET),
+    Range.CHAOS: (Root.NINJUTSU, Root.TIRE_MACHET, Root.GUN_KATA),
 }
 
 SHADOW_SLICE_MIN_LEVEL = 9   # locked 19536@db3 / 31167@db1: SDX and X2 only
@@ -170,6 +178,9 @@ CATALOGUE: Tuple[Action, ...] = (
     Action("room read", Beat.READ, _w(ninjutsu=.5, tire_machet=.3, kenjutsu=.2), tuple(Range),
            "eyes to exits and leverage before the opponent; range and terrain assessed",
            ends_exposed=False),
+    Action("angle read", Beat.READ, _w(gun_kata=.4, ninjutsu=.4, kenjutsu=.2), tuple(Range),
+           "predictive spatial read: where every opponent's line of fire and line of attack will be next beat",
+           ends_exposed=False),
     Action("causal-line read", Beat.READ, _w(ninjutsu=.4, kenjutsu=.4, tire_machet=.2), tuple(Range),
            "reads where the attack came from and where it will land as a line through the room",
            min_level=SHADOW_SLICE_MIN_LEVEL, ends_exposed=False, veil=True),
@@ -213,6 +224,12 @@ CATALOGUE: Tuple[Action, ...] = (
            "short elbow or hammer from a controlled position; keeps the weapon hand free"),
     Action("improvised strike", Beat.STRIKE, _w(tire_machet=.4, ninjutsu=.4, karate=.2), (Range.CHAOS,),
            "whatever the terrain hands her: rail, crate, dust thrown"),
+    Action("retention strike", Beat.STRIKE, _w(gun_kata=.4, goju_ryu=.3, tire_machet=.3), (Range.CLOSE, Range.CLINCH),
+           "close-range shot or muzzle strike with the weapon kept inside her own frame; the off hand controls the opponent's weapon",
+           needs_weapon=(Weapon.FIREARM,), safety="blank-fire"),
+    Action("angle-controlled shot", Beat.STRIKE, _w(gun_kata=.5, kenjutsu=.3, ninjutsu=.2), (Range.MID, Range.CHAOS),
+           "moves through the predicted angle so no opponent has a line on her while she has one on them; continuous motion",
+           needs_weapon=(Weapon.FIREARM,), safety="blank-fire"),
     Action("empty-hand line", Beat.STRIKE, _w(karate=.5, goju_ryu=.3, tire_machet=.2), (Range.MID,),
            "linear kick or straight to keep range when the blade is out of reach",
            needs_weapon=(Weapon.EMPTY_HAND, Weapon.IMPROVISED)),
@@ -238,6 +255,10 @@ CATALOGUE: Tuple[Action, ...] = (
            downward=True, to_range=Range.CLINCH, safety="fall"),
     Action("push-off", Beat.REDIRECT, _w(karate=.4, wushu=.3, goju_ryu=.3), (Range.CLOSE, Range.CLINCH),
            "the collision becomes the next entry's launch", to_range=Range.MID),
+    Action("weapon transition", Beat.REDIRECT, _w(gun_kata=.4, kenjutsu=.3, tire_machet=.3),
+           (Range.CLOSE, Range.CLINCH, Range.MID),
+           "seamless firearm-to-empty-hand-to-blade (or back) inside the same motion; nothing leaves the frame",
+           to_range=Range.CLOSE),
     Action("range reset", Beat.REDIRECT, _w(kenjutsu=.4, karate=.3, wushu=.3), (Range.LONG, Range.MID),
            "arrested momentum becomes distance; maai re-established", to_range=Range.MID),
     Action("stand to weapon", Beat.REDIRECT, _w(bjj=.5, ninjutsu=.3, tire_machet=.2), (Range.GROUND,),
@@ -308,9 +329,13 @@ def situation_weights(s: Situation) -> Dict[Root, float]:
     if s.weapon in (Weapon.KAGE_TANAK, Weapon.MACHETE):
         w[Root.KENJUTSU] += 0.3
         w[Root.TIRE_MACHET] += 0.3
+    if s.weapon == Weapon.FIREARM:
+        w[Root.GUN_KATA] += 0.4
+        w[Root.KENJUTSU] += 0.1       # blade geometry carries into the gun hand
     if s.opponent.count > 1:
         w[Root.NINJUTSU] += 0.2
         w[Root.WUSHU] += 0.1
+        w[Root.GUN_KATA] += 0.2       # multi-opponent spatial awareness
     if s.intent in (Intent.ESCAPE, Intent.REACH_OBJECTIVE, Intent.STALL):
         w[Root.NINJUTSU] += 0.3
     if s.fear > 0.6:
