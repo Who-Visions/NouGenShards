@@ -193,11 +193,15 @@ logs/
 *.orig
 *.rej
 
+# Generated KDP Print PDFs (Reproducible via build_kdp_art_interior.py)
+projects/learn-with-mrs-b/pilot/*.pdf
+*.pdf
+
+# Independent Projects (Separate repositories/workspaces)
+projects/
+
 # Local developer overrides and backups
 *.local.md
 *.bak*
 bin/ngs-node.sh.bak*
 ~/
-
-# Personal/product working data never belongs in the public tree.
-/projects/

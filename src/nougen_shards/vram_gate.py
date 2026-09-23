@@ -27,12 +27,12 @@ OLLAMA = "http://127.0.0.1:11434"
 # Disk size and vendor Q4_0 tables are both wrong for this — per-layer
 # embeddings are not compressed in Ollama's e-series builds.
 MEASURED_LOAD_GB = {
-    "gemma4:e2b": 7.51, "Yukiai:e2b": 7.51, "solai:e2b": 7.51,
-    "gemma4:e4b": 9.52, "Yukiai:e4b": 9.52, "solai:e4b": 9.52,
+    "gemma4:e2b": 7.51, "Yukiai:e2b": 7.51, "yukiai:e2b": 7.51, "solai:e2b": 7.51, "sol-ai:e2b": 7.51,
+    "gemma4:e4b": 9.52, "Yukiai:e4b": 9.52, "yukiai:e4b": 9.52, "solai:e4b": 9.52, "sol-ai:e4b": 9.52,
+    "mrs-b:latest": 4.20, "mrs-b": 4.20,
+    "dav1d:e2b": 2.50, "griot:e2b": 2.50, "rhea-noir:e4b": 4.20, "rhea-noir:e2b": 2.50,
+    "keadracode:latest": 7.51, "keadra:e4b": 9.52, "keadra:latest": 7.51,
     "qwen3-vl:4b": 3.53,
-    # MEASURED 2026-08-08 via /api/ps while pinned by IRIS: 1.66 GB, 100% on
-    # GPU. QAT q4_0 pages PLE tables on demand instead of loading them dense,
-    # so resident cost is far below the 4.3 GB disk size.
     "gemma4:e2b-qat": 1.66,
     "deepseek-ocr:3b": 6.9,
     "nomic-embed-text:latest": 0.4,

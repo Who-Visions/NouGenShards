@@ -18,6 +18,12 @@ import sys
 def _arm() -> None:
     if os.name != "nt" or os.environ.get("NOUGEN_ALLOW_CONSOLE") == "1":
         return
+    try:
+        import ctypes
+        if ctypes.windll.kernel32.GetConsoleWindow():
+            return  # a real console is attached; nothing to hide
+    except Exception:
+        return
     import subprocess
     if getattr(subprocess, "_nougen_windowless", False):
         return

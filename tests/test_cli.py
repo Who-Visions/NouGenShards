@@ -23,7 +23,7 @@ class TestCLI(unittest.TestCase):
         args = argparse.Namespace(json=False, defaults=True, no_onboarding=False)
         with patch('sys.stdout', new=io.StringIO()) as fake_out:
             cli.cmd_init(args)
-            self.assertIn("Initializing Valerion", fake_out.getvalue())
+            self.assertIn("Initializing NouGenMorph", fake_out.getvalue())
             self.assertIn("[IGNITION COMPLETE]", fake_out.getvalue())
             mock_init.assert_called_once()
 
