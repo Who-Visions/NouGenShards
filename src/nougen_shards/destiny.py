@@ -213,6 +213,49 @@ def create_destiny(title: str, goal: str, *, branch: Optional[str] = None,
     return _row_to_dict(row)
 
 
+def create_from_shard(shard_id: int, db_index: int, title: str, content: str,
+                      tags: Optional[List[str]] = None,
+                      sensitivity: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Create one dormant destiny per explicitly marked, public shard.
+
+    A captured fact is not automatically a goal. Explicit goal/intent/destiny
+    tags opt in; private bodies must never be copied into this plaintext store.
+    The write lock and source link make retries safe across concurrent callers.
+    """
+    tag_set = {str(tag).strip().lower() for tag in (tags or [])}
+    if not tag_set.intersection({"goal", "intent", "destiny"}):
+        return None
+    if sensitivity not in (None, "normal"):
+        return None
+    ref = f"{int(db_index)}:{int(shard_id)}"
+    goal = (content or "").strip()
+    name = (title or "").strip()
+    if len(name) < 3 or len(goal) < 3:
+        return None
+    now = _now()
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT destiny_id FROM destiny_links WHERE kind='shard' AND ref=? AND role='source'",
+            (ref,)).fetchone()
+        if existing:
+            row = conn.execute("SELECT * FROM destinies WHERE id=?", (existing[0],)).fetchone()
+            return _row_to_dict(row)
+        cur = conn.execute(
+            """INSERT INTO destinies (title, goal, status, branch, provenance, created_utc, updated_utc)
+               VALUES (?, ?, 'dormant', ?, ?, ?, ?)""",
+            (name, goal, default_branch(), json.dumps({"source": "shard", "ref": ref}), now, now))
+        did = int(cur.lastrowid)
+        conn.execute(
+            "INSERT INTO destiny_links (destiny_id, kind, ref, role, note, created_utc) VALUES (?, 'shard', ?, 'source', ?, ?)",
+            (did, ref, "auto-created from explicit goal/intent shard", now))
+        conn.execute(
+            "INSERT INTO destiny_events (destiny_id, from_status, to_status, actor, evidence, created_utc) VALUES (?, NULL, 'dormant', 'shard_capture', ?, ?)",
+            (did, f"source shard {ref}", now))
+        row = conn.execute("SELECT * FROM destinies WHERE id=?", (did,)).fetchone()
+    return _row_to_dict(row)
+
+
 def _transition(conn: sqlite3.Connection, destiny_id: int, to_status: str,
                 actor: Optional[str], evidence: Optional[str], now: str) -> Dict[str, Any]:
     row = conn.execute("SELECT id, status FROM destinies WHERE id=?", (destiny_id,)).fetchone()
