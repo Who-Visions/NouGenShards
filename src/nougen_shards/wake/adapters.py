@@ -363,11 +363,72 @@ class OllamaAdapter(ProviderAdapter):
         return {"runtime": self.name, "status": "success" if "error" not in res else "error", "response": res}
 
 
+class ChatGPTAdapter(ProviderAdapter):
+    """Adapter for the ChatGPT/OpenAI lane. Unlike the other adapters, this
+    one does NOT itself deliver -- it composes the pluggable transports in
+    chatgpt_transports.py, none of which is "custom MCP waking ChatGPT"
+    (that capability does not exist per the current watch; see
+    chatgpt_transports.MCP_NATIVE_WAKE_SUPPORTED, which stays False here).
+    ``inject()`` has no meaning for this adapter (no in-turn socket exists
+    for ChatGPT the way it does for Claude/Antigravity); it is implemented
+    to explicitly report unsupported rather than left abstract, since
+    ProviderAdapter requires a concrete implementation.
+    """
+
+    name = "chatgpt"
+
+    def inject(self, message: str, domain: str = "default") -> Dict[str, Any]:
+        return {"delivered": False, "status": "unsupported",
+                "detail": "ChatGPTAdapter has no in-turn injection socket; use wake() instead"}
+
+    def detect(self) -> bool:
+        from .chatgpt_transports import TRANSPORTS
+        return any(t.capabilities().get("configured") for name, t in TRANSPORTS.items()
+                  if name != "future_mcp_native")
+
+    def capabilities(self) -> Dict[str, Any]:
+        from .chatgpt_transports import MCP_NATIVE_WAKE_SUPPORTED
+        return {
+            "can_inject_active": False,
+            "can_wake_idle": self.detect(),
+            "can_resume_session": False,
+            "transport": "pluggable_doorbell_slack_github_workspace_agent",
+            "requires_user_presence": not self.detect(),
+            "auto_claim": False,
+            "mcp_native_wake_supported": MCP_NATIVE_WAKE_SUPPORTED,
+        }
+
+    def health(self) -> Dict[str, Any]:
+        from .chatgpt_transports import TRANSPORTS
+        transport_health = {name: t.health() for name, t in TRANSPORTS.items()}
+        any_configured = any(h.get("configured") for name, h in transport_health.items()
+                            if name != "future_mcp_native")
+        return {"detected": any_configured, "transports": transport_health,
+                "status": "healthy" if any_configured else "unconfigured"}
+
+    def wake(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        from .chatgpt_transports import notify_any_configured, wake_envelope_from_relay_id
+        relay_id = event.get("leg_id") or event.get("id")
+        if not relay_id:
+            return {"runtime": self.name, "woken": False, "status": "error",
+                    "error": "no relay_id/leg_id on event; ChatGPTAdapter never carries a payload, only a relay id"}
+        envelope = wake_envelope_from_relay_id(relay_id, priority=event.get("priority", "normal"))
+        result = notify_any_configured(envelope)
+        return {"runtime": self.name, "woken": result.delivered, "delivery": result.to_dict(),
+                "timestamp": time.time()}
+
+    def explain_unavailable(self) -> str:
+        return ("No ChatGPT wake transport is configured (Slack webhook, GitHub repo/token, "
+                "or Workspace Agent API key/agent id). Custom MCP itself cannot autonomously "
+                "wake ChatGPT per the current OpenAI capability watch.")
+
+
 ADAPTERS: Dict[str, ProviderAdapter] = {
     "claude": ClaudeAdapter(),
     "antigravity": AntigravityAdapter(),
     "codex": CodexAdapter(),
     "ollama": OllamaAdapter(),
+    "chatgpt": ChatGPTAdapter(),
 }
 
 
