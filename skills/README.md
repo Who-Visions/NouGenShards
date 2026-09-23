@@ -47,6 +47,7 @@ one costs a moment's reading.
 
 ## Installed
 
+- **`nougen-loop/`** - run one deterministic finish-a-change loop (recall, test, secret scan, commit named paths, PR, shard, dream, evolve ledger, handoff). Dry run by default. Tool: `tools/nougen_loop.py`.
 - **`design/`** — author, audit and emit design systems as portable `DESIGN.md` packages.
   Includes a validator with quality gates and three reference brand packages. Start from
   `design/brands/_template/`, not from one of the branded packages.
