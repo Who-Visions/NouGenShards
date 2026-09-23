@@ -1995,6 +1995,35 @@ def get_parser():
     p_doctor = subparsers.add_parser("doctor", help="Check system health")
     p_doctor.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    p_wishlist = subparsers.add_parser(
+        "wishlist", help="Track the canonical 100-item resilience/context wishlist "
+                        "(leg 20260910T202128Z, rebroadcast 20260923T174020Z)")
+    p_wishlist_sub = p_wishlist.add_subparsers(dest="wishlist_command")
+
+    p_wl_list = p_wishlist_sub.add_parser("list", help="List items, optionally filtered")
+    p_wl_list.add_argument("--phase", type=int, choices=[1, 2, 3, 4], help="Filter to one execution phase")
+    p_wl_list.add_argument("--category", choices=list("ABCDEF"), help="Filter to one category letter")
+    p_wl_list.add_argument("--status", choices=["open", "in_progress", "landed", "verified"],
+                           help="Filter to one status")
+    p_wl_list.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_wl_show = p_wishlist_sub.add_parser("show", help="Show one item in full, with its tracking record")
+    p_wl_show.add_argument("item_id", type=int)
+    p_wl_show.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_wl_mark = p_wishlist_sub.add_parser(
+        "mark", help="Set an item's status. landed/verified REQUIRE --evidence "
+                    "(no completion stamp without live verification).")
+    p_wl_mark.add_argument("item_id", type=int)
+    p_wl_mark.add_argument("--status", required=True, choices=["open", "in_progress", "landed", "verified"])
+    p_wl_mark.add_argument("--evidence", action="append", default=[],
+                          help="A citation: shard id, leg id, PR#, or commit sha. Repeatable.")
+    p_wl_mark.add_argument("--owner", help="machine/agent claiming or completing this item")
+    p_wl_mark.add_argument("--note", default="", help="Free-text context")
+
+    p_wl_progress = p_wishlist_sub.add_parser("progress", help="Progress summary by phase and category")
+    p_wl_progress.add_argument("--json", action="store_true", help="Machine-readable output")
+
     p_dream = subparsers.add_parser("dream", help="Autonomous NouGenMorph Evolution (Dream State)")
     p_dream.add_argument("action", choices=["wake"])
     p_dream.add_argument("--json", action="store_true", help="Machine-readable output")
@@ -2685,6 +2714,107 @@ def keymaker_vault_report() -> list:
         f"    'nougen auth set-key <provider>', or point {keymaker.ENV_SECRETS_VAULT}",
         "    at an existing one.",
     ]
+
+
+def cmd_wishlist(args):
+    """Track the canonical 100-item resilience/context wishlist.
+
+    The wishlist text lives in wishlist.py, verbatim from the rebroadcast --
+    this command never edits it. What this command manages is the tracking
+    layer: which items are open/in_progress/landed/verified, by whom, with
+    what evidence. landed/verified are refused without at least one
+    citation, per the wishlist's own doctrine (item 86, item 40).
+    """
+    from . import wishlist as wl  # pylint: disable=import-outside-toplevel
+
+    sub = getattr(args, "wishlist_command", None)
+    if sub is None:
+        print("usage: nougen wishlist {list,show,mark,progress}")
+        return
+
+    state = wl.load_state()
+
+    if sub == "list":
+        rows = []
+        for item_id, item in sorted(wl.ITEMS.items()):
+            if args.phase and item.phase != args.phase:
+                continue
+            if args.category and item.category != args.category:
+                continue
+            rec = state.get(item_id)
+            if args.status and rec.status.value != args.status:
+                continue
+            rows.append({"id": item_id, "category": item.category, "phase": item.phase,
+                        "status": rec.status.value, "text": item.text,
+                        "owner": rec.owner, "evidence": rec.evidence})
+        if args.json:
+            print(json.dumps(rows, indent=2))
+        else:
+            for r in rows:
+                owner = f" [{r['owner']}]" if r["owner"] else ""
+                print(f"{r['id']:>3}. [{r['category']}/P{r['phase']}] ({r['status']}){owner} {r['text']}")
+            print(f"\n{len(rows)} item(s)")
+        return
+
+    if sub == "show":
+        if args.item_id not in wl.ITEMS:
+            print(f"no such item: {args.item_id}")
+            raise SystemExit(1)
+        item = wl.ITEMS[args.item_id]
+        rec = state.get(args.item_id)
+        doc = {"id": item.id, "category": item.category, "category_name": item.category_name,
+              "phase": item.phase, "text": item.text, **rec.to_dict()}
+        if args.json:
+            print(json.dumps(doc, indent=2))
+        else:
+            print(f"#{item.id} [{item.category} — {item.category_name}] phase {item.phase}")
+            print(f"  {item.text}")
+            print(f"  status: {rec.status.value}")
+            if rec.owner:
+                print(f"  owner: {rec.owner}")
+            if rec.evidence:
+                print(f"  evidence: {', '.join(rec.evidence)}")
+            if rec.note:
+                print(f"  note: {rec.note}")
+            if rec.updated_at:
+                print(f"  updated: {rec.updated_at}")
+        return
+
+    if sub == "mark":
+        if args.item_id not in wl.ITEMS:
+            print(f"no such item: {args.item_id}")
+            raise SystemExit(1)
+        try:
+            rec = state.mark(args.item_id, wl.ItemStatus(args.status), evidence=args.evidence,
+                            owner=args.owner, note=args.note)
+        except ValueError as exc:
+            print(f"refused: {exc}")
+            raise SystemExit(1) from exc
+        wl.save_state(state)
+        print(f"#{args.item_id} -> {rec.status.value}" + (f" [{rec.owner}]" if rec.owner else ""))
+        return
+
+    if sub == "progress":
+        by_phase = wl.progress_by_phase(state)
+        by_cat = wl.progress_by_category(state)
+        if args.json:
+            print(json.dumps({"by_phase": by_phase, "by_category": by_cat}, indent=2))
+            return
+        print("By phase (execution order: 1 -> 2 -> 3 -> 4):")
+        for phase in (1, 2, 3, 4):
+            p = by_phase[phase]
+            done = p["landed"] + p["verified"]
+            print(f"  Phase {phase}: {done}/{p['total']} landed/verified "
+                 f"({p['in_progress']} in progress, {p['open']} open)")
+        print("\nBy category:")
+        for letter, name in wl.CATEGORIES.items():
+            c = by_cat[letter]
+            done = c["landed"] + c["verified"]
+            print(f"  {letter} ({name}): {done}/{c['total']}")
+        return
+
+    print(f"unknown wishlist subcommand: {sub!r}")
+    raise SystemExit(1)
 
 
 def cmd_doctor(args):
@@ -3539,7 +3669,7 @@ def main():
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
-        "doctor": cmd_doctor, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
+        "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr,
         "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
