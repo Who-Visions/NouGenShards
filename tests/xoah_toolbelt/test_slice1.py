@@ -4,7 +4,8 @@ import pytest
 from nougen_shards.xoah_toolbelt import (PacketUnavailable, load_packet, packet_from_dict, power_ceiling,
                                          scene_pressure_test, scene_receipt, timeline_trace)
 
-P = lambda n: {"shard_id": n, "db": "db1", "node": "test", "phrase": f"fixture {n}"}
+def P(n):
+    return {"shard_id": n, "db": "db1", "node": "test", "phrase": f"fixture {n}"}
 PACKET = packet_from_dict({
     "revision": "fixture-r1",
     "records": [
