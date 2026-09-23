@@ -27,6 +27,10 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 STAGES = ["recall", "build", "harden", "commit", "pr", "shard", "dream", "evolve", "handoff"]
 WRITE_STAGES = {"commit", "pr", "shard", "dream", "handoff"}
 
