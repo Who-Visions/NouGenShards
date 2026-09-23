@@ -1238,3 +1238,64 @@ class NouGenMsgBus:
                 except Exception:
                     pass
         return count
+
+    @classmethod
+    def search_messages(cls, query: str, target: str = "all", limit: int = 20) -> List[Dict[str, Any]]:
+        """Search across active and archived inbox messages by keyword query."""
+        q = (query or "").strip().lower()
+        if not q:
+            return []
+
+        inbox_dirs = []
+        if target in ("antigravity", "all"):
+            inbox_dirs.extend([
+                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
+                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox")),
+                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox", "archive")),
+                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox", "archive")),
+            ])
+        if target in ("codex", "all"):
+            inbox_dirs.extend([
+                os.path.expanduser(os.path.join("~", ".codex", "inbox")),
+                os.path.expanduser(os.path.join("~", ".codex", "inbox", "archive")),
+            ])
+
+        all_files = []
+        for d in inbox_dirs:
+            if os.path.exists(d):
+                all_files.extend(glob.glob(os.path.join(d, "*.json")))
+
+        files = sorted(all_files, key=os.path.getmtime, reverse=True)
+        matches = []
+        seen = set()
+        for f in files:
+            if len(matches) >= limit:
+                break
+            try:
+                with open(f, "r", encoding="utf-8") as fp:
+                    data = json.load(fp)
+                    identity = data.get("message_id") or "|".join(
+                        str(data.get(k, "")) for k in ("source", "text", "content", "timestamp"))
+                    if identity in seen:
+                        continue
+
+                    content_str = (
+                        str(data.get("text", "")) + " " +
+                        str(data.get("content", "")) + " " +
+                        str(data.get("sender", "")) + " " +
+                        str(data.get("source", "")) + " " +
+                        str(data.get("message_id", ""))
+                    ).lower()
+
+                    if q in content_str:
+                        seen.add(identity)
+                        data["_file"] = os.path.basename(f)
+                        data["_mtime"] = os.path.getmtime(f)
+                        if "text" not in data and "content" in data:
+                            data["text"] = data["content"]
+                        if not data.get("sender") and data.get("source"):
+                            data["sender"] = data["source"]
+                        matches.append(data)
+            except Exception:
+                continue
+        return matches
