@@ -1935,21 +1935,13 @@ def _vector_cache_lock(i: Optional[int] = None):
 
 
 def _vector_cache_wait_s() -> float:
-    """How long a recall may wait for another thread's matrix build.
-
-    Bounded on purpose: a request that cannot get the matrix in time answers
-    from the keyword lane (and from the stale matrix if one exists) instead of
-    becoming a straggler that outlives its own deadline. Env-first (Rule 0.2).
-    Default 5s: a warm build of one 110MB grid DB is ~0.5s, a cold one a few
-    seconds; anything longer means the process is in trouble and piling on
-    makes it worse.
-    """
+    """How long a recall may wait for another thread's matrix build."""
     raw = os.environ.get("NOUGEN_VECTOR_CACHE_WAIT_S", "")
     try:
-        return float(raw) if raw.strip() else 5.0
+        return float(raw) if raw.strip() else 30.0
     except ValueError:
-        logger.warning("NOUGEN_VECTOR_CACHE_WAIT_S=%r is not a number; using 5.0", raw)
-        return 5.0
+        logger.warning("NOUGEN_VECTOR_CACHE_WAIT_S=%r is not a number; using 30.0", raw)
+        return 30.0
 
 
 def _db_write_signature(i: int) -> tuple:
@@ -1960,7 +1952,7 @@ def _db_write_signature(i: int) -> tuple:
     for suffix in ("", "-wal"):
         try:
             st = os.stat(base + suffix)
-            sig.append((st.st_mtime_ns, st.st_size))
+            sig.append((int(st.st_mtime), st.st_size))
         except OSError:
             sig.append(None)
     return tuple(sig)
@@ -3145,6 +3137,8 @@ def compile_recall_packet(shards: list, token_budget: Optional[int] = None, stra
         pre_omitted = len(shards) - len(chosen)
         shards = [s for i, s in enumerate(shards) if i in chosen]
     for n, s in enumerate(shards):
+        if not isinstance(s, dict):
+            continue
         if token_budget is not None and used >= token_budget:
             omitted = len(shards) - n
             break
