@@ -1,6 +1,5 @@
 import json
-import pytest
-from nougen_shards import mcp, destiny
+from nougen_shards import mcp
 from nougen_shards.nougenmsg import NouGenMsgBus
 
 
