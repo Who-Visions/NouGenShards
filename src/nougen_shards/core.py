@@ -1966,12 +1966,40 @@ def _db_write_signature(i: int) -> tuple:
     return tuple(sig)
 
 
+def _prune_deleted(conn, entry: dict) -> dict:
+    """Drop deleted rows from a cache entry without re-reading embeddings.
+
+    A delete shrinks the embedded-row count, which used to force a full
+    reload of the DB's matrix. The e2e canary writes then deletes a shard
+    every cycle, so each cycle paid the cold rebuild (measured 2026-09-23:
+    ~38s cold vs ~2s warm across 9 grid DBs) and missed the 20s recall
+    deadline. An id-only scan is cheap; the blobs stay in memory.
+    """
+    live = {row[0] for row in conn.execute(
+        "SELECT id FROM shards WHERE embedding IS NOT NULL AND id <= ?",
+        (entry["max_id"],))}
+    keep = [k for k, sid in enumerate(entry["ids"]) if sid in live]
+    legacy = [row for row in entry["legacy"] if row[0] in live]
+    pruned = dict(entry)
+    pruned.update({
+        "ids": [entry["ids"][k] for k in keep],
+        "ts": [entry["ts"][k] for k in keep],
+        "dom": [entry["dom"][k] for k in keep],
+        "etype": [entry["etype"][k] for k in keep],
+        "util": entry["util"][keep],
+        "matrix": entry["matrix"][keep],
+        "legacy": legacy,
+    })
+    pruned["n_embedded"] = len(pruned["ids"]) + len(legacy)
+    return pruned
+
+
 def _vector_cache_entry(i: int, conn) -> Optional[dict]:
     """Return the (fresh) cache entry for DB i, loading or refreshing as needed.
 
     Refresh strategy: the grid is append-mostly. On a signature change, rows
     with id > the cached max are fetched and appended; a shrink in embedded-row
-    count forces a full reload. An embedding UPDATEd in place (backfill re-run)
+    count prunes the deleted ids in place (see _prune_deleted). An embedding UPDATEd in place (backfill re-run)
     stays stale until the next full reload - logged, accepted: the alternative
     is re-reading the full table per capture, which is the cost this cache
     exists to kill.
@@ -2013,6 +2041,8 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
             "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM shards WHERE embedding IS NOT NULL"
         ).fetchone()
         n_embedded, max_id = int(count[0]), int(count[1])
+        if entry is not None and n_embedded < entry["n_embedded"] and len(entry["ids"]):
+            entry = _prune_deleted(conn, entry)
         since_id = 0
         if entry is not None and n_embedded >= entry["n_embedded"] and len(entry["ids"]):
             since_id = entry["max_id"]  # append-only fast path
