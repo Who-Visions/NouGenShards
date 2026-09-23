@@ -54,8 +54,16 @@ def activate(thread=None):
         current = {"status": "offline"}
     if current.get("status") == "listening":
         if thread and current.get("thread") != thread:
-            return {"status": "conflict", "reason": "receiver targets another Codex thread",
-                    "requested_thread": thread, "receiver": current}
+            try:
+                uuid.UUID(thread)
+            except (ValueError, AttributeError):
+                return {"status": "unavailable", "reason": "CODEX_THREAD_ID is invalid", "thread": thread}
+            switched = request({"op": "retarget", "thread": thread})
+            if switched.get("status") == "ready" and switched.get("thread") == thread:
+                return {"status": "ready", "started": False, "retargeted": True,
+                        "receiver": switched}
+            return {"status": "conflict", "reason": "receiver could not retarget",
+                    "requested_thread": thread, "receiver": current, "result": switched}
         return {"status": "ready", "started": False, "receiver": current}
     if not thread:
         return {"status": "unavailable", "reason": "CODEX_THREAD_ID is not set"}
@@ -192,6 +200,16 @@ def handle(payload, thread, executable, transport="windows_pipe"):
         return {"status": "listening" if transport == "windows_pipe" else "configured",
                 "thread": thread, "pid": os.getpid(), "transport": transport,
                 "pipe": PIPE if transport == "windows_pipe" else None}
+    if payload.get("op") == "retarget":
+        new_thread = str(payload.get("thread") or "").strip()
+        uuid.UUID(new_thread)
+        target = _target_file()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"thread_id": new_thread, "updated_at": time.time()}, indent=2),
+                       encoding="utf-8")
+        os.replace(tmp, target)
+        return {"status": "ready", "thread": new_thread, "retargeted": True}
     text = payload.get("text")
     if not isinstance(text, str) or not text.strip():
         raise ValueError("Expected nonempty text")
@@ -328,6 +346,8 @@ def serve(thread, executable):
                     continue
                 try:
                     reply = handle(json.loads(incoming.raw[:count.value].decode("utf-8")), thread, executable)
+                    if reply.get("retargeted"):
+                        thread = reply["thread"]
                 except (ValueError, OSError) as exc:
                     reply = {"status": "error", "error": str(exc), "delivery_verified": False}
                 raw = json.dumps(reply).encode("utf-8")
