@@ -258,3 +258,19 @@ def test_an_opted_in_score_is_used_when_it_arrives_in_time(monkeypatch):
     monkeypatch.setattr(core, "_llm_scoring_enabled", lambda: True)
     monkeypatch.setattr(core, "_llm_density", lambda c: 0.77)
     assert core.calculate_contrastive_perplexity("text") == 0.77
+
+
+def test_a_directory_claim_covers_files_beneath_it():
+    """Roll call 2026-09-23 (blade/claude-app): claiming `aistudio/` still let a
+    claim on `aistudio/src/app.ts` look disjoint."""
+    dir_claim = dict(CLAIM, scope="aistudio/")
+    file_claim = dict(CLAIM, machine="whoart", scope="aistudio/src/app.ts")
+    clashes = D.conflicting_scopes([D.normalise(dir_claim), D.normalise(file_claim)])
+    assert len(clashes) == 1
+    assert clashes[0]["paths"] == ["aistudio/src/app.ts"]
+
+
+def test_a_shared_name_prefix_is_not_a_directory_overlap():
+    a = dict(CLAIM, scope="src/app")
+    b = dict(CLAIM, machine="whoart", scope="src/application.ts")
+    assert D.conflicting_scopes([D.normalise(a), D.normalise(b)]) == []
