@@ -5,7 +5,14 @@ import socket
 import tempfile
 import threading
 
+import pytest
+
 from nougen_shards.nougenmsg import AgentPinger
+
+# The fixture serves a UDS socket; Windows CPython has no AF_UNIX, and the
+# named-pipe path is covered by the Windows delivery tests.
+pytestmark = pytest.mark.skipif(not hasattr(socket, "AF_UNIX"),
+                                reason="AF_UNIX sockets unavailable on this platform")
 
 
 def _serve(path, got):

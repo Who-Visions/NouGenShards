@@ -1133,11 +1133,22 @@ class NouGenMsgBus:
             return os.environ.get(f"NOUGEN_NODE_{node.upper()}_IP") or f"{node}.local"
 
         def up(node: str) -> bool:
+            # Resolve IPv4 first: create_connection on an mDNS name tries the
+            # AAAA answer before falling back, which cost ~6s per call to
+            # whoart.local (measured 2026-09-23) while its A record came back
+            # in 0.13s.
             try:
-                with socket.create_connection((host_for(node), port), timeout=timeout):
-                    return True
+                addrs = [ai[4] for ai in socket.getaddrinfo(
+                    host_for(node), port, socket.AF_INET, socket.SOCK_STREAM)]
             except OSError:
-                return False
+                addrs = []
+            for addr in addrs or [(host_for(node), port)]:
+                try:
+                    with socket.create_connection(addr, timeout=timeout):
+                        return True
+                except OSError:
+                    continue
+            return False
 
         with ThreadPoolExecutor(max_workers=max(1, len(nodes))) as pool:
             status = dict(zip(nodes, pool.map(up, nodes)))
