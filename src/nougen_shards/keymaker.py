@@ -175,9 +175,10 @@ def find_legacy_stores(roots=None) -> list:
         roots = [home / "Watchtower", home / ".nougen" / "secrets", home]
     seen, found = set(), []
     for root in roots:
-        if not Path(root).exists():
-            continue
         try:
+            # A dead SMB symlink (Watchtower) raises OSError from exists() itself.
+            if not Path(root).exists():
+                continue
             candidates: list = []
             for db_name in (DB_FILENAME, "agent_secrets.db"):
                 candidates += list(Path(root).glob(f"*/{_LEGACY_VAULT_DIRNAME}/{db_name}"))
