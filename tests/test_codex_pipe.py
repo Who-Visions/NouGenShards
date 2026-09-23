@@ -105,11 +105,22 @@ class CodexPipeTests(unittest.TestCase):
         self.assertEqual(result["status"], "ready")
         self.assertFalse(result["started"])
 
-    def test_activate_refuses_to_retarget_live_receiver(self):
+    def test_activate_retargets_live_receiver(self):
         ready = {"status": "listening", "thread": "00000000-0000-4000-8000-000000000000"}
-        with patch.object(codex_pipe, "request", return_value=ready):
+        switched = {"status": "ready", "thread": "11111111-1111-4111-8111-111111111111"}
+        with patch.object(codex_pipe, "request", side_effect=[ready, switched]):
             result = codex_pipe.activate("11111111-1111-4111-8111-111111111111")
-        self.assertEqual(result["status"], "conflict")
+        self.assertEqual(result["status"], "ready")
+        self.assertTrue(result["retargeted"])
+
+    def test_retarget_persists_new_thread(self):
+        thread = "11111111-1111-4111-8111-111111111111"
+        target = Path(self.temp.name) / "relay_target.json"
+        with patch.object(codex_pipe, "_target_file", return_value=target):
+            result = codex_pipe.handle({"op": "retarget", "thread": thread},
+                                       "00000000-0000-4000-8000-000000000000", "codex.exe")
+        self.assertEqual(result["thread"], thread)
+        self.assertEqual(json.loads(target.read_text())["thread_id"], thread)
 
     def test_exact_ack_archives_one_message_and_writes_receipt(self):
         message_id = "11111111-1111-4111-8111-111111111111"
