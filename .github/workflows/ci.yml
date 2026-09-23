@@ -38,7 +38,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e . pytest pytest-asyncio ruff
       - name: Lint
-        run: ruff check src tests
+        # tools/ gets the bug-class rules only (undefined names, unused
+        # imports/vars, bare except): a missing import there crashed the
+        # agy inbox hook at runtime with NameError while CI stayed green.
+        run: |
+          ruff check src tests
+          ruff check tools --select F,E722
       - name: Run pytest
         # pythonpath is set in pyproject [tool.pytest.ini_options]; no manual
         # PYTHONPATH prefix needed.

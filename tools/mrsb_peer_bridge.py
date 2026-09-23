@@ -5,7 +5,6 @@ Autonomous cross-node coordination via NouGenMsgBus & Nano Banana pipeline.
 Operates unattended without requiring manual human turns.
 """
 
-import os
 import sys
 import time
 import json
@@ -33,7 +32,7 @@ def send_to_claude(text):
         log("ERROR: NouGenMsgBus not loaded.")
         return False
     try:
-        res = NouGenMsgBus.emit_node(BLADE_NODE, TARGET_AGENT, text)
+        NouGenMsgBus.emit_node(BLADE_NODE, TARGET_AGENT, text)
         log(f"Sent to Blade Claude: {text[:100]}...")
         return True
     except Exception as e:

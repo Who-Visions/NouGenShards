@@ -1182,8 +1182,6 @@ Rules:
         """
         为摘要添加标题和元信息
         """
-        language_name = self.language_map.get(target_language, "中文（简体）")
-        meta_labels = self._get_summary_labels(target_language)
         
         # 不加任何小标题/免责声明，可保留视频标题作为一级标题
         if video_title:

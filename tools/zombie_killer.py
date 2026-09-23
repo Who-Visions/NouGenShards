@@ -31,7 +31,7 @@ import fcntl
 import argparse
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Optional, Any
 
 PID_DIR = Path.home() / ".nougen" / "pids"
 

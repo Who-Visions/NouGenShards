@@ -814,7 +814,7 @@ def parse_codex():
                         if not line: continue
                         try:
                             rec = json.loads(line)
-                        except: continue
+                        except Exception: continue
                         
                         if rec.get("type") == "event_msg":
                             payload = rec.get("payload") or {}
@@ -833,7 +833,7 @@ def parse_codex():
                                 if ts_str:
                                     try:
                                         ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).astimezone()
-                                    except: pass
+                                    except Exception: pass
                                 
                                 if ts and CUTOFF <= ts <= LIMIT_UPPER:
                                     day = ts.strftime("%Y-%m-%d")
@@ -865,10 +865,10 @@ def parse_codex():
                                         "source_file": os.path.basename(rollout_path)
                                     })
                                     records += 1
-            except:
+            except Exception:
                 continue
         conn.close()
-    except:
+    except Exception:
         pass
         
     return by_day, by_model, totals, sessions_scanned, records

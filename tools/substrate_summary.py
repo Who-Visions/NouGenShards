@@ -150,7 +150,7 @@ def main():
                 count = row[1] or 0
                 category_counts[cat] = category_counts.get(cat, 0) + count
             conn.close()
-        except:
+        except Exception:
             pass
             
     if category_counts:
