@@ -4,7 +4,7 @@ from nougen_shards.synchron import Config, detect, score_pair, verify
 from nougen_shards.synchron.model import BaseRates, Snapshot
 from nougen_shards.synchron.score import bridge, classify
 
-from .fixtures import (ANGKOR, ANGKOR_SEARCHED, BMFM_ANNIV, BMFM_BACKFILLED, MOTO, SOLAR,
+from .fixtures import (RATES, ANGKOR, ANGKOR_SEARCHED, BMFM_ANNIV, BMFM_BACKFILLED, MOTO, SOLAR,
                        AS_OF, snap)
 
 CFG = Config()
@@ -108,3 +108,24 @@ def test_bridge_is_an_inverted_u_and_classification_bands():
     assert bridge(0.62, CFG) == 1.0 and bridge(0.99, CFG) == 0.0 and bridge(0.2, CFG) == 0.0
     assert [classify(x) for x in (0.5, 0.6, 0.75, 0.9)] == [
         "ignore", "weak_convergence", "notable_serendipity", "high_value_temporal_convergence"]
+
+
+def test_transitive_query_lineage_is_rejected():
+    from .fixtures import ev
+    mid = ev("mid", "2026-09-21T10:00:00", "chat", "chat:mid", ["equinox"], lineage=(SOLAR.event_id,))
+    far = ev("far", "2026-09-21T12:00:00", "archive", "archive:far", ["angkor wat", "equinox"],
+             lineage=("mid",))
+    s = Snapshot(as_of_ms=AS_OF, events=(SOLAR, mid, far), base_rates=RATES)
+    r = score_pair(SOLAR, far, s, CFG)
+    assert r["rejected"] == "likely self-induced"
+
+
+def test_recalibrate_stays_normalized_and_moves_toward_rewarded_features():
+    from nougen_shards.synchron import recalibrate, reward
+    w0 = dict(CFG.weights)
+    new = recalibrate(CFG, {"rarity": 1.0}, reward(created_artifact=True))
+    w1 = dict(new.weights)
+    assert abs(sum(w1.values()) - 1.0) < 1e-9 and w1["rarity"] > w0["rarity"]
+    assert CFG.weights == tuple(w0.items())          # original Config untouched
+    neg = dict(recalibrate(CFG, {"rarity": 1.0}, reward(dismissed_as_noise=True)).weights)
+    assert neg["rarity"] < w0["rarity"]

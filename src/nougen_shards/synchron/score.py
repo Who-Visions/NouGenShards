@@ -45,12 +45,28 @@ def shared_query_fraction(a: Event, b: Event) -> float:
     return len(q_later & earlier.terms()) / len(q_later)
 
 
-def independence(a: Event, b: Event, cfg: Config) -> Tuple[float, List[str]]:
+def lineage_ancestors(ev: Event, events: Tuple[Event, ...] = ()) -> frozenset:
+    """Every event_id ``ev`` was (transitively) searched from, via known events."""
+    by_id = {e.event_id: e for e in events}
+    seen: set = set()
+    stack = list(ev.query_lineage)
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        parent = by_id.get(cur)
+        if parent is not None:
+            stack.extend(parent.query_lineage)
+    return frozenset(seen)
+
+
+def independence(a: Event, b: Event, cfg: Config, events: Tuple[Event, ...] = ()) -> Tuple[float, List[str]]:
     why: List[str] = []
     if a.source_id == b.source_id:
         return 0.0, ["same source_id"]
-    if b.event_id in a.query_lineage or a.event_id in b.query_lineage:
-        return 0.0, ["direct query lineage"]
+    if b.event_id in lineage_ancestors(a, events) or a.event_id in lineage_ancestors(b, events):
+        return 0.0, ["query lineage (direct or via intermediate events)"]
     shared = shared_query_fraction(a, b)
     if shared > cfg.direct_query_threshold:
         return 0.0, [f"later search named earlier concepts ({shared:.2f})"]
@@ -161,7 +177,7 @@ def provenance(a: Event, b: Event) -> float:
 
 def features(a: Event, b: Event, snap: Snapshot, cfg: Config) -> Dict:
     sem = semantic(a, b)
-    ind, ind_why = independence(a, b, cfg)
+    ind, ind_why = independence(a, b, cfg, snap.events)
     cal, cal_hits = calendar(a, b, snap)
     rar, base = rarity(a, b, snap.base_rates)
     return {
