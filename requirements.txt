@@ -165,7 +165,7 @@ pydantic==2.13.5
     #   mcp-types
     #   ollama
     #   openai
-pydantic-core==2.46.5
+pydantic-core==2.49.0
     # via pydantic
 pydub==0.25.1
     # via gradio
