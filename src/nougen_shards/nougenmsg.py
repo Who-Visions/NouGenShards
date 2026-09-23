@@ -17,6 +17,10 @@ import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
+# Every child (ssh, scp) spawns windowless: a console child of a console-less
+# parent (MCP server, hook, pythonw) otherwise opens a terminal window.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 _SESSION_VARS = ("NOUGEN_SESSION", "CLAUDE_CODE_SESSION_ID")
 
 
@@ -134,6 +138,16 @@ def get_current_node() -> str:
             return node
     return "standalone"
 
+def _live_pipe_names() -> List[str]:
+    """Named pipes the kernel holds right now (empty off Windows)."""
+    if os.name != "nt":
+        return []
+    try:
+        return ["\\\\.\\pipe\\" + n for n in os.listdir("\\\\.\\pipe\\")]
+    except OSError:
+        return glob.glob(r"\\.\pipe\LOCAL\*")
+
+
 class AgentPinger:
     """Delivers live pings directly into agent context, named pipes, and session inboxes."""
 
@@ -147,24 +161,11 @@ class AgentPinger:
                 + glob.glob("/tmp/nougen-*.sock")
             ))
 
-        candidates: List[str] = []
-        try:
-            command = (
-                "[System.IO.Directory]::GetFiles('\\\\.\\pipe\\') | "
-                "Where-Object { $_ -match 'cc-msg|claude' }"
-            )
-            timeout_s = float(os.environ.get("NOUGEN_PIPE_DISCOVERY_TIMEOUT_S", "5"))
-            result = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-Command", command],
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                timeout=timeout_s,
-                check=False,
-            )
-            candidates.extend(line.strip() for line in result.stdout.splitlines())
-        except (OSError, subprocess.SubprocessError, ValueError):
-            pass
-
+        # Read the kernel pipe table in-process. This used to shell out to
+        # powershell.exe, which popped a Windows Terminal tab on every
+        # invocation (WT as default console host ignores CREATE_NO_WINDOW
+        # for some launch paths) and cost ~1s of PowerShell startup.
+        candidates: List[str] = list(_live_pipe_names())
         candidates.extend(glob.glob(r"\\.\pipe\LOCAL\cc-msg-*"))
         allowed = re.compile(r"^\\\\\.\\pipe\\(?:LOCAL\\)?(?:cc-msg|claude)[-\\\w.]*$", re.I)
         return sorted({pipe for pipe in candidates if pipe and allowed.fullmatch(pipe)})
@@ -592,6 +593,7 @@ class AgentPinger:
             try:
                 res = subprocess.run(
                     ["ssh", "--", node, remote_cmd],
+                    creationflags=_NO_WINDOW,
                     input=payload,
                     capture_output=True,
                     text=True,
@@ -857,6 +859,7 @@ class NouGenMsgBus:
         try:
             cp = subprocess.run(["scp", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", local, f"{node}:{remote_rel}"],
                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                creationflags=_NO_WINDOW,
                                 timeout=float(os.environ.get("NOUGEN_MSG_SHIP_TIMEOUT_S", "60")))
         except (OSError, subprocess.SubprocessError) as exc:
             return None, f"Error: body shipping failed, {type(exc).__name__}"
@@ -920,7 +923,8 @@ class NouGenMsgBus:
         try:
             with os.fdopen(fd, "wb") as sink:
                 subprocess.run(argv, stdout=sink, stderr=subprocess.STDOUT,
-                               stdin=subprocess.DEVNULL, timeout=timeout)
+                               stdin=subprocess.DEVNULL, timeout=timeout,
+                               creationflags=_NO_WINDOW)
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 return fh.read()
         finally:
@@ -1072,24 +1076,20 @@ class NouGenMsgBus:
         """Discovers active local pipes and session inboxes across agents."""
         curr = get_current_node()
         claude_pipes = AgentPinger._discover_claude_endpoints()
-        agy_pipes: List[str] = []
+        # Liveness comes from the kernel pipe table only. The registry and the
+        # default pipe name are claims: listing them unverified is how
+        # --peers reported Antigravity "active" while no server held the pipe.
+        live = set(_live_pipe_names())
+        agy_pipes = sorted(p for p in live if re.search(r"\\agy-msg-", p, re.I))
         agy_reg = os.path.expanduser(os.path.join("~", ".nougen", "agy_sessions.json"))
+        stale_agy: List[str] = []
         if os.path.exists(agy_reg):
             try:
                 with open(agy_reg, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    sessions = data.get("sessions") or {}
-                    for pipe_k in sessions.keys():
-                        if pipe_k not in agy_pipes:
-                            agy_pipes.append(pipe_k)
+                    sessions = (json.load(f) or {}).get("sessions") or {}
+                stale_agy = sorted(k for k in sessions if k not in live)
             except Exception:
                 pass
-        if not agy_pipes:
-            candidates = glob.glob(r"\\.\pipe\LOCAL\agy-msg-*")
-            if candidates:
-                agy_pipes.extend(candidates)
-            elif os.name == "nt":
-                agy_pipes.append(r"\\.\pipe\LOCAL\agy-msg-antigravity")
 
         try:
             from .codex_pipe import request as codex_request
@@ -1110,7 +1110,40 @@ class NouGenMsgBus:
             "codex_pipe": codex_pipe,
             "antigravity_inbox_unread": gemini_messages,
             "codex_inbox_unread": codex_messages,
-            "nodes_reachable": ["whoart", "blade", "phoebus"]
+            "antigravity_stale_registry": stale_agy,
+            **cls._probe_nodes(curr),
+        }
+
+    @staticmethod
+    def _probe_nodes(curr: str) -> Dict[str, List[str]]:
+        """TCP-probe each fleet node's NouGenMsg receiver instead of listing a constant.
+
+        Host: NOUGEN_NODE_<NODE>_IP, else <node>.local (mDNS); this node dials
+        loopback. Port NOUGEN_MSG_PORT, timeout NOUGEN_MSG_PROBE_TIMEOUT_S.
+        """
+        import socket
+        from concurrent.futures import ThreadPoolExecutor
+        port = int(os.environ.get("NOUGEN_MSG_PORT", "8766"))
+        timeout = float(os.environ.get("NOUGEN_MSG_PROBE_TIMEOUT_S", "1.5"))
+        nodes = sorted(set(fleet_identity_maps()[0].values()) | {curr})
+
+        def host_for(node: str) -> str:
+            if node == curr:
+                return "127.0.0.1"
+            return os.environ.get(f"NOUGEN_NODE_{node.upper()}_IP") or f"{node}.local"
+
+        def up(node: str) -> bool:
+            try:
+                with socket.create_connection((host_for(node), port), timeout=timeout):
+                    return True
+            except OSError:
+                return False
+
+        with ThreadPoolExecutor(max_workers=max(1, len(nodes))) as pool:
+            status = dict(zip(nodes, pool.map(up, nodes)))
+        return {
+            "nodes_reachable": [n for n in nodes if status[n]],
+            "nodes_unreachable": [n for n in nodes if not status[n]],
         }
 
     @classmethod
