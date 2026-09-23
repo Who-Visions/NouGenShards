@@ -826,6 +826,156 @@ def cf_run_ai(prompt: str, model: str = "@cf/meta/llama-3.1-8b-instruct") -> str
         return f"Workers AI Error: {e}"
 
 
+# --- Prospective Memory (Destiny) ---
+
+@mcp.tool()
+def unfinished_destinies(status: Optional[str] = None, trigger: Optional[str] = None,
+                         branch: Optional[str] = None, limit: int = 20) -> str:
+    """
+    Query unfinished destinies (dormant and active prospective goals) across the NouGen grid.
+
+    Args:
+        status: Optional filter ('dormant', 'active', or None for both).
+        trigger: Optional substring filter for trigger condition.
+        branch: Optional universe branch filter ('U0', 'UX', 'ARCH', etc.).
+        limit: Maximum number of destinies to return (default 20).
+    """
+    import json
+    from . import destiny
+    try:
+        res = destiny.unfinished_destinies(status=status, trigger=trigger, branch=branch, limit=limit)
+        return json.dumps(res, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def search_destinies(query: str, limit: int = 20, include_finished: bool = False) -> str:
+    """
+    Search prospective memory destinies by title, goal, trigger, or verification keywords.
+
+    Args:
+        query: Search keywords.
+        limit: Maximum results to return (default 20).
+        include_finished: Whether to include fulfilled/failed/superseded destinies (default False).
+    """
+    import json
+    from . import destiny
+    try:
+        res = destiny.search_destinies(query, limit=limit, include_finished=include_finished)
+        return json.dumps(res, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def create_destiny(title: str, goal: str, branch: Optional[str] = None,
+                   trigger: Optional[str] = None, required_events: Optional[List[str]] = None,
+                   forbidden_outcomes: Optional[List[str]] = None, acceptable_variance: Optional[str] = None,
+                   verification: Optional[str] = None, status: str = "dormant") -> str:
+    """
+    Create a new prospective goal (destiny) in the NouGen prospective memory substrate.
+
+    Args:
+        title: Short descriptive title (3+ chars).
+        goal: Target end-state goal description (3+ chars).
+        branch: Universe branch ('U0', 'UX', 'ARCH', etc., default 'U0').
+        trigger: Activation condition or trigger string.
+        required_events: List of milestone events required for fulfillment.
+        forbidden_outcomes: List of outcomes that invalidate the destiny.
+        acceptable_variance: Notes on acceptable tolerance/variance.
+        verification: Method or check used to verify fulfillment.
+        status: Initial status ('dormant' or 'active', default 'dormant').
+    """
+    import json
+    from . import destiny
+    try:
+        res = destiny.create_destiny(
+            title=title, goal=goal, branch=branch, trigger=trigger,
+            required_events=required_events, forbidden_outcomes=forbidden_outcomes,
+            acceptable_variance=acceptable_variance, verification=verification, status=status
+        )
+        return json.dumps(res, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# --- NouGenMsg Fleet Bus Tools ---
+
+@mcp.tool()
+def nougenmsg_search(query: str, target: str = "all", limit: int = 20) -> str:
+    """
+    Search across active and archived NouGenMsg inbox notifications across agents.
+
+    Args:
+        query: Search term or keyword.
+        target: Inbox scope ('antigravity', 'codex', or 'all').
+        limit: Max results to return (default 20).
+    """
+    import json
+    from .nougenmsg import NouGenMsgBus
+    try:
+        results = NouGenMsgBus.search_messages(query=query, target=target, limit=limit)
+        return json.dumps({
+            "query": query,
+            "count": len(results),
+            "messages": results
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def nougenmsg_inbox(target: str = "antigravity", limit: int = 10) -> str:
+    """
+    Read recent incoming messages from the local agent inbox.
+
+    Args:
+        target: Agent inbox ('antigravity' or 'codex').
+        limit: Max messages to read (default 10).
+    """
+    import json
+    from .nougenmsg import NouGenMsgBus
+    try:
+        msgs = NouGenMsgBus.read_inbox(target=target, limit=limit)
+        return json.dumps({"target": target, "count": len(msgs), "messages": msgs}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def nougenmsg_send(text: str, target: str = "all", audience: Optional[str] = None) -> str:
+    """
+    Broadcast or route a live message across the NouGen fleet mesh.
+
+    Args:
+        text: Message payload.
+        target: Target recipient ('all', 'antigravity', 'codex', 'blade', 'whoart', 'phoebus').
+        audience: Optional audience classification ('operator', 'agent').
+    """
+    import json
+    from .nougenmsg import NouGenMsgBus
+    try:
+        res = NouGenMsgBus.emit_fleet(text=text, target=target, audience=audience, background=True)
+        return json.dumps(res, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def nougenmsg_peers() -> str:
+    """
+    Probe and report live connectivity, active named pipes, and inbox counts across fleet peers.
+    """
+    import json
+    from .nougenmsg import NouGenMsgBus
+    try:
+        peers = NouGenMsgBus.list_peers()
+        return json.dumps(peers, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 def main():
 
     """Main entry point for the MCP server."""
