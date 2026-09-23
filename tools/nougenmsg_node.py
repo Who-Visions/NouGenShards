@@ -264,6 +264,8 @@ def record(msg: dict) -> Path:
     """Persist one message to the inbox and the last-message state file."""
     INBOX.mkdir(parents=True, exist_ok=True)
     STATE.parent.mkdir(parents=True, exist_ok=True)
+    if not MESSAGE_ID_RE.match(str(msg.get("message_id") or "")):
+        assign_message_id(msg)  # direct callers (relay_watch, tests) skip do_POST
     # id BEFORE the sender: consumers match on the sender suffix
     # (agy_inbox_reap globs msg_*relay-watch.json), so that must stay last.
     filename = "msg_{}_{}_{}.json".format(int(time.time() * 1000), msg["message_id"],
