@@ -2397,6 +2397,8 @@ def xoah_active_scars_endpoint(req: XoahSelfRequest,
 
 @app.get("/destinies")
 @app.post("/destinies")
+@app.get("/destiny/unfinished")
+@app.post("/destiny/unfinished")
 def destinies_endpoint(
     status: Optional[str] = None,
     trigger: Optional[str] = None,
