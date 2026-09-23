@@ -815,110 +815,10 @@ class WhoVisionsCloudClient(LLMClient):
         return [[] for _ in texts]
 
 
-def find_best_model_from_list(models: List[str]) -> Optional[ModelBudgetConfig]:
-    """Helper to select the best available model, preferring custom models over defaults."""
-    if not models:
-        return None
-
-    # 1. First tier: Known custom system models (tight context, low temp)
-    custom_system_tags = [
-        "dav1d:e2b", "rhea-noir:e2b", "sol-ai:e2b", "griot:e2b",
-        "gemma4-aggressive:e2b", "gemma4-aggressive:e4b", "rhea-noir:e4b",
-        "kaedra:e4b", "iris-ai:e4b", "sol-ai:e4b", "davos:latest", "janitor:latest"
-    ]
-    for tag in custom_system_tags:
-        for model in models:
-            model_lower = model.lower()
-            if model_lower.startswith(tag) or f"/{tag}" in model_lower or f"\\{tag}" in model_lower:
-                return ModelBudgetConfig(
-                    model_name=model,
-                    n_ctx=2048,
-                    temperature=0.2
-                )
-                
-    # 2. Second tier: Any other user-created custom/finetuned models (not starting with official vendor prefixes)
-    official_prefixes = (
-        "gemma", "llama", "qwen", "mistral", "phi", "deepseek", "codellama", "mixtral"
-    )
-    # Embedding-only families are not chat-capable; find_best_edge_model feeds
-    # cmd_chat, so returning one here would break /api/chat even when a real chat
-    # model is installed. Skip them so a later tier picks the chat model.
-    embed_markers = ("embed", "bge-", "minilm", "gte-", "e5-")
-    for model in models:
-        base_name = os.path.basename(model.replace("\\", "/")).lower()
-        if any(mk in base_name for mk in embed_markers):
-            continue
-        if not any(base_name.startswith(p) for p in official_prefixes):
-            # Dynamic context detection for user finetunes (capped at 8K for safety)
-            n_ctx = 4096
-            if "-8k" in base_name or "8k" in base_name:
-                n_ctx = 8192
-            elif "-16k" in base_name or "16k" in base_name:
-                n_ctx = 8192
-            elif "-2k" in base_name or "2k" in base_name:
-                n_ctx = 2048
-            return ModelBudgetConfig(
-                model_name=model,
-                n_ctx=n_ctx,
-                temperature=0.7
-            )
-            
-    # 3. Third tier: Official Gemma 4 QAT/edge/workstation defaults.
-    # The small QAT route leads because it fits Who-Art's 6 GB card, stays local,
-    # and is the fleet's resident drafting/digest lane. Heavy cloud and local
-    # models remain available through explicit selection or env configuration.
-    gemma4_tags = [
-        m.strip()
-        for m in os.getenv(
-            "NOUGEN_GEMMA4_PREFERENCE",
-            "gemma4:e2b-qat,gemma4:e2b-it-qat,gemma4:e2b,"
-            "gemma4:31b-cloud,gemma4:e4b,gemma4:e4b-it-qat,"
-            "gemma4:12b,gemma4:12b-it-qat,gemma4:latest",
-        ).split(",")
-        if m.strip()
-    ]
-    for tag in gemma4_tags:
-        for model in models:
-            model_lower = model.lower()
-            if model_lower.startswith(tag) or f"/{tag}" in model_lower or f"\\{tag}" in model_lower:
-                return ModelBudgetConfig(
-                    model_name=model,
-                    n_ctx=4096,
-                    temperature=0.7
-                )
-                
-    # 4. Fourth tier: Generic fallback to any Gemma family
-    for prefix in ["gemma4:", "gemma:"]:
-        for model in models:
-            model_lower = model.lower()
-            if model_lower.startswith(prefix) or prefix in model_lower:
-                return ModelBudgetConfig(
-                    model_name=model,
-                    n_ctx=4096,
-                    temperature=0.7
-                )
-                
-    # Default fallback to first available non-embedding model. Embedding-only
-    # models are not chat-capable, so skip them here too (mirrors tier 2).
-    model = next(
-        (m for m in models
-         if not any(mk in os.path.basename(m.replace("\\", "/")).lower()
-                    for mk in embed_markers)),
-        models[0]
-    )
-    base_name = os.path.basename(model.replace("\\", "/")).lower()
-    n_ctx = 4096
-    if "-8k" in base_name or "8k" in base_name:
-        n_ctx = 8192
-    elif "-16k" in base_name or "16k" in base_name:
-        n_ctx = 8192
-    elif "-2k" in base_name or "2k" in base_name:
-        n_ctx = 2048
-    return ModelBudgetConfig(
-        model_name=model,
-        n_ctx=n_ctx,
-        temperature=0.7
-    )
+def find_best_model_from_list(models: List[str], persona_hint: Optional[str] = None) -> Optional[ModelBudgetConfig]:
+    """Dynamically and deterministically selects the best available model, auto-prioritizing custom user models."""
+    from .custom_model_resolver import resolve_best_custom_model
+    return resolve_best_custom_model(models, persona_hint=persona_hint)
 
 
 class OllamaClient(LocalLLMClient):
@@ -1000,7 +900,10 @@ class OllamaClient(LocalLLMClient):
         payload = {"model": model, "messages": messages, "stream": stream,
                    "options": {"num_predict": int(
                        __import__("os").getenv("NOUGEN_NUM_PREDICT", "1400"))}}
-        if _v.reason != "already resident":
+        keep_alive_env = os.getenv("NOUGEN_KEEP_ALIVE")
+        if keep_alive_env is not None:
+            payload["keep_alive"] = keep_alive_env
+        elif _v.reason != "already resident":
             payload["keep_alive"] = 0
         req = urllib.request.Request(
             f"{self.base_url}/api/chat",
@@ -1077,7 +980,8 @@ class OllamaClient(LocalLLMClient):
 
     def chat_raw(self, model: str, messages: list, tools: Optional[list] = None,
                  num_ctx: Optional[int] = None, manual: bool = False,
-                 timeout: Optional[float] = None) -> dict:
+                 timeout: Optional[float] = None, on_token=None,
+                 output_format=None) -> dict:
         """POST /api/chat (stream false) and return the raw JSON dict.
 
         Used by tool-calling loops that need message.tool_calls intact. Same
@@ -1099,18 +1003,41 @@ class OllamaClient(LocalLLMClient):
         options = {"num_predict": int(os.getenv("NOUGEN_NUM_PREDICT", "1400"))}
         if num_ctx:
             options["num_ctx"] = int(num_ctx)
-        payload: dict = {"model": model, "messages": messages, "stream": False,
+        payload: dict = {"model": model, "messages": messages, "stream": on_token is not None,
                          "options": options}
+        if output_format is not None:
+            payload["format"] = output_format
+            options["temperature"] = 0
         if tools:
             payload["tools"] = tools
-        if _v.reason != "already resident":
+        keep_alive_env = os.getenv("NOUGEN_KEEP_ALIVE")
+        if keep_alive_env is not None:
+            payload["keep_alive"] = keep_alive_env
+        elif _v.reason != "already resident":
             payload["keep_alive"] = 0
         req = urllib.request.Request(
             f"{self.base_url}/api/chat", data=json.dumps(payload).encode(), method="POST")
         req.add_header("Content-Type", "application/json")
         try:
             with urllib.request.urlopen(req, timeout=timeout or _HTTP_TIMEOUT) as res:
-                return json.loads(res.read().decode())
+                if on_token is None:
+                    return json.loads(res.read().decode())
+                message = {"role": "assistant", "content": "", "thinking": "", "tool_calls": []}
+                for line in res:
+                    if not line.strip():
+                        continue
+                    chunk = json.loads(line)
+                    if chunk.get("error"):
+                        return {"error": chunk["error"]}
+                    part = chunk.get("message", {})
+                    for field in ("content", "thinking"):
+                        message[field] += part.get(field) or ""
+                    message["tool_calls"].extend(part.get("tool_calls") or [])
+                    if part.get("content"):
+                        on_token(part["content"])
+                    if chunk.get("done"):
+                        return {**chunk, "message": message}
+                return {"error": "Ollama stream ended before completion"}
         except Exception as exc:  # pylint: disable=broad-except
             return {"error": str(exc)}
 

@@ -1,7 +1,7 @@
 """
-Valerion Core — NouGenShards Memory Substrate.
+NouGenMorph Core — NouGenShards Memory Substrate.
 Logic: SQLite + FTS5 + BM25 + Trigram (n-gram) + Vector Embeddings + Weighted Relevance Reranking.
-Architecture: Valerion 21-step cognitive loop. Weighted multi-signal relevance blend (BM25 + semantic + usefulness prior).
+Architecture: NouGenMorph 21-step cognitive loop. Weighted multi-signal relevance blend (BM25 + semantic + usefulness prior).
 """
 # pylint: disable=duplicate-code
 import hashlib

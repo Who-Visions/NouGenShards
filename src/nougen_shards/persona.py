@@ -250,15 +250,33 @@ DEFAULT_AUDIENCES: tuple[Audience, ...] = (
 
 def load_registry(path: Optional[Path] = None) -> tuple[tuple[Market, ...], tuple[Audience, ...]]:
     """Registry is data. A JSON file {markets:[...], audiences:[...]} overrides the defaults."""
+    if path is None:
+        env_path = os.environ.get("NOUGEN_AUDIENCES_JSON")
+        if env_path and Path(env_path).exists():
+            path = Path(env_path)
+        else:
+            candidates = [
+                Path(__file__).resolve().parent.parent.parent / "canon" / "audiences.json",
+                Path.home() / ".nougen" / "audiences.json",
+                Path.home() / ".nougen" / "shards" / "audiences.json",
+            ]
+            for c in candidates:
+                if c.exists():
+                    path = c
+                    break
+
     if path is None or not Path(path).exists():
         return DEFAULT_MARKETS, DEFAULT_AUDIENCES
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    ms = tuple(Market(m["key"], m["problem"], tuple(m.get("decides", ()))) for m in raw.get("markets", []))
-    aus = tuple(Audience(a["key"], a["market"], tuple(a.get("affinities", ())), tuple(a.get("channels", ())),
-                         tuple(a.get("values", ())), tuple(a.get("pains", ())), a.get("support", ""),
-                         tuple(a.get("languages", ())), tuple(a.get("contract", ())))
-                for a in raw.get("audiences", []))
-    return (ms or DEFAULT_MARKETS), (aus or DEFAULT_AUDIENCES)
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        ms = tuple(Market(m["key"], m["problem"], tuple(m.get("decides", ()))) for m in raw.get("markets", []))
+        aus = tuple(Audience(a["key"], a["market"], tuple(a.get("affinities", ())), tuple(a.get("channels", ())),
+                             tuple(a.get("values", ())), tuple(a.get("pains", ())), a.get("support", ""),
+                             tuple(a.get("languages", ())), tuple(a.get("contract", ())))
+                    for a in raw.get("audiences", []))
+        return (ms or DEFAULT_MARKETS), (aus or DEFAULT_AUDIENCES)
+    except Exception:
+        return DEFAULT_MARKETS, DEFAULT_AUDIENCES
 
 
 # --------------------------------------------------------------------------- #
@@ -548,6 +566,68 @@ def signals_from_shards(scope_tag: str, *, tz: str = "UTC", limit: int = 400, ro
     merged.role, merged.audience_size = role, max(1, audience_size)
     return merged
 
+
+# --------------------------------------------------------------------------- #
+# Discovery and Nightly Rebuild
+# --------------------------------------------------------------------------- #
+
+def discover_recent_scopes(days: int = 7, vault: Optional[Path] = None) -> list[str]:
+    """Find all unique `via:<surface>/<user>` scope tags seen in shards over the last N days."""
+    import sqlite3
+    dbs = shard_dbs(vault)
+    scopes = set()
+    from datetime import datetime, timedelta, timezone
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    for db in dbs:
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                rows = con.execute("SELECT tags FROM shards WHERE timestamp >= ? AND tags LIKE '%via:%'", (cutoff,)).fetchall()
+                for (raw_tags,) in rows:
+                    try:
+                        tl = json.loads(raw_tags) if isinstance(raw_tags, str) else (raw_tags or [])
+                    except Exception:
+                        tl = str(raw_tags or "").split(",")
+                    for t in tl:
+                        t = str(t).strip()
+                        if t.lower().startswith("via:"):
+                            scopes.add(t)
+            finally:
+                con.close()
+        except Exception:
+            continue
+    # Fallback to scanning all tags if cutoff yielded no scopes (e.g. legacy/testing)
+    if not scopes:
+        for db in dbs:
+            try:
+                con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+                try:
+                    rows = con.execute("SELECT tags FROM shards WHERE tags LIKE '%via:%' LIMIT 1000").fetchall()
+                    for (raw_tags,) in rows:
+                        try:
+                            tl = json.loads(raw_tags) if isinstance(raw_tags, str) else (raw_tags or [])
+                        except Exception:
+                            tl = str(raw_tags or "").split(",")
+                        for t in tl:
+                            t = str(t).strip()
+                            if t.lower().startswith("via:"):
+                                scopes.add(t)
+                finally:
+                    con.close()
+            except Exception:
+                continue
+    return sorted(scopes)
+
+
+def rebuild_recent_personas(days: int = 7, vault: Optional[Path] = None, tz: str = "America/New_York", role: str = "") -> dict[str, str]:
+    """Rebuilds personas for every scope active in the last N days, saving to personas.json."""
+    scopes = discover_recent_scopes(days=days, vault=vault)
+    store = PersonaStore(vault / "personas.json" if vault else None)
+    results = {}
+    for scope in scopes:
+        p = store.get_or_build(scope, rebuild=True, tz=tz, role=role, vault=vault)
+        results[scope] = p.fingerprint()
+    return results
 
 
 # --------------------------------------------------------------------------- #
@@ -1085,6 +1165,9 @@ def _main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--stable-days", type=int, default=0)
     ap.add_argument("--registry", type=Path)
     ap.add_argument("--rebuild", action="store_true", help="ignore the persona cache for --scope")
+    ap.add_argument("--rebuild-all", "--nightly", action="store_true",
+                    help="rebuild personas for all via: scopes seen in the last --days")
+    ap.add_argument("--days", type=int, default=7, help="days of history to scan for --rebuild-all")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--masks", action="store_true", help="list all available 20 behavioral masks")
     ap.add_argument("--emotions", action="store_true", help="list all 20 emotional spectrum states")
@@ -1094,6 +1177,16 @@ def _main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--check", type=Path,
                     help="output file to lint against the resolved persona's contract; exit 1 on violations")
     a = ap.parse_args(argv)
+
+    if a.rebuild_all:
+        res = rebuild_recent_personas(days=a.days, tz=a.tz, role=a.role)
+        if a.json:
+            print(json.dumps(res, indent=1))
+        else:
+            print(f"Rebuilt {len(res)} personas across active scopes:")
+            for s, fp in res.items():
+                print(f"  • {s} -> {fp}")
+        return 0
 
     if a.masks:
         if a.json:
