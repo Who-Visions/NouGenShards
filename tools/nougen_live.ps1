@@ -110,6 +110,27 @@ function Show-Status {
     Write-Output ''
 }
 
+function Set-MsgAuthEnv {
+    # A LAN bind with no token lets any peer POST /msg or drain GET /pop. When
+    # the bind is not loopback, resolve the token from keymaker into THIS
+    # process env only (Start-Process inherits it; it is never persisted or
+    # printed) and latch auth. The latch is set even if the token does not
+    # resolve: the receiver then refuses mutations instead of silently
+    # accepting everyone (fail closed - see AUTH_LATCH in nougenmsg_node.py).
+    $bind = $env:NOUGEN_AGY_MSG_BIND
+    if (-not $bind -or $bind -eq '127.0.0.1' -or $bind -eq '::1') { return }
+    $env:NOUGEN_AGY_MSG_AUTH = '1'
+    if ($env:NOUGEN_AGY_MSG_TOKEN) { return }
+    $code = "import sys; sys.path.insert(0, r'$Root\src'); from nougen_shards import keymaker; sys.stdout.write((keymaker.get_secret('NOUGEN_AGY_MSG_TOKEN') or '').strip())"
+    try { $tok = & $Python -c $code 2>$null } catch { $tok = '' }
+    if ($tok) {
+        $env:NOUGEN_AGY_MSG_TOKEN = "$tok".Trim()
+        Write-Output "  msg bus auth: token resolved from keymaker, latched."
+    } else {
+        Write-Output "  msg bus auth: LATCHED WITHOUT TOKEN (keymaker miss) - LAN mutations will be refused."
+    }
+}
+
 function Start-Lanes {
     New-Item -ItemType Directory -Path $RunDir -Force | Out-Null
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
@@ -123,6 +144,7 @@ function Start-Lanes {
         Write-Output "  Refusing to start a second receiver. Investigate before forcing."
     } else {
         if (-not (Test-Path -LiteralPath $MsgNode)) { throw "Receiver missing: $MsgNode" }
+        Set-MsgAuthEnv
         $proc = Start-Process -FilePath $Python `
             -ArgumentList @(('"' + $MsgNode + '"')) `
             -WindowStyle Hidden -PassThru `
