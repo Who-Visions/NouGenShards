@@ -28,3 +28,12 @@ def test_a_broken_plugin_is_reported_not_fatal():
     assert ok == [1]
     assert report[0]["status"].startswith("failed: RuntimeError")
     assert report[1] == {"plugin": "good", "status": "loaded"}
+
+
+def test_a_three_arg_pack_receives_node_helpers():
+    got = {}
+    def register(app, mcp, ctx):
+        got.update(ctx)
+    report = load_node_plugins("A", "M", eps=[_EP("canon", register)], ctx={"offloaded": "deco"})
+    assert got == {"offloaded": "deco"}
+    assert report == [{"plugin": "canon", "status": "loaded"}]
