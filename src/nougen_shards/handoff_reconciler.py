@@ -1,6 +1,6 @@
 r"""Zero-Drift Handoff & Claim Reconciler (Wishlist Item #1).
 
-Authority: C:\Users\super\.nougen\AUTHORITY.md
+Authority: ~/.nougen/AUTHORITY.md
 Mission:
     Autonomous reconciler that audits .handoffs/claims across fleet repositories,
     identifies stale or orphaned active claims, reconciles their status to 'released'
@@ -190,7 +190,7 @@ def reconcile_claims_directory(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Zero-Drift Handoff & Claim Reconciler")
-    parser.add_argument("--dir", default=r"C:\Users\super\Outpost\NouGenRelay\.handoffs\claims", help="Target claims dir")
+    parser.add_argument("--dir", default=str(Path.home() / "Outpost" / "NouGenRelay" / ".handoffs" / "claims"), help="Target claims dir")
     parser.add_argument("--dry-run", action="store_true", help="Audit without mutating")
     parser.add_argument("--archive-days", type=int, default=7, help="Archive released claims older than N days")
     args = parser.parse_args()

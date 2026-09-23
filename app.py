@@ -1246,6 +1246,50 @@ async def health(
         _health_authed, result, warnings, persistent, x_ngs_token, x_nougen_lane)
 
 
+def _write_path_probe() -> dict:
+    """Can each vault DB take a write lock right now? Writes nothing.
+
+    /health used to be read-only, so a node whose captures were timing out on
+    a held lock still reported "ignited" (blade, 2026-09-23 17:50Z: the shard
+    canary's writes timed out while 4444 answered healthy). BEGIN IMMEDIATE
+    acquires the same RESERVED lock a capture needs, then ROLLBACK releases
+    it, so this probes the write path without adding a row or touching WAL.
+    Capped per DB by NGS_HEALTH_WRITE_PROBE_S (default 2s) so a wedged vault
+    makes /health report the fault, not hang on it.
+    """
+    import sqlite3
+    import time as _time
+    from nougen_shards import snapshot_mode
+    try:
+        timeout_s = float(os.environ.get("NGS_HEALTH_WRITE_PROBE_S", "") or 2.0)
+    except ValueError:
+        timeout_s = 2.0
+    out = {"ok": None, "timeout_s": timeout_s, "checked": 0, "blocked": [], "max_ms": 0.0}
+    if snapshot_mode.enabled():
+        out["mode"] = "read-only snapshot"
+        return out
+    for i in range(1, core.MAX_DB_COUNT + 1):
+        path = core.get_db_path(i)
+        if not path.exists():
+            continue
+        started = _time.perf_counter()
+        conn = None
+        try:
+            conn = sqlite3.connect(str(path), timeout=timeout_s, isolation_level=None)
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("ROLLBACK")
+        except sqlite3.Error as exc:
+            out["blocked"].append({"db": i, "error": str(exc)[:120]})
+        finally:
+            if conn is not None:
+                conn.close()
+        out["checked"] += 1
+        out["max_ms"] = max(out["max_ms"], round((_time.perf_counter() - started) * 1000.0, 1))
+    if out["checked"]:
+        out["ok"] = not out["blocked"]
+    return out
+
+
 def _health_authed(result: dict, warnings: list, persistent: bool,
                    x_ngs_token: str, x_nougen_lane: Optional[str] = None) -> dict:
     """Vault-touching half of /health; runs in the threadpool by design.
@@ -1283,6 +1327,18 @@ def _health_authed(result: dict, warnings: list, persistent: bool,
         },
         "substrate": coverage,
     })
+    context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id, lane=lane)
+    try:
+        write_path = _write_path_probe()
+    finally:
+        core.reset_active_vault(context_tokens)
+    result["write_path"] = write_path
+    if write_path["ok"] is False:
+        warnings.append(
+            f"write path blocked: {len(write_path['blocked'])} vault DB(s) could not take a "
+            f"write lock within {write_path['timeout_s']}s - captures will time out "
+            f"while reads still answer ({write_path['blocked']})"
+        )
     if not coverage["complete"] and not coverage["read_through"]:
         warnings.append(
             f"substrate incomplete: {coverage['databases_mounted']} of "
@@ -1614,6 +1670,44 @@ def capture_shard(req: CaptureRequest,
     return {"status": "ok", **dict(result)}
 
 
+@app.get("/shard/{shard_id}")
+@app.get("/shards/{shard_id}")
+def get_shard_endpoint(
+    shard_id: int,
+    db_index: Optional[int] = Query(None),
+    _tenant: tenants.Tenant = Depends(tenant_vault_context),
+):
+    """Fetch ONE shard's full record by id and optional db_index.
+
+    Returns the decrypted, hydrated shard content, metadata, timestamps, and db_index.
+    Answers 404 if not found across mounted databases in the active vault.
+    """
+    indexes = [db_index] if db_index else list(range(1, core.MAX_DB_COUNT + 1))
+    for i in indexes:
+        if not core.get_db_path(i).exists():
+            continue
+        conn = None
+        try:
+            conn = core.get_connection(i)
+            row = conn.execute("SELECT * FROM shards WHERE id = ?", (shard_id,)).fetchone()
+            if row is None:
+                continue
+            item = core.hydrate(dict(row))
+            item["_db_index"] = i
+            return _json_safe(item)
+        except Exception as exc:
+            logger.error("get_shard_endpoint: DB %s error: %s", i, exc)
+            continue
+        finally:
+            if conn is not None:
+                conn.close()
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Shard id {shard_id} not found across cluster DBs ({indexes}).",
+    )
+
+
 @app.post("/sync/push")
 def sync_push(req: SyncPushRequest,
               _tenant: tenants.Tenant = Depends(tenant_vault_context)):
@@ -1787,6 +1881,22 @@ def sync_pull(response: Response,
     if degraded:
         response.headers["X-NGS-Degraded-DBs"] = ",".join(str(i) for i in degraded)
     return all_shards
+
+
+@app.get("/shards/{shard_id}")
+def shard_by_id(shard_id: int, db_index: Optional[int] = None,
+                _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """One shard by id: the proof half of a capture.
+
+    A canary that verifies its write by /search is proving "something similar
+    ranks", not "my row exists". capture returns shard_id and db_index; this
+    reads that exact row back, so a caller can compare content byte-for-byte.
+    Same body as the get_shard MCP tool. 404 means no mounted DB holds the id.
+    """
+    found = get_shard.__wrapped__(shard_id, db_index)
+    if not found or not found.get("found", True) or "id" not in found:
+        raise HTTPException(status_code=404, detail="shard {} not found".format(shard_id))
+    return found
 
 
 @app.get("/sync/hashes")

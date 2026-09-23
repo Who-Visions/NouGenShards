@@ -56,8 +56,51 @@ DRIVE_SCOPES = (
 ALL_SCOPES = GMAIL_SCOPES + CALENDAR_SCOPES + DRIVE_SCOPES
 
 
+from dataclasses import dataclass
+from urllib.parse import urlparse
+
+
+@dataclass
+class LoopbackListener:
+    host: str
+    port: int
+    trailing_slash: bool = False
+    redirect_uri: str = ""
+
+
 class GoogleAuthError(RuntimeError):
     """Raised when credentials cannot be resolved, refreshed, or minted."""
+
+
+def resolve_loopback_listener(client_kind: str, redirect_uris: list[str]) -> LoopbackListener:
+    """Determine the loopback host and port to bind for the OAuth callback."""
+    env_redirect = os.environ.get(ENV_REDIRECT_URI, "").strip()
+    if env_redirect:
+        parsed = urlparse(env_redirect)
+        if parsed.path not in ("", "/"):
+            raise GoogleAuthError(
+                f"NOUGEN_GOOGLE_REDIRECT_URI must have no path component for loopback flow; received '{env_redirect}'"
+            )
+        host = parsed.hostname or "localhost"
+        port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+        trailing = env_redirect.endswith("/")
+        return LoopbackListener(host=host, port=port, trailing_slash=trailing, redirect_uri=env_redirect)
+
+    if client_kind == "installed":
+        return LoopbackListener(host="localhost", port=0, trailing_slash=False, redirect_uri="http://localhost")
+
+    for uri in redirect_uris:
+        parsed = urlparse(uri)
+        if parsed.scheme in ("http", "https") and parsed.hostname in ("localhost", "127.0.0.1", "::1"):
+            if parsed.path in ("", "/"):
+                host = parsed.hostname
+                port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+                trailing = uri.endswith("/")
+                return LoopbackListener(host=host, port=port, trailing_slash=trailing, redirect_uri=uri)
+
+    raise GoogleAuthError(
+        f"No usable loopback redirect URI found in client redirect_uris (redirect_uri_mismatch). Registered URIs: {redirect_uris}"
+    )
 
 
 def token_dir() -> Path:
@@ -89,6 +132,7 @@ def _load_client_config() -> dict:
     client_secret = os.environ.get(ENV_CLIENT_SECRET, "").strip()
     if client_id and client_secret:
         return {
+            "_kind": "env",
             "client_id": client_id,
             "client_secret": client_secret,
             "redirect_uris": [os.environ.get(ENV_REDIRECT_URI, DEFAULT_REDIRECT_URI)],
@@ -108,9 +152,11 @@ def _load_client_config() -> dict:
         except (OSError, json.JSONDecodeError) as exc:
             raise GoogleAuthError(f"Could not read/parse {path}: {exc}") from exc
         # Google's downloaded file nests under "installed" or "web".
+        kind = "installed" if "installed" in data else ("web" if "web" in data else "unknown")
         inner = data.get("installed") or data.get("web") or data
         try:
             return {
+                "_kind": kind,
                 "client_id": inner["client_id"],
                 "client_secret": inner["client_secret"],
                 "redirect_uris": inner.get(
@@ -127,6 +173,31 @@ def _load_client_config() -> dict:
         f"{ENV_CLIENT_ID} + {ENV_CLIENT_SECRET}, or {ENV_CLIENT_SECRET_FILE} "
         "to a Google Cloud OAuth client JSON download."
     )
+
+
+def verify_end_to_end() -> int:
+    """Verify minted credentials by probing Gmail, Calendar, and Drive API endpoints."""
+    try:
+        creds = get_credentials()
+        from googleapiclient.discovery import build
+
+        gmail_service = build("gmail", "v1", credentials=creds)
+        profile = gmail_service.users().getProfile(userId="me").execute()
+        print(f"Gmail OK: {profile.get('emailAddress')}")
+
+        cal_service = build("calendar", "v3", credentials=creds)
+        cal_list = cal_service.calendarList().list(maxResults=1).execute()
+        print(f"Calendar OK: {len(cal_list.get('items', []))} calendar(s) found")
+
+        drive_service = build("drive", "v3", credentials=creds)
+        about = drive_service.about().get(fields="user").execute()
+        print(f"Drive OK: {about.get('user', {}).get('displayName', 'User')}")
+
+        return 0
+    except Exception as exc:
+        logger.error("End-to-end verification failed: %s", exc)
+        print(f"Verification failed: {exc}")
+        return 1
 
 
 def get_credentials(scopes: Optional[Iterable[str]] = None):

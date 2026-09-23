@@ -5,6 +5,7 @@ import socket
 import tempfile
 import threading
 
+import pytest
 from nougen_shards.nougenmsg import AgentPinger
 
 
@@ -23,6 +24,7 @@ def _serve(path, got):
     return srv, t
 
 
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="AF_UNIX sockets not supported on this OS")
 def test_empty_nested_sessions_does_not_mask_top_level_entries(tmp_path, monkeypatch):
     sock = os.path.join(tempfile.mkdtemp(prefix="cc", dir="/tmp"), "s.sock")  # AF_UNIX path limit
     got = []
