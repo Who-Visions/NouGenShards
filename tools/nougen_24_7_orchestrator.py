@@ -9,7 +9,7 @@ Continuously runs the complete lifecycle loop:
   3. Dream & Consolidation: Invariant extraction, utility decay, and SFT dataset generation.
   4. Build & Scoreboard Verification: Execute test suites across behavioral and core modules.
   5. OpenSkill Evolution: Compile and evolve skills in .nougen/shards/skills.
-  6. Fleet Heartbeat: Maintain live TCP pulse with Apollo (192.168.1.16) and Phoebus (192.168.1.78).
+  6. Fleet Heartbeat: Maintain live TCP pulse with every node in ~/.nougen/fleet_hosts.json.
 """
 
 import os
@@ -30,11 +30,19 @@ logger = logging.getLogger("NouGen24_7")
 WORKSPACE_ROOT = Path.home() / "Outpost" / "NouGen"
 PYTHON_EXE = WORKSPACE_ROOT / ".venv" / "Scripts" / "python.exe"
 
-NODES = {
-    "apollo": ("192.168.1.16", 8765),
-    "hyperion": ("192.168.1.187", 8765),
-    "phoebus": ("192.168.1.78", 8765),
-}
+def _load_nodes() -> dict:
+    """name -> (ip, 8765) from ~/.nougen/fleet_hosts.json ("ip" per node).
+    Public code carries no fleet addresses; nodes without an ip are skipped."""
+    import json
+    try:
+        cfg = json.loads((Path.home() / ".nougen" / "fleet_hosts.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    nodes = cfg.get("nodes") if isinstance(cfg, dict) else None
+    return {str(k): (str(v["ip"]), 8765) for k, v in (nodes or {}).items() if isinstance(v, dict) and v.get("ip")}
+
+
+NODES = _load_nodes()
 
 
 def ping_node(name: str, ip: str, port: int = 8765, timeout: float = 1.0) -> bool:

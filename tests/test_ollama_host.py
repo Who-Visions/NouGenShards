@@ -32,11 +32,11 @@ def test_bind_shorthand_port_only():
 
 def test_schemeless_host_gets_scheme_and_port():
     assert sanitize_ollama_url("localhost") == f"http://localhost:{DEFAULT_OLLAMA_PORT}"
-    assert sanitize_ollama_url("192.168.1.16") == f"http://192.168.1.16:{DEFAULT_OLLAMA_PORT}"
+    assert sanitize_ollama_url("192.0.2.16") == f"http://192.0.2.16:{DEFAULT_OLLAMA_PORT}"
 
 
 def test_explicit_port_preserved():
-    assert sanitize_ollama_url("http://192.168.1.16:9999") == "http://192.168.1.16:9999"
+    assert sanitize_ollama_url("http://192.0.2.16:9999") == "http://192.0.2.16:9999"
 
 
 def test_cloud_url_passes_through_untouched():

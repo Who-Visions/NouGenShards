@@ -276,7 +276,7 @@ durable artifact, the automation is best-effort.
     "platform": "darwin",
     "os": "Darwin 24.6.0",
     "arch": "x86_64",
-    "user": "kushboygroup",    // omitted when NOUGEN_MACHINE_PRIVATE=1
+    "user": "owner",    // omitted when NOUGEN_MACHINE_PRIVATE=1
     "repo_root": "/…/nougenshards"
   },
   "status": "open",            // "open" until acknowledged

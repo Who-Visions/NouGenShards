@@ -51,7 +51,7 @@ PRIORITY = [
 # Fleet boxes run on DHCP, so a literal address here is a route that works
 # until the next lease and then fails as "host down". mDNS names track the
 # lease; env vars let a caller override without editing code. The same stale
-# literal (10.0.0.87 / 192.168.1.16) is what broke blade's firewall rule and
+# literal (a hardcoded LAN address) is what broke blade's firewall rule and
 # its CLAUDE.md docs, so it is not a hypothetical failure mode.
 BLADE_HOST  = os.environ.get("NOUGEN_BLADE_HOST",  "blade1tb.local")
 BLADE_MODEL = os.environ.get("NOUGEN_BLADE_MODEL", "gemma4:e2b")

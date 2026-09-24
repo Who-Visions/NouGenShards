@@ -154,8 +154,8 @@ def is_local_record(data: dict | None) -> bool:
     #
     # The label used to override the id here, and the result was a record
     # written on this Mac sixty seconds earlier being announced as "REMOTE —
-    # written elsewhere, you are on KushBoyGroups-Mac-mini". It was written on
-    # KushBoyGroups-Mac-mini. NOUGEN_MACHINE=phoebus had been set in the writing
+    # written elsewhere, you are on owner-mac-mini". It was written on
+    # owner-mac-mini. NOUGEN_MACHINE=phoebus had been set in the writing
     # shell and not the reading one, so two names for one box read as two boxes.
     #
     # That mattered beyond the display: remote-origin triggers fired for this
@@ -170,7 +170,7 @@ def record_alias_warning(data: dict | None) -> str | None:
 
     Fires when a record's machine_id matches this box but its host label does
     not: same hardware, different name. `who-mac-mini`, `phoebus` and
-    `kushboygroups-mac-mini-local` have all meant this Mac, and a fleet that
+    `owner-mac-mini-local` have all meant this Mac, and a fleet that
     treats them as three participants counts one box three times.
     """
     machine = record_machine(data)
