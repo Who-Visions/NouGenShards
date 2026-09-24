@@ -69,6 +69,8 @@ UTC stays inside ids and stored timestamps only. Take the time from the live clo
 
 Read a leg: `relay_read <exact id>`  (do not use `relay_open` to find one; it truncates.)
 
+Ack a leg: `relay_ack <id>` with a note that **starts with your host and lane**, e.g. `whoart/claude-app: picking up items 3-5`. Connector acks all show the same author otherwise, so the host prefix is the only thing that tells lanes apart.
+
 Create a leg (from `Outpost\NouGenRelay`, then `git pull --rebase; git push`):
 ```powershell
 python -m nougen_relay.cli create -g "<one-line goal>" -M body.md
