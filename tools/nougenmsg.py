@@ -437,7 +437,7 @@ def main():
         agents = NouGenMsgBus.list_agents_structured()
         border = "=" * 76
         print(f"\n{border}")
-        print(f"🛰️  STRUCTURED AGENT REGISTRY (ListAgents)")
+        print("🛰️  STRUCTURED AGENT REGISTRY (ListAgents)")
         print(border)
         print(f"  {'NAME':<28} {'KIND':<10} {'NODE':<10} {'STATUS':<8} {'TRANSPORT'}")
         print(f"  {'-'*26} {'-'*8} {'-'*8} {'-'*6} {'-'*26}")
