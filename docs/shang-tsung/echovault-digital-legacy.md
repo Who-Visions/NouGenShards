@@ -17,7 +17,7 @@ An AI "Echo" of a person (voice, stories, values) that family can talk to after 
 | # | Donor move | NouGen landing | Existing piece |
 |---|---|---|---|
 | 1 | Check-In biographer | Interview loop that asks, listens and captures each answer as a dated append to a living dossier | Living-dossier pattern: dated appends under one domain_key (append-only, Rule 0.6) |
-| 2 | Personality AI | Echo = a persona system prompt compiled from the dossier plus experiential provenance ("how I decided"), not only facts | Xoah Self Archive v0.2 (shard 17777): choice topology, conservation of character |
+| 2 | Personality AI | Echo = a persona system prompt compiled from the dossier plus experiential provenance ("how I decided"), not only facts | the protagonist Self Archive v0.2 (shard 17777): choice topology, conservation of character |
 | 3 | RAG Memory | `compile_recall_packet` over a per-person domain_key; answers cite shard ids | nougen_shards core |
 | 4 | Custodian + inactivity release | Destiny-bearing shard: trigger = N days without a Check-In, obligation = unseal to named custodians | Destiny shards (17772), Keymaker vault for the sealed store |
 | 5 | Voice / avatar | Local lane only (voice and face are biometric, so they never leave the machine, per the coach privacy gate) | e2b lane; Archive's local ONNX stack |

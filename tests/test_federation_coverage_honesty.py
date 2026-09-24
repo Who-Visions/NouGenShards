@@ -110,7 +110,7 @@ def test_deadline_miss_is_reported_not_just_logged(monkeypatch):
 
 
 def test_result_is_still_an_ordinary_list_for_existing_callers(monkeypatch):
-    """Backward compatibility: cli, rhea_noir and shadow_xoah iterate/slice it.
+    """Backward compatibility: cli, rhea_noir and plugin_agent iterate/slice it.
 
     Deliberately does NOT assert a row count -- rank fusion decides that, and
     pinning it here would make this test fail for reasons unrelated to the
