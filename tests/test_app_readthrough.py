@@ -37,9 +37,9 @@ def test_no_env_registers_nothing(app_ns):
 
 
 def test_single_upstream_derives_name_from_host(app_ns, monkeypatch):
-    monkeypatch.setenv("NGS_UPSTREAM_URL", "https://blade.nougenai.com")
+    monkeypatch.setenv("NGS_UPSTREAM_URL", "https://node.example.com")
     seeded = app_ns["_seed_upstreams"]()
-    assert seeded == [{"name": "blade.nougenai.com", "url": "https://blade.nougenai.com"}]
+    assert seeded == [{"name": "node.example.com", "url": "https://node.example.com"}]
     assert app_ns["_registered_upstreams"]() == seeded
 
 
@@ -53,7 +53,7 @@ def test_several_upstreams_with_explicit_names(app_ns, monkeypatch):
 
 def test_reseeding_is_idempotent(app_ns, monkeypatch):
     """Every boot re-seeds; a restart must not multiply the peer list."""
-    monkeypatch.setenv("NGS_UPSTREAM_URL", "https://blade.nougenai.com")
+    monkeypatch.setenv("NGS_UPSTREAM_URL", "https://node.example.com")
     for _ in range(3):
         app_ns["_seed_upstreams"]()
     assert len(app_ns["_registered_upstreams"]()) == 1
@@ -78,7 +78,7 @@ def test_a_bad_upstream_does_not_block_the_others(app_ns, monkeypatch):
 
 def test_returns_a_list_not_a_context_manager(app_ns, monkeypatch):
     """Regression: the lifespan decorator once slid onto this function."""
-    monkeypatch.setenv("NGS_UPSTREAM_URL", "https://blade.nougenai.com")
+    monkeypatch.setenv("NGS_UPSTREAM_URL", "https://node.example.com")
     assert isinstance(app_ns["_seed_upstreams"](), list)
 
 
