@@ -104,7 +104,13 @@ def fleet_identity_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
     """Resolve coach aliases to physical transport nodes from nodes.json."""
     coach_to_machine = _default_coach_routes()
     machine_to_coach = {machine: coach for coach, machine in coach_to_machine.items()}
-    path = Path.home() / ".nougen" / "nodes.json"
+    override = os.environ.get("NOUGEN_NODES_CONFIG", "").strip()
+    if override:
+        path = Path(override).expanduser()
+    elif os.environ.get("NOUGEN_FLEET_HOSTS_FILE", "").strip():
+        path = fleet_hosts_path().parent / "nodes.json"
+    else:
+        path = Path.home() / ".nougen" / "nodes.json"
     try:
         configured = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -1316,3 +1322,220 @@ class NouGenMsgBus:
             except Exception:
                 continue
         return matches
+
+    @classmethod
+    def _inbound_policy_path(cls) -> str:
+        base = os.environ.get("NOUGEN_HOME") or os.path.join(os.path.expanduser("~"), ".nougen")
+        return os.path.join(base, "inbound_policy.json")
+
+    @classmethod
+    def _idle_subs_path(cls) -> str:
+        base = os.environ.get("NOUGEN_HOME") or os.path.join(os.path.expanduser("~"), ".nougen")
+        return os.path.join(base, "idle_subscriptions.json")
+
+    @classmethod
+    def get_inbound_policy(cls) -> Dict[str, Any]:
+        """Read crossSessionInbound policy (accept | hold | refuse)."""
+        cfg_path = cls._inbound_policy_path()
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as fp:
+                    data = json.load(fp)
+                    if isinstance(data, dict):
+                        return {
+                            "crossSessionInbound": data.get("crossSessionInbound", "accept"),
+                            "isolatePeerMachines": bool(data.get("isolatePeerMachines", False)),
+                            "dialogExpirySeconds": data.get("dialogExpirySeconds", 300),
+                        }
+            except Exception:
+                pass
+        return {
+            "crossSessionInbound": "accept",
+            "isolatePeerMachines": False,
+            "dialogExpirySeconds": 300,
+        }
+
+    @classmethod
+    def set_inbound_policy(cls, policy: str = "accept", isolate_peer_machines: Optional[bool] = None,
+                           dialog_expiry_seconds: Optional[int] = None) -> Dict[str, Any]:
+        """Set crossSessionInbound policy (accept | hold | refuse)."""
+        policy = policy.strip().lower()
+        if policy not in ("accept", "hold", "refuse"):
+            raise ValueError(f"Invalid policy '{policy}'. Must be 'accept', 'hold', or 'refuse'.")
+
+        cfg_path = cls._inbound_policy_path()
+        os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
+        data = {}
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as fp:
+                    data = json.load(fp)
+            except Exception:
+                data = {}
+        data["crossSessionInbound"] = policy
+        if isolate_peer_machines is not None:
+            data["isolatePeerMachines"] = bool(isolate_peer_machines)
+        if dialog_expiry_seconds is not None:
+            data["dialogExpirySeconds"] = max(10, int(dialog_expiry_seconds))
+
+        with open(cfg_path, "w", encoding="utf-8") as fp:
+            json.dump(data, fp, indent=2)
+        return cls.get_inbound_policy()
+
+    @classmethod
+    def subscribe_idle(cls, subscriber_session: str, target: str,
+                       subscriber_node: Optional[str] = None,
+                       ttl_hours: float = 12.0) -> Dict[str, Any]:
+        """Subscribe to a one-shot idle notification when `target` agent/session goes idle."""
+        now = time.time()
+        expires_at = now + (ttl_hours * 3600.0)
+        sub_id = str(uuid.uuid4())
+        record = {
+            "id": sub_id,
+            "subscriber_session": subscriber_session,
+            "target": target.strip().lower(),
+            "subscriber_node": subscriber_node or get_current_node(),
+            "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            "expires_at": expires_at,
+            "expires_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires_at)),
+        }
+        path = cls._idle_subs_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        subs = []
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as fp:
+                    raw = json.load(fp)
+                    subs = [s for s in raw if isinstance(s, dict) and s.get("expires_at", 0) > now]
+            except Exception:
+                subs = []
+        subs.append(record)
+        with open(path, "w", encoding="utf-8") as fp:
+            json.dump(subs, fp, indent=2)
+        return record
+
+    @classmethod
+    def list_idle_subscriptions(cls) -> List[Dict[str, Any]]:
+        """List and purge expired idle subscriptions (12h TTL)."""
+        now = time.time()
+        path = cls._idle_subs_path()
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                raw = json.load(fp)
+                active = [s for s in raw if isinstance(s, dict) and s.get("expires_at", 0) > now]
+            if len(active) != len(raw):
+                with open(path, "w", encoding="utf-8") as fp:
+                    json.dump(active, fp, indent=2)
+            return active
+        except Exception:
+            return []
+
+    @classmethod
+    def emit_idle(cls, target_agent: str, status_summary: str = "",
+                  node: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Emit one-shot idle notification to all subscribers of `target_agent` and drain them."""
+        now = time.time()
+        path = cls._idle_subs_path()
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                subs = json.load(fp)
+        except Exception:
+            return []
+
+        norm_target = target_agent.strip().lower()
+        matched = []
+        remaining = []
+        for s in subs:
+            if not isinstance(s, dict) or s.get("expires_at", 0) <= now:
+                continue
+            sub_target = str(s.get("target", "")).lower()
+            if sub_target in (norm_target, "all", "*") or norm_target.endswith(sub_target):
+                matched.append(s)
+            else:
+                remaining.append(s)
+
+        with open(path, "w", encoding="utf-8") as fp:
+            json.dump(remaining, fp, indent=2)
+
+        results = []
+        for match in matched:
+            sub_session = match.get("subscriber_session", "")
+            sub_node = match.get("subscriber_node") or "local"
+            notice_text = f"⚡ [IDLE NOTICE] @{target_agent} on {node or get_current_node()} is now idle"
+            if status_summary:
+                notice_text += f": {status_summary}"
+            origin = {
+                "trigger_source": "notify_when_idle",
+                "target_agent": target_agent,
+                "subscription_id": match.get("id"),
+            }
+            if sub_node in ("local", get_current_node()):
+                res = cls.live_ping(target=sub_session or "antigravity", text=notice_text, origin=origin)
+            else:
+                res = cls.emit_node(node=sub_node, target=sub_session or "antigravity", text=notice_text, origin=origin)
+            results.append({"subscription": match, "delivery": res})
+        return results
+
+    @classmethod
+    def list_agents_structured(cls) -> List[Dict[str, Any]]:
+        """Rich ListAgents response returning structured descriptor objects for all peers."""
+        peers = cls.list_peers()
+        curr = peers.get("current_node", "standalone")
+        agents: List[Dict[str, Any]] = []
+
+        # Local Claude Sessions
+        for pipe in peers.get("claude_active_pipes", []):
+            pipe_name = pipe.split("\\")[-1]
+            agents.append({
+                "name": f"claude-{pipe_name[:8]}",
+                "kind": "session",
+                "agent_family": "claude-code",
+                "node": curr,
+                "status": "idle",
+                "transport": pipe,
+                "capabilities": ["text-b64", "notify_when_idle", "auth_handshake"]
+            })
+
+        # Local Antigravity Session
+        for pipe in peers.get("antigravity_active_pipes", []):
+            agents.append({
+                "name": "antigravity",
+                "kind": "session",
+                "agent_family": "antigravity",
+                "node": curr,
+                "status": "idle",
+                "transport": pipe,
+                "capabilities": ["text-b64", "notify_when_idle", "inbox_stream"]
+            })
+
+        # Model Lanes
+        agents.append({
+            "name": "ollama:gemma4:e2b-qat",
+            "kind": "model",
+            "agent_family": "gemma4",
+            "node": curr,
+            "status": "idle",
+            "transport": "local_http",
+            "capabilities": ["text-b64", "gpu_inference"]
+        })
+
+        # Remote Nodes
+        for r_node in peers.get("nodes_reachable", []):
+            if r_node != curr:
+                coach = coach_for_machine(r_node)
+                agents.append({
+                    "name": f"@{r_node}:{coach}",
+                    "kind": "remote",
+                    "agent_family": "fleet_coach",
+                    "node": r_node,
+                    "status": "online",
+                    "transport": f"ssh://{r_node}",
+                    "capabilities": ["text-b64", "relay_sync", "destiny_mesh"]
+                })
+
+        return agents
+

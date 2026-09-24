@@ -429,7 +429,57 @@ def main():
     if "--capabilities" in sys.argv:
         # Probed over ssh by NouGenMsgBus.emit_node to decide whether this
         # receiver can take a base64 body inline instead of an scp'd file.
-        print("nougenmsg-capabilities: text-b64")
+        print("nougenmsg-capabilities: text-b64, notify_when_idle, auth_handshake")
+        return
+
+    # Rich ListAgents command (matching Claude Code ListAgents specification)
+    if "list-agents" in sys.argv or "--list-agents" in sys.argv:
+        agents = NouGenMsgBus.list_agents_structured()
+        border = "=" * 76
+        print(f"\n{border}")
+        print("🛰️  STRUCTURED AGENT REGISTRY (ListAgents)")
+        print(border)
+        print(f"  {'NAME':<28} {'KIND':<10} {'NODE':<10} {'STATUS':<8} {'TRANSPORT'}")
+        print(f"  {'-'*26} {'-'*8} {'-'*8} {'-'*6} {'-'*26}")
+        for a in agents:
+            print(f"  {a['name']:<28} {a['kind']:<10} {a['node']:<10} {a.get('status',''):<8} {a.get('transport','')}")
+        print(f"{border}\n")
+        return
+
+    # Idle Notification Emission
+    if "idle" in sys.argv or "--idle" in sys.argv:
+        agent = resolve_agent_label()
+        status_text = ""
+        if "--status" in sys.argv:
+            idx = sys.argv.index("--status")
+            if idx + 1 < len(sys.argv):
+                status_text = sys.argv[idx + 1]
+        dispatched = NouGenMsgBus.emit_idle(target_agent=agent, status_summary=status_text)
+        print(f"[OK] Emitted idle notification for @{agent} -> {len(dispatched)} subscriber(s) notified.")
+        return
+
+    # Idle Subscription
+    if "subscribe-idle" in sys.argv or "--subscribe-idle" in sys.argv:
+        target = "antigravity"
+        if "--target" in sys.argv:
+            idx = sys.argv.index("--target")
+            if idx + 1 < len(sys.argv):
+                target = sys.argv[idx + 1]
+        session = resolve_session() or "unknown_session"
+        sub = NouGenMsgBus.subscribe_idle(subscriber_session=session, target=target)
+        print(f"[OK] Subscribed to idle notifications for @{target} (Sub ID: {sub['id'][:8]}, expires {sub['expires_utc']}).")
+        return
+
+    # Inbound Policy Configuration
+    if "inbound-policy" in sys.argv or "--inbound-policy" in sys.argv:
+        idx = sys.argv.index("inbound-policy") if "inbound-policy" in sys.argv else sys.argv.index("--inbound-policy")
+        if idx + 1 < len(sys.argv) and sys.argv[idx + 1] in ("accept", "hold", "refuse"):
+            pol = sys.argv[idx + 1]
+            res = NouGenMsgBus.set_inbound_policy(pol)
+            print(f"[OK] Inbound messaging policy set to: {res['crossSessionInbound']}")
+        else:
+            res = NouGenMsgBus.get_inbound_policy()
+            print(f"Current crossSessionInbound policy: {res['crossSessionInbound']} (isolatePeerMachines: {res['isolatePeerMachines']})")
         return
 
     if "--peers" in sys.argv or "--list-peers" in sys.argv or "--list-pipes" in sys.argv:
@@ -479,7 +529,7 @@ def main():
             idx = sys.argv.index("--target")
             if idx + 1 < len(sys.argv):
                 target = sys.argv[idx + 1]
-        archived = NouGenMsgBus.clear_inbox(target=target)
+        archived = NouGenMsgBus.clear_inbox(target=target, confirmed=True)
         print(f"[OK] Archived {archived} message(s) from {target} inbox.")
         return
 
