@@ -157,7 +157,7 @@ def render_aar(r: Receipt) -> str:
               f"- change: `{e.get('change', {}).get('from')}` → `{e.get('change', {}).get('to')}`",
               "", "## Replay", "",
               f"    nougen wargame run {r.scenario} --policy {r.blue_policy} --seed {r.seed}",
-              f"    nougen wargame replay <receipt.json>", ""]
+              "    nougen wargame replay <receipt.json>", ""]
     return "\n".join(lines)
 
 
