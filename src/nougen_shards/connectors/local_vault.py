@@ -38,7 +38,7 @@ def _timeout_s() -> float:
     and operators can retune without a process restart.
 
     Why this exists: measured 2026-08-17, one unindexed 1 GB store
-    (veilverse_canon_vault, no *_ngsfts table -> LIKE full scan) cost 46s per
+    (a large canon vault, no *_ngsfts table -> LIKE full scan) cost 46s per
     query and the concurrent sweep's wall-clock IS the slowest store — one vault
     held the entire federated merge hostage. The budget is enforced with
     SQLite's progress handler and the store is reported as errored, never

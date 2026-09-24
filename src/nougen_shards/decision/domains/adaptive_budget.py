@@ -22,7 +22,7 @@ its own flag (NOUGEN_ADAPTIVE_BUDGET) rather than overloading the shared one,
 so it can roll out and roll back independently of the rest of the Decision
 Plane.
 
-No Shadow Dweller lore: every fixture and example here is sanitized/synthetic.
+No proprietary lore: every fixture and example here is sanitized/synthetic.
 """
 from __future__ import annotations
 
