@@ -114,7 +114,7 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     # failure below is recorded in the same ``sweep_report["errored"]`` contract
     # local_vault already uses, so the /search trailer surfaces it with no
     # endpoint change, AND mirrored onto the returned list for library callers
-    # (CLI, rhea, shadow_xoah) that pass no sweep_report and would otherwise
+    # (CLI, rhea, plugin agents) that pass no sweep_report and would otherwise
     # still be blind.
     lane_failures: list = []
 
