@@ -140,7 +140,7 @@ function liveNougenApiPlugin() {
                     id: filename,
                     timestamp: whenMatch ? whenMatch[1].trim() : fs.statSync(file).mtime.toISOString(),
                     agent: agent,
-                    machine: machine === 'blade1tb' ? 'Razer Blade' : machine === 'phoebus' ? 'Mac Mini' : 'PX13 Laptop',
+                    machine: machine === 'blade1tb' ? 'Razer Blade' : machine === 'phoebus' ? 'Server' : 'PX13 Laptop',
                     branch: branchMatch ? branchMatch[1].trim() : 'main',
                     goal: goalMatch ? goalMatch[1].trim() : content.split('\n')[0].replace(/^#\s*/, ''),
                     tasks_done: 4,
@@ -187,7 +187,7 @@ function liveNougenApiPlugin() {
           // 6. Live Fleet Nodes Telemetry
           if (endpoint === 'fleet_nodes') {
             exec('nvidia-smi --query-gpu=name,memory.total,memory.used,temperature.gpu --format=csv,noheader,nounits', (err, stdout) => {
-              let localGpu = 'NVIDIA RTX 4050 Laptop GPU';
+              let localGpu = 'GPU';
               let totalVram = 6141;
               let usedVram = 512;
               let temp = '58°C';
@@ -204,14 +204,14 @@ function liveNougenApiPlugin() {
 
               const nodes = [
                 {
-                  name: 'Apollo',
-                  host: 'Razer Blade 2020',
-                  ip: '192.168.1.16',
-                  coach: 'Apollo',
-                  player: 'Sol-Ai (Gemma 4)',
+                  name: 'Node A',
+                  host: 'Workstation',
+                  ip: '192.0.2.10',
+                  coach: 'Node A',
+                  player: 'local model',
                   role: 'Heavy Thinking & Synthesis',
-                  gpu: 'RTX 2080 Super (8 GB VRAM)',
-                  ram: '64 GB RAM',
+                  gpu: 'Discrete GPU',
+                  ram: 'RAM',
                   status: 'online',
                   vram_used_pct: 68,
                   shards_synced: 835,
@@ -219,14 +219,14 @@ function liveNougenApiPlugin() {
                   fps_heartbeat: '120 Hz Sync',
                 },
                 {
-                  name: 'Hyperion',
-                  host: 'ProArt PX13 (This Machine)',
-                  ip: '192.168.1.187',
-                  coach: 'Antigravity (AGY)',
-                  player: 'Yukiai (Gemma 4)',
+                  name: 'Node B',
+                  host: 'Laptop (this machine)',
+                  ip: '192.0.2.11',
+                  coach: 'Agent',
+                  player: 'local model',
                   role: 'Fast Local Actions & Orchestration',
                   gpu: `${localGpu} (${(totalVram / 1024).toFixed(1)} GB)`,
-                  ram: '32 GB LPDDR5X',
+                  ram: 'RAM',
                   status: 'active-node',
                   vram_used_pct: usedPct,
                   shards_synced: 835,
@@ -234,14 +234,14 @@ function liveNougenApiPlugin() {
                   fps_heartbeat: 'Live Telemetry',
                 },
                 {
-                  name: 'Phoebus',
-                  host: 'Mac Mini',
-                  ip: '192.168.1.78',
-                  coach: 'Keadra',
-                  player: 'Keadracode',
+                  name: 'Node C',
+                  host: 'Server',
+                  ip: '192.0.2.12',
+                  coach: 'Agent',
+                  player: 'local model',
                   role: 'Main Hub & Central Storage',
-                  gpu: 'Apple Silicon GPU',
-                  ram: '32 GB Unified RAM',
+                  gpu: 'Integrated GPU',
+                  ram: 'RAM',
                   status: 'online',
                   vram_used_pct: 32,
                   shards_synced: 835,
