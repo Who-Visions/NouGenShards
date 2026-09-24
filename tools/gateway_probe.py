@@ -50,7 +50,16 @@ sys.path.insert(0, str(_REPO / "src"))
 
 # Resolve at run time: a pinned origin here is a claim about somebody else's
 # deployment, and this probe exists to stop unfalsifiable claims.
-ORIGIN = os.environ.get("NOUGEN_FLEET_ORIGIN", "https://fleet.nougenai.com").rstrip("/")
+def _fleet_url(key: str) -> str:
+    """URL from ~/.nougen/fleet_hosts.json "urls"; public code ships none."""
+    try:
+        with open(os.path.join(os.path.expanduser("~"), ".nougen", "fleet_hosts.json"), encoding="utf-8") as fh:
+            return str((json.load(fh).get("urls") or {}).get(key) or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+ORIGIN = (os.environ.get("NOUGEN_FLEET_ORIGIN") or _fleet_url("fleet_origin")).rstrip("/")
 REDIRECT = os.environ.get("NOUGEN_FLEET_REDIRECT", "http://localhost:8976/callback")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")

@@ -1171,7 +1171,7 @@ async def health(
     /sync/*, /agent, /dav1d/*) is sync-def, so they all dispatch through the
     same default anyio threadpool (~40 threads). A handful of wedged /agent
     or slow federated /search calls exhausts it, and a sync-def /health then
-    QUEUES behind them -- observed at the shards.nougenai.com front door as
+    QUEUES behind them -- observed at the public front door as
     /health hanging 30-120s with zero bytes while unknown paths 404ed
     instantly (routing never touches the pool). The unauthenticated probe is
     pure cheap local reads, so it now runs on the event loop and always

@@ -21,7 +21,7 @@ snapshots/ (on the Space: /data, so LATEST.json lives at
                               FUSE mount (measured: a 2-term search exceeded
                               280s cold). "0" serves straight off the mount.
   NOUGEN_SNAPSHOT_REFRESH_S   how often to re-read LATEST.json (default 300)
-  NOUGEN_CAPTURE_FORWARD_URL  where captures go (e.g. https://blade.nougenai.com)
+  NOUGEN_CAPTURE_FORWARD_URL  where captures go (e.g. https://node.example.com)
   NGS_FORWARD_TOKEN           X-NGS-Token for the forward target (falls back
                               to NGS_NODE_TOKEN)
 """

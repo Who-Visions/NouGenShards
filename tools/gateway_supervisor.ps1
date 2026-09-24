@@ -44,6 +44,10 @@ $env:NOUGEN_SECRETS_VAULT_DIR = Join-Path $env:USERPROFILE '.nougen\secrets'
 # stream, so any function that logs returns those log lines as part of its
 # return value. That made `if (Assert-GatewayAuth)` truthy on the failure path -
 # it logged "authenticated call FAILED" and the caller still printed AUTHENTICATED.
+function Get-FleetUrl([string]$Key) {
+    # URLs come from ~/.nougen/fleet_hosts.json "urls"; public code ships none.
+    try { return [string]((Get-Content (Join-Path $env:USERPROFILE '.nougen\fleet_hosts.json') -Raw | ConvertFrom-Json).urls.$Key) } catch { return '' }
+}
 function Log($m) { Write-Host ("{0}  {1}" -f (Get-Date -Format 'HH:mm:ss'), $m) }
 
 function Get-TunnelUrl {
@@ -84,7 +88,7 @@ function Sync-Worker($url) {
     # quick-tunnel hostname dies with its cloudflared process, and deploying it from a
     # stale local checkout can also regress the live worker code. Refuse by default;
     # opt back in only on purpose with NOUGEN_ALLOW_QUICK_GATEWAY=1.
-    $canonical = if ($env:NOUGEN_GATEWAY_CANONICAL) { $env:NOUGEN_GATEWAY_CANONICAL } else { 'https://shards.nougenai.com' }
+    $canonical = if ($env:NOUGEN_GATEWAY_CANONICAL) { $env:NOUGEN_GATEWAY_CANONICAL } else { Get-FleetUrl 'front_door' }
     if ($url -match '\.trycloudflare\.com' -and $env:NOUGEN_ALLOW_QUICK_GATEWAY -ne '1') {
         Log "quick tunnel $url is local-only; worker stays on canonical $canonical (set NOUGEN_ALLOW_QUICK_GATEWAY=1 to override)"
         return $false
@@ -207,14 +211,14 @@ function Assert-GatewayAuth {
 
 function Test-NamedTunnel {
     # The quick-tunnel checks above never look at the NAMED tunnel that the
-    # fleet actually dials (blade.nougenai.com). On 2026-09-19 that tunnel
+    # fleet actually dials (the named tunnel). On 2026-09-19 that tunnel
     # failed 199/199 requests (cloudflared proxied to a localhost origin that
     # resolved to ::1 while uvicorn listened on 127.0.0.1 only) and this
-    # supervisor logged "healthy" all night because shards.nougenai.com is
+    # supervisor logged "healthy" all night because the front door is
     # answered by the HF Space. Probe the named hostname on every tick; on
     # failure restart the cloudflared Windows service once (bounded: one
     # restart per tick) and say RED loudly either way.
-    $named = if ($env:NOUGEN_NAMED_TUNNEL_URL) { $env:NOUGEN_NAMED_TUNNEL_URL } else { 'https://blade.nougenai.com' }
+    $named = if ($env:NOUGEN_NAMED_TUNNEL_URL) { $env:NOUGEN_NAMED_TUNNEL_URL } else { Get-FleetUrl 'named_tunnel' }
     if ($named -eq 'off') { return 'skipped' }
     $ok = $false
     try { $ok = (Invoke-WebRequest "$named/health" -TimeoutSec 10 -UseBasicParsing).StatusCode -eq 200 } catch { $ok = $false }

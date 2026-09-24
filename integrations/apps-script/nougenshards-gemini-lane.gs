@@ -48,7 +48,7 @@
  *
  * SETUP (once):
  *   1. Project Settings -> Script Properties:
- *        NGS_URL         = https://shards.nougenai.com
+ *        NGS_URL         = https://<your-gateway-host>
  *        NGS_TOKEN       = <node token — lives here, never in code>
  *        GEMINI_FOLDER   = Gemini Exports      (name; only used to create/pin)
  *        SCAN_SUBFOLDERS = true                (optional)
@@ -66,7 +66,7 @@
 
 var PROPS = PropertiesService.getScriptProperties();
 
-var DEFAULT_URL     = 'https://shards.nougenai.com';
+var DEFAULT_URL     = '';  // set NGS_URL in Script Properties
 var MAX_CHUNK       = 6000;               // chars per shard — keeps recall sharp
 var MAX_RETRIES     = 3;                  // per-file failures before quarantine
 var LEDGER_KEY      = '__ledger';

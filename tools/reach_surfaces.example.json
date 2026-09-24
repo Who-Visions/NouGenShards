@@ -25,7 +25,7 @@
     {
       "name": "shards front door /health",
       "kind": "http",
-      "target": "https://shards.nougenai.com/health",
+      "target": "https://gateway.example.com/health",
       "expect": {
         "status": [
           200
@@ -36,7 +36,7 @@
     {
       "name": "shards front door /mcp",
       "kind": "mcp",
-      "target": "https://shards.nougenai.com/mcp",
+      "target": "https://gateway.example.com/mcp",
       "expect": {
         "status": [
           200,
@@ -49,7 +49,7 @@
     {
       "name": "shards front door /search (auth)",
       "kind": "search",
-      "target": "https://shards.nougenai.com/search",
+      "target": "https://gateway.example.com/search",
       "expect": {
         "status": [
           200
@@ -68,9 +68,9 @@
       }
     },
     {
-      "name": "blade.nougenai.com /health",
+      "name": "node-a.example.com /health",
       "kind": "http",
-      "target": "https://blade.nougenai.com/health",
+      "target": "https://node-a.example.com/health",
       "expect": {
         "status": [
           200
@@ -81,7 +81,7 @@
     {
       "name": "whoart-vault /health",
       "kind": "http",
-      "target": "https://whoart-vault.nougenai.com/health",
+      "target": "https://node-b.example.com/health",
       "expect": {
         "status": [
           200
@@ -91,7 +91,7 @@
     {
       "name": "phoebus /health",
       "kind": "http",
-      "target": "https://phoebus.nougenai.com/health",
+      "target": "https://node-c.example.com/health",
       "expect": {
         "status": [
           200

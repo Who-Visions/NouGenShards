@@ -27,7 +27,7 @@ $RunDir     = Join-Path $Root '.node'
 # The named highway tunnel and the quick tunnel (gateway_supervisor.ps1) are two
 # distinct processes. They MUST NOT share a pid file: sharing one made this lane
 # report UP for whichever cloudflared happened to be alive, so `start` short
-# circuited and blade.nougenai.com sat at 530 with nothing bound to it.
+# circuited and the node hostname sat at 530 with nothing bound to it.
 $PidName    = if ($env:NGS_TUNNEL_PID_NAME) { $env:NGS_TUNNEL_PID_NAME } else { 'named_tunnel.pid' }
 $PidFile    = Join-Path $RunDir $PidName
 $OutLog     = Join-Path $RunDir ([IO.Path]::ChangeExtension($PidName, $null) + 'out.log')

@@ -2,7 +2,7 @@
 
 A label is not a measurement. `shards_status` said green while blade was down
 (the failover Worker's first hop answered); a shard stamped source_node "blade"
-lived in the fleet store, not on blade's disk; blade.nougenai.com answered 000
+lived in the fleet store, not on blade's disk; the node hostname answered 000
 from blade itself. Each of those cost a lane hours because the surface that
 answered was not the surface the name promised. This tool prints, per surface:
 
@@ -18,7 +18,7 @@ never by trusting the hostname. Four states, so nothing has to be inferred:
     RED       no answer: DNS, TCP, TLS, timeout
     SKIPPED   this vantage cannot run the probe (no token, vantage_only)
 
-The manifest (tools/reach_surfaces.json, override NOUGEN_SURFACES_FILE) must
+The manifest (~/.nougen/reach_surfaces.json, else tools/reach_surfaces.example.json; override NOUGEN_SURFACES_FILE) must
 carry at least one `control` row pointing at a dead host; the run refuses to
 report GREEN for anything if the control row is not RED, per the
 adversarial-control doctrine (six wrong fleet conclusions in one morning were
@@ -52,8 +52,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 UA = os.environ.get("NOUGEN_PROBE_UA", "nougen-reach-matrix/1.0")  # bare Python UA draws a Cloudflare 1010/403
 TIMEOUT_S = float(os.environ.get("NOUGEN_REACH_TIMEOUT_S", "20"))
 STATE_DIR = os.environ.get("NOUGEN_STATE_DIR", os.path.join(os.path.expanduser("~"), ".nougen", "state"))
-MANIFEST = os.environ.get("NOUGEN_SURFACES_FILE", os.path.join(HERE, "reach_surfaces.json"))
-GATEWAY = os.environ.get("NGS_GATEWAY_ORIGIN_FLEET", "https://shards.nougenai.com")
+def _fleet_url(key: str) -> str:
+    """URL from ~/.nougen/fleet_hosts.json "urls"; public code ships none."""
+    try:
+        with open(os.path.join(os.path.expanduser("~"), ".nougen", "fleet_hosts.json"), encoding="utf-8") as fh:
+            return str((json.load(fh).get("urls") or {}).get(key) or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+_LOCAL_SURFACES = os.path.join(os.path.expanduser("~"), ".nougen", "reach_surfaces.json")
+MANIFEST = os.environ.get("NOUGEN_SURFACES_FILE") or (
+    _LOCAL_SURFACES if os.path.exists(_LOCAL_SURFACES) else os.path.join(HERE, "reach_surfaces.example.json"))
+GATEWAY = os.environ.get("NGS_GATEWAY_ORIGIN_FLEET") or _fleet_url("front_door")
 _ENV_RE = re.compile(r"\$\{([A-Z0-9_]+)(?::-([^}]*))?\}")
 
 
@@ -247,7 +258,7 @@ def run(manifest: dict, token: str | None, here: str | None = None) -> dict:
 
 
 def table(result: dict) -> str:
-    w = max(len(r["name"]) for r in result["rows"]) + 2
+    w = max((len(r["name"]) for r in result["rows"]), default=4) + 2
     out = [f"reach matrix  vantage={result['vantage']}  {result['utc']}  control_ok={result['control_ok']}  token_fp={result['token_fp']}"]
     for r in result["rows"]:
         st = "-" if r["status"] is None else str(r["status"])
