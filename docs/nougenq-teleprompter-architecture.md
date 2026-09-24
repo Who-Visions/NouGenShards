@@ -1,7 +1,7 @@
 # 🎬 NouGenQ: Broadcast-Safe Teleprompter & Live Operator Engine
 
 > **Architecture & Donor Morph Specification**
-> **Fleet Authority:** `C:\Users\super\.nougen` | **Version:** 1.0.0
+> **Fleet Authority:** `~/.nougen` | **Version:** 1.0.0
 > **Target Substrate:** Google AI Studio / WebXR & Multi-Screen Fleet Runtime
 
 ---
