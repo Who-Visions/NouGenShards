@@ -1,7 +1,6 @@
 """Unit tests for Claude Code cross-session messaging parity in NouGenMsgBus."""
 import json
 import time
-from pathlib import Path
 
 from nougen_shards.nougenmsg import NouGenMsgBus
 
