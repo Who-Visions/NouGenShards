@@ -1,0 +1,66 @@
+{
+  "id": "WG-2026-0003",
+  "title": "Port 4444 Split Brain",
+  "status": "candidate",
+  "level": "boss",
+  "mode": "split_brain",
+  "version": 1,
+  "mission": {
+    "goal": "Prove runtime identity rather than port availability",
+    "destiny": "Exactly one authoritative NouGen node owns :4444 on Blade"
+  },
+  "arena": {"repos": ["NouGenShards"], "nodes": ["blade"]},
+  "initial_state": {
+    "port": {"number": 4444, "listening": true, "owner_pid": 1001, "owner_tree": "tree_a"},
+    "trees": {
+      "tree_a": {"path": "C:/NouGenShards", "sha": "aaa111"},
+      "tree_b": {"path": "C:/NouGenShards-push-main", "sha": "bbb222"}
+    },
+    "expected_sha": null,
+    "rollout": "idle"
+  },
+  "assumptions": {
+    "confirmed": ["two scheduled mechanisms can launch different trees"],
+    "dangerous": ["port_open_means_correct_runtime", "one_task_owns_the_port"]
+  },
+  "actors": {
+    "blue": {
+      "objective": "keep the shard gateway available and correctly versioned",
+      "policy": "runtime_identity",
+      "naive_policy": "port_open_means_deployed"
+    },
+    "red": {"objective": "create ownership ambiguity without an obvious crash"},
+    "white": {"objective": "adjudicate on port + PID + tree + SHA, never port alone"},
+    "green": {"objective": "halt rollout until ownership is resolved"}
+  },
+  "injects": [
+    {
+      "type": "binder_swap",
+      "at_turn": 2,
+      "params": {"tree": "tree_b", "pid": 2002},
+      "description": "Scheduling order changes; the second tree binds :4444 first. Health endpoint still answers.",
+      "reversible": true
+    },
+    {
+      "type": "patch_deployed",
+      "at_turn": 4,
+      "params": {"tree": "tree_a", "sha": "ccc333"},
+      "description": "Agent deploys a patch to the inactive tree. Dashboard reports success.",
+      "reversible": true
+    }
+  ],
+  "invariants": ["port_open_is_not_runtime_identity"],
+  "telemetry": ["listening", "owner_pid", "owner_tree", "owner_sha", "expected_sha"],
+  "victory": ["runtime_identity_verified", "rollout_halted_on_mismatch"],
+  "catastrophic_failure": ["patch_declared_live_on_wrong_tree"],
+  "turns": 6,
+  "fog": {"blue": {"inject_visibility": "hidden"}, "white": {"ground_truth": "full"}},
+  "elevation": {
+    "failure_class": "split_brain",
+    "description": "a patch was declared live because the port answered, while another tree owned the socket",
+    "assumption": "port_open_means_correct_runtime",
+    "invariant": "port_open_is_not_runtime_identity",
+    "component": "runtime_ownership_proof",
+    "change_type": "identity_check"
+  }
+}

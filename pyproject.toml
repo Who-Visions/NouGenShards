@@ -75,6 +75,10 @@ nougen-mcp = "nougen_shards.mcp:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# War Games scenarios and schema ship with the wheel (nougen wargame list/run).
+nougen_shards = ["wargames/scenarios/*.json", "wargames/schema/*.json"]
+
 [tool.pytest.ini_options]
 # Makes `python -m pytest` work from the repo root without the manual
 # PYTHONPATH=src prefix (pytest>=7 injects these onto sys.path itself).

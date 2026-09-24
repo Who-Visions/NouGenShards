@@ -10,6 +10,8 @@
 **Core Relationship:** Hardcade × Shards × Relay × MSG × Track × Build × Dream × Harden × Evolve × Destiny
 
 > **Provenance note.** Lives at `docs/wargames-doctrine.md` because `wargames/` is gitignored for private working notes. This doctrine was drafted in a NouGenShards-assisted session on 2026-09-24 and captured here verbatim. The captured source ends partway through section 94 (Hardcade Visual Grammar). Sections 94 onward are open for completion; nothing after that point has been invented to fill the gap.
+>
+> **Implementation.** The section 83 slice is live: `src/nougen_shards/wargames/` (model, runner, adjudication, receipts), three scenarios under `wargames/scenarios/`, the schema under `wargames/schema/`, and `tests/test_wargame_runner.py`. Run `nougen wargame list`, `nougen wargame run false-green-scheduler`, `nougen wargame run memory-blackout --policy naive`, `nougen wargame replay <receipt.json>`. Receipts, AARs, and the ledger land in `./wargames/` (gitignored working notes).
 
 ---
 

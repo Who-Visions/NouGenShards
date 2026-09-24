@@ -1,0 +1,61 @@
+{
+  "id": "WG-2026-0001",
+  "title": "False Green Scheduler",
+  "status": "candidate",
+  "level": "duel",
+  "mode": "false_green",
+  "version": 1,
+  "mission": {
+    "goal": "Detect silent scheduled task expiration",
+    "destiny": "Continuous fleet automation remains truthful"
+  },
+  "arena": {"repos": ["NouGenShards"], "nodes": ["blade"]},
+  "initial_state": {
+    "task": {
+      "name": "shard_integrity_sweep",
+      "enabled": true,
+      "last_result": 0,
+      "next_run_time": "T+15m",
+      "repetition_duration_elapsed": false,
+      "recreate_next_run_time": "T+15m"
+    }
+  },
+  "assumptions": {
+    "confirmed": ["task reports successful historical exit", "task appears configured"],
+    "unconfirmed": ["whether a future trigger still exists"],
+    "dangerous": ["exit_code_zero_implies_health"]
+  },
+  "actors": {
+    "gm": {"objective": "fleet automation stays truthful"},
+    "blue": {
+      "objective": "maintain automation",
+      "policy": "task_truth",
+      "naive_policy": "exit_code_zero_means_green"
+    },
+    "red": {"objective": "create a silent failure"},
+    "white": {"objective": "adjudicate from evidence"},
+    "green": {"objective": "recreate the schedule once RED is called"}
+  },
+  "injects": [
+    {
+      "type": "scheduler_expiry",
+      "at_turn": 3,
+      "description": "Repetition duration elapses. enabled stays true, LastTaskResult stays 0, NextRunTime disappears.",
+      "reversible": true
+    }
+  ],
+  "invariants": ["repeating_task_must_have_future_run"],
+  "telemetry": ["next_run_time", "enabled", "last_task_result"],
+  "victory": ["false_green_detected", "repair_applied"],
+  "catastrophic_failure": ["system_reports_green_after_expiry"],
+  "turns": 5,
+  "fog": {"blue": {"inject_visibility": "hidden"}, "white": {"ground_truth": "full"}},
+  "elevation": {
+    "failure_class": "false_green",
+    "description": "repeating task had no future run while history looked healthy",
+    "assumption": "last_success_implies_future_health",
+    "invariant": "repeating_task_must_have_future_run",
+    "component": "task_truth",
+    "change_type": "deterministic_checker"
+  }
+}
