@@ -30,8 +30,8 @@ def test_list_agents_structured_returns_schema(tmp_path, monkeypatch):
 
 
 def test_inbound_policy_lifecycle(tmp_path, monkeypatch):
-    cfg_path = tmp_path / "messaging_config.json"
-    monkeypatch.setattr(NouGenMsgBus, "_config_path", staticmethod(lambda: str(cfg_path)))
+    cfg_path = tmp_path / "inbound_policy.json"
+    monkeypatch.setattr(NouGenMsgBus, "_inbound_policy_path", staticmethod(lambda: str(cfg_path)))
 
     # Default
     policy = NouGenMsgBus.get_inbound_policy()
