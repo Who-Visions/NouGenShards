@@ -60,12 +60,35 @@ def test_validate_accepts_a_well_formed_record():
         {"first_fork": ""},
         {"status": "abandoned"},
         {"unexpected": 1},
+        {"families": [0]},
+        {"families": [101]},
+        {"families": [3, 3]},
+        {"families": ["3"]},
+        {"families": [True]},
+        {"families": 3},
     ],
 )
 def test_validate_rejects_bad_fields(bad):
     it = _item()
     it.update(bad)
     assert wc.validate_items([it]), bad
+
+
+def test_validate_accepts_families_and_index_reports_coverage(tmp_path, monkeypatch):
+    it = _item(families=[6, 100])
+    assert wc.validate_items([it]) == []
+    (tmp_path / "families.json").write_text(
+        json.dumps({"source": "x#550", "families": {"6": "Corrupt DB reports false empty", "7": "Vector cache stale signature", "100": "War-game claims success without a receipt"}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "catalog.ndjson").write_text(json.dumps(it) + "\n", encoding="utf-8")
+    monkeypatch.setattr(wc, "CATALOG_DIR", tmp_path)
+    assert wc.main(["render"]) == 0
+    index = (tmp_path / "INDEX.md").read_text(encoding="utf-8")
+    assert "| 6 | Corrupt DB reports false empty | 1 |" in index
+    assert "| 7 | Vector cache stale signature | 0 |" in index
+    assert "1 families have no catalog entry yet: 7." in index
+    assert "#550 families: 6, 100" in (tmp_path / "nougenshards.md").read_text(encoding="utf-8")
 
 
 def test_validate_rejects_duplicate_ids_and_hand_typed_priority():

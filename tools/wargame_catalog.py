@@ -43,8 +43,12 @@ REQUIRED = (
     "id", "title", "repo", "kind", "priority", "blast_radius", "likelihood",
     "effort", "failure_surface", "first_fork", "evidence", "verdict",
 )
-OPTIONAL = ("lens", "lens_group", "verdict_note", "source", "status", "wargame", "tags")
+OPTIONAL = ("lens", "lens_group", "verdict_note", "source", "status", "wargame", "tags", "families")
 TITLE_MAX = 120
+# Scenario families from the war-room umbrella issue (NouGenShards#550). The
+# names live in families.json next to the catalog so the taxonomy is data.
+FAMILIES_FILE = "families.json"
+FAMILY_MIN, FAMILY_MAX = 1, 100
 
 # Priority is derived, never hand-assigned, so two people looking at the same
 # evidence land on the same number. Blast radius and likelihood carry the
@@ -138,6 +142,13 @@ def validate_items(items):
         ev = it.get("evidence")
         if not isinstance(ev, list) or not ev or not all(isinstance(e, str) and e.strip() for e in ev):
             problems.append(f"{where}: evidence must be a non-empty list of paths or ids")
+        fams = it.get("families")
+        if fams is not None:
+            ok = isinstance(fams, list) and all(
+                isinstance(f, int) and not isinstance(f, bool) and FAMILY_MIN <= f <= FAMILY_MAX for f in fams
+            ) and len(set(fams)) == len(fams)
+            if not ok:
+                problems.append(f"{where}: families must be a list of unique ints {FAMILY_MIN}..{FAMILY_MAX}")
         if all(it.get(f) in allowed for f, allowed in (("blast_radius", BLAST), ("likelihood", LIKELIHOOD), ("verdict", VERDICTS))):
             want = derive_priority(it)
             if it.get("priority") != want:
@@ -167,6 +178,8 @@ def _md_item(it):
     ]
     if it.get("verdict_note"):
         lines.append(f"- Verifier note: {it['verdict_note']}")
+    if it.get("families"):
+        lines.append("- #550 families: " + ", ".join(str(f) for f in it["families"]))
     if it.get("wargame"):
         lines.append(f"- War game: `{it['wargame']}`")
     lines.append("")
@@ -196,7 +209,25 @@ def render_repo(repo, items):
     return "\n".join(head + body)
 
 
-def render_index(items, reserve_count=0):
+def load_families():
+    path = CATALOG_DIR / FAMILIES_FILE
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {int(k): v for k, v in data.get("families", {}).items()}
+
+
+def family_coverage(items, families):
+    """Return (rows, uncovered): rows are (number, name, count) for every
+    family in families.json, uncovered lists the numbers no entry maps to."""
+    counts = Counter(f for it in items for f in (it.get("families") or []))
+    rows = [(n, families[n], counts.get(n, 0)) for n in sorted(families)]
+    uncovered = [n for n, _, c in rows if c == 0]
+    return rows, uncovered
+
+
+def render_index(items, reserve_count=0, families=None):
+    families = families or {}
     by_repo = _by_repo(items)
     pri = Counter(it["priority"] for it in items)
     kinds = Counter(it["kind"] for it in items)
@@ -238,13 +269,29 @@ def render_index(items, reserve_count=0):
     for it in p0:
         lines.append(f"| {it['id']} | {it['repo']} | {it['kind']} | {it['title'].replace('|', '/')} |")
     lines.append("")
+    if families:
+        rows, uncovered = family_coverage(items, families)
+        mapped = sum(1 for it in items if it.get("families"))
+        lines += [
+            "## Coverage of the #550 scenario families",
+            "",
+            f"{mapped} of {len(items)} entries map to at least one of the {len(families)} families in "
+            f"`families.json` (NouGenShards#550). {len(uncovered)} families have no catalog entry yet"
+            + (": " + ", ".join(str(n) for n in uncovered) if uncovered else "") + ".",
+            "",
+            "| # | family | entries |",
+            "|---|---|---|",
+        ]
+        for n, name, c in rows:
+            lines.append(f"| {n} | {name} | {c} |")
+        lines.append("")
     return "\n".join(lines)
 
 
-def rendered_files(items, reserve_count=0):
+def rendered_files(items, reserve_count=0, families=None):
     """Map of filename -> content for everything render writes."""
     out = OrderedDict()
-    out["INDEX.md"] = render_index(items, reserve_count)
+    out["INDEX.md"] = render_index(items, reserve_count, families)
     for repo, its in _by_repo(items).items():
         out[f"{slug(repo)}.md"] = render_repo(repo, its)
     return out
@@ -277,7 +324,7 @@ def cmd_render(args):
         return 1
     reserve_path = CATALOG_DIR / RESERVE_FILE
     reserve_count = len(load_ndjson(reserve_path)) if reserve_path.exists() else 0
-    files = rendered_files(items, reserve_count)
+    files = rendered_files(items, reserve_count, load_families())
     stale = []
     for name, content in files.items():
         target = CATALOG_DIR / name
@@ -307,6 +354,11 @@ def cmd_stats(args):
         "by_verdict": dict(Counter(it["verdict"] for it in items)),
         "by_status": dict(Counter(it.get("status", "open") for it in items)),
     }
+    families = load_families()
+    if families:
+        rows, uncovered = family_coverage(items, families)
+        stats["families_mapped_entries"] = sum(1 for it in items if it.get("families"))
+        stats["families_uncovered"] = uncovered
     if args.json:
         print(json.dumps(stats, indent=2, sort_keys=True))
     else:
