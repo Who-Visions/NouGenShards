@@ -93,6 +93,14 @@ switch ($Action) {
         $listener = Get-ListenerPid
         if ($listener) { "node already running (listener pid $listener) on $BaseUrl"; break }
         if ($running) {
+            # A launcher with no listener yet is usually still importing/warming
+            # (~120s on blade). Killing it restarted the warm-up every time this
+            # ran on a timer: 2026-09-24 blade churned ~20 minutes after one
+            # restart. Spare it inside the warm-up window; only replace a
+            # launcher that has had its full window and still is not listening.
+            $warmS = if ($env:NGS_NODE_WARMUP_S) { [int]$env:NGS_NODE_WARMUP_S } else { 300 }
+            $age = [int]((Get-Date) - (Get-Process -Id $running).StartTime).TotalSeconds
+            if ($age -lt $warmS) { "node warming up (launcher pid $running, ${age}s of ${warmS}s); not restarting"; break }
             Stop-Process -Id $running -Force -Confirm:$false -ErrorAction SilentlyContinue
             Remove-Item $PidFile -ErrorAction SilentlyContinue
         }
