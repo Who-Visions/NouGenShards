@@ -1938,10 +1938,10 @@ def _vector_cache_wait_s() -> float:
     """How long a recall may wait for another thread's matrix build."""
     raw = os.environ.get("NOUGEN_VECTOR_CACHE_WAIT_S", "")
     try:
-        return float(raw) if raw.strip() else 30.0
+        return float(raw) if raw.strip() else 5.0
     except ValueError:
-        logger.warning("NOUGEN_VECTOR_CACHE_WAIT_S=%r is not a number; using 30.0", raw)
-        return 30.0
+        logger.warning("NOUGEN_VECTOR_CACHE_WAIT_S=%r is not a number; using 5.0", raw)
+        return 5.0
 
 
 def _db_write_signature(i: int) -> tuple:
