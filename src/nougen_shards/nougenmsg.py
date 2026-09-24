@@ -17,10 +17,6 @@ import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
-# Every child (ssh, scp) spawns windowless: a console child of a console-less
-# parent (MCP server, hook, pythonw) otherwise opens a terminal window.
-_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
 _SESSION_VARS = ("NOUGEN_SESSION", "CLAUDE_CODE_SESSION_ID")
 
 
@@ -66,43 +62,22 @@ def resolve_origin_host() -> str:
         return ""
 
 
-def fleet_hosts_path() -> Path:
-    """Where this machine's fleet map lives. Public code ships no fleet names:
-    a box without this file is "standalone" and routes only to itself."""
-    override = os.environ.get("NOUGEN_FLEET_HOSTS_FILE", "").strip()
-    return Path(override).expanduser() if override else Path.home() / ".nougen" / "fleet_hosts.json"
+_KNOWN_FLEET_HOSTS = {
+    "phoebus": ("phoebus", "kushboygroups-mac-mini"),
+    "whoart": ("proart", "whoart"),
+    "blade": ("blade1tb", "blade"),
+}
 
-
-def _load_fleet_hosts() -> Dict[str, Any]:
-    """{"nodes": {node: {"host_patterns": [...]}}, "coach_routes": {coach: node}}"""
-    try:
-        data = json.loads(fleet_hosts_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _known_fleet_hosts() -> Dict[str, Tuple[str, ...]]:
-    nodes = _load_fleet_hosts().get("nodes") or {}
-    out: Dict[str, Tuple[str, ...]] = {}
-    for node, cfg in nodes.items() if isinstance(nodes, dict) else ():
-        pats = cfg.get("host_patterns") if isinstance(cfg, dict) else None
-        name = str(node).strip().lower()
-        if name:
-            out[name] = tuple(str(p).strip().lower() for p in (pats or [name]) if str(p).strip())
-    return out
-
-
-def _default_coach_routes() -> Dict[str, str]:
-    routes = _load_fleet_hosts().get("coach_routes") or {}
-    if not isinstance(routes, dict):
-        return {}
-    return {str(k).strip().lower(): str(v).strip().lower() for k, v in routes.items() if str(k).strip() and str(v).strip()}
+_DEFAULT_COACH_ROUTES = {
+    "hyperion": "whoart",
+    "apollo": "blade",
+    "phoebus": "phoebus",
+}
 
 
 def fleet_identity_maps() -> Tuple[Dict[str, str], Dict[str, str]]:
     """Resolve coach aliases to physical transport nodes from nodes.json."""
-    coach_to_machine = _default_coach_routes()
+    coach_to_machine = dict(_DEFAULT_COACH_ROUTES)
     machine_to_coach = {machine: coach for coach, machine in coach_to_machine.items()}
     path = Path.home() / ".nougen" / "nodes.json"
     try:
@@ -135,35 +110,29 @@ def coach_for_machine(value: str) -> str:
 
 
 def get_current_node() -> str:
-    """Which fleet node this box is, or "standalone".
+    """Which of Dave's three fleet boxes this is, or "standalone" for
+    everyone else.
 
-    Fleet names come only from the local fleet_hosts.json (see
-    fleet_hosts_path); public code carries none, so a fresh clone is always
-    "standalone". `NOUGEN_FLEET_NODE` overrides the hostname match when it
-    names a node in that file.
+    NouGenShards is a public repo. The old version of this function assumed
+    every non-Windows box was phoebus and every Windows box was blade —
+    meaning a stranger cloning this on Ubuntu got branded "phoebus" in their
+    own logs, and a Windows contributor got branded "blade". An explicit
+    `NOUGEN_FLEET_NODE` override always wins (for a fleet box whose hostname
+    doesn't match the patterns below); otherwise this only ever returns one
+    of the three names when the actual hostname matches a known fleet
+    pattern, and "standalone" for everything else.
     """
     override = os.environ.get("NOUGEN_FLEET_NODE", "").strip().lower()
-    known = _known_fleet_hosts()
-    if override in known:
+    if override in _KNOWN_FLEET_HOSTS:
         return override
 
     host = resolve_origin_host()
     if not host and os.name == "nt":
         host = os.environ.get("COMPUTERNAME", "").lower()
-    for node, patterns in known.items():
+    for node, patterns in _KNOWN_FLEET_HOSTS.items():
         if any(p in host for p in patterns):
             return node
     return "standalone"
-
-def _live_pipe_names() -> List[str]:
-    """Named pipes the kernel holds right now (empty off Windows)."""
-    if os.name != "nt":
-        return []
-    try:
-        return ["\\\\.\\pipe\\" + n for n in os.listdir("\\\\.\\pipe\\")]
-    except OSError:
-        return glob.glob(r"\\.\pipe\LOCAL\*")
-
 
 class AgentPinger:
     """Delivers live pings directly into agent context, named pipes, and session inboxes."""
@@ -178,11 +147,24 @@ class AgentPinger:
                 + glob.glob("/tmp/nougen-*.sock")
             ))
 
-        # Read the kernel pipe table in-process. This used to shell out to
-        # powershell.exe, which popped a Windows Terminal tab on every
-        # invocation (WT as default console host ignores CREATE_NO_WINDOW
-        # for some launch paths) and cost ~1s of PowerShell startup.
-        candidates: List[str] = list(_live_pipe_names())
+        candidates: List[str] = []
+        try:
+            command = (
+                "[System.IO.Directory]::GetFiles('\\\\.\\pipe\\') | "
+                "Where-Object { $_ -match 'cc-msg|claude' }"
+            )
+            timeout_s = float(os.environ.get("NOUGEN_PIPE_DISCOVERY_TIMEOUT_S", "5"))
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-Command", command],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=timeout_s,
+                check=False,
+            )
+            candidates.extend(line.strip() for line in result.stdout.splitlines())
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+
         candidates.extend(glob.glob(r"\\.\pipe\LOCAL\cc-msg-*"))
         allowed = re.compile(r"^\\\\\.\\pipe\\(?:LOCAL\\)?(?:cc-msg|claude)[-\\\w.]*$", re.I)
         return sorted({pipe for pipe in candidates if pipe and allowed.fullmatch(pipe)})
@@ -610,7 +592,6 @@ class AgentPinger:
             try:
                 res = subprocess.run(
                     ["ssh", "--", node, remote_cmd],
-                    creationflags=_NO_WINDOW,
                     input=payload,
                     capture_output=True,
                     text=True,
@@ -876,7 +857,6 @@ class NouGenMsgBus:
         try:
             cp = subprocess.run(["scp", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", local, f"{node}:{remote_rel}"],
                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                creationflags=_NO_WINDOW,
                                 timeout=float(os.environ.get("NOUGEN_MSG_SHIP_TIMEOUT_S", "60")))
         except (OSError, subprocess.SubprocessError) as exc:
             return None, f"Error: body shipping failed, {type(exc).__name__}"
@@ -940,8 +920,7 @@ class NouGenMsgBus:
         try:
             with os.fdopen(fd, "wb") as sink:
                 subprocess.run(argv, stdout=sink, stderr=subprocess.STDOUT,
-                               stdin=subprocess.DEVNULL, timeout=timeout,
-                               creationflags=_NO_WINDOW)
+                               stdin=subprocess.DEVNULL, timeout=timeout)
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 return fh.read()
         finally:
@@ -1093,20 +1072,24 @@ class NouGenMsgBus:
         """Discovers active local pipes and session inboxes across agents."""
         curr = get_current_node()
         claude_pipes = AgentPinger._discover_claude_endpoints()
-        # Liveness comes from the kernel pipe table only. The registry and the
-        # default pipe name are claims: listing them unverified is how
-        # --peers reported Antigravity "active" while no server held the pipe.
-        live = set(_live_pipe_names())
-        agy_pipes = sorted(p for p in live if re.search(r"\\agy-msg-", p, re.I))
+        agy_pipes: List[str] = []
         agy_reg = os.path.expanduser(os.path.join("~", ".nougen", "agy_sessions.json"))
-        stale_agy: List[str] = []
         if os.path.exists(agy_reg):
             try:
                 with open(agy_reg, "r", encoding="utf-8") as f:
-                    sessions = (json.load(f) or {}).get("sessions") or {}
-                stale_agy = sorted(k for k in sessions if k not in live)
+                    data = json.load(f)
+                    sessions = data.get("sessions") or {}
+                    for pipe_k in sessions.keys():
+                        if pipe_k not in agy_pipes:
+                            agy_pipes.append(pipe_k)
             except Exception:
                 pass
+        if not agy_pipes:
+            candidates = glob.glob(r"\\.\pipe\LOCAL\agy-msg-*")
+            if candidates:
+                agy_pipes.extend(candidates)
+            elif os.name == "nt":
+                agy_pipes.append(r"\\.\pipe\LOCAL\agy-msg-antigravity")
 
         try:
             from .codex_pipe import request as codex_request
@@ -1127,51 +1110,7 @@ class NouGenMsgBus:
             "codex_pipe": codex_pipe,
             "antigravity_inbox_unread": gemini_messages,
             "codex_inbox_unread": codex_messages,
-            "antigravity_stale_registry": stale_agy,
-            **cls._probe_nodes(curr),
-        }
-
-    @staticmethod
-    def _probe_nodes(curr: str) -> Dict[str, List[str]]:
-        """TCP-probe each fleet node's NouGenMsg receiver instead of listing a constant.
-
-        Host: NOUGEN_NODE_<NODE>_IP, else <node>.local (mDNS); this node dials
-        loopback. Port NOUGEN_MSG_PORT, timeout NOUGEN_MSG_PROBE_TIMEOUT_S.
-        """
-        import socket
-        from concurrent.futures import ThreadPoolExecutor
-        port = int(os.environ.get("NOUGEN_MSG_PORT", "8766"))
-        timeout = float(os.environ.get("NOUGEN_MSG_PROBE_TIMEOUT_S", "1.5"))
-        nodes = sorted(set(fleet_identity_maps()[0].values()) | {curr})
-
-        def host_for(node: str) -> str:
-            if node == curr:
-                return "127.0.0.1"
-            return os.environ.get(f"NOUGEN_NODE_{node.upper()}_IP") or f"{node}.local"
-
-        def up(node: str) -> bool:
-            # Resolve IPv4 first: create_connection on an mDNS name tries the
-            # AAAA answer before falling back, which cost ~6s per call to
-            # whoart.local (measured 2026-09-23) while its A record came back
-            # in 0.13s.
-            try:
-                addrs = [ai[4] for ai in socket.getaddrinfo(
-                    host_for(node), port, socket.AF_INET, socket.SOCK_STREAM)]
-            except OSError:
-                addrs = []
-            for addr in addrs or [(host_for(node), port)]:
-                try:
-                    with socket.create_connection(addr, timeout=timeout):
-                        return True
-                except OSError:
-                    continue
-            return False
-
-        with ThreadPoolExecutor(max_workers=max(1, len(nodes))) as pool:
-            status = dict(zip(nodes, pool.map(up, nodes)))
-        return {
-            "nodes_reachable": [n for n in nodes if status[n]],
-            "nodes_unreachable": [n for n in nodes if not status[n]],
+            "nodes_reachable": ["whoart", "blade", "phoebus"]
         }
 
     @classmethod
@@ -1256,63 +1195,224 @@ class NouGenMsgBus:
                     pass
         return count
 
+    # =========================================================================
+    # Claude Code Parity Primitives (Idle Subscriptions, Inbound Policies, ListAgents)
+    # =========================================================================
+
+    @staticmethod
+    def _config_path() -> str:
+        return os.path.expanduser(os.path.join("~", ".nougen", "messaging_config.json"))
+
+    @staticmethod
+    def _idle_subs_path() -> str:
+        return os.path.expanduser(os.path.join("~", ".nougen", "idle_subscriptions.json"))
+
     @classmethod
-    def search_messages(cls, query: str, target: str = "all", limit: int = 20) -> List[Dict[str, Any]]:
-        """Search across active and archived inbox messages by keyword query."""
-        q = (query or "").strip().lower()
-        if not q:
+    def get_inbound_policy(cls) -> Dict[str, Any]:
+        """Return crossSessionInbound policy ('accept' | 'hold' | 'refuse') and isolation flags."""
+        env_policy = os.environ.get("NOUGEN_MSG_INBOUND", "").strip().lower()
+        env_isolate = os.environ.get("NOUGEN_MSG_ISOLATE_PEER_MACHINES", "").strip().lower() in ("1", "true", "yes")
+        env_expiry = int(os.environ.get("NOUGEN_MSG_DIALOG_EXPIRY_S", "300"))
+
+        cfg_path = cls._config_path()
+        data = {}
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as fp:
+                    data = json.load(fp)
+            except Exception:
+                data = {}
+
+        policy = env_policy or data.get("crossSessionInbound") or "accept"
+        if policy not in ("accept", "hold", "refuse"):
+            policy = "accept"
+        isolate = env_isolate or bool(data.get("isolatePeerMachines", False))
+        expiry = env_expiry if "NOUGEN_MSG_DIALOG_EXPIRY_S" in os.environ else data.get("dialogExpirySeconds", 300)
+
+        return {
+            "crossSessionInbound": policy,
+            "isolatePeerMachines": isolate,
+            "dialogExpirySeconds": expiry
+        }
+
+    @classmethod
+    def set_inbound_policy(cls, policy: str, isolate_peer_machines: Optional[bool] = None,
+                           dialog_expiry_seconds: Optional[int] = None) -> Dict[str, Any]:
+        """Set persistent crossSessionInbound policy ('accept' | 'hold' | 'refuse')."""
+        if policy not in ("accept", "hold", "refuse"):
+            raise ValueError(f"Invalid policy {policy!r}; must be 'accept', 'hold', or 'refuse'")
+        cfg_path = cls._config_path()
+        os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
+        data = {}
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as fp:
+                    data = json.load(fp)
+            except Exception:
+                data = {}
+        data["crossSessionInbound"] = policy
+        if isolate_peer_machines is not None:
+            data["isolatePeerMachines"] = bool(isolate_peer_machines)
+        if dialog_expiry_seconds is not None:
+            data["dialogExpirySeconds"] = max(10, int(dialog_expiry_seconds))
+
+        with open(cfg_path, "w", encoding="utf-8") as fp:
+            json.dump(data, fp, indent=2)
+        return cls.get_inbound_policy()
+
+    @classmethod
+    def subscribe_idle(cls, subscriber_session: str, target: str,
+                       subscriber_node: Optional[str] = None,
+                       ttl_hours: float = 12.0) -> Dict[str, Any]:
+        """Subscribe to a one-shot idle notification when `target` agent/session goes idle."""
+        now = time.time()
+        expires_at = now + (ttl_hours * 3600.0)
+        sub_id = str(uuid.uuid4())
+        record = {
+            "id": sub_id,
+            "subscriber_session": subscriber_session,
+            "target": target.strip().lower(),
+            "subscriber_node": subscriber_node or get_current_node(),
+            "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            "expires_at": expires_at,
+            "expires_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires_at)),
+        }
+        path = cls._idle_subs_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        subs = []
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as fp:
+                    raw = json.load(fp)
+                    subs = [s for s in raw if isinstance(s, dict) and s.get("expires_at", 0) > now]
+            except Exception:
+                subs = []
+        subs.append(record)
+        with open(path, "w", encoding="utf-8") as fp:
+            json.dump(subs, fp, indent=2)
+        return record
+
+    @classmethod
+    def list_idle_subscriptions(cls) -> List[Dict[str, Any]]:
+        """List and purge expired idle subscriptions (12h TTL)."""
+        now = time.time()
+        path = cls._idle_subs_path()
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                raw = json.load(fp)
+                active = [s for s in raw if isinstance(s, dict) and s.get("expires_at", 0) > now]
+            if len(active) != len(raw):
+                with open(path, "w", encoding="utf-8") as fp:
+                    json.dump(active, fp, indent=2)
+            return active
+        except Exception:
             return []
 
-        inbox_dirs = []
-        if target in ("antigravity", "all"):
-            inbox_dirs.extend([
-                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
-                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox")),
-                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox", "archive")),
-                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox", "archive")),
-            ])
-        if target in ("codex", "all"):
-            inbox_dirs.extend([
-                os.path.expanduser(os.path.join("~", ".codex", "inbox")),
-                os.path.expanduser(os.path.join("~", ".codex", "inbox", "archive")),
-            ])
+    @classmethod
+    def emit_idle(cls, target_agent: str, status_summary: str = "",
+                  node: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Emit one-shot idle notification to all subscribers of `target_agent` and drain them."""
+        now = time.time()
+        path = cls._idle_subs_path()
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                subs = json.load(fp)
+        except Exception:
+            return []
 
-        all_files = []
-        for d in inbox_dirs:
-            if os.path.exists(d):
-                all_files.extend(glob.glob(os.path.join(d, "*.json")))
-
-        files = sorted(all_files, key=os.path.getmtime, reverse=True)
-        matches = []
-        seen = set()
-        for f in files:
-            if len(matches) >= limit:
-                break
-            try:
-                with open(f, "r", encoding="utf-8") as fp:
-                    data = json.load(fp)
-                    identity = data.get("message_id") or "|".join(
-                        str(data.get(k, "")) for k in ("source", "text", "content", "timestamp"))
-                    if identity in seen:
-                        continue
-
-                    content_str = (
-                        str(data.get("text", "")) + " " +
-                        str(data.get("content", "")) + " " +
-                        str(data.get("sender", "")) + " " +
-                        str(data.get("source", "")) + " " +
-                        str(data.get("message_id", ""))
-                    ).lower()
-
-                    if q in content_str:
-                        seen.add(identity)
-                        data["_file"] = os.path.basename(f)
-                        data["_mtime"] = os.path.getmtime(f)
-                        if "text" not in data and "content" in data:
-                            data["text"] = data["content"]
-                        if not data.get("sender") and data.get("source"):
-                            data["sender"] = data["source"]
-                        matches.append(data)
-            except Exception:
+        norm_target = target_agent.strip().lower()
+        matched = []
+        remaining = []
+        for s in subs:
+            if not isinstance(s, dict) or s.get("expires_at", 0) <= now:
                 continue
-        return matches
+            sub_target = str(s.get("target", "")).lower()
+            if sub_target in (norm_target, "all", "*") or norm_target.endswith(sub_target):
+                matched.append(s)
+            else:
+                remaining.append(s)
+
+        with open(path, "w", encoding="utf-8") as fp:
+            json.dump(remaining, fp, indent=2)
+
+        results = []
+        for match in matched:
+            sub_session = match.get("subscriber_session", "")
+            sub_node = match.get("subscriber_node") or "local"
+            notice_text = f"⚡ [IDLE NOTICE] @{target_agent} on {node or get_current_node()} is now idle"
+            if status_summary:
+                notice_text += f": {status_summary}"
+            origin = {
+                "trigger_source": "notify_when_idle",
+                "target_agent": target_agent,
+                "subscription_id": match.get("id"),
+            }
+            if sub_node in ("local", get_current_node()):
+                res = cls.live_ping(target=sub_session or "antigravity", text=notice_text, origin=origin)
+            else:
+                res = cls.emit_node(node=sub_node, target=sub_session or "antigravity", text=notice_text, origin=origin)
+            results.append({"subscription": match, "delivery": res})
+        return results
+
+    @classmethod
+    def list_agents_structured(cls) -> List[Dict[str, Any]]:
+        """Rich ListAgents response returning structured descriptor objects for all peers."""
+        peers = cls.list_peers()
+        curr = peers.get("current_node", "standalone")
+        agents: List[Dict[str, Any]] = []
+
+        # Local Claude Sessions
+        for pipe in peers.get("claude_active_pipes", []):
+            pipe_name = pipe.split("\\")[-1]
+            agents.append({
+                "name": f"claude-{pipe_name[:8]}",
+                "kind": "session",
+                "agent_family": "claude-code",
+                "node": curr,
+                "status": "idle",
+                "transport": pipe,
+                "capabilities": ["text-b64", "notify_when_idle", "auth_handshake"]
+            })
+
+        # Local Antigravity Session
+        for pipe in peers.get("antigravity_active_pipes", []):
+            agents.append({
+                "name": "antigravity",
+                "kind": "session",
+                "agent_family": "antigravity",
+                "node": curr,
+                "status": "idle",
+                "transport": pipe,
+                "capabilities": ["text-b64", "notify_when_idle", "inbox_stream"]
+            })
+
+        # Model Lanes
+        agents.append({
+            "name": "ollama:gemma4:e2b-qat",
+            "kind": "model",
+            "agent_family": "gemma4",
+            "node": curr,
+            "status": "idle",
+            "transport": "local_http",
+            "capabilities": ["text-b64", "gpu_inference"]
+        })
+
+        # Remote Nodes
+        for r_node in peers.get("nodes_reachable", []):
+            if r_node != curr:
+                coach = coach_for_machine(r_node)
+                agents.append({
+                    "name": f"@{r_node}:{coach}",
+                    "kind": "remote",
+                    "agent_family": "fleet_coach",
+                    "node": r_node,
+                    "status": "online",
+                    "transport": f"ssh://{r_node}",
+                    "capabilities": ["text-b64", "relay_sync", "destiny_mesh"]
+                })
+
+        return agents
