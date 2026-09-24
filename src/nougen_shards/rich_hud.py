@@ -201,30 +201,12 @@ def build_dashboard_renderable(sub_data: Optional[Dict[str, Any]] = None) -> Gro
     fleet_table.add_column("IP / Network", style="bright_white", width=16)
     fleet_table.add_column("Mesh Status", justify="center", style="bold green", width=12)
 
-    fleet_table.add_row(
-        "⚡ Hyperion",
-        "ASUS ProArt PX13 (RTX 4050 6GB)",
-        "Antigravity",
-        "Yukiai (Gemma 4)",
-        "192.168.1.187",
-        "[bold green]PRIMARY[/]"
-    )
-    fleet_table.add_row(
-        "🎮 Apollo",
-        "Razer Blade 2020 (RTX 2080 8GB)",
-        "Apollo",
-        "Sol-Ai (Gemma 4)",
-        "192.168.1.16",
-        "[green]INFERENCE[/]"
-    )
-    fleet_table.add_row(
-        "🍎 Phoebus",
-        "Apple Mac Mini M2",
-        "Keadra",
-        "Keadracode",
-        "192.168.1.78",
-        "[cyan]BACKBONE[/]"
-    )
+    # Rows come from this machine's ~/.nougen/nodes.json; public code ships no
+    # fleet roster, so a fresh clone shows an empty mesh.
+    for row in _local_fleet_rows():
+        fleet_table.add_row(*row)
+    if not fleet_table.rows:
+        fleet_table.add_row("(none)", "no ~/.nougen/nodes.json", "-", "-", "-", "[dim]STANDALONE[/]")
 
     # 4. Engine & State Panel
     relay_text = Text()
@@ -490,3 +472,19 @@ if __name__ == "__main__":
         render_rich_live_hud()
     else:
         render_rich_dashboard()
+
+def _local_fleet_rows():
+    """(name, role, coach, model, ip, status) per node in ~/.nougen/nodes.json."""
+    import json
+    from pathlib import Path
+    try:
+        nodes = json.loads((Path.home() / ".nougen" / "nodes.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows = []
+    for key, cfg in (nodes.items() if isinstance(nodes, dict) else []):
+        if not isinstance(cfg, dict):
+            continue
+        rows.append((str(cfg.get("name") or key), str(cfg.get("role") or "-"), str(cfg.get("coach") or "-"),
+                     str(cfg.get("model") or "-"), str(cfg.get("ip") or cfg.get("host") or "-"), "[green]CONFIGURED[/]"))
+    return rows

@@ -25,12 +25,18 @@ from pathlib import Path
 DEFAULT_PORT = 8766
 DEFAULT_LOCAL_HOST = "127.0.0.1"
 
-KNOWN_NODES = {
-    "blade": "127.0.0.1",
-    "blade1tb": "127.0.0.1",
-    "whoart": "10.0.0.178",
-    "phoebus": "10.0.0.88",
-}
+def _known_nodes() -> dict:
+    """Node name -> LAN address, from ~/.nougen/fleet_hosts.json ("ip" per node).
+    Public code ships no addresses; unknown targets fall back to localhost."""
+    try:
+        cfg = json.loads((Path.home() / ".nougen" / "fleet_hosts.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    nodes = cfg.get("nodes") if isinstance(cfg, dict) else None
+    return {str(k).lower(): str(v["ip"]) for k, v in (nodes or {}).items() if isinstance(v, dict) and v.get("ip")}
+
+
+KNOWN_NODES = _known_nodes()
 
 
 def send_http(host: str, port: int, payload: dict) -> dict:
