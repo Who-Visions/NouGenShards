@@ -20,7 +20,7 @@ Ten donors in one session. Per-donor docs sit in this folder. Fleet votes and ra
 |---|---|---|---|
 | **Offline consolidation / distillation**: atoms → scenes → persona, dedup, contradiction resolution | Tencent L0–L3 (6/6), openhuman memory tree (6/6), memmesh consolidation (3/4), cortex sleep pass (3/4), EverOS reflection (3/4) | Nothing ran between sessions. (The 0.28 body recall that motivated this was an eval artifact, see below.) | **1: BUILT** `distill.py` sidecar + `tools/distill_run.py` |
 | ~~Markdown as the editable source, DB as the index~~ | EverOS cascade watcher (3/4) + md source (2/4), openhuman Obsidian mirror, mraza007/echovault md vault | **REJECTED by Dave 11:34 PM EDT 9/13**: "db is source for us". Markdown is for rules and instructions; a file per shard would cost portability, small size and fast retrieval. Its slot went to bi-temporal (#6). | — |
-| **Entity/relation graph with provenance** (multi-hop, PageRank) | memory-vault (3/4), cortex trust graph (2/4), memmesh (1/4) | self_archive edges only (Xoah canon) | 3 |
+| **Entity/relation graph with provenance** (multi-hop, PageRank) | memory-vault (3/4), cortex trust graph (2/4), memmesh (1/4) | self_archive edges only (the protagonist canon) | 3 |
 | **Smarter context assembly**: knapsack by value/cost, cite everything, never re-send held tokens | cortex CMP (2/4), Tencent char/item caps, openhuman tool-output compaction (6/6) | Rank-order token budget only (shipped 9/13) | 4 |
 | **Scoped retrieval dimensions** (user / agent / project / session) | EverOS (3/4), Tencent ACL | domain_key + tags | 5 |
 | **Bi-temporal**: as-of queries | memmesh (3/4) | event_time is captured but not queryable as-of | 6 |

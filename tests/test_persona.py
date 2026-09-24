@@ -12,7 +12,7 @@ OPERATOR = [
     "stop talking to me like a bot",
 ]
 CANON = [
-    "Xoah is the protagonist of volume one, the arc bends at chapter nine.",
+    "the protagonist is the protagonist of volume one, the arc bends at chapter nine.",
     "Lock this in canon: Kenji was raised by his grandfather in the universe's first era.",
     "The film needs a scene where the character earns the audience before the trailer beat.",
 ]

@@ -1,6 +1,6 @@
 """PR-C evidence sufficiency gate (owner leg 20260923T034306Z).
 
-Synthetic policies only: no product lore, no Shadow Dweller coupling.
+Synthetic policies only: no product lore, no product-lore coupling.
 """
 import pytest
 
