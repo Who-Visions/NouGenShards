@@ -575,7 +575,7 @@ class LiveControlPlane:
             if cand.exists():
                 m_path = str(cand)
             else:
-                cand_tool = Path(__file__).resolve().parents[2] / "tools" / "reach_surfaces.json"
+                cand_tool = Path(__file__).resolve().parents[2] / "tools" / "reach_surfaces.example.json"
                 if cand_tool.exists():
                     m_path = str(cand_tool)
 

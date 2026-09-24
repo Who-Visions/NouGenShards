@@ -12,6 +12,7 @@ def _module():
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
+    module.ORIGIN = "https://gateway.example.com"  # public code ships no origin
     return module
 
 

@@ -258,7 +258,7 @@ def run(manifest: dict, token: str | None, here: str | None = None) -> dict:
 
 
 def table(result: dict) -> str:
-    w = max(len(r["name"]) for r in result["rows"]) + 2
+    w = max((len(r["name"]) for r in result["rows"]), default=4) + 2
     out = [f"reach matrix  vantage={result['vantage']}  {result['utc']}  control_ok={result['control_ok']}  token_fp={result['token_fp']}"]
     for r in result["rows"]:
         st = "-" if r["status"] is None else str(r["status"])
