@@ -2421,6 +2421,31 @@ def _nougenmsg_inbox_dirs() -> list:
     return [d for d in dirs if os.path.isdir(d)]
 
 
+def _nougenmsg_origin(raw: dict, sender) -> tuple:
+    """(origin_machine, origin_agent) for an inbox envelope, from structured fields only.
+
+    Order: sender dict -> origin_machine/origin_agent -> node/machine/agent ->
+    a leg-shaped leg_id/correlation_id (<stamp>__<machine>__<agent>) -> the
+    string sender. Never the message body: a body saying "from
+    chatgpt-app/g-whoentertains" is text anyone can type, and the fleet treats
+    g-whoentertains as the owner (Rule 0.0.2), so a body-derived origin let any
+    unattributed message impersonate him. Unresolved stays unknown-*.
+    """
+    sdict = sender if isinstance(sender, dict) else {}
+    origin_m = sdict.get("node") or raw.get("origin_machine") or raw.get("node") or raw.get("machine")
+    origin_a = sdict.get("agent") or raw.get("origin_agent") or raw.get("agent")
+    parts = str(raw.get("leg_id") or raw.get("correlation_id") or "").split("__")
+    if len(parts) >= 2:
+        origin_m = origin_m or parts[1]
+    if len(parts) >= 3:
+        origin_a = origin_a or parts[2]
+    if not origin_m:
+        origin_m = sender if isinstance(sender, str) and sender != "unknown" else "unknown-node"
+    if not origin_a:
+        origin_a = raw.get("from") or ("relay-watch" if sender == "relay-watch" else "unknown-agent")
+    return origin_m, origin_a
+
+
 def _nougenmsg_read(target: Optional[str] = None, limit: int = 10) -> dict:
     """Newest-first NouGenMsg envelopes across all local inbox dirs, deduped by message identity,
     optionally filtered to a target/destination substring. Read-only."""
@@ -2454,43 +2479,14 @@ def _nougenmsg_read(target: Optional[str] = None, limit: int = 10) -> dict:
         if want and want not in dest and dest not in want and dest != "all":
             continue
         sender = raw.get("sender") or raw.get("source") or "unknown"
-        sdict = sender if isinstance(sender, dict) else {}
         ts = raw.get("timestamp") or os.path.getmtime(f)
         try:
             created = raw.get("created_utc") or _dt.fromtimestamp(float(ts), tz=_tz.utc).isoformat()
         except Exception:
             created = str(ts)
 
-        # Dynamic, intuitive, and deterministic machine & agent resolution:
-        origin_m = sdict.get("node") or raw.get("origin_machine") or raw.get("node") or raw.get("machine")
-        origin_a = sdict.get("agent") or raw.get("origin_agent") or raw.get("agent")
-
-        # Extract provenance from leg_id if envelope was wrapped by a watcher or bus (e.g. 20260917T...__chatgpt-app__g-whoentertains)
-        leg = str(raw.get("leg_id") or raw.get("correlation_id") or "")
-        if "__" in leg:
-            parts = leg.split("__")
-            if len(parts) >= 3:
-                origin_m = origin_m or parts[1]
-                origin_a = origin_a or parts[2]
-            elif len(parts) == 2:
-                origin_m = origin_m or parts[1]
-
-        # Extract from text clue if still unresolved (e.g. "from chatgpt-app/g-whoentertains")
+        origin_m, origin_a = _nougenmsg_origin(raw, sender)
         body_text = str(raw.get("text") or raw.get("content") or raw.get("body") or "")
-        if (not origin_m or not origin_a) and "from " in body_text:
-            try:
-                import re as _re
-                m = _re.search(r"\bfrom\s+([a-zA-Z0-9_\-\.]+)/([a-zA-Z0-9_\-\.]+)", body_text)
-                if m:
-                    origin_m = origin_m or m.group(1)
-                    origin_a = origin_a or m.group(2)
-            except Exception:
-                pass
-
-        if not origin_m:
-            origin_m = sender if isinstance(sender, str) and sender != "unknown" else "unknown-node"
-        if not origin_a:
-            origin_a = raw.get("from") or ("relay-watch" if sender == "relay-watch" else "unknown-agent")
 
         out.append({
             "id": raw.get("message_id") or raw.get("id") or os.path.splitext(os.path.basename(f))[0],
