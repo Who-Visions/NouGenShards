@@ -143,7 +143,7 @@ def test_a_record_from_this_box_under_another_name_is_not_remote(monkeypatch):
     from nougen_shards import machine as M
 
     record = {"machine": {"machine_id": M.machine_id(), "host": "phoebus"}}
-    monkeypatch.setattr(M, "host_label", lambda: "KushBoyGroups-Mac-mini")
+    monkeypatch.setattr(M, "host_label", lambda: "owner-mac-mini")
 
     assert M.is_local_record(record) is True
     assert M.record_origin(record) == "local"
@@ -155,7 +155,7 @@ def test_the_alias_is_still_surfaced_as_a_warning(monkeypatch):
     from nougen_shards import machine as M
 
     record = {"machine": {"machine_id": M.machine_id(), "host": "phoebus"}}
-    monkeypatch.setattr(M, "host_label", lambda: "KushBoyGroups-Mac-mini")
+    monkeypatch.setattr(M, "host_label", lambda: "owner-mac-mini")
 
     warning = M.record_alias_warning(record)
     assert warning and "phoebus" in warning and "NOUGEN_MACHINE" in warning

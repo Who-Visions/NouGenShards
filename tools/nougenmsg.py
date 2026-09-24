@@ -217,7 +217,7 @@ RESOLVE_TIMEOUT_S = 3.0
 def _ssh_config_hostnames(node: str) -> list:
     """HostName values for every ~/.ssh/config Host block naming `node` as an
     alias. That file is where each box's real mDNS name already lives
-    (blade -> blade1tb.local, phoebus -> KushBoyGroups-Mac-mini.local)."""
+    (blade -> blade1tb.local, phoebus -> owner-mac-mini.local)."""
     path = os.path.join(os.path.expanduser("~"), ".ssh", "config")
     found, in_block = [], False
     try:

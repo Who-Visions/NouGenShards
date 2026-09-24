@@ -16,7 +16,7 @@ worse than no inbox.
 
 Managed by launchd as com.whovisions.fleetinbox.
 """
-import json, os, re, subprocess, sys
+import json, os, re, socket, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,7 +26,8 @@ LOG   = Path(os.environ.get("FLEET_INBOX_LOG", Path.home() / "fleet-inbox.log"))
 STATE = Path(os.environ.get("FLEET_INBOX_STATE", Path.home() / ".fleet-inbox-seen.json"))
 ME    = os.environ.get("FLEET_ME", "phoebus").lower()
 # Substrings that mean "this leg is talking to this box".
-MINE  = [ME, "kushboygroups-mac-mini", "mac-mini", "mini"]
+MINE  = [ME, socket.gethostname().split(".")[0].lower()] + [
+    a.strip().lower() for a in os.environ.get("FLEET_ME_ALIASES", "").split(",") if a.strip()]
 
 
 def sh(*args, cwd=None):
