@@ -27,7 +27,7 @@ CLI
     python fleet.py ask "question"
 """
 from __future__ import annotations
-import json, os, sys, time, itertools, threading, hashlib, ipaddress
+import json, os, re, sys, time, itertools, threading, hashlib, ipaddress
 for _s in (sys.stdout, sys.stderr):  # Windows consoles default to cp1252; never crash printing model output (9/13/2026)
     try:
         _s.reconfigure(encoding="utf-8", errors="replace")
@@ -150,17 +150,64 @@ def breaker_reset() -> None:
 
 # Free OpenRouter models spanning DIFFERENT LABS. Consensus across one model family
 # only reproduces that family's blind spots -- decorrelate by vendor.
+# Refreshed 2026-09-25 from GET /api/v1/models (":free" suffix). OpenRouter governs
+# free capacity GLOBALLY per model, not per account -- more keys on one slug buy
+# nothing; more slugs do. Verify slugs against the live list before adding.
 OR_DIVERSE = [
-    ("nvidia",      "nvidia/nemotron-3-super-120b-a12b:free"),
-    ("nvidia-nano", "nvidia/nemotron-3-nano-30b-a3b:free"),
-    ("poolside",    "poolside/laguna-m.1:free"),
-    ("poolside-s",  "poolside/laguna-s-2.1:free"),
-    ("openai",      "openai/gpt-oss-20b:free"),
-    ("cohere",      "cohere/north-mini-code:free"),
-    ("inclusionai", "inclusionai/ling-3.0-flash:free"),
-    ("google-moe",  "google/gemma-4-26b-a4b-it:free"),
-    ("google-31b",  "google/gemma-4-31b-it:free"),
+    ("google-31b",   "google/gemma-4-31b-it:free"),
+    ("nvidia-super", "nvidia/nemotron-3-super-120b-a12b:free"),
+    ("cohere",       "cohere/north-mini-code:free"),
+    ("qwen",         "qwen/qwen3.8-27b:free"),
+    ("tml-small",    "thinkingmachines/inkling-small:free"),
+    ("nvidia-light", "nvidia/nemotron-3.5-lightning:free"),
+    ("dots",         "dots-studio/dots-3-note-preview:free"),
+    ("google-moe",   "google/gemma-4-26b-a4b-it:free"),
+    ("poolside-s",   "poolside/laguna-s-2.1:free"),
+    ("nvidia-ultra", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+    ("zai",          "z-ai/glm-5.2:free"),
+    ("nvidia-omni",  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"),
+    ("tml",          "thinkingmachines/inkling:free"),
+    ("poolside-xs",  "poolside/laguna-xs-2.1:free"),
+    ("ling-fin",     "inclusionai/ling-3.0-flash-fin:free"),
+    ("liquid",       "liquid/lfm-2.5-2.6b:free"),
 ]
+# Server-side fallback chain sent as "models": OpenRouter hops to the next slug on a
+# 429/404 inside one request instead of returning the error to us. Hard cap is 3
+# entries total, so: primary + one decorrelated vendor + the random free router.
+OR_FALLBACK_DEPTH = 1
+OR_FREE_ROUTER = "openrouter/free"
+OR_FREE_CACHE = os.path.expanduser(r"~\.nougen\fleet_or_free.json")
+
+
+def refresh_or_diverse(max_age_s: int = 6 * 3600) -> list[tuple[str, str]]:
+    """Rebuild OR_DIVERSE from GET /api/v1/models so deprecated ':free' slugs
+    never reach a request. Cached on disk; the hardcoded list is the fallback."""
+    global OR_DIVERSE
+    try:
+        if os.path.exists(OR_FREE_CACHE) and time.time() - os.path.getmtime(OR_FREE_CACHE) < max_age_s:
+            OR_DIVERSE = [tuple(x) for x in json.load(open(OR_FREE_CACHE, encoding="utf-8"))]
+            return OR_DIVERSE
+        url = "https://openrouter.ai/api/v1/models?sort=throughput-high-to-low"
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "nougen-fleet"}), timeout=30) as r:
+            data = json.load(r)["data"]
+        live = []
+        for m in data:
+            mid = m.get("id", "")
+            if not mid.endswith(":free") or m.get("expiration_date"):
+                continue
+            if "text" not in (m.get("architecture") or {}).get("output_modalities", ["text"]):
+                continue
+            if "content-safety" in mid or int(m.get("context_length") or 0) < 32000:
+                continue
+            tag = re.sub(r"[^a-z0-9]+", "-", mid.split("/", 1)[1].replace(":free", ""))[:24]
+            live.append((tag, mid))
+        if live:
+            OR_DIVERSE = live
+            os.makedirs(os.path.dirname(OR_FREE_CACHE), exist_ok=True)
+            json.dump(live, open(OR_FREE_CACHE, "w", encoding="utf-8"))
+    except Exception:
+        pass
+    return OR_DIVERSE
 
 
 def _kind(name: str) -> str:
@@ -224,10 +271,17 @@ class Fleet:
         or_routes = [r for r in self.routes if r["kind"] == "openrouter"]
         if not or_routes:
             return self.routes
+        refresh_or_diverse()
         extra = []
-        for i, (tag, model) in enumerate(OR_DIVERSE):
-            base = or_routes[i % len(or_routes)]
-            extra.append({**base, "name": f'or-{tag}', "model": model, "vendor": tag})
+        # Every key becomes a route; keys cycle through vendors so no slug is hit
+        # by more keys than necessary (the per-model pool is global anyway).
+        for i, base in enumerate(or_routes):
+            tag, model = OR_DIVERSE[i % len(OR_DIVERSE)]
+            acct = base["name"].replace("openrouter-", "")
+            extra.append({**base, "name": f'or-{tag}-{acct}', "model": model, "vendor": tag,
+                          "min_tokens": max(base.get("min_tokens", 0), 1024),
+                          "fallbacks": [m for _, m in OR_DIVERSE[(i + 1) % len(OR_DIVERSE):][:OR_FALLBACK_DEPTH]]
+                                       + [OR_FREE_ROUTER]})
         # keep non-openrouter routes, replace the duplicated openrouter block
         self.routes = [r for r in self.routes if r["kind"] != "openrouter"] + extra
         self.routes.sort(key=lambda r: (_rank(r["kind"]), r["name"]))
@@ -250,12 +304,15 @@ class Fleet:
         # Reasoning models spend a hidden budget before emitting content and
         # return empty at HTTP 200 if starved. A route may declare its floor.
         max_tokens = max(max_tokens, route.get("min_tokens", 0))
-        body = json.dumps({
+        payload = {
             "model": route["model"],
             "messages": prompt if isinstance(prompt, list) else [{"role": "user", "content": str(prompt)}],
             "max_tokens": max_tokens,
             "temperature": temperature,
-        }).encode()
+        }
+        if route.get("fallbacks"):
+            payload["models"] = [route["model"], *route["fallbacks"]]
+        body = json.dumps(payload).encode()
         hdrs = {"Content-Type": "application/json", **route["headers"]}
         # Vertex-style routes carry a short-lived token minted per call, not a
         # static key baked into the registry.
@@ -278,7 +335,14 @@ class Fleet:
                 ok = bool(out.strip())
                 return rt, ok, round(time.time() - t0, 1), out.strip()[:24]
             except Exception as ex:
-                return rt, False, round(time.time() - t0, 1), type(ex).__name__
+                code = getattr(ex, "code", "")
+                try:
+                    detail = ex.read()[:400].decode("utf-8", "replace") if hasattr(ex, "read") else ""
+                    m = re.search(r'"raw":"([^"]{0,60})|"message":"([^"]{0,60})', detail)
+                    detail = next((g for g in (m.groups() if m else ()) if g), "")
+                except Exception:
+                    detail = ""
+                return rt, False, round(time.time() - t0, 1), f"{type(ex).__name__} {code} {detail}".strip()
         results = []
         with ThreadPoolExecutor(max_workers=workers) as ex:
             for rt, ok, dt, note in ex.map(check, self.routes):
