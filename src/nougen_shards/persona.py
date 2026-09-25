@@ -88,6 +88,27 @@ _IMPERATIVE = re.compile(r"^\s*(make|build|write|run|fix|add|do|ship|leg|shard|r
 _WORD = re.compile(r"[a-zà-ÿ']+", re.I)
 
 
+
+def request_shape(request: str) -> str:
+    """Infer a per-request presentation mode without changing member identity."""
+    text = (request or "").lower()
+    cinematic = bool(re.search(r"\b(movie|film|screenplay|cinematic|trailer|scene)\b", text))
+    explanatory = bool(re.search(r"\b(explain|explaining|how does|what is|teach|overview)\b", text))
+    if cinematic and explanatory:
+        return "cinematic explainer"
+    if cinematic:
+        return "cinematic narrative"
+    if explanatory:
+        return "clear explanation"
+    if re.search(r"\b(compare|versus|vs\.?|trade-?offs)\b", text):
+        return "comparison"
+    if re.search(r"\b(summarize|summary|recap|tl;dr)\b", text):
+        return "summary"
+    if re.search(r"\b(implement|implementation|code|refactor|debug)\b", text):
+        return "technical implementation"
+    return "general response"
+
+
 @dataclass
 class Signals:
     """Observed evidence about whoever is being reached. Everything optional."""
@@ -321,8 +342,8 @@ class Persona:
         d.pop("evidence", None)
         return hashlib.sha256(json.dumps(d, sort_keys=True, default=list).encode()).hexdigest()[:16]
 
-    def system_prompt(self) -> str:
-        """Style contract for any lane addressing this member. Plain English, no owner names."""
+    def system_prompt(self, request: str = "") -> str:
+        """Style contract for this member and an optional, current request."""
         lang = {"en": "English", "ht": "Haitian Creole (read phonetically, answer in kind)"}
         langs = ", ".join(lang.get(code, code) for code in self.languages) or "English"
         lines = [
@@ -335,6 +356,17 @@ class Persona:
                 "expansive": "Answer first, then walk the reasoning with examples.",
             }[self.register],
         ]
+        shape = request_shape(request)
+        task_guidance = {
+            "cinematic explainer": "Explain through a cinematic story with a protagonist and stakes; keep real capabilities distinct from metaphor.",
+            "cinematic narrative": "Use scenes, character, and stakes; keep invented story details distinct from established facts.",
+            "clear explanation": "Explain plainly, starting with the core idea and then how it works.",
+            "comparison": "Compare the options on shared criteria and state the practical trade-offs.",
+            "summary": "Give a compact summary that preserves the key facts and decisions.",
+            "technical implementation": "Focus on a concrete implementation using the project's existing conventions.",
+        }.get(shape)
+        if task_guidance:
+            lines.append(f"Task shape ({shape}): {task_guidance}")
         if self.lexicon:
             lines.append("Localize, do not translate: speak in their frames (" + ", ".join(self.lexicon[:3]) + ").")
         if self.directive:
@@ -1152,12 +1184,78 @@ def resolve_emotion(name: str) -> EmotionState:
 # CLI
 # --------------------------------------------------------------------------- #
 
+def generate_response(persona: Persona, request: str, *, model: Optional[str] = None,
+                     max_tokens: Optional[int] = None, output: Optional[Path] = None) -> str:
+    """Generate with local Ollama; persona resolution itself remains deterministic."""
+    if not request.strip():
+        raise ValueError("generation requires a non-empty request")
+
+    import urllib.request
+    import sys
+    src_root = str(Path(__file__).resolve().parents[1])
+    if src_root not in sys.path:
+        sys.path.insert(0, src_root)
+    from nougen_shards.ollama_host import resolve_ollama_url
+    from nougen_shards.vram_gate import check_vram
+    from urllib.parse import urlsplit
+
+    base_url = resolve_ollama_url()
+    host = (urlsplit(base_url).hostname or "").lower()
+    if host not in {"localhost", "127.0.0.1", "::1"}:
+        raise RuntimeError("persona generation requires a loopback Ollama endpoint; remote endpoints are disabled")
+
+    model = model or os.getenv("NOUGEN_PERSONA_MODEL", "gemma4:e2b-qat")
+    max_tokens = max_tokens or int(os.getenv("NOUGEN_PERSONA_MAX_TOKENS", "7000"))
+    gate = check_vram(model)
+    if not gate.ok:
+        raise RuntimeError(f"local generation refused by VRAM gate: {gate.reason}")
+
+    messages = [
+        {"role": "system", "content": persona.system_prompt(request)},
+        {"role": "user", "content": request},
+    ]
+    payload = json.dumps({
+        "model": model, "messages": messages, "stream": True,
+        "options": {"num_predict": max_tokens, "num_ctx": int(os.getenv("NOUGEN_PERSONA_NUM_CTX", "8192"))},
+    }).encode("utf-8")
+    req = urllib.request.Request(base_url + "/api/chat", data=payload,
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    collected: list[str] = []
+    out_file = output.open("w", encoding="utf-8", newline="") if output else None
+    try:
+        with urllib.request.urlopen(req, timeout=float(os.getenv("NOUGEN_PERSONA_TIMEOUT_S", "1800"))) as response:
+            for raw in response:
+                if not raw.strip():
+                    continue
+                part = json.loads(raw.decode("utf-8"))
+                if part.get("error"):
+                    raise RuntimeError(part["error"])
+                chunk = part.get("message", {}).get("content", "")
+                if chunk:
+                    collected.append(chunk)
+                    print(chunk, end="", flush=True)
+                    if out_file:
+                        out_file.write(chunk)
+                        out_file.flush()
+        print()
+        return "".join(collected)
+    finally:
+        if out_file:
+            out_file.close()
+
+
 def _main(argv: Optional[list[str]] = None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description="Resolve deterministic personas, compose behavioral masks, and set emotional states.")
     ap.add_argument("--text", action="append", default=[], help="a message from the member (repeatable)")
     ap.add_argument("--file", help="newline-delimited messages")
     ap.add_argument("--scope", help="shard scope tag, e.g. via:claude-app/<user>")
+    ap.add_argument("--request", default="", help="current request; adapt persona style to this task")
+    ap.add_argument("--request-file", type=Path, help="UTF-8 file containing the full generation request")
+    ap.add_argument("--generate", action="store_true", help="generate with local Ollama")
+    ap.add_argument("--model", help="Ollama model (default: NOUGEN_PERSONA_MODEL or gemma4:e2b-qat)")
+    ap.add_argument("--max-tokens", type=int, help="generation token cap (default: NOUGEN_PERSONA_MAX_TOKENS or 7000)")
+    ap.add_argument("--output", type=Path, help="also save generated text to this UTF-8 file")
     ap.add_argument("--surface", action="append", default=[])
     ap.add_argument("--tz", default="UTC")
     ap.add_argument("--role", default="")
@@ -1177,6 +1275,12 @@ def _main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--check", type=Path,
                     help="output file to lint against the resolved persona's contract; exit 1 on violations")
     a = ap.parse_args(argv)
+    request = a.request
+    if a.request_file:
+        file_request = a.request_file.read_text(encoding="utf-8")
+        request = "\n\n".join(x for x in (request, file_request) if x.strip())
+    if a.generate and not request.strip():
+        ap.error("--generate requires --request or --request-file")
 
     if a.rebuild_all:
         res = rebuild_recent_personas(days=a.days, tz=a.tz, role=a.role)
@@ -1250,6 +1354,13 @@ def _main(argv: Optional[list[str]] = None) -> int:
         sig = Signals.from_texts(texts, surfaces=a.surface, tz=a.tz, role=a.role,
                                  audience_size=a.size, stable_days=a.stable_days)
         p = resolve(sig, a.registry)
+    if a.generate:
+        try:
+            generate_response(p, request, model=a.model, max_tokens=a.max_tokens, output=a.output)
+        except Exception as exc:
+            print(f"persona generation failed: {exc}", file=__import__("sys").stderr)
+            return 2
+        return 0
     if a.check:
         viol = check_output(a.check.read_text(encoding="utf-8"), p)
         for x in viol:
@@ -1261,7 +1372,7 @@ def _main(argv: Optional[list[str]] = None) -> int:
     else:
         print(f"# persona {p.fingerprint()}  market={p.market} audience={p.audience} "
               f"segment_is_market={p.segment.is_market}")
-        print(p.system_prompt())
+        print(p.system_prompt(request))
     return 0
 
 
