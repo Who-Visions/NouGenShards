@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from . import handoff, machine, relay_watch
+from nougen_time import format_log_time, now as nougen_now
 
 # Repos this probe sweeps for dirty state. Override with NOUGEN_PROBE_REPOS
 # (":"-separated absolute paths). Falls back to this repo plus any sibling

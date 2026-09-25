@@ -1356,6 +1356,7 @@ def list_handoffs(agent: Optional[str] = None):
                 raw = t.get("raw_count", "?")
                 pct = f"?/{raw}"
             dt = _user_time(data.get("timestamp"))
+            agent_name = data.get('agent', 'generic').upper()
             stored = (data.get("status") or "open").lower()
             live = compute_live_status(data, live_git)
             # Build display string, show arrow when live differs from stored
