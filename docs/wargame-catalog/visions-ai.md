@@ -291,7 +291,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Run any Visions deploy script on blade without flipping gcloud's global account and project for other fleet repos**
 
-- Failure surface: deploy_visions_saas.sh and fix_visions_infrastructure.sh run `gcloud config set project endless-duality...` and `gcloud config set account whoentertains@gmail.com`; the next NouGenShards or Bandit deploy from the same shell targets the wrong project.
+- Failure surface: deploy_visions_saas.sh and fix_visions_infrastructure.sh run `gcloud config set project endless-duality...` and `gcloud config set account <gm-email>`; the next NouGenShards or Bandit deploy from the same shell targets the wrong project.
 - First fork: if you observe `gcloud config get project` differing from the repo you are in after a Visions deploy -> switch scripts to --project/--account flags or a named configuration; else -> do it preemptively and add a post-run restore
 - Evidence: `deploy_visions_saas.sh`, `fix_visions_infrastructure.sh`
 - Lens: infra · likelihood likely · blast fleet · verdict CONFIRMED · status open

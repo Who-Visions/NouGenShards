@@ -67,7 +67,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Kill /personal-finances/stats before the next Cloud Run deploy of the tax hub path**
 
-- Failure surface: agent.py exposes an unauthenticated GET that opens the SQLite at C:\Users\super\Watchtower\Iris-ai-repo\personal finances\personal_finances.db; handoff 20260725_011540 confirms that folder holds 243 bank/cashapp/paypal statements on Dave's box. Anyone who runs agent.py on that machine (or any future field added to the SELECT) makes Dave's transactions world-readable; on Cloud Run it 500s instead, so nobody notices the route exists.
+- Failure surface: agent.py exposes an unauthenticated GET that opens the SQLite at %USERPROFILE%\Watchtower\Iris-ai-repo\personal finances\personal_finances.db; handoff 20260725_011540 confirms that folder holds 243 bank/cashapp/paypal statements on Dave's box. Anyone who runs agent.py on that machine (or any future field added to the SELECT) makes Dave's transactions world-readable; on Cloud Run it 500s instead, so nobody notices the route exists.
 - First fork: if you observe the route still returns 500 on the deployed revision and no client references it -> delete the route outright and redeploy; else (something calls it) -> move the path to IRIS_FINANCE_DB env, require auth, then delete the hardcoded string
 - Evidence: `agent.py`, `nougen-handoffs/handoff_20260725_011540_chore_public-surface-untrack-internal.md`
 - Lens: security/privacy · likelihood likely · blast fleet · verdict CONFIRMED · status open
@@ -144,5 +144,5 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 - First fork: if you observe origin/main has any commit not in this clone -> re-run the name-only and pattern scans against origin before concluding; else -> record the verification in CLAUDE.md/HARDENING-style note and close the question
 - Evidence: `.gitignore`, `agent.py`
 - Lens: secrets/history · likelihood observed · blast repo · verdict CONFIRMED · status open
-- Verifier note: .gitignore lines 27-31 exclude *.db/*.sqlite/'personal finances/'/tax_knowledge/ (added in the 101fb1d security commit); git log --all --name-only across all 15 commits shows only the repo's normal source files, no .db/finance paths ever committed, and a content grep for AIza/PRIVATE KEY across history returns nothing. agent.py:238 does contain a hardcoded local path 'C:\\Users\\super\\Watchtower\
+- Verifier note: .gitignore lines 27-31 exclude *.db/*.sqlite/'personal finances/'/tax_knowledge/ (added in the 101fb1d security commit); git log --all --name-only across all 15 commits shows only the repo's normal source files, no .db/finance paths ever committed, and a content grep for AIza/PRIVATE KEY across history returns nothing. agent.py:238 does contain a hardcoded local path '%USERPROFILE%\\Watchtower\
 - #550 families: 75

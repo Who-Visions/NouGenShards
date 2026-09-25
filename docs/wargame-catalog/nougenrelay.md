@@ -249,11 +249,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Rotate blade's LAN node token whose fingerprint matches nothing in any vault**
 
-- Failure surface: FLEET-LOG-2026-08-17 records blade's 151k-shard node at 10.0.0.87:4444 rejecting both known tokens (fingerprint 9c67af03a9da, 'ROTATE not recover') while the mesh daemon on 10.0.0.88:8765 answers unauthenticated. The largest grid is either unreachable or open, depending on the box.
+- Failure surface: FLEET-LOG-2026-08-17 records blade's 151k-shard node at 192.0.2.87:4444 rejecting both known tokens (fingerprint 9c67af03a9da, 'ROTATE not recover') while the mesh daemon on 192.0.2.88:8765 answers unauthenticated. The largest grid is either unreachable or open, depending on the box.
 - First fork: if you observe blade's node still 401ing outpost's tokens -> route A: rotate via keymaker on blade and distribute through the vault, not a leg; else route B: keep the token local and route all blade reads through the Cloudflare Access front door.
 - Evidence: `docs/FLEET-LOG-2026-08-17.md`, `docs/ssh-lan-interconnect.md`
 - Lens: token-scope · likelihood observed · blast fleet · verdict CONFIRMED · status open
-- Verifier note: docs/FLEET-LOG-2026-08-17.md:1600 states 'blade's 151k grid - token unrecoverable (fingerprint 9c67af03a9da matches nothing outpost holds, so ROTATE not recover)' and references blade's LAN node at 10.0.0.87:4444 with 151,159 shards being 401'd; a mesh service on 10.0.0.88:8765 (MACMINI-7BA58F) is referenced elsewhere in the log. Directly supports the claim.
+- Verifier note: docs/FLEET-LOG-2026-08-17.md:1600 states 'blade's 151k grid - token unrecoverable (fingerprint 9c67af03a9da matches nothing outpost holds, so ROTATE not recover)' and references blade's LAN node at 192.0.2.87:4444 with 151,159 shards being 401'd; a mesh service on 192.0.2.88:8765 (MACMINI-7BA58F) is referenced elsewhere in the log. Directly supports the claim.
 - #550 families: 76
 
 ### WG-0145 · P0 · defend · effort M
@@ -315,11 +315,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Neutralize the root retire_*/ack_* sweep scripts before a re-run re-acks live legs**
 
-- Failure surface: retire_stale_5d.py rewrites every open leg older than 20260827 to complete with a fabricated 'at': ...Z stamp and json.dump escaping; ack_green_sweep.py acks seven hardcoded ids then pushes. Both run against C:\Users\super paths with no dry-run; a re-run on whoart overwrites newer relay events from other lanes.
+- Failure surface: retire_stale_5d.py rewrites every open leg older than 20260827 to complete with a fabricated 'at': ...Z stamp and json.dump escaping; ack_green_sweep.py acks seven hardcoded ids then pushes. Both run against %USERPROFILE% paths with no dry-run; a re-run on whoart overwrites newer relay events from other lanes.
 - First fork: if you observe any of the scripts imported or referenced from tools/ or fleet-ops/ -> route A: fold the useful logic into `relay autoclose --before <date>`; else -> route B: delete them and record the sweep in a leg
 - Evidence: `retire_stale_5d.py`, `ack_green_sweep.py`, `sweep_ack.py`
 - Lens: data-integrity · likelihood observed · blast fleet · verdict CONFIRMED · status open
-- Verifier note: retire_stale_5d.py and ack_green_sweep.py verified verbatim at repo root: fabricated 'at' stamp, hardcoded C:\Users\super path, no dry-run, 7 hardcoded ack ids then git push. sweep_ack.py also present at root.
+- Verifier note: retire_stale_5d.py and ack_green_sweep.py verified verbatim at repo root: fabricated 'at' stamp, hardcoded %USERPROFILE% path, no dry-run, 7 hardcoded ack ids then git push. sweep_ack.py also present at root.
 - #550 families: 17
 
 ### WG-0188 · P0 · defend · effort M
@@ -508,11 +508,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **relay_daemon.py's keymaker secret fallback only resolves on one Windows account**
 
-- Failure surface: NGS_INFERENCE_TOKEN(S)/HF_TOKEN fallback resolution reads C:/Users/super/.nougen/secrets/shards_secrets.db, a path that only exists on one specific Windows box; on blade1tb, phoebus (mac mini), or any Linux runner the same code silently returns no token instead of erroring loudly, so a token-dependent route fails differently per machine with no shared diagnostic.
+- Failure surface: NGS_INFERENCE_TOKEN(S)/HF_TOKEN fallback resolution reads C:~/.nougen/secrets/shards_secrets.db, a path that only exists on one specific Windows box; on blade1tb, phoebus (mac mini), or any Linux runner the same code silently returns no token instead of erroring loudly, so a token-dependent route fails differently per machine with no shared diagnostic.
 - First fork: if the daemon runs on a non-Windows machine or a different account -> the keymaker lookup returns nothing and downstream HF/OpenRouter calls fail as 'no credential' rather than 'wrong machine for this fallback path.'
 - Evidence: `tools/relay_daemon.py`
 - Lens: cost-quota · likelihood observed · blast fleet · verdict CONFIRMED · status open
-- Verifier note: tools/relay_daemon.py hardcodes KEYMAKER_BIN_DIR/KEYMAKER_DB_PATH defaults to C:/Users/super/.nougen/... and the HF token resolution falls through NGS_INFERENCE_TOKENS/HF_TOKEN env vars to _keymaker_load, which silently returns None off that one box/account, exactly as claimed.
+- Verifier note: tools/relay_daemon.py hardcodes KEYMAKER_BIN_DIR/KEYMAKER_DB_PATH defaults to C:~/.nougen/... and the HF token resolution falls through NGS_INFERENCE_TOKENS/HF_TOKEN env vars to _keymaker_load, which silently returns None off that one box/account, exactly as claimed.
 - #550 families: 35
 
 ### WG-0266 · P0 · defend · effort S
@@ -669,11 +669,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Quarantine the root sweep scripts so a re-run cannot re-ack or retire live legs**
 
-- Failure surface: retire_stale_5d.py rewrites every open leg before 2026-08-27 to complete with a fabricated whoart/antigravity ack; ack_green_sweep.py acks hardcoded ids then `git push origin main` from C:\Users\super. Running any of them today on whoart mutates the shared registry with backdated events.
-- First fork: if you observe a root *.py with a hardcoded C:\Users\super path and a glob over .handoffs -> route A: move to tools/archive with a guard that refuses to run; else route B: delete them and record the sweep provenance in a doc.
+- Failure surface: retire_stale_5d.py rewrites every open leg before 2026-08-27 to complete with a fabricated whoart/antigravity ack; ack_green_sweep.py acks hardcoded ids then `git push origin main` from %USERPROFILE%. Running any of them today on whoart mutates the shared registry with backdated events.
+- First fork: if you observe a root *.py with a hardcoded %USERPROFILE% path and a glob over .handoffs -> route A: move to tools/archive with a guard that refuses to run; else route B: delete them and record the sweep provenance in a doc.
 - Evidence: `retire_stale_5d.py`, `ack_green_sweep.py`, `retire_aug27_28.py`
 - Lens: tool-abuse · likelihood observed · blast repo · verdict CONFIRMED · status open
-- Verifier note: retire_stale_5d.py:7 globs r'C:\Users\super\Outpost\NouGenRelay\.handoffs\*.json', line 18 sets status='complete' with machine='whoart', agent='antigravity' fabricated ack; ack_green_sweep.py:16,20-21 hardcodes the same C:\Users\super path and runs `git push origin main` — all three scripts sit at repo root exactly as claimed.
+- Verifier note: retire_stale_5d.py:7 globs r'%USERPROFILE%\Outpost\NouGenRelay\.handoffs\*.json', line 18 sets status='complete' with machine='whoart', agent='antigravity' fabricated ack; ack_green_sweep.py:16,20-21 hardcodes the same %USERPROFILE% path and runs `git push origin main` — all three scripts sit at repo root exactly as claimed.
 - #550 families: 22
 
 ### WG-0497 · P1 · defend · effort S
@@ -836,7 +836,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 - First fork: if you observe a shard tagged fleet/reach-matrix carrying an RFC1918 address -> route A: strip addresses at capture and tag topology shards brand/personal so shardlog withholds them; else route B: delete the script.
 - Evidence: `fleet-ops/tools/persist_learning_shards.py`, `src/nougen_relay/shardlog.py`
 - Lens: secrets · likelihood likely · blast fleet · verdict CONFIRMED · status open
-- Verifier note: persist_learning_shards.py literally embeds 192.168.1.16/187/78 with hostnames under tags fleet,reach-matrix,...,recursive-learning; shardlog.py exists as the relay path.
+- Verifier note: persist_learning_shards.py literally embeds 198.51.100.16/187/78 with hostnames under tags fleet,reach-matrix,...,recursive-learning; shardlog.py exists as the relay path.
 - #550 families: 74
 
 ### WG-0668 · P1 · defend · effort S
@@ -897,7 +897,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Build a repeatable scrub pipeline for the public twin Who-Visions/nougen-relay**
 
-- Failure surface: The 2026-09-24 scrub that moved fleet-ops here was manual; 192.168.1.x IPs, C:\Users\super paths, hostnames and mDNS names live in docs, tools and tests. The next sync of engine changes to the twin carries a private path or topology line and nobody diffs for it.
+- Failure surface: The 2026-09-24 scrub that moved fleet-ops here was manual; 192.168.1.x IPs, %USERPROFILE% paths, hostnames and mDNS names live in docs, tools and tests. The next sync of engine changes to the twin carries a private path or topology line and nobody diffs for it.
 - First fork: if you observe a file in src/ or tools/ containing a LAN IP, user path or nougenai.com host -> route A: write a deny-pattern scan run in CI on the twin and a subtree filter for the sync; else route B: sync only src/ and tests/ via an explicit allowlist script.
 - Evidence: `fleet-ops/README.md`, `fleet-ops/tools/persist_learning_shards.py`, `tools/fleet_audit.py`
 - Lens: secrets · likelihood likely · blast fleet · verdict CONFIRMED · status open

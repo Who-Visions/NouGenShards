@@ -86,7 +86,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 | WG-0332 | P0 | defend | Stop scope-creep bundles like #423's SIGKILL-by-default OS-wide zombie nuke riding a CLI subcommand PR |
 | WG-0333 | P0 | defend | Rotate and redact the two NGS bearer tokens quoted verbatim in queue records, then rewrite shared history |
 | WG-0334 | P0 | elevate | Close the 8-live-Google-key rotation and RECOVERY_KEY.txt moves the 08-07 handoff left awaiting GM |
-| WG-0335 | P0 | elevate | Port NouGenShards' published-surface guard to the registry: 28 C:\Users\super paths and 9 LAN IPs live here |
+| WG-0335 | P0 | elevate | Port NouGenShards' published-surface guard to the registry: 28 %USERPROFILE% paths and 9 LAN IPs live here |
 | WG-0336 | P0 | defend | Remove off-domain personal data from fleet memory: house renovation ledger, insurance claims, selfie descriptions |
 | WG-0337 | P0 | elevate | Publish a JSON schema for handoff records: machine is a string in 48 files and an object in 18 |
 | WG-0338 | P0 | defend | Fix the queue filename split: three task_YYYYMMDDTHHMMSSZ_ files sort out of order against task_YYYYMMDD_HHMMSS_ |
@@ -293,7 +293,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 - First fork: if you observe a key returning 200 on generativelanguage /v1beta/models -> rotate that one, probe its dependent lane, then next; else (403/SERVICE_DISABLED) -> still rotate, it is a valid key, do not treat as dead
 - Evidence: `claude cli handoffs/handoff_20260807_221134_feat_private-vault-encryption.md`, `claude cli handoffs/handoff_20260807_221134_feat_private-vault-encryption.json`
 - Lens: secrets · likelihood observed · blast fleet · verdict CONFIRMED · status open
-- Verifier note: claude cli handoffs/handoff_20260807_221134...md states verbatim: 8 fully-live Google API keys, 313 rows, davemeralus@gmail.com carries credits, rotation set is 8 not 44, Move 1 says rotate one at a time probing Gemini lanes/sol_tools.py/blerdcon tooling -- matches the claim's specifics exactly.
+- Verifier note: claude cli handoffs/handoff_20260807_221134...md states verbatim: 8 fully-live Google API keys, 313 rows, <gm-email> carries credits, rotation set is 8 not 44, Move 1 says rotate one at a time probing Gemini lanes/sol_tools.py/blerdcon tooling -- matches the claim's specifics exactly.
 - #550 families: 62
 
 ### WG-0127 · P0 · elevate · effort M
@@ -893,11 +893,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Make node launchers path-agnostic across blade, phoebus and whoart (two tasks, two code trees)**
 
-- Failure surface: phoebus's bin/ngs-node.sh hardcodes /Users/kushboygroup, blade has two scheduled tasks pointing at two code trees, and which_tree.py was broken on Windows; a node can run the wrong tree for weeks while /health says ignited.
+- Failure surface: phoebus's bin/ngs-node.sh hardcodes ~, blade has two scheduled tasks pointing at two code trees, and which_tree.py was broken on Windows; a node can run the wrong tree for weeks while /health says ignited.
 - First fork: if you observe a launcher with a literal account path or two tasks targeting the same node -> route A: single NOUGEN_HOME-derived launcher per node with which_tree --proc in /health; else -> route B: retire the extra task and record the canonical tree
 - Evidence: `queue/task_20260916_183300_pr426-ngs-node-runner-hardcoded-account-path-fails-published-surface-guard.md`, `queue/task_20260908_050200_pr295-296-which-tree-shadow-fix-collision.md`
 - Lens: distributed/config-drift · likelihood observed · blast fleet · verdict CONFIRMED · status open
-- Verifier note: task_20260916_183300 (PR #426) shows the literal hardcoded path '/Users/kushboygroup/The Observatory/...' in bin/ngs-node.sh caught by CI's published-surface guard, matching the failure_surface closely; task_20260908_050200 covers the which_tree.py collision.
+- Verifier note: task_20260916_183300 (PR #426) shows the literal hardcoded path '~/The Observatory/...' in bin/ngs-node.sh caught by CI's published-surface guard, matching the failure_surface closely; task_20260908_050200 covers the which_tree.py collision.
 - #550 families: 40
 
 ### WG-0322 · P0 · defend · effort M
@@ -1040,13 +1040,13 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 ### WG-0335 · P0 · elevate · effort M
 
-**Port NouGenShards' published-surface guard to the registry: 28 C:\Users\super paths and 9 LAN IPs live here**
+**Port NouGenShards' published-surface guard to the registry: 28 %USERPROFILE% paths and 9 LAN IPs live here**
 
-- Failure surface: NouGenShards CI fails PRs on account names and machine paths (#378/#426/#434/#435) but this repo has no guard, so handoffs freely publish home paths, 192.168.1.16 and 10.0.0.x addresses that map the fleet's LAN.
+- Failure surface: NouGenShards CI fails PRs on account names and machine paths (#378/#426/#434/#435) but this repo has no guard, so handoffs freely publish home paths, 198.51.100.16 and 10.0.0.x addresses that map the fleet's LAN.
 - First fork: if you observe a new record contains a home path or RFC1918 address -> route A: reject at PR time with a placeholder suggestion; else -> route B: accept and backfill a scrub of the 650 existing records in a separate pass
 - Evidence: `queue/task_20260915_005500_pr378-cicd-red-personal-path-leak-issue342-350-still-unowned.md`, `queue/task_20260916_183300_pr426-ngs-node-runner-hardcoded-account-path-fails-published-surface-guard.md`, `claude cli handoffs/handoff_20260807_221134_feat_private-vault-encryption.md`
 - Lens: public surface · likelihood observed · blast fleet · verdict CONFIRMED · status open
-- Verifier note: pr378 record shows hardcoded 'C:\Users\super\Watchtower\NouGen' failing the published-surface guard; repo-wide grep finds 25 occurrences of C:\Users\super and exactly 9 distinct RFC1918 IPs (6x 10.0.0.x, 3x 192.168.1.x) matching the '9 LAN IPs' claim precisely; this repo has no CI/workflow files at all (none found), confirming no guard exists here.
+- Verifier note: pr378 record shows hardcoded '%USERPROFILE%\Watchtower\NouGen' failing the published-surface guard; repo-wide grep finds 25 occurrences of %USERPROFILE% and exactly 9 distinct RFC1918 IPs (6x 10.0.0.x, 3x 192.168.1.x) matching the '9 LAN IPs' claim precisely; this repo has no CI/workflow files at all (none found), confirming no guard exists here.
 - #550 families: 74
 
 ### WG-0336 · P0 · defend · effort M
@@ -1173,11 +1173,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Roll the hardcoded-account-path guard out as a fleet pre-commit after four PRs tripped it in a week**
 
-- Failure surface: #378, #426, #434 and #435 each shipped C:\Users\super or /Users/kushboygroup literals and a phoebus LAN IP; the CI guard catches them after the push, so the paths are already in a public PR diff.
+- Failure surface: #378, #426, #434 and #435 each shipped %USERPROFILE% or ~ literals and a phoebus LAN IP; the CI guard catches them after the push, so the paths are already in a public PR diff.
 - First fork: if you observe the lane's machine has no pre-commit installed -> route A: ship the guard as a git hook via the fleet bootstrap and verify on blade, phoebus, whoart; else -> route B: keep CI-only and add the pattern to the sweep's first check
 - Evidence: `queue/task_20260916_183300_pr426-ngs-node-runner-hardcoded-account-path-fails-published-surface-guard.md`, `queue/task_20260917_003600_pr435-mega-pr-bundles-unrelated-mrsb-project-and-affect-persona-subsystem-hardcoded-paths-fail-ci-duplicates-433.md`
 - Lens: public surface · likelihood observed · blast fleet · verdict CONFIRMED · status open
-- Verifier note: pr426 documents /Users/kushboygroup/... paths tripping test_no_account_names_or_machine_paths_are_published, references #378 as the same bug class; pr435 documents C:\Users\super\... paths as the '4th instance of this bug class' referencing #426/#378/#434. Matches claim directly.
+- Verifier note: pr426 documents ~/... paths tripping test_no_account_names_or_machine_paths_are_published, references #378 as the same bug class; pr435 documents %USERPROFILE%\... paths as the '4th instance of this bug class' referencing #426/#378/#434. Matches claim directly.
 
 ### WG-0348 · P0 · defend · effort M
 
@@ -1485,7 +1485,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 **Install lane_guard_precommit.py on every machine so hardcoded account paths die before CI (4th instance)**
 
 - Failure surface: #378, #426, #434 and #435 all failed test_no_account_names_or_machine_paths_are_published after opening; the guard exists only in CI, so the leak is already in a public PR diff by the time it is caught.
-- First fork: if you observe tools/lane_guard_precommit.py missing from a node's .git/hooks -> install via the boot script; else -> extend it with the published-surface regex and test on a fake /Users/kushboygroup path
+- First fork: if you observe tools/lane_guard_precommit.py missing from a node's .git/hooks -> install via the boot script; else -> extend it with the published-surface regex and test on a fake ~ path
 - Evidence: `queue/task_20260917_003600_pr435-mega-pr-bundles-unrelated-mrsb-project-and-affect-persona-subsystem-hardcoded-paths-fail-ci-duplicates-433.md`, `queue/task_20260916_183300_pr426-ngs-node-runner-hardcoded-account-path-fails-published-surface-guard.md`, `queue/task_20260916_231430_pr434-ngs-canonical-fact-snapshots-stale-branch-reverts-fixed-bugs.md`, `queue/task_20260915_005500_pr378-cicd-red-personal-path-leak-issue342-350-still-unowned.md`, `queue/task_20260914_174500_pr356-lane-guard-restored-issue342-350-still-unowned.md`
 - Lens: pii · likelihood observed · blast fleet · verdict PLAUSIBLE · status open
 - Verifier note: Evidence confirms #426, #434, #435 all failed tests/test_published_surface.py::test_no_account_names_or_machine_paths_are_published (found #378 too, via corrected path task_20260915_005500_pr378...), and pr356's file documents lane_guard_precommit.py being restored to main as a local pre-commit tool distinct from CI, supporting the 'guard exists only in CI'-vs-precommit distinction. Original evide
@@ -1516,11 +1516,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Give automated sweeps their own git identity instead of committing as the GM's account**
 
-- Failure surface: All 50 visible commits are authored WhoVisions/whoentertains@gmail.com although every one was written by an unattended claude-cli sweep; provenance for who merged what (and any injected content) collapses onto Dave, and the shallow clone hides the rest.
+- Failure surface: All 50 visible commits are authored WhoVisions/<gm-email> although every one was written by an unattended claude-cli sweep; provenance for who merged what (and any injected content) collapses onto Dave, and the shallow clone hides the rest.
 - First fork: if you observe a bot/app identity available for the org -> switch the sweep to it and require a full-depth clone for audits; else -> add Agent:/Session: trailers to every sweep commit as CANDIDATE
-- Evidence: `queue/task_20260908_180700_meta-six-unmerged-handoff-drafts.md`, `.git (git log --format=%ae, verified directly: exactly 50 commits, all authored whoentertains@gmail.com; git rev-parse --is-shallow-repository = true)`
+- Evidence: `queue/task_20260908_180700_meta-six-unmerged-handoff-drafts.md`, `.git (git log --format=%ae, verified directly: exactly 50 commits, all authored <gm-email>; git rev-parse --is-shallow-repository = true)`
 - Lens: provenance · likelihood likely · blast fleet · verdict CONFIRMED · status open
-- Verifier note: Verified directly against the repo's own git history: `git log --format=%ae | sort -u` returns only whoentertains@gmail.com, `git log --oneline | wc -l` returns exactly 50, and `git rev-parse --is-shallow-repository` returns true -- confirms the specific '50 commits, all whoentertains@gmail.com, shallow clone' claim precisely, though the originally-cited queue file (about six unmerged handoff draf
+- Verifier note: Verified directly against the repo's own git history: `git log --format=%ae | sort -u` returns only <gm-email>, `git log --oneline | wc -l` returns exactly 50, and `git rev-parse --is-shallow-repository` returns true -- confirms the specific '50 commits, all <gm-email>, shallow clone' claim precisely, though the originally-cited queue file (about six unmerged handoff draf
 - #550 families: 18
 
 ### WG-0603 · P1 · elevate · effort L
@@ -1659,7 +1659,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Turn the one-shot audit_daemon.sh into a triaged pipeline or delete its committed outputs**
 
-- Failure surface: audit_queue.ndjson holds 37 findings from griot:e2b including persona prose and a CRIT on an unused import; ROOT is hardcoded to C:/Users/super, files >400 lines are silently truncated at num_ctx 8192, and reruns append duplicates. Anyone grepping for CRIT gets noise as signal.
+- Failure surface: audit_queue.ndjson holds 37 findings from griot:e2b including persona prose and a CRIT on an unused import; ROOT is hardcoded to C:~, files >400 lines are silently truncated at num_ctx 8192, and reruns append duplicates. Anyone grepping for CRIT gets noise as signal.
 - First fork: if you observe a rerun on any node -> route A: parameterize ROOT/OUT, dedup by file+sha, add a coach-triage step that writes triaged.ndjson; else -> route B: git rm the log/ndjson and keep the script as a template
 - Evidence: `audit_daemon.sh`, `audit_queue.ndjson`, `audit_daemon.log`
 - Lens: observability/untriaged · likelihood observed · blast repo · verdict CONFIRMED · status open
@@ -1906,7 +1906,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Roll handoff_push.py redact-verify-refuse gate onto every registry writer fleet-wide**
 
-- Failure surface: blade's handoff_push.py redacts machine paths and refuses on surviving leaks, but 52 files still carry C:\Users\super or /Users/kushboygroup and 13 carry LAN IPs; whoart and phoebus write through NOUGEN_MACHINE_PRIVATE=1 only if the env var is set. A missed node leaks on its next handoff.
+- Failure surface: blade's handoff_push.py redacts machine paths and refuses on surviving leaks, but 52 files still carry %USERPROFILE% or ~ and 13 carry LAN IPs; whoart and phoebus write through NOUGEN_MACHINE_PRIVATE=1 only if the env var is set. A missed node leaks on its next handoff.
 - First fork: if you observe any node without NOUGEN_MACHINE_PRIVATE=1 in its shell rc -> route A: enforce redaction server-side in the sweep/merge step; else -> route B: client-side gate only and a nightly scan that opens a redaction PR
 - Evidence: `claude cli handoffs/handoff_20260802_114315_claude-cli_cli-colour-theme.md`, `claude cli handoffs/handoff_20260731_100943_who-mac-mini_feat_handoff-machine-identity-triggers.md`
 - Lens: data-integrity/PII-in-store · likelihood observed · blast fleet · verdict PLAUSIBLE · status open
@@ -1973,7 +1973,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 - First fork: if you observe the repo visibility is public -> route A: redact in place, add a records linter, and schedule history rewrite; else -> route B: redact forward only and mark the files private-scope
 - Evidence: `claude cli handoffs/handoff_20260807_221134_feat_private-vault-encryption.md`, `claude cli handoffs/handoff_20260807_221134_feat_private-vault-encryption.json`
 - Lens: privacy/PII · likelihood observed · blast fleet · verdict PLAUSIBLE · status open
-- Verifier note: The 08-07 handoff .md/.json list davemeralus@gmail.com carrying credits next to key-id prefixes (cc9ff900abba etc.) and mention unprobed OpenRouter keys; repo-wide grep found 4 distinct third-party gmail addresses across many files, roughly consistent with 'nine files' though not independently counted to exactly nine.
+- Verifier note: The 08-07 handoff .md/.json list <gm-email> carrying credits next to key-id prefixes (cc9ff900abba etc.) and mention unprobed OpenRouter keys; repo-wide grep found 4 distinct third-party gmail addresses across many files, roughly consistent with 'nine files' though not independently counted to exactly nine.
 - #550 families: 76
 
 ### WG-0993 · P1 · defend · effort S

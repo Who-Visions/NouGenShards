@@ -127,11 +127,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Turn kaedra_hi_probe's hardcoded roster and LAN IPs into a fleet-owned config**
 
-- Failure surface: FLEET_CLOUDRUN, LAN IPs 10.0.0.87/178, SSH keys and Mac paths are literals; after 'prune closed Cloud Run projects' a retired service reads as offline forever and a renumbered host reads as ghost, and PR #5 shows a wrong-attribute bug went unnoticed six weeks.
+- Failure surface: FLEET_CLOUDRUN, LAN IPs 192.0.2.87/178, SSH keys and Mac paths are literals; after 'prune closed Cloud Run projects' a retired service reads as offline forever and a renumbered host reads as ghost, and PR #5 shows a wrong-attribute bug went unnoticed six weeks.
 - First fork: if you observe FLEET_CLOUDRUN entries returning 404/NXDOMAIN -> route A: source the roster from NouGenRelay .handoffs or fleet_whoami; else route B: mark stale entries and alert on roster drift.
 - Evidence: `tools/kaedra_hi_probe.py`
 - Lens: observability/metrics-drift · likelihood observed · blast fleet · verdict CONFIRMED · status open
-- Verifier note: tools/kaedra_hi_probe.py:79 FLEET_CLOUDRUN={...} literal dict, lines 621/712/714/619 hardcode IPs 10.0.0.87, 192.168.1.78, 10.0.0.178; git log shows 'Merge PR #5: fix(tools) use response.status in cloud fleet health check' (commit 501e415) confirming a real attribute-usage bugfix landed on this file.
+- Verifier note: tools/kaedra_hi_probe.py:79 FLEET_CLOUDRUN={...} literal dict, lines 621/712/714/619 hardcode IPs 192.0.2.87, 198.51.100.78, 192.0.2.178; git log shows 'Merge PR #5: fix(tools) use response.status in cloud fleet health check' (commit 501e415) confirming a real attribute-usage bugfix landed on this file.
 - #550 families: 39
 
 ### WG-0075 · P0 · defend · effort S
@@ -373,7 +373,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Stop autosync_handoffs from mirroring GCP inventory and LAN topology into Notion**
 
-- Failure surface: autosync_handoffs.py runs sync_handoffs_to_notion.py every 5 minutes, pushing every .agent/handoff/*.md (GCP_INVENTORY with bucket names, kLocalUrl 192.168.1.187, service URLs) into DB 2e7ca671, which the leaked tokens can read.
+- Failure surface: autosync_handoffs.py runs sync_handoffs_to_notion.py every 5 minutes, pushing every .agent/handoff/*.md (GCP_INVENTORY with bucket names, kLocalUrl 198.51.100.187, service URLs) into DB 2e7ca671, which the leaked tokens can read.
 - First fork: if you observe GCP_INVENTORY content in the Notion handoff DB -> delete those pages and exclude the file; else -> allowlist handoff files and strip infra sections
 - Evidence: `scripts/autosync_handoffs.py`, `scripts/sync_handoffs_to_notion.py`, `.agent/handoff/GCP_INVENTORY.md`
 - Lens: secrets · likelihood likely · blast fleet · verdict CONFIRMED · status open
@@ -467,11 +467,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Move hi_probe off the hardcoded Mac path into a hidden scheduled job with a heartbeat shard**
 
-- Failure surface: The 1622-line probe hardcodes /Users/kushboygroup paths, runs from a visible console on an AM/PM schedule and prints to stdout; today's blade lesson is that visible consoles freeze the loop and nobody notices for hours, and a silent probe is worse than none because the GM believes it is running.
+- Failure surface: The 1622-line probe hardcodes ~ paths, runs from a visible console on an AM/PM schedule and prints to stdout; today's blade lesson is that visible consoles freeze the loop and nobody notices for hours, and a silent probe is worse than none because the GM believes it is running.
 - First fork: if you observe no probe output shard in the last 24h -> the job is already dead, relaunch hidden and shard each run; else -> convert to launchd with KeepAlive and a shards_capture heartbeat
 - Evidence: `tools/kaedra_hi_probe.py`, `rules/00-universal-mantra.md`
 - Lens: scheduled-tasks · likelihood likely · blast fleet · verdict CONFIRMED · status open
-- Verifier note: tools/kaedra_hi_probe.py is 1662 lines and hardcodes /Users/kushboygroup paths (lines 15, 190); it force-wraps sys.stdout for console printing and checks sys.stdout.isatty(), consistent with a visible-console script; rules/00-universal-mantra.md exists.
+- Verifier note: tools/kaedra_hi_probe.py is 1662 lines and hardcodes ~ paths (lines 15, 190); it force-wraps sys.stdout for console printing and checks sys.stdout.isatty(), consistent with a visible-console script; rules/00-universal-mantra.md exists.
 - #550 families: 95
 
 ### WG-0629 · P1 · elevate · effort M

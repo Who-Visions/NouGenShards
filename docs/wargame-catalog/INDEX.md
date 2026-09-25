@@ -371,7 +371,7 @@ reserve (verified but outside the 1000): 1642
 | WG-0332 | nougen-handoffs | defend | Stop scope-creep bundles like #423's SIGKILL-by-default OS-wide zombie nuke riding a CLI subcommand PR |
 | WG-0333 | nougen-handoffs | defend | Rotate and redact the two NGS bearer tokens quoted verbatim in queue records, then rewrite shared history |
 | WG-0334 | nougen-handoffs | elevate | Close the 8-live-Google-key rotation and RECOVERY_KEY.txt moves the 08-07 handoff left awaiting GM |
-| WG-0335 | nougen-handoffs | elevate | Port NouGenShards' published-surface guard to the registry: 28 C:\Users\super paths and 9 LAN IPs live here |
+| WG-0335 | nougen-handoffs | elevate | Port NouGenShards' published-surface guard to the registry: 28 %USERPROFILE% paths and 9 LAN IPs live here |
 | WG-0336 | nougen-handoffs | defend | Remove off-domain personal data from fleet memory: house renovation ledger, insurance claims, selfie descriptions |
 | WG-0337 | nougen-handoffs | elevate | Publish a JSON schema for handoff records: machine is a string in 48 files and an object in 18 |
 | WG-0338 | nougen-handoffs | defend | Fix the queue filename split: three task_YYYYMMDDTHHMMSSZ_ files sort out of order against task_YYYYMMDD_HHMMSS_ |

@@ -78,7 +78,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 | WG-0507 | P1 | elevate | Register whoart and phoebus grid snapshots on blade's keymaker instead of bulk-copying rows |
 | WG-0519 | P1 | defend | Make sync_mesh_status measure hash parity instead of asserting 3_VAULT_SYMMETRIC |
 | WG-0531 | P1 | defend | Retire the Antigravity legacy handoff writer and the hardcoded Watchtower path in RELAYS.md |
-| WG-0543 | P1 | elevate | Revive the local griot:e2b audit daemon with a dynamic root instead of C:/Users/super |
+| WG-0543 | P1 | elevate | Revive the local griot:e2b audit daemon with a dynamic root instead of C:~ |
 | WG-0555 | P1 | defend | Keep relay_watch pulling on phoebus when the keychain is locked outside the GUI session |
 | WG-0567 | P1 | defend | Resolve one NOUGEN_HOME runtime home before both the supervisor sync and the watcher launch |
 | WG-0578 | P1 | defend | Replace nougenmsg's hostname heuristics with NOUGEN_NODE_NAME so a fourth node is not 'blade' |
@@ -678,11 +678,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Unify Watchtower/Outpost tree naming behind NOUGEN_WORKSPACE_ROOT across skills, tools and RELAYS.md**
 
-- Failure surface: capture_doctrine.py defaults to ~/Watchtower, nougentube SKILL says %USERPROFILE%\Outpost\NouGen, RELAYS.md points at C:\Users\super\Watchtower; today's incident had two scheduled tasks on two code trees, and every doc names a different one.
+- Failure surface: capture_doctrine.py defaults to ~/Watchtower, nougentube SKILL says %USERPROFILE%\Outpost\NouGen, RELAYS.md points at %USERPROFILE%\Watchtower; today's incident had two scheduled tasks on two code trees, and every doc names a different one.
 - First fork: if you observe both trees still receive commits -> route A: pick one, alias the other, then rewrite literals; else route B: rewrite literals to the env var with a logged fallback only
 - Evidence: `NouGenShards/tools/capture_doctrine.py`, `NouGenShards/skills/nougentube/SKILL.md`, `NouGenRelay/RELAYS.md`
 - Lens: cross-repo-drift · likelihood observed · blast fleet · verdict CONFIRMED · status open
-- Verifier note: capture_doctrine.py defaults to ~/Watchtower, nougentube SKILL.md uses %USERPROFILE%\Outpost\NouGen, RELAYS.md uses C:\Users\super\Watchtower — three divergent literals confirmed.
+- Verifier note: capture_doctrine.py defaults to ~/Watchtower, nougentube SKILL.md uses %USERPROFILE%\Outpost\NouGen, RELAYS.md uses %USERPROFILE%\Watchtower — three divergent literals confirmed.
 
 ### WG-0301 · P0 · elevate · effort M
 
@@ -890,22 +890,22 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Retire the Antigravity legacy handoff writer and the hardcoded Watchtower path in RELAYS.md**
 
-- Failure surface: RELAYS.md tells lanes to check C:\Users\super\Watchtower\...\gemini handoffs when a leg is missing; nougen-handoffs still carries 92 legacy gemini files, so an Antigravity leg can land where no watcher reads it.
+- Failure surface: RELAYS.md tells lanes to check %USERPROFILE%\Watchtower\...\gemini handoffs when a leg is missing; nougen-handoffs still carries 92 legacy gemini files, so an Antigravity leg can land where no watcher reads it.
 - First fork: if new files appear under 'gemini handoffs' after 09-01 -> route A (redirect the writer to NouGenRelay .handoffs); else -> route B (archive the folder and strip the path from RELAYS.md)
 - Evidence: `NouGenRelay/RELAYS.md`, `nougen-handoffs/gemini handoffs`
 - Lens: relay-registry · likelihood likely · blast fleet · verdict CONFIRMED · status open
-- Verifier note: RELAYS.md references the literal C:\Users\super\Watchtower...\gemini handoffs path, and nougen-handoffs/gemini handoffs contains 92 legacy files, matching the claim closely (92 vs claimed 92 is exact).
+- Verifier note: RELAYS.md references the literal %USERPROFILE%\Watchtower...\gemini handoffs path, and nougen-handoffs/gemini handoffs contains 92 legacy files, matching the claim closely (92 vs claimed 92 is exact).
 - #550 families: 38
 
 ### WG-0543 · P1 · elevate · effort M
 
-**Revive the local griot:e2b audit daemon with a dynamic root instead of C:/Users/super**
+**Revive the local griot:e2b audit daemon with a dynamic root instead of C:~**
 
 - Failure surface: audit_daemon.sh hardcodes ROOT to a Watchtower path and last ran 2026-06-27 (37 findings); the local-only security audit lane has been dead for three months with no freshness signal.
 - First fork: if lane_freshness reports the audit lane older than 30 days -> route A (WATCHTOWER_ROOT/NOUGEN_SHARDS_REPO resolution, schedule weekly); else -> route B (lane not registered: add it to lane_freshness first)
 - Evidence: `nougen-handoffs/audit_daemon.sh`, `nougen-handoffs/audit_queue.ndjson`, `NouGenShards/tools/lane_freshness.py`
 - Lens: scheduled-tasks · likelihood observed · blast repo · verdict CONFIRMED · status open
-- Verifier note: audit_daemon.sh hardcodes ROOT="C:/Users/super/Watchtower/NouGen/NouGenShards-push-main" exactly as claimed; lane_freshness.py is the intended freshness-tracking tool.
+- Verifier note: audit_daemon.sh hardcodes ROOT="C:~/Watchtower/NouGen/NouGenShards-push-main" exactly as claimed; lane_freshness.py is the intended freshness-tracking tool.
 - #550 families: 36
 
 ### WG-0555 · P1 · defend · effort S
@@ -955,11 +955,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Regenerate the fleet timeline from all 14 clones instead of a Kaedra_Local workspace path**
 
-- Failure surface: harvest_fleet.py hardcodes c:/Users/super/Watchtower/Kaedra_Local and nine repos; fleet_timeline_2026.md stopped at 2026-01-07, so the DR narrative for the fleet is eight months stale.
+- Failure surface: harvest_fleet.py hardcodes c:~/Watchtower/Kaedra_Local and nine repos; fleet_timeline_2026.md stopped at 2026-01-07, so the DR narrative for the fleet is eight months stale.
 - First fork: if WORKSPACE exists on the running node -> route A (replace with an env-first root and include NouGenShards/Relay/handoffs); else -> route B (harvest from GitHub API by org)
 - Evidence: `Kaedra/harvest_fleet.py`, `Kaedra/fleet_timeline_2026.md`
 - Lens: fleet-observability · likelihood observed · blast repo · verdict CONFIRMED · status open
-- Verifier note: harvest_fleet.py hardcodes WORKSPACE = 'c:/Users/super/Watchtower/Kaedra_Local' as the default cwd for git operations, matching the claim.
+- Verifier note: harvest_fleet.py hardcodes WORKSPACE = 'c:~/Watchtower/Kaedra_Local' as the default cwd for git operations, matching the claim.
 - #550 families: 3
 
 ### WG-0611 · P1 · elevate · effort S
@@ -1329,7 +1329,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Replace ad-hoc retire/ack scratch scripts that rewrite registry JSON directly with a governed sweep verb**
 
-- Failure surface: retire_stale_5d.py rewrote every open leg older than 8/27 to complete via raw json.dump on a hardcoded C:\Users\super path, bypassing the CAS upstream write and relay event merge; ack_sweep*.py hard-code leg ids and push main afterwards. A re-run on another box silently closes new asks; the audit trail says 'antigravity' regardless of who ran it.
+- Failure surface: retire_stale_5d.py rewrote every open leg older than 8/27 to complete via raw json.dump on a hardcoded %USERPROFILE% path, bypassing the CAS upstream write and relay event merge; ack_sweep*.py hard-code leg ids and push main afterwards. A re-run on another box silently closes new asks; the audit trail says 'antigravity' regardless of who ran it.
 - First fork: if you observe a scratch script in the NouGenRelay root that mutates .handoffs/*.json -> port its rule into `relay policy --sweep` with dry-run and delete the script; else leave it but move it under fleet-ops/ with the machine path removed
 - Evidence: `NouGenRelay/retire_stale_5d.py`, `NouGenRelay/ack_sweep12.py`, `NouGenRelay/sweep_ack.py`
 - Lens: relay-governance/ack-discipline · likelihood observed · blast repo · verdict CONFIRMED · status open
@@ -1416,11 +1416,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Revive or retire the griot:e2b audit daemon dead since 2026-06-27 with 37 untriaged findings**
 
-- Failure surface: audit_daemon.sh hard-codes C:/Users/super/Watchtower, appends to audit_queue.ndjson and last ran 06-27; its findings (e.g. keymaker plaintext fallback) were never triaged and nobody knows the lane is dead. HARDENING §3 says lanes must announce their own death; this one has not.
+- Failure surface: audit_daemon.sh hard-codes C:~/Watchtower, appends to audit_queue.ndjson and last ran 06-27; its findings (e.g. keymaker plaintext fallback) were never triaged and nobody knows the lane is dead. HARDENING §3 says lanes must announce their own death; this one has not.
 - First fork: if you observe the queue's last ts older than 30 days -> either register it under lane_freshness with a threshold or delete the daemon and move findings into BACKLOG.md; else triage the 37 findings into issues
 - Evidence: `nougen-handoffs/audit_daemon.sh`, `nougen-handoffs/audit_queue.ndjson`, `NouGenShards/HARDENING.md`
 - Lens: relay-governance/stale-lanes · likelihood observed · blast repo · verdict CONFIRMED · status open
-- Verifier note: audit_daemon.sh hard-codes the exact C:/Users/super/Watchtower path and writes audit_queue.ndjson, which exists; HARDENING.md exists as referenced.
+- Verifier note: audit_daemon.sh hard-codes the exact C:~/Watchtower path and writes audit_queue.ndjson, which exists; HARDENING.md exists as referenced.
 - #550 families: 95
 
 ### WG-0998 · P1 · defend · effort M

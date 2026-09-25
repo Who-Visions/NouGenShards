@@ -108,7 +108,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Close the live emit_node shell injection on whoart and blade by hand-copy of untracked files**
 
-- Failure surface: The files whoart actually executes (C:\Users\super\Outpost\NouGen, untracked per infra/whoart/SOURCE.md) and blade's 195-line variant still interpolate {text} into the remote ssh command inside double quotes; any message containing $(...), backticks or a bare quote runs as code on the target node. Found 2026-09-04 when '(no agy binary on this host)' came back 'zsh:1: no matches found'.
+- Failure surface: The files whoart actually executes (%USERPROFILE%\Outpost\NouGen, untracked per infra/whoart/SOURCE.md) and blade's 195-line variant still interpolate {text} into the remote ssh command inside double quotes; any message containing $(...), backticks or a bare quote runs as code on the target node. Found 2026-09-04 when '(no agy binary on this host)' came back 'zsh:1: no matches found'.
 - First fork: if you observe `git ls-files --error-unmatch` on the node still saying the executing copy is untracked -> replace it by copy and record sha256 in SOURCE.md before any commit; else check the tracked file out and restart the receiver, then confirm build_id changed via an authenticated POST.
 - Evidence: `infra/whoart/nougenmsg.py`, `infra/blade/nougenmsg.py`, `infra/whoart/SOURCE.md`
 - Lens: injection · likelihood observed · blast fleet · verdict CONFIRMED · status open
@@ -249,7 +249,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 **Bring whoart's untracked Outpost\NouGen bus copy under version control before the next hand-copy diverges**
 
 - Failure surface: infra/whoart/SOURCE.md records that the files whoart executes are untracked in its NouGenShards tree and can only be fixed by hand-copy; the provenance table still says 311 lines while the snapshot is 496, so nobody can state today which bytes whoart runs.
-- First fork: if you observe sha256 of C:\Users\super\Outpost\NouGen\src\nougen_shards\nougenmsg.py differing from infra/whoart/nougenmsg.py -> commit the live copy to a whoart lane and refresh SOURCE.md, else point whoart's task at a tracked clone and delete the untracked pair
+- First fork: if you observe sha256 of %USERPROFILE%\Outpost\NouGen\src\nougen_shards\nougenmsg.py differing from infra/whoart/nougenmsg.py -> commit the live copy to a whoart lane and refresh SOURCE.md, else point whoart's task at a tracked clone and delete the untracked pair
 - Evidence: `infra/whoart/SOURCE.md`, `infra/whoart/nougenmsg.py`, `infra/whoart/nougenmsg_cli.py`
 - Lens: data-integrity · likelihood observed · blast fleet · verdict CONFIRMED · status open
 - Verifier note: infra/whoart/SOURCE.md provenance table literally says 'nougenmsg.py | ... | 12,985 B / 311 lines' while the actual infra/whoart/nougenmsg.py file is 496 lines (verified with wc -l) -- the exact discrepancy claimed. SOURCE.md also states the source files are untracked in the working tree.
@@ -325,14 +325,14 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 - First fork: if you observe `schtasks /query` showing both tasks enabled -> disable one, hash the tree the survivor runs, and record it in infra/blade/SOURCE.md, else -> verify the HTTP receiver and ssh CLI share a tree via --capabilities
 - Evidence: `src/nougenmsg.py`, `infra/blade/SOURCE.md`, `infra/blade/nougenmsg.py`
 - Lens: deploy-governance · likelihood observed · blast fleet · verdict CONFIRMED · status open
-- Verifier note: src/nougenmsg.py _REMOTE_CLI (line 433-437) has blade -> 'python C:/Users/super/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py' exactly; infra/blade/nougenmsg.py is 195 lines and infra/blade/SOURCE.md documents it as sourced from a specific blade commit, consistent with a second/injectable tree.
+- Verifier note: src/nougenmsg.py _REMOTE_CLI (line 433-437) has blade -> 'python C:~/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py' exactly; infra/blade/nougenmsg.py is 195 lines and infra/blade/SOURCE.md documents it as sourced from a specific blade commit, consistent with a second/injectable tree.
 - #550 families: 28
 
 ### WG-0199 · P0 · defend · effort M
 
 **Bring whoart's untracked live bus files under git without stopping the running node**
 
-- Failure surface: whoart executes C:\Users\super\Outpost\NouGen\{src,tools} files that git does not know about; the only copies are infra/whoart/*.py. A disk hiccup or a well-meaning `git checkout` on that tree erases the bus with no history, and the 5-minute tunnel watchdog cannot help.
+- Failure surface: whoart executes %USERPROFILE%\Outpost\NouGen\{src,tools} files that git does not know about; the only copies are infra/whoart/*.py. A disk hiccup or a well-meaning `git checkout` on that tree erases the bus with no history, and the 5-minute tunnel watchdog cannot help.
 - First fork: if you observe the live files byte-identical to infra/whoart -> commit them on a whoart lane and switch the node to the tracked path during a quiet window, else -> snapshot the drift first, then reconcile
 - Evidence: `infra/whoart/SOURCE.md`, `infra/whoart/nougenmsg.py`, `infra/whoart/nougenmsg_cli.py`
 - Lens: deploy-governance · likelihood observed · blast fleet · verdict CONFIRMED · status open
@@ -396,7 +396,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Reconcile PR #2's cc_msg.py against main instead of the 1331234 baseline**
 
-- Failure surface: antigravity/cc-msg-parity adds Claude live-socket auth framing and pipe injection but its merge base is 1331234: it removes _probe_nodes/_live_pipe_names (reintroducing the powershell console flash #5 fixed), deletes test_nougenmsg_node_resolve.py, hardcodes 10.0.0.178/10.0.0.88 and posts to :8766 with no auth header. NouGenShards already has a 173-line canonical cc_msg.py.
+- Failure surface: antigravity/cc-msg-parity adds Claude live-socket auth framing and pipe injection but its merge base is 1331234: it removes _probe_nodes/_live_pipe_names (reintroducing the powershell console flash #5 fixed), deletes test_nougenmsg_node_resolve.py, hardcodes 192.0.2.178/192.0.2.88 and posts to :8766 with no auth header. NouGenShards already has a 173-line canonical cc_msg.py.
 - First fork: if you observe NouGenShards covering the same features -> close #2 in favor of it, else -> cherry-pick only tools/cc_msg.py onto main and rewrite its transport to send_direct_http
 - Evidence: `origin/antigravity/cc-msg-parity`, `NouGenShards/tools/cc_msg.py`, `src/nougenmsg.py`
 - Lens: B6-parity · likelihood observed · blast fleet · verdict CONFIRMED · status open
@@ -557,11 +557,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Scrub owner paths and mDNS hostnames from this public repo via fleet_hosts.json**
 
-- Failure surface: src/nougenmsg.py _REMOTE_CLI carries C:/Users/super/... paths, tools/nougenmsg.py and the node-resolve test name blade1tb.local / KushBoyGroups-Mac-mini.local / 10.0.0.87, and NOUGEN_MSG_NODES defaults to the fleet roster; NouGenShards #528/#545 already moved these into ~/.nougen/fleet_hosts.json and get_current_node returns 'standalone' without it.
+- Failure surface: src/nougenmsg.py _REMOTE_CLI carries C:~/... paths, tools/nougenmsg.py and the node-resolve test name blade1tb.local / KushBoyGroups-Mac-mini.local / 192.0.2.87, and NOUGEN_MSG_NODES defaults to the fleet roster; NouGenShards #528/#545 already moved these into ~/.nougen/fleet_hosts.json and get_current_node returns 'standalone' without it.
 - First fork: if you observe main still being the copy any node executes -> ship fleet_hosts.json to each node before the scrub so remote_cli resolution does not go blank; else scrub, use %USERPROFILE%/~ forms, and add a grep test that no owner path or LAN IP is in the tree.
 - Evidence: `src/nougenmsg.py`, `tools/nougenmsg.py`, `NouGenShards/src/nougen_shards/nougenmsg.py`
 - Lens: B3-routing · likelihood observed · blast repo · verdict CONFIRMED · status open
-- Verifier note: Confirmed exactly: src/nougenmsg.py lines 433-438 hardcode C:/Users/super/Watchtower/... and C:/Users/super/Outpost/... paths; tools/nougenmsg.py line 57 and tests/test_nougenmsg_node_resolve.py reference blade1tb.local and 10.0.0.87; NOUGEN_MSG_NODES defaults to 'whoart,blade,phoebus' (src/nougenmsg.py line 47).
+- Verifier note: Confirmed exactly: src/nougenmsg.py lines 433-438 hardcode C:~/Watchtower/... and C:~/Outpost/... paths; tools/nougenmsg.py line 57 and tests/test_nougenmsg_node_resolve.py reference blade1tb.local and 192.0.2.87; NOUGEN_MSG_NODES defaults to 'whoart,blade,phoebus' (src/nougenmsg.py line 47).
 - #550 families: 74
 
 ### WG-0520 · P1 · defend · effort M
@@ -922,11 +922,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **B3-routing: Unify node address resolution between _probe_nodes and send_direct_http before PR #2's hardcoded IPs land**
 
-- Failure surface: _probe_nodes knows only NOUGEN_NODE_<X>_IP or <node>.local, send_direct_http uses the env->ssh-config->mDNS->cache ladder, and PR #2's cc_msg.py hardcodes whoart=10.0.0.178/phoebus=10.0.0.88; --peers can say reachable while the send goes elsewhere, and DHCP moves the hardcoded pair silently.
+- Failure surface: _probe_nodes knows only NOUGEN_NODE_<X>_IP or <node>.local, send_direct_http uses the env->ssh-config->mDNS->cache ladder, and PR #2's cc_msg.py hardcodes whoart=192.0.2.178/phoebus=192.0.2.88; --peers can say reachable while the send goes elsewhere, and DHCP moves the hardcoded pair silently.
 - First fork: if you observe --peers reachable but send_direct_http reporting unreachable for the same node -> move _route_node_ip into the bus module and make both callers use it, else pin env IPs on every box and delete mDNS from the probe
 - Evidence: `src/nougenmsg.py`, `tools/nougenmsg.py`, `origin/antigravity/cc-msg-parity`
 - Lens: B3-routing · likelihood likely · blast fleet · verdict CONFIRMED · status open
-- Verifier note: src/nougenmsg.py _probe_nodes only checks NOUGEN_NODE_<X>_IP or <node>.local; tools/nougenmsg.py _route_node_ip uses env->ssh-config-hostnames->cache ladder (distinct paths). git show origin/antigravity/cc-msg-parity:tools/cc_msg.py has whoart=10.0.0.178, phoebus=10.0.0.88 hardcoded at lines 32-33.
+- Verifier note: src/nougenmsg.py _probe_nodes only checks NOUGEN_NODE_<X>_IP or <node>.local; tools/nougenmsg.py _route_node_ip uses env->ssh-config-hostnames->cache ladder (distinct paths). git show origin/antigravity/cc-msg-parity:tools/cc_msg.py has whoart=192.0.2.178, phoebus=192.0.2.88 hardcoded at lines 32-33.
 - #550 families: 39
 
 ### WG-0882 · P1 · elevate · effort S
@@ -985,11 +985,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Pin blade's message receiver to one code tree now that two scheduled tasks point at two trees**
 
-- Failure surface: main's _REMOTE_CLI and the wake adapter both assume C:/Users/super/Watchtower/NouGen/NouGenShards-push-main; today's fix added a second task on a different tree, so which receiver flags (--stdin/--text-b64), which registry shape and which auth latch apply depends on which task won the port.
+- Failure surface: main's _REMOTE_CLI and the wake adapter both assume C:~/Watchtower/NouGen/NouGenShards-push-main; today's fix added a second task on a different tree, so which receiver flags (--stdin/--text-b64), which registry shape and which auth latch apply depends on which task won the port.
 - First fork: if you observe two tasks on blade able to bind :8766 -> delete one and record the surviving path in fleet_hosts.json plus _REMOTE_CLI, else add a build_id assertion at send time
 - Evidence: `src/nougenmsg.py`, `NouGenShards/src/nougen_shards/wake/adapters.py`, `infra/blade/SOURCE.md`
 - Lens: distributed · likelihood observed · blast fleet · verdict PLAUSIBLE · status open
-- Verifier note: src/nougenmsg.py _REMOTE_CLI['blade'] points to C:/Users/super/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py (verified line 434); infra/blade/SOURCE.md exists and references a different commit/path context. The 'two scheduled tasks' claim itself isn't directly evidenced in these files but is a plausible operational inference.
+- Verifier note: src/nougenmsg.py _REMOTE_CLI['blade'] points to C:~/Watchtower/NouGen/NouGenShards-push-main/tools/nougenmsg.py (verified line 434); infra/blade/SOURCE.md exists and references a different commit/path context. The 'two scheduled tasks' claim itself isn't directly evidenced in these files but is a plausible operational inference.
 - #550 families: 29
 
 ### WG-0932 · P1 · defend · effort S

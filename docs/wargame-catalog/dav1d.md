@@ -690,11 +690,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Scrub identity leakage before public: personal email, Windows user paths and project numbers in tracked files**
 
-- Failure surface: setup_quota_alerts.py hardcodes whoentertains@gmail.com, docs carry c:\Users\super paths, tracebacks carry project numbers and reasoning-engine ids. A public repo hands out the GM's contact and infra map.
+- Failure surface: setup_quota_alerts.py hardcodes <gm-email>, docs carry %USERPROFILE% paths, tracebacks carry project numbers and reasoning-engine ids. A public repo hands out the GM's contact and infra map.
 - First fork: if you observe the repo is already public on GitHub -> route A: scrub and rotate anything that doubles as a credential hint; else route B: scrub before visibility change
 - Evidence: `scripts/setup_quota_alerts.py`, `CORS_IMPLEMENTATION.md`, `resources/traceback.txt`
 - Lens: privacy · likelihood observed · blast repo · verdict CONFIRMED · status open
-- Verifier note: scripts/setup_quota_alerts.py:8 EMAIL = 'whoentertains@gmail.com'; CORS_IMPLEMENTATION.md has 'c:\Users\super\Watchtower\Dav1d\server.py'; resources/traceback.txt has project number 627440283840 and reasoning-engine resource id in full path.
+- Verifier note: scripts/setup_quota_alerts.py:8 EMAIL = '<gm-email>'; CORS_IMPLEMENTATION.md has '%USERPROFILE%\Watchtower\Dav1d\server.py'; resources/traceback.txt has project number 627440283840 and reasoning-engine resource id in full path.
 - #550 families: 74
 
 ### WG-0919 · P1 · defend · effort S

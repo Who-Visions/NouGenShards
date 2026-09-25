@@ -183,7 +183,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 - First fork: if env var is set in prod -> literal key unused but still exposed; else -> literal key is actively used by every unconfigured run
 - Evidence: `trading/analysis/news_sentiment.py:20`
 - Lens: Attack & Operate / secrets · likelihood observed · blast repo · verdict CONFIRMED · status open
-- Verifier note: Line 20 is exactly `NEWSDATA_API_KEY = os.getenv('NEWSDATA_API_KEY', 'pub_4fded9b3d86342fa94a5484b626f4486')`.
+- Verifier note: Line 20 is exactly `NEWSDATA_API_KEY = os.getenv('NEWSDATA_API_KEY', 'pub_[REDACTED]')`.
 - #550 families: 76
 
 ### WG-0504 · P1 · defend · effort S
@@ -225,7 +225,7 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 - First fork: if AiwithDav3_site's build pipeline reads news_feed.json expecting a specific schema and the trading bot's format changes -> the public site silently breaks or displays stale/malformed data; else the coupling stays invisible until someone touches either side
 - Evidence: `trading/core/unk_trader_cli.py:308-315`
 - Lens: Attack & Operate / infra · likelihood likely · blast fleet · verdict CONFIRMED · status open
-- Verifier note: trading/core/unk_trader_cli.py:310 contains the exact literal path `C:\Users\super\Watchtower\HQ_Blade\AiwithDav3_site\public\data\news_feed.json`, matching the claim's line and content precisely.
+- Verifier note: trading/core/unk_trader_cli.py:310 contains the exact literal path `%USERPROFILE%\Watchtower\HQ_Blade\AiwithDav3_site\public\data\news_feed.json`, matching the claim's line and content precisely.
 - #550 families: 75
 
 ### WG-0552 · P1 · elevate · effort L
@@ -525,11 +525,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Remove committed __pycache__, venv_trash and multi-megabyte log/diff files from git**
 
-- Failure surface: The repo has committed __pycache__/*.pyc (two Python ABI versions), venv_trash/Scripts/python.exe with hardcoded C:\Users\super paths, and logs/diffs/*.txt totaling ~2MB; any future CI checkout, clone, or fleet-wide code search pays this weight repeatedly, and the committed venv can mask real dependency issues if accidentally added to PYTHONPATH.
+- Failure surface: The repo has committed __pycache__/*.pyc (two Python ABI versions), venv_trash/Scripts/python.exe with hardcoded %USERPROFILE% paths, and logs/diffs/*.txt totaling ~2MB; any future CI checkout, clone, or fleet-wide code search pays this weight repeatedly, and the committed venv can mask real dependency issues if accidentally added to PYTHONPATH.
 - First fork: if venv_trash/python.exe is ever picked up by a PATH/PYTHONPATH misconfiguration on a Windows box -> runs against a broken, foreign venv instead of the real one; if just dead weight -> pure repo bloat and clone-time cost
 - Evidence: `venv_trash/pyvenv.cfg`, `venv_trash/Scripts/python.exe`, `logs/diffs/`, `__pycache__/`
 - Lens: testing-ci-stale-repo · likelihood observed · blast repo · verdict CONFIRMED · status open
-- Verifier note: venv_trash/Scripts/python.exe and venv_trash/pyvenv.cfg exist, with pyvenv.cfg literally containing C:\Users\super\... paths; __pycache__ contains .pyc files for two different CPython ABI versions (312 and 314); logs/diffs totals ~2MB.
+- Verifier note: venv_trash/Scripts/python.exe and venv_trash/pyvenv.cfg exist, with pyvenv.cfg literally containing %USERPROFILE%\... paths; __pycache__ contains .pyc files for two different CPython ABI versions (312 and 314); logs/diffs totals ~2MB.
 
 ### WG-0860 · P1 · defend · effort M
 

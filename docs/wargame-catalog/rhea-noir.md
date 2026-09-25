@@ -151,11 +151,11 @@ Generated from `catalog.ndjson` by `tools/wargame_catalog.py render`; do not han
 
 **Survive the death of the one Windows box rhea_bridge_server.py depends on**
 
-- Failure surface: rhea_bridge_server.py hardcodes c:\Users\super\.gemini\antigravity\brain\... as ARTIFACT_DIR and config\firebase_service_account.json; the gallery/render bridge only exists on that machine, mirroring the blade freeze pattern.
+- Failure surface: rhea_bridge_server.py hardcodes %USERPROFILE%\.gemini\antigravity\brain\... as ARTIFACT_DIR and config\firebase_service_account.json; the gallery/render bridge only exists on that machine, mirroring the blade freeze pattern.
 - First fork: if you observe the bridge is still what the Flutter app talks to -> route A: containerize with env paths; else route B: fold bridge functions into rhea_server and delete
 - Evidence: `rhea_bridge_server.py`
 - Lens: product · likelihood observed · blast fleet · verdict CONFIRMED · status open
-- Verifier note: rhea_bridge_server.py:12 hardcodes ARTIFACT_DIR to c:\Users\super\.gemini\...; line 14 hardcodes FIREBASE_CRED to config\firebase_service_account.json. Evidence directly supports the failure surface.
+- Verifier note: rhea_bridge_server.py:12 hardcodes ARTIFACT_DIR to %USERPROFILE%\.gemini\...; line 14 hardcodes FIREBASE_CRED to config\firebase_service_account.json. Evidence directly supports the failure surface.
 - #550 families: 94
 
 ### WG-0108 · P0 · defend · effort M
