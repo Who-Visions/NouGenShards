@@ -139,14 +139,7 @@ def local_time_stamp() -> str:
     time — never cached, never hardcoded to a zone. `%-I`/`%#I` (no leading
     zero) differs by platform, so strip it ourselves for a deterministic
     format everywhere: 'Mon 2026-09-14 8:54 PM EDT'."""
-    now = datetime.now().astimezone()
-    hour12 = now.strftime("%I").lstrip("0") or "12"
-    # Windows spells the zone out ("Eastern Daylight Time") where macOS and
-    # Linux print "EDT"; take the initials so every node stamps the same way.
-    tz = now.strftime("%Z")
-    if " " in tz:
-        tz = "".join(word[0] for word in tz.split() if word[:1].isalpha())
-    return now.strftime(f"%a %Y-%m-%d {hour12}:%M %p ") + tz
+    return format_log_time(nougen_now().utc_iso)
 
 
 def _check_port(port: int, host: str = "127.0.0.1") -> bool:

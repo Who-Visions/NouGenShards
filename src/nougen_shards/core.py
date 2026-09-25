@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
+from nougen_time import InvalidTimestampError, format_log_time, now as nougen_now, parse as parse_time
 
 logger = logging.getLogger(__name__)
 
@@ -3066,13 +3067,12 @@ def format_shard_when(timestamp: Optional[str]) -> str:
     if not timestamp:
         return "unknown time"
     try:
-        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-        if dt.tzinfo is None:  # legacy naive rows were written as UTC
-            dt = dt.replace(tzinfo=timezone.utc)
-    except ValueError:
+        instant = parse_time(timestamp)
+    except InvalidTimestampError:
         return "unknown time"
-    local = dt.astimezone()
-    age = datetime.now(timezone.utc) - dt
+    if instant is None:
+        return "unknown time"
+    age = nougen_now().utc_dt - instant.utc_dt
     secs = age.total_seconds()
     if secs < 0:
         rel = "in the future?"
@@ -3082,7 +3082,7 @@ def format_shard_when(timestamp: Optional[str]) -> str:
         rel = f"{int(secs // 3600)}h ago"
     else:
         rel = f"{int(secs // 86400)}d ago"
-    return f"{local.strftime('%Y-%m-%d %I:%M %p %Z').strip()} ({rel})"
+    return f"{format_log_time(instant.utc_iso)} ({rel})"
 
 
 def _approx_tokens(text: str) -> int:

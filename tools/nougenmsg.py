@@ -18,6 +18,7 @@ if hasattr(sys.stderr, "reconfigure"):
 # Ensure src is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from nougen_time import format_display_time, format_log_time
 
 def _import_bus():
     """Import the bus WITHOUT running nougen_shards/__init__ when possible.
@@ -148,7 +149,7 @@ def house_style(text: str, node: str, agent: str) -> str:
     except ValueError:
         width = 30
     heavy, light = "━" * width, "─" * width
-    stamp = time.strftime("%Y-%m-%d %H:%M %z")
+    stamp = format_log_time(time.time())
     # Session id in the header (GM, 2026-09-08 14:10 EDT): two sessions on
     # one host both built --dry-run in the same hour, each banner just said
     # "whoart". Host and lane identify a machine; the session identifies who
@@ -512,7 +513,7 @@ def main():
             print("  (inbox is empty)")
         else:
             for m in msgs:
-                ts_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(m.get('timestamp', time.time())))
+                ts_str = format_display_time(m.get('timestamp', time.time()), paired=False)
                 # sender is WHO spoke (a model lane sets it to "ollama:<model>");
                 # source is only the host that wrote the file.
                 src = m.get('sender') or m.get('source') or 'unknown'

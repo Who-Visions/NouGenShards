@@ -6,7 +6,6 @@ import math
 import sqlite3
 import subprocess
 import tempfile
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import urlencode
@@ -15,8 +14,18 @@ from rich.table import Table
 from rich.panel import Panel
 
 from . import machine
+from nougen_time import InvalidTimestampError, format_display_time, now as nougen_now
 
 logger = logging.getLogger(__name__)
+
+
+def _user_time(value) -> str:
+    """Render stored UTC time consistently; keep malformed legacy records visible."""
+    try:
+        return format_display_time(value)
+    except InvalidTimestampError:
+        logger.warning("Invalid handoff timestamp: %r", value)
+        return "[invalid timestamp]"
 
 # Handoff notes live in <repo>/.handoffs by default. Override with NOUGEN_HANDOFF_DIR
 # so the system works regardless of where it is installed or invoked from.
@@ -406,7 +415,7 @@ def _sync_handoff_to_db(path: Path, data: Dict) -> bool:
         git_info = data.get("git") or {}
         orchestration = data.get("orchestration") or {}
         checkpoints = orchestration.get("checkpoints") or []
-        now = datetime.now().isoformat()
+        now = nougen_now().utc_iso
         handoff_id = data.get("handoff_id") or path.stem
         record_machine = machine.record_machine(data)
         try:
@@ -667,7 +676,9 @@ def create_handoff(
         target_folder = HANDOFF_DIR / AGENT_FOLDERS[agent.lower()]
     target_folder.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    created = nougen_now()
+    identity_stamp = created.utc_dt.strftime("%Y%m%dT%H%M%S.%fZ")
+    timestamp = created.utc_iso
     git_info = get_git_status()
     branch = git_info["branch"].replace("/", "_").replace("\\", "_")
 
@@ -710,11 +721,11 @@ def create_handoff(
     host_slug = "".join(
         c if c.isalnum() or c in "-_" else "-" for c in identity["host"]
     ).strip("-") or "host"
-    record_slug = f"{timestamp}_{host_slug}_{branch}"
+    record_slug = f"{identity_stamp}_{host_slug}_{branch}"
 
     handoff_data = {
         "handoff_id": record_slug,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": timestamp,
         "goal": goal,
         "message": message,
         "git": git_info,
@@ -739,7 +750,7 @@ def create_handoff(
     md_path = target_folder / f"handoff_{record_slug}.md"
     try:
         with open(md_path, "w", encoding="utf-8") as f:
-            f.write(f"# 🤝 Agent Handoff: {branch} @ {timestamp}\n\n")
+            f.write(f"# 🤝 Agent Handoff: {branch} @ {_user_time(timestamp)}\n\n")
             f.write(f"**Agent**: `{agent.upper()}`\n")
             f.write(
                 f"**Machine**: `{identity['host']}` "
@@ -867,7 +878,7 @@ def _handoff_sort_key(path: Path) -> tuple:
         stamp = str(data.get("timestamp") or data.get("created_utc") or data.get("when") or data.get("created_at") or "")
 
     if not stamp:
-        m = re.search(r"(\d{8}T\d{6}Z)", path.name)
+        m = re.search(r"(\d{8}T\d{6}(?:\.\d{1,6})?Z)", path.name)
         if m:
             stamp = m.group(1)
         else:
@@ -895,7 +906,7 @@ def start_orchestration(
         return None
 
     receiver = (os.environ.get("NOUGEN_AGENT") or detect_current_agent()).lower()
-    timestamp = datetime.now().isoformat()
+    timestamp = nougen_now().utc_iso
     if (data.get("status") or "open") == "open":
         data["acknowledged_by"] = receiver
         data["acknowledged_at"] = timestamp
@@ -933,7 +944,7 @@ def start_orchestration(
     _append_markdown(target_path, "Orchestration Started", [
         f"By: `{receiver.upper()}`",
         f"On: `{stamp['host']}`",
-        f"At: {timestamp}",
+        f"At: {_user_time(timestamp)}",
         f"Run ID: `{orchestration['run_id']}`",
         f"Note: {message or 'started'}",
     ])
@@ -965,7 +976,7 @@ def checkpoint_orchestration(
         return None
 
     receiver = (os.environ.get("NOUGEN_AGENT") or detect_current_agent()).lower()
-    timestamp = datetime.now().isoformat()
+    timestamp = nougen_now().utc_iso
     stamp = machine.machine_stamp()
     orchestration = _ensure_orchestration(data, receiver, timestamp)
     orchestration["checkpoints"].append({
@@ -1010,7 +1021,7 @@ def checkpoint_orchestration(
     _append_markdown(target_path, "Orchestration Checkpoint", [
         f"By: `{receiver.upper()}`",
         f"On: `{stamp['host']}`",
-        f"At: {timestamp}",
+        f"At: {_user_time(timestamp)}",
         f"State: `{state}`",
         f"Note: {message or state}",
     ])
@@ -1081,7 +1092,7 @@ def acknowledge_handoff(
         console.print(
             f"[yellow]The most recent handoff is already acknowledged by "
             f"{(holder.get('acknowledged_by') or '?').upper()} at "
-            f"{holder.get('acknowledged_at', '?')}.[/yellow]"
+            f"{_user_time(holder.get('acknowledged_at'))}.[/yellow]"
         )
         console.print(
             f"[dim]Not claiming a different one on your behalf. To take the "
@@ -1137,7 +1148,7 @@ def acknowledge_handoff(
         data = json.loads(target_path.read_text(encoding="utf-8"))
         data["status"] = "acknowledged"
         data["acknowledged_by"] = receiver
-        data["acknowledged_at"] = datetime.now().isoformat()
+        data["acknowledged_at"] = nougen_now().utc_iso
         data["acknowledged_on"] = stamp
         if message:
             data["acknowledgement_note"] = message
@@ -1163,7 +1174,7 @@ def acknowledge_handoff(
                 f.write("\n## ✅ Acknowledged\n")
                 f.write(f"- **By**: `{receiver.upper()}`\n")
                 f.write(f"- **On**: `{stamp['host']}`\n")
-                f.write(f"- **At**: {data['acknowledged_at']}\n")
+                f.write(f"- **At**: {_user_time(data['acknowledged_at'])}\n")
                 if message:
                     f.write(f"- **Note**: {message}\n")
         except Exception:
@@ -1344,8 +1355,7 @@ def list_handoffs(agent: Optional[str] = None):
             if "summary" in t and total == 0:
                 raw = t.get("raw_count", "?")
                 pct = f"?/{raw}"
-            dt = datetime.fromisoformat(data["timestamp"]).strftime("%Y-%m-%d %H:%M")
-            agent_name = data.get("agent", "generic").upper()
+            dt = _user_time(data.get("timestamp"))
             stored = (data.get("status") or "open").lower()
             live = compute_live_status(data, live_git)
             # Build display string, show arrow when live differs from stored
@@ -1406,7 +1416,7 @@ def show_latest_handoff(agent: Optional[str] = None):
             ack_line = (
                 f"[bold green]Status:[/bold green] ✅ acknowledged by "
                 f"{(data.get('acknowledged_by') or '?').upper()} "
-                f"at {data.get('acknowledged_at', '?')}{live_marker}\n"
+                f"at {_user_time(data.get('acknowledged_at'))}{live_marker}\n"
             )
         elif live == "stale-complete":
             ack_line = (
@@ -1448,7 +1458,7 @@ def show_latest_handoff(agent: Optional[str] = None):
 
         # Format handoff details into rich panels
         summary = (
-            f"[bold cyan]Timestamp:[/bold cyan] {data['timestamp']}\n"
+            f"[bold cyan]Timestamp:[/bold cyan] {_user_time(data.get('timestamp'))}\n"
             f"[bold cyan]Agent:[/bold cyan] {agent_name}\n"
             f"{machine_line}"
             f"[bold cyan]Goal:[/bold cyan] {data['goal']}\n"
@@ -1592,7 +1602,7 @@ def show_machines(agent: str | None = None) -> None:
             label = entry["host"] + (
                 " [dim](this box)[/dim]" if entry["is_self"] else ""
             )
-        last = (entry.get("last_seen") or "")[:16].replace("T", " ")
+        last = _user_time(entry.get("last_seen"))
         table.add_row(
             label,
             entry["machine_id"],
