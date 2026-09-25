@@ -276,6 +276,77 @@ def cmd_studio(args):
         for dev, info in results.items():
             print(f"  • {dev.upper()}: {info.get('status', 'sent')}")
 
+def cmd_wargame(args):
+    """War Games: deterministic adversarial scenarios (docs/wargames-doctrine.md §83)."""
+    import json as _json
+    from nougen_shards.wargames import model as wg_model
+    from nougen_shards.wargames import runner as wg_runner
+    from nougen_shards.wargames import receipts as wg_receipts
+
+    action = getattr(args, "wargame_action", None) or "list"
+    as_json = getattr(args, "json", False)
+
+    if action == "list":
+        games = wg_model.list_scenarios()
+        if as_json:
+            print(_json.dumps([{"scenario": Path(g.source).stem, "id": g.id, "title": g.title,
+                                "level": g.level, "mode": g.mode, "turns": g.turns,
+                                "policy": g.blue.policy, "naive_policy": g.blue.naive_policy}
+                               for g in games], indent=2))
+            return
+        print("🎮 NouGen War Games — scenarios")
+        for g in games:
+            print(f"  {Path(g.source).stem:28} {g.id}  [{g.level}/{g.mode}]  {g.title}")
+            print(f"  {'':28} blue={g.blue.policy}  naive={g.blue.naive_policy}  turns={g.turns}")
+        return
+
+    if action == "show":
+        g = wg_model.load_scenario(args.scenario)
+        print(_json.dumps(g.to_dict(), indent=2))
+        return
+
+    if action == "replay":
+        result = wg_runner.replay_receipt(args.receipt)
+        if as_json:
+            print(_json.dumps(result, indent=2))
+        else:
+            mark = "✅" if result["replay"] == "PASS" else "❌"
+            print(f"{mark} replay {result['replay']}  scenario={result['scenario']} seed={result['seed']} "
+                  f"policy={result['blue_policy']}  original={result['original_status']} "
+                  f"now={result['replay_status']}")
+            if result["diverged_turns"]:
+                print(f"   diverged at turns: {result['diverged_turns']}")
+        return
+
+    if action == "run":
+        g = wg_model.load_scenario(args.scenario)
+        receipt = wg_runner.run_game(g, policy_name=args.policy, seed=args.seed)
+        paths = {} if args.no_write else wg_receipts.write_receipt(receipt, args.out)
+        if as_json:
+            out = receipt.to_dict()
+            out["paths"] = paths
+            print(_json.dumps(out, indent=2))
+            return
+        mark = "✅" if receipt.status == "PASS" else "❌"
+        print(f"{mark} {g.id} {g.title} — {receipt.status}  score {receipt.score['final']}/100  "
+              f"policy={receipt.blue_policy} seed={receipt.seed}")
+        for t in receipt.turns:
+            inj = "; ".join(f"{i['type']}" for i in t["injects"]) or "-"
+            verdicts = ",".join(p["verdict"] for p in t["packets"])
+            act = f"  → {t['counteraction']['action']}" if t["counteraction"] else ""
+            print(f"   T{t['turn']}: red={inj:22} blue={t['claim']['status']:9} white={verdicts}{act}")
+        for b in receipt.breaches:
+            print(f"   ⚠ turn {b['turn']}: {b['invariant']} — {b['reason']}")
+        print(f"   victory: {receipt.victory}")
+        if any(receipt.catastrophic.values()):
+            print(f"   ☠ catastrophic: {[k for k, v in receipt.catastrophic.items() if v]}")
+        print(f"   elevation: {receipt.elevation['id']} [{receipt.elevation['status']}]")
+        if paths:
+            print(f"   receipt: {paths['receipt']}")
+            print(f"   aar:     {paths['aar']}")
+        return
+
+
 def cmd_wake(args):
     """NouGen Wake Daemon: reactive idle wake detection for fleet IPC messaging."""
     timeout = getattr(args, "timeout", 600)
@@ -2328,6 +2399,25 @@ def get_parser():
     p_destiny_evolve.add_argument("--limit", type=int, default=50)
     p_destiny_evolve.add_argument("--json", action="store_true")
 
+    # War Games: deterministic adversarial scenarios (docs/wargames-doctrine.md §83).
+    p_wg = subparsers.add_parser("wargame", help="War Games: fight a scenario against adaptive failure")
+    wg_sub = p_wg.add_subparsers(dest="wargame_action")
+    p_wg_list = wg_sub.add_parser("list", help="List built-in scenarios")
+    p_wg_list.add_argument("--json", action="store_true")
+    p_wg_show = wg_sub.add_parser("show", help="Print a scenario's compiled spec")
+    p_wg_show.add_argument("scenario", help="Built-in name or path to a scenario JSON")
+    p_wg_run = wg_sub.add_parser("run", help="Run a scenario and write receipt + AAR")
+    p_wg_run.add_argument("scenario", help="Built-in name (see list) or path to a scenario JSON")
+    p_wg_run.add_argument("--policy", default=None,
+                          help="Blue policy name, or 'naive' for the scenario's doomed baseline")
+    p_wg_run.add_argument("--seed", type=int, default=0, help="Deterministic seed (recorded in receipt)")
+    p_wg_run.add_argument("--out", default=None, help="Output root (default: ./wargames, gitignored)")
+    p_wg_run.add_argument("--no-write", action="store_true", help="Do not write receipt/AAR/ledger")
+    p_wg_run.add_argument("--json", action="store_true")
+    p_wg_replay = wg_sub.add_parser("replay", help="Re-run a receipt's scenario and compare verdicts")
+    p_wg_replay.add_argument("receipt", help="Path to a receipt JSON")
+    p_wg_replay.add_argument("--json", action="store_true")
+
     # Structured canonical fact snapshots (separate from free-form shard recall).
     p_facts = subparsers.add_parser("facts", help="Index/resolve structured canonical fact snapshots")
     facts_sub = p_facts.add_subparsers(dest="facts_action", required=True)
@@ -3678,6 +3768,7 @@ def main():
         "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
         "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep, "open": cmd_open,
         "facts": cmd_facts, "mrsb": cmd_mrsb,
+        "wargame": cmd_wargame,
     }
     if args.command in cmds:
         cmds[args.command](args)
