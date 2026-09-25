@@ -15,8 +15,8 @@ import sys
 import time
 import sqlite3
 from pathlib import Path
-from datetime import datetime
 from typing import List, Dict, Any, Optional
+from nougen_time import format_display_time, now as nougen_now
 
 # Windows UTF-8 console protection
 if sys.platform == "win32":
@@ -153,7 +153,7 @@ def build_dashboard_renderable(sub_data: Optional[Dict[str, Any]] = None) -> Gro
     header_text.append("│  Node: ", style="dim")
     header_text.append("Hyperion (ProArt PX13)  ", style="bold cyan")
     header_text.append("│  Time: ", style="dim")
-    header_text.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S EDT"), style="bold bright_white")
+    header_text.append(format_display_time(nougen_now().utc_iso, paired=False), style="bold bright_white")
 
     header_panel = Panel(header_text, box=box.DOUBLE_EDGE, border_style="bright_cyan", padding=(0, 2))
 

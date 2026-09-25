@@ -32,6 +32,8 @@ dependencies = [
     "tqdm>=4.66",
     "rich>=13.0",
     "colorama>=0.4.6",
+    # ZoneInfo needs IANA data on Windows; system tzdb is used elsewhere.
+    "tzdata>=2024.2; sys_platform == 'win32'",
     "openai>=1.0",           # embeddings provider (text-embedding-3-small)
     "pydantic>=2.0",         # app.py models; mcp also requires pydantic v2
     "numpy>=1.24",           # imported in core.py; previously undeclared (broke `pip install .`)
@@ -71,6 +73,7 @@ test = [
 [project.scripts]
 nougen = "nougen_shards.cli:main"
 nougen-mcp = "nougen_shards.mcp:main"
+nougen-time = "nougen_time.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

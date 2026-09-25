@@ -2087,6 +2087,9 @@ def get_parser():
     p_bye.add_argument("--no-shard", action="store_true", help="Skip writing a verified session-close shard")
     p_bye.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    p_time = subparsers.add_parser("time", help="Authoritative dynamic local & UTC fleet time (NouGenTime)")
+    p_time.add_argument("--json", action="store_true", help="Machine-readable output")
+
     p_hijack = subparsers.add_parser("hijack", help="Repoint a foreign/legacy handoff record onto this node")
     p_hijack.add_argument("--id", dest="handoff_id", required=True, help="Handoff id to hijack")
     p_hijack.add_argument("--agent", "-a", default=None, help="Agent to record as the hijacker")
@@ -3521,6 +3524,33 @@ def cmd_tunnel(args):
         sys.exit(1)
 
 
+def cmd_time(args):
+    """Dynamic local and canonical fleet time (NouGenTime)."""
+    try:
+        from nougen_time import __version__, now
+    except ImportError:
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from nougen_time import __version__, now
+
+    t = now()
+    if getattr(args, "json", False):
+        import json as _json
+        print(_json.dumps(t.to_dict(__version__), ensure_ascii=False, indent=2))
+        return
+
+    print("=" * 60)
+    print("🕒 NouGenTime — Fleet Dynamic Temporal Anchor")
+    print("=" * 60)
+    print(f"  • Dave Local (EDT/EST) : {t.banner}")
+    print(f"  • Status Display       : {t.display}")
+    print(f"  • Provenance Paired    : {t.paired}")
+    print(f"  • Canonical UTC ISO    : {t.utc_iso}")
+    print(f"  • Unix Timestamp       : {t.unix_timestamp:.3f}")
+    print("=" * 60)
+
+
 def cmd_hi(args):
     from . import session_probe
     import json as _json
@@ -3667,7 +3697,7 @@ def main():
         "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
-        "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack,
+        "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,

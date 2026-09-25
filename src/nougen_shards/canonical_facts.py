@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from nougen_time import now as nougen_now
 from .temporal_fabric import to_epoch_ms
 
 SCHEMA_VERSION = 3
@@ -469,7 +470,7 @@ class CanonicalFactIndex:
 
         if "today" in query_terms:
             local_today = (date.fromisoformat(as_of[:10]) if as_of else
-                           datetime.now(ZoneInfo("America/New_York")).date())
+                           nougen_now().eastern_dt.date())
             date_filter = local_today.isoformat()
         else:
             date_filter = as_of

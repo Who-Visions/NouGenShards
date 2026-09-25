@@ -1,8 +1,15 @@
 import os
+import sys
+from pathlib import Path
 import openai
 import logging
 
 from llm_sanitize import strip_llm_artifacts
+
+_NOUGEN_SRC = Path(__file__).resolve().parents[3] / "src"
+if str(_NOUGEN_SRC) not in sys.path:
+    sys.path.insert(0, str(_NOUGEN_SRC))
+from nougen_time import format_display_time, now as nougen_now
 
 logger = logging.getLogger(__name__)
 
@@ -1254,8 +1261,7 @@ Rules:
     
     def _get_current_time(self) -> str:
         """获取当前时间字符串"""
-        from datetime import datetime
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return format_display_time(nougen_now().utc_iso, paired=False)
     
     def get_supported_languages(self) -> dict:
         """
