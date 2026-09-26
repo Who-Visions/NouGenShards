@@ -13,6 +13,7 @@ import datetime
 import contextlib
 import functools
 from typing import List, Optional
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 from fastapi import FastAPI, Header, HTTPException, Depends, Response, Query
@@ -1490,7 +1491,7 @@ def _merge_rows(*groups) -> list:
 # only /health and the separately-authed HUD are reachable without the token.
 
 @app.post("/search")
-def search(req: SearchRequest, response: Response,
+def search_route(req: SearchRequest, response: Response,
            _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Memory recall for cloud callers (mirrors the connector's POST /search).
 
@@ -2491,7 +2492,7 @@ def _nougenmsg_origin(raw: dict, sender) -> tuple:
 def _nougenmsg_read(target: Optional[str] = None, limit: int = 10) -> dict:
     """Newest-first NouGenMsg envelopes across all local inbox dirs, deduped by message identity,
     optionally filtered to a target/destination substring. Read-only."""
-    import glob as _glob, json as _json, time as _time
+    import glob as _glob, json as _json
     from datetime import datetime as _dt, timezone as _tz
     limit = max(1, min(int(limit or 10), int(os.environ.get("NOUGEN_MSG_INBOX_MAX", "50"))))
     want = (target or "").lstrip("@").strip().lower()
@@ -2542,7 +2543,8 @@ def _nougenmsg_read(target: Optional[str] = None, limit: int = 10) -> dict:
             "correlation_id": raw.get("correlation_id") or raw.get("leg_id"),
             "file": os.path.basename(f),
         })
-    return {"complete": True, "node": NODE_NAME if "NODE_NAME" in globals() else os.environ.get("NOUGEN_NODE_NAME", "blade"),
+    node_label = os.environ.get("NOUGEN_NODE_NAME") or machine.get_current_node()
+    return {"complete": True, "node": node_label,
             "target": target or "all", "scanned": scanned, "returned": len(out), "messages": out}
 
 
@@ -2558,6 +2560,88 @@ def nougenmsg_latest(limit: int = 10) -> dict:
 def nougenmsg_inbox(target: Optional[str] = None, limit: int = 10) -> dict:
     """Read NouGenMsg messages addressed to a specific agent, lane, node, or audience (e.g. @blade, claude-cli, antigravity)."""
     return _nougenmsg_read(target, limit)
+
+
+@node_mcp.tool()
+@_offloaded
+def nougenmsg_read(message_id: str) -> dict:
+    """Retrieve the complete canonical envelope and body for a specific NouGen message ID."""
+    import glob as _glob, json as _json, os
+    target_clean = (message_id or "").strip()
+    if target_clean.endswith(".json"):
+        target_clean = target_clean[:-5]
+    for d in _nougenmsg_inbox_dirs():
+        candidate = os.path.join(d, f"{target_clean}.json")
+        if os.path.exists(candidate):
+            try:
+                with open(candidate, "r", encoding="utf-8") as fh:
+                    raw = _json.load(fh)
+                sender = raw.get("sender") or raw.get("source") or "unknown"
+                origin_m, origin_a = _nougenmsg_origin(raw, sender)
+                return {
+                    "id": raw.get("message_id") or raw.get("id") or target_clean,
+                    "created_utc": raw.get("created_utc") or str(raw.get("timestamp") or ""),
+                    "origin_machine": origin_m,
+                    "origin_agent": origin_a,
+                    "destination": str(raw.get("target") or raw.get("destination") or "all"),
+                    "priority": raw.get("priority") or "normal",
+                    "message_type": raw.get("type") or "live_message",
+                    "body": str(raw.get("text") or raw.get("content") or raw.get("body") or ""),
+                    "correlation_id": raw.get("correlation_id") or raw.get("leg_id"),
+                    "file": os.path.basename(candidate),
+                }
+            except Exception as e:
+                return {"error": f"Failed reading message: {e}", "id": message_id}
+    # Search all files for matching ID in content
+    for d in _nougenmsg_inbox_dirs():
+        for f in _glob.glob(os.path.join(d, "*.json")):
+            try:
+                with open(f, "r", encoding="utf-8") as fh:
+                    raw = _json.load(fh)
+                if (raw.get("message_id") == message_id or raw.get("id") == message_id or raw.get("correlation_id") == message_id or raw.get("leg_id") == message_id):
+                    sender = raw.get("sender") or raw.get("source") or "unknown"
+                    origin_m, origin_a = _nougenmsg_origin(raw, sender)
+                    return {
+                        "id": raw.get("message_id") or raw.get("id") or os.path.splitext(os.path.basename(f))[0],
+                        "created_utc": raw.get("created_utc") or str(raw.get("timestamp") or ""),
+                        "origin_machine": origin_m,
+                        "origin_agent": origin_a,
+                        "destination": str(raw.get("target") or raw.get("destination") or "all"),
+                        "priority": raw.get("priority") or "normal",
+                        "message_type": raw.get("type") or "live_message",
+                        "body": str(raw.get("text") or raw.get("content") or raw.get("body") or ""),
+                        "correlation_id": raw.get("correlation_id") or raw.get("leg_id"),
+                        "file": os.path.basename(f),
+                    }
+            except Exception:
+                continue
+    return {"error": f"Message not found: {message_id}", "id": message_id}
+
+
+@node_mcp.tool()
+@_offloaded
+def nougenmsg_search(query: Optional[str] = None, origin: Optional[str] = None, destination: Optional[str] = None, limit: int = 10) -> dict:
+    """Search historical NouGen messages by keyword query, origin node/agent, or target destination."""
+    res = _nougenmsg_read(destination, limit=max(1, min(int(limit or 10), 50)))
+    messages = res.get("messages", [])
+    q_lower = (query or "").lower().strip()
+    orig_lower = (origin or "").lower().strip()
+
+    filtered = []
+    for m in messages:
+        if q_lower and (q_lower not in m.get("body", "").lower() and q_lower not in str(m.get("id", "")).lower()):
+            continue
+        if orig_lower and (orig_lower not in m.get("origin_machine", "").lower() and orig_lower not in m.get("origin_agent", "").lower()):
+            continue
+        filtered.append(m)
+    return {
+        "complete": True,
+        "query": query,
+        "origin": origin,
+        "destination": destination,
+        "returned": len(filtered),
+        "messages": filtered
+    }
 
 
 # =========================================================================
