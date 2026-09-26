@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nougen.local/schemas/score_report.schema.json",
+  "title": "ScoreReport",
+  "description": "Separate craft dimensions with named components. Heuristic, not a measure of artistic quality.",
+  "type": "object",
+  "required": ["schema_version", "dimensions", "genericness", "rewards", "composite", "notes", "weights"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "dimensions": {"type": "object", "additionalProperties": {
+      "type": "object", "required": ["score", "components"], "properties": {
+        "score": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "components": {"type": "object", "additionalProperties": {"type": "object", "required": ["value", "evidence"], "properties": {
+          "value": {"type": ["number", "null"], "minimum": 0, "maximum": 1}, "evidence": {"type": "string"}, "weight": {"type": "number"}
+        }}}
+      }
+    }},
+    "genericness": {"type": "object", "required": ["score", "components"], "properties": {"score": {"type": ["number", "null"], "minimum": 0, "maximum": 1}}},
+    "rewards": {"type": "array", "items": {"type": "object", "required": ["signal", "value"]}},
+    "composite": {"type": ["number", "null"]},
+    "notes": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "weights": {"type": "object"}
+  },
+  "additionalProperties": false
+}

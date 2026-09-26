@@ -60,6 +60,9 @@ tube = [
     "youtube-transcript-api>=0.6",
     "yt-dlp>=2024.1.1",
 ]
+transcribe = [
+    "faster-whisper>=1.1.0",
+]
 
 test = [
     "pytest>=7",
@@ -77,6 +80,9 @@ nougen-time = "nougen_time.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+nougen_verse = ["data/*.json", "data/*.txt", "schemas/*.json"]
 
 [tool.pytest.ini_options]
 # Makes `python -m pytest` work from the repo root without the manual
