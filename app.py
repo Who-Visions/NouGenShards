@@ -132,9 +132,9 @@ def recall_memory(query: str, limit: int = 5) -> list:
     return out
 
 
-@node_mcp.tool()
+@node_mcp.tool(name="search")
 @_offloaded
-def search(query: str, limit: int = 5) -> list:
+def search_tool(query: str, limit: int = 5) -> list:
     """Search memory shards across the fleet. Alias for recall_memory to support standard MCP connectors."""
     return recall_memory(query=query, limit=limit)
 
@@ -1491,7 +1491,7 @@ def _merge_rows(*groups) -> list:
 # only /health and the separately-authed HUD are reachable without the token.
 
 @app.post("/search")
-def search_route(req: SearchRequest, response: Response,
+def search(req: SearchRequest, response: Response,
            _tenant: tenants.Tenant = Depends(tenant_vault_context)):
     """Memory recall for cloud callers (mirrors the connector's POST /search).
 
