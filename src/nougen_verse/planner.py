@@ -18,7 +18,7 @@ from . import content as C
 from .analyzer import _expand_scheme
 from .breath import DeliveryAnnotation, breath_profile
 from .config import Config, load_data_json, load_data_lines, resolve_config
-from .flow import FLOW_SWITCH_CAUSES, FlowGrammar, FlowSwitch, breath_consequence, delivery_for, normalize_cause
+from .flow import FlowGrammar, FlowSwitch, breath_consequence, delivery_for, normalize_cause
 from .models import VerseBlueprint, VerseRequest
 from .persona import load_persona
 from .phonetics import get_dictionary, tokenize

@@ -9,7 +9,7 @@ can decide whether the change was on purpose.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Sequence
 
 from .config import Config, resolve_config

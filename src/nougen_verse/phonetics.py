@@ -20,7 +20,7 @@ import logging
 import os
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Iterable, Sequence
 
@@ -315,7 +315,7 @@ def heuristic_g2p(word: str) -> tuple[list[str], int]:
         c = w[i]
         rest = w[i:]
         # ---- vowel letters (y counts as a vowel unless it starts a syllable)
-        if c in LETTER_VOWELS or (c == "y" and i > 0 and not (at(i + 1) in LETTER_VOWELS)):
+        if c in LETTER_VOWELS or (c == "y" and i > 0 and at(i + 1) not in LETTER_VOWELS):
             is_first = not first_vowel_done
             first_vowel_done = True
             if rest.startswith("eau"):

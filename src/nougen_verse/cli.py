@@ -115,7 +115,7 @@ def _analysis_text(a: dict) -> str:
         for w in a["protected_bars"]:
             out.append(f"  {w['bar']}: {w['text']}  <- {w['label']} ({'; '.join(w['evidence'])})")
     out.append("limitations:")
-    out += [f"  - {l}" for l in a["limitations"]]
+    out += [f"  - {limitation}" for limitation in a["limitations"]]
     return "\n".join(out)
 
 

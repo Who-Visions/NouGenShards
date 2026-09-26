@@ -21,13 +21,12 @@ from __future__ import annotations
 import re
 import statistics
 from dataclasses import dataclass, field
-from fractions import Fraction
 from typing import Any
 
 from . import content as C
 from .breath import analyze_breath
 from .config import Config, resolve_config
-from .flow import FLOW_SWITCH_CAUSES, detect_flow_switches, normalize_cause
+from .flow import detect_flow_switches, normalize_cause
 from .models import VerseAnalysis, VerseBlueprint
 from .persona import Persona, load_persona, persona_consistency
 from .phonetics import (
@@ -517,7 +516,7 @@ def analyze_verse(text: str, context: Any = None) -> VerseAnalysis:
     cadence_consistency = max(0.0, 1.0 - (sum(cvs) / len(cvs) if cvs else 0.0))
     landings = [b.landing_onset for b in rhythm.bars if b.landing_onset is not None]
     mode_landing = statistics.mode(landings) if landings else None
-    landing_consistency = sum(1 for l in landings if l == mode_landing) / len(landings) if landings else 0.0
+    landing_consistency = sum(1 for landing in landings if landing == mode_landing) / len(landings) if landings else 0.0
     cadence = {"consistency": round(cadence_consistency, 3), "landing_consistency": round(landing_consistency, 3),
                "syllables_per_beat": [round(x, 3) for x in spb], "cells": [b.cell for b in rhythm.bars],
                "segments": [[lo + 1, hi] for lo, hi in zip(seg_bounds, seg_bounds[1:]) if hi > lo],
@@ -598,7 +597,7 @@ def analyze_verse(text: str, context: Any = None) -> VerseAnalysis:
         if 0 <= s_bar < n and 0 <= p_bar < n:
             shared = sorted({C.light_stem(w) for w in bar_contents[s_bar].content} & {C.light_stem(w) for w in bar_contents[p_bar].content})
             links.append({**link, "satisfied": bool(shared), "shared": shared})
-    integrity = (sum(1 for l in links if l["satisfied"]) / len(links)) if links else (1.0 if cbs else None)
+    integrity = (sum(1 for link in links if link["satisfied"]) / len(links)) if links else (1.0 if cbs else None)
     jobs = C.infer_bar_jobs(bar_contents, rhymed, [sw.bar for sw in switches], cfg)
     planned_jobs = {o["bar"]: o["job"] for o in (bp or {}).get("bar_objectives", [])}
     syntax = {"template_groups": [[b + 1 for b in g] for g in templates],
@@ -763,7 +762,7 @@ def analyze_verse(text: str, context: Any = None) -> VerseAnalysis:
     if not persona:
         limitations.append("No persona was supplied, so voice consistency was not checked.")
     analysis = VerseAnalysis(
-        counts={"lines": len([l for l in (text or '').splitlines() if l.strip()]), "bars": n, "tokens": sum(len(t) for t in bar_tokens)},
+        counts={"lines": len([line for line in (text or '').splitlines() if line.strip()]), "bars": n, "tokens": sum(len(t) for t in bar_tokens)},
         syllables={"total": total_sylls, "per_bar": [len(s) for s in bar_sylls]},
         stress_patterns=[bd["stress"] for bd in bar_details],
         end_rhyme_families=end_families_out,
