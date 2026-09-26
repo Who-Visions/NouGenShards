@@ -1,4 +1,4 @@
-"""Tests for native NouGen lane claim and execution enforcement."""
+import sys
 import time
 
 import pytest
@@ -91,7 +91,7 @@ def test_release_claim(temp_claims_dir):
 
 def test_immediate_execution_enforcement(temp_claims_dir, tmp_path):
     marker = tmp_path / "work_executed.txt"
-    cmd = f'python3 -c "import pathlib; pathlib.Path(\'{marker}\').write_text(\'done\')"'
+    cmd = f'"{sys.executable}" -c "import pathlib; pathlib.Path(r\'{marker}\').write_text(\'done\')"'
     res = claim_lane(
         scope=["work.py"],
         goal="run immediately",
