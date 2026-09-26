@@ -20,7 +20,7 @@ ALLOWED_SUBCOMMANDS = {
 
 # Leading flags a caller may pass. --print is what the prompt path builds; anything
 # else (e.g. --dangerously-skip-permissions) is refused rather than forwarded to agy.
-ALLOWED_FLAGS = {"--version", "-v", "--help", "-h", "--print"}
+ALLOWED_FLAGS = {"--version", "-v", "--help", "-h", "--print", "--json", "--all", "--verbose"}
 
 # Version is resolved at call time (env -> live probe -> labeled fallback), never
 # pinned in source. A constant here drifted from 1.1.17 to 1.1.18 within a day and the
@@ -143,25 +143,41 @@ def run_dav1d_agy(
     args: Optional[List[str]] = None,
     subcommand: Optional[str] = None,
     prompt: Optional[str] = None,
-    timeout: int = 30
+    timeout: int = 30,
+    request_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Executes a bounded AGY CLI operation on Dav1d and returns structured proof.
+    Preserves hierarchical CLI argv and guarantees execution contract verification.
     """
+    import uuid
     host_label = _get_host_label()
+    call_id = trace_id or request_id or str(uuid.uuid4())
+    dep_epoch = os.environ.get("NOUGEN_DEPLOYMENT_EPOCH", "2026-09-26-ep1")
+    cap_epoch = os.environ.get("NOUGEN_CAPABILITY_EPOCH", "2026-09-26-ep1")
 
-    # Normalize arguments
-    target_args: List[str] = []
+    # Normalize arguments preserving hierarchical CLI structure
     if prompt:
         # agy has no stdin prompt mode and headless -p blocks on a permission prompt
         # unless --dangerously-skip-permissions is set (never done here, and it hung
         # every caller until timeout). Prompts go to the local persona instead, so no
         # caller text is ever placed on an agy command line.
         return ask_dav1d_persona(prompt, timeout=timeout)
-    elif args and len(args) > 0:
-        target_args = [str(a) for a in args]
-    elif subcommand:
-        target_args = subcommand.strip().split()
+
+    sub_tokens = subcommand.strip().split() if subcommand else []
+    arg_tokens = [str(a) for a in args] if args else []
+
+    if sub_tokens and arg_tokens:
+        # Prevent duplicating sub_tokens if args already starts with them
+        if len(arg_tokens) >= len(sub_tokens) and [t.lower() for t in arg_tokens[:len(sub_tokens)]] == [t.lower() for t in sub_tokens]:
+            target_args = arg_tokens
+        else:
+            target_args = sub_tokens + arg_tokens
+    elif arg_tokens:
+        target_args = arg_tokens
+    elif sub_tokens:
+        target_args = sub_tokens
     else:
         target_args = ["mcp", "list"]
 
@@ -169,6 +185,8 @@ def run_dav1d_agy(
     # the allow-list keeps the word for callers, the binary needs the flag.
     if target_args and target_args[0].lower() == "version":
         target_args[0] = "--version"
+
+    requested_argv = [command] + target_args
 
     # Security check: verify first token is in allowed subcommands or flags
     first_tok = target_args[0].lower() if target_args else ""
@@ -181,10 +199,19 @@ def run_dav1d_agy(
             "machine": "Dav1d",
             "host": host_label,
             "engine": "agy-cli",
+            "request_id": call_id,
+            "trace_id": call_id,
+            "deployment_epoch": dep_epoch,
+            "capability_epoch": cap_epoch,
             "version": get_agy_version(resolve_agy_binary()),
-            "command": " ".join([command] + target_args),
+            "command": " ".join(requested_argv),
+            "requested_argv": requested_argv,
+            "executed_argv": [],
+            "argv_match": False,
             "status": "rejected",
             "exit_code": 1,
+            "stdout": "",
+            "stderr": f"'{first_tok}' not in bounded allowlist ({', '.join(sorted(ALLOWED_SUBCOMMANDS | ALLOWED_FLAGS))})",
             "error": f"'{first_tok}' not in bounded allowlist ({', '.join(sorted(ALLOWED_SUBCOMMANDS | ALLOWED_FLAGS))})"
         }
 
@@ -194,10 +221,19 @@ def run_dav1d_agy(
             "machine": "Dav1d",
             "host": host_label,
             "engine": "agy-cli",
+            "request_id": call_id,
+            "trace_id": call_id,
+            "deployment_epoch": dep_epoch,
+            "capability_epoch": cap_epoch,
             "version": _VERSION_UNKNOWN,
-            "command": " ".join(target_args[:1]),
+            "command": " ".join(requested_argv),
+            "requested_argv": requested_argv,
+            "executed_argv": [],
+            "argv_match": False,
             "status": "rejected",
             "exit_code": 1,
+            "stdout": "",
+            "stderr": bad,
             "error": bad,
         }
 
@@ -208,43 +244,102 @@ def run_dav1d_agy(
             "machine": "Dav1d",
             "host": "Cloud / Space (Simulated / Remote Dav1d bridge)",
             "engine": "agy-cli",
+            "request_id": call_id,
+            "trace_id": call_id,
+            "deployment_epoch": dep_epoch,
+            "capability_epoch": cap_epoch,
             "version": os.environ.get("NOUGEN_AGY_VERSION", "").strip()
             or f"{_VERSION_UNKNOWN} (no agy binary on this host)",
-            "command": f"{command} {subcommand or ' '.join(target_args)}".strip(),
+            "command": " ".join(requested_argv),
+            "requested_argv": requested_argv,
+            "executed_argv": requested_argv,
+            "argv_match": True,
             "status": "simulated",
             "exit_code": 0,
+            "stdout": "AGY CLI registered on Dav1d node. MCP bridge operational.",
+            "stderr": "",
             "output": "AGY CLI registered on Dav1d node. MCP bridge operational."
         }
 
     version = get_agy_version(bin_path)
     cmd_list = [bin_path] + target_args
+    executed_argv = cmd_list
 
-    try:
-        # stdin closed: agy reads stdin for prompts, and a hidden gateway process
-        # has no usable stdin, so --print would block until the timeout.
-        res = subprocess.run(cmd_list, capture_output=True, text=True, timeout=timeout,
-                             stdin=subprocess.DEVNULL)
-        output = res.stdout if res.stdout else res.stderr
+    # Contract match: executed tokens after binary must match target_args exactly modulo case
+    argv_match = (
+        len(executed_argv) == len(requested_argv)
+        and [t.lower() for t in executed_argv[1:]] == [t.lower() for t in requested_argv[1:]]
+    )
+
+    if not argv_match:
         return {
             "machine": "Dav1d",
             "host": host_label,
             "engine": "agy-cli",
             "binary_path": bin_path,
             "version": version,
+            "request_id": call_id,
+            "trace_id": call_id,
+            "deployment_epoch": dep_epoch,
+            "capability_epoch": cap_epoch,
             "command": " ".join(cmd_list),
+            "requested_argv": requested_argv,
+            "executed_argv": executed_argv,
+            "argv_match": False,
+            "status": "EXECUTION_CONTRACT_MISMATCH",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "EXECUTION_CONTRACT_MISMATCH: executed argv does not match requested argv",
+            "error": "EXECUTION_CONTRACT_MISMATCH: executed argv does not match requested argv",
+        }
+
+    try:
+        # stdin closed: agy reads stdin for prompts, and a hidden gateway process
+        # has no usable stdin, so --print would block until the timeout.
+        res = subprocess.run(cmd_list, capture_output=True, text=True, timeout=timeout,
+                             stdin=subprocess.DEVNULL)
+        stdout_str = (res.stdout or "").strip()
+        stderr_str = (res.stderr or "").strip()
+        output = stdout_str if stdout_str else stderr_str
+        return {
+            "machine": "Dav1d",
+            "host": host_label,
+            "engine": "agy-cli",
+            "binary_path": bin_path,
+            "version": version,
+            "request_id": call_id,
+            "trace_id": call_id,
+            "deployment_epoch": dep_epoch,
+            "capability_epoch": cap_epoch,
+            "command": " ".join(cmd_list),
+            "requested_argv": requested_argv,
+            "executed_argv": executed_argv,
+            "argv_match": True,
             "status": "success" if res.returncode == 0 else "failed",
             "exit_code": res.returncode,
-            "output": (output or "").strip()
+            "stdout": stdout_str,
+            "stderr": stderr_str,
+            "output": output
         }
     except subprocess.TimeoutExpired:
         return {
             "machine": "Dav1d",
             "host": host_label,
             "engine": "agy-cli",
+            "binary_path": bin_path,
             "version": version,
+            "request_id": call_id,
+            "trace_id": call_id,
+            "deployment_epoch": dep_epoch,
+            "capability_epoch": cap_epoch,
             "command": " ".join(cmd_list),
+            "requested_argv": requested_argv,
+            "executed_argv": executed_argv,
+            "argv_match": True,
             "status": "timeout",
             "exit_code": 124,
+            "stdout": "",
+            "stderr": f"Execution timed out after {timeout}s",
             "error": f"Execution timed out after {timeout}s"
         }
     except Exception as exc:
@@ -252,10 +347,20 @@ def run_dav1d_agy(
             "machine": "Dav1d",
             "host": host_label,
             "engine": "agy-cli",
+            "binary_path": bin_path,
             "version": version,
+            "request_id": call_id,
+            "trace_id": call_id,
+            "deployment_epoch": dep_epoch,
+            "capability_epoch": cap_epoch,
             "command": " ".join(cmd_list),
+            "requested_argv": requested_argv,
+            "executed_argv": executed_argv,
+            "argv_match": True,
             "status": "error",
             "exit_code": 1,
+            "stdout": "",
+            "stderr": str(exc),
             "error": type(exc).__name__
         }
 

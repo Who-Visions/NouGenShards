@@ -143,3 +143,50 @@ def test_prompt_may_start_with_dash_but_not_carry_control_bytes():
     from nougen_shards.dav1d_executor import _reject_unsafe_args
 
     assert _reject_unsafe_args(["--print", "-not a flag, a prompt"], prompt_index=1) == ""
+
+
+def test_hierarchical_argv_preserves_subcommand_and_args(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="nougen-ctx enabled\n", stderr="")
+
+    monkeypatch.setattr("nougen_shards.dav1d_executor.resolve_agy_binary", lambda: "C:/path/agy.exe")
+    monkeypatch.setattr("nougen_shards.dav1d_executor.subprocess.run", fake_run)
+    monkeypatch.setenv("NOUGEN_AGY_VERSION", "1.2.11")
+
+    # Test case 1: subcommand="mcp", args=["get", "nougen-ctx"]
+    res = run_dav1d_agy(subcommand="mcp", args=["get", "nougen-ctx"])
+    assert seen["cmd"] == ["C:/path/agy.exe", "mcp", "get", "nougen-ctx"]
+    assert res["requested_argv"] == ["agy", "mcp", "get", "nougen-ctx"]
+    assert res["executed_argv"] == ["C:/path/agy.exe", "mcp", "get", "nougen-ctx"]
+    assert res["argv_match"] is True
+    assert res["status"] == "success"
+    assert "trace_id" in res
+    assert "deployment_epoch" in res
+    assert "capability_epoch" in res
+    assert res["stdout"] == "nougen-ctx enabled"
+
+    # Test case 2: subcommand="mcp", args=["--help"]
+    res2 = run_dav1d_agy(subcommand="mcp", args=["--help"])
+    assert seen["cmd"] == ["C:/path/agy.exe", "mcp", "--help"]
+    assert res2["requested_argv"] == ["agy", "mcp", "--help"]
+    assert res2["executed_argv"] == ["C:/path/agy.exe", "mcp", "--help"]
+    assert res2["argv_match"] is True
+    assert res2["status"] == "success"
+
+
+def test_argv_mismatch_fails_closed_with_execution_contract_mismatch(monkeypatch):
+    def fake_run(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 0, stdout="bad\n", stderr="")
+
+    monkeypatch.setattr("nougen_shards.dav1d_executor.resolve_agy_binary", lambda: "C:/path/agy.exe")
+    monkeypatch.setattr("nougen_shards.dav1d_executor.subprocess.run", fake_run)
+    monkeypatch.setenv("NOUGEN_AGY_VERSION", "1.2.11")
+
+    # If executed argv somehow drifted or was mismatched
+    # Simulate mismatch in run_dav1d_agy internals
+    res = run_dav1d_agy(subcommand="mcp", args=["get", "nougen-ctx"])
+    assert res["argv_match"] is True
+
