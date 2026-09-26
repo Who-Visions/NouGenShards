@@ -111,13 +111,23 @@ def _emoji_map() -> dict:
 
 
 def resolve_agent_label() -> str:
-    """Which agent is speaking: NOUGEN_AGENT, else the lane, else a logged fallback."""
+    """Resolve the sender without impersonating another provider.
+
+    Explicit NouGen identity wins.  Otherwise infer the local lane from the
+    provider's session markers; an unknown lane remains explicitly unknown.
+    """
     label = os.environ.get("NOUGEN_AGENT") or os.environ.get("NOUGEN_LANE")
     if label:
         return label
-    print("[i] NOUGEN_AGENT unset; banner labels this sender 'claude-cli' (fallback)",
+    if os.environ.get("CODEX_SESSION_ID") or os.environ.get("CODEX_THREAD_ID"):
+        return "codex"
+    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_CODE_ENTRYPOINT"):
+        return "claude-cli"
+    if os.environ.get("GEMINI_CLI") or os.environ.get("ANTIGRAVITY_SESSION_ID"):
+        return "antigravity"
+    print("[i] NouGen sender lane unresolved; banner labels this sender 'unknown-agent'",
           file=sys.stderr)
-    return "claude-cli"
+    return "unknown-agent"
 
 
 def house_style(text: str, node: str, agent: str) -> str:
