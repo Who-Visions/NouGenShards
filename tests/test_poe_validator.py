@@ -1,8 +1,5 @@
-import os
-import json
-import pytest
 from pathlib import Path
-from tools.poe_validator import PoEValidator, PoEValidationError
+from tools.poe_validator import PoEValidator
 
 def test_poe_validator_git_check_valid():
     repo_path = Path("/Users/kushboygroup/.nougen/src/nougenshards")
