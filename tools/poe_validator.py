@@ -7,7 +7,6 @@ Enforces Hardcade Protocol v1.0.0:
 - Manages T-Lease TTLs, heartbeat decay, and marks dead leases as ORPHAN.
 """
 
-import os
 import sys
 import json
 import time
