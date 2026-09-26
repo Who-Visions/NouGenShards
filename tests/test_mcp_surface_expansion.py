@@ -1,7 +1,7 @@
 """Tests for expanded FastMCP tool surface (relay leg 20260925T210536Z)."""
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from nougen_shards import mcp
 
