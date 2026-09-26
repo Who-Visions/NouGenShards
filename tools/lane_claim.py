@@ -23,92 +23,12 @@ Every environment-shaped value resolves env-first (Rule 0.2).
 from __future__ import annotations
 
 import argparse
-import fnmatch
-import json
-import os
-import socket
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
-
-def _resolve_claims_dir() -> Path:
-    env_dir = os.environ.get("NOUGEN_RELAY_LOCAL_DIR") or os.environ.get("NOUGEN_RELAY_DIR")
-    if env_dir and Path(env_dir).exists():
-        p = Path(env_dir)
-        return (p / ".handoffs" / "claims") if not p.name.endswith(".handoffs") else (p / "claims")
-    candidates = [
-        Path.home() / "Outpost" / "NouGenRelay" / ".handoffs" / "claims",
-        Path.home() / "Watchtower" / "NouGen" / "NouGenRelay" / ".handoffs" / "claims",
-        Path(__file__).resolve().parents[1] / ".handoffs" / "claims",
-    ]
-    for c in candidates:
-        try:
-            if c.parent.is_dir() or c.is_dir():
-                return c
-        except OSError:
-            continue
-    return Path.home() / "Outpost" / "NouGenRelay" / ".handoffs" / "claims"
-
-CLAIMS_DIR = _resolve_claims_dir()
-AGENT = os.environ.get("NOUGEN_AGENT", "antigravity")
-MACHINE = os.environ.get("COMPUTERNAME", socket.gethostname()).lower()
-TTL_HOURS = float(os.environ.get("NOUGEN_CLAIM_TTL_HOURS", 8))
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _my_claim_path() -> Path:
-    return CLAIMS_DIR / f"{MACHINE}__{AGENT}.json"
-
-
-def active_claims() -> list[dict]:
-    out = []
-    if not CLAIMS_DIR.is_dir():
-        return out
-    for f in CLAIMS_DIR.glob("*.json"):
-        try:
-            c = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if c.get("status") == "released":
-            continue
-        try:
-            born = datetime.strptime(c["created_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        except (KeyError, ValueError):
-            continue
-        ttl = float(c.get("ttl_hours", 8))
-        if (datetime.now(timezone.utc) - born).total_seconds() < ttl * 3600:
-            out.append(c)
-    return out
-
-
-def conflicts_for(paths: list[str], me_agent: str, me_machine: str) -> list[tuple[str, dict]]:
-    """Paths claimed by someone who is not me."""
-    hits = []
-    for c in active_claims():
-        if c.get("agent") == me_agent and c.get("machine") == me_machine:
-            continue
-        scopes = c.get("scope", "")
-        scopes = scopes if isinstance(scopes, list) else [s.strip() for s in str(scopes).split(",") if s.strip()]
-        for p in paths:
-            norm = p.replace("\\", "/")
-            for scope in scopes:
-                if fnmatch.fnmatch(norm, scope) or norm == scope:
-                    hits.append((p, c))
-    return hits
-
 
 from nougen_shards.lane_claim import (
-    CLAIMS_DIR,
     AGENT,
     MACHINE,
-    TTL_HOURS,
-    utc_now,
-    my_claim_path,
     active_claims,
-    conflicts_for,
     claim_lane,
     release_lane,
 )

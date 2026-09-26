@@ -9,13 +9,11 @@ Ensures that whenever any agent or lane claims a work scope:
 """
 from __future__ import annotations
 
-import argparse
 import fnmatch
 import json
 import os
 import socket
 import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple

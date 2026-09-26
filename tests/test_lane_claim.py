@@ -1,7 +1,5 @@
 """Tests for native NouGen lane claim and execution enforcement."""
-import json
 import time
-from pathlib import Path
 
 import pytest
 from nougen_shards.lane_claim import (
@@ -9,7 +7,6 @@ from nougen_shards.lane_claim import (
     release_lane,
     active_claims,
     conflicts_for,
-    my_claim_path,
 )
 
 
