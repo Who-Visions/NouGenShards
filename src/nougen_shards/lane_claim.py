@@ -61,19 +61,44 @@ def active_claims(claims_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
     out = []
     if not cdir.is_dir():
         return out
+    now_utc = datetime.now(timezone.utc)
     for f in cdir.glob("*.json"):
         try:
             c = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if c.get("status") == "released":
+        status = str(c.get("status") or "").lower()
+        if status in ("released", "closed", "completed", "done"):
             continue
-        try:
-            born = datetime.strptime(c["created_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        except (KeyError, ValueError):
-            continue
+
+        stamp_str = (
+            c.get("created_utc")
+            or c.get("created_at")
+            or c.get("timestamp")
+            or c.get("claimed_at")
+        )
+        born = None
+        if stamp_str:
+            for fmt in (
+                "%Y-%m-%dT%H:%M:%SZ",
+                "%Y-%m-%dT%H:%M:%S.%fZ",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y%m%dT%H%M%SZ",
+                "%Y-%m-%d %I:%M:%S %p",
+            ):
+                try:
+                    born = datetime.strptime(str(stamp_str).strip(), fmt).replace(tzinfo=timezone.utc)
+                    break
+                except ValueError:
+                    pass
+        if born is None:
+            try:
+                born = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                continue
+
         ttl = float(c.get("ttl_hours", 8))
-        if (datetime.now(timezone.utc) - born).total_seconds() < ttl * 3600:
+        if (now_utc - born).total_seconds() < ttl * 3600:
             out.append(c)
     return out
 
