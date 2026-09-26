@@ -27,8 +27,9 @@ def _user_time(value) -> str:
         logger.warning("Invalid handoff timestamp: %r", value)
         return "[invalid timestamp]"
 
-# Handoff notes live in <repo>/.handoffs by default. Override with NOUGEN_HANDOFF_DIR
-# so the system works regardless of where it is installed or invoked from.
+# Runtime handoffs are per-user by default. Repository .handoffs directories may
+# contain maintainer history and must be opted into explicitly with
+# NOUGEN_HANDOFF_DIR.
 
 
 def _resolve_project_root() -> Path:
@@ -51,7 +52,14 @@ def _resolve_project_root() -> Path:
 
 
 PROJECT_ROOT = _resolve_project_root()
-HANDOFF_DIR = Path(os.environ.get("NOUGEN_HANDOFF_DIR", PROJECT_ROOT / ".handoffs"))
+
+
+def _default_handoff_dir(home: Path | None = None) -> Path:
+    """Keep runtime handoffs outside the checked-out or packaged source tree."""
+    return (home or Path.home()) / ".nougen" / "handoffs"
+
+
+HANDOFF_DIR = Path(os.environ.get("NOUGEN_HANDOFF_DIR") or _default_handoff_dir())
 
 _SPACE_SYNC_TIMEOUT_FALLBACK_S = 30.0
 
@@ -190,12 +198,9 @@ def get_cwd_repo_root() -> Path | None:
 def registry_conflict() -> str | None:
     """Describe a registry the operator probably meant instead of this one.
 
-    HANDOFF_DIR is derived from where the *module* lives, not where the command
-    was run. Running the CLI from a worktree or a second clone therefore points
-    it at that copy's `.handoffs` — which is usually empty — while the records
-    the operator cares about sit in the checkout they are standing in. Syncing
-    the empty one reports success and publishes nothing, which is worse than an
-    error, so callers use this to refuse instead.
+    Runtime handoffs default to the user's private data directory. If the
+    checkout also contains a repository .handoffs registry, syncing without an
+    explicit NOUGEN_HANDOFF_DIR would silently choose the wrong one, so refuse.
 
     An explicit NOUGEN_HANDOFF_DIR is always honoured: the operator has said
     which registry they mean.
@@ -205,18 +210,18 @@ def registry_conflict() -> str | None:
     cwd_root = get_cwd_repo_root()
     if not cwd_root:
         return None
-    try:
-        if cwd_root.resolve() == PROJECT_ROOT.resolve():
-            return None
-    except OSError:
-        return None
     candidate = cwd_root / ".handoffs"
     if not candidate.exists():
         return None
     if not any(candidate.rglob("handoff_*.json")):
         return None
+    try:
+        if HANDOFF_DIR.resolve() == candidate.resolve():
+            return None
+    except OSError:
+        pass
     return (
-        f"Registry mismatch: this CLI resolves handoffs to {HANDOFF_DIR}, but "
+        f"Registry mismatch: runtime handoffs resolve to {HANDOFF_DIR}, but "
         f"the checkout you are in has records at {candidate}. Set "
         f"NOUGEN_HANDOFF_DIR to the one you mean."
     )

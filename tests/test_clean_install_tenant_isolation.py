@@ -2,7 +2,22 @@
 
 from __future__ import annotations
 
+import os
+
 from nougen_shards import session_probe
+
+
+def test_runtime_handoffs_default_outside_source_tree(tmp_path, monkeypatch):
+    configured_handoff_dir = os.environ.get("NOUGEN_HANDOFF_DIR")
+    monkeypatch.delenv("NOUGEN_HANDOFF_DIR", raising=False)
+
+    path = session_probe.handoff._default_handoff_dir(tmp_path)
+
+    assert path == tmp_path / ".nougen" / "handoffs"
+    if not configured_handoff_dir:
+        assert session_probe.handoff.HANDOFF_DIR == (
+            session_probe.handoff.Path.home() / ".nougen" / "handoffs"
+        )
 
 
 def test_fleet_pulse_is_empty_without_enrollment(monkeypatch):
@@ -21,7 +36,7 @@ def test_fleet_pulse_is_empty_without_enrollment(monkeypatch):
     assert called == []
 
 
-def test_hi_clean_install_does_not_read_inherited_handoffs_or_relay(monkeypatch):
+def test_hi_clean_install_does_not_read_inherited_handoffs_or_relay(monkeypatch, tmp_path):
     monkeypatch.setattr(session_probe, "_fleet_enrolled", lambda: False)
     monkeypatch.setattr(
         session_probe.machine,
@@ -30,13 +45,23 @@ def test_hi_clean_install_does_not_read_inherited_handoffs_or_relay(monkeypatch)
     )
     monkeypatch.setattr(session_probe, "_check_port", lambda port: False)
     monkeypatch.setattr(session_probe, "usage_snapshot", lambda: {})
+    source_handoffs = tmp_path / "source" / ".handoffs"
+    source_handoffs.mkdir(parents=True)
+    (source_handoffs / "handoff_maintainer.json").write_text(
+        '{"goal":"maintainer-only goal","status":"open"}', encoding="utf-8"
+    )
+    monkeypatch.chdir(source_handoffs.parent.parent)
+    monkeypatch.setattr(
+        session_probe.handoff,
+        "HANDOFF_DIR",
+        tmp_path / "new-user-home" / ".nougen" / "handoffs",
+    )
 
-    def forbidden(*args, **kwargs):
-        raise AssertionError("clean install must not read inherited fleet state")
+    def forbidden_relay(*args, **kwargs):
+        raise AssertionError("clean install must not read inherited relay state")
 
-    monkeypatch.setattr(session_probe.handoff, "handoff_feed", forbidden)
-    monkeypatch.setattr(session_probe, "read_relay", forbidden)
-    monkeypatch.setattr(session_probe, "_fleet_pulse", forbidden)
+    monkeypatch.setattr(session_probe, "read_relay", forbidden_relay)
+    monkeypatch.setattr(session_probe, "_fleet_pulse", forbidden_relay)
 
     report = session_probe.run_hi(fleet=True)
 
