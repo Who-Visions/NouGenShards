@@ -23,113 +23,59 @@ Every environment-shaped value resolves env-first (Rule 0.2).
 from __future__ import annotations
 
 import argparse
-import fnmatch
-import json
-import os
-import socket
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
 
-def _resolve_claims_dir() -> Path:
-    env_dir = os.environ.get("NOUGEN_RELAY_LOCAL_DIR") or os.environ.get("NOUGEN_RELAY_DIR")
-    if env_dir and Path(env_dir).exists():
-        p = Path(env_dir)
-        return (p / ".handoffs" / "claims") if not p.name.endswith(".handoffs") else (p / "claims")
-    candidates = [
-        Path.home() / "Outpost" / "NouGenRelay" / ".handoffs" / "claims",
-        Path.home() / "Watchtower" / "NouGen" / "NouGenRelay" / ".handoffs" / "claims",
-        Path(__file__).resolve().parents[1] / ".handoffs" / "claims",
-    ]
-    for c in candidates:
-        try:
-            if c.parent.is_dir() or c.is_dir():
-                return c
-        except OSError:
-            continue
-    return Path.home() / "Outpost" / "NouGenRelay" / ".handoffs" / "claims"
-
-CLAIMS_DIR = _resolve_claims_dir()
-AGENT = os.environ.get("NOUGEN_AGENT", "antigravity")
-MACHINE = os.environ.get("COMPUTERNAME", socket.gethostname()).lower()
-TTL_HOURS = float(os.environ.get("NOUGEN_CLAIM_TTL_HOURS", 8))
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _my_claim_path() -> Path:
-    return CLAIMS_DIR / f"{MACHINE}__{AGENT}.json"
-
-
-def active_claims() -> list[dict]:
-    out = []
-    if not CLAIMS_DIR.is_dir():
-        return out
-    for f in CLAIMS_DIR.glob("*.json"):
-        try:
-            c = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if c.get("status") == "released":
-            continue
-        try:
-            born = datetime.strptime(c["created_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        except (KeyError, ValueError):
-            continue
-        ttl = float(c.get("ttl_hours", 8))
-        if (datetime.now(timezone.utc) - born).total_seconds() < ttl * 3600:
-            out.append(c)
-    return out
-
-
-def conflicts_for(paths: list[str], me_agent: str, me_machine: str) -> list[tuple[str, dict]]:
-    """Paths claimed by someone who is not me."""
-    hits = []
-    for c in active_claims():
-        if c.get("agent") == me_agent and c.get("machine") == me_machine:
-            continue
-        scopes = c.get("scope", "")
-        scopes = scopes if isinstance(scopes, list) else [s.strip() for s in str(scopes).split(",") if s.strip()]
-        for p in paths:
-            norm = p.replace("\\", "/")
-            for scope in scopes:
-                if fnmatch.fnmatch(norm, scope) or norm == scope:
-                    hits.append((p, c))
-    return hits
+from nougen_shards.lane_claim import (
+    AGENT,
+    MACHINE,
+    active_claims,
+    claim_lane,
+    release_lane,
+)
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="NouGen Lane Claims & Execution Enforcement")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("claim")
+    c = sub.add_parser("claim", help="Claim a file scope and enforce immediate execution")
     c.add_argument("scope", nargs="+", help="file paths or globs you are editing")
     c.add_argument("-g", "--goal", default="working", help="one-line goal")
-    sub.add_parser("release")
-    sub.add_parser("status")
+    c.add_argument("--exec", dest="execute_cmd", default=None,
+                   help="command to execute immediately upon claiming (forces work)")
+    c.add_argument("--ttl", dest="ttl_hours", type=float, default=None,
+                   help="claim TTL in hours")
+
+    sub.add_parser("release", help="Release active lane claim")
+    sub.add_parser("status", help="List active lane claims")
     args = ap.parse_args()
 
     if args.cmd == "claim":
-        CLAIMS_DIR.mkdir(parents=True, exist_ok=True)
-        claim = {
-            "machine": MACHINE, "agent": AGENT, "goal": args.goal,
-            "scope": [s.replace("\\", "/") for s in args.scope],
-            "created_utc": _now(), "ttl_hours": TTL_HOURS, "status": "active",
-        }
-        _my_claim_path().write_text(json.dumps(claim, indent=2), encoding="utf-8")
-        print(f"claimed {claim['scope']} as {MACHINE}/{AGENT} (ttl {TTL_HOURS}h)")
+        res = claim_lane(
+            scope=args.scope,
+            goal=args.goal,
+            agent=AGENT,
+            machine=MACHINE,
+            ttl_hours=args.ttl_hours,
+            execute_cmd=args.execute_cmd,
+        )
+        claim = res["claim"]
+        print(f"claimed {claim['scope']} as {MACHINE}/{AGENT} (ttl {claim['ttl_hours']}h)")
+        if res.get("shard_replicated"):
+            print("✓ Claim replicated natively into NouGen shards cluster.")
+        if res.get("wake_dispatch"):
+            print("✓ Immediate work enforcement ping broadcast across fleet bus.")
+        if res.get("execution_pid"):
+            print(f"✓ Immediate execution launched (PID {res['execution_pid']}): {args.execute_cmd}")
         return 0
+
     if args.cmd == "release":
-        p = _my_claim_path()
-        if p.exists():
-            c = json.loads(p.read_text(encoding="utf-8"))
-            c["status"] = "released"
-            p.write_text(json.dumps(c, indent=2), encoding="utf-8")
+        ok = release_lane(agent=AGENT, machine=MACHINE)
+        if ok:
             print("released")
         else:
             print("no claim on file")
         return 0
+
     # status
     live = active_claims()
     if not live:
