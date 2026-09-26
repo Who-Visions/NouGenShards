@@ -976,6 +976,71 @@ def nougenmsg_peers() -> str:
         return json.dumps({"error": str(e)})
 
 
+@mcp.tool()
+def claim_lane(scope: List[str], goal: str = "working", execute_cmd: Optional[str] = None, ttl_hours: float = 8.0) -> str:
+    """
+    Declare an active lane claim on a file scope, replicate to shards, and enforce immediate work.
+
+    Args:
+        scope: List of file paths or globs to claim (e.g. ['src/foo.py']).
+        goal: Brief description of the task being executed.
+        execute_cmd: Optional shell command to trigger immediately upon claiming.
+        ttl_hours: Claim TTL in hours (default 8.0).
+    """
+    import json
+    from .lane_claim import claim_lane as _claim
+    try:
+        res = _claim(scope=scope, goal=goal, execute_cmd=execute_cmd, ttl_hours=ttl_hours)
+        return json.dumps(res, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def release_lane() -> str:
+    """
+    Release any active lane claim currently held by this agent/machine.
+    """
+    import json
+    from .lane_claim import release_lane as _release
+    try:
+        ok = _release()
+        return json.dumps({"released": ok}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def list_lane_claims() -> str:
+    """
+    List all active declared lane claims across the NouGen fleet.
+    """
+    import json
+    from .lane_claim import active_claims
+    try:
+        claims = active_claims()
+        return json.dumps({"active_claims": claims, "count": len(claims)}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def session_hi(fleet: bool = True) -> str:
+    """
+    Session-open probe: report machine identity, enrolled fleet pulse, open handoffs, and next play.
+
+    Args:
+        fleet: If True, probe reachability of enrolled fleet peers.
+    """
+    import json
+    from .session_probe import run_hi
+    try:
+        report = run_hi(fleet=fleet)
+        return json.dumps(report.__dict__, default=str, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 def main():
 
     """Main entry point for the MCP server."""

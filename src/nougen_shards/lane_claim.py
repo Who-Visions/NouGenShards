@@ -25,6 +25,8 @@ def resolve_claims_dir() -> Path:
         p = Path(env_dir)
         return (p / ".handoffs" / "claims") if not p.name.endswith(".handoffs") else (p / "claims")
     candidates = [
+        Path.home() / ".nougen" / "relay" / ".handoffs" / "claims",
+        Path.home() / ".nougen" / "claims",
         Path.home() / "Outpost" / "NouGenRelay" / ".handoffs" / "claims",
         Path.home() / "Watchtower" / "NouGen" / "NouGenRelay" / ".handoffs" / "claims",
         Path(__file__).resolve().parents[2] / ".handoffs" / "claims",
@@ -35,7 +37,7 @@ def resolve_claims_dir() -> Path:
                 return c
         except OSError:
             continue
-    return Path.home() / "Outpost" / "NouGenRelay" / ".handoffs" / "claims"
+    return Path.home() / ".nougen" / "claims"
 
 
 CLAIMS_DIR = resolve_claims_dir()

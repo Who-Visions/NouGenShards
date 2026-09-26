@@ -110,3 +110,78 @@ def test_immediate_execution_enforcement(temp_claims_dir, tmp_path):
         time.sleep(0.1)
     assert marker.exists()
     assert marker.read_text() == "done"
+
+
+def test_cli_cmd_claim_workflow(temp_claims_dir, monkeypatch):
+    import argparse
+    import io
+    import json
+    from contextlib import redirect_stdout
+    from nougen_shards import cli, lane_claim
+
+    monkeypatch.setattr(lane_claim, "CLAIMS_DIR", temp_claims_dir)
+
+    # 1. Status empty
+    out = io.StringIO()
+    with redirect_stdout(out):
+        cli.cmd_claim(argparse.Namespace(claim_args=["status"], json=False))
+    assert "no active claims" in out.getvalue()
+
+    # 2. Claim scope
+    out = io.StringIO()
+    with redirect_stdout(out):
+        cli.cmd_claim(argparse.Namespace(
+            claim_args=["src/foo.py"],
+            goal="cli claim test",
+            execute_cmd=None,
+            ttl_hours=1.0,
+            json=True,
+        ))
+    res = json.loads(out.getvalue())
+    assert res["status"] == "claimed"
+    assert "src/foo.py" in res["claim"]["scope"]
+
+    # 3. Status with claim
+    out = io.StringIO()
+    with redirect_stdout(out):
+        cli.cmd_claim(argparse.Namespace(claim_args=[], json=False))
+    assert "src/foo.py" in out.getvalue()
+
+    # 4. Release claim
+    out = io.StringIO()
+    with redirect_stdout(out):
+        cli.cmd_claim(argparse.Namespace(claim_args=["release"], json=False))
+    assert "released" in out.getvalue()
+
+
+def test_mcp_lane_claim_and_hi_tools(temp_claims_dir, monkeypatch):
+    import json
+    from nougen_shards import lane_claim, mcp
+
+    monkeypatch.setattr(lane_claim, "CLAIMS_DIR", temp_claims_dir)
+
+    # 1. List claims (empty)
+    raw = mcp.list_lane_claims()
+    data = json.loads(raw)
+    assert data["count"] == 0
+
+    # 2. Claim lane
+    raw_claim = mcp.claim_lane(scope=["src/mcp_test.py"], goal="mcp test goal")
+    claim_data = json.loads(raw_claim)
+    assert claim_data["status"] == "claimed"
+
+    # 3. List claims (1 active)
+    raw = mcp.list_lane_claims()
+    data = json.loads(raw)
+    assert data["count"] == 1
+
+    # 4. Release lane
+    raw_rel = mcp.release_lane()
+    rel_data = json.loads(raw_rel)
+    assert rel_data["released"] is True
+
+    # 5. Session hi tool
+    raw_hi = mcp.session_hi(fleet=False)
+    hi_data = json.loads(raw_hi)
+    assert "identity" in hi_data
+
