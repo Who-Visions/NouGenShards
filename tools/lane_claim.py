@@ -23,7 +23,10 @@ Every environment-shaped value resolves env-first (Rule 0.2).
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 from nougen_shards.lane_claim import (
     AGENT,
