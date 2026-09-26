@@ -1,3 +1,5 @@
+> **Agents and LLMs: read [START_HERE.md](START_HERE.md) before anything else.**
+
 ---
 title: NouGenShards Node
 emoji: 🧠
