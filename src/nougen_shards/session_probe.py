@@ -23,7 +23,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from . import handoff, machine, relay_watch, nougenmsg
 from nougen_time import format_log_time, now as nougen_now
