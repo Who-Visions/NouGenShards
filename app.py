@@ -60,7 +60,15 @@ node_mcp = MCPServer(
     "NouGenShards",
     instructions=(
         "Persistent memory node. Use recall_memory before reasoning from "
-        "scratch and capture_experience to store durable learnings."
+        "scratch and capture_experience to store durable learnings. "
+        "persona_resolve analyzes only the messages supplied in its call. "
+        "Use nougentube_preview to inspect a YouTube ingest without shard writes; "
+        "nougentube_ingest writes the resulting memories to the grid. "
+        "NouGen-Verse tools analyze, plan and suggest repairs for user-provided drafts; "
+        "NouGenTime tools format timestamps in Eastern Time with canonical UTC. "
+        "nougen_media_transcribe uses local Whisper for YouTube videos up to 30 minutes. "
+        "GitHub inspection and skill lookup are read-only; GitHub README capture writes a shard. "
+        "ShadowDweller search retrieves Veilverse material from the shared shard grid."
     ),
 )
 
@@ -229,6 +237,40 @@ def get_shard(shard_id: int, db_index: int | None = None) -> dict:
             "searched": indexes,
             "hint": "id not present (or its DB is unreadable); ids are per-DB - "
                     "pass the _db_index from the recall result"}
+
+
+@node_mcp.tool()
+@_offloaded
+def persona_resolve(messages: List[str], surfaces: Optional[List[str]] = None,
+                    tz: str = "UTC", role: str = "",
+                    tags: Optional[List[str]] = None, audience_size: int = 1,
+                    stable_days: int = 0) -> dict:
+    """Resolve a deterministic audience persona from caller-supplied signals.
+
+    Text is analyzed in memory only; this tool does not read or persist shard
+    data. The result includes the persona fields, stable fingerprint and prompt.
+    """
+    if not messages:
+        raise ValueError("persona_resolve requires at least one message")
+    if len(messages) > 500:
+        raise ValueError("persona_resolve accepts at most 500 messages")
+    if sum(len(message) for message in messages) > 200_000:
+        raise ValueError("persona_resolve accepts at most 200,000 message characters")
+    from dataclasses import asdict
+    from nougen_shards.persona import Signals, resolve
+
+    signals = Signals.from_texts(
+        messages, surfaces=surfaces or [], tz=tz, role=role,
+        tags=tags or [], audience_size=max(1, min(int(audience_size), 100_000)),
+        stable_days=max(0, min(int(stable_days), 36_500)),
+    )
+    persona = resolve(signals)
+    return {
+        "persona": asdict(persona),
+        "fingerprint": persona.fingerprint(),
+        "system_prompt": persona.system_prompt(),
+        "source": "caller_supplied_signals",
+    }
 
 
 @node_mcp.tool()
@@ -2795,12 +2837,405 @@ def youtube_ingest(url: str, extract_chars: int = 2000, shard: bool = True) -> d
     return tube.process_video(url=url, extract_chars=extract_chars, shard=shard)
 
 
+_NOUGENTUBE_MODULE = None
+
+
+def _load_nougentube():
+    """Load the standalone, tested NouGenTube pipeline from this checkout."""
+    global _NOUGENTUBE_MODULE
+    if _NOUGENTUBE_MODULE is not None:
+        return _NOUGENTUBE_MODULE
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parent / "tools" / "nougentube.py"
+    spec = importlib.util.spec_from_file_location("nougen_node_nougentube", script)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"NouGenTube script unavailable: {script}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    _NOUGENTUBE_MODULE = module
+    return module
+
+
+def _run_nougentube(url: str, *, dry_run: bool, limit: int) -> dict:
+    if not url or not url.strip():
+        raise ValueError("a YouTube video or playlist URL is required")
+    from urllib.parse import urlsplit
+
+    url = url.strip()
+    parsed = urlsplit(url)
+    allowed_hosts = {
+        "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
+        "youtu.be", "youtube-nocookie.com", "www.youtube-nocookie.com",
+    }
+    if parsed.scheme not in {"https", "http"} or (parsed.hostname or "").lower() not in allowed_hosts:
+        raise ValueError("NouGenTube accepts YouTube video and playlist URLs only")
+    tube = _load_nougentube()
+    urls = tube.expand_playlist(url) if tube.is_playlist(url) else [url]
+    if not urls:
+        raise ValueError("the YouTube playlist did not contain any videos")
+    limit = max(1, min(int(limit), 20))
+    selected = urls[:limit]
+    results = [
+        {"url": item, "status": tube.process_video(item, dry_run=dry_run)}
+        for item in selected
+    ]
+    counts: dict[str, int] = {}
+    for result in results:
+        counts[result["status"]] = counts.get(result["status"], 0) + 1
+    return {
+        "mode": "dry_run" if dry_run else "ingest",
+        "source": url,
+        "processed": len(results),
+        "remaining": max(0, len(urls) - len(results)),
+        "counts": counts,
+        "results": results,
+    }
+
+
 @node_mcp.tool()
 @_offloaded
-def arxiv_research(query: str, max_results: int = 5, auto_shard: bool = True) -> dict:
-    """Search arXiv papers and auto-capture research abstracts into the NouGen shard cluster."""
+def nougentube_preview(url: str, limit: int = 1) -> dict:
+    """Fetch and preview NouGenTube results without writing shards or state."""
+    return _run_nougentube(url, dry_run=True, limit=limit)
+
+
+@node_mcp.tool()
+@_offloaded
+def nougentube_ingest(url: str, limit: int = 1) -> dict:
+    """Ingest a YouTube video or a bounded number of playlist videos as shards."""
+    return _run_nougentube(url, dry_run=False, limit=limit)
+
+
+@node_mcp.tool()
+@_offloaded
+def nougentube_transcript(url: str) -> dict:
+    """Fetch a single YouTube video's transcript and metadata without storing a shard."""
+    if not url or len(url) > 2048:
+        raise ValueError("provide one YouTube video URL (maximum 2048 characters)")
+    from urllib.parse import urlsplit
+    parsed = urlsplit(url.strip())
+    allowed_hosts = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+    if parsed.scheme not in {"http", "https"} or (parsed.hostname or "").lower() not in allowed_hosts:
+        raise ValueError("NouGenTube accepts YouTube video URLs only")
+    tube = _load_nougentube()
+    video_id = tube.extract_video_id(url)
+    if not video_id:
+        raise ValueError("URL must identify one YouTube video, not a playlist")
+    transcript, tier = tube.fetch_transcript(video_id, url)
+    metadata = tube.fetch_metadata(url, video_id)
+    text = transcript or ""
+    return {
+        "video_id": video_id,
+        "metadata": metadata,
+        "transcript_source": tier,
+        "transcript_available": bool(text),
+        "transcript": text[:20000],
+        "transcript_truncated": len(text) > 20000,
+        "stored": False,
+    }
+
+
+@node_mcp.tool()
+@_offloaded
+def nougen_media_transcribe(url: str, language: Optional[str] = None,
+                            whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
+    """Transcribe a YouTube video with local Whisper; videos over 30 minutes are rejected."""
+    if not url or len(url) > 2048:
+        raise ValueError("provide one YouTube video URL (maximum 2048 characters)")
+    from urllib.parse import urlsplit
+    parsed = urlsplit(url.strip())
+    allowed_hosts = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+    if parsed.scheme not in {"http", "https"} or (parsed.hostname or "").lower() not in allowed_hosts:
+        raise ValueError("local Whisper transcription accepts YouTube video URLs only")
+    tube = _load_nougentube()
+    if not tube.extract_video_id(url) or tube.is_playlist(url):
+        raise ValueError("URL must identify one YouTube video, not a playlist")
+    if whisper_model not in {"tiny", "base", "small"}:
+        raise ValueError("whisper_model must be tiny, base, or small")
+    if language is not None and (not language.strip() or len(language) > 16):
+        raise ValueError("language must be a short language code or omitted for detection")
+    language = language.strip() if language is not None else None
+    import tempfile
+    try:
+        import yt_dlp
+    except ImportError as exc:
+        raise RuntimeError("yt-dlp is unavailable; install the NouGenShards [tube] extra") from exc
+    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True,
+                           "noplaylist": True}) as ydl:
+        metadata = ydl.extract_info(url.strip(), download=False)
+    duration = (metadata or {}).get("duration")
+    if not isinstance(duration, (int, float)) or duration <= 0 or duration > 1800:
+        raise ValueError("video duration must be known and no longer than 30 minutes")
+    from nougen_shards.transcriber import NouGenTranscriber
+    with tempfile.TemporaryDirectory(prefix="nougen_transcribe_") as output_dir:
+        transcriber = NouGenTranscriber(output_dir=output_dir, whisper_model=whisper_model)
+        result = transcriber.process_and_shard(
+            url.strip(), language=language, auto_shard=bool(auto_shard),
+        )
+        transcript = result.get("text", "")
+        return {
+            "title": result.get("title"),
+            "source": url.strip(),
+            "language": result.get("language"),
+            "duration_seconds": result.get("meta", {}).get("duration"),
+            "transcript": transcript[:20000],
+            "transcript_truncated": len(transcript) > 20000,
+            "sharded": result.get("sharded"),
+            "model": whisper_model,
+        }
+
+
+@node_mcp.tool()
+@_offloaded
+def nougen_time_now() -> dict:
+    """Return current NouGenTime fields: Eastern display plus canonical UTC ISO."""
+    from nougen_time import __version__, now
+    return now().to_dict(version=__version__)
+
+
+@node_mcp.tool()
+@_offloaded
+def nougen_time_format(timestamp: str) -> dict:
+    """Parse an ISO-8601 or Unix-seconds timestamp and return its NouGenTime views."""
+    if not timestamp or len(timestamp) > 128:
+        raise ValueError("timestamp must be a non-empty ISO-8601 value or Unix-seconds string")
+    from nougen_time import __version__, parse
+    instant = parse(timestamp)
+    if instant is None:
+        return {"missing": True, "display": "?", "version": __version__}
+    return instant.to_dict(version=__version__)
+
+
+@node_mcp.tool()
+@_offloaded
+def nougen_verse_analyze(text: str) -> dict:
+    """Analyze an original user-provided verse draft and return rhythm, rhyme and craft diagnostics."""
+    if not text or len(text) > 16000:
+        raise ValueError("text must be non-empty and at most 16,000 characters")
+    if len([line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]) > 64:
+        raise ValueError("NouGen-Verse analysis accepts at most 64 bars")
+    from nougen_verse.analyzer import analyze_verse
+    return analyze_verse(text).to_dict()
+
+
+@node_mcp.tool()
+@_offloaded
+def nougen_verse_score(text: str) -> dict:
+    """Score an original verse draft by separate craft dimensions with evidence."""
+    if not text or len(text) > 16000:
+        raise ValueError("text must be non-empty and at most 16,000 characters")
+    if len([line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]) > 64:
+        raise ValueError("NouGen-Verse scoring accepts at most 64 bars")
+    from nougen_verse.analyzer import analyze_verse
+    from nougen_verse.scorer import score_verse
+    return score_verse(analyze_verse(text)).to_dict()
+
+
+@node_mcp.tool()
+@_offloaded
+def nougen_verse_plan(request: dict, provider: str = "generic") -> dict:
+    """Build a deterministic verse blueprint and provider-neutral prompt; it does not generate lyrics."""
+    if not isinstance(request, dict) or len(json.dumps(request, ensure_ascii=False)) > 12000:
+        raise ValueError("request must be an object no larger than 12,000 characters")
+    from nougen_verse.compiler import compile_prompt
+    from nougen_verse.models import VerseRequest
+    from nougen_verse.planner import plan_verse
+    req = VerseRequest.from_dict(request)
+    if (isinstance(req.bar_count, bool) or not isinstance(req.bar_count, int)
+            or not 1 <= req.bar_count <= 64):
+        raise ValueError("bar_count must be an integer from 1 through 64")
+    blueprint = plan_verse(req)
+    prompt = compile_prompt(blueprint, provider=provider)
+    return {"blueprint": blueprint.to_dict(), "prompt": prompt.to_dict()}
+
+
+@node_mcp.tool()
+@_offloaded
+def nougen_verse_repair(text: str, persona: Optional[dict] = None) -> dict:
+    """Suggest targeted, voice-preserving edits for an original draft without changing the input."""
+    if not text or len(text) > 16000:
+        raise ValueError("text must be non-empty and at most 16,000 characters")
+    if len([line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]) > 64:
+        raise ValueError("NouGen-Verse repair accepts at most 64 bars")
+    from nougen_verse.repair import suggest_repairs
+    return suggest_repairs(text, persona=persona).to_dict()
+
+
+@node_mcp.tool()
+@_offloaded
+def nougen_skill_search(task: str, limit: int = 10) -> list:
+    """Find installed SKILL.md instructions relevant to a task."""
+    if not task or len(task) > 2000:
+        raise ValueError("task must be non-empty and at most 2,000 characters")
+    from nougen_shards import skills
+    limit = max(1, min(int(limit), 20))
+    return [
+        {"name": item.name, "description": item.description, "summary": item.summary}
+        for item in skills.match(task)[:limit]
+    ]
+
+
+@node_mcp.tool()
+@_offloaded
+def nougen_skill_get(name: str) -> dict:
+    """Load one installed skill by name; returns its instructions as content, not as an action."""
+    if not name or len(name) > 160:
+        raise ValueError("provide a skill name")
+    from nougen_shards import skills
+    item = skills.get(name)
+    if item is None:
+        return {"found": False, "name": name}
+    body = item.body[:20000]
+    return {
+        "found": True, "name": item.name, "description": item.description,
+        "instructions": body, "truncated": len(item.body) > len(body),
+    }
+
+
+def _github_repo_parts(owner: str, repo: str) -> tuple[str, str]:
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", owner or "") or owner in {".", ".."}:
+        raise ValueError("owner must be a GitHub account or organization name")
+    if not _re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", repo or "") or repo in {".", ".."}:
+        raise ValueError("repo must be a GitHub repository name")
+    return owner, repo
+
+
+def _github_api_json(path: str) -> dict:
+    import urllib.request
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "NouGenShards-MCP/1.0"}
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(f"https://api.github.com/{path.lstrip('/')}", headers=headers)
+    with urllib.request.urlopen(req, timeout=15) as response:
+        raw = response.read(2_000_001)
+    if len(raw) > 2_000_000:
+        raise ValueError("GitHub response exceeded the 2 MB tool limit")
+    payload = json.loads(raw.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("GitHub returned an unexpected response")
+    return payload
+
+
+@node_mcp.tool()
+@_offloaded
+def github_repo_inspect(owner: str, repo: str, file_limit: int = 100) -> dict:
+    """Inspect a public GitHub repository and list a bounded set of tracked paths; read-only."""
+    import urllib.parse
+    owner, repo = _github_repo_parts(owner, repo)
+    metadata = _github_api_json(f"repos/{owner}/{repo}")
+    branch = metadata.get("default_branch") or "main"
+    tree = _github_api_json(f"repos/{owner}/{repo}/git/trees/{urllib.parse.quote(branch, safe='')}?recursive=1")
+    nodes = tree.get("tree") or []
+    files = [node.get("path") for node in nodes if node.get("type") == "blob" and isinstance(node.get("path"), str)]
+    limit = max(1, min(int(file_limit), 200))
+    return {
+        "repository": f"{owner}/{repo}",
+        "description": metadata.get("description"),
+        "default_branch": branch,
+        "stars": metadata.get("stargazers_count"),
+        "license": (metadata.get("license") or {}).get("spdx_id"),
+        "topics": metadata.get("topics") or [],
+        "file_count": len(files),
+        "files": files[:limit],
+        "files_truncated": len(files) > limit or bool(tree.get("truncated")),
+    }
+
+
+@node_mcp.tool()
+@_offloaded
+def github_repo_read(owner: str, repo: str, path: str, ref: Optional[str] = None) -> dict:
+    """Read one text file from a GitHub repository; public repositories work without credentials."""
+    import base64
+    import urllib.parse
+    owner, repo = _github_repo_parts(owner, repo)
+    path = (path or "").strip().replace("\\", "/")
+    parts = path.split("/")
+    if not path or len(path) > 500 or path.startswith("/") or any(p in {"", ".", ".."} for p in parts):
+        raise ValueError("path must be a repository-relative file path without dot segments")
+    endpoint = f"repos/{owner}/{repo}/contents/{urllib.parse.quote(path, safe='/')}"
+    if ref:
+        if len(ref) > 200:
+            raise ValueError("ref is too long")
+        endpoint += "?ref=" + urllib.parse.quote(ref, safe="")
+    payload = _github_api_json(endpoint)
+    if payload.get("type") != "file" or payload.get("encoding") != "base64":
+        raise ValueError("GitHub API did not return a regular text-file payload")
+    raw = base64.b64decode(payload.get("content", ""), validate=False)
+    content = raw.decode("utf-8", errors="replace")
+    return {
+        "repository": f"{owner}/{repo}", "path": path,
+        "html_url": payload.get("html_url"), "content": content[:20000],
+        "truncated": len(content) > 20000,
+    }
+
+
+@node_mcp.tool()
+@_offloaded
+def github_repo_capture_readme(owner: str, repo: str) -> dict:
+    """Capture a repository README into NouGen memory as a shard; this performs a durable memory write."""
+    import base64
+    owner, repo = _github_repo_parts(owner, repo)
+    payload = _github_api_json(f"repos/{owner}/{repo}/readme")
+    if payload.get("encoding") != "base64":
+        raise ValueError("repository README is not available as text")
+    content = base64.b64decode(payload.get("content", ""), validate=False).decode("utf-8", errors="replace")
+    if len(content) > 20000:
+        content = content[:20000] + "\n\n[README truncated by NouGenShards MCP]"
+    metadata = _github_api_json(f"repos/{owner}/{repo}")
+    from nougen_shards import core
+    result = core.capture(
+        event_type="KNOWLEDGE",
+        title=f"GitHub README: {owner}/{repo}",
+        content=f"# {owner}/{repo}\n\n{metadata.get('description') or ''}\n\nSource: {payload.get('html_url')}\n\n{content}",
+        tags=["github", "repository", f"github:{owner.lower()}/{repo.lower()}", "readme"],
+        source_uri=payload.get("html_url"),
+    )
+    return {"repository": f"{owner}/{repo}", "captured": bool(result)}
+
+
+@node_mcp.tool()
+@_offloaded
+def shadow_dweller_search(query: str, scope: str = "all", limit: int = 5) -> list:
+    """Search shared NouGen memory for ShadowDweller/Veilverse canon, characters, timeline or lore."""
+    if not query or len(query) > 1000:
+        raise ValueError("query must be non-empty and at most 1,000 characters")
+    scope_terms = {
+        "all": "canon characters timeline locations stories systems",
+        "canon": "canon hard facts canon locks",
+        "characters": "characters entities relationships",
+        "timeline": "timeline chronology events",
+        "locations": "locations places worlds",
+        "stories": "stories scenes dialogue screenplays",
+        "systems": "systems engines veilverse tools",
+    }
+    scope = (scope or "all").strip().lower()
+    if scope not in scope_terms:
+        raise ValueError(f"scope must be one of: {', '.join(scope_terms)}")
+    limit = max(1, min(int(limit), 20))
+    results = federated_retrieve(
+        f"ShadowDweller Veilverse {scope_terms[scope]} {query}", limit=limit,
+    )
+    return [_slim_shard(item) for item in results]
+
+
+@node_mcp.tool()
+@_offloaded
+def arxiv_research(query: str, max_results: int = 5, auto_shard: bool = False) -> dict:
+    """Search arXiv; set auto_shard true to also store the returned papers in NouGen memory."""
+    if not query or len(query) > 500:
+        raise ValueError("query must be non-empty and at most 500 characters")
+    max_results = max(1, min(int(max_results), 10))
     from nougen_shards import arxiv_core
-    return arxiv_core.search_and_shard(query=query, max_results=max_results, auto_shard=auto_shard)
+    papers = arxiv_core.search_arxiv(query=query, max_results=max_results)
+    captures = []
+    if auto_shard:
+        captures = [arxiv_core.ingest_paper_to_shard(paper) for paper in papers]
+    return {"query": query, "papers": papers, "captured": captures}
 
 
 @node_mcp.tool()

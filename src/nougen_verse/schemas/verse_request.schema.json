@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nougen.local/schemas/verse_request.schema.json",
+  "title": "VerseRequest",
+  "description": "Input to PLAN mode. All fields are optional; defaults come from the config. Extra keys such as provenance and label are allowed.",
+  "type": "object",
+  "properties": {
+    "topic": {"type": "string"},
+    "central_claim": {"type": "string"},
+    "emotional_axis": {
+      "oneOf": [
+        {"type": "string"},
+        {"type": "object", "properties": {"from": {"type": "string"}, "to": {"type": "string"}}}
+      ]
+    },
+    "narrative_perspective": {"type": "string"},
+    "persona_id": {"type": ["string", "null"]},
+    "persona": {"type": ["object", "null"]},
+    "audience": {"type": "string"},
+    "bar_count": {"type": "integer", "minimum": 1},
+    "bpm": {"type": "number", "exclusiveMinimum": 0},
+    "time_signature": {"type": "string", "pattern": "^[0-9]+/[0-9]+$"},
+    "subdivisions_per_beat": {"type": "integer", "minimum": 1},
+    "rhyme_density": {"type": "number", "minimum": 0, "maximum": 1},
+    "multisyllabic": {"type": "number", "minimum": 0, "maximum": 1},
+    "internal_rhyme": {"type": "number", "minimum": 0, "maximum": 1},
+    "scheme": {"type": "string", "pattern": "^[A-Za-z ]+$"},
+    "flow_switches": {
+      "oneOf": [
+        {"type": "integer", "minimum": 0},
+        {"type": "array", "items": {"type": "object", "required": ["bar"], "properties": {
+          "bar": {"type": "integer", "minimum": 2},
+          "cause": {"type": "string"},
+          "trigger": {"type": "string"}
+        }}}
+      ]
+    },
+    "breath_budget": {"type": ["string", "object"]},
+    "explicitness": {"type": "string"},
+    "vocabulary_register": {"type": "string"},
+    "imagery_domains": {"type": "array", "items": {"type": "string"}},
+    "forbidden_phrases": {"type": "array", "items": {"type": "string"}},
+    "required_facts": {"type": "array", "items": {"type": "string"}},
+    "callbacks": {"type": "array", "items": {"type": "string"}},
+    "punchline_targets": {"type": "array", "items": {"type": ["integer", "string"]}},
+    "provider_constraints": {"type": "object"},
+    "seed": {"type": "integer"},
+    "content_spine": {"type": ["object", "null"]},
+    "scheme_breaks": {"type": "array", "items": {"type": "integer"}}
+  },
+  "additionalProperties": true
+}

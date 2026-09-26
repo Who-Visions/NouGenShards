@@ -1,0 +1,27 @@
+{
+  "_about": "Optional pronunciation profiles. None of these is treated as correct; they are hooks so a writer can analyze a verse the way they actually say it. Profiles compose: config phonetics.dialect may be a single name or a list of names applied in order.",
+  "none": {
+    "description": "No substitutions. Uses the dictionary or heuristic pronunciation as found."
+  },
+  "cot_caught_merger": {
+    "description": "AO and AA are heard as the same vowel.",
+    "vowel_map": {"AO": "AA"}
+  },
+  "pin_pen_merger": {
+    "description": "EH before a nasal is heard as IH (pen sounds like pin).",
+    "vowel_before": [{"vowel": "EH", "before": ["N", "M", "NG"], "to": "IH"}]
+  },
+  "non_rhotic": {
+    "description": "R after a vowel is not pronounced; ER is heard as a mid central vowel.",
+    "drop_postvocalic_r": true,
+    "vowel_map": {"ER": "AH"}
+  },
+  "th_stopping": {
+    "description": "TH and DH are pronounced as stops T and D.",
+    "consonant_map": {"TH": "T", "DH": "D"}
+  },
+  "g_dropping": {
+    "description": "Unstressed final -ing ends in N instead of NG.",
+    "final_ing_to_in": true
+  }
+}

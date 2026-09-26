@@ -1,0 +1,366 @@
+{
+  "_about": "Documented defaults for nougen_verse. Every threshold, weight and cutoff used by the engine lives here. Override with a JSON file (env NOUGEN_VERSE_CONFIG), with env vars shaped NOUGEN_VERSE__SECTION__KEY=value (value parsed as JSON when possible), or with the overrides argument of load_config(). See docs/config.md.",
+  "phonetics": {
+    "_about": "use_dictionary: auto uses the optional cmudict package when importable, on requires it, off never uses it. Env NOUGEN_VERSE_DICTIONARY wins over this value. dialect names a profile in data/dialects.json; none means no substitutions, not a claim that one accent is correct.",
+    "use_dictionary": "auto",
+    "dialect": "none",
+    "demote_function_words": true,
+    "g_drop_expansion": true,
+    "confidence": {
+      "override": 1.0,
+      "dictionary": 0.95,
+      "seed": 0.9,
+      "heuristic_base": 0.62,
+      "heuristic_ambiguity_penalty": 0.07,
+      "heuristic_length_penalty_per_syllable_over_two": 0.04,
+      "heuristic_min": 0.2,
+      "g_drop_penalty": 0.05,
+      "contraction_penalty": 0.05
+    }
+  },
+  "rhyme": {
+    "_about": "Distances run from 0.0 (identical) to 1.0 (unrelated). Classification cutoffs below are heuristics tuned on synthetic examples, not linguistic law.",
+    "vowel_weight": 0.65,
+    "coda_weight": 0.35,
+    "stressed_syllable_weight": 1.5,
+    "unstressed_syllable_weight": 1.0,
+    "syllable_mismatch_penalty": 0.35,
+    "consonant_indel_cost": 0.6,
+    "consonant_feature_weights": {
+      "place": 0.4,
+      "manner": 0.4,
+      "voice": 0.2
+    },
+    "vowel_feature_weights": {
+      "height": 0.45,
+      "backness": 0.35,
+      "round": 0.1,
+      "rhotic": 0.1
+    },
+    "diphthong_glide_penalty": 0.15,
+    "perfect_unstressed_vowel_max": 0.3,
+    "slant_max_distance": 0.25,
+    "assonance_vowel_max": 0.12,
+    "consonance_coda_max": 0.15,
+    "family_join_max_distance": 0.25,
+    "internal_max_distance": 0.2,
+    "multi_vowel_max": 0.18,
+    "multi_unstressed_vowel_max": 0.35,
+    "multi_min_syllables": 2,
+    "multi_max_syllables": 6,
+    "internal_window_bars": 1,
+    "identity_overuse_ratio": 0.25,
+    "find_max_results": 25,
+    "slant_vowel_max": 0.2,
+    "family_window_bars": 4
+  },
+  "rhythm": {
+    "_about": "Text-only cadence estimation. Onsets are inferred from syllable counts, stress and punctuation. They are an estimate, never an audio alignment.",
+    "default_bpm": 90,
+    "default_beats_per_bar": 4,
+    "default_subdivisions": 4,
+    "end_landing_beat": 4,
+    "max_pickup_beats": 1.0,
+    "density_bands": [
+      [
+        "quarter",
+        1.25
+      ],
+      [
+        "eighth",
+        2.25
+      ],
+      [
+        "sixteenth",
+        4.25
+      ],
+      [
+        "thirty_second",
+        8.5
+      ]
+    ],
+    "triplet_density_min": 2.6,
+    "triplet_density_max": 3.4,
+    "triplet_stress_ratio": 0.67,
+    "overcrowded_syllables_per_beat": 4.5,
+    "half_time_max_density": 1.0,
+    "rest_steps_at_punctuation": 1,
+    "rest_steps_at_sentence_end": 2,
+    "flam_offset_ratio": 0.5,
+    "lazy_tail_delay_steps": 1,
+    "hold_min_steps": 2,
+    "syncopation_max_weight": 0.45,
+    "metrical_weights": {
+      "downbeat": 1.0,
+      "midbar": 0.9,
+      "backbeat": 0.8,
+      "half": 0.5,
+      "triplet": 0.35,
+      "quarter": 0.25,
+      "finer": 0.1
+    },
+    "swing": 0.5
+  },
+  "flow": {
+    "_about": "A flow switch is a sustained change in rhythmic grammar. density_change_ratio compares syllables per beat across the boundary.",
+    "density_change_ratio": 1.4,
+    "min_bars_after_switch": 2,
+    "tag_confidence": 0.95,
+    "cue_confidence": 0.6,
+    "unexplained_confidence": 0.35
+  },
+  "breath": {
+    "_about": "Breath pressure is a performance heuristic, not a physiological or medical measure. Profiles describe how much continuous delivery a performer is comfortable with.",
+    "profile": "default",
+    "profiles": {
+      "default": {
+        "relaxed_syllables_per_second": 3.0,
+        "max_syllables_per_second": 9.0,
+        "relaxed_phrase_seconds": 2.0,
+        "max_phrase_seconds": 6.0,
+        "warn_pressure": 0.6,
+        "severe_pressure": 0.8
+      },
+      "trained": {
+        "relaxed_syllables_per_second": 4.0,
+        "max_syllables_per_second": 11.0,
+        "relaxed_phrase_seconds": 3.0,
+        "max_phrase_seconds": 9.0,
+        "warn_pressure": 0.65,
+        "severe_pressure": 0.85
+      },
+      "beginner": {
+        "relaxed_syllables_per_second": 2.5,
+        "max_syllables_per_second": 6.5,
+        "relaxed_phrase_seconds": 1.5,
+        "max_phrase_seconds": 4.0,
+        "warn_pressure": 0.55,
+        "severe_pressure": 0.75
+      }
+    },
+    "weights": {
+      "rate": 0.35,
+      "length": 0.3,
+      "clusters": 0.12,
+      "closed_vowels": 0.08,
+      "intensity": 0.1,
+      "attacks": 0.05
+    },
+    "min_breath_rest_beats": 0.5,
+    "open_vowels": [
+      "AA",
+      "AE",
+      "AO",
+      "AW",
+      "AY",
+      "OW"
+    ],
+    "default_intensity": 0.5
+  },
+  "content": {
+    "min_content_words_without_end": 3,
+    "semantic_repeat_jaccard": 0.5,
+    "semantic_repeat_window_bars": 4,
+    "fact_match_min_fraction": 0.75,
+    "abstract_stack_min": 2,
+    "skeleton_prefix_tokens": 3,
+    "template_repeat_min": 3,
+    "emotion_flat_range": 0.2,
+    "callback_min_distance": 3,
+    "self_description_max": 1,
+    "lexicon_overrides": {},
+    "template_similarity_prefix": 2,
+    "job_confidence": {
+      "position": 0.6,
+      "cue": 0.55,
+      "anchor": 0.5,
+      "rhyme_position": 0.45,
+      "fallback": 0.2,
+      "weak_cue": 0.44
+    },
+    "emotion_escalation_delta": 0.15,
+    "callback_min_overlap": 1,
+    "perfect_end_share": 0.8,
+    "internal_floor_per_bar": 0.25,
+    "emotion_direction_delta": 0.05
+  },
+  "analysis": {
+    "weak_bar_threshold": 0.45,
+    "weak_bar_weights": {
+      "generic": 0.3,
+      "no_anchor": 0.2,
+      "forced_syntax": 0.2,
+      "rhyme_only": 0.15,
+      "restatement": 0.1,
+      "persona_drift": 0.15,
+      "overcrowded": 0.1,
+      "no_clear_job": 0.1
+    },
+    "scheme_min_family_share": 0.5,
+    "collapse_min_run": 2,
+    "break_compensation_internal_hits": 2,
+    "scheme_established_min": 0.6,
+    "break_confidence": {
+      "tagged": 0.95,
+      "partner_of_tagged": 0.8,
+      "planned": 0.95,
+      "base": 0.5,
+      "per_evidence": 0.1,
+      "max": 0.9
+    }
+  },
+  "persona": {
+    "_about": "search_paths: directories searched for <persona_id>.json. Env NOUGEN_VERSE_PERSONA_PATH (os.pathsep separated) is prepended.",
+    "search_paths": [],
+    "drift_warn": 0.5,
+    "sentence_length_tolerance_words": 3,
+    "voice_anchor_weight": 0.6,
+    "voice_vocab_weight": 0.4,
+    "issue_penalty": 0.5,
+    "positive_share": 0.3,
+    "positive_target_share": 0.5
+  },
+  "scorer": {
+    "_about": "Each dimension is a weighted mean of named components in 0..1. Weights are editable and every component is reported. No global ranking is produced unless emit_composite is true.",
+    "emit_composite": false,
+    "weights": {
+      "rhyme_craft": {
+        "rhyme_density": 0.25,
+        "multisyllabic": 0.25,
+        "internal": 0.2,
+        "span": 0.15,
+        "identity_restraint": 0.15
+      },
+      "rhythm_control": {
+        "cadence_consistency": 0.4,
+        "no_overcrowding": 0.35,
+        "purposeful_switches": 0.25
+      },
+      "breath_feasibility": {
+        "pressure_headroom": 0.7,
+        "breath_opportunities": 0.3
+      },
+      "specificity": {
+        "concrete_nouns": 0.3,
+        "sensory_detail": 0.2,
+        "named_facts": 0.25,
+        "speaker_facts": 0.25
+      },
+      "structure": {
+        "scheme_consistency": 0.35,
+        "break_control": 0.35,
+        "setup_payoff": 0.3
+      },
+      "narrative": {
+        "progression": 0.35,
+        "emotional_movement": 0.3,
+        "callbacks": 0.15,
+        "meaning_without_rhyme": 0.2
+      },
+      "originality": {
+        "low_genericness": 0.6,
+        "varied_syntax": 0.4
+      },
+      "persona_fit": {
+        "consistency": 1.0
+      }
+    },
+    "genericness_weights": {
+      "unsupported_cliche": 1.0,
+      "generic_phrase": 1.2,
+      "empty_victory": 1.0,
+      "unspecified_struggle": 1.0,
+      "abstract_stack": 0.8,
+      "redundant_self_description": 0.8,
+      "repeated_template": 0.7,
+      "filler_intensifier": 0.5,
+      "forced_syntax": 1.0,
+      "semantic_restatement": 0.6,
+      "predictable_pair": 0.6,
+      "voice_inconsistent": 0.7,
+      "perfect_end_without_internal": 0.5
+    },
+    "genericness_saturation_per_bar": 1.5,
+    "concrete_target_per_bar": 1.5,
+    "sensory_target_per_bar": 0.75,
+    "multi_target_share": 0.5,
+    "internal_target_per_bar": 1.0,
+    "span_target_syllables": 3.0,
+    "progression_target": 0.6,
+    "emotion_movement_target": 0.4,
+    "rhyme_density_target": 0.4,
+    "no_switch_neutral": 0.75,
+    "named_anchor_target_share": 0.25,
+    "anchored_bar_target_share": 0.75,
+    "accidental_break_tolerance_share": 0.25,
+    "callbacks_target": 1,
+    "persona_anchor_share": 0.5,
+    "persona_anchor_target": 1
+  },
+  "planner": {
+    "default_scheme": "AABB",
+    "default_bar_count": 16,
+    "punch_every_bars": 4,
+    "family_vowel_pool": [
+      "AY",
+      "EY",
+      "OW",
+      "IY",
+      "AA",
+      "AE",
+      "UW",
+      "AH",
+      "EH",
+      "IH",
+      "AO",
+      "ER"
+    ],
+    "cadence_by_bpm": [
+      [
+        80,
+        "sixteenth"
+      ],
+      [
+        110,
+        "eighth"
+      ],
+      [
+        999,
+        "eighth"
+      ]
+    ],
+    "switch_contrast_cells": {
+      "eighth": "triplet",
+      "sixteenth": "triplet",
+      "triplet": "sixteenth",
+      "quarter": "eighth",
+      "thirty_second": "sixteenth"
+    },
+    "max_bars_per_breath_group": 2,
+    "emotion_curve_dip_before_reveal": 0.1,
+    "misdirect_probability": 0.5,
+    "reveal_position": 0.667,
+    "internal_onset_choices": [
+      "1",
+      "3/2",
+      "2"
+    ],
+    "multi_depth_syllables": 2,
+    "breath_rest_beats": "1/2",
+    "punch_space_beats": "1/4",
+    "emotion_start_default": 0.3,
+    "emotion_end_default": 0.8,
+    "volume_low_below": 0.35,
+    "volume_high_above": 0.7
+  },
+  "performance": {
+    "long_verse_budget_seconds": 15.0
+  },
+  "repair": {
+    "max_ending_options": 8,
+    "max_end_swaps": 3,
+    "demo_skip_types": [
+      "slot_detail"
+    ]
+  }
+}
