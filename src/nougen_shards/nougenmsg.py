@@ -1103,12 +1103,24 @@ class NouGenMsgBus:
             for n in nodes:
                 results[n] = {"queued": True, "via": "ssh"}
             return results
-        for n in nodes:
-            try:
-                res = cls.emit_node(n, target, text, origin=origin)
-                results.update(res)
-            except Exception as e:
-                results[n] = f"Error: {e}"
+        if len(nodes) > 1:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=len(nodes)) as pool:
+                futures = {pool.submit(cls.emit_node, n, target, text, origin=origin): n for n in nodes}
+                for fut in as_completed(futures):
+                    n = futures[fut]
+                    try:
+                        res = fut.result()
+                        results.update(res)
+                    except Exception as e:
+                        results[n] = f"Error: {e}"
+        else:
+            for n in nodes:
+                try:
+                    res = cls.emit_node(n, target, text, origin=origin)
+                    results.update(res)
+                except Exception as e:
+                    results[n] = f"Error: {e}"
 
         return results
 
@@ -1171,7 +1183,12 @@ class NouGenMsgBus:
         def host_for(node: str) -> str:
             if node == curr:
                 return "127.0.0.1"
-            return os.environ.get(f"NOUGEN_NODE_{node.upper()}_IP") or f"{node}.local"
+            explicit = os.environ.get(f"NOUGEN_NODE_{node.upper()}_IP")
+            if explicit:
+                return explicit
+            if node in ("blade", "apollo"):
+                return "blade1tb.local"
+            return f"{node}.local"
 
         def up(node: str) -> bool:
             # Resolve IPv4 first: create_connection on an mDNS name tries the
