@@ -23,7 +23,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from . import handoff, machine, relay_watch, nougenmsg
 from nougen_time import format_log_time, now as nougen_now
@@ -328,26 +328,56 @@ def usage_snapshot() -> Dict[str, Dict]:
     return snapshot
 
 
-def _fleet_pulse() -> Dict[str, bool]:
+def _expected_offline_nodes() -> set[str]:
+    """Nodes currently marked expected-offline (e.g. in transit, resting, travel).
+
+    Reads ~/.nougen/expected_offline.json or NOUGEN_EXPECTED_OFFLINE env var.
+    """
+    env = os.environ.get("NOUGEN_EXPECTED_OFFLINE", "").strip()
+    nodes = set()
+    if env:
+        nodes.update(n.strip().lower() for n in env.split(",") if n.strip())
+    path = Path.home() / ".nougen" / "expected_offline.json"
+    if path.is_file():
+        try:
+            import json as _json
+            data = _json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                nodes.update(str(n).strip().lower() for n in data if str(n).strip())
+            elif isinstance(data, dict):
+                nodes.update(str(k).strip().lower() for k, v in data.items() if v)
+        except Exception:
+            pass
+    return nodes
+
+
+def _fleet_pulse() -> Dict[str, Any]:
     """Best-effort reachability of explicitly enrolled sibling nodes.
 
     A clean install has no fleet_hosts.json, so it has no peers to probe and
     returns an empty pulse. Public runtime code must never invent maintainer
-    topology as a fallback.
+    topology as a fallback. Expected-offline nodes (e.g. in transit/car) are
+    not probed unnecessarily and are reported as resting.
     """
-    pulse: Dict[str, bool] = {}
+    pulse: Dict[str, Any] = {}
     current = nougenmsg.get_current_node()
+    expected_offline = _expected_offline_nodes()
     for host in sorted(nougenmsg._known_fleet_hosts()):
         if host == current:
+            continue
+        host_clean = host.lower().strip()
+        host_base = host_clean.split(".")[0]
+        if host_clean in expected_offline or host_base in expected_offline:
+            pulse[host] = "resting"
             continue
         try:
             r = subprocess.run(
                 ["ssh", "-o", "ConnectTimeout=4", "-o", "BatchMode=yes", host, "hostname"],
                 capture_output=True, text=True, timeout=6, check=False,
             )
-            pulse[host] = r.returncode == 0
+            pulse[host] = True if r.returncode == 0 else "route_unreachable"
         except (OSError, subprocess.SubprocessError):
-            pulse[host] = False
+            pulse[host] = "route_unreachable"
     return pulse
 
 
@@ -362,7 +392,7 @@ class HiReport:
     local_time: str = ""
     open_handoffs: int = 0
     latest_goal: Optional[str] = None
-    fleet_pulse: Dict[str, bool] = field(default_factory=dict)
+    fleet_pulse: Dict[str, Any] = field(default_factory=dict)
     orphan_ports: List[tuple] = field(default_factory=list)
     relay_armed: bool = False
     relay_open_count: int = 0
