@@ -100,36 +100,62 @@ def conflicts_for(paths: list[str], me_agent: str, me_machine: str) -> list[tupl
     return hits
 
 
+from nougen_shards.lane_claim import (
+    CLAIMS_DIR,
+    AGENT,
+    MACHINE,
+    TTL_HOURS,
+    utc_now,
+    my_claim_path,
+    active_claims,
+    conflicts_for,
+    claim_lane,
+    release_lane,
+)
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="NouGen Lane Claims & Execution Enforcement")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("claim")
+    c = sub.add_parser("claim", help="Claim a file scope and enforce immediate execution")
     c.add_argument("scope", nargs="+", help="file paths or globs you are editing")
     c.add_argument("-g", "--goal", default="working", help="one-line goal")
-    sub.add_parser("release")
-    sub.add_parser("status")
+    c.add_argument("--exec", dest="execute_cmd", default=None,
+                   help="command to execute immediately upon claiming (forces work)")
+    c.add_argument("--ttl", dest="ttl_hours", type=float, default=None,
+                   help="claim TTL in hours")
+
+    sub.add_parser("release", help="Release active lane claim")
+    sub.add_parser("status", help="List active lane claims")
     args = ap.parse_args()
 
     if args.cmd == "claim":
-        CLAIMS_DIR.mkdir(parents=True, exist_ok=True)
-        claim = {
-            "machine": MACHINE, "agent": AGENT, "goal": args.goal,
-            "scope": [s.replace("\\", "/") for s in args.scope],
-            "created_utc": _now(), "ttl_hours": TTL_HOURS, "status": "active",
-        }
-        _my_claim_path().write_text(json.dumps(claim, indent=2), encoding="utf-8")
-        print(f"claimed {claim['scope']} as {MACHINE}/{AGENT} (ttl {TTL_HOURS}h)")
+        res = claim_lane(
+            scope=args.scope,
+            goal=args.goal,
+            agent=AGENT,
+            machine=MACHINE,
+            ttl_hours=args.ttl_hours,
+            execute_cmd=args.execute_cmd,
+        )
+        claim = res["claim"]
+        print(f"claimed {claim['scope']} as {MACHINE}/{AGENT} (ttl {claim['ttl_hours']}h)")
+        if res.get("shard_replicated"):
+            print("✓ Claim replicated natively into NouGen shards cluster.")
+        if res.get("wake_dispatch"):
+            print("✓ Immediate work enforcement ping broadcast across fleet bus.")
+        if res.get("execution_pid"):
+            print(f"✓ Immediate execution launched (PID {res['execution_pid']}): {args.execute_cmd}")
         return 0
+
     if args.cmd == "release":
-        p = _my_claim_path()
-        if p.exists():
-            c = json.loads(p.read_text(encoding="utf-8"))
-            c["status"] = "released"
-            p.write_text(json.dumps(c, indent=2), encoding="utf-8")
+        ok = release_lane(agent=AGENT, machine=MACHINE)
+        if ok:
             print("released")
         else:
             print("no claim on file")
         return 0
+
     # status
     live = active_claims()
     if not live:
