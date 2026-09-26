@@ -41,6 +41,13 @@ def test_is_private_url(url, ok):
 
 def test_privacy_mode_drops_cloud_and_vertex_at_load(tmp_path, monkeypatch):
     monkeypatch.setenv("NOUGEN_PRIVACY", "1")
+    monkeypatch.setattr(fleet, "LOCAL_ROUTES", [{
+        "name": "local-ollama-node",
+        "url": "http://127.0.0.1:11434/v1",
+        "model": "local-model",
+        "headers": {},
+        "kind": "local",
+    }])
     f = fleet.Fleet(_cfg(tmp_path), include_local=True, include_vertex=True)
     assert f.routes and all(fleet.is_private_url(r["url"]) for r in f.routes)
 

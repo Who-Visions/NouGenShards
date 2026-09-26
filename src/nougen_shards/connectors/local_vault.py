@@ -26,6 +26,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from .. import machine
+
 logger = logging.getLogger(__name__)
 
 #: Rows returned per vault. These tables are large (one holds 379k rows) and the
@@ -419,7 +421,7 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
             # rewritten.
             title = _redact(item["title"] or "Untitled")
             content = _redact(item["content"] or "")
-            machine_id = os.environ.get("NOUGEN_MACHINE_ID", "blade1tb")
+            machine_id = os.environ.get("NOUGEN_MACHINE_ID") or machine.machine_id() or "local"
             results.append({
                 "id": f"vault_{vid}_{_stable_hash(item['title'])[:16]}",
                 "event_type": "LOCAL_VAULT",

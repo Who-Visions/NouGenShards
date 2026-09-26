@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import handoff, machine, relay_watch
+from . import handoff, machine, relay_watch, nougenmsg
 from nougen_time import format_log_time, now as nougen_now
 
 # Repos this probe sweeps for dirty state. Override with NOUGEN_PROBE_REPOS
@@ -329,12 +329,17 @@ def usage_snapshot() -> Dict[str, Dict]:
 
 
 def _fleet_pulse() -> Dict[str, bool]:
-    """Best-effort reachability of sibling nodes, via SSH config aliases
-    already used fleet-wide (blade1tb, whoart) rather than a private
-    fleet_topology.json. Never raises — a missing ssh config just means the
-    node reports unknown."""
+    """Best-effort reachability of explicitly enrolled sibling nodes.
+
+    A clean install has no fleet_hosts.json, so it has no peers to probe and
+    returns an empty pulse. Public runtime code must never invent maintainer
+    topology as a fallback.
+    """
     pulse: Dict[str, bool] = {}
-    for host in ("blade1tb", "whoart"):
+    current = nougenmsg.get_current_node()
+    for host in sorted(nougenmsg._known_fleet_hosts()):
+        if host == current:
+            continue
         try:
             r = subprocess.run(
                 ["ssh", "-o", "ConnectTimeout=4", "-o", "BatchMode=yes", host, "hostname"],
@@ -344,6 +349,11 @@ def _fleet_pulse() -> Dict[str, bool]:
         except (OSError, subprocess.SubprocessError):
             pulse[host] = False
     return pulse
+
+
+def _fleet_enrolled() -> bool:
+    """True only when this user explicitly configured at least one fleet node."""
+    return bool(nougenmsg._known_fleet_hosts())
 
 
 @dataclass
@@ -383,12 +393,17 @@ def run_hi(fleet: bool = True) -> HiReport:
     candidate next play. Read-only — never writes a handoff, never replies
     or acks on its own; a human or a later explicit action does that."""
     identity = machine.machine_identity()
-    feed = handoff.handoff_feed(limit=25)
+    enrolled = _fleet_enrolled()
+
+    # A source checkout may contain maintainer handoff history. On an
+    # unconfigured install that history is package/repository data, not this
+    # user's tenant state, so it must not appear in the session-open report.
+    feed = handoff.handoff_feed(limit=25) if enrolled else []
     open_count = sum(1 for h in feed if h.get("live_status") not in ("complete", "acknowledged"))
     latest_goal = feed[0].get("goal") if feed else None
     orphan = [(p, label) for p, label in DEV_SERVER_PORTS if _check_port(p)]
-    pulse = _fleet_pulse() if fleet else {}
-    relay = read_relay()
+    pulse = _fleet_pulse() if (fleet and enrolled) else {}
+    relay = read_relay() if enrolled else {"armed": False, "count": 0, "legs": []}
     next_play = pick_next_play(relay.get("legs", []), identity)
     try:
         usage = usage_snapshot()

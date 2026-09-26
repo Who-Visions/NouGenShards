@@ -3,6 +3,7 @@ import logging
 import os
 import threading
 from . import core
+from . import machine
 from .connectors.sql import query_external_dbs
 from .connectors.cloud import query_cloud_shards
 from .connectors.local_vault import query_local_vaults
@@ -298,7 +299,7 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         weights=[1.0, lane_weight, lane_weight, lane_weight])
 
     # Ensure every combined hit carries machine_id attribution
-    default_machine = _os.environ.get("NOUGEN_MACHINE_ID", "blade1tb")
+    default_machine = _os.environ.get("NOUGEN_MACHINE_ID") or machine.machine_id() or "local"
     for hit in combined:
         if isinstance(hit, dict) and "machine_id" not in hit:
             hit["machine_id"] = default_machine
