@@ -328,17 +328,29 @@ def usage_snapshot() -> Dict[str, Dict]:
     return snapshot
 
 
-def _fleet_pulse() -> Dict[str, bool]:
-    """Best-effort reachability of sibling nodes, via SSH config aliases
-    already used fleet-wide (blade1tb, whoart) rather than a private
-    fleet_topology.json. Never raises — a missing ssh config just means the
-    node reports unknown."""
+def configured_fleet_peers() -> List[str]:
+    """Configured peer node hostnames/aliases. Resolves from NOUGEN_FLEET_PEERS.
+    On a fresh clean install without explicit peer configuration, defaults to empty list
+    so maintainer-specific peer names are never leaked.
+    """
+    raw = os.environ.get("NOUGEN_FLEET_PEERS", "").strip()
+    if not raw:
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def _fleet_pulse(peers: Optional[List[str]] = None) -> Dict[str, bool]:
+    """Best-effort reachability of sibling nodes.
+    Only checks explicitly configured peers. Never raises — unreachable nodes report False.
+    """
     pulse: Dict[str, bool] = {}
-    for host in ("blade1tb", "whoart"):
+    target_peers = peers if peers is not None else configured_fleet_peers()
+    for host in target_peers:
         try:
             r = subprocess.run(
                 ["ssh", "-o", "ConnectTimeout=4", "-o", "BatchMode=yes", host, "hostname"],
                 capture_output=True, text=True, timeout=6, check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
             )
             pulse[host] = r.returncode == 0
         except (OSError, subprocess.SubprocessError):
@@ -377,13 +389,29 @@ class ByeReport:
     relay_leg_id: str = ""
 
 
-def run_hi(fleet: bool = True) -> HiReport:
+def run_hi(fleet: bool = True, isolate_clean: bool = True) -> HiReport:
     """Session-open probe — NouGen Live boot: arms the relay pipe, reads the
     open board, reads local handoffs, pulses peer nodes, and surfaces one
     candidate next play. Read-only — never writes a handoff, never replies
     or acks on its own; a human or a later explicit action does that."""
     identity = machine.machine_identity()
     feed = handoff.handoff_feed(limit=25)
+    # Clean install / foreign machine isolation: if no explicit NOUGEN_HANDOFF_DIR is set,
+    # do not present maintainer handoff history from other machines as this machine's own active goals.
+    if isolate_clean and not os.environ.get("NOUGEN_HANDOFF_DIR"):
+        my_host = (identity.get("host") or "").lower()
+        my_id = (identity.get("machine_id") or "").lower()
+        local_feed = [
+            h for h in feed
+            if str(h.get("machine", "")).lower() == my_host
+            or (isinstance(h.get("machine"), dict) and str(h.get("machine", {}).get("host", "")).lower() == my_host)
+            or str(h.get("machine_id", "")).lower() == my_id
+        ]
+        if local_feed:
+            feed = local_feed
+        elif feed and not any(str(h.get("machine", "")).lower() == my_host for h in feed):
+            feed = []
+
     open_count = sum(1 for h in feed if h.get("live_status") not in ("complete", "acknowledged"))
     latest_goal = feed[0].get("goal") if feed else None
     orphan = [(p, label) for p, label in DEV_SERVER_PORTS if _check_port(p)]
