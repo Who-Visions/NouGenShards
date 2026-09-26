@@ -3574,8 +3574,17 @@ def cmd_hi(args):
     if report.latest_goal:
         print(f"  Latest goal: {report.latest_goal}")
     if report.fleet_pulse:
-        pulse = ", ".join(f"{h}:{'up' if ok else 'down'}" for h, ok in report.fleet_pulse.items())
-        print(f"  Fleet pulse: {pulse}")
+        parts = []
+        for h, status in report.fleet_pulse.items():
+            if status is True or status == "up":
+                parts.append(f"{h}:up")
+            elif status == "resting":
+                parts.append(f"{h}:resting (expected offline)")
+            elif status == "route_unreachable" or status is False:
+                parts.append(f"{h}:route unreachable")
+            else:
+                parts.append(f"{h}:{status}")
+        print(f"  Fleet pulse: {', '.join(parts)}")
     if report.orphan_ports:
         print(f"  Ports already up: {', '.join(f'{p} ({label})' for p, label in report.orphan_ports)}")
     relay_status = "armed" if report.relay_armed else "unreachable"
