@@ -398,7 +398,9 @@ def run_hi(fleet: bool = True) -> HiReport:
     # A source checkout may contain maintainer handoff history. On an
     # unconfigured install that history is package/repository data, not this
     # user's tenant state, so it must not appear in the session-open report.
-    feed = handoff.handoff_feed(limit=25) if enrolled else []
+    # handoff.HANDOFF_DIR is user-local by default; the operator can opt into
+    # a shared/repository registry explicitly with NOUGEN_HANDOFF_DIR.
+    feed = handoff.handoff_feed(limit=25)
     open_count = sum(1 for h in feed if h.get("live_status") not in ("complete", "acknowledged"))
     latest_goal = feed[0].get("goal") if feed else None
     orphan = [(p, label) for p, label in DEV_SERVER_PORTS if _check_port(p)]

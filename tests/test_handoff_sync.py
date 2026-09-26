@@ -199,6 +199,10 @@ def test_sync_refuses_when_another_checkout_holds_the_records(monkeypatch, fleet
     assert any("Registry mismatch" in e for e in report["errors"])
 
 
+def test_runtime_handoffs_default_to_user_data(tmp_path):
+    assert handoff._default_handoff_dir(tmp_path) == tmp_path / ".nougen" / "handoffs"
+
+
 def test_explicit_handoff_dir_is_always_honoured(monkeypatch, fleet, tmp_path):
     """An operator who names the registry is not second-guessed."""
     directory = _become(monkeypatch, fleet, "who-pc", "bbbb2222")
