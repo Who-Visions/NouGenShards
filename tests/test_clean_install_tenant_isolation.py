@@ -71,3 +71,16 @@ def test_hi_enrolled_install_uses_only_configured_peer_names(monkeypatch):
 
     assert report.fleet_pulse == {"node-b": True}
     assert report.latest_goal is None
+
+
+def test_federation_and_local_vault_default_machine_not_hardcoded(monkeypatch):
+    """Default machine in federation and local_vault must derive dynamically, not hardcode blade1tb."""
+    from unittest.mock import patch
+    from nougen_shards import federation
+    from nougen_shards.connectors import local_vault
+
+    monkeypatch.delenv("NOUGEN_MACHINE_ID", raising=False)
+    with patch("nougen_shards.machine.machine_id", return_value="custom-test-node"):
+        assert federation.machine.machine_id() == "custom-test-node"
+        assert local_vault.machine.machine_id() == "custom-test-node"
+
