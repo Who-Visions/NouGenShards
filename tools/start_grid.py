@@ -53,6 +53,7 @@ SCRATCH.mkdir(parents=True, exist_ok=True)
 PROBE_STATE_DIR = _path_env("NOUGEN_PROBE_STATE_DIR", NOUGEN_HOME / "state")
 PROBE_STATE_DIR.mkdir(parents=True, exist_ok=True)
 DETACHED = subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, "DETACHED_PROCESS", 0)
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 # Shared with node_lane.ps1 (same path there via $env:NOUGEN_NODE_LOCK) so
 # neither launcher can spawn a competing uvicorn while the other is mid-start.
 # 2026-08-27 incident: watchdog + manual node_lane.ps1 restart raced within
@@ -324,7 +325,8 @@ def _start_tunnel_if_needed():
     try:
         out = subprocess.run(
             ["tasklist", "/FI", f"IMAGENAME eq {exe_name}", "/FO", "CSV", "/NH"],
-            capture_output=True, text=True, timeout=15).stdout
+            capture_output=True, text=True, timeout=15,
+            stdin=subprocess.DEVNULL, creationflags=NO_WINDOW).stdout
         already = exe_name.lower() in out.lower()
     except Exception as e:
         print(f"tunnel probe failed ({type(e).__name__}); assuming not running")
@@ -369,7 +371,8 @@ def _authenticated_probe():
                 env=dict(os.environ, NGS_REPO=str(REPO),
                          NOUGEN_PROBE_STATE_DIR=str(PROBE_STATE_DIR)),
                 stdout=fh, stderr=subprocess.STDOUT,
-                timeout=timeout_s, check=False)
+                timeout=timeout_s, check=False,
+                stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
         # Write the state artifact from HERE, not from inside the probe. It was
         # the probe's job, and on 2026-08-29 state/gateway_probe.json sat 13
         # hours stale while this loop ticked -- a stale artifact reads exactly
