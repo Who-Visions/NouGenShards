@@ -56,6 +56,7 @@ def _become(monkeypatch, fleet, host, machine_id):
     directory = fleet["root"] / host
     directory.mkdir(exist_ok=True)
     monkeypatch.setattr(handoff, "HANDOFF_DIR", directory)
+    monkeypatch.setenv("NOUGEN_HANDOFF_DIR", str(directory))
     monkeypatch.setenv("NOUGEN_MACHINE", host)
     monkeypatch.setenv("NOUGEN_MACHINE_ID", machine_id)
     machine.host_label.cache_clear()
