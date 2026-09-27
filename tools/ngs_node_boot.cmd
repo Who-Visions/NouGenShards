@@ -33,7 +33,7 @@ set "NGS_HOME_FALLBACK=%USERPROFILE%\.nougen"
 if defined NOUGEN_HOME if not exist "%NOUGEN_HOME%\%NGS_HOME_MARKER%" >&2 echo ngs_node_boot: NOUGEN_HOME=%NOUGEN_HOME% lacks %NGS_HOME_MARKER%; using %NGS_HOME_FALLBACK%
 if defined NOUGEN_HOME if not exist "%NOUGEN_HOME%\%NGS_HOME_MARKER%" set "NOUGEN_HOME="
 if not defined NOUGEN_HOME set "NOUGEN_HOME=%NGS_HOME_FALLBACK%"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools\install_grid_supervisor.ps1"
+powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "tools\install_grid_supervisor.ps1"
 if errorlevel 1 (
   popd
   exit /b 1
@@ -43,7 +43,7 @@ rem silently drift back to logon-only. Best-effort: a failure here must not bloc
 rem watcher from starting, so it is swallowed, not fatal like the step above. This fires every
 rem NOUGEN_NGS_TASK_RETRIGGER_MINS (default 15) forever, so only failures are logged -- a
 rem success line appended on every re-trigger would grow the log without bound.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "tools\install_ngs_node_task.ps1" 1>nul 2>>"%USERPROFILE%\.nougen\logs\ngs_node_task_install.log"
+powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "tools\install_ngs_node_task.ps1" 1>nul 2>>"%USERPROFILE%\.nougen\logs\ngs_node_task_install.log"
 set "NGS_REPO=%NGS_ROOT%"
 set "PYTHONW=%LocalAppData%\Programs\Python\Python311\pythonw.exe"
 if not exist "%PYTHONW%" set "PYTHONW=pythonw.exe"

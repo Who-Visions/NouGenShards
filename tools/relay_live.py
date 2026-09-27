@@ -198,6 +198,27 @@ def fetch(repo: Path) -> str:
     already equals the upstream ref."""
     if os.environ.get("NOUGEN_RELAY_LIVE_FETCH", "1") == "0":
         return "skipped"
+    # A relay checkout can be left mid-merge by an operator or an earlier
+    # failed synchronization.  Do not keep spawning git/ssh on every poll in
+    # that state: it cannot fetch-and-merge safely, and repeated retries were
+    # opening console windows on Windows.  Resolve the per-worktree git dir
+    # directly so this guard itself does not launch git.
+    git_entry = repo / ".git"
+    git_dir = git_entry
+    try:
+        if git_entry.is_file():
+            marker = git_entry.read_text(encoding="utf-8", errors="replace").strip()
+            if marker.lower().startswith("gitdir:"):
+                raw_git_dir = marker.split(":", 1)[1].strip()
+                git_dir = Path(raw_git_dir)
+                if not git_dir.is_absolute():
+                    git_dir = (repo / git_dir).resolve()
+        if (git_dir / "MERGE_HEAD").exists():
+            return "skipped(merge-in-progress; preserving checkout)"
+    except OSError:
+        # If the metadata cannot be inspected, retain the existing fetch path;
+        # its git errors are reported by the normal bounded error handling.
+        pass
     timeout = _env_float("NOUGEN_RELAY_LIVE_GIT_TIMEOUT_S", 40)
     retries = max(0, int(_env_float("NOUGEN_RELAY_LIVE_FETCH_RETRIES", 1)))
     try:
@@ -475,14 +496,25 @@ def run_daemon(*, dry: bool, quiet: bool) -> None:
     interval, last_active = active, time.time()
     while True:
         new_count = 0
+        fetch_failed = False
         try:
-            new_count = int(one_pass(dry=dry, quiet=quiet).get("new", 0))
+            result = one_pass(dry=dry, quiet=quiet)
+            new_count = int(result.get("new", 0))
+            fetch_status = str(result.get("fetch", ""))
+            fetch_failed = fetch_status.startswith(("git fetch rc=", "git merge rc=", "git error"))
         except Exception as exc:  # pylint: disable=broad-except
             print(json.dumps({"error": f"{type(exc).__name__}: {exc}"[:300]}), flush=True)
+            fetch_failed = True
         now = time.time()
         if new_count:
             last_active = now
-        interval = next_interval(interval, new_count, now, last_active, active=active, window=window, idle_max=idle_max)
+        if fetch_failed:
+            # A failing Git/SSH pass cannot deliver fresh remote state. Back
+            # off immediately instead of repeating credential, console, or
+            # merge failures at the active message cadence.
+            interval = min(max(interval * 2, active), idle_max)
+        else:
+            interval = next_interval(interval, new_count, now, last_active, active=active, window=window, idle_max=idle_max)
         if wait(interval, wake, slice_s) == "wake":
             last_active = time.time()
             interval = active

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import sys
 from pathlib import Path
@@ -32,6 +33,27 @@ STATE_PATH = Path(os.environ.get("NOUGEN_AGY_INBOX_STATE", Path.home() / ".nouge
 MAX_MESSAGE_CHARS = int(os.environ.get("NOUGEN_AGY_INBOX_MESSAGE_CHARS", "2000"))
 MAX_BATCH_CHARS = int(os.environ.get("NOUGEN_AGY_INBOX_BATCH_CHARS", "6000"))
 TARGETS = {t.strip().lower() for t in os.environ.get("NOUGEN_AGY_INBOX_TARGETS", "antigravity,gemini,all,local").split(",") if t.strip()}
+
+# Fleet inboxes are untrusted input. Sanitize before embedding their contents
+# in a live model context; never print credential values or host addresses.
+_IPV4_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
+_IPV6_RE = re.compile(r"(?i)(?<![\w:])(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}(?![\w:])")
+_LABELED_SECRET_RE = re.compile(
+    r"(?i)\b(?:[a-z0-9]+[_-])*(password|passwd|pwd|passphrase|secret|token|credential|api[_ -]?key)"
+    r"(?:[_-][a-z0-9]+)*\b"
+    r"\s*(?:(?:is|equals)\s+|[:=]\s*)?[^\r\n,;]+"
+)
+_COMMON_TOKEN_RE = re.compile(
+    r"(?i)\b(?:sk-[a-z0-9_-]{12,}|gh[pousr]_[a-z0-9]{20,}|"
+    r"github_pat_[a-z0-9_]{20,}|AIza[a-z0-9_-]{30,}|AKIA[A-Z0-9]{16})\b"
+)
+
+
+def _redact_sensitive_text(value: str) -> str:
+    value = _LABELED_SECRET_RE.sub("[REDACTED CREDENTIAL]", value)
+    value = _COMMON_TOKEN_RE.sub("[REDACTED TOKEN]", value)
+    value = _IPV4_RE.sub("[REDACTED IP]", value)
+    return _IPV6_RE.sub("[REDACTED IP]", value)
 
 
 def _cursor() -> tuple[int, str] | None:
@@ -81,12 +103,13 @@ def read_new_messages(*, replay_existing: bool = False) -> list[str]:
             target = str(env.get("target", "antigravity")).lower()
             if target not in TARGETS:
                 continue
-            source = str(env.get("sender") or env.get("source") or "unknown")[:160]
+            source = _redact_sensitive_text(
+                str(env.get("sender") or env.get("source") or "unknown")[:160])
             text = env.get("text") or env.get("content") or env.get("message")
             if not isinstance(text, str) or not text.strip():
                 continue
-            domain = str(env.get("domain") or "").lower()
-            goal = str(env.get("goal") or "")
+            domain = _redact_sensitive_text(str(env.get("domain") or "").lower())
+            goal = _redact_sensitive_text(str(env.get("goal") or ""))
 
             # Smart Emoji selection based on source & content
             src_lower = source.lower()
@@ -120,7 +143,8 @@ def read_new_messages(*, replay_existing: bool = False) -> list[str]:
             if domain:
                 header += f" [{domain}]"
 
-            rendered = f"{header}\n  └─ {text.strip()[:MAX_MESSAGE_CHARS]}"
+            safe_text = _redact_sensitive_text(text.strip())
+            rendered = f"{header}\n  └─ {safe_text[:MAX_MESSAGE_CHARS]}"
             if messages and used + len(rendered) > MAX_BATCH_CHARS:
                 break
             messages.append(rendered)
