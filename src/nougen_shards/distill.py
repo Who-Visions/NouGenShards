@@ -27,6 +27,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+from .distill_elevated import DistillationMetrics, compute_distillation_metrics
+
+
 ATOM_TYPES = ("fact", "preference", "constraint", "event", "decision")
 ENTITY_KINDS = ("person", "project", "tool", "machine", "org", "place", "concept")
 MAX_BODY_CHARS = 5000        # keeps prompt + 1.4k-token answer inside e2b's default context
