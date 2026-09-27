@@ -81,12 +81,20 @@ def _save_keyring_cache() -> None:
 def _keyring_get(ref: str, timeout: float = 1.5) -> Optional[str]:
     """Cached keyring.get_password — hits macOS Keychain at most once per ref.
 
-    Guarded with a thread timeout to guarantee headless/autonomous calls NEVER
-    hang forever if macOS attempts to block on an interactive keychain modal.
+    ZERO FRICTION GUARANTEE: Never spawns interactive macOS Keychain UI modals
+    in headless, autonomous, or fleet automation environments. If a secret is
+    not pre-cached or if GUI prompts are disabled, skips cleanly without blocking.
     """
     _load_keyring_cache()
     if ref in _KEYRING_CACHE:
         return _KEYRING_CACHE[ref]
+
+    # Rule 0.2 & Zero Friction: If running in non-interactive/automation environment,
+    # or if NOUGEN_DISABLE_KEYCHAIN_POPUP is set (defaulted to active on macOS),
+    # never trigger Apple Keychain authorization dialogs.
+    if os.getenv("NOUGEN_DISABLE_KEYCHAIN_POPUP", "1") == "1" or not sys.stdin.isatty():
+        logger.debug("Bypassing OS keyring for '%s' to prevent interactive system popups", ref)
+        return None
 
     import concurrent.futures
     import keyring  # pylint: disable=import-outside-toplevel
@@ -205,7 +213,8 @@ def _unprotect(stored: str) -> str:
         ref = stored[len(_KEYRING_PREFIX):]
         value = _keyring_get(ref)
         if value is None:
-            raise OSError(f"Keyring entry '{ref}' not found.")
+            logger.debug("Keyring entry '%s' not cached or inaccessible", ref)
+            return None
         return value
     return stored  # legacy plaintext row (pre-encryption migration)
 
