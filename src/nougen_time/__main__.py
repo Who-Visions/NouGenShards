@@ -23,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
         print("=" * 60)
         print("NouGenTime — Fleet Dynamic Temporal Anchor")
         print("=" * 60)
-        print(f"  Dave Local (EDT/EST) : {instant.banner}")
+        print(f"  Local Time (EDT/EST) : {instant.banner}")
         print(f"  Short Display        : {instant.display}")
         print(f"  Provenance Paired    : {instant.paired}")
         print(f"  Canonical UTC ISO    : {instant.utc_iso}")

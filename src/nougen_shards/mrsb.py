@@ -131,8 +131,8 @@ def audit_assets() -> dict:
         result["character_refs"] = [
             f.name for f in ASSETS_DIR.iterdir()
             if any(k in f.name.lower() for k in [
-                "mrs_b_character", "little_dave", "curious_granddaughter",
-                "parents_canonical", "meralus_family", "mrs_b_granddaughter",
+                "mrs_b_character", "student_lead", "curious_granddaughter",
+                "parents_canonical", "core_family", "mrs_b_granddaughter",
                 "mrs_b_teacher", "mrs_b_kdp"
             ])
         ]
@@ -270,7 +270,7 @@ def recall_shards(query: str, limit: int = 5) -> list:
 
 
 def get_lineage() -> dict:
-    """Return the canonical Meralus family lineage manifest."""
+    """Return the canonical Mrs. B character lineage manifest."""
     return _load_json(LINEAGE_MANIFEST)
 
 
@@ -341,16 +341,16 @@ RECURSION_MAP = {
         "unit": 2,
         "title": "Colors & Shapes / Koulè ak Fòm",
         "theme": "Visual vocabulary, primary colors, geometric forms",
-        "setup": "Kid Dave explores colorful art palette with brushes. Focus words: Red/Wouj/Rojo, Circle/Sèk/Círculo.",
+        "setup": "Kid Artist explores colorful art palette with brushes. Focus words: Red/Wouj/Rojo, Circle/Sèk/Círculo.",
         "first_echo": "Tracing D, E, F; saying and coloring the 54-circle swatch grid.",
-        "inversion": "Color-by-number pattern; finding hidden circles and squares in Kid Dave's studio.",
+        "inversion": "Color-by-number pattern; finding hidden circles and squares in Kid Artist's studio.",
         "final_payoff": "Master Artist Certificate stamp; create your own family flag."
     },
     3: {
         "unit": 3,
         "title": "Family & Home / Fanmi ak Kay",
         "theme": "Sacred family provenance, community foundation",
-        "setup": "Meralus family porch scene with Grandma Mrs. B, Tech Dad Teddy, and curious grandchildren.",
+        "setup": "Family porch scene with Grandma Mrs. B, Tech Dad Teddy, and curious grandchildren.",
         "first_echo": "Tracing G, H, I; family member vocabulary (Mother, Father, Sister, Brother).",
         "inversion": "Family tree connection puzzle; drawing who lives in your home with bilingual prompt.",
         "final_payoff": "Family Foundation award; share story with caregiver."
@@ -485,7 +485,7 @@ def cli_handler(args):
             if getattr(args, "json", False):
                 print(json.dumps(manifest, indent=2, ensure_ascii=False))
             else:
-                print("═══ Meralus Family Lineage ═══")
+                print("═══ Mrs. B Character Lineage ═══")
                 for key, char in manifest.get("characters", {}).items():
                     name = char.get("name", key)
                     role = char.get("role", "")

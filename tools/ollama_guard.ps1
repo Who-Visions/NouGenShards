@@ -31,7 +31,7 @@ $ErrorActionPreference = 'Stop'
 
 function Write-Log {
     param([string]$Level, [string]$Message)
-    # Store UTC (fleet convention); render Eastern for Dave when read back.
+    # Store UTC (fleet convention); render Eastern for operator when read back.
     $line = '{0} [{1}] {2}' -f (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'), $Level, $Message
     try {
         $dir = Split-Path -Parent $LogPath

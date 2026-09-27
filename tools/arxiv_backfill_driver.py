@@ -76,7 +76,7 @@ def api_ready():
     req = urllib.request.Request(
         PREFLIGHT_URL,
         headers={"User-Agent": _env("NOUGEN_ARXIV_UA",
-                                    "NouGenAi-Orchestrator/4.0 (dave@whovisions.com)")})
+                                    "NouGenAi-Orchestrator/4.0 (contact@whovisions.com)")})
     try:
         with urllib.request.urlopen(req, timeout=PREFLIGHT_TIMEOUT_S) as r:
             return r.status == 200 and bool(r.read(64))

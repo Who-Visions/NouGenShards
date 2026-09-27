@@ -39,7 +39,7 @@ RATE_DELAY, RATE_DELAY_SRC = _cfg.resolve(
     "NOUGEN_ARXIV_RATE_DELAY_S", "arxiv_rate_delay_s", "3.0", float)
 MAX_TOTAL, MAX_TOTAL_SRC = _cfg.resolve(
     "NOUGEN_ARXIV_BACKFILL_MAX", "arxiv_backfill_max", "4000", int)
-UA = os.environ.get("NOUGEN_ARXIV_UA", "NouGenAi-Orchestrator/4.0 (dave@whovisions.com)")
+UA = os.environ.get("NOUGEN_ARXIV_UA", "NouGenAi-Orchestrator/4.0 (contact@whovisions.com)")
 
 # Artifact name prefixes. These are the lane's NAMESPACE, not a category claim:
 # the daily-doc prefix is what both the gap probe below and lane_freshness.py
@@ -389,7 +389,7 @@ created_at: {created_at_iso}
 {abstract}
 
 ---
-*Ingested via NouGenAi-Orchestrator API backfill (gap-fill lane) under the Dave @ Who Visions authorization system.*
+*Ingested via NouGenAi-Orchestrator API backfill (gap-fill lane) under the Who Visions authorization system.*
 """
                 if shard_exists:
                     skipped += 1

@@ -1,6 +1,6 @@
 """Canonical wall-clock and elapsed-time APIs for the NouGen fleet.
 
-Wall-clock values are UTC instants rendered in America/New_York for Dave.
+Wall-clock values are UTC instants rendered in America/New_York for operator.
     Naive ``datetime`` values and ISO timestamps without an offset are treated as
 UTC for compatibility with existing NouGen records. New storage should use
 aware UTC datetimes or the ``utc_iso`` field. Timestamp precision is one

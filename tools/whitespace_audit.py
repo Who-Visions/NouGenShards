@@ -1,6 +1,6 @@
 """Negative-space audit for NouGen web UIs: measure whitespace instead of eyeballing it.
 
-Merges the concepts Dave fed in on 9/13/2026: the Wix / Mailchimp / Elementor white-space guides and the sources they
+Merges the whitespace concepts compiled on 9/13/2026: the Wix / Mailchimp / Elementor white-space guides and the sources they
 cite (NN/g, W3C WCAG supplemental whitespace pattern, Smashing on cognitive load, Mailchimp Gestalt); the
 consistent_whitespace idea (one spacing system, enforced by a lint; AGPL, idea only); demojify-sanitize (strip emoji
 clutter and redundant spaces from AI text; Apache-2.0, idea only). The free fleet distilled 12 sharded sources into

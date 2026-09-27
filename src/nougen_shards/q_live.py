@@ -283,8 +283,8 @@ def _parse_hits(payload) -> tuple[list[Hit], bool]:
 # ---- candidate generation -------------------------------------------------------------------
 
 _SYSTEM = (
-    "You write live teleprompter cues for a human speaker named Dave. Output JSON only. "
-    "Each cue is ONE short spoken line Dave could say NEXT, in first person, plain conversational English. "
+    "You write live teleprompter cues for the active human speaker. Output JSON only. "
+    "Each cue is ONE short spoken line the speaker could say NEXT, in first person, plain conversational English. "
     "Use only the numbered MEMORY items and the transcript; never invent facts, names, numbers or stories. "
     "If a cue does not use a memory item, its memory list must be empty."
 )

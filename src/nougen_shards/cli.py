@@ -2400,7 +2400,7 @@ def get_parser():
     p_mrsb.add_argument("mrsb_action", nargs="?", default="status",
                         choices=["status", "audit", "lineage", "recall", "recurse", "build", "kdp"],
                         help="Action to perform (default: status)")
-    p_mrsb.add_argument("--character", "-c", help="Character key for lineage lookup (e.g. mrs_b, little_dave, kam_the_police_helper)")
+    p_mrsb.add_argument("--character", "-c", help="Character key for lineage lookup (e.g. mrs_b, student_lead, kam_the_police_helper)")
     p_mrsb.add_argument("--query", "-q", default="Mrs. B", help="Search query for shard recall")
     p_mrsb.add_argument("--limit", "-n", type=int, default=5, help="Max results for recall")
     p_mrsb.add_argument("--unit", "-u", type=int, default=None, help="Unit number (1-8) for recursive lesson ledger")
@@ -3554,7 +3554,7 @@ def cmd_time(args):
     print("=" * 60)
     print("🕒 NouGenTime — Fleet Dynamic Temporal Anchor")
     print("=" * 60)
-    print(f"  • Dave Local (EDT/EST) : {t.banner}")
+    print(f"  • Local Time (EDT/EST) : {t.banner}")
     print(f"  • Status Display       : {t.display}")
     print(f"  • Provenance Paired    : {t.paired}")
     print(f"  • Canonical UTC ISO    : {t.utc_iso}")

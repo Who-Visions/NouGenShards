@@ -1,6 +1,6 @@
 """Hardcade CRON OUT: backend-agnostic temporal deployment operator.
 
-Owner authorial/operator lock, leg 20260923T165947Z (Dave, 2026-09-23).
+Owner authorial/operator lock, leg 20260923T165947Z (GM, 2026-09-23).
 
     CRON OUT = take a proven operation and roll it out across time as a
     persistent, governed, recurring autonomous execution.

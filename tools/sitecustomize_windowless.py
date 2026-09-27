@@ -3,7 +3,7 @@
 When this interpreter runs without a console (pythonw.exe, a hidden
 scheduled task, a service), every child it spawns with subprocess would
 otherwise allocate a fresh console — one flashing window per ``git`` call.
-Dave saw it from three different tasks on 2026-09-14 ("everything git
+Observed from three different tasks on 2026-09-14 ("everything git
 spawns on my screen"). Patching each script is whack-a-mole; patching the
 interpreter once is deterministic and covers scripts not written yet.
 
@@ -15,12 +15,12 @@ import os
 import sys
 
 
-def _arm() -> None:
+def _arm(force: bool = False) -> None:
     if os.name != "nt" or os.environ.get("NOUGEN_ALLOW_CONSOLE") == "1":
         return
     try:
         import ctypes
-        if ctypes.windll.kernel32.GetConsoleWindow():
+        if not force and ctypes.windll.kernel32.GetConsoleWindow():
             return  # a real console is attached; nothing to hide
     except Exception:
         return
