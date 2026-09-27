@@ -803,7 +803,9 @@ def cf_deploy_worker(directory_path: str = "") -> str:
     from . import cloudflare
     try:
         cf = cloudflare.CloudflareClient()
-        target = Path(directory_path) if directory_path else Path.cwd()
+        target = Path(directory_path).resolve() if directory_path else Path.cwd()
+        if not target.exists() or not target.is_dir():
+            return json.dumps({"status": "error", "error": f"Invalid worker directory path: '{directory_path}' does not exist or is not a directory."})
         res = cf.auto_deploy(target)
         return json.dumps({
             "status": "success",
