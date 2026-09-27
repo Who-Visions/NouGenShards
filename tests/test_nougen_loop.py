@@ -29,7 +29,8 @@ def repo(tmp_path, monkeypatch):
     (r / "app.py").write_text("print('hi')\n", encoding="utf-8")
     _git(r, "add", "app.py")
     _git(r, "commit", "-q", "-m", "init")
-    monkeypatch.setenv("NOUGEN_LOOP_TEST_CMD", f"{sys.executable} -c pass")
+    import shlex as _shlex
+    monkeypatch.setenv("NOUGEN_LOOP_TEST_CMD", f"{_shlex.quote(sys.executable)} -c pass")
     monkeypatch.setenv("NOUGEN_LOOP_DEFAULT_BRANCH", "main")
     monkeypatch.setattr(loop, "LEDGER", tmp_path / "ledger.jsonl")
     return r
@@ -78,7 +79,8 @@ def test_harden_blocks_secret_before_commit(repo):
 
 
 def test_failing_build_stops_the_loop(repo, monkeypatch):
-    monkeypatch.setenv("NOUGEN_LOOP_TEST_CMD", f"{sys.executable} -c raise SystemExit(3)")
+    import shlex as _shlex
+    monkeypatch.setenv("NOUGEN_LOOP_TEST_CMD", f"{_shlex.quote(sys.executable)} -c 'raise SystemExit(3)'")
     monkeypatch.setenv("NOUGEN_LOOP_BUILD_ATTEMPTS", "1")
     rc, res = _run(repo, "--paths", "app.py", "--apply")
     assert rc == 1
@@ -133,10 +135,11 @@ def test_missing_test_program_fails_cleanly(repo, monkeypatch):
 
 
 def test_relative_test_program_resolves_against_repo(repo, monkeypatch):
+    import shlex as _shlex
     runner = repo / "bin" / "check.py"
     runner.parent.mkdir()
     runner.write_text("raise SystemExit(0)\n", encoding="utf-8")
-    monkeypatch.setenv("NOUGEN_LOOP_TEST_CMD", f"{sys.executable} bin/check.py")
+    monkeypatch.setenv("NOUGEN_LOOP_TEST_CMD", f"{_shlex.quote(sys.executable)} bin/check.py")
     rc, res = _run(repo, "--paths", "app.py")
     assert res["build"].status == "ok"
 

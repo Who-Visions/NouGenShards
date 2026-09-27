@@ -1,5 +1,5 @@
 """nougen wishlist: the canonical 100-item wishlist as a real, trackable
-artifact (leg 20260910T202128Z, rebroadcast 20260923T174020Z, Dave's
+artifact (leg 20260910T202128Z, rebroadcast 20260923T174020Z, GM operator
 explicit order 2026-09-23 for a fresh shard + relay of the exact original)."""
 import json
 import sys

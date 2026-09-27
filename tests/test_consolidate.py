@@ -1,7 +1,7 @@
 from nougen_shards.consolidate import consolidate
 
 PIZZA = [{"id": "1", "text": "Likes pizza", "status": "candidate"},
-         {"id": "2", "text": "Name is Dave", "status": "candidate"}]
+         {"id": "2", "text": "Name is Alex", "status": "candidate"}]
 LOCKED = [{"id": "L", "text": "Veil is a dark matter sea", "status": "locked"}]
 
 
@@ -48,8 +48,8 @@ def test_dead_decider_never_drops_the_fact():
 
 
 def test_supersede_of_identical_restatement_becomes_none():
-    nb = [{"id": "2", "text": "Name is Dave", "status": "candidate"}]
-    r = consolidate("Name is Dave", nb, dec("SUPERSEDE", "2"))
+    nb = [{"id": "2", "text": "Name is Alex", "status": "candidate"}]
+    r = consolidate("Name is Alex", nb, dec("SUPERSEDE", "2"))
     assert r["action"] == "NONE" and "supersede_of_identical_fact" in r["guards"]
 
 

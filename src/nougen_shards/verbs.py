@@ -1,6 +1,6 @@
 """NouGen 11-Verb Cognitive Instruction Set & 6-Plane Architecture Registry.
 
-Canonical semantic contracts locked by Dave & Fleet (2026-09-23).
+Canonical semantic contracts locked by Fleet Operator (2026-09-23).
 Provides non-overlapping authority definition across Memory, Coordination,
 Observability, Intent, Execution, and Learning planes.
 """

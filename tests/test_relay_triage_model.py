@@ -6,7 +6,7 @@ from nougen_shards import relay_triage_model as m
 from nougen_shards.relay_triage import LABELS
 
 LEG = {"id": "20260921T000000Z__blade1tb__x", "machine": "blade1tb", "agent": "x",
-       "status": "open", "goal": "Dave to decide: lock the canon?", "body": ""}
+       "status": "open", "goal": "Owner to decide: lock the canon?", "body": ""}
 
 
 def _fake(label):

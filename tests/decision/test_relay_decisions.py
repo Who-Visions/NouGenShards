@@ -24,7 +24,7 @@ def plane(model):
 
 
 def test_owner_ask_is_decided_by_rules_and_surfaces():
-    leg = {"id": "x", "status": "open", "goal": "Dave to decide: lock canon?"}
+    leg = {"id": "x", "status": "open", "goal": "Owner to decide: lock canon?"}
     m = Fake("STATUS_FYI")
     r = relay.triage_leg(leg, "phoebus", plane(m))
     assert r.backend == "rules" and r.value("label") == "NEEDS_OWNER" and relay.surfaces(r)

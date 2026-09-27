@@ -312,7 +312,7 @@ MODEL_PRICING = {
     "gpt-5.4-mini":               (0.75, 4.50, 0.075, DOC),
     "gpt-5-codex-mini":           (0.75, 4.50, 0.075, EST),
     "gpt-5.1-codex-mini":         (0.75, 4.50, 0.075, EST),
-    # gpt-oss is open-weights; Dave runs it free via OpenRouter/local. Nominal host est.
+    # gpt-oss is open-weights; runs free via OpenRouter/local. Nominal host est.
     "gpt-oss-120b-medium":        (0.10, 0.40, 0.010, EST),
 }
 # Unknown model: conservative estimate so the bill never silently reads $0.
