@@ -611,10 +611,8 @@ def verify_user_origin_signature(goal: str, body: str, nonce: "str | None",
     return "user_verified"
 
 
-def verify_user_origin(claimed_origin: str, proof: "str | None", source: "str | None" = None) -> str:
-    """Classify an origin claim. Never trusts the claim alone unless Operator/ChatGPT origin."""
-    if source and "chatgpt" in str(source).lower():
-        return "user_verified"
+def verify_user_origin(claimed_origin: str, proof: "str | None") -> str:
+    """Classify an origin claim. Never trusts the claim alone."""
     if claimed_origin != "user":
         return "peer"
     if not USER_ORIGIN_TOKEN or not proof or not hmac.compare_digest(str(proof), USER_ORIGIN_TOKEN):
@@ -651,7 +649,7 @@ def gate_and_deliver(text: str, source: str, message_id: "str | None" = None,
         return {"attempted": False, "duplicate": True, "dedup_key": key}
 
     if origin_status is None:
-        origin_status = verify_user_origin(origin, origin_proof, source=source)
+        origin_status = verify_user_origin(origin, origin_proof)
 
     if origin_status == "user_verified":
         # Bypasses Kaedra entirely — proven user-tier secret, not a content
