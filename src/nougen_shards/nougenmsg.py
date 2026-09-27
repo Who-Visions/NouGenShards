@@ -1354,9 +1354,13 @@ class NouGenMsgBus:
             if len(matches) >= limit:
                 break
             try:
+                if not os.path.exists(f):
+                    continue
                 with open(f, "r", encoding="utf-8") as fp:
                     data = json.load(fp)
-                    identity = data.get("message_id") or "|".join(
+                if not isinstance(data, dict):
+                    continue
+                identity = data.get("message_id") or "|".join(
                         str(data.get(k, "")) for k in ("source", "text", "content", "timestamp"))
                     if identity in seen:
                         continue
