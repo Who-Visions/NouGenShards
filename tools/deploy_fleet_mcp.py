@@ -21,10 +21,13 @@ with urllib.request.urlopen(req) as resp:
 plain_bindings = []
 for b in bindings_raw:
     if b.get('type') == 'plain_text':
+        val = b.get('text')
+        if b.get('name') == 'SHARD_GATEWAY_URL' and 'shards.nougenai.com' in val:
+            val = 'https://blade.nougenai.com'
         plain_bindings.append({
             'type': 'plain_text',
             'name': b.get('name'),
-            'text': b.get('text')
+            'text': val
         })
 
 print(f"Preserving {len(plain_bindings)} plain_text bindings and keeping secret_text bindings")

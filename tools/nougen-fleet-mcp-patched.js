@@ -828,7 +828,10 @@ function gatewayUnconfigured(env) {
 }
 __name(gatewayUnconfigured, "gatewayUnconfigured");
 async function shardRpcHttp(env, method, params, id) {
-  const res = await fetch(env.SHARD_GATEWAY_URL.replace(/\/$/, "") + "/mcp/", {
+  const gatewayUrl = (env.SHARD_GATEWAY_URL && !env.SHARD_GATEWAY_URL.includes("shards.nougenai.com"))
+    ? env.SHARD_GATEWAY_URL
+    : (env.BLADE_ORIGIN || "https://blade.nougenai.com");
+  const res = await fetch(gatewayUrl.replace(/\/$/, "") + "/mcp/", {
     method: "POST",
     headers: {
       ...await shardHeaders(env),
@@ -1174,13 +1177,19 @@ function sameOrigin(a, b) {
 __name(sameOrigin, "sameOrigin");
 function shardRoutes(env) {
   const routes = [];
-  if (env.SHARD_GATEWAY_URL) {
-    routes.push({ name: env.SHARD_PRIMARY_NAME || "blade", origin: env.SHARD_GATEWAY_URL, token: env.SHARD_GATEWAY_TOKEN, primary: true });
-  }
+  const primaryOrigin = (env.SHARD_GATEWAY_URL && !env.SHARD_GATEWAY_URL.includes("shards.nougenai.com"))
+    ? env.SHARD_GATEWAY_URL
+    : (env.BLADE_ORIGIN || "https://blade.nougenai.com");
+  routes.push({ name: env.SHARD_PRIMARY_NAME || "blade", origin: primaryOrigin, token: env.SHARD_GATEWAY_TOKEN || env.BLADE_TOKEN, primary: true });
+
   for (const name of fleetPeerNames(env)) {
     const p = peerConfig(env, name);
     if (!p.origin || routes.some((r) => r.name === name || sameOrigin(r.origin, p.origin))) continue;
     routes.push({ name, origin: p.origin, token: p.token, budget: p.budget, primary: false });
+  }
+  const spaceOrigin = env.SPACE_ORIGIN || "https://nougenai-nougenshards.hf.space";
+  if (!routes.some((r) => sameOrigin(r.origin, spaceOrigin))) {
+    routes.push({ name: "space", origin: spaceOrigin, token: env.SHARD_GATEWAY_TOKEN || env.SPACE_TOKEN, budget: 35000, primary: false });
   }
   return routes;
 }
@@ -1374,9 +1383,8 @@ async function shardCall(env, toolName, args) {
     if (env.SHARD_FANOUT !== "off") return shardCallFanout(env, toolName, args);
     return shardCallDirect(env, toolName, args);
   }
-  if (federate && isFederatedRead(env, toolName)) return shardCallFederated(env, toolName, args);
-  if (federate && toolName === (env.SHARD_TOOL_CAPTURE || "capture_experience")) {
-    return shardCallFederated(env, toolName, args, { write: true });
+  if (federate) {
+    return shardCallFederated(env, toolName, args, { write: toolIsWrite(toolName) });
   }
   return shardCallDirect(env, toolName, args);
 }
@@ -5081,7 +5089,28 @@ ${body}`,
     if (!url) return toolError("url is required for nougentube");
     
     // FastMCP Tool Transformation:
-    // 1. nougen_media_transcribe (Node Whisper transcription)
+    // 1. Native nougentube across fleet (Phoebus / Blade)
+    try {
+      const res = await shardCall(env, "nougentube", { url });
+      const body = (res.content || []).map((c) => c.text || "").join("\n");
+      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
+    } catch (e) {}
+
+    // 2. Subtitle extraction (nougentube_transcript on Phoebus / Blade / Space)
+    try {
+      const res = await shardCall(env, "nougentube_transcript", { url });
+      const body = (res.content || []).map((c) => c.text || "").join("\n");
+      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
+    } catch (e) {}
+
+    // 3. Media transcribe fallback
+    try {
+      const res = await shardCall(env, "transcribe_media", { source: url, url, language: args.language, whisper_model: args.whisper_model });
+      const body = (res.content || []).map((c) => c.text || "").join("\n");
+      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
+    } catch (e) {}
+
+    // 4. Whisper transcription fallback
     try {
       const res = await shardCall(env, "nougen_media_transcribe", {
         url,
@@ -5093,21 +5122,7 @@ ${body}`,
       if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
     } catch (e) {}
 
-    // 2. nougentube_transcript (Subtitle extraction)
-    try {
-      const res = await shardCall(env, "nougentube_transcript", { url });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-
-    // 3. nougentube_ingest
-    try {
-      const res = await shardCall(env, "nougentube_ingest", { url, limit: 1 });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-
-    // 4. youtube_ingest (Direct grid ingest)
+    // 5. Grid YouTube ingest fallback
     try {
       const res = await shardCall(env, "youtube_ingest", {
         url,
@@ -5128,7 +5143,29 @@ ${body}`,
     const url = args.source || args.url;
     if (!url) return toolError("source or url is required for transcribe_media");
 
-    // Tier 1: nougen_media_transcribe
+    // FastMCP Tool Transformation:
+    // 1. Native transcribe_media across fleet (Phoebus / Blade)
+    try {
+      const res = await shardCall(env, "transcribe_media", { source: url, url, language: args.language, whisper_model: args.whisper_model });
+      const body = (res.content || []).map((c) => c.text || "").join("\n");
+      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
+    } catch (e) {}
+
+    // 2. Native nougentube across fleet (Phoebus / Blade)
+    try {
+      const res = await shardCall(env, "nougentube", { url });
+      const body = (res.content || []).map((c) => c.text || "").join("\n");
+      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
+    } catch (e) {}
+
+    // 3. Subtitle extraction (nougentube_transcript on Phoebus / Blade / Space)
+    try {
+      const res = await shardCall(env, "nougentube_transcript", { url });
+      const body = (res.content || []).map((c) => c.text || "").join("\n");
+      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
+    } catch (e) {}
+
+    // 4. Whisper transcription fallback
     try {
       const res = await shardCall(env, "nougen_media_transcribe", {
         url,
@@ -5140,7 +5177,7 @@ ${body}`,
       if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
     } catch (e) {}
 
-    // Tier 2: youtube_ingest
+    // 5. Grid YouTube ingest fallback
     try {
       const res = await shardCall(env, "youtube_ingest", {
         url,
