@@ -38,7 +38,7 @@ _GLOSS = {
     "ECHO_OWN": "this node wrote the leg itself; it is our own message coming back",
     "AUTO_NOTE": "automatic hook/daemon note (e.g. 'session ended with N uncommitted files')",
     "OTHER_LANE": "addressed to a different node or lane, not this one",
-    "NEEDS_OWNER": "asks the owner (Dave) to decide, approve, or lock something",
+    "NEEDS_OWNER": "asks the owner/operator to decide, approve, or lock something",
     "ACTIONABLE": "asks this node or any node to do concrete work now",
     "STATUS_FYI": "reports results or status; no ask",
     "STALE": "old open leg, not addressed here, overtaken by events",

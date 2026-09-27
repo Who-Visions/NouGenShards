@@ -30,7 +30,7 @@ RATES = BaseRates(
 )
 
 
-def ev(eid, when, source_type, source_id, concepts, *, actor="dave", intent=(), lineage=(),
+def ev(eid, when, source_type, source_id, concepts, *, actor="operator", intent=(), lineage=(),
        canonical=None, created=None):
     t = ms(when)
     return Event(eid, ms(created) if created else t, t, source_type, source_id, actor,
@@ -45,7 +45,7 @@ SOLAR = ev("solar-doc", "2026-09-20T02:00:00", "shards_ingest", "yt:solar-5h33m"
 ANGKOR = ev("angkor-equinox", "2026-09-21T14:00:00", "griot_calendar", "griot:angkor",
             ["angkor wat", "equinox", "sun", "astronomy", "cambodia"], actor="griot",
             intent=["cambodia", "trip"], canonical="2026-09-22")
-# Negative control: Dave searched the equinox straight from the solar doc.
+# Negative control: Operator searched the equinox straight from the solar doc.
 ANGKOR_SEARCHED = ev("angkor-searched", "2026-09-20T03:00:00", "web_search", "search:1",
                      ["angkor wat", "equinox", "sun", "astronomy"],
                      intent=["angkor", "equinox", "sun"], lineage=["solar-doc"])

@@ -34,6 +34,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.live import Live
 from rich import box
+from . import machine
 
 console = Console()
 
@@ -148,10 +149,12 @@ def build_dashboard_renderable(sub_data: Optional[Dict[str, Any]] = None) -> Gro
     header_text.append("NouGen", style="bold bright_cyan")
     header_text.append("Ai", style="bold bright_magenta")
     header_text.append("  [ NouGenMorph Engine v1.3.1 ]\n", style="bold bright_yellow")
+    node_name = os.environ.get("NOUGEN_NODE_NAME") or machine.machine_identity().get("host") or "Local"
+    operator_name = os.environ.get("NOUGEN_OPERATOR", "Operator")
     header_text.append("Authority: ", style="dim")
-    header_text.append("Dave Meralus (Dav3 / GM)  ", style="bold green")
+    header_text.append(f"{operator_name} (GM)  ", style="bold green")
     header_text.append("│  Node: ", style="dim")
-    header_text.append("Hyperion (ProArt PX13)  ", style="bold cyan")
+    header_text.append(f"{node_name}  ", style="bold cyan")
     header_text.append("│  Time: ", style="dim")
     header_text.append(format_display_time(nougen_now().utc_iso, paired=False), style="bold bright_white")
 

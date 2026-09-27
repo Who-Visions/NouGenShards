@@ -32,7 +32,7 @@ def test_lineage_and_character_dna():
     
     mrs_b = mrsb.get_character_dna("mrs_b")
     assert mrs_b is not None
-    assert "Meralus" in mrs_b.get("name", "")
+    assert "Mrs. B" in mrs_b.get("name", "")
 
     kam = mrsb.get_character_dna("kam_the_police_helper")
     assert kam is not None

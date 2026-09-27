@@ -45,7 +45,7 @@ class Authority(str, Enum):
     """Who may promote. Ordered: each level subsumes the ones before it."""
     AUTOMATIC = "automatic"      # the loop may adopt without a human
     LANE = "lane"                # an owning lane signs off
-    OWNER = "owner"              # the human author (Dave) signs off
+    OWNER = "owner"              # the human owner/operator signs off
 
     @property
     def rank(self) -> int:

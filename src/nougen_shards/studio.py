@@ -39,7 +39,7 @@ class RazerController:
         payload = {
             "title": "NouGen Studio Engine",
             "description": "Agent State Peripheral Lighting",
-            "author": {"name": "Who Visions", "contact": "dave@whovisions.com"},
+            "author": {"name": "Who Visions", "contact": os.environ.get("NOUGEN_CONTACT_EMAIL", "contact@whovisions.com")},
             "device_supported": ["keyboard", "mouse", "headset", "mousepad", "keypad", "chromalink"],
             "category": "application"
         }
