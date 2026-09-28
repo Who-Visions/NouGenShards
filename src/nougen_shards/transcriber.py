@@ -211,13 +211,16 @@ class NouGenTranscriber:
         with open(out_file, "w", encoding="utf-8") as f:
             f.write(full_md)
 
-        shard_id = None
+        shard_state = None
+        captured = None
+        stored = None
+        capture_result = None
         if auto_shard and text.strip():
             tags = ["transcript", "audio", "video", str(meta.get("platform", "media")).lower()]
             if detected_lang:
                 tags.append(detected_lang)
             
-            ok = shards.capture(
+            capture_result = shards.capture(
                 event_type="KNOWLEDGE",
                 title=f"Transcript: {title[:70]}",
                 content=full_md,
@@ -225,7 +228,25 @@ class NouGenTranscriber:
                 domain_key=domain_key,
                 source_uri=source,
             )
-            shard_id = "captured" if ok else "existing"
+            captured = bool(capture_result)
+            reason = (capture_result.get("reason")
+                      if isinstance(capture_result, dict) else None)
+            durable = (capture_result.get("durable")
+                       if isinstance(capture_result, dict) else None)
+            if isinstance(durable, bool):
+                stored = durable
+            elif captured:
+                stored = True
+            elif reason == "duplicate":
+                # Older CaptureResult duplicate paths omitted `durable`, but
+                # an exact-content duplicate proves that the shard exists.
+                stored = True
+            else:
+                # A bare False or a reported write error cannot prove durable
+                # presence. Keep this fail-closed for pre-CaptureResult callers.
+                stored = False
+            shard_state = "captured" if captured else (
+                "existing" if stored else "failed")
 
         return {
             "title": title,
@@ -235,5 +256,8 @@ class NouGenTranscriber:
             "transcript_file": str(out_file),
             "audio_file": audio_path,
             "meta": meta,
-            "sharded": shard_id,
+            "sharded": shard_state,
+            "captured": captured,
+            "stored": stored,
+            "capture_result": capture_result,
         }

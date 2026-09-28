@@ -721,6 +721,8 @@ def transcribe_media(source: str, language: str = "", whisper_model: str = "base
         "source": res.get("source"),
         "language": res.get("language"),
         "sharded": res.get("sharded"),
+        "captured": res.get("captured"),
+        "stored": res.get("stored"),
         "transcript_file": res.get("transcript_file"),
         "text_preview": res.get("text", "")[:500] + ("..." if len(res.get("text", "")) > 500 else ""),
     }, indent=2)
