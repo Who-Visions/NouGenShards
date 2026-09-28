@@ -31,3 +31,17 @@ d8c751594720630a4cbbf9450462f2e05736fa4b:.github/workflows/deploy-space.yml:gene
 # only. Not new leaks; not from PR #109/#110/#111. ---
 029ecda113e5b0c83cbcddd99401fa93e91413e5:tests/test_audit_fixes.py:aws-access-token:24
 aba0802c458afc97d9230a1c8476029805804971:.github/workflows/deploy-space.yml:generic-api-key:70
+
+# --- war-game catalog, 2026-09-25 (2). NOT a false positive: WG-0492's evidence
+# text quoted a real NEWSDATA_API_KEY value verbatim instead of citing its path.
+# The key is real and pre-existing -- it is hardcoded (not env-only) in
+# who-visions/unk-app-ai at trading/analysis/news_sentiment.py:20 and
+# scripts/news_scanner.py:7, introduced there 2026-01-14 and still on that
+# repo's HEAD; this catalog entry surfaced an existing exposure, it did not
+# create one. Fixed forward here at 8dbf4ef (evidence now cites the path, not
+# the value); allowlisted here rather than rewritten out of history per this
+# file's own no-rewrite policy. The credential itself still needs rotation --
+# that fix belongs in unk-app-ai, not here, and is flagged to the account
+# owner separately. ---
+97a4672fac422d4d8d6d954c20696f19d2ed7534:docs/wargame-catalog/catalog.ndjson:generic-api-key:492
+97a4672fac422d4d8d6d954c20696f19d2ed7534:docs/wargame-catalog/unk-app-ai.md:generic-api-key:186
