@@ -467,6 +467,22 @@ def resolve(sig: Signals, registry_path: Optional[Path] = None) -> Persona:
     lex = _ranked(sig.lexicon)
     chans = _ranked(sig.surfaces) or best.channels
     peaks = tuple(h for h, _ in sorted(sig.active_hours.most_common(3), key=lambda t: (-t[1], t[0])))
+    # Compute mathematical algorithm metrics (OCEAN vector & mannerism dynamics)
+    try:
+        from .persona_math import compute_ocean_vector, compute_shannon_entropy
+        total_hits = sum(sig.lexicon.values())
+        entropy_val = compute_shannon_entropy([w for k in sig.lexicon.keys() for w in [k]*sig.lexicon[k]])
+        ocean_vec = compute_ocean_vector(
+            shannon_entropy=entropy_val,
+            imperative_ratio=sig.imperative_ratio,
+            correction_ratio=sig.correction_ratio,
+            median_words=sig.median_words,
+            lexicon_hits=total_hits
+        )
+        ocean_dict = ocean_vec.to_dict()
+    except Exception:
+        ocean_dict = {"O": 0.5, "C": 0.5, "E": 0.5, "A": 0.5, "N": 0.5}
+
     return Persona(
         market=market.key, audience=best.key, secondary_audiences=secondary,
         role=sig.role or "member", tz=sig.tz, languages=langs, lexicon=lex, channels=chans,
@@ -478,7 +494,7 @@ def resolve(sig: Signals, registry_path: Optional[Path] = None) -> Persona:
         contract=best.contract,
         evidence={"scores": scored[:4], "median_words": sig.median_words, "register_evidence": sig.register_evidence,
                   "imperative_ratio": sig.imperative_ratio, "correction_ratio": sig.correction_ratio,
-                  "market_decides": list(market.decides)},
+                  "market_decides": list(market.decides), "ocean_vector": ocean_dict},
     )
 
 

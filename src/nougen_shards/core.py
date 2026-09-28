@@ -22,6 +22,8 @@ from typing import List, Optional
 import numpy as np
 from nougen_time import InvalidTimestampError, format_log_time, now as nougen_now, parse as parse_time
 
+
+
 logger = logging.getLogger(__name__)
 
 #: Seconds a capture may wait for its embedding before storing NULL and
