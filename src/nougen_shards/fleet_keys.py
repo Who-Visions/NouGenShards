@@ -135,7 +135,7 @@ def account_aliases() -> Dict[str, str]:
     package. Set `NOUGEN_ACCOUNT_ALIASES` to a comma-separated list of
     `shorthand=canonical` pairs::
 
-        NOUGEN_ACCOUNT_ALIASES="cw=contact,c_who=contact,dm=dmeralus"
+        NOUGEN_ACCOUNT_ALIASES="work=primary,w_acct=primary,team=primary"
 
     Anything not declared keeps its own identity, which is the safe default:
     treating one account as two costs throughput, while treating two accounts

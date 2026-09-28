@@ -48,29 +48,56 @@ PRIORITY = [
     ("ollama-cloud", 5),
     ("vertex",       6),   # BILLED — opt-in only, see vertex_lane.py
 ]
-# Fleet boxes run on DHCP, so a literal address here is a route that works
-# until the next lease and then fails as "host down". mDNS names track the
-# lease; env vars let a caller override without editing code. The same stale
-# literal (a hardcoded LAN address) is what broke blade's firewall rule and
-# its CLAUDE.md docs, so it is not a hypothetical failure mode.
-BLADE_HOST  = os.environ.get("NOUGEN_BLADE_HOST",  "blade1tb.local")
-BLADE_MODEL = os.environ.get("NOUGEN_BLADE_MODEL", "gemma4:e2b")
-# The route is NAMED for whoart, so it must ADDRESS whoart. Defaulting this
-# to localhost meant that whenever Fleet dispatched from any other box, the
-# "whoart" lane loaded a ~7GB gemma4 onto THAT machine instead. On phoebus
-# (16GB, CPU-only) that evicted the kaedracode:e2b the Kaedra gateway pins
-# with keep_alive=-1, so the pin looked broken while whoart's own ollama --
-# which actually holds gemma4:e2b-qat -- sat idle.
-WHOART_HOST = os.environ.get("NOUGEN_WHOART_HOST", "whoart.local")
+def _load_local_routes():
+    """Load tenant-local routes from explicit configuration only.
 
-LOCAL_ROUTES = [
-    {"name": "local-ollama-whoart", "url": f"http://{WHOART_HOST}:11434/v1",
-     "model": "gemma4:e2b-qat", "headers": {}, "kind": "local"},
-    {"name": "local-ollama-blade", "url": f"http://{BLADE_HOST}:11434/v1",
-     "model": BLADE_MODEL, "headers": {}, "kind": "local"},
-    {"name": "lmstudio-whoart", "url": f"http://{WHOART_HOST}:1234/v1",
-     "model": "local-model", "headers": {}, "kind": "lmstudio"},
-]
+    Fresh installs intentionally return no peer routes. Configure with either
+    NOUGEN_LOCAL_ROUTES_JSON or NOUGEN_LOCAL_ROUTES_FILE. The default file is
+    ~/.nougen/local_routes.json and is user-local, not shipped repository state.
+    """
+    raw = os.environ.get("NOUGEN_LOCAL_ROUTES_JSON", "").strip()
+    if raw:
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            data = []
+    else:
+        path = os.path.expanduser(
+            os.environ.get("NOUGEN_LOCAL_ROUTES_FILE", "~/.nougen/local_routes.json")
+        )
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            data = []
+
+    if isinstance(data, dict):
+        data = data.get("routes", [])
+    if not isinstance(data, list):
+        return []
+
+    routes = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        url = str(item.get("url") or "").strip()
+        model = str(item.get("model") or "").strip()
+        kind = str(item.get("kind") or "local").strip()
+        if not (name and url and model):
+            continue
+        headers = item.get("headers") if isinstance(item.get("headers"), dict) else {}
+        routes.append({
+            "name": name,
+            "url": url,
+            "model": model,
+            "headers": headers,
+            "kind": kind,
+        })
+    return routes
+
+
+LOCAL_ROUTES = _load_local_routes()
 
 
 # Privacy mode (openhuman's local-only switch, clean-room from its README):

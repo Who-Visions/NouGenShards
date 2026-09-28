@@ -33,7 +33,7 @@ def fake_llm(prompt, schema):
         if "Kestrel" in prompt:
             return json.dumps({
                 "atoms": [{"type": "fact", "text": "The Kestrel relay runs on the WhoArt machine"},
-                          {"type": "decision", "text": "Dave chose zephyrine caching for Kestrel"}],
+                          {"type": "decision", "text": "Operator chose zephyrine caching for Kestrel"}],
                 "entities": [{"name": "Kestrel", "kind": "project"}, {"name": "WhoArt", "kind": "machine"}],
                 "relations": [{"src": "Kestrel", "rel": "runs on", "dst": "WhoArt"}]})
         return json.dumps({"atoms": [{"type": "fact", "text": "WhoArt hosts the local lane"}],

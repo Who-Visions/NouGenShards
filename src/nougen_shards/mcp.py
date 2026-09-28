@@ -976,6 +976,152 @@ def nougenmsg_peers() -> str:
         return json.dumps({"error": str(e)})
 
 
+@mcp.tool()
+def claim_lane(scope: List[str], goal: str = "working", execute_cmd: Optional[str] = None, ttl_hours: float = 8.0) -> str:
+    """
+    Declare an active lane claim on a file scope, replicate to shards, and enforce immediate work.
+
+    Args:
+        scope: List of file paths or globs to claim (e.g. ['src/foo.py']).
+        goal: Brief description of the task being executed.
+        execute_cmd: Optional shell command to trigger immediately upon claiming.
+        ttl_hours: Claim TTL in hours (default 8.0).
+    """
+    import json
+    from .lane_claim import claim_lane as _claim
+    try:
+        res = _claim(scope=scope, goal=goal, execute_cmd=execute_cmd, ttl_hours=ttl_hours)
+        return json.dumps(res, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def release_lane() -> str:
+    """
+    Release any active lane claim currently held by this agent/machine.
+    """
+    import json
+    from .lane_claim import release_lane as _release
+    try:
+        ok = _release()
+        return json.dumps({"released": ok}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def list_lane_claims() -> str:
+    """
+    List all active declared lane claims across the NouGen fleet.
+    """
+    import json
+    from .lane_claim import active_claims
+    try:
+        claims = active_claims()
+        return json.dumps({"active_claims": claims, "count": len(claims)}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def session_hi(fleet: bool = True) -> str:
+    """
+    Session-open probe: report machine identity, enrolled fleet pulse, open handoffs, and next play.
+
+    Args:
+        fleet: If True, probe reachability of enrolled fleet peers.
+    """
+    import json
+    from .session_probe import run_hi
+    try:
+        report = run_hi(fleet=fleet)
+        return json.dumps(report.__dict__, default=str, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def session_bye(agent: Optional[str] = None, goal: Optional[str] = None, summary: str = "", dry_run: bool = False) -> str:
+    """
+    Session-close probe: sweep dirty repos, write handoff record, and optionally persist session close shard.
+
+    Args:
+        agent: Agent identity name.
+        goal: The goal or mission just completed.
+        summary: Human-readable closeout summary.
+        dry_run: If True, simulate close without disk mutation.
+    """
+    import json
+    from .session_probe import run_bye
+    try:
+        report = run_bye(agent=agent, goal=goal, summary=summary, dry_run=dry_run)
+        return json.dumps(report.__dict__, default=str, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def search_shards(query: str, limit: int = 5) -> str:
+    """
+    Search across the 108K+ active NouGen substrate shards (federated weighted-relevance retrieval).
+
+    Args:
+        query: The search term or concept to recall.
+        limit: Max results to return.
+    """
+    import json
+    from .federation import federated_retrieve
+    try:
+        results = federated_retrieve(query, limit=limit)
+        return json.dumps({"query": query, "count": len(results), "shards": results}, default=str, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def add_shard(content: str, title: Optional[str] = None, tags: Optional[List[str]] = None) -> str:
+    """
+    Capture a new intelligence memory shard directly into the active NouGen multi-DB cluster.
+
+    Args:
+        content: Verbatim text body of the memory shard.
+        title: Optional title.
+        tags: Optional category tags.
+    """
+    import json
+    from .core import capture
+    try:
+        t_val = title or (content[:60].replace("\n", " ").strip() + "...")
+        ok = capture(
+            event_type="learning",
+            title=t_val,
+            content=content,
+            tags=tags or ["mcp", "voice"],
+        )
+        return json.dumps({"status": "ok" if ok else "failed", "title": t_val, "tags": tags}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def relay_open(limit: int = 10) -> str:
+    """
+    Inspect open relay legs currently waiting on the fleet relay board.
+
+    Args:
+        limit: Max open legs to report.
+    """
+    import json
+    from .session_probe import read_relay
+    try:
+        relay_data = read_relay()
+        legs = relay_data.get("legs", [])[:limit]
+        return json.dumps({"armed": relay_data.get("armed", False), "total_open": relay_data.get("count", 0), "legs": legs}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 def main():
 
     """Main entry point for the MCP server."""

@@ -56,6 +56,7 @@ def _become(monkeypatch, fleet, host, machine_id):
     directory = fleet["root"] / host
     directory.mkdir(exist_ok=True)
     monkeypatch.setattr(handoff, "HANDOFF_DIR", directory)
+    monkeypatch.setenv("NOUGEN_HANDOFF_DIR", str(directory))
     monkeypatch.setenv("NOUGEN_MACHINE", host)
     monkeypatch.setenv("NOUGEN_MACHINE_ID", machine_id)
     machine.host_label.cache_clear()
@@ -197,6 +198,10 @@ def test_sync_refuses_when_another_checkout_holds_the_records(monkeypatch, fleet
     report = handoff_sync.sync(remote=fleet["remote"])
     assert report["pushed"] is False
     assert any("Registry mismatch" in e for e in report["errors"])
+
+
+def test_runtime_handoffs_default_to_user_data(tmp_path):
+    assert handoff._default_handoff_dir(tmp_path) == tmp_path / ".nougen" / "handoffs"
 
 
 def test_explicit_handoff_dir_is_always_honoured(monkeypatch, fleet, tmp_path):

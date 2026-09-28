@@ -78,7 +78,6 @@ def _save_keyring_cache() -> None:
     except OSError as exc:
         logger.debug("keyring cache write failed: %s", exc)
 
-
 def enforce_deepseek_auth_boundary() -> dict[str, Any]:
     """
     Enforces DeepSeek provider auth boundary across NouGen (directive 20260928T043431Z).
@@ -101,6 +100,8 @@ def _keyring_get(ref: str, timeout: float = 1.5) -> Optional[str]:
     ZERO FRICTION GUARANTEE: Never spawns interactive macOS Keychain UI modals
     in headless, autonomous, or fleet automation environments. If a secret is
     not pre-cached or if GUI prompts are disabled, skips cleanly without blocking.
+    Guarded with a thread timeout to guarantee headless/autonomous calls NEVER
+    hang forever if macOS attempts to block on an interactive keychain modal.
     """
     _load_keyring_cache()
     if ref in _KEYRING_CACHE:
@@ -134,6 +135,7 @@ def _keyring_get(ref: str, timeout: float = 1.5) -> Optional[str]:
         _KEYRING_CACHE[ref] = value
         _save_keyring_cache()
     return value
+
 
 def _is_encrypted(stored: str) -> bool:
     """True if the stored value is protected (DPAPI or keyring), not legacy plaintext."""
@@ -176,6 +178,9 @@ def _protect(value: str, key: Optional[str] = None) -> str:
         import keyring  # pylint: disable=import-outside-toplevel
         ref = key or hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
         keyring.set_password(_KEYRING_SERVICE, ref, value)
+        # Populate the cache so subsequent reads never trigger a keychain prompt.
+        _KEYRING_CACHE[ref] = value
+        _save_keyring_cache()
         return _KEYRING_PREFIX + ref
     except ImportError:
         if os.getenv("NOUGEN_ALLOW_PLAINTEXT_VAULT") == "1":
@@ -849,25 +854,14 @@ def get_secret(key: str) -> Optional[str]:
         "OLLAMA_MRSB_OLLAMA_KEY": ["OLLAMA_MRSB_OLLAMAA_KEY"],
         "OLLAMA_MRSB_OLLAMAA_KEY": ["OLLAMA_MRSB_OLLAMA_KEY"],
         "OPENROUTER_API_KEY": [
-            "OPENROUTER_KEY_WHOENTERTAINS_GMAIL_COM",
-            "OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM",
-            "OPENROUTER_KEY_AIWITHDAV3_GMAIL_COM",
-            "OPENROUTER_KEY_NOUGENAI_GMAIL_COM",
-            "OPENROUTER_WHOENTERTAINS",
-            "OPENROUTER_DAVEMERALUS",
-            "OPENROUTER_NOUGENAI",
-            "OPENROUTER_OPENROUTER_OPENROUTER_API_KEY",
+            "OPENROUTER_KEY_PRIMARY",
+            "OPENROUTER_KEY_SECONDARY",
+            "OPENROUTER_KEY_NOUGENAI",
             "OPENROUTER_KEY_UNASSIGNED",
             "OpenRouter_key_unlabeled",
-            "WhoE_openr_2",
-            "WhoE_openr_3",
-            "WhoE_openr_4"
+            "OPENROUTER_OPENROUTER_OPENROUTER_API_KEY"
         ],
         "OPENROUTER_OPENROUTER_OPENROUTER_API_KEY": ["OPENROUTER_API_KEY"],
-        "OPENROUTER_KEY_EATSRUGER_GMAIL_COM": ["OPENROUTER_KEY_EATSUGER_GMAIL_COM"],
-        "OPENROUTER_KEY_EATSUGER_GMAIL_COM": ["OPENROUTER_KEY_EATSRUGER_GMAIL_COM"],
-        "OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM": ["OPENROUTER_DAVEMERALUS"],
-        "OPENROUTER_DAVEMERALUS": ["OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM"],
         "GEMINI_API_KEY": ["GOOGLE_API_KEY", "GEMINI_API_KEY_FALLBACK", "GEMINI_API_KEY_FALLBACK_2"],
         "GOOGLE_API_KEY": ["GEMINI_API_KEY", "GEMINI_API_KEY_FALLBACK"],
         "HUGGINGFACE_API_KEY": ["HUGGINGFACE_API_TOKEN", "HF_SPACE_API_KEY", "HUGGINGFACE_KEY_WHOENTERTAINS_GMAIL_COM", "Agy_HF_Api"],

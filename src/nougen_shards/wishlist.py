@@ -2,7 +2,7 @@
 a real, trackable artifact, not a relay leg nobody can query.
 
 Source: relay leg 20260910T202128Z (original), rebroadcast 20260923T174020Z
-(Dave's explicit order for a fresh shard + relay). Items, numbering,
+(GM explicit order for a fresh shard + relay). Items, numbering,
 categories and phases below are copied VERBATIM from the rebroadcast text --
 this module never rewords an item, because the id is the citation.
 

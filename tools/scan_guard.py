@@ -1,7 +1,7 @@
 """PreToolUse hook: block broad filesystem scans of the Watchtower/NouGen roots.
 
 GM rule (2026-07-11, memory: no-deep-dives-recall-first): never tree-scan the
-1M+ file roots. Vault recall -> ask Dave -> narrow delegated inspection.
+1M+ file roots. Vault recall -> ask operator -> narrow delegated inspection.
 Blocks: recursive grep/rg/find/ls -R aimed at the Watchtower or NouGen ROOT
 (deeper subdirectory scans stay allowed), and Grep/Glob tool calls whose path
 is one of those roots. Fails open on any parse error (a guard must never wedge
@@ -28,7 +28,7 @@ RECURSIVE = re.compile(
 REASON = (
     "Blocked: broad scan of the Watchtower/NouGen roots (1M+ files). "
     "GM standing rule: vault recall (nougen-shards / nougen-fleet-registry) first, "
-    "ask Dave second, narrow delegated inspection third. Scoped subdirectory "
+    "ask operator second, narrow delegated inspection third. Scoped subdirectory "
     "searches (e.g. NouGenShards-push-main/tools) are still allowed."
 )
 

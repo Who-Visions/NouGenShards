@@ -2094,6 +2094,17 @@ def get_parser():
     p_hijack.add_argument("--id", dest="handoff_id", required=True, help="Handoff id to hijack")
     p_hijack.add_argument("--agent", "-a", default=None, help="Agent to record as the hijacker")
 
+    p_claim = subparsers.add_parser(
+        "claim",
+        help="Lane claim & execution enforcement: claim <scope> | release | status",
+        description="Declare an active file scope claim, replicate to shards, and enforce immediate work."
+    )
+    p_claim.add_argument("claim_args", nargs="*", default=[], help="File paths/globs, or 'release' / 'status'")
+    p_claim.add_argument("-g", "--goal", default="working", help="Goal description for the lane claim")
+    p_claim.add_argument("--exec", dest="execute_cmd", default=None, help="Command to execute immediately upon claiming")
+    p_claim.add_argument("--ttl", dest="ttl_hours", type=float, default=None, help="Claim TTL in hours (default 8)")
+    p_claim.add_argument("--json", action="store_true", help="Machine-readable output")
+
     p_relay = subparsers.add_parser(
         "relay", add_help=False,
         help="Fleet relay board (NouGenRelay): open | read | ack | create | claim ...",
@@ -2389,7 +2400,7 @@ def get_parser():
     p_mrsb.add_argument("mrsb_action", nargs="?", default="status",
                         choices=["status", "audit", "lineage", "recall", "recurse", "build", "kdp"],
                         help="Action to perform (default: status)")
-    p_mrsb.add_argument("--character", "-c", help="Character key for lineage lookup (e.g. mrs_b, little_dave, kam_the_police_helper)")
+    p_mrsb.add_argument("--character", "-c", help="Character key for lineage lookup (e.g. mrs_b, student_lead, kam_the_police_helper)")
     p_mrsb.add_argument("--query", "-q", default="Mrs. B", help="Search query for shard recall")
     p_mrsb.add_argument("--limit", "-n", type=int, default=5, help="Max results for recall")
     p_mrsb.add_argument("--unit", "-u", type=int, default=None, help="Unit number (1-8) for recursive lesson ledger")
@@ -3543,7 +3554,7 @@ def cmd_time(args):
     print("=" * 60)
     print("🕒 NouGenTime — Fleet Dynamic Temporal Anchor")
     print("=" * 60)
-    print(f"  • Dave Local (EDT/EST) : {t.banner}")
+    print(f"  • Local Time (EDT/EST) : {t.banner}")
     print(f"  • Status Display       : {t.display}")
     print(f"  • Provenance Paired    : {t.paired}")
     print(f"  • Canonical UTC ISO    : {t.utc_iso}")
@@ -3563,8 +3574,17 @@ def cmd_hi(args):
     if report.latest_goal:
         print(f"  Latest goal: {report.latest_goal}")
     if report.fleet_pulse:
-        pulse = ", ".join(f"{h}:{'up' if ok else 'down'}" for h, ok in report.fleet_pulse.items())
-        print(f"  Fleet pulse: {pulse}")
+        parts = []
+        for h, status in report.fleet_pulse.items():
+            if status is True or status == "up":
+                parts.append(f"{h}:up")
+            elif status == "resting":
+                parts.append(f"{h}:resting (expected offline)")
+            elif status == "route_unreachable" or status is False:
+                parts.append(f"{h}:route unreachable")
+            else:
+                parts.append(f"{h}:{status}")
+        print(f"  Fleet pulse: {', '.join(parts)}")
     if report.orphan_ports:
         print(f"  Ports already up: {', '.join(f'{p} ({label})' for p, label in report.orphan_ports)}")
     relay_status = "armed" if report.relay_armed else "unreachable"
@@ -3628,6 +3648,62 @@ def cmd_hijack(args):
     else:
         print(f"❌ {result.get('error')}")
         sys.exit(1)
+
+
+def cmd_claim(args):
+    """Lane claim & execution enforcement."""
+    from . import lane_claim
+    import json as _json
+
+    claim_args = getattr(args, "claim_args", [])
+    if not claim_args:
+        live = lane_claim.active_claims()
+        if getattr(args, "json", False):
+            print(_json.dumps({"active_claims": live, "count": len(live)}, indent=2))
+            return
+        if not live:
+            print("no active claims - every scope is free")
+        for c in live:
+            print(f"- {c['machine']}/{c['agent']}: {c.get('goal','')} scope={c.get('scope')} since {c['created_utc']}")
+        return
+
+    sub = claim_args[0].lower()
+    if sub in ("status", "list"):
+        live = lane_claim.active_claims()
+        if getattr(args, "json", False):
+            print(_json.dumps({"active_claims": live, "count": len(live)}, indent=2))
+            return
+        if not live:
+            print("no active claims - every scope is free")
+        for c in live:
+            print(f"- {c['machine']}/{c['agent']}: {c.get('goal','')} scope={c.get('scope')} since {c['created_utc']}")
+        return
+
+    if sub in ("release", "drop", "free"):
+        ok = lane_claim.release_lane()
+        if getattr(args, "json", False):
+            print(_json.dumps({"released": ok}, indent=2))
+            return
+        print("released" if ok else "no claim on file")
+        return
+
+    res = lane_claim.claim_lane(
+        scope=claim_args,
+        goal=getattr(args, "goal", "working"),
+        execute_cmd=getattr(args, "execute_cmd", None),
+        ttl_hours=getattr(args, "ttl_hours", None),
+    )
+    if getattr(args, "json", False):
+        print(_json.dumps(res, indent=2))
+        return
+    c = res["claim"]
+    print(f"claimed {c['scope']} as {c['machine']}/{c['agent']} (ttl {c['ttl_hours']}h)")
+    if res.get("shard_replicated"):
+        print("✓ Claim replicated natively into NouGen shards cluster.")
+    if res.get("wake_dispatch"):
+        print("✓ Immediate work enforcement ping broadcast across fleet bus.")
+    if res.get("execution_pid"):
+        print(f"✓ Immediate execution launched (PID {res['execution_pid']}): {args.execute_cmd}")
 
 
 def cmd_open(args):
@@ -3701,7 +3777,7 @@ def main():
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
-        "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr,
+        "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr, "claim": cmd_claim,
         "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
         "transcribe": cmd_transcribe, "live": cmd_live, "algo": cmd_algo,

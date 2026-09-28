@@ -42,8 +42,8 @@ _UNPROVEN = {"dead_letter"}
 _ADDRESS = re.compile(r"->\s*@([A-Za-z0-9_.-]+)|\[\s*([A-Za-z0-9_.-]+)\s+DIRECT\s*\]", re.I)
 _BROADCAST = {"all", "fleet", "everyone", "*"}
 _OWNER_ASK = re.compile(
-    r"\b(dave|owner|gm)\b[^.\n]{0,40}\b(to decide|to rule|explicit lock|ruling|needs? to (decide|rule|lock))\b"
-    r"|\bneeds?\s+(dave|the owner)\b|\bowner (decision|ruling) (needed|required)\b",
+    r"\b(dave|owner|gm|operator)\b[^.\n]{0,40}\b(to decide|to rule|explicit lock|ruling|needs? to (decide|rule|lock))\b"
+    r"|\bneeds?\s+(dave|the owner|the operator|gm)\b|\bowner (decision|ruling) (needed|required)\b",
     re.I,
 )
 _STATUS_LEAD = re.compile(
