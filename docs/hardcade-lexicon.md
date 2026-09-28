@@ -17,6 +17,7 @@ never diverted by any command here.
 | RELAY FORWARD | advance the baton to the next destination |
 | CHARGE | do the work: hold context, gather evidence, verify locally before bouncing the baton |
 | LOOT | source extraction primitive: `LOOT <source>` inspects authorized/public sources, recovers structured assets/content, preserves provenance, and returns an inventory. Evidence-gated |
+| INTELLIGIZE | natural speech/shorthand -> memory+context+canon resolution -> executable intent -> reasoning/action. User does not craft prompts when context is sufficient ("I don't send prompts anymore. I intelligize my words.") |
 
 ## Moves (named commands)
 

@@ -42,6 +42,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from nougen_time import InvalidTimestampError, format_display_time
+
 ANALYSIS = ROOT / "analysis" / "recall_eval"
 GOLDEN = ANALYSIS / "golden.json"
 KS = (1, 3, 5, 10)
@@ -196,9 +199,8 @@ def build(n: int, neg: int, seed: int, include_research: bool = False) -> dict:
 
 def _eastern(dt):
     try:
-        from zoneinfo import ZoneInfo  # pylint: disable=import-outside-toplevel
-        return dt.astimezone(ZoneInfo("America/New_York")).strftime("%I:%M %p %Z %a %m/%d").lstrip("0")
-    except Exception:  # tzdata missing on this interpreter
+        return format_display_time(dt.isoformat(), paired=False)
+    except (InvalidTimestampError, AttributeError):
         return None
 
 

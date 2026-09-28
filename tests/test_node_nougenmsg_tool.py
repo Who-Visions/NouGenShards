@@ -46,3 +46,17 @@ def test_every_msg_method_exists_on_the_class_it_is_called_on():
     missing = [f"{fn}: {call}" for fn, call in _calls()
                if not callable(getattr(getattr(nougenmsg, call.split(".")[0]), call.split(".")[1], None))]
     assert not missing, "app.py calls NouGenMsg methods on the wrong class: " + "; ".join(missing)
+
+
+def test_nougenmsg_reader_tools_defined_on_node():
+    """Verify that nougenmsg_read and nougenmsg_search are declared as node MCP tools."""
+    tree = ast.parse(APP.read_text(encoding="utf-8"))
+    tool_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            for dec in node.decorator_list:
+                if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                        and dec.func.attr == "tool"):
+                    tool_names.add(node.name)
+    assert {"nougenmsg_latest", "nougenmsg_inbox", "nougenmsg_read", "nougenmsg_search"} <= tool_names
+

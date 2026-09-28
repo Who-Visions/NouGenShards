@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 import uuid
+from nougen_time import InvalidTimestampError, format_display_time
 
 PIPE = r"\\.\pipe\LOCAL\nougen-msg-codex"
 MAX_BYTES = 24000
@@ -167,7 +168,10 @@ def banner(message, thread, transport):
     """Render attributed data inline without granting it instruction authority."""
     source = re.sub(r"[^A-Za-z0-9_.:/@+-]", "_", message["source"])[:160]
     message_id = str(message.get("message_id") or "legacy-unidentified")
-    received = datetime.fromtimestamp(message["timestamp"], timezone.utc).isoformat()
+    try:
+        received = format_display_time(message.get("timestamp"))
+    except InvalidTimestampError:
+        received = "[invalid timestamp]"
     return (
         "> 📨 **NOUGENMSG · INCOMING**\n"
         f"> **Attributed source:** {source}\n"

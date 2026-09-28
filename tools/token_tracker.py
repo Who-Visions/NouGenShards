@@ -19,6 +19,9 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 import datetime as _dtm
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+from nougen_time import format_display_time
+
 DAYS = 2
 MONTH = None
 BY_PROVIDER = False
@@ -309,7 +312,7 @@ MODEL_PRICING = {
     "gpt-5.4-mini":               (0.75, 4.50, 0.075, DOC),
     "gpt-5-codex-mini":           (0.75, 4.50, 0.075, EST),
     "gpt-5.1-codex-mini":         (0.75, 4.50, 0.075, EST),
-    # gpt-oss is open-weights; Dave runs it free via OpenRouter/local. Nominal host est.
+    # gpt-oss is open-weights; runs free via OpenRouter/local. Nominal host est.
     "gpt-oss-120b-medium":        (0.10, 0.40, 0.010, EST),
 }
 # Unknown model: conservative estimate so the bill never silently reads $0.
@@ -1372,7 +1375,7 @@ def print_top_hogs(invocations):
     print("======================================================================")
     for idx, inv in enumerate(sorted_inv, 1):
         ts = inv.get("timestamp")
-        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else "unknown"
+        ts_str = _fmt_window_time(ts) if ts else "unknown"
         source = inv.get("source", "unknown")
         model = inv.get("model", "unknown")
         exact_str = "exact" if inv.get("exact", True) else "estimated"
@@ -1399,20 +1402,26 @@ def print_route_recommendations(invocations):
     print("======================================================================")
 
 
+def _fmt_window_time(dt):
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    return format_display_time(dt.isoformat(), paired=False)
+
+
 # --- Main Reporting ---
 print("\n======================================================================")
 if RANGE_START or RANGE_END:
     print(f"Token usage monitor — range {CUTOFF:%Y-%m-%d} -> {LIMIT_UPPER - timedelta(days=1):%Y-%m-%d}")
-    print(f"window: {CUTOFF:%Y-%m-%d %H:%M} -> {LIMIT_UPPER:%Y-%m-%d %H:%M} {NOW:%Z}")
+    print(f"window: {_fmt_window_time(CUTOFF)} -> {_fmt_window_time(LIMIT_UPPER)}")
 elif MONTH:
     print(f"Token usage monitor — Month: {MONTH}")
-    print(f"window: {CUTOFF:%Y-%m-%d %H:%M} -> {LIMIT_UPPER:%Y-%m-%d %H:%M} {NOW:%Z}")
+    print(f"window: {_fmt_window_time(CUTOFF)} -> {_fmt_window_time(LIMIT_UPPER)}")
 elif COMPARE_N:
     print(f"Token usage monitor — compare last {COMPARE_N}d vs prior {COMPARE_N}d (collecting {DAYS} days)")
-    print(f"window: {CUTOFF:%Y-%m-%d %H:%M} -> {NOW:%Y-%m-%d %H:%M} {NOW:%Z}")
+    print(f"window: {_fmt_window_time(CUTOFF)} -> {_fmt_window_time(NOW)}")
 else:
     print(f"Token usage monitor — last {DAYS} day(s)")
-    print(f"window: {CUTOFF:%Y-%m-%d %H:%M} -> {NOW:%Y-%m-%d %H:%M} {NOW:%Z}")
+    print(f"window: {_fmt_window_time(CUTOFF)} -> {_fmt_window_time(NOW)}")
 print("scope:  [EVIDENCE-SCOPED OBSERVABLE FLOOR | TRUE USAGE >= TRACKED TOTALS]")
 print("======================================================================\n")
 
@@ -2261,4 +2270,3 @@ if __name__ == "__main__" and LANES:
     print(f"Token usage analytics  (history through {NOW:%Y-%m-%d})")
     print("=" * 70)
     print_analytics_dashboard(ALL_INVOCATIONS, NOW)
-

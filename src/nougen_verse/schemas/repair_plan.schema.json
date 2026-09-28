@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nougen.local/schemas/repair_plan.schema.json",
+  "title": "RepairPlan",
+  "type": "object",
+  "required": ["schema_version", "actions", "llm_instructions", "preserved_voice", "notes"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "actions": {"type": "array", "items": {"type": "object", "required": ["bar", "original", "problems", "preserve", "instruction", "candidates"], "properties": {
+      "bar": {"type": "integer", "minimum": 1},
+      "preserve": {"type": "array", "items": {"type": "string"}},
+      "candidates": {"type": "array", "items": {"type": "object", "required": ["type", "text", "voice_similarity"], "properties": {
+        "voice_similarity": {"type": "number", "minimum": 0, "maximum": 1}
+      }}},
+      "ending_options": {"type": "array", "items": {"type": "string"}}
+    }}},
+    "llm_instructions": {"type": "string"},
+    "preserved_voice": {"type": "object"},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

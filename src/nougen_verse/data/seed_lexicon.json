@@ -1,0 +1,1051 @@
+{
+  "_about": "Small hand-written seed lexicon in ARPAbet for common words that spelling rules get wrong (function words, irregular spellings, a few number words). It keeps the no-dictionary mode usable. Entries list one or more pronunciations, most useful for rhyme first. Stress digits: 1 primary, 2 secondary, 0 unstressed.",
+  "provenance": "hand-written for nougen-verse",
+  "license": "same as repo",
+  "words": {
+    "a": [
+      "AH0",
+      "EY1"
+    ],
+    "an": [
+      "AE1 N",
+      "AH0 N"
+    ],
+    "and": [
+      "AE1 N D",
+      "AH0 N D"
+    ],
+    "the": [
+      "DH AH0",
+      "DH IY0"
+    ],
+    "of": [
+      "AH1 V"
+    ],
+    "to": [
+      "T UW1"
+    ],
+    "too": [
+      "T UW1"
+    ],
+    "two": [
+      "T UW1"
+    ],
+    "into": [
+      "IH0 N T UW1"
+    ],
+    "onto": [
+      "AA1 N T UW0"
+    ],
+    "you": [
+      "Y UW1"
+    ],
+    "your": [
+      "Y AO1 R"
+    ],
+    "yours": [
+      "Y AO1 R Z"
+    ],
+    "i": [
+      "AY1"
+    ],
+    "i'm": [
+      "AY1 M"
+    ],
+    "i'll": [
+      "AY1 L"
+    ],
+    "i'd": [
+      "AY1 D"
+    ],
+    "i've": [
+      "AY1 V"
+    ],
+    "my": [
+      "M AY1"
+    ],
+    "me": [
+      "M IY1"
+    ],
+    "we": [
+      "W IY1"
+    ],
+    "he": [
+      "HH IY1"
+    ],
+    "she": [
+      "SH IY1"
+    ],
+    "they": [
+      "DH EY1"
+    ],
+    "them": [
+      "DH EH1 M"
+    ],
+    "'em": [
+      "AH0 M"
+    ],
+    "their": [
+      "DH EH1 R"
+    ],
+    "there": [
+      "DH EH1 R"
+    ],
+    "they're": [
+      "DH EH1 R"
+    ],
+    "these": [
+      "DH IY1 Z"
+    ],
+    "those": [
+      "DH OW1 Z"
+    ],
+    "this": [
+      "DH IH1 S"
+    ],
+    "that": [
+      "DH AE1 T"
+    ],
+    "than": [
+      "DH AE1 N"
+    ],
+    "then": [
+      "DH EH1 N"
+    ],
+    "though": [
+      "DH OW1"
+    ],
+    "although": [
+      "AO0 L DH OW1"
+    ],
+    "what": [
+      "W AH1 T"
+    ],
+    "who": [
+      "HH UW1"
+    ],
+    "whose": [
+      "HH UW1 Z"
+    ],
+    "where": [
+      "W EH1 R"
+    ],
+    "when": [
+      "W EH1 N"
+    ],
+    "why": [
+      "W AY1"
+    ],
+    "how": [
+      "HH AW1"
+    ],
+    "was": [
+      "W AA1 Z",
+      "W AH0 Z"
+    ],
+    "were": [
+      "W ER1"
+    ],
+    "is": [
+      "IH1 Z"
+    ],
+    "his": [
+      "HH IH1 Z"
+    ],
+    "as": [
+      "AE1 Z"
+    ],
+    "us": [
+      "AH1 S"
+    ],
+    "yes": [
+      "Y EH1 S"
+    ],
+    "sometimes": [
+      "S AH1 M T AY2 M Z"
+    ],
+    "are": [
+      "AA1 R"
+    ],
+    "be": [
+      "B IY1"
+    ],
+    "been": [
+      "B IH1 N"
+    ],
+    "being": [
+      "B IY1 IH0 NG"
+    ],
+    "do": [
+      "D UW1"
+    ],
+    "does": [
+      "D AH1 Z"
+    ],
+    "done": [
+      "D AH1 N"
+    ],
+    "don't": [
+      "D OW1 N T"
+    ],
+    "doesn't": [
+      "D AH1 Z AH0 N T"
+    ],
+    "didn't": [
+      "D IH1 D AH0 N T"
+    ],
+    "can't": [
+      "K AE1 N T"
+    ],
+    "won't": [
+      "W OW1 N T"
+    ],
+    "ain't": [
+      "EY1 N T"
+    ],
+    "isn't": [
+      "IH1 Z AH0 N T"
+    ],
+    "wasn't": [
+      "W AA1 Z AH0 N T"
+    ],
+    "it's": [
+      "IH1 T S"
+    ],
+    "that's": [
+      "DH AE1 T S"
+    ],
+    "what's": [
+      "W AH1 T S"
+    ],
+    "let's": [
+      "L EH1 T S"
+    ],
+    "he's": [
+      "HH IY1 Z"
+    ],
+    "she's": [
+      "SH IY1 Z"
+    ],
+    "we're": [
+      "W IH1 R"
+    ],
+    "you're": [
+      "Y UH1 R"
+    ],
+    "y'all": [
+      "Y AO1 L"
+    ],
+    "'cause": [
+      "K AH1 Z"
+    ],
+    "gonna": [
+      "G AA1 N AH0"
+    ],
+    "wanna": [
+      "W AA1 N AH0"
+    ],
+    "gotta": [
+      "G AA1 T AH0"
+    ],
+    "tryna": [
+      "T R AY1 N AH0"
+    ],
+    "one": [
+      "W AH1 N"
+    ],
+    "once": [
+      "W AH1 N S"
+    ],
+    "none": [
+      "N AH1 N"
+    ],
+    "someone": [
+      "S AH1 M W AH2 N"
+    ],
+    "everyone": [
+      "EH1 V R IY0 W AH2 N"
+    ],
+    "said": [
+      "S EH1 D"
+    ],
+    "says": [
+      "S EH1 Z"
+    ],
+    "have": [
+      "HH AE1 V"
+    ],
+    "has": [
+      "HH AE1 Z"
+    ],
+    "give": [
+      "G IH1 V"
+    ],
+    "live": [
+      "L IH1 V",
+      "L AY1 V"
+    ],
+    "love": [
+      "L AH1 V"
+    ],
+    "above": [
+      "AH0 B AH1 V"
+    ],
+    "glove": [
+      "G L AH1 V"
+    ],
+    "come": [
+      "K AH1 M"
+    ],
+    "some": [
+      "S AH1 M"
+    ],
+    "become": [
+      "B IH0 K AH1 M"
+    ],
+    "gone": [
+      "G AO1 N"
+    ],
+    "again": [
+      "AH0 G EH1 N"
+    ],
+    "against": [
+      "AH0 G EH1 N S T"
+    ],
+    "any": [
+      "EH1 N IY0"
+    ],
+    "many": [
+      "M EH1 N IY0"
+    ],
+    "only": [
+      "OW1 N L IY0"
+    ],
+    "would": [
+      "W UH1 D"
+    ],
+    "could": [
+      "K UH1 D"
+    ],
+    "should": [
+      "SH UH1 D"
+    ],
+    "eye": [
+      "AY1"
+    ],
+    "eyes": [
+      "AY1 Z"
+    ],
+    "buy": [
+      "B AY1"
+    ],
+    "through": [
+      "TH R UW1"
+    ],
+    "thought": [
+      "TH AO1 T"
+    ],
+    "enough": [
+      "IH0 N AH1 F"
+    ],
+    "tough": [
+      "T AH1 F"
+    ],
+    "rough": [
+      "R AH1 F"
+    ],
+    "laugh": [
+      "L AE1 F"
+    ],
+    "heart": [
+      "HH AA1 R T"
+    ],
+    "word": [
+      "W ER1 D"
+    ],
+    "world": [
+      "W ER1 L D"
+    ],
+    "work": [
+      "W ER1 K"
+    ],
+    "worse": [
+      "W ER1 S"
+    ],
+    "worst": [
+      "W ER1 S T"
+    ],
+    "worth": [
+      "W ER1 TH"
+    ],
+    "walk": [
+      "W AO1 K"
+    ],
+    "talk": [
+      "T AO1 K"
+    ],
+    "know": [
+      "N OW1"
+    ],
+    "known": [
+      "N OW1 N"
+    ],
+    "knew": [
+      "N UW1"
+    ],
+    "now": [
+      "N AW1"
+    ],
+    "cow": [
+      "K AW1"
+    ],
+    "wow": [
+      "W AW1"
+    ],
+    "allow": [
+      "AH0 L AW1"
+    ],
+    "down": [
+      "D AW1 N"
+    ],
+    "town": [
+      "T AW1 N"
+    ],
+    "crown": [
+      "K R AW1 N"
+    ],
+    "brown": [
+      "B R AW1 N"
+    ],
+    "gown": [
+      "G AW1 N"
+    ],
+    "clown": [
+      "K L AW1 N"
+    ],
+    "drown": [
+      "D R AW1 N"
+    ],
+    "frown": [
+      "F R AW1 N"
+    ],
+    "own": [
+      "OW1 N"
+    ],
+    "power": [
+      "P AW1 ER0"
+    ],
+    "flower": [
+      "F L AW1 ER0"
+    ],
+    "hour": [
+      "AW1 ER0"
+    ],
+    "hours": [
+      "AW1 ER0 Z"
+    ],
+    "our": [
+      "AW1 ER0"
+    ],
+    "four": [
+      "F AO1 R"
+    ],
+    "pour": [
+      "P AO1 R"
+    ],
+    "door": [
+      "D AO1 R"
+    ],
+    "floor": [
+      "F L AO1 R"
+    ],
+    "court": [
+      "K AO1 R T"
+    ],
+    "course": [
+      "K AO1 R S"
+    ],
+    "bread": [
+      "B R EH1 D"
+    ],
+    "head": [
+      "HH EH1 D"
+    ],
+    "dead": [
+      "D EH1 D"
+    ],
+    "instead": [
+      "IH0 N S T EH1 D"
+    ],
+    "ready": [
+      "R EH1 D IY0"
+    ],
+    "heavy": [
+      "HH EH1 V IY0"
+    ],
+    "breath": [
+      "B R EH1 TH"
+    ],
+    "weather": [
+      "W EH1 DH ER0"
+    ],
+    "sweat": [
+      "S W EH1 T"
+    ],
+    "thread": [
+      "TH R EH1 D"
+    ],
+    "great": [
+      "G R EY1 T"
+    ],
+    "break": [
+      "B R EY1 K"
+    ],
+    "heard": [
+      "HH ER1 D"
+    ],
+    "learn": [
+      "L ER1 N"
+    ],
+    "early": [
+      "ER1 L IY0"
+    ],
+    "earth": [
+      "ER1 TH"
+    ],
+    "good": [
+      "G UH1 D"
+    ],
+    "wood": [
+      "W UH1 D"
+    ],
+    "stood": [
+      "S T UH1 D"
+    ],
+    "hood": [
+      "HH UH1 D"
+    ],
+    "foot": [
+      "F UH1 T"
+    ],
+    "put": [
+      "P UH1 T"
+    ],
+    "push": [
+      "P UH1 SH"
+    ],
+    "pull": [
+      "P UH1 L"
+    ],
+    "full": [
+      "F UH1 L"
+    ],
+    "money": [
+      "M AH1 N IY0"
+    ],
+    "every": [
+      "EH1 V R IY0"
+    ],
+    "very": [
+      "V EH1 R IY0"
+    ],
+    "memory": [
+      "M EH1 M ER0 IY0"
+    ],
+    "enemy": [
+      "EH1 N AH0 M IY0"
+    ],
+    "family": [
+      "F AE1 M AH0 L IY0"
+    ],
+    "different": [
+      "D IH1 F R AH0 N T"
+    ],
+    "business": [
+      "B IH1 Z N AH0 S"
+    ],
+    "evening": [
+      "IY1 V N IH0 NG"
+    ],
+    "city": [
+      "S IH1 T IY0"
+    ],
+    "body": [
+      "B AA1 D IY0"
+    ],
+    "somebody": [
+      "S AH1 M B AA2 D IY0"
+    ],
+    "nobody": [
+      "N OW1 B AA2 D IY0"
+    ],
+    "river": [
+      "R IH1 V ER0"
+    ],
+    "never": [
+      "N EH1 V ER0"
+    ],
+    "ever": [
+      "EH1 V ER0"
+    ],
+    "over": [
+      "OW1 V ER0"
+    ],
+    "other": [
+      "AH1 DH ER0"
+    ],
+    "mother": [
+      "M AH1 DH ER0"
+    ],
+    "brother": [
+      "B R AH1 DH ER0"
+    ],
+    "father": [
+      "F AA1 DH ER0"
+    ],
+    "together": [
+      "T AH0 G EH1 DH ER0"
+    ],
+    "color": [
+      "K AH1 L ER0"
+    ],
+    "get": [
+      "G EH1 T"
+    ],
+    "forget": [
+      "F ER0 G EH1 T"
+    ],
+    "girl": [
+      "G ER1 L"
+    ],
+    "begin": [
+      "B IH0 G IH1 N"
+    ],
+    "water": [
+      "W AO1 T ER0"
+    ],
+    "aunt": [
+      "AE1 N T",
+      "AA1 N T"
+    ],
+    "watch": [
+      "W AA1 CH"
+    ],
+    "want": [
+      "W AA1 N T"
+    ],
+    "lost": [
+      "L AO1 S T"
+    ],
+    "cost": [
+      "K AO1 S T"
+    ],
+    "post": [
+      "P OW1 S T"
+    ],
+    "most": [
+      "M OW1 S T"
+    ],
+    "ghost": [
+      "G OW1 S T"
+    ],
+    "host": [
+      "HH OW1 S T"
+    ],
+    "move": [
+      "M UW1 V"
+    ],
+    "lose": [
+      "L UW1 Z"
+    ],
+    "shoe": [
+      "SH UW1"
+    ],
+    "sure": [
+      "SH UH1 R"
+    ],
+    "here": [
+      "HH IH1 R"
+    ],
+    "year": [
+      "Y IH1 R"
+    ],
+    "wear": [
+      "W EH1 R"
+    ],
+    "bear": [
+      "B EH1 R"
+    ],
+    "friend": [
+      "F R EH1 N D"
+    ],
+    "people": [
+      "P IY1 P AH0 L"
+    ],
+    "music": [
+      "M Y UW1 Z IH0 K"
+    ],
+    "listen": [
+      "L IH1 S AH0 N"
+    ],
+    "often": [
+      "AO1 F AH0 N"
+    ],
+    "because": [
+      "B IH0 K AH1 Z"
+    ],
+    "maybe": [
+      "M EY1 B IY0"
+    ],
+    "okay": [
+      "OW2 K EY1"
+    ],
+    "radio": [
+      "R EY1 D IY0 OW2"
+    ],
+    "receipt": [
+      "R IH0 S IY1 T"
+    ],
+    "police": [
+      "P AH0 L IY1 S"
+    ],
+    "hospital": [
+      "HH AA1 S P IH0 T AH0 L"
+    ],
+    "powder": [
+      "P AW1 D ER0"
+    ],
+    "glovebox": [
+      "G L AH1 V B AA2 K S"
+    ],
+    "handwriting": [
+      "HH AE1 N D R AY2 T IH0 NG"
+    ],
+    "envelope": [
+      "EH1 N V AH0 L OW2 P"
+    ],
+    "funeral": [
+      "F Y UW1 N ER0 AH0 L"
+    ],
+    "sunday": [
+      "S AH1 N D EY2"
+    ],
+    "monday": [
+      "M AH1 N D EY2"
+    ],
+    "tuesday": [
+      "T UW1 Z D EY2"
+    ],
+    "friday": [
+      "F R AY1 D EY2"
+    ],
+    "towel": [
+      "T AW1 AH0 L"
+    ],
+    "landlord": [
+      "L AE1 N D L AO2 R D"
+    ],
+    "building": [
+      "B IH1 L D IH0 NG"
+    ],
+    "afternoon": [
+      "AE2 F T ER0 N UW1 N"
+    ],
+    "thermos": [
+      "TH ER1 M AH0 S"
+    ],
+    "coffee": [
+      "K AO1 F IY0"
+    ],
+    "cousin": [
+      "K AH1 Z AH0 N"
+    ],
+    "son": [
+      "S AH1 N"
+    ],
+    "won": [
+      "W AH1 N"
+    ],
+    "hustle": [
+      "HH AH1 S AH0 L"
+    ],
+    "castle": [
+      "K AE1 S AH0 L"
+    ],
+    "nothing": [
+      "N AH1 TH IH0 NG"
+    ],
+    "something": [
+      "S AH1 M TH IH0 NG"
+    ],
+    "everything": [
+      "EH1 V R IY0 TH IH2 NG"
+    ],
+    "anything": [
+      "EH1 N IY0 TH IH2 NG"
+    ],
+    "about": [
+      "AH0 B AW1 T"
+    ],
+    "around": [
+      "ER0 AW1 N D"
+    ],
+    "away": [
+      "AH0 W EY1"
+    ],
+    "alone": [
+      "AH0 L OW1 N"
+    ],
+    "along": [
+      "AH0 L AO1 NG"
+    ],
+    "across": [
+      "AH0 K R AO1 S"
+    ],
+    "behind": [
+      "B IH0 HH AY1 N D"
+    ],
+    "before": [
+      "B IH0 F AO1 R"
+    ],
+    "below": [
+      "B IH0 L OW1"
+    ],
+    "between": [
+      "B IH0 T W IY1 N"
+    ],
+    "yeah": [
+      "Y AE1"
+    ],
+    "oh": [
+      "OW1"
+    ],
+    "uh": [
+      "AH1"
+    ],
+    "addressed": [
+      "AH0 D R EH1 S T"
+    ],
+    "pier": [
+      "P IH1 R"
+    ],
+    "tea": [
+      "T IY1"
+    ],
+    "idea": [
+      "AY0 D IY1 AH0"
+    ],
+    "science": [
+      "S AY1 AH0 N S"
+    ],
+    "quiet": [
+      "K W AY1 AH0 T"
+    ],
+    "lion": [
+      "L AY1 AH0 N"
+    ],
+    "iron": [
+      "AY1 ER0 N"
+    ],
+    "fire": [
+      "F AY1 ER0"
+    ],
+    "higher": [
+      "HH AY1 ER0"
+    ],
+    "choir": [
+      "K W AY1 ER0"
+    ],
+    "island": [
+      "AY1 L AH0 N D"
+    ],
+    "answer": [
+      "AE1 N S ER0"
+    ],
+    "sign": [
+      "S AY1 N"
+    ],
+    "gauge": [
+      "G EY1 JH"
+    ],
+    "height": [
+      "HH AY1 T"
+    ],
+    "neighbor": [
+      "N EY1 B ER0"
+    ],
+    "kettle": [
+      "K EH1 T AH0 L"
+    ],
+    "o'clock": [
+      "AH0 K L AA1 K"
+    ],
+    "zero": [
+      "Z IH1 R OW0"
+    ],
+    "three": [
+      "TH R IY1"
+    ],
+    "five": [
+      "F AY1 V"
+    ],
+    "six": [
+      "S IH1 K S"
+    ],
+    "seven": [
+      "S EH1 V AH0 N"
+    ],
+    "eight": [
+      "EY1 T"
+    ],
+    "nine": [
+      "N AY1 N"
+    ],
+    "ten": [
+      "T EH1 N"
+    ],
+    "eleven": [
+      "IH0 L EH1 V AH0 N"
+    ],
+    "twelve": [
+      "T W EH1 L V"
+    ],
+    "thirteen": [
+      "TH ER1 T IY1 N"
+    ],
+    "fourteen": [
+      "F AO1 R T IY1 N"
+    ],
+    "fifteen": [
+      "F IH0 F T IY1 N"
+    ],
+    "sixteen": [
+      "S IH0 K S T IY1 N"
+    ],
+    "seventeen": [
+      "S EH1 V AH0 N T IY1 N"
+    ],
+    "eighteen": [
+      "EY1 T IY1 N"
+    ],
+    "nineteen": [
+      "N AY1 N T IY1 N"
+    ],
+    "twenty": [
+      "T W EH1 N T IY0"
+    ],
+    "thirty": [
+      "TH ER1 D IY0"
+    ],
+    "forty": [
+      "F AO1 R T IY0"
+    ],
+    "fifty": [
+      "F IH1 F T IY0"
+    ],
+    "sixty": [
+      "S IH1 K S T IY0"
+    ],
+    "seventy": [
+      "S EH1 V AH0 N T IY0"
+    ],
+    "eighty": [
+      "EY1 T IY0"
+    ],
+    "ninety": [
+      "N AY1 N T IY0"
+    ],
+    "hundred": [
+      "HH AH1 N D R AH0 D"
+    ],
+    "thousand": [
+      "TH AW1 Z AH0 N D"
+    ],
+    "understand": [
+      "AH2 N D ER0 S T AE1 N D"
+    ],
+    "tonight": [
+      "T AH0 N AY1 T"
+    ],
+    "today": [
+      "T AH0 D EY1"
+    ],
+    "tomorrow": [
+      "T AH0 M AA1 R OW2"
+    ],
+    "ignite": [
+      "IH0 G N AY1 T"
+    ],
+    "delight": [
+      "D IH0 L AY1 T"
+    ],
+    "despite": [
+      "D IH0 S P AY1 T"
+    ],
+    "apart": [
+      "AH0 P AA1 R T"
+    ],
+    "alright": [
+      "AO2 L R AY1 T"
+    ],
+    "naive": [
+      "N AY0 IY1 V"
+    ],
+    "cafe": [
+      "K AH0 F EY1"
+    ],
+    "grandpa": [
+      "G R AE1 N D P AA2"
+    ],
+    "laundromat": [
+      "L AO1 N D R AH0 M AE2 T"
+    ],
+    "ninety-one": [
+      "N AY1 N T IY0 W AH1 N"
+    ],
+    "blood": [
+      "B L AH1 D"
+    ],
+    "board": [
+      "B AO1 R D"
+    ],
+    "bowl": [
+      "B OW1 L"
+    ],
+    "camera": [
+      "K AE1 M ER0 AH0",
+      "K AE1 M R AH0"
+    ],
+    "cover": [
+      "K AH1 V ER0"
+    ],
+    "closet": [
+      "K L AA1 Z AH0 T"
+    ],
+    "angel": [
+      "EY1 N JH AH0 L"
+    ],
+    "danger": [
+      "D EY1 N JH ER0"
+    ],
+    "case": [
+      "K EY1 S"
+    ],
+    "basement": [
+      "B EY1 S M AH0 N T"
+    ],
+    "comb": [
+      "K OW1 M"
+    ],
+    "habit": [
+      "HH AE1 B AH0 T"
+    ],
+    "lead": [
+      "L EH1 D",
+      "L IY1 D"
+    ],
+    "skrrt": [
+      "S K ER1 T"
+    ]
+  }
+}

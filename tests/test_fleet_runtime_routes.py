@@ -1,8 +1,9 @@
-"""Fleet node routes follow runtime identity instead of stale literals."""
+"""Fleet routes are tenant-configured and empty on a clean install."""
 
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 
@@ -15,19 +16,41 @@ def _load_fleet():
     return module
 
 
-def test_blade_route_defaults_to_mdns_and_installed_model(monkeypatch):
-    monkeypatch.delenv("NOUGEN_BLADE_HOST", raising=False)
-    monkeypatch.delenv("NOUGEN_BLADE_MODEL", raising=False)
+def test_clean_install_has_no_private_local_routes(monkeypatch, tmp_path):
+    monkeypatch.delenv("NOUGEN_LOCAL_ROUTES_JSON", raising=False)
+    monkeypatch.setenv("NOUGEN_LOCAL_ROUTES_FILE", str(tmp_path / "missing.json"))
     fleet = _load_fleet()
-    route = next(r for r in fleet.LOCAL_ROUTES if r["name"] == "local-ollama-blade")
-    assert route["url"] == "http://blade1tb.local:11434/v1"
-    assert route["model"] == "gemma4:e2b"
+    assert fleet.LOCAL_ROUTES == []
 
 
-def test_blade_route_allows_runtime_overrides(monkeypatch):
-    monkeypatch.setenv("NOUGEN_BLADE_HOST", "blade.test")
-    monkeypatch.setenv("NOUGEN_BLADE_MODEL", "installed:test")
+def test_runtime_routes_load_from_explicit_json(monkeypatch):
+    routes = [{
+        "name": "local-ollama-node-a",
+        "url": "http://node-a.test:11434/v1",
+        "model": "installed:test",
+        "headers": {},
+        "kind": "local",
+    }]
+    monkeypatch.setenv("NOUGEN_LOCAL_ROUTES_JSON", json.dumps(routes))
     fleet = _load_fleet()
-    route = next(r for r in fleet.LOCAL_ROUTES if r["name"] == "local-ollama-blade")
-    assert route["url"] == "http://blade.test:11434/v1"
-    assert route["model"] == "installed:test"
+    assert fleet.LOCAL_ROUTES == routes
+
+
+def test_runtime_routes_load_from_user_file(monkeypatch, tmp_path):
+    path = tmp_path / "local_routes.json"
+    path.write_text(json.dumps({"routes": [{
+        "name": "lmstudio-workstation",
+        "url": "http://workstation.test:1234/v1",
+        "model": "local-model",
+        "kind": "lmstudio",
+    }]}), encoding="utf-8")
+    monkeypatch.delenv("NOUGEN_LOCAL_ROUTES_JSON", raising=False)
+    monkeypatch.setenv("NOUGEN_LOCAL_ROUTES_FILE", str(path))
+    fleet = _load_fleet()
+    assert fleet.LOCAL_ROUTES == [{
+        "name": "lmstudio-workstation",
+        "url": "http://workstation.test:1234/v1",
+        "model": "local-model",
+        "headers": {},
+        "kind": "lmstudio",
+    }]

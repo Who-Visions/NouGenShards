@@ -1,6 +1,6 @@
 """Lane claims - the fleet's "I am working here" signal, enforced by pre-commit.
 
-Dave built the relay so parallel agents share the field without stepping on
+The fleet relay ensures parallel agents share the field without stepping on
 each other; 2026-08-28 an agent (claude-cli) swept another agent's in-flight
 keymaker work into its own commit with `git add -A`, then nearly reverted it.
 This module is the self-awareness layer that makes that mechanically hard:

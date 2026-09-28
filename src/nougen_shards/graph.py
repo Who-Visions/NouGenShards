@@ -19,6 +19,7 @@ from typing import List, Dict, Optional
 from . import core
 
 
+
 def get_graph_db_path():
     """Path to the graph edge store (alongside the shard cluster in the vault)."""
     vault = core.active_vault_dir()

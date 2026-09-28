@@ -336,10 +336,18 @@ def _run_tool(call: dict) -> dict:
                                                   "Accept": "application/vnd.github+json"})
             with urllib.request.urlopen(req, timeout=30) as r:
                 return json.loads(r.read().decode())
-        leg_id = str(call.get("id") or "").strip()
         if not leg_id:
-            entries = _gh(f"/contents/.handoffs?ref={branch}")
-            ids = sorted((e["name"][:-5] for e in entries if e["name"].endswith(".json")), reverse=True)
+            try:
+                tree_data = _gh(f"/git/trees/{branch}?recursive=1")
+                entries = [
+                    item["path"].split("/")[-1]
+                    for item in tree_data.get("tree", [])
+                    if item.get("path", "").startswith(".handoffs/") and item.get("type") == "blob"
+                ]
+                ids = sorted((name[:-5] for name in entries if name.endswith(".json")), reverse=True)
+            except Exception:
+                entries = _gh(f"/contents/.handoffs?ref={branch}")
+                ids = sorted((e["name"][:-5] for e in entries if isinstance(e, dict) and e.get("name", "").endswith(".json")), reverse=True)
             if not ids:
                 return {"error": "relay registry has no legs"}
             leg_id = ids[0]

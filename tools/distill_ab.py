@@ -18,7 +18,6 @@ import contextlib
 import json
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,14 +26,11 @@ os.environ.setdefault("NOUGEN_VAULT_DIR", str(Path.home() / ".nougen" / "shards"
 os.environ["NOUGEN_QUERY_EMBED"] = "0"
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
+from nougen_time import format_log_time, now as nougen_now
 
 
 def log(msg: str) -> None:
-    try:
-        from zoneinfo import ZoneInfo
-        stamp = datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M %p %Z").lstrip("0")
-    except Exception:
-        stamp = datetime.now().strftime("%I:%M %p")
+    stamp = format_log_time(nougen_now().utc_iso)
     with LOG.open("a", encoding="utf-8") as fh:
         fh.write(f"[{stamp}] {msg}\n")
 

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nougen.local/schemas/verse_analysis.schema.json",
+  "title": "VerseAnalysis",
+  "description": "Output of ANALYZE mode. Bar numbers are 1-based. Cadence and scores are estimates; see confidence and limitations.",
+  "type": "object",
+  "required": [
+    "schema_version", "counts", "syllables", "stress_patterns", "end_rhyme_families", "internal_rhyme_families",
+    "multisyllabic_chains", "compound_and_slant_candidates", "rhyme_density", "rhyme_span", "scheme", "pattern_changes",
+    "scheme_breaks", "pattern_collapses", "cadence", "overcrowded_bars", "breath", "lexical_repetition",
+    "semantic_repetition", "generic_flags", "concrete_noun_density", "sensory_detail_density", "named_fact_retention",
+    "persona_consistency", "emotional_progression", "setup_payoff", "weak_bars", "repair_recommendations",
+    "confidence", "limitations"
+  ],
+  "$defs": {
+    "cause": {"enum": ["emotional_escalation", "new_addressee", "reveal", "beat_change", "time_jump", "perspective_shift", "punchline_run", "internal_argument", "loss_of_control", "regained_control", "unexplained"]}
+  },
+  "properties": {
+    "schema_version": {"type": "string"},
+    "counts": {"type": "object", "required": ["lines", "bars", "tokens"], "properties": {
+      "lines": {"type": "integer", "minimum": 0}, "bars": {"type": "integer", "minimum": 0}, "tokens": {"type": "integer", "minimum": 0}
+    }},
+    "syllables": {"type": "object", "required": ["total", "per_bar"], "properties": {
+      "total": {"type": "integer"}, "per_bar": {"type": "array", "items": {"type": "integer"}}
+    }},
+    "stress_patterns": {"type": "array", "items": {"type": "string", "pattern": "^[01]*$"}},
+    "end_rhyme_families": {"type": "array", "items": {"type": "object", "required": ["label", "bars", "words", "rhymed"]}},
+    "internal_rhyme_families": {"type": "array", "items": {"type": "object", "required": ["label", "bars", "words"]}},
+    "multisyllabic_chains": {"type": "array", "items": {"type": "object", "required": ["bars", "syllables", "kind"], "properties": {
+      "kind": {"enum": ["multisyllabic", "compound", "mosaic"]}, "syllables": {"type": "integer", "minimum": 2}
+    }}},
+    "compound_and_slant_candidates": {"type": "array", "items": {"type": "object", "required": ["type", "bars"], "properties": {
+      "type": {"enum": ["compound", "mosaic", "slant"]}
+    }}},
+    "rhyme_density": {"type": "number", "minimum": 0, "maximum": 1},
+    "rhyme_span": {"type": "object", "required": ["mean", "max"]},
+    "scheme": {"type": "object", "required": ["letters", "inferred_pattern", "consistency"], "properties": {
+      "consistency": {"type": "number", "minimum": 0, "maximum": 1}
+    }},
+    "pattern_changes": {"type": "array", "items": {"type": "object", "required": ["bar", "type"]}},
+    "scheme_breaks": {"type": "array", "items": {"type": "object", "required": ["bar", "classification", "confidence", "evidence"], "properties": {
+      "classification": {"enum": ["likely_intentional", "likely_accidental", "planned_break"]},
+      "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+    }}},
+    "pattern_collapses": {"type": "array", "items": {"type": "object", "required": ["bars"]}},
+    "cadence": {"type": "object", "required": ["consistency", "syllables_per_beat", "cells"]},
+    "overcrowded_bars": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+    "breath": {"type": "object", "required": ["profile", "groups", "warnings", "max_pressure", "breath_opportunities"]},
+    "lexical_repetition": {"type": "object", "required": ["type_token_ratio", "repeated"]},
+    "semantic_repetition": {"type": "array", "items": {"type": "object", "required": ["bars", "jaccard"]}},
+    "generic_flags": {"type": "array", "items": {"type": "object", "required": ["bar", "rule", "penalized"], "properties": {
+      "bar": {"type": ["integer", "null"]}, "rule": {"type": "string"}, "penalized": {"type": "boolean"}
+    }}},
+    "concrete_noun_density": {"type": "number", "minimum": 0},
+    "sensory_detail_density": {"type": "number", "minimum": 0},
+    "named_fact_retention": {"type": "object", "required": ["facts", "retained", "total"]},
+    "persona_consistency": {"type": ["object", "null"]},
+    "emotional_progression": {"type": "object", "required": ["curve", "range", "flat"]},
+    "setup_payoff": {"type": "object", "required": ["links", "callbacks", "integrity"]},
+    "weak_bars": {"type": "array", "items": {"type": "object", "required": ["bar", "score", "reasons"]}},
+    "protected_bars": {"type": "array", "items": {"type": "object", "required": ["bar", "label", "evidence"]}},
+    "repair_recommendations": {"type": "array", "items": {"type": "object", "required": ["bar", "recommendations"]}},
+    "confidence": {"type": "object", "required": ["pronunciation_mean", "dictionary_backend"]},
+    "limitations": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "flow_switches": {"type": "array", "items": {"type": "object", "required": ["coordinate", "previous_grammar", "next_grammar", "cause", "semantic_trigger", "breath_consequence", "rhyme_consequence", "delivery_instruction", "confidence"], "properties": {
+      "cause": {"$ref": "#/$defs/cause"}
+    }}},
+    "rhyme_stats": {"type": "object"},
+    "syntax": {"type": "object"},
+    "bars": {"type": "array", "items": {"type": "object", "required": ["bar", "text", "syllables", "job"]}},
+    "grid": {"type": ["object", "null"], "properties": {
+      "estimate_note": {"type": "string"},
+      "bars": {"type": "array", "items": {"type": "object", "required": ["bar", "cell", "events"], "properties": {
+        "events": {"type": "array", "items": {"type": "object", "required": ["bar", "onset", "duration", "kind"], "properties": {
+          "onset": {"type": "string", "pattern": "^-?[0-9]+(/[0-9]+)?$"},
+          "kind": {"enum": ["syllable", "rest"]}
+        }}}
+      }}}
+    }}
+  },
+  "additionalProperties": false
+}

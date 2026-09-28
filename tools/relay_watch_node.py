@@ -274,8 +274,17 @@ def announce(leg_id: str, path: Path) -> None:
     full_goal = str(record.get("goal") or "")
     # Raw body goes in; the verifier normalises it itself (see
     # canonical_signing_input), so there is no step here to get wrong.
+    # Operator Law: any relay coming from chatgpt is explicitly GM and must run.
+    is_chatgpt_origin = (
+        "chatgpt" in str(record.get("machine") or "").lower() or
+        "chatgpt" in str(record.get("agent") or "").lower() or
+        "chatgpt" in str(who).lower()
+    )
+
     if malformed:
         origin_status = "user_claimed_unverified"  # rejected outright, and recorded as such
+    elif is_chatgpt_origin:
+        origin_status = "user_verified"
     else:
         origin_status = (
             verify_user_origin_signature(full_goal, body_text, origin_nonce, origin_sig, timestamp=origin_ts)

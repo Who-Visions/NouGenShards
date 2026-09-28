@@ -1,0 +1,458 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nougen.local/schemas/verse_blueprint.schema.json",
+  "title": "VerseBlueprint",
+  "description": "Output of PLAN mode: constraints for writing a verse. Bar numbers are 1-based. Grid positions are fraction strings in beats.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "request_digest",
+    "seed",
+    "grid",
+    "content_spine",
+    "bar_objectives",
+    "setup_payoff_links",
+    "rhyme_family_assignments",
+    "stressed_syllable_targets",
+    "internal_rhyme_placements",
+    "end_rhyme_placements",
+    "cadence_cells",
+    "rest_positions",
+    "breath_groups",
+    "delivery_instructions",
+    "emotion_curve",
+    "flow_switches",
+    "scheme_breaks",
+    "callbacks",
+    "specificity_anchors",
+    "revision_priorities",
+    "provenance"
+  ],
+  "$defs": {
+    "frac": {
+      "type": "string",
+      "pattern": "^-?[0-9]+(/[0-9]+)?$"
+    },
+    "job": {
+      "enum": [
+        "establish",
+        "specify",
+        "escalate",
+        "contrast",
+        "reveal",
+        "misdirect",
+        "punch",
+        "callback",
+        "pivot",
+        "resolve_or_fracture"
+      ]
+    },
+    "cause": {
+      "enum": [
+        "emotional_escalation",
+        "new_addressee",
+        "reveal",
+        "beat_change",
+        "time_jump",
+        "perspective_shift",
+        "punchline_run",
+        "internal_argument",
+        "loss_of_control",
+        "regained_control"
+      ]
+    },
+    "grammar": {
+      "type": "object",
+      "required": [
+        "cell",
+        "family",
+        "density"
+      ],
+      "properties": {
+        "cell": {
+          "type": "string"
+        },
+        "family": {
+          "type": "string"
+        },
+        "density": {
+          "type": "number"
+        },
+        "landing": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "syncopation": {
+          "type": "number"
+        },
+        "region": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "request_digest": {
+      "type": "string"
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "grid": {
+      "type": "object",
+      "required": [
+        "bpm",
+        "beats_per_bar",
+        "subdivisions_per_beat"
+      ],
+      "properties": {
+        "bpm": {
+          "type": "number"
+        },
+        "beats_per_bar": {
+          "type": "integer"
+        },
+        "subdivisions_per_beat": {
+          "type": "integer"
+        },
+        "swing": {
+          "type": "number"
+        }
+      }
+    },
+    "persona": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "content_spine": {
+      "type": "object",
+      "required": [
+        "what_happened",
+        "who_wants_what",
+        "what_changed",
+        "concrete_objects",
+        "emotional_contradiction",
+        "speaker_only_fact",
+        "central_image",
+        "setup",
+        "payoff",
+        "must_not_say_generically"
+      ]
+    },
+    "bar_objectives": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "bar",
+          "job",
+          "objective"
+        ],
+        "properties": {
+          "bar": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "job": {
+            "$ref": "#/$defs/job"
+          },
+          "objective": {
+            "type": "string"
+          },
+          "anchors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "end_family": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cell": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "setup_payoff_links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "setup_bar",
+          "payoff_bar"
+        ]
+      }
+    },
+    "rhyme_family_assignments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "label",
+          "bars",
+          "anchor_vowel"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "bars": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "anchor_vowel": {
+            "type": "string"
+          },
+          "anchor_word": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggested_endings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "stressed_syllable_targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "bar",
+          "onsets"
+        ]
+      }
+    },
+    "internal_rhyme_placements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "bar",
+          "onset",
+          "family"
+        ],
+        "properties": {
+          "onset": {
+            "$ref": "#/$defs/frac"
+          }
+        }
+      }
+    },
+    "end_rhyme_placements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "bar",
+          "onset",
+          "family"
+        ],
+        "properties": {
+          "onset": {
+            "$ref": "#/$defs/frac"
+          }
+        }
+      }
+    },
+    "cadence_cells": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "bar",
+          "cell"
+        ]
+      }
+    },
+    "rest_positions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "bar",
+          "onset",
+          "duration"
+        ],
+        "properties": {
+          "onset": {
+            "$ref": "#/$defs/frac"
+          },
+          "duration": {
+            "$ref": "#/$defs/frac"
+          }
+        }
+      }
+    },
+    "breath_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "bars"
+        ]
+      }
+    },
+    "delivery_instructions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "bar",
+          "volume",
+          "intensity",
+          "pitch_direction",
+          "timbre",
+          "articulation",
+          "elongation",
+          "stutter",
+          "half_sung",
+          "emphasis_words",
+          "adlib_slots",
+          "silence",
+          "audience_interaction"
+        ]
+      }
+    },
+    "emotion_curve": {
+      "type": "array",
+      "items": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      }
+    },
+    "flow_switches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "coordinate",
+          "previous_grammar",
+          "next_grammar",
+          "cause",
+          "semantic_trigger",
+          "breath_consequence",
+          "rhyme_consequence",
+          "delivery_instruction"
+        ],
+        "properties": {
+          "coordinate": {
+            "type": "object",
+            "required": [
+              "bar",
+              "beat"
+            ],
+            "properties": {
+              "bar": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "beat": {
+                "type": "string"
+              }
+            }
+          },
+          "previous_grammar": {
+            "$ref": "#/$defs/grammar"
+          },
+          "next_grammar": {
+            "$ref": "#/$defs/grammar"
+          },
+          "cause": {
+            "$ref": "#/$defs/cause"
+          }
+        }
+      }
+    },
+    "scheme_breaks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "bar"
+        ]
+      }
+    },
+    "callbacks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "phrase",
+          "bar"
+        ]
+      }
+    },
+    "specificity_anchors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "anchor",
+          "bar",
+          "source"
+        ]
+      }
+    },
+    "revision_priorities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "required_facts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "forbidden_phrases": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "scheme": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

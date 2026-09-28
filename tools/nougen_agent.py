@@ -31,8 +31,9 @@ VAULT = Path(os.environ.get("NOUGEN_VAULT_DIR") or HOME / ".nougen" / "shards").
 os.environ["NOUGEN_VAULT_DIR"] = str(VAULT)          # pin BEFORE nougen_shards is ever imported
 RELAY = Path(os.environ.get("NOUGEN_RELAY_CLONE", str(Path.home() / "Outpost" / "NouGenRelay")))
 NOUGEN_SRC = Path(os.environ.get("NOUGEN_SRC", str(Path(__file__).resolve().parents[1] / "src")))
+sys.path.insert(0, str(NOUGEN_SRC))
+from nougen_time import format_log_time, now as nougen_now
 OLLAMA = "http://127.0.0.1:11434"
-EASTERN_NOTE = "America/New_York"
 MAX_OUT = 3500                                        # chars of any tool result handed to the model
 
 
@@ -53,7 +54,7 @@ def _clip(s: str, n: int = MAX_OUT) -> str:
 
 
 def _local_now() -> datetime:
-    return datetime.now().astimezone()
+    return nougen_now().eastern_dt
 
 
 def _git(*args: str) -> str:
@@ -63,8 +64,7 @@ def _git(*args: str) -> str:
 
 # ------------------------------------------------------------------ tools
 def now() -> str:
-    n = _local_now()
-    return f"{n.strftime('%A %Y-%m-%d %I:%M %p')} {n.tzname()} ({EASTERN_NOTE}); UTC {n.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%MZ')}"
+    return format_log_time(nougen_now().utc_iso)
 
 
 def shards_search(query: str, limit: int = 8) -> str:

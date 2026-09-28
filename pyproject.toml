@@ -32,6 +32,8 @@ dependencies = [
     "tqdm>=4.66",
     "rich>=13.0",
     "colorama>=0.4.6",
+    # ZoneInfo needs IANA data on Windows; system tzdb is used elsewhere.
+    "tzdata>=2024.2; sys_platform == 'win32'",
     "openai>=1.0",           # embeddings provider (text-embedding-3-small)
     "pydantic>=2.0",         # app.py models; mcp also requires pydantic v2
     "numpy>=1.24",           # imported in core.py; previously undeclared (broke `pip install .`)
@@ -58,6 +60,9 @@ tube = [
     "youtube-transcript-api>=0.6",
     "yt-dlp>=2024.1.1",
 ]
+transcribe = [
+    "faster-whisper>=1.1.0",
+]
 
 test = [
     "pytest>=7",
@@ -71,6 +76,7 @@ test = [
 [project.scripts]
 nougen = "nougen_shards.cli:main"
 nougen-mcp = "nougen_shards.mcp:main"
+nougen-time = "nougen_time.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -78,6 +84,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 # War Games scenarios and schema ship with the wheel (nougen wargame list/run).
 nougen_shards = ["wargames/scenarios/*.json", "wargames/schema/*.json"]
+nougen_verse = ["data/*.json", "data/*.txt", "schemas/*.json"]
 
 [tool.pytest.ini_options]
 # Makes `python -m pytest` work from the repo root without the manual

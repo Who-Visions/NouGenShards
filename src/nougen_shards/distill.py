@@ -4,7 +4,7 @@ The cross-donor #1 move from Sun 9/13/2026. Five independent teams converge on i
 TencentDB-Agent-Memory L0-L3 (MIT) and openhuman's memory tree (fleet 6/6 on
 both), memmesh consolidation, cortex-app sleep pass, EverOS reflection.
 
-The shard DBs stay the source of truth (Dave, 9/13: "db is source for us").
+The shard DBs stay the source of truth (GM rule, 9/13: "db is source for us").
 Everything here is DERIVED and lives in ONE sidecar SQLite file beside the
 vault. It can be rebuilt from the shards at any time, and the 9 shard DBs are
 never schema-changed by it.
@@ -26,6 +26,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
+
 
 ATOM_TYPES = ("fact", "preference", "constraint", "event", "decision")
 ENTITY_KINDS = ("person", "project", "tool", "machine", "org", "place", "concept")

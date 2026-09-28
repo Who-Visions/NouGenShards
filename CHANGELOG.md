@@ -2,6 +2,10 @@
 
 All notable changes to NouGenShards will be documented in this file.
 
+## [Unreleased]
+### Added
+- **Elevation Atlas** (`docs/elevation-atlas.md`): a 1000-step, repository-grounded elevation roadmap in ten zones (memory physics, capture, retrieval, graph, temporal/Griot, federation, truth/canon, security, scale, autonomous memory). Every step carries a status: ✅ only when a file and function implement it, 🟡 for partial with the gap named, ⬜ for missing with a landing spot. Steps cross-reference #551 and #550. It includes a ground-truth table that corrects the draft plan against main @ ae40d10, and the first five verified moves.
+
 ## [1.3.1] - 2026-08-20
 ### Added
 - **Dynamic Reasoning & Live Token Stream**: `OllamaClient` and `OpenAIClient` stream reasoning/thinking tokens live in dimmed ANSI styling with unbuffered real-time stdout delivery.

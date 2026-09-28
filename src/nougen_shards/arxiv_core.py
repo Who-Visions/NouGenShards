@@ -92,10 +92,14 @@ def ingest_paper_to_shard(paper: dict[str, Any], vault_dir: Optional[str] = None
         tags=tags,
         vault_dir=vault_dir
     )
+    # The current core.capture contract returns bool (written vs. deduplicated),
+    # while older installations returned a row mapping. Support both shapes.
+    row = result if isinstance(result, dict) else {}
     return {
-        "status": "success",
-        "shard_id": result.get("id"),
-        "db": result.get("db_index"),
-        "file_hash": result.get("file_hash"),
+        "status": "success" if bool(result) else "already_present_or_not_written",
+        "captured": bool(result),
+        "shard_id": row.get("id"),
+        "db": row.get("db_index"),
+        "file_hash": row.get("file_hash"),
         "title": paper["title"]
     }

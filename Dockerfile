@@ -13,14 +13,20 @@ ENV HOME=/home/user \
 
 WORKDIR /app
 
-# Install exact pinned dependencies from the compiled lockfile first (fully
-# reproducible builds - regenerate with `uv pip compile --universal
-# pyproject.toml -o requirements.txt`), then the package itself without
-# re-resolving.
+# FFmpeg is used by the bounded local Whisper transcription tool.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the pinned base dependencies first, then the local package without
+# re-resolving them. Install only the optional transcript and Whisper runtime
+# dependencies afterward. Regenerate the base lock with `uv pip compile
+# --universal pyproject.toml -o requirements.txt`.
 COPY --chown=user:user . /app
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir --no-deps .
+    && pip install --no-cache-dir --no-deps . \
+    && pip install --no-cache-dir 'youtube-transcript-api>=0.6' 'yt-dlp>=2024.1.1' 'faster-whisper>=1.1.0'
 
 # app.py writes persistent state to /data when SPACE_ID is set. Provision a
 # writable /data so the node still boots if HF persistent storage is off.

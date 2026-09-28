@@ -48,7 +48,13 @@ function Get-FleetUrl([string]$Key) {
     # URLs come from ~/.nougen/fleet_hosts.json "urls"; public code ships none.
     try { return [string]((Get-Content (Join-Path $env:USERPROFILE '.nougen\fleet_hosts.json') -Raw | ConvertFrom-Json).urls.$Key) } catch { return '' }
 }
-function Log($m) { Write-Host ("{0}  {1}" -f (Get-Date -Format 'HH:mm:ss'), $m) }
+function Get-EasternLogTime {
+    $zone = [TimeZoneInfo]::FindSystemTimeZoneById('Eastern Standard Time')
+    $now = [TimeZoneInfo]::ConvertTime([DateTimeOffset]::Now, $zone)
+    $abbreviation = if ($zone.IsDaylightSavingTime($now)) { 'EDT' } else { 'EST' }
+    return "{0} {1}" -f $now.ToString('hh:mm:ss tt'), $abbreviation
+}
+function Log($m) { Write-Host ("{0}  {1}" -f (Get-EasternLogTime), $m) }
 
 function Get-TunnelUrl {
     if (-not (Test-Path $TunnelLog)) { return $null }

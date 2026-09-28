@@ -1,0 +1,29 @@
+{
+  "label": "Bundled demo for `nougen-verse demo`: a synthetic request and a synthetic draft",
+  "provenance": "synthetic, written for nougen-verse tests",
+  "license": "same as repo",
+  "synthetic": true,
+  "request": {
+    "topic": "paying rent after the building is sold",
+    "central_claim": "doing everything right does not guarantee a place to stay",
+    "emotional_axis": {"from": "prepared", "to": "unmoored"},
+    "bar_count": 8,
+    "bpm": 88,
+    "scheme": "AABB",
+    "flow_switches": 1,
+    "required_facts": ["forty dollars", "Friday"],
+    "callbacks": ["watch"],
+    "imagery_domains": ["money", "home"],
+    "forbidden_phrases": ["on the grind"]
+  },
+  "draft_lines": [
+    "Route twelve bus with the heater only hitting my left side",
+    "Grandpa's watch in my pocket, still an hour behind",
+    "Forty dollars in a sock and a folder of receipts",
+    "Seven money order stubs, all stapled, dated, neat",
+    "I rehearsed the landlord speech at every yellow light",
+    "Told the mirror in my head to keep my shoulders tight",
+    "He opened with the building sold on Friday afternoon",
+    "I really gotta stay on the grind, you know"
+  ]
+}

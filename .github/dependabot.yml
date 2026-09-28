@@ -19,11 +19,22 @@ updates:
     # pydantic pins pydantic-core exactly too, so the same class of break hit
     # #463's requirements.txt (2026-09-21): pydantic-core alone can't resolve
     # against pydantic's exact pin. Move them in one PR.
+    # mcp pins mcp-types exactly too, so the same class of break hit #533's
+    # requirements.txt (2026-09-23): mcp==2.2.0 requires mcp-types==2.2.0, so
+    # bumping mcp alone while mcp-types stays pinned at 2.1.1 can't resolve.
+    # anyio needs a typing-extensions floor that moves independently, so the
+    # same class of break hit #532's requirements.txt (2026-09-23): anyio
+    # 4.15.1 requires typing_extensions>=4.16.0, which the pinned
+    # typing-extensions==4.15.0 line alone can't satisfy.
     groups:
       gradio:
         patterns: ["gradio", "gradio-client"]
       pydantic:
         patterns: ["pydantic", "pydantic-core"]
+      mcp:
+        patterns: ["mcp", "mcp-types"]
+      anyio:
+        patterns: ["anyio", "typing-extensions"]
     # gradio (through 6.28.0) requires tomlkit<0.15.0, so 0.15.x can never
     # resolve in the Space requirements job (#419). Lift when gradio lifts the cap.
     ignore:

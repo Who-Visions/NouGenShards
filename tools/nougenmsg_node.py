@@ -55,6 +55,11 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+_NOUGEN_SRC = Path(__file__).resolve().parent.parent / "src"
+if str(_NOUGEN_SRC) not in sys.path:
+    sys.path.insert(0, str(_NOUGEN_SRC))
+from nougen_time import format_log_time
+
 PENDING: "queue.Queue" = queue.Queue()
 
 DEFAULT_PORT = 8766
@@ -273,7 +278,7 @@ def record(msg: dict) -> Path:
     path.write_text(json.dumps(msg, indent=2), encoding="utf-8")
     STATE.write_text(json.dumps(msg, indent=2), encoding="utf-8")
     PENDING.put(msg)
-    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    stamp = format_log_time(time.time())
     print("\n[LIVE INCOMING MSG] ({}) from [{}]:\n   {}\n".format(
         stamp, msg.get("sender"), str(msg.get("text", ""))[:PREVIEW_CHARS]), flush=True)
     return path
