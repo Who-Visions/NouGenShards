@@ -277,6 +277,17 @@ See [Cloud Modes](./docs/cloud-modes.md) and [Licensing](./docs/licensing.md) fo
 
 This repository is the public client: the CLI, the local memory engine, bring-your-own-key adapters, AI Memory Recon, and the plugin interfaces. Some hosted and advanced features are not part of this repository.
 
+### 🌐 Public Fleet Repositories & Modules
+
+The public NouGen ecosystem is federated across specialized modular repositories on GitHub:
+
+- **[NouGenShards](https://github.com/Who-Visions/NouGenShards)**: Local-first AI memory substrate, CLI, and shard cluster (`who-visions/nougenshards`).
+- **[nougen-relay](https://github.com/Who-Visions/nougen-relay)**: Autonomous fleet relay, multi-machine handoff protocol, and baton synchronization engine (`who-visions/nougen-relay`).
+- **[NouGenTracker](https://github.com/WhoVisions/NouGenTracker)**: Token accounting, live fleet usage metrics, and multi-model cost tracking (`whovisions/nougentracker`).
+- **`nougenmsg`**: Cross-agent message routing and IPC socket transport. Shipped directly within the public NouGenShards package (`src/nougen_shards/nougenmsg.py` and `tools/nougenmsg_node.py`), with dedicated plugin integration.
+
+All public repositories can be kept in continuous sync with `nougen sync` (`tools/sync_fleet.py`), which automatically discovers, stashes, and rebases local working trees against upstream branches.
+
 ### 🎯 Skills
 
 `skills/` holds standing instructions the agent must follow for a kind of work. They are
