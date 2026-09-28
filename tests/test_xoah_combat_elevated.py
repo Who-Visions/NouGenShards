@@ -60,3 +60,58 @@ def test_engine_step_attack_and_teleport():
     assert frame2.damage_dealt > 0.0
     assert fb.health < 100.0
     assert len(engine.history) == 2
+
+
+def test_seeded_engine_reproducibility():
+    engine1 = XoahCombatEngine(seed=1337)
+    engine2 = XoahCombatEngine(seed=1337)
+
+    assert engine1.seed == engine2.seed
+    r1 = engine1.rng.random()
+    r2 = engine2.rng.random()
+    assert r1 == r2
+
+
+def test_zero_vector_chronocut_causality():
+    engine = XoahCombatEngine()
+    past = [(0.0, 0.0, 0.0)]
+    future = [(0.0, 0.0, 0.0)]
+    causality = engine.calculate_chronocut_causality(past, future)
+    assert causality == 1.0
+
+
+def test_counter_state_step():
+    engine = XoahCombatEngine()
+    fa = FighterVector(mass=75.0, vx=5.0, vy=0.0, vz=0.0)
+    fb = FighterVector(mass=75.0, vx=-5.0, vy=0.0, vz=0.0)
+
+    frame = engine.step(1, CombatState.COUNTER, fa, fb)
+    assert frame.state == CombatState.COUNTER
+    assert frame.chronocut_debt == 0.0
+
+
+def test_recovery_state_step():
+    engine = XoahCombatEngine()
+    fa = FighterVector(mass=75.0, stamina=50.0)
+    fb = FighterVector(mass=75.0, stamina=100.0)
+
+    frame = engine.step(1, CombatState.RECOVERY, fa, fb)
+    assert frame.state == CombatState.RECOVERY
+    assert frame.damage_dealt == 0.0
+
+
+def test_choreography_multi_frame_history():
+    engine = XoahCombatEngine(seed=42)
+    fa = FighterVector(mass=70.0, vx=2.0)
+    fb = FighterVector(mass=70.0, vx=-2.0)
+
+    for idx, state in enumerate([CombatState.GUARD, CombatState.TELEPORT_TEAR, CombatState.ATTACK, CombatState.RECOVERY], start=1):
+        engine.step(idx, state, fa, fb)
+
+    assert len(engine.history) == 4
+    assert [f.state for f in engine.history] == [
+        CombatState.GUARD,
+        CombatState.TELEPORT_TEAR,
+        CombatState.ATTACK,
+        CombatState.RECOVERY,
+    ]

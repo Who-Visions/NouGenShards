@@ -72,9 +72,12 @@ class XoahCombatEngine:
     Deterministic Combat Choreography & State Machine Engine.
     """
 
-    def __init__(self, decay_rate: float = 0.05, temperature: float = 1.0):
+    def __init__(self, decay_rate: float = 0.05, temperature: float = 1.0, seed: Optional[int] = None):
         self.decay_rate = decay_rate
         self.temperature = max(1e-5, temperature)
+        self.seed = seed
+        import random
+        self.rng = random.Random(seed) if seed is not None else random.Random()
         self.history: List[ChoreographyFrame] = []
 
     def compute_teleport_momentum(
