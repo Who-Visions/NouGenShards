@@ -44,6 +44,49 @@ ICONS = {
 DEFAULT_MAX_AGE_S = 300.0
 
 
+def classify_node_offline_reason(
+    node_name: str,
+    route_reachable: bool,
+    service_live: bool,
+    scheduled_activity: bool = False,
+) -> Dict[str, Any]:
+    """
+    Categorizes node absence per operator directive 20260928T053625Z:
+    WhoArt is a mobile laptop and is intentionally shut off often.
+    Absence is planned_offline / mobile_off unless explicit evidence expected it to serve.
+    """
+    normalized = node_name.lower().strip()
+    if service_live and route_reachable:
+        return {
+            "category": "online",
+            "status": StatusLevel.GREEN,
+            "reason": f"Node {node_name} is online and serving.",
+        }
+    if normalized in ("whoart", "whoart-laptop") and not route_reachable and not scheduled_activity:
+        return {
+            "category": "planned_offline",
+            "status": StatusLevel.UNKNOWN,
+            "reason": f"Node {node_name} is a mobile laptop in planned_offline state; absence is normal behavior.",
+        }
+    if not route_reachable:
+        return {
+            "category": "route_unavailable",
+            "status": StatusLevel.ORANGE,
+            "reason": f"Route to {node_name} unavailable.",
+        }
+    if not service_live:
+        return {
+            "category": "local_service_down",
+            "status": StatusLevel.YELLOW,
+            "reason": f"Service on {node_name} down.",
+        }
+    return {
+        "category": "unexpected_node_failure",
+        "status": StatusLevel.RED,
+        "reason": f"Unexpected failure on {node_name}.",
+    }
+
+
 @dataclass
 class Observation:
     observed_component: str
