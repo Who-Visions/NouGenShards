@@ -127,13 +127,52 @@ def verify_secrets(report: list) -> None:
         step(report, f"secret:{name}", is_configured(name), f"optional - {why}", required=False)
 
 
+def ensure_git_sync(report: list, check_only: bool) -> bool:
+    """Auto-sync and rebase git working tree to latest upstream ref."""
+    if not (ROOT / ".git").exists():
+        return step(report, "git_sync", True, "not a git checkout (skipped)", required=False)
+    
+    # Check if remote exists
+    proc_remote = run(["git", "config", "--get", "remote.origin.url"])
+    if proc_remote.returncode != 0 or not proc_remote.stdout.strip():
+        return step(report, "git_sync", True, "no remote.origin.url configured (skipped)", required=False)
+
+    branch = run(["git", "branch", "--show-current"]).stdout.strip()
+    if not branch:
+        return step(report, "git_sync", True, "detached HEAD (skipped)", required=False)
+
+    if check_only:
+        proc_fetch = run(["git", "fetch", "--dry-run", "origin"])
+        return step(report, "git_sync", True, f"tracking {branch} (check-only)")
+
+    # Ensure wildcard fetch refspec
+    run(["git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"])
+    run(["git", "fetch", "--all", "--prune"])
+    
+    # Check ahead / behind
+    counts = run(["git", "rev-list", "--left-right", "--count", f"HEAD...origin/{branch}"]).stdout.strip()
+    if counts:
+        parts = counts.split()
+        if len(parts) == 2 and int(parts[1]) > 0:
+            rebase_res = run(["git", "pull", "--rebase", "--autostash", "origin", branch])
+            if rebase_res.returncode != 0:
+                run(["git", "rebase", "--abort"])
+                return step(report, "git_sync", False, f"rebase conflict; safely aborted: {rebase_res.stderr.strip()[:100]}", required=False)
+            return step(report, "git_sync", True, f"rebased {parts[1]} commit(s) from origin/{branch}")
+
+    return step(report, "git_sync", True, f"up to date with origin/{branch}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--check", action="store_true", help="verify only; mutate nothing")
+    ap.add_argument("--no-sync", action="store_true", help="skip git auto-rebase update step")
     ap.add_argument("--json", action="store_true", help="machine-readable report")
     args = ap.parse_args()
 
     report: list = []
+    if not args.no_sync:
+        ensure_git_sync(report, args.check)
     ensure_venv(report, args.check)
     ensure_install(report, args.check)
     verify_cli(report)

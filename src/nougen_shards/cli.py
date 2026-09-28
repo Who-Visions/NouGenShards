@@ -2358,6 +2358,12 @@ def get_parser():
     p_facts_resolve.add_argument("--scope", help="Additional exact JSON scope filter")
     p_facts_resolve.add_argument("--as-of", help="Reference date/time; 'today' queries require an exact date match")
 
+    # sync: Fleet repository auto-sync and upstream rebase
+    p_sync = subparsers.add_parser("sync", help="Auto-sync and rebase fleet git repositories to latest upstream")
+    p_sync.add_argument("--repo", default=None, help="Explicit repository path to synchronize")
+    p_sync.add_argument("--no-push", action="store_true", help="Fetch and rebase only, do not push")
+    p_sync.add_argument("--json", action="store_true", help="Machine-readable output")
+
     # wake daemon
     p_wake = subparsers.add_parser("wake", help="Run NouGen reactive idle wake daemon for fleet IPC messaging")
     p_wake.add_argument("--timeout", type=float, default=600.0, help="Max idle seconds before recycle")
@@ -3720,6 +3726,35 @@ def cmd_open(args):
     open_main(forwarded)
 
 
+def cmd_sync(args):
+    """Synchronize, autostash, and rebase fleet git repositories."""
+    from .fleet_sync import FleetSyncManager
+    explicit = [Path(args.repo)] if getattr(args, "repo", None) else None
+    auto_push = not getattr(args, "no_push", False)
+    manager = FleetSyncManager()
+    results = manager.sync_all(explicit_paths=explicit, auto_push=auto_push)
+    
+    if getattr(args, "json", False):
+        import json as _json
+        print(_json.dumps([r.__dict__ for r in results], indent=2))
+        return
+
+    print("=" * 80)
+    print("🔄 NouGen Fleet Auto-Sync Engine — Upstream Rebase & Alignment")
+    print("=" * 80)
+    for r in results:
+        if r.status == "skipped":
+            continue
+        icon = "✅" if r.status in ("synced", "up_to_date", "pushed") else "⚠️" if "dirty" in r.status else "❌"
+        print(f"{icon} {r.repo_name:<28} [{r.branch:<25}] status: {r.status}")
+        if r.details:
+            print(f"   Details: {r.details}")
+        if r.error:
+            print(f"   Error:   {r.error}")
+    print("=" * 80)
+    print("✨ Sync cycle complete. All working trees aligned.")
+
+
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
@@ -3783,7 +3818,7 @@ def main():
         "transcribe": cmd_transcribe, "live": cmd_live, "algo": cmd_algo,
         "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
         "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep, "open": cmd_open,
-        "facts": cmd_facts, "mrsb": cmd_mrsb,
+        "facts": cmd_facts, "mrsb": cmd_mrsb, "sync": cmd_sync,
     }
     if args.command in cmds:
         cmds[args.command](args)

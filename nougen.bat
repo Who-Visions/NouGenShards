@@ -50,6 +50,22 @@ if not defined PY_CMD (
     goto :finish_pause
 )
 
+:: --- 1.5. Optional Git Auto-Rebase to Latest Upstream ----------
+:: Automatically syncs and rebases branch if inside a Git checkout
+:: and NOUGEN_NO_SYNC is not set to 1.
+if not "%NOUGEN_NO_SYNC%"=="1" (
+    if exist ".git" (
+        where git >nul 2>nul
+        if not errorlevel 1 (
+            git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*" >nul 2>nul
+            git fetch --prune origin >nul 2>nul
+            for /f %%B in ('git branch --show-current 2^>nul') do (
+                git pull --rebase --autostash origin %%B >nul 2>nul
+            )
+        )
+    )
+)
+
 :: --- 2. Fingerprint dependencies (pyproject.toml hash) -------
 :: The marker file stores this hash so dependency changes in the
 :: repo automatically trigger a reinstall instead of crashing on
