@@ -6,7 +6,7 @@ annotated-doc==0.0.5
     #   typer
 annotated-types==0.8.0
     # via pydantic
-anyio==4.15.1
+anyio==4.14.2
     # via
     #   gradio
     #   httpx
@@ -27,24 +27,25 @@ certifi==2026.7.22
     # via
     #   httpcore
     #   httpx
+    #   requests
 cffi==2.0.0 ; platform_python_implementation != 'PyPy'
     # via cryptography
+charset-normalizer==3.5.1
+    # via requests
 click==8.5.0
     # via
     #   huggingface-hub
-    #   typer
     #   uvicorn
 colorama==0.4.6
     # via
     #   nougen-shards (pyproject.toml)
-    #   click
     #   tqdm
+    #   typer
 cryptography==50.0.1
     # via
     #   nougen-shards (pyproject.toml)
+    #   google-auth
     #   pyjwt
-exceptiongroup==1.3.1 ; python_full_version < '3.11'
-    # via anyio
 fastapi==0.141.1
     # via
     #   nougen-shards (pyproject.toml)
@@ -55,6 +56,25 @@ fsspec==2026.7.0
     # via
     #   gradio-client
     #   huggingface-hub
+google-api-core==2.39.0
+    # via google-api-python-client
+google-api-python-client==2.200.0
+    # via nougen-shards (pyproject.toml)
+google-auth==2.58.1
+    # via
+    #   nougen-shards (pyproject.toml)
+    #   google-api-core
+    #   google-api-python-client
+    #   google-auth-httplib2
+    #   google-auth-oauthlib
+google-auth-httplib2==0.4.2
+    # via
+    #   nougen-shards (pyproject.toml)
+    #   google-api-python-client
+google-auth-oauthlib==1.4.1
+    # via nougen-shards (pyproject.toml)
+googleapis-common-protos==1.75.4
+    # via google-api-core
 gradio==6.28.0
     # via nougen-shards (pyproject.toml)
 gradio-client==2.7.1
@@ -78,6 +98,10 @@ httpcore==1.0.9
     # via httpx
 httpcore2==2.12.0 ; sys_platform != 'emscripten'
     # via httpx2
+httplib2==0.32.0
+    # via
+    #   google-api-python-client
+    #   google-auth-httplib2
 httpx==0.28.1
     # via
     #   gradio
@@ -89,7 +113,7 @@ httpx2==2.12.0
     # via
     #   mcp
     #   openai
-httpx2-jsfetch==1.0 ; python_full_version >= '3.12' and sys_platform == 'emscripten'
+httpx2-jsfetch==1.0 ; sys_platform == 'emscripten'
     # via httpx2
 huggingface-hub==1.31.0
     # via
@@ -100,6 +124,7 @@ idna==3.20
     #   anyio
     #   httpx
     #   httpx2
+    #   requests
 jinja2==3.1.6
     # via gradio
 jiter==0.17.0
@@ -116,31 +141,25 @@ markupsafe==3.0.3
     #   jinja2
 mcp==2.2.0
     # via nougen-shards (pyproject.toml)
-mcp-types==2.1.1
+mcp-types==2.2.0
     # via mcp
 mdurl==0.1.2
     # via markdown-it-py
-numpy==2.2.6 ; python_full_version < '3.11'
+numpy==2.5.0
     # via
     #   nougen-shards (pyproject.toml)
     #   gradio
     #   pandas
-numpy==2.4.6 ; python_full_version == '3.11.*'
-    # via
-    #   nougen-shards (pyproject.toml)
-    #   gradio
-    #   pandas
-numpy==2.5.0 ; python_full_version >= '3.12'
-    # via
-    #   nougen-shards (pyproject.toml)
-    #   gradio
-    #   pandas
+oauthlib==4.0.0
+    # via requests-oauthlib
 ollama==0.6.2
     # via nougen-shards (pyproject.toml)
 openai==3.16.2
     # via nougen-shards (pyproject.toml)
 opentelemetry-api==1.44.0
-    # via mcp
+    # via
+    #   google-api-core
+    #   mcp
 orjson==3.12.0
     # via gradio
 packaging==26.3
@@ -148,12 +167,21 @@ packaging==26.3
     #   gradio
     #   gradio-client
     #   huggingface-hub
-pandas==2.3.3 ; python_full_version < '3.11'
-    # via gradio
-pandas==3.0.3 ; python_full_version >= '3.11'
+pandas==3.0.3
     # via gradio
 pillow==12.3.0
     # via gradio
+proto-plus==1.28.4
+    # via google-api-core
+protobuf==7.36.2
+    # via
+    #   google-api-core
+    #   googleapis-common-protos
+    #   proto-plus
+pyasn1==0.6.4
+    # via pyasn1-modules
+pyasn1-modules==0.4.2
+    # via google-auth
 pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
     # via cffi
 pydantic==2.13.5
@@ -173,6 +201,8 @@ pygments==2.21.0
     # via rich
 pyjwt==2.13.0
     # via mcp
+pyparsing==3.3.3
+    # via httplib2
 python-dateutil==2.9.0.post0
     # via pandas
 python-multipart==0.0.32
@@ -180,9 +210,7 @@ python-multipart==0.0.32
     #   gradio
     #   mcp
 pytz==2026.3.post1
-    # via
-    #   gradio
-    #   pandas
+    # via gradio
 pywin32==312 ; sys_platform == 'win32'
     # via mcp
 pyyaml==6.0.3
@@ -193,15 +221,17 @@ referencing==0.37.0
     # via
     #   jsonschema
     #   jsonschema-specifications
+requests==2.34.2
+    # via
+    #   google-api-core
+    #   requests-oauthlib
+requests-oauthlib==2.0.0
+    # via google-auth-oauthlib
 rich==15.0.0
     # via
     #   nougen-shards (pyproject.toml)
     #   typer
-rpds-py==0.30.0 ; python_full_version < '3.11'
-    # via
-    #   jsonschema
-    #   referencing
-rpds-py==2026.6.3 ; python_full_version >= '3.11'
+rpds-py==2026.6.3
     # via
     #   jsonschema
     #   referencing
@@ -239,12 +269,9 @@ typer==0.27.2
     # via
     #   gradio
     #   hf-gradio
-    #   huggingface-hub
 typing-extensions==4.15.0
     # via
     #   anyio
-    #   cryptography
-    #   exceptiongroup
     #   fastapi
     #   gradio
     #   gradio-client
@@ -256,19 +283,23 @@ typing-extensions==4.15.0
     #   opentelemetry-api
     #   pydantic
     #   pydantic-core
-    #   pyjwt
     #   referencing
     #   sqlalchemy
     #   starlette
     #   typing-inspection
-    #   uvicorn
 typing-inspection==0.4.4
     # via
     #   fastapi
     #   mcp
     #   pydantic
-tzdata==2026.3 ; python_full_version < '3.11' or sys_platform == 'emscripten' or sys_platform == 'win32'
-    # via pandas
+tzdata==2026.3 ; sys_platform == 'emscripten' or sys_platform == 'win32'
+    # via
+    #   nougen-shards (pyproject.toml)
+    #   pandas
+uritemplate==4.2.0
+    # via google-api-python-client
+urllib3==2.8.0
+    # via requests
 uvicorn==0.53.0
     # via
     #   nougen-shards (pyproject.toml)
