@@ -9,7 +9,6 @@ import unittest
 from nougen_shards.auto_discovery import (
     ActionRisk,
     CapabilityDomain,
-    CapabilityGraph,
     DeepAutoDiscoveryService,
     DiscoveryBudget,
     EvidenceLedger,
