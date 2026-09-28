@@ -1,3 +1,4 @@
+import os
 from nougen_shards.status_semantics import classify_node_offline_reason, StatusLevel
 from nougen_shards.keymaker import enforce_deepseek_auth_boundary
 
@@ -32,6 +33,9 @@ def test_enforce_deepseek_auth_boundary():
 def test_openrouter_api_key_resolution(monkeypatch):
     from nougen_shards.keymaker import get_secret, ENV_VAULT_PROBE
     monkeypatch.setenv(ENV_VAULT_PROBE, "1")
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-mock-key-for-ci-testing-12345678")
     key = get_secret("OPENROUTER_API_KEY")
     assert key is not None
     assert key.startswith("sk-or-v1-")
+
