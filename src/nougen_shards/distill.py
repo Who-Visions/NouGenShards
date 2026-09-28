@@ -27,8 +27,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from .distill_elevated import DistillationMetrics, compute_distillation_metrics
-
 
 ATOM_TYPES = ("fact", "preference", "constraint", "event", "decision")
 ENTITY_KINDS = ("person", "project", "tool", "machine", "org", "place", "concept")

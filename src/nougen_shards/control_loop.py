@@ -30,9 +30,6 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from .control_loop_elevated import AlignmentVector, compute_alignment_transfer
-
-
 log = logging.getLogger(__name__)
 
 _logged_fallbacks: set = set()
