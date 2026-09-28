@@ -1,3 +1,4 @@
+from unittest.mock import patch
 from nougen_shards.bootstrap_elevated import (
     RiskClassifier,
     ActionRisk,
@@ -71,3 +72,39 @@ def test_install_agent_hooks_all_surfaces(tmp_path):
     assert (tmp_path / "AGENTS.md").exists()
     assert (tmp_path / "GEMINI.md").exists()
     assert (tmp_path / "CLAUDE.md").exists()
+
+
+def test_autonomous_bootstrap_with_models(tmp_path):
+    # Set reserve_gb to 1.0 so test environment satisfies space check
+    bootstrap = ZeroBabysittingBootstrap(root_dir=tmp_path, reserve_gb=1.0)
+    # Mock space check to ensure deterministic pass across CI runners
+    mock_probe = {
+        "free_bytes": 100 * 1024**3,
+        "free_gb": 100.0,
+        "space_qualified": True,
+        "space_reason": "Qualified: 100 GB free exceeds requirement.",
+        "ollama_binary_found": True,
+        "ollama_live": True,
+        "bootstrap_mode": "local_hybrid",
+    }
+
+    with patch.object(bootstrap, "probe_environment", return_value=mock_probe), \
+         patch.object(bootstrap, "is_ollama_live", return_value=True), \
+         patch.object(bootstrap, "list_installed_models", return_value=["nomic-embed-text:latest", "gemma4:e2b"]):
+        
+        # Test individual model check
+        ok1, msg1 = bootstrap.ensure_model_installed("nomic-embed-text:latest")
+        assert ok1 is True
+        assert "already installed" in msg1
+
+        ok2, msg2 = bootstrap.ensure_model_installed("gemma4:e2b")
+        assert ok2 is True
+        assert "already installed" in msg2
+
+        # Full bootstrap run
+        report = bootstrap.autonomous_bootstrap(target_workspace=tmp_path)
+        assert report["status"] == "completed"
+        assert report["ollama"]["ready"] is True
+        assert report["models"]["nomic-embed-text:latest"]["ready"] is True
+        assert report["models"]["gemma4:e2b"]["ready"] is True
+        assert len(report["agent_hooks"]) == 3
