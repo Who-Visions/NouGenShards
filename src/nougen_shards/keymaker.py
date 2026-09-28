@@ -880,6 +880,20 @@ def get_secret(key: str) -> Optional[str]:
                 if val:
                     return val
 
+        # Check ~/.nougen/openrouter_fleet_keys.env
+        fleet_keys_path = Path.home() / ".nougen" / "openrouter_fleet_keys.env"
+        if fleet_keys_path.exists():
+            try:
+                for line in fleet_keys_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        _, secret = line.split("=", 1)
+                        secret = secret.strip()
+                        if secret.startswith("sk-or-v1-"):
+                            return secret
+            except Exception:
+                pass
+
     return None
 
 

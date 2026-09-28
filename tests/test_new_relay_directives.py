@@ -27,3 +27,11 @@ def test_enforce_deepseek_auth_boundary():
     assert res["provider"] == "deepseek"
     assert res["auth_bound"] is True
     assert res["status"] == "ENFORCED"
+
+
+def test_openrouter_api_key_resolution(monkeypatch):
+    from nougen_shards.keymaker import get_secret, ENV_VAULT_PROBE
+    monkeypatch.setenv(ENV_VAULT_PROBE, "1")
+    key = get_secret("OPENROUTER_API_KEY")
+    assert key is not None
+    assert key.startswith("sk-or-v1-")
