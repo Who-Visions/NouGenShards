@@ -108,3 +108,59 @@ def test_autonomous_bootstrap_with_models(tmp_path):
         assert report["models"]["nomic-embed-text:latest"]["ready"] is True
         assert report["models"]["gemma4:e2b"]["ready"] is True
         assert len(report["agent_hooks"]) == 3
+
+
+def test_autostart_generators():
+    plist = ZeroBabysittingBootstrap.generate_macos_launchd_plist(
+        python_bin="/usr/bin/python3",
+        script_path="-m nougen_shards",
+        label="com.nougen.test",
+        working_dir="/tmp/test",
+    )
+    assert "<key>Label</key>" in plist
+    assert "<string>com.nougen.test</string>" in plist
+    assert "<string>/usr/bin/python3</string>" in plist
+    assert "<key>RunAtLoad</key>" in plist
+
+    service = ZeroBabysittingBootstrap.generate_systemd_service(
+        python_bin="/usr/bin/python3",
+        script_path="-m nougen_shards",
+        description="Test Service",
+        working_dir="/tmp/test",
+    )
+    assert "[Unit]" in service
+    assert "Description=Test Service" in service
+    assert "ExecStart=/usr/bin/python3 -m nougen_shards" in service
+
+
+def test_install_autostart_daemon_darwin(tmp_path):
+    bootstrap = ZeroBabysittingBootstrap(root_dir=tmp_path)
+    with patch("platform.system", return_value="Darwin"), \
+         patch("pathlib.Path.home", return_value=tmp_path):
+        res = bootstrap.install_autostart_daemon(
+            python_bin="/usr/bin/python3",
+            script_path="-m nougen_shards",
+            label="com.nougen.testnode",
+        )
+        assert res["platform"] == "darwin"
+        assert res["installed"] is True
+        expected_file = tmp_path / "Library" / "LaunchAgents" / "com.nougen.testnode.plist"
+        assert expected_file.exists()
+        assert "com.nougen.testnode" in expected_file.read_text(encoding="utf-8")
+
+
+def test_install_autostart_daemon_linux(tmp_path):
+    bootstrap = ZeroBabysittingBootstrap(root_dir=tmp_path)
+    with patch("platform.system", return_value="Linux"), \
+         patch("pathlib.Path.home", return_value=tmp_path):
+        res = bootstrap.install_autostart_daemon(
+            python_bin="/usr/bin/python3",
+            script_path="-m nougen_shards",
+            label="com.nougen.testnode",
+        )
+        assert res["platform"] == "linux"
+        assert res["installed"] is True
+        expected_file = tmp_path / ".config" / "systemd" / "user" / "com.nougen.testnode.service"
+        assert expected_file.exists()
+        assert "ExecStart=/usr/bin/python3 -m nougen_shards" in expected_file.read_text(encoding="utf-8")
+

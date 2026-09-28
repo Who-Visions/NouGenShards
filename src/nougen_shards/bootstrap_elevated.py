@@ -23,6 +23,7 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 import urllib.error
@@ -319,3 +320,131 @@ class ZeroBabysittingBootstrap:
                 res = AgentSurfaceAdapter.apply_to_file(path, agent_type)
                 results.append(res)
         return results
+
+    @classmethod
+    def generate_macos_launchd_plist(
+        cls,
+        python_bin: str,
+        script_path: str,
+        label: str = "com.nougen.ngsnode",
+        working_dir: Optional[str] = None,
+    ) -> str:
+        """
+        Generates macOS launchd plist XML for starting NouGenShards at computer/user login.
+        """
+        cwd = working_dir or str(Path.home())
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{python_bin}</string>
+        <string>{script_path}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>{cwd}</string>
+    <key>StandardOutPath</key>
+    <string>{str(Path.home() / '.nougen' / 'logs' / 'ngs_autostart.out.log')}</string>
+    <key>StandardErrorPath</key>
+    <string>{str(Path.home() / '.nougen' / 'logs' / 'ngs_autostart.err.log')}</string>
+</dict>
+</plist>
+"""
+
+    @classmethod
+    def generate_systemd_service(
+        cls,
+        python_bin: str,
+        script_path: str,
+        description: str = "NouGenShards Autonomous Memory Node",
+        working_dir: Optional[str] = None,
+    ) -> str:
+        """
+        Generates Linux systemd user service definition for auto-start.
+        """
+        cwd = working_dir or str(Path.home())
+        return f"""[Unit]
+Description={description}
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory={cwd}
+ExecStart={python_bin} {script_path}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
+
+    def install_autostart_daemon(
+        self,
+        python_bin: Optional[str] = None,
+        script_path: Optional[str] = None,
+        label: str = "com.nougen.ngsnode",
+    ) -> Dict[str, Any]:
+        """
+        Installs and registers a computer/session autostart daemon for NouGenShards.
+        macOS: ~/Library/LaunchAgents/{label}.plist
+        Linux: ~/.config/systemd/user/{label}.service
+        Windows: %APPDATA%/Microsoft/Windows/Start Menu/Programs/Startup/nougen_autostart.bat
+        """
+        py = python_bin or sys.executable
+        scr = script_path or "-m nougen_shards"
+        sys_name = platform.system()
+
+        logs_dir = Path.home() / ".nougen" / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+
+        if sys_name == "Darwin":
+            target_dir = Path.home() / "Library" / "LaunchAgents"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            plist_file = target_dir / f"{label}.plist"
+            plist_content = self.generate_macos_launchd_plist(py, scr, label=label)
+            plist_file.write_text(plist_content, encoding="utf-8")
+            return {
+                "platform": "darwin",
+                "installed": True,
+                "file": str(plist_file),
+                "activation_cmd": f"launchctl load {plist_file}",
+            }
+
+        elif sys_name == "Linux":
+            target_dir = Path.home() / ".config" / "systemd" / "user"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            service_file = target_dir / f"{label}.service"
+            service_content = self.generate_systemd_service(py, scr)
+            service_file.write_text(service_content, encoding="utf-8")
+            return {
+                "platform": "linux",
+                "installed": True,
+                "file": str(service_file),
+                "activation_cmd": f"systemctl --user enable --now {label}",
+            }
+
+        elif sys_name == "Windows":
+            appdata = os.environ.get("APPDATA")
+            if appdata:
+                startup_dir = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+                startup_dir.mkdir(parents=True, exist_ok=True)
+                bat_file = startup_dir / "nougen_shards_autostart.bat"
+                bat_file.write_text(f'@echo off\nstart "" "{py}" {scr}\n', encoding="utf-8")
+                return {
+                    "platform": "windows",
+                    "installed": True,
+                    "file": str(bat_file),
+                    "activation_cmd": "Auto-executes on Windows login",
+                }
+
+        return {"platform": sys_name, "installed": False, "reason": "Unsupported platform for automatic autostart installation"}
