@@ -1,3 +1,4 @@
+import json
 from unittest.mock import patch
 from nougen_shards.bootstrap_elevated import (
     RiskClassifier,
@@ -74,6 +75,45 @@ def test_install_agent_hooks_all_surfaces(tmp_path):
     assert (tmp_path / "CLAUDE.md").exists()
 
 
+def test_agent_surface_adapter_uses_native_imports_and_codex_inline(tmp_path):
+    canonical = tmp_path / "core.md"
+    canonical.write_text("Shared fleet rules", encoding="utf-8")
+    assert "@" + str(canonical) in AgentSurfaceAdapter.generate_instruction_block("gemini", str(canonical))
+    assert "@" + str(canonical) in AgentSurfaceAdapter.generate_instruction_block("claude", str(canonical))
+    codex = AgentSurfaceAdapter.generate_instruction_block("codex", str(canonical))
+    assert "Preserve active ownership" in codex
+    assert "@import" not in codex
+
+
+def test_model_store_volume_uses_ollama_models_path(tmp_path, monkeypatch):
+    model_store = tmp_path / "separate-volume" / "ollama-models"
+    model_store.mkdir(parents=True)
+    monkeypatch.setenv("OLLAMA_MODELS", str(model_store))
+    bootstrap = ZeroBabysittingBootstrap(root_dir=tmp_path)
+    with patch("nougen_shards.bootstrap_elevated.shutil.disk_usage") as disk_usage:
+        disk_usage.return_value.free = 123
+        probe = bootstrap.probe_environment()
+    assert probe["space_probe_dir"] == str(model_store)
+    disk_usage.assert_called_once_with(model_store)
+
+
+def test_remote_ollama_storage_is_not_assumed_to_match_local_disk():
+    bootstrap = ZeroBabysittingBootstrap(ollama_url="http://ollama.example:11434")
+    with patch.object(bootstrap, "is_ollama_live", return_value=True):
+        probe = bootstrap.probe_environment()
+    assert probe["model_storage_local"] is False
+    assert probe["space_qualified"] is False
+    assert "cannot be measured" in probe["space_reason"]
+
+
+def test_model_pull_skips_unmeasurable_remote_storage():
+    bootstrap = ZeroBabysittingBootstrap(ollama_url="http://ollama.example:11434")
+    with patch.object(bootstrap, "list_installed_models", return_value=[]):
+        ok, detail = bootstrap.ensure_model_installed("gemma4:e2b")
+    assert ok is False
+    assert "remote Ollama storage capacity is not measurable" in detail
+
+
 def test_autonomous_bootstrap_with_models(tmp_path):
     # Set reserve_gb to 1.0 so test environment satisfies space check
     bootstrap = ZeroBabysittingBootstrap(root_dir=tmp_path, reserve_gb=1.0)
@@ -108,6 +148,46 @@ def test_autonomous_bootstrap_with_models(tmp_path):
         assert report["models"]["nomic-embed-text:latest"]["ready"] is True
         assert report["models"]["gemma4:e2b"]["ready"] is True
         assert len(report["agent_hooks"]) == 3
+
+
+def test_low_space_still_installs_safe_hooks(tmp_path):
+    bootstrap = ZeroBabysittingBootstrap(root_dir=tmp_path)
+    probe = {
+        "free_bytes": 1, "free_gb": 0.0, "space_qualified": False,
+        "space_reason": "Insufficient free disk.", "ollama_binary_found": False,
+        "ollama_live": False, "bootstrap_mode": "remote_memory_only",
+    }
+    with patch.object(bootstrap, "probe_environment", return_value=probe):
+        report = bootstrap.autonomous_bootstrap(target_workspace=tmp_path)
+    assert report["status"] == "partial"
+    assert len(report["agent_hooks"]) == 3
+    assert (tmp_path / "AGENTS.md").exists()
+
+
+def test_pull_requires_model_list_verification():
+    bootstrap = ZeroBabysittingBootstrap()
+    response = type("Response", (), {
+        "status": 200,
+        "read": lambda self: json.dumps({"status": "success"}).encode(),
+        "__enter__": lambda self: self,
+        "__exit__": lambda self, *_args: False,
+    })()
+    with patch.object(bootstrap, "list_installed_models", side_effect=[[], []]), \
+         patch.object(bootstrap, "is_ollama_live", return_value=True), \
+         patch("nougen_shards.bootstrap_elevated.urllib.request.urlopen", return_value=response):
+        ok, detail = bootstrap.ensure_model_installed("gemma4:e2b")
+    assert ok is False
+    assert "absent from Ollama's model list" in detail
+
+
+def test_missing_ollama_does_not_suggest_unapproved_installer():
+    bootstrap = ZeroBabysittingBootstrap()
+    with patch.object(bootstrap, "is_ollama_live", return_value=False), \
+         patch("nougen_shards.bootstrap_elevated.shutil.which", return_value=None):
+        ok, detail = bootstrap.ensure_ollama_installed_and_running()
+    assert ok is False
+    assert "setup was skipped" in detail
+    assert "curl" not in detail
 
 
 def test_autostart_generators():
@@ -163,4 +243,3 @@ def test_install_autostart_daemon_linux(tmp_path):
         expected_file = tmp_path / ".config" / "systemd" / "user" / "com.nougen.testnode.service"
         assert expected_file.exists()
         assert "ExecStart=/usr/bin/python3 -m nougen_shards" in expected_file.read_text(encoding="utf-8")
-

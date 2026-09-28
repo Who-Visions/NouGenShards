@@ -16,6 +16,7 @@ Directives Satisfied:
 from dataclasses import dataclass, field
 from enum import Enum, auto
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -28,6 +29,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,12 @@ class DiskSpaceRequirement:
         return False, f"Insufficient free disk: {free_bytes / (1024**3):.1f} GB available, need {self.total_required / (1024**3):.1f} GB."
 
 
+BOOTSTRAP_RULES = (
+    "Preserve active ownership and user-authored instructions. Keep credentials out of "
+    "files, logs, and memory. Verify changes before claiming completion."
+)
+
+
 class AgentSurfaceAdapter:
     """
     Universal agent rule surface adapter for AGENTS.md, GEMINI.md, and CLAUDE.md.
@@ -83,12 +91,20 @@ class AgentSurfaceAdapter:
     }
 
     @classmethod
-    def generate_instruction_block(cls, agent_type: str, canonical_ref: str = "~/.nougen/rules/core.md") -> str:
+    def generate_instruction_block(cls, agent_type: str, canonical_ref: Optional[str] = None) -> str:
+        """Render native imports for Gemini/Claude and inline Codex instructions."""
+        if agent_type not in cls.SURFACE_MAP:
+            raise ValueError(f"Unsupported agent surface: {agent_type}")
+        include = None
+        if canonical_ref and agent_type in {"gemini", "claude"}:
+            canonical_path = Path(canonical_ref).expanduser().resolve()
+            if canonical_path.is_file():
+                include = f"@{canonical_path}"
+        body = include or BOOTSTRAP_RULES
         return (
             f"{cls.MANAGED_START}\n"
             f"# NouGen Autonomous Fleet Operating Layer\n"
-            f"@import {canonical_ref}\n"
-            f"Preserve active ownership, verify ground truth, and adhere to Rule 0.13 (Hardcade execution before ack).\n"
+            f"{body}\n"
             f"{cls.MANAGED_END}"
         )
 
@@ -102,7 +118,9 @@ class AgentSurfaceAdapter:
         original_content = file_path.read_text(encoding="utf-8") if existed else ""
         original_hash = hashlib.sha256(original_content.encode("utf-8")).hexdigest()
 
-        block = cls.generate_instruction_block(agent_type)
+        block = cls.generate_instruction_block(
+            agent_type, str(Path.home() / ".nougen" / "rules" / "core.md")
+        )
 
         if cls.MANAGED_START in original_content and cls.MANAGED_END in original_content:
             # Replace existing block
@@ -149,7 +167,9 @@ class ZeroBabysittingBootstrap:
         reserve_gb: float = 10.0,
         ollama_url: Optional[str] = None,
     ):
-        self.root_dir = root_dir or Path.home()
+        self.root_dir = Path(root_dir or Path.home()).expanduser()
+        configured_models_dir = os.environ.get("OLLAMA_MODELS")
+        self.model_store_dir = Path(configured_models_dir).expanduser() if configured_models_dir else Path.home() / ".ollama" / "models"
         self.reserve_bytes = int(reserve_gb * 1024 * 1024 * 1024)
         self.space_req = DiskSpaceRequirement(reserve_floor_bytes=self.reserve_bytes)
         self.ollama_url = ollama_url or os.environ.get("NOUGEN_OLLAMA_URL", "http://127.0.0.1:11434")
@@ -158,21 +178,41 @@ class ZeroBabysittingBootstrap:
         """
         Inspects disk capacity, local Ollama presence, and platform capabilities.
         """
-        stat = shutil.disk_usage(self.root_dir)
-        qualified, reason = self.space_req.evaluate(stat.free)
+        parsed_url = urlparse(self.ollama_url)
+        hostname = parsed_url.hostname or ""
+        try:
+            endpoint_is_loopback = hostname.lower() == "localhost" or ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            endpoint_is_loopback = False
+
+        if endpoint_is_loopback:
+            storage_probe = self.model_store_dir
+            while not storage_probe.exists() and storage_probe != storage_probe.parent:
+                storage_probe = storage_probe.parent
+            free_bytes = shutil.disk_usage(storage_probe).free
+            qualified, reason = self.space_req.evaluate(free_bytes)
+        else:
+            storage_probe = None
+            free_bytes = 0
+            qualified = False
+            reason = "Remote Ollama model storage cannot be measured from this machine; provisioning was skipped."
 
         # Check local Ollama
         ollama_present = shutil.which("ollama") is not None
         ollama_live = self.is_ollama_live()
+        can_use_local_lane = endpoint_is_loopback and (ollama_live or (qualified and ollama_present))
 
         return {
-            "free_bytes": stat.free,
-            "free_gb": round(stat.free / (1024**3), 2),
+            "free_bytes": free_bytes,
+            "free_gb": round(free_bytes / (1024**3), 2),
+            "model_store_dir": str(self.model_store_dir),
+            "space_probe_dir": str(storage_probe) if storage_probe else None,
+            "model_storage_local": endpoint_is_loopback,
             "space_qualified": qualified,
             "space_reason": reason,
             "ollama_binary_found": ollama_present,
             "ollama_live": ollama_live,
-            "bootstrap_mode": "local_hybrid" if qualified else "remote_memory_only",
+            "bootstrap_mode": "local_hybrid" if can_use_local_lane else "remote_memory_only",
         }
 
     def is_ollama_live(self) -> bool:
@@ -223,10 +263,13 @@ class ZeroBabysittingBootstrap:
             except Exception as e:
                 return False, f"Failed to start Ollama daemon: {e}"
 
-        # If binary is missing entirely
-        sys_name = platform.system()
-        install_cmd = "curl -fsSL https://ollama.com/install.sh | sh" if sys_name != "Windows" else "winget install Ollama.Ollama"
-        return False, f"Ollama binary not found on PATH. Run '{install_cmd}' to install."
+        # Installing software changes system state; leave that to an explicit action.
+        return False, "Ollama binary not found on PATH; local model setup was skipped."
+
+    @staticmethod
+    def _model_is_installed(model_name: str, installed: List[str]) -> bool:
+        base_name = model_name.split(":")[0]
+        return any(name == model_name or name.startswith(f"{base_name}:") for name in installed)
 
     def ensure_model_installed(self, model_name: str, timeout_s: float = 300.0) -> Tuple[bool, str]:
         """
@@ -234,9 +277,17 @@ class ZeroBabysittingBootstrap:
         """
         installed = self.list_installed_models()
         # Check direct or prefix match (e.g., nomic-embed-text matching nomic-embed-text:latest)
-        base_name = model_name.split(":")[0]
-        if any(m == model_name or m.startswith(f"{base_name}:") for m in installed):
+        if self._model_is_installed(model_name, installed):
             return True, f"Model '{model_name}' is already installed."
+
+        parsed_url = urlparse(self.ollama_url)
+        hostname = parsed_url.hostname or ""
+        try:
+            endpoint_is_loopback = hostname.lower() == "localhost" or ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            endpoint_is_loopback = False
+        if not endpoint_is_loopback:
+            return False, f"Cannot provision '{model_name}': remote Ollama storage capacity is not measurable here."
 
         if not self.is_ollama_live():
             return False, f"Cannot pull '{model_name}': Ollama is not running."
@@ -252,15 +303,22 @@ class ZeroBabysittingBootstrap:
             )
             with urllib.request.urlopen(req, timeout=timeout_s) as resp:
                 if resp.status == 200:
-                    return True, f"Successfully pulled '{model_name}'."
+                    payload = json.loads(resp.read().decode("utf-8") or "{}")
+                    if payload.get("error"):
+                        return False, f"Ollama pull failed for '{model_name}': {payload['error']}"
+                    if self._model_is_installed(model_name, self.list_installed_models()):
+                        return True, f"Pulled and verified '{model_name}'."
+                    return False, f"Pull returned success but '{model_name}' is absent from Ollama's model list."
         except Exception as e:
             # Fallback to CLI if API stream fails
             ollama_bin = shutil.which("ollama")
             if ollama_bin:
                 try:
                     res = subprocess.run([ollama_bin, "pull", model_name], capture_output=True, text=True, timeout=timeout_s)
+                    if res.returncode == 0 and self._model_is_installed(model_name, self.list_installed_models()):
+                        return True, f"Pulled and verified '{model_name}' via CLI."
                     if res.returncode == 0:
-                        return True, f"Successfully pulled '{model_name}' via CLI."
+                        return False, f"CLI pull returned success but '{model_name}' is absent from Ollama's model list."
                     return False, f"CLI pull failed: {res.stderr.strip()}"
                 except Exception as cli_exc:
                     return False, f"Failed pulling '{model_name}': {cli_exc}"
@@ -284,10 +342,18 @@ class ZeroBabysittingBootstrap:
             "status": "in_progress",
         }
 
-        # 1. Space check
+        # Safe, reversible context hooks do not consume model-store space.
+        if target_workspace and target_workspace.exists():
+            report["agent_hooks"] = self.install_agent_hooks(target_workspace)
+
+        # Only provision models when this machine can measure their storage.
         if not report["probe"]["space_qualified"]:
-            report["status"] = "skipped_insufficient_space"
+            report["status"] = "partial"
             report["summary"] = report["probe"]["space_reason"]
+            report["ollama"] = {
+                "ready": report["probe"]["ollama_live"],
+                "detail": "Local model provisioning skipped because model-store capacity is insufficient or unavailable.",
+            }
             return report
 
         # 2. Ollama setup
@@ -299,10 +365,6 @@ class ZeroBabysittingBootstrap:
             for model in self.RECOMMENDED_MODELS:
                 m_ok, m_msg = self.ensure_model_installed(model)
                 report["models"][model] = {"ready": m_ok, "detail": m_msg}
-
-        # 4. Agent hooks
-        if target_workspace and target_workspace.exists():
-            report["agent_hooks"] = self.install_agent_hooks(target_workspace)
 
         all_models_ready = all(m.get("ready", False) for m in report["models"].values()) if report["models"] else False
         report["status"] = "completed" if (ollama_ok and all_models_ready) else "partial"
