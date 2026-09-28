@@ -2981,95 +2981,60 @@ def _run_nougentube(url: str, *, dry_run: bool, limit: int) -> dict:
 
 @node_mcp.tool()
 @_offloaded
-def nougentube_preview(url: str, limit: int = 1) -> dict:
-    """Fetch and preview NouGenTube results without writing shards or state."""
-    return _run_nougentube(url, dry_run=True, limit=limit)
+def nougentube(url: str, language: Optional[str] = None,
+               whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
+    """Transcribe and summarize video/audio with subtitle-first extraction and local Whisper fallback."""
+    tube = _load_nougentube()
+    try:
+        video_id = tube.extract_video_id(url)
+        if video_id:
+            transcript, tier = tube.fetch_transcript(video_id, url)
+            metadata = tube.fetch_metadata(url, video_id)
+            if transcript:
+                return {
+                    "video_id": video_id,
+                    "title": metadata.get("title"),
+                    "transcript": transcript[:20000],
+                    "transcript_source": tier,
+                    "stored": False
+                }
+    except Exception as e:
+        logger.warning(f"nougentube local subtitle fetch failed: {e}")
+    # Forward to blade if subtitle extraction fails or if Whisper is needed
+    try:
+        from nougen_shards.keymaker import get_secret
+        token = get_secret("NGS_NODE_TOKEN")
+        req_p = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "nougen_media_transcribe", "arguments": {"url": url, "language": language, "whisper_model": whisper_model, "auto_shard": auto_shard}}
+        }
+        r = requests.post("https://blade.nougenai.com/mcp/", json=req_p, headers={"x-ngs-token": token, "content-type": "application/json", "accept": "application/json"}, timeout=30)
+        res_data = r.json()
+        if not res_data.get("result", {}).get("isError"):
+            return res_data.get("result", {})
+    except Exception as e:
+        logger.warning(f"nougentube blade forward failed: {e}")
+    return {"error": "Could not transcribe media or extract subtitles", "url": url}
 
 
 @node_mcp.tool()
 @_offloaded
-def nougentube_ingest(url: str, limit: int = 1) -> dict:
-    """Ingest a YouTube video or a bounded number of playlist videos as shards."""
-    return _run_nougentube(url, dry_run=False, limit=limit)
+def transcribe_media(source: str = "", url: str = "", language: Optional[str] = None,
+                     whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
+    """Transcribe media from URL or source using local Whisper and subtitle extraction."""
+    target_url = url or source
+    fn = getattr(nougentube, "__wrapped__", nougentube)
+    return fn(url=target_url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
 
 
 @node_mcp.tool()
 @_offloaded
 def nougentube_transcript(url: str) -> dict:
-    """Fetch a single YouTube video's transcript and metadata without storing a shard."""
-    if not url or len(url) > 2048:
-        raise ValueError("provide one YouTube video URL (maximum 2048 characters)")
-    from urllib.parse import urlsplit
-    parsed = urlsplit(url.strip())
-    allowed_hosts = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
-    if parsed.scheme not in {"http", "https"} or (parsed.hostname or "").lower() not in allowed_hosts:
-        raise ValueError("NouGenTube accepts YouTube video URLs only")
-    tube = _load_nougentube()
-    video_id = tube.extract_video_id(url)
-    if not video_id:
-        raise ValueError("URL must identify one YouTube video, not a playlist")
-    transcript, tier = tube.fetch_transcript(video_id, url)
-    metadata = tube.fetch_metadata(url, video_id)
-    text = transcript or ""
-    return {
-        "video_id": video_id,
-        "metadata": metadata,
-        "transcript_source": tier,
-        "transcript_available": bool(text),
-        "transcript": text[:20000],
-        "transcript_truncated": len(text) > 20000,
-        "stored": False,
-    }
-
-
-@node_mcp.tool()
-@_offloaded
-def nougen_media_transcribe(url: str, language: Optional[str] = None,
-                            whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
-    """Transcribe a YouTube video with local Whisper; videos over 30 minutes are rejected."""
-    if not url or len(url) > 2048:
-        raise ValueError("provide one YouTube video URL (maximum 2048 characters)")
-    from urllib.parse import urlsplit
-    parsed = urlsplit(url.strip())
-    allowed_hosts = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
-    if parsed.scheme not in {"http", "https"} or (parsed.hostname or "").lower() not in allowed_hosts:
-        raise ValueError("local Whisper transcription accepts YouTube video URLs only")
-    tube = _load_nougentube()
-    if not tube.extract_video_id(url) or tube.is_playlist(url):
-        raise ValueError("URL must identify one YouTube video, not a playlist")
-    if whisper_model not in {"tiny", "base", "small"}:
-        raise ValueError("whisper_model must be tiny, base, or small")
-    if language is not None and (not language.strip() or len(language) > 16):
-        raise ValueError("language must be a short language code or omitted for detection")
-    language = language.strip() if language is not None else None
-    import tempfile
-    try:
-        import yt_dlp
-    except ImportError as exc:
-        raise RuntimeError("yt-dlp is unavailable; install the NouGenShards [tube] extra") from exc
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True,
-                           "noplaylist": True}) as ydl:
-        metadata = ydl.extract_info(url.strip(), download=False)
-    duration = (metadata or {}).get("duration")
-    if not isinstance(duration, (int, float)) or duration <= 0 or duration > 1800:
-        raise ValueError("video duration must be known and no longer than 30 minutes")
-    from nougen_shards.transcriber import NouGenTranscriber
-    with tempfile.TemporaryDirectory(prefix="nougen_transcribe_") as output_dir:
-        transcriber = NouGenTranscriber(output_dir=output_dir, whisper_model=whisper_model)
-        result = transcriber.process_and_shard(
-            url.strip(), language=language, auto_shard=bool(auto_shard),
-        )
-        transcript = result.get("text", "")
-        return {
-            "title": result.get("title"),
-            "source": url.strip(),
-            "language": result.get("language"),
-            "duration_seconds": result.get("meta", {}).get("duration"),
-            "transcript": transcript[:20000],
-            "transcript_truncated": len(transcript) > 20000,
-            "sharded": result.get("sharded"),
-            "model": whisper_model,
-        }
+    """Extract subtitles/transcript directly from YouTube."""
+    fn = getattr(nougentube, "__wrapped__", nougentube)
+    return fn(url=url)
 
 
 @node_mcp.tool()
