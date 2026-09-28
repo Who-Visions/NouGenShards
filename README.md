@@ -1,5 +1,3 @@
-> **Agents and LLMs: read [START_HERE.md](START_HERE.md) before anything else.**
-
 ---
 title: NouGenShards Node
 emoji: 🧠
@@ -9,6 +7,8 @@ sdk: docker
 app_port: 7860
 pinned: false
 ---
+
+> **Agents and LLMs: read [START_HERE.md](START_HERE.md) before anything else.**
 
 <p align="center">
   <picture>
