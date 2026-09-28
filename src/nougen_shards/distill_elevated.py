@@ -4,11 +4,10 @@ Extends distill.py with information compression ratios and knowledge density met
 """
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Any, Optional
+from dataclasses import dataclass
+from typing import Dict, List
 
-from .distill import ATOM_TYPES, ENTITY_KINDS, norm_entity
+from .distill import norm_entity
 
 
 @dataclass

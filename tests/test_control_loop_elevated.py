@@ -1,8 +1,8 @@
 """
 Unit tests for control_loop_elevated module.
 """
-from datetime import datetime, timezone
-from nougen_shards.control_loop import ALIGNED, CONFLICTED, UNKNOWN
+from datetime import datetime
+from nougen_shards.control_loop import ALIGNED, CONFLICTED
 from nougen_shards.control_loop_elevated import compute_alignment_transfer, AlignmentVector
 
 def test_alignment_transfer_clean():

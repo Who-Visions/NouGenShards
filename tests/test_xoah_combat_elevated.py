@@ -3,7 +3,6 @@ import pytest
 from nougen_shards.xoah_combat_elevated import (
     CombatState,
     FighterVector,
-    ChoreographyFrame,
     XoahCombatEngine,
 )
 

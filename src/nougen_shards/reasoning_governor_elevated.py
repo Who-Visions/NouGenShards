@@ -5,10 +5,10 @@ Extends reasoning_governor.py with formal utility tensors, confidence intervals,
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Any, Optional
+from dataclasses import dataclass
+from typing import Tuple
 
-from .reasoning_governor import TrajectoryCheckpoint, ReasoningValueBucket, GovernorAction, TaskClass, ConsequenceClass
+from .reasoning_governor import TrajectoryCheckpoint, ReasoningValueBucket
 
 
 @dataclass

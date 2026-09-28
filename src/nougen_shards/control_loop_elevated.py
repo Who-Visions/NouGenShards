@@ -4,12 +4,11 @@ Extends control_loop.py with alignment transfer matrices and priority displaceme
 """
 from __future__ import annotations
 
-import math
 from datetime import datetime
-from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Any, Optional
+from dataclasses import dataclass
+from typing import Dict, Tuple, Any, Optional
 
-from .control_loop import intent_alignment_check, ALIGNED, CONFLICTED, UNKNOWN
+from .control_loop import intent_alignment_check, UNKNOWN
 
 
 @dataclass

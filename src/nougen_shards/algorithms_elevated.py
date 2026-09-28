@@ -4,8 +4,7 @@ Extends algorithms.py with Damerau-Levenshtein, Jaro-Winkler similarity, and fas
 """
 from __future__ import annotations
 
-import math
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, Tuple
 
 
 def damerau_levenshtein_distance(s1: str, s2: str) -> int:

@@ -1,5 +1,3 @@
-import os
-import pytest
 from nougen_shards.status_semantics import classify_node_offline_reason, StatusLevel
 from nougen_shards.keymaker import enforce_deepseek_auth_boundary
 

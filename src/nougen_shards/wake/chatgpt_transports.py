@@ -35,8 +35,6 @@ from __future__ import annotations
 import json
 import os
 import time
-import urllib.error
-import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
@@ -286,7 +284,7 @@ class WorkspaceAgentWakeTransport(ChatGPTWakeTransport):
         # Direct call to OpenAI Workspace / Assistant run API
         api_key = cfg["api_key"]
         agent_id = cfg["agent_id"]
-        url = f"https://api.openai.com/v1/threads/runs"
+        url = "https://api.openai.com/v1/threads/runs"
         
         try:
             import urllib.request

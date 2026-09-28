@@ -19,7 +19,7 @@ Mathematical Formulations:
    C_chrono = sum_i(w_i * cos_sim(v_past_i, v_future_i)) / N
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum, auto
 import math
 from typing import Dict, List, Optional, Tuple

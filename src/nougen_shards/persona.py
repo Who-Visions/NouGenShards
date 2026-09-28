@@ -469,7 +469,7 @@ def resolve(sig: Signals, registry_path: Optional[Path] = None) -> Persona:
     peaks = tuple(h for h, _ in sorted(sig.active_hours.most_common(3), key=lambda t: (-t[1], t[0])))
     # Compute mathematical algorithm metrics (OCEAN vector & mannerism dynamics)
     try:
-        from .persona_math import compute_ocean_vector, compute_shannon_entropy, compute_syntactic_cohesion
+        from .persona_math import compute_ocean_vector, compute_shannon_entropy
         total_hits = sum(sig.lexicon.values())
         entropy_val = compute_shannon_entropy([w for k in sig.lexicon.keys() for w in [k]*sig.lexicon[k]])
         ocean_vec = compute_ocean_vector(

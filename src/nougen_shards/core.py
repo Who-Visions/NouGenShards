@@ -22,7 +22,6 @@ from typing import List, Optional
 import numpy as np
 from nougen_time import InvalidTimestampError, format_log_time, now as nougen_now, parse as parse_time
 
-from .core_elevated import RelevanceTensor, compute_cosine_similarity
 
 
 logger = logging.getLogger(__name__)

@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 from zoneinfo import ZoneInfo
 
-from .temporal_fabric_elevated import VectorClock, compute_causal_matrix
 
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
