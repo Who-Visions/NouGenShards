@@ -4,6 +4,7 @@
   Lanes covered:
     shard node   127.0.0.1:4444   (delegated to node_lane.ps1)
     msg bus      127.0.0.1:8766   (tools/nougenmsg_node.py - NouGenMsg receiver)
+    ollama       OLLAMA_HOST or 127.0.0.1:11434 (ensured + model warmed on start)
     cc-msg       \\.\pipe\LOCAL\cc-msg-*   (READ ONLY - see note below)
     codex pipe   (delegated to start_codex_pipe.ps1, needs a thread id)
 
@@ -75,6 +76,110 @@ function Get-TrackedProcess {
     return $proc
 }
 
+# --- Ollama lane (native to live startup) -----------------------------------
+# Endpoint/model resolve env -> probe; constants are logged fallbacks only.
+if ($env:OLLAMA_HOST) {
+    $OllamaBase = $env:OLLAMA_HOST
+    if ($OllamaBase -notmatch '^https?://') { $OllamaBase = 'http://' + $OllamaBase }
+    $OllamaBase = $OllamaBase.TrimEnd('/')
+    $OllamaBase = $OllamaBase -replace '://0\.0\.0\.0', '://127.0.0.1'
+    if ($OllamaBase -notmatch '://[^/]+:\d+') {
+        $OllamaBase = $OllamaBase + ':11434'   # ollama's documented default port
+        Write-Verbose "OLLAMA_HOST has no port; fallback $OllamaBase"
+    }
+} else {
+    $OllamaBase = 'http://127.0.0.1:11434'
+    Write-Verbose "OLLAMA_HOST unset; fallback $OllamaBase"
+}
+if ($env:NOUGEN_OLLAMA_WAIT_S) { $OllamaWaitS = [int]$env:NOUGEN_OLLAMA_WAIT_S } else { $OllamaWaitS = 60 }
+# Custom fleet families (Rule 0.4). Override with NOUGEN_FLEET_MODELS=a,b,c
+if ($env:NOUGEN_FLEET_MODELS) { $FleetFamilies = $env:NOUGEN_FLEET_MODELS.Split(',') | ForEach-Object { $_.Trim().ToLower() } }
+else { $FleetFamilies = @('dav1d', 'sol-ai', 'kaedra', 'iris-ai', 'rhea-noir', 'griot', 'davos', 'mrs-b') }
+
+function Get-OllamaTags {
+    try {
+        $r = Invoke-RestMethod -Uri "$OllamaBase/api/tags" -TimeoutSec 5 -ErrorAction Stop
+        return @($r.models | ForEach-Object { $_.name })
+    } catch { return $null }
+}
+
+function Test-ModelAllowed {
+    param([string]$Name)
+    $n = $Name.ToLower()
+    if ($n -match '(^|[:\-])(12b|27b|31b)') { return $false }   # banned class
+    if ($n -match '-cloud$|:cloud') { return $false }
+    if ($n -match 'embed') { return $false }
+    return $true
+}
+
+function Select-OllamaModel {
+    param([string[]]$Tags)
+    if (-not $Tags) { return $null }
+    $pref = $env:NOUGEN_OLLAMA_MODEL
+    if ($pref -and ($Tags -contains $pref) -and (Test-ModelAllowed $pref)) { return $pref }
+    $custom = @($Tags | Where-Object {
+        (Test-ModelAllowed $_) -and ($FleetFamilies -contains ($_.Split(':')[0].ToLower())) -and ($_ -notmatch '-prev$|-pre-')
+    })
+    $small = @($custom | Where-Object { $_ -match ':(e2b|e4b)$' })
+    if ($small) { return ($small | Sort-Object { $FleetFamilies.IndexOf($_.Split(':')[0].ToLower()) })[0] }
+    if ($custom) { return ($custom | Sort-Object { $FleetFamilies.IndexOf($_.Split(':')[0].ToLower()) })[0] }
+    $g = @($Tags | Where-Object { $_ -match '^gemma4:(e2b|e4b)' })
+    if ($g) { return $g[0] }
+    return $null
+}
+
+function Start-OllamaLane {
+    $tags = Get-OllamaTags
+    if ($null -ne $tags) {
+        Write-Output "  ollama already serving at $OllamaBase ($($tags.Count) tags) - leaving it alone."
+    } else {
+        $exe = $env:NOUGEN_OLLAMA_EXE
+        if (-not $exe) { $cmd = Get-Command ollama -ErrorAction SilentlyContinue; if ($cmd) { $exe = $cmd.Source } }
+        if (-not $exe) {
+            $exe = Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'
+            Write-Output "  ollama not on PATH; fallback $exe"
+        }
+        if (-not (Test-Path -LiteralPath $exe)) { Write-Output "  ollama: executable not found ($exe) - lane DOWN"; return }
+        # No duplicate servers: if a 'serve' is already running but not yet answering, wait for it.
+        $serving = @(Get-CimInstance Win32_Process -Filter "Name = 'ollama.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -match '\bserve\b' })
+        if ($serving) {
+            Write-Output "  ollama serve already running (pid $($serving[0].ProcessId)); waiting for it."
+        } else {
+            Start-Process -FilePath $exe -ArgumentList 'serve' -WindowStyle Hidden `
+                -RedirectStandardOutput (Join-Path $LogDir 'ollama.stdout.log') `
+                -RedirectStandardError  (Join-Path $LogDir 'ollama.stderr.log') | Out-Null
+            Write-Output "  ollama serve started hidden."
+        }
+        $deadline = (Get-Date).AddSeconds($OllamaWaitS)
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 500
+            $tags = Get-OllamaTags
+            if ($null -ne $tags) { break }
+        }
+        if ($null -eq $tags) { Write-Output "  ollama: /api/tags not answering after ${OllamaWaitS}s - lane DOWN"; return }
+        Write-Output "  ollama up at $OllamaBase ($($tags.Count) tags)."
+    }
+    $model = Select-OllamaModel -Tags $tags
+    if (-not $model) { Write-Output "  ollama: no allowed custom/gemma4 e2b|e4b model served - warm skipped."; return }
+    try {
+        $body = @{ model = $model; prompt = 'ok'; stream = $false; options = @{ num_predict = 1 } } | ConvertTo-Json -Compress
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        Invoke-RestMethod -Uri "$OllamaBase/api/generate" -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 180 -ErrorAction Stop | Out-Null
+        Write-Output ("  ollama model warm: {0} ({1:N1}s)" -f $model, $sw.Elapsed.TotalSeconds)
+    } catch {
+        Write-Output "  ollama model warm FAILED for ${model}: $($_.Exception.Message)"
+    }
+}
+
+function Show-OllamaStatus {
+    $tags = Get-OllamaTags
+    if ($null -eq $tags) { Write-Output ("  ollama       {0,-22} down" -f $OllamaBase); return }
+    $loaded = @()
+    try { $loaded = @((Invoke-RestMethod -Uri "$OllamaBase/api/ps" -TimeoutSec 5).models | ForEach-Object { $_.name }) } catch { }
+    Write-Output ("  ollama       {0,-22} UP ({1} tags) pick={2} loaded=[{3}]" -f $OllamaBase, $tags.Count, (Select-OllamaModel -Tags $tags), ($loaded -join ', '))
+}
+
 function Show-Status {
     Write-Output ''
     Write-Output "NouGen live lanes - $env:COMPUTERNAME  ($(Get-Date -Format 'h:mm tt') local)"
@@ -87,6 +192,7 @@ function Show-Status {
     $msgProc = Get-TrackedProcess -PidFile $MsgPid -MustContain 'nougenmsg_node.py'
     if ($msgProc) { $msgState = "$msgState (pid $($msgProc.ProcessId))" }
     Write-Output ("  msg bus      127.0.0.1:{0,-6} {1}" -f $MsgPort, $msgState)
+    Show-OllamaStatus
 
     $pipes = Get-CcMsgPipes
     Write-Output ("  cc-msg       {0} pipe(s) open" -f $pipes.Count)
@@ -135,6 +241,8 @@ function Start-Lanes {
     New-Item -ItemType Directory -Path $RunDir -Force | Out-Null
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 
+    if ($env:NOUGEN_LIVE_SKIP_OLLAMA -ne '1') { Start-OllamaLane }
+
     $existing = Get-TrackedProcess -PidFile $MsgPid -MustContain 'nougenmsg_node.py'
     if ($existing) {
         Write-Output "  msg bus already up (pid $($existing.ProcessId)) - leaving it alone."
@@ -175,6 +283,9 @@ function Start-Lanes {
 }
 
 function Stop-Lanes {
+    # Ollama is shared by every lane on this box; stop reports it, never kills it.
+    Show-OllamaStatus
+    Write-Output "  ollama left running (shared by other lanes) - quit it from the tray if you meant to."
     $proc = Get-TrackedProcess -PidFile $MsgPid -MustContain 'nougenmsg_node.py'
     if (-not $proc) {
         Write-Output "  no msg bus started by this script is running; nothing to stop."
