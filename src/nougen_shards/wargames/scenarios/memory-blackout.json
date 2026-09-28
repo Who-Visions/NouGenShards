@@ -1,0 +1,60 @@
+{
+  "id": "WG-2026-0002",
+  "title": "Memory Federation Blackout",
+  "status": "candidate",
+  "level": "skirmish",
+  "mode": "blackout",
+  "version": 1,
+  "mission": {
+    "goal": "Preserve epistemic honesty during partial fleet recall",
+    "destiny": "A recall miss is never presented as proof of absence"
+  },
+  "arena": {"repos": ["NouGenShards"], "nodes": ["blade", "phoebus", "whoart"]},
+  "initial_state": {
+    "query": "port 4444 ownership decision",
+    "lanes": {
+      "blade":   {"answered": true, "hits": 1},
+      "phoebus": {"answered": true, "hits": 0},
+      "whoart":  {"answered": true, "hits": 0}
+    },
+    "retries": 0,
+    "retry_budget": 1
+  },
+  "assumptions": {
+    "confirmed": ["three vault lanes are expected"],
+    "dangerous": ["zero_hits_means_never_happened", "all_lanes_always_answer"]
+  },
+  "actors": {
+    "blue": {
+      "objective": "answer the recall query truthfully",
+      "policy": "coverage_aware_recall",
+      "naive_policy": "merge_and_declare"
+    },
+    "red": {"objective": "remove the one lane that holds the memory"},
+    "white": {"objective": "adjudicate from lane coverage, not from Blue's confidence"},
+    "purple": {"objective": "absence is never asserted beyond answered coverage"}
+  },
+  "injects": [
+    {
+      "type": "lane_timeout",
+      "at_turn": 2,
+      "params": {"lane": "blade"},
+      "description": "Blade's vault lane times out. The only lane with a hit goes silent.",
+      "reversible": true
+    }
+  ],
+  "invariants": ["no_false_absence"],
+  "telemetry": ["lanes_answered", "lanes_silent", "fleet_complete"],
+  "victory": ["coverage_marked_incomplete", "absence_never_claimed_under_partial_coverage", "bounded_retry_attempted"],
+  "catastrophic_failure": ["false_absence_claimed"],
+  "turns": 4,
+  "fog": {"blue": {"inject_visibility": "hidden"}, "white": {"ground_truth": "full"}},
+  "elevation": {
+    "failure_class": "amnesia",
+    "description": "partial federation coverage was reported as proof of absence",
+    "assumption": "zero_hits_means_never_happened",
+    "invariant": "no_false_absence",
+    "component": "shards_recall",
+    "change_type": "coverage_flag"
+  }
+}

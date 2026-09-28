@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nougenai.com/schemas/war-game.schema.json",
+  "title": "NouGen War Game scenario",
+  "description": "Executable scenario contract. See docs/wargames-doctrine.md section 7.",
+  "type": "object",
+  "required": ["id", "title", "mission", "initial_state", "actors", "injects", "invariants", "victory", "turns"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^WG-[0-9]{4}-[0-9]{4}$"},
+    "title": {"type": "string"},
+    "status": {"type": "string", "enum": ["candidate", "canonical", "retired"], "default": "candidate"},
+    "level": {"type": "string", "enum": ["skirmish", "duel", "gauntlet", "boss", "raid", "campaign", "world"]},
+    "mode": {"type": "string", "description": "Named game mode, e.g. false_green, amnesia, split_brain"},
+    "version": {"type": "integer", "minimum": 1},
+    "mission": {
+      "type": "object",
+      "required": ["goal"],
+      "properties": {"goal": {"type": "string"}, "destiny": {"type": "string"}}
+    },
+    "arena": {
+      "type": "object",
+      "properties": {
+        "repos": {"type": "array", "items": {"type": "string"}},
+        "nodes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "initial_state": {"type": "object", "description": "Round Zero: what Blue can see at turn 1"},
+    "assumptions": {
+      "type": "object",
+      "properties": {
+        "confirmed": {"type": "array", "items": {"type": "string"}},
+        "unconfirmed": {"type": "array", "items": {"type": "string"}},
+        "inherited": {"type": "array", "items": {"type": "string"}},
+        "dangerous": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "actors": {
+      "type": "object",
+      "required": ["blue", "white"],
+      "propertyNames": {"enum": ["gm", "blue", "red", "white", "green", "gold", "purple"]},
+      "properties": {
+        "blue": {
+          "type": "object",
+          "required": ["policy"],
+          "properties": {
+            "objective": {"type": "string"},
+            "policy": {"type": "string", "description": "Hardened Blue policy name registered in runner.POLICIES"},
+            "naive_policy": {"type": "string", "description": "Doomed baseline; run with --policy naive"}
+          }
+        }
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {"objective": {"type": "string"}}
+      }
+    },
+    "injects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "at_turn"],
+        "properties": {
+          "type": {"type": "string", "description": "Registered in runner.INJECTS"},
+          "at_turn": {"type": "integer", "minimum": 1},
+          "params": {"type": "object"},
+          "description": {"type": "string"},
+          "reversible": {"type": "boolean", "default": true}
+        }
+      }
+    },
+    "invariants": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "Hitboxes registered in adjudication.INVARIANTS"},
+    "telemetry": {"type": "array", "items": {"type": "string"}},
+    "victory": {"type": "array", "items": {"type": "string"}, "description": "Conditions registered in adjudication.CONDITIONS"},
+    "catastrophic_failure": {"type": "array", "items": {"type": "string"}},
+    "turns": {"type": "integer", "minimum": 1},
+    "fog": {"type": "object"},
+    "elevation": {
+      "type": "object",
+      "properties": {
+        "failure_class": {"type": "string"},
+        "description": {"type": "string"},
+        "assumption": {"type": "string"},
+        "invariant": {"type": "string"},
+        "component": {"type": "string"},
+        "change_type": {"type": "string"}
+      }
+    }
+  }
+}

@@ -141,7 +141,7 @@ docs/valerion-orchestration-playbook.md
 # Internal ops surface -- never ships to the public repo (origin: GitHub,
 # hf: HuggingFace Space). War-games carry cost/billing analysis and unresolved
 # GM decisions; transcripts and dreams are working notes, not product.
-wargames/
+/wargames/
 transcripts/
 dreams/
 *.blade-local-*

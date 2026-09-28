@@ -82,6 +82,8 @@ nougen-time = "nougen_time.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
+# War Games scenarios and schema ship with the wheel (nougen wargame list/run).
+nougen_shards = ["wargames/scenarios/*.json", "wargames/schema/*.json"]
 nougen_verse = ["data/*.json", "data/*.txt", "schemas/*.json"]
 
 [tool.pytest.ini_options]
