@@ -1101,7 +1101,11 @@ def add_shard(content: str, title: Optional[str] = None, tags: Optional[List[str
             content=content,
             tags=tags or ["mcp", "voice"],
         )
-        return json.dumps({"status": "ok" if ok else "failed", "title": t_val, "tags": tags}, indent=2)
+        if isinstance(ok, dict):
+            is_success = ok.get("status") in ("ok", "success", "captured", "durable") or ok.get("success") is True or (bool(ok.get("shard_id")) and "error" not in ok)
+        else:
+            is_success = bool(ok)
+        return json.dumps({"status": "ok" if is_success else "failed", "title": t_val, "tags": tags}, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
