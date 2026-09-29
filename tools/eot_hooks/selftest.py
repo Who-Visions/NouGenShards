@@ -4,7 +4,9 @@ for p in [h/".codex/hooks.json",h/".codex/hooks/nougen_lifecycle.py",h/".gemini/
     print("OK " if p.exists() else "MISSING ", p)
 lc=str(h/".codex/hooks/nougen_lifecycle.py"); cur=h/".nougen/state/codex_eot_cursor.json"
 cur.unlink(missing_ok=True); E='{"hook_event_name":"Stop","session_id":"test"}'
-run=lambda: subprocess.run([sys.executable,lc],input=E,capture_output=True,text=True,timeout=60)
+def run():
+    return subprocess.run([sys.executable, lc], input=E, capture_output=True, text=True, timeout=60)
+
 r=run(); print("1 seed:",r.stdout[:120],r.stderr[-200:])
 r=run(); print("2 idle:",r.stdout[:120])
 time.sleep(1.2); t=h/".nougen/codex/inbox/ping_test_eot.json"; t.write_text('{"message":"TEST ping"}')

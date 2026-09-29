@@ -14,7 +14,6 @@ When all inbox work has been processed, updates cursor and exits cleanly allowin
 import json
 import os
 import socket
-import sys
 import time
 import subprocess
 from datetime import datetime, timezone
@@ -292,9 +291,9 @@ def main() -> int:
                     try:
                         with open(transcript_path, "r", encoding="utf-8", errors="ignore") as tf:
                             lines = tf.readlines()
-                            for l in reversed(lines):
+                            for line in reversed(lines):
                                 try:
-                                    entry = json.loads(l)
+                                    entry = json.loads(line)
                                     if entry.get("type") == "PLANNER_RESPONSE" and entry.get("content"):
                                         c = entry["content"].strip()
                                         # Grab the last paragraph or sentence
