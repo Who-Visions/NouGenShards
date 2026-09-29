@@ -40,6 +40,11 @@ updates:
     ignore:
       - dependency-name: "tomlkit"
         versions: [">=0.15.0"]
+      # gradio (through 6.28.0) requires huggingface-hub<2.0, so #588's lone
+      # bump to 2.0.0 broke the Space requirements job (2026-09-29). Lift when
+      # gradio lifts the cap.
+      - dependency-name: "huggingface-hub"
+        versions: [">=2.0.0"]
   - package-ecosystem: npm
     directory: /
     schedule:
