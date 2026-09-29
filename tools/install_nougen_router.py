@@ -45,7 +45,7 @@ def write_skill(root: Path, desc: str, text: str) -> str:
 
 def pick_base() -> str | None:
     pref = os.environ.get("NOUGEN_ROUTER_BASE")
-    tags = [m["name"] for m in json.load(urllib.request.urlopen(f"{OLLAMA}/api/tags", timeout=10))["models"]]
+    tags = [m["name"] for m in json.load(urllib.request.urlopen(f"{OLLAMA}/api/tags", timeout=float(os.environ.get("NOUGEN_OLLAMA_TAGS_TIMEOUT", "60"))))["models"]]
     if pref and pref in tags:
         return pref
     ok = lambda t: re.search(r":e[24]b$", t) and "prev" not in t and "pre-" not in t
