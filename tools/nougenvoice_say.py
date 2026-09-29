@@ -29,10 +29,12 @@ OUT_DIR = os.environ.get("NOUGENVOICE_OUT", os.path.join(os.path.dirname(os.path
 
 # persona -> (profile name, engine, preset voice id). Voice ids are Kokoro presets served by /profiles/presets/kokoro.
 PERSONAS = {
-    "rhea":   ("Rhea (Kokoro Heart)",  "kokoro", "af_heart"),
-    "kaedra": ("Kaedra (Kokoro Nova)", "kokoro", "af_nova"),
-    "dav1d":  ("Dav1d (Kokoro Adam)",  "kokoro", "am_adam"),
-    "griot":  ("Griot (Kokoro Onyx)",  "kokoro", "am_onyx"),
+    "rhea":        ("Rhea (Kokoro Heart)",       "kokoro", "af_heart"),
+    "kaedra":      ("Kaedra (Kokoro Nova)",      "kokoro", "af_nova"),
+    "antigravity": ("Antigravity (Kokoro Onyx)", "kokoro", "am_onyx"),
+    "yukiai":      ("Yukiai (Kokoro Fable)",     "kokoro", "bm_fable"),
+    "solai":       ("Sol-Ai (Kokoro Adam)",      "kokoro", "am_adam"),
+    "dav3":        ("Dav3 (Kokoro Eric)",        "kokoro", "am_eric"),
 }
 
 
@@ -95,10 +97,37 @@ def say(text: str, persona: str = "rhea", out: str | None = None, timeout: float
     if code != 200:
         raise SystemExit(3)
     os.makedirs(OUT_DIR, exist_ok=True)
+    _prune_old_wavs()
     path = out or os.path.join(OUT_DIR, f"{persona}-{time.strftime('%Y%m%dT%H%M%S')}.wav")
     with open(path, "wb") as f:
         f.write(wav)
     return path
+
+
+def _prune_old_wavs(max_age_seconds: float = 3600, max_files: int = 30) -> None:
+    """Automatically prunes ephemeral turn-brief wav files older than 1 hour or keeps newest 30."""
+    try:
+        if not os.path.exists(OUT_DIR):
+            return
+        now = time.time()
+        files = [
+            os.path.join(OUT_DIR, f)
+            for f in os.listdir(OUT_DIR)
+            if f.endswith(".wav") and not f.endswith("first-words.wav")
+        ]
+        files.sort(key=lambda p: os.path.getmtime(p))
+        
+        # Remove files older than max_age_seconds or in excess of max_files
+        for idx, fpath in enumerate(files):
+            age = now - os.path.getmtime(fpath)
+            # Remove if older than 1 hour or beyond the newest 30 files
+            if age > max_age_seconds or (len(files) - idx) > max_files:
+                try:
+                    os.remove(fpath)
+                except OSError:
+                    pass
+    except Exception:
+        pass
 
 
 def main() -> int:
