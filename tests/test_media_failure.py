@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -20,7 +21,7 @@ def test_failed_url_has_ordered_safe_attempts(tmp_path):
         def extract_info(self, source, download):
             raise RuntimeError("login required cookie secret-token=private")
 
-    with patch("nougen_shards.transcriber.yt_dlp.YoutubeDL", BrokenYDL):
+    with patch("nougen_shards.transcriber.yt_dlp", SimpleNamespace(YoutubeDL=BrokenYDL)):
         with pytest.raises(MediaIngestFailure) as caught:
             NouGenTranscriber(output_dir=str(tmp_path)).extract_or_download_audio(
                 "https://www.instagram.com/reel/DblWuNUKu4C/?token=private"
