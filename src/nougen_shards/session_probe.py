@@ -61,11 +61,32 @@ def _discover_repos() -> List[Path]:
     return repos
 
 
+# hi/bye run from hooks and background lanes; on Windows every child would
+# otherwise open (and flash) its own console window.
+_NO_WINDOW = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+
+# Coach Box: Claude's per-turn budget; the reasoning goes to fleet/local lanes.
+COACH_BOX_TOKENS = 500
+def _ollama_url() -> str:
+    """OLLAMA_HOST is often the server's *bind* address (0.0.0.0, no port);
+    turn it into something a client can dial."""
+    raw = os.environ.get("OLLAMA_HOST", "").strip().rstrip("/") or "127.0.0.1:11434"
+    scheme, _, hostport = raw.rpartition("://")
+    host, sep, port = hostport.rpartition(":") if ":" in hostport else (hostport, "", "")
+    host = host or hostport
+    if host in ("0.0.0.0", "::", "[::]", ""):
+        host = "127.0.0.1"
+    return f"{scheme or 'http'}://{host}:{port if sep and port else '11434'}"
+
+
+OLLAMA_URL = _ollama_url()
+
+
 def _repo_git_status(repo: Path) -> Dict:
     def run(args):
         try:
             r = subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                                text=True, timeout=8, check=False)
+                                text=True, timeout=8, check=False, **_NO_WINDOW)
             return r.stdout.strip() if r.returncode == 0 else ""
         except OSError:
             return ""
@@ -268,7 +289,7 @@ def publish_bye_leg(goal: str, body: str, agent: str,
 
         def _git(*args):
             return subprocess.run(["git", *args], cwd=registry, capture_output=True,
-                                   text=True, timeout=120, check=False)
+                                   text=True, timeout=120, check=False, **_NO_WINDOW)
 
         _git("add", f".handoffs/{leg_id}.json", f".handoffs/{leg_id}.md")
         commit = _git("commit", "-q", "-m", f"handoff({agent}): {goal}"[:200])
@@ -351,6 +372,44 @@ def _expected_offline_nodes() -> set[str]:
     return nodes
 
 
+def stadium_check() -> Dict:
+    """The old Yuki-Ai hi_probe checks, native: coach box budget, shard vault
+    (DB files + shard rows, read-only), and the local Ollama lane. Never
+    raises; a failed piece reports its error instead."""
+    import json as _json
+    import sqlite3
+    import urllib.request
+    from .persona import _vault_dir, shard_dbs
+
+    out: Dict = {"coach_box_tokens": COACH_BOX_TOKENS}
+
+    vault = _vault_dir()
+    dbs = shard_dbs(vault)
+    total, bad = 0, []
+    for db in dbs:
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+            try:
+                total += conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            bad.append(f"{db.name}: {exc}")
+    out["vault"] = {"path": str(vault), "dbs": len(dbs), "shards": total, "errors": bad}
+
+    ollama: Dict = {"url": OLLAMA_URL, "up": False, "models": [], "loaded": []}
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=3) as r:
+            ollama["models"] = [m["name"] for m in _json.load(r).get("models", [])]
+        ollama["up"] = True
+        with urllib.request.urlopen(f"{OLLAMA_URL}/api/ps", timeout=3) as r:
+            ollama["loaded"] = [m["name"] for m in _json.load(r).get("models", [])]
+    except Exception as exc:
+        ollama["error"] = str(exc)
+    out["ollama"] = ollama
+    return out
+
+
 def _fleet_pulse() -> Dict[str, Any]:
     """Best-effort reachability of explicitly enrolled sibling nodes.
 
@@ -373,7 +432,7 @@ def _fleet_pulse() -> Dict[str, Any]:
         try:
             r = subprocess.run(
                 ["ssh", "-o", "ConnectTimeout=4", "-o", "BatchMode=yes", host, "hostname"],
-                capture_output=True, text=True, timeout=6, check=False,
+                capture_output=True, text=True, timeout=6, check=False, **_NO_WINDOW,
             )
             pulse[host] = True if r.returncode == 0 else "route_unreachable"
         except (OSError, subprocess.SubprocessError):
@@ -399,6 +458,7 @@ class HiReport:
     relay_legs: List[Dict] = field(default_factory=list)
     next_play: Optional[str] = None
     usage: Dict[str, Dict] = field(default_factory=dict)
+    stadium: Dict = field(default_factory=dict)
 
 
 @dataclass
@@ -441,6 +501,10 @@ def run_hi(fleet: bool = True) -> HiReport:
         usage = usage_snapshot()
     except Exception:
         usage = {}
+    try:
+        stadium = stadium_check()
+    except Exception as exc:
+        stadium = {"error": str(exc)}
     return HiReport(
         identity=identity,
         local_time=local_time_stamp(),
@@ -453,6 +517,7 @@ def run_hi(fleet: bool = True) -> HiReport:
         relay_legs=relay.get("legs", []),
         next_play=next_play,
         usage=usage,
+        stadium=stadium,
     )
 
 
