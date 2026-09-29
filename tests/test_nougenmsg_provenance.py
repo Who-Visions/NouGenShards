@@ -19,6 +19,14 @@ import pytest
 from nougen_shards.nougenmsg import NouGenMsgBus
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_lane(monkeypatch):
+    # The sender label now carries the lane from NOUGEN_LANE / NOUGEN_AGENT /
+    # CLAUDECODE; these tests pin the lane-less (legacy 'nougen-<node>') path.
+    for var in ("NOUGEN_LANE", "NOUGEN_AGENT", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
+        monkeypatch.delenv(var, raising=False)
+
+
 @pytest.fixture
 def on_node(monkeypatch):
     def _set(name):

@@ -727,11 +727,35 @@ class NouGenMsgBus:
             path.append(current)
         return path
 
+    # Short lane names for sender labels ("blade-agy", not "blade-antigravity").
+    _LANE_ALIASES = {"antigravity": "agy", "claude-code": "claude", "claude-cli": "claude"}
+
+    @classmethod
+    def _sender_lane(cls, supplied: Dict[str, Any]) -> Optional[str]:
+        """The sending lane, from explicit signals only: the caller, then
+        NOUGEN_LANE, then Claude Code's per-process markers, then NOUGEN_AGENT.
+        The Claude markers beat NOUGEN_AGENT because the latter is often set
+        machine-wide (whoart: NOUGEN_AGENT=antigravity), which would label every
+        Claude session as agy. No API-key guessing -- an unknown lane stays None."""
+        lane = (supplied.get("lane") or os.environ.get("NOUGEN_LANE") or "").strip().lower()
+        if not lane and (os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_ENTRYPOINT")):
+            lane = "claude"
+        lane = lane or (os.environ.get("NOUGEN_AGENT") or "").strip().lower()
+        if lane.startswith("nougen-"):
+            lane = lane[len("nougen-"):]
+        return cls._LANE_ALIASES.get(lane, lane) or None
+
+    @staticmethod
+    def sender_label(machine: str, lane: Optional[str]) -> str:
+        """'<node>-<lane>' when the lane is known, else the legacy 'nougen-<node>'."""
+        return f"{machine}-{lane}" if lane else f"nougen-{machine}"
+
     @classmethod
     def _origin_envelope(cls, supplied: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Build a provenance envelope without inventing missing session identity."""
         supplied = dict(supplied or {})
         current = get_current_node()
+        lane = cls._sender_lane(supplied)
         claimed_machine = supplied.get("machine")
         conflicts = list(supplied.get("conflicts") or [])
         if claimed_machine and claimed_machine != current:
@@ -745,7 +769,7 @@ class NouGenMsgBus:
             "machine": claimed_machine or current,
             "coach": supplied.get("coach") or coach_for_machine(claimed_machine or current),
             "transport_machine": current,
-            "lane": supplied.get("lane"),
+            "lane": lane,
             "transport": supplied.get("transport") or "nougenmsg",
             # Stamped once, at the origin, and never overwritten on a hop --
             # that is the whole point of the field. It was left null, so
@@ -754,7 +778,7 @@ class NouGenMsgBus:
             # traffic reaching phoebus read as nougen-phoebus, origin.machine
             # phoebus. The content carried the origin; the envelope did not,
             # so cross-machine provenance was unrecoverable after one hop.
-            "original_sender": supplied.get("original_sender") or f"nougen-{current}",
+            "original_sender": supplied.get("original_sender") or cls.sender_label(current, lane),
             "relay_path": cls._extend_relay_path(supplied.get("relay_path"), current),
             "trigger_source": supplied.get("trigger_source") or os.environ.get("NOUGEN_TRIGGER_SOURCE", "direct_dispatch"),
             "correlation_id": supplied.get("correlation_id"),
