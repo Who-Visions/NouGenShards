@@ -9,8 +9,6 @@ from nougen_shards.visual_identity_adapters import (
     VeoIdentityAdapter,
 )
 from nougen_shards.visual_identity_capsule import (
-    IdentityRoot,
-    IdentityVariant,
     calculate_identity_confidence,
     compute_weighted_centroid,
     find_pareto_frontier,
