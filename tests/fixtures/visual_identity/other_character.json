@@ -1,0 +1,10 @@
+{
+  "schema_version": "nougen.visual-identity/1.0",
+  "tenant_id": "tenant:sample-a",
+  "character_id": "character:sample-2",
+  "capsule_id": "capsule:sample-2:r1",
+  "revision": 1,
+  "references": [{"asset_id": "asset:other", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "uri": "nougen://asset/asset-other", "view": "front", "quality": 0.8}],
+  "identity": {"claims": [], "invariants": []},
+  "provenance": {"created_at": "2026-09-28T13:00:00Z", "created_by": "lane:fixture", "source_records": ["asset:other"]}
+}

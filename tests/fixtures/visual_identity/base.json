@@ -1,0 +1,23 @@
+{
+  "schema_version": "nougen.visual-identity/1.0",
+  "tenant_id": "tenant:sample-a",
+  "character_id": "character:sample-1",
+  "capsule_id": "capsule:sample-1:r1",
+  "revision": 1,
+  "state": "active",
+  "references": [
+    {"asset_id": "asset:front", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "uri": "nougen://asset/asset-front", "view": "front", "quality": 0.95, "source_role": "canonical"},
+    {"asset_id": "asset:three-quarter", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "uri": "nougen://asset/asset-three-quarter", "view": "three_quarter", "quality": 0.9, "source_role": "canonical"}
+  ],
+  "identity": {
+    "claims": [
+      {"key": "hair_color", "value": "dark", "evidence_class": "reference_observation", "source_ids": ["asset:front"]},
+      {"key": "role", "value": "hero", "evidence_class": "narrative_canon", "source_ids": ["shard:sample-canon"]},
+      {"key": "glowing_eyes", "value": true, "evidence_class": "generated_interpretation", "source_ids": ["render:sample-1"]}
+    ],
+    "invariants": [{"key": "eye_count", "value": 2, "hard": true, "source_ids": ["asset:front"]}],
+    "embedding": {"model": "sample-identity", "version": "1", "dimension": 3, "centroid": [0.6, 0.0, 0.8], "reference_asset_ids": ["asset:front", "asset:three-quarter"]}
+  },
+  "provenance": {"created_at": "2026-09-28T12:00:00Z", "created_by": "lane:fixture", "source_records": ["asset:front", "asset:three-quarter", "shard:sample-canon"], "model_family": "synthetic", "model_version": "1"},
+  "negative_constraints": ["do not add unapproved scars"]
+}
