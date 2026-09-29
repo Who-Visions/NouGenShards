@@ -207,7 +207,7 @@ class NouGenTranscriber:
         audio_path, title, meta = self.extract_or_download_audio(source)
         try:
             res = self.engine.transcribe_file(audio_path, language=language)
-        except Exception as error:
+        except Exception:
             code = "ASR_UNAVAILABLE" if WhisperModel is None else "ASR_FAILED"
             raise MediaIngestFailure(code, "transcribe", source, [
                 {"adapter": "yt-dlp-public" if source.startswith(("http://", "https://")) else "local-file",
