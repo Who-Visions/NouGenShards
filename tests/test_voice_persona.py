@@ -22,7 +22,7 @@ def test_five_agents_bound_to_distinct_speakers_and_archetypes():
     b = vp.DEFAULT_AGENTS
     assert len(b) == 5
     assert len({v["voice"] for v in b.values()}) == 5
-    assert {v["archetype"] for v in b.values()} == set(vp.ARCHETYPES)
+    assert {v["archetype"] for v in b.values()} == set(vp.ARCHETYPES) - {vp.NEUTRAL_ARCHETYPE}
     assert b["claude-code"]["voice"] != b["antigravity"]["voice"]
 
 
@@ -98,3 +98,35 @@ def test_measure_pauses_and_drift():
     p = vp.plan(_env("dav1d"))
     assert vp.drift(p, {"mean_pause_ms": p.policy.pause_ms}) == []
     assert vp.drift(p, {"mean_pause_ms": p.policy.pause_ms * 3})
+
+
+def test_low_confidence_role_falls_back_to_neutral_without_changing_facts():
+    assert vp.gated_archetype("rapid_scout", 0.9) == "rapid_scout"
+    assert vp.gated_archetype("rapid_scout", 0.3) == "neutral"
+    assert vp.gated_archetype("unknown", 1.0) == "neutral"
+    env = _env("antigravity")
+    neutral = vp.plan(env, archetype=vp.gated_archetype("rapid_scout", 0.1))
+    assert neutral.policy.masks == () and neutral.policy.rate == vp.BASE["rate"]
+    assert vp.extract_facts(neutral) == env.facts()
+
+
+def test_speak_policy_decisions():
+    sp = vp.speak_policy
+    assert sp("success", novelty=0.0, operator_relevance=0.0, evidence_confidence=1).decision == "ABSTAIN"
+    assert sp("failure", novelty=1, operator_relevance=1, evidence_confidence=0.1).decision == "ABSTAIN"
+    assert sp("warning", novelty=0.5, operator_relevance=0.5, evidence_confidence=0.9).decision == "SPEAK"
+    assert sp("warning", novelty=0.5, operator_relevance=0.5, evidence_confidence=0.9,
+              operator_speaking=True).decision == "HOLD"
+    assert sp("failure", novelty=1, operator_relevance=1, evidence_confidence=0.95,
+              operator_speaking=True).decision == "INTERRUPT"
+
+
+@pytest.mark.parametrize("bad", [float("nan"), -0.1, 1.1, True])
+def test_speak_policy_rejects_bad_inputs(bad):
+    with pytest.raises(ValueError):
+        vp.speak_policy("success", novelty=bad, operator_relevance=0.5, evidence_confidence=0.5)
+
+
+def test_replay_is_deterministic_for_gate_and_policy():
+    a = [vp.speak_policy("decision", novelty=0.4, operator_relevance=0.7, evidence_confidence=0.8) for _ in range(3)]
+    assert len(set(a)) == 1

@@ -241,3 +241,55 @@ def drift(p: ProsodyPlan, measured: dict, tolerance: float = 0.35) -> list[str]:
     if want and abs(got - want) / want > tolerance:
         return [f"mean_pause_ms {got} vs planned {want} (>{int(tolerance * 100)}%)"]
     return []
+
+
+# --- Role gating and speak-worthiness (relay 20260929T193234Z) ---------------
+
+NEUTRAL_ARCHETYPE = "neutral"
+ARCHETYPES[NEUTRAL_ARCHETYPE] = ()
+ROLE_MIN_CONFIDENCE = float(os.environ.get("NOUGEN_VOICE_ROLE_MIN_CONFIDENCE", "0.6"))
+
+
+def gated_archetype(archetype: str, confidence: float, relevance: float = 1.0) -> str:
+    """A role overlay applies only when confidence*relevance clears the gate; else neutral delivery."""
+    if archetype not in ARCHETYPES:
+        return NEUTRAL_ARCHETYPE
+    return archetype if confidence * relevance >= ROLE_MIN_CONFIDENCE else NEUTRAL_ARCHETYPE
+
+
+SPEAK_DECISIONS = ("HOLD", "SPEAK", "INTERRUPT", "ABSTAIN")
+_SEVERITY = {"success": 0.2, "discovery": 0.5, "warning": 0.6, "decision": 0.8, "failure": 0.9}
+
+
+@dataclass(frozen=True)
+class SpeakDecision:
+    decision: str
+    score: float
+    reason: str
+
+
+def speak_policy(outcome: str, *, novelty: float, operator_relevance: float,
+                 evidence_confidence: float, operator_speaking: bool = False) -> SpeakDecision:
+    """Content-aware turn decision, separate from any duplex backend.
+
+    ABSTAIN: nothing worth saying or too little evidence to say it.
+    HOLD:    worth saying but not urgent enough to talk over the operator.
+    INTERRUPT: urgent and well evidenced while the operator is speaking.
+    """
+    if outcome not in _SEVERITY:
+        raise ValueError(f"outcome must be one of {OUTCOMES}")
+    for name, v in (("novelty", novelty), ("operator_relevance", operator_relevance),
+                    ("evidence_confidence", evidence_confidence)):
+        if not (isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= v <= 1.0):
+            raise ValueError(f"{name} must be a number from 0 to 1")
+    score = round(_SEVERITY[outcome] * 0.5 + novelty * 0.2 + operator_relevance * 0.3, 4)
+    min_ev = float(os.environ.get("NOUGEN_VOICE_MIN_EVIDENCE", "0.3"))
+    speak_at = float(os.environ.get("NOUGEN_VOICE_SPEAK_AT", "0.35"))
+    interrupt_at = float(os.environ.get("NOUGEN_VOICE_INTERRUPT_AT", "0.8"))
+    if evidence_confidence < min_ev or score < speak_at:
+        return SpeakDecision("ABSTAIN", score, "low evidence" if evidence_confidence < min_ev else "low salience")
+    if operator_speaking:
+        if score >= interrupt_at and evidence_confidence >= 0.8:
+            return SpeakDecision("INTERRUPT", score, "urgent and well evidenced")
+        return SpeakDecision("HOLD", score, "operator speaking")
+    return SpeakDecision("SPEAK", score, "salient")
