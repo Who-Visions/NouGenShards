@@ -1,11 +1,8 @@
 """Unit tests for NouGenMorph Evolutionary Ingestion Engine."""
 
-import pytest
-
 from nougen_morph.engine import (
     AdoptionState,
     MorphCandidate,
-    MorphEvidence,
     MorphFinding,
     MorphKind,
     NouGenMorphEngine,
