@@ -214,7 +214,7 @@ python-multipart==0.0.32
     # via
     #   gradio
     #   mcp
-pytz==2026.3.post1
+pytz==2026.4
     # via gradio
 pywin32==312 ; sys_platform == 'win32'
     # via mcp
