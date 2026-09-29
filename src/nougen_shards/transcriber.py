@@ -23,6 +23,7 @@ except ImportError:
     WhisperModel = None
 
 from . import core as shards
+from .media_failure import MediaIngestFailure, classify_download_error
 
 # Media MIME & extensions
 VIDEO_EXT = frozenset({".mp4", ".mkv", ".webm", ".mov", ".flv"})
@@ -148,22 +149,42 @@ class NouGenTranscriber:
             "noplaylist": True,
         }
 
+        attempts = []
         if yt_dlp is None:
-            raise RuntimeError("yt-dlp is not installed. Install with: pip install yt-dlp")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            meta = ydl.extract_info(source, download=True)
-            title = meta.get("title", "Online Media")
-            filename = ydl.prepare_filename(meta)
-            audio_path = Path(filename).with_suffix(".m4a")
-            if not audio_path.is_file():
-                audio_path = Path(filename)
-            return str(audio_path), title, {
-                "source": source,
-                "uploader": meta.get("uploader"),
-                "duration": meta.get("duration"),
-                "platform": meta.get("extractor_key", "web"),
-                "webpage_url": meta.get("webpage_url", source),
-            }
+            attempts.append({"adapter": "yt-dlp-public", "status": "unavailable", "code": "DEPENDENCY_UNAVAILABLE"})
+        else:
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    meta = ydl.extract_info(source, download=True)
+                    title = meta.get("title", "Online Media")
+                    filename = ydl.prepare_filename(meta)
+                    audio_path = Path(filename).with_suffix(".m4a")
+                    if not audio_path.is_file():
+                        audio_path = Path(filename)
+                    if not audio_path.is_file() or audio_path.stat().st_size == 0:
+                        raise MediaIngestFailure("EMPTY_AUDIO", "verify", source, [
+                            {"adapter": "yt-dlp-public", "status": "failed", "code": "EMPTY_AUDIO"}
+                        ])
+                    return str(audio_path), title, {
+                        "source": source,
+                        "uploader": meta.get("uploader"),
+                        "duration": meta.get("duration"),
+                        "platform": meta.get("extractor_key", "web"),
+                        "webpage_url": meta.get("webpage_url", source),
+                    }
+            except MediaIngestFailure:
+                raise
+            except Exception as error:
+                attempts.append({"adapter": "yt-dlp-public", "status": "failed", "code": classify_download_error(error)})
+        # These adapters require explicit capabilities; do not silently try
+        # credentials or browser profiles from the host environment.
+        attempts.extend([
+            {"adapter": "yt-dlp-authorized", "status": "unavailable", "code": "AUTH_REFERENCE_REQUIRED"},
+            {"adapter": "gallery-dl", "status": "unavailable", "code": "ADAPTER_NOT_CONFIGURED"},
+            {"adapter": "browser-authorized", "status": "unavailable", "code": "AUTH_REFERENCE_REQUIRED"},
+        ])
+        code = attempts[0]["code"]
+        raise MediaIngestFailure(code, "acquire", source, attempts)
 
     def process_and_shard(
         self,
@@ -180,7 +201,15 @@ class NouGenTranscriber:
         4. Auto-shard directly into NouGen 9-DB cluster
         """
         audio_path, title, meta = self.extract_or_download_audio(source)
-        res = self.engine.transcribe_file(audio_path, language=language)
+        try:
+            res = self.engine.transcribe_file(audio_path, language=language)
+        except Exception as error:
+            code = "ASR_UNAVAILABLE" if WhisperModel is None else "ASR_FAILED"
+            raise MediaIngestFailure(code, "transcribe", source, [
+                {"adapter": "yt-dlp-public" if source.startswith(("http://", "https://")) else "local-file",
+                 "status": "succeeded", "code": "AUDIO_ACQUIRED"},
+                {"adapter": "faster-whisper", "status": "failed", "code": code},
+            ]) from None
 
         text = res["text"]
         detected_lang = res["language"]
