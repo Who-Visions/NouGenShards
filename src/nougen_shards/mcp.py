@@ -714,9 +714,14 @@ def transcribe_media(source: str, language: str = "", whisper_model: str = "base
     """
     import json
     from .transcriber import NouGenTranscriber
+    from .media_failure import MediaIngestFailure
     transcriber = NouGenTranscriber(whisper_model=whisper_model)
-    res = transcriber.process_and_shard(source=source, language=language or None, auto_shard=auto_shard)
+    try:
+        res = transcriber.process_and_shard(source=source, language=language or None, auto_shard=auto_shard)
+    except MediaIngestFailure as failure:
+        return json.dumps({"ok": False, "failure": failure.to_dict()}, indent=2)
     return json.dumps({
+        "ok": True,
         "title": res.get("title"),
         "source": res.get("source"),
         "language": res.get("language"),
