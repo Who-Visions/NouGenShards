@@ -946,7 +946,8 @@ def nougenmsg_inbox(target: str = "antigravity", limit: int = 10) -> str:
 
 
 @mcp.tool()
-def nougenmsg_send(text: str, target: str = "all", audience: Optional[str] = None) -> str:
+def nougenmsg_send(text: str, target: str = "all", audience: Optional[str] = None,
+                   lane: Optional[str] = None) -> str:
     """
     Broadcast or route a live message across the NouGen fleet mesh.
 
@@ -954,11 +955,15 @@ def nougenmsg_send(text: str, target: str = "all", audience: Optional[str] = Non
         text: Message payload.
         target: Target recipient ('all', 'antigravity', 'codex', 'blade', 'whoart', 'phoebus').
         audience: Optional audience classification ('operator', 'agent').
+        lane: Sending lane ('agy', 'codex', 'claude', 'ollama', ...). Labels the
+            message '<node>-<lane>'; defaults to NOUGEN_LANE / NOUGEN_AGENT.
     """
     import json
     from .nougenmsg import NouGenMsgBus
     try:
-        res = NouGenMsgBus.emit_fleet(text=text, target=target, audience=audience, background=True)
+        origin = {"lane": lane} if lane else None
+        res = NouGenMsgBus.emit_fleet(text=text, target=target, origin=origin,
+                                      audience=audience, background=True)
         return json.dumps(res, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
