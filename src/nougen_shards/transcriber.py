@@ -23,7 +23,7 @@ except ImportError:
     WhisperModel = None
 
 from . import core as shards
-from .media_failure import MediaIngestFailure, classify_download_error
+from .media_failure import MediaIngestFailure, classify_download_error, public_source
 
 # Media MIME & extensions
 VIDEO_EXT = frozenset({".mp4", ".mkv", ".webm", ".mov", ".flv"})
@@ -117,7 +117,7 @@ class NouGenTranscriber:
         if not is_url:
             p = Path(source).resolve()
             if not p.is_file():
-                raise FileNotFoundError(f"Local file not found: {source}")
+                raise MediaIngestFailure("MEDIA_NOT_FOUND", "discover", source)
             title = p.stem
             out_audio = self.output_dir / f"{sanitize_slug(title)}_{uuid.uuid4().hex[:6]}.m4a"
             
@@ -127,11 +127,14 @@ class NouGenTranscriber:
                 "-c:a", "aac", "-b:a", "128k",
                 str(out_audio),
             ]
-            res = subprocess.run(cmd, capture_output=True, text=True)
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True)
+            except Exception:
+                raise MediaIngestFailure("FFMPEG_FAILURE", "acquire", source) from None
             if res.returncode != 0 or not out_audio.is_file():
                 if p.suffix.lower() in AUDIO_EXT:
                     return str(p), title, {"source": source, "is_local": True}
-                raise RuntimeError(f"FFmpeg audio extraction failed: {res.stderr[:500]}")
+                raise MediaIngestFailure("FFMPEG_FAILURE", "acquire", source)
             return str(out_audio), title, {"source": source, "is_local": True}
 
         out_tmpl = str(self.output_dir / "%(title).70s_%(id)s.%(ext)s")
@@ -147,6 +150,7 @@ class NouGenTranscriber:
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
+            "ignoreconfig": True,
         }
 
         attempts = []
@@ -166,11 +170,11 @@ class NouGenTranscriber:
                             {"adapter": "yt-dlp-public", "status": "failed", "code": "EMPTY_AUDIO"}
                         ])
                     return str(audio_path), title, {
-                        "source": source,
+                        "source": public_source(source),
                         "uploader": meta.get("uploader"),
                         "duration": meta.get("duration"),
                         "platform": meta.get("extractor_key", "web"),
-                        "webpage_url": meta.get("webpage_url", source),
+                        "webpage_url": public_source(meta.get("webpage_url", source)),
                     }
             except MediaIngestFailure:
                 raise
@@ -179,9 +183,9 @@ class NouGenTranscriber:
         # These adapters require explicit capabilities; do not silently try
         # credentials or browser profiles from the host environment.
         attempts.extend([
-            {"adapter": "yt-dlp-authorized", "status": "unavailable", "code": "AUTH_REFERENCE_REQUIRED"},
-            {"adapter": "gallery-dl", "status": "unavailable", "code": "ADAPTER_NOT_CONFIGURED"},
-            {"adapter": "browser-authorized", "status": "unavailable", "code": "AUTH_REFERENCE_REQUIRED"},
+            {"adapter": "yt-dlp-authorized", "status": "skipped", "code": "AUTH_REFERENCE_REQUIRED"},
+            {"adapter": "gallery-dl", "status": "skipped", "code": "ADAPTER_NOT_CONFIGURED"},
+            {"adapter": "browser-authorized", "status": "skipped", "code": "AUTH_REFERENCE_REQUIRED"},
         ])
         code = attempts[0]["code"]
         raise MediaIngestFailure(code, "acquire", source, attempts)
@@ -218,7 +222,7 @@ class NouGenTranscriber:
         md_lines = [
             f"# {title}",
             "",
-            f"- **Source**: [{source}]({source})",
+            f"- **Source**: [{public_source(source)}]({public_source(source)})",
             f"- **Platform**: `{meta.get('platform', 'local')}`",
             f"- **Detected Language**: `{detected_lang}`",
             f"- **Duration**: `{res.get('duration', 0):.1f}s`",
@@ -255,7 +259,7 @@ class NouGenTranscriber:
                 content=full_md,
                 tags=tags,
                 domain_key=domain_key,
-                source_uri=source,
+                source_uri=public_source(source),
             )
             captured = bool(capture_result)
             reason = (capture_result.get("reason")
@@ -279,7 +283,7 @@ class NouGenTranscriber:
 
         return {
             "title": title,
-            "source": source,
+            "source": public_source(source),
             "language": detected_lang,
             "text": text,
             "transcript_file": str(out_file),
