@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nougen.ai/schemas/visual-identity-capsule.v1.schema.json",
+  "title": "NouGen Visual Identity Capsule",
+  "description": "Universal, provenance-separated identity conditioning record. Asset pointers are references; this schema never stores image bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "tenant_id", "character_id", "capsule_id", "revision", "references", "identity", "provenance"],
+  "properties": {
+    "schema_version": {"const": "nougen.visual-identity/1.0"},
+    "tenant_id": {"$ref": "#/$defs/id"},
+    "character_id": {"$ref": "#/$defs/id"},
+    "capsule_id": {"$ref": "#/$defs/id"},
+    "revision": {"type": "integer", "minimum": 1},
+    "supersedes": {"type": ["string", "null"]},
+    "state": {"enum": ["active", "retracted"]},
+    "retraction_reason": {"type": "string"},
+    "references": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/reference"}},
+    "identity": {"$ref": "#/$defs/identity"},
+    "provenance": {"$ref": "#/$defs/provenance"},
+    "negative_constraints": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "extensions": {"type": "object", "description": "Namespaced extension data; consumers must ignore unknown namespaces safely."}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"},
+    "sha256": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+    "reference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["asset_id", "sha256", "uri", "view", "quality"],
+      "properties": {
+        "asset_id": {"$ref": "#/$defs/id"}, "sha256": {"$ref": "#/$defs/sha256"},
+        "uri": {"type": "string", "minLength": 1},
+        "view": {"enum": ["front", "three_quarter", "profile", "full_body", "detail", "other"]},
+        "pose": {"type": "string"}, "expression": {"type": "string"},
+        "quality": {"type": "number", "minimum": 0, "maximum": 1},
+        "source_role": {"enum": ["canonical", "supporting"]}
+      }
+    },
+    "identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["claims", "invariants"],
+      "properties": {
+        "claims": {"type": "array", "items": {"$ref": "#/$defs/claim"}},
+        "invariants": {"type": "array", "items": {"$ref": "#/$defs/invariant"}},
+        "embedding": {"$ref": "#/$defs/embedding"},
+        "face_geometry": {"type": "array", "items": {"$ref": "#/$defs/landmark"}},
+        "mark_topology": {"type": "array", "items": {"$ref": "#/$defs/mark"}},
+        "hair": {"type": "object"}, "body": {"type": "object"}, "wardrobe": {"type": "object"}
+      }
+    },
+    "claim": {
+      "type": "object", "additionalProperties": false,
+      "required": ["key", "value", "evidence_class", "source_ids"],
+      "properties": {
+        "key": {"type": "string", "minLength": 1}, "value": {},
+        "evidence_class": {"enum": ["reference_observation", "narrative_canon", "generated_interpretation"]},
+        "source_ids": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/id"}},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "invariant": {
+      "type": "object", "additionalProperties": false,
+      "required": ["key", "value", "hard", "source_ids"],
+      "properties": {"key": {"type": "string"}, "value": {}, "hard": {"type": "boolean"}, "source_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}}}
+    },
+    "embedding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["model", "version", "dimension", "centroid", "reference_asset_ids"],
+      "properties": {
+        "model": {"type": "string", "minLength": 1}, "version": {"type": "string", "minLength": 1},
+        "dimension": {"type": "integer", "minimum": 1},
+        "centroid": {"type": "array", "minItems": 1, "items": {"type": "number"}},
+        "reference_asset_ids": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/id"}}
+      }
+    },
+    "landmark": {"type": "object", "additionalProperties": false, "required": ["name", "x", "y"], "properties": {"name": {"type": "string"}, "x": {"type": "number", "minimum": 0, "maximum": 1}, "y": {"type": "number", "minimum": 0, "maximum": 1}, "weight": {"type": "number", "exclusiveMinimum": 0}}},
+    "mark": {"type": "object", "additionalProperties": false, "required": ["name", "anchors"], "properties": {"name": {"type": "string"}, "anchors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/id"}}, "description": {"type": "string"}}},
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["created_at", "created_by", "source_records"],
+      "properties": {
+        "created_at": {"type": "string", "format": "date-time"}, "created_by": {"$ref": "#/$defs/id"},
+        "source_records": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/id"}},
+        "model_family": {"type": "string"}, "model_version": {"type": "string"}, "prompt_policy": {"type": "string"}
+      }
+    }
+  }
+}
