@@ -1,0 +1,109 @@
+{
+  "schema": "nougen.visual_identity.v2",
+  "schema_version": 2,
+  "identity": {
+    "character_id": "synthetic_subject",
+    "canonical_name": "Synthetic Subject",
+    "status": "test",
+    "tenant_id": "test_tenant"
+  },
+  "references": [
+    {
+      "asset_id": "sample_front",
+      "sha256": "3ac9cbacf8c823d6aeaf204977472b3ebf0ac3e115c19cb1cd31fd0dd1d12c6b",
+      "role": "identity_anchor",
+      "view": {
+        "yaw": 0.0,
+        "pitch": 0.0,
+        "roll": 0.0
+      },
+      "quality": 0.95,
+      "redundancy": 0.0,
+      "uri": "references/front.ref"
+    },
+    {
+      "asset_id": "sample_three_quarter",
+      "sha256": "3e937dcf33dfef78e79a71e587407196d7497ff7ac588c5543d3c55b966d299e",
+      "role": "pose_variant",
+      "view": {
+        "yaw": 30.0,
+        "pitch": -3.0,
+        "roll": 0.0
+      },
+      "quality": 0.9,
+      "redundancy": 0.1,
+      "uri": "references/three_quarter.ref"
+    }
+  ],
+  "embedding": {
+    "model": "synthetic-test-embedding",
+    "dimension": 4,
+    "centroid": [
+      0.5,
+      0.5,
+      0.5,
+      0.5
+    ],
+    "reference_vectors": [
+      [
+        0.6,
+        0.4,
+        0.5,
+        0.5
+      ],
+      [
+        0.4,
+        0.6,
+        0.5,
+        0.5
+      ]
+    ],
+    "normalization": "l2"
+  },
+  "face_geometry": {
+    "coordinate_system": "synthetic_normalized",
+    "landmarks": {
+      "left_eye": [
+        -0.5,
+        0.0
+      ],
+      "right_eye": [
+        0.5,
+        0.0
+      ]
+    },
+    "ratios": {},
+    "angles": {}
+  },
+  "persistent_marks": [
+    {
+      "mark_id": "sample_mark",
+      "mark_type": "scar",
+      "anchors": {
+        "origin": "sample_a",
+        "termination": "sample_b"
+      },
+      "polyline_normalized": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.2,
+          0.3
+        ]
+      ],
+      "width_profile": [
+        0.5,
+        0.25
+      ]
+    }
+  ],
+  "provenance": {
+    "created_utc": "2026-09-29T00:00:00Z",
+    "source_shards": [],
+    "approved_assets": [],
+    "generator_independent": true,
+    "author": "synthetic test fixture"
+  }
+}

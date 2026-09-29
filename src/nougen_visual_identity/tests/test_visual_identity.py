@@ -8,8 +8,10 @@ Validates:
 5. Pareto frontier multi-objective selection
 6. Deterministic retrieval and confidence verification
 """
-import os
 import json
+import shutil
+from pathlib import Path
+import pytest
 from nougen_visual_identity.centroid import (
     compute_identity_centroid,
     compute_identity_drift_index
@@ -110,20 +112,74 @@ def test_pareto_frontier_selection():
     assert "C" not in pareto_ids
 
 def test_deterministic_retrieval_and_fixture_loading(tmp_path):
-    fixture_path = os.path.join(os.path.dirname(__file__), "../fixtures/xoah_oda.json")
-    with open(fixture_path) as f:
-        xoah_data = json.load(f)
+    fixture_dir = Path(__file__).parent.parent / "fixtures" / "synthetic_character"
+    data = json.loads((fixture_dir / "capsule.json").read_text(encoding="utf-8"))
+    capsule_dir = tmp_path / "test_tenant" / "synthetic_subject"
+    shutil.copytree(fixture_dir / "references", capsule_dir / "references")
+    capsule_dir.mkdir(parents=True, exist_ok=True)
+    (capsule_dir / "capsule.json").write_text(json.dumps(data), encoding="utf-8")
 
     retriever = DeterministicIdentityRetriever(root_dir=str(tmp_path))
-    # Store fixture
-    out_file = os.path.join(tmp_path, "xoah_oda.json")
-    with open(out_file, "w") as f:
-        json.dump(xoah_data, f)
-
-    capsule, confidence = retriever.retrieve("xoah_oda")
+    capsule, confidence = retriever.retrieve("synthetic_subject", tenant_id="test_tenant")
     assert capsule is not None
     assert confidence == "HIGH"
-    assert capsule["identity"]["character_id"] == "xoah_oda"
+    assert capsule["identity"]["character_id"] == "synthetic_subject"
     assert capsule["schema"] == "nougen.visual_identity.v2"
     assert len(capsule["references"]) == 2
     assert capsule["persistent_marks"][0]["mark_type"] == "scar"
+    assert retriever.retrieve("synthetic_subject", tenant_id="other_tenant") == (None, "LOW")
+
+    (capsule_dir / "references" / "front.ref").write_text("tampered", encoding="utf-8")
+    assert retriever.retrieve("synthetic_subject", tenant_id="test_tenant") == (None, "LOW")
+
+
+def test_retriever_rejects_unsafe_identifiers(tmp_path):
+    retriever = DeterministicIdentityRetriever(root_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="character_id"):
+        retriever.retrieve("../outside")
+    with pytest.raises(ValueError, match="tenant_id"):
+        retriever.retrieve("synthetic_subject", tenant_id="../outside")
+
+
+def test_retriever_rejects_capsule_identity_mismatch(tmp_path):
+    fixture_dir = Path(__file__).parent.parent / "fixtures" / "synthetic_character"
+    data = json.loads((fixture_dir / "capsule.json").read_text(encoding="utf-8"))
+    data["identity"]["character_id"] = "different_subject"
+    capsule_dir = tmp_path / "test_tenant" / "synthetic_subject"
+    shutil.copytree(fixture_dir / "references", capsule_dir / "references")
+    capsule_dir.mkdir(parents=True, exist_ok=True)
+    (capsule_dir / "capsule.json").write_text(json.dumps(data), encoding="utf-8")
+    retriever = DeterministicIdentityRetriever(root_dir=str(tmp_path))
+    assert retriever.retrieve("synthetic_subject", tenant_id="test_tenant") == (None, "LOW")
+
+
+def test_centroid_rejects_mismatched_dimensions_and_nonfinite_weights():
+    with pytest.raises(ValueError, match="dimension"):
+        compute_identity_centroid([[1.0, 0.0], [1.0]], [1.0, 1.0], [0.0, 0.0])
+    with pytest.raises(ValueError, match="finite"):
+        compute_identity_centroid([[1.0, 0.0]], [float("nan")], [0.0])
+
+
+def test_hard_gate_rejects_nonfinite_metrics_and_score_rejects_invalid_ranges():
+    validator = IdentityValidator()
+    metrics = {
+        "identity_similarity": float("nan"),
+        "geometry_error": 0.0,
+        "mark_error": 0.0,
+        "hair_error": 0.0,
+    }
+    assert validator.hard_gate(metrics) is False
+    with pytest.raises(ValueError, match="finite"):
+        validator.calculate_quality_score({"identity_similarity": float("inf")})
+
+
+def test_retriever_rejects_reference_path_escape(tmp_path):
+    fixture_dir = Path(__file__).parent.parent / "fixtures" / "synthetic_character"
+    data = json.loads((fixture_dir / "capsule.json").read_text(encoding="utf-8"))
+    data["references"][0]["uri"] = "../outside.ref"
+    capsule_dir = tmp_path / "test_tenant" / "synthetic_subject"
+    shutil.copytree(fixture_dir / "references", capsule_dir / "references")
+    capsule_dir.mkdir(parents=True, exist_ok=True)
+    (capsule_dir / "capsule.json").write_text(json.dumps(data), encoding="utf-8")
+    retriever = DeterministicIdentityRetriever(root_dir=str(tmp_path))
+    assert retriever.retrieve("synthetic_subject", tenant_id="test_tenant") == (None, "LOW")

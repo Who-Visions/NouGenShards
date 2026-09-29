@@ -13,44 +13,44 @@ from nougen_visual_identity.manifold import (
 
 def test_decomposable_identity_inheritance():
     root = IdentityRoot(
-        character_id="xoah_oda",
-        canonical_name="Xoah Oda",
+        character_id="synthetic_subject",
+        canonical_name="Synthetic Subject",
         tenant_id="veilverse",
         face_embedding=[0.1, 0.2, 0.3],
         face_geometry={"jaw_ratio": 0.72},
-        persistent_marks=[{"mark_id": "left_eye_scar"}],
+        persistent_marks=[{"mark_id": "sample_mark"}],
         base_hair={"type": "dense_locs", "color": "black"},
         body={"build": "athletic"}
     )
 
     sdx_variant = IdentityVariant(
-        variant_id="xoah_sdx",
-        parent_id="xoah_oda",
+        variant_id="synthetic_branch",
+        parent_id="synthetic_subject",
         timeline_state="2185",
         route_state="route_2",
-        mark_delta={"mark_id": "caldera_burn_mark"},
-        hair_delta={"accent": "violet_cyan_sheen"}
+        mark_delta={"mark_id": "variant_mark"},
+        hair_delta={"accent": "blue_accent"}
     )
 
     compiler = CharacterStateCompiler()
     contract = compiler.resolve(root=root, variant=sdx_variant)
 
-    assert contract.character_id == "xoah_oda"
-    assert contract.variant_id == "xoah_sdx"
+    assert contract.character_id == "synthetic_subject"
+    assert contract.variant_id == "synthetic_branch"
     # Root marks preserved + delta added
     marks = [m["mark_id"] for m in contract.resolved_phenotype["persistent_marks"]]
-    assert "left_eye_scar" in marks
-    assert "caldera_burn_mark" in marks
+    assert "sample_mark" in marks
+    assert "variant_mark" in marks
     # Hair delta applied
-    assert contract.resolved_presentation["hair"]["accent"] == "violet_cyan_sheen"
+    assert contract.resolved_presentation["hair"]["accent"] == "blue_accent"
     # Immutable face geometry untouched
     assert contract.resolved_phenotype["face_geometry"]["jaw_ratio"] == 0.72
     assert len(contract.contract_hash) == 64
 
 def test_scene_override_mutation_budget_enforcement():
     root = IdentityRoot(
-        character_id="xoah_oda",
-        canonical_name="Xoah Oda",
+        character_id="synthetic_subject",
+        canonical_name="Synthetic Subject",
         face_geometry={"interocular_ratio": 0.44},
         mutation_policy=MutationPolicy(face_geometry=0.0, pose=1.0)
     )
@@ -59,7 +59,8 @@ def test_scene_override_mutation_budget_enforcement():
     # Attempt illegal drift (altering face_geometry without explicit authorization)
     illegal_scene = {
         "pose": "kneeling_combat",
-        "face_geometry": {"interocular_ratio": 0.85}  # Illegal drift
+        "face_geometry": {"interocular_ratio": 0.85},
+        "explicit_phenotype_override": True,
     }
     contract = compiler.resolve(root=root, scene_overrides=illegal_scene)
 
@@ -100,3 +101,16 @@ def test_scene_aware_reference_selection():
     assert "ref_front" in ids
     assert "ref_3quarter" in ids
     assert "ref_profile" not in ids
+
+
+def test_manifold_rejects_mismatched_dimensions_and_shrinkage():
+    import pytest
+
+    with pytest.raises(ValueError, match="dimensions"):
+        compute_empirical_covariance([[1.0, 2.0]], [1.0])
+    with pytest.raises(ValueError, match="shrinkage_lambda"):
+        apply_shrinkage([[1.0]], shrinkage_lambda=1.5)
+    with pytest.raises(ValueError, match="dimensions"):
+        mahalanobis_distance_diagonal([1.0], [1.0, 2.0], [1.0])
+    with pytest.raises(ValueError, match="max_refs"):
+        scene_aware_reference_selection([], 0.0, 0.0, max_refs=0)

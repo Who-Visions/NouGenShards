@@ -89,10 +89,8 @@ class CharacterStateCompiler:
                 elif key in ["hair_arrangement", "wardrobe"]:
                     resolved_presentation[key] = val
                 elif key in ["face_geometry", "skin_identity"]:
-                    # Violation of 0.00 mutation budget unless explicit override is passed
-                    if not scene_overrides.get("explicit_phenotype_override", False):
-                        continue  # Silently reject illegal mutation drift
-                    resolved_phenotype[key] = val
+                    # Scene input cannot authorize a canonical phenotype mutation.
+                    continue
 
         # 6. Freeze Contract
         policy_dict = {

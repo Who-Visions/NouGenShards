@@ -2,7 +2,7 @@
 
 The supplied sections 28–70 are the target design. This directory is a local
 prototype, not evidence of fleet deployment or successful visual resurrection.
-Existing character fixtures are test inputs, not approval to amend canon.
+The included fixture uses synthetic data and does not alter or describe canon.
 
 ## Verified transaction boundary
 
@@ -30,8 +30,8 @@ not an authorization or tenant-scoped storage boundary.
 | Sections | Current coverage | Remaining work |
 | --- | --- | --- |
 | 28–32 | Root/variant deltas, phenotype/presentation split, policy fields | Deeply immutable stored roots; calibrated per-property displacement checks; explicit rejection diagnostics; policy enforcement across every layer |
-| 33–39 | Sample covariance, caller-selected shrinkage, diagonal distance helper | Full covariance estimator or explicit diagonal evaluation policy; dimension/finite checks; evidence confidence; regional consensus; append-only outlier flags |
-| 40–42 | View-based reference ranking retaining an anchor | Reference graph, configurable ranking weights, dynamic softmax temperature and reference verification |
+| 33–39 | Sample covariance, caller-selected shrinkage, diagonal distance helper | Full covariance estimator or explicit diagonal evaluation policy; evidence confidence; regional consensus; append-only outlier flags |
+| 40–42 | View-based reference ranking retaining an anchor | Reference graph, configurable ranking weights, dynamic softmax temperature |
 | 43–47 | Basic scene override and ordered merges | Field-scoped override authority; amendment approval/provenance validation; temporal validity intervals; causal branch resolution; conflict detection |
 | 48–54 | Detached immutable snapshot, revision, transaction ID, scoped content hash | Store-backed resolver; generator adapter integration; canonical cross-language serialization; fleet hash comparison |
 | 55–58 | Synthetic unit tests only | Cold-start B0/B1/BN image benchmark; repeat seeds, worst case and variance; adapter portability evaluation; empirical routing |
@@ -56,13 +56,14 @@ exists, and retain approvals/rejections as append-only events.
 
 ## Verification
 
-From the parent `NouGen` directory:
+From the NouGenShards repository root `NouGen` directory:
 
 ```sh
-python3 -m pytest nougen_visual_identity/tests -q
+python3 -m pytest -q src/nougen_visual_identity/tests
 ```
 
-22 tests passed on 2026-09-29, including nested immutability, input isolation,
-repeatable hashes, distinct transactions, namespace/causal separation, parent
-validation, invalid policy rejection, nonfinite state rejection and honest F0.
-These tests do not measure generated-image identity fidelity.
+28 tests passed on 2026-09-29. Coverage includes nested immutability, input
+isolation, reproducible hashes, namespace/causal separation, invalid policy
+rejection, honest F0 reporting, tenant-scoped exact retrieval, local asset hash
+checks, unsafe-input rejection, and malformed-vector rejection. These tests do
+not measure generated-image identity fidelity.

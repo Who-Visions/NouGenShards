@@ -1,93 +1,124 @@
-"""
-NouGen Multi-Modal Identity Validator & Gate Engine
-Implements Hard Invariant Gating, Quality Objective, and Pareto Frontier Selection.
-"""
-from typing import Dict, List, Any
+"""Hard identity gates and Pareto selection for candidate render metrics."""
+import math
+from typing import Any, Dict, List
+
 
 class IdentityValidator:
-    """Evaluates candidate renders against visual identity capsule specifications."""
+    """Evaluate normalized render metrics against configured hard limits."""
 
     def __init__(self, thresholds: Dict[str, float] = None, weights: Dict[str, float] = None):
-        self.thresholds = thresholds or {
+        self.thresholds = {
             "identity_similarity_min": 0.85,
             "geometry_error_max": 0.12,
             "mark_error_max": 0.10,
-            "hair_error_max": 0.15
+            "hair_error_max": 0.15,
         }
-        self.weights = weights or {
+        if thresholds:
+            self.thresholds.update(thresholds)
+        for value in self.thresholds.values():
+            self._unit_value(value, "threshold")
+
+        self.weights = {
             "identity": 0.35,
             "geometry": 0.20,
             "marks": 0.15,
             "hair": 0.10,
             "prompt": 0.10,
             "perceptual": 0.10,
-            "artifact_penalty": 0.15
+            "artifact_penalty": 0.15,
         }
-
-    def hard_gate(self, metrics: Dict[str, float]) -> bool:
-        """
-        Hard Invariant Gate: PASS_id = 1[ S_id >= tau_id AND D_geo <= tau_geo AND D_mark <= tau_mark ]
-        Candidate is rejected if any hard constraint fails, regardless of aesthetic quality.
-        """
-        if metrics.get("identity_similarity", 0.0) < self.thresholds.get("identity_similarity_min", 0.85):
-            return False
-        if metrics.get("geometry_error", 1.0) > self.thresholds.get("geometry_error_max", 0.12):
-            return False
-        if metrics.get("mark_error", 1.0) > self.thresholds.get("mark_error_max", 0.10):
-            return False
-        if metrics.get("hair_error", 1.0) > self.thresholds.get("hair_error_max", 0.15):
-            return False
-        return True
-
-    def calculate_quality_score(self, metrics: Dict[str, float]) -> float:
-        """
-        Candidate quality objective J:
-        J = w_id * S_id + w_geo * (1 - D_geo) + w_marks * (1 - D_marks) + w_hair * (1 - D_hair)
-            + w_prompt * S_prompt + w_perceptual * Q_perceptual - w_artifact * A_artifact
-        """
-        w = self.weights
-        m = metrics
-        score = (
-            w["identity"] * m.get("identity_similarity", 0.0) +
-            w["geometry"] * (1.0 - m.get("geometry_error", 0.0)) +
-            w["marks"] * (1.0 - m.get("mark_error", 0.0)) +
-            w["hair"] * (1.0 - m.get("hair_error", 0.0)) +
-            w["prompt"] * m.get("prompt_alignment", 0.0) +
-            w["perceptual"] * m.get("perceptual_quality", 0.0) -
-            w["artifact_penalty"] * m.get("artifact_score", 0.0)
-        )
-        return score
+        if weights:
+            self.weights.update(weights)
+        for value in self.weights.values():
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                raise ValueError("Weights must be finite non-negative numbers")
+        if sum(self.weights.values()) <= 0:
+            raise ValueError("At least one objective weight must be positive")
 
     @staticmethod
-    def pareto_select(candidates: List[Dict[str, Any]], objectives: List[str] = None) -> List[Dict[str, Any]]:
-        """
-        Multi-objective Pareto Frontier Selection.
-        A candidate 'a' dominates 'b' iff:
-        f_i(a) >= f_i(b) for all i AND exists j such that f_j(a) > f_j(b).
-        """
+    def _unit_value(value: Any, label: str) -> float:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0.0 <= value <= 1.0
+        ):
+            raise ValueError(f"{label} must be a finite number in [0, 1]")
+        return float(value)
+
+    def hard_gate(self, metrics: Dict[str, float]) -> bool:
+        """Reject missing or invalid hard-gate metrics; aesthetics cannot override identity."""
+        required = ("identity_similarity", "geometry_error", "mark_error", "hair_error")
+        if any(key not in metrics for key in required):
+            return False
+        try:
+            values = {key: self._unit_value(metrics[key], key) for key in required}
+        except ValueError:
+            return False
+        return (
+            values["identity_similarity"] >= self.thresholds["identity_similarity_min"]
+            and values["geometry_error"] <= self.thresholds["geometry_error_max"]
+            and values["mark_error"] <= self.thresholds["mark_error_max"]
+            and values["hair_error"] <= self.thresholds["hair_error_max"]
+        )
+
+    def calculate_quality_score(self, metrics: Dict[str, float]) -> float:
+        """Calculate a normalized weighted score; reject non-finite supplied metrics."""
+        defaults = {
+            "identity_similarity": 0.0,
+            "geometry_error": 1.0,
+            "mark_error": 1.0,
+            "hair_error": 1.0,
+            "prompt_alignment": 0.0,
+            "perceptual_quality": 0.0,
+            "artifact_score": 1.0,
+        }
+        values = dict(defaults)
+        for key in defaults:
+            if key in metrics:
+                values[key] = self._unit_value(metrics[key], key)
+
+        score = (
+            self.weights["identity"] * values["identity_similarity"]
+            + self.weights["geometry"] * (1.0 - values["geometry_error"])
+            + self.weights["marks"] * (1.0 - values["mark_error"])
+            + self.weights["hair"] * (1.0 - values["hair_error"])
+            + self.weights["prompt"] * values["prompt_alignment"]
+            + self.weights["perceptual"] * values["perceptual_quality"]
+            - self.weights["artifact_penalty"] * values["artifact_score"]
+        )
+        return score / sum(self.weights.values())
+
+    @staticmethod
+    def pareto_select(
+        candidates: List[Dict[str, Any]], objectives: List[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Return candidates not dominated on the requested normalized objectives."""
         if not candidates:
             return []
-        
-        objectives = objectives or ["identity_similarity", "perceptual_quality", "prompt_alignment"]
-        pareto_front = []
+        objectives = objectives or [
+            "identity_similarity",
+            "perceptual_quality",
+            "prompt_alignment",
+        ]
+        normalized = []
+        for candidate in candidates:
+            metrics = candidate.get("metrics", candidate)
+            normalized.append(
+                {
+                    key: IdentityValidator._unit_value(metrics.get(key, 0.0), key)
+                    for key in objectives
+                }
+            )
 
-        for i, cand_a in enumerate(candidates):
-            dominated = False
-            metrics_a = cand_a.get("metrics", cand_a)
-            for j, cand_b in enumerate(candidates):
-                if i == j:
-                    continue
-                metrics_b = cand_b.get("metrics", cand_b)
-                
-                # Check if b dominates a
-                b_ge_all = all(metrics_b.get(obj, 0.0) >= metrics_a.get(obj, 0.0) for obj in objectives)
-                b_gt_one = any(metrics_b.get(obj, 0.0) > metrics_a.get(obj, 0.0) for obj in objectives)
-                
-                if b_ge_all and b_gt_one:
-                    dominated = True
-                    break
-            
+        frontier = []
+        for index, candidate in enumerate(candidates):
+            dominated = any(
+                all(other[key] >= normalized[index][key] for key in objectives)
+                and any(other[key] > normalized[index][key] for key in objectives)
+                for other_index, other in enumerate(normalized)
+                if other_index != index
+            )
             if not dominated:
-                pareto_front.append(cand_a)
-
-        return pareto_front
+                frontier.append(candidate)
+        return frontier

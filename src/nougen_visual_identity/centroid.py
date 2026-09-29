@@ -1,74 +1,106 @@
-"""
-NouGen Multi-Reference Identity Centroid and Mathematical Formulations
-"""
+"""Numerically guarded identity centroid and embedding distance helpers."""
 import math
 from typing import List, Tuple
 
+
+def _validated_vector(vector: List[float], label: str) -> List[float]:
+    if not vector:
+        raise ValueError(f"{label} must not be empty")
+    values = []
+    for value in vector:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"{label} must contain only finite numbers")
+        values.append(float(value))
+    return values
+
+
 def l2_normalize(vector: List[float]) -> List[float]:
-    """Compute normalized vector \hat{e} = e / ||e||_2."""
-    norm = math.sqrt(sum(x * x for x in vector))
+    """Return the L2-normalized vector, preserving an all-zero vector."""
+    values = _validated_vector(vector, "vector")
+    norm = math.hypot(*values)
     if norm == 0.0:
-        return [0.0] * len(vector)
-    return [x / norm for x in vector]
+        return [0.0] * len(values)
+    return [value / norm for value in values]
 
-def compute_identity_centroid(reference_vectors: List[List[float]], 
-                              qualities: List[float], 
-                              redundancies: List[float]) -> List[float]:
-    """
-    Construct multi-reference identity centroid:
-    \mu = \frac{ \sum w_i \hat{e}_i }{ || \sum w_i \hat{e}_i ||_2 }
-    where w_i = \frac{ q_i(1-r_i) }{ \sum_j q_j(1-r_j) }
-    """
-    if not reference_vectors:
-        raise ValueError("Cannot compute centroid from empty reference vectors.")
-    if len(reference_vectors) != len(qualities) or len(reference_vectors) != len(redundancies):
-        raise ValueError("Vectors, qualities, and redundancies must have matching length.")
 
-    # 1. Compute raw weights: q_i * (1 - r_i)
-    raw_weights = [max(0.0, q * (1.0 - r)) for q, r in zip(qualities, redundancies)]
-    weight_sum = sum(raw_weights)
-    if weight_sum == 0.0:
-        # Fallback to uniform if all weights degenerate
-        weights = [1.0 / len(raw_weights)] * len(raw_weights)
-    else:
-        weights = [w / weight_sum for w in raw_weights]
+def _validate_batch(vectors: List[List[float]]) -> List[List[float]]:
+    if not vectors:
+        raise ValueError("At least one embedding is required")
+    values = [_validated_vector(vector, "embedding") for vector in vectors]
+    dimension = len(values[0])
+    if any(len(vector) != dimension for vector in values):
+        raise ValueError("All embeddings must have the same dimension")
+    return values
 
-    dim = len(reference_vectors[0])
-    weighted_sum = [0.0] * dim
 
-    # 2. Accumulate normalized vectors with weights
-    for v, w in zip(reference_vectors, weights):
-        norm_v = l2_normalize(v)
-        for d in range(dim):
-            weighted_sum[d] += w * norm_v[d]
+def compute_identity_centroid(
+    reference_vectors: List[List[float]],
+    qualities: List[float],
+    redundancies: List[float],
+) -> List[float]:
+    """Build a normalized centroid using quality times non-redundancy weights."""
+    vectors = _validate_batch(reference_vectors)
+    if len(vectors) != len(qualities) or len(vectors) != len(redundancies):
+        raise ValueError("Vectors, qualities, and redundancies must have matching length")
 
-    # 3. Final L2 normalization
-    return l2_normalize(weighted_sum)
+    raw_weights = []
+    for quality, redundancy in zip(qualities, redundancies):
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0.0 <= value <= 1.0
+            for value in (quality, redundancy)
+        ):
+            raise ValueError("Quality and redundancy values must be finite numbers in [0, 1]")
+        raw_weights.append(float(quality) * (1.0 - float(redundancy)))
+
+    total = sum(raw_weights)
+    weights = (
+        [weight / total for weight in raw_weights]
+        if total > 0.0
+        else [1.0 / len(raw_weights)] * len(raw_weights)
+    )
+    weighted_sum = [
+        sum(weight * l2_normalize(vector)[index] for vector, weight in zip(vectors, weights))
+        for index in range(len(vectors[0]))
+    ]
+    centroid = l2_normalize(weighted_sum)
+    if not any(centroid):
+        raise ValueError("Cannot compute an identity centroid from zero vectors")
+    return centroid
+
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
-    """Compute cosine similarity between two vectors."""
-    n1 = l2_normalize(v1)
-    n2 = l2_normalize(v2)
-    return sum(a * b for a, b in zip(n1, n2))
+    """Compute cosine similarity after validating compatible dimensions."""
+    left = _validated_vector(v1, "left embedding")
+    right = _validated_vector(v2, "right embedding")
+    if len(left) != len(right):
+        raise ValueError("Embeddings must have the same dimension")
+    left_norm = math.hypot(*left)
+    right_norm = math.hypot(*right)
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    return sum((a / left_norm) * (b / right_norm) for a, b in zip(left, right))
+
 
 def identity_distance(candidate: List[float], centroid: List[float]) -> float:
-    """Identity distance D_id = 1 - S_id."""
+    """Return one minus cosine similarity."""
     return 1.0 - cosine_similarity(candidate, centroid)
 
+
 def compute_identity_drift_index(embeddings: List[List[float]]) -> Tuple[float, float, float]:
-    """
-    Compute Identity Drift Index (Identity Entropy):
-    H_I = (1/n) * \sum (1 - cos(e_i, \mu))
-    Returns: (mean_similarity, std_dev, drift_index)
-    """
+    """Return mean cosine similarity, population standard deviation, and drift."""
     if not embeddings:
         return 0.0, 0.0, 0.0
-    
-    # Compute centroid of the batch
-    centroid = l2_normalize([sum(col) for col in zip(*embeddings)])
-    sims = [cosine_similarity(e, centroid) for e in embeddings]
-    mean_sim = sum(sims) / len(sims)
-    variance = sum((s - mean_sim) ** 2 for s in sims) / len(sims)
-    std_dev = math.sqrt(variance)
-    drift_index = sum(1.0 - s for s in sims) / len(sims)
-    return mean_sim, std_dev, drift_index
+    vectors = _validate_batch(embeddings)
+    centroid = l2_normalize(
+        [sum(vector[index] for vector in vectors) for index in range(len(vectors[0]))]
+    )
+    if not any(centroid):
+        return 0.0, 0.0, 1.0
+    similarities = [cosine_similarity(vector, centroid) for vector in vectors]
+    mean = sum(similarities) / len(similarities)
+    variance = sum((value - mean) ** 2 for value in similarities) / len(similarities)
+    drift = sum(1.0 - value for value in similarities) / len(similarities)
+    return mean, math.sqrt(variance), drift

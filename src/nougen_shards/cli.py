@@ -1406,23 +1406,18 @@ def cmd_ctx(args):
             )
     elif args.action == "get":
         if not args.input:
-            print("Error: Usage: nougen ctx get <event_id|handle>")
-            return
-        # First check if it matches a sandbox handle
-        sandbox_data = nougen_context.fetch_sandbox(args.input)
-        if sandbox_data:
-            print(sandbox_data)
+            print("Error: Usage: nougen ctx get <event_id>")
             return
         try:
             event_id = int(args.input)
-            event = nougen_context.get_event(event_id)
-            if not event:
-                print(f"Error: Context event #{args.input} not found.")
-                return
-            print(json.dumps(event, indent=2))
         except (ValueError, TypeError):
-            print(f"Error: Sandbox handle or context event #{args.input} not found.")
+            print("Error: Usage: nougen ctx get <event_id> (event_id must be an integer)")
             return 1
+        event = nougen_context.get_event(event_id)
+        if not event:
+            print(f"Error: Context event #{args.input} not found.")
+            return
+        print(json.dumps(event, indent=2))
     elif args.action == "promote":
         if not args.input:
             print("Error: Usage: nougen ctx promote <event_id> [--tags <tags>]")
