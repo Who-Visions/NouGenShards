@@ -1,0 +1,136 @@
+{
+  "schema": "nougen.visual_identity.v2",
+  "schema_version": 2,
+  "identity": {
+    "character_id": "xoah_oda",
+    "canonical_name": "Xoah Oda",
+    "status": "canon",
+    "tenant_id": "veilverse"
+  },
+  "references": [
+    {
+      "asset_id": "xoah_ref_front_001",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "role": "identity_anchor",
+      "view": { "yaw": 0.0, "pitch": 0.0, "roll": 0.0 },
+      "quality": 0.98,
+      "redundancy": 0.0
+    },
+    {
+      "asset_id": "xoah_ref_threequarter_002",
+      "sha256": "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+      "role": "pose_variant",
+      "view": { "yaw": 28.5, "pitch": -2.0, "roll": 0.5 },
+      "quality": 0.95,
+      "redundancy": 0.12
+    }
+  ],
+  "embedding": {
+    "model": "arcface-r100",
+    "dimension": 512,
+    "centroid": [0.042, -0.015, 0.088, 0.124],
+    "reference_vectors": [
+      [0.040, -0.012, 0.085, 0.120],
+      [0.044, -0.018, 0.091, 0.128]
+    ],
+    "normalization": "l2"
+  },
+  "face_geometry": {
+    "coordinate_system": "interocular_normalized",
+    "landmarks": {
+      "left_eye_center": [-0.5, 0.0],
+      "right_eye_center": [0.5, 0.0],
+      "nose_tip": [0.0, -0.42],
+      "mouth_center": [0.0, -0.78],
+      "chin_tip": [0.0, -1.25]
+    },
+    "ratios": {
+      "interocular_to_face_width": 0.44,
+      "nose_width_to_face_width": 0.26,
+      "mouth_width_to_face_width": 0.38,
+      "jaw_width_to_face_height": 0.72
+    },
+    "angles": {
+      "eye_cantus_angle": 3.2,
+      "brow_slope": -1.8,
+      "jaw_angle": 118.0
+    }
+  },
+  "persistent_marks": [
+    {
+      "mark_id": "xoah_primary_left",
+      "mark_type": "scar",
+      "anchors": {
+        "origin": "left_brow_outer",
+        "termination": "left_upper_cheek"
+      },
+      "polyline_normalized": [
+        [0.00, 0.00],
+        [0.17, 0.24],
+        [0.31, 0.51],
+        [0.48, 0.77],
+        [0.63, 1.00]
+      ],
+      "width_profile": [0.72, 0.61, 0.43, 0.31]
+    }
+  ],
+  "hair": {
+    "base": "black",
+    "type": "dense_locs",
+    "length_ratio": 1.78,
+    "volume_ratio": 1.31,
+    "accent_distribution": {
+      "violet": 0.12,
+      "magenta": 0.07
+    },
+    "hardware": {
+      "material": "gold",
+      "type": "cuffs",
+      "density": 0.08
+    }
+  },
+  "body": {
+    "proportions": {
+      "shoulder_to_hip_ratio": 1.35,
+      "athletic_build_index": 0.88,
+      "height_to_head_ratio": 7.5
+    },
+    "silhouette_embedding": null
+  },
+  "wardrobe": {
+    "hard_invariants": [
+      "matte_black_tactical_undersuit",
+      "gold_cuff_loc_hardware"
+    ],
+    "soft_invariants": [
+      "high_collar_reinforcement",
+      "weathered_utility_harness"
+    ]
+  },
+  "negative_identity": {
+    "forbidden_features": [
+      "caucasian_skin_tone",
+      "straight_hair",
+      "smooth_unscarred_left_cheek",
+      "pure_blonde_or_neon_blue_hair"
+    ],
+    "known_failure_modes": [
+      "excessive_purple_hair_saturation",
+      "omission_of_left_eye_scar",
+      "narrow_jaw_drift"
+    ]
+  },
+  "thresholds": {
+    "identity_similarity_min": 0.85,
+    "geometry_error_max": 0.12,
+    "mark_error_max": 0.10,
+    "hair_error_max": 0.15
+  },
+  "provenance": {
+    "created_utc": "2026-09-29T03:32:27Z",
+    "source_shards": ["29600@db6", "30582@db1", "25360@db1"],
+    "approved_assets": ["xoah_ref_front_001", "xoah_ref_threequarter_002"],
+    "generator_independent": true,
+    "author": "chatgpt-app/g-whoentertains"
+  }
+}
