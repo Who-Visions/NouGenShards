@@ -122,9 +122,8 @@ def compute_weighted_centroid(
 
     denom = sum(raw_weights)
     if denom <= 0:
-        norm_weights = [1.0 / k] * k
-    else:
-        norm_weights = [w / denom for w in raw_weights]
+        raise ValueError("at least one reference must have positive quality and non-redundancy weight")
+    norm_weights = [w / denom for w in raw_weights]
 
     accum = [0.0] * dim
     for e, w in zip(embeddings, norm_weights):
@@ -136,7 +135,7 @@ def compute_weighted_centroid(
 
     res_mag = math.sqrt(sum(x ** 2 for x in accum))
     if res_mag <= 0:
-        return [0.0] * dim
+        raise ValueError("cannot compute an identity centroid from zero or cancelling embeddings")
     return [x / res_mag for x in accum]
 
 
