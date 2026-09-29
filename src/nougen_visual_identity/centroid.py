@@ -56,11 +56,9 @@ def compute_identity_centroid(
         raw_weights.append(float(quality) * (1.0 - float(redundancy)))
 
     total = sum(raw_weights)
-    weights = (
-        [weight / total for weight in raw_weights]
-        if total > 0.0
-        else [1.0 / len(raw_weights)] * len(raw_weights)
-    )
+    if total <= 0.0:
+        raise ValueError("At least one reference must have positive quality and non-redundancy weight")
+    weights = [weight / total for weight in raw_weights]
     weighted_sum = [
         sum(weight * l2_normalize(vector)[index] for vector, weight in zip(vectors, weights))
         for index in range(len(vectors[0]))
