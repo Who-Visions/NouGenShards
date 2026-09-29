@@ -3660,6 +3660,21 @@ def cmd_hi(args):
         print(_json.dumps(report.__dict__, default=str, indent=2))
         return
     print(f"🌅 hi — {report.identity.get('host', 'unknown')} ({report.identity.get('machine_id', '?')}) — {report.local_time}")
+    st = report.stadium or {}
+    if st.get("error"):
+        print(f"  Stadium: ⚠️ {st['error']}")
+    elif st:
+        v, o = st.get("vault", {}), st.get("ollama", {})
+        vmark = "✅" if v.get("dbs") and not v.get("errors") else "⚠️"
+        print(f"  Coach box: {st.get('coach_box_tokens')} tok/turn")
+        print(f"  {vmark} Vault: {v.get('shards', 0):,} shards in {v.get('dbs', 0)} DB(s) — {v.get('path')}")
+        for err in v.get("errors", []):
+            print(f"      ⚠️ {err}")
+        if o.get("up"):
+            loaded = ", ".join(o.get("loaded") or []) or "none resident"
+            print(f"  ✅ Ollama: {len(o.get('models', []))} model(s), loaded: {loaded}")
+        else:
+            print(f"  ❌ Ollama down at {o.get('url')}: {o.get('error', '?')}")
     print(f"  Open handoffs: {report.open_handoffs}")
     if report.latest_goal:
         print(f"  Latest goal: {report.latest_goal}")
