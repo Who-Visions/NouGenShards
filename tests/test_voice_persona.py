@@ -154,3 +154,11 @@ def test_identity_for_rejects_bad_confidence(bad):
 def test_identity_for_unknown_agent():
     with pytest.raises(KeyError):
         vp.identity_for("nobody")
+
+
+def test_identity_for_rejects_separator_in_agent(tmp_path, monkeypatch):
+    f = tmp_path / "agents.json"
+    f.write_text('{"a:b": {"profile": "X", "engine": "kokoro", "voice": "am_adam", "archetype": "heavy"}}')
+    monkeypatch.setenv("NOUGEN_VOICE_AGENTS", str(f))
+    with pytest.raises(ValueError):
+        vp.identity_for("a:b")

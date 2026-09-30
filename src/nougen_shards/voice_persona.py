@@ -308,6 +308,8 @@ def identity_for(agent: str, confidence: float = 1.0, relevance: float = 1.0) ->
     if binding is None:
         raise KeyError(f"no voice binding for agent {agent!r}")
     archetype = gated_archetype(binding["archetype"], confidence, relevance)
+    if ":" in agent or ":" in archetype:
+        raise ValueError("agent and archetype must not contain ':' (source_id separator)")
     return {
         "persona_name": agent,
         "archetype": archetype,
