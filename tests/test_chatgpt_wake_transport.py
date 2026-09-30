@@ -123,15 +123,24 @@ def test_canonical_fetch_reminder_names_relay_read_not_a_local_cache():
 
 
 # --- the capability boundary itself: never claim MCP native wake exists ---------
-def test_mcp_native_wake_supported_flag_is_hardcoded_false():
-    assert MCP_NATIVE_WAKE_SUPPORTED is False
+@pytest.fixture(autouse=True)
+def _no_real_mcp_subscriptions(monkeypatch, tmp_path):
+    """The default store reads a state file; tests must never see a real one."""
+    monkeypatch.setenv("NOUGEN_MCP_EVENT_SUBSCRIPTIONS", str(tmp_path / "none.json"))
 
 
-def test_future_transport_refuses_to_pretend_it_works():
+def test_mcp_native_wake_is_documented_but_qualified_and_plan_unresolved():
+    from nougen_shards.wake import chatgpt_transports as ct
+    assert MCP_NATIVE_WAKE_SUPPORTED is True
+    assert ct.MCP_NATIVE_WAKE_QUALIFIER == "subscription_based_user_authorized_wake_only"
+    assert ct.MCP_EVENTS_PLAN_ELIGIBILITY == "unresolved"
+
+
+def test_future_transport_without_a_subscription_is_unconfigured_not_a_delivery():
     t = FutureMCPNativeWakeTransport()
-    with pytest.raises(NotImplementedError):
-        t.notify(wake_envelope_from_relay_id(RELAY_ID))
-    assert t.health()["status"] == "not_available"
+    r = t.notify(wake_envelope_from_relay_id(RELAY_ID))
+    assert r.delivered is False and r.status == "unconfigured"
+    assert t.health()["status"] == "no_subscription"
 
 
 def test_no_transport_capability_dict_ever_claims_mcp_native_support(monkeypatch):
@@ -146,7 +155,8 @@ def test_no_transport_capability_dict_ever_claims_mcp_native_support(monkeypatch
         caps = t.capabilities()
         if name == "future_mcp_native":
             assert caps["configured"] is False
-            assert caps["plan_eligible"] is MCP_NATIVE_WAKE_SUPPORTED
+            assert caps["plan_eligible"] is None  # unresolved: never claimed True
+            assert caps["plan_eligibility"] == "unresolved"
 
 
 def test_get_transport_is_case_and_whitespace_insensitive():

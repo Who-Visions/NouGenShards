@@ -368,7 +368,7 @@ class ChatGPTAdapter(ProviderAdapter):
     one does NOT itself deliver -- it composes the pluggable transports in
     chatgpt_transports.py, none of which is "custom MCP waking ChatGPT"
     (that capability does not exist per the current watch; see
-    chatgpt_transports.MCP_NATIVE_WAKE_SUPPORTED, which stays False here).
+    chatgpt_transports.MCP_NATIVE_WAKE_SUPPORTED: documented, subscription-based only).
     ``inject()`` has no meaning for this adapter (no in-turn socket exists
     for ChatGPT the way it does for Claude/Antigravity); it is implemented
     to explicitly report unsupported rather than left abstract, since
@@ -396,6 +396,7 @@ class ChatGPTAdapter(ProviderAdapter):
             "requires_user_presence": not self.detect(),
             "auto_claim": False,
             "mcp_native_wake_supported": MCP_NATIVE_WAKE_SUPPORTED,
+            "mcp_native_wake_qualifier": "subscription_based_user_authorized_wake_only",
         }
 
     def health(self) -> Dict[str, Any]:
