@@ -1,0 +1,14 @@
+[
+  {
+    "change": "Opaque panel, fine divider, remove blur.",
+    "selector": ".fixed-header-zone"
+  },
+  {
+    "change": "Hide decorative neural background.",
+    "selector": ".neural-bg-canvas"
+  },
+  {
+    "change": "Visible amber keyboard outline.",
+    "selector": ":focus-visible"
+  }
+]
