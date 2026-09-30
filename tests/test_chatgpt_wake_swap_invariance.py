@@ -68,6 +68,11 @@ ENV_FOR = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _no_real_mcp_subscriptions(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOUGEN_MCP_EVENT_SUBSCRIPTIONS", str(tmp_path / "none.json"))
+
+
 def _configure(monkeypatch, cls):
     for k, v in ENV_FOR[cls].items():
         monkeypatch.setenv(k, v)
@@ -210,8 +215,8 @@ def test_detect_means_a_transport_is_configured_not_a_binary_on_path(monkeypatch
 
 def test_detect_ignores_the_future_transport():
     """A FutureMCPNativeWakeTransport that somehow reported configured=True
-    must never make detect() true -- it always raises on notify(), so
-    detect() would be lying about what can actually be woken."""
+    must never make detect() true -- it is excluded until burn-in proves
+    native event reliability, so detect() stays about the fallback doorbells."""
     from nougen_shards.wake.adapters import ChatGPTAdapter
     from nougen_shards.wake.chatgpt_transports import FutureMCPNativeWakeTransport
     caps = FutureMCPNativeWakeTransport().capabilities()
@@ -244,14 +249,15 @@ def test_inject_explicitly_reports_unsupported_not_left_abstract():
     assert r["delivered"] is False and r["status"] == "unsupported"
 
 
-def test_capabilities_never_claims_mcp_native_support_through_the_adapter_layer(monkeypatch):
+def test_capabilities_reports_mcp_native_wake_only_with_its_qualifier(monkeypatch):
     """Same trip-wire as the transport layer's own test, checked again one
-    layer up -- capabilities() here derives MCP_NATIVE_WAKE_SUPPORTED fresh
-    each call rather than caching a value that could go stale."""
+    layer up -- capabilities() derives the flag fresh each call, and never
+    reports it without the subscription-only qualifier."""
     from nougen_shards.wake.adapters import ChatGPTAdapter
     from nougen_shards.wake import chatgpt_transports
-    assert ChatGPTAdapter().capabilities()["mcp_native_wake_supported"] is False
-    assert ChatGPTAdapter().capabilities()["mcp_native_wake_supported"] is chatgpt_transports.MCP_NATIVE_WAKE_SUPPORTED
+    caps = ChatGPTAdapter().capabilities()
+    assert caps["mcp_native_wake_supported"] is chatgpt_transports.MCP_NATIVE_WAKE_SUPPORTED
+    assert caps["mcp_native_wake_qualifier"] == chatgpt_transports.MCP_NATIVE_WAKE_QUALIFIER
 
 
 def test_health_surfaces_every_transport_not_just_the_first_configured_one(monkeypatch):
@@ -273,13 +279,13 @@ def test_future_transport_is_excluded_from_every_delivery_path():
 
 
 def test_future_transport_raising_does_not_corrupt_other_transports_state(monkeypatch):
-    """If a caller manually invokes the future transport and it raises (by
-    design), that must not leave any other transport's ledger or state
+    """If a caller manually invokes the future transport and it reports
+    unconfigured, that must not leave any other transport's ledger or state
     corrupted -- the failure must be fully contained."""
     monkeypatch.setenv("NOUGEN_CHATGPT_SLACK_WEBHOOK", "https://example.invalid/webhook")
     e = wake_envelope_from_relay_id("20260923T000000Z__test__future-contained")
     slack = SlackWakeTransport()
-    with pytest.raises(NotImplementedError):
-        FutureMCPNativeWakeTransport().notify(e)
+    # No subscription: reports unconfigured rather than raising or pretending.
+    assert FutureMCPNativeWakeTransport().notify(e).delivered is False
     # Slack must still work normally afterward.
     assert slack.notify(e).status == "sent"

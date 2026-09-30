@@ -2,12 +2,17 @@
 shards 26681@db9 "chatgpt_wake adapter law", 19571@db3 "ChatGPT inbound wake
 boundary").
 
-CAPABILITY BOUNDARY, load-bearing, not a comment: as of this watch, no
-official OpenAI documentation names a custom MCP app/server itself as a
-supported inbound trigger source. Nothing in this module, or reachable from
-it, may claim otherwise. ``MCP_NATIVE_WAKE_SUPPORTED`` is the single flag that
-would flip that, and it is hardcoded False here; a real capability change
-gets recorded by changing that constant deliberately, never inferred.
+CAPABILITY BOUNDARY, load-bearing, not a comment: OpenAI's first-party
+"Add events to your MCP server (optional)" page documents a custom MCP server
+originating subscribed events that resume a ChatGPT chat without a new user
+message (owner leg 20260930T012249Z). That is USER-AUTHORIZED, SUBSCRIPTION-
+BASED wake only -- never an arbitrary unsolicited wake -- and plan eligibility
+(Plus vs Business/Enterprise) is UNRESOLVED: the docs conflict and the Events
+page names no plan. ``MCP_NATIVE_WAKE_SUPPORTED`` records only that the
+capability is documented; whether THIS account can use it is decided at
+runtime (an active subscription exists) and reported as ``plan_eligible=None``
+until plan-specific entitlement is explicit. The fallback transports stay the
+default path until burn-in proves native event reliability.
 
 Design law:
   * canonical truth and the baton payload live ONLY in NouGenRelay/Shards.
@@ -32,17 +37,31 @@ credential, rather than fabricating a send.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import time
+import urllib.error
+import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
-# The single flag: True only when OpenAI documentation explicitly names a
-# custom MCP app/server as a supported autonomous inbound trigger. Flipping
-# this is a deliberate, reviewed edit, never an inference from other signals.
-MCP_NATIVE_WAKE_SUPPORTED = False
+# True: OpenAI documents MCP Events (https://developers.openai.com/plugins/build/mcp-events,
+# MCP 2026-07-28, webhook delivery only). This is a documented-capability flag,
+# NOT an entitlement claim: see MCP_NATIVE_WAKE_QUALIFIER and plan eligibility.
+MCP_NATIVE_WAKE_SUPPORTED = True
+MCP_NATIVE_WAKE_QUALIFIER = "subscription_based_user_authorized_wake_only"
+# Docs conflict on Plus (landing page: full MCP in Plus/Pro; Help Center: Business/
+# Enterprise/Edu, Pro limited). Stays "unresolved" until entitlement is explicit.
+MCP_EVENTS_PLAN_ELIGIBILITY = "unresolved"
+
+MCP_EVENTS_MAX_BODY_BYTES = 256 * 1024
+MCP_EVENTS_MAX_ATTEMPTS = 3
+MCP_EVENT_TYPE = "nougen.relay.wake"
 
 
 @dataclass(frozen=True)
@@ -329,27 +348,184 @@ class WorkspaceAgentWakeTransport(ChatGPTWakeTransport):
             return NotifyResult(self.name, False, "exception", f"OpenAI Workspace Agent exception: {exc}")
 
 
+@dataclass(frozen=True)
+class MCPEventSubscription:
+    """A subscription ChatGPT registered with us: where to POST and how to sign."""
+    subscription_id: str
+    callback_url: str
+    secret: str = field(repr=False)  # never in repr/logs
+
+
+class SubscriptionStore(Protocol):
+    def active(self) -> List[MCPEventSubscription]: ...
+    def mark_gone(self, subscription_id: str) -> None: ...
+
+
+class FileSubscriptionStore:
+    """Subscriptions from a JSON list of {subscription_id, callback_url, secret_key}.
+
+    The signing secret is never written to this file: ``secret_key`` names an
+    entry in the Keymaker (resolved lazily). Any read failure yields no
+    subscriptions -- a broken store is "unconfigured", never a crash or a guess.
+    """
+
+    def __init__(self, path: Optional[str] = None,
+                 secret_getter: Optional[Callable[[str], Optional[str]]] = None) -> None:
+        self._path = path
+        self._secret_getter = secret_getter
+
+    def _file(self) -> Path:
+        if self._path:
+            return Path(self._path)
+        env = os.environ.get("NOUGEN_MCP_EVENT_SUBSCRIPTIONS")
+        if env:
+            return Path(env)
+        home = Path(os.environ.get("NOUGEN_HOME") or (Path.home() / ".nougen"))
+        return home / "state" / "mcp_event_subscriptions.json"
+
+    def _secret(self, key: str) -> Optional[str]:
+        if self._secret_getter:
+            return self._secret_getter(key)
+        from . import keymaker  # lazy: no vault access at import time
+        return keymaker.get_secret(key)
+
+    def _rows(self) -> List[Dict[str, Any]]:
+        try:
+            rows = json.loads(self._file().read_text(encoding="utf-8"))
+            return rows if isinstance(rows, list) else []
+        except Exception:
+            return []
+
+    def active(self) -> List[MCPEventSubscription]:
+        out: List[MCPEventSubscription] = []
+        for row in self._rows():
+            try:
+                if row.get("gone"):
+                    continue
+                secret = self._secret(row["secret_key"])
+                if secret:
+                    out.append(MCPEventSubscription(row["subscription_id"], row["callback_url"], secret))
+            except Exception:
+                continue
+        return out
+
+    def mark_gone(self, subscription_id: str) -> None:
+        rows = self._rows()
+        for row in rows:
+            if row.get("subscription_id") == subscription_id:
+                row["gone"] = True
+        try:
+            self._file().write_text(json.dumps(rows, indent=1), encoding="utf-8")
+        except Exception:
+            pass
+
+
+def _standard_webhooks_signature(secret: str, msg_id: str, timestamp: int, body: bytes) -> str:
+    """Standard Webhooks v1: base64(HMAC-SHA256(key, "<id>.<ts>.<body>"))."""
+    key = base64.b64decode(secret[len("whsec_"):]) if secret.startswith("whsec_") else secret.encode()
+    mac = hmac.new(key, f"{msg_id}.{timestamp}.".encode() + body, hashlib.sha256).digest()
+    return "v1," + base64.b64encode(mac).decode()
+
+
+def _default_send(url: str, headers: Dict[str, str], body: bytes, timeout: float = 10.0) -> int:
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+
+
 class FutureMCPNativeWakeTransport(ChatGPTWakeTransport):
-    """Placeholder slot for when MCP_NATIVE_WAKE_SUPPORTED flips to True.
-    Deliberately raises rather than pretending to work: implementing this
-    for real is exactly the "retire shadow doorbells only after live proof"
-    step from the leg, not something to stub into looking functional."""
+    """MCP Events wake: POST a signed, minimal event to each subscription ChatGPT
+    registered. Subscription-based, user-authorized only.
+
+    Contract (OpenAI MCP Events, 2026-07-28): webhook delivery, one event per
+    request, <=256 KiB, a 2xx means RECEIPT ONLY (processing is async), bounded
+    retry with a stable event id, NO retry on 410 (subscription gone) or 413
+    (too large), out-of-order possible so the receiver must be idempotent. The
+    body carries the wake envelope only -- the baton is fetched with
+    relay_read() after wake. Not in the default notify order until burn-in
+    proves native event reliability; the fallback transports stay authoritative.
+    """
 
     name = "future_mcp_native"
 
+    def __init__(self, store: Optional[SubscriptionStore] = None,
+                 sender: Optional[Callable[[str, Dict[str, str], bytes], int]] = None,
+                 sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], float] = time.time) -> None:
+        self._store = store or FileSubscriptionStore()
+        self._send = sender or _default_send
+        self._sleep = sleep
+        self._clock = clock
+        self._ledger = _IdempotencyLedger()
+
     def capabilities(self) -> Dict[str, Any]:
-        return {"configured": False, "plan_eligible": MCP_NATIVE_WAKE_SUPPORTED,
-                "semantics": "not_yet_supported_by_openai_per_current_watch"}
+        n = len(self._store.active())
+        return {"configured": n > 0, "plan_eligible": None,
+                "plan_eligibility": MCP_EVENTS_PLAN_ELIGIBILITY,
+                "semantics": MCP_NATIVE_WAKE_QUALIFIER, "delivery": "webhook_only",
+                "receipt_semantics": "2xx_receipt_only", "max_body_bytes": MCP_EVENTS_MAX_BODY_BYTES,
+                "active_subscriptions": n}
 
     def health(self) -> Dict[str, Any]:
-        return {"configured": False, "status": "not_available",
-                "reason": "MCP_NATIVE_WAKE_SUPPORTED is False; no OpenAI documentation names this as supported"}
+        n = len(self._store.active())  # local read only: never a network probe
+        return {"configured": n > 0, "status": "ready" if n else "no_subscription",
+                "active_subscriptions": n, "plan_eligibility": MCP_EVENTS_PLAN_ELIGIBILITY}
+
+    @staticmethod
+    def event_id(envelope: WakeEnvelope) -> str:
+        """Stable across retries and re-notifies, so the receiver can dedupe."""
+        raw = f"{envelope.relay_id}|{envelope.priority}|{envelope.target}"
+        return "evt_" + hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+    def _post(self, sub: MCPEventSubscription, event_id: str, body: bytes) -> str:
+        for attempt in range(MCP_EVENTS_MAX_ATTEMPTS):
+            ts = int(self._clock())
+            headers = {"content-type": "application/json", "webhook-id": event_id,
+                       "webhook-timestamp": str(ts),
+                       "webhook-signature": _standard_webhooks_signature(sub.secret, event_id, ts, body),
+                       "X-MCP-Subscription-Id": sub.subscription_id}
+            try:
+                code = self._send(sub.callback_url, headers, body)
+            except Exception:
+                code = -1  # transport failure: retriable
+            if 200 <= code < 300:
+                return "sent"
+            if code == 410:
+                return "gone"
+            if code == 413:
+                return "payload_too_large"
+            if attempt < MCP_EVENTS_MAX_ATTEMPTS - 1:
+                self._sleep(0.5 * (2 ** attempt))
+        return "error"
 
     def notify(self, envelope: WakeEnvelope) -> NotifyResult:
-        raise NotImplementedError(
-            "FutureMCPNativeWakeTransport is a placeholder. Implementing notify() here without "
-            "MCP_NATIVE_WAKE_SUPPORTED first flipping to True (a deliberate, documented capability "
-            "change) would be exactly the false claim this module exists to prevent.")
+        subs = self._store.active()
+        if not subs:
+            return NotifyResult(self.name, False, "unconfigured",
+                                "no active MCP Events subscription; the user sets a monitor instruction in ChatGPT once")
+        key = f"{envelope.relay_id}|{envelope.target}"
+        if self._ledger.already_sent(key):
+            return NotifyResult(self.name, True, "duplicate_suppressed", "same relay id already notified")
+        event_id = self.event_id(envelope)
+        body = json.dumps({"eventId": event_id, "type": MCP_EVENT_TYPE, "data": envelope.to_dict()},
+                          sort_keys=True, separators=(",", ":")).encode()
+        if len(body) > MCP_EVENTS_MAX_BODY_BYTES:
+            return NotifyResult(self.name, False, "error", "payload_too_large")
+        results = []
+        for sub in subs:
+            outcome = self._post(sub, event_id, body)
+            if outcome == "gone":
+                self._store.mark_gone(sub.subscription_id)
+            results.append((sub.subscription_id, outcome))
+        delivered = any(o == "sent" for _, o in results)
+        if delivered:
+            self._ledger.record(key)
+        return NotifyResult(self.name, delivered, "sent" if delivered else "error",
+                            "; ".join(f"{i}:{o}" for i, o in results),
+                            {"event_id": event_id, "receipt_only": True, "async_processing": True})
 
 
 TRANSPORTS: Dict[str, ChatGPTWakeTransport] = {
@@ -366,7 +542,7 @@ def get_transport(name: str) -> Optional[ChatGPTWakeTransport]:
 
 def notify_any_configured(envelope: WakeEnvelope, order: Optional[list] = None) -> NotifyResult:
     """Try transports in ``order`` (default: slack, github, workspace_agent --
-    future_mcp_native excluded, it always raises) until one reports a real
+    future_mcp_native excluded until burn-in proves native event reliability) until one reports a real
     send. This is the seam the relay layer actually calls: it never chooses
     a transport by name, so a transport swap changes nothing at the caller."""
     for name in (order or ["slack", "github", "workspace_agent"]):
