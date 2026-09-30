@@ -204,7 +204,7 @@ pydub==0.25.1
     # via gradio
 pygments==2.21.0
     # via rich
-pyjwt==2.13.0
+pyjwt==2.14.0
     # via mcp
 pyparsing==3.3.3
     # via httplib2
