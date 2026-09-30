@@ -257,6 +257,54 @@ def gated_archetype(archetype: str, confidence: float, relevance: float = 1.0) -
     return archetype if confidence * relevance >= ROLE_MIN_CONFIDENCE else NEUTRAL_ARCHETYPE
 
 
+# --- Canonical identity producer for consumers (relay 20260930T043437Z) ------
+
+# The wire contract Voice's PersonaIdentity pins. Deliberately NOT CONFIG_VERSION:
+# tuning delivery deltas must not silently change the identity contract a
+# consumer validates against; bump this only when the identity shape changes.
+IDENTITY_CONTRACT_VERSION = "voice-persona.v1"
+
+
+def _unit_interval(name: str, value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a number in [0, 1]")
+    x = float(value)
+    if not math.isfinite(x) or not 0.0 <= x <= 1.0:
+        raise ValueError(f"{name} must be a finite number in [0, 1]")
+    return x
+
+
+def identity_for(agent: str, confidence: float, relevance: float = 1.0) -> dict:
+    """The already-gated identity a consumer (NouGenVoice) adopts, from canonical policy.
+
+    persona_name is the agent's canonical profile; archetype is that agent's role
+    overlay passed through gated_archetype(), so confidence/relevance gating and the
+    allowed archetype set live ONLY here. source_id pins the contract version, name and
+    archetype so a consumer can reject drift. Returns a plain, JSON-serialisable dict.
+
+    Fails closed: an unknown agent has no canonical identity and is never invented,
+    and non-numeric / non-finite / out-of-range confidence or relevance is rejected
+    rather than silently degraded to neutral.
+    """
+    entry = agents().get(agent)
+    if not isinstance(entry, dict):
+        raise ValueError(f"unknown agent {agent!r}: no canonical persona identity")
+    name = entry.get("profile")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"agent {agent!r} has no canonical profile name")
+    name = name.strip()
+    archetype = gated_archetype(
+        str(entry.get("archetype", NEUTRAL_ARCHETYPE)),
+        _unit_interval("confidence", confidence),
+        _unit_interval("relevance", relevance),
+    )
+    return {
+        "persona_name": name,
+        "archetype": archetype,
+        "source_id": f"{IDENTITY_CONTRACT_VERSION}:{name}:{archetype}",
+    }
+
+
 SPEAK_DECISIONS = ("HOLD", "SPEAK", "INTERRUPT", "ABSTAIN")
 _SEVERITY = {"success": 0.2, "discovery": 0.5, "warning": 0.6, "decision": 0.8, "failure": 0.9}
 
