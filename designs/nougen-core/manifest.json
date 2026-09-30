@@ -1,0 +1,37 @@
+{
+  "description": "Matte instrument surfaces for the NouGen fleet workbench.",
+  "dialect": "nougendesigns/v0",
+  "entry": {
+    "prose": "DESIGN.md",
+    "tokens": "tokens.css"
+  },
+  "name": "nougen-core",
+  "provenance": [
+    {
+      "kind": "observed",
+      "note": "Existing semantic token names and workbench selectors.",
+      "source": "ui/src/styles.css"
+    },
+    {
+      "kind": "invented",
+      "note": "Graphite and amber palette; local Ollama draft, Codex review.",
+      "source": "NouGenDesigns v0 relay brief"
+    },
+    {
+      "kind": "inferred",
+      "note": "Review prompted explicit validation, drift and binary reference acceptance tests.",
+      "source": "NouGenOpen/huggingface/Qwen2.5-Coder-3B-Instruct"
+    }
+  ],
+  "schemaVersion": "od-design-system-project/v1",
+  "sourceDigest": "4d744bd1c614df7f48a43cd387e128327fdc4be1b0c2c62a30f4d3f7f0f2115b",
+  "surfaces": {
+    "ground": "--bg",
+    "ink": "--text"
+  },
+  "themes": [
+    "dark",
+    "light"
+  ],
+  "version": "0.1.0"
+}

@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NouGenDesigns v0",
+  "type": "object",
+  "required": [
+    "dialect",
+    "name",
+    "version",
+    "description",
+    "tokens",
+    "evidence",
+    "contrastPairs",
+    "referenceWorld",
+    "antiPatterns",
+    "materiality",
+    "density",
+    "motionGrammar",
+    "interactionPhysics",
+    "informationHierarchy",
+    "responsiveBehavior",
+    "accessibility",
+    "brandVoice",
+    "iconography",
+    "dataViz",
+    "stateGrammar",
+    "provenance"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "referenceWorld": {
+      "type": "string",
+      "minLength": 1
+    },
+    "antiPatterns": {
+      "type": "string",
+      "minLength": 1
+    },
+    "materiality": {
+      "type": "string",
+      "minLength": 1
+    },
+    "density": {
+      "type": "string",
+      "minLength": 1
+    },
+    "motionGrammar": {
+      "type": "string",
+      "minLength": 1
+    },
+    "interactionPhysics": {
+      "type": "string",
+      "minLength": 1
+    },
+    "informationHierarchy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "responsiveBehavior": {
+      "type": "string",
+      "minLength": 1
+    },
+    "accessibility": {
+      "type": "string",
+      "minLength": 1
+    },
+    "brandVoice": {
+      "type": "string",
+      "minLength": 1
+    },
+    "iconography": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dataViz": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stateGrammar": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provenance": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dialect": {
+      "const": "nougendesigns/v0"
+    },
+    "tokens": {
+      "type": "object",
+      "minProperties": 26,
+      "propertyNames": {
+        "pattern": "^--[a-z][a-z0-9-]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[^;{}\\n\\r]+$"
+      }
+    },
+    "themes": {
+      "type": "object",
+      "propertyNames": {
+        "enum": [
+          "dark",
+          "light"
+        ]
+      },
+      "additionalProperties": {
+        "type": "object"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "source"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "observed",
+              "inferred",
+              "invented"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "contrastPairs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "ink",
+          "ground"
+        ]
+      }
+    },
+    "componentMutations": {
+      "type": "array"
+    }
+  }
+}
