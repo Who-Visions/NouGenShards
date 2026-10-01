@@ -59,6 +59,18 @@ $ nougen search "React auth bug" --semantic
 
 ---
 
+## Message receipts and execution
+
+`nougen live ack-msg <id>` records receipt only; it does not claim or complete
+actionable work. Such messages remain visible through `nougen live pending-msg`
+until an agent takes them with `nougen live take-msg <id>`. That claim returns a
+fencing epoch. Advance work with
+`nougen live advance-msg <id> <state> --epoch <epoch> <evidence>`; terminal completion requires evidence accepted by the
+verifier and the current epoch. Informational, status, and receipt messages may
+end at `ACKED`. `relay ack` is a separate handoff-baton operation.
+
+---
+
 ## 🏗️ Architecture
 
 ```mermaid
