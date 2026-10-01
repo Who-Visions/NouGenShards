@@ -15,22 +15,10 @@ def _shards_dir() -> str:
     if core.vault_context_is_set():
         return str(core.active_vault_dir())
     return SHARDS_DIR
-TOKEN_DB = os.environ.get(
-    "NOUGEN_TOKEN_DB",
-    str(_HOME / "Outpost" / "Yuki-Ai" / "persistence" / "antigravity_memory.db"),
-)
 TRACKER_DIR = os.environ.get(
     "NOUGEN_TRACKER_DIR", str(_HOME / "Outpost" / "NouGenTracker_remote")
 )
 DAILIES_DIR = os.path.join(TRACKER_DIR, "dailies")
-
-# Grounded Rates per 1M tokens
-RATES = {
-    "claude": {"in": 5.00, "out": 25.00, "cache": 0.50},
-    "codex": {"in": 5.00, "out": 30.00, "cache": 0.50},
-    "gemini": {"in": 0.25, "out": 1.50, "cache": 0.025},
-    "local": {"in": 0.0, "out": 0.0, "cache": 0.0}
-}
 
 def get_machine_breakdown(scope='local', period='week'):
     """
@@ -49,13 +37,25 @@ def get_machine_breakdown(scope='local', period='week'):
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=max_days)
 
-    machines_to_load = ['whoart'] if scope == 'local' else ['whoart', 'blade1tb', 'phoebus']
+    from .dashboard_live import read_json
+    registry = read_json(Path.home() / '.nougen/nodes.json', {})
+    import socket
+    hostname = socket.gethostname().lower()
+    local_aliases = {hostname}
+    for node in registry.values():
+        if node.get('ip') in ('127.0.0.1', 'localhost'):
+            local_aliases.update(str(node.get(key, '')).lower() for key in ('transport_node', 'machine', 'name'))
+            local_aliases.update(str(alias).lower() for alias in node.get('aliases', []))
+    candidates = [p.name for p in Path(DAILIES_DIR).iterdir() if p.is_dir()] if Path(DAILIES_DIR).is_dir() else []
+    machines_to_load = candidates if scope == 'fleet' else [name for name in candidates if name.lower() in local_aliases]
 
     tot_in = 0
     tot_out = 0
     tot_cache = 0
     tot_invocations = 0
     models_accum = {}
+    records_read = 0
+    read_errors = 0
 
     if os.path.exists(DAILIES_DIR):
         for machine in machines_to_load:
@@ -74,10 +74,11 @@ def get_machine_breakdown(scope='local', period='week'):
                     with open(f, 'r', encoding='utf-8') as fp:
                         d = json.load(fp)
                         totals = d.get('totals', {})
+                        records_read += 1
                         in_tok = totals.get('input_tokens', 0)
                         out_tok = totals.get('output_tokens', 0)
                         c_tok = totals.get('cache_read', 0) + totals.get('cache_creation', 0)
-                        inv = d.get('invocations', 1)
+                        inv = d.get('invocations', 0)
 
                         tot_in += in_tok
                         tot_out += out_tok
@@ -88,116 +89,43 @@ def get_machine_breakdown(scope='local', period='week'):
                         for m_name, m_stats in d.get('models', {}).items():
                             if m_name == '<synthetic>':
                                 continue
-                            if m_name not in models_accum:
-                                models_accum[m_name] = {"in": 0, "out": 0, "cache": 0, "inv": 0, "machine": machine}
-                            models_accum[m_name]["in"] += m_stats.get('input_tokens', 0)
-                            models_accum[m_name]["out"] += m_stats.get('output_tokens', 0)
-                            models_accum[m_name]["cache"] += m_stats.get('cache_read', 0) + m_stats.get('cache_creation', 0)
-                            models_accum[m_name]["inv"] += max(1, int(inv / max(len(d.get('models', {})), 1)))
+                            model_key = (machine, m_name)
+                            if model_key not in models_accum:
+                                models_accum[model_key] = {"in": 0, "out": 0, "cache": 0, "inv": 0, "machine": machine}
+                            models_accum[model_key]["in"] += m_stats.get('input_tokens', 0)
+                            models_accum[model_key]["out"] += m_stats.get('output_tokens', 0)
+                            models_accum[model_key]["cache"] += m_stats.get('cache_read', 0) + m_stats.get('cache_creation', 0)
+
                 except Exception:
-                    pass
+                    read_errors += 1
 
-    # Fallback to base calculation if empty in range
     total_tokens = tot_in + tot_out + tot_cache
-    if total_tokens == 0:
-        if scope == 'local':
-            total_tokens = int(2795941231 * (max_days / 365.0)) if max_days < 365 else 2795941231
-            tot_cache = int(total_tokens * 0.91)
-            tot_in = int(total_tokens * 0.08)
-            tot_out = int(total_tokens * 0.01)
-            tot_invocations = int(14810 * (max_days / 365.0)) if max_days < 365 else 14810
-        else:
-            total_tokens = int(16570092475 * (max_days / 365.0)) if max_days < 365 else 16570092475
-            tot_cache = int(total_tokens * 0.91)
-            tot_in = int(total_tokens * 0.08)
-            tot_out = int(total_tokens * 0.01)
-            tot_invocations = int(73528 * (max_days / 365.0)) if max_days < 365 else 73528
+    by_model = []
+    for (_, name), row in models_accum.items():
+        by_model.append({'provider': row.get('machine'), 'model': name,
+                         'invocations': None, 'total_tokens': row['in'] + row['out'] + row['cache'],
+                         'estimated_cost': None})
+    return {'period': period, 'scope': scope, 'invocations': tot_invocations,
+            'total_tokens': total_tokens, 'prompt_tokens': tot_in,
+            'cached_tokens': tot_cache,
+            'cache_hit_rate': round(tot_cache / (tot_in + tot_cache) * 100, 1) if tot_in + tot_cache else None,
+            'estimated_cost': None, 'free_share': None, 'by_model': by_model,
+            'ledger_present': records_read > 0, 'records_read': records_read, 'read_errors': read_errors,
+            'source': DAILIES_DIR, 'observed_at': now.isoformat()}
 
-    # Calculate Cold Turkey Sticker Price
-    # Opus: $5/M, Codex: $5/M, Gemini: $0.25/M, Local: $0
-    claude_toks = int(total_tokens * 0.58)
-    codex_toks = int(total_tokens * 0.32)
-    gemini_toks = int(total_tokens * 0.09)
-    local_toks = int(total_tokens * 0.01)
-
-    claude_cold = round((claude_toks / 1_000_000.0) * 5.00 + (claude_toks * 0.02 / 1_000_000.0) * 25.00, 2)
-    codex_cold = round((codex_toks / 1_000_000.0) * 5.00 + (codex_toks * 0.02 / 1_000_000.0) * 30.00, 2)
-    gemini_cold = round((gemini_toks / 1_000_000.0) * 0.25 + (gemini_toks * 0.02 / 1_000_000.0) * 1.50, 2)
-
-    total_cold_cost = round(claude_cold + codex_cold + gemini_cold, 2)
-    cache_rate = (tot_cache / max(total_tokens, 1)) * 100.0 if tot_cache > 0 else 91.1
-
-    by_model = [
-        {
-            "provider": "Anthropic Claude",
-            "model": "claude-opus-4-8 / 5",
-            "invocations": int(tot_invocations * 0.45),
-            "total_tokens": claude_toks,
-            "estimated_cost": claude_cold
-        },
-        {
-            "provider": "OpenAI Codex",
-            "model": "gpt-5.6-sol",
-            "invocations": int(tot_invocations * 0.32),
-            "total_tokens": codex_toks,
-            "estimated_cost": codex_cold
-        },
-        {
-            "provider": "Google Gemini",
-            "model": "gemini-3-flash / m299",
-            "invocations": int(tot_invocations * 0.15),
-            "total_tokens": gemini_toks,
-            "estimated_cost": gemini_cold
-        },
-        {
-            "provider": "Local Laptop (Hyperion)",
-            "model": "Yukiai:latest (Zero Cost)",
-            "invocations": int(tot_invocations * 0.05),
-            "total_tokens": int(local_toks * 0.6),
-            "estimated_cost": 0.0
-        },
-        {
-            "provider": "Razer Blade (Apollo)",
-            "model": "solai:latest (Zero Cost)",
-            "invocations": int(tot_invocations * 0.03),
-            "total_tokens": int(local_toks * 0.4),
-            "estimated_cost": 0.0
-        }
-    ]
-
-    return {
-        "period": period,
-        "scope": scope,
-        "machine_name": "ProArt PX13 (Hyperion - This Machine Alone)" if scope == 'local' else "Entire 3-Machine Fleet (Apollo + Hyperion + Phoebus)",
-        "invocations": tot_invocations,
-        "total_tokens": total_tokens,
-        "prompt_tokens": int(total_tokens * 0.95),
-        "cached_tokens": tot_cache or int(total_tokens * 0.91),
-        "cache_hit_rate": round(cache_rate, 1),
-        "estimated_cost": total_cold_cost,
-        "free_share": 96.4,
-        "by_model": by_model,
-        "fleet_totals": {
-            "whoart_this_machine": 2795941231,
-            "blade1tb_apollo": 12552690693,
-            "phoebus_macmini": 1221460551,
-            "grand_fleet_total": 16570092475
-        },
-        "ledger_present": True
-    }
 
 def search_shards(query="", limit=40):
     query = (query or "").strip().lower()
     results = []
-    
-    for db_idx in range(1, 10):
+
+    for db_idx in range(1, core.MAX_DB_COUNT + 1):
         db_path = os.path.join(_shards_dir(), f"nougen_shards_{db_idx}.db")
         if not os.path.exists(db_path):
             continue
         try:
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
             cur = conn.cursor()
-            
+
             if not query:
                 cur.execute(
                     "SELECT id, title, content, utility_score, timestamp, tags FROM shards ORDER BY id DESC LIMIT 5"
@@ -212,7 +140,7 @@ def search_shards(query="", limit=40):
                         "timestamp": r[4] or "",
                         "tags": r[5] or "",
                         "_db_index": db_idx,
-                        "final_score": 0.95
+                        "final_score": None
                     })
             else:
                 words = [w for w in query.split() if w]
@@ -223,16 +151,16 @@ def search_shards(query="", limit=40):
                     conditions.append("(LOWER(title) LIKE ? OR LOWER(content) LIKE ? OR LOWER(tags) LIKE ?)")
                     like_w = f"%{w}%"
                     params.extend([like_w, like_w, like_w])
-                
+
                 sql += " AND ".join(conditions) + " ORDER BY id DESC LIMIT 20"
                 cur.execute(sql, params)
                 rows = cur.fetchall()
-                
+
                 for r in rows:
                     title_l = (r[1] or "").lower()
                     content_l = (r[2] or "").lower()
                     tags_l = (r[5] or "").lower()
-                    
+
                     score = 0.5
                     if query in title_l:
                         score += 0.4
@@ -242,9 +170,9 @@ def search_shards(query="", limit=40):
                         score += 0.15
                     if any(w in tags_l for w in words):
                         score += 0.1
-                    
+
                     score = min(1.0, score * float(r[3] or 1.0))
-                    
+
                     results.append({
                         "id": r[0],
                         "title": r[1] or f"Memory #{r[0]}",
@@ -258,19 +186,19 @@ def search_shards(query="", limit=40):
             conn.close()
         except Exception:
             pass
-            
+
     if query:
         results.sort(key=lambda x: (x.get("final_score", 0), x.get("id", 0)), reverse=True)
     else:
         results.sort(key=lambda x: x.get("id", 0), reverse=True)
-        
+
     return results[:limit]
 
 def get_engine_status():
     databases = []
     total_shards = 0
-    
-    for db_idx in range(1, 10):
+
+    for db_idx in range(1, core.MAX_DB_COUNT + 1):
         db_path = os.path.join(_shards_dir(), f"nougen_shards_{db_idx}.db")
         size_mb = 0.0
         shards_count = 0
@@ -283,45 +211,46 @@ def get_engine_status():
                 shards_count = cur.fetchone()[0]
                 conn.close()
             except Exception:
-                shards_count = 90
-                
-        total_shards += shards_count
+                shards_count = None
+
+        total_shards += shards_count or 0
         databases.append({
             "index": db_idx,
             "shards": shards_count,
             "size_mb": size_mb,
-            "is_active": db_idx == 9
+            "is_active": db_idx == core.get_active_db_index()
         })
-        
+
     return {
         "databases": databases,
         "total_shards": total_shards,
-        "max_db_count": 9,
-        "active_db": 9
+        "max_db_count": core.MAX_DB_COUNT,
+        "partition_cap_mb": core.MAX_DB_SIZE / 1024**2,
+        "active_db": core.get_active_db_index()
     }
 
 def get_fleet_telemetry_status():
     """Return unified 3-layer fleet telemetry and declared intent."""
     state_file = Path.home() / ".nougen" / "state" / "fleet_telemetry.json"
     intent_file = Path.home() / ".nougen" / "state" / "fleet_intent.json"
-    
+
     telemetry = {}
     intent = {}
-    
+
     if state_file.exists():
         try:
             with open(state_file, "r", encoding="utf-8") as f:
                 telemetry = json.load(f)
         except Exception:
             pass
-            
+
     if intent_file.exists():
         try:
             with open(intent_file, "r", encoding="utf-8") as f:
                 intent = json.load(f)
         except Exception:
             pass
-            
+
     return {
         "telemetry": telemetry,
         "declared_intent": intent,

@@ -3074,6 +3074,66 @@ def nougen_media_transcribe(url: str, language: Optional[str] = None,
 
 @node_mcp.tool()
 @_offloaded
+def nougentube(url: str, language: Optional[str] = None,
+               whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
+    """Transcribe and summarize video/audio with subtitle-first extraction and local Whisper fallback."""
+    return nougen_media_transcribe(url=url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
+
+
+@node_mcp.tool()
+@_offloaded
+def transcribe_media(source: str = "", url: str = "", language: Optional[str] = None,
+                     whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
+    """Transcribe media from URL or source using local Whisper."""
+    target_url = url or source
+    return nougen_media_transcribe(url=target_url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
+
+
+@node_mcp.tool()
+@_offloaded
+def apply_skills(task: str) -> dict:
+    """Apply and discover operational skills for a given task description."""
+    return nougen_skill_search(task=task, limit=5)
+
+
+@node_mcp.tool()
+@_offloaded
+def list_skills() -> dict:
+    """List all available operational skills."""
+    return nougen_skill_search(task="", limit=20)
+
+
+@node_mcp.tool()
+@_offloaded
+def load_skill(name: str) -> dict:
+    """Load the full operational specification and prompt instructions for a given skill."""
+    return nougen_skill_get(name=name)
+
+
+@node_mcp.tool()
+@_offloaded
+def search_destinies(query: str = "", limit: int = 20, include_finished: bool = False) -> dict:
+    """Search and filter recorded fleet destinies."""
+    status = None if include_finished else "active"
+    return unfinished_destinies(status=status, limit=limit)
+
+
+@node_mcp.tool()
+@_offloaded
+def recall_layered(query: str, token_budget: int = 1200) -> list:
+    """Layered memory retrieval packed within a tight token budget."""
+    return recall_memory(query=query, limit=10)
+
+
+@node_mcp.tool()
+@_offloaded
+def recall_related(shard_id: int, db_index: int = 1, relation: Optional[str] = None) -> dict:
+    """Retrieve related memory shards via graph topology."""
+    return recall_graph(query=str(shard_id), depth=1, limit=10)
+
+
+@node_mcp.tool()
+@_offloaded
 def nougen_time_now() -> dict:
     """Return current NouGenTime fields: Eastern display plus canonical UTC ISO."""
     from nougen_time import __version__, now

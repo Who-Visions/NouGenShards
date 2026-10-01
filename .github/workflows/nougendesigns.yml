@@ -1,0 +1,21 @@
+name: NouGenDesigns
+on:
+  pull_request:
+    paths: ['designs/**', 'ui/**', 'tools/nougendesigns.py', 'tests/test_nougendesigns.py', '.github/workflows/nougendesigns.yml']
+  push:
+    paths: ['designs/**', 'ui/**', 'tools/nougendesigns.py', 'tests/test_nougendesigns.py', '.github/workflows/nougendesigns.yml']
+jobs:
+  design:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests -p test_nougendesigns.py
+      - run: python tools/nougendesigns.py lint designs/nougen-core/design.json --css ui/src/styles.css
+      - run: python tools/nougendesigns.py check designs/nougen-core/design.json designs/nougen-core

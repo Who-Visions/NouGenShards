@@ -200,7 +200,7 @@ def _live_processes():
         ps = ["ps", "-eo", "pid=,ppid=,lstart=,command="]
         sep = None
     try:
-        r = subprocess.run(ps, capture_output=True, text=True, timeout=30)
+        r = subprocess.run(ps, capture_output=True, text=True, timeout=30, creationflags=_NO_WINDOW)
         if r.returncode != 0:
             return []
     except (OSError, subprocess.SubprocessError):

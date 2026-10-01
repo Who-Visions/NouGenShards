@@ -1136,6 +1136,71 @@ def relay_open(limit: int = 10) -> str:
         return json.dumps({"error": str(e)})
 
 
+# --- arXiv Research Radar & Lab Watcher (satellite: Who-Visions/nougen-radar) ---
+
+@mcp.tool()
+def arxiv_radar(mode: str = "sweep", recipe_path: Optional[str] = None) -> str:
+    """
+    Execute an arXiv research radar cycle (sweep or reconcile) across core fleet pillars.
+
+    Preserves 3-lane topology (beacon, review, shard), category priors, and dynamic taggers.
+
+    Args:
+        mode: Radar cadence ('sweep' for hourly delta check, 'reconcile' for daily settlement).
+        recipe_path: Optional path to custom route-v1.json recipe.
+    """
+    from .arxiv_radar import run_arxiv_radar
+    res = run_arxiv_radar(mode=mode, recipe_path=recipe_path)
+    return json.dumps(res, default=str, indent=2)
+
+
+@mcp.tool()
+def arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False) -> str:
+    """
+    Execute an arXiv research lab watcher cycle (e.g. cs.AR hardware architecture -> graft candidates).
+
+    Screens submissions deterministically into graft candidates. Novelty remains unjudged;
+    nothing is auto-sharded without explicit elevation.
+
+    Args:
+        channel: arXiv channel to screen (default: cs.AR).
+        backfill: If true, seed from recent archive and arXiv API.
+    """
+    from .arxiv_radar import run_arxiv_lab_watch
+    res = run_arxiv_lab_watch(channel=channel, backfill=backfill)
+    return json.dumps(res, default=str, indent=2)
+
+
+@mcp.tool()
+def arxiv_paper(action: str, ref: str, pattern: Optional[str] = None) -> str:
+    """
+    Single-paper arXiv deep recall: metadata lookup, LaTeX fulltext caching, or paper body claim search.
+
+    Args:
+        action: 'lookup' (API metadata), 'fulltext' (cache LaTeX source), or 'claim' (search body).
+        ref: arXiv identifier (e.g. '2609.34785', 'arXiv:2609.34785v2', or abs URL).
+        pattern: Regex pattern to search in paper body (required when action is 'claim').
+    """
+    from .arxiv_radar import run_arxiv_paper
+    res = run_arxiv_paper(action=action, ref=ref, pattern=pattern)
+    return json.dumps(res, default=str, indent=2)
+
+
+@mcp.tool()
+def morph_gate(ref: str, claims: List[str]) -> str:
+    """
+    Turn candidate key claims into typed verifiability evidence by regex checking the LaTeX paper body.
+
+    Args:
+        ref: arXiv identifier (e.g. '2609.34785').
+        claims: List of anchored claim regexes to check in the body.
+    """
+    from .arxiv_radar import run_morph_gate
+    res = run_morph_gate(ref=ref, claims=claims)
+    return json.dumps(res, default=str, indent=2)
+
+
+
 def main():
 
     """Main entry point for the MCP server."""

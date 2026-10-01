@@ -111,3 +111,38 @@ def test_evidence_weighted_non_democratic_arbitration():
     can_ship_after_fix, max_risk_after_fix = NouGenMorphEngine.evaluate_arbitration(findings, critical_threshold=0.60)
     assert can_ship_after_fix
     assert max_risk_after_fix < 0.20
+
+
+def _strong(**kw):
+    base = dict(name="x", kind=MorphKind.MECHANISM, donor_source="arXiv:0000.00000", donor_behavior="b",
+                generalized_behavior="a generalized mechanism", nougen_target="a nougen module",
+                usefulness=1.0, generalizability=1.0, verifiability=1.0, compatibility=1.0, reversibility=1.0,
+                integration_cost=0.0)
+    base.update(kw)
+    return MorphCandidate(**base)
+
+
+def test_no_evidence_caps_verifiability_and_blocks_acceptance():
+    from nougen_morph.engine import NO_EVIDENCE_CEILING
+    c = _strong()
+    assert c.morph_score() == 1.0  # the raw formula is unchanged
+    assert c.effective_score() == NO_EVIDENCE_CEILING
+    accepted, score = NouGenMorphEngine(acceptance_threshold=0.5).ingest_candidate(c)
+    assert not accepted and score == NO_EVIDENCE_CEILING
+
+
+def test_abstract_only_cannot_pass_but_paper_body_can():
+    from nougen_morph.engine import MorphEvidence
+    abstract = _strong(evidence=[MorphEvidence("arXiv:1", "55.0 -> 75.0", 0.9, "abstract_only")])
+    body = _strong(evidence=[MorphEvidence("arXiv:1", "55.0 -> 75.0", 0.9, "paper_body")])
+    eng = NouGenMorphEngine(acceptance_threshold=0.5)
+    assert eng.ingest_candidate(abstract) == (False, 0.4)
+    assert eng.ingest_candidate(body) == (True, 0.8)
+
+
+def test_strongest_evidence_sets_the_ceiling_and_untyped_evidence_is_weakest():
+    from nougen_morph.engine import MorphEvidence
+    c = _strong(evidence=[MorphEvidence("s", "c", 0.5, "static"), MorphEvidence("t", "c", 0.5, "targeted_test")])
+    assert c.verifiability_ceiling() == 0.9
+    assert MorphEvidence("s", "c", 0.5).evidence_type == "model"
+    assert _strong(evidence=[MorphEvidence("s", "c", 0.5, "made_up_type")]).verifiability_ceiling() == 0.3

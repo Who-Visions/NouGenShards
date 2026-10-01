@@ -130,3 +130,35 @@ def test_speak_policy_rejects_bad_inputs(bad):
 def test_replay_is_deterministic_for_gate_and_policy():
     a = [vp.speak_policy("decision", novelty=0.4, operator_relevance=0.7, evidence_confidence=0.8) for _ in range(3)]
     assert len(set(a)) == 1
+
+
+def test_identity_for_matches_voice_contract():
+    snap = vp.identity_for("claude-code")
+    assert snap == {"persona_name": "claude-code", "archetype": "field_commander",
+                    "source_id": "voice-persona.v1:claude-code:field_commander"}
+    assert snap["source_id"] == f'{vp.CONFIG_VERSION}:{snap["persona_name"]}:{snap["archetype"]}'
+
+
+def test_identity_for_gates_low_confidence_to_neutral():
+    snap = vp.identity_for("antigravity", confidence=0.2)
+    assert snap["archetype"] == "neutral"
+    assert snap["source_id"] == "voice-persona.v1:antigravity:neutral"
+
+
+@pytest.mark.parametrize("bad", [float("nan"), -0.1, 1.5, True])
+def test_identity_for_rejects_bad_confidence(bad):
+    with pytest.raises(ValueError):
+        vp.identity_for("codex", confidence=bad)
+
+
+def test_identity_for_unknown_agent():
+    with pytest.raises(KeyError):
+        vp.identity_for("nobody")
+
+
+def test_identity_for_rejects_separator_in_agent(tmp_path, monkeypatch):
+    f = tmp_path / "agents.json"
+    f.write_text('{"a:b": {"profile": "X", "engine": "kokoro", "voice": "am_adam", "archetype": "heavy"}}')
+    monkeypatch.setenv("NOUGEN_VOICE_AGENTS", str(f))
+    with pytest.raises(ValueError):
+        vp.identity_for("a:b")

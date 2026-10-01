@@ -52,7 +52,7 @@ fastapi==0.141.1
     #   gradio
 filelock==3.32.5
     # via huggingface-hub
-fsspec==2026.7.0
+fsspec==2026.9.0
     # via
     #   gradio-client
     #   huggingface-hub
@@ -204,7 +204,7 @@ pydub==0.25.1
     # via gradio
 pygments==2.21.0
     # via rich
-pyjwt==2.13.0
+pyjwt==2.14.0
     # via mcp
 pyparsing==3.3.3
     # via httplib2
@@ -214,7 +214,7 @@ python-multipart==0.0.32
     # via
     #   gradio
     #   mcp
-pytz==2026.3.post1
+pytz==2026.4
     # via gradio
 pywin32==312 ; sys_platform == 'win32'
     # via mcp
@@ -254,7 +254,7 @@ sqlalchemy==2.0.54
     # via nougen-shards (pyproject.toml)
 sse-starlette==3.4.11
     # via mcp
-starlette==1.6.0
+starlette==1.7.0
     # via
     #   fastapi
     #   gradio
