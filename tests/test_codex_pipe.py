@@ -309,6 +309,64 @@ class CodexPipeTests(unittest.TestCase):
         after = self._advance(mid, "EXECUTING")
         self.assertEqual(after["status"], "illegal_transition")
 
+    def _valid_complete_proof(self, mid):
+        repo = Path(__file__).resolve().parents[1]
+        commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        return self._evidence(mid, "complete", poe={
+            "git": {"commit_sha": commit, "files_changed": ["src/nougen_shards/codex_pipe.py"],
+                    "repo_path": str(repo)},
+            "test_evidence": {"runner": "pytest tests/test_codex_pipe.py", "exit_code": 0,
+                              "stdout_hash": "a" * 64},
+            "verifier": {"observer_node": "chatgpt-app"},
+        })
+
+    def test_complete_resumes_after_a_crash_between_commit_and_complete(self):
+        """verify + commit succeeded, complete() died: the retry must finish, not stick.
+
+        The manager now refuses to move a COMMITTING claim back to VERIFYING, so
+        advance() has to resume at complete() with the same idempotency key.
+        """
+        from nougen_shards.claim_lifecycle import ClaimLifecycleManager
+        mid = "aaaaaaaa-0000-4000-8000-0000000000a1"
+        self._stage(mid)
+        codex_pipe.take(mid, consumer="codex", thread="t")
+        self.assertTrue(self._advance(mid, "EXECUTING")["advanced"])
+        proof = self._valid_complete_proof(mid)
+        real_complete = ClaimLifecycleManager.complete
+        calls = {"n": 0}
+
+        def crash_once(self_, *a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ValueError("simulated crash after commit_step")
+            return real_complete(self_, *a, **k)
+
+        with patch.object(ClaimLifecycleManager, "complete", crash_once):
+            first = self._advance(mid, "COMPLETE", proof)
+            self.assertFalse(first["advanced"])
+            claim = ClaimLifecycleManager().get_claim(mid)
+            self.assertEqual(claim["state"], "COMMITTING")        # committed, not completed
+            retry = self._advance(mid, "COMPLETE", proof)
+        self.assertTrue(retry["advanced"], retry)
+        self.assertEqual(ClaimLifecycleManager().get_claim(mid)["state"], "COMPLETE")
+        self.assertEqual(codex_pipe.pending_execution(self.temp.name), [])
+
+    def test_a_different_completion_cannot_hijack_a_committing_claim(self):
+        from nougen_shards.claim_lifecycle import ClaimLifecycleManager
+        mid = "aaaaaaaa-0000-4000-8000-0000000000a2"
+        self._stage(mid)
+        codex_pipe.take(mid, consumer="codex", thread="t")
+        self.assertTrue(self._advance(mid, "EXECUTING")["advanced"])
+        proof = self._valid_complete_proof(mid)
+        with patch.object(ClaimLifecycleManager, "complete", side_effect=ValueError("crash")):
+            self._advance(mid, "COMPLETE", proof)
+        other = dict(proof)
+        other["execution_receipt"] = dict(proof["execution_receipt"], execution_id="run-2")
+        result = self._advance(mid, "COMPLETE", other)
+        self.assertFalse(result["advanced"])
+        self.assertEqual(ClaimLifecycleManager().get_claim(mid)["state"], "COMMITTING")
+
     def test_checkpoint_recomputes_artifact_digest_and_preserves_pending_work(self):
         mid = "aaaaaaaa-0000-4000-8000-000000000006"
         self._stage(mid)

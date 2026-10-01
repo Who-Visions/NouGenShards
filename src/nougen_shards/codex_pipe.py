@@ -553,7 +553,7 @@ def advance(message_id, state, evidence="", consumer=None, inbox=None, fencing_e
             return {"status": "fencing_token_required", "message_id": message_id,
                     "advanced": False}
         from .claim_lifecycle import (ClaimLifecycleManager, FencingViolationError,
-                                      TaskState)
+                                      InvalidStateTransitionError, TaskState)
         manager = ClaimLifecycleManager()
         claim = manager.get_claim(str(message_id))
         if (claim is None or int(claim["fencing_epoch"]) != int(expected_epoch) or
@@ -565,10 +565,16 @@ def advance(message_id, state, evidence="", consumer=None, inbox=None, fencing_e
             if state in {"EXECUTING", "CHECKPOINTED"}:
                 manager.heartbeat(str(message_id), int(fencing_epoch), TaskState.WORKING)
             elif state == "COMPLETE":
-                manager.verify_step(str(message_id), int(fencing_epoch), verification)
-                manager.commit_step(
-                    str(message_id), int(fencing_epoch),
-                    f"nougen:complete:{message_id}:{verification['evidence_sha256']}")
+                complete_key = f"nougen:complete:{message_id}:{verification['evidence_sha256']}"
+                if claim["state"] == "COMMITTING":
+                    # An earlier COMPLETE verified and committed but died before finishing.
+                    # Resume with the same effect key; a committing claim is never un-committed
+                    # (the manager refuses to move COMMITTING back to VERIFYING).
+                    if claim.get("idempotency_key") != complete_key:
+                        raise ValueError("a different completion is already committing for this claim")
+                else:
+                    manager.verify_step(str(message_id), int(fencing_epoch), verification)
+                    manager.commit_step(str(message_id), int(fencing_epoch), complete_key)
                 manager.complete(str(message_id), int(fencing_epoch), verification)
             elif state == "FAILED":
                 manager.fail(str(message_id), int(fencing_epoch),
@@ -576,6 +582,9 @@ def advance(message_id, state, evidence="", consumer=None, inbox=None, fencing_e
             else:
                 manager.interrupt(str(message_id), int(fencing_epoch), TaskState.BLOCKED,
                                   str(evidence.get("reason") or "execution blocked"))
+        except InvalidStateTransitionError as exc:
+            return {"status": "illegal_transition", "message_id": message_id,
+                    "advanced": False, "error": str(exc)}
         except (FencingViolationError, KeyError, ValueError) as exc:
             return {"status": "lease_expired_or_superseded", "message_id": message_id,
                     "advanced": False, "error": str(exc)}
