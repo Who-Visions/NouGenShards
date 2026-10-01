@@ -75,6 +75,8 @@ def graph_context_packet(query, candidates, expanded=(), *, token_budget=8000,
             deps = item.get('dependencies', [])
             if not isinstance(deps, list):
                 raise ValueError("invalid_dependencies")
+            if len(deps) > max_dependencies:
+                raise ValueError("dependency_budget")
             for dep in sorted(deps, key=canonical):
                 if not isinstance(dep, dict) or 'id' not in dep:
                     raise ValueError("invalid_dependency_reference")
@@ -115,7 +117,10 @@ def graph_context_packet(query, candidates, expanded=(), *, token_budget=8000,
             if key in selected:
                 continue
             decision = {"id": key, "stage": stage, "relevance": relevance,
-                        "selection_score": -negative_score, "policy_version": policy_version}
+                        "selection_score": -negative_score, "policy_version": policy_version,
+                        "content_hash": "sha256:" + hashlib.sha256(str(item.get('content', '')).encode('utf-8')).hexdigest(),
+                        "source_uri": item.get('source_uri'),
+                        "evidence_level": item.get('evidence_level', 'unclassified')}
             try:
                 addition = closure(item)
                 proposal = dict(selected, **addition)
