@@ -442,3 +442,20 @@ def test_default_wake_pings_the_lane_that_acked_with_the_watchdog_text(env, mana
         NouGenMsgBus.__dict__.get("live_ping"), staticmethod) else classmethod(lambda cls, t, x, *a, **k: fake(t, x)))
     assert wd.default_wake({"message_id": "abc", "age_s": 700, "consumer": "claude"}) is True
     assert calls and calls[0][0] == "claude" and "take-msg abc" in calls[0][1]
+
+
+# --- the watchdog's own nudge must not become an obligation ---------------------------------
+
+def test_acking_a_nudge_ends_at_acked_and_is_never_nudged_about(env, manager):
+    original = "bbbbbbbb-0000-4000-8000-000000000001"
+    nudge_id = "bbbbbbbb-0000-4000-8000-000000000002"
+    _stage(original)
+    _ack(original)
+    _age_ack(original, 900)
+    _stage(nudge_id, text=wd.wake_text({"message_id": original, "age_s": 900}))
+    _ack(nudge_id)
+    rec = codex_pipe.lifecycle(nudge_id)
+    assert rec["actionable"] is False and rec["pending_execution"] is False
+    _age_ack(nudge_id, 9999)
+    ids = [n["message_id"] for n in wd.sweep(dispatch_grace_s=300)["needs_claim"]]
+    assert ids == [original]                      # the original is still the only thing owed
