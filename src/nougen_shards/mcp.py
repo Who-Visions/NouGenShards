@@ -1208,6 +1208,24 @@ def morph_gate(ref: str, claims: List[str]) -> str:
 
 
 
+@mcp.tool()
+def information_gain_evaluate(event_text: str, context_samples: Optional[List[str]] = None, confidence: float = 1.0) -> str:
+    """
+    Evaluate deterministic conditional information gain Delta_I(event | memory_state).
+
+    Returns 3 strictly separated provenance envelopes:
+      - raw_observation (hash, token count, exact seen)
+      - inferred_relationship (novelty score, surprisal bits, edge weight, retrieval boost)
+      - action_recommendation (deduplication verdict, relay urgency, action gating)
+    """
+    from .information_gain import InformationGainState
+    state = InformationGainState()
+    for ctx in (context_samples or []):
+        state.update(ctx)
+    env = state.evaluate(event_text, confidence=confidence)
+    return json.dumps(env.to_dict(), default=str, indent=2)
+
+
 def main():
 
     """Main entry point for the MCP server."""

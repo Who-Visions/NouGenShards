@@ -3432,6 +3432,17 @@ def morph_gate(ref: str, claims: List[str]) -> dict:
 
 @node_mcp.tool()
 @_offloaded
+def information_gain_evaluate(event_text: str, context_samples: Optional[List[str]] = None, confidence: float = 1.0) -> dict:
+    """Evaluate deterministic conditional information gain Delta_I(event | memory_state)."""
+    from nougen_shards.information_gain import InformationGainState
+    state = InformationGainState()
+    for ctx in (context_samples or []):
+        state.update(ctx)
+    return state.evaluate(event_text, confidence=confidence).to_dict()
+
+
+@node_mcp.tool()
+@_offloaded
 def evidence_assure(claim: str, source: str = "runtime", level: str = "measured") -> dict:
     """Validate and label empirical claim through Iris evidence assurance standards."""
     from nougen_shards import assurance
