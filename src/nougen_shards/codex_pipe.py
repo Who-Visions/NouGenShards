@@ -289,7 +289,6 @@ def claim(message_id, consumer=None, thread=None, inbox=None):
     candidate_roots = _candidate_inbox_dirs(inbox=inbox, consumer=consumer if inbox else None)
     match = None
     payload = None
-    found_root = None
     for root in candidate_roots:
         if not root.exists():
             continue
@@ -299,7 +298,7 @@ def claim(message_id, consumer=None, thread=None, inbox=None):
             except (OSError, ValueError):
                 continue
             if candidate.get("message_id") == message_id:
-                match, payload, found_root = path, candidate, root
+                match, payload = path, candidate
                 break
         if match:
             break
