@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nougen-delegation",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": false,
+  "durable_objects": {
+    "bindings": [{ "name": "BOARD", "class_name": "DelegationBoard" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DelegationBoard"] }],
+  "observability": { "enabled": true }
+}
