@@ -3614,6 +3614,167 @@ var TOOLS = [
       "openWorldHint": false
     }
   }
+,
+  {
+    "name": "arxiv_capabilities",
+    "description": "Return the arXiv MCP handlers actually available in this process.",
+    "inputSchema": {
+      "properties": {},
+      "title": "arxiv_capabilitiesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "arxiv_radar",
+    "description": "Scan current arXiv channels through NouGen's canonical radar.\n\n        Args:\n            channels: RSS channels, e.g. [\"cs\"] or [\"cs.AI\", \"cs.LG\"].\n            mode: \"preview\", \"sweep\", or \"reconcile\".\n            limit: Maximum papers returned per lane.\n            commit: False by default. True may update radar state and ingest priority\n                papers only when the server operator also enabled mutation.\n            broadcast_target: Optional NouGenMsg target for an authorized committed run.\n\n        Read-only preview intentionally bypasses persisted ETag cursors so a web MCP\n        client can ask \"what is current?\" without mutating the operator's scheduler.\n        ",
+    "inputSchema": {
+      "properties": {
+        "channels": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channels"
+        },
+        "mode": {
+          "default": "preview",
+          "title": "Mode",
+          "type": "string"
+        },
+        "limit": {
+          "default": 25,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "commit": {
+          "default": false,
+          "title": "Commit",
+          "type": "boolean"
+        },
+        "broadcast_target": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Broadcast Target"
+        }
+      },
+      "title": "arxiv_radarArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "arxiv_lab_watch",
+    "description": "Screen an arXiv lab channel for NouGen architecture graft candidates.\n\n        The classifier screens. It does NOT judge novelty. Every candidate remains\n        novelty=\"unjudged\" until explicit review/NouGenMorph evaluation.\n        ",
+    "inputSchema": {
+      "properties": {
+        "channel": {
+          "default": "cs.AR",
+          "title": "Channel",
+          "type": "string"
+        },
+        "limit": {
+          "default": 25,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "backfill": {
+          "default": false,
+          "title": "Backfill",
+          "type": "boolean"
+        },
+        "commit": {
+          "default": false,
+          "title": "Commit",
+          "type": "boolean"
+        }
+      },
+      "title": "arxiv_lab_watchArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "arxiv_paper",
+    "description": "Inspect one arXiv paper.\n\n        action:\n          lookup   -> structured metadata from arXiv API\n          fulltext -> cached/source LaTeX text, bounded for MCP transport\n          claim    -> regex occurrences in BODY ONLY; abstract is excluded\n        ",
+    "inputSchema": {
+      "properties": {
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        },
+        "action": {
+          "default": "lookup",
+          "title": "Action",
+          "type": "string"
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pattern"
+        },
+        "refresh": {
+          "default": false,
+          "title": "Refresh",
+          "type": "boolean"
+        },
+        "max_chars": {
+          "default": 24000,
+          "title": "Max Chars",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ref"
+      ],
+      "title": "arxiv_paperArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "morph_gate",
+    "description": "Check key claim regexes against the arXiv paper BODY.\n\n        Returns the canonical NouGenMorph-compatible evidence row. All claims found\n        in body -> paper_body. Any missing/unavailable -> abstract_only. No automatic\n        promotion occurs here.\n        ",
+    "inputSchema": {
+      "properties": {
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        },
+        "claims": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Claims",
+          "type": "array"
+        }
+      },
+      "required": [
+        "ref",
+        "claims"
+      ],
+      "title": "morph_gateArguments",
+      "type": "object"
+    }
+  }
 ];
 var DESTINIES_PATH = "/destinies";
 var KAEDRA_URL_FALLBACK = "https://kaedra.nougenai.com";
@@ -5730,6 +5891,47 @@ ${body}`,
       if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
     } catch (e) {}
     return text(`Synthesized sandbox data for handle: ${args.handle}`);
+  }
+,
+  async arxiv_capabilities(args, env) {
+    const unset = gatewayUnconfigured(env);
+    if (unset) return toolError(unset);
+    const result = await shardCall(env, "arxiv_capabilities", args);
+    const body = (result.content || []).map((c) => c.text || "").join("\n");
+    if (result.isError) return toolError(body || "arxiv_capabilities failed");
+    return text(body || "(no output)", result.structuredContent);
+  },
+  async arxiv_radar(args, env) {
+    const unset = gatewayUnconfigured(env);
+    if (unset) return toolError(unset);
+    const result = await shardCall(env, "arxiv_radar", args);
+    const body = (result.content || []).map((c) => c.text || "").join("\n");
+    if (result.isError) return toolError(body || "arxiv_radar failed");
+    return text(body || "(no output)", result.structuredContent);
+  },
+  async arxiv_lab_watch(args, env) {
+    const unset = gatewayUnconfigured(env);
+    if (unset) return toolError(unset);
+    const result = await shardCall(env, "arxiv_lab_watch", args);
+    const body = (result.content || []).map((c) => c.text || "").join("\n");
+    if (result.isError) return toolError(body || "arxiv_lab_watch failed");
+    return text(body || "(no output)", result.structuredContent);
+  },
+  async arxiv_paper(args, env) {
+    const unset = gatewayUnconfigured(env);
+    if (unset) return toolError(unset);
+    const result = await shardCall(env, "arxiv_paper", args);
+    const body = (result.content || []).map((c) => c.text || "").join("\n");
+    if (result.isError) return toolError(body || "arxiv_paper failed");
+    return text(body || "(no output)", result.structuredContent);
+  },
+  async morph_gate(args, env) {
+    const unset = gatewayUnconfigured(env);
+    if (unset) return toolError(unset);
+    const result = await shardCall(env, "morph_gate", args);
+    const body = (result.content || []).map((c) => c.text || "").join("\n");
+    if (result.isError) return toolError(body || "morph_gate failed");
+    return text(body || "(no output)", result.structuredContent);
   }
 };
 async function handleRpc(msg, env, keyId, auth = null) {

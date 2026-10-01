@@ -3384,6 +3384,52 @@ def arxiv_research(query: str, max_results: int = 5, auto_shard: bool = False) -
 
 @node_mcp.tool()
 @_offloaded
+def arxiv_capabilities() -> dict:
+    """Return the arXiv MCP handlers actually available on this node."""
+    from nougen_shards.arxiv_radar import get_radar_tools
+    tools = get_radar_tools()
+    return {
+        "ok": True,
+        "available": bool(tools),
+        "capabilities": list(tools.keys()),
+        "provenance": {"origin": "node_mcp", "repo": "Who-Visions/nougen-radar"}
+    }
+
+
+@node_mcp.tool()
+@_offloaded
+def arxiv_radar(mode: str = "preview", recipe_path: Optional[str] = None) -> dict:
+    """Scan current arXiv channels through NouGen's canonical radar."""
+    from nougen_shards.arxiv_radar import run_arxiv_radar
+    return run_arxiv_radar(mode=mode, recipe_path=recipe_path)
+
+
+@node_mcp.tool()
+@_offloaded
+def arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False) -> dict:
+    """Execute an arXiv research lab watcher cycle (e.g. cs.AR hardware architecture -> graft candidates)."""
+    from nougen_shards.arxiv_radar import run_arxiv_lab_watch
+    return run_arxiv_lab_watch(channel=channel, backfill=backfill)
+
+
+@node_mcp.tool()
+@_offloaded
+def arxiv_paper(action: str, ref: str, pattern: Optional[str] = None) -> dict:
+    """Single-paper arXiv deep recall: metadata lookup, LaTeX fulltext caching, or paper body claim search."""
+    from nougen_shards.arxiv_radar import run_arxiv_paper
+    return run_arxiv_paper(action=action, ref=ref, pattern=pattern)
+
+
+@node_mcp.tool()
+@_offloaded
+def morph_gate(ref: str, claims: List[str]) -> dict:
+    """Turn candidate key claims into typed verifiability evidence by regex checking the LaTeX paper body."""
+    from nougen_shards.arxiv_radar import run_morph_gate
+    return run_morph_gate(ref=ref, claims=claims)
+
+
+@node_mcp.tool()
+@_offloaded
 def evidence_assure(claim: str, source: str = "runtime", level: str = "measured") -> dict:
     """Validate and label empirical claim through Iris evidence assurance standards."""
     from nougen_shards import assurance
