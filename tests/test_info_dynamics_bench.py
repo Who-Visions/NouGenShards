@@ -4,8 +4,6 @@ Ten scenarios. Each asserts what is OBSERVED, including where the current inform
 layer is blind: those are labelled LIMITATION and are findings, not bugs hidden by the test.
 Metrics stay separate; no scenario relies on a combined score.
 """
-import math
-
 import pytest
 
 from nougen_shards import info_dynamics as D
