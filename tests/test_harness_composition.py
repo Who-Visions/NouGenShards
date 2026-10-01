@@ -187,18 +187,33 @@ def test_rollback_refuses_when_nothing_was_promoted():
         EvolveGate().rollback("harness.never", reason="x")
 
 
+def test_information_gain_measured_receipt_composition():
+    """Stage 7: information_gain provides measured surprise/gain that passes the EvidenceGate."""
+    from nougen_shards.information_gain import MemoryState
+    m = MemoryState()
+    g = m.observe({"event": 1, "test": 1})
+    # Measured information gain receipt with sufficient sample count
+    r = EvidenceReceipt(source="information_gain.measured", observation="measured", delta=g.novelty, trials=25)
+    c = PolicyCandidate(
+        "harness.infogain", "v2", "information gain measured",
+        receipts=(r,),
+        metrics=(Metrics("answer_quality", baseline=0.70, candidate=0.85),),
+        rollback_to="v1",
+    )
+    gate = EvolveGate()
+    assert gate.check(c).status is Status.ELIGIBLE
+
+
 # ------------------------------------------------------- the honest boundary
 
 def test_stages_absent_from_this_repo_are_not_silently_passed():
-    """Stages 1, 4, 7, 8, 9 (Context Gate, FAST/REFLECTIVE + DIVERGE/CONVERGE
-    routing, measured Information Gain Receipt, Natural Workload Replay,
-    Predictive Memory) do not exist at 12944ff. This test exists so the suite
-    cannot be read as covering them -- it fails the day one lands unwired, and
-    the composition assertions above must then be extended to it."""
+    """Stages 1, 4, 8, 9 (Context Gate, FAST/REFLECTIVE + DIVERGE/CONVERGE
+    routing, Natural Workload Replay, Predictive Memory) do not exist at 12944ff.
+    Stage 7 (measured Information Gain) is covered above. This test exists so
+    the suite cannot be read as covering absent stages -- it fails the day one lands unwired."""
     expected_absent = {
         "nougen_shards.context_gate",
         "nougen_shards.decision.domains.reflective_routing",
-        "nougen_shards.information_gain",
         "nougen_shards.workload_replay",
         "nougen_shards.predictive_memory",
     }

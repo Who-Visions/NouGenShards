@@ -3429,10 +3429,11 @@ def arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False) -> dict:
 
 @node_mcp.tool()
 @_offloaded
-def arxiv_paper(action: str, ref: str, pattern: Optional[str] = None) -> dict:
+def arxiv_paper(action: str, ref: str, pattern: Optional[str] = None,
+                max_chars: Optional[int] = None) -> dict:
     """Single-paper arXiv deep recall: metadata lookup, LaTeX fulltext caching, or paper body claim search."""
     from nougen_shards.arxiv_radar import run_arxiv_paper
-    return run_arxiv_paper(action=action, ref=ref, pattern=pattern)
+    return run_arxiv_paper(action=action, ref=ref, pattern=pattern, max_chars=max_chars)
 
 
 @node_mcp.tool()
