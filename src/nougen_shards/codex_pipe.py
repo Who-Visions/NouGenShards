@@ -14,6 +14,7 @@ import sys
 import time
 import uuid
 from nougen_time import InvalidTimestampError, format_display_time
+from .execution_proof import create_context_binding, verify_lifecycle_evidence
 
 PIPE = r"\\.\pipe\LOCAL\nougen-msg-codex"
 MAX_BYTES = 24000
@@ -346,6 +347,9 @@ def _open_lifecycle(root, message_id, payload, consumer):
     _write_lifecycle(path, {
         "message_id": message_id, "actionable": actionable, "state": "ACKED",
         "pending_execution": actionable, "evidence_verified": False,
+        "payload_sha256": hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).hexdigest(),
         "history": [{"state": "ACKED", "at": now, "consumer": consumer, "evidence": ""}]})
 
 
@@ -361,12 +365,10 @@ def lifecycle(message_id, inbox=None):
 def advance(message_id, state, evidence="", consumer="codex", inbox=None):
     """Move an acknowledged message through its execution lifecycle.
 
-    Evidence is required for CHECKPOINTED and every terminal state. It is
-    recorded verbatim and flagged unverified: this layer proves a claim was
-    made, not that it is true.
+    Checkpoints and terminal states require structured evidence that passes
+    the execution-proof validator. A receipt or a non-empty string is not proof.
     """
     state = str(state or "").strip().upper()
-    evidence = str(evidence or "").strip()
     root = _inbox_root(inbox)
     path = _lifecycle_path(root, message_id)
     record = lifecycle(message_id, inbox)
@@ -378,16 +380,37 @@ def advance(message_id, state, evidence="", consumer="codex", inbox=None):
     if current in TERMINAL_STATES or state not in _NEXT_STATES.get(current, set()):
         return {"status": "illegal_transition", "from": current, "to": state,
                 "advanced": False}
-    if state in _EVIDENCE_STATES and not evidence:
+    if (state == "CLAIMED" or state in _EVIDENCE_STATES) and not record.get("context_binding"):
+        return {"status": "take_required", "message_id": message_id, "advanced": False}
+    if state in _EVIDENCE_STATES and (
+            evidence is None or evidence == {} or
+            (isinstance(evidence, str) and not evidence.strip())):
         return {"status": "evidence_required", "to": state, "advanced": False}
+    verification = None
+    if state in _EVIDENCE_STATES:
+        workspace_value = os.environ.get("NOUGEN_CODEX_WORKSPACE", "").strip()
+        workspace_root = Path(workspace_value).expanduser() if workspace_value else None
+        verification = verify_lifecycle_evidence(
+            state, evidence, message_id=str(message_id), consumer=str(consumer),
+            workspace_root=workspace_root,
+            expected_context=record.get("context_binding"))
+        if not verification["verified"]:
+            return {"status": "evidence_invalid", "to": state, "advanced": False,
+                    "evidence_verified": False, "verifier_result": verification}
+        evidence = verification.pop("normalized_evidence")
     record["state"] = state
     record["pending_execution"] = bool(record["actionable"]) and state not in TERMINAL_STATES
-    record["history"].append({"state": state, "at": datetime.now(timezone.utc).isoformat(),
-                              "consumer": consumer, "evidence": evidence})
+    event = {"state": state, "at": datetime.now(timezone.utc).isoformat(),
+             "consumer": consumer, "evidence": evidence}
+    if verification is not None:
+        record["evidence_verified"] = True
+        event["verifier_result"] = verification
+    record["history"].append(event)
     _write_lifecycle(path, record)
     return {"status": "advanced", "advanced": True, "message_id": message_id,
             "state": state, "pending_execution": record["pending_execution"],
-            "evidence_verified": False}
+            "evidence_verified": verification["verified"] if verification else None,
+            "verifier_result": verification}
 
 
 def take(message_id, consumer="codex", thread=None, inbox=None):
@@ -399,6 +422,10 @@ def take(message_id, consumer="codex", thread=None, inbox=None):
     if record is None or not record["actionable"]:
         return {**receipt, "lifecycle_state": "ACKED", "pending_execution": False}
     if record["state"] == "ACKED":
+        if not record.get("context_binding"):
+            record["context_binding"] = create_context_binding(
+                str(message_id), str(record.get("payload_sha256") or ""), str(consumer))
+            _write_lifecycle(_lifecycle_path(_inbox_root(inbox), message_id), record)
         advance(message_id, "CLAIMED", consumer=consumer, inbox=inbox)
     record = lifecycle(message_id, inbox)
     return {**receipt, "lifecycle_state": record["state"],
