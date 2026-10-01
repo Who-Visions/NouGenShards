@@ -99,3 +99,71 @@ def test_arxiv_radar_integration_direct():
     assert tools["paper"] is not None
     assert tools["morph"] is not None
 
+
+
+# --- regression: wrapper must call the radar's REAL API (run_pipeline), not run_radar_cycle ---
+
+_RSS = b"<rss><channel><item><id>2609.00001</id></item><item><id>2609.00002</id></item></channel></rss>"
+
+
+def _fake_radar(calls):
+    """Mirror of arxiv_rss_radar's public surface. Deliberately has NO run_radar_cycle."""
+    from types import SimpleNamespace
+
+    def fetch(channel, cursor):
+        calls.append(("fetch", channel, dict(cursor)))
+        return _RSS, {}
+
+    def parse(item):
+        return {"id": item.findtext("id"), "title": "t-" + item.findtext("id"), "secret_internal": 1}
+
+    def pipeline(mode, channels, broadcast_target):
+        calls.append(("run_pipeline", mode, tuple(channels), broadcast_target))
+        return {"status": "ran"}
+
+    return SimpleNamespace(
+        fetch_arxiv_rss_conditional=fetch,
+        parse_arxiv_item=parse,
+        compute_percentiles=lambda papers: papers,
+        route_papers=lambda papers, recipe: {"beacon": papers[:1], "review": papers[1:], "shard": []},
+        load_route_recipe=lambda: {},
+        run_pipeline=pipeline,
+    )
+
+
+def test_radar_preview_uses_real_api_and_stays_read_only(monkeypatch):
+    from nougen_shards import arxiv_radar
+
+    calls = []
+    monkeypatch.setattr(arxiv_radar, "get_radar_tools", lambda: {"radar": _fake_radar(calls)})
+    res = arxiv_radar.run_arxiv_radar(mode="preview", channels=["cs.AR"], limit=1)
+    assert res["status"] == "success" and res["mutation"] is False
+    assert res["counts"] == {"beacon": 1, "review": 1, "shard": 0, "total": 2}
+    assert len(res["lanes"]["beacon"]) == 1
+    assert "secret_internal" not in res["lanes"]["beacon"][0]
+    assert not [c for c in calls if c[0] == "run_pipeline"]
+    # preview must fetch with an EMPTY cursor so scheduler ETag state is never read or written
+    assert calls[0] == ("fetch", "cs.AR", {"channels": {}, "seen_ids": []})
+
+
+def test_radar_commit_is_gated_by_operator_env(monkeypatch):
+    from nougen_shards import arxiv_radar
+
+    calls = []
+    monkeypatch.setattr(arxiv_radar, "get_radar_tools", lambda: {"radar": _fake_radar(calls)})
+    monkeypatch.delenv("NOUGEN_ARXIV_MCP_ALLOW_MUTATION", raising=False)
+    res = arxiv_radar.run_arxiv_radar(mode="sweep", commit=True)
+    assert res["status"] == "mutation_disabled" and res["mutation"] is False
+    assert not calls
+
+    monkeypatch.setenv("NOUGEN_ARXIV_MCP_ALLOW_MUTATION", "1")
+    res = arxiv_radar.run_arxiv_radar(mode="preview", channels=["cs"], commit=True, broadcast_target="all")
+    assert res["status"] == "committed" and res["mutation"] is True
+    assert calls == [("run_pipeline", "reconcile", ("cs",), "all")]
+
+
+def test_radar_rejects_unknown_mode(monkeypatch):
+    from nougen_shards import arxiv_radar
+
+    monkeypatch.setattr(arxiv_radar, "get_radar_tools", lambda: {"radar": _fake_radar([])})
+    assert arxiv_radar.run_arxiv_radar(mode="nope")["status"] == "error"

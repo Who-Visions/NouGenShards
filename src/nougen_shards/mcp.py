@@ -1137,18 +1137,38 @@ def relay_open(limit: int = 10) -> str:
 # --- arXiv Research Radar & Lab Watcher (satellite: Who-Visions/nougen-radar) ---
 
 @mcp.tool()
-def arxiv_radar(mode: str = "sweep", recipe_path: Optional[str] = None) -> str:
+def arxiv_radar(
+    mode: str = "preview",
+    recipe_path: Optional[str] = None,
+    channels: Optional[List[str]] = None,
+    limit: int = 0,
+    commit: bool = False,
+    broadcast_target: Optional[str] = None,
+) -> str:
     """
-    Execute an arXiv research radar cycle (sweep or reconcile) across core fleet pillars.
+    Scan arXiv through the canonical research radar across core fleet pillars.
 
     Preserves 3-lane topology (beacon, review, shard), category priors, and dynamic taggers.
+    Read-only by default: a preview never touches the scheduler cursor or queues.
 
     Args:
-        mode: Radar cadence ('sweep' for hourly delta check, 'reconcile' for daily settlement).
-        recipe_path: Optional path to custom route-v1.json recipe.
+        mode: 'preview' (read-only, default), 'sweep' (hourly delta), or 'reconcile' (daily settlement).
+        recipe_path: Accepted for compatibility; reported back as ignored (the radar loads its own recipe).
+        channels: RSS channels, e.g. ["cs"] or ["cs.AR"]. Defaults to NOUGEN_ARXIV_DEFAULT_CHANNELS, else ["cs"].
+        limit: Max papers returned per lane (0 = server default).
+        commit: False by default. True runs the real pipeline and only works when the server operator
+            set NOUGEN_ARXIV_MCP_ALLOW_MUTATION=1.
+        broadcast_target: Optional NouGenMsg target for an authorized committed run.
     """
     from .arxiv_radar import run_arxiv_radar
-    res = run_arxiv_radar(mode=mode, recipe_path=recipe_path)
+    res = run_arxiv_radar(
+        mode=mode,
+        recipe_path=recipe_path,
+        channels=channels,
+        limit=limit or None,
+        commit=commit,
+        broadcast_target=broadcast_target,
+    )
     return json.dumps(res, default=str, indent=2)
 
 
