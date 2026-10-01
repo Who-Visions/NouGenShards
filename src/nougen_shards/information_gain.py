@@ -77,6 +77,18 @@ class Gain:
     novelty: float       # normalised to [0, 1]
     size: int            # |E|, distinct features
     kind: str            # provenance of the event that was scored
+    peak: float = 0.0    # most surprising single feature, normalised to [0, 1]
+
+    @property
+    def signal(self) -> float:
+        """Decision value for dedup, urgency and gating: max(novelty, peak).
+
+        ``novelty`` is a per-feature average, so it dilutes: one decisive new fact in a long
+        event of familiar features scores near 0 (49 common + 1 new after 60 repeats:
+        7.5 bits but novelty 0.022). ``peak`` keeps that fact visible. Pass ``signal``, not
+        ``novelty``, to ``classify``, ``urgency`` and ``gate``.
+        """
+        return max(self.novelty, self.peak)
 
 
 class MemoryState:
@@ -102,8 +114,10 @@ class MemoryState:
         ev = _as_set(event)
         if not ev:
             return Gain(0.0, 0.0, 0, kind)
-        bits = sum(-math.log2(self.p(f)) for f in sorted(ev))
-        return Gain(bits, bits / (len(ev) * self.s_max()), len(ev), kind)
+        surprisals = [-math.log2(self.p(f)) for f in sorted(ev)]
+        bits = sum(surprisals)
+        s_max = self.s_max()
+        return Gain(bits, bits / (len(ev) * s_max), len(ev), kind, peak=max(surprisals) / s_max)
 
     def observe(self, event: Iterable[str] | Dict[str, int], kind: str = "observation") -> Gain:
         """Score then absorb. Inferences/recommendations are refused, not absorbed."""
