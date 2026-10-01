@@ -12,11 +12,23 @@ python tools/nougendesigns.py check designs/nougen-core/design.json designs/noug
 python tools/nougendesigns.py diff before.json after.json
 ```
 
-Repository adapters inspect CSS files, exclude build/dependency directories and
-record hashes, observed tokens and anti-pattern counts. Site input uses a saved
-HTML/CSS export; a brief uses a saved text file. Screenshots register binary
-hashes, with visual interpretation supplied separately as inferred prose.
-This v0 does not fetch sites or infer design intent from pixels automatically.
+Repository adapters inspect CSS, HTML, TS and TSX files, exclude build and
+dependency directories, and record hashes, observed custom properties,
+component/control counts, and anti-pattern counts. `analyze` combines these
+measurements with a saved brief and a reviewed profile to create a deterministic
+review draft:
+
+```sh
+python tools/nougendesigns.py analyze ui/src brief.md designs/nougen-core/design.json .reports/design-review
+```
+
+The draft contains `DESIGN.md`, `tokens.css`, `manifest.json`, `mutations.json`,
+`analysis.json`, and `lint.json`. The brief is preserved verbatim. The reviewed
+profile remains the source of design intent; source analysis does not invent
+palette or interaction decisions, and recommendations never rewrite source
+files. Screenshots register binary hashes only, with visual interpretation
+supplied separately as inferred prose. This deterministic pass does not fetch
+sites or infer design intent from pixels.
 Local Ollama can draft prose from private evidence; NouGenOpen can review a
 text-only contract. Review their output before entering it in a specification.
 

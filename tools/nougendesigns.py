@@ -18,6 +18,8 @@ RULES = {
     'pill': r'border-radius\s*:\s*(?:999\d*px|50%)',
     'glow': r'box-shadow\s*:\s*0\s+0\s+[1-9]\d*px',
 }
+SOURCE_SUFFIXES = {'.css', '.html', '.ts', '.tsx'}
+EXCLUDED_DIRS = {'.git', 'node_modules', 'dist', 'build', '.next', 'coverage', 'out', 'target'}
 
 def canonical(value):
     return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + '\n'
@@ -118,22 +120,132 @@ def lint(spec, css=''):
 
 def inspect_source(path):
     path = Path(path)
-    files = sorted(path.rglob('*.css')) if path.is_dir() else [path]
+    files = (sorted(file for file in path.rglob('*')
+                    if file.is_file() and file.suffix.lower() in SOURCE_SUFFIXES
+                    and not any(part in EXCLUDED_DIRS for part in file.relative_to(path).parts))
+             if path.is_dir() else [path])
     records = []
     for file in files:
-        if any(part in ('node_modules', '.git', 'dist') for part in file.parts):
-            continue
         data = file.read_bytes()
+        suffix = file.suffix.lower()
         record = {'source': file.name if path.is_file() else file.relative_to(path).as_posix(),
-                  'kind': 'observed', 'sha256': hashlib.sha256(data).hexdigest()}
-        if file.suffix in ('.css', '.html', '.md', '.txt'):
+                  'kind': 'observed', 'sha256': hashlib.sha256(data).hexdigest(), 'extension': suffix}
+        if suffix in SOURCE_SUFFIXES:
             text = data.decode('utf-8')
-            record['tokens'] = dict(re.findall(r'(--[\w-]+)\s*:\s*([^;{}]+);', text))
-            record['antiPatterns'] = {key: len(re.findall(pattern, text, re.I)) for key, pattern in RULES.items()}
+            if suffix == '.css':
+                clean = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+                record['tokens'] = dict(re.findall(r'(--[\w-]+)\s*:\s*([^;{}]+);', clean))
+                record['antiPatterns'] = {key: len(re.findall(pattern, clean, re.I)) for key, pattern in RULES.items()}
+                record['hasFocusVisible'] = ':focus-visible' in clean
+                record['hasReducedMotion'] = 'prefers-reduced-motion' in clean
+            elif suffix in ('.ts', '.tsx'):
+                record['components'] = sorted(set(re.findall(
+                    r'(?:function|class|const)\s+([A-Z][A-Za-z0-9_]*)', text)))
+                record['elements'] = {tag: len(re.findall(r'<\s*' + tag + r'(?=[\s/>])', text, re.I))
+                                      for tag in ('button', 'a', 'input', 'select', 'textarea', 'form', 'h1', 'h2', 'h3')}
+                record['ariaAttributes'] = len(re.findall(r'\baria-[\w-]+\s*=', text))
+                record['inlineStyleAttributes'] = len(re.findall(r'\bstyle\s*=', text))
+            else:
+                record['elements'] = {tag: len(re.findall(r'<\s*' + tag + r'(?=[\s/>])', text, re.I))
+                                      for tag in ('button', 'a', 'input', 'form', 'h1', 'h2', 'h3')}
         else:
             record['note'] = 'Binary reference registered; visual interpretation must be supplied as inferred prose.'
         records.append(record)
     return records
+
+def analyze_inputs(source, brief, spec):
+    """Measure a repository and preserve a brief as an input, without inference or mutation."""
+    source = Path(source)
+    brief = Path(brief)
+    if not source.exists() or not brief.is_file():
+        raise ValueError('source and brief must exist')
+    brief_text = brief.read_text(encoding='utf-8').strip()
+    if not brief_text or len(brief_text) > 20000:
+        raise ValueError('brief must contain 1 to 20000 characters')
+    records = inspect_source(source)
+    if not records:
+        raise ValueError('source contains no supported CSS, HTML, TS or TSX files')
+
+    tokens = {}
+    css_parts = []
+    recommendations = []
+    for record in records:
+        if record.get('extension') == '.css':
+            css_path = source / record['source'] if source.is_dir() else source
+            css_parts.append(css_path.read_text(encoding='utf-8'))
+            for name, value in record.get('tokens', {}).items():
+                tokens.setdefault(name, []).append({'value': value.strip(), 'source': record['source']})
+            for rule, count in record.get('antiPatterns', {}).items():
+                if count:
+                    recommendations.append({'id': 'review-' + rule, 'finding': rule, 'count': count,
+                        'sources': [record['source']], 'guidance': 'Review the measured occurrences against the design brief; the compiler does not rewrite source CSS.'})
+            if not record.get('hasFocusVisible'):
+                recommendations.append({'id': 'add-visible-focus-' + record['source'], 'finding': 'missing-visible-focus',
+                    'count': 1, 'sources': [record['source']], 'guidance': 'Add a visible :focus-visible treatment and verify it against the focus token.'})
+            if not record.get('hasReducedMotion'):
+                recommendations.append({'id': 'add-reduced-motion-' + record['source'], 'finding': 'missing-reduced-motion-policy',
+                    'count': 1, 'sources': [record['source']], 'guidance': 'Add a prefers-reduced-motion policy for nonessential motion.'})
+
+    brief_bytes = brief.read_bytes()
+    spec_bytes = canonical(spec).encode('utf-8')
+    analysis = {
+        'schemaVersion': 'nougendesigns-analysis/v1',
+        'mode': 'deterministic-review-draft',
+        'inputs': {
+            'source': source.name if source.is_dir() else source.name,
+            'sourceDigest': hashlib.sha256(canonical(records).encode('utf-8')).hexdigest(),
+            'brief': brief.name,
+            'briefDigest': hashlib.sha256(brief_bytes).hexdigest(),
+            'profile': spec.get('name', 'unnamed'),
+            'profileDigest': hashlib.sha256(spec_bytes).hexdigest(),
+        },
+        'summary': {
+            'sourceFiles': len(records),
+            'cssFiles': sum(record.get('extension') == '.css' for record in records),
+            'componentFiles': sum(record.get('extension') in ('.ts', '.tsx') for record in records),
+            'tokenNames': len(tokens),
+            'antiPatternOccurrences': {rule: sum(record.get('antiPatterns', {}).get(rule, 0) for record in records)
+                                       for rule in RULES},
+        },
+        'brief': brief_text,
+        'tokenCandidates': {name: sorted(values, key=lambda item: (item['source'], item['value']))
+                            for name, values in sorted(tokens.items())},
+        'sourceEvidence': records,
+        'reviewGuidance': recommendations,
+        'limitations': [
+            'The brief is preserved verbatim; it is not interpreted or used to invent design decisions.',
+            'CSS and component evidence is static and deterministic; screenshots are only hashed, never visually interpreted.',
+            'No source files are changed. Review the draft and guidance before adopting them.',
+        ],
+    }
+    css = '\n'.join(css_parts)
+    report = lint(spec, css)
+    files = render(spec)
+    brief_quote = '\n'.join('> ' + line for line in brief_text.splitlines())
+    guidance = '\n'.join(f"- `{item['finding']}` ({item['count']}; {', '.join(item['sources'])}): {item['guidance']}"
+                         for item in recommendations) or '- No static review guidance was triggered.'
+    files['DESIGN.md'] += (
+        '\n\n## Repository analysis draft\n\n'
+        'This section combines the reviewed profile above with measured source evidence. '
+        'The brief is preserved verbatim; no visual intent is inferred by this deterministic pass.\n\n'
+        '### Design brief (verbatim)\n\n' + brief_quote + '\n\n'
+        '### Measured source\n\n'
+        f"- Files: {analysis['summary']['sourceFiles']} ({analysis['summary']['cssFiles']} CSS; "
+        f"{analysis['summary']['componentFiles']} TS/TSX).\n"
+        f"- Distinct CSS custom-property names: {analysis['summary']['tokenNames']}.\n"
+        f"- Source digest: `{analysis['inputs']['sourceDigest']}`.\n\n"
+        '### Review before adoption\n\n' + guidance + '\n'
+    )
+    mutations = list(spec.get('componentMutations', []))
+    mutations.extend({'selector': '*', 'change': f"Review measured {item['finding']} in {', '.join(item['sources'])}: {item['guidance']}"}
+                     for item in recommendations)
+    files['mutations.json'] = canonical(mutations)
+    manifest = json.loads(files['manifest.json'])
+    manifest['analysisInputs'] = {key: analysis['inputs'][key] for key in ('sourceDigest', 'briefDigest', 'profileDigest')}
+    files['manifest.json'] = canonical(manifest)
+    files['analysis.json'] = canonical(analysis)
+    files['lint.json'] = canonical(report)
+    return files, report, analysis
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -146,10 +258,28 @@ def main():
         else:
             p.add_argument('--css', type=Path)
     p = sub.add_parser('inspect'); p.add_argument('source', type=Path)
+    p = sub.add_parser('analyze', help='build a deterministic review draft from source, brief and a reviewed profile')
+    p.add_argument('source', type=Path); p.add_argument('brief', type=Path)
+    p.add_argument('spec', type=Path); p.add_argument('output', type=Path)
     p = sub.add_parser('diff'); p.add_argument('before', type=Path); p.add_argument('after', type=Path)
     args = parser.parse_args()
     if args.command == 'inspect':
         print(canonical(inspect_source(args.source))); return 0
+    if args.command == 'analyze':
+        spec = json.loads(args.spec.read_text(encoding='utf-8'))
+        files, report, analysis = analyze_inputs(args.source, args.brief, spec)
+        output = args.output.resolve()
+        source = args.source.resolve()
+        protected_inputs = {source, args.brief.resolve(), args.spec.resolve()}
+        if ((args.source.is_dir() and (output == source or source in output.parents))
+                or any((output / name).resolve() in protected_inputs for name in files)):
+            raise ValueError('output must be outside the source tree')
+        args.output.mkdir(parents=True, exist_ok=True)
+        for name, body in files.items():
+            (args.output / name).write_text(body, encoding='utf-8', newline='\n')
+        print(canonical({'passed': report['passed'], 'sourceFiles': analysis['summary']['sourceFiles'],
+                         'artifacts': sorted(files), 'lintErrors': report['errors']}))
+        return int(not report['passed'])
     if args.command == 'diff':
         a, b = [json.loads(p.read_text()) for p in (args.before, args.after)]
         print(canonical({k: {'before': a.get(k), 'after': b.get(k)} for k in sorted(a.keys() | b.keys()) if a.get(k) != b.get(k)})); return 0
