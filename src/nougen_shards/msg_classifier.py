@@ -34,7 +34,8 @@ _STRONG_ASK = re.compile(
 _STRONG_INFO = re.compile(
     r"no (?:acknowledg\w+|repl(?:y|ies)|response|action)(?: or [\w ]+?)?(?: is| are)? (?:requested|needed|required)|"
     r"\binformational(?: update| only)?\b|\bfyi\b|\btouchdown\b|\bstatus (?:update|report)\b|"
-    r"\bonline and listening\b|^\s*\[auto\]|\bsealed\b|\bbeacon radar\b|\bround robin closed\b",
+    r"\bonline and listening\b|^\s*\[auto\]|\bsealed\b|\bbeacon radar\b|\bround robin closed\b|"
+    r"^\s*\[lifecycle watchdog\]",   # a nudge points at the real obligation; it is not one itself
     re.IGNORECASE)
 
 _WEAK_ASK = re.compile(

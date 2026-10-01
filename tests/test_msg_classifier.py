@@ -80,3 +80,18 @@ def test_classification_is_deterministic_and_reports_a_reason():
     a = classify("Please review the PR")
     b = classify("Please review the PR")
     assert a == b and a.reason
+
+
+def test_a_watchdog_nudge_is_a_pointer_not_a_new_obligation():
+    """The nudge says 'run take-msg <id>'. Acking it must not create its own obligation, or an
+    un-taken nudge would be nudged again, and that one nudged again, without end. The obligation
+    is the ORIGINAL message the nudge points at."""
+    from nougen_shards.lifecycle_watchdog import wake_text
+    nudge = wake_text({"message_id": "abc", "age_s": 660})
+    c = classify(nudge)
+    assert c.actionable is False and "marker" in c.reason
+
+
+def test_a_real_ask_quoted_inside_a_nudge_wrapper_still_wins():
+    c = classify("[LIFECYCLE WATCHDOG] message abc is stale. Please review PR 12 before you take it.")
+    assert c.actionable is True
