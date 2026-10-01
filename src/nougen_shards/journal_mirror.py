@@ -240,7 +240,7 @@ CREATE TRIGGER IF NOT EXISTS shards_ad AFTER DELETE ON shards BEGIN
     VALUES ('delete', old.id, old.title, old.content);
 END;
 
-CREATE TRIGGER IF NOT EXISTS shards_au AFTER UPDATE ON shards BEGIN
+CREATE TRIGGER IF NOT EXISTS shards_au AFTER UPDATE OF title, content ON shards BEGIN
     INSERT INTO shards_fts(shards_fts, rowid, title, content)
     VALUES ('delete', old.id, old.title, old.content);
     INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);

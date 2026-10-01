@@ -558,6 +558,13 @@ def init_db(index: int = 1):  # noqa: C901
         # the delete/update triggers, edited or removed shards leave stale rows that
         # keep matching searches. External-content FTS5 needs the special 'delete'
         # command rows to retract a row before re-indexing it.
+        #
+        # The update trigger is scoped to the two columns the index covers. Unscoped,
+        # it re-tokenized a row's full text on EVERY update, so decay_utility_scores
+        # (an UPDATE of utility_score on every row of all nine databases) became ~270k
+        # FTS delete+insert pairs and `dream wake` outran its 900s stage timeout.
+        # The DROP/CREATE here runs on first open in each process, so existing
+        # databases pick up the narrower trigger without a separate migration.
         cursor.execute("DROP TRIGGER IF EXISTS shards_ai")
         cursor.execute("DROP TRIGGER IF EXISTS shards_ad")
         cursor.execute("DROP TRIGGER IF EXISTS shards_au")
@@ -573,7 +580,7 @@ def init_db(index: int = 1):  # noqa: C901
             END;
         """)
         cursor.execute("""
-            CREATE TRIGGER shards_au AFTER UPDATE ON shards BEGIN
+            CREATE TRIGGER shards_au AFTER UPDATE OF title, content ON shards BEGIN
                 INSERT INTO shards_fts(shards_fts, rowid, title, content)
                 VALUES ('delete', old.id, old.title, old.content);
                 INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
@@ -3022,6 +3029,11 @@ def decay_utility_scores(factor: float = 0.95):
         try:
             if not get_db_path(i).exists():
                 continue
+            # get_connection() does not run init_db(), so without this a database
+            # still carrying the old unscoped shards_au trigger stays on it and
+            # this UPDATE re-indexes every row (the 10/1 dream-wake timeout).
+            # init_db() is idempotent and guarded per process.
+            init_db(i)
             conn = get_connection(i)
             conn.execute("UPDATE shards SET utility_score = utility_score * ?", (factor,))
             conn.commit()
