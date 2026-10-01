@@ -1179,17 +1179,19 @@ def arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False) -> str:
 
 
 @mcp.tool()
-def arxiv_paper(action: str, ref: str, pattern: Optional[str] = None) -> str:
+def arxiv_paper(action: str, ref: str, pattern: Optional[str] = None,
+                max_chars: Optional[int] = None) -> str:
     """
     Single-paper arXiv deep recall: metadata lookup, LaTeX fulltext caching, or paper body claim search.
 
     Args:
-        action: 'lookup' (API metadata), 'fulltext' (cache LaTeX source), or 'claim' (search body).
+        action: 'lookup' (API metadata), 'fulltext' (cache LaTeX source and return bounded text), or 'claim' (search body).
         ref: arXiv identifier (e.g. '2609.34785', 'arXiv:2609.34785v2', or abs URL).
         pattern: Regex pattern to search in paper body (required when action is 'claim').
+        max_chars: Cap on returned fulltext characters (default and ceiling 24000; floor 1000).
     """
     from .arxiv_radar import run_arxiv_paper
-    res = run_arxiv_paper(action=action, ref=ref, pattern=pattern)
+    res = run_arxiv_paper(action=action, ref=ref, pattern=pattern, max_chars=max_chars)
     return json.dumps(res, default=str, indent=2)
 
 

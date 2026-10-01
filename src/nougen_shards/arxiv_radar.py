@@ -13,6 +13,7 @@ Degrades gracefully when radar tools or network feeds are unavailable.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import inspect
 import io
@@ -266,7 +267,11 @@ def run_arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False) -> Dict[
         }
 
 
-def run_arxiv_paper(action: str, ref: str, pattern: Optional[str] = None) -> Dict[str, Any]:
+MAX_FULLTEXT_CHARS = int(os.environ.get("NOUGEN_ARXIV_MCP_MAX_FULLTEXT_CHARS", "24000"))
+
+
+def run_arxiv_paper(action: str, ref: str, pattern: Optional[str] = None,
+                    max_chars: Optional[int] = None) -> Dict[str, Any]:
     """Inspect an arXiv paper: lookup metadata, cache LaTeX fulltext, or search body claims."""
     tools = get_radar_tools()
     if not tools or not tools.get("paper"):
@@ -283,6 +288,9 @@ def run_arxiv_paper(action: str, ref: str, pattern: Optional[str] = None) -> Dic
             return {"status": "success", "available": True, "action": action, "paper_id": aid, "metadata": data}
         elif action == "fulltext":
             p = paper.fulltext(aid)
+            text = p.read_text(encoding="utf-8")
+            cap = MAX_FULLTEXT_CHARS if max_chars is None else max(1000, min(int(max_chars), MAX_FULLTEXT_CHARS))
+            clipped = text[:cap]
             return {
                 "status": "success",
                 "available": True,
@@ -290,6 +298,11 @@ def run_arxiv_paper(action: str, ref: str, pattern: Optional[str] = None) -> Dic
                 "paper_id": aid,
                 "cached_path": str(p),
                 "bytes": p.stat().st_size,
+                "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "chars_total": len(text),
+                "chars_returned": len(clipped),
+                "truncated": len(clipped) < len(text),
+                "text": clipped,
             }
         elif action == "claim":
             if not pattern:
