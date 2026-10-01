@@ -3446,6 +3446,26 @@ def morph_gate(ref: str, claims: List[str]) -> dict:
 
 @node_mcp.tool()
 @_offloaded
+def formal_verify_lean(code: str, allow_sorry: bool = False, timeout_seconds: float = 30.0) -> dict:
+    """Verify a Lean 4 formal mathematical proof against the Lean kernel with zero-placeholder enforcement."""
+    from nougen_shards.formal_prover import engine
+    from dataclasses import asdict
+    res = engine.verify_lean4_code(code=code, timeout_seconds=timeout_seconds, allow_sorry=allow_sorry)
+    return asdict(res)
+
+
+@node_mcp.tool()
+@_offloaded
+def formal_solve_smt(declarations: List[List[str]], assertions: List[str],
+                     query: Optional[str] = None, timeout_ms: int = 5000) -> dict:
+    """Solve SMT constraints or prove mathematical invariants using the native Z3 SMT solver."""
+    from nougen_shards.formal_prover import engine
+    typed_decls = [(d[0], d[1]) for d in declarations if len(d) >= 2]
+    return engine.solve_smt_constraint(declarations=typed_decls, assertions=assertions, query=query, timeout_ms=timeout_ms)
+
+
+@node_mcp.tool()
+@_offloaded
 def evidence_assure(claim: str, source: str = "runtime", level: str = "measured") -> dict:
     """Validate and label empirical claim through Iris evidence assurance standards."""
     from nougen_shards import assurance

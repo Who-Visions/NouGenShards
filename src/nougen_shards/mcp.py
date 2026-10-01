@@ -1213,6 +1213,40 @@ def morph_gate(ref: str, claims: List[str]) -> str:
     return json.dumps(res, default=str, indent=2)
 
 
+@mcp.tool()
+def formal_verify_lean(code: str, allow_sorry: bool = False, timeout_seconds: float = 30.0) -> str:
+    """
+    Verify a Lean 4 formal mathematical proof against the Lean kernel. Enforces strict zero-placeholder ('no-sorry') standard by default.
+
+    Args:
+        code: Lean 4 code string containing theorem statements and proof tactics.
+        allow_sorry: If False (default), immediately rejects proofs containing unproven 'sorry' placeholders.
+        timeout_seconds: Compilation timeout in seconds.
+    """
+    from .formal_prover import engine
+    res = engine.verify_lean4_code(code=code, timeout_seconds=timeout_seconds, allow_sorry=allow_sorry)
+    from dataclasses import asdict
+    return json.dumps(asdict(res), default=str, indent=2)
+
+
+@mcp.tool()
+def formal_solve_smt(declarations: List[List[str]], assertions: List[str],
+                     query: Optional[str] = None, timeout_ms: int = 5000) -> str:
+    """
+    Solve SMT constraints or prove mathematical invariants using the native Z3 SMT solver.
+
+    Args:
+        declarations: List of [var_name, var_type] pairs, e.g. [['x', 'Int'], ['y', 'Int']]. Supported: Int, Real, Bool, BitVec.
+        assertions: List of Python/Z3-syntax formulas defining axioms or problem constraints.
+        query: Optional target theorem formula. If supplied, checks if the query holds under axioms by checking UNSAT of its negation.
+        timeout_ms: Solver timeout in milliseconds.
+    """
+    from .formal_prover import engine
+    typed_decls = [(d[0], d[1]) for d in declarations if len(d) >= 2]
+    res = engine.solve_smt_constraint(declarations=typed_decls, assertions=assertions, query=query, timeout_ms=timeout_ms)
+    return json.dumps(res, default=str, indent=2)
+
+
 
 def main():
 
