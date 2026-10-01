@@ -1,0 +1,42 @@
+{
+  "description": "Matte instrument surfaces for the NouGen fleet workbench.",
+  "dialect": "nougendesigns/v0",
+  "entry": {
+    "prose": "DESIGN.md",
+    "tokens": "tokens.css"
+  },
+  "name": "nougen-core",
+  "provenance": [
+    {
+      "kind": "observed",
+      "note": "Existing semantic token names and workbench selectors.",
+      "source": "ui/src/styles.css"
+    },
+    {
+      "kind": "invented",
+      "note": "Graphite and amber palette; local Ollama draft, Codex review.",
+      "source": "NouGenDesigns v0 relay brief"
+    },
+    {
+      "kind": "inferred",
+      "note": "Review prompted explicit validation, drift and binary reference acceptance tests.",
+      "source": "NouGenOpen/huggingface/Qwen2.5-Coder-3B-Instruct"
+    },
+    {
+      "kind": "observed",
+      "note": "Read DESIGN-POLICIES.md, STYLE.md, design-system.css and internal-tools.css. Morphed semantic tiers, reading measure, rem scale, explicit disclosure and accessible targets. Brand colors and arXiv-specific public metrics policy are excluded.",
+      "source": "https://github.com/arXiv/design-system/tree/53df82bb48548438e31a00261e958bf009f63d33/docs"
+    }
+  ],
+  "schemaVersion": "od-design-system-project/v1",
+  "sourceDigest": "5b22dd6b07fa74cfa7812aa56e520194bbf10c92668ea346b1d6994b84a58153",
+  "surfaces": {
+    "ground": "--bg",
+    "ink": "--text"
+  },
+  "themes": [
+    "dark",
+    "light"
+  ],
+  "version": "0.2.0"
+}

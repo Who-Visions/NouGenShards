@@ -1,0 +1,26 @@
+[
+  {
+    "change": "Opaque panel, fine divider, remove blur.",
+    "selector": ".fixed-header-zone"
+  },
+  {
+    "change": "Hide decorative neural background.",
+    "selector": ".neural-bg-canvas"
+  },
+  {
+    "change": "Visible amber keyboard outline.",
+    "selector": ":focus-visible"
+  },
+  {
+    "change": "Use reading-measure token and explicit native full-memory disclosure.",
+    "selector": ".shard-body"
+  },
+  {
+    "change": "Provide accessible search name.",
+    "selector": ".input-glow-wrap input"
+  },
+  {
+    "change": "Provide explicit keyboard-accessible Inspect action instead of a clickable article.",
+    "selector": ".shard-actions button"
+  }
+]

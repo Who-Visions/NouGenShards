@@ -518,6 +518,13 @@ export default function App() {
   const [selectedShard, setSelectedShard] = useState<Shard | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [clockEastern, setClockEastern] = useState<string>(getLiveEasternClock);
+  const memoryDialog = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const dialog = memoryDialog.current;
+    if (selectedShard && dialog && !dialog.open) dialog.showModal();
+    return () => { if (dialog?.open) dialog.close(); };
+  }, [selectedShard]);
 
   // Trigger token usage refresh whenever time period or machine scope changes
   const loadUsage = useCallback(async () => {
@@ -751,7 +758,7 @@ export default function App() {
   return (
     <div className="app-container">
       {/* Live Particle Backdrop */}
-      <NeuralCanvas />
+      {/* NouGenDesigns: decorative canvas motion is not part of the workbench. */}
 
       {/* Top Fixed Zone: Titlebar + Streamlined Header + Navigation */}
       <div className="fixed-header-zone">
@@ -896,6 +903,7 @@ export default function App() {
                 <div className="input-glow-wrap">
                   <span className="search-icon">🔍</span>
                   <input
+                    aria-label="Search memories"
                     value={query}
                     placeholder="Search your saved memories (e.g. fleet setup, gemma 4, hardware, notes)..."
                     onChange={(e) => setQuery(e.target.value)}
@@ -903,7 +911,7 @@ export default function App() {
                     autoFocus
                   />
                   {query && (
-                    <button className="clear-btn" onClick={() => setQuery('')}>
+                    <button className="clear-btn" aria-label="Clear search" onClick={() => setQuery('')}>
                       ✕
                     </button>
                   )}
@@ -972,7 +980,6 @@ export default function App() {
                   key={`${s._db_index}-${s.id}`}
                   style={{ animationDelay: `${idx * 0.05}s` }}
                   className={`shard-card card-lift ${selectedShard?.id === s.id ? 'selected' : ''}`}
-                  onClick={() => setSelectedShard(s)}
                 >
                   <div className="shard-head">
                     <div className="shard-title-wrap">
@@ -980,6 +987,9 @@ export default function App() {
                       <h3>{s.title}</h3>
                     </div>
                     <div className="shard-actions">
+                      <button className="copy-btn" onClick={() => setSelectedShard(s)}>
+                        Inspect
+                      </button>
                       <button
                         className={`copy-btn ${copiedId === s.id ? 'copied' : ''}`}
                         onClick={(e) => copyShardText(s, e)}
@@ -990,7 +1000,15 @@ export default function App() {
                     </div>
                   </div>
 
-                  <p className="shard-body">{s.content}</p>
+                  <p className="shard-body">
+                    {s.content.length > 600 ? `${s.content.replace(/\s+/g, ' ').slice(0, 360).trimEnd()}…` : s.content}
+                  </p>
+                  {s.content.length > 600 && (
+                    <details className="memory-disclosure">
+                      <summary>Read full memory ({s.content.length.toLocaleString()} characters)</summary>
+                      <p className="shard-body">{s.content}</p>
+                    </details>
+                  )}
 
                   <div className="shard-footer">
                     <div className="score-bars-wrap">
@@ -1394,14 +1412,13 @@ export default function App() {
 
         {/* Shard Detail Modal */}
         {selectedShard && (
-          <div className="modal-backdrop" onClick={() => setSelectedShard(null)}>
-            <div className="shard-modal pop-in" onClick={(e) => e.stopPropagation()}>
+            <dialog ref={memoryDialog} className="shard-modal pop-in" aria-labelledby="memory-dialog-title" onCancel={() => setSelectedShard(null)}>
               <div className="modal-header">
                 <div>
                   <span className="db-badge">DATABASE #{selectedShard._db_index ?? 9}</span>
-                  <h2>{selectedShard.title}</h2>
+                  <h2 id="memory-dialog-title">{selectedShard.title}</h2>
                 </div>
-                <button className="modal-close-btn" onClick={() => setSelectedShard(null)}>
+                <button className="modal-close-btn" aria-label="Close memory" onClick={() => setSelectedShard(null)}>
                   ✕
                 </button>
               </div>
@@ -1429,8 +1446,7 @@ export default function App() {
                   Close
                 </button>
               </div>
-            </div>
-          </div>
+            </dialog>
         )}
         </div>
       </main>
