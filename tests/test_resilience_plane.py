@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from nougen_shards.resilience_plane import (
+    CapabilityProbe,
     EvidenceSignal,
     PersistenceHooks,
     RecoveryCandidate,
@@ -15,6 +16,7 @@ from nougen_shards.resilience_plane import (
     hostile_action_verified,
     persist_resilience_record,
     resolve_live_evidence,
+    resolve_capability_graph,
     resolve_routes,
     route_delta,
     route_probes_from_status_payload,
@@ -280,6 +282,112 @@ def test_provider_resolution_is_per_run_and_failures_stay_unknown():
     _, stale_observation = resolve_live_evidence([StaleProvider()], now=NOW)
     assert stale_observation[0].state == RouteState.UNKNOWN
     assert stale_observation[0].provenance["stale_count"] == 1
+
+
+def test_capability_graph_discovers_each_run_and_missing_capability_is_unknown():
+    class DynamicProvider:
+        name = "replaceable-adapter"
+        active = True
+
+        def discover(self, now):
+            if not self.active:
+                return []
+            return [CapabilityProbe(
+                "arbitrary.capability", True, now.isoformat(), "probe-v1",
+                {"request_id": "current"}, 60,
+            )]
+
+    provider = DynamicProvider()
+    current = resolve_capability_graph([provider], now=NOW)
+    assert current.capabilities["arbitrary.capability"].state == RouteState.GREEN
+    assert current.capabilities["arbitrary.capability"].callable is True
+
+    provider.active = False
+    absent = resolve_capability_graph(
+        [provider], expected=("arbitrary.capability",), now=NOW + timedelta(seconds=1))
+    assertion = absent.capabilities["arbitrary.capability"]
+    assert assertion.state == RouteState.UNKNOWN
+    assert assertion.callable is False
+    assert assertion.freshness == "missing"
+
+
+def test_capability_dependencies_gate_callability_and_map_fault_domains():
+    graph = resolve_capability_graph([
+        type("Provider", (), {"name": "adapter", "discover": lambda self, now: [
+            CapabilityProbe("transport", False, now.isoformat(), "probe",
+                            {"check": "transport"}, 60, fault_domains=("network",)),
+            CapabilityProbe("search", True, now.isoformat(), "probe",
+                            {"check": "search"}, 60, requires=("transport",)),
+        ]})(),
+    ], protocol_version="2", now=NOW)
+    assert graph.capabilities["transport"].state == RouteState.RED
+    assert graph.capabilities["search"].state == RouteState.RED
+    assert graph.capabilities["search"].callable is False
+    assert graph.fault_domains["network"] == ("transport",)
+    assert graph.normalized_decision_payload()["protocol_version"] == "2"
+
+
+def test_capability_dependency_failures_propagate_transitively():
+    probes = [
+        CapabilityProbe("a.entry", True, NOW.isoformat(), "probe", {}, 60,
+                        requires=("b.middle",)),
+        CapabilityProbe("b.middle", True, NOW.isoformat(), "probe", {}, 60,
+                        requires=("z.transport",)),
+        CapabilityProbe("z.transport", False, NOW.isoformat(), "probe", {}, 60),
+    ]
+    provider = type("Provider", (), {
+        "name": "adapter", "discover": lambda self, now: probes,
+    })()
+
+    graph = resolve_capability_graph([provider], now=NOW)
+
+    assert graph.capabilities["z.transport"].state == RouteState.RED
+    assert graph.capabilities["b.middle"].state == RouteState.RED
+    assert graph.capabilities["a.entry"].state == RouteState.RED
+    assert graph.capabilities["a.entry"].callable is False
+
+
+def test_equivalent_runtime_graph_is_deterministic_across_adapter_names():
+    observation = CapabilityProbe(
+        "capability.alpha", True, NOW.isoformat(), "portable-probe",
+        {"request_id": "fixture-1"}, 60, requires=(), fault_domains=("domain-x",),
+    )
+
+    class Adapter:
+        def __init__(self, name):
+            self.name = name
+
+        def discover(self, now):
+            return [observation]
+
+    graph_a = resolve_capability_graph([Adapter("adapter-a")],
+                                       protocol_version="1", now=NOW)
+    graph_b = resolve_capability_graph([Adapter("adapter-b")],
+                                       protocol_version="1", now=NOW)
+    assert graph_a.normalized_decision_payload() == graph_b.normalized_decision_payload()
+    assert graph_a.decision_hash == graph_b.decision_hash
+
+
+def test_capability_graph_rejects_stale_and_conflicting_observations():
+    stale_probe = CapabilityProbe(
+        "stale.capability", True, (NOW - timedelta(seconds=61)).isoformat(),
+        "probe", {"fixture": "stale"}, 60,
+    )
+    conflict_a = CapabilityProbe(
+        "conflict.capability", True, NOW.isoformat(), "probe-a", {"fixture": "a"}, 60,
+    )
+    conflict_b = CapabilityProbe(
+        "conflict.capability", False, NOW.isoformat(), "probe-b", {"fixture": "b"}, 60,
+    )
+    provider = type("Provider", (), {
+        "name": "adapter", "discover": lambda self, now: [stale_probe, conflict_a, conflict_b],
+    })()
+    graph = resolve_capability_graph([provider], now=NOW)
+    assert graph.capabilities["stale.capability"].state == RouteState.UNKNOWN
+    assert graph.capabilities["stale.capability"].freshness == "stale"
+    assert graph.capabilities["conflict.capability"].state == RouteState.UNKNOWN
+    assert graph.capabilities["conflict.capability"].provenance[
+        "resolution"] == "conflicting fresh provider observations"
 
 
 def test_persistence_hooks_are_explicit_isolated_and_tracker_stays_separate():

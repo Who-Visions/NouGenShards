@@ -581,6 +581,237 @@ class ProviderObservation:
     freshness: str
 
 
+@dataclass(frozen=True)
+class CapabilityProbe:
+    """One provider's current observation about one declared capability."""
+
+    capability_id: str
+    available: Optional[bool]
+    observed_at: Optional[str]
+    source: str
+    provenance: Mapping[str, Any]
+    ttl_s: float
+    requires: tuple[str, ...] = ()
+    fault_domains: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CapabilityAssertion:
+    capability_id: str
+    state: str
+    callable: bool
+    requires: tuple[str, ...]
+    observed_at: Optional[str]
+    source: str
+    provenance: Mapping[str, Any]
+    freshness: str
+    age_s: Optional[float]
+    ttl_s: float
+    fault_domains: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class CapabilityGraphSnapshot:
+    """Transient per-sweep decision view; it is not a persisted capability registry."""
+    protocol_version: str
+    observed_at: str
+    capabilities: Mapping[str, CapabilityAssertion]
+    providers: tuple[ProviderObservation, ...]
+    expected: tuple[str, ...]
+    fault_domains: Mapping[str, tuple[str, ...]]
+
+    def normalized_decision_payload(self) -> dict[str, Any]:
+        """Portable state-machine input with host/provider metadata removed."""
+        return {
+            "protocol_version": self.protocol_version,
+            "capabilities": [
+                {
+                    "capability_id": capability_id,
+                    "state": assertion.state,
+                    "callable": assertion.callable,
+                    "requires": list(assertion.requires),
+                    "fault_domains": list(assertion.fault_domains),
+                }
+                for capability_id, assertion in sorted(self.capabilities.items())
+            ],
+        }
+
+    @property
+    def decision_hash(self) -> str:
+        return _digest(self.normalized_decision_payload())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **self.normalized_decision_payload(),
+            "observed_at": self.observed_at,
+            "expected": list(self.expected),
+            "providers": [asdict(provider) for provider in self.providers],
+            "fault_domains": {key: list(value)
+                              for key, value in sorted(self.fault_domains.items())},
+            "evidence": {key: assertion.to_dict()
+                         for key, assertion in sorted(self.capabilities.items())},
+        }
+
+
+class CapabilityProvider(Protocol):
+    name: str
+
+    def discover(self, now: datetime) -> Sequence[CapabilityProbe]: ...
+
+
+def resolve_capability_graph(providers: Iterable[CapabilityProvider], *,
+                             expected: Sequence[str] = (),
+                             protocol_version: str = "1",
+                             now: Optional[datetime] = None) -> CapabilityGraphSnapshot:
+    """Discover capabilities on each run and derive a deterministic usable graph.
+
+    Provider identity is retained only in the evidence envelope. State decisions
+    use normalized capability ids, current observations, TTL, and declared
+    dependencies; expected topology is supplied by the caller.
+    """
+    checked = _now(now)
+    probes: dict[str, list[CapabilityProbe]] = {}
+    observations: list[ProviderObservation] = []
+    for provider in sorted(providers, key=lambda item: str(item.name)):
+        try:
+            current = list(provider.discover(checked))
+        except Exception as exc:
+            observations.append(ProviderObservation(
+                provider=str(provider.name), state=RouteState.UNKNOWN,
+                observed_at=checked.isoformat(),
+                provenance={"resolution_error": type(exc).__name__}, freshness="fresh",
+            ))
+            continue
+        provider_fresh = any(
+            probe.available is True
+            and _freshness(probe.observed_at, probe.ttl_s, checked)[0] == "fresh"
+            for probe in current
+        )
+        observations.append(ProviderObservation(
+            provider=str(provider.name),
+            state=RouteState.GREEN if provider_fresh else RouteState.UNKNOWN,
+            observed_at=checked.isoformat(),
+            provenance={"capability_count": len(current)}, freshness="fresh",
+        ))
+        for probe in current:
+            if probe.capability_id:
+                probes.setdefault(probe.capability_id, []).append(probe)
+
+    expected_set = set(filter(None, expected)) | set(probes)
+    for candidates in probes.values():
+        for probe in candidates:
+            expected_set.update(filter(None, probe.requires))
+    expected_ids = tuple(sorted(expected_set))
+    assertions: dict[str, CapabilityAssertion] = {}
+    direct_states: dict[str, RouteState] = {}
+    for capability_id in expected_ids:
+        candidates = probes.get(capability_id, [])
+        if not candidates:
+            assertions[capability_id] = CapabilityAssertion(
+                capability_id, RouteState.UNKNOWN, False, (), None,
+                "current-sweep", {"observation": "missing"}, "missing", None, 0.0,
+            )
+            direct_states[capability_id] = RouteState.UNKNOWN
+            continue
+
+        classified = [(probe, *_freshness(probe.observed_at, probe.ttl_s, checked))
+                      for probe in candidates]
+        fresh = [(probe, age) for probe, freshness, age, _ in classified
+                 if freshness == "fresh"]
+        if not fresh:
+            probe, freshness, age, _ = max(
+                classified,
+                key=lambda item: (_parse_time(item[0].observed_at)
+                                  or datetime.min.replace(tzinfo=timezone.utc),
+                                  item[0].source),
+            )
+            assertions[capability_id] = CapabilityAssertion(
+                capability_id, RouteState.UNKNOWN, False,
+                tuple(sorted(set(probe.requires))), probe.observed_at,
+                probe.source, dict(probe.provenance), freshness, age, probe.ttl_s,
+                tuple(sorted(set(probe.fault_domains))),
+            )
+            direct_states[capability_id] = RouteState.UNKNOWN
+            continue
+
+        availability = {probe.available for probe, _ in fresh}
+        requirements = {tuple(sorted(set(probe.requires))) for probe, _ in fresh}
+        if len(availability) != 1 or len(requirements) != 1:
+            state = RouteState.UNKNOWN
+            reason = "conflicting fresh provider observations"
+            required = tuple(sorted(set().union(*(set(item) for item in requirements))))
+        else:
+            available = next(iter(availability))
+            state = (RouteState.GREEN if available is True else
+                     RouteState.RED if available is False else RouteState.UNKNOWN)
+            reason = "current provider observations agree"
+            required = next(iter(requirements))
+        latest_probe, _ = max(
+            fresh,
+            key=lambda item: (_parse_time(item[0].observed_at)
+                              or datetime.min.replace(tzinfo=timezone.utc),
+                              item[0].source),
+        )
+        evidence = sorted(({
+            "source": probe.source, "observed_at": probe.observed_at,
+            "provenance": dict(probe.provenance), "freshness": "fresh",
+        } for probe, _ in fresh), key=_canonical_json)
+        assertions[capability_id] = CapabilityAssertion(
+            capability_id, state, state == RouteState.GREEN, required,
+            latest_probe.observed_at, latest_probe.source,
+            {"resolution": reason, "observations": evidence}, "fresh",
+            max(age for _, age in fresh if age is not None),
+            min(probe.ttl_s for probe, _ in fresh),
+            tuple(sorted({domain for probe, _ in fresh
+                          for domain in probe.fault_domains})),
+        )
+        direct_states[capability_id] = state
+
+    # Propagate dependency state through the graph. A single pass would miss
+    # transitive failures when a dependent appears earlier in sorted order.
+    resolved_states = dict(direct_states)
+    for _ in range(len(expected_ids) + 1):
+        changed = False
+        for capability_id in expected_ids:
+            if direct_states[capability_id] != RouteState.GREEN:
+                continue
+            dependencies = [resolved_states.get(required, RouteState.UNKNOWN)
+                            for required in assertions[capability_id].requires]
+            if any(state == RouteState.RED for state in dependencies):
+                state = RouteState.RED
+            elif any(state != RouteState.GREEN for state in dependencies):
+                state = RouteState.UNKNOWN
+            else:
+                state = RouteState.GREEN
+            if resolved_states[capability_id] != state:
+                resolved_states[capability_id] = state
+                changed = True
+        if not changed:
+            break
+
+    for capability_id, assertion in assertions.items():
+        state = resolved_states[capability_id]
+        assertions[capability_id] = CapabilityAssertion(
+            **{**assertion.to_dict(), "state": state,
+               "callable": state == RouteState.GREEN}
+        )
+
+    domains: dict[str, list[str]] = {}
+    for capability_id, assertion in assertions.items():
+        for domain in assertion.fault_domains:
+            domains.setdefault(domain, []).append(capability_id)
+    return CapabilityGraphSnapshot(
+        protocol_version=protocol_version, observed_at=checked.isoformat(),
+        capabilities=assertions,
+        providers=tuple(sorted(observations, key=lambda item: item.provider)),
+        expected=expected_ids,
+        fault_domains={key: tuple(sorted(values)) for key, values in sorted(domains.items())},
+    )
+
+
 def resolve_live_evidence(providers: Iterable[EvidenceProvider], *,
                           now: Optional[datetime] = None
                           ) -> tuple[list[EvidenceSignal], list[ProviderObservation]]:
