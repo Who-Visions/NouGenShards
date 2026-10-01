@@ -198,6 +198,10 @@ def fetch(repo: Path) -> str:
     already equals the upstream ref."""
     if os.environ.get("NOUGEN_RELAY_LIVE_FETCH", "1") == "0":
         return "skipped"
+    # Do not fetch while a merge is in progress (or Git metadata is unreadable):
+    # retries cannot safely update this checkout and must not disturb operator work.
+    if _merge_in_progress(repo):
+        return "skipped(merge-in-progress; preserving checkout)"
     timeout = _env_float("NOUGEN_RELAY_LIVE_GIT_TIMEOUT_S", 40)
     retries = max(0, int(_env_float("NOUGEN_RELAY_LIVE_FETCH_RETRIES", 1)))
     try:
@@ -220,10 +224,79 @@ def fetch(repo: Path) -> str:
         # merge when upstream has something HEAD does not already contain
         if _git(repo, "merge-base", "--is-ancestor", "@{u}", "HEAD", timeout=timeout).returncode == 0:
             return "ok(unchanged,ahead)"
-        m = _git(repo, "merge", "--ff-only", "--quiet", "@{u}", timeout=timeout)
-        return "ok(updated)" if m.returncode == 0 else f"git merge rc={m.returncode}: {(m.stderr or m.stdout).strip()[:160]}"
+        if _git(repo, "merge-base", "--is-ancestor", "HEAD", "@{u}", timeout=timeout).returncode == 0:
+            m = _git(repo, "merge", "--ff-only", "--quiet", upstream, timeout=timeout)
+            return "ok(updated)" if m.returncode == 0 else f"git merge rc={m.returncode}: {(m.stderr or m.stdout).strip()[:160]}"
+        return _merge_divergent_handoffs(repo, upstream, timeout)
     except (OSError, subprocess.SubprocessError) as exc:
         return f"git error {type(exc).__name__}"
+
+
+def _merge_divergent_handoffs(repo: Path, upstream: str, timeout: float) -> str:
+    """Merge publisher-only handoff additions without disturbing local work.
+
+    Local completion legs can make this checkout diverge from origin/main.
+    Permit unattended reconciliation only for cleanly mergeable additions under
+    .handoffs/; code changes, dirty tracked state, conflicts, and uncertainty
+    are deferred without mutating the checkout.
+    """
+    for args in (("diff", "--quiet"), ("diff", "--cached", "--quiet")):
+        if _git(repo, *args, timeout=timeout).returncode != 0:
+            return "skipped(diverged,tracked-worktree-dirty)"
+
+    base = _git(repo, "merge-base", "HEAD", upstream, timeout=timeout)
+    if base.returncode != 0 or not base.stdout.strip():
+        return "skipped(diverged,merge-base-unknown)"
+    incoming = _git(repo, "diff", "--name-status", "-z", base.stdout.strip(), upstream,
+                    timeout=timeout)
+    if incoming.returncode != 0:
+        return "skipped(diverged,incoming-diff-unknown)"
+    fields = incoming.stdout.split("\0")
+    if fields and not fields[-1]:
+        fields.pop()
+    if not fields or len(fields) % 2:
+        return "skipped(diverged,no-additive-handoff-diff)"
+    incoming_paths = []
+    for index in range(0, len(fields), 2):
+        status, path = fields[index:index + 2]
+        if status != "A" or not path.replace("\\", "/").startswith(".handoffs/"):
+            return "skipped(diverged,non-additive-handoff-change)"
+        incoming_paths.append(path.replace("\\", "/"))
+
+    untracked = _git(repo, "ls-files", "--others", "--exclude-standard", "-z", timeout=timeout)
+    if untracked.returncode != 0:
+        return "skipped(diverged,untracked-state-unknown)"
+    untracked_paths = {p.replace("\\", "/") for p in untracked.stdout.split("\0") if p}
+    if untracked_paths.intersection(incoming_paths):
+        return "skipped(diverged,untracked-path-collision)"
+
+    preview = _git(repo, "merge-tree", "--write-tree", "HEAD", upstream, timeout=timeout)
+    if preview.returncode != 0:
+        return "skipped(diverged,merge-conflict-or-preview-unavailable)"
+    merged = _git(repo, "merge", "--no-ff", "--no-edit", "--quiet", upstream, timeout=timeout)
+    if merged.returncode == 0:
+        return "ok(updated,merged-additive-handoffs)"
+    if _merge_in_progress(repo):
+        _git(repo, "merge", "--abort", timeout=timeout)
+    return "skipped(diverged,merge-raced-or-failed)"
+
+
+def _merge_in_progress(repo: Path) -> bool:
+    """Check Git merge state without starting a child process."""
+    git_entry = repo / ".git"
+    git_dir = git_entry
+    try:
+        if git_entry.is_file():
+            marker = git_entry.read_text(encoding="utf-8", errors="replace").strip()
+            if marker.lower().startswith("gitdir:"):
+                git_dir = Path(marker.split(":", 1)[1].strip())
+                if not git_dir.is_absolute():
+                    git_dir = (repo / git_dir).resolve()
+        return (git_dir / "MERGE_HEAD").exists()
+    except OSError:
+        # Unknown merge state is treated as busy; fetching is safe, but merging
+        # without knowing the index/worktree state is not.
+        return True
 
 
 def registry_branch(repo: Path) -> str:
@@ -475,14 +548,25 @@ def run_daemon(*, dry: bool, quiet: bool) -> None:
     interval, last_active = active, time.time()
     while True:
         new_count = 0
+        fetch_failed = False
         try:
-            new_count = int(one_pass(dry=dry, quiet=quiet).get("new", 0))
+            result = one_pass(dry=dry, quiet=quiet)
+            new_count = int(result.get("new", 0))
+            fetch_status = str(result.get("fetch", ""))
+            fetch_failed = fetch_status.startswith(("git fetch rc=", "git merge rc=", "git error"))
         except Exception as exc:  # pylint: disable=broad-except
             print(json.dumps({"error": f"{type(exc).__name__}: {exc}"[:300]}), flush=True)
+            fetch_failed = True
         now = time.time()
         if new_count:
             last_active = now
-        interval = next_interval(interval, new_count, now, last_active, active=active, window=window, idle_max=idle_max)
+        if fetch_failed:
+            # A failing Git/SSH pass cannot deliver fresh remote state. Back
+            # off immediately instead of repeating credential, console, or
+            # merge failures at the active message cadence.
+            interval = min(max(interval * 2, active), idle_max)
+        else:
+            interval = next_interval(interval, new_count, now, last_active, active=active, window=window, idle_max=idle_max)
         if wait(interval, wake, slice_s) == "wake":
             last_active = time.time()
             interval = active

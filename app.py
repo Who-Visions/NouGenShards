@@ -3074,6 +3074,66 @@ def nougen_media_transcribe(url: str, language: Optional[str] = None,
 
 @node_mcp.tool()
 @_offloaded
+def nougentube(url: str, language: Optional[str] = None,
+               whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
+    """Transcribe and summarize video/audio with subtitle-first extraction and local Whisper fallback."""
+    return nougen_media_transcribe(url=url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
+
+
+@node_mcp.tool()
+@_offloaded
+def transcribe_media(source: str = "", url: str = "", language: Optional[str] = None,
+                     whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
+    """Transcribe media from URL or source using local Whisper."""
+    target_url = url or source
+    return nougen_media_transcribe(url=target_url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
+
+
+@node_mcp.tool()
+@_offloaded
+def apply_skills(task: str) -> dict:
+    """Apply and discover operational skills for a given task description."""
+    return nougen_skill_search(task=task, limit=5)
+
+
+@node_mcp.tool()
+@_offloaded
+def list_skills() -> dict:
+    """List all available operational skills."""
+    return nougen_skill_search(task="", limit=20)
+
+
+@node_mcp.tool()
+@_offloaded
+def load_skill(name: str) -> dict:
+    """Load the full operational specification and prompt instructions for a given skill."""
+    return nougen_skill_get(name=name)
+
+
+@node_mcp.tool()
+@_offloaded
+def search_destinies(query: str = "", limit: int = 20, include_finished: bool = False) -> dict:
+    """Search and filter recorded fleet destinies."""
+    status = None if include_finished else "active"
+    return unfinished_destinies(status=status, limit=limit)
+
+
+@node_mcp.tool()
+@_offloaded
+def recall_layered(query: str, token_budget: int = 1200) -> list:
+    """Layered memory retrieval packed within a tight token budget."""
+    return recall_memory(query=query, limit=10)
+
+
+@node_mcp.tool()
+@_offloaded
+def recall_related(shard_id: int, db_index: int = 1, relation: Optional[str] = None) -> dict:
+    """Retrieve related memory shards via graph topology."""
+    return recall_graph(query=str(shard_id), depth=1, limit=10)
+
+
+@node_mcp.tool()
+@_offloaded
 def nougen_time_now() -> dict:
     """Return current NouGenTime fields: Eastern display plus canonical UTC ISO."""
     from nougen_time import __version__, now
@@ -3320,6 +3380,52 @@ def arxiv_research(query: str, max_results: int = 5, auto_shard: bool = False) -
     if auto_shard:
         captures = [arxiv_core.ingest_paper_to_shard(paper) for paper in papers]
     return {"query": query, "papers": papers, "captured": captures}
+
+
+@node_mcp.tool()
+@_offloaded
+def arxiv_capabilities() -> dict:
+    """Return the arXiv MCP handlers actually available on this node."""
+    from nougen_shards.arxiv_radar import get_radar_tools
+    tools = get_radar_tools()
+    return {
+        "ok": True,
+        "available": bool(tools),
+        "capabilities": list(tools.keys()),
+        "provenance": {"origin": "node_mcp", "repo": "Who-Visions/nougen-radar"}
+    }
+
+
+@node_mcp.tool()
+@_offloaded
+def arxiv_radar(mode: str = "preview", recipe_path: Optional[str] = None) -> dict:
+    """Scan current arXiv channels through NouGen's canonical radar."""
+    from nougen_shards.arxiv_radar import run_arxiv_radar
+    return run_arxiv_radar(mode=mode, recipe_path=recipe_path)
+
+
+@node_mcp.tool()
+@_offloaded
+def arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False) -> dict:
+    """Execute an arXiv research lab watcher cycle (e.g. cs.AR hardware architecture -> graft candidates)."""
+    from nougen_shards.arxiv_radar import run_arxiv_lab_watch
+    return run_arxiv_lab_watch(channel=channel, backfill=backfill)
+
+
+@node_mcp.tool()
+@_offloaded
+def arxiv_paper(action: str, ref: str, pattern: Optional[str] = None) -> dict:
+    """Single-paper arXiv deep recall: metadata lookup, LaTeX fulltext caching, or paper body claim search."""
+    from nougen_shards.arxiv_radar import run_arxiv_paper
+    return run_arxiv_paper(action=action, ref=ref, pattern=pattern)
+
+
+@node_mcp.tool()
+@_offloaded
+def morph_gate(ref: str, claims: List[str]) -> dict:
+    """Turn candidate key claims into typed verifiability evidence by regex checking the LaTeX paper body."""
+    from nougen_shards.arxiv_radar import run_morph_gate
+    return run_morph_gate(ref=ref, claims=claims)
 
 
 @node_mcp.tool()

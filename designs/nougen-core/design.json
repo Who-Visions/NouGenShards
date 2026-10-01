@@ -1,0 +1,181 @@
+{
+  "dialect": "nougendesigns/v0",
+  "name": "nougen-core",
+  "version": "0.5.0",
+  "description": "Matte instrument surfaces for the NouGen fleet workbench.",
+  "referenceWorld": "Precision instrument, editorial technical publishing, broadcast control room and premium creative software.",
+  "antiPatterns": "Reject decorative gradients, glass, glow, giant pills, sparkles, waveform noise and generic SaaS card grids.",
+  "materiality": "Use opaque graphite surfaces, fine dividers and matte amber accents.",
+  "density": "Keep functional clusters compact; use whitespace to separate tasks, with readable 14px body text. Keep sustained reading near 65ch while metadata and tables use the workbench width. Summarize long records with an explicit full-content disclosure. Treat negative space as a functional separator: independent cards retain a cluster gap, while related label/value pairs remain visibly grouped. Reflow content before reducing separation.",
+  "motionGrammar": "Use short deliberate state transitions. Disable nonessential motion when reduced motion is requested.",
+  "interactionPhysics": "Inputs respond immediately; asynchronous work exposes progress, cancellation and recovery. Refer to shared objects by stable, scoped identity instead of row position or left/right language. Selection, inspection and handoff refer to the same record; local view changes do not silently imply a synchronized peer view.",
+  "informationHierarchy": "Prioritize active work and failures before secondary telemetry. Align numbers in monospace. Each region has one primary reading (machine identity, memory title or chart); badges and supporting telemetry remain subordinate. Shared boundaries are permitted only inside a single related task. Collaborative surfaces keep the task reference frame explicit: name the observed machine, vault scope and selected object before participant representation. Peer presence never substitutes for shared task-state evidence. Settle the page composition (regions, space budget, the primary reading of each region) before detailing components, so a late element does not have to take room an earlier one needs. Text stays live text on its own layer, never baked into an image.",
+  "responsiveBehavior": "Stack work regions at narrow widths; allow document scrolling and wrap toolbars. Use rem type and spacing. Full-width regions use their container width rather than 100vw. Long identifiers wrap without losing content. Choose columns from available container width. Fleet cards need 23rem when room permits and retain a 1.25rem gap; below an 18rem card content width, label/value rows stack with a 0.25rem gap. At 320px and split-pane widths, independently meaningful regions must not touch or overlap. Responsive reordering may change placement but must retain record identity, selected state and reference labels. A card moving across columns must not change which object a peer reference identifies.",
+  "accessibility": "Body text must meet 4.5:1 and focus/status indicators 3:1. Preserve labels and keyboard access. Measured default text on ground: 15.92:1; muted on panel: 8.24:1; focus on ground: 10.10:1. These are declared token pairs, not a complete application audit. Inputs have explicit accessible names. Controls have a 24px minimum target and 44px touch target. Reflow at 320px and text-size growth are verification requirements.",
+  "brandVoice": "Use concrete verbs, technical accuracy and concise recovery instructions. Keep the same term for the same action. Errors state what happened and the recovery action; do not use metaphors in task-critical copy.",
+  "iconography": "Use consistent monochrome line icons; pair unfamiliar symbols with labels.",
+  "dataViz": "Use labelled axes and text status; color alone never conveys meaning. Preserve data-bearing bar lengths, baselines, scales and area encodings when applying visual metaphors. Decorative integration belongs outside measured geometry. Missing evidence is unavailable, not zero.",
+  "stateGrammar": "Specify default, hover, focus, selected, disabled, loading, empty, offline, success and error states. Full-memory disclosure uses native details and summary, with a visible character count and keyboard access. Memory counts state their vault coverage. Partition filters show configured partitions and distinguish returned-result counts from vault cardinality. Inspect separates the machine observing a vault from record-origin provenance; unresolved ancestry stays explicit. For collaborative inspection distinguish observer, record origin, owner and recipient. Mark independently filtered, stale, unavailable and unsynchronized views explicitly. Transport accepted, recipient acknowledged, work in progress and verified completion are distinct states.",
+  "provenance": "Token choices are invented from the relay brief. Existing selectors and token names are observed. Local Ollama draft reviewed by Codex; NouGenOpen reviewed acceptance criteria. Spatial composition adaptations draw on arXiv:2609.00476v1; dashboard gap thresholds are NouGen implementation choices verified in-browser, not empirical findings of that paper. Recursive design research uses the NouGenDesigns discover command. Citation depth, discovery parent and keyword matches identify candidates, not adopted rules. Read the full source, state applicability and limitations, then record inferred adaptations separately from observed metadata before compilation. arXiv:1910.03380v1 supplies a workspace-awareness analogy from two-person 3D telepresence. Stable vault/DB/record references and relay lifecycle distinctions are NouGen adaptations; the paper does not test fleet dashboards or establish faster task performance. arXiv:2507.05601v1 (Accordion) supplies the frame-first ordering and live-text rule; it is a generative layered-design pipeline evaluated on posters and thumbnails, and says nothing about dashboards. arXiv:2609.05364 (SMART) and arXiv:2508.12726 (DESIGNER) were read only as alphaXiv reports; design.json is the durable source and generated artifacts are regenerated and drift-checked, and reusable construction recipes are recorded as an untested candidate in designs/design-process-morph.md, not as a rule.",
+  "tokens": {
+    "--bg": "#141414",
+    "--bg-gradient": "var(--bg)",
+    "--panel": "#202020",
+    "--panel-solid": "#202020",
+    "--panel-2": "#282828",
+    "--panel-hover": "#333333",
+    "--line": "#777777",
+    "--line-glow": "#777777",
+    "--text": "#f2eee6",
+    "--muted": "#bdb8ad",
+    "--accent": "#e8b86d",
+    "--accent-rgb": "232, 184, 109",
+    "--accent-2": "#e8b86d",
+    "--accent-purple": "#c8bfad",
+    "--accent-green": "#a9c79b",
+    "--danger": "#ffb4ab",
+    "--warn": "#e8b86d",
+    "--focus": "#e8b86d",
+    "--radius-sm": "2px",
+    "--radius-md": "3px",
+    "--radius-lg": "4px",
+    "--font-main": "system-ui, sans-serif",
+    "--font-mono": "Consolas, monospace",
+    "--space-1": "0.25rem",
+    "--space-2": "0.5rem",
+    "--space-3": "0.75rem",
+    "--space-4": "1rem",
+    "--space-5": "1.5rem",
+    "--space-6": "2rem",
+    "--motion-fast": "120ms",
+    "--motion-ease": "ease-out",
+    "--control-ink": "#141414",
+    "--reading-measure": "65ch",
+    "--workbench-width": "87.5rem",
+    "--type-body": "1rem",
+    "--type-meta": "0.8125rem",
+    "--line-body": "1.65",
+    "--target-min": "1.5rem",
+    "--target-touch": "2.75rem",
+    "--cluster-gap": "1.25rem",
+    "--fleet-card-min": "23rem"
+  },
+  "themes": {
+    "dark": {},
+    "light": {
+      "--bg": "#f5f1e8",
+      "--panel": "#ffffff",
+      "--panel-solid": "#ffffff",
+      "--panel-2": "#eee9df",
+      "--panel-hover": "#e1dbce",
+      "--text": "#202020",
+      "--muted": "#555047",
+      "--accent": "#765013",
+      "--accent-2": "#765013",
+      "--focus": "#765013",
+      "--control-ink": "#ffffff",
+      "--danger": "#a62520",
+      "--line": "#76716a"
+    }
+  },
+  "evidence": [
+    {
+      "kind": "observed",
+      "source": "ui/src/styles.css",
+      "note": "Existing semantic token names and workbench selectors."
+    },
+    {
+      "kind": "invented",
+      "source": "NouGenDesigns v0 relay brief",
+      "note": "Graphite and amber palette; local Ollama draft, Codex review."
+    },
+    {
+      "kind": "inferred",
+      "source": "NouGenOpen/huggingface/Qwen2.5-Coder-3B-Instruct",
+      "note": "Review prompted explicit validation, drift and binary reference acceptance tests."
+    },
+    {
+      "kind": "observed",
+      "source": "https://github.com/arXiv/design-system/tree/53df82bb48548438e31a00261e958bf009f63d33/docs",
+      "note": "Read DESIGN-POLICIES.md, STYLE.md, design-system.css and internal-tools.css. Morphed semantic tiers, reading measure, rem scale, explicit disclosure and accessible targets. Brand colors and arXiv-specific public metrics policy are excluded."
+    },
+    {
+      "kind": "inferred",
+      "source": "https://arxiv.org/html/2609.00476v1",
+      "note": "Adapted DG1-DG3 and sections 5.3.2/6.3 into primary-task hierarchy, intentional region separation, editable geometry and data-fidelity rules. The study evaluates generated concept blends, not dashboard usability; spacing thresholds are invented NouGen choices."
+    },
+    {
+      "kind": "inferred",
+      "source": "https://arxiv.org/pdf/1910.03380v1",
+      "note": "Read evaluation, results, discussion and conclusions. Adapted consistent task reference frames to scoped object identity and explicit independent-view state. Study: 16 participants/eight pairs, four conditions; no significant completion-time or error differences. Negative Space denotes a shared virtual task volume, not a whitespace guideline."
+    },
+    {
+      "kind": "inferred",
+      "source": "https://arxiv.org/abs/2507.05601",
+      "note": "Read the extracted full text (abstract, introduction, related work, conclusions); method and results sections skimmed only. Adapted top-down, reference-first composition and live text layers. Paper reports SAM IoU 68.4% and a fixed 2,000 text styles; no dashboard evaluation."
+    },
+    {
+      "kind": "inferred",
+      "source": "https://arxiv.org/abs/2609.05364",
+      "note": "Read as an alphaXiv-generated report, not full text. Design docs as durable artifact with regenerable code, worked examples and reconciliation anchors. Already how NouGenDesigns operates (compile and check fail on drift); recorded, no new rule. Domain is ML performance modelling."
+    },
+    {
+      "kind": "inferred",
+      "source": "https://arxiv.org/abs/2508.12726",
+      "note": "Read as an alphaXiv-generated report, not full text. Reusable design logics retrieved and followed for question synthesis; evaluated on LLM reasoning data, not interface design. Candidate only."
+    }
+  ],
+  "contrastPairs": [
+    {
+      "ink": "--text",
+      "ground": "--bg"
+    },
+    {
+      "ink": "--muted",
+      "ground": "--panel"
+    },
+    {
+      "ink": "--control-ink",
+      "ground": "--accent"
+    },
+    {
+      "ink": "--focus",
+      "ground": "--bg",
+      "role": "ui"
+    }
+  ],
+  "componentMutations": [
+    {
+      "selector": ".fixed-header-zone",
+      "change": "Opaque panel, fine divider, remove blur."
+    },
+    {
+      "selector": ".neural-bg-canvas",
+      "change": "Hide decorative neural background."
+    },
+    {
+      "selector": ":focus-visible",
+      "change": "Visible amber keyboard outline."
+    },
+    {
+      "selector": ".shard-body",
+      "change": "Use reading-measure token and explicit native full-memory disclosure."
+    },
+    {
+      "selector": ".input-glow-wrap input",
+      "change": "Provide accessible search name."
+    },
+    {
+      "selector": ".shard-actions button",
+      "change": "Provide explicit keyboard-accessible Inspect action instead of a clickable article."
+    },
+    {
+      "selector": ".fleet-node-grid",
+      "change": "Use container-fitting columns with fleet-card-min and cluster-gap tokens; never force three columns into a narrow pane."
+    },
+    {
+      "selector": ".hw-row, .role-item",
+      "change": "Preserve label/value grouping; stack inside cards below 18rem and wrap long values."
+    }
+  ]
+}

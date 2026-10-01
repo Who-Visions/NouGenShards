@@ -293,3 +293,25 @@ def speak_policy(outcome: str, *, novelty: float, operator_relevance: float,
             return SpeakDecision("INTERRUPT", score, "urgent and well evidenced")
         return SpeakDecision("HOLD", score, "operator speaking")
     return SpeakDecision("SPEAK", score, "salient")
+
+
+def identity_for(agent: str, confidence: float = 1.0, relevance: float = 1.0) -> dict:
+    """Versioned identity snapshot consumed by NouGenVoice PersonaIdentity.
+
+    Shards owns the archetype and the confidence gate; the consumer only validates
+    that source_id == f"{CONFIG_VERSION}:{persona_name}:{archetype}".
+    """
+    for name, v in (("confidence", confidence), ("relevance", relevance)):
+        if not (isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= v <= 1.0):
+            raise ValueError(f"{name} must be a number from 0 to 1")
+    binding = agents().get(agent)
+    if binding is None:
+        raise KeyError(f"no voice binding for agent {agent!r}")
+    archetype = gated_archetype(binding["archetype"], confidence, relevance)
+    if ":" in agent or ":" in archetype:
+        raise ValueError("agent and archetype must not contain ':' (source_id separator)")
+    return {
+        "persona_name": agent,
+        "archetype": archetype,
+        "source_id": f"{CONFIG_VERSION}:{agent}:{archetype}",
+    }

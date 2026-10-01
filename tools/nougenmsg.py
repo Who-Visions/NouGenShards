@@ -72,6 +72,7 @@ Inspection & Discovery:
   agy msg --peers                             List discovered local pipes and reachable nodes
   agy msg --inbox [--target <antigravity|codex>] Read recent unread messages in inbox
   agy msg --clear-inbox                       Archive and clear read inbox messages
+  agy msg --wake [--timeout <seconds>]        Run autonomous wake sentry (monitors inbox & relay legs)
   agy msg --help                              Show this help menu
 """)
 
@@ -543,6 +544,60 @@ def main():
         archived = NouGenMsgBus.clear_inbox(target=target, confirmed=True)
         print(f"[OK] Archived {archived} message(s) from {target} inbox.")
         return
+
+    # Take Message / Durable Claim Lifecycle
+    if any(cmd in sys.argv for cmd in ("take-msg", "--take-msg", "claim-msg", "--claim-msg")):
+        idx = -1
+        for cmd in ("take-msg", "--take-msg", "claim-msg", "--claim-msg"):
+            if cmd in sys.argv:
+                idx = sys.argv.index(cmd)
+                break
+        if idx + 1 >= len(sys.argv):
+            print("[!] Error: take-msg requires <msg_id>")
+            return
+        target_msg_id = sys.argv[idx + 1]
+        lane = resolve_agent_label() or "blade-antigravity"
+        if "--lane" in sys.argv:
+            l_idx = sys.argv.index("--lane")
+            if l_idx + 1 < len(sys.argv):
+                lane = sys.argv[l_idx + 1]
+        lease_s = 300
+        if "--lease" in sys.argv:
+            ls_idx = sys.argv.index("--lease")
+            if ls_idx + 1 < len(sys.argv) and sys.argv[ls_idx + 1].isdigit():
+                lease_s = int(sys.argv[ls_idx + 1])
+        try:
+            from nougen_shards.claim_lifecycle import ClaimLifecycleManager
+            mgr = ClaimLifecycleManager()
+            claim = mgr.take_msg(target_msg_id, agent_lane=lane, lease_seconds=lease_s)
+            print(f"[OK] Task {target_msg_id} CLAIMED by {lane}. Fencing Epoch: {claim['fencing_epoch']}, Lease: {claim['lease_expires_at']:.1f}")
+        except Exception as e:
+            print(f"[!] Claim failed: {e}")
+        return
+
+    # Autonomous Wake Sentry
+    if any(cmd in sys.argv for cmd in ("--wake", "wake", "--watch", "watch")):
+        timeout_s = 3600
+        if "--timeout" in sys.argv:
+            idx = sys.argv.index("--timeout")
+            if idx + 1 < len(sys.argv) and sys.argv[idx + 1].isdigit():
+                timeout_s = int(sys.argv[idx + 1])
+        try:
+            import antigravity_wake_daemon
+            sys.exit(antigravity_wake_daemon.main(timeout_seconds=timeout_s))
+        except ImportError:
+            daemon_path = os.path.join(os.path.dirname(__file__), "antigravity_wake_daemon.py")
+            if os.path.exists(daemon_path):
+                import runpy
+                mod = runpy.run_path(daemon_path)
+                if "main" in mod:
+                    sys.exit(mod["main"](timeout_seconds=timeout_s))
+                sys.exit(0)
+            else:
+                print(f"[!] Error: antigravity_wake_daemon.py not found at {daemon_path}", file=sys.stderr)
+                sys.exit(1)
+
+
 
     # Parse arguments
     args = sys.argv[1:]

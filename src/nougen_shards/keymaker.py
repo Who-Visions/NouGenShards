@@ -176,6 +176,12 @@ def _protect(value: str, key: Optional[str] = None) -> str:
         import keyring  # pylint: disable=import-outside-toplevel
         ref = key or hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
         keyring.set_password(_KEYRING_SERVICE, ref, value)
+        # Headless reads never touch the Keychain (no popups); they only consult this
+        # cache. Without seeding it here, a secret ingested from a headless session was
+        # written to the Keychain and then unreadable to every headless session.
+        _load_keyring_cache()
+        _KEYRING_CACHE[ref] = value
+        _save_keyring_cache()
         return _KEYRING_PREFIX + ref
     except ImportError:
         if os.getenv("NOUGEN_ALLOW_PLAINTEXT_VAULT") == "1":
@@ -533,7 +539,8 @@ def _export_to_csv():
             writer.writerow(["id", "secret_key", "fingerprint_sha256_12", "encrypted", "last_rotated"])
             for row_id, key, stored, rotated in rows:
                 try:
-                    fp = _fingerprint(_unprotect(stored))
+                    plain = _unprotect(stored)
+                    fp = _fingerprint(plain) if plain is not None else "unreadable"
                 except OSError:
                     fp = "unreadable"
                 writer.writerow([row_id, key, fp, _is_encrypted(stored), rotated])

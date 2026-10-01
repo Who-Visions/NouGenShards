@@ -1,0 +1,67 @@
+{
+  "description": "Matte instrument surfaces for the NouGen fleet workbench.",
+  "dialect": "nougendesigns/v0",
+  "entry": {
+    "prose": "DESIGN.md",
+    "tokens": "tokens.css"
+  },
+  "name": "nougen-core",
+  "provenance": [
+    {
+      "kind": "observed",
+      "note": "Existing semantic token names and workbench selectors.",
+      "source": "ui/src/styles.css"
+    },
+    {
+      "kind": "invented",
+      "note": "Graphite and amber palette; local Ollama draft, Codex review.",
+      "source": "NouGenDesigns v0 relay brief"
+    },
+    {
+      "kind": "inferred",
+      "note": "Review prompted explicit validation, drift and binary reference acceptance tests.",
+      "source": "NouGenOpen/huggingface/Qwen2.5-Coder-3B-Instruct"
+    },
+    {
+      "kind": "observed",
+      "note": "Read DESIGN-POLICIES.md, STYLE.md, design-system.css and internal-tools.css. Morphed semantic tiers, reading measure, rem scale, explicit disclosure and accessible targets. Brand colors and arXiv-specific public metrics policy are excluded.",
+      "source": "https://github.com/arXiv/design-system/tree/53df82bb48548438e31a00261e958bf009f63d33/docs"
+    },
+    {
+      "kind": "inferred",
+      "note": "Adapted DG1-DG3 and sections 5.3.2/6.3 into primary-task hierarchy, intentional region separation, editable geometry and data-fidelity rules. The study evaluates generated concept blends, not dashboard usability; spacing thresholds are invented NouGen choices.",
+      "source": "https://arxiv.org/html/2609.00476v1"
+    },
+    {
+      "kind": "inferred",
+      "note": "Read evaluation, results, discussion and conclusions. Adapted consistent task reference frames to scoped object identity and explicit independent-view state. Study: 16 participants/eight pairs, four conditions; no significant completion-time or error differences. Negative Space denotes a shared virtual task volume, not a whitespace guideline.",
+      "source": "https://arxiv.org/pdf/1910.03380v1"
+    },
+    {
+      "kind": "inferred",
+      "note": "Read the extracted full text (abstract, introduction, related work, conclusions); method and results sections skimmed only. Adapted top-down, reference-first composition and live text layers. Paper reports SAM IoU 68.4% and a fixed 2,000 text styles; no dashboard evaluation.",
+      "source": "https://arxiv.org/abs/2507.05601"
+    },
+    {
+      "kind": "inferred",
+      "note": "Read as an alphaXiv-generated report, not full text. Design docs as durable artifact with regenerable code, worked examples and reconciliation anchors. Already how NouGenDesigns operates (compile and check fail on drift); recorded, no new rule. Domain is ML performance modelling.",
+      "source": "https://arxiv.org/abs/2609.05364"
+    },
+    {
+      "kind": "inferred",
+      "note": "Read as an alphaXiv-generated report, not full text. Reusable design logics retrieved and followed for question synthesis; evaluated on LLM reasoning data, not interface design. Candidate only.",
+      "source": "https://arxiv.org/abs/2508.12726"
+    }
+  ],
+  "schemaVersion": "od-design-system-project/v1",
+  "sourceDigest": "4dde1e13f84b173d5bb00b10ee980eb387e297ecb2296e0321fdfc7f8d2f5b86",
+  "surfaces": {
+    "ground": "--bg",
+    "ink": "--text"
+  },
+  "themes": [
+    "dark",
+    "light"
+  ],
+  "version": "0.5.0"
+}

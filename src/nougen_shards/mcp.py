@@ -803,7 +803,9 @@ def cf_deploy_worker(directory_path: str = "") -> str:
     from . import cloudflare
     try:
         cf = cloudflare.CloudflareClient()
-        target = Path(directory_path) if directory_path else Path.cwd()
+        target = Path(directory_path).resolve() if directory_path else Path.cwd()
+        if not target.exists() or not target.is_dir():
+            return json.dumps({"status": "error", "error": f"Invalid worker directory path: '{directory_path}' does not exist or is not a directory."})
         res = cf.auto_deploy(target)
         return json.dumps({
             "status": "success",
@@ -1132,6 +1134,78 @@ def relay_open(limit: int = 10) -> str:
         return json.dumps({"armed": relay_data.get("armed", False), "total_open": relay_data.get("count", 0), "legs": legs}, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
+
+
+# --- arXiv Research Radar & Lab Watcher (satellite: Who-Visions/nougen-radar) ---
+
+@mcp.tool()
+def arxiv_radar(channels: Optional[List[str]] = None, mode: str = "preview", limit: int = 5,
+                commit: bool = False, recipe_path: Optional[str] = None) -> str:
+    """
+    Run the arXiv research radar across core fleet pillars. Read-only unless commit=true.
+
+    Preserves 3-lane topology (beacon, review, shard), category priors, and dynamic taggers.
+    The default is a preview: fetch, score and route the feed and return the lanes, writing nothing.
+
+    Args:
+        channels: arXiv channels such as "cs" or "cs.AR" (1-5; default ["cs"]).
+        mode: 'preview' (read-only), or 'sweep' / 'reconcile' (hourly delta / daily settlement).
+        limit: Papers shown per lane in a preview (1-50).
+        commit: Only with mode 'sweep' or 'reconcile': run the full pipeline (queues, cursor,
+            digest, shard ingest). Without it every mode is a read-only preview. The server
+            operator must also set NOUGEN_ARXIV_MCP_ALLOW_MUTATION=1, or commit is refused.
+        recipe_path: Optional route-v1.json inside the radar directory; preview only.
+    """
+    from .arxiv_radar import run_arxiv_radar
+    res = run_arxiv_radar(channels=channels, mode=mode, limit=limit, commit=commit, recipe_path=recipe_path)
+    return json.dumps(res, default=str, indent=2)
+
+
+@mcp.tool()
+def arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False) -> str:
+    """
+    Execute an arXiv research lab watcher cycle (e.g. cs.AR hardware architecture -> graft candidates).
+
+    Screens submissions deterministically into graft candidates. Novelty remains unjudged;
+    nothing is auto-sharded without explicit elevation.
+
+    Args:
+        channel: arXiv channel to screen (default: cs.AR).
+        backfill: If true, seed from recent archive and arXiv API.
+    """
+    from .arxiv_radar import run_arxiv_lab_watch
+    res = run_arxiv_lab_watch(channel=channel, backfill=backfill)
+    return json.dumps(res, default=str, indent=2)
+
+
+@mcp.tool()
+def arxiv_paper(action: str, ref: str, pattern: Optional[str] = None) -> str:
+    """
+    Single-paper arXiv deep recall: metadata lookup, LaTeX fulltext caching, or paper body claim search.
+
+    Args:
+        action: 'lookup' (API metadata), 'fulltext' (cache LaTeX source), or 'claim' (search body).
+        ref: arXiv identifier (e.g. '2609.34785', 'arXiv:2609.34785v2', or abs URL).
+        pattern: Regex pattern to search in paper body (required when action is 'claim').
+    """
+    from .arxiv_radar import run_arxiv_paper
+    res = run_arxiv_paper(action=action, ref=ref, pattern=pattern)
+    return json.dumps(res, default=str, indent=2)
+
+
+@mcp.tool()
+def morph_gate(ref: str, claims: List[str]) -> str:
+    """
+    Turn candidate key claims into typed verifiability evidence by regex checking the LaTeX paper body.
+
+    Args:
+        ref: arXiv identifier (e.g. '2609.34785').
+        claims: List of anchored claim regexes to check in the body.
+    """
+    from .arxiv_radar import run_morph_gate
+    res = run_morph_gate(ref=ref, claims=claims)
+    return json.dumps(res, default=str, indent=2)
+
 
 
 def main():

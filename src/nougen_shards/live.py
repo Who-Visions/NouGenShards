@@ -346,25 +346,47 @@ class LiveControlPlane:
         return sessions
 
     def pending_nougenmsgs(self, limit: int = 10) -> Dict[str, Any]:
-        """Read retained Codex messages without acknowledging or deleting them."""
-        inbox = Path(os.environ.get(
-            "NOUGEN_CODEX_INBOX", str(Path.home() / ".codex" / "inbox")))
-        files = sorted(inbox.glob("ping_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        """Read retained agent messages across Codex, Antigravity, and Claude inboxes."""
+        inboxes = [
+            ("codex", Path(os.environ.get("NOUGEN_CODEX_INBOX", str(Path.home() / ".codex" / "inbox")))),
+            ("antigravity", Path.home() / ".gemini" / "config" / "inbox"),
+            ("antigravity", Path.home() / ".nougen" / "agy_inbox"),
+            ("claude", Path(os.environ.get("NOUGEN_CLAUDE_INBOX", str(Path.home() / ".nougen" / "claude_inbox")))),
+        ]
+        all_files = []
+        for target, inbox_dir in inboxes:
+            if inbox_dir.exists():
+                for p in inbox_dir.glob("ping_*.json"):
+                    all_files.append((target, p))
+
+        # Sort newest first by mtime
+        all_files.sort(key=lambda item: item[1].stat().st_mtime, reverse=True)
         messages = []
-        for path in files[:limit]:
+        seen = set()
+        total_retained = 0
+
+        for target, path in all_files:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
-                messages.append({"file": path.name, "source": "unknown", "text": "[unreadable retained message]"})
                 continue
-            messages.append({
-                "file": path.name,
-                "message_id": data.get("message_id"),
-                "source": data.get("source") or data.get("origin", {}).get("original_sender") or "unknown",
-                "timestamp": data.get("timestamp"),
-                "text": str(data.get("text") or "")[:1000],
-            })
-        return {"retained": len(files), "shown": len(messages), "messages": messages,
+            msg_id = data.get("message_id")
+            dedup_key = msg_id or f"{path.name}:{path.stat().st_mtime}"
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+            total_retained += 1
+            if len(messages) < limit:
+                messages.append({
+                    "file": path.name,
+                    "target_inbox": target,
+                    "message_id": msg_id,
+                    "source": data.get("source") or data.get("origin", {}).get("original_sender") or "unknown",
+                    "timestamp": data.get("timestamp"),
+                    "text": str(data.get("text") or "")[:1000],
+                })
+
+        return {"retained": total_retained, "shown": len(messages), "messages": messages,
                 "acknowledged": False}
 
     def pending_relays(self, limit: int = 10) -> Dict[str, Any]:
@@ -401,9 +423,16 @@ class LiveControlPlane:
         for item in msgs["messages"]:
             body = " ".join(item["text"].split())
             ident = item.get("message_id") or f"legacy:{item['file']}"
-            lines.append(f"  • {ident} [{item['source']}] {body}")
+            target_badge = f" [@{item['target_inbox']}]" if item.get("target_inbox") else ""
+            lines.append(f"  • {ident}{target_badge} [{item['source']}] {body}")
         if msgs["retained"] > msgs["shown"]:
             lines.append(f"  … {msgs['retained'] - msgs['shown']} more retained (nougen live inbox)")
+        from . import codex_pipe  # pylint: disable=import-outside-toplevel
+        executing = codex_pipe.pending_execution()
+        if executing:
+            lines.append(f"⏳ ACKED BUT NOT FINISHED — {len(executing)} actionable message(s) awaiting execution")
+            for item in executing[:limit]:
+                lines.append(f"  • {item['message_id']} [{item['state']}] since {item['since']}")
         lines.extend([
             "🔁 NOUGEN RELAYS — open batons, not claimed or acknowledged",
             f"  {relays['open']} open retained; showing {relays['shown']}",
@@ -647,6 +676,37 @@ class LiveControlPlane:
 NouGenLive = LiveControlPlane
 
 
+def _int_flag(args: List[str], name: str, default: int) -> int:
+    """Value of `--name N` in args, or the default. Raises ValueError naming the flag if N is not a number."""
+    if name not in args:
+        return default
+    index = args.index(name)
+    try:
+        return int(args[index + 1])
+    except (IndexError, ValueError):
+        raise ValueError(f"{name} needs a whole number of seconds") from None
+
+
+def _lifecycle_sweep_command(subcmd: str, args: List[str]) -> str:
+    """`sweep-msg` runs the lifecycle watchdog once; `watch-msg` repeats it every --every seconds."""
+    from . import lifecycle_watchdog as watchdog  # pylint: disable=import-outside-toplevel
+    try:
+        options = {
+            "dispatch_grace_s": _int_flag(args, "--grace", watchdog.DEFAULT_DISPATCH_GRACE_S),
+            "no_progress_s": _int_flag(args, "--stall", watchdog.DEFAULT_NO_PROGRESS_S),
+            "dry_run": "--dry-run" in args,
+            "wake": watchdog.default_wake if "--wake" in args else None,
+        }
+        if subcmd == "sweep-msg":
+            return json.dumps(watchdog.sweep(**options), indent=2)
+        every = _int_flag(args, "--every", 60)
+        runs = _int_flag(args, "--runs", 0) or None
+    except ValueError as exc:
+        return json.dumps({"status": "usage_error", "error": str(exc)}, indent=2)
+    reports = watchdog.run_loop(every_s=every, iterations=runs, **options)
+    return json.dumps({"sweeps": len(reports), "last": reports[-1] if reports else None}, indent=2)
+
+
 def handle_live_command(args: List[str]) -> str:
     """Canonical dispatcher for /live slash command and CLI invocations."""
     control = LiveControlPlane()
@@ -666,11 +726,52 @@ def handle_live_command(args: List[str]) -> str:
         return json.dumps(control.sessions(), indent=2)
     elif subcmd == "inbox":
         return control.render_pending_inline()
+    elif subcmd == "claim-msg" and len(args) >= 2:
+        from . import codex_pipe  # pylint: disable=import-outside-toplevel
+        return json.dumps(codex_pipe.take(
+            args[1], consumer=codex_pipe.current_consumer(),
+            thread=os.environ.get("CODEX_THREAD_ID") or None), indent=2)
     elif subcmd == "ack-msg" and len(args) >= 2:
         from . import codex_pipe  # pylint: disable=import-outside-toplevel
+        if len(args) > 2:
+            return json.dumps({"status": "invalid_args", "acknowledged": False,
+                               "error": "ack-msg records receipt only; use take-msg to claim work."}, indent=2)
         return json.dumps(codex_pipe.acknowledge(
-            args[1], consumer=os.environ.get("NOUGEN_AGENT", "codex"),
+            args[1], consumer=codex_pipe.current_consumer(),
             thread=os.environ.get("CODEX_THREAD_ID") or None), indent=2)
+    elif subcmd == "take-msg" and len(args) >= 2:
+        from . import codex_pipe  # pylint: disable=import-outside-toplevel
+        return json.dumps(codex_pipe.take(
+            args[1], consumer=codex_pipe.current_consumer(),
+            thread=os.environ.get("CODEX_THREAD_ID") or None), indent=2)
+    elif subcmd == "advance-msg" and len(args) >= 3:
+        from . import codex_pipe  # pylint: disable=import-outside-toplevel
+        evidence_parts = []
+        fencing_epoch = None
+        i = 3
+        while i < len(args):
+            if args[i] in ("--epoch", "--fencing-epoch") and i + 1 < len(args):
+                try:
+                    fencing_epoch = int(args[i + 1])
+                except ValueError:
+                    return json.dumps({"status": "invalid_args", "advanced": False,
+                                       "error": "--epoch must be an integer returned by take-msg."}, indent=2)
+                i += 2
+            else:
+                evidence_parts.append(args[i])
+                i += 1
+        return json.dumps(codex_pipe.advance(
+            args[1], args[2], " ".join(evidence_parts),
+            consumer=codex_pipe.current_consumer(), fencing_epoch=fencing_epoch), indent=2)
+    elif subcmd == "pending-msg":
+        from . import codex_pipe  # pylint: disable=import-outside-toplevel
+        return json.dumps(codex_pipe.pending_execution(), indent=2)
+    elif subcmd in ("sweep-msg", "watch-msg"):
+        return _lifecycle_sweep_command(subcmd, args[1:])
+    elif subcmd in ("requeue-msg", "cancel-msg") and len(args) >= 2:
+        from . import codex_pipe  # pylint: disable=import-outside-toplevel
+        op = codex_pipe.requeue if subcmd == "requeue-msg" else codex_pipe.cancel
+        return json.dumps(op(args[1], " ".join(args[2:]) or subcmd.split("-")[0]), indent=2)
     elif subcmd == "ssh":
         return json.dumps(control.ssh(), indent=2)
     elif subcmd == "relays":
@@ -709,7 +810,11 @@ def handle_live_command(args: List[str]) -> str:
     else:
         return (
             f"Unknown /live subcommand: {subcmd}.\n"
-            "Available: activate, overview, snapshot, nodes, sessions, ports, ssh, relays, watch, tracker, matrix, send, broadcast, reply, "
+            "Available: activate, overview, snapshot, nodes, sessions, ports, inbox, ack-msg <id> (receipt only), "
+            "take-msg <id> (claim execution), advance-msg <id> <state> --epoch <fencing token> <verified evidence>, pending-msg, "
+            "claim-msg <id> (alias for take-msg), sweep-msg [--dry-run] [--wake] [--grace S] [--stall S] "
+            "(watchdog: reclaim expired/stalled claims, wake unclaimed), watch-msg [--every S] [--runs N], "
+            "requeue-msg <id> <reason>, cancel-msg <id> <reason>, ssh, relays, watch, tracker, matrix, send, broadcast, reply, "
             "declare <node> offline|sleeping|online [note]"
         )
 
