@@ -2424,3 +2424,8 @@ summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
   .tab { flex-shrink: 0; }
   .statusbar { flex-wrap: wrap; gap: 12px; height: auto; }
 }
+
+.memory-evidence { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: var(--space-3); margin-block: var(--space-4); overflow-wrap: anywhere; }
+.memory-evidence dt { color: var(--muted); }
+.memory-evidence dd { margin: 0; }
+@media (max-width: 760px) { .memory-evidence { grid-template-columns: minmax(0, 1fr); } }

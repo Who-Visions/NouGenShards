@@ -442,12 +442,6 @@ export default function App() {
     [status]
   );
 
-  const hitPartitions = useMemo(() => {
-    const seen = new Set<number>();
-    for (const r of results) if (typeof r._db_index === 'number') seen.add(r._db_index);
-    return [...seen].sort((a, b) => a - b);
-  }, [results]);
-
   const visibleResults = useMemo(
     () => (partition === ALL_PARTITIONS ? results : results.filter((r) => r._db_index === partition)),
     [results, partition]
@@ -551,7 +545,7 @@ export default function App() {
             </span>
             <span className="badge live-status glow-teal">
               <span className={`dot ${status ? 'ok' : 'warn'}`} />
-              <strong>{status ? totalShards.toLocaleString() : 'Unavailable'}</strong> memories
+              <strong>{status ? totalShards.toLocaleString() : 'Unavailable'}</strong> local memories
             </span>
             <div className="node-indicator glow-indigo" title="Current Active Machine">
               <span className="pulse-beacon" />
@@ -636,7 +630,7 @@ export default function App() {
               </div>
             </div>
 
-            {results.length > 0 && (
+            {partitionIndices.length > 0 && (
               <div className="filter-row">
                 <div className="partition-chips">
                   <button
@@ -645,19 +639,19 @@ export default function App() {
                   >
                     All Databases ({results.length})
                   </button>
-                  {hitPartitions.map((idx) => (
+                  {partitionIndices.map((idx) => (
                     <button
                       key={idx}
                       className={partition === idx ? 'chip active' : 'chip'}
                       onClick={() => setPartition(idx)}
                     >
-                      Database #{idx}
+                      Database #{idx} ({results.filter(r => r._db_index === idx).length} returned)
                       {idx === activeDb ? ' ⭐' : ''}
                     </button>
                   ))}
                 </div>
                 <span className="result-count">
-                  Showing <strong>{visibleResults.length}</strong> of {results.length} memories
+                  Showing <strong>{visibleResults.length}</strong> of {results.length} returned memories
                 </span>
               </div>
             )}
@@ -1126,10 +1120,17 @@ export default function App() {
               <div className="modal-body">
                 <div className="modal-meta-bar">
                   <span>Memory ID: <strong>#{selectedShard.id}</strong></span>
-                  <span>Match Rating: <strong>{selectedShard.final_score == null ? 'Not scored' : `${Math.round(selectedShard.final_score * 100)}%`}</strong></span>
+                  <span>Search relevance: <strong>{selectedShard.final_score == null ? 'Not scored' : `${Math.round(selectedShard.final_score * 100)}%`}</strong></span>
                   {selectedShard.timestamp && <span>Saved: <strong>{formatEasternTime(selectedShard.timestamp)}</strong></span>}
                 </div>
 
+                <dl className="memory-evidence">
+                  <dt>Vault observed on</dt><dd>{identity?.hostname ?? 'Unavailable'}</dd>
+                  <dt>Vault path</dt><dd>{identity?.vault_path ?? 'Unavailable'}</dd>
+                  <dt>Record length</dt><dd>{selectedShard.content.length.toLocaleString()} characters</dd>
+                  <dt>Origin machine / agent / session</dt><dd>Not resolved from structured provenance</dd>
+                  <dt>Related shards / relay ancestry / correction</dt><dd>Not resolved</dd>
+                </dl>
                 <div className="modal-content-box">
                   <pre>{selectedShard.content}</pre>
                 </div>

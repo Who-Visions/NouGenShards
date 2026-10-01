@@ -57,7 +57,7 @@ Use labelled axes and text status; color alone never conveys meaning. Preserve d
 
 ## stateGrammar
 
-Specify default, hover, focus, selected, disabled, loading, empty, offline, success and error states. Full-memory disclosure uses native details and summary, with a visible character count and keyboard access.
+Specify default, hover, focus, selected, disabled, loading, empty, offline, success and error states. Full-memory disclosure uses native details and summary, with a visible character count and keyboard access. Memory counts state their vault coverage. Partition filters show configured partitions and distinguish returned-result counts from vault cardinality. Inspect separates the machine observing a vault from record-origin provenance; unresolved ancestry stays explicit.
 
 ## provenance
 
