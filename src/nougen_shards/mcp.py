@@ -1095,18 +1095,31 @@ def search_shards(query: str, limit: int = 5, context_budget: int = 0) -> str:
         if context_budget:
             from .context_packet import graph_context_packet
             from . import core
+            from . import graph
+
+            def with_dependencies(item):
+                item = dict(item)
+                item['_db_index'] = item.get('_db_index', item.get('__db_index__', 0))
+                if item.get('source_node', 'local') == 'local' and item['_db_index']:
+                    deps = graph.dependency_shards(int(item['id']), int(item['_db_index']))
+                    refs = [{"id": d['id'], "_db_index": d.get('_db_index', d.get('__db_index__', item['_db_index'])),
+                             "source_node": "local", "unresolved": d.get('unresolved', False)} for d in deps]
+                    item['dependencies'] = item.get('dependencies', []) + refs
+                return item
+
+            results = [with_dependencies(item) for item in results]
 
             def load_dependency(ref):
                 # Remote dependencies require an explicit federation resolver;
                 # never silently substitute a same-numbered local shard.
-                if ref.get('source_node', 'local') != 'local':
+                if ref.get('source_node', 'local') != 'local' or ref.get('unresolved'):
                     return None
                 item = core.get_shard_by_id(int(ref['id']), int(ref['_db_index']))
                 if item:
                     item = dict(item)
                     item['_db_index'] = ref['_db_index']
                     item['source_node'] = 'local'
-                return item
+                return with_dependencies(item) if item else None
 
             packet = graph_context_packet(query, results[:limit], results[limit:],
                                           token_budget=context_budget, max_results=limit,

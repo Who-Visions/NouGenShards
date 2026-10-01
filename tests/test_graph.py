@@ -39,6 +39,28 @@ def test_link_and_count():
     assert graph.edge_count() == 1
 
 
+def test_dependency_shards_only_follows_outgoing_required_edges():
+    (a, adb), (b, bdb), (c, cdb) = _make_three()
+    graph.link_shards(a, b, "depends_on", adb, bdb)
+    graph.link_shards(c, a, "depends_on", cdb, adb)
+    graph.link_shards(a, c, "relates", adb, cdb)
+    dependencies = graph.dependency_shards(a, adb)
+    assert [d['title'] for d in dependencies] == ['auth source']
+
+
+def test_dependency_shards_preserves_dangling_reference():
+    (a, adb), _, _ = _make_three()
+    graph.init_graph_db()
+    conn = graph.get_graph_connection()
+    try:
+        conn.execute("INSERT INTO shard_edges (src_hash, dst_hash, relation, created_at) VALUES (?, ?, ?, ?)",
+                     (graph._hash_for(a, adb), 'missing-hash', 'depends_on', '2026-10-01T00:00:00Z'))
+        conn.commit()
+    finally:
+        conn.close()
+    assert graph.dependency_shards(a, adb)[0]['unresolved'] is True
+
+
 def test_link_is_idempotent():
     (a, adb), (b, bdb), _ = _make_three()
     assert graph.link_shards(a, b, "touches", adb, bdb) is True

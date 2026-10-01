@@ -85,7 +85,8 @@ def test_database_qualified_dependency_identity_prevents_numeric_collision():
 
 
 def test_registered_search_resolves_local_dependency_from_durable_store(monkeypatch):
-    from nougen_shards import mcp, federation, core
+    from nougen_shards import mcp, federation, core, graph
+    monkeypatch.setattr(graph, 'dependency_shards', lambda *args: [])
     monkeypatch.setattr(federation, 'federated_retrieve',
                         lambda *args, **kwargs: [shard(1, 'alpha', _db_index=2,
                                                        dependencies=[{'id': 9}])])
@@ -99,3 +100,25 @@ def test_registered_search_resolves_local_dependency_from_durable_store(monkeypa
     packet = json.loads(mcp.search_shards('alpha', context_budget=1000))
     assert calls == [(9, 2)]
     assert [x['id'] for x in packet['content_payload']] == ['local:2:9', 'local:2:1']
+
+
+def test_registered_search_follows_native_outgoing_dependency_edges(monkeypatch):
+    from nougen_shards import mcp, federation, core, graph
+    monkeypatch.setattr(federation, 'federated_retrieve',
+                        lambda *args, **kwargs: [shard(1, 'alpha', __db_index__=2)])
+    monkeypatch.setattr(graph, 'dependency_shards',
+                        lambda id, db: [shard(9, 'support', __db_index__=3)] if id == 1 else [])
+    monkeypatch.setattr(core, 'get_shard_by_id', lambda id, db: shard(id, 'support'))
+    packet = json.loads(mcp.search_shards('alpha', context_budget=1000))
+    assert [x['id'] for x in packet['content_payload']] == ['local:3:9', 'local:2:1']
+
+
+def test_dangling_native_dependency_rejects_root(monkeypatch):
+    from nougen_shards import mcp, federation, graph
+    monkeypatch.setattr(federation, 'federated_retrieve',
+                        lambda *args, **kwargs: [shard(1, 'alpha', __db_index__=2)])
+    monkeypatch.setattr(graph, 'dependency_shards', lambda *args:
+                        [{'id': 'unresolved:hash', '_db_index': 2, 'unresolved': True}])
+    packet = json.loads(mcp.search_shards('alpha', context_budget=1000))
+    assert packet['content_payload'] == []
+    assert packet['decisions'][0]['outcome'] == 'missing_dependency'

@@ -42,7 +42,7 @@ def graph_context_packet(query, candidates, expanded=(), *, token_budget=8000,
     terms = set(re.findall(r"\w+", query.casefold()))
 
     def identity(item):
-        return f"{item.get('source_node', 'local')}:{item.get('_db_index', item.get('db_index', 0))}:{item['id']}"
+        return f"{item.get('source_node', 'local')}:{item.get('_db_index', item.get('__db_index__', item.get('db_index', 0)))}:{item['id']}"
 
     def canonical(value):
         return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
