@@ -1,5 +1,6 @@
 """relay_live fetch: SSH stall limits and one retry on a hung fetch."""
 import importlib.util
+import os
 import subprocess
 from pathlib import Path
 
@@ -92,3 +93,128 @@ def test_git_timeout_kills_child_tree_before_raising(rl, monkeypatch, tmp_path):
     assert calls[1][0] == "tree-kill"
     assert calls[1][1][-4:] == ["/PID", "4321", "/T", "/F"]
     assert calls[2][0] == "drained"
+
+
+def _git(repo, *args):
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        stdin=subprocess.DEVNULL,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    ).stdout.strip()
+
+
+def _diverged_repos(tmp_path, *, remote_path=".handoffs/hourly.md", conflict=False):
+    origin = tmp_path / "origin.git"
+    local = tmp_path / "local"
+    writer = tmp_path / "writer"
+    _git(tmp_path, "init", "--bare", str(origin))
+    local.mkdir()
+    _git(local, "init")
+    _git(local, "config", "user.name", "Relay Test")
+    _git(local, "config", "user.email", "relay-test@example.invalid")
+    (local / ".handoffs").mkdir()
+    (local / ".handoffs" / "base.md").write_text("base\n", encoding="utf-8")
+    if conflict:
+        (local / ".handoffs" / "shared.md").write_text("base shared\n", encoding="utf-8")
+    _git(local, "add", ".")
+    _git(local, "commit", "-m", "base")
+    _git(local, "branch", "-M", "main")
+    _git(local, "remote", "add", "origin", str(origin))
+    _git(local, "push", "-u", "origin", "main")
+
+    _git(tmp_path, "clone", "--branch", "main", str(origin), str(writer))
+    _git(writer, "config", "user.name", "Phoebus Test")
+    _git(writer, "config", "user.email", "phoebus-test@example.invalid")
+    remote_file = writer / remote_path
+    remote_file.parent.mkdir(parents=True, exist_ok=True)
+    remote_file.write_text("remote\n", encoding="utf-8")
+    _git(writer, "add", ".")
+    _git(writer, "commit", "-m", "hourly publisher update")
+    _git(writer, "push", "origin", "main")
+
+    if conflict:
+        (local / remote_path).write_text("local\n", encoding="utf-8")
+    else:
+        (local / ".handoffs" / "local-completion.md").write_text("local completion\n", encoding="utf-8")
+    _git(local, "add", ".")
+    _git(local, "commit", "-m", "local completion")
+    return origin, local, writer
+
+
+def test_fetch_merges_only_additive_handoff_divergence_and_preserves_untracked(rl, tmp_path):
+    _origin, local, writer = _diverged_repos(tmp_path)
+    untracked = local / "src" / "nougenrelay" / "candidate.ts"
+    untracked.parent.mkdir(parents=True)
+    untracked.write_text("preserve me\n", encoding="utf-8")
+    local_commit = _git(local, "rev-parse", "HEAD")
+    remote_commit = _git(writer, "rev-parse", "HEAD")
+
+    assert rl.fetch(local) == "ok(updated,merged-additive-handoffs)"
+    assert (local / ".handoffs" / "local-completion.md").read_text(encoding="utf-8") == "local completion\n"
+    assert (local / ".handoffs" / "hourly.md").read_text(encoding="utf-8") == "remote\n"
+    assert untracked.read_text(encoding="utf-8") == "preserve me\n"
+    assert _git(local, "merge-base", "--is-ancestor", local_commit, "HEAD") == ""
+    assert _git(local, "merge-base", "--is-ancestor", remote_commit, "HEAD") == ""
+
+
+def test_fetch_defers_same_path_handoff_conflict_without_mutation(rl, tmp_path):
+    _origin, local, _writer = _diverged_repos(
+        tmp_path, remote_path=".handoffs/shared.md", conflict=True
+    )
+    before = _git(local, "rev-parse", "HEAD")
+    assert rl.fetch(local) == "skipped(diverged,non-additive-handoff-change)"
+    assert _git(local, "rev-parse", "HEAD") == before
+    assert (local / ".handoffs" / "shared.md").read_text(encoding="utf-8") == "local\n"
+    assert not (local / ".git" / "MERGE_HEAD").exists()
+
+
+def test_fetch_defers_non_handoff_upstream_change(rl, tmp_path):
+    _origin, local, _writer = _diverged_repos(tmp_path, remote_path="src/feature.py")
+    before = _git(local, "rev-parse", "HEAD")
+    assert rl.fetch(local) == "skipped(diverged,non-additive-handoff-change)"
+    assert _git(local, "rev-parse", "HEAD") == before
+
+
+def test_fetch_defers_untracked_path_collision(rl, tmp_path):
+    _origin, local, _writer = _diverged_repos(tmp_path)
+    incoming = local / ".handoffs" / "hourly.md"
+    incoming.write_text("untracked local file\n", encoding="utf-8")
+    before = _git(local, "rev-parse", "HEAD")
+    assert rl.fetch(local) == "skipped(diverged,untracked-path-collision)"
+    assert _git(local, "rev-parse", "HEAD") == before
+    assert incoming.read_text(encoding="utf-8") == "untracked local file\n"
+
+
+def test_fetch_defers_when_tracked_worktree_is_dirty(rl, tmp_path):
+    _origin, local, _writer = _diverged_repos(tmp_path)
+    path = local / ".handoffs" / "base.md"
+    path.write_text("operator edit\n", encoding="utf-8")
+    before = _git(local, "rev-parse", "HEAD")
+    assert rl.fetch(local) == "skipped(diverged,tracked-worktree-dirty)"
+    assert _git(local, "rev-parse", "HEAD") == before
+    assert path.read_text(encoding="utf-8") == "operator edit\n"
+
+
+def test_fetch_skips_existing_merge_state(rl, tmp_path):
+    _origin, local, _writer = _diverged_repos(
+        tmp_path, remote_path=".handoffs/shared.md", conflict=True
+    )
+    _git(local, "fetch", "origin")
+    result = subprocess.run(
+        ["git", "-C", str(local), "merge", "--no-commit", "--no-ff", "origin/main"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        stdin=subprocess.DEVNULL,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode != 0
+    assert (local / ".git" / "MERGE_HEAD").exists()
+    assert rl.fetch(local) == "skipped(merge-in-progress; preserving checkout)"
+    assert (local / ".git" / "MERGE_HEAD").exists()

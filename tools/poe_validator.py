@@ -10,10 +10,8 @@ Enforces Hardcade Protocol v1.0.0:
 import sys
 import json
 import time
-import hashlib
-import subprocess
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any
 
 HOME = Path.home()
 RELAY_BASE = HOME / ".nougen" / "relay"
@@ -28,6 +26,8 @@ except ModuleNotFoundError:
     # Keep direct `python tools/poe_validator.py` use working from a source checkout.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     from nougen_shards.poe_validator import PoEValidationError, PoEValidator
+
+__all__ = ["PoEValidationError", "PoEValidator", "audit_all_claims"]
 
 
 def audit_all_claims(claims_dir: Path = CLAIMS_DIR) -> Dict[str, Any]:

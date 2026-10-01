@@ -10,6 +10,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from nougen_shards import codex_pipe
@@ -19,7 +20,7 @@ class CodexPipeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        env = patch.dict(os.environ, NOUGEN_CODEX_INBOX=self.temp.name)
+        env = patch.dict(os.environ, NOUGEN_CODEX_INBOX=self.temp.name, NOUGEN_HOME=self.temp.name)
         env.start()
         self.addCleanup(env.stop)
 
@@ -131,12 +132,88 @@ class CodexPipeTests(unittest.TestCase):
         receipt = codex_pipe.acknowledge(message_id, consumer="codex", thread="thread-1",
                                          inbox=self.temp.name)
         self.assertTrue(receipt["acknowledged"])
+        self.assertTrue(receipt["receipt_only"])
+        self.assertNotIn("work", receipt)
+        self.assertNotIn("sha", receipt)
         self.assertFalse(Path(path).exists())
         self.assertTrue(Path(receipt["file"]).exists())
         self.assertTrue(Path(other).exists())
         again = codex_pipe.acknowledge(message_id, consumer="codex", thread="thread-1",
                                        inbox=self.temp.name)
         self.assertTrue(again["idempotent"])
+
+    def test_ack_is_receipt_only_and_leaves_actionable_work_pending(self):
+        message_id = "44444444-4444-4444-8444-444444444444"
+        path = codex_pipe.save({"message_id": message_id, "thread": "thread-1", "text": "test"})
+        receipt = codex_pipe.acknowledge(message_id, consumer="codex", thread="thread-1",
+                                         inbox=self.temp.name)
+        self.assertTrue(receipt["acknowledged"])
+        self.assertFalse(Path(path).exists())
+        self.assertNotIn("work", receipt)
+        self.assertEqual(codex_pipe.lifecycle(message_id, self.temp.name)["state"], "ACKED")
+        self.assertTrue(codex_pipe.lifecycle(message_id, self.temp.name)["pending_execution"])
+
+    def test_multi_inbox_claim_and_ack_are_receipt_only(self):
+        agy_inbox = Path(self.temp.name) / ".nougen" / "agy_inbox"
+        agy_inbox.mkdir(parents=True)
+        msg_id = "66666666-6666-4666-8666-666666666666"
+        ping_file = agy_inbox / f"ping_{uuid.uuid4().hex}.json"
+        ping_file.write_text(json.dumps({"message_id": msg_id, "text": "agy ping", "source": "fleet"}), encoding="utf-8")
+
+        claimed = codex_pipe.claim(msg_id, consumer="antigravity", inbox=str(agy_inbox))
+        self.assertTrue(claimed["claimed"])
+        acked = codex_pipe.acknowledge(msg_id, consumer="antigravity", inbox=str(agy_inbox))
+        self.assertTrue(acked["acknowledged"])
+        self.assertNotIn("work", acked)
+        self.assertTrue((agy_inbox / "archive" / ping_file.name).exists())
+        self.assertTrue((agy_inbox / "archive" / f"{ping_file.name}.ack.json").exists())
+        state = codex_pipe.lifecycle(msg_id, str(agy_inbox))
+        self.assertEqual(state["state"], "ACKED")
+        self.assertTrue(state["pending_execution"])
+        with patch.object(Path, "home", return_value=Path(self.temp.name)):
+            self.assertIn(msg_id, [item["message_id"] for item in codex_pipe.pending_execution()])
+
+    def test_expired_take_is_reclaimed_and_old_epoch_cannot_advance(self):
+        mid = "99999999-9999-4999-8999-999999999999"
+        codex_pipe.save({"message_id": mid, "thread": "old-worker", "text": "do the thing"})
+        with patch.dict(os.environ, NOUGEN_LIVE_LEASE_SECONDS="1"):
+            first = codex_pipe.take(mid, consumer="codex", thread="old-worker")
+            time.sleep(1.05)
+            second = codex_pipe.take(mid, consumer="codex", thread="new-worker")
+        self.assertGreater(second["fencing_epoch"], first["fencing_epoch"])
+        stale = codex_pipe.advance(mid, "EXECUTING", consumer="codex",
+                                   fencing_epoch=first["fencing_epoch"], inbox=self.temp.name)
+        self.assertEqual(stale["status"], "fencing_token_required")
+        current = codex_pipe.advance(mid, "EXECUTING", consumer="codex",
+                                     fencing_epoch=second["fencing_epoch"], inbox=self.temp.name)
+        self.assertTrue(current["advanced"])
+
+    def test_live_ack_command_is_passive_and_rejects_work_summaries(self):
+        from nougen_shards.live import handle_live_command
+
+        mid = "77777777-7777-4777-8777-777777777777"
+        self._stage(mid)
+        receipt = json.loads(handle_live_command(["ack-msg", mid]))
+        self.assertTrue(receipt["acknowledged"])
+        self.assertNotIn("work", receipt)
+        self.assertTrue(codex_pipe.lifecycle(mid, self.temp.name)["pending_execution"])
+
+        second = "88888888-8888-4888-8888-888888888888"
+        path = codex_pipe.save({"message_id": second, "text": "do another thing"})
+        rejected = json.loads(handle_live_command(["ack-msg", second, "--work", "done"]))
+        self.assertEqual(rejected["status"], "invalid_args")
+        self.assertTrue(Path(path).exists())
+
+    def test_claim_message_marks_in_progress(self):
+        message_id = "55555555-5555-4555-8555-555555555555"
+        path = codex_pipe.save({"message_id": message_id, "thread": "thread-1", "text": "to claim"})
+        claimed = codex_pipe.claim(message_id, consumer="codex", thread="thread-1")
+        self.assertEqual(claimed["status"], "claimed")
+        self.assertTrue(claimed["claimed"])
+        self.assertTrue(Path(path).exists())
+        saved_data = json.loads(Path(path).read_text(encoding="utf-8"))
+        self.assertIn("claim", saved_data)
+        self.assertEqual(saved_data["claim"]["consumer"], "codex")
 
     def test_ack_rejects_wrong_thread_without_moving_message(self):
         message_id = "33333333-3333-4333-8333-333333333333"
@@ -148,6 +225,12 @@ class CodexPipeTests(unittest.TestCase):
 
     def _stage(self, message_id, **extra):
         codex_pipe.save({"message_id": message_id, "thread": "t", "text": "do the thing", **extra})
+
+    def _advance(self, message_id, state, evidence="", **kwargs):
+        record = codex_pipe.lifecycle(message_id, self.temp.name)
+        epoch = record.get("fencing_epoch") if record else None
+        return codex_pipe.advance(message_id, state, evidence, consumer="codex",
+                                  fencing_epoch=epoch, inbox=self.temp.name, **kwargs)
 
     def _evidence(self, message_id, kind, **extra):
         record = codex_pipe.lifecycle(message_id, self.temp.name)
@@ -167,7 +250,7 @@ class CodexPipeTests(unittest.TestCase):
     def test_ack_of_actionable_message_stays_pending_execution(self):
         mid = "aaaaaaaa-0000-4000-8000-000000000001"
         self._stage(mid)
-        codex_pipe.acknowledge(mid, consumer="codex", thread="t", inbox=self.temp.name)
+        codex_pipe.acknowledge(mid, consumer="codex", thread="t")
         record = codex_pipe.lifecycle(mid, self.temp.name)
         self.assertEqual(record["state"], "ACKED")
         self.assertTrue(record["pending_execution"])
@@ -177,32 +260,34 @@ class CodexPipeTests(unittest.TestCase):
     def test_informational_message_ends_at_acked(self):
         mid = "aaaaaaaa-0000-4000-8000-000000000002"
         self._stage(mid, origin={"kind": "status"})
-        codex_pipe.acknowledge(mid, consumer="codex", thread="t", inbox=self.temp.name)
+        codex_pipe.acknowledge(mid, consumer="codex", thread="t")
         self.assertFalse(codex_pipe.lifecycle(mid, self.temp.name)["pending_execution"])
         self.assertEqual(codex_pipe.pending_execution(self.temp.name), [])
 
     def test_take_acks_and_claims_atomically_and_is_idempotent(self):
         mid = "aaaaaaaa-0000-4000-8000-000000000003"
         self._stage(mid)
-        first = codex_pipe.take(mid, consumer="codex", thread="t", inbox=self.temp.name)
+        first = codex_pipe.take(mid, consumer="codex", thread="t")
+        no_token = codex_pipe.advance(mid, "EXECUTING", consumer="codex")
+        self.assertEqual(no_token["status"], "fencing_token_required")
         self.assertEqual(first["lifecycle_state"], "CLAIMED")
         self.assertTrue(first["pending_execution"])
         self.assertIn("context_binding", codex_pipe.lifecycle(mid, self.temp.name))
-        again = codex_pipe.take(mid, consumer="codex", thread="t", inbox=self.temp.name)
+        again = codex_pipe.take(mid, consumer="codex", thread="t")
         self.assertEqual(again["lifecycle_state"], "CLAIMED")
         self.assertEqual(len(codex_pipe.lifecycle(mid, self.temp.name)["history"]), 2)
 
     def test_complete_requires_evidence_and_legal_order(self):
         mid = "aaaaaaaa-0000-4000-8000-000000000004"
         self._stage(mid)
-        codex_pipe.take(mid, consumer="codex", thread="t", inbox=self.temp.name)
-        skip = codex_pipe.advance(mid, "COMPLETE", "proof", inbox=self.temp.name)
+        codex_pipe.take(mid, consumer="codex", thread="t")
+        skip = self._advance(mid, "COMPLETE", "proof")
         self.assertEqual(skip["status"], "illegal_transition")
-        self.assertTrue(codex_pipe.advance(mid, "EXECUTING", inbox=self.temp.name)["advanced"])
-        bare = codex_pipe.advance(mid, "COMPLETE", "  ", inbox=self.temp.name)
+        self.assertTrue(self._advance(mid, "EXECUTING")["advanced"])
+        bare = self._advance(mid, "COMPLETE", "  ")
         self.assertEqual(bare["status"], "evidence_required")
         self.assertTrue(codex_pipe.pending_execution(self.temp.name))
-        unverified = codex_pipe.advance(mid, "COMPLETE", "PR merged: abc123", inbox=self.temp.name)
+        unverified = self._advance(mid, "COMPLETE", "PR merged: abc123")
         self.assertEqual(unverified["status"], "evidence_invalid")
         self.assertEqual(codex_pipe.lifecycle(mid, self.temp.name)["state"], "EXECUTING")
         repo = Path(__file__).resolve().parents[1]
@@ -215,20 +300,20 @@ class CodexPipeTests(unittest.TestCase):
                               "stdout_hash": "a" * 64},
             "verifier": {"observer_node": "chatgpt-app"},
         })
-        done = codex_pipe.advance(mid, "COMPLETE", proof, inbox=self.temp.name)
-        self.assertTrue(done["advanced"])
+        done = self._advance(mid, "COMPLETE", proof)
+        self.assertTrue(done["advanced"], done)
         self.assertFalse(done["pending_execution"])
         self.assertTrue(done["evidence_verified"])
         self.assertTrue(codex_pipe.lifecycle(mid, self.temp.name)["history"][-1]["verifier_result"]["verified"])
         self.assertEqual(codex_pipe.pending_execution(self.temp.name), [])
-        after = codex_pipe.advance(mid, "EXECUTING", inbox=self.temp.name)
+        after = self._advance(mid, "EXECUTING")
         self.assertEqual(after["status"], "illegal_transition")
 
     def test_checkpoint_recomputes_artifact_digest_and_preserves_pending_work(self):
         mid = "aaaaaaaa-0000-4000-8000-000000000006"
         self._stage(mid)
-        codex_pipe.take(mid, consumer="codex", thread="t", inbox=self.temp.name)
-        codex_pipe.advance(mid, "EXECUTING", inbox=self.temp.name)
+        codex_pipe.take(mid, consumer="codex", thread="t")
+        self._advance(mid, "EXECUTING")
         artifact = Path(self.temp.name) / "checkpoint.txt"
         artifact.write_text("checkpoint contents", encoding="utf-8")
         proof = self._evidence(mid, "checkpoint", artifacts=[{
@@ -236,21 +321,21 @@ class CodexPipeTests(unittest.TestCase):
             "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
         }])
         with patch.dict(os.environ, NOUGEN_CODEX_WORKSPACE=self.temp.name):
-            result = codex_pipe.advance(mid, "CHECKPOINTED", proof, inbox=self.temp.name)
-            self.assertTrue(result["advanced"])
+            result = self._advance(mid, "CHECKPOINTED", proof)
+            self.assertTrue(result["advanced"], result)
             self.assertTrue(result["evidence_verified"])
             self.assertTrue(result["pending_execution"])
-            codex_pipe.advance(mid, "EXECUTING", inbox=self.temp.name)
+            self._advance(mid, "EXECUTING")
             proof["artifacts"][0]["sha256"] = "0" * 64
-            rejected = codex_pipe.advance(mid, "CHECKPOINTED", proof, inbox=self.temp.name)
+            rejected = self._advance(mid, "CHECKPOINTED", proof)
         self.assertEqual(rejected["status"], "evidence_invalid")
         self.assertEqual(codex_pipe.lifecycle(mid, self.temp.name)["state"], "EXECUTING")
 
     def test_proof_must_match_acknowledged_context_and_worker(self):
         mid = "aaaaaaaa-0000-4000-8000-000000000007"
         self._stage(mid)
-        codex_pipe.take(mid, consumer="codex", thread="t", inbox=self.temp.name)
-        codex_pipe.advance(mid, "EXECUTING", inbox=self.temp.name)
+        codex_pipe.take(mid, consumer="codex", thread="t")
+        self._advance(mid, "EXECUTING")
         repo = Path(__file__).resolve().parents[1]
         commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
                                 capture_output=True, text=True, check=True).stdout.strip()
@@ -261,7 +346,7 @@ class CodexPipeTests(unittest.TestCase):
             "verifier": {"observer_node": "chatgpt-app"},
         })
         proof["context_binding"]["workflow_version"] = "changed-version"
-        rejected_context = codex_pipe.advance(mid, "COMPLETE", proof, inbox=self.temp.name)
+        rejected_context = self._advance(mid, "COMPLETE", proof)
         self.assertEqual(rejected_context["status"], "evidence_invalid")
         proof = self._evidence(mid, "complete", poe={
             "git": {"commit_sha": commit, "files_changed": ["src/nougen_shards/codex_pipe.py"],
@@ -270,7 +355,7 @@ class CodexPipeTests(unittest.TestCase):
             "verifier": {"observer_node": "chatgpt-app"},
         })
         proof["execution_receipt"]["worker"] = "other-agent"
-        rejected_worker = codex_pipe.advance(mid, "COMPLETE", proof, inbox=self.temp.name)
+        rejected_worker = self._advance(mid, "COMPLETE", proof)
         self.assertEqual(rejected_worker["status"], "evidence_invalid")
         self.assertEqual(codex_pipe.lifecycle(mid, self.temp.name)["state"], "EXECUTING")
 
@@ -278,21 +363,21 @@ class CodexPipeTests(unittest.TestCase):
         mid = "aaaaaaaa-0000-4000-8000-000000000008"
         with patch.dict(os.environ, NOUGEN_POLICY_SHA256="policy-a"):
             self._stage(mid)
-            codex_pipe.take(mid, consumer="codex", thread="t", inbox=self.temp.name)
-            codex_pipe.advance(mid, "EXECUTING", inbox=self.temp.name)
+            codex_pipe.take(mid, consumer="codex", thread="t")
+            self._advance(mid, "EXECUTING")
             proof = self._evidence(mid, "checkpoint", artifacts=[])
         with patch.dict(os.environ, NOUGEN_POLICY_SHA256="policy-b"):
-            result = codex_pipe.advance(mid, "CHECKPOINTED", proof, inbox=self.temp.name)
+            result = self._advance(mid, "CHECKPOINTED", proof)
         self.assertEqual(result["status"], "evidence_invalid")
         self.assertIn("execution context changed after claim", result["verifier_result"]["errors"][0])
         self.assertEqual(codex_pipe.lifecycle(mid, self.temp.name)["state"], "EXECUTING")
 
     def test_advance_unknown_message_and_state(self):
-        self.assertEqual(codex_pipe.advance("nope", "CLAIMED", inbox=self.temp.name)["status"], "no_lifecycle")
+        self.assertEqual(self._advance("nope", "CLAIMED")["status"], "no_lifecycle")
         mid = "aaaaaaaa-0000-4000-8000-000000000005"
         self._stage(mid)
-        codex_pipe.acknowledge(mid, consumer="codex", thread="t", inbox=self.temp.name)
-        self.assertEqual(codex_pipe.advance(mid, "DONE", "x", inbox=self.temp.name)["status"], "unknown_state")
+        codex_pipe.acknowledge(mid, consumer="codex", thread="t")
+        self.assertEqual(self._advance(mid, "DONE", "x")["status"], "unknown_state")
 
 
 @unittest.skipUnless(sys.platform == 'win32', 'named pipe is Windows-only')
@@ -301,29 +386,35 @@ class CodexPipeServeSurvivesBadConnectsTests(unittest.TestCase):
     take the whole receiver down with it (see relay leg 20260915T033332Z)."""
 
     def setUp(self):
+        self.orig_pipe = codex_pipe.PIPE
+        self.test_pipe = rf"\\.\pipe\LOCAL\test-nougen-msg-{uuid.uuid4().hex}"
+        codex_pipe.PIPE = self.test_pipe
         self.thread_id = '00000000-0000-4000-8000-000000000000'
         # sys.executable (python.exe) only needs to satisfy serve()'s is_file()/.exe check;
         # the "queue" subprocess call is never exercised by the assertions below.
-        server = threading.Thread(target=codex_pipe.serve, args=(self.thread_id, sys.executable), daemon=True)
+        server = threading.Thread(target=codex_pipe.serve, args=(self.thread_id, sys.executable, self.test_pipe), daemon=True)
         server.start()
         for _ in range(50):
             try:
-                if codex_pipe.request({'op': 'status'})['status'] == 'listening':
+                if codex_pipe.request({'op': 'status'}, pipe=self.test_pipe)['status'] == 'listening':
                     break
             except OSError:
                 time.sleep(0.1)
         else:
             self.fail('receiver never reported listening')
 
+    def tearDown(self):
+        codex_pipe.PIPE = self.orig_pipe
+
     def test_dropped_connect_does_not_kill_the_receiver(self):
         kernel = ctypes.WinDLL('kernel32', use_last_error=True)
         GENERIC_READ, GENERIC_WRITE, OPEN_EXISTING = 0x80000000, 0x40000000, 3
-        handle = kernel.CreateFileW(codex_pipe.PIPE, GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING, 0, None)
+        handle = kernel.CreateFileW(self.test_pipe, GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING, 0, None)
         self.assertNotEqual(handle, -1, 'could not open the pipe to simulate a dropped client')
         kernel.CloseHandle(handle)  # connect, then vanish with no data -- never send/receive
         time.sleep(0.3)
 
-        result = codex_pipe.request({'op': 'status'})
+        result = codex_pipe.request({'op': 'status'}, pipe=self.test_pipe)
         self.assertEqual(result['status'], 'listening')
         self.assertEqual(result['thread'], self.thread_id)
 

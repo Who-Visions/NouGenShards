@@ -34,8 +34,8 @@ def create_context_binding(message_id: str, payload_sha256: str, consumer: str) 
         "payload_sha256": str(payload_sha256),
         "consumer": str(consumer),
         "workflow_version": version,
-        "agent": os.environ.get("NOUGEN_AGENT", "codex"),
-        "lane": os.environ.get("NOUGEN_LANE", "unknown"),
+        "agent": os.environ.get("NOUGEN_AGENT") or str(consumer),
+        "lane": os.environ.get("NOUGEN_LANE") or str(consumer),
         "model": os.environ.get("CODEX_MODEL", os.environ.get("NOUGEN_AGENT_MODEL", "unknown")),
         "policy_fingerprint": os.environ.get("NOUGEN_POLICY_SHA256", "unbound"),
     }
@@ -152,8 +152,8 @@ def verify_lifecycle_evidence(
                 raise ValueError("context_hash does not match the acknowledged context snapshot")
             current = {
                 "workflow_version": os.environ.get("NOUGEN_WORKFLOW_VERSION", "nougen-live-v1").strip(),
-                "agent": os.environ.get("NOUGEN_AGENT", "codex"),
-                "lane": os.environ.get("NOUGEN_LANE", "unknown"),
+                "agent": os.environ.get("NOUGEN_AGENT") or str(consumer),
+                "lane": os.environ.get("NOUGEN_LANE") or str(consumer),
                 "model": os.environ.get("CODEX_MODEL", os.environ.get("NOUGEN_AGENT_MODEL", "unknown")),
                 "policy_fingerprint": os.environ.get("NOUGEN_POLICY_SHA256", "unbound"),
             }
