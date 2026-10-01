@@ -36,7 +36,8 @@ def test_dual_birth_milestones_present():
     # 4. Mesh Expansion & May 19 Convergence
     assert "May 6, 2026" in content
     assert "May 7, 2026" in content
-    assert "nougenai.com" in content
+    assert "Netlify" in content
+    assert "Cloudflare" in content
     assert "May 19, 2026" in content
     assert "Convergence" in content
     
