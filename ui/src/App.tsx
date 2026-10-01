@@ -7,20 +7,21 @@ function formatEasternTime(dateInput?: string): string {
   if (!dateInput) return 'Recently';
   try {
     let dateStr = dateInput;
-    if (!dateStr.includes('Z') && !dateStr.includes('+') && !dateStr.includes('-')) {
+    if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(dateStr) && /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(dateStr)) {
       dateStr = dateStr.replace(' ', 'T') + 'Z';
     }
     const d = new Date(dateStr);
     if (isNaN(d.getTime())) return dateInput;
     return d.toLocaleString('en-US', {
       timeZone: 'America/New_York',
+      timeZoneName: 'short',
       month: 'short',
       day: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
       second: '2-digit',
       hour12: true,
-    }) + ' EDT';
+    });
   } catch {
     return dateInput;
   }
@@ -29,11 +30,12 @@ function formatEasternTime(dateInput?: string): string {
 function getLiveEasternClock(): string {
   return new Date().toLocaleTimeString('en-US', {
     timeZone: 'America/New_York',
+      timeZoneName: 'short',
     hour: 'numeric',
     minute: '2-digit',
     second: '2-digit',
     hour12: true,
-  }) + ' EDT';
+  });
 }
 
 type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -42,184 +44,6 @@ const tauriInvoke: InvokeFn | null =
   typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
     ? (window as any).__TAURI_INTERNALS__.invoke
     : null;
-
-const RICH_PREVIEW_SHARDS = [
-  {
-    id: 1142,
-    title: 'Fleet Setup & Machine Roles',
-    content: 'Apollo (Razer Blade 2080 Super / Sol-Ai), Hyperion (ProArt PX13 / Yukiai / Antigravity), Phoebus (Mac Mini / Keadra).\n\nCanonical local persistence lives under the operator profile in .nougen for zero-friction fleet memory recall.',
-    final_score: 0.98,
-    utility_score: 1.0,
-    category: 'Architecture',
-    _db_index: 9,
-    timestamp: '2026-08-16T18:30:00Z',
-  },
-  {
-    id: 1141,
-    title: 'Relay System — Cross-Machine Task Coordination',
-    content: 'Coordinates work across your computers so agents never do the same job twice.\n\nClaims file areas before editing, locks active scope, and posts full verification handoff summaries when done.',
-    final_score: 0.94,
-    utility_score: 0.95,
-    category: 'Coordination',
-    _db_index: 9,
-    timestamp: '2026-08-16T17:15:22Z',
-  },
-  {
-    id: 1089,
-    title: 'Gemma 4 Memory Optimization & VRAM Limits',
-    content: 'Hyperion (PX13) runs lightweight Gemma 4 models to save GPU memory for active coding.\n\nApollo handles heavy reasoning tasks with a full 256K token context window over LAN.',
-    final_score: 0.89,
-    utility_score: 0.92,
-    category: 'Hardware',
-    _db_index: 7,
-    timestamp: '2026-08-15T21:04:10Z',
-  },
-  {
-    id: 982,
-    title: 'Desktop App & Real-Time Data Streaming',
-    content: 'The desktop app talks directly to the local memory engine, streaming search results in real time without UI lag or freezes.',
-    final_score: 0.86,
-    utility_score: 0.88,
-    category: 'App',
-    _db_index: 3,
-    timestamp: '2026-08-14T14:10:00Z',
-  },
-  {
-    id: 854,
-    title: 'Smart Search Ranking & Memory Scoring',
-    content: 'Searches memory files by text matching and semantic meaning, putting the most helpful and frequently referenced memories at the top of your list.',
-    final_score: 0.81,
-    utility_score: 0.85,
-    category: 'Search',
-    _db_index: 6,
-    timestamp: '2026-08-12T09:25:40Z',
-  },
-];
-
-const PREVIEW_STATUS = {
-  total_shards: 1142,
-  max_db_count: 9,
-  active_db: 9,
-  databases: [
-    { index: 1, shards: 84, size_mb: 40.5, is_active: false },
-    { index: 2, shards: 122, size_mb: 65.8, is_active: false },
-    { index: 3, shards: 210, size_mb: 146.8, is_active: false },
-    { index: 4, shards: 95, size_mb: 40.9, is_active: false },
-    { index: 5, shards: 89, size_mb: 42.1, is_active: false },
-    { index: 6, shards: 204, size_mb: 144.4, is_active: false },
-    { index: 7, shards: 112, size_mb: 49.0, is_active: false },
-    { index: 8, shards: 78, size_mb: 40.1, is_active: false },
-    { index: 9, shards: 148, size_mb: 150.6, is_active: true },
-  ],
-};
-
-const PREVIEW_FLEET_NODES = [
-  {
-    name: 'Node A',
-    host: 'Workstation',
-    ip: '192.0.2.10',
-    coach: 'Node A',
-    player: 'local model',
-    role: 'Heavy Thinking & Synthesis',
-    gpu: 'Discrete GPU',
-    ram: 'RAM',
-    status: 'online',
-    vram_used_pct: 72,
-    shards_synced: 1142,
-    temperature: '58°C',
-    fps_heartbeat: '120 Hz Sync',
-  },
-  {
-    name: 'Node B',
-    host: 'Laptop (this machine)',
-    ip: '192.0.2.11',
-    coach: 'Agent',
-    player: 'local model',
-    role: 'Fast Local Actions & Orchestration',
-    gpu: 'Laptop GPU',
-    ram: 'RAM',
-    status: 'active-node',
-    vram_used_pct: 44,
-    shards_synced: 1142,
-    temperature: '51°C',
-    fps_heartbeat: 'Active Pulse',
-  },
-  {
-    name: 'Node C',
-    host: 'Server',
-    ip: '192.0.2.12',
-    coach: 'Agent',
-    player: 'local model',
-    role: 'Main Hub & Central Storage',
-    gpu: 'Integrated GPU',
-    ram: 'RAM',
-    status: 'online',
-    vram_used_pct: 35,
-    shards_synced: 1142,
-    temperature: '39°C',
-    fps_heartbeat: 'Standby Sync',
-  },
-];
-
-const PREVIEW_USAGE = {
-  period: 'week',
-  invocations: 342,
-  total_tokens: 3_840_000,
-  prompt_tokens: 3_120_000,
-  cached_tokens: 2_745_000,
-  cache_hit_rate: 87.9,
-  estimated_cost: 2.15,
-  free_share: 74.2,
-  by_model: [
-    { provider: 'Local Laptop (Hyperion)', model: 'gemma4:e2b (Zero Cost)', invocations: 184, total_tokens: 1_920_000, estimated_cost: 0 },
-    { provider: 'Razer Blade (Apollo)', model: 'solai:latest (Zero Cost)', invocations: 92, total_tokens: 1_240_000, estimated_cost: 0 },
-    { provider: 'Google Cloud', model: 'Gemini 3.7 Flash', invocations: 42, total_tokens: 480_000, estimated_cost: 0 },
-    { provider: 'Anthropic Cloud', model: 'Claude 3.5 Sonnet', invocations: 24, total_tokens: 200_000, estimated_cost: 2.15 },
-  ],
-  ledger_present: true,
-};
-
-const PREVIEW_RELAY = [
-  {
-    id: 'relay_01',
-    timestamp: '2026-08-16T00:31:01Z',
-    agent: 'claude-cli',
-    machine: 'Razer Blade',
-    branch: 'main',
-    goal: 'Completed security audit: fixed 2 API filter issues and verified with live tests.',
-    tasks_done: 4,
-    tasks_total: 4,
-    status: 'completed',
-    live_status: 'completed',
-    acknowledged_by: 'AGY',
-  },
-  {
-    id: 'relay_02',
-    timestamp: '2026-08-15T12:36:35Z',
-    agent: 'agy-cli',
-    machine: 'PX13 Laptop',
-    branch: 'main',
-    goal: 'Updated desktop dashboard with live search, copy tools, and machine status.',
-    tasks_done: 5,
-    tasks_total: 5,
-    status: 'completed',
-    live_status: 'completed',
-    acknowledged_by: 'Claude',
-  },
-  {
-    id: 'relay_03',
-    timestamp: '2026-08-15T10:32:51Z',
-    agent: 'claude-cli',
-    machine: 'Server',
-    branch: 'main',
-    goal: 'Verified memory backup sync between Mac Mini and PX13 laptop.',
-    tasks_done: 3,
-    tasks_total: 3,
-    status: 'completed',
-    live_status: 'completed',
-    acknowledged_by: 'AGY',
-  },
-];
 
 const CLIENT_TIMEOUT_MS = 35_000;
 
@@ -242,39 +66,24 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-async function callEngine(cmd: string, args: Record<string, unknown>): Promise<unknown> {
+async function callEngine(cmd: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
   if (tauriInvoke) {
     return withTimeout(tauriInvoke(cmd, args), CLIENT_TIMEOUT_MS);
   }
 
-  // Browser Mode: Fetch from live Vite dev server API bridge connected directly to Python CLI & SQLite shards
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(args)) if (value != null) params.set(key, String(value));
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted) controller.abort();
+  const timer = setTimeout(abort, CLIENT_TIMEOUT_MS);
   try {
-    const params = new URLSearchParams();
-    for (const [k, v] of Object.entries(args)) {
-      if (v !== undefined && v !== null) params.set(k, String(v));
-    }
-    const qs = params.toString() ? `?${params.toString()}` : '';
-    const res = await fetch(`/api/${cmd}${qs}`);
-    if (res.ok) {
-      const text = await res.text();
-      return text;
-    }
-  } catch {
-    // Fallback if offline
-  }
+    const response = await fetch(`/api/${cmd}?${params}`, { signal: controller.signal });
+    if (!response.ok) throw new Error(`${cmd} unavailable (${response.status})`);
+    return await response.text();
+  } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
 
-  if (cmd === 'search_shards') {
-    const q = String(args.query || '').toLowerCase().trim();
-    if (!q) return JSON.stringify(RICH_PREVIEW_SHARDS);
-    const filtered = RICH_PREVIEW_SHARDS.filter(
-      (s) => s.title.toLowerCase().includes(q) || s.content.toLowerCase().includes(q)
-    );
-    return JSON.stringify(filtered.length > 0 ? filtered : RICH_PREVIEW_SHARDS);
-  }
-  if (cmd === 'engine_status') return JSON.stringify(PREVIEW_STATUS);
-  if (cmd === 'token_usage') return JSON.stringify(PREVIEW_USAGE);
-  if (cmd === 'relay_feed') return JSON.stringify(PREVIEW_RELAY);
-  return JSON.stringify({ period: args.period ?? 'week', preview: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -301,10 +110,11 @@ interface EngineStatus {
   total_shards: number;
   databases: DbInfo[];
   max_db_count?: number;
+  partition_cap_mb?: number;
   active_db?: number;
 }
 
-const PARTITION_CAP_MB = Number(import.meta.env.VITE_NOUGEN_PARTITION_CAP_MB ?? 250);
+
 
 interface UsageModel {
   provider: string;
@@ -345,7 +155,7 @@ type Tab = 'search' | 'substrate' | 'fleet' | 'tracker' | 'relay' | 'stats';
 
 const TABS: { key: Tab; label: string; icon: string }[] = [
   { key: 'search', label: 'Search Memory', icon: '🔍' },
-  { key: 'substrate', label: 'Storage (9 DBs)', icon: '💾' },
+  { key: 'substrate', label: 'Storage', icon: '💾' },
   { key: 'fleet', label: 'Your Machines', icon: '💻' },
   { key: 'tracker', label: 'Token & Cost Meter', icon: '⚡' },
   { key: 'relay', label: 'Team Handoffs', icon: '🤝' },
@@ -362,147 +172,15 @@ function formatCompactNumber(num: number): string {
   return num.toLocaleString();
 }
 
-function getModelDisplayMeta(modelStr: string, providerStr: string) {
-  const m = (modelStr || '').toLowerCase();
-  const p = (providerStr || '').toLowerCase();
-
-  if (m.includes('opus') || p.includes('claude') || p.includes('anthropic')) {
-    return {
-      title: 'Claude Opus 4.8 / 5',
-      badge: 'Anthropic Cloud API',
-      icon: '✦',
-      isLocal: false,
-      tier: 'Frontier Intelligence',
-    };
-  }
-  if (m.includes('gpt-5') || m.includes('codex') || p.includes('codex') || p.includes('openai')) {
-    return {
-      title: 'OpenAI Codex (GPT-5.6 Sol)',
-      badge: 'Autonomous Codex Lane',
-      icon: '⚡',
-      isLocal: false,
-      tier: 'Autonomous Reasoning',
-    };
-  }
-  if (m.includes('gemini') || p.includes('gemini') || p.includes('google')) {
-    return {
-      title: 'Gemini 3 Flash / M299',
-      badge: 'Google AI Cloud Endpoint',
-      icon: '◈',
-      isLocal: false,
-      tier: 'High-Speed Context',
-    };
-  }
-  if (m.includes('yuki') || p.includes('hyperion') || m.includes('px13')) {
-    return {
-      title: 'Yukiai (Gemma 4 Tactical)',
-      badge: 'Local Laptop (PX13 · RTX 4050)',
-      icon: '💻',
-      isLocal: true,
-      tier: 'Zero-Cost Local GPU',
-    };
-  }
-  if (m.includes('solai') || p.includes('apollo') || m.includes('blade')) {
-    return {
-      title: 'Sol-Ai (Gemma 4 Synthesis)',
-      badge: 'Razer Blade 2020 (RTX 2080 Super)',
-      icon: '💻',
-      isLocal: true,
-      tier: 'Zero-Cost LAN GPU',
-    };
-  }
-
-  return {
-    title: modelStr.replace(/\s*\([^)]*\)/g, ''),
-    badge: providerStr,
-    icon: '🤖',
-    isLocal: m.includes('zero cost') || m.includes('free'),
-    tier: 'Inference Model',
-  };
-}
-
-// Live Starfield Background Component
-function NeuralCanvas() {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    let animId: number;
-    let width = (canvas.width = window.innerWidth);
-    let height = (canvas.height = window.innerHeight);
-
-    const handleResize = () => {
-      if (!canvas) return;
-      width = canvas.width = window.innerWidth;
-      height = canvas.height = window.innerHeight;
-    };
-    window.addEventListener('resize', handleResize);
-
-    const particles: Array<{ x: number; y: number; vx: number; vy: number; radius: number; alpha: number }> = [];
-    const count = 35;
-    for (let i = 0; i < count; i++) {
-      particles.push({
-        x: Math.random() * width,
-        y: Math.random() * height,
-        vx: (Math.random() - 0.5) * 0.3,
-        vy: (Math.random() - 0.5) * 0.3,
-        radius: Math.random() * 2 + 1,
-        alpha: Math.random() * 0.4 + 0.15,
-      });
-    }
-
-    const render = () => {
-      ctx.clearRect(0, 0, width, height);
-
-      for (let i = 0; i < particles.length; i++) {
-        const p1 = particles[i];
-        p1.x += p1.vx;
-        p1.y += p1.vy;
-        if (p1.x < 0 || p1.x > width) p1.vx *= -1;
-        if (p1.y < 0 || p1.y > height) p1.vy *= -1;
-
-        ctx.beginPath();
-        ctx.arc(p1.x, p1.y, p1.radius, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(45, 212, 191, ${p1.alpha})`;
-        ctx.shadowBlur = 6;
-        ctx.shadowColor = '#2dd4bf';
-        ctx.fill();
-
-        for (let j = i + 1; j < particles.length; j++) {
-          const p2 = particles[j];
-          const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
-          if (dist < 120) {
-            ctx.beginPath();
-            ctx.moveTo(p1.x, p1.y);
-            ctx.lineTo(p2.x, p2.y);
-            ctx.strokeStyle = `rgba(129, 140, 248, ${0.14 * (1 - dist / 120)})`;
-            ctx.lineWidth = 0.8;
-            ctx.stroke();
-          }
-        }
-      }
-
-      animId = requestAnimationFrame(render);
-    };
-
-    render();
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      cancelAnimationFrame(animId);
-    };
-  }, []);
-
-  return <canvas ref={canvasRef} className="neural-bg-canvas" />;
+function getModelDisplayMeta(model: string, provider: string) {
+  return { title: model, badge: provider, icon: '◈', isLocal: provider === 'ollama' || provider === 'local', tier: provider || 'Unknown provider' };
 }
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('search');
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Shard[]>(RICH_PREVIEW_SHARDS);
+  const [results, setResults] = useState<Shard[]>([]);
+  const [identity, setIdentity] = useState<any>(null);
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [partition, setPartition] = useState<number | typeof ALL_PARTITIONS>(ALL_PARTITIONS);
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
@@ -511,13 +189,18 @@ export default function App() {
   const [usagePeriod, setUsagePeriod] = useState('week');
   const [machineScope, setMachineScope] = useState<'local' | 'fleet'>('local');
   const [relay, setRelay] = useState<RelayEntry[]>([]);
-  const [fleetNodes, setFleetNodes] = useState<any[]>(PREVIEW_FLEET_NODES);
+  const [fleetNodes, setFleetNodes] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const [selectedShard, setSelectedShard] = useState<Shard | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [clockEastern, setClockEastern] = useState<string>(getLiveEasternClock);
+  const requestVersions = useRef({usage: 0, stats: 0, search: 0});
+  const queryRef = useRef(query);
+  queryRef.current = query;
+  const searchController = useRef<AbortController | null>(null);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const memoryDialog = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -528,21 +211,21 @@ export default function App() {
 
   // Trigger token usage refresh whenever time period or machine scope changes
   const loadUsage = useCallback(async () => {
+    const version = ++requestVersions.current.usage;
+    setUsage(null);
     setBusy(true);
     try {
       const raw = (await callEngine('token_usage', { period: usagePeriod, scope: machineScope })) as string;
+      if (version !== requestVersions.current.usage) return;
       setUsage(JSON.parse(raw));
-      setError(null);
+
     } catch (e) {
+      if (version !== requestVersions.current.usage) return;
       setError(String(e));
     } finally {
-      setBusy(false);
+      if (version === requestVersions.current.usage) setBusy(false);
     }
   }, [usagePeriod, machineScope]);
-
-  useEffect(() => {
-    loadUsage();
-  }, [usagePeriod, machineScope, loadUsage]);
 
   // Live clock updated every second in Eastern Time
   useEffect(() => {
@@ -580,8 +263,9 @@ export default function App() {
     try {
       const raw = (await callEngine('engine_status', {})) as string;
       setStatus(JSON.parse(raw));
-      setError(null);
+
     } catch (e) {
+      setStatus(null);
       setError(String(e));
     }
   }, []);
@@ -590,22 +274,25 @@ export default function App() {
     try {
       const raw = (await callEngine('fleet_nodes', {})) as string;
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        setFleetNodes(parsed);
-      }
-    } catch {}
+      setFleetNodes(Array.isArray(parsed) ? parsed : []);
+      setIdentity(JSON.parse(await callEngine('identity', {}) as string));
+    } catch (e) { setFleetNodes([]); setError(String(e)); }
   }, []);
 
   const loadStats = useCallback(async () => {
+    const version = ++requestVersions.current.stats;
+    setStats(null);
     setBusy(true);
     try {
       const raw = (await callEngine('memory_stats', { period })) as string;
+      if (version !== requestVersions.current.stats) return;
       setStats(JSON.parse(raw));
-      setError(null);
+
     } catch (e) {
+      if (version !== requestVersions.current.stats) return;
       setError(String(e));
     } finally {
-      setBusy(false);
+      if (version === requestVersions.current.stats) setBusy(false);
     }
   }, [period]);
 
@@ -614,10 +301,8 @@ export default function App() {
     try {
       const raw = (await callEngine('relay_feed', {})) as string;
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        setRelay(parsed);
-      }
-      setError(null);
+      setRelay(Array.isArray(parsed) ? parsed : []);
+
     } catch (e) {
       setError(String(e));
     } finally {
@@ -625,21 +310,29 @@ export default function App() {
     }
   }, []);
 
-  const runSearch = useCallback(async () => {
+  const runSearch = useCallback(async (searchQuery?: string) => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchController.current?.abort();
+    const controller = new AbortController();
+    searchController.current = controller;
+    const version = ++requestVersions.current.search;
+    setResults([]);
     setBusy(true);
     try {
-      const raw = (await callEngine('search_shards', { query })) as string;
+      const raw = (await callEngine('search_shards', { query: searchQuery ?? queryRef.current }, controller.signal)) as string;
+      if (controller.signal.aborted || version !== requestVersions.current.search) return;
       const parsed = JSON.parse(raw);
       setResults(parsed.length > 0 ? parsed : []);
       setPartition(ALL_PARTITIONS);
-      setError(null);
+
     } catch (e) {
+      if (controller.signal.aborted || version !== requestVersions.current.search) return;
       setError(String(e));
       setResults([]);
     } finally {
-      setBusy(false);
+      if (version === requestVersions.current.search) setBusy(false);
     }
-  }, [query]);
+  }, []);
 
   // File menu actions. Declared after the loaders they call: a useCallback
   // dependency array is evaluated at render, so an earlier declaration hits the TDZ.
@@ -677,28 +370,36 @@ export default function App() {
     if (tab === 'relay') loadRelay();
     if (tab === 'fleet') loadFleet();
     if (tab === 'stats') loadStats();
-    if (tab === 'search') runSearch();
   }, [tab, loadUsage, loadRelay, loadFleet, loadStats, runSearch]);
 
-  // Initial load and continuous 5s live polling
   useEffect(() => {
-    refreshStatus();
-    runSearch();
-    loadFleet();
-    loadRelay();
-    loadUsage();
-    loadStats();
+    searchController.current?.abort();
+    requestVersions.current.search++;
+    if (tab !== 'search') return;
+    searchTimer.current = setTimeout(() => runSearch(), 300);
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+      searchController.current?.abort();
+    };
+  }, [query, tab, runSearch]);
 
-    const timer = setInterval(() => {
-      refreshStatus();
-      loadFleet();
-    }, 5000);
-
+  // Poll only discovery; query and period changes load their own active tab.
+  useEffect(() => {
+    let pending = false;
+    const poll = async () => {
+      if (pending || document.hidden) return;
+      pending = true;
+      try { await Promise.all([refreshStatus(), loadFleet()]); }
+      finally { pending = false; }
+    };
+    poll();
+    const timer = setInterval(poll, 15000);
     return () => clearInterval(timer);
-  }, [refreshStatus, runSearch, loadFleet, loadRelay, loadUsage, loadStats]);
+  }, [refreshStatus, loadFleet]);
 
   const retry = useCallback(() => {
     setError(null);
+
     refreshStatus();
     if (tab === 'search') runSearch();
     if (tab === 'stats') loadStats();
@@ -706,31 +407,40 @@ export default function App() {
     if (tab === 'relay') loadRelay();
   }, [tab, refreshStatus, runSearch, loadStats, loadUsage, loadRelay]);
 
-  const copyShardText = useCallback((shard: Shard, e: React.MouseEvent) => {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'F5') { event.preventDefault(); handleRefresh(); }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault(); setTab('search');
+        requestAnimationFrame(() => document.querySelector<HTMLInputElement>('input[aria-label="Search memories"]')?.focus());
+      }
+      if (tauriInvoke && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'q') {
+        event.preventDefault(); handleExit();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [handleRefresh, handleExit]);
+
+  const copyShardText = useCallback(async (shard: Shard, e: React.MouseEvent) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(`[Memory #${shard.id}] ${shard.title}\n\n${shard.content}`);
+    try { await navigator.clipboard.writeText(`[Memory #${shard.id}] ${shard.title}\n\n${shard.content}`);
     setCopiedId(shard.id);
     setTimeout(() => setCopiedId(null), 2000);
+    } catch { setError('Copy failed. Select the memory text and copy it manually.'); }
   }, []);
 
-  const totalShards = status?.total_shards ?? 1142;
+  const totalShards = status?.total_shards ?? 0;
 
   const partitionIndices = useMemo(() => {
     const reported = status?.databases?.map((d) => d.index) ?? [];
-    const ceiling = status?.max_db_count ?? (reported.length ? Math.max(...reported) : 9);
-    return Array.from({ length: ceiling }, (_, i) => i + 1);
+    return reported;
   }, [status]);
 
   const activeDb = useMemo(
-    () => status?.active_db ?? status?.databases?.find((d) => d.is_active)?.index ?? 9,
+    () => status?.active_db ?? status?.databases?.find((d) => d.is_active)?.index ?? null,
     [status]
   );
-
-  const hitPartitions = useMemo(() => {
-    const seen = new Set<number>();
-    for (const r of results) if (typeof r._db_index === 'number') seen.add(r._db_index);
-    return [...seen].sort((a, b) => a - b);
-  }, [results]);
 
   const visibleResults = useMemo(
     () => (partition === ALL_PARTITIONS ? results : results.filter((r) => r._db_index === partition)),
@@ -745,15 +455,15 @@ export default function App() {
   const growth = useMemo(() => {
     const g = (stats?.growth ?? {}) as Record<string, unknown>;
     return {
-      new_shards: Number(g.new_shards ?? 142),
-      total_shards: Number(g.total_shards ?? 1142),
+      new_shards: Number(g.new_shards ?? 0),
+      total_shards: Number(g.total_shards ?? status?.total_shards ?? 0),
     };
   }, [stats]);
 
-  const utilityDelta = Number(stats?.utility_delta ?? 0.14);
+  const utilityDelta = Number(stats?.utility_delta ?? 0);
 
   const accelerationRate =
-    growth.total_shards > 0 ? (growth.new_shards / growth.total_shards) * 100 : 12.4;
+    growth.total_shards > 0 ? (growth.new_shards / growth.total_shards) * 100 : 0;
 
   return (
     <div className="app-container">
@@ -778,26 +488,26 @@ export default function App() {
                     <span className="shortcut">F5</span>
                   </button>
                   <button onClick={handleScan}>
-                    <span>Check All 9 Databases</span>
+                    <span>Check All {status?.databases.length ?? 0} Databases</span>
                   </button>
                   <button onClick={handleImport}>
                     <span>View Activity Log</span>
                   </button>
                   <div className="divider" />
-                  <button onClick={handleExit} className="danger-item">
+                  <button onClick={handleExit} className="danger-item" disabled={!tauriInvoke}>
                     <span>Exit</span>
                     <span className="shortcut">Ctrl+Q</span>
                   </button>
                 </div>
               )}
             </div>
-            <span className="node-tag pulsing-glow">PX13 LAPTOP</span>
+            <span className="node-tag pulsing-glow">{identity?.hostname ?? 'Discovering machine'}</span>
           </div>
 
           <div className="titlebar-center" data-tauri-drag-region>
             <span className="live-status-dot" />
             <span className="titlebar-glow">NOUGEN MEMORY HUB</span>
-            <span className="version-pill shimmer-pill">LIVE 60 FPS</span>
+
           </div>
 
           <div className="titlebar-right">
@@ -813,26 +523,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Live Animated Ticker Bar */}
-        <div className="live-ticker-wrap">
-          <div className="ticker-badge">FLEET PULSE</div>
-          <div className="ticker-track">
-            <div className="ticker-content">
-              <span>⚡ 9-DB Substrate Active (DB #9 Writing)</span>
-              <span className="ticker-sep">◈</span>
-              <span>🛰️ Apollo: 72% VRAM (Sol-Ai Online)</span>
-              <span className="ticker-sep">◈</span>
-              <span>💻 Hyperion: 44% VRAM (Gemma 4 Tactical)</span>
-              <span className="ticker-sep">◈</span>
-              <span>🍎 Phoebus: 35% VRAM (Central Backbone)</span>
-              <span className="ticker-sep">◈</span>
-              <span>📈 Cache Efficiency: 87.9% Reused</span>
-              <span className="ticker-sep">◈</span>
-              <span>💰 Free Share: 74.2% On-Device GPU</span>
-            </div>
-          </div>
-        </div>
-
         {/* Streamlined Main Header */}
         <header className="hud-header-bar">
           <div className="brand">
@@ -843,39 +533,40 @@ export default function App() {
             <div className="brand-text-block">
               <div className="brand-title-row">
                 <h1>NouGen Memory Hub</h1>
-                <span className="badge-grid glow-border">9-DB GRID</span>
+                <span className="badge-grid glow-border">{status ? `${status.databases.length}-DB GRID` : 'STORAGE UNKNOWN'}</span>
               </div>
-              <p className="tagline">Local Memory & Multi-Machine Coordination for Dave</p>
+              <p className="tagline">Local Memory & Multi-Machine Coordination</p>
             </div>
           </div>
 
           <div className="header-right">
             <span className="badge preview-mode glow-teal">
-              <span className="dot ok" /> LIVE ENGINE CONNECTED
+              <span className="dot ok" /> {status ? 'ENGINE RESPONDING' : 'ENGINE UNAVAILABLE'}
             </span>
             <span className="badge live-status glow-teal">
-              <span className={`dot ${status ? 'ok' : 'ok'}`} />
-              <strong>{(status?.total_shards ?? totalShards).toLocaleString()}</strong> memories
+              <span className={`dot ${status ? 'ok' : 'warn'}`} />
+              <strong>{status ? totalShards.toLocaleString() : 'Unavailable'}</strong> local memories
             </span>
             <div className="node-indicator glow-indigo" title="Current Active Machine">
               <span className="pulse-beacon" />
-              <span>PX13 Laptop</span>
+              <span>{identity?.hostname ?? 'Unknown machine'}</span>
             </div>
           </div>
         </header>
 
         {/* Navigation Tabs */}
-        <nav className="tabs">
+        <nav className="tabs" aria-label="Memory Hub sections">
           {TABS.map(({ key, label, icon }) => (
             <button
               key={key}
+              aria-current={tab === key ? 'page' : undefined}
               className={tab === key ? 'tab active tab-glow' : 'tab'}
               onClick={() => setTab(key)}
             >
               <span className="tab-icon bounce-hover">{icon}</span>
               <span className="tab-label">{label}</span>
-              {key === 'substrate' && <span className="tab-counter glow-pill">9 DBs</span>}
-              {key === 'fleet' && <span className="tab-counter node-live">3 Machines</span>}
+              {key === 'substrate' && <span className="tab-counter glow-pill">{status?.databases.length ?? 'Unknown'} DBs</span>}
+              {key === 'fleet' && <span className="tab-counter node-live">{fleetNodes.length} Machines</span>}
             </button>
           ))}
         </nav>
@@ -916,7 +607,7 @@ export default function App() {
                     </button>
                   )}
                 </div>
-                <button className="primary-cyber-btn ripple-btn" onClick={runSearch} disabled={busy}>
+                <button className="primary-cyber-btn ripple-btn" onClick={() => runSearch()} disabled={busy}>
                   {busy ? <span className="spinner" /> : '⚡ Search Now'}
                 </button>
               </div>
@@ -930,7 +621,7 @@ export default function App() {
                     className="tag-pill interactive-pill"
                     onClick={() => {
                       setQuery(tag);
-                      setTimeout(() => runSearch(), 50);
+
                     }}
                   >
                     #{tag}
@@ -939,7 +630,7 @@ export default function App() {
               </div>
             </div>
 
-            {results.length > 0 && (
+            {partitionIndices.length > 0 && (
               <div className="filter-row">
                 <div className="partition-chips">
                   <button
@@ -948,19 +639,19 @@ export default function App() {
                   >
                     All Databases ({results.length})
                   </button>
-                  {hitPartitions.map((idx) => (
+                  {partitionIndices.map((idx) => (
                     <button
                       key={idx}
                       className={partition === idx ? 'chip active' : 'chip'}
                       onClick={() => setPartition(idx)}
                     >
-                      Database #{idx}
+                      Database #{idx} ({results.filter(r => r._db_index === idx).length} returned)
                       {idx === activeDb ? ' ⭐' : ''}
                     </button>
                   ))}
                 </div>
                 <span className="result-count">
-                  Showing <strong>{visibleResults.length}</strong> of {results.length} memories
+                  Showing <strong>{visibleResults.length}</strong> of {results.length} returned memories
                 </span>
               </div>
             )}
@@ -983,7 +674,7 @@ export default function App() {
                 >
                   <div className="shard-head">
                     <div className="shard-title-wrap">
-                      <span className="db-badge">Database #{s._db_index ?? 9}</span>
+                      <span className="db-badge">Database #{s._db_index ?? 'Unknown'}</span>
                       <h3>{s.title}</h3>
                     </div>
                     <div className="shard-actions">
@@ -1015,11 +706,11 @@ export default function App() {
                       <div className="score-track">
                         <div
                           className="score-fill animated-shimmer"
-                          style={{ width: `${((s.final_score ?? 0.8) / maxScore) * 100}%` }}
+                          style={{ width: `${((s.final_score ?? 0) / maxScore) * 100}%` }}
                         />
                       </div>
                       <div className="score-labels">
-                        <span>Match: <strong>{Math.round((s.final_score ?? 0.85) * 100)}%</strong></span>
+                        <span>Match: <strong>{s.final_score == null ? 'Not scored' : `${Math.round(s.final_score * 100)}%`}</strong></span>
                         {s.timestamp && <span>Saved: <strong>{formatEasternTime(s.timestamp)}</strong></span>}
                       </div>
                     </div>
@@ -1036,10 +727,10 @@ export default function App() {
           <section className="panel fade-in">
             <div className="panel-intro-card neon-box">
               <div className="intro-text">
-                <h2>Memory Storage (9 Database Partitions)</h2>
+                <h2>Memory Storage ({status?.databases.length ?? 'Unknown'} Database Partitions)</h2>
                 <p>
                   Saved securely on this computer at{' '}
-                  <code>%USERPROFILE%\.nougen\shards</code>. Automatically rolls to the next partition as storage expands.
+                  <code>{identity?.vault_path ?? 'Unknown vault path'}</code>. Automatically rolls to the next partition as storage expands.
                 </p>
               </div>
               <button className="primary-cyber-btn mini ripple-btn" onClick={refreshStatus}>
@@ -1049,10 +740,10 @@ export default function App() {
 
             <div className="substrate-grid-9">
               {partitionIndices.map((idx) => {
-                const db = status?.databases?.find((d) => d.index === idx) ?? PREVIEW_STATUS.databases.find((d) => d.index === idx);
+                const db = status?.databases?.find((d) => d.index === idx);
                 const sizeMb = db ? db.size_mb : 0;
                 const shardsCount = db ? db.shards : 0;
-                const pct = Math.min(100, (sizeMb / PARTITION_CAP_MB) * 100);
+                const pct = Math.min(100, (sizeMb / (status?.partition_cap_mb ?? Infinity)) * 100);
                 const isActive = idx === activeDb;
 
                 return (
@@ -1067,11 +758,11 @@ export default function App() {
                   >
                     <div className="cell-top">
                       <span className="cell-num">Database #{idx}</span>
-                      {isActive && <span className="live-write-pill pulsing-pill">● ACTIVE WRITE</span>}
+                      {isActive && <span className="live-write-pill pulsing-pill">● DEFAULT ROUTE</span>}
                     </div>
 
                     <div className="cell-main-stat">
-                      <span className="cell-shard-val">{shardsCount.toLocaleString()}</span>
+                      <span className="cell-shard-val">{shardsCount == null ? 'Unavailable' : shardsCount.toLocaleString()}</span>
                       <span className="cell-shard-lbl">memories</span>
                     </div>
 
@@ -1099,7 +790,7 @@ export default function App() {
             <div className="panel-intro-card neon-box">
               <div className="intro-text">
                 <h2>💻 Your Active Fleet Machines</h2>
-                <p>Status, specs, and temperature telemetry for your three synchronized computers.</p>
+                <p>Registry and live probes for {fleetNodes.length} discovered machines. Missing readings are unavailable.</p>
               </div>
             </div>
 
@@ -1108,55 +799,55 @@ export default function App() {
                 <div key={node.name} className={`fleet-card card-lift ${node.status}`}>
                   <div className="fleet-card-header">
                     <div>
-                      <span className="fleet-station">{node.host}</span>
+                      <span className="fleet-station">{node.host ?? 'Unavailable'}</span>
                       <h3>{node.name}</h3>
                     </div>
                     <span className={`fleet-badge ${node.status}`}>
-                      {node.status === 'active-node' ? '● CURRENT LAPTOP' : '● ONLINE'}
+                      {node.is_local ? '● THIS MACHINE' : node.status.toUpperCase()}
                     </span>
                   </div>
 
                   <div className="fleet-roles">
                     <div className="role-item">
                       <span className="role-lbl">Agent Lead</span>
-                      <span className="role-val">{node.coach}</span>
+                      <span className="role-val">{node.coach ?? 'Unavailable'}</span>
                     </div>
                     <div className="role-item">
                       <span className="role-lbl">Model on Duty</span>
-                      <span className="role-val accent">{node.player}</span>
+                      <span className="role-val accent">{node.player ?? 'Unavailable'}</span>
                     </div>
                   </div>
 
                   <div className="fleet-hardware-box">
                     <div className="hw-row">
                       <span className="hw-lbl">Role:</span>
-                      <span className="hw-val">{node.role}</span>
+                      <span className="hw-val">{node.role ?? 'Unavailable'}</span>
                     </div>
                     <div className="hw-row">
                       <span className="hw-lbl">Graphics / GPU:</span>
-                      <span className="hw-val">{node.gpu}</span>
+                      <span className="hw-val">{node.gpu ?? 'Unavailable'}</span>
                     </div>
                     <div className="hw-row">
                       <span className="hw-lbl">Memory (RAM):</span>
-                      <span className="hw-val">{node.ram}</span>
+                      <span className="hw-val">{node.ram ?? 'Unavailable'}</span>
                     </div>
                     <div className="hw-row">
                       <span className="hw-lbl">Local IP:</span>
-                      <span className="hw-val mono">{node.ip}</span>
+                      <span className="hw-val mono">{node.ip ?? 'Unavailable'}</span>
                     </div>
                     <div className="hw-row">
                       <span className="hw-lbl">Temp / Heartbeat:</span>
-                      <span className="hw-val glow-text">{node.temperature} · {node.fps_heartbeat}</span>
+                      <span className="hw-val glow-text">{node.temperature ?? 'Unavailable'} · {node.health_status ?? 'Unprobed'}</span>
                     </div>
                   </div>
 
                   <div className="vram-section">
                     <div className="vram-header">
                       <span>GPU Memory Used</span>
-                      <span>{node.vram_used_pct}%</span>
+                      <span>{node.vram_used_pct == null ? 'Unavailable' : `${node.vram_used_pct}%`}</span>
                     </div>
                     <div className="vram-track">
-                      <div className="vram-fill animated-shimmer" style={{ width: `${node.vram_used_pct}%` }} />
+                      <div className="vram-fill animated-shimmer" style={{ width: `${node.vram_used_pct ?? 0}%` }} />
                     </div>
                   </div>
                 </div>
@@ -1165,6 +856,7 @@ export default function App() {
           </section>
         )}
 
+        {tab === "tracker" && !usage?.ledger_present && <p className="panel">No published usage records are available for this scope and period.</p>}
         {/* TAB 4: Token & Cost Meter */}
         {tab === 'tracker' && (
           <section className="panel fade-in">
@@ -1177,18 +869,18 @@ export default function App() {
                       className={machineScope === 'local' ? 'scope-chip active' : 'scope-chip'}
                       onClick={() => setMachineScope('local')}
                     >
-                      💻 This Machine Alone (PX13 · 2.80B)
+                      💻 This machine: {identity?.hostname ?? "Unknown"}
                     </button>
                     <button
                       className={machineScope === 'fleet' ? 'scope-chip active' : 'scope-chip'}
                       onClick={() => setMachineScope('fleet')}
                     >
-                      🛰️ Grand 3-Node Fleet (16.57B)
+                      🛰️ Published fleet usage
                     </button>
                   </div>
                 </div>
                 <p>
-                  {machineScope === 'local' ? '💻 Node: ProArt PX13 (Hyperion - Local Machine Alone)' : '🛰️ Aggregate: Apollo (Razer Blade) + Hyperion (PX13) + Phoebus (Mac Mini)'} · {' '}
+                  {machineScope === 'local' ? identity?.hostname ?? 'Unknown machine' : `${fleetNodes.length} registered fleet machines`} · {' '}
                   {usagePeriod === '24h' && 'Past 24 Hours of Activity'}
                   {usagePeriod === 'week' && 'Past 7 Days (Weekly Rolling)'}
                   {usagePeriod === 'month' && 'Past 30 Days (Monthly Rolling)'}
@@ -1210,17 +902,18 @@ export default function App() {
               </div>
             </div>
 
+            {usage?.ledger_present && <>
             <div className="tile-grid human-grid">
               <div className="tile neon-border card-lift">
                 <span className="tile-label">Total Volume Processed</span>
                 <div className="tile-primary-metric">
                   <span className="tile-hero-val accent">
-                    {formatCompactNumber(usage?.total_tokens ?? PREVIEW_USAGE.total_tokens)}
+                    {formatCompactNumber(usage?.total_tokens ?? 0)}
                   </span>
                   <span className="tile-hero-unit">tokens</span>
                 </div>
                 <span className="tile-sub">
-                  {(usage?.total_tokens ?? PREVIEW_USAGE.total_tokens).toLocaleString()} exact tokens · {(usage?.invocations ?? PREVIEW_USAGE.invocations).toLocaleString()} calls
+                  {(usage?.total_tokens ?? 0).toLocaleString()} published tokens · {(usage?.invocations ?? 0).toLocaleString()} calls
                 </span>
               </div>
 
@@ -1228,12 +921,12 @@ export default function App() {
                 <span className="tile-label">Context Reused (Cache)</span>
                 <div className="tile-primary-metric">
                   <span className="tile-hero-val accent-cyan">
-                    {(usage?.cache_hit_rate ?? PREVIEW_USAGE.cache_hit_rate).toFixed(1)}%
+                    {usage?.cache_hit_rate == null ? 'Unavailable' : `${usage.cache_hit_rate.toFixed(1)}%`}
                   </span>
                   <span className="tile-hero-unit">hot context</span>
                 </div>
                 <span className="tile-sub">
-                  {formatCompactNumber(usage?.cached_tokens ?? PREVIEW_USAGE.cached_tokens)} tokens kept in hot memory
+                  {formatCompactNumber(usage?.cached_tokens ?? 0)} reported cached-input tokens
                 </span>
               </div>
 
@@ -1241,21 +934,21 @@ export default function App() {
                 <span className="tile-label">Cold Turkey Sticker Price</span>
                 <div className="tile-primary-metric">
                   <span className="tile-hero-val accent-gold">
-                    ${(usage?.estimated_cost ?? PREVIEW_USAGE.estimated_cost).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    {usage?.estimated_cost == null ? 'Unavailable' : `$${usage.estimated_cost.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`}
                   </span>
                 </div>
-                <span className="tile-sub">Raw un-cached list price before subscription</span>
+                <span className="tile-sub">No recorded price is substituted with a guess</span>
               </div>
 
               <div className="tile neon-border card-lift green-border">
-                <span className="tile-label">Zero-Cost Local GPU</span>
+                <span className="tile-label">Recorded Local Share</span>
                 <div className="tile-primary-metric">
                   <span className="tile-hero-val accent-green glow-green">
-                    {(usage?.free_share ?? PREVIEW_USAGE.free_share).toFixed(1)}%
+                    {usage?.free_share == null ? 'Unavailable' : `${usage.free_share.toFixed(1)}%`}
                   </span>
                   <span className="tile-hero-unit">on-device</span>
                 </div>
-                <span className="tile-sub">Runs 100% free on your local RTX GPUs</span>
+                <span className="tile-sub">Share requires published execution-source records</span>
               </div>
             </div>
 
@@ -1269,7 +962,7 @@ export default function App() {
               </div>
 
               <div className="human-ledger-body">
-                {(usage?.by_model ?? PREVIEW_USAGE.by_model).map((m) => {
+                {(usage?.by_model ?? []).map((m) => {
                   const meta = getModelDisplayMeta(m.model, m.provider);
                   return (
                     <div key={`${m.provider}/${m.model}`} className="human-ledger-row row-hover">
@@ -1294,16 +987,16 @@ export default function App() {
                       </div>
 
                       <div className="col-stat text-right">
-                        <span className="stat-highlight">{m.invocations.toLocaleString()}</span>
+                        <span className="stat-highlight">{m.invocations == null ? 'Unavailable' : m.invocations.toLocaleString()}</span>
                         <span className="stat-exact-sub">invocations</span>
                       </div>
 
                       <div className="col-cost text-right">
                         {meta.isLocal ? (
-                          <span className="badge-free-gpu glow-green">100% FREE</span>
+                          <span className="badge-free-gpu glow-green">Price unavailable</span>
                         ) : (
                           <span className="cold-cost-text">
-                            ${m.estimated_cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            {m.estimated_cost == null ? 'Unavailable' : `$${m.estimated_cost.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`}
                           </span>
                         )}
                       </div>
@@ -1312,6 +1005,7 @@ export default function App() {
                 })}
               </div>
             </div>
+            </>}
           </section>
         )}
 
@@ -1329,7 +1023,7 @@ export default function App() {
             </div>
 
             <div className="relay-feed-grid">
-              {(relay.length > 0 ? relay : PREVIEW_RELAY).map((h, idx) => (
+              {relay.map((h, idx) => (
                 <article
                   key={h.id}
                   style={{ animationDelay: `${idx * 0.08}s` }}
@@ -1337,7 +1031,7 @@ export default function App() {
                 >
                   <div className="relay-pro-head">
                     <div className="agent-badge-wrap">
-                      <span className="agent-name">{h.agent.toUpperCase()}</span>
+                      <span className="agent-name">{(h.agent ?? 'Unknown agent').toUpperCase()}</span>
                       <span className="machine-tag">on {h.machine}</span>
                     </div>
                     <span className={`status-pill ${h.live_status}`}>
@@ -1381,31 +1075,31 @@ export default function App() {
             <div className="tile-grid">
               <div className="tile card-lift">
                 <span className="tile-label">New Memories Saved</span>
-                <span className="tile-value accent">{growth.new_shards.toLocaleString()}</span>
+                <span className="tile-value accent">{stats ? growth.new_shards.toLocaleString() : 'Unavailable'}</span>
                 <span className="tile-sub">in the selected period</span>
               </div>
               <div className="tile card-lift">
                 <span className="tile-label">Total Memory Bank</span>
-                <span className="tile-value">{growth.total_shards.toLocaleString()}</span>
+                <span className="tile-value">{stats ? growth.total_shards.toLocaleString() : 'Unavailable'}</span>
                 <span className="tile-sub">total memories stored</span>
               </div>
               <div className="tile card-lift">
                 <span className="tile-label">Helpfulness Gain</span>
                 <span className={`tile-value ${utilityDelta >= 0 ? 'accent-green glow-green' : 'warn'}`}>
-                  {utilityDelta >= 0 ? '+' : ''}{utilityDelta.toFixed(2)}
+                  {stats?.utility_delta == null ? 'Unavailable' : `${utilityDelta >= 0 ? '+' : ''}${utilityDelta.toFixed(2)}`}
                 </span>
                 <span className="tile-sub">memory quality drift</span>
               </div>
               <div className="tile card-lift">
                 <span className="tile-label">Growth Rate</span>
-                <span className="tile-value">{accelerationRate.toFixed(1)}%</span>
+                <span className="tile-value">{stats ? `${accelerationRate.toFixed(1)}%` : 'Unavailable'}</span>
                 <span className="tile-sub">expansion speed</span>
               </div>
             </div>
 
             <details className="raw-json-box">
               <summary>View Technical Data</summary>
-              <pre className="stats-code-block">{JSON.stringify(stats ?? PREVIEW_STATUS, null, 2)}</pre>
+              <pre className="stats-code-block">{JSON.stringify(stats ?? { available: false }, null, 2)}</pre>
             </details>
           </section>
         )}
@@ -1415,7 +1109,7 @@ export default function App() {
             <dialog ref={memoryDialog} className="shard-modal pop-in" aria-labelledby="memory-dialog-title" onCancel={() => setSelectedShard(null)}>
               <div className="modal-header">
                 <div>
-                  <span className="db-badge">DATABASE #{selectedShard._db_index ?? 9}</span>
+                  <span className="db-badge">DATABASE #{selectedShard._db_index ?? 'Unknown'}</span>
                   <h2 id="memory-dialog-title">{selectedShard.title}</h2>
                 </div>
                 <button className="modal-close-btn" aria-label="Close memory" onClick={() => setSelectedShard(null)}>
@@ -1426,10 +1120,17 @@ export default function App() {
               <div className="modal-body">
                 <div className="modal-meta-bar">
                   <span>Memory ID: <strong>#{selectedShard.id}</strong></span>
-                  <span>Match Rating: <strong>{Math.round((selectedShard.final_score ?? 0.85) * 100)}%</strong></span>
+                  <span>Search relevance: <strong>{selectedShard.final_score == null ? 'Not scored' : `${Math.round(selectedShard.final_score * 100)}%`}</strong></span>
                   {selectedShard.timestamp && <span>Saved: <strong>{formatEasternTime(selectedShard.timestamp)}</strong></span>}
                 </div>
 
+                <dl className="memory-evidence">
+                  <dt>Vault observed on</dt><dd>{identity?.hostname ?? 'Unavailable'}</dd>
+                  <dt>Vault path</dt><dd>{identity?.vault_path ?? 'Unavailable'}</dd>
+                  <dt>Record length</dt><dd>{selectedShard.content.length.toLocaleString()} characters</dd>
+                  <dt>Origin machine / agent / session</dt><dd>Not resolved from structured provenance</dd>
+                  <dt>Related shards / relay ancestry / correction</dt><dd>Not resolved</dd>
+                </dl>
                 <div className="modal-content-box">
                   <pre>{selectedShard.content}</pre>
                 </div>
@@ -1456,15 +1157,11 @@ export default function App() {
         <div className="footer-dock-left">
           <div className="dock-item">
             <span className="dock-icon">💾</span>
-            <code className="dock-code">%USERPROFILE%\.nougen\shards</code>
-            <span className="dock-tag">9 DBs</span>
+            <code className="dock-code">{identity?.vault_path ?? 'Unknown vault path'}</code>
+            <span className="dock-tag">{status?.databases.length ?? 'Unknown'} DBs</span>
           </div>
           <span className="dock-sep">·</span>
-          <div className="fleet-pings-dock">
-            <span className="ping-pill">Apollo ●</span>
-            <span className="ping-pill active-pill">Hyperion ●</span>
-            <span className="ping-pill">Phoebus ●</span>
-          </div>
+          <div className="fleet-pings-dock">{fleetNodes.map(node => <span key={node.name} className={`ping-pill ${node.is_local ? 'active-pill' : ''}`}>{node.name} · {node.status}</span>)}</div>
         </div>
 
         <div className="footer-dock-center">
@@ -1478,7 +1175,7 @@ export default function App() {
           <div className="hotkeys-dock">
             <span><kbd>Ctrl</kbd>+<kbd>F</kbd> Search</span>
             <span><kbd>F5</kbd> Refresh</span>
-            <span><kbd>Ctrl</kbd>+<kbd>Q</kbd> Exit</span>
+            {tauriInvoke && <span><kbd>Ctrl</kbd>+<kbd>Q</kbd> Exit</span>}
           </div>
           <span className="dock-sep">·</span>
           <span className="brand-copyright">Who Visions LLC</span>

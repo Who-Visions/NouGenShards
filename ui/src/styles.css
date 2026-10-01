@@ -1232,8 +1232,8 @@ body {
 /* Fleet Topology Cards */
 .fleet-node-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--fleet-card-min)), 1fr));
+  gap: var(--cluster-gap);
 }
 
 .fleet-card {
@@ -2403,3 +2403,29 @@ summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 
 /* Status remains beside its task; decorative telemetry chrome is suppressed. */
 .live-ticker-wrap, .version-pill { display: none; }
+
+/* Fleet cards wrap to their available panel width, including split views. */
+.fleet-card { min-width: 0; container-type: inline-size; }
+.fleet-card-header { flex-wrap: wrap; gap: 12px; }
+.fleet-card-header > div { min-width: 0; flex: 1 1 10rem; }
+.fleet-badge { flex-shrink: 0; white-space: nowrap; }
+.fleet-station, .role-val, .hw-val { overflow-wrap: anywhere; }
+.role-item, .hw-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 12px; align-items: baseline; }
+.role-val { text-align: right; }
+.vram-header { flex-wrap: wrap; gap: 8px; }
+@container (max-width: 18rem) {
+  .role-item, .hw-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .role-val, .hw-val { text-align: left; }
+}
+@media (max-width: 1100px) {
+  .hud-header-bar { flex-wrap: wrap; gap: 16px; }
+  .header-right { flex-wrap: wrap; gap: 12px; }
+  .tabs { overflow-x: auto; }
+  .tab { flex-shrink: 0; }
+  .statusbar { flex-wrap: wrap; gap: 12px; height: auto; }
+}
+
+.memory-evidence { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: var(--space-3); margin-block: var(--space-4); overflow-wrap: anywhere; }
+.memory-evidence dt { color: var(--muted); }
+.memory-evidence dd { margin: 0; }
+@media (max-width: 760px) { .memory-evidence { grid-template-columns: minmax(0, 1fr); } }

@@ -49,25 +49,43 @@ def _resolve_claims_dir() -> Path:
             continue
     return Path.home() / "Outpost" / "NouGenRelay" / ".handoffs" / "claims"
 
+def _resolve_agent() -> str:
+    return os.environ.get("NOUGEN_AGENT") or os.environ.get("AGENT") or "antigravity"
+
+
+def _resolve_machine() -> str:
+    return (os.environ.get("NOUGEN_NODE") or os.environ.get("NOUGEN_MACHINE") or os.environ.get("COMPUTERNAME") or socket.gethostname()).lower()
+
+
+def _resolve_ttl() -> float:
+    try:
+        return float(os.environ.get("NOUGEN_CLAIM_TTL_HOURS", 8.0))
+    except (ValueError, TypeError):
+        return 8.0
+
+
 CLAIMS_DIR = _resolve_claims_dir()
-AGENT = os.environ.get("NOUGEN_AGENT", "antigravity")
-MACHINE = os.environ.get("COMPUTERNAME", socket.gethostname()).lower()
-TTL_HOURS = float(os.environ.get("NOUGEN_CLAIM_TTL_HOURS", 8))
+AGENT = _resolve_agent()
+MACHINE = _resolve_machine()
+TTL_HOURS = _resolve_ttl()
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _my_claim_path() -> Path:
-    return CLAIMS_DIR / f"{MACHINE}__{AGENT}.json"
+def _my_claim_path(agent: str | None = None, machine: str | None = None) -> Path:
+    a = agent or _resolve_agent()
+    m = (machine or _resolve_machine()).lower()
+    return _resolve_claims_dir() / f"{m}__{a}.json"
 
 
 def active_claims() -> list[dict]:
     out = []
-    if not CLAIMS_DIR.is_dir():
+    cdir = _resolve_claims_dir()
+    if not cdir.is_dir():
         return out
-    for f in CLAIMS_DIR.glob("*.json"):
+    for f in cdir.glob("*.json"):
         try:
             c = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):

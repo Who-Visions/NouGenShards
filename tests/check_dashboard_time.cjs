@@ -1,0 +1,11 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const source=fs.readFileSync('ui/src/App.tsx','utf8');
+const helpers=source.slice(source.indexOf('function formatEasternTime'),source.indexOf('type InvokeFn')).replace('dateInput?: string','dateInput').replaceAll('): string',')');
+const context={};vm.createContext(context);vm.runInContext(helpers,context);
+assert.match(context.formatEasternTime('2026-09-30 15:00:00'),/11:00:00 AM EDT/);
+assert.match(context.formatEasternTime('2026-12-01T15:00:00Z'),/10:00:00 AM EST/);
+assert.equal(context.formatEasternTime('2026-09-30T15:00:00+00:00'),context.formatEasternTime('2026-09-30 15:00:00'));
+assert.equal(context.formatEasternTime('invalid'),'invalid');
+console.log('Timezone regression checks passed');
