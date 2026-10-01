@@ -22,5 +22,13 @@
   {
     "change": "Provide explicit keyboard-accessible Inspect action instead of a clickable article.",
     "selector": ".shard-actions button"
+  },
+  {
+    "change": "Use container-fitting columns with fleet-card-min and cluster-gap tokens; never force three columns into a narrow pane.",
+    "selector": ".fleet-node-grid"
+  },
+  {
+    "change": "Preserve label/value grouping; stack inside cards below 18rem and wrap long values.",
+    "selector": ".hw-row, .role-item"
   }
 ]

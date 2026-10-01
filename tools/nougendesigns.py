@@ -262,7 +262,24 @@ def main():
     p.add_argument('source', type=Path); p.add_argument('brief', type=Path)
     p.add_argument('spec', type=Path); p.add_argument('output', type=Path)
     p = sub.add_parser('diff'); p.add_argument('before', type=Path); p.add_argument('after', type=Path)
+    p = sub.add_parser('discover', help='find bounded arXiv design candidates; does not mutate a design package')
+    p.add_argument('seeds', nargs='+')
+    p.add_argument('--depth', type=int, choices=range(4), default=1)
+    p.add_argument('--max-papers', type=int, default=8)
+    p.add_argument('--cache', type=Path, default=Path('.cache/design-discovery'))
+    p.add_argument('--output', type=Path, default=Path('designs/discovery.json'))
     args = parser.parse_args()
+    if args.command == 'discover':
+        from nougendesign_discover import discover, Fetcher
+        if not 1 <= args.max_papers <= 100:
+            raise ValueError('max-papers must be 1..100')
+        result = discover(args.seeds, Fetcher(args.cache), args.depth, args.max_papers)
+        result['adoption'] = 'candidate references only; review full source and applicability before editing design.json'
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(canonical(result), encoding='utf-8')
+        print(canonical({'papers': len(result['papers']), 'output': str(args.output), 'designMutated': False}))
+        return 0
+
     if args.command == 'inspect':
         print(canonical(inspect_source(args.source))); return 0
     if args.command == 'analyze':

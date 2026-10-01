@@ -44,3 +44,21 @@ Donor conventions: https://github.com/google-labs-code/design.md and the existin
 NouGen design skill. No donor source is vendored. Local Ollama drafted the
 design intent; Codex reviewed it and implemented the compiler. NouGenOpen's
 Qwen review supplied acceptance-test categories.
+
+## Recursive research is part of NouGenDesigns
+
+```sh
+python tools/nougendesigns.py discover 2609.00476 --depth 2 --max-papers 8
+```
+
+Use discover, review full sources, morph applicable principles in `design.json`,
+compile, lint/check, then reassess the rendered interface. Discovery is the
+explicit network stage; compilation stays deterministic and offline.
+The catalogue records citation parents, depth, metadata, topic matches and errors.
+Candidates become authority only after source and applicability review with
+observed evidence separated from inferred adaptations.
+
+See [discovery.json](discovery.json), [discovery-guide.md](discovery-guide.md),
+and the reviewed [spatial adaptation](spatial-composition-morph.md).
+
+Workspace-awareness rules and their evidence limits: [1910.03380 morph](workspace-awareness-morph.md).
