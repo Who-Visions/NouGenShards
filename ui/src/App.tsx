@@ -7,20 +7,21 @@ function formatEasternTime(dateInput?: string): string {
   if (!dateInput) return 'Recently';
   try {
     let dateStr = dateInput;
-    if (!dateStr.includes('Z') && !dateStr.includes('+') && !dateStr.includes('-')) {
+    if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(dateStr) && /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(dateStr)) {
       dateStr = dateStr.replace(' ', 'T') + 'Z';
     }
     const d = new Date(dateStr);
     if (isNaN(d.getTime())) return dateInput;
     return d.toLocaleString('en-US', {
       timeZone: 'America/New_York',
+      timeZoneName: 'short',
       month: 'short',
       day: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
       second: '2-digit',
       hour12: true,
-    }) + ' EDT';
+    });
   } catch {
     return dateInput;
   }
@@ -29,11 +30,12 @@ function formatEasternTime(dateInput?: string): string {
 function getLiveEasternClock(): string {
   return new Date().toLocaleTimeString('en-US', {
     timeZone: 'America/New_York',
+      timeZoneName: 'short',
     hour: 'numeric',
     minute: '2-digit',
     second: '2-digit',
     hour12: true,
-  }) + ' EDT';
+  });
 }
 
 type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -64,7 +66,7 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-async function callEngine(cmd: string, args: Record<string, unknown>): Promise<unknown> {
+async function callEngine(cmd: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
   if (tauriInvoke) {
     return withTimeout(tauriInvoke(cmd, args), CLIENT_TIMEOUT_MS);
   }
@@ -72,12 +74,15 @@ async function callEngine(cmd: string, args: Record<string, unknown>): Promise<u
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(args)) if (value != null) params.set(key, String(value));
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS);
+  const abort = () => controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted) controller.abort();
+  const timer = setTimeout(abort, CLIENT_TIMEOUT_MS);
   try {
     const response = await fetch(`/api/${cmd}?${params}`, { signal: controller.signal });
     if (!response.ok) throw new Error(`${cmd} unavailable (${response.status})`);
     return await response.text();
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
 
 }
 
@@ -192,6 +197,10 @@ export default function App() {
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [clockEastern, setClockEastern] = useState<string>(getLiveEasternClock);
   const requestVersions = useRef({usage: 0, stats: 0, search: 0});
+  const queryRef = useRef(query);
+  queryRef.current = query;
+  const searchController = useRef<AbortController | null>(null);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const memoryDialog = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -301,25 +310,29 @@ export default function App() {
     }
   }, []);
 
-  const runSearch = useCallback(async () => {
+  const runSearch = useCallback(async (searchQuery?: string) => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchController.current?.abort();
+    const controller = new AbortController();
+    searchController.current = controller;
     const version = ++requestVersions.current.search;
     setResults([]);
     setBusy(true);
     try {
-      const raw = (await callEngine('search_shards', { query })) as string;
-      if (version !== requestVersions.current.search) return;
+      const raw = (await callEngine('search_shards', { query: searchQuery ?? queryRef.current }, controller.signal)) as string;
+      if (controller.signal.aborted || version !== requestVersions.current.search) return;
       const parsed = JSON.parse(raw);
       setResults(parsed.length > 0 ? parsed : []);
       setPartition(ALL_PARTITIONS);
 
     } catch (e) {
-      if (version !== requestVersions.current.search) return;
+      if (controller.signal.aborted || version !== requestVersions.current.search) return;
       setError(String(e));
       setResults([]);
     } finally {
       if (version === requestVersions.current.search) setBusy(false);
     }
-  }, [query]);
+  }, []);
 
   // File menu actions. Declared after the loaders they call: a useCallback
   // dependency array is evaluated at render, so an earlier declaration hits the TDZ.
@@ -357,8 +370,18 @@ export default function App() {
     if (tab === 'relay') loadRelay();
     if (tab === 'fleet') loadFleet();
     if (tab === 'stats') loadStats();
-    if (tab === 'search') runSearch();
   }, [tab, loadUsage, loadRelay, loadFleet, loadStats, runSearch]);
+
+  useEffect(() => {
+    searchController.current?.abort();
+    requestVersions.current.search++;
+    if (tab !== 'search') return;
+    searchTimer.current = setTimeout(() => runSearch(), 300);
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+      searchController.current?.abort();
+    };
+  }, [query, tab, runSearch]);
 
   // Poll only discovery; query and period changes load their own active tab.
   useEffect(() => {
@@ -384,11 +407,27 @@ export default function App() {
     if (tab === 'relay') loadRelay();
   }, [tab, refreshStatus, runSearch, loadStats, loadUsage, loadRelay]);
 
-  const copyShardText = useCallback((shard: Shard, e: React.MouseEvent) => {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'F5') { event.preventDefault(); handleRefresh(); }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault(); setTab('search');
+        requestAnimationFrame(() => document.querySelector<HTMLInputElement>('input[aria-label="Search memories"]')?.focus());
+      }
+      if (tauriInvoke && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'q') {
+        event.preventDefault(); handleExit();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [handleRefresh, handleExit]);
+
+  const copyShardText = useCallback(async (shard: Shard, e: React.MouseEvent) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(`[Memory #${shard.id}] ${shard.title}\n\n${shard.content}`);
+    try { await navigator.clipboard.writeText(`[Memory #${shard.id}] ${shard.title}\n\n${shard.content}`);
     setCopiedId(shard.id);
     setTimeout(() => setCopiedId(null), 2000);
+    } catch { setError('Copy failed. Select the memory text and copy it manually.'); }
   }, []);
 
   const totalShards = status?.total_shards ?? 0;
@@ -461,7 +500,7 @@ export default function App() {
                     <span>View Activity Log</span>
                   </button>
                   <div className="divider" />
-                  <button onClick={handleExit} className="danger-item">
+                  <button onClick={handleExit} className="danger-item" disabled={!tauriInvoke}>
                     <span>Exit</span>
                     <span className="shortcut">Ctrl+Q</span>
                   </button>
@@ -474,7 +513,7 @@ export default function App() {
           <div className="titlebar-center" data-tauri-drag-region>
             <span className="live-status-dot" />
             <span className="titlebar-glow">NOUGEN MEMORY HUB</span>
-            <span className="version-pill shimmer-pill">LIVE 60 FPS</span>
+
           </div>
 
           <div className="titlebar-right">
@@ -522,10 +561,11 @@ export default function App() {
         </header>
 
         {/* Navigation Tabs */}
-        <nav className="tabs">
+        <nav className="tabs" aria-label="Memory Hub sections">
           {TABS.map(({ key, label, icon }) => (
             <button
               key={key}
+              aria-current={tab === key ? 'page' : undefined}
               className={tab === key ? 'tab active tab-glow' : 'tab'}
               onClick={() => setTab(key)}
             >
@@ -573,7 +613,7 @@ export default function App() {
                     </button>
                   )}
                 </div>
-                <button className="primary-cyber-btn ripple-btn" onClick={runSearch} disabled={busy}>
+                <button className="primary-cyber-btn ripple-btn" onClick={() => runSearch()} disabled={busy}>
                   {busy ? <span className="spinner" /> : '⚡ Search Now'}
                 </button>
               </div>
@@ -587,7 +627,7 @@ export default function App() {
                     className="tag-pill interactive-pill"
                     onClick={() => {
                       setQuery(tag);
-                      setTimeout(() => runSearch(), 50);
+
                     }}
                   >
                     #{tag}
@@ -1134,7 +1174,7 @@ export default function App() {
           <div className="hotkeys-dock">
             <span><kbd>Ctrl</kbd>+<kbd>F</kbd> Search</span>
             <span><kbd>F5</kbd> Refresh</span>
-            <span><kbd>Ctrl</kbd>+<kbd>Q</kbd> Exit</span>
+            {tauriInvoke && <span><kbd>Ctrl</kbd>+<kbd>Q</kbd> Exit</span>}
           </div>
           <span className="dock-sep">·</span>
           <span className="brand-copyright">Who Visions LLC</span>

@@ -60,6 +60,8 @@ function liveNougenApiPlugin() {
       timeout: 20000, maxBuffer: 4 * 1024 * 1024,
     }, (error, stdout) => error ? reject(error) : resolve(stdout.trim()));
   });
+  let activeSearches = 0;
+  const periods = new Set(["24h", "week", "month", "quarter", "year", "all"]);
   let fleetCache: { value: string; expires: number } | undefined;
   let fleetPending: Promise<string> | undefined;
 
@@ -84,31 +86,28 @@ function liveNougenApiPlugin() {
           // 2. Live Full-Text Search (Direct SQLite 9-DB Grid)
           if (endpoint === 'search_shards') {
             const query = url.searchParams.get('query') || '';
-            execFile(
-              pythonPath,
-              ['-m', 'nougen_shards.dynamic_api', 'search', query],
-              {
-                cwd: projectRoot,
-                env: {
-                  ...process.env,
-                  PYTHONPATH: path.join(projectRoot, 'src'),
-                },
-                maxBuffer: 25 * 1024 * 1024,
-              },
-              (err, stdout) => {
-                if (err || !stdout || !stdout.trim()) {
-                  res.statusCode = 503; res.end(JSON.stringify({ error: 'Memory search unavailable' }));
-                  return;
-                }
-                res.end(stdout.trim());
-              }
-            );
+            if (query.length > 2000) { res.statusCode = 400; res.end(JSON.stringify({error: 'Query too long'})); return; }
+            if (activeSearches >= 2) { res.statusCode = 429; res.end(JSON.stringify({error: 'Search busy; retry shortly'})); return; }
+            activeSearches++;
+            const child = execFile(pythonPath, ['-m', 'nougen_shards.dynamic_api', 'search', query], {
+              cwd: projectRoot, env: {...process.env, PYTHONPATH: path.join(projectRoot, 'src'), PYTHONUTF8: '1'},
+              timeout: 30000, maxBuffer: 4 * 1024 * 1024,
+            }, (err, stdout) => {
+              activeSearches--;
+              res.removeListener('close', cancel);
+              if (res.destroyed) return;
+              if (err || !stdout.trim()) { res.statusCode = 503; res.end(JSON.stringify({error: 'Memory search unavailable'})); return; }
+              res.end(stdout.trim());
+            });
+            const cancel = () => { if (!res.writableEnded) child.kill(); };
+            res.once('close', cancel);
             return;
           }
 
           // 3. Live Growth Stats
           if (endpoint === 'memory_stats') {
             const period = url.searchParams.get('period') || 'week';
+            if (!periods.has(period)) { res.statusCode = 400; res.end(JSON.stringify({error: 'Invalid period'})); return; }
             try {
               const out = await runPythonCli(['stats', '--period', period, '--json']);
               res.end(out);
@@ -125,7 +124,9 @@ function liveNougenApiPlugin() {
           // 5. Live Token Tracker Usage (from session_costs SQLite DB + Dailies)
           if (endpoint === 'token_usage') {
             const period = url.searchParams.get('period') || 'week';
+            if (!periods.has(period)) { res.statusCode = 400; res.end(JSON.stringify({error: 'Invalid period'})); return; }
             const scope = url.searchParams.get('scope') || 'local';
+            if (!['local', 'fleet'].includes(scope)) { res.statusCode = 400; res.end(JSON.stringify({error: 'Invalid scope'})); return; }
             execFile(
               pythonPath,
               ['-m', 'nougen_shards.dynamic_api', 'usage', period, scope],
@@ -160,7 +161,7 @@ function liveNougenApiPlugin() {
           next();
         } catch (err: any) {
           res.statusCode = 500;
-          res.end(JSON.stringify({ error: err?.message || String(err) }));
+          res.end(JSON.stringify({ error: 'Local service unavailable; retry the request' }));
         }
       });
     },
