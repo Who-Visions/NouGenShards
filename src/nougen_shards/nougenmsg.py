@@ -1361,27 +1361,27 @@ class NouGenMsgBus:
                 if not isinstance(data, dict):
                     continue
                 identity = data.get("message_id") or "|".join(
-                        str(data.get(k, "")) for k in ("source", "text", "content", "timestamp"))
-                    if identity in seen:
-                        continue
+                    str(data.get(k, "")) for k in ("source", "text", "content", "timestamp"))
+                if identity in seen:
+                    continue
 
-                    content_str = (
-                        str(data.get("text", "")) + " " +
-                        str(data.get("content", "")) + " " +
-                        str(data.get("sender", "")) + " " +
-                        str(data.get("source", "")) + " " +
-                        str(data.get("message_id", ""))
-                    ).lower()
+                content_str = (
+                    str(data.get("text", "")) + " " +
+                    str(data.get("content", "")) + " " +
+                    str(data.get("sender", "")) + " " +
+                    str(data.get("source", "")) + " " +
+                    str(data.get("message_id", ""))
+                ).lower()
 
-                    if q in content_str:
-                        seen.add(identity)
-                        data["_file"] = os.path.basename(f)
-                        data["_mtime"] = os.path.getmtime(f)
-                        if "text" not in data and "content" in data:
-                            data["text"] = data["content"]
-                        if not data.get("sender") and data.get("source"):
-                            data["sender"] = data["source"]
-                        matches.append(data)
+                if q in content_str:
+                    seen.add(identity)
+                    data["_file"] = os.path.basename(f)
+                    data["_mtime"] = os.path.getmtime(f)
+                    if "text" not in data and "content" in data:
+                        data["text"] = data["content"]
+                    if not data.get("sender") and data.get("source"):
+                        data["sender"] = data["source"]
+                    matches.append(data)
             except Exception:
                 continue
         return matches

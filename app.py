@@ -3561,6 +3561,164 @@ def mrsb_recurse(unit: Optional[int] = None) -> dict:
     return mrsb.get_recursion_map(unit)
 
 
+# --- Canonical arXiv Radar & Lab Watch MCP Tools & Routes (Who-Visions/nougen-radar) ---
+
+def _get_arxiv_mcp():
+    try:
+        import sys
+        from pathlib import Path
+        tools_dir = Path(__file__).resolve().parent / "tools"
+        if str(tools_dir) not in sys.path:
+            sys.path.insert(0, str(tools_dir))
+        home_tools = Path.home() / ".nougen" / "tools"
+        if home_tools.exists() and str(home_tools) not in sys.path:
+            sys.path.insert(0, str(home_tools))
+        import mcp_server as arxiv_server
+        return arxiv_server
+    except Exception as exc:
+        logger.warning(f"Failed to import arXiv MCP server: {exc}")
+        return None
+
+
+@node_mcp.tool()
+@_offloaded
+def arxiv_capabilities() -> str:
+    """Return the arXiv MCP handlers actually available in this process."""
+    srv = _get_arxiv_mcp()
+    if srv:
+        return srv.arxiv_capabilities()
+    return json.dumps({
+        "ok": False,
+        "mutation_enabled": False,
+        "capabilities": [],
+        "error": "arxiv mcp_server module not loaded"
+    })
+
+
+@node_mcp.tool()
+@_offloaded
+def arxiv_radar(
+    channels: Optional[List[str]] = None,
+    mode: str = "preview",
+    limit: int = 25,
+    commit: bool = False,
+    broadcast_target: Optional[str] = None,
+) -> str:
+    """Scan current arXiv channels through NouGen's canonical radar (read-only preview by default)."""
+    srv = _get_arxiv_mcp()
+    if srv and hasattr(srv, "arxiv_radar"):
+        return srv.arxiv_radar(channels=channels, mode=mode, limit=limit, commit=commit, broadcast_target=broadcast_target)
+    return json.dumps({"ok": False, "status": "unavailable", "error": "arxiv_radar unavailable"})
+
+
+@node_mcp.tool()
+@_offloaded
+def arxiv_lab_watch(
+    channel: str = "cs.AR",
+    limit: int = 25,
+    backfill: bool = False,
+    commit: bool = False,
+) -> str:
+    """Screen an arXiv lab channel for NouGen architecture graft candidates. Novelty is unjudged."""
+    srv = _get_arxiv_mcp()
+    if srv and hasattr(srv, "arxiv_lab_watch"):
+        return srv.arxiv_lab_watch(channel=channel, limit=limit, backfill=backfill, commit=commit)
+    return json.dumps({"ok": False, "status": "unavailable", "error": "arxiv_lab_watch unavailable"})
+
+
+@node_mcp.tool()
+@_offloaded
+def arxiv_paper(
+    ref: str,
+    action: str = "lookup",
+    pattern: Optional[str] = None,
+    refresh: bool = False,
+    max_chars: int = 24000,
+) -> str:
+    """Inspect one arXiv paper: lookup metadata, bounded fulltext, or claim regex search in body."""
+    srv = _get_arxiv_mcp()
+    if srv and hasattr(srv, "arxiv_paper"):
+        return srv.arxiv_paper(ref=ref, action=action, pattern=pattern, refresh=refresh, max_chars=max_chars)
+    return json.dumps({"ok": False, "status": "unavailable", "error": "arxiv_paper unavailable"})
+
+
+@node_mcp.tool()
+@_offloaded
+def morph_gate(ref: str, claims: List[str]) -> str:
+    """Check key claim regexes against an arXiv paper body for NouGenMorph compatibility."""
+    srv = _get_arxiv_mcp()
+    if srv and hasattr(srv, "morph_gate"):
+        return srv.morph_gate(ref=ref, claims=claims)
+    return json.dumps({"ok": False, "status": "unavailable", "error": "morph_gate unavailable"})
+
+
+class ArxivRadarRequest(BaseModel):
+    channels: Optional[List[str]] = None
+    mode: str = "preview"
+    limit: int = 25
+    commit: bool = False
+    broadcast_target: Optional[str] = None
+
+
+class ArxivLabWatchRequest(BaseModel):
+    channel: str = "cs.AR"
+    limit: int = 25
+    backfill: bool = False
+    commit: bool = False
+
+
+class ArxivPaperRequest(BaseModel):
+    ref: str
+    action: str = "lookup"
+    pattern: Optional[str] = None
+    refresh: bool = False
+    max_chars: int = 24000
+
+
+class MorphGateRequest(BaseModel):
+    ref: str
+    claims: List[str]
+
+
+@app.get("/arxiv/capabilities")
+def arxiv_capabilities_endpoint():
+    """Return the arXiv MCP handlers actually available in this process."""
+    raw = arxiv_capabilities.__wrapped__() if hasattr(arxiv_capabilities, "__wrapped__") else arxiv_capabilities()
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+@app.post("/arxiv/radar")
+def arxiv_radar_endpoint(req: ArxivRadarRequest):
+    """Scan current arXiv channels through NouGen's canonical radar."""
+    fn = arxiv_radar.__wrapped__ if hasattr(arxiv_radar, "__wrapped__") else arxiv_radar
+    raw = fn(channels=req.channels, mode=req.mode, limit=req.limit, commit=req.commit, broadcast_target=req.broadcast_target)
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+@app.post("/arxiv/lab-watch")
+def arxiv_lab_watch_endpoint(req: ArxivLabWatchRequest):
+    """Screen an arXiv lab channel for NouGen architecture graft candidates."""
+    fn = arxiv_lab_watch.__wrapped__ if hasattr(arxiv_lab_watch, "__wrapped__") else arxiv_lab_watch
+    raw = fn(channel=req.channel, limit=req.limit, backfill=req.backfill, commit=req.commit)
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+@app.post("/arxiv/paper")
+def arxiv_paper_endpoint(req: ArxivPaperRequest):
+    """Inspect one arXiv paper."""
+    fn = arxiv_paper.__wrapped__ if hasattr(arxiv_paper, "__wrapped__") else arxiv_paper
+    raw = fn(ref=req.ref, action=req.action, pattern=req.pattern, refresh=req.refresh, max_chars=req.max_chars)
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+@app.post("/arxiv/morph-gate")
+def morph_gate_endpoint(req: MorphGateRequest):
+    """Check key claim regexes against the arXiv paper BODY."""
+    fn = morph_gate.__wrapped__ if hasattr(morph_gate, "__wrapped__") else morph_gate
+    raw = fn(ref=req.ref, claims=req.claims)
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
 # --- Cortex HUD UI Logic ---
 
 
