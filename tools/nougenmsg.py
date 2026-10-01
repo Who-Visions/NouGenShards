@@ -72,6 +72,7 @@ Inspection & Discovery:
   agy msg --peers                             List discovered local pipes and reachable nodes
   agy msg --inbox [--target <antigravity|codex>] Read recent unread messages in inbox
   agy msg --clear-inbox                       Archive and clear read inbox messages
+  agy msg --wake [--timeout <seconds>]        Run autonomous wake sentry (monitors inbox & relay legs)
   agy msg --help                              Show this help menu
 """)
 
@@ -533,6 +534,26 @@ def main():
         archived = NouGenMsgBus.clear_inbox(target=target, confirmed=True)
         print(f"[OK] Archived {archived} message(s) from {target} inbox.")
         return
+
+    # Autonomous Wake Sentry
+    if any(cmd in sys.argv for cmd in ("--wake", "wake", "--watch", "watch")):
+        timeout_s = 3600
+        if "--timeout" in sys.argv:
+            idx = sys.argv.index("--timeout")
+            if idx + 1 < len(sys.argv) and sys.argv[idx + 1].isdigit():
+                timeout_s = int(sys.argv[idx + 1])
+        try:
+            import antigravity_wake_daemon
+            sys.exit(antigravity_wake_daemon.main())
+        except ImportError:
+            daemon_path = os.path.join(os.path.dirname(__file__), "antigravity_wake_daemon.py")
+            if os.path.exists(daemon_path):
+                import runpy
+                sys.exit(runpy.run_path(daemon_path, run_name="__main__"))
+            else:
+                print(f"[!] Error: antigravity_wake_daemon.py not found at {daemon_path}", file=sys.stderr)
+                sys.exit(1)
+
 
     # Parse arguments
     args = sys.argv[1:]
