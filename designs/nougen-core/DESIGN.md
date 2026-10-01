@@ -1,6 +1,6 @@
 ---
 name: "nougen-core"
-version: "0.4.0"
+version: "0.5.0"
 description: "Matte instrument surfaces for the NouGen fleet workbench."
 colors: {"--bg": "#141414", "--panel": "#202020", "--panel-solid": "#202020", "--panel-2": "#282828", "--panel-hover": "#333333", "--line": "#777777", "--line-glow": "#777777", "--text": "#f2eee6", "--muted": "#bdb8ad", "--accent": "#e8b86d", "--accent-2": "#e8b86d", "--accent-purple": "#c8bfad", "--accent-green": "#a9c79b", "--danger": "#ffb4ab", "--warn": "#e8b86d", "--focus": "#e8b86d", "--control-ink": "#141414"}
 ---
@@ -33,7 +33,7 @@ Inputs respond immediately; asynchronous work exposes progress, cancellation and
 
 ## informationHierarchy
 
-Prioritize active work and failures before secondary telemetry. Align numbers in monospace. Each region has one primary reading (machine identity, memory title or chart); badges and supporting telemetry remain subordinate. Shared boundaries are permitted only inside a single related task. Collaborative surfaces keep the task reference frame explicit: name the observed machine, vault scope and selected object before participant representation. Peer presence never substitutes for shared task-state evidence.
+Prioritize active work and failures before secondary telemetry. Align numbers in monospace. Each region has one primary reading (machine identity, memory title or chart); badges and supporting telemetry remain subordinate. Shared boundaries are permitted only inside a single related task. Collaborative surfaces keep the task reference frame explicit: name the observed machine, vault scope and selected object before participant representation. Peer presence never substitutes for shared task-state evidence. Settle the page composition (regions, space budget, the primary reading of each region) before detailing components, so a late element does not have to take room an earlier one needs. Text stays live text on its own layer, never baked into an image.
 
 ## responsiveBehavior
 
@@ -61,4 +61,4 @@ Specify default, hover, focus, selected, disabled, loading, empty, offline, succ
 
 ## provenance
 
-Token choices are invented from the relay brief. Existing selectors and token names are observed. Local Ollama draft reviewed by Codex; NouGenOpen reviewed acceptance criteria. Spatial composition adaptations draw on arXiv:2609.00476v1; dashboard gap thresholds are NouGen implementation choices verified in-browser, not empirical findings of that paper. Recursive design research uses the NouGenDesigns discover command. Citation depth, discovery parent and keyword matches identify candidates, not adopted rules. Read the full source, state applicability and limitations, then record inferred adaptations separately from observed metadata before compilation. arXiv:1910.03380v1 supplies a workspace-awareness analogy from two-person 3D telepresence. Stable vault/DB/record references and relay lifecycle distinctions are NouGen adaptations; the paper does not test fleet dashboards or establish faster task performance.
+Token choices are invented from the relay brief. Existing selectors and token names are observed. Local Ollama draft reviewed by Codex; NouGenOpen reviewed acceptance criteria. Spatial composition adaptations draw on arXiv:2609.00476v1; dashboard gap thresholds are NouGen implementation choices verified in-browser, not empirical findings of that paper. Recursive design research uses the NouGenDesigns discover command. Citation depth, discovery parent and keyword matches identify candidates, not adopted rules. Read the full source, state applicability and limitations, then record inferred adaptations separately from observed metadata before compilation. arXiv:1910.03380v1 supplies a workspace-awareness analogy from two-person 3D telepresence. Stable vault/DB/record references and relay lifecycle distinctions are NouGen adaptations; the paper does not test fleet dashboards or establish faster task performance. arXiv:2507.05601v1 (Accordion) supplies the frame-first ordering and live-text rule; it is a generative layered-design pipeline evaluated on posters and thumbnails, and says nothing about dashboards. arXiv:2609.05364 (SMART) and arXiv:2508.12726 (DESIGNER) were read only as alphaXiv reports; design.json is the durable source and generated artifacts are regenerated and drift-checked, and reusable construction recipes are recorded as an untested candidate in designs/design-process-morph.md, not as a rule.
