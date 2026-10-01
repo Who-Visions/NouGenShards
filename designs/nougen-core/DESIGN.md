@@ -61,4 +61,4 @@ Specify default, hover, focus, selected, disabled, loading, empty, offline, succ
 
 ## provenance
 
-Token choices are invented from the relay brief. Existing selectors and token names are observed. Local Ollama draft reviewed by Codex; NouGenOpen reviewed acceptance criteria. Spatial composition adaptations draw on arXiv:2609.00476v1; dashboard gap thresholds are NouGen implementation choices verified in-browser, not empirical findings of that paper.
+Token choices are invented from the relay brief. Existing selectors and token names are observed. Local Ollama draft reviewed by Codex; NouGenOpen reviewed acceptance criteria. Spatial composition adaptations draw on arXiv:2609.00476v1; dashboard gap thresholds are NouGen implementation choices verified in-browser, not empirical findings of that paper. Recursive design research uses the NouGenDesigns discover command. Citation depth, discovery parent and keyword matches identify candidates, not adopted rules. Read the full source, state applicability and limitations, then record inferred adaptations separately from observed metadata before compilation.

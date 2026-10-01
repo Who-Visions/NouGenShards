@@ -34,7 +34,7 @@
     }
   ],
   "schemaVersion": "od-design-system-project/v1",
-  "sourceDigest": "9f457c777b4c0a283455bc928c7ef727102e6eca48a76c09166fad0eb263f381",
+  "sourceDigest": "59c1b68698190ef47efe363b4a86a2b3f73313e61c49630a431b51cc9c21500e",
   "surfaces": {
     "ground": "--bg",
     "ink": "--text"
