@@ -3443,6 +3443,14 @@ def information_gain_evaluate(event_text: str, context_samples: Optional[List[st
 
 @node_mcp.tool()
 @_offloaded
+def information_dynamics_benchmark() -> dict:
+    """Execute the complete 10-condition NouGen information dynamics and rate-distortion benchmark suite (HURRICANE KICK)."""
+    from nougen_shards.information_dynamics import InformationDynamicsBenchmark
+    return InformationDynamicsBenchmark().run_all_benchmarks()
+
+
+@node_mcp.tool()
+@_offloaded
 def evidence_assure(claim: str, source: str = "runtime", level: str = "measured") -> dict:
     """Validate and label empirical claim through Iris evidence assurance standards."""
     from nougen_shards import assurance
