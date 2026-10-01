@@ -3398,10 +3398,25 @@ def arxiv_capabilities() -> dict:
 
 @node_mcp.tool()
 @_offloaded
-def arxiv_radar(mode: str = "preview", recipe_path: Optional[str] = None) -> dict:
-    """Scan current arXiv channels through NouGen's canonical radar."""
+def arxiv_radar(channels: Optional[List[str]] = None, mode: str = "preview", limit: int = 5,
+                commit: bool = False, recipe_path: Optional[str] = None,
+                broadcast_target: Optional[str] = None) -> dict:
+    """Scan current arXiv channels through NouGen's canonical radar (read-only unless commit=true).
+
+    Args:
+        channels: arXiv channels such as "cs" or "cs.AR" (1-5; default ["cs"]).
+        mode: 'preview' (read-only), or 'sweep' / 'reconcile'.
+        limit: Papers shown per lane in a preview (1-50); the fetch itself is the whole feed.
+        commit: Only with sweep/reconcile; also needs NOUGEN_ARXIV_MCP_ALLOW_MUTATION=1 on the server.
+        recipe_path: Optional route-v1.json inside the radar directory; preview only.
+        broadcast_target: Accepted for schema compatibility; broadcasts stay local, so only
+            None or "local" is allowed rather than being silently ignored.
+    """
     from nougen_shards.arxiv_radar import run_arxiv_radar
-    return run_arxiv_radar(mode=mode, recipe_path=recipe_path)
+    if broadcast_target not in (None, "", "local"):
+        return {"status": "error", "mode": mode, "mutated": False,
+                "error": "broadcast_target must be omitted or 'local'; fleet broadcast is not exposed here"}
+    return run_arxiv_radar(channels=channels, mode=mode, limit=limit, commit=commit, recipe_path=recipe_path)
 
 
 @node_mcp.tool()
