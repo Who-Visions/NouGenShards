@@ -65,8 +65,23 @@ class MorphEvidence:
     source: str
     claim: str
     confidence: float
-    evidence_type: str = "runtime_reproduction"  # runtime_reproduction > targeted_test > static > model
+    # Strongest -> weakest: runtime_reproduction > targeted_test > paper_body > static > abstract_only > model.
+    # Default is the WEAKEST: an evidence row that doesn't say how it was obtained is an assertion.
+    evidence_type: str = "model"
     provenance: Optional[str] = None
+
+
+# Verifiability ceiling per evidence type. A candidate's verifiability can never exceed what
+# its strongest evidence supports: a number read in an abstract is not a verified number.
+EVIDENCE_CEILING: Dict[str, float] = {
+    "runtime_reproduction": 1.0,  # we ran it and saw it
+    "targeted_test": 0.9,         # a test we wrote exercises it
+    "paper_body": 0.8,            # every key claim found in the paper's own text (nougen-radar morph_gate)
+    "static": 0.6,                # code / docs read, not executed
+    "abstract_only": 0.4,         # claims seen only in an abstract
+    "model": 0.3,                 # asserted by a model or a person, unverified
+}
+NO_EVIDENCE_CEILING = 0.3
 
 
 @dataclass
@@ -98,6 +113,16 @@ class MorphCandidate:
         )
         return positive - self.integration_cost
 
+    def verifiability_ceiling(self) -> float:
+        if not self.evidence:
+            return NO_EVIDENCE_CEILING
+        return max(EVIDENCE_CEILING.get(e.evidence_type, NO_EVIDENCE_CEILING) for e in self.evidence)
+
+    def effective_score(self) -> float:
+        """MorphScore with verifiability capped by the strongest evidence actually held."""
+        v = min(self.verifiability, self.verifiability_ceiling())
+        return self.usefulness * self.generalizability * v * self.compatibility * self.reversibility - self.integration_cost
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
@@ -107,6 +132,8 @@ class MorphCandidate:
             "generalized_behavior": self.generalized_behavior,
             "nougen_target": self.nougen_target,
             "score": round(self.morph_score(), 4),
+            "effective_score": round(self.effective_score(), 4),
+            "verifiability_ceiling": self.verifiability_ceiling(),
             "state": self.state.value,
             "metrics": {
                 "usefulness": self.usefulness,
@@ -158,9 +185,9 @@ class NouGenMorphEngine:
             if brand in gen_lower or brand in target_lower:
                 candidate.state = AdoptionState.QUARANTINED
                 self.candidates[candidate.name] = candidate
-                return False, candidate.morph_score()
+                return False, candidate.effective_score()
 
-        score = candidate.morph_score()
+        score = candidate.effective_score()
         if score >= self.acceptance_threshold:
             candidate.state = AdoptionState.CANDIDATE
             self.candidates[candidate.name] = candidate
