@@ -1,3 +1,10 @@
+# NouGen Context Mode
+
+Inherit ../AGENTS.md: use NouGen Context Mode for all inspection, recall, search,
+git reads, logs, test/build output and diagnostics. Analyze inside ctx_execute,
+ctx_execute_file or ctx_batch_execute; return concise evidence, not raw dumps.
+Native tools remain available for edits/writes and documented bounded fallback.
+
 # UI design
 
 Before changing a NouGen UI, read root DESIGN.md and the applicable brand package.
