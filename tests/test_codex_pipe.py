@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from nougen_shards import codex_pipe
@@ -128,22 +129,68 @@ class CodexPipeTests(unittest.TestCase):
         other = codex_pipe.save({"message_id": "22222222-2222-4222-8222-222222222222",
                                  "thread": "thread-1", "text": "two"})
         receipt = codex_pipe.acknowledge(message_id, consumer="codex", thread="thread-1",
-                                         inbox=self.temp.name)
+                                         inbox=self.temp.name, work="Verified patch and green CI", sha="abcdef1")
         self.assertTrue(receipt["acknowledged"])
+        self.assertEqual(receipt["work"], "Verified patch and green CI")
+        self.assertEqual(receipt["sha"], "abcdef1")
         self.assertFalse(Path(path).exists())
         self.assertTrue(Path(receipt["file"]).exists())
         self.assertTrue(Path(other).exists())
         again = codex_pipe.acknowledge(message_id, consumer="codex", thread="thread-1",
-                                       inbox=self.temp.name)
+                                       inbox=self.temp.name, work="Again")
         self.assertTrue(again["idempotent"])
+
+    def test_ack_requires_work_unless_allowed(self):
+        message_id = "44444444-4444-4444-8444-444444444444"
+        path = codex_pipe.save({"message_id": message_id, "thread": "thread-1", "text": "test"})
+        rejected = codex_pipe.acknowledge(message_id, consumer="codex", thread="thread-1",
+                                          inbox=self.temp.name)
+        self.assertEqual(rejected["status"], "work_required")
+        self.assertFalse(rejected["acknowledged"])
+        self.assertTrue(Path(path).exists())
+
+        forced = codex_pipe.acknowledge(message_id, consumer="codex", thread="thread-1",
+                                        inbox=self.temp.name, allow_empty_work=True)
+        self.assertTrue(forced["acknowledged"])
+
+    def test_claim_message_marks_in_progress(self):
+        message_id = "55555555-5555-4555-8555-555555555555"
+        path = codex_pipe.save({"message_id": message_id, "thread": "thread-1", "text": "to claim"})
+        claimed = codex_pipe.claim(message_id, consumer="codex", thread="thread-1", inbox=self.temp.name)
+        self.assertEqual(claimed["status"], "claimed")
+        self.assertTrue(claimed["claimed"])
+        self.assertTrue(Path(path).exists())
+        saved_data = json.loads(Path(path).read_text(encoding="utf-8"))
+        self.assertIn("claim", saved_data)
+        self.assertEqual(saved_data["claim"]["consumer"], "codex")
 
     def test_ack_rejects_wrong_thread_without_moving_message(self):
         message_id = "33333333-3333-4333-8333-333333333333"
         path = codex_pipe.save({"message_id": message_id, "thread": "right", "text": "one"})
         receipt = codex_pipe.acknowledge(message_id, consumer="codex", thread="wrong",
-                                         inbox=self.temp.name)
+                                         inbox=self.temp.name, work="Tried wrong thread")
         self.assertEqual(receipt["status"], "thread_mismatch")
         self.assertTrue(Path(path).exists())
+
+    def test_multi_inbox_claim_and_ack_for_agy_and_claude(self):
+        # Create simulated Antigravity inbox
+        agy_inbox = Path(self.temp.name) / "agy_inbox"
+        agy_inbox.mkdir()
+        msg_id = "66666666-6666-4666-8666-666666666666"
+        ping_file = agy_inbox / f"ping_{uuid.uuid4().hex}.json"
+        ping_file.write_text(json.dumps({"message_id": msg_id, "text": "agy ping", "source": "fleet"}), encoding="utf-8")
+
+        # Claim as antigravity agent specifying agy inbox
+        claimed = codex_pipe.claim(msg_id, consumer="antigravity", inbox=str(agy_inbox))
+        self.assertTrue(claimed["claimed"])
+        self.assertEqual(claimed["consumer"], "antigravity")
+
+        # Acknowledge with work
+        acked = codex_pipe.acknowledge(msg_id, consumer="antigravity", inbox=str(agy_inbox), work="Ran memory sync")
+        self.assertTrue(acked["acknowledged"])
+        self.assertEqual(acked["work"], "Ran memory sync")
+        self.assertTrue((agy_inbox / "archive" / ping_file.name).exists())
+        self.assertTrue((agy_inbox / "archive" / f"{ping_file.name}.ack.json").exists())
 
 
 @unittest.skipUnless(sys.platform == 'win32', 'named pipe is Windows-only')
@@ -152,29 +199,35 @@ class CodexPipeServeSurvivesBadConnectsTests(unittest.TestCase):
     take the whole receiver down with it (see relay leg 20260915T033332Z)."""
 
     def setUp(self):
+        self.orig_pipe = codex_pipe.PIPE
+        self.test_pipe = rf"\\.\pipe\LOCAL\test-nougen-msg-{uuid.uuid4().hex}"
+        codex_pipe.PIPE = self.test_pipe
         self.thread_id = '00000000-0000-4000-8000-000000000000'
         # sys.executable (python.exe) only needs to satisfy serve()'s is_file()/.exe check;
         # the "queue" subprocess call is never exercised by the assertions below.
-        server = threading.Thread(target=codex_pipe.serve, args=(self.thread_id, sys.executable), daemon=True)
+        server = threading.Thread(target=codex_pipe.serve, args=(self.thread_id, sys.executable, self.test_pipe), daemon=True)
         server.start()
         for _ in range(50):
             try:
-                if codex_pipe.request({'op': 'status'})['status'] == 'listening':
+                if codex_pipe.request({'op': 'status'}, pipe=self.test_pipe)['status'] == 'listening':
                     break
             except OSError:
                 time.sleep(0.1)
         else:
             self.fail('receiver never reported listening')
 
+    def tearDown(self):
+        codex_pipe.PIPE = self.orig_pipe
+
     def test_dropped_connect_does_not_kill_the_receiver(self):
         kernel = ctypes.WinDLL('kernel32', use_last_error=True)
         GENERIC_READ, GENERIC_WRITE, OPEN_EXISTING = 0x80000000, 0x40000000, 3
-        handle = kernel.CreateFileW(codex_pipe.PIPE, GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING, 0, None)
+        handle = kernel.CreateFileW(self.test_pipe, GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING, 0, None)
         self.assertNotEqual(handle, -1, 'could not open the pipe to simulate a dropped client')
         kernel.CloseHandle(handle)  # connect, then vanish with no data -- never send/receive
         time.sleep(0.3)
 
-        result = codex_pipe.request({'op': 'status'})
+        result = codex_pipe.request({'op': 'status'}, pipe=self.test_pipe)
         self.assertEqual(result['status'], 'listening')
         self.assertEqual(result['thread'], self.thread_id)
 
