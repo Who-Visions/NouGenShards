@@ -176,6 +176,29 @@ def related_shards(shard_id: int, db_index: int = 1, relation: Optional[str] = N
     return neighbours
 
 
+def dependency_shards(shard_id: int, db_index: int, limit: int = 21) -> List[Dict]:
+    """Read outgoing depends_on edges, preserving unresolved prerequisites.
+
+    Unlike related_shards, incoming edges never consume the dependency budget.
+    One overflow entry lets the caller reject a closure exceeding its ceiling.
+    """
+    node_hash = _hash_for(shard_id, db_index)
+    if not node_hash or not get_graph_db_path().exists():
+        return []
+    conn = get_graph_connection()
+    try:
+        rows = conn.execute(
+            "SELECT dst_hash FROM shard_edges WHERE src_hash = ? AND relation = ? "
+            "ORDER BY dst_hash LIMIT ?", (node_hash, "depends_on", limit)).fetchall()
+    finally:
+        conn.close()
+    hashes = [row['dst_hash'] for row in rows]
+    resolved = _shards_for_hashes(hashes)
+    return [dict(resolved[h]) if h in resolved else
+            {"id": "unresolved:" + h, "_db_index": db_index, "unresolved": True}
+            for h in hashes]
+
+
 def edge_count() -> int:
     """Total number of edges in the mesh (0 if the graph store is absent)."""
     if not get_graph_db_path().exists():
