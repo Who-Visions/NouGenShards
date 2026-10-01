@@ -30,6 +30,25 @@ MAX_TEXT = 300
 MAX_SEEN_LEGS = 500  # rolling window to prevent unbounded growth
 
 
+def _load_codex_pipe():
+    """Import the pipe adapter as a package so its relative imports resolve."""
+    import importlib
+    import sys
+
+    source_roots = (
+        HOME / ".nougen" / "src",
+        HOME / ".nougen" / "src" / "nougenshards" / "src",
+        Path(__file__).resolve().parents[2] / "src",
+    )
+    for source_root in source_roots:
+        if (source_root / "nougen_shards" / "codex_pipe.py").is_file():
+            source_root = str(source_root)
+            if source_root not in sys.path:
+                sys.path.insert(0, source_root)
+            break
+    return importlib.import_module("nougen_shards.codex_pipe")
+
+
 def _log(event: dict, out: dict) -> None:
     try:
         DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -221,7 +240,7 @@ def _check_active_my_claims() -> list[str]:
 def main() -> int:
     # --- AUTOMATED EVERY-TURN CODEX BEACON ---
     try:
-        import sys, json, types, importlib.util, time
+        import sys, json, types, time
         for mod_name in ['numpy', 'sqlalchemy']:
             if mod_name not in sys.modules:
                 m = types.ModuleType(mod_name)
@@ -230,9 +249,7 @@ def main() -> int:
                     m.create_engine = lambda *a, **k: None
                     m.text = lambda *a, **k: None
                 sys.modules[mod_name] = m
-        spec = importlib.util.spec_from_file_location('codex_pipe', str(HOME / '.nougen' / 'src' / 'nougen_shards' / 'codex_pipe.py'))
-        codex_pipe = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(codex_pipe)
+        codex_pipe = _load_codex_pipe()
         ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
         codex_pipe.deliver(f'AUTOMATED EVERY-TURN BEACON [{ts}]: Antigravity turn completed.', origin={'original_sender': 'phoebus/antigravity'}, thread_id='01a0ab83-b0ec-7180-a52f-7933296fd704')
     except Exception:
