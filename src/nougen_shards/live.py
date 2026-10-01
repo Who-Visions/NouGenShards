@@ -676,6 +676,37 @@ class LiveControlPlane:
 NouGenLive = LiveControlPlane
 
 
+def _int_flag(args: List[str], name: str, default: int) -> int:
+    """Value of `--name N` in args, or the default. Raises ValueError naming the flag if N is not a number."""
+    if name not in args:
+        return default
+    index = args.index(name)
+    try:
+        return int(args[index + 1])
+    except (IndexError, ValueError):
+        raise ValueError(f"{name} needs a whole number of seconds") from None
+
+
+def _lifecycle_sweep_command(subcmd: str, args: List[str]) -> str:
+    """`sweep-msg` runs the lifecycle watchdog once; `watch-msg` repeats it every --every seconds."""
+    from . import lifecycle_watchdog as watchdog  # pylint: disable=import-outside-toplevel
+    try:
+        options = {
+            "dispatch_grace_s": _int_flag(args, "--grace", watchdog.DEFAULT_DISPATCH_GRACE_S),
+            "no_progress_s": _int_flag(args, "--stall", watchdog.DEFAULT_NO_PROGRESS_S),
+            "dry_run": "--dry-run" in args,
+            "wake": watchdog.default_wake if "--wake" in args else None,
+        }
+        if subcmd == "sweep-msg":
+            return json.dumps(watchdog.sweep(**options), indent=2)
+        every = _int_flag(args, "--every", 60)
+        runs = _int_flag(args, "--runs", 0) or None
+    except ValueError as exc:
+        return json.dumps({"status": "usage_error", "error": str(exc)}, indent=2)
+    reports = watchdog.run_loop(every_s=every, iterations=runs, **options)
+    return json.dumps({"sweeps": len(reports), "last": reports[-1] if reports else None}, indent=2)
+
+
 def handle_live_command(args: List[str]) -> str:
     """Canonical dispatcher for /live slash command and CLI invocations."""
     control = LiveControlPlane()
@@ -735,6 +766,12 @@ def handle_live_command(args: List[str]) -> str:
     elif subcmd == "pending-msg":
         from . import codex_pipe  # pylint: disable=import-outside-toplevel
         return json.dumps(codex_pipe.pending_execution(), indent=2)
+    elif subcmd in ("sweep-msg", "watch-msg"):
+        return _lifecycle_sweep_command(subcmd, args[1:])
+    elif subcmd in ("requeue-msg", "cancel-msg") and len(args) >= 2:
+        from . import codex_pipe  # pylint: disable=import-outside-toplevel
+        op = codex_pipe.requeue if subcmd == "requeue-msg" else codex_pipe.cancel
+        return json.dumps(op(args[1], " ".join(args[2:]) or subcmd.split("-")[0]), indent=2)
     elif subcmd == "ssh":
         return json.dumps(control.ssh(), indent=2)
     elif subcmd == "relays":
@@ -775,7 +812,9 @@ def handle_live_command(args: List[str]) -> str:
             f"Unknown /live subcommand: {subcmd}.\n"
             "Available: activate, overview, snapshot, nodes, sessions, ports, inbox, ack-msg <id> (receipt only), "
             "take-msg <id> (claim execution), advance-msg <id> <state> --epoch <fencing token> <verified evidence>, pending-msg, "
-            "claim-msg <id> (alias for take-msg), ssh, relays, watch, tracker, matrix, send, broadcast, reply, "
+            "claim-msg <id> (alias for take-msg), sweep-msg [--dry-run] [--wake] [--grace S] [--stall S] "
+            "(watchdog: reclaim expired/stalled claims, wake unclaimed), watch-msg [--every S] [--runs N], "
+            "requeue-msg <id> <reason>, cancel-msg <id> <reason>, ssh, relays, watch, tracker, matrix, send, broadcast, reply, "
             "declare <node> offline|sleeping|online [note]"
         )
 

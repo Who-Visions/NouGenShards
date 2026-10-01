@@ -14,6 +14,7 @@ import sys
 import time
 import uuid
 from nougen_time import InvalidTimestampError, format_display_time
+from .msg_classifier import INFORMATIONAL_KINDS, classify  # noqa: F401  (INFORMATIONAL_KINDS is re-exported)
 from .execution_proof import create_context_binding, verify_lifecycle_evidence
 
 PIPE = r"\\.\pipe\LOCAL\nougen-msg-codex"
@@ -441,9 +442,8 @@ def acknowledge(message_id, consumer=None, thread=None, inbox=None):
 # ACK is receipt, not completion. An actionable message stays pending until it
 # reaches a terminal state with evidence. Informational messages end at ACKED.
 LIFECYCLE_STATES = ("RECEIVED", "ACKED", "CLAIMED", "EXECUTING",
-                    "CHECKPOINTED", "COMPLETE", "FAILED", "BLOCKED")
-TERMINAL_STATES = frozenset({"COMPLETE", "FAILED", "BLOCKED"})
-INFORMATIONAL_KINDS = frozenset({"info", "informational", "status", "receipt"})
+                    "CHECKPOINTED", "COMPLETE", "FAILED", "BLOCKED", "CANCELED")
+TERMINAL_STATES = frozenset({"COMPLETE", "FAILED", "BLOCKED", "CANCELED"})
 _NEXT_STATES = {
     "ACKED": {"CLAIMED", "BLOCKED", "FAILED"},
     "CLAIMED": {"EXECUTING", "BLOCKED", "FAILED"},
@@ -478,10 +478,13 @@ def _write_lifecycle(path, record):
     os.replace(tmp, path)
 
 
+def _classify(payload):
+    body = payload if isinstance(payload, dict) else {}
+    return classify(body.get("text"), body.get("origin"))
+
+
 def _is_actionable(payload):
-    origin = payload.get("origin") if isinstance(payload, dict) else None
-    kind = str((origin or {}).get("kind") or "").strip().lower()
-    return kind not in INFORMATIONAL_KINDS
+    return _classify(payload).actionable
 
 
 def _open_lifecycle(root, message_id, payload, consumer):
@@ -489,10 +492,12 @@ def _open_lifecycle(root, message_id, payload, consumer):
     path = _lifecycle_path(root, message_id)
     if path.exists():
         return
-    actionable = _is_actionable(payload)
+    classification = _classify(payload)
+    actionable = classification.actionable
     now = datetime.now(timezone.utc).isoformat()
     _write_lifecycle(path, {
         "message_id": message_id, "actionable": actionable, "state": "ACKED",
+        "classification": {"actionable": actionable, "reason": classification.reason},
         "pending_execution": actionable, "evidence_verified": False,
         "payload_sha256": hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -552,8 +557,9 @@ def advance(message_id, state, evidence="", consumer=None, inbox=None, fencing_e
         if fencing_epoch is None or expected_epoch is None or int(fencing_epoch) != int(expected_epoch):
             return {"status": "fencing_token_required", "message_id": message_id,
                     "advanced": False}
-        from .claim_lifecycle import (ClaimLifecycleManager, FencingViolationError,
-                                      InvalidStateTransitionError, TaskState)
+        from .claim_lifecycle import (AuthorityExpiredError, ClaimLifecycleManager,
+                                      FencingViolationError, InvalidStateTransitionError,
+                                      TaskState)
         manager = ClaimLifecycleManager()
         claim = manager.get_claim(str(message_id))
         if (claim is None or int(claim["fencing_epoch"]) != int(expected_epoch) or
@@ -562,9 +568,15 @@ def advance(message_id, state, evidence="", consumer=None, inbox=None, fencing_e
             return {"status": "lease_expired_or_superseded", "message_id": message_id,
                     "advanced": False}
         try:
-            if state in {"EXECUTING", "CHECKPOINTED"}:
+            if state == "EXECUTING":
                 manager.heartbeat(str(message_id), int(fencing_epoch), TaskState.WORKING)
+            elif state == "CHECKPOINTED":
+                # A checkpoint is progress, not just liveness: the watchdog reclaims workers that
+                # heartbeat without ever checkpointing.
+                manager.checkpoint(str(message_id), int(fencing_epoch),
+                                   evidence if isinstance(evidence, dict) and evidence else {"checkpoint": True})
             elif state == "COMPLETE":
+                authority = _commit_authority(str(message_id), inbox, claim["agent_lane"], int(fencing_epoch))
                 complete_key = f"nougen:complete:{message_id}:{verification['evidence_sha256']}"
                 if claim["state"] == "COMMITTING":
                     # An earlier COMPLETE verified and committed but died before finishing.
@@ -574,14 +586,19 @@ def advance(message_id, state, evidence="", consumer=None, inbox=None, fencing_e
                         raise ValueError("a different completion is already committing for this claim")
                 else:
                     manager.verify_step(str(message_id), int(fencing_epoch), verification)
-                    manager.commit_step(str(message_id), int(fencing_epoch), complete_key)
-                manager.complete(str(message_id), int(fencing_epoch), verification)
+                    manager.commit_step(str(message_id), int(fencing_epoch), complete_key,
+                                        authority_check=authority)
+                manager.complete(str(message_id), int(fencing_epoch), verification,
+                                 authority_check=authority)
             elif state == "FAILED":
                 manager.fail(str(message_id), int(fencing_epoch),
                              str(evidence.get("reason") or "execution failed"))
             else:
                 manager.interrupt(str(message_id), int(fencing_epoch), TaskState.BLOCKED,
                                   str(evidence.get("reason") or "execution blocked"))
+        except AuthorityExpiredError as exc:
+            return {"status": "authority_expired", "message_id": message_id,
+                    "advanced": False, "error": str(exc)}
         except InvalidStateTransitionError as exc:
             return {"status": "illegal_transition", "message_id": message_id,
                     "advanced": False, "error": str(exc)}
@@ -660,6 +677,99 @@ def pending_execution(inbox=None):
                 pending.append({"message_id": message_id, "state": record["state"],
                                 "since": record["history"][0]["at"]})
     return pending
+
+
+def _commit_authority(message_id, inbox, expected_lane, expected_epoch):
+    """Authority check for the commit boundary: the claim must still be this lane's, at this epoch,
+    on a task that has not been canceled, failed or finished since the work was claimed."""
+    def check(claim):
+        record = lifecycle(message_id, inbox)
+        if record is None:
+            return False, "lifecycle record is missing"
+        if record["state"] in TERMINAL_STATES:
+            return False, f"task is {record['state']}"
+        if record.get("claim_lane") != expected_lane or int(record.get("fencing_epoch") or -1) != int(expected_epoch):
+            return False, "claim was reassigned"
+        if claim.get("agent_lane") != expected_lane or int(claim.get("fencing_epoch")) != int(expected_epoch):
+            return False, "claim row no longer matches this worker"
+        return True, ""
+    return check
+
+
+def _event(record, state, consumer, **extra):
+    record["history"].append({"state": state, "at": datetime.now(timezone.utc).isoformat(),
+                              "consumer": consumer, "evidence": "", **extra})
+
+
+def release_claim(message_id, reason, inbox=None):
+    """Return a claimed message to ACKED/pending so anyone can take it again.
+
+    The fencing epoch is kept: the old worker's token stays invalid, and the next take gets
+    epoch + 1. Terminal messages are left alone."""
+    record = lifecycle(message_id, inbox)
+    if record is None or record["state"] in TERMINAL_STATES:
+        return None
+    record.update(state="ACKED", pending_execution=bool(record.get("actionable")), claim_lane=None)
+    record.pop("lease_expires_at", None)
+    _event(record, "ACKED", "watchdog", released=True, reason=reason)
+    _write_lifecycle(_find_lifecycle_path(message_id, inbox), record)
+    return record
+
+
+def note_wake(message_id, when, inbox=None):
+    """Record that the watchdog nudged a lane, so it is nudged at most once per grace window."""
+    record = lifecycle(message_id, inbox)
+    if record is None:
+        return None
+    record["last_woken_at"] = float(when)
+    record["wake_count"] = int(record.get("wake_count") or 0) + 1
+    _write_lifecycle(_find_lifecycle_path(message_id, inbox), record)
+    return record
+
+
+def requeue(message_id, reason, inbox=None, max_requeues=3):
+    """Send a FAILED or BLOCKED message back for another attempt (bounded, never silent)."""
+    from .claim_lifecycle import (ClaimLifecycleManager, DEFAULT_MAX_REQUEUES,  # pylint: disable=import-outside-toplevel
+                                  InvalidStateTransitionError)
+    record = lifecycle(message_id, inbox)
+    if record is None:
+        return {"status": "no_lifecycle", "message_id": message_id, "requeued": False}
+    if record["state"] not in {"FAILED", "BLOCKED"}:
+        return {"status": "not_requeueable", "state": record["state"], "message_id": message_id,
+                "requeued": False}
+    try:
+        claim = ClaimLifecycleManager().requeue(str(message_id), str(reason),
+                                                max_requeues=max_requeues or DEFAULT_MAX_REQUEUES)
+    except (InvalidStateTransitionError, KeyError) as exc:
+        return {"status": "requeue_refused", "message_id": message_id, "requeued": False, "error": str(exc)}
+    record.update(state="ACKED", pending_execution=bool(record.get("actionable")), claim_lane=None,
+                  requeue_count=claim["requeue_count"])
+    _event(record, "ACKED", current_consumer(), requeued=True, reason=reason)
+    _write_lifecycle(_find_lifecycle_path(message_id, inbox), record)
+    return {"status": "requeued", "message_id": message_id, "requeued": True,
+            "requeue_count": claim["requeue_count"], "pending_execution": record["pending_execution"]}
+
+
+def cancel(message_id, reason, inbox=None):
+    """Operator withdrawal. The message becomes CANCELED (terminal) and any worker is fenced."""
+    from .claim_lifecycle import (ClaimLifecycleManager,  # pylint: disable=import-outside-toplevel
+                                  InvalidStateTransitionError)
+    record = lifecycle(message_id, inbox)
+    if record is None:
+        return {"status": "no_lifecycle", "message_id": message_id, "canceled": False}
+    if record["state"] in TERMINAL_STATES:
+        return {"status": "already_terminal", "state": record["state"], "message_id": message_id,
+                "canceled": False}
+    try:
+        ClaimLifecycleManager().cancel(str(message_id), str(reason))
+    except KeyError:
+        pass                                    # acked but never claimed: no claim row to fence
+    except InvalidStateTransitionError as exc:
+        return {"status": "already_terminal", "message_id": message_id, "canceled": False, "error": str(exc)}
+    record.update(state="CANCELED", pending_execution=False)
+    _event(record, "CANCELED", current_consumer(), reason=reason)
+    _write_lifecycle(_find_lifecycle_path(message_id, inbox), record)
+    return {"status": "canceled", "message_id": message_id, "canceled": True, "pending_execution": False}
 
 
 def serve(thread, executable, pipe_name=None):
