@@ -697,44 +697,41 @@ def handle_live_command(args: List[str]) -> str:
         return control.render_pending_inline()
     elif subcmd == "claim-msg" and len(args) >= 2:
         from . import codex_pipe  # pylint: disable=import-outside-toplevel
-        return json.dumps(codex_pipe.claim(
-            args[1], consumer=os.environ.get("NOUGEN_AGENT", "codex"),
+        return json.dumps(codex_pipe.take(
+            args[1], consumer=codex_pipe.current_consumer(),
             thread=os.environ.get("CODEX_THREAD_ID") or None), indent=2)
     elif subcmd == "ack-msg" and len(args) >= 2:
         from . import codex_pipe  # pylint: disable=import-outside-toplevel
-        msg_id = args[1]
-        work_parts = []
-        sha = None
-        allow_empty = False
-        i = 2
-        while i < len(args):
-            if args[i] in ("--work", "-w", "-m") and i + 1 < len(args):
-                work_parts.append(args[i + 1])
-                i += 2
-            elif args[i] == "--sha" and i + 1 < len(args):
-                sha = args[i + 1]
-                i += 2
-            elif args[i] in ("--force", "--allow-empty", "--no-work"):
-                allow_empty = True
-                i += 1
-            else:
-                work_parts.append(args[i])
-                i += 1
-        work = " ".join(work_parts).strip()
+        if len(args) > 2:
+            return json.dumps({"status": "invalid_args", "acknowledged": False,
+                               "error": "ack-msg records receipt only; use take-msg to claim work."}, indent=2)
         return json.dumps(codex_pipe.acknowledge(
-            msg_id, consumer=os.environ.get("NOUGEN_AGENT", "codex"),
-            thread=os.environ.get("CODEX_THREAD_ID") or None,
-            work=work or None, sha=sha, allow_empty_work=allow_empty), indent=2)
+            args[1], consumer=codex_pipe.current_consumer(),
+            thread=os.environ.get("CODEX_THREAD_ID") or None), indent=2)
     elif subcmd == "take-msg" and len(args) >= 2:
         from . import codex_pipe  # pylint: disable=import-outside-toplevel
         return json.dumps(codex_pipe.take(
-            args[1], consumer=os.environ.get("NOUGEN_AGENT", "codex"),
+            args[1], consumer=codex_pipe.current_consumer(),
             thread=os.environ.get("CODEX_THREAD_ID") or None), indent=2)
     elif subcmd == "advance-msg" and len(args) >= 3:
         from . import codex_pipe  # pylint: disable=import-outside-toplevel
+        evidence_parts = []
+        fencing_epoch = None
+        i = 3
+        while i < len(args):
+            if args[i] in ("--epoch", "--fencing-epoch") and i + 1 < len(args):
+                try:
+                    fencing_epoch = int(args[i + 1])
+                except ValueError:
+                    return json.dumps({"status": "invalid_args", "advanced": False,
+                                       "error": "--epoch must be an integer returned by take-msg."}, indent=2)
+                i += 2
+            else:
+                evidence_parts.append(args[i])
+                i += 1
         return json.dumps(codex_pipe.advance(
-            args[1], args[2], " ".join(args[3:]),
-            consumer=os.environ.get("NOUGEN_AGENT", "codex")), indent=2)
+            args[1], args[2], " ".join(evidence_parts),
+            consumer=codex_pipe.current_consumer(), fencing_epoch=fencing_epoch), indent=2)
     elif subcmd == "pending-msg":
         from . import codex_pipe  # pylint: disable=import-outside-toplevel
         return json.dumps(codex_pipe.pending_execution(), indent=2)
@@ -776,7 +773,9 @@ def handle_live_command(args: List[str]) -> str:
     else:
         return (
             f"Unknown /live subcommand: {subcmd}.\n"
-            "Available: activate, overview, snapshot, nodes, sessions, ports, inbox, claim-msg <id>, ack-msg <id> --work '<summary>', ssh, relays, watch, tracker, matrix, send, broadcast, reply, "
+            "Available: activate, overview, snapshot, nodes, sessions, ports, inbox, ack-msg <id> (receipt only), "
+            "take-msg <id> (claim execution), advance-msg <id> <state> --epoch <fencing token> <verified evidence>, pending-msg, "
+            "claim-msg <id> (alias for take-msg), ssh, relays, watch, tracker, matrix, send, broadcast, reply, "
             "declare <node> offline|sleeping|online [note]"
         )
 

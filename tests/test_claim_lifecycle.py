@@ -63,6 +63,12 @@ def test_fencing_epoch_rejects_stale_worker(manager):
     # Sleep to allow lease expiry
     time.sleep(1.05)
 
+    # Expiry itself fences the worker, even before the sweeper runs.
+    with pytest.raises(FencingViolationError):
+        manager.heartbeat(msg_id, fencing_epoch=epoch_1)
+    with pytest.raises(FencingViolationError):
+        manager.commit_step(msg_id, fencing_epoch=epoch_1, idempotency_key="late-effect")
+
     # Stale reclamation
     reclaimed = manager.detect_and_reclaim_stale(grace_seconds=0)
     assert len(reclaimed) == 1
@@ -85,6 +91,13 @@ def test_concurrent_claim_blocked_while_lease_active(manager):
     # Another worker attempts to take while primary lease is active
     with pytest.raises(FencingViolationError):
         manager.take_msg(msg_id, agent_lane="worker-rogue", lease_seconds=60)
+
+
+def test_repeated_take_by_same_lane_keeps_the_live_fencing_epoch(manager):
+    msg_id = "test-retry-005"
+    first = manager.take_msg(msg_id, agent_lane="chatgpt-app/thread-1", lease_seconds=60)
+    second = manager.take_msg(msg_id, agent_lane="chatgpt-app/thread-1", lease_seconds=60)
+    assert second["fencing_epoch"] == first["fencing_epoch"]
 
 
 def test_interrupt_states(manager):

@@ -14,6 +14,7 @@ Mechanisms:
 - Verification proof before COMPLETE transition
 """
 import enum
+from contextlib import contextmanager
 import json
 import logging
 import os
@@ -58,25 +59,29 @@ def get_db_path() -> Path:
 def init_db(db_path: Optional[Path] = None) -> Path:
     p = db_path or get_db_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(p) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS claims (
-                msg_id TEXT PRIMARY KEY,
-                state TEXT NOT NULL,
-                agent_lane TEXT NOT NULL,
-                fencing_epoch INTEGER NOT NULL DEFAULT 1,
-                lease_expires_at REAL NOT NULL,
-                created_at REAL NOT NULL,
-                updated_at REAL NOT NULL,
-                idempotency_key TEXT,
-                semantic_version TEXT,
-                evidence TEXT,
-                verification_proof TEXT,
-                error_detail TEXT
-            )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_claims_state ON claims(state)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_claims_lease ON claims(lease_expires_at)")
+    conn = sqlite3.connect(p)
+    try:
+        with conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS claims (
+                    msg_id TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    agent_lane TEXT NOT NULL,
+                    fencing_epoch INTEGER NOT NULL DEFAULT 1,
+                    lease_expires_at REAL NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    idempotency_key TEXT,
+                    semantic_version TEXT,
+                    evidence TEXT,
+                    verification_proof TEXT,
+                    error_detail TEXT
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_claims_state ON claims(state)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_claims_lease ON claims(lease_expires_at)")
+    finally:
+        conn.close()
     return p
 
 
@@ -96,8 +101,17 @@ class ClaimLifecycleManager:
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = init_db(db_path)
 
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path, timeout=10.0)
+    @contextmanager
+    def _connect(self):
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def register_received(self, msg_id: str, sender_lane: str = "unknown") -> Dict[str, Any]:
         """Record receipt of a message."""
@@ -122,6 +136,8 @@ class ClaimLifecycleManager:
         lease_expires = now + max(1, lease_seconds)
         with self._connect() as conn:
             cur = conn.cursor()
+            # Serialize read-check-write so two lanes cannot both win a lease.
+            cur.execute("BEGIN IMMEDIATE")
             cur.execute("SELECT state, agent_lane, fencing_epoch, lease_expires_at FROM claims WHERE msg_id = ?", (msg_id,))
             row = cur.fetchone()
 
@@ -129,7 +145,9 @@ class ClaimLifecycleManager:
                 current_state, current_lane, current_epoch, current_lease = row
                 # Check if currently held by another live worker
                 if current_state in (TaskState.CLAIMED.value, TaskState.WORKING.value, TaskState.VERIFYING.value, TaskState.COMMITTING.value):
-                    if current_lease > now and current_lane != agent_lane:
+                    if current_lease > now:
+                        if current_lane == agent_lane:
+                            return self.get_claim(msg_id)
                         raise FencingViolationError(
                             f"Task {msg_id} is actively leased by {current_lane} until {current_lease:.1f} (epoch {current_epoch})"
                         )
@@ -163,21 +181,23 @@ class ClaimLifecycleManager:
         new_expires = now + max(1, lease_seconds)
         with self._connect() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT fencing_epoch, state FROM claims WHERE msg_id = ?", (msg_id,))
+            cur.execute("SELECT fencing_epoch, state, lease_expires_at FROM claims WHERE msg_id = ?", (msg_id,))
             row = cur.fetchone()
             if not row:
                 raise KeyError(f"Task {msg_id} not found")
-            epoch, current_state = row
+            epoch, current_state, lease_expires_at = row
             if epoch != fencing_epoch:
                 raise FencingViolationError(f"Epoch mismatch: active epoch {epoch} != caller epoch {fencing_epoch}")
+            if lease_expires_at <= now:
+                raise FencingViolationError("Lease expired; the worker must reacquire the task")
             if current_state == TaskState.COMPLETE.value:
                 return False
 
             cur.execute("""
                 UPDATE claims
                 SET state = ?, lease_expires_at = ?, updated_at = ?
-                WHERE msg_id = ? AND fencing_epoch = ?
-            """, (state.value, new_expires, now, msg_id, fencing_epoch))
+                WHERE msg_id = ? AND fencing_epoch = ? AND lease_expires_at > ?
+            """, (state.value, new_expires, now, msg_id, fencing_epoch, now))
             return cur.rowcount > 0
 
     def verify_step(
@@ -190,16 +210,16 @@ class ClaimLifecycleManager:
         now = time.time()
         with self._connect() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT fencing_epoch FROM claims WHERE msg_id = ?", (msg_id,))
+            cur.execute("SELECT fencing_epoch, lease_expires_at FROM claims WHERE msg_id = ?", (msg_id,))
             row = cur.fetchone()
-            if not row or row[0] != fencing_epoch:
+            if not row or row[0] != fencing_epoch or row[1] <= now:
                 raise FencingViolationError("Fencing epoch mismatch on verify_step")
 
             cur.execute("""
                 UPDATE claims
                 SET state = ?, evidence = ?, updated_at = ?
-                WHERE msg_id = ? AND fencing_epoch = ?
-            """, (TaskState.VERIFYING.value, json.dumps(evidence), now, msg_id, fencing_epoch))
+                WHERE msg_id = ? AND fencing_epoch = ? AND lease_expires_at > ?
+            """, (TaskState.VERIFYING.value, json.dumps(evidence), now, msg_id, fencing_epoch, now))
 
         return self.get_claim(msg_id)
 
@@ -213,16 +233,18 @@ class ClaimLifecycleManager:
         now = time.time()
         with self._connect() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT fencing_epoch, idempotency_key FROM claims WHERE msg_id = ?", (msg_id,))
+            cur.execute("SELECT fencing_epoch, idempotency_key, lease_expires_at FROM claims WHERE msg_id = ?", (msg_id,))
             row = cur.fetchone()
-            if not row or row[0] != fencing_epoch:
+            if not row or row[0] != fencing_epoch or row[2] <= now:
                 raise FencingViolationError("Fencing epoch mismatch on commit_step")
+            if row[1] and row[1] != idempotency_key:
+                raise FencingViolationError("A different idempotency key is already bound to this claim")
 
             cur.execute("""
                 UPDATE claims
                 SET state = ?, idempotency_key = ?, updated_at = ?
-                WHERE msg_id = ? AND fencing_epoch = ?
-            """, (TaskState.COMMITTING.value, idempotency_key, now, msg_id, fencing_epoch))
+                WHERE msg_id = ? AND fencing_epoch = ? AND lease_expires_at > ?
+            """, (TaskState.COMMITTING.value, idempotency_key, now, msg_id, fencing_epoch, now))
 
         return self.get_claim(msg_id)
 
@@ -236,17 +258,35 @@ class ClaimLifecycleManager:
         now = time.time()
         with self._connect() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT fencing_epoch, state FROM claims WHERE msg_id = ?", (msg_id,))
+            cur.execute("SELECT fencing_epoch, state, lease_expires_at FROM claims WHERE msg_id = ?", (msg_id,))
             row = cur.fetchone()
-            if not row or row[0] != fencing_epoch:
+            if not row or row[0] != fencing_epoch or row[2] <= now:
                 raise FencingViolationError("Fencing epoch mismatch on complete")
 
             cur.execute("""
                 UPDATE claims
                 SET state = ?, verification_proof = ?, lease_expires_at = 0, updated_at = ?
-                WHERE msg_id = ? AND fencing_epoch = ?
-            """, (TaskState.COMPLETE.value, json.dumps(verification_proof), now, msg_id, fencing_epoch))
+                WHERE msg_id = ? AND fencing_epoch = ? AND lease_expires_at > ?
+            """, (TaskState.COMPLETE.value, json.dumps(verification_proof), now, msg_id, fencing_epoch, now))
 
+        return self.get_claim(msg_id)
+
+    def fail(self, msg_id: str, fencing_epoch: int, reason: str) -> Dict[str, Any]:
+        """Close a failed task only while the caller still owns a live lease."""
+        now = time.time()
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT fencing_epoch, lease_expires_at FROM claims WHERE msg_id = ?", (msg_id,))
+            row = cur.fetchone()
+            if not row or row[0] != fencing_epoch or row[1] <= now:
+                raise FencingViolationError("Fencing epoch mismatch or expired lease on fail")
+            cur.execute("""
+                UPDATE claims
+                SET state = ?, error_detail = ?, lease_expires_at = 0, updated_at = ?
+                WHERE msg_id = ? AND fencing_epoch = ? AND lease_expires_at > ?
+            """, (TaskState.FAILED.value, reason, now, msg_id, fencing_epoch, now))
+            if not cur.rowcount:
+                raise FencingViolationError("Lease expired before fail was recorded")
         return self.get_claim(msg_id)
 
     def interrupt(
@@ -262,16 +302,16 @@ class ClaimLifecycleManager:
         now = time.time()
         with self._connect() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT fencing_epoch FROM claims WHERE msg_id = ?", (msg_id,))
+            cur.execute("SELECT fencing_epoch, lease_expires_at FROM claims WHERE msg_id = ?", (msg_id,))
             row = cur.fetchone()
-            if not row or row[0] != fencing_epoch:
+            if not row or row[0] != fencing_epoch or row[1] <= now:
                 raise FencingViolationError("Fencing epoch mismatch on interrupt")
 
             cur.execute("""
                 UPDATE claims
                 SET state = ?, error_detail = ?, updated_at = ?
-                WHERE msg_id = ? AND fencing_epoch = ?
-            """, (interrupt_state.value, reason, now, msg_id, fencing_epoch))
+                WHERE msg_id = ? AND fencing_epoch = ? AND lease_expires_at > ?
+            """, (interrupt_state.value, reason, now, msg_id, fencing_epoch, now))
 
         return self.get_claim(msg_id)
 
