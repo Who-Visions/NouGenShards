@@ -32,25 +32,30 @@ def find_radar_root() -> Optional[Path]:
     env_path = os.environ.get(RADAR_REPO_ENV)
     if env_path:
         p = Path(env_path).resolve()
-        if (p / "tools" / "arxiv_rss_radar.py").exists():
+        tools_dir = p / "tools" if (p / "tools").is_dir() else p
+        if (tools_dir / "arxiv_rss_radar.py").exists() and (tools_dir / "arxiv_lab_watch.py").exists():
             return p
 
     candidates = [
         Path.home() / "Outpost" / "nougen-radar",
+        Path.home() / "The Observatory" / "NouGen" / "nougen-radar",
+        Path.home() / "The Observatory" / "tools",
         Path.home() / ".nougen" / "tools",
         Path.home() / "Observatory" / "tools",
     ]
     for c in candidates:
-        if (c / "arxiv_rss_radar.py").exists():
-            return c.parent if c.name == "tools" else c
-        if (c / "tools" / "arxiv_rss_radar.py").exists():
-            return c
+        root_dir = c.parent if c.name == "tools" else c
+        tools_dir = root_dir / "tools" if (root_dir / "tools").is_dir() else root_dir
+        if (tools_dir / "arxiv_rss_radar.py").exists() and (tools_dir / "arxiv_lab_watch.py").exists():
+            return root_dir
     return None
 
 
 def _load_module(mod_name: str, file_path: Path):
     if mod_name in sys.modules:
         return sys.modules[mod_name]
+    if not file_path.exists():
+        return None
     spec = importlib.util.spec_from_file_location(mod_name, file_path)
     if not spec or not spec.loader:
         return None
@@ -65,6 +70,9 @@ def get_radar_tools():
     if not root:
         return None
     tools_dir = root / "tools" if (root / "tools").is_dir() else root
+    required = ["arxiv_rss_radar.py", "arxiv_lab_watch.py", "arxiv_paper.py", "morph_gate.py"]
+    if not all((tools_dir / f).exists() for f in required):
+        return None
     radar_mod = _load_module("arxiv_rss_radar", tools_dir / "arxiv_rss_radar.py")
     lab_mod = _load_module("arxiv_lab_watch", tools_dir / "arxiv_lab_watch.py")
     paper_mod = _load_module("arxiv_paper", tools_dir / "arxiv_paper.py")
