@@ -827,8 +827,12 @@ function gatewayUnconfigured(env) {
   return null;
 }
 __name(gatewayUnconfigured, "gatewayUnconfigured");
+// Exact-host check (not a substring match): SHARD_GATEWAY_URL must not point the worker back at its own public front door.
+function isPublicShardsFrontDoor(value) {
+  try { return new URL(value).hostname === "shards.nougenai.com"; } catch { return false; }
+}
 async function shardRpcHttp(env, method, params, id) {
-  const gatewayUrl = (env.SHARD_GATEWAY_URL && !env.SHARD_GATEWAY_URL.includes("shards.nougenai.com"))
+  const gatewayUrl = (env.SHARD_GATEWAY_URL && !isPublicShardsFrontDoor(env.SHARD_GATEWAY_URL))
     ? env.SHARD_GATEWAY_URL
     : (env.BLADE_ORIGIN || "https://blade.nougenai.com");
   const res = await fetch(gatewayUrl.replace(/\/$/, "") + "/mcp/", {
@@ -1177,7 +1181,7 @@ function sameOrigin(a, b) {
 __name(sameOrigin, "sameOrigin");
 function shardRoutes(env) {
   const routes = [];
-  const primaryOrigin = (env.SHARD_GATEWAY_URL && !env.SHARD_GATEWAY_URL.includes("shards.nougenai.com"))
+  const primaryOrigin = (env.SHARD_GATEWAY_URL && !isPublicShardsFrontDoor(env.SHARD_GATEWAY_URL))
     ? env.SHARD_GATEWAY_URL
     : (env.BLADE_ORIGIN || "https://blade.nougenai.com");
   routes.push({ name: env.SHARD_PRIMARY_NAME || "blade", origin: primaryOrigin, token: env.SHARD_GATEWAY_TOKEN || env.BLADE_TOKEN, primary: true });
@@ -5438,8 +5442,8 @@ ${body}`,
         signal: AbortSignal.timeout(15000)
       });
       const rawText = await resp.text();
-      const cleaned = rawText.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-                             .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
+      const cleaned = rawText.replace(/<script\b[^<]*(?:(?!<\/script\s*>)<[^<]*)*<\/script\s*>/gi, "")
+                             .replace(/<style\b[^<]*(?:(?!<\/style\s*>)<[^<]*)*<\/style\s*>/gi, "")
                              .replace(/<[^>]+>/g, " ")
                              .replace(/\s+/g, " ")
                              .trim();

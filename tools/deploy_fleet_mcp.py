@@ -2,6 +2,7 @@ import sys, json, uuid
 import urllib.request, urllib.error
 sys.path.insert(0, r'C:\Users\super\Outpost\NouGen\src')
 from nougen_shards import keymaker
+from urllib.parse import urlparse
 
 token = keymaker.get_secret('CLOUDFLARE_API_TOKEN_NOUGEN_FULL').strip()
 acct_id = '0d4ac187acceea4d9692619097927d1e'
@@ -22,7 +23,7 @@ plain_bindings = []
 for b in bindings_raw:
     if b.get('type') == 'plain_text':
         val = b.get('text')
-        if b.get('name') == 'SHARD_GATEWAY_URL' and 'shards.nougenai.com' in val:
+        if b.get('name') == 'SHARD_GATEWAY_URL' and urlparse(val or '').hostname == 'shards.nougenai.com':
             val = 'https://blade.nougenai.com'
         plain_bindings.append({
             'type': 'plain_text',
