@@ -1,16 +1,12 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { exec, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import path from 'path';
-import fs from 'fs';
-import os from 'os';
 
 // Vite API plugin that bridges browser requests directly to live dynamic Python CLI, SQLite databases, and handoff markdown files
 function liveNougenApiPlugin() {
   const pythonPath = process.env.NOUGEN_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3');
   const projectRoot = path.resolve(__dirname);
-  const handoffsDir = path.resolve(process.env.NOUGEN_HANDOFFS_DIR || path.join(os.homedir(), 'Outpost', 'NouGenRelay', '.handoffs'));
-  const tokenDbPath = path.resolve(process.env.NOUGEN_TOKEN_DB || path.join(os.homedir(), 'Outpost', 'Yuki-Ai', 'persistence', 'antigravity_memory.db'));
 
   const runPythonCli = (args: string[]): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -27,7 +23,6 @@ function liveNougenApiPlugin() {
         },
         (error, stdout) => {
           if (error) {
-            if (stdout && stdout.trim()) return resolve(stdout.trim());
             return reject(error);
           }
           resolve(stdout.trim());
@@ -51,7 +46,6 @@ function liveNougenApiPlugin() {
         },
         (error, stdout) => {
           if (error) {
-            if (stdout && stdout.trim()) return resolve(stdout.trim());
             return reject(error);
           }
           resolve(stdout.trim());
@@ -59,6 +53,15 @@ function liveNougenApiPlugin() {
       );
     });
   };
+
+  const runDashboard = (command: string): Promise<string> => new Promise((resolve, reject) => {
+    execFile(pythonPath, ['-m', 'nougen_shards.dashboard_live', command], {
+      cwd: projectRoot, env: { ...process.env, PYTHONPATH: path.join(projectRoot, 'src'), PYTHONIOENCODING: 'utf-8' },
+      timeout: 20000, maxBuffer: 4 * 1024 * 1024,
+    }, (error, stdout) => error ? reject(error) : resolve(stdout.trim()));
+  });
+  let fleetCache: { value: string; expires: number } | undefined;
+  let fleetPending: Promise<string> | undefined;
 
   return {
     name: 'live-nougen-api',
@@ -73,7 +76,7 @@ function liveNougenApiPlugin() {
         try {
           // 1. Live 9-DB Substrate Status
           if (endpoint === 'engine_status') {
-            const out = await runPythonCli(['status', '--json']);
+            const out = await runPythonInline("import json; from nougen_shards.dynamic_api import get_engine_status; print(json.dumps(get_engine_status()))");
             res.end(out);
             return;
           }
@@ -94,7 +97,7 @@ function liveNougenApiPlugin() {
               },
               (err, stdout) => {
                 if (err || !stdout || !stdout.trim()) {
-                  res.end('[]');
+                  res.statusCode = 503; res.end(JSON.stringify({ error: 'Memory search unavailable' }));
                   return;
                 }
                 res.end(stdout.trim());
@@ -110,53 +113,13 @@ function liveNougenApiPlugin() {
               const out = await runPythonCli(['stats', '--period', period, '--json']);
               res.end(out);
             } catch {
-              res.end(JSON.stringify({ period, growth: { new_shards: 142, total_shards: 835 }, utility_delta: 0.14 }));
+              res.statusCode = 503; res.end(JSON.stringify({ error: 'Memory statistics unavailable' }));
             }
             return;
           }
 
-          // 4. Live Relay Feed (54 real handoff files from disk)
-          if (endpoint === 'relay_feed') {
-            try {
-              if (fs.existsSync(handoffsDir)) {
-                const files = fs.readdirSync(handoffsDir)
-                  .filter((f) => f.endsWith('.md'))
-                  .map((f) => path.join(handoffsDir, f))
-                  .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)
-                  .slice(0, 15);
-
-                const records = files.map((file) => {
-                  const content = fs.readFileSync(file, 'utf-8');
-                  const filename = path.basename(file);
-                  const parts = filename.replace('.md', '').split('__');
-                  const machine = parts[1] || 'Laptop';
-                  const agent = parts[2] || 'agent';
-
-                  const goalMatch = content.match(/\*\*Goal\*\*:\s*([^\n\r]+)/i);
-                  const branchMatch = content.match(/\*\*Branch\*\*:\s*`?([^`\n\r]+)`?/i);
-                  const whenMatch = content.match(/\*\*When\*\*:\s*([^\n\r]+)/i);
-
-                  return {
-                    id: filename,
-                    timestamp: whenMatch ? whenMatch[1].trim() : fs.statSync(file).mtime.toISOString(),
-                    agent: agent,
-                    machine: machine === 'blade1tb' ? 'Razer Blade' : machine === 'phoebus' ? 'Server' : 'PX13 Laptop',
-                    branch: branchMatch ? branchMatch[1].trim() : 'main',
-                    goal: goalMatch ? goalMatch[1].trim() : content.split('\n')[0].replace(/^#\s*/, ''),
-                    tasks_done: 4,
-                    tasks_total: 4,
-                    status: 'completed',
-                    live_status: 'completed',
-                    acknowledged_by: 'Antigravity Fleet',
-                  };
-                });
-
-                res.end(JSON.stringify(records));
-                return;
-              }
-            } catch {}
-            res.end('[]');
-            return;
+          if (endpoint === 'relay_feed' || endpoint === 'identity') {
+            res.end(await runDashboard(endpoint)); return;
           }
 
           // 5. Live Token Tracker Usage (from session_costs SQLite DB + Dailies)
@@ -175,7 +138,7 @@ function liveNougenApiPlugin() {
               },
               (err, stdout) => {
                 if (err || !stdout || !stdout.trim()) {
-                  res.end(JSON.stringify({ period, invocations: 42, total_tokens: 11486536, estimated_cost: 10.77, free_share: 96.4, by_model: [] }));
+                  res.statusCode = 503; res.end(JSON.stringify({ error: 'Token telemetry unavailable' }));
                   return;
                 }
                 res.end(stdout.trim());
@@ -184,75 +147,14 @@ function liveNougenApiPlugin() {
             return;
           }
 
-          // 6. Live Fleet Nodes Telemetry
           if (endpoint === 'fleet_nodes') {
-            exec('nvidia-smi --query-gpu=name,memory.total,memory.used,temperature.gpu --format=csv,noheader,nounits', (err, stdout) => {
-              let localGpu = 'GPU';
-              let totalVram = 6141;
-              let usedVram = 512;
-              let temp = '58°C';
-
-              if (!err && stdout && stdout.trim()) {
-                const parts = stdout.trim().split(',').map((s) => s.trim());
-                if (parts[0]) localGpu = parts[0];
-                if (parts[1]) totalVram = Number(parts[1]);
-                if (parts[2]) usedVram = Number(parts[2]);
-                if (parts[3]) temp = `${parts[3]}°C`;
-              }
-
-              const usedPct = Math.round((usedVram / Math.max(totalVram, 1)) * 100) || 12;
-
-              const nodes = [
-                {
-                  name: 'Node A',
-                  host: 'Workstation',
-                  ip: '192.0.2.10',
-                  coach: 'Node A',
-                  player: 'local model',
-                  role: 'Heavy Thinking & Synthesis',
-                  gpu: 'Discrete GPU',
-                  ram: 'RAM',
-                  status: 'online',
-                  vram_used_pct: 68,
-                  shards_synced: 835,
-                  temperature: '56°C',
-                  fps_heartbeat: '120 Hz Sync',
-                },
-                {
-                  name: 'Node B',
-                  host: 'Laptop (this machine)',
-                  ip: '192.0.2.11',
-                  coach: 'Agent',
-                  player: 'local model',
-                  role: 'Fast Local Actions & Orchestration',
-                  gpu: `${localGpu} (${(totalVram / 1024).toFixed(1)} GB)`,
-                  ram: 'RAM',
-                  status: 'active-node',
-                  vram_used_pct: usedPct,
-                  shards_synced: 835,
-                  temperature: temp,
-                  fps_heartbeat: 'Live Telemetry',
-                },
-                {
-                  name: 'Node C',
-                  host: 'Server',
-                  ip: '192.0.2.12',
-                  coach: 'Agent',
-                  player: 'local model',
-                  role: 'Main Hub & Central Storage',
-                  gpu: 'Integrated GPU',
-                  ram: 'RAM',
-                  status: 'online',
-                  vram_used_pct: 32,
-                  shards_synced: 835,
-                  temperature: '38°C',
-                  fps_heartbeat: 'Standby Sync',
-                },
-              ];
-
-              res.end(JSON.stringify(nodes));
-            });
-            return;
+            if (!fleetCache || fleetCache.expires < Date.now()) {
+              fleetPending ??= runDashboard('fleet_nodes').then(value => {
+                fleetCache = { value, expires: Date.now() + 15000 }; return value;
+              }).finally(() => { fleetPending = undefined; });
+              await fleetPending;
+            }
+            res.end(fleetCache!.value); return;
           }
 
           next();

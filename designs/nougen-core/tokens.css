@@ -6,8 +6,10 @@
   --accent-rgb: 232, 184, 109;
   --bg: #141414;
   --bg-gradient: var(--bg);
+  --cluster-gap: 1.25rem;
   --control-ink: #141414;
   --danger: #ffb4ab;
+  --fleet-card-min: 23rem;
   --focus: #e8b86d;
   --font-main: system-ui, sans-serif;
   --font-mono: Consolas, monospace;

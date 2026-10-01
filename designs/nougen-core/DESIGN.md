@@ -1,6 +1,6 @@
 ---
 name: "nougen-core"
-version: "0.2.0"
+version: "0.3.0"
 description: "Matte instrument surfaces for the NouGen fleet workbench."
 colors: {"--bg": "#141414", "--panel": "#202020", "--panel-solid": "#202020", "--panel-2": "#282828", "--panel-hover": "#333333", "--line": "#777777", "--line-glow": "#777777", "--text": "#f2eee6", "--muted": "#bdb8ad", "--accent": "#e8b86d", "--accent-2": "#e8b86d", "--accent-purple": "#c8bfad", "--accent-green": "#a9c79b", "--danger": "#ffb4ab", "--warn": "#e8b86d", "--focus": "#e8b86d", "--control-ink": "#141414"}
 ---
@@ -21,7 +21,7 @@ Use opaque graphite surfaces, fine dividers and matte amber accents.
 
 ## density
 
-Keep functional clusters compact; use whitespace to separate tasks, with readable 14px body text. Keep sustained reading near 65ch while metadata and tables use the workbench width. Summarize long records with an explicit full-content disclosure.
+Keep functional clusters compact; use whitespace to separate tasks, with readable 14px body text. Keep sustained reading near 65ch while metadata and tables use the workbench width. Summarize long records with an explicit full-content disclosure. Treat negative space as a functional separator: independent cards retain a cluster gap, while related label/value pairs remain visibly grouped. Reflow content before reducing separation.
 
 ## motionGrammar
 
@@ -33,11 +33,11 @@ Inputs respond immediately; asynchronous work exposes progress, cancellation and
 
 ## informationHierarchy
 
-Prioritize active work and failures before secondary telemetry. Align numbers in monospace.
+Prioritize active work and failures before secondary telemetry. Align numbers in monospace. Each region has one primary reading (machine identity, memory title or chart); badges and supporting telemetry remain subordinate. Shared boundaries are permitted only inside a single related task.
 
 ## responsiveBehavior
 
-Stack work regions at narrow widths; allow document scrolling and wrap toolbars. Use rem type and spacing. Full-width regions use their container width rather than 100vw. Long identifiers wrap without losing content.
+Stack work regions at narrow widths; allow document scrolling and wrap toolbars. Use rem type and spacing. Full-width regions use their container width rather than 100vw. Long identifiers wrap without losing content. Choose columns from available container width. Fleet cards need 23rem when room permits and retain a 1.25rem gap; below an 18rem card content width, label/value rows stack with a 0.25rem gap. At 320px and split-pane widths, independently meaningful regions must not touch or overlap.
 
 ## Accessibility
 
@@ -53,7 +53,7 @@ Use consistent monochrome line icons; pair unfamiliar symbols with labels.
 
 ## dataViz
 
-Use labelled axes and text status; color alone never conveys meaning.
+Use labelled axes and text status; color alone never conveys meaning. Preserve data-bearing bar lengths, baselines, scales and area encodings when applying visual metaphors. Decorative integration belongs outside measured geometry. Missing evidence is unavailable, not zero.
 
 ## stateGrammar
 
@@ -61,4 +61,4 @@ Specify default, hover, focus, selected, disabled, loading, empty, offline, succ
 
 ## provenance
 
-Token choices are invented from the relay brief. Existing selectors and token names are observed. Local Ollama draft reviewed by Codex; NouGenOpen reviewed acceptance criteria.
+Token choices are invented from the relay brief. Existing selectors and token names are observed. Local Ollama draft reviewed by Codex; NouGenOpen reviewed acceptance criteria. Spatial composition adaptations draw on arXiv:2609.00476v1; dashboard gap thresholds are NouGen implementation choices verified in-browser, not empirical findings of that paper.
