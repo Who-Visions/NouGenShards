@@ -1076,18 +1076,42 @@ def session_bye(agent: Optional[str] = None, goal: Optional[str] = None, summary
 
 
 @mcp.tool()
-def search_shards(query: str, limit: int = 5) -> str:
+def search_shards(query: str, limit: int = 5, context_budget: int = 0) -> str:
     """
     Search across the 108K+ active NouGen substrate shards (federated weighted-relevance retrieval).
 
     Args:
         query: The search term or concept to recall.
         limit: Max results to return.
+        context_budget: Opt-in graph context projection budget; UTF-8 byte
+            upper bound on tokens. Zero preserves the existing raw search.
     """
     import json
     from .federation import federated_retrieve
     try:
-        results = federated_retrieve(query, limit=limit)
+        if context_budget < 0 or limit < 1 or limit > 100:
+            raise ValueError("context_budget must be nonnegative and limit must be 1..100")
+        results = federated_retrieve(query, limit=limit * 4 if context_budget else limit)
+        if context_budget:
+            from .context_packet import graph_context_packet
+            from . import core
+
+            def load_dependency(ref):
+                # Remote dependencies require an explicit federation resolver;
+                # never silently substitute a same-numbered local shard.
+                if ref.get('source_node', 'local') != 'local':
+                    return None
+                item = core.get_shard_by_id(int(ref['id']), int(ref['_db_index']))
+                if item:
+                    item = dict(item)
+                    item['_db_index'] = ref['_db_index']
+                    item['source_node'] = 'local'
+                return item
+
+            packet = graph_context_packet(query, results[:limit], results[limit:],
+                                          token_budget=context_budget, max_results=limit,
+                                          load_dependency=load_dependency)
+            return json.dumps(packet, default=str, indent=2)
         return json.dumps({"query": query, "count": len(results), "shards": results}, default=str, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
