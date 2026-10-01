@@ -1,6 +1,5 @@
-import os
-
-target_file = r"C:\Users\super\Outpost\NouGen\tools\nougen-fleet-mcp-patched.js"
+from pathlib import Path
+target_file = Path(__file__).resolve().parent / "nougen-fleet-mcp-patched.js"
 
 with open(target_file, "r", encoding="utf-8") as f:
     text = f.read()

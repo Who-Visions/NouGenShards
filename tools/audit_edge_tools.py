@@ -1,5 +1,5 @@
-import json
 import re
+from pathlib import Path
 import requests
 from nougen_shards.keymaker import get_secret
 
@@ -29,7 +29,7 @@ print(f"Phoebus tools count: {len(phoebus_tools)}")
 print(f"Fleet backend total unique tools: {len(fleet_backend_tools)}")
 
 # 3. Read nougen-fleet-mcp-patched.js
-with open(r"C:\Users\super\Outpost\NouGen\tools\nougen-fleet-mcp-patched.js", "r", encoding="utf-8") as f:
+with open(Path(__file__).resolve().parent / "nougen-fleet-mcp-patched.js", "r", encoding="utf-8") as f:
     text = f.read()
 
 # Extract tool names from openapi.json

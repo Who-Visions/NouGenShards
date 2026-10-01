@@ -1,6 +1,7 @@
 import sys, json, uuid
 import urllib.request, urllib.error
-sys.path.insert(0, r'C:\Users\super\Outpost\NouGen\src')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from nougen_shards import keymaker
 from urllib.parse import urlparse
 
@@ -42,7 +43,7 @@ metadata = {
 }
 
 # 3. Read patched worker.js
-worker_path = r'C:\Users\super\Outpost\NouGen\tools\nougen-fleet-mcp-patched.js'
+worker_path = Path(__file__).resolve().parent / "nougen-fleet-mcp-patched.js"
 with open(worker_path, 'r', encoding='utf-8') as f:
     worker_content = f.read()
 
