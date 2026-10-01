@@ -104,6 +104,27 @@ def test_an_existing_database_with_the_old_trigger_is_migrated_on_init(vault):
     assert "AFTER UPDATE OF title, content ON shards" in _trigger_sql()
 
 
+def test_global_decay_migrates_an_old_trigger_before_it_updates(vault):
+    """The decay opens its own connections and never went through init_db, so a
+    database still carrying the unscoped trigger stayed slow: the 10/1 dream
+    run was still re-indexing every row after the trigger text was fixed."""
+    ids = [_add(f"legacy {n}", f"legacy payload {n} with a distinctive marker lg{n}x") for n in range(30)]
+    conn = _conn()
+    conn.execute("DROP TRIGGER shards_au")
+    conn.execute(
+        "CREATE TRIGGER shards_au AFTER UPDATE ON shards BEGIN "
+        "INSERT INTO shards_fts(shards_fts, rowid, title, content) VALUES ('delete', old.id, old.title, old.content); "
+        "INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content); END;")
+    conn.commit()
+    conn.close()
+    shards._INITIALIZED_DBS.clear()                    # a fresh process: nothing has initialised this DB
+    before = _fts_fingerprint()
+    shards.decay_utility_scores()
+    assert "AFTER UPDATE OF title, content ON shards" in _trigger_sql()
+    assert _fts_fingerprint() == before                # and the decay itself did not re-index
+    assert _fts_hits("lg7x") == [ids[7]]
+
+
 def test_updating_only_utility_does_not_touch_the_fts_index():
     sid = _add("decay target", "content that the decay must never re-tokenize")
     before = _fts_fingerprint()

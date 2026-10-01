@@ -3029,6 +3029,11 @@ def decay_utility_scores(factor: float = 0.95):
         try:
             if not get_db_path(i).exists():
                 continue
+            # get_connection() does not run init_db(), so without this a database
+            # still carrying the old unscoped shards_au trigger stays on it and
+            # this UPDATE re-indexes every row (the 10/1 dream-wake timeout).
+            # init_db() is idempotent and guarded per process.
+            init_db(i)
             conn = get_connection(i)
             conn.execute("UPDATE shards SET utility_score = utility_score * ?", (factor,))
             conn.commit()
