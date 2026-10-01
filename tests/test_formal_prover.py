@@ -61,3 +61,17 @@ def test_z3_theorem_refutation_with_counterexample():
     assert res["valid"] is False
     assert "counterexample" in res
     assert res["counterexample"].get("x") == "1"
+
+
+def test_ramsey_exact_bound_r33():
+    # R(3,3) is exactly 6:
+    # 1. A 5-cycle graph has no triangle and no independent set of size 3 -> R(3,3) > 5 (SAT)
+    res5 = engine.solve_ramsey_bound(n_vertices=5, clique_size=3, indep_size=3)
+    assert res5["status"] == "sat"
+    assert res5["lower_bound_proven"] is True
+    assert res5["witness_edge_count"] == 5
+
+    # 2. Every 2-coloring of K_6 contains a monochromatic triangle -> R(3,3) <= 6 (UNSAT)
+    res6 = engine.solve_ramsey_bound(n_vertices=6, clique_size=3, indep_size=3)
+    assert res6["status"] == "unsat"
+    assert res6["upper_bound_proven"] is True
