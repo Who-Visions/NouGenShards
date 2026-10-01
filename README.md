@@ -303,3 +303,16 @@ See [`skills/README.md`](skills/README.md) for the layout and how to write one.
 ## 📜 Notice
 
 Copyright © 2020–present Who Visions LLC. All rights reserved. 🛡️ This source code is provided for visibility and personal use only. Commercial reuse is not granted.
+
+<!-- nougen:fleet-role:begin (generated from nougen-handoffs fleet/manifest.json; edit the manifest, not this block) -->
+## Fleet role
+
+| | |
+|---|---|
+| Role | durable memory / retrieval / facts |
+| Kind | core |
+| Status | canonical |
+| Canonical for | memory |
+| Visibility | public |
+
+<!-- nougen:fleet-role:end -->
