@@ -3398,10 +3398,12 @@ def arxiv_capabilities() -> dict:
 
 @node_mcp.tool()
 @_offloaded
-def arxiv_radar(mode: str = "preview", recipe_path: Optional[str] = None) -> dict:
+def arxiv_radar(channels: Optional[List[str]] = None, mode: str = "preview", limit: int = 5,
+                commit: bool = False, recipe_path: Optional[str] = None) -> dict:
     """Scan current arXiv channels through NouGen's canonical radar."""
     from nougen_shards.arxiv_radar import run_arxiv_radar
-    return run_arxiv_radar(mode=mode, recipe_path=recipe_path)
+    return run_arxiv_radar(channels=channels, mode=mode, limit=limit, commit=commit, recipe_path=recipe_path)
+
 
 
 @node_mcp.tool()

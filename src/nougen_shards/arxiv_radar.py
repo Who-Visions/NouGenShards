@@ -275,13 +275,23 @@ def run_arxiv_paper(action: str, ref: str, pattern: Optional[str] = None) -> Dic
             return {"status": "success", "available": True, "action": action, "paper_id": aid, "metadata": data}
         elif action == "fulltext":
             p = paper.fulltext(aid)
+            try:
+                full_text = p.read_text(encoding="utf-8")
+                bounded = full_text[:8000]
+            except Exception:
+                bounded = ""
+                full_text = ""
             return {
                 "status": "success",
                 "available": True,
                 "action": action,
                 "paper_id": aid,
                 "cached_path": str(p),
-                "bytes": p.stat().st_size,
+                "bytes": p.stat().st_size if p.exists() else 0,
+                "text": bounded,
+                "text_length": len(bounded),
+                "total_chars": len(full_text),
+                "truncated": len(full_text) > len(bounded),
             }
         elif action == "claim":
             if not pattern:

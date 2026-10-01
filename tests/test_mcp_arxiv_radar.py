@@ -99,3 +99,40 @@ def test_arxiv_radar_integration_direct():
     assert tools["paper"] is not None
     assert tools["morph"] is not None
 
+
+def test_mcp_arxiv_paper_fulltext_returns_bounded_text(monkeypatch, tmp_path):
+    tex_file = tmp_path / "fulltext.tex"
+    tex_file.write_text("Sample LaTeX body " * 500, encoding="utf-8")
+    
+    mock_tools = {
+        "paper": MagicMock(
+            normalize_id=lambda ref: ref,
+            fulltext=lambda aid: tex_file
+        )
+    }
+    monkeypatch.setattr("nougen_shards.arxiv_radar.get_radar_tools", lambda: mock_tools)
+    from nougen_shards.arxiv_radar import run_arxiv_paper
+    res = run_arxiv_paper(action="fulltext", ref="2609.34785")
+    assert res["status"] == "success"
+    assert res["action"] == "fulltext"
+    assert "text" in res
+    assert res["text_length"] > 0
+    assert res["bytes"] > 0
+
+
+def test_app_node_mcp_arxiv_radar_accepts_channels_and_limit(monkeypatch):
+    import asyncio
+    import app
+    forwarded = {}
+    def mock_run_radar(**kwargs):
+        forwarded.update(kwargs)
+        return {"status": "success", "result": {"lanes": {}}}
+    
+    monkeypatch.setattr("nougen_shards.arxiv_radar.run_arxiv_radar", mock_run_radar)
+    res = asyncio.run(app.arxiv_radar(channels=["cs.AI", "cs.LG"], mode="preview", limit=10, commit=False))
+    assert res["status"] == "success"
+    assert forwarded["channels"] == ["cs.AI", "cs.LG"]
+    assert forwarded["limit"] == 10
+    assert forwarded["commit"] is False
+
+
