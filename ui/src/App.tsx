@@ -1,40 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-// ---------------------------------------------------------------------------
-// Human-friendly date and time helper (Eastern Time)
-// ---------------------------------------------------------------------------
-function formatEasternTime(dateInput?: string): string {
-  if (!dateInput) return 'Recently';
-  try {
-    let dateStr = dateInput;
-    if (!dateStr.includes('Z') && !dateStr.includes('+') && !dateStr.includes('-')) {
-      dateStr = dateStr.replace(' ', 'T') + 'Z';
-    }
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return dateInput;
-    return d.toLocaleString('en-US', {
-      timeZone: 'America/New_York',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: true,
-    }) + ' EDT';
-  } catch {
-    return dateInput;
-  }
-}
-
-function getLiveEasternClock(): string {
-  return new Date().toLocaleTimeString('en-US', {
-    timeZone: 'America/New_York',
-    hour: 'numeric',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: true,
-  }) + ' EDT';
-}
+import { formatEasternTime, getLiveEasternClock } from './lib/time';
+import { useShortcuts } from './lib/use-shortcuts';
 
 type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
 
@@ -193,6 +160,7 @@ export default function App() {
   const [clockEastern, setClockEastern] = useState<string>(getLiveEasternClock);
   const requestVersions = useRef({usage: 0, stats: 0, search: 0});
   const memoryDialog = useRef<HTMLDialogElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const dialog = memoryDialog.current;
@@ -350,6 +318,12 @@ export default function App() {
     setFileMenuOpen(false);
     handleClose();
   }, [handleClose]);
+
+  useShortcuts({
+    refresh: handleRefresh,
+    focusSearch: () => { setTab('search'); requestAnimationFrame(() => searchInput.current?.focus()); },
+    quit: handleExit,
+  });
 
   // Tab change triggers
   useEffect(() => {
@@ -560,6 +534,7 @@ export default function App() {
                 <div className="input-glow-wrap">
                   <span className="search-icon">🔍</span>
                   <input
+                    ref={searchInput}
                     aria-label="Search memories"
                     value={query}
                     placeholder="Search your saved memories (e.g. fleet setup, gemma 4, hardware, notes)..."
