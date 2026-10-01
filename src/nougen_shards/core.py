@@ -558,6 +558,13 @@ def init_db(index: int = 1):  # noqa: C901
         # the delete/update triggers, edited or removed shards leave stale rows that
         # keep matching searches. External-content FTS5 needs the special 'delete'
         # command rows to retract a row before re-indexing it.
+        #
+        # The update trigger is scoped to the two columns the index covers. Unscoped,
+        # it re-tokenized a row's full text on EVERY update, so decay_utility_scores
+        # (an UPDATE of utility_score on every row of all nine databases) became ~270k
+        # FTS delete+insert pairs and `dream wake` outran its 900s stage timeout.
+        # The DROP/CREATE here runs on first open in each process, so existing
+        # databases pick up the narrower trigger without a separate migration.
         cursor.execute("DROP TRIGGER IF EXISTS shards_ai")
         cursor.execute("DROP TRIGGER IF EXISTS shards_ad")
         cursor.execute("DROP TRIGGER IF EXISTS shards_au")
@@ -573,7 +580,7 @@ def init_db(index: int = 1):  # noqa: C901
             END;
         """)
         cursor.execute("""
-            CREATE TRIGGER shards_au AFTER UPDATE ON shards BEGIN
+            CREATE TRIGGER shards_au AFTER UPDATE OF title, content ON shards BEGIN
                 INSERT INTO shards_fts(shards_fts, rowid, title, content)
                 VALUES ('delete', old.id, old.title, old.content);
                 INSERT INTO shards_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
