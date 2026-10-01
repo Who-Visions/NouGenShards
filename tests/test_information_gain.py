@@ -90,3 +90,41 @@ def test_default_extractor_feeds_the_same_primitives():
     other = m.gain(features("arxiv fulltext returns only a cache path"))
     assert first.novelty == pytest.approx(1.0)
     assert again.novelty < other.novelty
+
+
+def test_one_decisive_new_feature_in_a_long_familiar_event_is_not_a_duplicate():
+    """Counterexample found on main (PR #658): size-normalised novelty dilutes a single new fact."""
+    from nougen_shards.information_gain import MemoryState, classify, gate, urgency
+    memory = MemoryState()
+    common = [f"c{i}" for i in range(49)]
+    for _ in range(60):
+        memory.observe(common)
+    event = common + ["NEW_DECISIVE"]
+    g = memory.gain(event)
+    assert g.bits > 7                              # a lot of information in absolute terms
+    assert g.novelty < 0.15                        # but the average hides it
+    assert classify(g.novelty) == "duplicate" and not gate(g.novelty)   # the old decision was wrong
+    assert g.peak > 0.99 and g.signal == g.peak
+    assert classify(g.signal) == "novel" and gate(g.signal) and urgency(g.signal) > 0.99
+
+
+def test_signal_stays_quiet_for_a_pure_repeat_and_loud_for_unseen_events():
+    from nougen_shards.information_gain import MemoryState, classify, gate
+    memory = MemoryState()
+    event = [f"f{i}" for i in range(20)]
+    first = memory.observe(event)
+    assert first.signal == 1.0
+    for _ in range(59):
+        memory.observe(event)
+    repeat = memory.gain(event)
+    assert repeat.signal < 0.01 and classify(repeat.signal) == "duplicate" and not gate(repeat.signal)
+    assert memory.gain(["brand", "new"]).signal == 1.0
+    assert memory.gain([]).signal == 0.0
+
+
+def test_peak_is_deterministic_and_order_independent():
+    from nougen_shards.information_gain import MemoryState
+    memory = MemoryState()
+    for _ in range(5):
+        memory.observe(["a", "b"])
+    assert memory.gain(["a", "x", "b"]).peak == memory.gain(["b", "b", "x", "a"]).peak
