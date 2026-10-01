@@ -49,6 +49,28 @@ class TaskState(str, enum.Enum):
 
 DEFAULT_LEASE_SECONDS = 300
 
+# The manager enforces the state machine itself: the CLI path (codex_pipe.advance)
+# checks order and proof, but callers that use this class directly must not be able
+# to skip them (2026-10-01 audit: heartbeat(state=COMPLETE) completed a task with no
+# evidence; FAILED/CANCELED/REJECTED tasks could be re-claimed).
+ACTIVE_STATES = frozenset({"CLAIMED", "WORKING", "VERIFYING", "COMMITTING"})
+INTERRUPT_STATES = frozenset({"INPUT_REQUIRED", "AUTH_REQUIRED", "BLOCKED"})
+TERMINAL_STATES = frozenset({"COMPLETE", "FAILED", "CANCELED", "REJECTED"})
+LIVE_STATES = ACTIVE_STATES | INTERRUPT_STATES
+
+
+def _heartbeat_may_set(current: str, new: str) -> bool:
+    """A heartbeat renews the lease; it may only keep the state or resume work."""
+    if new == current:
+        return True
+    return new == "WORKING" and current in ({"CLAIMED", "VERIFYING"} | INTERRUPT_STATES)
+
+
+def _require_state(msg_id: str, current: str, allowed: frozenset, action: str) -> None:
+    if current not in allowed:
+        raise InvalidStateTransitionError(
+            f"Task {msg_id} is {current}; {action} needs one of: {', '.join(sorted(allowed))}")
+
 
 def get_db_path() -> Path:
     home = Path(os.environ.get("NOUGEN_HOME", str(Path.home() / ".nougen")))
@@ -151,8 +173,8 @@ class ClaimLifecycleManager:
                         raise FencingViolationError(
                             f"Task {msg_id} is actively leased by {current_lane} until {current_lease:.1f} (epoch {current_epoch})"
                         )
-                if current_state == TaskState.COMPLETE.value:
-                    raise InvalidStateTransitionError(f"Task {msg_id} is already COMPLETE")
+                if current_state in TERMINAL_STATES:
+                    raise InvalidStateTransitionError(f"Task {msg_id} is already {current_state} (terminal)")
 
                 new_epoch = current_epoch + 1
                 cur.execute("""
@@ -192,6 +214,9 @@ class ClaimLifecycleManager:
                 raise FencingViolationError("Lease expired; the worker must reacquire the task")
             if current_state == TaskState.COMPLETE.value:
                 return False
+            if not _heartbeat_may_set(current_state, state.value):
+                raise InvalidStateTransitionError(
+                    f"Task {msg_id} is {current_state}; a heartbeat cannot set it to {state.value}")
 
             cur.execute("""
                 UPDATE claims
@@ -210,10 +235,13 @@ class ClaimLifecycleManager:
         now = time.time()
         with self._connect() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT fencing_epoch, lease_expires_at FROM claims WHERE msg_id = ?", (msg_id,))
+            cur.execute("SELECT fencing_epoch, lease_expires_at, state FROM claims WHERE msg_id = ?", (msg_id,))
             row = cur.fetchone()
             if not row or row[0] != fencing_epoch or row[1] <= now:
                 raise FencingViolationError("Fencing epoch mismatch on verify_step")
+            _require_state(msg_id, row[2], frozenset({"WORKING", "VERIFYING"}), "verify_step")
+            if not evidence:
+                raise InvalidStateTransitionError(f"Task {msg_id}: verify_step needs non-empty evidence")
 
             cur.execute("""
                 UPDATE claims
@@ -233,10 +261,13 @@ class ClaimLifecycleManager:
         now = time.time()
         with self._connect() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT fencing_epoch, idempotency_key, lease_expires_at FROM claims WHERE msg_id = ?", (msg_id,))
+            cur.execute("SELECT fencing_epoch, idempotency_key, lease_expires_at, state FROM claims WHERE msg_id = ?", (msg_id,))
             row = cur.fetchone()
             if not row or row[0] != fencing_epoch or row[2] <= now:
                 raise FencingViolationError("Fencing epoch mismatch on commit_step")
+            _require_state(msg_id, row[3], frozenset({"VERIFYING", "COMMITTING"}), "commit_step")
+            if not idempotency_key or not str(idempotency_key).strip():
+                raise InvalidStateTransitionError(f"Task {msg_id}: commit_step needs an idempotency key")
             if row[1] and row[1] != idempotency_key:
                 raise FencingViolationError("A different idempotency key is already bound to this claim")
 
@@ -262,6 +293,9 @@ class ClaimLifecycleManager:
             row = cur.fetchone()
             if not row or row[0] != fencing_epoch or row[2] <= now:
                 raise FencingViolationError("Fencing epoch mismatch on complete")
+            _require_state(msg_id, row[1], frozenset({"COMMITTING"}), "complete")
+            if not verification_proof:
+                raise InvalidStateTransitionError(f"Task {msg_id}: complete needs a non-empty verification proof")
 
             cur.execute("""
                 UPDATE claims
@@ -276,10 +310,11 @@ class ClaimLifecycleManager:
         now = time.time()
         with self._connect() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT fencing_epoch, lease_expires_at FROM claims WHERE msg_id = ?", (msg_id,))
+            cur.execute("SELECT fencing_epoch, lease_expires_at, state FROM claims WHERE msg_id = ?", (msg_id,))
             row = cur.fetchone()
             if not row or row[0] != fencing_epoch or row[1] <= now:
                 raise FencingViolationError("Fencing epoch mismatch or expired lease on fail")
+            _require_state(msg_id, row[2], LIVE_STATES, "fail")
             cur.execute("""
                 UPDATE claims
                 SET state = ?, error_detail = ?, lease_expires_at = 0, updated_at = ?
@@ -302,10 +337,11 @@ class ClaimLifecycleManager:
         now = time.time()
         with self._connect() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT fencing_epoch, lease_expires_at FROM claims WHERE msg_id = ?", (msg_id,))
+            cur.execute("SELECT fencing_epoch, lease_expires_at, state FROM claims WHERE msg_id = ?", (msg_id,))
             row = cur.fetchone()
             if not row or row[0] != fencing_epoch or row[1] <= now:
                 raise FencingViolationError("Fencing epoch mismatch on interrupt")
+            _require_state(msg_id, row[2], LIVE_STATES, "interrupt")
 
             cur.execute("""
                 UPDATE claims
