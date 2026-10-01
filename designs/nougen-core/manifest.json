@@ -36,10 +36,25 @@
       "kind": "inferred",
       "note": "Read evaluation, results, discussion and conclusions. Adapted consistent task reference frames to scoped object identity and explicit independent-view state. Study: 16 participants/eight pairs, four conditions; no significant completion-time or error differences. Negative Space denotes a shared virtual task volume, not a whitespace guideline.",
       "source": "https://arxiv.org/pdf/1910.03380v1"
+    },
+    {
+      "kind": "inferred",
+      "note": "Read the extracted full text (abstract, introduction, related work, conclusions); method and results sections skimmed only. Adapted top-down, reference-first composition and live text layers. Paper reports SAM IoU 68.4% and a fixed 2,000 text styles; no dashboard evaluation.",
+      "source": "https://arxiv.org/abs/2507.05601"
+    },
+    {
+      "kind": "inferred",
+      "note": "Read as an alphaXiv-generated report, not full text. Design docs as durable artifact with regenerable code, worked examples and reconciliation anchors. Already how NouGenDesigns operates (compile and check fail on drift); recorded, no new rule. Domain is ML performance modelling.",
+      "source": "https://arxiv.org/abs/2609.05364"
+    },
+    {
+      "kind": "inferred",
+      "note": "Read as an alphaXiv-generated report, not full text. Reusable design logics retrieved and followed for question synthesis; evaluated on LLM reasoning data, not interface design. Candidate only.",
+      "source": "https://arxiv.org/abs/2508.12726"
     }
   ],
   "schemaVersion": "od-design-system-project/v1",
-  "sourceDigest": "d512aded354250ccf4c1393475cd330b1c0bf226c0546cc34a664ae74eb20be8",
+  "sourceDigest": "4dde1e13f84b173d5bb00b10ee980eb387e297ecb2296e0321fdfc7f8d2f5b86",
   "surfaces": {
     "ground": "--bg",
     "ink": "--text"
@@ -48,5 +63,5 @@
     "dark",
     "light"
   ],
-  "version": "0.4.0"
+  "version": "0.5.0"
 }
