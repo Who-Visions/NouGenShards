@@ -2,12 +2,15 @@
   "mcpServers": {
     "nougen-shards": {
       "command": "python",
-      "args": ["-m", "nougen_shards.mcp"],
+      "args": [
+        "-m",
+        "nougen_shards.mcp"
+      ],
       "env": {
         "PYTHONPATH": "src",
         "PYTHONIOENCODING": "utf-8",
         "NOUGEN_VAULT_DIR": "~/.nougen/shards",
-        "NOUGEN_RECALL_TOKEN_BUDGET": "8000",
+        "NOUGEN_RECALL_TOKEN_BUDGET": "2000",
         "NOUGEN_RECALL_DEADLINE_S": "15",
         "NOUGEN_VECTOR_CACHE_WAIT_S": "1",
         "NOUGEN_SQLITE_TIMEOUT_S": "30"
@@ -15,7 +18,12 @@
     },
     "ollama": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "ollama-mcp"],
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "ollama-mcp"
+      ],
       "env": {
         "OLLAMA_HOST": "http://127.0.0.1:11434"
       }
@@ -26,7 +34,14 @@
     },
     "Ref": {
       "command": "docker",
-      "args": ["run", "-i", "--rm", "-e", "REF_API_KEY", "mcp/ref-tools-mcp"],
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "REF_API_KEY",
+        "mcp/ref-tools-mcp"
+      ],
       "env": {
         "REF_API_KEY": "${REF_API_KEY}"
       }
@@ -44,6 +59,12 @@
       "args": [
         "-y",
         "context-mode"
+      ]
+    },
+    "nougen-open": {
+      "command": ".venv/Scripts/nougen-open.exe",
+      "args": [
+        "mcp"
       ]
     }
   }
