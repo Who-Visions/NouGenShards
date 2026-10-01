@@ -12,6 +12,53 @@ from typing import List, Dict, Any
 
 from . import core
 
+# A JSON key is not a subject and a brace is not a predicate. Notion-mirror and
+# API-payload shards are JSON dumps; the extractor turned their keys into
+# "invariants" (subject '"object"', predicate '"block",'). 6,516 of the 9,452
+# rows the 2026-10-01 dream run touched were fragments like that, and the
+# skill synthesizer named skills after them (evolved-name, evolved-notion_id).
+_JSON_VALUE_LINE = re.compile(r'^"[^"]*",?$')
+_STRUCTURAL_RATIO = 0.08
+
+
+def is_plausible_invariant(subject: Any, predicate: Any) -> bool:
+    """False for JSON fragments masquerading as a subject/predicate pair."""
+    if not isinstance(subject, str) or not isinstance(predicate, str):
+        return False
+    subj, pred = subject.strip(), predicate.strip()
+    if not subj or not pred or not any(ch.isalpha() for ch in subj) or not any(ch.isalnum() for ch in pred):
+        return False
+    if subj[0] in '"{[' or pred[0] in '{[' or _JSON_VALUE_LINE.match(pred):
+        return False
+    return True
+
+
+def is_structured_dump(content: Any) -> bool:
+    """True for a JSON/structured-data dump (data, not prose): skip the LLM entirely."""
+    if not isinstance(content, str):
+        return False
+    text = content.lstrip()
+    if not text or text[0] not in '{[':
+        return False
+    sample = text[:4000]
+    return sum(sample.count(c) for c in '{}[]":,') / len(sample) > _STRUCTURAL_RATIO
+
+
+def _retire_shard(shard: Dict[str, Any], errors: List[Dict[str, Any]]) -> bool:
+    """Mark a shard consolidated so it is not re-picked (and re-sent to the LLM) every cycle."""
+    conn = core.get_connection(shard["_db_index"])
+    try:
+        conn.execute("UPDATE shards SET consolidated = 1 WHERE id = ?", (shard["id"],))
+        conn.commit()
+        return True
+    except sqlite3.Error as exc:
+        conn.rollback()
+        errors.append({"db_index": shard["_db_index"], "shard_id": shard["id"],
+                       "stage": "retire", "error": str(exc)})
+        return False
+    finally:
+        conn.close()
+
 
 def fetch_high_utility_shards(limit: int = 50) -> List[Dict[str, Any]]:
     """Retrieve the top shards by utility score across the federated database cluster."""
@@ -199,12 +246,27 @@ def consolidate_episodic_data(limit: int = 10) -> Dict[str, Any]:
     new_invariants_count = 0
     consolidated_shards_count = 0
     extracted_rules = []
+    structured_skipped = 0
+    shards_rejected = 0
+    invariants_rejected = 0
     
     for shard in unconsolidated:
+        if is_structured_dump(shard["content"]):
+            if _retire_shard(shard, errors):
+                structured_skipped += 1
+            continue
         invariants = extract_semantic_invariants_via_llm(shard["content"])
         if not isinstance(invariants, list):
             errors.append({"db_index": shard["_db_index"], "shard_id": shard["id"],
                            "stage": "extract", "error": "Expected a list of invariants"})
+            continue
+        raw_count = len(invariants)
+        invariants = [inv for inv in invariants
+                      if isinstance(inv, dict) and is_plausible_invariant(inv.get("subject"), inv.get("predicate"))]
+        invariants_rejected += raw_count - len(invariants)
+        if raw_count and not invariants:
+            if _retire_shard(shard, errors):
+                shards_rejected += 1
             continue
         if invariants:
             db_idx = shard["_db_index"]
@@ -258,6 +320,9 @@ def consolidate_episodic_data(limit: int = 10) -> Dict[str, Any]:
     return {
         "shards_scanned": len(unconsolidated),
         "shards_consolidated": consolidated_shards_count,
+        "structured_skipped": structured_skipped,
+        "shards_rejected": shards_rejected,
+        "invariants_rejected": invariants_rejected,
         "new_invariants_extracted": new_invariants_count,
         "rules": extracted_rules,
         "errors": errors,
@@ -295,7 +360,7 @@ def synthesize_skills_from_invariants(
             continue
         sub_clean = sub.strip()
         pred_clean = pred.strip()
-        if not sub_clean or not pred_clean:
+        if not sub_clean or not pred_clean or not is_plausible_invariant(sub_clean, pred_clean):
             continue
         grouped.setdefault(sub_clean, []).append(pred_clean)
 
