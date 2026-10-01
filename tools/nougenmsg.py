@@ -545,6 +545,36 @@ def main():
         print(f"[OK] Archived {archived} message(s) from {target} inbox.")
         return
 
+    # Take Message / Durable Claim Lifecycle
+    if any(cmd in sys.argv for cmd in ("take-msg", "--take-msg", "claim-msg", "--claim-msg")):
+        idx = -1
+        for cmd in ("take-msg", "--take-msg", "claim-msg", "--claim-msg"):
+            if cmd in sys.argv:
+                idx = sys.argv.index(cmd)
+                break
+        if idx + 1 >= len(sys.argv):
+            print("[!] Error: take-msg requires <msg_id>")
+            return
+        target_msg_id = sys.argv[idx + 1]
+        lane = resolve_agent_label() or "blade-antigravity"
+        if "--lane" in sys.argv:
+            l_idx = sys.argv.index("--lane")
+            if l_idx + 1 < len(sys.argv):
+                lane = sys.argv[l_idx + 1]
+        lease_s = 300
+        if "--lease" in sys.argv:
+            ls_idx = sys.argv.index("--lease")
+            if ls_idx + 1 < len(sys.argv) and sys.argv[ls_idx + 1].isdigit():
+                lease_s = int(sys.argv[ls_idx + 1])
+        try:
+            from nougen_shards.claim_lifecycle import ClaimLifecycleManager
+            mgr = ClaimLifecycleManager()
+            claim = mgr.take_msg(target_msg_id, agent_lane=lane, lease_seconds=lease_s)
+            print(f"[OK] Task {target_msg_id} CLAIMED by {lane}. Fencing Epoch: {claim['fencing_epoch']}, Lease: {claim['lease_expires_at']:.1f}")
+        except Exception as e:
+            print(f"[!] Claim failed: {e}")
+        return
+
     # Autonomous Wake Sentry
     if any(cmd in sys.argv for cmd in ("--wake", "wake", "--watch", "watch")):
         timeout_s = 3600
