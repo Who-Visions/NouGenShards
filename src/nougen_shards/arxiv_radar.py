@@ -237,8 +237,28 @@ def run_arxiv_radar(channels: Optional[List[str]] = None, mode: str = "preview",
     return out
 
 
-def run_arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False) -> Dict[str, Any]:
-    """Execute an arXiv lab watcher cycle for hardware/systems research."""
+def _lab_entry(e: Dict[str, Any]) -> Dict[str, Any]:
+    return {"id": e.get("id"), "title": e.get("title"), "score": e.get("score"),
+            "classes": e.get("classes", []), "tier": e.get("tier")}
+
+
+def run_arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False, limit: int = 25,
+                        commit: bool = False) -> Dict[str, Any]:
+    """arXiv lab watcher for hardware/systems research. Read-only unless `commit` is true and the
+    operator has set NOUGEN_ARXIV_MCP_ALLOW_MUTATION=1 (same gate as the radar and the canonical
+    nougen-radar MCP server): lab.run() advances the cursor, the graft queue and the digest.
+
+    preview: fetch, screen and dedupe the feed; returns graft/watch lists clipped to `limit`.
+    commit: run the full cycle (queue, cursor, digest). Novelty stays unjudged; nothing is sharded.
+    """
+    provenance = "Who-Visions/nougen-radar tools/arxiv_lab_watch.py"
+    if not isinstance(channel, str) or not _CHANNEL_RE.match(channel):
+        return {"status": "error", "error": "channel must be an arXiv channel name like 'cs.AR'"}
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
+        return {"status": "error", "channel": channel, "error": f"limit must be an integer 1-{MAX_LIMIT}"}
+    if commit and os.environ.get(MUTATION_ENV, "").strip() != "1":
+        return {"status": "mutation_disabled", "channel": channel, "mutated": False,
+                "error": f"commit needs the server operator to set {MUTATION_ENV}=1; read-only preview remains available"}
     tools = get_radar_tools()
     if not tools or not tools.get("lab"):
         return {
@@ -247,23 +267,42 @@ def run_arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False) -> Dict[
             "error": "nougen-radar repository not installed or arxiv_lab_watch.py missing",
         }
     lab = tools["lab"]
+    buffer = io.StringIO()
     try:
-        res = lab.run(channel=channel, backfill=backfill)
-        return {
-            "status": "success",
-            "available": True,
-            "channel": channel,
-            "result": res,
-            "novelty": "unjudged",
-            "provenance": "Who-Visions/nougen-radar tools/arxiv_lab_watch.py",
-        }
+        with contextlib.redirect_stdout(buffer):
+            if commit:
+                res = lab.run(channel=channel, backfill=backfill)
+                out: Dict[str, Any] = {"result": res}
+            else:
+                items, _hdr = lab.fetch_feed(channel, {}, lab._radar())   # empty cursor: nothing saved
+                if backfill:
+                    items += lab.backfill_recent(channel)
+                fresh, seen = [], set()
+                for e in items:
+                    if e["id"] not in seen:
+                        seen.add(e["id"])
+                        fresh.append(e)
+                graft = sorted((e for e in fresh if e.get("graft")), key=lambda x: -x.get("score", 0))
+                watch = sorted((e for e in fresh if e.get("tier") == "watch"), key=lambda x: -x.get("score", 0))
+                out = {"result": {"channel": channel, "screened": len(fresh),
+                                  "graft_candidates": len(graft), "watch": len(watch),
+                                  "graft_top": [_lab_entry(e) for e in graft[:limit]],
+                                  "watch_top": [_lab_entry(e) for e in watch[:limit]],
+                                  "auto_shard": False}}
+        out.update({"status": "success", "available": True, "channel": channel, "mutated": bool(commit),
+                    "novelty": "unjudged", "provenance": provenance})
+        log = buffer.getvalue().strip()
+        if log:
+            out["log_tail"] = log[-LOG_TAIL_CHARS:]
+        return out
     except Exception as e:
         return {
             "status": "error",
             "available": True,
             "channel": channel,
+            "mutated": False,
             "error": str(e),
-            "provenance": "Who-Visions/nougen-radar tools/arxiv_lab_watch.py",
+            "provenance": provenance,
         }
 
 

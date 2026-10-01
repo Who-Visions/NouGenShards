@@ -3421,10 +3421,10 @@ def arxiv_radar(channels: Optional[List[str]] = None, mode: str = "preview", lim
 
 @node_mcp.tool()
 @_offloaded
-def arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False) -> dict:
-    """Execute an arXiv research lab watcher cycle (e.g. cs.AR hardware architecture -> graft candidates)."""
+def arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False, limit: int = 25, commit: bool = False) -> dict:
+    """arXiv lab watcher (e.g. cs.AR -> graft candidates). Read-only preview unless commit=true and the server sets NOUGEN_ARXIV_MCP_ALLOW_MUTATION=1."""
     from nougen_shards.arxiv_radar import run_arxiv_lab_watch
-    return run_arxiv_lab_watch(channel=channel, backfill=backfill)
+    return run_arxiv_lab_watch(channel=channel, backfill=backfill, limit=limit, commit=commit)
 
 
 @node_mcp.tool()

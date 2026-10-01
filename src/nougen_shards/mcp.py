@@ -1162,7 +1162,8 @@ def arxiv_radar(channels: Optional[List[str]] = None, mode: str = "preview", lim
 
 
 @mcp.tool()
-def arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False) -> str:
+def arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False, limit: int = 25,
+                    commit: bool = False) -> str:
     """
     Execute an arXiv research lab watcher cycle (e.g. cs.AR hardware architecture -> graft candidates).
 
@@ -1171,10 +1172,13 @@ def arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False) -> str:
 
     Args:
         channel: arXiv channel to screen (default: cs.AR).
-        backfill: If true, seed from recent archive and arXiv API.
+        backfill: If true, also screen the recent archive via the arXiv API.
+        limit: Graft/watch entries returned in a preview (1-50).
+        commit: Run the full cycle (queue, cursor, digest); needs NOUGEN_ARXIV_MCP_ALLOW_MUTATION=1 on the server.
+        Without commit this is a read-only preview.
     """
     from .arxiv_radar import run_arxiv_lab_watch
-    res = run_arxiv_lab_watch(channel=channel, backfill=backfill)
+    res = run_arxiv_lab_watch(channel=channel, backfill=backfill, limit=limit, commit=commit)
     return json.dumps(res, default=str, indent=2)
 
 
