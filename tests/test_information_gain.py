@@ -113,12 +113,12 @@ def test_signal_stays_quiet_for_a_pure_repeat_and_loud_for_unseen_events():
     memory = MemoryState()
     event = [f"f{i}" for i in range(20)]
     first = memory.observe(event)
-    assert first.signal == 1.0
+    assert first.signal == pytest.approx(1.0)
     for _ in range(59):
         memory.observe(event)
     repeat = memory.gain(event)
     assert repeat.signal < 0.01 and classify(repeat.signal) == "duplicate" and not gate(repeat.signal)
-    assert memory.gain(["brand", "new"]).signal == 1.0
+    assert memory.gain(["brand", "new"]).signal == pytest.approx(1.0)
     assert memory.gain([]).signal == 0.0
 
 
