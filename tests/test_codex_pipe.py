@@ -145,6 +145,60 @@ class CodexPipeTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "thread_mismatch")
         self.assertTrue(Path(path).exists())
 
+    def _stage(self, message_id, **extra):
+        codex_pipe.save({"message_id": message_id, "thread": "t", "text": "do the thing", **extra})
+
+    def test_ack_of_actionable_message_stays_pending_execution(self):
+        mid = "aaaaaaaa-0000-4000-8000-000000000001"
+        self._stage(mid)
+        codex_pipe.acknowledge(mid, consumer="codex", thread="t", inbox=self.temp.name)
+        record = codex_pipe.lifecycle(mid, self.temp.name)
+        self.assertEqual(record["state"], "ACKED")
+        self.assertTrue(record["pending_execution"])
+        self.assertEqual([p["message_id"] for p in codex_pipe.pending_execution(self.temp.name)], [mid])
+
+    def test_informational_message_ends_at_acked(self):
+        mid = "aaaaaaaa-0000-4000-8000-000000000002"
+        self._stage(mid, origin={"kind": "status"})
+        codex_pipe.acknowledge(mid, consumer="codex", thread="t", inbox=self.temp.name)
+        self.assertFalse(codex_pipe.lifecycle(mid, self.temp.name)["pending_execution"])
+        self.assertEqual(codex_pipe.pending_execution(self.temp.name), [])
+
+    def test_take_acks_and_claims_atomically_and_is_idempotent(self):
+        mid = "aaaaaaaa-0000-4000-8000-000000000003"
+        self._stage(mid)
+        first = codex_pipe.take(mid, consumer="codex", thread="t", inbox=self.temp.name)
+        self.assertEqual(first["lifecycle_state"], "CLAIMED")
+        self.assertTrue(first["pending_execution"])
+        again = codex_pipe.take(mid, consumer="codex", thread="t", inbox=self.temp.name)
+        self.assertEqual(again["lifecycle_state"], "CLAIMED")
+        self.assertEqual(len(codex_pipe.lifecycle(mid, self.temp.name)["history"]), 2)
+
+    def test_complete_requires_evidence_and_legal_order(self):
+        mid = "aaaaaaaa-0000-4000-8000-000000000004"
+        self._stage(mid)
+        codex_pipe.take(mid, consumer="codex", thread="t", inbox=self.temp.name)
+        skip = codex_pipe.advance(mid, "COMPLETE", "proof", inbox=self.temp.name)
+        self.assertEqual(skip["status"], "illegal_transition")
+        self.assertTrue(codex_pipe.advance(mid, "EXECUTING", inbox=self.temp.name)["advanced"])
+        bare = codex_pipe.advance(mid, "COMPLETE", "  ", inbox=self.temp.name)
+        self.assertEqual(bare["status"], "evidence_required")
+        self.assertTrue(codex_pipe.pending_execution(self.temp.name))
+        done = codex_pipe.advance(mid, "COMPLETE", "PR merged: abc123", inbox=self.temp.name)
+        self.assertTrue(done["advanced"])
+        self.assertFalse(done["pending_execution"])
+        self.assertFalse(done["evidence_verified"])
+        self.assertEqual(codex_pipe.pending_execution(self.temp.name), [])
+        after = codex_pipe.advance(mid, "EXECUTING", inbox=self.temp.name)
+        self.assertEqual(after["status"], "illegal_transition")
+
+    def test_advance_unknown_message_and_state(self):
+        self.assertEqual(codex_pipe.advance("nope", "CLAIMED", inbox=self.temp.name)["status"], "no_lifecycle")
+        mid = "aaaaaaaa-0000-4000-8000-000000000005"
+        self._stage(mid)
+        codex_pipe.acknowledge(mid, consumer="codex", thread="t", inbox=self.temp.name)
+        self.assertEqual(codex_pipe.advance(mid, "DONE", "x", inbox=self.temp.name)["status"], "unknown_state")
+
 
 @unittest.skipUnless(sys.platform == 'win32', 'named pipe is Windows-only')
 class CodexPipeServeSurvivesBadConnectsTests(unittest.TestCase):

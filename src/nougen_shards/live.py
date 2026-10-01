@@ -404,6 +404,12 @@ class LiveControlPlane:
             lines.append(f"  • {ident} [{item['source']}] {body}")
         if msgs["retained"] > msgs["shown"]:
             lines.append(f"  … {msgs['retained'] - msgs['shown']} more retained (nougen live inbox)")
+        from . import codex_pipe  # pylint: disable=import-outside-toplevel
+        executing = codex_pipe.pending_execution()
+        if executing:
+            lines.append(f"⏳ ACKED BUT NOT FINISHED — {len(executing)} actionable message(s) awaiting execution")
+            for item in executing[:limit]:
+                lines.append(f"  • {item['message_id']} [{item['state']}] since {item['since']}")
         lines.extend([
             "🔁 NOUGEN RELAYS — open batons, not claimed or acknowledged",
             f"  {relays['open']} open retained; showing {relays['shown']}",
@@ -671,6 +677,19 @@ def handle_live_command(args: List[str]) -> str:
         return json.dumps(codex_pipe.acknowledge(
             args[1], consumer=os.environ.get("NOUGEN_AGENT", "codex"),
             thread=os.environ.get("CODEX_THREAD_ID") or None), indent=2)
+    elif subcmd == "take-msg" and len(args) >= 2:
+        from . import codex_pipe  # pylint: disable=import-outside-toplevel
+        return json.dumps(codex_pipe.take(
+            args[1], consumer=os.environ.get("NOUGEN_AGENT", "codex"),
+            thread=os.environ.get("CODEX_THREAD_ID") or None), indent=2)
+    elif subcmd == "advance-msg" and len(args) >= 3:
+        from . import codex_pipe  # pylint: disable=import-outside-toplevel
+        return json.dumps(codex_pipe.advance(
+            args[1], args[2], " ".join(args[3:]),
+            consumer=os.environ.get("NOUGEN_AGENT", "codex")), indent=2)
+    elif subcmd == "pending-msg":
+        from . import codex_pipe  # pylint: disable=import-outside-toplevel
+        return json.dumps(codex_pipe.pending_execution(), indent=2)
     elif subcmd == "ssh":
         return json.dumps(control.ssh(), indent=2)
     elif subcmd == "relays":
