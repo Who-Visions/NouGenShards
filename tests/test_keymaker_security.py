@@ -94,3 +94,50 @@ def test_list_external_dbs_skips_row_when_keyring_missing(km, monkeypatch):
         raise ImportError("No module named 'keyring'")
     monkeypatch.setattr(keymaker, "_unprotect", boom)
     assert km.list_external_dbs() == []  # skipped, no exception
+
+
+class _FakeKeyring:
+    """In-memory keyring; records reads so the test can prove the Keychain is never hit."""
+    def __init__(self):
+        self.store, self.reads = {}, 0
+
+    def set_password(self, service, ref, value):
+        self.store[(service, ref)] = value
+
+    def get_password(self, service, ref):
+        self.reads += 1
+        return self.store.get((service, ref))
+
+
+@pytest.fixture
+def km_keyring(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(tmp_path / "vault"))
+    monkeypatch.delenv("NOUGEN_ALLOW_PLAINTEXT_VAULT", raising=False)
+    monkeypatch.setenv("NOUGEN_DISABLE_KEYCHAIN_POPUP", "1")  # headless: reads use the cache only
+    fake = _FakeKeyring()
+    monkeypatch.setitem(sys.modules, "keyring", fake)
+    import nougen_shards.keymaker as keymaker
+    importlib.reload(keymaker)
+    monkeypatch.setattr(keymaker, "_KEYRING_CACHE_FILE", tmp_path / "keyring_cache.json")
+    yield keymaker, fake
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows uses DPAPI, not the keyring cache")
+def test_secret_ingested_headless_is_readable_headless(km_keyring):
+    km, fake = km_keyring
+    km.ingest_secret("NEW_PROVIDER_API_KEY", "value-123")
+    km._KEYRING_CACHE.clear()  # a fresh session: nothing in memory
+    assert km.get_secret("NEW_PROVIDER_API_KEY") == "value-123"
+    assert fake.reads == 0  # served from the cache; the Keychain was never asked
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows uses DPAPI, not the keyring cache")
+def test_csv_export_survives_an_unreadable_row(km_keyring):
+    km, _ = km_keyring
+    km.ingest_secret("OK_KEY", "fine")
+    conn = sqlite3.connect(str(km._get_db_path()) if hasattr(km, "_get_db_path") else str(km.DB_PATH))
+    conn.execute("insert into secrets (secret_key, secret_value, last_rotated) values (?, ?, ?)",
+                 ("ORPHAN_KEY", km._KEYRING_PREFIX + "no-such-ref", "2026-10-01"))
+    conn.commit(); conn.close()
+    km.ingest_secret("ANOTHER_KEY", "also-fine")  # used to raise AttributeError in _export_to_csv
+    assert km.get_secret("ANOTHER_KEY") == "also-fine"
