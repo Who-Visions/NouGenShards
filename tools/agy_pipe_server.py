@@ -133,10 +133,12 @@ def wake_idle_consoles(text: str = "check inbox\r") -> int:
     woken = 0
     try:
         out = subprocess.check_output(
-            ["powershell", "-NoProfile", "-Command", "Get-Process -Name agy -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -ExpandProperty Id"],
+            ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", "Get-Process -Name agy -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -ExpandProperty Id"],
             text=True,
             errors="replace",
             timeout=3,
+            stdin=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0,
         )
         pids = [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
     except Exception:
