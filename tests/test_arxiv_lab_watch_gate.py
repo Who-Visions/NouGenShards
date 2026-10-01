@@ -1,9 +1,7 @@
 """arxiv_lab_watch: read-only preview by default, mutation gated, edge schema honoured."""
 import ast
-import json
 import re
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
