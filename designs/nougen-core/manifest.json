@@ -31,10 +31,15 @@
       "kind": "inferred",
       "note": "Adapted DG1-DG3 and sections 5.3.2/6.3 into primary-task hierarchy, intentional region separation, editable geometry and data-fidelity rules. The study evaluates generated concept blends, not dashboard usability; spacing thresholds are invented NouGen choices.",
       "source": "https://arxiv.org/html/2609.00476v1"
+    },
+    {
+      "kind": "inferred",
+      "note": "Read evaluation, results, discussion and conclusions. Adapted consistent task reference frames to scoped object identity and explicit independent-view state. Study: 16 participants/eight pairs, four conditions; no significant completion-time or error differences. Negative Space denotes a shared virtual task volume, not a whitespace guideline.",
+      "source": "https://arxiv.org/pdf/1910.03380v1"
     }
   ],
   "schemaVersion": "od-design-system-project/v1",
-  "sourceDigest": "dc6109ec5cc1967e2e2f90268224c686447f07246dcc3423ccb967dcec6293be",
+  "sourceDigest": "d512aded354250ccf4c1393475cd330b1c0bf226c0546cc34a664ae74eb20be8",
   "surfaces": {
     "ground": "--bg",
     "ink": "--text"
@@ -43,5 +48,5 @@
     "dark",
     "light"
   ],
-  "version": "0.3.0"
+  "version": "0.4.0"
 }

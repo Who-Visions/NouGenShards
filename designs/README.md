@@ -60,3 +60,5 @@ observed evidence separated from inferred adaptations.
 
 See [discovery.json](discovery.json), [discovery-guide.md](discovery-guide.md),
 and the reviewed [spatial adaptation](spatial-composition-morph.md).
+
+Workspace-awareness rules and their evidence limits: [1910.03380 morph](workspace-awareness-morph.md).
