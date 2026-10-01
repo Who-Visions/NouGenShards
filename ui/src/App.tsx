@@ -618,21 +618,43 @@ export default function App() {
     }
   }, []);
 
-  const runSearch = useCallback(async () => {
+  const searchAbortControllerRef = useRef<AbortController | null>(null);
+
+  const runSearch = useCallback(async (overrideQuery?: string) => {
+    const q = overrideQuery !== undefined ? overrideQuery : query;
+    if (searchAbortControllerRef.current) {
+      searchAbortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    searchAbortControllerRef.current = controller;
+
     setBusy(true);
     try {
-      const raw = (await callEngine('search_shards', { query })) as string;
+      const raw = (await callEngine('search_shards', { query: q })) as string;
+      if (controller.signal.aborted) return;
       const parsed = JSON.parse(raw);
       setResults(parsed.length > 0 ? parsed : []);
       setPartition(ALL_PARTITIONS);
       setError(null);
     } catch (e) {
+      if (controller.signal.aborted) return;
       setError(String(e));
       setResults([]);
     } finally {
-      setBusy(false);
+      if (!controller.signal.aborted) {
+        setBusy(false);
+      }
     }
   }, [query]);
+
+  // Debounced auto-search when typing query in Search tab
+  useEffect(() => {
+    if (tab !== 'search') return;
+    const timer = setTimeout(() => {
+      runSearch();
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [query, tab, runSearch]);
 
   // File menu actions. Declared after the loaders they call: a useCallback
   // dependency array is evaluated at render, so an earlier declaration hits the TDZ.
@@ -922,7 +944,7 @@ export default function App() {
                     className="tag-pill interactive-pill"
                     onClick={() => {
                       setQuery(tag);
-                      setTimeout(() => runSearch(), 50);
+                      runSearch(tag);
                     }}
                   >
                     #{tag}
