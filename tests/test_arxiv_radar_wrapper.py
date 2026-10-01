@@ -125,7 +125,8 @@ def test_a_failing_channel_is_reported_not_raised(radar, monkeypatch):
 
 # --- commit path -------------------------------------------------------------
 
-def test_commit_runs_the_pipeline_without_fleet_broadcast_and_keeps_stdout_clean(radar, capsys):
+def test_commit_runs_the_pipeline_without_fleet_broadcast_and_keeps_stdout_clean(radar, capsys, monkeypatch):
+    monkeypatch.setenv(wrapper.MUTATION_ENV, "1")
     _ns, calls = radar
     res = wrapper.run_arxiv_radar(channels=["cs.AR"], mode="sweep", commit=True)
     assert res["status"] == "success" and res["mutated"] is True
@@ -239,3 +240,22 @@ def test_mcp_tool_default_is_a_read_only_preview(monkeypatch):
     monkeypatch.setattr("nougen_shards.arxiv_radar.run_arxiv_radar", lambda **kw: seen.update(kw) or {"status": "success"})
     mcp.arxiv_radar()
     assert seen["mode"] == "preview" and seen["commit"] is False
+
+
+# --- the operator gate on writes ---------------------------------------------
+
+@pytest.mark.parametrize("value", [None, "", "0", "true", "yes"])
+def test_commit_is_refused_unless_the_operator_enabled_mutation(radar, monkeypatch, value):
+    _ns, calls = radar
+    monkeypatch.delenv(wrapper.MUTATION_ENV, raising=False)
+    if value is not None:
+        monkeypatch.setenv(wrapper.MUTATION_ENV, value)
+    res = wrapper.run_arxiv_radar(channels=["cs.AR"], mode="sweep", commit=True)
+    assert res["status"] == "mutation_disabled" and res["mutated"] is False
+    assert wrapper.MUTATION_ENV in res["error"] and "preview" in res["error"]
+    assert calls == []                                    # not even a fetch: nothing ran
+
+
+def test_preview_does_not_need_the_gate(radar, monkeypatch):
+    monkeypatch.delenv(wrapper.MUTATION_ENV, raising=False)
+    assert wrapper.run_arxiv_radar(channels=["cs.AR"], mode="preview")["status"] == "success"

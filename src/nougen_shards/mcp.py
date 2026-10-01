@@ -1150,7 +1150,8 @@ def arxiv_radar(channels: Optional[List[str]] = None, mode: str = "preview", lim
         mode: 'preview' (read-only), or 'sweep' / 'reconcile' (hourly delta / daily settlement).
         limit: Papers shown per lane in a preview (1-50).
         commit: Only with mode 'sweep' or 'reconcile': run the full pipeline (queues, cursor,
-            digest, shard ingest). Without it every mode is a read-only preview.
+            digest, shard ingest). Without it every mode is a read-only preview. The server
+            operator must also set NOUGEN_ARXIV_MCP_ALLOW_MUTATION=1, or commit is refused.
         recipe_path: Optional route-v1.json inside the radar directory; preview only.
     """
     from .arxiv_radar import run_arxiv_radar

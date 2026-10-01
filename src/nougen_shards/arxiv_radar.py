@@ -90,6 +90,9 @@ RADAR_CONTRACT = {
     "run_pipeline": ("mode", "channels", "broadcast_target"),
 }
 MODES = ("preview", "sweep", "reconcile")
+# Same operator gate as the canonical nougen-radar MCP server (tools/mcp_server.py): a remote
+# caller can ask for commit=true, but writing queues, the cursor and shards also needs this env var.
+MUTATION_ENV = "NOUGEN_ARXIV_MCP_ALLOW_MUTATION"
 MAX_CHANNELS = 5
 MAX_LIMIT = 50
 LOG_TAIL_CHARS = 2000
@@ -166,7 +169,8 @@ def _preview(radar: Any, channels: List[str], recipe: Dict[str, Any], limit: int
 
 def run_arxiv_radar(channels: Optional[List[str]] = None, mode: str = "preview", limit: int = 5,
                     commit: bool = False, recipe_path: Optional[str] = None) -> Dict[str, Any]:
-    """Run the arXiv radar. Read-only unless `commit` is true and `mode` is 'sweep' or 'reconcile'.
+    """Run the arXiv radar. Read-only unless `commit` is true, `mode` is 'sweep' or 'reconcile',
+    and the operator has set NOUGEN_ARXIV_MCP_ALLOW_MUTATION=1.
 
     preview: fetch, score and route the feed, return the lanes; writes nothing.
     sweep / reconcile with commit=True: the full pipeline (queues, cursor, digest, shard ingest);
@@ -185,6 +189,9 @@ def run_arxiv_radar(channels: Optional[List[str]] = None, mode: str = "preview",
         return {"status": "error", "mode": mode, "error": "commit requires mode 'sweep' or 'reconcile'"}
     if commit and recipe_path:
         return {"status": "error", "mode": mode, "error": "a custom recipe is preview only; commit uses the radar's own recipe"}
+    if commit and os.environ.get(MUTATION_ENV, "").strip() != "1":
+        return {"status": "mutation_disabled", "mode": mode, "mutated": False,
+                "error": f"commit needs the server operator to set {MUTATION_ENV}=1; read-only preview remains available"}
 
     tools = get_radar_tools()
     if not tools or not tools.get("radar"):
