@@ -47,5 +47,40 @@ class DesignTests(unittest.TestCase):
     def test_real_ui_passes_measured_gate(self):
         self.assertTrue(design.lint(self.spec, (ROOT / 'ui/src/styles.css').read_text())['passed'])
 
+    def test_analysis_draft_is_deterministic_and_reports_measured_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'sample-ui'
+            (root / 'src').mkdir(parents=True)
+            (root / 'node_modules/pkg').mkdir(parents=True)
+            css = root / 'src/styles.css'
+            css.write_text('''
+:root { --surface: #202020; }
+a:focus-visible { outline: 2px solid orange; }
+@media (prefers-reduced-motion: reduce) { * { animation: none; } }
+.hero { background: linear-gradient(red, blue); }
+''')
+            app = root / 'src/App.tsx'
+            app.write_text("export function Sample() { return <button aria-label='Run'>Run</button>; }")
+            (root / 'node_modules/pkg/ignored.css').write_text('a{background:linear-gradient(red,blue)}')
+            brief = Path(directory) / 'brief.md'
+            brief.write_text('Keep the interface calm and easy to scan.\n')
+
+            files, report, analysis = design.analyze_inputs(root, brief, self.spec)
+            files_again, report_again, analysis_again = design.analyze_inputs(root, brief, self.spec)
+
+            self.assertEqual(files, files_again)
+            self.assertEqual(report, report_again)
+            self.assertEqual(analysis, analysis_again)
+            self.assertFalse(report['passed'])
+            self.assertEqual(analysis['summary']['sourceFiles'], 2)
+            self.assertEqual(analysis['summary']['componentFiles'], 1)
+            self.assertEqual(analysis['tokenCandidates']['--surface'][0]['value'], '#202020')
+            app_record = next(row for row in analysis['sourceEvidence'] if row['source'].endswith('App.tsx'))
+            self.assertEqual(app_record['elements']['button'], 1)
+            self.assertEqual(app_record['ariaAttributes'], 1)
+            self.assertIn('Keep the interface calm', files['DESIGN.md'])
+            self.assertIn('gradient', files['mutations.json'])
+            self.assertIn('linear-gradient', css.read_text())
+
 if __name__ == '__main__':
     unittest.main()
