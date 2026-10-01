@@ -1,0 +1,298 @@
+{
+  "generated_at": "2026-10-01T04:12:01.923302+00:00",
+  "seeds": [
+    "2609.00476"
+  ],
+  "depth_limit": 2,
+  "paper_limit": 8,
+  "pending_references": 127,
+  "papers": [
+    {
+      "id": "2609.00476",
+      "url": "https://arxiv.org/abs/2609.00476",
+      "depth": 0,
+      "discovered_from": null,
+      "title": "Less Is More: Balancing Positive and Negative Space in Visual Concept Blending",
+      "authors": [
+        "Xiao, Shishi",
+        "Coscia, Adam J.",
+        "Laidlaw, David H."
+      ],
+      "matched_topics": [
+        "negative space",
+        "visual"
+      ],
+      "status": "metadata_read",
+      "references": [
+        "2603.14209",
+        "2602.12280",
+        "2106.14127",
+        "2504.11571",
+        "2209.14988",
+        "2512.04082",
+        "2304.01919",
+        "2306.02224"
+      ]
+    },
+    {
+      "id": "2603.14209",
+      "url": "https://arxiv.org/abs/2603.14209",
+      "depth": 1,
+      "discovered_from": "2609.00476",
+      "title": "ChArtist: Generating Pictorial Charts with Unified Spatial and Subject Control",
+      "authors": [
+        "Xiao, Shishi",
+        "Zhou, Tongyu",
+        "Laidlaw, David",
+        "Chan, Gromit Yeuk-Yin"
+      ],
+      "matched_topics": [
+        "chart"
+      ],
+      "status": "metadata_read",
+      "references": [
+        "2312.11805",
+        "2506.15742",
+        "2508.02324",
+        "2302.09778",
+        "2410.23775",
+        "2305.15194",
+        "2404.06451",
+        "2306.00983",
+        "1903.07820",
+        "2503.09277",
+        "2304.01919",
+        "2211.13227",
+        "2505.18612"
+      ]
+    },
+    {
+      "id": "2602.12280",
+      "url": "https://arxiv.org/abs/2602.12280",
+      "depth": 1,
+      "discovered_from": "2609.00476",
+      "title": "Stroke of Surprise: Progressive Semantic Illusions in Vector Sketching",
+      "authors": [
+        "Cheng, Huai-Hsun",
+        "Zhang, Siang-Ling",
+        "Liu, Yu-Lun"
+      ],
+      "matched_topics": [
+        "vector"
+      ],
+      "status": "metadata_read",
+      "references": [
+        "2112.03258",
+        "2312.03817",
+        "2405.12221",
+        "2504.02289",
+        "2412.09625",
+        "2106.14843",
+        "2404.11615",
+        "2311.17919",
+        "1704.03477",
+        "2104.08718",
+        "2311.11284",
+        "2405.15891",
+        "2512.05110",
+        "2307.01952",
+        "2209.14988",
+        "2308.14191",
+        "2103.00020",
+        "2102.02798",
+        "2112.10752",
+        "2211.17256",
+        "2305.16213",
+        "2412.11102",
+        "1501.07873",
+        "2312.02967",
+        "2501.03992",
+        "2306.09341",
+        "2511.07889"
+      ]
+    },
+    {
+      "id": "2106.14127",
+      "url": "https://arxiv.org/abs/2106.14127",
+      "depth": 1,
+      "discovered_from": "2609.00476",
+      "title": "Visual Conceptual Blending with Large-scale Language and Vision Models",
+      "authors": [
+        "Ge, Songwei",
+        "Parikh, Devi"
+      ],
+      "matched_topics": [
+        "visual"
+      ],
+      "status": "metadata_read",
+      "references": []
+    },
+    {
+      "id": "2504.11571",
+      "url": "https://arxiv.org/abs/2504.11571",
+      "depth": 1,
+      "discovered_from": "2609.00476",
+      "title": "GraphicBench: A Planning Benchmark for Graphic Design with Language Agents",
+      "authors": [
+        "Ki, Dayeon",
+        "Zhou, Tianyi",
+        "Carpuat, Marine",
+        "Wu, Gang",
+        "Mathur, Puneet",
+        "Swaminathan, Viswanathan"
+      ],
+      "matched_topics": [
+        "design",
+        "graphic"
+      ],
+      "status": "metadata_read",
+      "references": [
+        "1505.00468",
+        "2308.10848",
+        "2404.14368",
+        "2311.11591",
+        "2406.05720",
+        "2406.08979",
+        "2411.04468",
+        "2312.02249",
+        "2501.00912",
+        "2407.21783",
+        "2402.01680",
+        "2405.15414",
+        "2308.00352",
+        "2406.08232",
+        "2401.13266",
+        "2401.08807",
+        "2412.15115",
+        "2303.17580",
+        "2303.11366",
+        "2309.02427",
+        "2306.03314",
+        "2408.00118",
+        "2201.11903",
+        "2402.07456",
+        "2406.04784",
+        "2407.15711",
+        "2309.17428",
+        "2412.20071",
+        "2310.08367",
+        "2305.17144",
+        "2410.10934",
+        "2303.08774",
+        "1901.08492",
+        "1901.06767",
+        "2307.16789",
+        "2210.03629"
+      ]
+    },
+    {
+      "id": "2209.14988",
+      "url": "https://arxiv.org/abs/2209.14988",
+      "depth": 1,
+      "discovered_from": "2609.00476",
+      "title": "DreamFusion: Text-to-3D using 2D Diffusion",
+      "authors": [
+        "Poole, Ben",
+        "Jain, Ajay",
+        "Barron, Jonathan T.",
+        "Mildenhall, Ben"
+      ],
+      "matched_topics": [],
+      "status": "metadata_read",
+      "references": [
+        "2002.09018",
+        "1810.09136",
+        "2204.06125",
+        "1703.09194",
+        "2111.05826",
+        "2104.07636",
+        "2010.02502",
+        "1607.06450",
+        "2008.03824",
+        "2110.01963",
+        "1803.08495",
+        "2009.00713",
+        "2206.09012",
+        "1606.08415",
+        "2207.12598",
+        "2204.03458",
+        "1810.03545",
+        "2109.12922",
+        "2112.03221",
+        "2205.11487",
+        "2206.10789"
+      ]
+    },
+    {
+      "id": "2512.04082",
+      "url": "https://arxiv.org/abs/2512.04082",
+      "depth": 1,
+      "discovered_from": "2609.00476",
+      "title": "PosterCopilot: Toward Layout Reasoning and Controllable Editing for Professional Graphic Design",
+      "authors": [
+        "Wei, Jiazhe",
+        "Li, Ken",
+        "Lao, Tianyu",
+        "Wang, Haofan",
+        "Wang, Liang",
+        "Shan, Caifeng",
+        "Si, Chenyang"
+      ],
+      "matched_topics": [
+        "design",
+        "layout",
+        "graphic"
+      ],
+      "status": "metadata_read",
+      "references": [
+        "2509.13031",
+        "2404.14368",
+        "2507.06261",
+        "2510.08009",
+        "2410.21276",
+        "2508.13836",
+        "2507.13362",
+        "2311.16974",
+        "2510.12798",
+        "2408.06327",
+        "2503.08729",
+        "2411.02662",
+        "2509.06759",
+        "1707.06347",
+        "2402.03300",
+        "2409.19256",
+        "2306.00983",
+        "2309.09506",
+        "2406.07209",
+        "2503.16430",
+        "2401.15688",
+        "2505.14460",
+        "2306.09341",
+        "2406.02884",
+        "2503.18013",
+        "2505.19114",
+        "2506.10890"
+      ]
+    },
+    {
+      "id": "2304.01919",
+      "url": "https://arxiv.org/abs/2304.01919",
+      "depth": 1,
+      "discovered_from": "2609.00476",
+      "title": "viz2viz: Prompt-driven stylized visualization generation using a diffusion model",
+      "authors": [
+        "Wu, Jiaqi",
+        "Chung, John Joon Young",
+        "Adar, Eytan"
+      ],
+      "matched_topics": [
+        "visual"
+      ],
+      "status": "metadata_read",
+      "references": [
+        "2207.12598",
+        "2302.05543"
+      ]
+    }
+  ]
+}
