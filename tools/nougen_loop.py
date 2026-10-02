@@ -62,12 +62,12 @@ class StageResult:
 
 
 def _resolve_exe(cmd: list[str], cwd: Path) -> list[str]:
-    exe = cmd[0]
+    exe = cmd[0].strip("'\"")
     local = (cwd / exe)
     if not Path(exe).is_absolute() and ("/" in exe or "\\" in exe) and local.exists():
         return [str(local), *cmd[1:]]
     found = shutil.which(exe)
-    return [found, *cmd[1:]] if found else cmd
+    return [found, *cmd[1:]] if found else [exe, *cmd[1:]]
 
 
 def _run(cmd: list[str], cwd: Path, timeout: float = STAGE_TIMEOUT, stdin: str | None = None) -> subprocess.CompletedProcess:
@@ -107,7 +107,10 @@ def default_branch(cwd: Path) -> str:
 def detect_test_cmd(cwd: Path) -> list[str] | None:
     env = os.environ.get("NOUGEN_LOOP_TEST_CMD", "").strip()
     if env:
-        return shlex.split(env, posix=os.name != "nt")
+        parts = shlex.split(env, posix=os.name != "nt")
+        if os.name == "nt":
+            parts = [p.strip("'\"") for p in parts]
+        return parts
     if (cwd / "tests").is_dir() or (cwd / "pytest.ini").exists() or (cwd / "pyproject.toml").exists():
         if importlib.util.find_spec("pytest") is not None:
             return [sys.executable, "-m", "pytest", "-q", "-x"]
