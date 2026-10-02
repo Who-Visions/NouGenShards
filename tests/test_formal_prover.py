@@ -43,6 +43,10 @@ def test_formal_suite_module_is_importable_and_honest_without_z3():
     assert report["obligations"]["O3_provider_invariants"]["status"] in ("empirical_required", "not_run")
     if not engine.has_z3:
         assert report["status"] == "unavailable"
+    else:
+        assert report["status"] == "bounded_checks_complete"
+        for key in ("O1_idempotent_capture", "O2_append_only_identity", "O4_bounded_projection", "O5_relay_state_safety", "O6_decision_equivalence"):
+            assert report["obligations"][key]["status"] == "bounded_model_proven"
 
 
 def test_formal_suite_is_registered_in_fleet_proxy():

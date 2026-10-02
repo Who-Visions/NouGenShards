@@ -13,12 +13,12 @@ from .formal_prover import engine
 
 
 OBLIGATIONS = {
-    "O1_idempotent_capture": "Applying the abstract set insertion twice is observationally equivalent to once.",
-    "O2_append_only_identity": "For bounded integer sequence identities, append preserves prior identities and increases the tail.",
+    "O1_idempotent_capture": "Applying Boolean set insertion twice is observationally equivalent to once.",
+    "O2_append_only_identity": "For bounded integer identities, appending after the tail preserves prior order.",
     "O3_provider_invariants": "EMPIRICAL_REQUIRED: schema and behavior invariants require production provider evidence; not proven here.",
-    "O4_bounded_projection": "A projection of at most k selected records never exceeds k.",
-    "O5_relay_state_safety": "Only declared transitions are allowed in this finite relay lifecycle model.",
-    "O6_decision_equivalence": "Set-membership-equivalent merge inputs yield equal abstract decisions; array order is ignored.",
+    "O4_bounded_projection": "The bounded min(count, k) projection contains between zero and k records.",
+    "O5_relay_state_safety": "Every declared transition in the three-state lifecycle stays within valid states.",
+    "O6_decision_equivalence": "The two-element membership decision is invariant under merge input permutation.",
 }
 
 
@@ -30,7 +30,7 @@ def run_full_formal_verification_suite() -> Dict[str, Any]:
         "suite": "information_dynamics_bounded_models_v1",
         "encoding_sha256": digest,
         "solver_version": engine.inspect_toolchain().get("z3_version"),
-        "bound": "Boolean/finite-state and integer identities in the formulas below",
+        "bound": "Two Boolean membership bits; three-state lifecycle; integer counts, limits, and identities bounded to 0..5",
         "assumptions": ["Each formula is an abstraction, not an implementation refinement proof.",
                         "O3 provider behavior is empirical and is never labeled proven."],
         "obligations": {},
@@ -44,11 +44,11 @@ def run_full_formal_verification_suite() -> Dict[str, Any]:
         return report
 
     checks = {
-        "O1_idempotent_capture": ([ ("x", "Bool") ], ["(x or True) == True"], "((x or True) or True) == (x or True)"),
-        "O2_append_only_identity": ([ ("old", "Int"), ("tail", "Int"), ("new", "Int") ], ["old <= tail", "tail < new"], "old < new"),
-        "O4_bounded_projection": ([ ("selected", "Int"), ("k", "Int") ], ["selected >= 0", "k >= 0", "selected <= k"], "selected <= k"),
-        "O5_relay_state_safety": ([ ("open", "Bool"), ("commit", "Bool") ], ["(commit == False) or open"], "(commit == False) or open"),
-        "O6_decision_equivalence": ([ ("a", "Bool"), ("b", "Bool") ], ["a == b"], "a == b"),
+        "O1_idempotent_capture": ([ ("x", "Bool"), ("event", "Bool") ], [], "((x or event) or event) == (x or event)"),
+        "O2_append_only_identity": ([ ("old", "Int"), ("tail", "Int"), ("new", "Int") ], ["old >= 0", "old <= tail", "tail < new", "new <= 5"], "old < new"),
+        "O4_bounded_projection": ([ ("count", "Int"), ("k", "Int"), ("selected", "Int") ], ["count >= 0", "count <= 5", "k >= 0", "k <= 5", "(count <= k and selected == count) or (k < count and selected == k)"], "selected >= 0 and selected <= k"),
+        "O5_relay_state_safety": ([ ("state", "Int"), ("action", "Int"), ("next_state", "Int") ], ["state >= 0", "state <= 2", "action >= 0", "action <= 2", "(action == 0 and next_state == state) or (action == 1 and state == 0 and next_state == 1) or (action == 2 and (state == 0 or state == 1) and next_state == 2)"], "next_state >= 0 and next_state <= 2"),
+        "O6_decision_equivalence": ([ ("a", "Bool"), ("b", "Bool") ], [], "(a or b) == (b or a)"),
     }
     for key, statement in OBLIGATIONS.items():
         if key == "O3_provider_invariants":
