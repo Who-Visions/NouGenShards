@@ -4,6 +4,8 @@ All notable changes to NouGenShards will be documented in this file.
 
 ## [Unreleased]
 ### Added
+- **MCP Events wake transport** (#620): `FutureMCPNativeWakeTransport` sends a signed minimal wake envelope (Standard Webhooks v1, one event per request, stable event id, bounded retry, no retry on 410/413, 2xx = receipt only) to each active subscription and stays `unconfigured` when none exists. Plan eligibility is reported as `plan_eligible=None` (docs conflict); fallback transports remain the default notify order.
+- **`voice_persona`** (#612): character briefs bound to `persona.py`.
 - **Elevation Atlas** (`docs/elevation-atlas.md`): a 1000-step, repository-grounded elevation roadmap in ten zones (memory physics, capture, retrieval, graph, temporal/Griot, federation, truth/canon, security, scale, autonomous memory). Every step carries a status: ✅ only when a file and function implement it, 🟡 for partial with the gap named, ⬜ for missing with a landing spot. Steps cross-reference #551 and #550. It includes a ground-truth table that corrects the draft plan against main @ ae40d10, and the first five verified moves.
 
 ## [1.3.1] - 2026-08-20
