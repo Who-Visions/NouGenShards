@@ -3532,62 +3532,34 @@ def rsi_diagnostics() -> dict:
 @node_mcp.tool()
 @_offloaded
 def control_plane_context_select(query: str, budget_tokens: int = 500, nodes_json: Optional[str] = None) -> dict:
-    """Select persistent context graph memory using stored importance, query relevance and dependency expansion."""
-    from nougen_shards.control_plane_math import PersistentContextGraph, ContextNode
-    graph = PersistentContextGraph()
-    if nodes_json:
-        try:
-            data = json.loads(nodes_json)
-            for item in data:
-                graph.add_node(ContextNode(
-                    node_id=item["id"],
-                    content=item.get("content", ""),
-                    importance=float(item.get("importance", 0.5)),
-                    token_count=int(item.get("tokens", len(item.get("content", "").split()))),
-                ))
-        except Exception:
-            pass
-    return graph.select_context(query=query, budget_tokens=budget_tokens).to_dict()
+    """Select a bounded graph-aware projection from caller-supplied shard candidates."""
+    from nougen_shards.control_plane_api import context_select
+    try:
+        return context_select(query, budget_tokens, nodes_json if nodes_json is not None else "[]")
+    except (TypeError, ValueError) as exc:
+        return {"error": str(exc)}
 
 
 @node_mcp.tool()
 @_offloaded
-def control_plane_pareto_route(routes_json: str, policy_weights_json: Optional[str] = None) -> dict:
-    """Execute multi-objective Pareto routing over quality, truth, latency, cost, robustness, memory fidelity, safety."""
-    from nougen_shards.control_plane_math import MultiObjectiveParetoRouter, RouteProfile
-    routes = []
+def control_plane_pareto_route(routes_json: str, policy_weights_json: str) -> dict:
+    """Choose from the Pareto front using explicit objective weights and provenance."""
+    from nougen_shards.control_plane_api import pareto_route
     try:
-        data = json.loads(routes_json)
-        for r in data:
-            routes.append(RouteProfile(
-                route_id=r["id"],
-                quality=float(r.get("quality", 0.8)),
-                truth=float(r.get("truth", 0.8)),
-                latency_ms=float(r.get("latency_ms", 100.0)),
-                cost_usd=float(r.get("cost_usd", 0.0)),
-                robustness=float(r.get("robustness", 0.8)),
-                memory_fidelity=float(r.get("memory_fidelity", 0.8)),
-                safety_score=float(r.get("safety_score", 0.9)),
-            ))
-    except Exception as e:
-        return {"error": f"Failed to parse routes: {e}"}
-
-    weights = json.loads(policy_weights_json) if policy_weights_json else None
-    decision = MultiObjectiveParetoRouter.route(routes, policy_weights=weights)
-    return decision.to_dict()
+        return pareto_route(routes_json, policy_weights_json)
+    except (TypeError, ValueError) as exc:
+        return {"error": str(exc)}
 
 
 @node_mcp.tool()
 @_offloaded
 def control_plane_adherence_evaluate(declared_edges_json: str, observed_events_json: str, threshold: float = 0.8) -> dict:
-    """Compute execution adherence from declared workflow edges vs observed event-stream edges."""
-    from nougen_shards.control_plane_math import ExecutionAdherenceEvaluator
+    """Compare declared workflow edges with observed [source, target] event edges."""
+    from nougen_shards.control_plane_api import adherence_evaluate
     try:
-        dec = [tuple(e) for e in json.loads(declared_edges_json)]
-        obs = json.loads(observed_events_json)
-        return ExecutionAdherenceEvaluator.evaluate(dec, obs, adherence_threshold=threshold).to_dict()
-    except Exception as e:
-        return {"error": f"Failed adherence calculation: {e}"}
+        return adherence_evaluate(declared_edges_json, observed_events_json, threshold)
+    except (TypeError, ValueError) as exc:
+        return {"error": str(exc)}
 
 
 @node_mcp.tool()
