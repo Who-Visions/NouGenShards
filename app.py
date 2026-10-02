@@ -3469,7 +3469,7 @@ def information_gain_evaluate(event_text: str, context_samples: Optional[List[st
 @_offloaded
 def formal_solve_smt(declarations: List[List[str]], assertions: List[str],
                      query: Optional[str] = None, timeout_ms: int = 5000) -> dict:
-    """Solve SMT constraints or prove mathematical invariants using the native Z3 SMT solver."""
+    """Solve bounded expressions with Z3; accepts the restricted SMT expression subset only."""
     from nougen_shards.formal_prover import engine
     if any(not isinstance(d, list) or len(d) != 2 for d in declarations):
         return {"status": "error", "error": "Each declaration must be a [name, type] pair."}

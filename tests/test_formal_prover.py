@@ -79,7 +79,7 @@ def test_z3_theorem_proving_valid():
     # Prove De Morgan's Law for boolean logic: not (A and B) == (not A or not B)
     decls = [("a", "Bool"), ("b", "Bool")]
     assertions = []  # no extra axioms
-    query = "z3.Not(z3.And(a, b)) == z3.Or(z3.Not(a), z3.Not(b))"
+    query = "(not (a and b)) == ((not a) or (not b))"
     res = engine.solve_smt_constraint(decls, assertions, query=query)
     assert res["status"] == "proven"
     assert res["valid"] is True

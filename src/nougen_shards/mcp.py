@@ -1274,8 +1274,10 @@ def formal_solve_smt(declarations: List[List[str]], assertions: List[str],
 
     Args:
         declarations: List of [var_name, var_type] pairs, e.g. [['x', 'Int'], ['y', 'Int']]. Supported: Int, Real, Bool, BitVec.
-        assertions: List of Python/Z3-syntax formulas defining axioms or problem constraints.
-        query: Optional target theorem formula. If supplied, checks if the query holds under axioms by checking UNSAT of its negation.
+    assertions: List of bounded expressions using declared names, numeric/bool literals,
+        arithmetic, comparisons, and boolean operators. Python calls and Z3 attributes are rejected.
+    query: Optional target theorem in the same expression subset. If supplied, checks if
+        the query holds under axioms by checking UNSAT of its negation.
         timeout_ms: Solver timeout in milliseconds.
     """
     from .formal_prover import engine
