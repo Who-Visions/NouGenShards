@@ -3616,6 +3616,21 @@ var TOOLS = [
   }
 ,
   {
+    "name": "formal_verification_suite",
+    "description": "Run fixed bounded information-dynamics SMT models. Reports provider invariants as empirical and does not claim implementation refinement.",
+    "inputSchema": {
+      "properties": {},
+      "title": "formal_verification_suiteArguments",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "arxiv_capabilities",
     "description": "Return the arXiv MCP handlers actually available in this process.",
     "inputSchema": {
@@ -5901,6 +5916,14 @@ ${body}`,
     if (result.isError) return toolError(body || "arxiv_capabilities failed");
     return text(body || "(no output)", result.structuredContent);
   },
+  async formal_verification_suite(args, env) {
+    const unset = gatewayUnconfigured(env);
+    if (unset) return toolError(unset);
+    const result = await shardCall(env, "formal_verification_suite", {});
+    const body = (result.content || []).map((c) => c.text || "").join("\n");
+    if (result.isError) return toolError(body || "formal_verification_suite failed");
+    return text(body || "(no output)", result.structuredContent);
+  },
   async arxiv_radar(args, env) {
     const unset = gatewayUnconfigured(env);
     if (unset) return toolError(unset);
@@ -6124,4 +6147,3 @@ export {
   worker_default as default
 };
 //# sourceMappingURL=worker.js.map
-
