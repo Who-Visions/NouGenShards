@@ -29,7 +29,7 @@ def test_scan_document_success():
         assert "flatbed" in cmd
         assert "--out" in cmd
         assert "C:/temp/scan.png" in cmd
-        assert kwargs.get("creationflags") == 0x08000000
+        assert kwargs.get("creationflags") == physical_peripheral._NO_WINDOW
 
 
 def test_scan_document_error():
