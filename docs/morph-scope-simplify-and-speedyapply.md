@@ -56,3 +56,8 @@ Candidate Profile Scoring (0–100% Match) & 1-Click Application / Letter Elevat
 5. **Emre Durukn / Awesome-Job-Boards**:
    - URL: `https://github.com/emredurukn/awesome-job-boards`
    - Morphed Count: 480 curated niche and global job boards stored in `curated_job_boards` table.
+
+6. **BarrosoHub / Remote-Jobs-For-Devs**:
+   - URL: `https://github.com/barrosohub/remote-jobs-for-devs`
+   - Morphed Count: 47 dedicated direct-hire remote developer platforms (Arc.dev, Gun.io, JS Remotely, Hired, Turing, etc.).
+   - Schema mapping: Ingests platform tables with direct verified links into `curated_job_boards`.
