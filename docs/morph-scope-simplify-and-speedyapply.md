@@ -61,3 +61,15 @@ Candidate Profile Scoring (0–100% Match) & 1-Click Application / Letter Elevat
    - URL: `https://github.com/barrosohub/remote-jobs-for-devs`
    - Morphed Count: 47 dedicated direct-hire remote developer platforms (Arc.dev, Gun.io, JS Remotely, Hired, Turing, etc.).
    - Schema mapping: Ingests platform tables with direct verified links into `curated_job_boards`.
+
+7. **NoOfficeLabs / How-To-Work-Remotely**:
+   - URL: `https://github.com/NoOfficeLabs/how-to-work-remotely`
+   - Morphed Count: Curated directory of APAC remote-first teams and international hiring companies (China, Japan, Korea, New Zealand).
+
+8. **Rajat Mehra / Awesome-Frontend-Interview-Resources**:
+   - URL: `https://github.com/rajat-mehra05/awesome-frontend-interview-resources`
+   - Morphed Count: 75 core frontend interview modules, coding quizzes, and system design challenges stored in `candidate_interview_prep`.
+
+9. **RemoteWLB / Remote-Jobs**:
+   - URL: `https://github.com/RemoteWLB/remote-jobs`
+   - Morphed Count: 1,068 categorized remote tech jobs and direct language portal feeds (Golang, Java, C#).
