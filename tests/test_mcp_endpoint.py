@@ -169,3 +169,53 @@ def test_mcp_node_status(client):
     result = _call_tool(client, "node_status", {})
     text = "".join(c.get("text", "") for c in result["content"])
     assert "ignited" in text
+
+
+# --- newly advertised handlers (registered call paths) ------------------------
+
+def test_mcp_control_plane_context_select_registered_call_path(client):
+    result = _call_tool(client, "control_plane_context_select", {"query": "test query"})
+    text = "".join(c.get("text", "") for c in result["content"])
+    assert "graph-context-v1" in text
+    assert "replay_hash" in text
+
+
+def test_mcp_control_plane_pareto_route_registered_call_path(client):
+    import json
+    routes = [{
+        "id": "r1", "quality": 0.9, "truth": 0.9, "latency_ms": 5,
+        "cost_usd": 0.01, "robustness": 0.9, "memory_fidelity": 0.9, "safety_score": 0.99
+    }]
+    weights = {k: 1.0 for k in [
+        "quality", "truth", "latency_ms", "cost_usd",
+        "robustness", "memory_fidelity", "safety_score"
+    ]}
+    result = _call_tool(client, "control_plane_pareto_route", {
+        "routes_json": json.dumps(routes),
+        "policy_weights_json": json.dumps(weights),
+    })
+    text = "".join(c.get("text", "") for c in result["content"])
+    assert '"chosen": "r1"' in text
+
+
+def test_mcp_control_plane_adherence_evaluate_registered_call_path(client):
+    import json
+    result = _call_tool(client, "control_plane_adherence_evaluate", {
+        "declared_edges_json": json.dumps([["a", "b"]]),
+        "observed_events_json": json.dumps([["a", "b"]]),
+    })
+    text = "".join(c.get("text", "") for c in result["content"])
+    assert '"coverage": 1.0' in text
+
+
+def test_mcp_formal_verification_suite_registered_call_path(client):
+    result = _call_tool(client, "formal_verification_suite", {})
+    text = "".join(c.get("text", "") for c in result["content"])
+    assert "information_dynamics_bounded_models_v1" in text
+
+
+def test_mcp_arxiv_paper_empty_ref_validation_call_path(client):
+    result = _call_tool(client, "arxiv_paper", {"ref": ""})
+    text = "".join(c.get("text", "") for c in result["content"])
+    assert "ref is required and cannot be empty" in text
+
