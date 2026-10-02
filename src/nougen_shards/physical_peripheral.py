@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
-CANONICAL_SCRIPT = Path(os.environ.get("USERPROFILE", "C:/Users/super")) / ".nougen" / "bin" / "hp_scan_print.py"
+CANONICAL_SCRIPT = Path(os.environ.get("NOUGEN_HOME", str(Path.home() / ".nougen"))) / "bin" / "hp_scan_print.py"
 
 
 def scan_document(
