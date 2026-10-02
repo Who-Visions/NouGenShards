@@ -47,3 +47,12 @@ Candidate Profile Scoring (0–100% Match) & 1-Click Application / Letter Elevat
    - URL: `https://github.com/backend-br/vagas`
    - Morphed Count: 41 live open issue vacancies (Senior/Mid/Remote backend roles).
    - Schema mapping: Ingests GitHub issue payload, parses remote locations `[Remoto]`, tech stack labels (Python, Go, Node.js, SQL, GCP), and partner companies.
+
+4. **Mauro Bonfietti / Remote-Jobs**:
+   - URL: `https://github.com/maurobonfietti/remote-jobs`
+   - Morphed Count: 1,517 live remote job postings (updated October 02, 2026).
+   - Schema mapping: Parses markdown table rows, extracts company names, direct job links, global remote locations, and technical skill taxonomy.
+
+5. **Emre Durukn / Awesome-Job-Boards**:
+   - URL: `https://github.com/emredurukn/awesome-job-boards`
+   - Morphed Count: 480 curated niche and global job boards stored in `curated_job_boards` table.
