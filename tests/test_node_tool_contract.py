@@ -10,6 +10,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ("arxiv_radar", "arxiv_lab_watch", "arxiv_paper", "morph_gate")
+CONTROL_PLANE_TOOLS = (
+    "control_plane_context_select",
+    "control_plane_pareto_route",
+    "control_plane_adherence_evaluate",
+)
 
 
 def _params(path, name):
@@ -38,3 +43,17 @@ def test_arxiv_radar_node_tool_forwards_what_it_accepts():
     body = src[start:src.index("@node_mcp.tool()", start)]
     for arg in ("channels", "mode", "limit", "commit", "recipe_path"):
         assert f"{arg}={arg}" in body, f"arxiv_radar does not forward {arg}"
+
+
+def test_control_plane_tools_are_registered_on_both_python_mcp_surfaces():
+    for name in CONTROL_PLANE_TOOLS:
+        assert _params(ROOT / "app.py", name) is not None, f"app.py has no node MCP tool {name}"
+        assert _params(ROOT / "src" / "nougen_shards" / "mcp.py", name) is not None, f"mcp.py has no tool {name}"
+
+
+def test_control_plane_tools_are_discoverable_and_forwarded_by_fleet_proxy():
+    proxy = (ROOT / "tools" / "nougen-fleet-mcp-patched.js").read_text(encoding="utf-8")
+    for name in CONTROL_PLANE_TOOLS:
+        assert f'"name": "{name}"' in proxy, f"fleet proxy has no schema for {name}"
+        assert f"async {name}(args, env)" in proxy, f"fleet proxy has no handler for {name}"
+        assert f'shardCall(env, "{name}", args)' in proxy, f"fleet proxy does not forward {name}"
