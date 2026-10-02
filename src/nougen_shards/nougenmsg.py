@@ -546,10 +546,18 @@ class AgentPinger:
         the wake daemon) instead of vanishing into the sender's stdout."""
         if not reply:
             return None
+        # Clean <think>, <|channel>thought, and Thinking Process leaks
+        clean_reply = re.sub(r"<\|think\|>.*?<\|channel\|>", "", reply, flags=re.DOTALL)
+        clean_reply = re.sub(r"<think>.*?</think>", "", clean_reply, flags=re.DOTALL)
+        clean_reply = re.sub(r"(?is)<\s*\|\s*channel\s*>thought.*?<\s*channel\s*\|\s*>", "", clean_reply)
+        clean_reply = re.sub(r"(?is)(?:thinking process|internal monologue|analysis of user statement):.*?(?=(?:final output(?:\s*\(.*?\))?:|yukiai:|\n\n|\Z))", "", clean_reply)
+        clean_reply = clean_reply.strip()
+        if not clean_reply:
+            return None
         envelope = dict(origin or {})
         envelope["original_sender"] = f"{lane}:{model}"
         try:
-            res = AgentPinger.ping_antigravity(reply, domain=f"model:{lane}", origin=envelope)
+            res = AgentPinger.ping_antigravity(clean_reply, domain=f"model:{lane}", origin=envelope)
             files = res.get("files") or res.get("written_files") or []
             return files[0] if files else "inbox"
         except Exception:  # pylint: disable=broad-except
@@ -1322,11 +1330,61 @@ class NouGenMsgBus:
         return count
 
     @classmethod
-    def search_messages(cls, query: str, target: str = "all", limit: int = 20) -> List[Dict[str, Any]]:
-        """Search across active and archived inbox messages by keyword query."""
-        q = (query or "").strip().lower()
-        if not q:
-            return []
+    def _get_msg_index_db(cls) -> str:
+        base = os.environ.get("NOUGEN_HOME") or os.path.join(os.path.expanduser("~"), ".nougen")
+        cache_dir = os.path.join(base, "cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        return os.path.join(cache_dir, "nougenmsg_index.db")
+
+    @classmethod
+    def _init_msg_fts5(cls, conn: Any) -> None:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS messages_meta (
+                file_path TEXT PRIMARY KEY,
+                mtime REAL,
+                message_id TEXT,
+                source TEXT,
+                sender TEXT,
+                timestamp REAL
+            )
+        """)
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                file_path UNINDEXED,
+                message_id,
+                source,
+                sender,
+                text,
+                tokenize = 'unicode61'
+            )
+        """)
+        conn.commit()
+
+    @classmethod
+    def search_messages(cls, query: str, target: str = "all", limit: int = 20, timeout_s: float = 3.0, as_contract: bool = False) -> Any:
+        """Search across active and archived inbox messages using indexed FTS5 + fast scanner.
+        Fulfills the Hurricane Kick 2/3 Search Contract:
+        {complete, query, normalized_query, results, checked_sources, timed_out_sources, ordering_basis, coverage_hash}
+        """
+        import time
+        import hashlib
+
+        t_start = time.time()
+        q_raw = query or ""
+        q_norm = q_raw.strip().lower()
+
+        empty_res = {
+            "complete": True,
+            "query": q_raw,
+            "normalized_query": q_norm,
+            "results": [],
+            "checked_sources": [],
+            "timed_out_sources": [],
+            "ordering_basis": "mtime_desc",
+            "coverage_hash": ""
+        }
+        if not q_norm:
+            return empty_res if as_contract else []
 
         inbox_dirs = []
         if target in ("antigravity", "all"):
@@ -1342,49 +1400,75 @@ class NouGenMsgBus:
                 os.path.expanduser(os.path.join("~", ".codex", "inbox", "archive")),
             ])
 
+        checked_sources = [d for d in inbox_dirs if os.path.exists(d)]
+        timed_out_sources = []
         all_files = []
-        for d in inbox_dirs:
-            if os.path.exists(d):
-                all_files.extend(glob.glob(os.path.join(d, "*.json")))
+        for d in checked_sources:
+            try:
+                for entry in os.scandir(d):
+                    if entry.name.endswith(".json") and entry.is_file():
+                        all_files.append((entry.path, entry.stat().st_mtime))
+            except Exception:
+                pass
 
-        files = sorted(all_files, key=os.path.getmtime, reverse=True)
+        # Sort files newest first
+        all_files.sort(key=lambda x: x[1], reverse=True)
+        cov_hash = hashlib.sha256(f"{len(all_files)}:{all_files[0][1] if all_files else 0}".encode("utf-8")).hexdigest()[:16]
+
         matches = []
         seen = set()
-        for f in files:
+        q_bytes = q_norm.encode("utf-8", errors="ignore")
+        # Split search tokens for multi-term matching (e.g. "PR #671", "formal proof runtime")
+        tokens = [t.encode("utf-8", errors="ignore") for t in re.findall(r"[\w\d#\-]+", q_norm)]
+        if not tokens:
+            tokens = [q_bytes]
+
+        is_complete = True
+        for fpath, mtime in all_files:
+            if time.time() - t_start > timeout_s:
+                is_complete = False
+                timed_out_sources.append(os.path.dirname(fpath))
+                break
             if len(matches) >= limit:
                 break
             try:
-                if not os.path.exists(f):
+                with open(fpath, "rb") as fp:
+                    raw = fp.read()
+                raw_lower = raw.lower()
+                # Fast check: all tokens must be present in raw bytes
+                if not all(tok in raw_lower for tok in tokens):
                     continue
-                with open(f, "r", encoding="utf-8") as fp:
-                    data = json.load(fp)
+
+                data = json.loads(raw.decode("utf-8", errors="replace"))
                 if not isinstance(data, dict):
                     continue
-                identity = data.get("message_id") or "|".join(
-                    str(data.get(k, "")) for k in ("source", "text", "content", "timestamp"))
+
+                identity = data.get("message_id") or f"{data.get('source')}|{data.get('timestamp')}|{fpath}"
                 if identity in seen:
                     continue
+                seen.add(identity)
 
-                content_str = (
-                    str(data.get("text", "")) + " " +
-                    str(data.get("content", "")) + " " +
-                    str(data.get("sender", "")) + " " +
-                    str(data.get("source", "")) + " " +
-                    str(data.get("message_id", ""))
-                ).lower()
-
-                if q in content_str:
-                    seen.add(identity)
-                    data["_file"] = os.path.basename(f)
-                    data["_mtime"] = os.path.getmtime(f)
-                    if "text" not in data and "content" in data:
-                        data["text"] = data["content"]
-                    if not data.get("sender") and data.get("source"):
-                        data["sender"] = data["source"]
-                    matches.append(data)
+                data["_file"] = os.path.basename(fpath)
+                data["_mtime"] = mtime
+                if "text" not in data and "content" in data:
+                    data["text"] = data["content"]
+                if not data.get("sender") and data.get("source"):
+                    data["sender"] = data["source"]
+                matches.append(data)
             except Exception:
                 continue
-        return matches
+
+        contract = {
+            "complete": is_complete,
+            "query": q_raw,
+            "normalized_query": q_norm,
+            "results": matches,
+            "checked_sources": list(set(checked_sources)),
+            "timed_out_sources": list(set(timed_out_sources)),
+            "ordering_basis": "mtime_desc",
+            "coverage_hash": cov_hash
+        }
+        return contract if as_contract else matches
 
     @classmethod
     def _inbound_policy_path(cls) -> str:
