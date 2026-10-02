@@ -3471,7 +3471,9 @@ def formal_solve_smt(declarations: List[List[str]], assertions: List[str],
                      query: Optional[str] = None, timeout_ms: int = 5000) -> dict:
     """Solve SMT constraints or prove mathematical invariants using the native Z3 SMT solver."""
     from nougen_shards.formal_prover import engine
-    typed_decls = [(d[0], d[1]) for d in declarations if len(d) >= 2]
+    if any(not isinstance(d, list) or len(d) != 2 for d in declarations):
+        return {"status": "error", "error": "Each declaration must be a [name, type] pair."}
+    typed_decls = [(d[0], d[1]) for d in declarations]
     return engine.solve_smt_constraint(declarations=typed_decls, assertions=assertions, query=query, timeout_ms=timeout_ms)
 
 
@@ -3636,12 +3638,13 @@ def morph_holistic_gate(
 @node_mcp.tool()
 @_offloaded
 def formal_verification_suite() -> dict:
-    """Executes the complete suite of 6 Hurricane Kick information dynamics formal proof obligations.
-    Proves idempotent duplicate capture, monotonic append-only sequence identity, provider invariants,
-    bounded working memory projections, relay lifecycle state-machine safety, and decision-equivalence merge conditions.
+    """Run bounded SMT models for information-dynamics obligations.
+
+    Results cover only the published encodings. Provider invariants are empirical;
+    implementation refinement is not established by this suite.
     """
-    from nougen_shards.formal_verification import InformationDynamicsProofEngine
-    return InformationDynamicsProofEngine.run_full_formal_verification_suite()
+    from nougen_shards.formal_verification import run_full_formal_verification_suite
+    return run_full_formal_verification_suite()
 
 
 # --- 5. Physical Studio Lighting, Tunnels & Compounding ------------------

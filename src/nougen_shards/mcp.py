@@ -1279,9 +1279,18 @@ def formal_solve_smt(declarations: List[List[str]], assertions: List[str],
         timeout_ms: Solver timeout in milliseconds.
     """
     from .formal_prover import engine
-    typed_decls = [(d[0], d[1]) for d in declarations if len(d) >= 2]
+    if any(not isinstance(d, list) or len(d) != 2 for d in declarations):
+        return json.dumps({"status": "error", "error": "Each declaration must be a [name, type] pair."})
+    typed_decls = [(d[0], d[1]) for d in declarations]
     res = engine.solve_smt_constraint(declarations=typed_decls, assertions=assertions, query=query, timeout_ms=timeout_ms)
     return json.dumps(res, default=str, indent=2)
+
+
+@mcp.tool()
+def formal_verification_suite() -> str:
+    """Run bounded information-dynamics SMT models; this does not prove implementation refinement."""
+    from .formal_verification import run_full_formal_verification_suite
+    return json.dumps(run_full_formal_verification_suite(), default=str, indent=2)
 
 
 

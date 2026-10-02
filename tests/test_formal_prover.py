@@ -1,6 +1,7 @@
 """Tests for NouGen Formal Prover Engine (Lean 4 & Z3 SMT solver)."""
 import pytest
 from nougen_shards.formal_prover import engine
+from nougen_shards.formal_prover import _parse_smt_expression
 
 
 def test_toolchain_inspection():
@@ -19,6 +20,37 @@ theorem fake_proof (n : Nat) : n + 1 = 1 + n := by
     assert res.status == "rejected"
     assert res.verified is False
     assert "sorry" in (res.error or "").lower()
+
+
+def test_allow_sorry_never_reports_verified():
+    res = engine.verify_lean4_code("theorem fake : True := by sorry", allow_sorry=True)
+    assert res.status == "rejected"
+    assert res.verified is False
+
+
+def test_smt_expression_rejects_python_execution():
+    with pytest.raises(ValueError):
+        _parse_smt_expression("z3.__dict__", {}, None)
+    with pytest.raises(ValueError):
+        _parse_smt_expression("__import__('os').system('true')", {}, None)
+
+
+def test_formal_suite_module_is_importable_and_honest_without_z3():
+    from nougen_shards.formal_verification import run_full_formal_verification_suite
+    report = run_full_formal_verification_suite()
+    assert report["suite"] == "information_dynamics_bounded_models_v1"
+    assert report["implementation_refinement"] == "not_established"
+    assert report["obligations"]["O3_provider_invariants"]["status"] in ("empirical_required", "not_run")
+    if not engine.has_z3:
+        assert report["status"] == "unavailable"
+
+
+def test_formal_suite_is_registered_in_fleet_proxy():
+    from pathlib import Path
+    proxy = Path(__file__).resolve().parents[1] / "tools" / "nougen-fleet-mcp-patched.js"
+    source = proxy.read_text(encoding="utf-8")
+    assert '"name": "formal_verification_suite"' in source
+    assert "async formal_verification_suite(args, env)" in source
 
 
 @pytest.mark.skipif(not engine.has_z3, reason="z3-solver not installed")
