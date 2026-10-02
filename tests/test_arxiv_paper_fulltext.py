@@ -47,3 +47,56 @@ def test_fulltext_cap_has_floor_and_ceiling(monkeypatch, tmp_path):
     assert low["chars_returned"] == 1000
     high = arxiv_radar.run_arxiv_paper("fulltext", "2609.39915", max_chars=10**9)
     assert high["chars_returned"] == arxiv_radar.MAX_FULLTEXT_CHARS and high["truncated"] is True
+
+
+def test_empty_ref_fails_explicitly():
+    for empty in ("", "   ", None):
+        res = arxiv_radar.run_arxiv_paper("lookup", ref=empty)
+        assert res["status"] == "error"
+        assert "ref is required" in res["error"]
+
+        res_ft = arxiv_radar.run_arxiv_paper("fulltext", ref=empty)
+        assert res_ft["status"] == "error"
+        assert "ref is required" in res_ft["error"]
+
+        res_cl = arxiv_radar.run_arxiv_paper("claim", ref=empty, pattern="test")
+        assert res_cl["status"] == "error"
+        assert "ref is required" in res_cl["error"]
+
+        res_mg = arxiv_radar.run_morph_gate(ref=empty, claims=["claim1"])
+        assert res_mg["status"] == "error"
+        assert "ref is required" in res_mg["error"]
+
+
+def test_morph_gate_empty_claims_fails():
+    for bad_claims in ([], None, "not-a-list"):
+        res = arxiv_radar.run_morph_gate(ref="2609.39915", claims=bad_claims)
+        assert res["status"] == "error"
+        assert "claims must be a non-empty list" in res["error"]
+
+
+def test_narrow_type_error_compatibility_fallback(monkeypatch, tmp_path):
+    # Case 1: Legacy fulltext() that does not accept refresh keyword argument
+    f = tmp_path / "fulltext.tex"
+    f.write_text("legacy body", encoding="utf-8")
+
+    class _LegacyPaper:
+        def normalize_id(self, ref): return ref
+        def fulltext(self, aid): return f
+
+    monkeypatch.setattr(arxiv_radar, "get_radar_tools", lambda: {"paper": _LegacyPaper()})
+    res = arxiv_radar.run_arxiv_paper("fulltext", "2609.39915", refresh=True)
+    assert res["status"] == "success"
+    assert res["text"] == "legacy body"
+
+    # Case 2: Genuine internal TypeError inside fulltext implementation must NOT be swallowed
+    class _BuggyPaper:
+        def normalize_id(self, ref): return ref
+        def fulltext(self, aid, refresh=False):
+            raise TypeError("internal implementation bug: unsupported operand type(s) for +: 'int' and 'str'")
+
+    monkeypatch.setattr(arxiv_radar, "get_radar_tools", lambda: {"paper": _BuggyPaper()})
+    res_bug = arxiv_radar.run_arxiv_paper("fulltext", "2609.39915", refresh=True)
+    assert res_bug["status"] == "error"
+    assert "internal implementation bug" in res_bug["error"]
+
