@@ -320,15 +320,21 @@ def run_arxiv_paper(action: str = "lookup", ref: str = "", pattern: Optional[str
             "error": "nougen-radar repository not installed or arxiv_paper.py missing",
         }
     paper = tools["paper"]
+    if not ref or not ref.strip():
+        return {"status": "error", "error": "ref is required and cannot be empty", "action": action}
     try:
         aid = paper.normalize_id(ref)
         if action == "lookup":
             data = paper.lookup(aid)
             return {"status": "success", "available": True, "action": action, "paper_id": aid, "metadata": data}
         elif action == "fulltext":
-            try:
+            sig = inspect.signature(paper.fulltext)
+            supports_refresh = "refresh" in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            )
+            if supports_refresh:
                 p = paper.fulltext(aid, refresh=refresh)
-            except TypeError:
+            else:
                 p = paper.fulltext(aid)
             text = p.read_text(encoding="utf-8")
             cap = MAX_FULLTEXT_CHARS if max_chars is None else max(1000, min(int(max_chars), MAX_FULLTEXT_CHARS))
