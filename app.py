@@ -3429,11 +3429,11 @@ def arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False, limit: int =
 
 @node_mcp.tool()
 @_offloaded
-def arxiv_paper(action: str, ref: str, pattern: Optional[str] = None,
-                max_chars: Optional[int] = None) -> dict:
+def arxiv_paper(action: str = "lookup", ref: str = "", pattern: Optional[str] = None,
+                max_chars: Optional[int] = None, refresh: bool = False) -> dict:
     """Single-paper arXiv deep recall: metadata lookup, LaTeX fulltext caching, or paper body claim search."""
     from nougen_shards.arxiv_radar import run_arxiv_paper
-    return run_arxiv_paper(action=action, ref=ref, pattern=pattern, max_chars=max_chars)
+    return run_arxiv_paper(action=action, ref=ref, pattern=pattern, max_chars=max_chars, refresh=refresh)
 
 
 @node_mcp.tool()
@@ -3456,6 +3456,17 @@ def formal_verify_lean(code: str, allow_sorry: bool = False, timeout_seconds: fl
 
 @node_mcp.tool()
 @_offloaded
+def information_gain_evaluate(event_text: str, context_samples: Optional[List[str]] = None, confidence: float = 1.0) -> dict:
+    """Evaluate deterministic conditional information gain Delta_I(event | memory_state)."""
+    from nougen_shards.information_gain import InformationGainState
+    state = InformationGainState()
+    for ctx in (context_samples or []):
+        state.update(ctx)
+    return state.evaluate(event_text, confidence=confidence).to_dict()
+
+
+@node_mcp.tool()
+@_offloaded
 def formal_solve_smt(declarations: List[List[str]], assertions: List[str],
                      query: Optional[str] = None, timeout_ms: int = 5000) -> dict:
     """Solve SMT constraints or prove mathematical invariants using the native Z3 SMT solver."""
@@ -3466,10 +3477,171 @@ def formal_solve_smt(declarations: List[List[str]], assertions: List[str],
 
 @node_mcp.tool()
 @_offloaded
+def information_dynamics_benchmark() -> dict:
+    """Execute the complete 10-condition NouGen information dynamics and rate-distortion benchmark suite (HURRICANE KICK)."""
+    from nougen_shards.information_dynamics import InformationDynamicsBenchmark
+    return InformationDynamicsBenchmark().run_all_benchmarks()
+
+
+@node_mcp.tool()
+@_offloaded
 def evidence_assure(claim: str, source: str = "runtime", level: str = "measured") -> dict:
     """Validate and label empirical claim through Iris evidence assurance standards."""
     from nougen_shards import assurance
     return assurance.label_claim(claim, source=source, level=level)
+
+
+@node_mcp.tool()
+@_offloaded
+def rsi_graze_shards(limit: int = 10) -> dict:
+    """Digests recent memory vault shards ('eats shards') to extract learning nutrients, invariants, and failure modes."""
+    from nougen_shards.rsi_engine import RecursiveSelfImprovementEngine
+    engine = RecursiveSelfImprovementEngine()
+    return engine.eat_shards(limit=limit)
+
+
+@node_mcp.tool()
+@_offloaded
+def rsi_cycle(subsystem: str, hypothesis: str, patch_code: str, mutation_type: str = "code_optimization") -> dict:
+    """Executes an autonomous Recursive Self-Improvement (RSI) cycle synthesizing Weco AIDE and Move 37/78 doctrine.
+    Evaluates candidate against Weco self-healing grader, tests Lyapunov Fleet Error Energy drift (Delta E < 0),
+    and stages Move 78 sovereign proposal with Proof of Execution.
+    """
+    from nougen_shards.rsi_engine import RecursiveSelfImprovementEngine
+    engine = RecursiveSelfImprovementEngine()
+    proposal = engine.execute_rsi_cycle(
+        subsystem=subsystem,
+        hypothesis=hypothesis,
+        patch_code=patch_code,
+        mutation_type=mutation_type,
+    )
+    return proposal.to_dict()
+
+
+@node_mcp.tool()
+@_offloaded
+def rsi_diagnostics() -> dict:
+    """Returns telemetry, calibration anchors, and staged Move 78 proposals from the NouGen RSI Engine."""
+    from nougen_shards.rsi_engine import RecursiveSelfImprovementEngine
+    engine = RecursiveSelfImprovementEngine()
+    return engine.get_diagnostics()
+
+
+@node_mcp.tool()
+@_offloaded
+def control_plane_context_select(query: str, budget_tokens: int = 500, nodes_json: Optional[str] = None) -> dict:
+    """Select persistent context graph memory using stored importance, query relevance and dependency expansion."""
+    from nougen_shards.control_plane_math import PersistentContextGraph, ContextNode
+    graph = PersistentContextGraph()
+    if nodes_json:
+        try:
+            data = json.loads(nodes_json)
+            for item in data:
+                graph.add_node(ContextNode(
+                    node_id=item["id"],
+                    content=item.get("content", ""),
+                    importance=float(item.get("importance", 0.5)),
+                    token_count=int(item.get("tokens", len(item.get("content", "").split()))),
+                ))
+        except Exception:
+            pass
+    return graph.select_context(query=query, budget_tokens=budget_tokens).to_dict()
+
+
+@node_mcp.tool()
+@_offloaded
+def control_plane_pareto_route(routes_json: str, policy_weights_json: Optional[str] = None) -> dict:
+    """Execute multi-objective Pareto routing over quality, truth, latency, cost, robustness, memory fidelity, safety."""
+    from nougen_shards.control_plane_math import MultiObjectiveParetoRouter, RouteProfile
+    routes = []
+    try:
+        data = json.loads(routes_json)
+        for r in data:
+            routes.append(RouteProfile(
+                route_id=r["id"],
+                quality=float(r.get("quality", 0.8)),
+                truth=float(r.get("truth", 0.8)),
+                latency_ms=float(r.get("latency_ms", 100.0)),
+                cost_usd=float(r.get("cost_usd", 0.0)),
+                robustness=float(r.get("robustness", 0.8)),
+                memory_fidelity=float(r.get("memory_fidelity", 0.8)),
+                safety_score=float(r.get("safety_score", 0.9)),
+            ))
+    except Exception as e:
+        return {"error": f"Failed to parse routes: {e}"}
+
+    weights = json.loads(policy_weights_json) if policy_weights_json else None
+    decision = MultiObjectiveParetoRouter.route(routes, policy_weights=weights)
+    return decision.to_dict()
+
+
+@node_mcp.tool()
+@_offloaded
+def control_plane_adherence_evaluate(declared_edges_json: str, observed_events_json: str, threshold: float = 0.8) -> dict:
+    """Compute execution adherence from declared workflow edges vs observed event-stream edges."""
+    from nougen_shards.control_plane_math import ExecutionAdherenceEvaluator
+    try:
+        dec = [tuple(e) for e in json.loads(declared_edges_json)]
+        obs = json.loads(observed_events_json)
+        return ExecutionAdherenceEvaluator.evaluate(dec, obs, adherence_threshold=threshold).to_dict()
+    except Exception as e:
+        return {"error": f"Failed adherence calculation: {e}"}
+
+
+@node_mcp.tool()
+@_offloaded
+def morph_atom_catalog() -> dict:
+    """Canonical registry mapping 2026-10-01 research atoms into native NouGen fleet primitives."""
+    from nougen_shards.nougen_morph_atoms import NouGenMorphCatalog
+    atoms = NouGenMorphCatalog.get_all_atoms()
+    return {k: v.to_dict() for k, v in atoms.items()}
+
+
+@node_mcp.tool()
+@_offloaded
+def morph_holistic_gate(
+    candidate_id: str,
+    baseline_benchmark: float,
+    candidate_benchmark: float,
+    baseline_truth: float = 0.9,
+    candidate_truth: float = 0.9,
+    baseline_adherence: float = 0.9,
+    candidate_adherence: float = 0.9,
+    baseline_memory: float = 0.9,
+    candidate_memory: float = 0.9,
+    baseline_safety: float = 0.95,
+    candidate_safety: float = 0.95,
+    tolerance: float = 0.0,
+) -> dict:
+    """Holistic promotion gate: blocks promotion on benchmark gain if truth, adherence, memory fidelity, or safety regress."""
+    from nougen_shards.nougen_morph_atoms import HolisticPromotionGate
+    base = {
+        "benchmark_score": baseline_benchmark,
+        "truth": baseline_truth,
+        "adherence": baseline_adherence,
+        "memory_fidelity": baseline_memory,
+        "safety": baseline_safety,
+    }
+    cand = {
+        "benchmark_score": candidate_benchmark,
+        "truth": candidate_truth,
+        "adherence": candidate_adherence,
+        "memory_fidelity": candidate_memory,
+        "safety": candidate_safety,
+    }
+    decision = HolisticPromotionGate.evaluate_promotion(candidate_id, base, cand, regression_tolerance=tolerance)
+    return decision.to_dict()
+
+
+@node_mcp.tool()
+@_offloaded
+def formal_verification_suite() -> dict:
+    """Executes the complete suite of 6 Hurricane Kick information dynamics formal proof obligations.
+    Proves idempotent duplicate capture, monotonic append-only sequence identity, provider invariants,
+    bounded working memory projections, relay lifecycle state-machine safety, and decision-equivalence merge conditions.
+    """
+    from nougen_shards.formal_verification import InformationDynamicsProofEngine
+    return InformationDynamicsProofEngine.run_full_formal_verification_suite()
 
 
 # --- 5. Physical Studio Lighting, Tunnels & Compounding ------------------

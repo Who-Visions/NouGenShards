@@ -50,6 +50,7 @@ dependencies = [
     "google-auth>=2.25",
     "google-auth-oauthlib>=1.2",
     "google-auth-httplib2>=0.2",
+    "z3-solver>=4.12.0",
 ]
 
 [project.optional-dependencies]
