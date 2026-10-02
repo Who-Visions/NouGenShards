@@ -309,8 +309,8 @@ def run_arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False, limit: i
 MAX_FULLTEXT_CHARS = int(os.environ.get("NOUGEN_ARXIV_MCP_MAX_FULLTEXT_CHARS", "24000"))
 
 
-def run_arxiv_paper(action: str, ref: str, pattern: Optional[str] = None,
-                    max_chars: Optional[int] = None) -> Dict[str, Any]:
+def run_arxiv_paper(action: str = "lookup", ref: str = "", pattern: Optional[str] = None,
+                    max_chars: Optional[int] = None, refresh: bool = False) -> Dict[str, Any]:
     """Inspect an arXiv paper: lookup metadata, cache LaTeX fulltext, or search body claims."""
     tools = get_radar_tools()
     if not tools or not tools.get("paper"):
@@ -326,7 +326,10 @@ def run_arxiv_paper(action: str, ref: str, pattern: Optional[str] = None,
             data = paper.lookup(aid)
             return {"status": "success", "available": True, "action": action, "paper_id": aid, "metadata": data}
         elif action == "fulltext":
-            p = paper.fulltext(aid)
+            try:
+                p = paper.fulltext(aid, refresh=refresh)
+            except TypeError:
+                p = paper.fulltext(aid)
             text = p.read_text(encoding="utf-8")
             cap = MAX_FULLTEXT_CHARS if max_chars is None else max(1000, min(int(max_chars), MAX_FULLTEXT_CHARS))
             clipped = text[:cap]
@@ -340,6 +343,7 @@ def run_arxiv_paper(action: str, ref: str, pattern: Optional[str] = None,
                 "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                 "chars_total": len(text),
                 "chars_returned": len(clipped),
+                "text_length": len(clipped),
                 "truncated": len(clipped) < len(text),
                 "text": clipped,
             }
