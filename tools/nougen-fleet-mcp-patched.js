@@ -3616,6 +3616,65 @@ var TOOLS = [
   }
 ,
   {
+    "name": "control_plane_context_select",
+    "description": "Select a bounded graph-aware projection from caller-supplied shard candidates; returns provenance, sufficiency coverage, and replay hash.",
+    "inputSchema": {
+      "properties": {
+        "query": {"title": "Query", "type": "string"},
+        "budget_tokens": {"default": 500, "minimum": 0, "maximum": 1000000, "title": "Budget Tokens", "type": "integer"},
+        "nodes_json": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Nodes Json"}
+      },
+      "required": ["query"],
+      "title": "control_plane_context_selectArguments",
+      "type": "object"
+    },
+    "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+  },
+  {
+    "name": "control_plane_pareto_route",
+    "description": "Evaluate caller-supplied route candidates over the explicit Pareto objectives; requires task-specific weights and does not dispatch a provider call.",
+    "inputSchema": {
+      "properties": {
+        "routes_json": {"title": "Routes Json", "type": "string"},
+        "policy_weights_json": {"title": "Policy Weights Json", "type": "string"}
+      },
+      "required": ["routes_json", "policy_weights_json"],
+      "title": "control_plane_pareto_routeArguments",
+      "type": "object"
+    },
+    "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+  },
+  {
+    "name": "control_plane_adherence_evaluate",
+    "description": "Compare declared workflow edges to observed [source, target] edges. Coverage and undeclared behavior are reported separately; empty coverage is unmeasured.",
+    "inputSchema": {
+      "properties": {
+        "declared_edges_json": {"title": "Declared Edges Json", "type": "string"},
+        "observed_events_json": {"title": "Observed Events Json", "type": "string"},
+        "threshold": {"default": 0.8, "minimum": 0, "maximum": 1, "title": "Threshold", "type": "number"}
+      },
+      "required": ["declared_edges_json", "observed_events_json"],
+      "title": "control_plane_adherence_evaluateArguments",
+      "type": "object"
+    },
+    "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+  },
+  {
+    "name": "formal_verification_suite",
+    "description": "Run fixed bounded information-dynamics SMT models. Reports provider invariants as empirical and does not claim implementation refinement.",
+    "inputSchema": {
+      "properties": {},
+      "title": "formal_verification_suiteArguments",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "arxiv_capabilities",
     "description": "Return the arXiv MCP handlers actually available in this process.",
     "inputSchema": {
@@ -5901,6 +5960,38 @@ ${body}`,
     if (result.isError) return toolError(body || "arxiv_capabilities failed");
     return text(body || "(no output)", result.structuredContent);
   },
+  async formal_verification_suite(args, env) {
+    const unset = gatewayUnconfigured(env);
+    if (unset) return toolError(unset);
+    const result = await shardCall(env, "formal_verification_suite", {});
+    const body = (result.content || []).map((c) => c.text || "").join("\n");
+    if (result.isError) return toolError(body || "formal_verification_suite failed");
+    return text(body || "(no output)", result.structuredContent);
+  },
+  async control_plane_context_select(args, env) {
+    const unset = gatewayUnconfigured(env);
+    if (unset) return toolError(unset);
+    const result = await shardCall(env, "control_plane_context_select", args);
+    const body = (result.content || []).map((c) => c.text || "").join("\n");
+    if (result.isError) return toolError(body || "control_plane_context_select failed");
+    return text(body || "(no output)", result.structuredContent);
+  },
+  async control_plane_pareto_route(args, env) {
+    const unset = gatewayUnconfigured(env);
+    if (unset) return toolError(unset);
+    const result = await shardCall(env, "control_plane_pareto_route", args);
+    const body = (result.content || []).map((c) => c.text || "").join("\n");
+    if (result.isError) return toolError(body || "control_plane_pareto_route failed");
+    return text(body || "(no output)", result.structuredContent);
+  },
+  async control_plane_adherence_evaluate(args, env) {
+    const unset = gatewayUnconfigured(env);
+    if (unset) return toolError(unset);
+    const result = await shardCall(env, "control_plane_adherence_evaluate", args);
+    const body = (result.content || []).map((c) => c.text || "").join("\n");
+    if (result.isError) return toolError(body || "control_plane_adherence_evaluate failed");
+    return text(body || "(no output)", result.structuredContent);
+  },
   async arxiv_radar(args, env) {
     const unset = gatewayUnconfigured(env);
     if (unset) return toolError(unset);
@@ -6124,4 +6215,3 @@ export {
   worker_default as default
 };
 //# sourceMappingURL=worker.js.map
-

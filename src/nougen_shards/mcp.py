@@ -1274,14 +1274,62 @@ def formal_solve_smt(declarations: List[List[str]], assertions: List[str],
 
     Args:
         declarations: List of [var_name, var_type] pairs, e.g. [['x', 'Int'], ['y', 'Int']]. Supported: Int, Real, Bool, BitVec.
-        assertions: List of Python/Z3-syntax formulas defining axioms or problem constraints.
-        query: Optional target theorem formula. If supplied, checks if the query holds under axioms by checking UNSAT of its negation.
+    assertions: List of bounded expressions using declared names, numeric/bool literals,
+        arithmetic, comparisons, and boolean operators. Python calls and Z3 attributes are rejected.
+    query: Optional target theorem in the same expression subset. If supplied, checks if
+        the query holds under axioms by checking UNSAT of its negation.
         timeout_ms: Solver timeout in milliseconds.
     """
     from .formal_prover import engine
-    typed_decls = [(d[0], d[1]) for d in declarations if len(d) >= 2]
+    if any(not isinstance(d, list) or len(d) != 2 for d in declarations):
+        return json.dumps({"status": "error", "error": "Each declaration must be a [name, type] pair."})
+    typed_decls = [(d[0], d[1]) for d in declarations]
     res = engine.solve_smt_constraint(declarations=typed_decls, assertions=assertions, query=query, timeout_ms=timeout_ms)
     return json.dumps(res, default=str, indent=2)
+
+
+@mcp.tool()
+def formal_verification_suite() -> str:
+    """Run bounded information-dynamics SMT models; this does not prove implementation refinement."""
+    from .formal_verification import run_full_formal_verification_suite
+    return json.dumps(run_full_formal_verification_suite(), default=str, indent=2)
+
+
+@mcp.tool()
+def control_plane_context_select(query: str, budget_tokens: int = 500,
+                                 nodes_json: Optional[str] = None) -> str:
+    """Select a bounded graph-aware projection from caller-supplied shard candidates."""
+    from .control_plane_api import context_select
+    try:
+        result = context_select(query, budget_tokens, nodes_json if nodes_json is not None else "[]")
+    except (TypeError, ValueError) as exc:
+        result = {"error": str(exc)}
+    return json.dumps(result, default=str, indent=2)
+
+
+@mcp.tool()
+def control_plane_pareto_route(routes_json: str,
+                               policy_weights_json: str) -> str:
+    """Choose from a Pareto front using explicit objective weights and provenance."""
+    from .control_plane_api import pareto_route
+    try:
+        result = pareto_route(routes_json, policy_weights_json)
+    except (TypeError, ValueError) as exc:
+        result = {"error": str(exc)}
+    return json.dumps(result, default=str, indent=2)
+
+
+@mcp.tool()
+def control_plane_adherence_evaluate(declared_edges_json: str,
+                                     observed_events_json: str,
+                                     threshold: float = 0.8) -> str:
+    """Compare declared workflow edges with observed [source, target] event edges."""
+    from .control_plane_api import adherence_evaluate
+    try:
+        result = adherence_evaluate(declared_edges_json, observed_events_json, threshold)
+    except (TypeError, ValueError) as exc:
+        result = {"error": str(exc)}
+    return json.dumps(result, default=str, indent=2)
 
 
 
