@@ -343,12 +343,15 @@ def _parse_args(raw: Any) -> dict:
 
 def run_tool_loop(chat_fn: Callable[..., dict], model: str, messages: list,
                   max_rounds: Optional[int] = None,
-                  log: Optional[logging.Logger] = None) -> Tuple[str, List[dict]]:
+                  log: Optional[logging.Logger] = None,
+                  tracker: Optional[Any] = None) -> Tuple[str, List[dict]]:
     """Drive an ollama-style tool loop until the model stops calling tools.
 
     chat_fn(model, messages, tools=TOOLS) must return the ollama chat
     response dict. Returns (final_text, call_log) where call_log holds one
     {tool, args, result_size, ok} entry per attempted call for grant audit.
+    If tracker (SessionToolActivityTracker) is provided, invocations are
+    automatically bounded, redacted, and recorded.
     """
     lg = log or logger
     rounds = max_rounds if max_rounds is not None else _env_int("NOUGEN_KAEDRA_TOOL_ROUNDS", 4)
@@ -414,10 +417,17 @@ def run_tool_loop(chat_fn: Callable[..., dict], model: str, messages: list,
                 msgs.append({"role": "tool", "tool_name": name,
                              "content": json.dumps({"error": "unknown tool"})})
                 continue
+            import time
+            start_call = time.perf_counter()
             result = dispatch(name, args)
+            dur_ms = (time.perf_counter() - start_call) * 1000
             payload = json.dumps(result, default=str)
             ok = "error" not in result
+            err_msg = result.get("error") if isinstance(result, dict) else None
             call_log.append({"tool": name, "args": args, "result_size": len(payload), "ok": ok})
+            if tracker is not None and hasattr(tracker, "record_call"):
+                tracker.record_call(tool_name=name, arguments=args, ok=ok, result_size=len(payload),
+                                    duration_ms=dur_ms, error=err_msg)
             lg.info("kaedra tool %s ok=%s size=%d", name, ok, len(payload))
             msgs.append({"role": "tool", "tool_name": name, "content": payload[:cap]})
 
