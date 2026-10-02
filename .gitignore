@@ -205,3 +205,5 @@ projects/
 *.bak*
 bin/ngs-node.sh.bak*
 ~/
+.env.*
+!.env.example

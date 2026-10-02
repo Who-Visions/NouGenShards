@@ -1,0 +1,89 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Who-Visions/NouGenShards/main/schemas/readme-manifest.schema.json",
+  "schema_version": 1,
+  "project": {
+    "title": "NouGenShards",
+    "description": "Persistent local memory for coding agents. Store machine experience as shards across tools and sessions.",
+    "emoji": "🧠"
+  },
+  "table_of_contents": true,
+  "badges": [
+    {
+      "label": "Version",
+      "image": "https://img.shields.io/badge/version-1.3.1-blue.svg",
+      "url": "https://github.com/nougenai/nougen"
+    },
+    {
+      "label": "License",
+      "image": "https://img.shields.io/badge/license-Source--Available-purple.svg",
+      "url": "LICENSE.md"
+    },
+    {
+      "label": "Tests",
+      "image": "https://img.shields.io/badge/tests-460%2B%20passed-success.svg",
+      "url": "tests/"
+    }
+  ],
+  "sections": [
+    {
+      "title": "Installation & Setup",
+      "keywords": ["install", "setup", "dependencies"],
+      "emoji": "🚀",
+      "content": "Establish the local memory substrate. Dependencies are strictly pinned to ensure reproducible state across nodes—maximizing momentum and eliminating drift.\n\n```bash\n# One-command bootstrap (virtualenv + dependencies + CLI verification):\npython tools/bootstrap.py\n\n# Or install directly into active python environment:\npip install .\n```\n\n**Windows One-Click Launcher**:\n```cmd\nnougen.bat\n```"
+    },
+    {
+      "title": "CLI Workflow: Memory Recon",
+      "keywords": ["cli", "scan", "memory", "recon"],
+      "emoji": "🔎",
+      "content": "Execute the core discovery sequence to map and import fragmented AI tool history. This is the initial leverage point for capturing scattered machine intelligence:\n\n```bash\n# Discover local AI history across Claude, Gemini, Cursor, and Codex:\nnougen brain scan\n\n# Preview imported traces (dry-run mode):\nnougen brain import\n\n# Commit memories directly to the local encrypted SQLite WAL vault:\nnougen brain import --confirm\n```"
+    },
+    {
+      "title": "Core Memory & Utility Feedback",
+      "keywords": ["workflow", "capture", "utility", "shards"],
+      "emoji": "💾",
+      "content": "Capture, recall, and reinforce machine experience directly from your terminal or agent loop—prioritizing memory over context window limits:\n\n```bash\n# 1. Capture shard\nnougen add \"Fixed the N+1 query bug in the user controller\" --tags rails,fix,performance\n\n# 2. Hybrid search (FTS5 + semantic embeddings)\nnougen search \"N+1 query\" --semantic\n\n# 3. Reinforce shard utility rank (closed-loop learning)\nnougen mark 5 --worked\n```"
+    },
+    {
+      "title": "Agent Handoffs",
+      "keywords": ["handoff", "agents", "fleet", "doctrine"],
+      "emoji": "🤝",
+      "content": "Pass baton and task doctrine between sessions and nodes without duplicating work or losing context:\n\n```bash\n# Outgoing agent logs state and open objectives\nnougen handoff create --goal \"Wire the Tauri sidecar\" --message \"frontend done, rust stubbed\"\n\n# Incoming agent reviews the active handoff\nnougen handoff read\n\n# Acknowledge and claim the baton\nnougen handoff ack --message \"picking this up\"\n```"
+    },
+    {
+      "title": "System Architecture: Leverage Over Spend",
+      "keywords": ["architecture", "flow", "doctrine", "routing"],
+      "emoji": "🏗️",
+      "content": "The operational flow for fleet memory. Data is scanned, normalized, routed through an encrypted 9-DB SQLite shard grid, ranked by relevance, and queried via local zero-cost models (`Yukiai:e2b` / `gemma4:e2b-qat`).\n\n- **$0 Local First**: Local inference always takes priority over metered cloud endpoints.\n- **Zero Silent Fallback**: If a local route is unavailable, it is reported cleanly rather than causing unexpected billing spikes.\n- **Doctrine Over Transcripts**: Permanent institutional knowledge stays anchored in shards."
+    },
+    {
+      "title": "Data Sovereignty & License",
+      "keywords": ["license", "privacy", "leverage", "terms"],
+      "emoji": "🔒",
+      "content": "Copyright © 2020–present **Who Visions LLC**. All rights reserved.\n\nThe system operates locally using encrypted SQLite databases, ensuring complete data sovereignty. Commercial reuse, fee-based redistribution, and hosting competing cloud services are strictly prohibited. See [LICENSE.md](LICENSE.md)."
+    }
+  ],
+  "links": [
+    {
+      "label": "GitHub Repository",
+      "url": "https://github.com/nougenai/nougen"
+    },
+    {
+      "label": "Architecture Doctrine",
+      "url": "docs/architecture.md"
+    },
+    {
+      "label": "Handoff Protocol",
+      "url": "docs/handoffs.md"
+    },
+    {
+      "label": "License Terms",
+      "url": "LICENSE.md"
+    }
+  ],
+  "persona": {
+    "market": "agent-fleet-operators",
+    "audience": "fleet-operator",
+    "register": "expansive",
+    "fingerprint": "c20f8baf250c1dd1"
+  }
+}

@@ -540,6 +540,33 @@ def cmd_auth(args):
         if not found:
             print(" No cloud services connected.")
 
+    elif args.action == "auto-env":
+        target = getattr(args, "target", None) or getattr(args, "input", None) or "."
+        force = getattr(args, "force", False)
+        if target == "--all" or getattr(args, "all", False):
+            results = keymaker.auto_env_all(force=force)
+            if getattr(args, "json", False):
+                print(json.dumps(results, indent=2))
+                return
+            print(f"🔐 Keymaker auto-enved {len(results)} Outpost repositories:")
+            for r in results:
+                if "error" in r:
+                    print(f"  ❌ {r['repo']}: {r['error']}")
+                else:
+                    gi_note = " (.gitignore updated)" if r.get("gitignore_updated") else ""
+                    print(f"  ✅ {r['repo']}: {r['populated_count']} keys -> {r['path']}{gi_note}")
+        else:
+            res = keymaker.auto_env_repo(target, force=force)
+            if getattr(args, "json", False):
+                print(json.dumps(res, indent=2))
+                return
+            gi_note = " (.gitignore updated)" if res.get("gitignore_updated") else ""
+            print(f"✅ Keymaker auto-enved {res['repo']}: {res['populated_count']} keys -> {res['path']}{gi_note}")
+            if res.get("populated_keys"):
+                print(f"   Populated: {', '.join(res['populated_keys'])}")
+            if res.get("missing_vault"):
+                print(f"   Missing in vault: {', '.join(res['missing_vault'])}")
+
 
 def cmd_init(args):
     """Bootstrap the local shard layer, then adaptively onboard.
@@ -1961,9 +1988,11 @@ def get_parser():
                         help="Persona to embody (NouGen, Sol-Ai, Rhea, DavOs, Iris, Kaedra, Griot, Kronos)")
 
     p_auth = subparsers.add_parser("auth", help="Manage keys")
-    p_auth.add_argument("action", choices=["set-key", "list", "check"])
+    p_auth.add_argument("action", choices=["set-key", "list", "check", "auto-env"])
     p_auth.add_argument("provider", nargs="?")
     p_auth.add_argument("input", nargs="?")
+    p_auth.add_argument("--all", action="store_true", help="Auto-env all Outpost repositories")
+    p_auth.add_argument("--force", action="store_true", help="Overwrite existing environment variables")
     p_auth.add_argument("--json", action="store_true", help="Machine-readable output")
     p_auth.add_argument("--timeout", type=float, default=10.0,
                         help="Per-provider probe timeout in seconds (auth check)")
