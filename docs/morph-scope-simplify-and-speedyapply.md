@@ -42,3 +42,8 @@ Candidate Profile Scoring (0–100% Match) & 1-Click Application / Letter Elevat
 - Total Opportunities Morphed: 2,417
 - Salary Rate Floor Extraction: Enabled
 - Dynamic Candidate Matching: Live on http://127.0.0.1:8765
+
+3. **Backend-BR / Vagas**:
+   - URL: `https://github.com/backend-br/vagas`
+   - Morphed Count: 41 live open issue vacancies (Senior/Mid/Remote backend roles).
+   - Schema mapping: Ingests GitHub issue payload, parses remote locations `[Remoto]`, tech stack labels (Python, Go, Node.js, SQL, GCP), and partner companies.
