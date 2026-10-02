@@ -159,7 +159,7 @@ oauthlib==4.0.0
     # via requests-oauthlib
 ollama==0.6.2
     # via nougen-shards (pyproject.toml)
-openai==3.16.2
+openai==3.19.2
     # via nougen-shards (pyproject.toml)
 opentelemetry-api==1.44.0
     # via
