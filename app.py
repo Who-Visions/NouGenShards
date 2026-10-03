@@ -12,6 +12,7 @@ import re
 import datetime
 import contextlib
 import functools
+import inspect
 from typing import List, Optional
 from pathlib import Path
 
@@ -74,6 +75,16 @@ node_mcp = MCPServer(
 )
 
 
+def _unwrap_sync(target):
+    seen = set()
+    while hasattr(target, "fn") and callable(getattr(target, "fn")):
+        if id(target) in seen:
+            break
+        seen.add(id(target))
+        target = target.fn
+    return target
+
+
 def _offloaded(fn):
     """Run a blocking tool body in a worker thread instead of the event loop.
 
@@ -95,16 +106,21 @@ def _offloaded(fn):
     FastMCP reads to build the tool name, description and argument schema --
     inspect.signature follows __wrapped__, so the schema is unchanged.
     """
+    sync_fn = _unwrap_sync(fn)
+
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
-        return await run_in_threadpool(fn, *args, **kwargs)
+        res = await run_in_threadpool(sync_fn, *args, **kwargs)
+        if inspect.iscoroutine(res):
+            res = await res
+        return res
     # Keep the SYNC body reachable. FastMCP exposes a tool's raw callable as
     # ``.fn`` and in-process callers (tests, rhea, the CLI) already use that
     # contract: ``node.recall_memory.fn("q")``. functools.wraps sets
     # ``__wrapped__`` but not ``.fn``, so the first offload landed with five
     # tests calling a coroutine and subscripting it (main red from #176 at
     # 00:33Z until this). The wire path stays async; the direct path stays sync.
-    wrapper.fn = fn
+    wrapper.fn = sync_fn
     return wrapper
 
 
@@ -136,7 +152,7 @@ def recall_memory(query: str, limit: int = 5) -> list:
 @_offloaded
 def search_tool(query: str, limit: int = 5) -> list:
     """Search memory shards across the fleet. Alias for recall_memory to support standard MCP connectors."""
-    return recall_memory(query=query, limit=limit)
+    return _unwrap_sync(recall_memory)(query=query, limit=limit)
 
 
 # A stored timestamp is only usable for era math if it is ISO-shaped.
@@ -2889,6 +2905,45 @@ def relay_ack_leg(
 
 @node_mcp.tool()
 @_offloaded
+def evaluate_evidence_template(
+    evidence: dict,
+    template_id: str,
+    tau: float = 0.75,
+    metrics: Optional[List[dict]] = None,
+    hard_gates: Optional[List[str]] = None,
+    version: str = "1.0.0"
+) -> dict:
+    """Evaluate evidence against a deterministic bounded interval [R_min, R_max] template."""
+    from nougen_shards.result_template import MetricCriterion, ResultTemplate, evaluate_result
+    criteria = []
+    if metrics:
+        for m in metrics:
+            criteria.append(
+                MetricCriterion(
+                    name=m["name"],
+                    weight=float(m.get("weight", 1.0)),
+                    min_value=float(m.get("min_value", 0.0)),
+                    max_value=float(m.get("max_value", 1.0)),
+                    description=m.get("description", "")
+                )
+            )
+    else:
+        # Default criteria if unspecified
+        criteria.append(MetricCriterion(name="score", weight=1.0))
+
+    tmpl = ResultTemplate(
+        template_id=template_id,
+        version=version,
+        tau=float(tau),
+        metrics=tuple(criteria),
+        hard_gates=tuple(hard_gates or []),
+    )
+    result = evaluate_result(evidence, tmpl)
+    return result.to_dict()
+
+
+@node_mcp.tool()
+@_offloaded
 def wake_daemon_status() -> dict:
     """Inspect reactive wake daemon operational state, symmetric window, and noise filtering stats."""
     from nougen_shards import wake_daemon
@@ -3077,7 +3132,7 @@ def nougen_media_transcribe(url: str, language: Optional[str] = None,
 def nougentube(url: str, language: Optional[str] = None,
                whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
     """Transcribe and summarize video/audio with subtitle-first extraction and local Whisper fallback."""
-    return nougen_media_transcribe(url=url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
+    return _unwrap_sync(nougen_media_transcribe)(url=url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
 
 
 @node_mcp.tool()
@@ -3086,28 +3141,28 @@ def transcribe_media(source: str = "", url: str = "", language: Optional[str] = 
                      whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
     """Transcribe media from URL or source using local Whisper."""
     target_url = url or source
-    return nougen_media_transcribe(url=target_url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
+    return _unwrap_sync(nougen_media_transcribe)(url=target_url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
 
 
 @node_mcp.tool()
 @_offloaded
 def apply_skills(task: str) -> dict:
     """Apply and discover operational skills for a given task description."""
-    return nougen_skill_search(task=task, limit=5)
+    return _unwrap_sync(nougen_skill_search)(task=task, limit=5)
 
 
 @node_mcp.tool()
 @_offloaded
 def list_skills() -> dict:
     """List all available operational skills."""
-    return nougen_skill_search(task="", limit=20)
+    return _unwrap_sync(nougen_skill_search)(task="", limit=20)
 
 
 @node_mcp.tool()
 @_offloaded
 def load_skill(name: str) -> dict:
     """Load the full operational specification and prompt instructions for a given skill."""
-    return nougen_skill_get(name=name)
+    return _unwrap_sync(nougen_skill_get)(name=name)
 
 
 @node_mcp.tool()
@@ -3115,21 +3170,21 @@ def load_skill(name: str) -> dict:
 def search_destinies(query: str = "", limit: int = 20, include_finished: bool = False) -> dict:
     """Search and filter recorded fleet destinies."""
     status = None if include_finished else "active"
-    return unfinished_destinies(status=status, limit=limit)
+    return _unwrap_sync(unfinished_destinies)(status=status, limit=limit)
 
 
 @node_mcp.tool()
 @_offloaded
 def recall_layered(query: str, token_budget: int = 1200) -> list:
     """Layered memory retrieval packed within a tight token budget."""
-    return recall_memory(query=query, limit=10)
+    return _unwrap_sync(recall_memory)(query=query, limit=10)
 
 
 @node_mcp.tool()
 @_offloaded
 def recall_related(shard_id: int, db_index: int = 1, relation: Optional[str] = None) -> dict:
     """Retrieve related memory shards via graph topology."""
-    return recall_graph(query=str(shard_id), depth=1, limit=10)
+    return _unwrap_sync(recall_graph)(query=str(shard_id), depth=1, limit=10)
 
 
 @node_mcp.tool()
@@ -3469,9 +3524,11 @@ def information_gain_evaluate(event_text: str, context_samples: Optional[List[st
 @_offloaded
 def formal_solve_smt(declarations: List[List[str]], assertions: List[str],
                      query: Optional[str] = None, timeout_ms: int = 5000) -> dict:
-    """Solve SMT constraints or prove mathematical invariants using the native Z3 SMT solver."""
+    """Solve bounded expressions with Z3; accepts the restricted SMT expression subset only."""
     from nougen_shards.formal_prover import engine
-    typed_decls = [(d[0], d[1]) for d in declarations if len(d) >= 2]
+    if any(not isinstance(d, list) or len(d) != 2 for d in declarations):
+        return {"status": "error", "error": "Each declaration must be a [name, type] pair."}
+    typed_decls = [(d[0], d[1]) for d in declarations]
     return engine.solve_smt_constraint(declarations=typed_decls, assertions=assertions, query=query, timeout_ms=timeout_ms)
 
 
@@ -3530,62 +3587,34 @@ def rsi_diagnostics() -> dict:
 @node_mcp.tool()
 @_offloaded
 def control_plane_context_select(query: str, budget_tokens: int = 500, nodes_json: Optional[str] = None) -> dict:
-    """Select persistent context graph memory using stored importance, query relevance and dependency expansion."""
-    from nougen_shards.control_plane_math import PersistentContextGraph, ContextNode
-    graph = PersistentContextGraph()
-    if nodes_json:
-        try:
-            data = json.loads(nodes_json)
-            for item in data:
-                graph.add_node(ContextNode(
-                    node_id=item["id"],
-                    content=item.get("content", ""),
-                    importance=float(item.get("importance", 0.5)),
-                    token_count=int(item.get("tokens", len(item.get("content", "").split()))),
-                ))
-        except Exception:
-            pass
-    return graph.select_context(query=query, budget_tokens=budget_tokens).to_dict()
+    """Select a bounded graph-aware projection from caller-supplied shard candidates."""
+    from nougen_shards.control_plane_api import context_select
+    try:
+        return context_select(query, budget_tokens, nodes_json if nodes_json is not None else "[]")
+    except (TypeError, ValueError) as exc:
+        return {"error": str(exc)}
 
 
 @node_mcp.tool()
 @_offloaded
-def control_plane_pareto_route(routes_json: str, policy_weights_json: Optional[str] = None) -> dict:
-    """Execute multi-objective Pareto routing over quality, truth, latency, cost, robustness, memory fidelity, safety."""
-    from nougen_shards.control_plane_math import MultiObjectiveParetoRouter, RouteProfile
-    routes = []
+def control_plane_pareto_route(routes_json: str, policy_weights_json: str) -> dict:
+    """Choose from the Pareto front using explicit objective weights and provenance."""
+    from nougen_shards.control_plane_api import pareto_route
     try:
-        data = json.loads(routes_json)
-        for r in data:
-            routes.append(RouteProfile(
-                route_id=r["id"],
-                quality=float(r.get("quality", 0.8)),
-                truth=float(r.get("truth", 0.8)),
-                latency_ms=float(r.get("latency_ms", 100.0)),
-                cost_usd=float(r.get("cost_usd", 0.0)),
-                robustness=float(r.get("robustness", 0.8)),
-                memory_fidelity=float(r.get("memory_fidelity", 0.8)),
-                safety_score=float(r.get("safety_score", 0.9)),
-            ))
-    except Exception as e:
-        return {"error": f"Failed to parse routes: {e}"}
-
-    weights = json.loads(policy_weights_json) if policy_weights_json else None
-    decision = MultiObjectiveParetoRouter.route(routes, policy_weights=weights)
-    return decision.to_dict()
+        return pareto_route(routes_json, policy_weights_json)
+    except (TypeError, ValueError) as exc:
+        return {"error": str(exc)}
 
 
 @node_mcp.tool()
 @_offloaded
 def control_plane_adherence_evaluate(declared_edges_json: str, observed_events_json: str, threshold: float = 0.8) -> dict:
-    """Compute execution adherence from declared workflow edges vs observed event-stream edges."""
-    from nougen_shards.control_plane_math import ExecutionAdherenceEvaluator
+    """Compare declared workflow edges with observed [source, target] event edges."""
+    from nougen_shards.control_plane_api import adherence_evaluate
     try:
-        dec = [tuple(e) for e in json.loads(declared_edges_json)]
-        obs = json.loads(observed_events_json)
-        return ExecutionAdherenceEvaluator.evaluate(dec, obs, adherence_threshold=threshold).to_dict()
-    except Exception as e:
-        return {"error": f"Failed adherence calculation: {e}"}
+        return adherence_evaluate(declared_edges_json, observed_events_json, threshold)
+    except (TypeError, ValueError) as exc:
+        return {"error": str(exc)}
 
 
 @node_mcp.tool()
@@ -3636,12 +3665,13 @@ def morph_holistic_gate(
 @node_mcp.tool()
 @_offloaded
 def formal_verification_suite() -> dict:
-    """Executes the complete suite of 6 Hurricane Kick information dynamics formal proof obligations.
-    Proves idempotent duplicate capture, monotonic append-only sequence identity, provider invariants,
-    bounded working memory projections, relay lifecycle state-machine safety, and decision-equivalence merge conditions.
+    """Run bounded SMT models for information-dynamics obligations.
+
+    Results cover only the published encodings. Provider invariants are empirical;
+    implementation refinement is not established by this suite.
     """
-    from nougen_shards.formal_verification import InformationDynamicsProofEngine
-    return InformationDynamicsProofEngine.run_full_formal_verification_suite()
+    from nougen_shards.formal_verification import run_full_formal_verification_suite
+    return run_full_formal_verification_suite()
 
 
 # --- 5. Physical Studio Lighting, Tunnels & Compounding ------------------

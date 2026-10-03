@@ -309,9 +309,21 @@ def run_arxiv_lab_watch(channel: str = "cs.AR", backfill: bool = False, limit: i
 MAX_FULLTEXT_CHARS = int(os.environ.get("NOUGEN_ARXIV_MCP_MAX_FULLTEXT_CHARS", "24000"))
 
 
+def _accepts_refresh(fn: Any) -> bool:
+    """True when ``fn`` declares ``refresh`` (or **kwargs); decided by signature, never by catching TypeError."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "refresh" in params or any(q.kind is inspect.Parameter.VAR_KEYWORD for q in params.values())
+
+
 def run_arxiv_paper(action: str = "lookup", ref: str = "", pattern: Optional[str] = None,
                     max_chars: Optional[int] = None, refresh: bool = False) -> Dict[str, Any]:
     """Inspect an arXiv paper: lookup metadata, cache LaTeX fulltext, or search body claims."""
+    if not isinstance(ref, str) or not ref.strip():
+        return {"status": "error", "available": True, "action": action,
+                "error": "ref required: pass an arXiv id, 'arXiv:<id>' or abs URL"}
     tools = get_radar_tools()
     if not tools or not tools.get("paper"):
         return {
@@ -326,10 +338,7 @@ def run_arxiv_paper(action: str = "lookup", ref: str = "", pattern: Optional[str
             data = paper.lookup(aid)
             return {"status": "success", "available": True, "action": action, "paper_id": aid, "metadata": data}
         elif action == "fulltext":
-            try:
-                p = paper.fulltext(aid, refresh=refresh)
-            except TypeError:
-                p = paper.fulltext(aid)
+            p = paper.fulltext(aid, refresh=refresh) if _accepts_refresh(paper.fulltext) else paper.fulltext(aid)
             text = p.read_text(encoding="utf-8")
             cap = MAX_FULLTEXT_CHARS if max_chars is None else max(1000, min(int(max_chars), MAX_FULLTEXT_CHARS))
             clipped = text[:cap]

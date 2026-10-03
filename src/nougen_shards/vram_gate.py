@@ -34,6 +34,8 @@ MEASURED_LOAD_GB = {
     "keadracode:latest": 7.51, "keadra:e4b": 9.52, "keadra:latest": 7.51,
     "qwen3-vl:4b": 3.53,
     "gemma4:e2b-qat": 1.66,
+    "gemma4:e2b-it-qat": 1.66,
+    "gemma4:e4b-it-qat": 2.45,
     "deepseek-ocr:3b": 6.9,
     "nomic-embed-text:latest": 0.4,
 }
