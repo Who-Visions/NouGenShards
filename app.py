@@ -12,6 +12,7 @@ import re
 import datetime
 import contextlib
 import functools
+import inspect
 from typing import List, Optional
 from pathlib import Path
 
@@ -74,6 +75,16 @@ node_mcp = MCPServer(
 )
 
 
+def _unwrap_sync(target):
+    seen = set()
+    while hasattr(target, "fn") and callable(getattr(target, "fn")):
+        if id(target) in seen:
+            break
+        seen.add(id(target))
+        target = target.fn
+    return target
+
+
 def _offloaded(fn):
     """Run a blocking tool body in a worker thread instead of the event loop.
 
@@ -95,16 +106,21 @@ def _offloaded(fn):
     FastMCP reads to build the tool name, description and argument schema --
     inspect.signature follows __wrapped__, so the schema is unchanged.
     """
+    sync_fn = _unwrap_sync(fn)
+
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
-        return await run_in_threadpool(fn, *args, **kwargs)
+        res = await run_in_threadpool(sync_fn, *args, **kwargs)
+        if inspect.iscoroutine(res):
+            res = await res
+        return res
     # Keep the SYNC body reachable. FastMCP exposes a tool's raw callable as
     # ``.fn`` and in-process callers (tests, rhea, the CLI) already use that
     # contract: ``node.recall_memory.fn("q")``. functools.wraps sets
     # ``__wrapped__`` but not ``.fn``, so the first offload landed with five
     # tests calling a coroutine and subscripting it (main red from #176 at
     # 00:33Z until this). The wire path stays async; the direct path stays sync.
-    wrapper.fn = fn
+    wrapper.fn = sync_fn
     return wrapper
 
 
@@ -136,7 +152,7 @@ def recall_memory(query: str, limit: int = 5) -> list:
 @_offloaded
 def search_tool(query: str, limit: int = 5) -> list:
     """Search memory shards across the fleet. Alias for recall_memory to support standard MCP connectors."""
-    return recall_memory(query=query, limit=limit)
+    return _unwrap_sync(recall_memory)(query=query, limit=limit)
 
 
 # A stored timestamp is only usable for era math if it is ISO-shaped.
@@ -2889,6 +2905,45 @@ def relay_ack_leg(
 
 @node_mcp.tool()
 @_offloaded
+def evaluate_evidence_template(
+    evidence: dict,
+    template_id: str,
+    tau: float = 0.75,
+    metrics: Optional[List[dict]] = None,
+    hard_gates: Optional[List[str]] = None,
+    version: str = "1.0.0"
+) -> dict:
+    """Evaluate evidence against a deterministic bounded interval [R_min, R_max] template."""
+    from nougen_shards.result_template import MetricCriterion, ResultTemplate, evaluate_result
+    criteria = []
+    if metrics:
+        for m in metrics:
+            criteria.append(
+                MetricCriterion(
+                    name=m["name"],
+                    weight=float(m.get("weight", 1.0)),
+                    min_value=float(m.get("min_value", 0.0)),
+                    max_value=float(m.get("max_value", 1.0)),
+                    description=m.get("description", "")
+                )
+            )
+    else:
+        # Default criteria if unspecified
+        criteria.append(MetricCriterion(name="score", weight=1.0))
+
+    tmpl = ResultTemplate(
+        template_id=template_id,
+        version=version,
+        tau=float(tau),
+        metrics=tuple(criteria),
+        hard_gates=tuple(hard_gates or []),
+    )
+    result = evaluate_result(evidence, tmpl)
+    return result.to_dict()
+
+
+@node_mcp.tool()
+@_offloaded
 def wake_daemon_status() -> dict:
     """Inspect reactive wake daemon operational state, symmetric window, and noise filtering stats."""
     from nougen_shards import wake_daemon
@@ -3077,7 +3132,7 @@ def nougen_media_transcribe(url: str, language: Optional[str] = None,
 def nougentube(url: str, language: Optional[str] = None,
                whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
     """Transcribe and summarize video/audio with subtitle-first extraction and local Whisper fallback."""
-    return nougen_media_transcribe(url=url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
+    return _unwrap_sync(nougen_media_transcribe)(url=url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
 
 
 @node_mcp.tool()
@@ -3086,28 +3141,28 @@ def transcribe_media(source: str = "", url: str = "", language: Optional[str] = 
                      whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
     """Transcribe media from URL or source using local Whisper."""
     target_url = url or source
-    return nougen_media_transcribe(url=target_url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
+    return _unwrap_sync(nougen_media_transcribe)(url=target_url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
 
 
 @node_mcp.tool()
 @_offloaded
 def apply_skills(task: str) -> dict:
     """Apply and discover operational skills for a given task description."""
-    return nougen_skill_search(task=task, limit=5)
+    return _unwrap_sync(nougen_skill_search)(task=task, limit=5)
 
 
 @node_mcp.tool()
 @_offloaded
 def list_skills() -> dict:
     """List all available operational skills."""
-    return nougen_skill_search(task="", limit=20)
+    return _unwrap_sync(nougen_skill_search)(task="", limit=20)
 
 
 @node_mcp.tool()
 @_offloaded
 def load_skill(name: str) -> dict:
     """Load the full operational specification and prompt instructions for a given skill."""
-    return nougen_skill_get(name=name)
+    return _unwrap_sync(nougen_skill_get)(name=name)
 
 
 @node_mcp.tool()
@@ -3115,21 +3170,21 @@ def load_skill(name: str) -> dict:
 def search_destinies(query: str = "", limit: int = 20, include_finished: bool = False) -> dict:
     """Search and filter recorded fleet destinies."""
     status = None if include_finished else "active"
-    return unfinished_destinies(status=status, limit=limit)
+    return _unwrap_sync(unfinished_destinies)(status=status, limit=limit)
 
 
 @node_mcp.tool()
 @_offloaded
 def recall_layered(query: str, token_budget: int = 1200) -> list:
     """Layered memory retrieval packed within a tight token budget."""
-    return recall_memory(query=query, limit=10)
+    return _unwrap_sync(recall_memory)(query=query, limit=10)
 
 
 @node_mcp.tool()
 @_offloaded
 def recall_related(shard_id: int, db_index: int = 1, relation: Optional[str] = None) -> dict:
     """Retrieve related memory shards via graph topology."""
-    return recall_graph(query=str(shard_id), depth=1, limit=10)
+    return _unwrap_sync(recall_graph)(query=str(shard_id), depth=1, limit=10)
 
 
 @node_mcp.tool()
