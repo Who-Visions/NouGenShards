@@ -130,9 +130,9 @@ def test_autonomous_bootstrap_with_models(tmp_path):
 
     with patch.object(bootstrap, "probe_environment", return_value=mock_probe), \
          patch.object(bootstrap, "is_ollama_live", return_value=True), \
-         patch.object(bootstrap, "list_installed_models", return_value=["nomic-embed-text:latest", "gemma4:e2b"]):
+         patch.object(bootstrap, "list_installed_models", return_value=["nomic-embed-text:latest", "gemma4:e2b-it-qat"]):
         
-        # Test individual model check
+        # Test individual model check (gemma4:e2b dynamically maps to gemma4:e2b-it-qat)
         ok1, msg1 = bootstrap.ensure_model_installed("nomic-embed-text:latest")
         assert ok1 is True
         assert "already installed" in msg1
@@ -146,8 +146,20 @@ def test_autonomous_bootstrap_with_models(tmp_path):
         assert report["status"] == "completed"
         assert report["ollama"]["ready"] is True
         assert report["models"]["nomic-embed-text:latest"]["ready"] is True
-        assert report["models"]["gemma4:e2b"]["ready"] is True
+        assert report["models"]["gemma4:e2b-it-qat"]["ready"] is True
         assert len(report["agent_hooks"]) == 3
+
+
+def test_qat_prime_directive_tag_resolution():
+    # Maps unquantized to QAT
+    assert ZeroBabysittingBootstrap.resolve_optimal_model_tag("gemma4:e2b") == "gemma4:e2b-it-qat"
+    assert ZeroBabysittingBootstrap.resolve_optimal_model_tag("gemma4:e4b") == "gemma4:e4b-it-qat"
+    assert ZeroBabysittingBootstrap.resolve_optimal_model_tag("gemma4") == "gemma4:e4b-it-qat"
+
+    # Preserves when QAT already installed locally
+    installed = ["gemma4:e2b-it-qat", "nomic-embed-text:latest"]
+    assert ZeroBabysittingBootstrap.resolve_optimal_model_tag("gemma4:e2b", installed) == "gemma4:e2b-it-qat"
+    assert ZeroBabysittingBootstrap.resolve_optimal_model_tag("gemma4", installed) == "gemma4:e2b-it-qat"
 
 
 def test_low_space_still_installs_safe_hooks(tmp_path):
