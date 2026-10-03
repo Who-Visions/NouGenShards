@@ -169,3 +169,18 @@ def test_mcp_node_status(client):
     result = _call_tool(client, "node_status", {})
     text = "".join(c.get("text", "") for c in result["content"])
     assert "ignited" in text
+
+
+def test_mcp_search_and_alias_tools_return_no_coroutines(client):
+    """Verify that offloaded tools and alias delegations never return unawaited coroutines."""
+    import inspect
+    # Test search alias directly via sync contract
+    res_search = node.search_tool.fn("streamable connector", limit=1)
+    assert not inspect.iscoroutine(res_search), "search_tool.fn returned a coroutine"
+    assert isinstance(res_search, list)
+
+    # Test via HTTP MCP endpoint
+    result = _call_tool(client, "search", {"query": "streamable connector", "limit": 1})
+    text = "".join(c.get("text", "") for c in result["content"])
+    assert "<coroutine object" not in text
+    assert not result.get("isError")
