@@ -312,6 +312,13 @@ MAX_FULLTEXT_CHARS = int(os.environ.get("NOUGEN_ARXIV_MCP_MAX_FULLTEXT_CHARS", "
 def run_arxiv_paper(action: str = "lookup", ref: str = "", pattern: Optional[str] = None,
                     max_chars: Optional[int] = None, refresh: bool = False) -> Dict[str, Any]:
     """Inspect an arXiv paper: lookup metadata, cache LaTeX fulltext, or search body claims."""
+    if not ref or not str(ref).strip():
+        return {
+            "status": "error",
+            "available": True,
+            "action": action,
+            "error": "ref is required and cannot be empty",
+        }
     tools = get_radar_tools()
     if not tools or not tools.get("paper"):
         return {
@@ -328,8 +335,12 @@ def run_arxiv_paper(action: str = "lookup", ref: str = "", pattern: Optional[str
         elif action == "fulltext":
             try:
                 p = paper.fulltext(aid, refresh=refresh)
-            except TypeError:
-                p = paper.fulltext(aid)
+            except TypeError as te:
+                err_msg = str(te)
+                if "unexpected keyword argument 'refresh'" in err_msg or ("unexpected keyword argument" in err_msg and "refresh" in err_msg):
+                    p = paper.fulltext(aid)
+                else:
+                    raise
             text = p.read_text(encoding="utf-8")
             cap = MAX_FULLTEXT_CHARS if max_chars is None else max(1000, min(int(max_chars), MAX_FULLTEXT_CHARS))
             clipped = text[:cap]
@@ -368,6 +379,18 @@ def run_arxiv_paper(action: str = "lookup", ref: str = "", pattern: Optional[str
 
 def run_morph_gate(ref: str, claims: List[str]) -> Dict[str, Any]:
     """Turn candidate key claims into verified evidence by regex checking the LaTeX body."""
+    if not ref or not str(ref).strip():
+        return {
+            "status": "error",
+            "available": True,
+            "error": "ref is required and cannot be empty",
+        }
+    if not claims or not isinstance(claims, list):
+        return {
+            "status": "error",
+            "available": True,
+            "error": "claims must be a non-empty list of strings",
+        }
     tools = get_radar_tools()
     if not tools or not tools.get("morph"):
         return {

@@ -544,9 +544,13 @@ class AgentPinger:
         """Land a model's answer in the inbox as a message FROM that model, so a
         model lane reads back like any other fleet peer (--inbox, the bridge,
         the wake daemon) instead of vanishing into the sender's stdout."""
-        if not reply:
+        if not reply or reply.startswith("Error:") or "Error: OR Key missing" in reply:
             return None
-        envelope = dict(origin or {})
+        orig = origin or {}
+        orig_sender = orig.get("original_sender", "") or orig.get("sender", "") or ""
+        if orig_sender.startswith("model:") or orig.get("domain", "").startswith("model:"):
+            return None
+        envelope = dict(orig)
         envelope["original_sender"] = f"{lane}:{model}"
         try:
             res = AgentPinger.ping_antigravity(reply, domain=f"model:{lane}", origin=envelope)
@@ -578,8 +582,11 @@ class AgentPinger:
             if hasattr(client, "timeout"):
                 client.timeout = timeout
             reply = (client.chat(target_model, [{"role": "user", "content": prompt}]) or "").strip()
+            if not reply or reply.startswith("Error:") or "Error: OR Key missing" in reply:
+                return {"status": "error", "lane": "openrouter", "model": target_model,
+                        "error": reply or "empty reply"}
             dropped = AgentPinger._drop_model_reply("openrouter", target_model, reply, origin)
-            return {"status": "delivered" if reply else "error", "lane": "openrouter",
+            return {"status": "delivered", "lane": "openrouter",
                     "model": target_model, "response": reply, "inbox": dropped}
         except Exception as exc:  # pylint: disable=broad-except
             return {"status": "error", "lane": "openrouter", "model": model, "error": str(exc)}
