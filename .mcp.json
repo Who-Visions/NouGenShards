@@ -17,12 +17,9 @@
       }
     },
     "ollama": {
-      "command": "cmd",
+      "command": "C:\\nvm4w\\nodejs\\node.EXE",
       "args": [
-        "/c",
-        "npx",
-        "-y",
-        "ollama-mcp"
+        "C:/nvm4w/nodejs/node_modules/ollama-mcp/dist/index.js"
       ],
       "env": {
         "OLLAMA_HOST": "http://127.0.0.1:11434"
