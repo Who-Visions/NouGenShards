@@ -6,7 +6,6 @@ caches the preferences locally in ~/.nougen/state/whoart_voice_favorites.json,
 and provides dynamic voice resolution across the NouGen fleet.
 """
 import os
-import sys
 import json
 import time
 import subprocess
