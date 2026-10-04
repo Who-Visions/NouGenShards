@@ -78,8 +78,8 @@ def main() -> int:
             if "error" in r:
                 print(f"  [ERROR] {r['file']}: {r['error']}")
             else:
-                flag = "⚠️" if r["refactor_candidate"] else "✅"
-                print(f"  {flag} {r['file']:<30} | Density: {r['intelligence_density']:<5.1f} | Refactor: {r['reason']}")
+                flag = "[WARN]" if r["refactor_candidate"] else "[OK]"
+                print(f"  {flag:<6} {r['file']:<30} | Density: {r['intelligence_density']:<5.1f} | Refactor: {r['reason']}")
 
     return 0 if result["status"] == "PASS" else 1
 
