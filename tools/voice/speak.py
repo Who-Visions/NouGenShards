@@ -17,11 +17,12 @@ ROOT = Path(os.environ.get("NOUGEN_ROOT") or Path.home() / "The Observatory" / "
 VOICE_VENV = ROOT / "NouGenVoice" / "backend" / "venv" / "bin" / "python"
 NEURAL_RUNNER = HERE / "nougen_speak_neural.py"
 
-def get_dynamic_voice_and_speed(override_voice: str | None = None, override_speed: float | None = None) -> tuple[str, float]:
+def get_dynamic_voice_and_speed(override_voice: str | None = None, override_speed: float | None = None,
+                                lane: str | None = None) -> tuple[str, float]:
     try:
         sys.path.insert(0, str(HERE))
         from whoart_voice_sync import resolve_dynamic_voice
-        v, s = resolve_dynamic_voice(override_voice)
+        v, s = resolve_dynamic_voice(override_voice, lane)
         return v, (override_speed if override_speed is not None else s)
     except Exception:
         v = override_voice or os.environ.get("NOUGEN_VOICE", "af_river")

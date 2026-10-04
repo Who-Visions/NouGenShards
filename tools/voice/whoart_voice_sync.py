@@ -15,6 +15,19 @@ SSH_KEY = Path(os.environ.get("NOUGEN_WHOART_SSH_KEY") or Path.home() / ".ssh" /
 REMOTE_FILE = Path.home() / ".nougen" / "state" / "whoart_voice_remote.json"   # {"ssh": "<user>@<host>", "bin": "<remote dir holding agy_voice.py>"}
 CACHE_FILE = Path.home() / ".nougen" / "state" / "whoart_voice_favorites.json"
 CACHE_TTL = 3600  # 1 hour cache
+LANE_FILE = Path.home() / ".nougen" / "state" / "lane_voices.json"   # {"claude-app": "af_sky", ...}: machine config, not source
+
+
+def lane_preference(lane: str | None) -> str | None:
+    """A lane's own voice, from NOUGEN_LANE or the argument; None when unset or unreadable."""
+    lane = lane or os.environ.get("NOUGEN_LANE")
+    if not lane:
+        return None
+    try:
+        value = json.loads(LANE_FILE.read_text(encoding="utf-8")).get(lane)
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def _remote() -> tuple[str, str] | None:
@@ -80,15 +93,16 @@ def get_voice_favorites(force_refresh: bool = False) -> dict:
             pass
     return {}
 
-def resolve_dynamic_voice(requested: str | None = None) -> tuple[str, float]:
+def resolve_dynamic_voice(requested: str | None = None, lane: str | None = None) -> tuple[str, float]:
     """
     Dynamically resolve the voice ID and speed.
     Priority:
     1. Explicit requested / env override (e.g. NOUGEN_VOICE)
-    2. WhoArt #1 favorite (or River if specified)
-    3. Safe default 'af_river'
+    2. This lane's own voice (NOUGEN_LANE / lane_voices.json)
+    3. WhoArt #1 favorite
+    4. Safe default 'af_river'
     """
-    req = requested or os.environ.get("NOUGEN_VOICE")
+    req = requested or os.environ.get("NOUGEN_VOICE") or lane_preference(lane)
     if req:
         req_clean = req.lower().strip()
         # If explicitly asking for river / koroko
@@ -99,6 +113,8 @@ def resolve_dynamic_voice(requested: str | None = None) -> tuple[str, float]:
             req_clean = None
         elif req_clean in ("adam", "am_adam"):
             return "am_adam", 0.98
+        elif req_clean in ("sky", "skye", "af_sky"):
+            return "af_sky", 1.0
         elif req_clean in ("nova", "af_nova"):
             return "af_nova", 0.96
         elif req_clean in ("heart", "af_heart"):
