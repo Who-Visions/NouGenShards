@@ -162,6 +162,45 @@ class CalibrationLedger:
         return out
 
 
+def effective_lanes(ledger: CalibrationLedger, *, harness: str = "base", min_shared: int = 10) -> tuple[float, float]:
+    """Kish-style effective lane count n_eff = n / (1 + (n - 1) * rho_bar).
+
+    rho_bar is the mean pairwise phi correlation of lane outcomes over cases both
+    lanes resolved (pairs with fewer than min_shared cases, or a constant
+    outcome, are skipped). Negative correlation is floored at 0 so disagreement
+    never inflates n_eff past n. Returns (n_eff, rho_bar); (0.0, 0.0) if no lanes.
+    """
+    with ledger._connect() as db:
+        rows = db.execute(
+            "SELECT lane, case_id, outcome FROM forecasts WHERE outcome IS NOT NULL AND harness = ?",
+            (harness,),
+        ).fetchall()
+    by_lane: dict[str, dict[str, int]] = {}
+    for lane, case_id, outcome in rows:
+        by_lane.setdefault(lane, {})[case_id] = outcome
+    lanes = sorted(by_lane)
+    n = len(lanes)
+    if n == 0:
+        return 0.0, 0.0
+    rhos = []
+    for i, a in enumerate(lanes):
+        for b in lanes[i + 1:]:
+            shared = by_lane[a].keys() & by_lane[b].keys()
+            if len(shared) < min_shared:
+                continue
+            xs = [by_lane[a][c] for c in shared]
+            ys = [by_lane[b][c] for c in shared]
+            mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+            vx = sum((x - mx) ** 2 for x in xs)
+            vy = sum((y - my) ** 2 for y in ys)
+            if vx == 0 or vy == 0:
+                continue
+            cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+            rhos.append(max(0.0, cov / math.sqrt(vx * vy)))
+    rho = sum(rhos) / len(rhos) if rhos else 0.0
+    return n / (1 + (n - 1) * rho), rho
+
+
 def weighted_consensus(votes: Mapping[str, float], weights: Mapping[str, float]) -> float:
     """Noisy-OR confidence C = 1 - prod_i (1 - p_i) ** w_i.
 
