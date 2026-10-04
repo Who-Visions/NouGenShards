@@ -142,23 +142,51 @@ class SearchView:
         return known and not _is_sealed(case_id, self._key, self._fraction)
 
 
+DEFAULT_MIN_ANCHOR_FRACTION = 0.20
+
+
 class Evaluator:
     """Evaluator-private access to the sealed split. Hold this only inside the evaluator service."""
 
     def __init__(self, corpus: FitnessCorpus, keys: EpochKeys, epoch: str,
-                 fraction: Optional[float] = None, min_sealed: Optional[int] = None) -> None:
+                 fraction: Optional[float] = None, min_sealed: Optional[int] = None,
+                 anchor_from: Optional["Evaluator"] = None,
+                 min_anchor_overlap: Optional[float] = None) -> None:
         self.corpus, self.epoch = corpus, epoch
         self.fraction = fraction if fraction is not None else _env_float("NOUGEN_FITNESS_SEALED_FRACTION", DEFAULT_SEALED_FRACTION)
         if not 0.0 < self.fraction < 1.0:
             raise ValueError("sealed fraction must be in (0, 1)")
         self.min_sealed = min_sealed if min_sealed is not None else int(_env_float("NOUGEN_FITNESS_MIN_SEALED", DEFAULT_MIN_SEALED))
+        self.min_anchor_overlap = (
+            min_anchor_overlap
+            if min_anchor_overlap is not None
+            else _env_float("NOUGEN_FITNESS_MIN_ANCHOR_OVERLAP", DEFAULT_MIN_ANCHOR_FRACTION)
+        )
         self._key = keys.get(epoch, create=True)
+        self._anchor_case_ids: set[str] = set()
+
+        if anchor_from is not None:
+            prior_sealed = {c.case_id for c in anchor_from.sealed_cases()}
+            curr_sealed = {c.case_id for c in self.sealed_cases()}
+            overlap = prior_sealed & curr_sealed
+            self._anchor_case_ids = overlap
+            if prior_sealed:
+                overlap_ratio = len(overlap) / len(prior_sealed)
+                if overlap_ratio < self.min_anchor_overlap:
+                    raise ValueError(
+                        f"reseal with <{self.min_anchor_overlap*100:.0f}% anchor overlap is refused: "
+                        f"got {overlap_ratio*100:.1f}% ({len(overlap)}/{len(prior_sealed)})"
+                    )
 
     def search_view(self) -> SearchView:
         return SearchView(self.corpus, self._key, self.fraction)
 
     def sealed_cases(self) -> List[FitnessCase]:
         return [c for c in self.corpus._iter_all() if _is_sealed(c.case_id, self._key, self.fraction)]
+
+    def anchor_cases(self) -> List[FitnessCase]:
+        """Sealed cases retained from the prior epoch to anchor cross-epoch score calibration."""
+        return [c for c in self.sealed_cases() if c.case_id in self._anchor_case_ids]
 
     def epoch_hash(self) -> str:
         """Commitment to this epoch's sealed membership without revealing it (for the fitness gate's epoch check)."""
