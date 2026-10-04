@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 
 @dataclass(frozen=True)
@@ -169,9 +169,18 @@ def epoch_series(records: Sequence[EpochRecord], compute_normalized: bool = True
     return gains, eta, [r.search - r.heldout for r in records]
 
 
-def classify_epochs(records: Sequence[EpochRecord], *, min_epochs: int = 4,
+# A perfectly monotone trend over n epochs has best-case exact one-sided p = 1/n! (Kendall):
+# n=4 -> 0.042 (cannot clear alpha 0.01), n=6 -> 0.0014. Phoebus, leg 20261004T192204Z.
+MIN_EPOCHS_ENV = "NOUGEN_RSI_MIN_EPOCHS"
+DEFAULT_MIN_EPOCHS = 6
+
+
+def classify_epochs(records: Sequence[EpochRecord], *, min_epochs: Optional[int] = None,
                     compute_normalized: bool = True) -> EpochVerdict:
     import os
+
+    if min_epochs is None:
+        min_epochs = int(os.environ.get(MIN_EPOCHS_ENV, DEFAULT_MIN_EPOCHS))
 
     gains, eta, gaps = epoch_series(list(records), compute_normalized)
     mean_gain = sum(gains) / len(gains) if gains else 0.0
