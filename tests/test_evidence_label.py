@@ -51,3 +51,49 @@ def test_claude_wire_applies_label():
     assert LABEL in wire
     wire = AgentPinger.cc_wire_lines("tok", "NouGenMsg from x: Pass 3 landed in #711.").decode()
     assert LABEL not in wire
+
+
+# --- referenced-but-false merge claims ------------------------------------------------------
+from nougen_shards.evidence_label import MISMATCH, check_merge_claims, pr_refs  # noqa: E402
+
+STATES = {("Who-Visions/NouGenShards", 711): "OPEN", ("Who-Visions/NouGenShards", 705): "MERGED"}
+
+
+def _lookup(repo, n):
+    return STATES.get((repo, n))
+
+
+def test_merge_claim_on_open_pr_is_flagged():
+    out = check_merge_claims("Snapshot fix landed in Who-Visions/NouGenShards#711.", _lookup)
+    assert MISMATCH in out and "Who-Visions/NouGenShards#711 is OPEN" in out
+
+
+def test_merge_claim_on_merged_pr_passes():
+    t = "Ledger merged: https://github.com/Who-Visions/NouGenShards/pull/705"
+    assert check_merge_claims(t, _lookup) == t
+
+
+def test_bare_ref_uses_default_repo():
+    out = check_merge_claims("PR #711 merged.", _lookup, default_repo="Who-Visions/NouGenShards")
+    assert MISMATCH in out
+    assert check_merge_claims("PR #711 merged.", _lookup) == "PR #711 merged."  # no repo known -> no guess
+
+
+def test_non_merge_claims_and_unknown_state_untouched():
+    assert check_merge_claims("PR #711 is open for review.", _lookup, "Who-Visions/NouGenShards").endswith("review.")
+    assert MISMATCH not in check_merge_claims("Merged Who-Visions/Other#1.", _lookup)
+
+
+def test_pr_refs_dedup_forms():
+    refs = list(pr_refs("o/r#5 and https://github.com/o/r/pull/6 and #77", default_repo="o/r"))
+    assert refs == [("o/r", 5), ("o/r", 6), ("o/r", 77)]
+
+
+def test_wire_check_is_opt_in(monkeypatch):
+    import nougen_shards.evidence_label as el
+    monkeypatch.setattr(el, "gh_pr_state", _lookup)
+    monkeypatch.setattr(el.check_merge_claims, "__defaults__", (_lookup, None))
+    text = "NouGenMsg from x: fix landed in Who-Visions/NouGenShards#711."
+    assert MISMATCH not in AgentPinger.cc_wire_lines("t", text).decode()
+    monkeypatch.setenv("NOUGEN_CLAIM_PR_CHECK", "1")
+    assert MISMATCH in AgentPinger.cc_wire_lines("t", text).decode()

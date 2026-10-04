@@ -286,8 +286,10 @@ class AgentPinger:
         """
         if not text:
             return text
-        from .evidence_label import label_claim
+        from .evidence_label import PR_CHECK_ENV, check_merge_claims, label_claim
         text = label_claim(text)
+        if os.environ.get(PR_CHECK_ENV) == "1":
+            text = check_merge_claims(text)
         upper = text.upper()
         if any(k in upper for k in ["CLAIM", "TASK", "BATON", "RELAY LEG"]):
             mandate = "\n⚡ [HARDCADE NATIVE MANDATE]: A CLAIM legally commits this lane to immediate physical engineering execution (source code commits, passing test suites, and verified artifacts). Bare ACKs, simulated progress, and stopping without landing proof are strictly prohibited."

@@ -11,7 +11,11 @@ It does not judge truth; it only makes the absence of evidence visible.
 """
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+from functools import lru_cache
+from typing import Callable, Optional
 
 LABEL = "[UNVERIFIED: no evidence ref]"
 
@@ -49,3 +53,51 @@ def label_claim(text: str) -> str:
     if has_claim(text) and not has_evidence(text):
         return f"{LABEL} {text}"
     return text
+
+
+# --- Referenced-but-false claims -------------------------------------------------------------
+# Experiment 2026-10-04 (leg 20261004T192122Z): only 4 of 32 completion claims lacked a ref, but
+# most false claims DID cite one ("#711 landed" while #711 was open). For merge-type claims that
+# cite a PR, compare against the PR's live state.
+
+MISMATCH = "[CLAIM MISMATCH]"
+PR_CHECK_ENV = "NOUGEN_CLAIM_PR_CHECK"   # "1" enables the live gh lookup on the wire (off by default: network)
+DEFAULT_REPO_ENV = "NOUGEN_CLAIM_DEFAULT_REPO"  # owner/repo for bare "#N" refs, e.g. Who-Visions/NouGenShards
+
+_MERGE_CLAIM = re.compile(r"\b(merged|landed|shipped)\b", re.IGNORECASE)
+_PR_REF = re.compile(r"(?:\b([\w.-]+/[\w.-]+)#(\d+)\b|github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)|(?<![\w/])(?:PR\s*)?#(\d{2,})\b)",
+                     re.IGNORECASE)
+
+
+@lru_cache(maxsize=256)
+def gh_pr_state(repo: str, number: int) -> Optional[str]:
+    """MERGED / OPEN / CLOSED via the gh CLI, or None if unavailable."""
+    try:
+        out = subprocess.run(["gh", "pr", "view", str(number), "--repo", repo, "--json", "state", "-q", ".state"],
+                             capture_output=True, text=True, timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    state = out.stdout.strip().upper()
+    return state or None
+
+
+def pr_refs(text: str, default_repo: Optional[str] = None):
+    for m in _PR_REF.finditer(text or ""):
+        repo = m.group(1) or m.group(3) or default_repo
+        num = m.group(2) or m.group(4) or m.group(5)
+        if repo and num:
+            yield repo, int(num)
+
+
+def check_merge_claims(text: str, lookup: Callable[[str, int], Optional[str]] = gh_pr_state,
+                       default_repo: Optional[str] = None) -> str:
+    """Append a mismatch note when a merge-type claim cites a PR whose live state is not MERGED."""
+    if not text or MISMATCH in text or not _MERGE_CLAIM.search(text):
+        return text
+    default_repo = default_repo or os.environ.get(DEFAULT_REPO_ENV)
+    notes = []
+    for repo, num in dict.fromkeys(pr_refs(text, default_repo)):
+        state = lookup(repo, num)
+        if state and state != "MERGED":
+            notes.append(f"{repo}#{num} is {state}")
+    return f"{text}\n{MISMATCH} " + "; ".join(notes) if notes else text
