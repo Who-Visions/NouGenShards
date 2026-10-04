@@ -24,6 +24,7 @@ if _appdata:
     _candidates.append(Path(_appdata) / "npm/node_modules/context-mode/start.mjs")
 
 _candidates.extend([
+    Path.home() / ".nougen/tools/context-mode/node_modules/context-mode/start.mjs",
     Path.home() / "AppData/Roaming/npm/node_modules/context-mode/start.mjs",
     Path("/usr/local/lib/node_modules/context-mode/start.mjs"),
     Path("/usr/lib/node_modules/context-mode/start.mjs")

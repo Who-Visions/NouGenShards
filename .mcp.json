@@ -55,10 +55,9 @@
       }
     },
     "nougen-ctx": {
-      "command": "npx",
+      "command": "node",
       "args": [
-        "-y",
-        "context-mode"
+        "bin/context-mode-mcp.mjs"
       ]
     },
     "nougen-open": {
