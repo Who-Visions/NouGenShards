@@ -55,11 +55,13 @@
       }
     },
     "nougen-ctx": {
-      "command": "npx",
+      "command": "node",
       "args": [
-        "-y",
-        "context-mode"
-      ]
+        "${NOUGEN_CTX_START:-${USERPROFILE}/.nougen/tools/context-mode/start.mjs}"
+      ],
+      "env": {
+        "CONTEXT_MODE_PLATFORM": "claude"
+      }
     },
     "nougen-open": {
       "command": ".venv/Scripts/nougen-open.exe",
