@@ -47,6 +47,31 @@ def sign_test(helped: int, hurt: int) -> float:
     return min(1.0, 2 * tail)
 
 
+def min_cases_for_sign_test(k: int, alpha: float = 0.05, two_sided: bool = True) -> int:
+    """Minimum paired cases required to reach significance at alpha / k under an all-win condition.
+
+    For one-sided: 2^-n <= alpha / k  => n >= ceil(log2(k / alpha))
+    For two-sided: 2^{-(n-1)} <= alpha / k => n >= 1 + ceil(log2(k / alpha))
+    """
+    if k <= 0:
+        return 0
+    if not 0 < alpha < 1:
+        raise ValueError("alpha must be in (0, 1)")
+    log2_val = math.log2(k / alpha)
+    needed = math.ceil(log2_val)
+    return (1 + needed) if two_sided else needed
+
+
+def effective_sample_size(n: int, rho_bar: float) -> float:
+    """Effective number of independent cases: n_eff = n / (1 + (n - 1) * rho_bar)."""
+    if n <= 0:
+        return 0.0
+    if rho_bar < -1.0 / max(1, n - 1) or rho_bar > 1.0:
+        raise ValueError("rho_bar must be valid correlation in admissible range")
+    denom = 1.0 + (n - 1) * rho_bar
+    return n / denom if denom > 0 else 0.0
+
+
 class MemoryUtilityLedger:
     """Evaluator-owned record of baseline and withheld-shard runs."""
 
@@ -160,8 +185,9 @@ class MemoryUtilityLedger:
         if not tested:
             return {}
         threshold = alpha / len(tested)
+        effective_min_n = max(min_n, min_cases_for_sign_test(len(tested), alpha, two_sided=True))
         return {
             sid: x.mv
             for sid, x in tested.items()
-            if x.n >= min_n and x.p_value < threshold
+            if x.n >= effective_min_n and x.p_value < threshold
         }
