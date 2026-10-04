@@ -91,7 +91,10 @@ class CodexPipeTests(unittest.TestCase):
         receipt = {'status': 'saved', 'file': 'retained.json', 'pipe_delivered': False}
         with patch.object(codex_pipe, 'deliver', return_value=receipt), \
              patch('builtins.open') as write:
-            self.assertEqual(AgentPinger.ping_codex('offline'), receipt)
+            result = AgentPinger.ping_codex('offline')
+            self.assertIn('codex_limits', result)
+            result.pop('codex_limits')
+            self.assertEqual(result, receipt)
             write.assert_not_called()
 
     def test_banner_source_cannot_inject_markdown_lines(self):
