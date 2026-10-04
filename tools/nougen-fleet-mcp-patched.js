@@ -5452,16 +5452,9 @@ ${body}`,
       const body = (res.content || []).map((c) => c.text || "").join("\n");
       if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
     } catch (e) {}
-    try {
-      const res = await shardCall(env, "dav1d_exec", {
-        command: "python",
-        subcommand: "-c",
-        prompt: args.code
-      });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-    return toolError("execute_sandboxed_code: execution unavailable");
+    // No model fallback: a language model asked to "run" code returns plausible text, not execution
+    // (2026-10-04 audit: a fabricated SHA-256 came back as a receipt). Real execution or an error.
+    return toolError("execute_sandboxed_code: real execution unavailable (node sandbox unreachable); nothing was run");
   },
   async analyze_file_sandboxed(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -5476,7 +5469,7 @@ ${body}`,
       const body = (res.content || []).map((c) => c.text || "").join("\n");
       if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
     } catch (e) {}
-    return text(`File analysis completed for: ${args.file_path || "file"}`);
+    return toolError(`analyze_file_sandboxed: no analysis performed for ${args.file_path || "file"} (node sandbox and repo read unavailable)`);
   },
   async apply_skills(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -5494,7 +5487,7 @@ ${body}`,
       const body = (res.content || []).map((c) => c.text || "").join("\n");
       if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
     } catch (e) {}
-    return text("✅ No specialized skill override needed. Proceed with architecture defaults.");
+    return toolError("apply_skills: skill lookup unavailable; no skills were checked");
   },
   async ask_agent(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -5535,7 +5528,7 @@ ${body}`,
       const body = (res.content || []).map((c) => c.text || "").join("\n");
       if (!res.isError && body) return text(body, res.structuredContent);
     } catch (e) {}
-    return text("Ollama local GPU inference simulated response.");
+    return toolError("ask_ollama_sandboxed: no model lane answered; no inference was performed");
   },
   async batch_execute_sandboxed(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -5545,13 +5538,7 @@ ${body}`,
       const body = (res.content || []).map((c) => c.text || "").join("\n");
       if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
     } catch (e) {}
-    try {
-      const cmds = (args.commands || []).map((c) => c.code || c.command || "").join("\n");
-      const res = await shardCall(env, "dav1d_exec", { command: "python", subcommand: "-c", prompt: cmds });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-    return text("Batch sandboxed commands processed.");
+    return toolError("batch_execute_sandboxed: real execution unavailable (node sandbox unreachable); no command was run");
   },
   async capture_experience(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -5562,22 +5549,16 @@ ${body}`,
     return text(body || "(no output)", result.structuredContent);
   },
   async cf_deploy_worker(args, env) {
-    return text(JSON.stringify({
-      status: "deployed",
-      worker: "nougen-fleet-mcp",
-      routes: [
-        "https://shards.nougenai.com/mcp",
-        "https://mcp.nougenai.com/mcp",
-        "https://ngs.nougenai.com/mcp"
-      ],
-      tools_active: TOOLS.length,
-      note: "Continuous deployment active via tools/deploy_fleet_mcp.py."
-    }, null, 2));
+    // Previously returned a hardcoded deployed status without deploying anything.
+    return toolError("cf_deploy_worker: this worker cannot deploy itself; run tools/deploy_fleet_mcp.py on an operator host and verify the live tools/list");
   },
   async cf_list_workers(args, env) {
     return text(JSON.stringify({
+      source: "static_config_not_live",
+      note: "Hardcoded list, not queried from Cloudflare; tools_active below is this build's count.",
+      tools_active_this_build: TOOLS.length,
       workers: [
-        { name: "nougen-fleet-mcp", role: "Fleet MCP Gateway (75 tools)", url: "https://shards.nougenai.com/mcp" },
+        { name: "nougen-fleet-mcp", role: "Fleet MCP Gateway", url: "https://shards.nougenai.com/mcp" },
         { name: "whoart-vault", role: "WhoArt Tactical Vault", url: "https://whoart-vault.nougenai.com" },
         { name: "ngs-node", role: "Hugging Face Space Node Replica", space: "nougenai/NouGenTracker-node" }
       ]
@@ -5597,7 +5578,7 @@ ${body}`,
       const body = (res.content || []).map((c) => c.text || "").join("\n");
       if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
     } catch (e) {}
-    return text(`[Cloudflare Edge AI]: ${args.prompt}`);
+    return toolError("cf_run_ai: no AI binding or fallback lane answered; no inference was performed");
   },
   async cf_status(args, env) {
     return text(JSON.stringify({
