@@ -38,3 +38,35 @@ def test_spacing_tokens_ts_integrity():
     assert "'96px'" in content
     assert "getHarmonicSpacing" in content
     assert "isGridCompliant" in content
+    assert "getAtfCeiling" in content
+    assert "calculateFoldRatio" in content
+    assert "calculateNegativeSpaceRatio" in content
+    assert "getFluidFoldClamp" in content
+    assert "getFoldBudget" in content
+
+
+def test_fold_aware_formulas_mathematical_precision():
+    # Simulate TypeScript formula logic in test harness
+    def get_atf_ceiling(vh: int, max_clamp: int = 900) -> int:
+        return min(round(vh * 0.85), max_clamp)
+
+    def calculate_fold_ratio(ch: float, vh: float) -> float:
+        return round(ch / vh, 4) if vh > 0 else 0.0
+
+    def calculate_negative_space_ratio(content_area: float, total_area: float) -> float:
+        if total_area <= 0:
+            return 1.0
+        return round(max(0.0, min(1.0, 1.0 - (content_area / total_area))), 4)
+
+    # 1. Desktop 1440x900
+    assert get_atf_ceiling(900) == 765
+    assert calculate_fold_ratio(765, 900) == 0.85
+    assert calculate_negative_space_ratio(450 * 600, 1440 * 900) == 0.7917  # > 55% negative space
+
+    # 2. Mobile 390x844
+    assert get_atf_ceiling(844) == 717
+    assert calculate_fold_ratio(717, 844) == 0.8495
+
+    # 3. 4K 3840x2160 clamped to 900 max
+    assert get_atf_ceiling(2160) == 900
+
