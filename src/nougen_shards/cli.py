@@ -3454,11 +3454,52 @@ def _relay_registry_candidates():
             yield here.parents[depth] / "NouGenRelay"
 
 
+RELAY_REGISTRY_BRANCH = os.environ.get("NOUGEN_RELAY_BRANCH", "main")
+
+
+def _checkout_branch(repo: Path):
+    """Current branch of a checkout or worktree from .git/HEAD (no subprocess); None if detached/unknown."""
+    git = repo / ".git"
+    try:
+        if git.is_file():  # worktree: "gitdir: <path>"
+            text = git.read_text(encoding="utf-8").strip()
+            if not text.startswith("gitdir:"):
+                return None
+            gitdir = Path(text.split(":", 1)[1].strip())
+            git = gitdir if gitdir.is_absolute() else (repo / gitdir)
+        head = (git / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return head.rsplit("/", 1)[-1] if head.startswith("ref: refs/heads/") else None
+
+
 def find_relay_registry():
-    """Return the NouGenRelay clone that holds a `.handoffs/` registry, or None."""
+    """Return the NouGenRelay clone that holds a `.handoffs/` registry, or None.
+
+    An explicit $NOUGEN_RELAY_DIR / $FLEET_RELAY_DIR always wins. Otherwise a candidate checked
+    out on the registry branch ($NOUGEN_RELAY_BRANCH, default main) is preferred: on 2026-10-04 the
+    fallback was the installed nougen_relay package's clone, sitting on a feature branch ~4400
+    commits behind main, so every leg created through the MCP connector was invisible to the CLI
+    ("no matching handoff record found"). A non-main fallback is still returned, but loudly.
+    """
+    explicit = {Path(os.environ[v].strip()).expanduser() for v in RELAY_DIR_ENV_VARS if os.environ.get(v, "").strip()}
+    fallback = None
     for cand in _relay_registry_candidates():
-        if (cand / ".handoffs").is_dir() and (cand / "src" / "nougen_relay").is_dir():
+        if not ((cand / ".handoffs").is_dir() and (cand / "src" / "nougen_relay").is_dir()):
+            continue
+        if cand in explicit:
             return cand
+        branch = _checkout_branch(cand)
+        if branch == RELAY_REGISTRY_BRANCH:
+            return cand
+        if fallback is None:
+            fallback = (cand, branch)
+    if fallback is not None:
+        cand, branch = fallback
+        print(f"WARNING: relay registry {cand} is on branch {branch or 'DETACHED'!r}, not "
+              f"{RELAY_REGISTRY_BRANCH!r}; legs created elsewhere may be missing. "
+              f"Set NOUGEN_RELAY_DIR to a {RELAY_REGISTRY_BRANCH} checkout.", file=sys.stderr)
+        return cand
     return None
 
 
