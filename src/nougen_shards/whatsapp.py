@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -143,3 +144,26 @@ def handle_webhook(body: bytes, signature: str, app_secret: str,
         sink(m)
         n += 1
     return n
+
+
+def inbox_path() -> str:
+    home = os.environ.get("NOUGEN_HOME") or os.path.join(os.path.expanduser("~"), ".nougen")
+    return os.path.join(home, "whatsapp", "inbox.jsonl")
+
+
+def jsonl_sink(path: Optional[str] = None) -> Callable[[Inbound], None]:
+    """Append each inbound message to a local JSONL inbox as DATA.
+
+    Third-party text is never written into the relay or any prompt path; a
+    consumer reads the inbox deliberately and treats it as untrusted.
+    """
+    target = path or inbox_path()
+
+    def _write(m: Inbound) -> None:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "wa_id": m.wa_id, "id": m.message_id, "kind": m.kind,
+                "text": m.text, "ts": m.timestamp,
+            }) + "\n")
+    return _write

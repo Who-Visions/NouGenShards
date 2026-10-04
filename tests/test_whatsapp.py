@@ -67,3 +67,36 @@ def test_send_text_blocked_outside_window_then_allowed_inside():
         c.send_text("15550001111", "late")
     c.send_template("15550001111", "hello")  # templates ignore the window
     assert sent[-1][3]["type"] == "template"
+
+
+def _client(monkeypatch, tmp_path, secrets):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    import app as node
+    monkeypatch.setattr(node, "_wa_secret", lambda n: secrets.get(n))
+    monkeypatch.setattr(node, "_WA_WINDOWS", None)
+    monkeypatch.setenv("NOUGEN_HOME", str(tmp_path))
+    return TestClient(node.app)
+
+
+def test_route_handshake_and_fail_closed(monkeypatch, tmp_path):
+    q = {"hub.mode": "subscribe", "hub.verify_token": "vt", "hub.challenge": "99"}
+    c = _client(monkeypatch, tmp_path, {})
+    assert c.get("/webhooks/whatsapp", params=q).status_code == 503
+    c = _client(monkeypatch, tmp_path, {"WHATSAPP_VERIFY_TOKEN": "vt"})
+    r = c.get("/webhooks/whatsapp", params=q)
+    assert r.status_code == 200 and r.text == "99"
+    assert c.get("/webhooks/whatsapp", params={**q, "hub.verify_token": "x"}).status_code == 403
+
+
+def test_route_inbound_signed_lands_in_inbox_unsigned_rejected(monkeypatch, tmp_path):
+    c = _client(monkeypatch, tmp_path, {"WHATSAPP_APP_SECRET": SECRET})
+    body = json.dumps(_payload(text="ping")).encode()
+    assert c.post("/webhooks/whatsapp", content=body).status_code == 403
+    r = c.post("/webhooks/whatsapp", content=body,
+               headers={"X-Hub-Signature-256": _sign(body)})
+    assert r.status_code == 200 and r.json() == {"received": 1}
+    lines = (tmp_path / "whatsapp" / "inbox.jsonl").read_text().splitlines()
+    assert json.loads(lines[0])["text"] == "ping"
+    c2 = _client(monkeypatch, tmp_path, {})
+    assert c2.post("/webhooks/whatsapp", content=body).status_code == 503
