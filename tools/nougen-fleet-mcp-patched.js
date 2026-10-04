@@ -603,6 +603,49 @@ async function latestFreshness(env, headSha, latestId) {
   }
 }
 __name(latestFreshness, "latestFreshness");
+// ---- NouGenMsg cursor pagination ------------------------------------------
+// nougenmsg_latest used to slice the newest 25 legs with no cursor, so no caller
+// could read message 26+ (2026-10-04 RELAY DOWN brief). Pages are pinned to the
+// registry commit of the first page and resume after the last id returned, so
+// appends during paging never shift, skip or duplicate entries. Order is
+// orderLegIds: UTC stamp desc, ties broken by id desc (deterministic).
+var MSG_PAGE_MAX = 100;
+function encodeMsgCursor(head, lastId) {
+  return "m1:" + head + ":" + btoa(unescape(encodeURIComponent(lastId))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+__name(encodeMsgCursor, "encodeMsgCursor");
+function decodeMsgCursor(cursor) {
+  const m = typeof cursor === "string" ? /^m1:([a-f0-9]{40,64}):([A-Za-z0-9_-]+)$/i.exec(cursor) : null;
+  if (!m) return null;
+  try {
+    const b64 = m[2].replace(/-/g, "+").replace(/_/g, "/");
+    const lastId = decodeURIComponent(escape(atob(b64 + "===".slice((b64.length + 3) % 4))));
+    return lastId ? { head: m[1], lastId } : null;
+  } catch (_) {
+    return null;
+  }
+}
+__name(decodeMsgCursor, "decodeMsgCursor");
+// ids: full snapshot listing, newest first. Returns {pageIds, nextCursor, complete} or {error}.
+function paginateLegIds(ids, head, cursor, limit) {
+  const size = Math.min(Math.max(Number.isInteger(limit) ? limit : 25, 1), MSG_PAGE_MAX);
+  let start = 0;
+  if (cursor !== void 0 && cursor !== null) {
+    const c = decodeMsgCursor(cursor);
+    if (!c) return { error: "invalid nougenmsg cursor; restart without cursor" };
+    if (!head || c.head.toLowerCase() !== String(head).toLowerCase()) {
+      return { error: "nougenmsg cursor snapshot does not match this registry listing; restart without cursor" };
+    }
+    const at = ids.indexOf(c.lastId);
+    if (at < 0) return { error: "nougenmsg cursor points at an id not in its snapshot; restart without cursor" };
+    start = at + 1;
+  }
+  const pageIds = ids.slice(start, start + size);
+  const more = start + pageIds.length < ids.length;
+  if (more && !head) return { pageIds, nextCursor: null, complete: false, reason: "no registry head sha; safe pagination unavailable" };
+  return { pageIds, nextCursor: more ? encodeMsgCursor(head, pageIds[pageIds.length - 1]) : null, complete: !more };
+}
+__name(paginateLegIds, "paginateLegIds");
 async function listLegs(env, revision = env.RELAY_BRANCH) {
   // The contents API caps a directory listing at 1000 entries and returns them
   // ALPHABETICALLY. Leg files are timestamp-named, so once the registry passes
@@ -1692,11 +1735,12 @@ var TOOLS = [
   {
     name: "nougenmsg_latest",
     title: "Latest NouGen Messages",
-    description: "Read the newest inter-agent and fleet messages from the NouGenMsg bus (relay legs), newest first.",
+    description: "Read NouGenMsg bus messages (relay legs), newest first, with snapshot-pinned cursor pagination. Returns complete, next_cursor, snapshot_head_sha, ordering_basis, checked_utc.",
     inputSchema: {
       type: "object",
       properties: {
-        limit: { type: "integer", default: 10, description: "Maximum messages to return (max 25)." }
+        limit: { type: "integer", minimum: 1, maximum: 100, default: 10, description: "Page size (1-100)." },
+        cursor: { type: "string", description: "next_cursor from the previous page. Pages are pinned to the first page's registry snapshot; keep paging until complete is true. Absence is unproven until complete is true." }
       },
       additionalProperties: false
     },
@@ -3843,9 +3887,20 @@ var HANDLERS = {
   // implementation existed only in worker.live.js, while wrangler deploys
   // worker.js, so clients received "unknown tool" for both readers.
   async nougenmsg_latest(args, env) {
-    const limit = Math.min(Math.max(args.limit ?? 10, 1), 25);
-    const { ids } = await listLegs(env);
-    const settled = await mapPooled(ids.slice(0, limit), 8, (id) => readLeg(env, id).then(({ rec }) => rec));
+    const limit = Number.isInteger(args.limit) ? args.limit : 10;
+    const decoded = args.cursor !== void 0 ? decodeMsgCursor(args.cursor) : null;
+    if (args.cursor !== void 0 && !decoded) return toolError("invalid nougenmsg cursor; restart without cursor");
+    let listing;
+    try {
+      listing = await listLegs(env, decoded ? decoded.head : env.RELAY_BRANCH);
+    } catch (err) {
+      if (decoded) return toolError(`could not resume nougenmsg snapshot ${decoded.head}: ${err.message || err}`);
+      throw err;
+    }
+    const { ids, headSha, checkedUtc, listingComplete = true } = listing;
+    const pg = paginateLegIds(ids, headSha, args.cursor, limit);
+    if (pg.error) return toolError(pg.error);
+    const settled = await mapPooled(pg.pageIds, 8, (id) => readLeg(env, id, headSha || env.RELAY_BRANCH).then(({ rec }) => rec));
     const messages = [];
     for (const r of settled) {
       if (!r.ok) continue;
@@ -3858,7 +3913,18 @@ var HANDLERS = {
     for (const m of messages) {
       lines.push("  * [" + (m.created_utc || "").slice(0, 19) + "] [" + m.origin_machine + "/" + m.origin_agent + "] -> [" + m.destination + "]: " + String(m.body).replace(/\n/g, " ").slice(0, 100));
     }
-    return text(lines.join("\n"), { complete: settled.every((r) => r.ok), total_messages: messages.length, messages, ...orderingMeta(ids[0], messages[0]?.created_utc) });
+    const unreadable = settled.filter((r) => !r.ok).map((r) => ({ id: r.item, error: r.error }));
+    if (pg.nextCursor) lines.push("", "Continue with cursor `" + pg.nextCursor + "` until complete is true.");
+    return text(lines.join("\n"), {
+      messages, returned: messages.length, total_records: ids.length,
+      complete: pg.complete && listingComplete && unreadable.length === 0,
+      next_cursor: pg.nextCursor, unreadable,
+      snapshot_head_sha: headSha, checked_utc: checkedUtc,
+      ...(pg.reason ? { incomplete_reason: pg.reason } : {}),
+      ...(!listingComplete ? { listing_warning: "GitHub did not provide a complete .handoffs listing" } : {}),
+      ...orderingMeta(pg.pageIds[0], messages[0]?.created_utc),
+      ordering_basis: "leg_id_utc_stamp_desc_then_id_desc",
+    });
   },
   async nougenmsg_inbox(args, env) {
     const limit = Math.min(Math.max(args.limit ?? 10, 1), 25);
@@ -6080,7 +6146,7 @@ async function handleMcp(request, env, origin) {
   return json(Array.isArray(body) ? replies : replies[0]);
 }
 __name(handleMcp, "handleMcp");
-var __test__ = { summarizeHit,  summaryOn,  summaryReply,  clientFromUserAgent,  toolIsWrite,  laneIsReadOnly,  fleetKeys,  authenticate,  laneForRedirect,  HANDLERS, TOOLS, orderLegIds, griotRows, griotEra, griotInEra, griotFlags, griotKey, shardCall, FEDERATION_CIRCUIT };
+var __test__ = { summarizeHit,  summaryOn,  summaryReply,  clientFromUserAgent,  toolIsWrite,  laneIsReadOnly,  fleetKeys,  authenticate,  laneForRedirect,  HANDLERS, TOOLS, orderLegIds, paginateLegIds, encodeMsgCursor, decodeMsgCursor, griotRows, griotEra, griotInEra, griotFlags, griotKey, shardCall, FEDERATION_CIRCUIT };
 // ---- /openapi.json -------------------------------------------------------
 // The Cloudflare routes for /openapi.json and /openapi* have pointed at this
 // worker since before 2026-09-01, but the switch below had no case for them,
