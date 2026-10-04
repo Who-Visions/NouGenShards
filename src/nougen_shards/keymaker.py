@@ -962,15 +962,209 @@ def migrate_to_encrypted() -> int:
         conn.commit()
     finally:
         conn.close()
-    if migrated:
-        _export_to_csv()
     return migrated
+
+
+# Canonical environment variable aliases for automatic repo configuration
+ENV_KEY_ALIASES: dict[str, list[str]] = {
+    "GEMINI_API_KEY": ["GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_KEY"],
+    "GOOGLE_API_KEY": ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_KEY"],
+    "OPENAI_API_KEY": ["OPENAI_API_KEY", "OPENAI_KEY"],
+    "ANTHROPIC_API_KEY": ["ANTHROPIC_API_KEY", "ANTHROPIC_KEY", "CLAUDE_KEY"],
+    "HUGGINGFACE_API_KEY": ["HUGGINGFACE_API_KEY", "HF_TOKEN", "HF_API_KEY", "HUGGING_FACE_HUB_TOKEN"],
+    "HUGGING_FACE_HUB_TOKEN": ["HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY"],
+    "HF_TOKEN": ["HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY"],
+    "OPENROUTER_API_KEY": ["OPENROUTER_API_KEY", "OPENROUTER_KEY"],
+    "ARLIAI_API_KEY": ["ARLIAI_API_KEY", "ARLAI_API_KEY"],
+    "ARLAI_API_KEY": ["ARLIAI_API_KEY", "ARLAI_API_KEY"],
+    "GITHUB_TOKEN": ["GITHUB_TOKEN", "GITHUB_PAT", "GH_TOKEN", "GITHUB_PAT_NOUGENAI"],
+    "GH_TOKEN": ["GITHUB_TOKEN", "GITHUB_PAT", "GH_TOKEN"],
+    "CLOUDFLARE_API_TOKEN": ["CLOUDFLARE_API_TOKEN_NOUGEN_FULL", "CLOUDFLARE_API_TOKEN"],
+    "FLEET_KEY": ["FLEET_KEY", "FLEET_KEY_OUTPOST"],
+}
+
+DEFAULT_ENV_VARS = [
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "HUGGINGFACE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "ARLIAI_API_KEY",
+    "GITHUB_TOKEN",
+    "FLEET_KEY",
+]
+
+
+def resolve_secret_for_var(var_name: str) -> Optional[str]:
+    """Resolves secret value for a requested environment variable using aliases & providers."""
+    # 1. Direct get_secret
+    val = get_secret(var_name)
+    if val:
+        return val
+    # 2. Key aliases
+    for alias in ENV_KEY_ALIASES.get(var_name, []):
+        val = get_secret(alias)
+        if val:
+            return val
+    # 3. Exact case-insensitive match in providers
+    for p in list_providers():
+        if p.upper() == var_name.upper():
+            val = get_secret(p)
+            if val:
+                return val
+    return None
+
+
+def ensure_repo_gitignore(repo_path: Path) -> bool:
+    """Guarantees .env and secrets are safely ignored in repository .gitignore."""
+    gitignore_p = repo_path / ".gitignore"
+    needed_rules = [".env", ".env.*", "!.env.example", "*.local"]
+    
+    if not gitignore_p.exists():
+        content = "\n".join(needed_rules) + "\n"
+        gitignore_p.write_text(content, encoding="utf-8")
+        return True
+        
+    current = gitignore_p.read_text(encoding="utf-8", errors="ignore")
+    lines = [line.strip() for line in current.splitlines()]
+    appended = []
+    
+    if ".env" not in lines and not any(line == ".env" or line == "/.env" for line in lines):
+        appended.append(".env")
+    if ".env.*" not in lines and not any(line.startswith(".env.") for line in lines):
+        appended.append(".env.*")
+    if "!.env.example" not in lines:
+        appended.append("!.env.example")
+        
+    if appended:
+        prefix = "\n" if not current.endswith("\n") else ""
+        gitignore_p.write_text(current + prefix + "\n".join(appended) + "\n", encoding="utf-8")
+        return True
+    return False
+
+
+def auto_env_repo(repo_dir: str | Path, force: bool = False) -> dict[str, Any]:
+    """Automatically populates or updates .env for a repository from Keymaker vault secrets.
+    
+    Discovers required/suggested variables from:
+    1. .env.example / .env.template
+    2. Existing .env keys
+    3. Default fleet intelligence keys (Gemini, OpenRouter, ArliAI, HuggingFace, etc.)
+    
+    Ensures .gitignore protects .env prior to writing.
+    """
+    repo_path = Path(repo_dir).resolve()
+    if not repo_path.is_dir():
+        raise FileNotFoundError(f"Repo directory does not exist: {repo_path}")
+        
+    # Safety guard: ensure .gitignore protects .env
+    gitignore_updated = ensure_repo_gitignore(repo_path)
+    
+    # 1. Detect template variables
+    target_vars: set[str] = set()
+    templates = [".env.example", ".env.template", "env.example", ".env.sample"]
+    found_template = None
+    for tmpl in templates:
+        p = repo_path / tmpl
+        if p.is_file():
+            found_template = tmpl
+            try:
+                for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, _ = line.split("=", 1)
+                        clean_k = k.strip()
+                        if clean_k and clean_k.isidentifier():
+                            target_vars.add(clean_k)
+            except Exception:
+                pass
+            break
+            
+    # Always merge standard fleet vars
+    target_vars.update(DEFAULT_ENV_VARS)
+    
+    # Read existing .env if present
+    env_p = repo_path / ".env"
+    existing_pairs: dict[str, str] = {}
+    if env_p.exists():
+        try:
+            for line in env_p.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    existing_pairs[k.strip()] = v.strip()
+        except Exception:
+            pass
+            
+    populated: dict[str, str] = {}
+    missing_vault: list[str] = []
+    
+    for var in sorted(target_vars):
+        if not force and var in existing_pairs and existing_pairs[var] and not existing_pairs[var].startswith("your_") and not existing_pairs[var].startswith("sk-..."):
+            continue  # Keep existing valid setting
+        val = resolve_secret_for_var(var)
+        if val:
+            populated[var] = val
+        else:
+            missing_vault.append(var)
+            
+    # Merge existing and newly resolved
+    final_pairs = dict(existing_pairs)
+    final_pairs.update(populated)
+    
+    lines = [
+        "# Auto-generated by NouGen Keymaker",
+        f"# Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "# Protected by .gitignore — NEVER commit secrets to source control",
+        ""
+    ]
+    for k, v in sorted(final_pairs.items()):
+        lines.append(f"{k}={v}")
+    lines.append("")
+    
+    env_p.write_text("\n".join(lines), encoding="utf-8")
+    
+    return {
+        "repo": repo_path.name,
+        "path": str(env_p),
+        "populated_count": len(populated),
+        "populated_keys": list(populated.keys()),
+        "missing_vault": missing_vault,
+        "gitignore_updated": gitignore_updated,
+        "template_detected": found_template
+    }
+
+
+def auto_env_all(outpost_dir: str | Path | None = None, force: bool = False) -> list[dict[str, Any]]:
+    """Sweeps all git repositories under Outpost and auto-envs them safely."""
+    if outpost_dir is None:
+        env_val = os.environ.get("OUTPOST_DIR")
+        target_dir = Path(env_val).resolve() if env_val else (Path.home() / "Outpost")
+    else:
+        target_dir = Path(outpost_dir).resolve()
+    outpost_path = target_dir
+    results = []
+    
+    for item in sorted(outpost_path.iterdir()):
+        if item.is_dir() and not item.name.startswith("."):
+            if (item / ".git").is_dir():
+                try:
+                    res = auto_env_repo(item, force=force)
+                    results.append(res)
+                except Exception as e:
+                    results.append({
+                        "repo": item.name,
+                        "error": str(e)
+                    })
+    return results
+
 
 
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
-        print("Usage: python keymaker.py init | add <key> <value> | sa <json_content> | migrate")
+        print("Usage: python keymaker.py init | add <key> <value> | sa <json_content> | migrate | auto-env [<repo_path> | --all]")
         sys.exit(1)
 
     CMD = sys.argv[1]
@@ -984,5 +1178,16 @@ if __name__ == "__main__":
         ingest_secret(sys.argv[2], sys.argv[3])
     elif CMD == "sa" and len(sys.argv) == 3:
         ingest_service_account(sys.argv[2])
+    elif CMD == "auto-env":
+        target = sys.argv[2] if len(sys.argv) > 2 else "."
+        if target == "--all":
+            results = auto_env_all()
+            print(f"[*] Auto-enved {len(results)} Outpost repositories.")
+            for r in results:
+                print(f"  - {r.get('repo')}: {r.get('populated_count', 0)} keys populated")
+        else:
+            res = auto_env_repo(target)
+            print(f"[*] Auto-enved {res['repo']}: {res['populated_count']} keys written to {res['path']}")
     else:
         print("Invalid command or arguments.")
+
