@@ -1,6 +1,6 @@
 import pytest
 
-from nougen_shards.calibration_ledger import CalibrationLedger, ForecastLocked, weighted_consensus
+from nougen_shards.calibration_ledger import CalibrationLedger, ForecastLocked, effective_lanes, weighted_consensus
 
 
 @pytest.fixture
@@ -78,3 +78,30 @@ def test_weighted_consensus():
     # Two half-weight correlated votes equal one full independent vote.
     assert weighted_consensus({"a": 0.6, "b": 0.6}, {"a": 0.5, "b": 0.5}) == pytest.approx(one)
     assert weighted_consensus({"a": 1.0}, {"a": 0.1}) == 1.0
+
+
+def test_effective_lanes_collapses_identical_lanes(ledger):
+    for i in range(20):
+        ok = i % 3 != 0
+        for lane in "abc":
+            ledger.forecast(lane, f"n{i}", 0.6)
+        ledger.resolve(f"n{i}", {"a": ok, "b": ok, "c": ok})
+    n_eff, rho = effective_lanes(ledger)
+    assert rho == pytest.approx(1.0)
+    assert n_eff == pytest.approx(1.0)
+
+
+def test_effective_lanes_independent_lanes_count_fully(ledger):
+    # a and b disagree half the time with balanced outcomes -> phi = 0.
+    pattern = [(1, 1), (1, 0), (0, 1), (0, 0)] * 5
+    for i, (x, y) in enumerate(pattern):
+        for lane in "ab":
+            ledger.forecast(lane, f"m{i}", 0.5)
+        ledger.resolve(f"m{i}", {"a": bool(x), "b": bool(y)})
+    n_eff, rho = effective_lanes(ledger)
+    assert rho == pytest.approx(0.0)
+    assert n_eff == pytest.approx(2.0)
+
+
+def test_effective_lanes_empty(ledger):
+    assert effective_lanes(ledger) == (0.0, 0.0)
