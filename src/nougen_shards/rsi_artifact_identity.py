@@ -1,8 +1,10 @@
 """Artifact-bound, authenticated decisions for a trusted evaluator service.
 
 Candidate code must not have access to this service's signing key or ledger.
-Use evaluator-owned immutable snapshots: filesystem checks here reject links
-and observed changes but are not a sandbox against concurrent hostile writers.
+evaluate_artifact copies the candidate into an evaluator-owned snapshot, hashes the COPY for
+the receipt and runs the evaluator on the copy only, so a concurrent writer on the source
+cannot change what was scored (CWE-367). Residual: code running as the evaluator's own uid
+can mutate and restore the snapshot undetected; that needs a separate uid or read-only mount.
 Ed25519 authenticates the evaluator's assertion, not the correctness of its test.
 """
 
@@ -21,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey, Ed25519PublicKey,
 )
 
+from .rsi_artifact_snapshot import evaluator_readonly_snapshot
 from .rsi_evaluation_ledger import EvaluationContext, EvaluationLedger
 
 
@@ -145,17 +148,20 @@ def evaluate_artifact(
     Errors or mutations leave the reservation spent; no decision is signed.
     """
     key = _key(signing_key)
-    candidate = artifact_hash(root)
-    reservation = ledger.reserve(context, candidate, lineage)
-    if reservation.cached:
-        decision = reservation.decision
-    else:
-        decision = evaluator(Path(root))
-        if type(decision) is not bool:
-            raise ValueError("Evaluator must return only a boolean decision")
-        if artifact_hash(root) != candidate:
-            raise ValueError("Artifact changed during evaluation")
-        ledger.finish(reservation, decision)
+    _checked_stat(Path(root))  # a link or reparse-point root is refused before anything is copied
+    # Snapshot before reserving: a refused tree (symlink, hardlink, FIFO) never spends a query.
+    with evaluator_readonly_snapshot(root) as (snapshot, _digest):
+        candidate = artifact_hash(snapshot)
+        reservation = ledger.reserve(context, candidate, lineage)
+        if reservation.cached:
+            decision = reservation.decision
+        else:
+            decision = evaluator(snapshot)
+            if type(decision) is not bool:
+                raise ValueError("Evaluator must return only a boolean decision")
+            if artifact_hash(snapshot) != candidate:
+                raise ValueError("Artifact changed during evaluation")
+            ledger.finish(reservation, decision)
     signature = key.sign(_payload(reservation.receipt_id, context, candidate,
                                   decision)).hex()
     return SignedDecision(reservation.receipt_id, context, candidate, decision, signature)
