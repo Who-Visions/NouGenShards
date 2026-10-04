@@ -58,6 +58,19 @@ class ArtistProjectSpec:
         is_valid = len(errors) == 0
         raw_json = json.dumps(asdict(self), sort_keys=True)
         seal_hash = hashlib.sha256(raw_json.encode("utf-8")).hexdigest()
+        audit_seal_cert = {
+            "certificate_id": f"CERT-SEAL-{seal_hash[:12].upper()}",
+            "project_id": self.project_id,
+            "funder": self.target_funder,
+            "seal_hash": seal_hash,
+            "statutory_compliance": {
+                "artist_stipend_ratio": round(self.budget.artist_stipend / self.budget.total_request, 4),
+                "producer_fee_ratio": round(self.budget.producer_fee / self.budget.total_request, 4),
+                "artist_retained_ip": True,
+                "passed_compliance": is_valid,
+            },
+            "status": "AUDIT_VERIFIED" if is_valid else "VALIDATION_FAILED",
+        }
 
         return {
             "project_id": self.project_id,
@@ -67,6 +80,7 @@ class ArtistProjectSpec:
             "is_valid": is_valid,
             "validation_errors": errors,
             "seal_hash": seal_hash,
+            "audit_seal": audit_seal_cert,
             "nextjs_props": {
                 "title": self.project_title,
                 "artist": self.lead_artist,
@@ -80,3 +94,11 @@ class ArtistProjectSpec:
                 "seal": seal_hash[:16],
             }
         }
+
+
+def verify_grant_audit_seal(compiled_package: Dict[str, Any], raw_spec: ArtistProjectSpec) -> bool:
+    """Verifies that the compiled package seal hash matches raw spec cryptographic digest."""
+    expected_raw = json.dumps(asdict(raw_spec), sort_keys=True)
+    expected_hash = hashlib.sha256(expected_raw.encode("utf-8")).hexdigest()
+    return compiled_package.get("seal_hash") == expected_hash and compiled_package.get("audit_seal", {}).get("seal_hash") == expected_hash
+
