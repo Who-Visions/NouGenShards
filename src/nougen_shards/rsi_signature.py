@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 
 @dataclass(frozen=True)
@@ -126,3 +126,78 @@ def evaluate_rsi_signature(
         sample_size=n,
         reason=reason.strip("; "),
     )
+
+
+# --- Verdicts on raw epoch records (leg 20261004T184219Z) -----------------------------------
+# evaluate_rsi_signature above takes a precomputed eta series and a fixed 0.05 gap threshold.
+# classify_epochs derives eta from the raw evaluator records, optionally normalizes by compute,
+# uses a bootstrap CI for the gap slope too, and separates accumulation from acceleration.
+
+GAP_CI_ENV = "NOUGEN_RSI_GAP_SLOPE_MIN"  # optional extra floor on the gap slope's CI lower bound
+
+
+@dataclass(frozen=True)
+class EpochRecord:
+    epoch: str
+    experience: int      # verified fitness-corpus cases (#706)
+    heldout: float       # sealed leave-one-kind-out pass rate
+    search: float        # lane-visible pass rate
+    compute: float = 1.0  # ledger-receipted compute (#705), any positive unit
+
+
+@dataclass
+class EpochVerdict:
+    verdict: str  # INSUFFICIENT_DATA | GOODHART | ACCELERATION | ACCUMULATION | NO_GAIN
+    eta: List[float]
+    eta_ci: Tuple[float, float]
+    gap_ci: Tuple[float, float]
+    mean_gain: float
+
+
+def epoch_series(records: Sequence[EpochRecord], compute_normalized: bool = True) -> Tuple[List[float], List[float], List[float]]:
+    """(gains, eta, gaps). eta_t = gain / new experience [/ compute]; experience must strictly increase."""
+    gains, eta = [], []
+    for prev, cur in zip(records, records[1:]):
+        d_exp = cur.experience - prev.experience
+        if d_exp <= 0:
+            raise ValueError(f"experience must strictly increase ({prev.epoch} -> {cur.epoch})")
+        if cur.compute <= 0:
+            raise ValueError(f"compute must be positive ({cur.epoch})")
+        g = cur.heldout - prev.heldout
+        gains.append(g)
+        eta.append(g / d_exp / (cur.compute if compute_normalized else 1.0))
+    return gains, eta, [r.search - r.heldout for r in records]
+
+
+def classify_epochs(records: Sequence[EpochRecord], *, min_epochs: int = 4,
+                    compute_normalized: bool = True) -> EpochVerdict:
+    import os
+
+    gains, eta, gaps = epoch_series(list(records), compute_normalized)
+    mean_gain = sum(gains) / len(gains) if gains else 0.0
+    if len(eta) < min_epochs:
+        return EpochVerdict("INSUFFICIENT_DATA", eta, (0.0, 0.0), (0.0, 0.0), mean_gain)
+    eta_ci = bootstrap_slope_ci(list(range(len(eta))), eta)
+    gap_ci = bootstrap_slope_ci(list(range(len(gaps))), gaps)
+    gap_floor = float(os.environ.get(GAP_CI_ENV, "0"))
+    if gap_ci[0] > gap_floor:
+        verdict = "GOODHART"
+    elif eta_ci[0] > 0:
+        verdict = "ACCELERATION"
+    elif mean_gain > 0:
+        verdict = "ACCUMULATION"
+    else:
+        verdict = "NO_GAIN"
+    return EpochVerdict(verdict, eta, eta_ci, gap_ci, mean_gain)
+
+
+def credit_table(total_gain: float, ablation_deltas: Dict[str, float], min_fraction: float = 0.5) -> Dict[str, object]:
+    """Causal credit: delta_i = C(all) - C(all minus change i) on sealed cases.
+
+    The gain counts as attributed only if positively credited changes explain >= min_fraction of it.
+    """
+    credited = {k: v for k, v in ablation_deltas.items() if v > 0}
+    explained = sum(credited.values())
+    frac = explained / total_gain if total_gain > 0 else 0.0
+    return {"credited": credited, "explained": explained, "fraction": frac,
+            "attributed": total_gain > 0 and frac >= min_fraction}
