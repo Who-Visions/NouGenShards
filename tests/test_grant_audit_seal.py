@@ -1,5 +1,4 @@
 """Test suite for Grant Compiler Audit Seal generation and cryptographic verification."""
-import pytest
 from nougen_shards.grant_compiler import (
     ArtistProjectSpec,
     GrantBudget,

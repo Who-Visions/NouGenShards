@@ -7,7 +7,6 @@ Validates:
 4. Rejection of un-balanced budgets.
 5. Ingestion of Project Shapeshifter, Lilith, and Tiffany models.
 """
-import pytest
 from nougen_shards.grant_compiler import ArtistProjectSpec, GrantBudget
 
 

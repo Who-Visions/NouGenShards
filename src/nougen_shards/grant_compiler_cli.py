@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Dict
 
 from nougen_shards.grant_compiler import ArtistProjectSpec, GrantBudget
-from nougen_shards.funding_discovery import VERIFIED_FUNDERS
 
 
 def compile_grant_file(spec_path: Path, output_dir: Path | None = None) -> Dict[str, Any]:

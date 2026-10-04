@@ -6,10 +6,8 @@ Validates:
 3. Fiscal sponsor requirement filtering.
 4. Correct sorting by eligibility and deadline.
 """
-import pytest
 from nougen_shards.funding_discovery import (
     ArtistProfile,
-    VERIFIED_FUNDERS,
     match_funding_opportunities,
 )
 
