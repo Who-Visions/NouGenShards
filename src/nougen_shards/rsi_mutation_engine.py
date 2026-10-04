@@ -11,7 +11,7 @@ import ast
 import copy
 import hashlib
 from dataclasses import dataclass
-from typing import Set
+from typing import Optional, Set, Tuple
 
 
 class MutationSyntaxError(ValueError):
@@ -53,41 +53,26 @@ def compute_ast_jaccard_distance(tree_a: ast.AST, tree_b: ast.AST) -> float:
 class ASTMutator(ast.NodeTransformer):
     """Safe, bounded AST mutator for operator and boundary tweaks."""
 
-    def __init__(self, op_flip_limit: int = 1) -> None:
+    _FLIP = {ast.Gt: ast.GtE, ast.Lt: ast.LtE, ast.GtE: ast.Gt, ast.LtE: ast.Lt, ast.Eq: ast.NotEq, ast.NotEq: ast.Eq}
+
+    def __init__(self, op_flip_limit: int = 1, target: int = 0) -> None:
         super().__init__()
         self.flips = 0
         self.flip_limit = op_flip_limit
+        self.target = target  # flip the target-th eligible operator (0 = first), so callers can enumerate candidates
+        self.seen = 0  # eligible operators encountered
 
     def visit_Compare(self, node: ast.Compare) -> ast.AST:
         self.generic_visit(node)
-        if self.flips >= self.flip_limit:
-            return node
-
         new_ops = []
         for op in node.ops:
-            if self.flips < self.flip_limit:
-                if isinstance(op, ast.Gt):
-                    new_ops.append(ast.GtE())
+            flip = self._FLIP.get(type(op))
+            if flip is not None:
+                if self.flips < self.flip_limit and self.seen >= self.target:
+                    op = flip()
                     self.flips += 1
-                elif isinstance(op, ast.Lt):
-                    new_ops.append(ast.LtE())
-                    self.flips += 1
-                elif isinstance(op, ast.GtE):
-                    new_ops.append(ast.Gt())
-                    self.flips += 1
-                elif isinstance(op, ast.LtE):
-                    new_ops.append(ast.Lt())
-                    self.flips += 1
-                elif isinstance(op, ast.Eq):
-                    new_ops.append(ast.NotEq())
-                    self.flips += 1
-                elif isinstance(op, ast.NotEq):
-                    new_ops.append(ast.Eq())
-                    self.flips += 1
-                else:
-                    new_ops.append(op)
-            else:
-                new_ops.append(op)
+                self.seen += 1
+            new_ops.append(op)
         node.ops = new_ops
         return node
 
@@ -95,31 +80,51 @@ class ASTMutator(ast.NodeTransformer):
 class RSIMutationEngine:
     """Engine orchestrating candidate AST mutations with sandboxed invariant checks."""
 
+    SUPPORTED_TYPES = ("boundary_tweak",)
+    GLOBAL = "*"
+
     def __init__(self, deny_list: Set[str] | None = None) -> None:
-        self.deny_list: Set[str] = set(deny_list or [])
+        # Entries are (context, mutant_hash). A bare hash is global ("*"), the pre-existing behaviour.
+        self.deny_list: Set[Tuple[str, str]] = {(self.GLOBAL, h) for h in (deny_list or [])}
 
-    def register_negative_constraint(self, mutation_hash: str) -> None:
-        """Adds a failed mutation hash to the lineage deny-list."""
-        self.deny_list.add(mutation_hash)
+    def register_negative_constraint(self, mutation_hash: str, context: Optional[str] = None) -> None:
+        """Deny a mutant. Scope it to ``context`` (parent/task/environment hash) when known: a mutant
+        that failed in one context is not evidence it fails in another (leg 20261004T183209Z turn 4)."""
+        self.deny_list.add((context or self.GLOBAL, mutation_hash))
 
-    def mutate_code(self, source_code: str, mutation_type: str = "boundary_tweak") -> MutationResult:
-        """Parses, mutates, and verifies a code snippet under AST invariants."""
+    def _denied(self, mutation_hash: str, context: Optional[str]) -> bool:
+        return (self.GLOBAL, mutation_hash) in self.deny_list or (
+            context is not None and (context, mutation_hash) in self.deny_list)
+
+    def mutate_code(self, source_code: str, mutation_type: str = "boundary_tweak",
+                    context: Optional[str] = None) -> MutationResult:
+        """Return the first eligible mutant not denied for ``context``.
+
+        Raises ValueError for an unsupported ``mutation_type`` (previously ignored),
+        LineageConstraintError when every candidate mutant is denied.
+        """
+        if mutation_type not in self.SUPPORTED_TYPES:
+            raise ValueError(f"unsupported mutation_type {mutation_type!r}; supported: {self.SUPPORTED_TYPES}")
         try:
             tree = ast.parse(source_code)
         except SyntaxError as e:
             raise MutationSyntaxError(f"Initial code is not valid Python: {e}") from e
-
         orig_hash = compute_ast_hash(tree)
 
-        mutated_tree = copy.deepcopy(tree)
-        mutator = ASTMutator()
-        mutated_tree = mutator.visit(mutated_tree)
-        ast.fix_missing_locations(mutated_tree)
-
-        mut_hash = compute_ast_hash(mutated_tree)
-
-        if mut_hash in self.deny_list:
-            raise LineageConstraintError(f"Mutant {mut_hash} is present in lineage negative constraints")
+        counter = ASTMutator(op_flip_limit=0)
+        counter.visit(copy.deepcopy(tree))
+        candidates = max(counter.seen, 1)
+        mutated_tree = mut_hash = None
+        for target in range(candidates):
+            trial = ASTMutator(target=target).visit(copy.deepcopy(tree))
+            ast.fix_missing_locations(trial)
+            trial_hash = compute_ast_hash(trial)
+            if not self._denied(trial_hash, context):
+                mutated_tree, mut_hash = trial, trial_hash
+                break
+        if mutated_tree is None:
+            raise LineageConstraintError(
+                f"all {candidates} candidate mutants are in lineage negative constraints for context {context or self.GLOBAL!r}")
 
         try:
             mutated_code = ast.unparse(mutated_tree)
@@ -127,7 +132,6 @@ class RSIMutationEngine:
             ast.parse(mutated_code)
         except Exception as e:
             raise MutationSyntaxError(f"Mutated AST failed roundtrip synthesis: {e}") from e
-
         distance = compute_ast_jaccard_distance(tree, mutated_tree)
 
         return MutationResult(
