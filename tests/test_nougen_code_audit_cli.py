@@ -1,8 +1,6 @@
 """
 Unit tests for NouGenCode Audit & Pre-Execution Cleanup CLI.
 """
-import json
-import pytest
 from pathlib import Path
 from nougen_shards.nougen_code_audit_cli import audit_files
 

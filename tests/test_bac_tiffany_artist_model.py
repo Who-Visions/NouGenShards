@@ -7,7 +7,6 @@ Validates:
 4. Sum of line items invariant (sum of all line items == total grant request).
 5. Document integrity and structural invariants.
 """
-import pytest
 from pathlib import Path
 
 

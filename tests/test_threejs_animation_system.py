@@ -6,7 +6,6 @@ Validates:
 3. GPU lifecycle and idle conservation logic (visibilitychange listener, requestAnimationFrame).
 4. Dual-state compliance palette rendering (Imperial Gold/Nyx Cyan for valid, Warning for invalid).
 """
-import pytest
 from pathlib import Path
 
 STUDIO_ROOT = Path(r"C:\Users\super\Watchtower\who-visions-grants-studio")

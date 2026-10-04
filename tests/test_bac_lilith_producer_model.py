@@ -6,7 +6,6 @@ Validates:
 3. Direct artist allocation (>= 50.0% of total budget).
 4. Full budget sum invariant (sum of line items == total request).
 """
-import pytest
 from pathlib import Path
 
 

@@ -1,6 +1,5 @@
 """Test suite for BAC 2027 Sakura Soiree brand provenance & IP dossier validation."""
 from pathlib import Path
-import pytest
 
 DOSSIER_PATH = Path(r"C:\Users\super\Watchtower\BAC_2027_SAKURA_SOIREE_DOSSIER.md")
 

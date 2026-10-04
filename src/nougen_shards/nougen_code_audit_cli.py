@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-from nougen_shards.nougen_code_scorer import NouGenCodeAuditor, CodeAuditReport
+from nougen_shards.nougen_code_scorer import NouGenCodeAuditor
 
 
 def audit_files(target_paths: List[Path]) -> Dict[str, Any]:

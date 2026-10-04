@@ -6,7 +6,6 @@ Validates:
 3. Presence of the master studio framework architectural document.
 4. Shapeshifter cohort reference case study budget and deliverables math.
 """
-import pytest
 from pathlib import Path
 
 TEMPLATES_DIR = Path(r"C:\Users\super\Documents\WhoVisions\grants\STUDIO_TEMPLATES")

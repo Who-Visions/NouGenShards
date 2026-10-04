@@ -7,7 +7,6 @@ Validates:
 4. UI compliance rules (artist equity floor >= 50%, producer fee cap <= 18%).
 """
 import json
-import pytest
 from pathlib import Path
 
 STUDIO_ROOT = Path(r"C:\Users\super\Watchtower\who-visions-grants-studio")

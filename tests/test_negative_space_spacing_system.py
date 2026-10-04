@@ -6,7 +6,6 @@ Validates:
 3. Strict 4pt/8pt harmonic scale compliance.
 4. Spacing multiplier calculations.
 """
-import pytest
 from pathlib import Path
 
 STUDIO_ROOT = Path(r"C:\Users\super\Watchtower\who-visions-grants-studio")
