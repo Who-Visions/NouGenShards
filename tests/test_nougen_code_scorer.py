@@ -2,7 +2,6 @@
 Unit tests for NouGenCode Intelligence & Cleanup Scoring Engine.
 Validates all 8 mathematical formulas and the NouGenCodeAuditor report generation.
 """
-import pytest
 from nougen_shards.nougen_code_scorer import (
     compute_intelligence_density,
     compute_repair_priority,

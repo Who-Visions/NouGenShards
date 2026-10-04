@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Set
+from typing import Set
 
 
 def compute_intelligence_density(unique_tokens: int, capabilities: int, loc: int) -> float:
@@ -118,7 +118,7 @@ class NouGenCodeAuditor:
 
     @staticmethod
     def audit_source_text(source_text: str, file_name: str = "module.py", ref_count: int = 5) -> CodeAuditReport:
-        lines = [l for l in source_text.splitlines() if l.strip() and not l.strip().startswith("#") and not l.strip().startswith("//")]
+        lines = [line for line in source_text.splitlines() if line.strip() and not line.strip().startswith("#") and not line.strip().startswith("//")]
         loc = len(lines)
         
         # Token extraction
