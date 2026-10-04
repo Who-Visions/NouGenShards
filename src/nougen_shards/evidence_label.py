@@ -21,16 +21,20 @@ LABEL = "[UNVERIFIED: no evidence ref]"
 
 _CLAIM = re.compile(
     r"\b(merged|landed|shipped|deployed|complete[d]?|passed|green|fixed|resolved|verified|"
-    r"operationali[sz]ed|implemented|done|closed|reconciled)\b",
+    r"operationali[sz]ed|implemented|done|closed|reconciled|checkpointed)\b",
     re.IGNORECASE,
 )
+
+# A claim word is not an assertion when negated shortly before it ("not done", "nothing has landed").
+_NEGATORS = re.compile(r"\b(?:not|no|nothing|never|yet|without|until|isn't|wasn't|hasn't|haven't|won't)\b|n't\b",
+                       re.IGNORECASE)
 
 _EVIDENCE = re.compile(
     r"(https?://\S+"                                   # any URL
     r"|\b[\w.-]+/[\w.-]+#\d+\b"                        # owner/repo#123
     r"|\b(?:PR|pull|issue)\s*#?\d+\b"                  # PR #123 / PR 123
     r"|(?<![\w/])#\d{2,}\b"                            # #705
-    r"|\b[0-9a-f]{7,40}\b"                             # commit sha
+    r"|\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b"  # commit sha: needs a digit AND an a-f letter
     r"|\b[\w./\\-]+\.\w{1,5}:\d+\b"                    # path/file.py:42
     r"|\b\d{8}T\d{6}Z__[\w-]+"                         # relay leg id
     r"|\bshard[ _:#]*\d{3,}\b)",                       # shard 30744
@@ -39,7 +43,12 @@ _EVIDENCE = re.compile(
 
 
 def has_claim(text: str) -> bool:
-    return bool(_CLAIM.search(text or ""))
+    """True when ``text`` asserts a completed state; negated mentions ("not done") do not count."""
+    text = text or ""
+    for m in _CLAIM.finditer(text):
+        if not _NEGATORS.search(" ".join(text[:m.start()].split()[-4:])):
+            return True
+    return False
 
 
 def has_evidence(text: str) -> bool:

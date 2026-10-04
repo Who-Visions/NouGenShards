@@ -63,7 +63,7 @@ def test_verified_can_still_be_refuted(ledger):
     cid = ledger.claim("blade", "y")
     _climb(ledger, cid, 3)
     ledger.advance(cid, S.INDEPENDENTLY_VERIFIED, lane="phoebus", evidence=PR)
-    ledger.advance(cid, S.REFUTED, lane="codex", evidence="sha deadbeef reverted it")
+    ledger.advance(cid, S.REFUTED, lane="codex", evidence="sha 3a7f9c2 reverted it")
     assert ledger.state(cid) == S.REFUTED
     assert len(ledger.history(cid)) == 6
 
