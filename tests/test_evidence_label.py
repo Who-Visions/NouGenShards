@@ -97,3 +97,39 @@ def test_wire_check_is_opt_in(monkeypatch):
     assert MISMATCH not in AgentPinger.cc_wire_lines("t", text).decode()
     monkeypatch.setenv("NOUGEN_CLAIM_PR_CHECK", "1")
     assert MISMATCH in AgentPinger.cc_wire_lines("t", text).decode()
+
+
+# --- PASS 3 review fixes (2026-10-04): hex-lookalikes, honest negatives, 'checkpointed' -----------
+
+@pytest.mark.parametrize("text", [
+    "Everything is merged and green, ticket 1234567.",       # a bare 7+ digit run is not a commit sha
+    "The schema was defaced and fixed.",                     # an all-a-f-letter word is not a commit sha
+    "Phoebus PASS 1/5 turn is checkpointed (claude-app, phoebus).",  # new claim word
+])
+def test_hex_lookalikes_and_checkpointed_are_labeled(text):
+    assert label_claim(text).startswith(LABEL)
+
+
+@pytest.mark.parametrize("text", [
+    "Not done: the gate is not wired and nothing has landed.",
+    "It has not been merged yet.",
+    "Never shipped, still blocked.",
+    "The test isn't green.",
+])
+def test_honest_negatives_are_not_labeled(text):
+    assert label_claim(text) == text
+
+
+def test_real_shas_still_count_as_evidence():
+    for text in ("fix landed in 3a7f9c2", "merged as 8bf4842c01d3e5f6a7b8c9d0e1f2a3b4c5d6e7f8"):
+        assert label_claim(text) == text
+
+
+def test_positive_claim_after_a_negation_is_still_caught():
+    assert label_claim("Not blocked anymore. Everything is merged.").startswith(LABEL)
+
+
+@pytest.mark.xfail(strict=True, reason="residual: a hex session id (8c26a120) is indistinguishable from a short commit sha")
+def test_session_id_is_not_evidence():
+    # This is the exact text of the 2026-10-04 'checkpointed' ping that was false when sent.
+    assert label_claim("Phoebus PASS 1/5 turn is checkpointed (claude-app, session 8c26a120, phoebus).").startswith(LABEL)
