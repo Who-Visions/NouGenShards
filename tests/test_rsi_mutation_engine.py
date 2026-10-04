@@ -5,10 +5,7 @@ from nougen_shards.rsi_mutation_engine import (
     RSIMutationEngine,
     MutationSyntaxError,
     LineageConstraintError,
-    compute_ast_hash,
-    compute_ast_jaccard_distance,
 )
-import ast
 
 
 def test_mutation_engine_boundary_flip():

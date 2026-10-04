@@ -11,7 +11,7 @@ import ast
 import copy
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Set
+from typing import Set
 
 
 class MutationSyntaxError(ValueError):
