@@ -71,6 +71,7 @@ def test_fetch_uses_accept_new_not_no_host_check(monkeypatch, tmp_path):
     mod = _load("whoart_voice_sync")
     key = tmp_path / "k"; key.write_text("x")
     monkeypatch.setattr(mod, "SSH_KEY", key)
+    monkeypatch.setenv("NOUGEN_WHOART_SSH", "user@host.invalid"); monkeypatch.setenv("NOUGEN_WHOART_BIN", "remote-bin")
     seen = {}
     monkeypatch.setattr(mod.subprocess, "run", lambda cmd, **kw: seen.setdefault("cmd", cmd) and subprocess.CompletedProcess(cmd, 1, "", ""))
     mod.fetch_whoart_favorites()
@@ -91,3 +92,21 @@ def test_speak_ignores_empty_text(monkeypatch):
     sp = _load("speak")
     monkeypatch.setattr(sp.subprocess, "run", lambda *a, **k: pytest.fail("must not run"))
     sp.speak("   ")
+
+
+def test_no_remote_configured_means_no_ssh(monkeypatch, tmp_path):
+    mod = _load("whoart_voice_sync")
+    key = tmp_path / "k"; key.write_text("x")
+    monkeypatch.setattr(mod, "SSH_KEY", key)
+    monkeypatch.setattr(mod, "REMOTE_FILE", tmp_path / "missing.json")
+    monkeypatch.delenv("NOUGEN_WHOART_SSH", raising=False); monkeypatch.delenv("NOUGEN_WHOART_BIN", raising=False)
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: pytest.fail("must not ssh"))
+    assert mod.fetch_whoart_favorites() == {}
+
+
+def test_remote_read_from_state_file(monkeypatch, tmp_path):
+    mod = _load("whoart_voice_sync")
+    f = tmp_path / "r.json"; f.write_text('{"ssh": "u@h.invalid", "bin": "rb"}')
+    monkeypatch.setattr(mod, "REMOTE_FILE", f)
+    monkeypatch.delenv("NOUGEN_WHOART_SSH", raising=False); monkeypatch.delenv("NOUGEN_WHOART_BIN", raising=False)
+    assert mod._remote() == ("u@h.invalid", "rb")

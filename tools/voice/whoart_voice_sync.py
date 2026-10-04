@@ -11,23 +11,38 @@ import time
 import subprocess
 from pathlib import Path
 
-WHOART_IP = "10.0.0.178"
-SSH_KEY = Path.home() / ".ssh" / "kaedra_swarm_key"
+SSH_KEY = Path(os.environ.get("NOUGEN_WHOART_SSH_KEY") or Path.home() / ".ssh" / "kaedra_swarm_key")
+REMOTE_FILE = Path.home() / ".nougen" / "state" / "whoart_voice_remote.json"   # {"ssh": "<user>@<host>", "bin": "<remote dir holding agy_voice.py>"}
 CACHE_FILE = Path.home() / ".nougen" / "state" / "whoart_voice_favorites.json"
 CACHE_TTL = 3600  # 1 hour cache
 
+
+def _remote() -> tuple[str, str] | None:
+    """Where WhoArt lives is machine config, not source: env first, then the local state file."""
+    ssh, rbin = os.environ.get("NOUGEN_WHOART_SSH"), os.environ.get("NOUGEN_WHOART_BIN")
+    if not (ssh and rbin):
+        try:
+            cfg = json.loads(REMOTE_FILE.read_text(encoding="utf-8"))
+            ssh, rbin = cfg.get("ssh"), cfg.get("bin")
+        except (OSError, ValueError):
+            return None
+    return (ssh, rbin) if ssh and rbin else None
+
+
 def fetch_whoart_favorites() -> dict:
     """Fetch remote voice favorites from WhoArt via SSH."""
-    if not SSH_KEY.is_file():
+    remote = _remote()
+    if not remote or not SSH_KEY.is_file():
         return {}
-    
+    ssh_target, remote_bin = remote
+
     cmd = [
         "ssh", "-i", str(SSH_KEY),
         "-o", "BatchMode=yes",
         "-o", "ConnectTimeout=3",
         "-o", "StrictHostKeyChecking=accept-new",
-        f"super@{WHOART_IP}",
-        "powershell -Command \"python -c \\\"import sys, json; sys.path.insert(0, r'C:\\Users\\super\\.nougen\\bin'); from agy_voice import VOICE_FAVORITES; print(json.dumps(VOICE_FAVORITES))\\\"\""
+        ssh_target,
+        "powershell -Command \"python -c \\\"import sys, json; sys.path.insert(0, r'" + remote_bin + "'); from agy_voice import VOICE_FAVORITES; print(json.dumps(VOICE_FAVORITES))\\\"\""
     ]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
