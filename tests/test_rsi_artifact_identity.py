@@ -1,6 +1,7 @@
 from dataclasses import replace
 import os
 import subprocess
+import threading
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -94,7 +95,8 @@ def test_real_evaluator_bit_signed_and_duplicate_not_rescored(artifact, ledger):
     assert verify_decision(receipt, CONTEXT, artifact_hash(artifact), PUBLIC_KEY)
     replay = evaluate_artifact(ledger, CONTEXT, artifact, "B", evaluate, KEY)
     assert replay == receipt
-    assert calls == [artifact]
+    assert len(calls) == 1 and calls[0] != artifact   # evaluated on a snapshot, never on the live tree
+    assert not calls[0].exists()                       # and the snapshot is cleaned up
     assert ledger.spent("epoch") == 1
 
 
@@ -135,6 +137,7 @@ def test_nonboolean_evaluator_result_is_not_authenticated(artifact, ledger):
 def test_mutation_during_evaluation_remains_spent_without_decision(artifact, ledger):
     original = artifact_hash(artifact)
     def mutate(root):
+        (root / "agent.py").chmod(0o600)               # read-only is advisory for the same uid
         (root / "agent.py").write_text("changed")
         return True
     with pytest.raises(ValueError, match="changed during"):
@@ -152,3 +155,91 @@ def test_evaluator_exception_remains_spent(artifact, ledger):
         evaluate_artifact(ledger, CONTEXT, artifact, "A", failed, KEY)
     assert ledger.spent("epoch") == 1
     assert ledger.feedback(CONTEXT, artifact_hash(artifact)) is None
+
+
+def test_concurrent_writer_on_source_cannot_change_what_was_scored(tmp_path):
+    """Swap/restore writer on the SOURCE while evaluate_artifact runs: the receipt hash must
+    always equal the hash of the bytes the evaluator itself read (CWE-367)."""
+    ledger = EvaluationLedger(tmp_path / "race.db")
+    ledger.start_epoch("epoch", "evaluator", "dataset", 1000)
+    mismatches = evaluated = completed = 0
+    for i in range(120):
+        root = tmp_path / f"c{i}"
+        root.mkdir()
+        target = root / "agent.py"
+        good = f"GOOD{i}\n" * 4000
+        evil = f"EVIL{i}\n" * 4000     # unique per trial so a torn or swapped copy never collides in the ledger
+        target.write_text(good)
+        stamp = os.stat(target)
+        stop = threading.Event()
+
+        def swapper():
+            while not stop.is_set():
+                target.write_text(evil)
+                os.utime(target, (stamp.st_atime, stamp.st_mtime))
+                target.write_text(good)
+                os.utime(target, (stamp.st_atime, stamp.st_mtime))
+
+        seen = []
+        def evaluate(path):
+            seen.append(artifact_hash(path))
+            return True
+
+        thread = threading.Thread(target=swapper)
+        thread.start()
+        try:
+            try:
+                receipt = evaluate_artifact(ledger, CONTEXT, root, "A", evaluate, KEY)
+            except ValueError:      # snapshot copy raced the writer and was refused: fails closed
+                continue
+        finally:
+            stop.set()
+            thread.join()
+        completed += 1
+        if not seen:                # the copy caught a truncated/earlier state with a known hash: ledger replay
+            continue
+        evaluated += 1
+        mismatches += receipt.candidate_hash != seen[0]
+    # Fast CI runners can make the copy keep catching the same half-written file (one evaluation, then
+    # replays); the receipt still binds exactly the copied bytes. Require the race to have run, not a rate.
+    assert completed >= 100 and evaluated >= 1, (completed, evaluated)
+    assert mismatches == 0
+
+
+def test_symlink_in_source_is_refused_before_any_query_is_spent(artifact, ledger, tmp_path):
+    outside = tmp_path / "secret.txt"
+    outside.write_text("SECRET")
+    (artifact / "innocent.py").symlink_to(outside)
+    with pytest.raises(ValueError):
+        evaluate_artifact(ledger, CONTEXT, artifact, "A", lambda _: True, KEY)
+    assert ledger.spent("epoch") == 0
+
+
+def test_link_root_is_refused_before_any_query_is_spent(artifact, ledger, tmp_path):
+    link = tmp_path / "link_root"
+    link.symlink_to(artifact, target_is_directory=True)
+    with pytest.raises(ValueError, match="links"):
+        evaluate_artifact(ledger, CONTEXT, link, "A", lambda _: True, KEY)
+    assert ledger.spent("epoch") == 0
+
+
+def test_swap_and_restore_during_evaluation_cannot_change_the_scored_bytes(artifact, ledger):
+    """Deterministic CWE-367 reproduction (blade's PoC): a writer swaps the SOURCE to EVIL while the
+    evaluator reads, then restores the bytes and mtime before evaluate_artifact re-hashes. The evaluator
+    must have read exactly the bytes the receipt hash covers."""
+    source = artifact / "agent.py"
+    good = source.read_text(encoding="utf-8")
+    stamp = os.stat(source)
+    seen = []
+
+    def evaluate(path):
+        source.write_text("EVIL\n")
+        os.utime(source, (stamp.st_atime, stamp.st_mtime))
+        seen.append((path / "agent.py").read_text(encoding="utf-8"))   # what the evaluator actually scores
+        source.write_text(good)
+        os.utime(source, (stamp.st_atime, stamp.st_mtime))
+        return True
+
+    receipt = evaluate_artifact(ledger, CONTEXT, artifact, "A", evaluate, KEY)
+    assert seen == [good]
+    assert receipt.candidate_hash == artifact_hash(artifact)
