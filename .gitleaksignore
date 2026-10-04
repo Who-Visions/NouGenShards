@@ -52,3 +52,6 @@ aba0802c458afc97d9230a1c8476029805804971:.github/workflows/deploy-space.yml:gene
 # Only these two historic code fingerprints are ignored; no path/rule bypass.
 355eb3f152c7aaaac820c90c68ce822510f4c247:src/nougen_shards/rsi_artifact_identity.py:generic-api-key:85
 355eb3f152c7aaaac820c90c68ce822510f4c247:src/nougen_shards/rsi_artifact_identity.py:generic-api-key:139
+821c6feb0857226565cdf7a95c7149c9807bd75f:src/nougen_shards/rsi_artifact_identity.py:generic-api-key:85
+821c6feb0857226565cdf7a95c7149c9807bd75f:src/nougen_shards/rsi_artifact_identity.py:generic-api-key:139
+
