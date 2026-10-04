@@ -53,12 +53,6 @@
         "Accept": "application/json",
         "X-Goog-Api-Key": "${STITCH_API_KEY}"
       }
-    },
-    "nougen-open": {
-      "command": ".venv/Scripts/nougen-open.exe",
-      "args": [
-        "mcp"
-      ]
     }
   }
 }
