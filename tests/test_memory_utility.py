@@ -65,3 +65,57 @@ def test_bonferroni_needs_more_cases_when_many_shards_tested(ledger):
     for i in range(6, 8):
         _case(ledger, i, True, {"useful": False, "noise": True})
     assert ledger.utility_marks() == {"useful": 1.0}
+
+
+def test_min_cases_for_sign_test():
+    from nougen_shards.memory_utility import min_cases_for_sign_test
+
+    # One-sided
+    assert min_cases_for_sign_test(1, alpha=0.05, two_sided=False) == 5
+    assert min_cases_for_sign_test(5, alpha=0.05, two_sided=False) == 7
+    assert min_cases_for_sign_test(20, alpha=0.05, two_sided=False) == 9
+    assert min_cases_for_sign_test(50, alpha=0.05, two_sided=False) == 10
+
+    # Two-sided
+    assert min_cases_for_sign_test(1, alpha=0.05, two_sided=True) == 6
+    assert min_cases_for_sign_test(5, alpha=0.05, two_sided=True) == 8
+    assert min_cases_for_sign_test(20, alpha=0.05, two_sided=True) == 10
+    assert min_cases_for_sign_test(50, alpha=0.05, two_sided=True) == 11
+
+
+def test_effective_sample_size():
+    from nougen_shards.memory_utility import effective_sample_size
+
+    # Uncorrelated (rho = 0) -> n_eff = n
+    assert effective_sample_size(10, 0.0) == 10.0
+    # Fully correlated (rho = 1) -> n_eff = 1
+    assert effective_sample_size(10, 1.0) == 1.0
+    # Moderate correlation (rho = 0.5) -> 10 / (1 + 9 * 0.5) = 10 / 5.5 = 1.818...
+    assert effective_sample_size(10, 0.5) == pytest.approx(10 / 5.5)
+    # Zero or empty
+    assert effective_sample_size(0, 0.5) == 0.0
+
+
+def test_twenty_shards_under_sample_refusal(ledger):
+    # Testing 20 shards with only 8 cases refuses to report marks (needs >= 10 for two-sided)
+    shards_list = [(f"s_{k}", 10, 50.0) for k in range(20)]
+    for i in range(8):
+        cid = f"c_20_{i}"
+        ledger.record_recall("e20", cid, shards_list, 100.0)
+        ledger.record_run("e20", cid, True)
+        # Shard 0 was withheld and led to failure (all 8 wins)
+        for k in range(20):
+            ledger.record_run("e20", cid, False if k == 0 else True, withheld=f"s_{k}")
+
+    # 8 cases cannot clear alpha/20 (p = 2/256 = 0.0078125 > 0.0025)
+    assert ledger.utility_marks(epoch="e20") == {}
+
+    # Adding cases 8 and 9 (total 10 all-win cases, p = 2/1024 = 0.001953 < 0.0025)
+    for i in range(8, 10):
+        cid = f"c_20_{i}"
+        ledger.record_recall("e20", cid, shards_list, 100.0)
+        ledger.record_run("e20", cid, True)
+        for k in range(20):
+            ledger.record_run("e20", cid, False if k == 0 else True, withheld=f"s_{k}")
+
+    assert ledger.utility_marks(epoch="e20") == {"s_0": 1.0}
