@@ -70,6 +70,7 @@ Usage:
 
 Inspection & Discovery:
   agy msg --peers                             List discovered local pipes and reachable nodes
+  agy msg --capacity                          Inspect lane capacity, usage & status before pushing tasks
   agy msg --inbox [--target <antigravity|codex>] Read recent unread messages in inbox
   agy msg --clear-inbox                       Archive and clear read inbox messages
   agy msg --wake [--timeout <seconds>]        Run autonomous wake sentry (monitors inbox & relay legs)
@@ -506,6 +507,41 @@ def main():
         print(f"  • Antigravity Inbox Unread: {peers['antigravity_inbox_unread']} message(s)")
         print(f"  • Codex Inbox Unread:       {peers['codex_inbox_unread']} message(s)")
         print(f"  • Reachable Nodes:          {', '.join(peers['nodes_reachable'])}\n")
+        return
+
+    # Lane Capacity & Usage Status Probe (/status & /usage inspection)
+    if "--capacity" in sys.argv or "--lane-status" in sys.argv or "--lanes" in sys.argv:
+        import glob
+        border = "=" * 76
+        print(f"\n{border}")
+        print("📊  FLEET LANE CAPACITY & TELEMETRY PROBE (Pre-Task Governor)")
+        print(border)
+        
+        # 1. Antigravity (/usage)
+        agy_brains = glob.glob(os.path.expanduser("~/.gemini/antigravity/brain/*"))
+        agy_inbox = glob.glob(os.path.expanduser("~/.nougen/agy_inbox/*.json"))
+        agy_active = len(agy_brains)
+        agy_queue = len(agy_inbox)
+        agy_status = "READY" if agy_queue < 10 else "BUSY"
+        print(f"  • [ANTIGRAVITY]  Telemetry: /usage | Sessions: {agy_active} | Queue: {agy_queue} | Status: {agy_status}")
+        print(f"    └─ Capacity: High-throughput reasoning & verification engine (Recommended: Architectural/Synthesis tasks)")
+
+        # 2. Claude Code (/usage)
+        claude_projects = os.path.expanduser("~/.claude/projects")
+        claude_projs = len(os.listdir(claude_projects)) if os.path.exists(claude_projects) else 0
+        claude_pipes = peers['claude_active_pipes'] if 'peers' in locals() else NouGenMsgBus.list_peers()['claude_active_pipes']
+        claude_status = "READY" if claude_pipes else "STANDBY"
+        print(f"  • [CLAUDE CODE]  Telemetry: /usage | Active Pipes: {len(claude_pipes)} | Projects: {claude_projs} | Status: {claude_status}")
+        print(f"    └─ Capacity: High-context strategy & deep refactoring (Recommended: Planning/Review tasks)")
+
+        # 3. OpenAI Codex (/status)
+        codex_inbox = os.path.expanduser("~/.codex/inbox")
+        codex_msgs = glob.glob(os.path.join(codex_inbox, "*.json")) if os.path.exists(codex_inbox) else []
+        codex_status = "READY" if len(codex_msgs) < 20 else "CONGESTED"
+        print(f"  • [CODEX]        Telemetry: /status | Inbound Queue: {len(codex_msgs)} | Status: {codex_status}")
+        print(f"    └─ Capacity: High-volume deterministic execution (Recommended: Test/Codegen/CI tasks)")
+
+        print(f"{border}\n")
         return
 
     # Inbox reader
