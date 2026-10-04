@@ -371,7 +371,7 @@ def vocal_debrief(event: dict[str, Any]) -> None:
             pass
 
     try:
-        env = {**os.environ, "NOUGEN_VOICE": "bf_emma", "NOUGEN_SPEED": "1.05"}
+        env = {**os.environ, "NOUGEN_VOICE": os.environ.get("NOUGEN_VOICE") or "af_river", "NOUGEN_SPEED": "1.05"}
         subprocess.Popen(
             [sys.executable, str(speak_script), announcement],
             env=env,

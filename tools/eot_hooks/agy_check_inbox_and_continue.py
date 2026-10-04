@@ -334,7 +334,7 @@ def main() -> int:
                 if speak_script.is_file():
                     subprocess.Popen(
                         [sys.executable, str(speak_script), announcement],
-                        env={**os.environ, "NOUGEN_VOICE": "bf_emma", "NOUGEN_SPEED": "1.05"},
+                        env={**os.environ, "NOUGEN_VOICE": os.environ.get("NOUGEN_VOICE") or "af_river", "NOUGEN_SPEED": "1.05"},
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         start_new_session=True
