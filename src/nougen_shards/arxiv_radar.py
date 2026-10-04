@@ -322,8 +322,12 @@ def run_arxiv_paper(action: str = "lookup", ref: str = "", pattern: Optional[str
                     max_chars: Optional[int] = None, refresh: bool = False) -> Dict[str, Any]:
     """Inspect an arXiv paper: lookup metadata, cache LaTeX fulltext, or search body claims."""
     if not isinstance(ref, str) or not ref.strip():
-        return {"status": "error", "available": True, "action": action,
-                "error": "ref required: pass an arXiv id, 'arXiv:<id>' or abs URL"}
+        return {
+            "status": "error",
+            "error": "ref required: ref is required and cannot be empty (pass an arXiv id, 'arXiv:<id>' or abs URL)",
+            "action": action,
+            "available": True,
+        }
     tools = get_radar_tools()
     if not tools or not tools.get("paper"):
         return {
