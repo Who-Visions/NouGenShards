@@ -83,7 +83,7 @@ def test_classify_goodhart():
 
 
 def test_classify_flat_is_no_gain():
-    assert classify_epochs(_recs([0.3] * 6)).verdict == "NO_GAIN"
+    assert classify_epochs(_recs([0.3] * 8)).verdict == "NO_GAIN"
 
 
 def test_compute_normalization_removes_bought_acceleration():
@@ -103,3 +103,11 @@ def test_credit_table():
     assert t["attributed"] and t["fraction"] == pytest.approx(0.7)
     assert not credit_table(0.10, {"c1": 0.02})["attributed"]
     assert not credit_table(0.0, {"c1": 0.1})["attributed"]
+
+
+def test_default_min_epochs_is_six(monkeypatch):
+    monkeypatch.delenv("NOUGEN_RSI_MIN_EPOCHS", raising=False)
+    five_etas = _recs([0.10, 0.11, 0.13, 0.16, 0.20, 0.25])  # 5 eta points
+    assert classify_epochs(five_etas).verdict == "INSUFFICIENT_DATA"
+    monkeypatch.setenv("NOUGEN_RSI_MIN_EPOCHS", "4")
+    assert classify_epochs(five_etas).verdict != "INSUFFICIENT_DATA"
