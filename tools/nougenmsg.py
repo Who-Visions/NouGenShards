@@ -524,7 +524,7 @@ def main():
         agy_queue = len(agy_inbox)
         agy_status = "READY" if agy_queue < 10 else "BUSY"
         print(f"  • [ANTIGRAVITY]  Telemetry: /usage | Sessions: {agy_active} | Queue: {agy_queue} | Status: {agy_status}")
-        print(f"    └─ Capacity: High-throughput reasoning & verification engine (Recommended: Architectural/Synthesis tasks)")
+        print("    └─ Capacity: High-throughput reasoning & verification engine (Recommended: Architectural/Synthesis tasks)")
 
         # 2. Claude Code (/usage)
         claude_projects = os.path.expanduser("~/.claude/projects")
@@ -532,14 +532,14 @@ def main():
         claude_pipes = peers['claude_active_pipes'] if 'peers' in locals() else NouGenMsgBus.list_peers()['claude_active_pipes']
         claude_status = "READY" if claude_pipes else "STANDBY"
         print(f"  • [CLAUDE CODE]  Telemetry: /usage | Active Pipes: {len(claude_pipes)} | Projects: {claude_projs} | Status: {claude_status}")
-        print(f"    └─ Capacity: High-context strategy & deep refactoring (Recommended: Planning/Review tasks)")
+        print("    └─ Capacity: High-context strategy & deep refactoring (Recommended: Planning/Review tasks)")
 
         # 3. OpenAI Codex (/status)
         codex_inbox = os.path.expanduser("~/.codex/inbox")
         codex_msgs = glob.glob(os.path.join(codex_inbox, "*.json")) if os.path.exists(codex_inbox) else []
         codex_status = "READY" if len(codex_msgs) < 20 else "CONGESTED"
         print(f"  • [CODEX]        Telemetry: /status | Inbound Queue: {len(codex_msgs)} | Status: {codex_status}")
-        print(f"    └─ Capacity: High-volume deterministic execution (Recommended: Test/Codegen/CI tasks)")
+        print("    └─ Capacity: High-volume deterministic execution (Recommended: Test/Codegen/CI tasks)")
 
         print(f"{border}\n")
         return
