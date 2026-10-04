@@ -91,3 +91,24 @@ def test_min_sealed_and_fraction_from_env(setup, monkeypatch):
 def test_missing_epoch_key_is_not_silently_created(tmp_path):
     with pytest.raises(KeyError):
         fc.EpochKeys(tmp_path / "k.json").get("nope")
+
+
+def test_gate_config_uses_sealed_split(setup):
+    from nougen_shards.fitness_gate import dataset_hash
+    corpus, keys, _ = setup
+    ev = fc.Evaluator(corpus, keys, "e1", fraction=0.4, min_sealed=30)
+    cfg = fc.gate_config(ev, evaluator_hash="eval-v1", budget=4)
+    sealed = sorted(c.case_id for c in ev.sealed_cases())
+    assert list(cfg.sealed_case_ids) == sealed
+    assert cfg.epoch == "e1"
+    assert dataset_hash(cfg.sealed_case_ids) == dataset_hash(sealed)
+    visible = {c.case_id for c in ev.search_view().cases()}
+    assert visible.isdisjoint(cfg.sealed_case_ids)
+
+
+def test_gate_config_refuses_when_not_ready(tmp_path):
+    corpus = fc.FitnessCorpus(tmp_path / "c.jsonl")
+    fc.seed_from(corpus, fc.SEED_2026_10_04)
+    ev = fc.Evaluator(corpus, fc.EpochKeys(tmp_path / "k.json"), "e1")
+    with pytest.raises(ValueError, match="not gate-ready"):
+        fc.gate_config(ev, evaluator_hash="eval-v1", budget=4)

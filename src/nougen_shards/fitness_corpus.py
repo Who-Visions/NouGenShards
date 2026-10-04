@@ -193,3 +193,19 @@ SEED_2026_10_04 = [
     {"title": "local llm cli hangs silently with no output",
      "detector": {"kind": "cli_timeout_no_output", "cmd": "nougen_open.cli doctor", "max_s": 60}, "source": "NouGenOpen#11"},
 ]
+
+
+def gate_config(evaluator: "Evaluator", evaluator_hash: str, budget: int, alpha: float = 0.05):
+    """Build the sealed-holdout gate's config (#707) from this epoch's sealed split.
+
+    The gate gets exactly the evaluator-private sealed ids, so lanes never choose or see them.
+    Refuses (ValueError) below ``evaluator.min_sealed`` instead of letting a tiny set gate promotion.
+    """
+    from .fitness_gate import GateConfig
+
+    if not evaluator.gate_ready():
+        raise ValueError(f"fitness corpus not gate-ready: {len(evaluator.sealed_cases())} sealed cases "
+                         f"< {evaluator.min_sealed} for epoch {evaluator.epoch!r}")
+    sealed = tuple(sorted(c.case_id for c in evaluator.sealed_cases()))
+    return GateConfig(epoch=evaluator.epoch, evaluator_hash=evaluator_hash,
+                      sealed_case_ids=sealed, budget=budget, alpha=alpha)
