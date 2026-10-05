@@ -1,0 +1,10 @@
+<!doctype html><meta charset="utf-8"><title>NouGen Capture</title>
+<style>body{font:14px system-ui;max-width:34rem;margin:2rem auto;padding:0 1rem}label{display:block;margin:1rem 0 .25rem}input{width:100%;padding:.4rem;box-sizing:border-box}button{margin-top:1rem;padding:.4rem 1rem}#msg{margin-top:1rem}</style>
+<h1>NouGen Capture</h1>
+<label for="endpoint">Node endpoint (https, or http on localhost)</label>
+<input id="endpoint" placeholder="https://phoebus.nougenai.com" autocomplete="off">
+<label for="token">Token (stored in this browser profile only)</label>
+<input id="token" type="password" autocomplete="off">
+<button id="save">Save</button>
+<div id="msg" role="status"></div>
+<script type="module" src="options.js"></script>
