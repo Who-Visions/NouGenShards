@@ -1,3 +1,4 @@
+import pytest
 from nougen_shards import fitness_corpus as fc
 from nougen_shards.fitness_detectors import Sources, run_cases, run_detector
 
@@ -62,6 +63,7 @@ def test_run_cases_over_seed_corpus(tmp_path):
 
 
 def test_live_probes_run():
+    pytest.importorskip("psutil")  # live probes need psutil; CI images may not ship it
     r = run_detector({"kind": "proc_count", "name": "python.exe", "max": 100000})
     assert r.status == "ok"
     r = run_detector({"kind": "free_commit_gb", "min": 0})
