@@ -25,6 +25,10 @@ documented fallback:
                                ~/.nougen/state/relay_watch.json)
 ``NOUGEN_AGY_INBOX``           inbox directory (default ~/.nougen/agy_inbox)
 ``NOUGEN_RELAY_WATCH_ONCE``    ``1`` for a single pass (cron, testing)
+``NOUGEN_RELAY_BLOCK_ALERT_SECS``  how long a pull may stay blocked before
+                               an ALERT is raised (default 600)
+``NOUGEN_RELAY_BLOCKED_STATE`` file written while blocked (default
+                               ~/.nougen/state/relay_watch_blocked.json)
 =============================  =========================================
 
 Note for macOS nodes: if the clone authenticates over HTTPS with the keychain
@@ -58,6 +62,8 @@ LOCK_STALE_SECS = 300  # a holder quieter than this is treated as dead
 PULL_TIMEOUT_SECS = 180
 CURSOR_KEEP = 4000  # ids are time-ordered, so the tail is the useful part
 GOAL_CHARS = 180
+BLOCK_ALERT_SECS = 600     # a pull blocked this long means the board is stale: say so loudly
+BLOCK_REPEAT_SECS = 1800   # then repeat, not every cycle
 
 
 def _env_path(key: str, *default_parts: str) -> Path:
@@ -194,6 +200,60 @@ def pull(root: Path) -> str:
             fallback = "{} failed".format(args[0])
             return (result.stderr.strip().splitlines() or [fallback])[0][:120]
     return "ok"
+
+
+class BlockTracker:
+    """Escalate a pull that stays blocked.
+
+    A blocked pull used to cost one log line per cycle and nothing else, so on 2026-10-04 two
+    uncommitted leg files left this watcher blind to every new leg all night and nobody noticed.
+    ``update`` returns an ALERT line once the block has lasted ``alert_secs`` (then again every
+    ``repeat_secs``), keeps ``state_path`` while blocked so a HUD or another session can read it,
+    and returns a RECOVERED line (and removes the file) when the pull works again.
+    """
+
+    def __init__(self, alert_secs=None, repeat_secs=None, state_path=None):
+        self.alert_secs = float(os.environ.get("NOUGEN_RELAY_BLOCK_ALERT_SECS") or alert_secs or BLOCK_ALERT_SECS)
+        self.repeat_secs = float(repeat_secs or BLOCK_REPEAT_SECS)
+        self.state_path = Path(state_path or os.environ.get("NOUGEN_RELAY_BLOCKED_STATE")
+                               or HOME / ".nougen" / "state" / "relay_watch_blocked.json")
+        self.since = None
+        self.last_alert = None
+
+    def _write(self, now, status, dirty):
+        stamp = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))  # noqa: E731
+        body = {"blocked_since_utc": stamp(self.since), "minutes": int((now - self.since) // 60), "status": status,
+                "dirty_legs": dirty, "alerted_utc": stamp(now), "pid": os.getpid()}
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(body), encoding="utf-8")
+            os.replace(tmp, self.state_path)
+        except OSError:
+            pass
+
+    def update(self, status, dirty=-1, now=None):
+        now = time.time() if now is None else now
+        if status == "ok":
+            alerted, since = self.last_alert is not None, self.since
+            self.since = self.last_alert = None
+            try:
+                self.state_path.unlink()
+            except OSError:
+                pass
+            if alerted:
+                return "[relay_watch] RECOVERED: pull works again after {:.0f} min".format((now - since) / 60)
+            return None
+        if self.since is None:
+            self.since = now
+        blocked = now - self.since
+        if blocked < self.alert_secs or (self.last_alert is not None and now - self.last_alert < self.repeat_secs):
+            return None
+        self.last_alert = now
+        self._write(now, status, dirty)
+        return ("[relay_watch] ALERT: pull blocked for {:.0f} min, so the board may be stale: {} (uncommitted legs: {}). "
+                "Commit or claim them, then `git merge --no-edit @{{u}}`; do NOT rebase, reset, or merge with -X ours."
+                ).format(blocked / 60, status, "unknown" if dirty < 0 else dirty)
 
 
 def scrub(obj):
@@ -456,10 +516,14 @@ def main() -> int:
         print("[relay_watch] cursor primed with {} existing legs".format(len(seen)), flush=True)
     print("[relay_watch] interval={}s ({}) once={} inbox={}".format(
         interval, source, once, INBOX), flush=True)
+    blocks = BlockTracker()
     try:
         while True:
             heartbeat()
             status = pull(root)
+            alert = blocks.update(status, dirty_legs(root) if status != "ok" else 0)
+            if alert:
+                print(alert, flush=True)
             current = legs(root)
             fresh = sorted(set(current) - seen)
             for leg_id in fresh:
