@@ -587,6 +587,33 @@ def init_db(index: int = 1):  # noqa: C901
             END;
         """)
 
+        # Timestamp guard: any writer that stores time.time() (seconds or ms) in `timestamp`
+        # produced values that sort as the year 1789 and vanish from date-window recall
+        # (2026-10-04: 398 rows on blade, 91 on phoebus from an unidentified Antigravity writer
+        # that bypasses capture()). Normalize at the schema so unknown writers are covered too.
+        # Only plain numbers in the 2000-2100 epoch range are touched; nothing else is guessed.
+        _ts_numeric = (
+            "new.timestamp IS NOT NULL AND new.timestamp <> '' "
+            "AND new.timestamp NOT GLOB '*[^0-9.]*' "
+            "AND CAST(new.timestamp AS REAL) BETWEEN 946684800 AND 4102444800000"
+        )
+        _ts_iso = (
+            "strftime('%Y-%m-%dT%H:%M:%fZ', CASE WHEN CAST(new.timestamp AS REAL) >= 1e12 "
+            "THEN CAST(new.timestamp AS REAL) / 1000.0 ELSE CAST(new.timestamp AS REAL) END, 'unixepoch')"
+        )
+        cursor.execute("DROP TRIGGER IF EXISTS shards_ts_norm_ai")
+        cursor.execute("DROP TRIGGER IF EXISTS shards_ts_norm_au")
+        cursor.execute(f"""
+            CREATE TRIGGER shards_ts_norm_ai AFTER INSERT ON shards WHEN {_ts_numeric} BEGIN
+                UPDATE shards SET timestamp = {_ts_iso} WHERE id = new.id;
+            END;
+        """)
+        cursor.execute(f"""
+            CREATE TRIGGER shards_ts_norm_au AFTER UPDATE OF timestamp ON shards WHEN {_ts_numeric} BEGIN
+                UPDATE shards SET timestamp = {_ts_iso} WHERE id = new.id;
+            END;
+        """)
+
         conn.commit()
         _INITIALIZED_DBS.add(key)
     finally:
