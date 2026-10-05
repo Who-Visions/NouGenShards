@@ -35,6 +35,11 @@ def grid(tmp_path, monkeypatch):
     core._INITIALIZED_DBS.clear()
     core.init_db(1)
     conn = sqlite3.connect(core.get_db_path(1))
+    # Simulate a grid written before the 2026-10-04 schema guard existed: the
+    # shards_ts_norm_* triggers would otherwise convert the epoch row on insert,
+    # and this test is about the READ path tolerating legacy rows already on disk.
+    conn.execute("DROP TRIGGER IF EXISTS shards_ts_norm_ai")
+    conn.execute("DROP TRIGGER IF EXISTS shards_ts_norm_au")
     for ts in ("2026-01-05T00:00:00Z", "2026-03-05T00:00:00Z",
                "1765164383.7884684"):            # the epoch row
         conn.execute("INSERT INTO shards (event_type, title, content, timestamp, "
