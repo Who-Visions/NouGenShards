@@ -285,6 +285,27 @@ def classify_sensitivity(tags: Iterable[str]) -> str:
     return "normal"
 
 
+def shard_timestamp(created_utc: str) -> str:
+    """ISO-8601 UTC for the shards.timestamp column.
+
+    Journals written with ``time.time()`` carry epoch seconds (or milliseconds) in created_utc;
+    stored raw they sort as the year 1789 and fall out of every date-window recall (2026-10-04:
+    91 rows on phoebus, Sep 16/28 fleet acks). The mirror key still uses the raw value, so
+    re-runs stay idempotent; only the stored timestamp is normalized. Unrecognized values pass
+    through unchanged rather than being guessed.
+    """
+    raw = str(created_utc or "").strip()
+    try:
+        v = float(raw)
+    except ValueError:
+        return raw
+    secs = v / 1000.0 if v >= 1e12 else v
+    if not 946684800 <= secs <= 4102444800:  # 2000-01-01 .. 2100-01-01
+        return raw
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(secs, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 @dataclass
 class MirrorRecord:
     key: str
@@ -435,7 +456,7 @@ def mirror_journal(cfg: MirrorConfig, dry_run: bool = True) -> MirrorResult:
                                   sensitivity=?, enc=?, domain_key=?
                             WHERE id=?""",
                         (
-                            rec.created_utc,
+                            shard_timestamp(rec.created_utc),
                             rec.title,
                             content,
                             rec.tags_json,
@@ -457,7 +478,7 @@ def mirror_journal(cfg: MirrorConfig, dry_run: bool = True) -> MirrorResult:
                                 access_count, file_hash, domain_key, sensitivity, enc, schema_version)
                            VALUES (?, ?, ?, ?, ?, 1.0, 0, ?, ?, ?, ?, 2)""",
                         (
-                            rec.created_utc,
+                            shard_timestamp(rec.created_utc),
                             _EVENT_TYPE,
                             rec.title,
                             content,
