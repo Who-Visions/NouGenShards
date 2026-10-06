@@ -205,3 +205,6 @@ projects/
 *.bak*
 bin/ngs-node.sh.bak*
 ~/
+
+# Chrome extension icons must ship with the extension
+!integrations/chrome-capture/*.png
