@@ -11,3 +11,6 @@ Use: right-click a selection or page -> Capture to shards, or `Alt+Shift+S`.
 The notification reports `captured` from the response, not the HTTP status.
 
 Test: `node --test integrations/chrome-capture/tests/capture.test.mjs`
+
+Design: UI is styled from the NouGenDesign `nougen-core` tokens (`nougen-tokens.css` is a
+verbatim copy of `designs/nougen-core/tokens.css`; refresh it by copying, do not edit it).
