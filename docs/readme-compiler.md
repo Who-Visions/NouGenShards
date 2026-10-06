@@ -7,10 +7,10 @@ The compiler is deterministic and fail-closed: it rejects duplicate JSON keys, u
 ## Start in a GitHub repository
 
 ```powershell
-python C:\Users\super\Outpost\NouGen\tools\readme_compiler.py draft C:\path\to\repo --output README.nougen.draft.json
+python ~\Outpost\NouGen\tools\readme_compiler.py draft C:\path\to\repo --output README.nougen.draft.json
 # Review, then copy the accepted draft to README.nougen.json.
-python C:\Users\super\Outpost\NouGen\tools\readme_compiler.py compile C:\path\to\repo
-python C:\Users\super\Outpost\NouGen\tools\readme_compiler.py check C:\path\to\repo
+python ~\Outpost\NouGen\tools\readme_compiler.py compile C:\path\to\repo
+python ~\Outpost\NouGen\tools\readme_compiler.py check C:\path\to\repo
 ```
 
 `init` reads the project name and description from `pyproject.toml` or `package.json` when available. It creates a starter manifest and does not replace an existing one unless `--force` is passed. A forced manifest replacement saves the prior file as `README.nougen.json.pre-nougen.bak`; it will not replace an existing backup. Empty starter sections are skipped when compiling.

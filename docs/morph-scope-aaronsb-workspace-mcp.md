@@ -8,7 +8,7 @@ already done)" and a prior scope doc at
 `docs/google-workspace-mcp-port.md`. **Neither exists in this repository.**
 
 Checked and confirmed absent:
-- `C:\Users\super\Outpost\NouGen\docs\google-workspace-mcp-port.md` — not on disk on
+- `~\Outpost\NouGen\docs\google-workspace-mcp-port.md` — not on disk on
   the current branch (`fleet/nougenmorph-elevation`), nor findable via glob.
 - `src/nougen_shards/google_workspace/` — no such path under `NouGen\src`.
 - Git history: `git log --all` and `git ls-tree -r` across all branches (including
@@ -67,7 +67,7 @@ what "existing" might actually mean, both checked:
 1. **A prior NouGen-owned Python port of taylorwilsdon/google_workspace_mcp** —
    not found anywhere in this repo's history or working tree. If it exists, it lives
    in a different repo/machine than the one this session ran in
-   (`C:\Users\super\Outpost\NouGen`, branch `fleet/nougenmorph-elevation`). Worth
+   (`~\Outpost\NouGen`, branch `fleet/nougenmorph-elevation`). Worth
    checking `NouGenShards-pull-clone`, `Watchtower`, or another machine (blade/
    whoart) before concluding it truly doesn't exist — this session did not scan
    the full Outpost root (Rule 0.4 forbids it) and only checked the two named

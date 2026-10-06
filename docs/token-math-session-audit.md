@@ -32,7 +32,7 @@
 - **Top 20 Token Events**: 20 consecutive turns averaging ~160,000 input tokens and ~159,000 cache-read tokens per turn.
 - **Cache Share**: `49.1%` (Flagged: *Cold context leak / un-cached system prompt churn*).
 
-### Claude Code (`C:\Users\super\Outpost`)
+### Claude Code (`~\Outpost`)
 - **Cache Share**: `98.0%` (Status: *Excellent*).
 
 ---

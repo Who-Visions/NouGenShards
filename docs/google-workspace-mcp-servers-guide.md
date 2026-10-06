@@ -62,7 +62,7 @@ gcloud services enable \
 
 ## 4. Antigravity Configuration (`mcp_config.json`)
 
-File location: `~/.gemini/config/mcp_config.json` (also mirrored at `C:\Users\super\.gemini\antigravity-ide\mcp_config.json`):
+File location: `~/.gemini/config/mcp_config.json` (also mirrored at `~\.gemini\antigravity-ide\mcp_config.json`):
 
 ```json
 {

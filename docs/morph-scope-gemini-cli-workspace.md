@@ -22,7 +22,7 @@ The official **Google Workspace extension for Gemini CLI**, published by Google 
 
 ## Overlap / dedup assessment vs `src/nougen_shards/google_workspace/`
 
-NouGen already has a **native Python MCP port** (`C:\Users\super\Outpost\NouGen\src\nougen_shards\google_workspace\`, documented at `docs/google-workspace-mcp-port.md`, ported from `taylorwilsdon/google_workspace_mcp`) covering:
+NouGen already has a **native Python MCP port** (`~\Outpost\NouGen\src\nougen_shards\google_workspace\`, documented at `docs/google-workspace-mcp-port.md`, ported from `taylorwilsdon/google_workspace_mcp`) covering:
 
 | Surface | NouGen native port | gemini-cli-extensions/workspace |
 |---|---|---|

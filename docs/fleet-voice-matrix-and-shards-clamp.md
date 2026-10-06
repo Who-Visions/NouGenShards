@@ -1,7 +1,7 @@
 # 🛰️ Fleet Dynamic Voice Matrix & Shard Token Clamps
 
 **Recorded**: 2026-09-29  
-**Authority**: NouGen Sovereign Fleet Architecture (`C:\Users\super\.nougen`)  
+**Authority**: NouGen Sovereign Fleet Architecture (`~\.nougen`)  
 **Nodes**: Apollo (`192.168.1.16`), Hyperion (`192.168.1.187`), Phoebus (`192.168.1.78`)
 
 ---
@@ -34,7 +34,7 @@ During a live probe on the 9-DB grid, an unbudgeted 5-hit search for standard te
 
 ## 3. Dynamic & Deterministic Fleet Voice Matrix
 
-Routing is handled deterministically via [scratch/speak_brief.py](file:///c:/Users/super/.gemini/antigravity-ide/brain/16458914-317a-4cb2-bcb4-3146ce0157aa/scratch/speak_brief.py) hitting NouGenVoice on `http://127.0.0.1:17493`:
+Routing is handled deterministically via [scratch/speak_brief.py](file:///~/.gemini/antigravity-ide/brain/16458914-317a-4cb2-bcb4-3146ce0157aa/scratch/speak_brief.py) hitting NouGenVoice on `http://127.0.0.1:17493`:
 
 | Node / Alias | Character Role | Kokoro Voice ID | Tone & Character Profile |
 |---|---|---|---|

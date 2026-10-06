@@ -2,7 +2,7 @@
 
 Reviewed: 2026-10-02 (02:43 PM EDT).
 Source Repository: `https://github.com/speedyapply/JobSpy`
-Canonical Target: `C:\Users\super\Outpost\nougenjobs`
+Canonical Target: `~\Outpost\nougenjobs`
 Status: Architecture Morphed & Native Ingestion Bridge Designed.
 
 ## Observed Donor Capabilities

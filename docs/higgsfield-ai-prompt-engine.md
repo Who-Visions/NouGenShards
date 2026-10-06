@@ -65,6 +65,6 @@ For long-form, complex narrative shots, Seedance replaces single-shot MCSLA with
 ---
 
 ## 5. Fleet Skill Location & Sub-skills
-- Installed path: `C:\Users\super\.gemini\config\skills\higgsfield-ai-prompt-skill\`
-- Active junction: `C:\Users\super\.gemini\config\skills\higgsfield\`
+- Installed path: `~\.gemini\config\skills\higgsfield-ai-prompt-skill\`
+- Active junction: `~\.gemini\config\skills\higgsfield\`
 - Sub-skill modules: 33 specialized modules for acting, camera, motion, seedance, cinema studio, soul character locking, and marketing factory.
