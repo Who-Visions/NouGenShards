@@ -40,7 +40,7 @@ except ImportError:
     print("[-] Error: nougen_shards.nougenmsg not found.", file=sys.stderr)
     sys.exit(1)
 
-INTERVAL_SECONDS = int(os.environ.get("AGY_PING_PONG_INTERVAL", "60"))
+INTERVAL_SECONDS = int(os.environ.get("AGY_PING_PONG_INTERVAL", "120"))
 INBOX_DIR = Path.home() / ".gemini" / "config" / "inbox"
 NOUGEN_INBOX = Path.home() / ".nougen" / "agy_inbox"
 SHARDS_DIR = Path.home() / ".nougen" / "shards"
@@ -153,9 +153,17 @@ def run_loop():
     print(f"🛰️  [agy-cli 24/7 Ping-Pong Daemon Online with POE Engine] Node: {node} ({host})", flush=True)
     print(f"⏱️  Heartbeat interval: {INTERVAL_SECONDS}s", flush=True)
 
+    if os.environ.get("NOUGEN_HEARTBEAT_DISABLED", "1") == "1":
+        print("🛑 Heartbeat loop paused by NOUGEN_HEARTBEAT_DISABLED=1. Idling...", flush=True)
+        while True:
+            time.sleep(3600)
+
     round_idx = 0
     while True:
         try:
+            if os.environ.get("NOUGEN_HEARTBEAT_DISABLED", "1") == "1":
+                time.sleep(60)
+                continue
             round_idx += 1
             now_str = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p EDT")
             poe = collect_poe(node, round_idx)
