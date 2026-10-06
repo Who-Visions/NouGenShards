@@ -4,7 +4,7 @@ Source: [morluto/rea](https://github.com/morluto/rea) v4.0.1, MIT licensed, Type
 
 ## Recall-first
 
-The Antigravity CLI lane (Gemini 3.8 Flash, nougenai@gmail.com) cloned rea to `C:\Users\super\Outpost\rea` and captured a morph shard (`#nougenmorph #reverse-engineering #rea`) earlier on 2026-10-06 (~08:4x EDT), with a 118-tool / 10-family catalogue and the skill installed at `reverse-engineer-anything`. Per the nougentube/relay recall rule, this pass does **not** re-clone or re-ingest. It builds on that shard and scores the *transferable discipline patterns* — not the reverse-engineering capability itself — against NouGen's own memory and relay tooling.
+The Antigravity CLI lane (Gemini 3.8 Flash) cloned rea to `%USERPROFILE%\Outpost\rea` and captured a morph shard (`#nougenmorph #reverse-engineering #rea`) earlier on 2026-10-06 (~08:4x EDT), with a 118-tool / 10-family catalogue and the skill installed at `reverse-engineer-anything`. Per the nougentube/relay recall rule, this pass does **not** re-clone or re-ingest. It builds on that shard and scores the *transferable discipline patterns* — not the reverse-engineering capability itself — against NouGen's own memory and relay tooling.
 
 ## Scope boundary
 
