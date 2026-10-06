@@ -1027,12 +1027,12 @@ def ensure_repo_gitignore(repo_path: Path) -> bool:
         return True
         
     current = gitignore_p.read_text(encoding="utf-8", errors="ignore")
-    lines = [l.strip() for l in current.splitlines()]
+    lines = [line.strip() for line in current.splitlines()]
     appended = []
     
-    if ".env" not in lines and not any(l == ".env" or l == "/.env" for l in lines):
+    if ".env" not in lines and not any(line == ".env" or line == "/.env" for line in lines):
         appended.append(".env")
-    if ".env.*" not in lines and not any(l.startswith(".env.") for l in lines):
+    if ".env.*" not in lines and not any(line.startswith(".env.") for line in lines):
         appended.append(".env.*")
     if "!.env.example" not in lines:
         appended.append("!.env.example")
@@ -1136,9 +1136,14 @@ def auto_env_repo(repo_dir: str | Path, force: bool = False) -> dict[str, Any]:
     }
 
 
-def auto_env_all(outpost_dir: str | Path = r"C:\Users\super\Outpost", force: bool = False) -> list[dict[str, Any]]:
+def auto_env_all(outpost_dir: str | Path | None = None, force: bool = False) -> list[dict[str, Any]]:
     """Sweeps all git repositories under Outpost and auto-envs them safely."""
-    outpost_path = Path(outpost_dir).resolve()
+    if outpost_dir is None:
+        env_val = os.environ.get("OUTPOST_DIR")
+        target_dir = Path(env_val).resolve() if env_val else (Path.home() / "Outpost")
+    else:
+        target_dir = Path(outpost_dir).resolve()
+    outpost_path = target_dir
     results = []
     
     for item in sorted(outpost_path.iterdir()):

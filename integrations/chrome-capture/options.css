@@ -1,0 +1,15 @@
+/* Styled only from nougen-core tokens (nougen-tokens.css is a copy of NouGenDesign designs/nougen-core/tokens.css). */
+@media (prefers-color-scheme: light) { :root[data-theme="dark"] { color-scheme: light; } }
+body { margin: 0; background: var(--bg); color: var(--text); font: var(--type-body)/var(--line-body) var(--font-main); }
+main { max-width: var(--reading-measure); margin: var(--space-6) auto; padding: 0 var(--space-4); }
+h1 { font-size: 1.5rem; margin: 0 0 var(--space-2); }
+label { display: block; margin: var(--space-5) 0 var(--space-2); }
+input { width: 100%; box-sizing: border-box; min-height: var(--target-touch); padding: 0 var(--space-3);
+  background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius-md); font: inherit; }
+input:hover { background: var(--panel-hover); }
+button { margin-top: var(--space-5); min-height: var(--target-touch); padding: 0 var(--space-5);
+  background: var(--accent); color: var(--control-ink); border: 0; border-radius: var(--radius-md); font: inherit; cursor: pointer;
+  transition: background var(--motion-fast) var(--motion-ease); }
+button:hover { filter: brightness(1.08); }
+.meta { color: var(--muted); font-size: var(--type-meta); margin: var(--space-2) 0 0; }
+#msg { margin-top: var(--space-4); color: var(--accent-green); min-height: 1.5em; }

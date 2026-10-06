@@ -47,3 +47,26 @@ def test_fulltext_cap_has_floor_and_ceiling(monkeypatch, tmp_path):
     assert low["chars_returned"] == 1000
     high = arxiv_radar.run_arxiv_paper("fulltext", "2609.39915", max_chars=10**9)
     assert high["chars_returned"] == arxiv_radar.MAX_FULLTEXT_CHARS and high["truncated"] is True
+
+
+def test_empty_ref_validation(monkeypatch):
+    monkeypatch.setattr(arxiv_radar, "get_radar_tools", lambda: {"paper": _FakePaper(None)})
+    res = arxiv_radar.run_arxiv_paper("lookup", "")
+    assert res["status"] == "error"
+    assert "ref is required" in res["error"]
+
+    res_spaces = arxiv_radar.run_arxiv_paper("fulltext", "   ")
+    assert res_spaces["status"] == "error"
+    assert "ref is required" in res_spaces["error"]
+
+
+def test_fulltext_preserves_internal_type_error(monkeypatch):
+    class _BuggyPaper(_FakePaper):
+        def fulltext(self, aid, refresh=False):
+            return 1 + "str"
+
+    monkeypatch.setattr(arxiv_radar, "get_radar_tools", lambda: {"paper": _BuggyPaper(None)})
+    res = arxiv_radar.run_arxiv_paper("fulltext", "2609.39915")
+    assert res["status"] == "error"
+    assert "unsupported operand type" in res["error"]
+

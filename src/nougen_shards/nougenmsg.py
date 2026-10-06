@@ -286,6 +286,10 @@ class AgentPinger:
         """
         if not text:
             return text
+        from .evidence_label import PR_CHECK_ENV, check_merge_claims, label_claim
+        text = label_claim(text)
+        if os.environ.get(PR_CHECK_ENV) == "1":
+            text = check_merge_claims(text)
         upper = text.upper()
         if any(k in upper for k in ["CLAIM", "TASK", "BATON", "RELAY LEG"]):
             mandate = "\n⚡ [HARDCADE NATIVE MANDATE]: A CLAIM legally commits this lane to immediate physical engineering execution (source code commits, passing test suites, and verified artifacts). Bare ACKs, simulated progress, and stopping without landing proof are strictly prohibited."
@@ -476,14 +480,27 @@ class AgentPinger:
 
     @staticmethod
     def ping_codex(prompt: str, origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Queue through the local Codex pipe, retaining an inbox fallback."""
+        """Queue through the local Codex pipe, retaining an inbox fallback.
+
+        Every result carries ``codex_limits`` (Codex's /status rate windows) so a
+        sender can tell "Codex is rate-paused until 7:20 PM" from "Codex ignored me".
+        """
+        try:
+            from .codex_status import status as _codex_status
+            limits = _codex_status()
+        except Exception as exc:
+            limits = {"ok": False, "error": str(exc)}
         try:
             from .codex_pipe import deliver
             res = deliver(prompt, origin=origin)
             if res.get("pipe_delivered") or (res.get("file") and res.get("status") in {"queued", "saved"}):
-                return res
+                return {**res, "codex_limits": limits}
         except Exception:
             pass
+        return {**AgentPinger._drop_codex_inbox(prompt, origin), "codex_limits": limits}
+
+    @staticmethod
+    def _drop_codex_inbox(prompt: str, origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
         inbox_dir = os.path.expanduser(os.path.join("~", ".codex", "inbox"))
         os.makedirs(inbox_dir, exist_ok=True)
@@ -1181,6 +1198,11 @@ class NouGenMsgBus:
             codex_pipe = codex_request({"op": "status"})
         except Exception:
             codex_pipe = {"status": "offline"}
+        try:
+            from .codex_status import status as _codex_status
+            codex_pipe = {**codex_pipe, "limits": _codex_status()}
+        except Exception:
+            pass
 
         inbox_gemini = os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox"))
         inbox_codex = os.path.expanduser(os.path.join("~", ".codex", "inbox"))

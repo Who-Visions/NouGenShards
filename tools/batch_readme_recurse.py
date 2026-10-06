@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import time
@@ -36,9 +35,9 @@ TARGET_REPOS = [
 
 def process_repo(repo_name: str, model: str = "Yukiai:e2b") -> dict:
     repo_path = (root_dir.parent / repo_name).resolve()
-    print(f"\n==================================================")
+    print("\n==================================================")
     print(f"[*] Processing: {repo_name} at {repo_path}")
-    print(f"==================================================")
+    print("==================================================")
 
     if not repo_path.is_dir():
         print(f"[-] Directory not found: {repo_path}")

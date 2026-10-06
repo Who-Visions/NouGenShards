@@ -45,3 +45,13 @@ aba0802c458afc97d9230a1c8476029805804971:.github/workflows/deploy-space.yml:gene
 # owner separately. ---
 97a4672fac422d4d8d6d954c20696f19d2ed7534:docs/wargame-catalog/catalog.ndjson:generic-api-key:492
 97a4672fac422d4d8d6d954c20696f19d2ed7534:docs/wargame-catalog/unk-app-ai.md:generic-api-key:186
+
+# RSI artifact identity: generic-api-key matched Ed25519PrivateKey type
+# annotations after the parameter names key/signing_key, not credentials.
+# Verified against the exact source lines and pinned gitleaks 8.30.1 report.
+# Only these two historic code fingerprints are ignored; no path/rule bypass.
+355eb3f152c7aaaac820c90c68ce822510f4c247:src/nougen_shards/rsi_artifact_identity.py:generic-api-key:85
+355eb3f152c7aaaac820c90c68ce822510f4c247:src/nougen_shards/rsi_artifact_identity.py:generic-api-key:139
+821c6feb0857226565cdf7a95c7149c9807bd75f:src/nougen_shards/rsi_artifact_identity.py:generic-api-key:85
+821c6feb0857226565cdf7a95c7149c9807bd75f:src/nougen_shards/rsi_artifact_identity.py:generic-api-key:139
+

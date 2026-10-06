@@ -17,7 +17,7 @@ from typing import List, Optional
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from fastapi import FastAPI, Header, HTTPException, Depends, Response, Query
+from fastapi import FastAPI, Header, HTTPException, Depends, Response, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import gradio as gr
@@ -1501,6 +1501,64 @@ def _merge_rows(*groups) -> list:
     return merged
 
 
+# --- WhatsApp Cloud API webhook (public, signature-gated) -------------------
+# Meta cannot send X-NGS-Token, so this pair is the one deliberate exception:
+# GET answers the subscribe handshake, POST requires a valid X-Hub-Signature-256
+# over the raw body. Both fail closed (503) until the Keymaker holds
+# WHATSAPP_VERIFY_TOKEN / WHATSAPP_APP_SECRET. Inbound text lands in a local
+# JSONL inbox as untrusted data; nothing is written to the relay.
+
+def _wa_secret(name: str) -> Optional[str]:
+    from nougen_shards import keymaker
+    try:
+        return keymaker.get_secret(name) or None
+    except Exception:
+        return None
+
+
+@app.get("/webhooks/whatsapp")
+def whatsapp_verify(
+    mode: Optional[str] = Query(None, alias="hub.mode"),
+    token: Optional[str] = Query(None, alias="hub.verify_token"),
+    challenge: Optional[str] = Query(None, alias="hub.challenge"),
+):
+    from nougen_shards import whatsapp
+    want = _wa_secret("WHATSAPP_VERIFY_TOKEN")
+    if not want:
+        raise HTTPException(503, "whatsapp webhook not configured")
+    out = whatsapp.verify_challenge(
+        {"hub.mode": mode or "", "hub.verify_token": token or "",
+         "hub.challenge": challenge or ""}, want)
+    if out is None:
+        raise HTTPException(403, "verify token mismatch")
+    return Response(content=out, media_type="text/plain")
+
+
+_WA_WINDOWS = None
+
+
+@app.post("/webhooks/whatsapp")
+async def whatsapp_inbound(request: Request):
+    global _WA_WINDOWS
+    from nougen_shards import whatsapp
+    secret = _wa_secret("WHATSAPP_APP_SECRET")
+    if not secret:
+        raise HTTPException(503, "whatsapp webhook not configured")
+    if _WA_WINDOWS is None:
+        _WA_WINDOWS = whatsapp.WindowTracker()
+    body = await request.body()
+    sig = request.headers.get("X-Hub-Signature-256", "")
+    try:
+        n = await run_in_threadpool(
+            whatsapp.handle_webhook, body, sig, secret, _WA_WINDOWS,
+            whatsapp.jsonl_sink())
+    except PermissionError:
+        raise HTTPException(403, "bad signature")
+    except ValueError:
+        raise HTTPException(400, "malformed payload")
+    return {"received": n}
+
+
 # Every data endpoint requires X-NGS-Token (verify_token 503s until
 # NGS_NODE_TOKEN is configured, so the node is deny-by-default). This is what
 # makes it safe to run the Space public: reads and writes are both gated;
@@ -2716,9 +2774,9 @@ def create_destiny(
         goal=goal,
         branch=branch,
         trigger=trigger,
-        required=required,
-        forbidden=forbidden,
-        variance=variance,
+        required_events=required,
+        forbidden_outcomes=forbidden,
+        acceptable_variance=variance,
         verification=verification,
         status=status,
         actor=actor
@@ -2743,7 +2801,7 @@ def update_destiny(
 ) -> dict:
     """Update prospective destiny status (dormant, active, fulfilled, fumbled, abandoned)."""
     from nougen_shards import destiny as _destiny
-    return _destiny.update_status(destiny_id, status=status, actor=actor, evidence=evidence)
+    return _destiny.update_status(destiny_id, status, actor=actor, evidence=evidence)
 
 
 @node_mcp.tool()
