@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "NouGen Capture",
-  "version": "0.1.0",
-  "description": "Send a selection or page to your NouGen shard vault.",
+  "name": "NouGen: Capture, Tube, Morph",
+  "version": "0.2.0",
+  "description": "Send a selection, a YouTube video or a whole page to your NouGen shard vault.",
   "minimum_chrome_version": "116",
+  "icons": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" },
   "permissions": ["contextMenus", "storage", "activeTab", "scripting", "notifications"],
   "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
   "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "NouGen", "default_popup": "popup.html", "default_icon": { "16": "icon16.png", "48": "icon48.png" } },
   "options_ui": { "page": "options.html", "open_in_tab": true },
   "commands": {
     "capture-selection": {

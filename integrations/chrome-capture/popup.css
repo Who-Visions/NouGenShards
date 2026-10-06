@@ -1,0 +1,12 @@
+/* Styled only from nougen-core tokens (nougen-tokens.css). */
+body { margin: 0; width: 22.5rem; background: var(--bg); color: var(--text); font: var(--type-body)/var(--line-body) var(--font-main); }
+main { padding: var(--space-4); }
+h1 { font-size: 1.125rem; margin: 0 0 var(--space-3); }
+button { display: block; width: 100%; min-height: var(--target-touch); margin-top: var(--space-2); padding: 0 var(--space-4);
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius-md); font: inherit; text-align: left; cursor: pointer; }
+button:hover { background: var(--panel-hover); }
+#morph { background: var(--accent); color: var(--control-ink); border: 0; }
+label { display: block; margin: var(--space-4) 0 var(--space-2); font-size: var(--type-meta); color: var(--muted); }
+input { width: 100%; box-sizing: border-box; min-height: var(--target-touch); padding: 0 var(--space-3); background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-md); font: inherit; }
+.meta { color: var(--muted); font-size: var(--type-meta); margin: var(--space-3) 0 0; display: block; }
