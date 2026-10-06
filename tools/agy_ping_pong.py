@@ -182,7 +182,7 @@ def run_loop():
             res_local = NouGenMsgBus.live_ping(target="antigravity", text=ping_text)
 
             # 2. Emit background fleet heartbeat
-            res_fleet = NouGenMsgBus.emit_fleet(
+            _ = NouGenMsgBus.emit_fleet(
                 text=ping_text,
                 target="all",
                 background=True,
