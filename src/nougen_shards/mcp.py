@@ -592,13 +592,42 @@ def apply_skills(task: str) -> str:
             f"Installed skills:\n{installed}"
         )
 
-    parts = [
-        f"✅ {len(matched)} skill(s) govern this task. Follow them; they "
-        f"supersede your defaults.\n"
-    ]
+    # Cap the total body size returned. A single call once returned 92,416 chars and
+    # overflowed the caller's tool-result limit, which spilled the whole payload to a
+    # file and defeated the point. Bodies are inlined in match order while they fit;
+    # the rest are named with their size and a load_skill() handle so nothing is lost
+    # and nothing is silently truncated mid-text.
+    try:
+        max_chars = int(os.environ.get("NOUGEN_APPLY_SKILLS_MAX_CHARS", "20000"))
+    except ValueError:
+        max_chars = 20000
+
+    inlined = []
+    deferred = []
+    used = 0
     for skill in matched:
+        block_len = len(skill.name) + len(str(skill.path)) + len(skill.body.strip()) + 150  # + headers
+        # Always inline the first match, even if it alone exceeds the cap, so a lone
+        # large skill is never silently withheld; later bodies defer once the cap is hit.
+        if not inlined or used + block_len <= max_chars:
+            inlined.append(skill)
+            used += block_len
+        else:
+            deferred.append(skill)
+
+    header = (
+        f"✅ {len(matched)} skill(s) govern this task. Follow them; they supersede "
+        f"your defaults. Inlined {len(inlined)}, deferred {len(deferred)} "
+        f"(cap {max_chars} chars).\n"
+    )
+    parts = [header]
+    for skill in inlined:
         parts.append(f"\n{'=' * 70}\nSKILL: {skill.name}\nSOURCE: {skill.path}\n{'=' * 70}\n")
         parts.append(skill.body.strip())
+    if deferred:
+        parts.append(f"\n{'=' * 70}\nNot inlined (over {max_chars}-char budget) — load on demand:")
+        for skill in deferred:
+            parts.append(f'- {skill.name} ({len(skill.body.strip())} chars): load_skill("{skill.name}")')
     return "\n".join(parts)
 
 
