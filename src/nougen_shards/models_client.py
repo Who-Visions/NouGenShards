@@ -547,16 +547,28 @@ class OpenRouterClient(OpenAIClient):
         return list(FREE_MODEL_SEED)
 
     def preferred_free_model(self, preference: Optional[str] = None) -> str:
-        """Resolve a single free model DYNAMICALLY from the live roster. Prefer
-        the first roster entry matching ``preference`` (substring), else the top
-        of the live roster; only falls back to the seed when discovery is empty.
-        No call site should hardcode a model string — call this instead."""
+        """Resolve a free model DYNAMICALLY from the live roster.
+        Supports explicit preference, environment overrides, or dynamic multi-model rotation
+        across the full frontier set (Nemotron, Gemma, Ling, LFM, Inkling, etc.)."""
         roster = self.get_free_models()
-        if preference:
+        if not roster:
+            return FREE_MODEL_SEED[0]
+
+        env_pref = os.environ.get("NOUGEN_MSG_OPENROUTER_MODEL", "").strip() or os.environ.get("NOUGEN_OPENROUTER_PREFERENCE", "").strip()
+        pref = preference or env_pref
+
+        # If user explicitly specifies a model preference (e.g. 'nemotron', 'gemma', 'ling')
+        if pref and pref.lower() not in ("random", "rotate", "auto", "dynamic"):
             for mid in roster:
-                if preference.lower() in mid.lower():
+                if pref.lower() in mid.lower():
                     return mid
-        return roster[0] if roster else FREE_MODEL_SEED[0]
+
+        # Dynamic Frontier Rotation: choose from capable free models instead of hard-pinning roster[0]
+        import random
+        # Pool capable frontier architectures
+        priority_models = [m for m in roster if any(k in m.lower() for k in ["nemotron", "gemma", "ling", "lfm", "inkling", "north"])]
+        pool = priority_models if priority_models else roster
+        return random.choice(pool)
 
     def bounded_fallback_models(self, primary: Optional[str] = None,
                                 roster: Optional[list] = None) -> list:

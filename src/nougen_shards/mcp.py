@@ -941,27 +941,25 @@ def create_destiny(title: str, goal: str, branch: Optional[str] = None,
 # --- NouGenMsg Fleet Bus Tools ---
 
 @mcp.tool()
-def nougenmsg_search(query: str, target: str = "all", limit: int = 20) -> str:
+def nougenmsg_search(query: str, target: str = "all", limit: int = 20, timeout_s: float = 3.0) -> str:
     """
     Search across active and archived NouGenMsg inbox notifications across agents.
+    Fulfills the Hurricane Kick 2/3 Search Contract:
+    {complete, query, normalized_query, results, checked_sources, timed_out_sources, ordering_basis, coverage_hash}
 
     Args:
         query: Search term or keyword.
         target: Inbox scope ('antigravity', 'codex', or 'all').
         limit: Max results to return (default 20).
+        timeout_s: Maximum execution duration before returning partial coverage (default 3.0).
     """
     import json
     from .nougenmsg import NouGenMsgBus
     try:
-        results = NouGenMsgBus.search_messages(query=query, target=target, limit=limit)
-        return json.dumps({
-            "query": query,
-            "count": len(results),
-            "messages": results
-        }, indent=2)
+        res = NouGenMsgBus.search_messages(query=query, target=target, limit=limit, timeout_s=timeout_s, as_contract=True)
+        return json.dumps(res, indent=2)
     except Exception as e:
-        return json.dumps({"error": str(e)})
-
+        return json.dumps({"error": str(e), "complete": False, "results": []})
 
 @mcp.tool()
 def nougenmsg_inbox(target: str = "antigravity", limit: int = 10) -> str:
