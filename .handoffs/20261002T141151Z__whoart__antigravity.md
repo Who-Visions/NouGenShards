@@ -6,8 +6,8 @@
 2. **Search Contract Verified**: 6/6 test queries (`PR #671`, `control-plane`, `promotion_gate`, `2026-10-02`, etc.) resolved in ≤0.128s with `complete=True`.
 3. **Unit Tests Passed**: `test_mcp_destiny_nougenmsg.py` (100% pass) and dream suite (30/30 passed).
 4. **Git Repositories Committed**:
-   - `C:\Users\super\Outpost\NouGen`: commit `1413802`
-   - `C:\Users\super\.nougen\src\nougenshards`: commit `895dc30`
+   - `~\Outpost\NouGen`: commit `1413802`
+   - `~\.nougen\src\nougenshards`: commit `895dc30`
 5. **Continuous Voice Co-Pilot Live**: `agy_voice.py` streaming cleanly without thinking leaks, dynamic EDT time grounding enabled.
 6. **NouGenOpen Model Mesh Fan-out**: Verified across Ollama local (`Yukiai:e2b`), OpenRouter, and Hugging Face spaces.
 

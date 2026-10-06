@@ -103,11 +103,11 @@ graph TD
 - **Biological Principle**: Retrieval renders memory plastic and prone to confabulation or lore drift.
 - **NouGen Clamp**:
   - In biological brains, reconsolidation can cause false memories.
-  - In NouGen, we prevent memory corruption via **Cryptographic Domain-Separated Hash Descriptors** ([src/nougen_shards/rsi_artifact_identity.py](file:///C:/Users/super/Outpost/NouGen/src/nougen_shards/rsi_artifact_identity.py)).
+  - In NouGen, we prevent memory corruption via **Cryptographic Domain-Separated Hash Descriptors** ([src/nougen_shards/rsi_artifact_identity.py](file:///~/Outpost/NouGen/src/nougen_shards/rsi_artifact_identity.py)).
   - While context and metadata evolve, raw canonical artifacts remain cryptographically verifiable and tamper-proof.
 
 ---
 
 ## 4. Fleet Ingestion & Canon Record
-- **Canon Document**: [docs/morph-scope-kurzgesagt-brain-memory.md](file:///C:/Users/super/Outpost/NouGen/docs/morph-scope-kurzgesagt-brain-memory.md)
+- **Canon Document**: [docs/morph-scope-kurzgesagt-brain-memory.md](file:///~/Outpost/NouGen/docs/morph-scope-kurzgesagt-brain-memory.md)
 - **Primary Tags**: `#morph #neurobiology #memory-consolidation #hippocampus #cortex #dream-engine #fts5 #shards`

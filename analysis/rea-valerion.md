@@ -2,8 +2,8 @@
 
 **Subject**: `morluto/rea` (Reverse Engineer Anything v4.0.1)  
 **Host**: WhoArt (Node 25.1.0 / Python 3.11.9 / Windows 10 x64)  
-**Target Repository**: `C:\Users\super\Outpost\rea`  
-**Artifact Blueprint**: `C:\Users\super\Outpost\rea\rea_morphed_blueprint.json`  
+**Target Repository**: `~\Outpost\rea`  
+**Artifact Blueprint**: `~\Outpost\rea\rea_morphed_blueprint.json`  
 
 ---
 
@@ -46,11 +46,11 @@
 
 ## 3. Fleet Activation & Integration Artifacts
 
-- **Cloned Source**: `C:\Users\super\Outpost\rea`
-- **Fleet Skill**: Installed in `C:\Users\super\.gemini\config\skills\reverse-engineer-anything`
-- **MCP Registration**: Configured in `C:\Users\super\.gemini\antigravity-ide\mcp_config.json` as `rea` (`npx -y rea-agents@4.0.1 mcp`)
+- **Cloned Source**: `~\Outpost\rea`
+- **Fleet Skill**: Installed in `~\.gemini\config\skills\reverse-engineer-anything`
+- **MCP Registration**: Configured in `~\.gemini\antigravity-ide\mcp_config.json` as `rea` (`npx -y rea-agents@4.0.1 mcp`)
 - **NouGen Shard Persistence**: Stored in `core` memory database with tags `#nougenmorph #reverse-engineering #rea`
-- **Complementary Engine Created**: `NouGenForge` (`C:\Users\super\Outpost\NouGenForge`) for automated scaffolding and clean-room recreation of analyzed artifacts.
+- **Complementary Engine Created**: `NouGenForge` (`~\Outpost\NouGenForge`) for automated scaffolding and clean-room recreation of analyzed artifacts.
 
 ---
 

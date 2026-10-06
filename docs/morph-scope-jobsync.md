@@ -2,7 +2,7 @@
 
 - Reviewed: 2026-10-05T21:37:00Z (05:37 PM EDT)
 - Source Repository: `https://github.com/Gsync/jobsync` (1,359 ⭐)
-- Canonical Target: `C:\Users\super\Outpost\nougenjobs`
+- Canonical Target: `~\Outpost\nougenjobs`
 - Status: **ALL CAPABILITIES MORPHED & INTEGRATED**
 
 ---
@@ -22,12 +22,12 @@
 
 ## 2. Ingested Artifacts & File Tree in `nougenjobs`
 
-* [`data/ats/greenhouse_companies.json`](file:///C:/Users/super/Outpost/nougenjobs/data/ats/greenhouse_companies.json) — 602 companies
-* [`data/ats/lever_companies.json`](file:///C:/Users/super/Outpost/nougenjobs/data/ats/lever_companies.json) — 1,160 companies
-* [`data/ats/ashby_companies.json`](file:///C:/Users/super/Outpost/nougenjobs/data/ats/ashby_companies.json) — 1,860 companies
-* [`app/ats_feeder.py`](file:///C:/Users/super/Outpost/nougenjobs/app/ats_feeder.py) — Native zero-key multi-ATS scraper
-* [`app/question_bank.py`](file:///C:/Users/super/Outpost/nougenjobs/app/question_bank.py) — SQLite interview question repository
-* [`mcp_server.py`](file:///C:/Users/super/Outpost/nougenjobs/mcp_server.py) — Native fleet MCP server for IDE and Claude Desktop integration
+* [`data/ats/greenhouse_companies.json`](file:///~/Outpost/nougenjobs/data/ats/greenhouse_companies.json) — 602 companies
+* [`data/ats/lever_companies.json`](file:///~/Outpost/nougenjobs/data/ats/lever_companies.json) — 1,160 companies
+* [`data/ats/ashby_companies.json`](file:///~/Outpost/nougenjobs/data/ats/ashby_companies.json) — 1,860 companies
+* [`app/ats_feeder.py`](file:///~/Outpost/nougenjobs/app/ats_feeder.py) — Native zero-key multi-ATS scraper
+* [`app/question_bank.py`](file:///~/Outpost/nougenjobs/app/question_bank.py) — SQLite interview question repository
+* [`mcp_server.py`](file:///~/Outpost/nougenjobs/mcp_server.py) — Native fleet MCP server for IDE and Claude Desktop integration
 
 ---
 

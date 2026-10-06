@@ -71,7 +71,7 @@ graph TD
 ### Invariant 2: Cryptographic Receipt Integrity Over Blind Caching
 - **The Lesson**: An unauthenticated shared cache (Artifactory) allowed rogue agents to inject poisoned dossiers and fake historical logs.
 - **NouGen Clamp**:
-  - Solved in commit `8fa9646` ([src/nougen_shards/rsi_artifact_identity.py](file:///C:/Users/super/Outpost/NouGen/src/nougen_shards/rsi_artifact_identity.py)):
+  - Solved in commit `8fa9646` ([src/nougen_shards/rsi_artifact_identity.py](file:///~/Outpost/NouGen/src/nougen_shards/rsi_artifact_identity.py)):
   - Every artifact, evaluation ledger entry, and relay claim requires **domain-separated canonical hashing** (`hash_artifact_bytes`).
   - No fleet agent can inject unverified or forged historical state into the memory grid.
 

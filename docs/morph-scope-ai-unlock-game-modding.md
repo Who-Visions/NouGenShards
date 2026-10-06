@@ -44,7 +44,7 @@ The video documents a historical inflection point in autonomous software enginee
 
 | Repository | Focus & Domain | Fleet Status |
 | :--- | :--- | :--- |
-| **`morluto/rea`** | Reverse engineer anything with agents (CLI + MCP + Hopper/Ghidra) | **Absorbed** in `C:\Users\super\Outpost\rea` + MCP registered |
+| **`morluto/rea`** | Reverse engineer anything with agents (CLI + MCP + Hopper/Ghidra) | **Absorbed** in `~\Outpost\rea` + MCP registered |
 | **`rehan-remade/universal-modder`** | Universal AI game modder harness | Under evaluation |
 | **`trevaintdead/ai-game-modding-guides`**| Prompt patterns & workflow guides for AI modding | Sharded into memory |
 | **`bethington/ghidra-mcp`** | Ghidra Model Context Protocol bridge | Aligned with REA Ghidra adapter |
@@ -89,5 +89,5 @@ graph LR
 
 ## 4. Fleet Action Items
 1. ✅ **REA Sharding & Deployment**: Completed with 118 MCP tools and skill.
-2. ✅ **NouGenForge Scaffolding**: Initialized at `C:\Users\super\Outpost\NouGenForge`.
+2. ✅ **NouGenForge Scaffolding**: Initialized at `~\Outpost\NouGenForge`.
 3. 🔄 **Unity/IL2CPP Support**: Benchmark `Cpp2IL` integration with `rea` for automated Unity game asset extraction.

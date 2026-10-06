@@ -1,8 +1,8 @@
 # NouGenMorph: bethington/ghidra-mcp (Production-Grade Ghidra MCP Server)
 
 **Repo**: https://github.com/bethington/ghidra-mcp  
-**Local Path**: `C:\Users\super\Outpost\ghidra-mcp`  
-**Installed Skill**: `C:\Users\super\.gemini\config\skills\ghidra-mcp`  
+**Local Path**: `~\Outpost\ghidra-mcp`  
+**Installed Skill**: `~\.gemini\config\skills\ghidra-mcp`  
 **MCP Server**: `ghidra-mcp`  
 
 ---
@@ -19,7 +19,7 @@
 ---
 
 ## 2. Integration & Wiring
-- **Python Environment**: Isolated `.venv` created at `C:\Users\super\Outpost\ghidra-mcp\.venv` with `mcp<2` compatibility.
-- **MCP Server Registration**: Configured in `C:\Users\super\.gemini\antigravity-ide\mcp_config.json` under `ghidra-mcp`.
-- **Fleet Skill**: Deployed to `C:\Users\super\.gemini\config\skills\ghidra-mcp\SKILL.md`.
+- **Python Environment**: Isolated `.venv` created at `~\Outpost\ghidra-mcp\.venv` with `mcp<2` compatibility.
+- **MCP Server Registration**: Configured in `~\.gemini\antigravity-ide\mcp_config.json` under `ghidra-mcp`.
+- **Fleet Skill**: Deployed to `~\.gemini\config\skills\ghidra-mcp\SKILL.md`.
 - **Synergy with REA**: Works alongside `morluto/rea` (which handles high-level multi-layer investigation and Hopper/CDP), while `ghidra-mcp` provides deep headless/GUI Java bridge access into Ghidra's decompiler and emulator.

@@ -1,8 +1,8 @@
 # Morph Scope: Tech & College Job Radars to NouGenJobs
 
 Reviewed: 2026-10-02 (02:42 PM EDT).
-Target Substrate: `C:\Users\super\Outpost\nougenjobs`
-Canonical Morphed SQLite: `C:\Users\super\Outpost\nougenjobs\data\morph_opportunities.db`
+Target Substrate: `~\Outpost\nougenjobs`
+Canonical Morphed SQLite: `~\Outpost\nougenjobs\data\morph_opportunities.db`
 
 ## Donor Sources Morphed
 

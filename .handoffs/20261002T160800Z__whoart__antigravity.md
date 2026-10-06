@@ -1,7 +1,7 @@
 # Handoff: 2026-10-02T16:08:00Z (12:08 EDT)
 **Node**: `whoart` (ProArt PX13 / Hyperion)
 **Agent**: Antigravity (Coach) / Yukiai (Player)
-**Authority**: `C:\Users\super\.nougen` (Canonical Persistent Substrate)
+**Authority**: `~\.nougen` (Canonical Persistent Substrate)
 
 ---
 

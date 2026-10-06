@@ -30,7 +30,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Setup paths
-OUTPOST_SRC = Path(r"C:\Users\super\Outpost\NouGen\src")
+OUTPOST_SRC = Path(r"~\Outpost\NouGen\src")
 if str(OUTPOST_SRC) not in sys.path:
     sys.path.insert(0, str(OUTPOST_SRC))
 
@@ -128,7 +128,7 @@ def collect_poe(node: str, round_idx: int) -> dict:
     """Collect verifiable physical Proof of Execution telemetry."""
     global _LAST_SHARD_COUNT
     ports = check_ports()
-    script_sha = get_git_sha(r"C:\Users\super\Outpost\NouGenScript")
+    script_sha = get_git_sha(r"~\Outpost\NouGenScript")
     shard_count = get_shard_count()
     shard_delta = shard_count - _LAST_SHARD_COUNT if _LAST_SHARD_COUNT > 0 else 0
     _LAST_SHARD_COUNT = shard_count
