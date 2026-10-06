@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "NouGen Capture",
+  "version": "0.1.0",
+  "description": "Send a selection or page to your NouGen shard vault.",
+  "minimum_chrome_version": "116",
+  "permissions": ["contextMenus", "storage", "activeTab", "scripting", "notifications"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "commands": {
+    "capture-selection": {
+      "suggested_key": { "default": "Alt+Shift+S" },
+      "description": "Capture the selection (or page) to shards"
+    }
+  }
+}

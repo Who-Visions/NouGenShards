@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NouGen Capture</title>
+<link rel="stylesheet" href="nougen-tokens.css">
+<link rel="stylesheet" href="options.css">
+<main>
+  <h1>NouGen Capture</h1>
+  <p class="meta">Sends a selection or page to your shard vault. Nothing leaves the browser until you capture.</p>
+  <label for="endpoint">Node endpoint</label>
+  <input id="endpoint" placeholder="https://phoebus.nougenai.com" autocomplete="off">
+  <p class="meta">https, or http on localhost.</p>
+  <label for="token">Token</label>
+  <input id="token" type="password" autocomplete="off">
+  <p class="meta">Kept in this browser profile only; never written to source.</p>
+  <button id="save">Save</button>
+  <p id="msg" role="status"></p>
+</main>
+<script type="module" src="options.js"></script>
+</html>
