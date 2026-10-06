@@ -602,8 +602,8 @@ def apply_skills(task: str) -> str:
     except ValueError:
         max_chars = 20000
 
-    inlined: List[Any] = []
-    deferred: List[Any] = []
+    inlined = []
+    deferred = []
     used = 0
     for skill in matched:
         block_len = len(skill.name) + len(str(skill.path)) + len(skill.body.strip()) + 150  # + headers
