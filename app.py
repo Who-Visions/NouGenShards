@@ -2774,9 +2774,9 @@ def create_destiny(
         goal=goal,
         branch=branch,
         trigger=trigger,
-        required=required,
-        forbidden=forbidden,
-        variance=variance,
+        required_events=required,
+        forbidden_outcomes=forbidden,
+        acceptable_variance=variance,
         verification=verification,
         status=status,
         actor=actor
@@ -2801,7 +2801,7 @@ def update_destiny(
 ) -> dict:
     """Update prospective destiny status (dormant, active, fulfilled, fumbled, abandoned)."""
     from nougen_shards import destiny as _destiny
-    return _destiny.update_status(destiny_id, status=status, actor=actor, evidence=evidence)
+    return _destiny.update_status(destiny_id, status, actor=actor, evidence=evidence)
 
 
 @node_mcp.tool()
