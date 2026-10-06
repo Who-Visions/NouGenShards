@@ -592,13 +592,42 @@ def apply_skills(task: str) -> str:
             f"Installed skills:\n{installed}"
         )
 
-    parts = [
-        f"✅ {len(matched)} skill(s) govern this task. Follow them; they "
-        f"supersede your defaults.\n"
-    ]
+    # Cap the total body size returned. A single call once returned 92,416 chars and
+    # overflowed the caller's tool-result limit, which spilled the whole payload to a
+    # file and defeated the point. Bodies are inlined in match order while they fit;
+    # the rest are named with their size and a load_skill() handle so nothing is lost
+    # and nothing is silently truncated mid-text.
+    try:
+        max_chars = int(os.environ.get("NOUGEN_APPLY_SKILLS_MAX_CHARS", "20000"))
+    except ValueError:
+        max_chars = 20000
+
+    inlined = []
+    deferred = []
+    used = 0
     for skill in matched:
+        block_len = len(skill.name) + len(str(skill.path)) + len(skill.body.strip()) + 150  # + headers
+        # Always inline the first match, even if it alone exceeds the cap, so a lone
+        # large skill is never silently withheld; later bodies defer once the cap is hit.
+        if not inlined or used + block_len <= max_chars:
+            inlined.append(skill)
+            used += block_len
+        else:
+            deferred.append(skill)
+
+    header = (
+        f"✅ {len(matched)} skill(s) govern this task. Follow them; they supersede "
+        f"your defaults. Inlined {len(inlined)}, deferred {len(deferred)} "
+        f"(cap {max_chars} chars).\n"
+    )
+    parts = [header]
+    for skill in inlined:
         parts.append(f"\n{'=' * 70}\nSKILL: {skill.name}\nSOURCE: {skill.path}\n{'=' * 70}\n")
         parts.append(skill.body.strip())
+    if deferred:
+        parts.append(f"\n{'=' * 70}\nNot inlined (over {max_chars}-char budget) — load on demand:")
+        for skill in deferred:
+            parts.append(f'- {skill.name} ({len(skill.body.strip())} chars): load_skill("{skill.name}")')
     return "\n".join(parts)
 
 
@@ -912,27 +941,25 @@ def create_destiny(title: str, goal: str, branch: Optional[str] = None,
 # --- NouGenMsg Fleet Bus Tools ---
 
 @mcp.tool()
-def nougenmsg_search(query: str, target: str = "all", limit: int = 20) -> str:
+def nougenmsg_search(query: str, target: str = "all", limit: int = 20, timeout_s: float = 3.0) -> str:
     """
     Search across active and archived NouGenMsg inbox notifications across agents.
+    Fulfills the Hurricane Kick 2/3 Search Contract:
+    {complete, query, normalized_query, results, checked_sources, timed_out_sources, ordering_basis, coverage_hash}
 
     Args:
         query: Search term or keyword.
         target: Inbox scope ('antigravity', 'codex', or 'all').
         limit: Max results to return (default 20).
+        timeout_s: Maximum execution duration before returning partial coverage (default 3.0).
     """
     import json
     from .nougenmsg import NouGenMsgBus
     try:
-        results = NouGenMsgBus.search_messages(query=query, target=target, limit=limit)
-        return json.dumps({
-            "query": query,
-            "count": len(results),
-            "messages": results
-        }, indent=2)
+        res = NouGenMsgBus.search_messages(query=query, target=target, limit=limit, timeout_s=timeout_s, as_contract=True)
+        return json.dumps(res, indent=2)
     except Exception as e:
-        return json.dumps({"error": str(e)})
-
+        return json.dumps({"error": str(e), "complete": False, "results": []})
 
 @mcp.tool()
 def nougenmsg_inbox(target: str = "antigravity", limit: int = 10) -> str:

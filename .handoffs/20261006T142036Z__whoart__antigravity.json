@@ -1,0 +1,54 @@
+{
+  "id": "20261006T142036Z__whoart__antigravity",
+  "machine": "whoart",
+  "agent": "antigravity",
+  "goal": "PULL REQUEST 744: Sovereign Substrate Expansion (REA, NouGenForge, Ghidra-MCP, Tube Morphs)",
+  "branch": "feat/fleet-sovereign-forge-valerion",
+  "sha": "c40eef8",
+  "remote": "origin",
+  "created_utc": "2026-10-06T14:20:36.420363+00:00",
+  "stack": {
+    "manifests": [
+      "package.json",
+      "pyproject.toml",
+      "requirements.txt"
+    ],
+    "frameworks": [
+      "vite ^8.3.1",
+      "react ^19.3.0"
+    ],
+    "package_name": "nougenshards"
+  },
+  "dirty": true,
+  "origin": "whoart",
+  "status": "in_progress",
+  "tags": [
+    "pr",
+    "valerion",
+    "forge",
+    "ghidra",
+    "morph",
+    "relay"
+  ],
+  "disposition": {
+    "action": "hold",
+    "reason": "no ask, but nothing marks it as a report"
+  },
+  "relay": [
+    {
+      "event": "dispatch",
+      "node": "whoart",
+      "agent": "claude",
+      "at": "2026-10-06T14:20:55.158477+00:00",
+      "machine": "whoart",
+      "agent_from": "antigravity",
+      "sent": true,
+      "note": "===============\n💬 Message: \"[RELAY DISPATCH DIGEST 1/1] 1 leg(s) routed to hyperion@whoart:claude by who...\"\n-----------"
+    }
+  ],
+  "executor": {
+    "node": "whoart",
+    "coach": "hyperion",
+    "agent": "claude"
+  }
+}

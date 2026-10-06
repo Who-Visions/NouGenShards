@@ -344,7 +344,8 @@ def _parse_args(raw: Any) -> dict:
 def run_tool_loop(chat_fn: Callable[..., dict], model: str, messages: list,
                   max_rounds: Optional[int] = None,
                   log: Optional[logging.Logger] = None,
-                  tracker: Optional[Any] = None) -> Tuple[str, List[dict]]:
+                  tracker: Optional[Any] = None,
+                  observer=None) -> Tuple[str, List[dict]]:
     """Drive an ollama-style tool loop until the model stops calling tools.
 
     chat_fn(model, messages, tools=TOOLS) must return the ollama chat
@@ -354,6 +355,19 @@ def run_tool_loop(chat_fn: Callable[..., dict], model: str, messages: list,
     automatically bounded, redacted, and recorded.
     """
     lg = log or logger
+    import time
+    import uuid
+    from nougen_shards.tool_activity import configured_sink, observe
+    owned_observer = observer is None
+    if observer is None:
+        try:
+            observer = configured_sink()
+        except Exception:
+            observer = None
+    def finish(text, calls):
+        if owned_observer and observer is not None:
+            observer.close()
+        return text, calls
     rounds = max_rounds if max_rounds is not None else _env_int("NOUGEN_KAEDRA_TOOL_ROUNDS", 4)
     cap = _env_int("NOUGEN_KAEDRA_RESULT_CHARS", 4000)
     msgs = list(messages)
@@ -361,7 +375,13 @@ def run_tool_loop(chat_fn: Callable[..., dict], model: str, messages: list,
     final_text = ""
 
     for rnd in range(rounds + 1):
-        resp = chat_fn(model, msgs, tools=TOOLS) or {}
+        try:
+            resp = chat_fn(model, msgs, tools=TOOLS) or {}
+        except Exception:
+            observe(observer, "loop_end", "", outcome="chat_exception")
+            if owned_observer and observer is not None:
+                observer.close()
+            raise
         if not isinstance(resp, dict) or "error" in resp or "message" not in resp:
             # OllamaClient.chat_raw returns {"error": ...} instead of raising
             # (VRAM refusal, HTTP failure). Attempt cloud fallback before giving up.
@@ -390,7 +410,8 @@ def run_tool_loop(chat_fn: Callable[..., dict], model: str, messages: list,
                 lg.warning("kaedra tool loop chat error: %s", text)
                 call_log.append({"tool": "_chat", "args": {}, "result_size": len(text),
                                  "ok": False, "error": text})
-                return f"[chat error] {text}", call_log
+                observe(observer, "loop_end", "", outcome="chat_error")
+                return finish(f"[chat error] {text}", call_log)
         message = resp.get("message") or {}
         final_text = message.get("content") or ""
         tool_calls = message.get("tool_calls") or []
@@ -401,8 +422,10 @@ def run_tool_loop(chat_fn: Callable[..., dict], model: str, messages: list,
             if isinstance(thinking, str) and thinking.strip():
                 final_text = "[recovered from reasoning]\n" + thinking
         if not tool_calls:
-            return final_text, call_log
+            observe(observer, "loop_end", "", outcome="complete")
+            return finish(final_text, call_log)
         if rnd >= rounds:
+            observe(observer, "loop_end", "", outcome="round_limit")
             lg.warning("kaedra tool loop hit max rounds (%d); stopping", rounds)
             break
         msgs.append(message)
@@ -410,7 +433,13 @@ def run_tool_loop(chat_fn: Callable[..., dict], model: str, messages: list,
             fn = (call or {}).get("function") or {}
             name = str(fn.get("name", ""))
             args = _parse_args(fn.get("arguments"))
+            invocation_id = uuid.uuid4().hex
+            started = time.monotonic()
+            # Shape only: even credential values embedded in arbitrary text stay private.
+            observe(observer, "start", name if name in TOOL_NAMES else "unknown",
+                    invocation_id, argument_count=len(args))
             if name not in TOOL_NAMES:
+                observe(observer, "end", "unknown", invocation_id, outcome="refused")
                 lg.warning("kaedra tool loop refused non-allowlisted tool %r", name)
                 call_log.append({"tool": name, "args": args, "result_size": 0, "ok": False,
                                  "refused": True})
@@ -419,11 +448,28 @@ def run_tool_loop(chat_fn: Callable[..., dict], model: str, messages: list,
                 continue
             import time
             start_call = time.perf_counter()
-            result = dispatch(name, args)
+            try:
+                result = dispatch(name, args)
+            except Exception:
+                observe(observer, "end", name, invocation_id, outcome="exception",
+                        duration_ms=round((time.monotonic() - started) * 1000, 3))
+                if owned_observer and observer is not None:
+                    observer.close()
+                raise
             dur_ms = (time.perf_counter() - start_call) * 1000
-            payload = json.dumps(result, default=str)
+            try:
+                payload = json.dumps(result, default=str)
+            except Exception:
+                observe(observer, "end", name, invocation_id, outcome="serialization_error")
+                if owned_observer and observer is not None:
+                    observer.close()
+                raise
             ok = "error" not in result
             err_msg = result.get("error") if isinstance(result, dict) else None
+            observe(observer, "end", name, invocation_id,
+                    outcome="success" if ok else "error", result_chars=len(payload),
+                    truncated=len(payload) > cap,
+                    duration_ms=round((time.monotonic() - started) * 1000, 3))
             call_log.append({"tool": name, "args": args, "result_size": len(payload), "ok": ok})
             if tracker is not None and hasattr(tracker, "record_call"):
                 tracker.record_call(tool_name=name, arguments=args, ok=ok, result_size=len(payload),
@@ -433,4 +479,4 @@ def run_tool_loop(chat_fn: Callable[..., dict], model: str, messages: list,
 
     if not final_text:
         final_text = "[kaedra] tool round limit reached before a final answer."
-    return final_text, call_log
+    return finish(final_text, call_log)
