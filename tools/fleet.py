@@ -405,15 +405,40 @@ class Fleet:
         _breaker_record(key, "; ".join(sorted(set(reasons))) or "no routes")
         raise RuntimeError("no route answered")
 
-    def map(self, prompts: list[str], workers: int | None = None, retries: int = 2, **kw):
+    def map(self, prompts: list[str], workers: int | None = None, retries: int = 2,
+            max_requests: int | None = None, **kw):
         """Fan a list of prompts across ALL healthy routes concurrently.
-        Returns list of (index, route_name, output) in completion order."""
+        Returns list of (index, route_name, output) in completion order.
+
+        max_requests caps the TOTAL upstream calls across every prompt and retry
+        (default: len(prompts) + max(2, len(prompts)//2)). Without it a dead pool
+        cost prompts*(retries+1) requests; one failing call was once retried 21
+        times. A first attempt always runs while budget remains; a retry that finds
+        the budget spent fails fast instead of hammering the pool."""
         pool = self.healthy or self.routes
         if not pool:
             raise RuntimeError("no routes")
         workers = workers or min(len(pool) * 2, 24)
+        if max_requests is None:
+            max_requests = len(prompts) + max(2, len(prompts) // 2)
         cyc = itertools.cycle(pool)
-        assign = [(i, p, next(cyc)) for i, p in enumerate(prompts)]
+        cyc_lock = threading.Lock()  # itertools.cycle is not thread-safe across workers
+        budget = [0]
+        budget_lock = threading.Lock()
+
+        def _next_route():
+            with cyc_lock:
+                return next(cyc)
+
+        def _take_budget():
+            with budget_lock:
+                if budget[0] >= max_requests:
+                    return False
+                budget[0] += 1
+                return True
+
+        with cyc_lock:
+            assign = [(i, p, next(cyc)) for i, p in enumerate(prompts)]
 
         def run(item):
             i, prompt, rt = item
@@ -422,6 +447,8 @@ class Fleet:
                 return i, f"FAILED({tripped})", ""
             last = None
             for attempt in range(retries + 1):
+                if not _take_budget():
+                    return i, f"FAILED(budget exhausted after {budget[0]} requests)", ""
                 if attempt:  # back off before re-trying; never hammer a failing pool
                     time.sleep(min(4.0, 0.5 * 2 ** (attempt - 1)))
                 try:
@@ -436,7 +463,7 @@ class Fleet:
                     except Exception:
                         detail = ""
                     last = f"{type(ex).__name__} {code} {detail}".strip()
-                rt = next(cyc)          # rotate to a different route on failure
+                rt = _next_route()      # rotate to a different route on failure
             return i, f"FAILED({last})", ""
         out = []
         with ThreadPoolExecutor(max_workers=workers) as ex:
