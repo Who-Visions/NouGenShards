@@ -146,3 +146,31 @@ def test_strongest_evidence_sets_the_ceiling_and_untyped_evidence_is_weakest():
     assert c.verifiability_ceiling() == 0.9
     assert MorphEvidence("s", "c", 0.5).evidence_type == "model"
     assert _strong(evidence=[MorphEvidence("s", "c", 0.5, "made_up_type")]).verifiability_ceiling() == 0.3
+
+
+def test_brand_filter_matches_whole_words_not_substrings():
+    """Regression: the substring brand filter quarantined the common word 'cursor'
+    (pagination cursor) and any token containing a brand as a fragment. Brands are now
+    matched whole-word; 'cursor' is a brand only as the capitalised product name."""
+    from nougen_morph.engine import MorphEvidence
+    strong_ev = [MorphEvidence("s", "c", 0.9, "runtime_reproduction")]
+
+    def cand(gen, tgt):
+        return _strong(generalized_behavior=gen, nougen_target=tgt, evidence=strong_ev)
+
+    eng = NouGenMorphEngine(acceptance_threshold=0.5)
+    # common-noun "cursor", and tokens that merely contain a brand, must pass
+    ok, _ = eng.ingest_candidate(cand("return an offset or page cursor to read on", "relay_open cursor"))
+    assert ok
+    for benign in ("a precursor step", "the codexample fixture", "geminification naming"):
+        e = NouGenMorphEngine(acceptance_threshold=0.5)
+        assert e.ingest_candidate(cand(benign, "a nougen module"))[0]
+
+    # real brands (any case) and the product name Cursor must quarantine
+    for brand in ("claude", "CLAUDE", "Anthropic", "codex", "gemini", "openai"):
+        e = NouGenMorphEngine(acceptance_threshold=0.5)
+        e.ingest_candidate(cand(f"behaves like {brand}", "a nougen module"))
+        assert e.candidates["x"].state == AdoptionState.QUARANTINED
+    e = NouGenMorphEngine(acceptance_threshold=0.5)
+    e.ingest_candidate(cand("use the Cursor editor", "a nougen module"))
+    assert e.candidates["x"].state == AdoptionState.QUARANTINED
