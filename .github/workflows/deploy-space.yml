@@ -82,6 +82,8 @@ jobs:
           # Bake the source sha into the snapshot; /health reports it, and the
           # verify step below waits for it - proving the NEW build booted.
           echo "${DEPLOY_SHA}" > .deploy_sha
+          # Preserve Docker Space metadata after compiled README updates.
+          python3 tools/prepare_space_readme.py
           # Re-stage the whole tree so the LFS attributes apply to the images.
           # -f: the .gitattributes append above makes it differ from the index,
           # which plain `git rm --cached` refuses to drop.
