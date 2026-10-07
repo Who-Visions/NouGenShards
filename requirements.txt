@@ -75,7 +75,7 @@ google-auth-oauthlib==1.4.1
     # via nougen-shards (pyproject.toml)
 googleapis-common-protos==1.75.4
     # via google-api-core
-gradio==6.28.0
+gradio==6.29.0
     # via nougen-shards (pyproject.toml)
 gradio-client==2.7.1
     # via
