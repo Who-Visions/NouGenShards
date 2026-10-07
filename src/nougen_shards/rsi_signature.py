@@ -9,6 +9,7 @@ between search and out-of-distribution (OOD) sealed cases is not widening.
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -60,14 +61,13 @@ def bootstrap_slope_ci(
         return slope, slope
 
     slopes: List[float] = []
-    # Deterministic pseudo-random sequence for reproducible test verification
-    seed = 42
+    # A local RNG preserves reproducibility without modulo low-bit cycles.
+    rng = random.Random(42)
     for i in range(n_resamples):
         resampled_x = []
         resampled_y = []
         for j in range(n):
-            seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
-            idx = seed % n
+            idx = rng.randrange(n)
             resampled_x.append(x_series[idx])
             resampled_y.append(y_series[idx])
         slopes.append(linear_slope(resampled_x, resampled_y))
