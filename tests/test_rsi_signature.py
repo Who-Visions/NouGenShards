@@ -314,3 +314,14 @@ def test_falsification_credit_ablation_sums_reproduce_injected_effects_within_10
     assert relative_error <= 0.10  # within 10% reproduction
 
 
+
+def test_nan_and_infinite_metric_guards():
+    """Explicit NaN/Inf metric inputs must raise ValueError or fail cleanly, never producing bogus acceleration."""
+    with pytest.raises(ValueError, match="must be a valid real number"):
+        compute_eta(float("nan"), 10.0)
+    with pytest.raises(ValueError, match="must be a valid real number"):
+        compute_eta(10.0, float("nan"))
+    with pytest.raises(ValueError, match="must be a valid real number"):
+        compute_eta(float("inf"), 10.0)
+    with pytest.raises(ValueError, match="must be a valid real number"):
+        compute_eta(10.0, float("inf"))

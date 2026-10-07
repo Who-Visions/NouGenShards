@@ -26,6 +26,8 @@ class RSISignatureResult:
 
 def compute_eta(delta_capability: float, delta_experience: float) -> float:
     """Computes efficiency derivative eta = dC / dE."""
+    if math.isnan(delta_capability) or math.isnan(delta_experience) or math.isinf(delta_capability) or math.isinf(delta_experience):
+        raise ValueError("delta_capability and delta_experience must be a valid real number")
     if delta_experience <= 0:
         raise ValueError("delta_experience must be positive")
     return delta_capability / delta_experience
