@@ -15,14 +15,14 @@
   "definitions": {
     "Formula": {
       "oneOf": [
-        {"type":"object","properties":{"op":{"const":"input"},"key":{"type":"string","maxLength":32}},"required":["op","key"]},
+        {"type":"object","properties":{"op":{"const":"input"},"key":{"type":"string","pattern":"^[a-zA-Z0-9_-]{1,32}$","maxLength":32}},"required":["op","key"]},
         {"type":"object","properties":{"op":{"const":"const"},"value":{"type":"number"}},"required":["op","value"]},
         {"type":"object","properties":{"op":{"const":"neg"},"value":{"$ref":"#/definitions/Formula"}},"required":["op","value"]},
         {"type":"object","properties":{"op":{"enum":["add","sub","mul","div","pow"]},"left":{"$ref":"#/definitions/Formula"},"right":{"$ref":"#/definitions/Formula"}},"required":["op","left","right"]}
       ]
     },
     "CalculatorInput": {
-      "type":"object","properties":{"key":{"type":"string","maxLength":32},"label":{"type":"string","maxLength":80},"value":{"type":"number"},"min":{"type":"number"},"max":{"type":"number"},"step":{"type":"number"},"unit":{"type":"string","maxLength":16}},"required":["key","label","value","min","max","step"]
+      "type":"object","properties":{"key":{"type":"string","pattern":"^[a-zA-Z0-9_-]{1,32}$","maxLength":32},"label":{"type":"string","maxLength":80},"value":{"type":"number"},"min":{"type":"number"},"max":{"type":"number"},"step":{"type":"number"},"unit":{"type":"string","maxLength":16}},"required":["key","label","value","min","max","step"]
     },
     "ChartPoint": {
       "type":"object","properties":{"x":{"type":"string","maxLength":64},"y":{"type":"number"}},"required":["x","y"]
@@ -45,8 +45,8 @@
       "kind":{"type":"string","enum":["checklist","comparison","steps","metric_grid","calculator","chart"]},
       "title":{"type":"string","minLength":1,"maxLength":160},
       "items":{"type":"array","items":{"type":"string","minLength":1,"maxLength":500}},
-      "inputs":{"type":"array","items":{"type":"object","properties":{"key":{"type":"string"},"label":{"type":"string"},"value":{"type":"number"},"min":{"type":"number"},"max":{"type":"number"},"step":{"type":"number"},"unit":{"type":"string"}},"required":["key","label","value","min","max","step"]}},
-      "formula":{"type":"object","description":"A calculator formula is a JSON AST, never code or an expression string. Every node has op. Use {\"op\":\"input\",\"key\":\"principal\"}, {\"op\":\"const\",\"value\":12}, {\"op\":\"neg\",\"value\":<node>}, or {\"op\":\"div\",\"left\":<node>,\"right\":<node>}; binary ops are add, sub, mul, div, pow. Example monthly interest: {\"op\":\"div\",\"left\":{\"op\":\"mul\",\"left\":{\"op\":\"input\",\"key\":\"principal\"},\"right\":{\"op\":\"input\",\"key\":\"annual_rate\"}},\"right\":{\"op\":\"const\",\"value\":1200}}. Input keys must match declared inputs; do not add a calculation field.","properties":{"op":{"type":"string","enum":["input","const","neg","add","sub","mul","div","pow"]},"key":{"type":"string","maxLength":32},"value":{"description":"A numeric constant for const, or a nested formula node for neg."},"left":{"type":"object","description":"Nested formula node; its op must use the same AST rules."},"right":{"type":"object","description":"Nested formula node; its op must use the same AST rules."}},"required":["op"],"additionalProperties":false},
+      "inputs":{"type":"array","items":{"type":"object","properties":{"key":{"type":"string","pattern":"^[a-zA-Z0-9_-]{1,32}$","maxLength":32},"label":{"type":"string","maxLength":80},"value":{"type":"number"},"min":{"type":"number"},"max":{"type":"number"},"step":{"type":"number"},"unit":{"type":"string","maxLength":16}},"required":["key","label","value","min","max","step"]}},
+      "formula":{"type":"object","description":"A calculator formula is a JSON AST, never code or an expression string. Every node has op. Use {\"op\":\"input\",\"key\":\"principal\"}, {\"op\":\"const\",\"value\":12}, {\"op\":\"neg\",\"value\":<node>}, or {\"op\":\"div\",\"left\":<node>,\"right\":<node>}; binary ops are add, sub, mul, div, pow. Example monthly interest: {\"op\":\"div\",\"left\":{\"op\":\"mul\",\"left\":{\"op\":\"input\",\"key\":\"principal\"},\"right\":{\"op\":\"input\",\"key\":\"annual_rate\"}},\"right\":{\"op\":\"const\",\"value\":1200}}. Input keys must match declared inputs; do not add a calculation field.","properties":{"op":{"type":"string","enum":["input","const","neg","add","sub","mul","div","pow"]},"key":{"type":"string","pattern":"^[a-zA-Z0-9_-]{1,32}$","maxLength":32},"value":{"description":"A numeric constant for const, or a nested formula node for neg."},"left":{"type":"object","description":"Nested formula node; its op must use the same AST rules."},"right":{"type":"object","description":"Nested formula node; its op must use the same AST rules."}},"required":["op"],"additionalProperties":false},
       "resultLabel":{"type":"string","maxLength":80},"unit":{"type":"string","maxLength":16},"precision":{"type":"integer","minimum":0,"maximum":6},
       "chartType":{"type":"string","enum":["line","bar"]},"xLabel":{"type":"string","maxLength":80},"yLabel":{"type":"string","maxLength":80},
       "series":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"points":{"type":"array","items":{"type":"object","properties":{"x":{"type":"string"},"y":{"type":"number"}},"required":["x","y"]}}},"required":["label","points"]}}
