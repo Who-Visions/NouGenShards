@@ -205,19 +205,19 @@ class HistoryReplaySimulator:
             CandidateRole.RECOVERY.value: 0,
         }
 
-        best_score = 0.0
+        best_score = float("-inf")
         best_id: Optional[str] = None
         steps = 0
 
-        # Prime the observer with the root node(s)
-        observer.advance(1)
+        # Prime the observer with initial candidates up to max_parallelism
+        observer.advance(max(1, sched.max_parallelism))
 
         while (observer.has_next() or len(closed_set) < len(self._history)) and (max_steps is None or steps < max_steps):
             prefix = observer.observed_prefix()
             batch = sched.select_batch(prefix, closed_set)
             if not batch:
                 if observer.has_next():
-                    observer.advance(1)
+                    observer.advance(max(1, sched.max_parallelism))
                     continue
                 break
 
@@ -233,10 +233,11 @@ class HistoryReplaySimulator:
                 observer.advance(max(1, len(batch)))
             steps += 1
 
+        final_max = best_score if best_id is not None else 0.0
         return SimulationResult(
             total_steps=steps,
             traversed_ids=traversed,
-            max_score=best_score,
+            max_score=final_max,
             best_attempt_id=best_id,
             portfolio_counts=portfolio_counts,
             execution_cost=0.0,
