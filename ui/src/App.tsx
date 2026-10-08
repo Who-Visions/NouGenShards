@@ -1,4 +1,5 @@
-import { recoverMessages, validWidgets, buildContext } from './chatPersistence';
+import { recoverMessages, validWidgets, buildContext, type Widget } from './chatPersistence';
+import ChatWidgetRenderer from './ChatWidgetRenderer';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // ---------------------------------------------------------------------------
@@ -241,8 +242,9 @@ export default function App() {
     uiComponent?: 'calculator' | 'diagram' | 'checklist' | 'comparison' | 'audit_box' | 'pipeline-trace';
     uiData?: any;
     isError?: boolean;
-    widgets?: Array<{ kind: string; title: string; items: string[] }>;
+    widgets?: Widget[];
     widgetChecks?: Record<string, boolean>;
+    widgetValues?: Record<string, number | null>;
     isStreaming?: boolean;
   }>>(() => {
     try {
@@ -836,66 +838,9 @@ export default function App() {
               {chatMessages.filter(msg => msg.id !== 'welcome-1' && msg.id !== 'welcome-reset').map((msg) => (
                 <div key={msg.id} className={`chat-message-bubble ${msg.role}-bubble fade-in`}>
                   {msg.widgets?.map((widget, index) => (
-                    <section className={`chat-model-widget ${widget.kind}`} key={`${msg.id}-${index}`} aria-label={widget.title}>
-                      <div className="widget-header-title">
-                        <span className="widget-icon">
-                          {widget.kind === 'checklist' && '📋'}
-                          {widget.kind === 'comparison' && '⚖️'}
-                          {widget.kind === 'steps' && '🔢'}
-                          {widget.kind === 'metric_grid' && '📊'}
-                        </span>
-                        <h3>{widget.title}</h3>
-                      </div>
-                      {widget.kind === 'checklist' && (
-                        <div className="widget-checklist-group">
-                          {widget.items.map((item, j) => (
-                            <label key={j} className="widget-check-label">
-                              <input
-                                type="checkbox"
-                                aria-label={item}
-                                checked={Boolean(msg.widgetChecks?.[`${index}-${j}`])}
-                                onChange={(e) => {
-                                  const checked = e.target.checked;
-                                  setChatMessages((prev) =>
-                                    prev.map((m) =>
-                                      m.id === msg.id
-                                        ? { ...m, widgetChecks: { ...m.widgetChecks, [`${index}-${j}`]: checked } }
-                                        : m
-                                    )
-                                  );
-                                }}
-                              />
-                              <span>{item}</span>
-                            </label>
-                          ))}
-                        </div>
-                      )}
-                      {widget.kind === 'metric_grid' && (
-                        <div className="widget-metric-grid">
-                          {widget.items.map((item, j) => (
-                            <div key={j} className="metric-chip-card">
-                              <span className="metric-text">{item}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {widget.kind === 'comparison' && (
-                        <div className="widget-comparison-grid">
-                          {widget.items.map((item, j) => (
-                            <div key={j} className="comparison-column-card">
-                              <p>{item}</p>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {widget.kind === 'steps' && (
-                        <ol className="widget-steps-list">
-                          {widget.items.map((item, j) => (
-                            <li key={j}>{item}</li>
-                          ))}
-                        </ol>
-                      )}
-                    </section>
+                    <ChatWidgetRenderer key={`${msg.id}-${index}`} widget={widget} messageId={msg.id} index={index} checks={msg.widgetChecks} values={msg.widgetValues}
+                      onCheck={(key, checked) => setChatMessages(prev => prev.map(m => m.id === msg.id ? { ...m, widgetChecks: { ...m.widgetChecks, [key]: checked } } : m))}
+                      onValue={(key, value) => setChatMessages(prev => prev.map(m => m.id === msg.id ? { ...m, widgetValues: { ...m.widgetValues, [key]: value } } : m))}/>
                   ))}
                   <div className="message-header-row">
                     <span className="message-author">
@@ -955,7 +900,7 @@ export default function App() {
                     const requestId = crypto.randomUUID();
                     chatRequestRef.current = { controller, id: requestId };
                     const timer = setTimeout(() => controller.abort(), 100000);
-                    let widgets: Array<{ kind: string; title: string; items: string[] }> = [];
+                    let widgets: Widget[] = [];
                     let isError = false;
                     try {
                       const messages = buildContext([...chatMessages, userMsg]);

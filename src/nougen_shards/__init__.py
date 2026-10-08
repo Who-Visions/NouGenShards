@@ -2,7 +2,65 @@
 
 Engine: Valerion — The Metameric Memory Engine (21-step cognitive architecture).
 """
+import importlib
 import sys
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+# Keep ordinary package imports light. In particular, the Tauri chat sidecar
+# must not initialize the complete 9-DB engine just to load chat_service.
+_EXPORTS = {
+    "capture": ("core", "capture"),
+    "retrieve": ("core", "retrieve"),
+    "mark_shard": ("core", "mark_shard"),
+    "compile_recall_packet": ("core", "compile_recall_packet"),
+    "federated_retrieve": ("federation", "federated_retrieve"),
+    "HistoryEngine": ("history", "HistoryEngine"),
+    "log_event": ("history", "log_event"),
+    "init_history_db": ("history", "init_history_db"),
+    "link_shards": ("graph", "link_shards"),
+    "related_shards": ("graph", "related_shards"),
+    "check_mutation_gate": ("gatekeeper", "check_mutation_gate"),
+    "TemporalEnvelope": ("temporal_fabric", "TemporalEnvelope"),
+    "TemporalFabric": ("temporal_fabric", "TemporalFabric"),
+    "extract_temporal_mentions": ("temporal_fabric", "extract_temporal_mentions"),
+    "CloudflareClient": ("cloudflare", "CloudflareClient"),
+    "WorkerInfo": ("cloudflare", "WorkerInfo"),
+    "SecretInfo": ("cloudflare", "SecretInfo"),
+    "NouGenTranscriber": ("transcriber", "NouGenTranscriber"),
+    "TranscribeEngine": ("transcriber", "TranscribeEngine"),
+}
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str):
+    """Load public exports and submodules only when a caller asks for them."""
+    if name in _EXPORTS:
+        module_name, attribute = _EXPORTS[name]
+        try:
+            value = getattr(importlib.import_module(f".{module_name}", __name__), attribute)
+        except (ImportError, ModuleNotFoundError):
+            if name not in ("NouGenTranscriber", "TranscribeEngine"):
+                raise
+            value = None
+        globals()[name] = value
+        return value
+    try:
+        module = importlib.import_module(f".{name}", __name__)
+        globals()[name] = module
+        return module
+    except ImportError:
+        raise AttributeError(f"module '{__name__}' has no attribute '{name}'") from None
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_EXPORTS))
+
+
+def __get_popen_wrapper__():
+    """Retained no-op hook for compatibility; process control belongs to callers."""
+    return None
+
+
 if sys.platform == "win32":
     import subprocess
     _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
@@ -18,25 +76,6 @@ if sys.platform == "win32":
         return _orig_popen_init(self, *args, **kwargs)
 
     subprocess.Popen.__init__ = _nougen_popen_init
-
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
-
-from .core import capture as capture, retrieve as retrieve, mark_shard as mark_shard, compile_recall_packet as compile_recall_packet
-from .federation import federated_retrieve as federated_retrieve
-from .history import HistoryEngine as HistoryEngine, log_event as log_event, init_history_db as init_history_db
-from .graph import link_shards as link_shards, related_shards as related_shards
-from .gatekeeper import check_mutation_gate as check_mutation_gate
-from .temporal_fabric import TemporalEnvelope as TemporalEnvelope, TemporalFabric as TemporalFabric
-from .temporal_fabric import extract_temporal_mentions as extract_temporal_mentions
-from .end_of_turn_voice import resolve_end_of_turn as resolve_end_of_turn, EndOfTurnResolution as EndOfTurnResolution
-
-try:
-    from .transcriber import NouGenTranscriber, TranscribeEngine
-except (ImportError, ModuleNotFoundError):
-    NouGenTranscriber = None  # type: ignore[assignment,misc]
-    TranscribeEngine = None  # type: ignore[assignment,misc]
-
-from .cloudflare import CloudflareClient as CloudflareClient, WorkerInfo as WorkerInfo, SecretInfo as SecretInfo
 
 # Read from installed package metadata rather than restated here. The v1.2.0
 # release bumped pyproject.toml and left this line at 1.1.0, so `nougen
@@ -59,13 +98,3 @@ except PackageNotFoundError:
         else:
             __version__ = "0.0.0+unknown"
 VALERION_ENGINE = "Valerion"
-
-def __getattr__(name: str):
-    """Dynamic submodule resolution so 'from nougen_shards import <submodule>' always works cleanly."""
-    import importlib
-    try:
-        mod = importlib.import_module(f".{name}", __name__)
-        globals()[name] = mod
-        return mod
-    except ImportError:
-        raise AttributeError(f"module '{__name__}' has no attribute '{name}'") from None

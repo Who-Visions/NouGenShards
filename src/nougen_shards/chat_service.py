@@ -1,8 +1,10 @@
 """Bounded conversational endpoint. Credentials remain in the Ollama daemon."""
 import json
+import math
 import os
 import sys
 from pathlib import Path
+from .chat_widget_ir import CHAT_WIDGET_IR_VERSION, CHAT_WIDGET_KINDS, CHAT_WIDGET_LIMITS, PRESENT_WIDGET_PARAMETERS
 
 SYSTEM = """You are NouGen, Dave's high-caliber technical collaborator and local intelligence engine.
 You are running directly on Dave's local hardware (WhoArt / Hyperion PX13) connected to the 9-DB persistent memory grid (~/.nougen/shards) and the fleet mesh (Apollo, Hyperion, Phoebus).
@@ -12,6 +14,8 @@ Think like an architect: verify live facts before making claims.
 When asked about relays, handoffs, fleet nodes, engine health, or memory shards:
 ALWAYS proactively call the appropriate tools (`relay_status`, `fleet_status`, `engine_status`, `search_memory`) to retrieve live verified facts instead of guessing or saying you lack tools.
 When presenting multi-item comparisons, plans, or checklists, use `present_widget`.
+Use its calculator for a useful what-if model with editable bounded inputs, and its chart for grounded numeric trends or comparisons. Keep ordinary answers conversational; never invent data or hide assumptions. A widget is optional and should clarify the answer.
+For calculator formulas, emit a JSON AST: input nodes are {"op":"input","key":"<declared input key>"}, constants are {"op":"const","value":12}, unary negation uses {"op":"neg","value":<node>}, and binary nodes use {"op":"add|sub|mul|div|pow","left":<node>,"right":<node>}. Never emit code, an expression string, or a `calculation` field. For monthly interest use div(mul(input principal, input annual_rate), const 1200); declare keys exactly as referenced.
 Never execute destructive commands or claim mutations without confirmation. After tool calls, synthesize the actual live findings with clarity and precision."""
 
 
@@ -50,86 +54,6 @@ def discover_chat_model(configured: str | None = None) -> str:
     return "gemma4:cloud"
 
 
-def detect_and_route_tools(prompt: str) -> tuple[str, dict] | None:
-    """UDCT fast-path: detect tool intent and return (tool_name, arguments)."""
-    p = prompt.strip().lower()
-
-    # 1. Recent shards / memories
-    if any(k in p for k in ("recent shards", "latest shards", "newest shards", "recent memories", "newest memories", "latest memories")):
-        return "get_recent_shards", {"limit": 6}
-
-    # 2. Engine / Substrate status
-    if any(k in p for k in ("engine status", "substrate status", "how many shards", "database status", "storage status", "9-db", "9 dbs", "total shards")):
-        return "engine_status", {}
-
-    # 3. Fleet status
-    if any(k in p for k in ("fleet status", "fleet nodes", "active machines", "who is connected", "apollo", "hyperion", "phoebus")):
-        return "fleet_status", {}
-
-    # 4. Relay status
-    if any(k in p for k in ("relay status", "relay handoff", "latest handoffs", "batons", "relay feed")):
-        return "relay_status", {}
-
-    # 5. Interactive widgets (checklist, comparison, steps)
-    if "checklist" in p:
-        title = prompt.split("for")[-1].strip().title() if "for" in prompt else "Checklist"
-        return "present_widget", {"kind": "checklist", "title": title[:60], "items": ["Review scope & context", "Execute & build code", "Pass all test suites", "Merge & sync upstream"]}
-    if "comparison" in p or "compare" in p:
-        title = prompt.split("for")[-1].strip().title() if "for" in prompt else "Comparison"
-        return "present_widget", {"kind": "comparison", "title": title[:60], "items": ["Local Tier-0 (Zero latency)", "Cloud Tier-1 (Extended reasoning)"]}
-    if "steps" in p or "step-by-step" in p:
-        title = prompt.split("for")[-1].strip().title() if "for" in prompt else "Ordered Steps"
-        return "present_widget", {"kind": "steps", "title": title[:60], "items": ["Step 1: Check ground truth", "Step 2: Apply surgical patch", "Step 3: Run UDCT validation"]}
-
-    # 6. Search memory
-    if any(k in p for k in ("search memory", "search memories", "search shards", "find in memory", "lookup in memory", "query memory", "recall", "rule 0.")):
-        for prefix in ("search memories for", "search memory for", "search shards for", "find in memory", "lookup in memory", "query memory for", "recall"):
-            if prefix in p:
-                query = prompt[p.find(prefix) + len(prefix):].strip()
-                if query:
-                    return "search_memory", {"query": query[:200]}
-        return "search_memory", {"query": prompt[:200]}
-
-    return None
-
-
-def synthesize_tool_result(name: str, result: any, prompt: str) -> str:
-    """Generate dense, human-clear UDCT synthesis from live tool findings."""
-    if name == "engine_status":
-        dbs = result.get("databases", [])
-        total_shards = sum(d.get("shards", 0) for d in dbs)
-        active = next((d.get("index") for d in dbs if d.get("is_active")), 1)
-        return f"9-DB Memory Substrate: {total_shards:,} total shards indexed across {len(dbs)} databases. Active partition: DB #{active}."
-
-    if name == "fleet_status":
-        nodes = result.get("nodes", [])
-        count = result.get("nodes_count", len(nodes))
-        node_names = ", ".join(n.get("name", "node") for n in nodes) or "Apollo, Hyperion, Phoebus"
-        return f"Fleet Mesh: {count} active nodes verified ({node_names}). All operational."
-
-    if name == "relay_status":
-        handoffs = result.get("handoffs", [])
-        count = result.get("recent_count", len(handoffs))
-        if not handoffs:
-            return "NouGenRelay: Clean. No active blocked batons or open handoffs."
-        summary = "; ".join(f"{h.get('agent', 'node')}: {h.get('goal', 'task')}" for h in handoffs[:2])
-        return f"NouGenRelay: {count} recent handoffs recorded. Latest: {summary}."
-
-    if name in ("search_memory", "get_recent_shards"):
-        if not result:
-            return "Memory Grid: No matching shards found for the query."
-        top = result[0]
-        title = top.get("title") or "Shard"
-        preview = str(top.get("content", ""))[:140].strip()
-        count = len(result)
-        return f"Memory Grid ({count} shards matched): Found '{title}' [DB #{top.get('_db_index')}]. Preview: {preview}"
-
-    if name == "present_widget":
-        return f"Presenting interactive {result.get('kind', 'widget')}: '{result.get('title', '')}' with {len(result.get('items', []))} items."
-
-    return "Tool execution verified."
-
-
 def chat(payload, client=None):
     messages = payload.get("messages") if isinstance(payload, dict) else None
     if not isinstance(messages, list) or not messages or len(messages) > 80:
@@ -149,21 +73,6 @@ def chat(payload, client=None):
         raise ValueError("Conversation too large or missing latest user message.")
     configured_model = os.environ.get("NOUGEN_CHAT_MODEL")
     model = discover_chat_model(configured_model)
-
-    # UDCT Fast-Path: Zero-latency one-turn execution for native fleet tools
-    if client is None:
-        last_user_prompt = clean[-1]["content"]
-        detected = detect_and_route_tools(last_user_prompt)
-        if detected:
-            tool_name, tool_args = detected
-            try:
-                tool_res = execute_tool(tool_name, tool_args)
-                widgets = [tool_res] if tool_name == "present_widget" else []
-                receipts = [{"tool": tool_name, "ok": True}]
-                synthesis = synthesize_tool_result(tool_name, tool_res, last_user_prompt)
-                return {"text": redact(synthesis), "model": model, "widgets": widgets, "receipts": receipts}
-            except Exception:
-                pass
 
     conversation = [{"role": "system", "content": SYSTEM}, *clean]
     widgets, receipts = [], []
@@ -256,12 +165,72 @@ def execute_tool(name, args):
             ],
         }
     if name == "present_widget":
-        kind, title, items = args.get("kind"), args.get("title"), args.get("items")
-        if kind not in ("checklist", "comparison", "steps", "metric_grid") or not isinstance(title, str) or not 1 <= len(title) <= 160:
+        kind, title = args.get("kind"), args.get("title")
+        if kind not in CHAT_WIDGET_KINDS or not isinstance(title, str) or not 1 <= len(title) <= CHAT_WIDGET_LIMITS["titleLength"]:
             raise ValueError("Invalid widget")
-        if not isinstance(items, list) or not 1 <= len(items) <= 12 or any(not isinstance(i, str) or not 1 <= len(i) <= 500 for i in items):
+        if kind == "calculator":
+            inputs, formula = args.get("inputs"), args.get("formula")
+            if not isinstance(inputs, list) or not 1 <= len(inputs) <= CHAT_WIDGET_LIMITS["calculatorInputs"] or not isinstance(formula, dict):
+                raise ValueError("Invalid calculator")
+            keys = set()
+            for field in inputs:
+                if not isinstance(field, dict): raise ValueError("Invalid calculator input")
+                key, label = field.get("key"), field.get("label")
+                value, minimum, maximum, step = (field.get(k) for k in ("value", "min", "max", "step"))
+                if not isinstance(key, str) or not 1 <= len(key) <= 32 or key in keys or not isinstance(label, str) or not 1 <= len(label) <= 80:
+                    raise ValueError("Invalid calculator input")
+                limit = CHAT_WIDGET_LIMITS["numericMagnitude"]
+                if any(isinstance(n, bool) or not isinstance(n, (int, float)) for n in (value, minimum, maximum, step)) or not all(math.isfinite(n) for n in (value, minimum, maximum, step)) or abs(minimum) > limit or abs(maximum) > limit or minimum >= maximum or not minimum <= value <= maximum or step <= 0:
+                    raise ValueError("Invalid calculator range")
+                if field.get("unit", "") and (not isinstance(field["unit"], str) or len(field["unit"]) > 16): raise ValueError("Invalid unit")
+                keys.add(key)
+            def evaluate(node, depth=0):
+                if depth > CHAT_WIDGET_LIMITS["formulaDepth"] or not isinstance(node, dict): raise ValueError("Invalid formula")
+                op = node.get("op")
+                if op == "input":
+                    if node.get("key") not in keys: raise ValueError("Unknown input")
+                    return next(f["value"] for f in inputs if f["key"] == node["key"])
+                if op == "const":
+                    v = node.get("value")
+                    if isinstance(v, bool) or not isinstance(v, (int,float)) or not math.isfinite(v) or abs(v) > CHAT_WIDGET_LIMITS["numericMagnitude"]: raise ValueError("Invalid constant")
+                    return v
+                if op == "neg": return -evaluate(node.get("value"), depth + 1)
+                if op not in ("add", "sub", "mul", "div", "pow"): raise ValueError("Unsupported formula operation")
+                left, right = evaluate(node.get("left"), depth + 1), evaluate(node.get("right"), depth + 1)
+                if op == "add": result = left + right
+                elif op == "sub": result = left - right
+                elif op == "mul": result = left * right
+                elif op == "div":
+                    if right == 0: raise ValueError("Division by zero")
+                    result = left / right
+                else:
+                    if abs(right) > 12: raise ValueError("Exponent too large")
+                    if left < 0 and not float(right).is_integer(): raise ValueError("Fractional powers of negative values are unsupported")
+                    try: result = left ** right
+                    except OverflowError as exc: raise ValueError("Formula result out of bounds") from exc
+                if not math.isfinite(result) or abs(result) > CHAT_WIDGET_LIMITS["numericMagnitude"]: raise ValueError("Formula result out of bounds")
+                return result
+            result = evaluate(formula)
+            result_label, unit = args.get("resultLabel", "Result"), args.get("unit", "")
+            precision = args.get("precision", 2)
+            if not isinstance(result_label, str) or not 1 <= len(result_label) <= 80 or not isinstance(unit, str) or len(unit) > 16 or isinstance(precision, bool) or not isinstance(precision, int) or not 0 <= precision <= 6: raise ValueError("Invalid calculator display")
+            return {"contractVersion": CHAT_WIDGET_IR_VERSION, "kind": kind, "title": title, "inputs": inputs, "formula": formula, "resultLabel": result_label, "unit": unit, "precision": precision}
+        if kind == "chart":
+            chart_type, x_label, y_label, series = (args.get(k) for k in ("chartType", "xLabel", "yLabel", "series"))
+            if chart_type not in ("line", "bar") or any(not isinstance(v, str) or not 1 <= len(v) <= 80 for v in (x_label, y_label)) or not isinstance(series, list) or not 1 <= len(series) <= CHAT_WIDGET_LIMITS["chartSeries"]: raise ValueError("Invalid chart")
+            categories = None
+            for s in series:
+                if not isinstance(s, dict) or not isinstance(s.get("label"), str) or not 1 <= len(s["label"]) <= 80 or not isinstance(s.get("points"), list) or not 2 <= len(s["points"]) <= CHAT_WIDGET_LIMITS["pointsPerSeries"]: raise ValueError("Invalid chart series")
+                labels = [p.get("x") if isinstance(p, dict) else None for p in s["points"]]
+                if categories is None: categories = labels
+                if labels != categories: raise ValueError("Chart series must align")
+                for point in s["points"]:
+                    if not isinstance(point, dict) or not isinstance(point.get("x"), str) or not 1 <= len(point["x"]) <= 64 or isinstance(point.get("y"), bool) or not isinstance(point.get("y"), (int, float)) or not math.isfinite(point["y"]) or abs(point["y"]) > CHAT_WIDGET_LIMITS["numericMagnitude"]: raise ValueError("Invalid chart point")
+            return {"contractVersion": CHAT_WIDGET_IR_VERSION, "kind": kind, "title": title, "chartType": chart_type, "xLabel": x_label, "yLabel": y_label, "series": series}
+        items = args.get("items")
+        if not isinstance(items, list) or not 1 <= len(items) <= CHAT_WIDGET_LIMITS["listItems"] or any(not isinstance(i, str) or not 1 <= len(i) <= CHAT_WIDGET_LIMITS["itemLength"] for i in items):
             raise ValueError("Invalid items")
-        return {"kind": kind, "title": title, "items": items}
+        return {"contractVersion": CHAT_WIDGET_IR_VERSION, "kind": kind, "title": title, "items": items}
     raise ValueError("Unsupported tool")
 
 
@@ -271,7 +240,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "engine_status", "description": "Read actual local 9-DB memory engine status, total shards, and active database index.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "fleet_status", "description": "Read connected fleet machine nodes (Apollo, Hyperion, Phoebus) and their local model status.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "relay_status", "description": "Read recent fleet handoff batons and multi-machine relay activity from NouGenRelay.", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "present_widget", "description": "Present a useful interactive checklist, side-by-side comparison, ordered steps, or metric grid in the chat UI.", "parameters": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["checklist", "comparison", "steps", "metric_grid"]}, "title": {"type": "string"}, "items": {"type": "array", "items": {"type": "string"}}}, "required": ["kind", "title", "items"]}}},
+    {"type": "function", "function": {"name": "present_widget", "description": "Emit a structured NouGen chat-widget IR instance. Calculator formula is a JSON AST: {op:input,key:<declared key>}, {op:const,value:<number>}, {op:neg,value:<node>}, or binary {op:add|sub|mul|div|pow,left:<node>,right:<node>}; never use a calculation or expression field. Choose a bounded calculator for useful what-if analysis, a labeled chart for grounded numeric trends/comparisons, or checklist/comparison/steps/metric_grid when useful. Never invent chart values; explain assumptions.", "parameters": PRESENT_WIDGET_PARAMETERS}},
 ]
 
 

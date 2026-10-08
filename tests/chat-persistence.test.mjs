@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { recoverMessages, validWidgets, buildContext } from '../ui/src/chatPersistence.ts';
+import { evaluateFormula } from '../ui/src/chatWidgets.ts';
 test('corrupt records and unknown widgets cannot reach renderers', () => {
   assert.deepEqual(recoverMessages(null), []);
   assert.deepEqual(validWidgets([{kind:'html', title:'x', items:['x']}]), []);
@@ -22,4 +23,17 @@ test('context keeps the latest turn within backend limits and omits errors', () 
   assert.equal(result.at(-1).content, 'latest');
   assert.ok(result.reduce((n,m) => n+m.content.length,0) <= 100000);
   assert.ok(!result.some(m => m.content === 'connection failed'));
+});
+
+test('calculator and chart widgets validate and recover interactive values', () => {
+  const calculator={kind:'calculator',title:'Estimate',inputs:[{key:'n',label:'Value',value:3,min:0,max:10,step:1}],formula:{op:'mul',left:{op:'input',key:'n'},right:{op:'const',value:2}},resultLabel:'Total',unit:'',precision:0};
+  const chart={kind:'chart',title:'Trend',chartType:'line',xLabel:'Year',yLabel:'Count',series:[{label:'Observed',points:[{x:'2024',y:2},{x:'2025',y:5}]}]};
+  assert.equal(validWidgets([calculator,chart]).length,2);
+  assert.equal(evaluateFormula(calculator.formula,{n:4}),8);
+  const [recovered]=recoverMessages([{id:'m',role:'assistant',text:'Estimate',timestamp:'now',widgets:[calculator,chart],widgetValues:{'0-n':4,'bad':'x'}}]);
+  assert.equal(recovered.widgetValues['0-n'],4);
+  assert.equal(recovered.widgetValues.bad,undefined);
+  assert.equal(recovered.widgets.length,2);
+  assert.throws(()=>evaluateFormula({op:'div',left:{op:'const',value:1},right:{op:'const',value:0}},{ }));
+  assert.equal(validWidgets([{...calculator,formula:{op:'exec',code:'alert(1)'}}]).length,0);
 });
