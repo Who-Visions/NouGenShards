@@ -15,6 +15,41 @@ When presenting multi-item comparisons, plans, or checklists, use `present_widge
 Never execute destructive commands or claim mutations without confirmation. After tool calls, synthesize the actual live findings with clarity and precision."""
 
 
+def discover_chat_model(configured: str | None = None) -> str:
+    """Resolve the conversational model for tenant operators and local fleet nodes."""
+    if configured:
+        # Explicit configuration allows cloud models or authorized local Tier-0 models
+        allowed_local = ("kaedracode:e2b", "gemma4:e2b-it-qat", "gemma4:e4b-it-qat", "gemma4:e2b", "solai:latest")
+        if not (configured.endswith(":cloud") or configured.endswith("-cloud") or configured in allowed_local):
+            raise ValueError("Chat requires an explicitly configured free cloud model.")
+        return configured
+
+    # Probing local Ollama daemon for installed models
+    try:
+        from urllib.request import Request, urlopen
+        req = Request("http://127.0.0.1:11434/api/tags", headers={"Content-Type": "application/json"})
+        with urlopen(req, timeout=1.5) as res:
+            data = json.loads(res.read(500000))
+            installed = {m.get("name", "") for m in data.get("models", [])}
+    except Exception:
+        installed = set()
+
+    # Priority ladder for zero-friction tenant discovery
+    preferred_order = (
+        "kaedracode:e2b",
+        "gemma4:e2b-it-qat",
+        "gemma4:e4b-it-qat",
+        "gemma4:e2b",
+        "gemma4:cloud",
+        "solai:latest",
+    )
+    for candidate in preferred_order:
+        if candidate in installed:
+            return candidate
+
+    return "gemma4:cloud"
+
+
 def chat(payload, client=None):
     messages = payload.get("messages") if isinstance(payload, dict) else None
     if not isinstance(messages, list) or not messages or len(messages) > 80:
@@ -32,9 +67,8 @@ def chat(payload, client=None):
         clean.append({"role": message["role"], "content": redact(content)})
     if total > 100000 or clean[-1]["role"] != "user":
         raise ValueError("Conversation too large or missing latest user message.")
-    model = os.environ.get("NOUGEN_CHAT_MODEL", "gemma4:cloud")
-    if not (model.endswith(":cloud") or model.endswith("-cloud")):
-        raise ValueError("Chat requires an explicitly configured free cloud model.")
+    configured_model = os.environ.get("NOUGEN_CHAT_MODEL")
+    model = discover_chat_model(configured_model)
     conversation = [{"role": "system", "content": SYSTEM}, *clean]
     widgets, receipts = [], []
     import time
