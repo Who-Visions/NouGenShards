@@ -143,7 +143,8 @@ def recall_memory(query: str, limit: int = 5) -> list:
     # the lane the fleet's connectors actually recall through, and an empty
     # list here reads to an agent as "the substrate holds nothing on this".
     # A lane dropped by the deadline must not be able to say that.
-    if sweep_report.get("lanes_timed_out"):
+    if (sweep_report.get("lanes_timed_out") or sweep_report.get("errored")
+            or sweep_report.get("tier2_deferred") or sweep_report.get("lanes_skipped")):
         out.append(_deadline_trailer(sweep_report))
     return out
 
@@ -172,16 +173,8 @@ def _deadline_trailer(sweep_report: dict) -> dict:
     return {
         "id": "federation_meta",
         "event_type": "FEDERATION_STATUS",
-        "title": (f"recall INCOMPLETE: {len(dropped)} lane(s) "
-                  f"({', '.join(dropped)}) missed the "
-                  f"{sweep_report.get('deadline_s')}s deadline — absence in "
-                  "these results is NOT evidence of absence in the substrate"),
-        "content": json.dumps({
-            "lanes_timed_out": dropped,
-            "deadline_s": sweep_report.get("deadline_s"),
-            "deadline_exceeded": bool(sweep_report.get("deadline_exceeded")),
-            "lanes": sweep_report.get("lanes"),
-        }),
+        "title": "recall INCOMPLETE: some stores failed, timed out, or were not searched",
+        "content": json.dumps(dict(sweep_report, complete=False)),
         "tags": json.dumps(["federation_status"]),
         "final_score": 0.0,
         "_db_index": "federation_meta",
@@ -955,6 +948,45 @@ app = FastAPI(
     redoc_url="/redoc" if _serve_docs else None,
     openapi_url="/openapi.json" if _serve_docs else None,
 )
+
+
+@app.middleware("http")
+async def chrome_extension_cors(request: Request, call_next):
+    """CORS only for the local extension pairing and capture endpoints."""
+    path = request.url.path
+    origin = request.headers.get("origin", "")
+    allowed = path in {"/extension/connect", "/capture"} and origin.startswith("chrome-extension://")
+    if request.method == "OPTIONS" and path in {"/extension/connect", "/capture"} and allowed:
+        response = Response(status_code=204)
+    else:
+        response = await call_next(request)
+    if allowed:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "content-type, x-ngs-token"
+        response.headers["Access-Control-Max-Age"] = "600"
+    return response
+
+
+@app.post("/extension/connect")
+async def connect_chrome_extension(request: Request):
+    """Issue a capture-only token to the extension on this computer."""
+    import ipaddress
+
+    peer = request.client.host if request.client else ""
+    try:
+        if not ipaddress.ip_address(peer).is_loopback:
+            raise ValueError("not loopback")
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Connect from this computer only.")
+    if not request.headers.get("origin", "").startswith("chrome-extension://"):
+        raise HTTPException(status_code=403, detail="Open this from the NouGen Capture extension.")
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+        raise HTTPException(status_code=415, detail="Use the NouGen Capture extension to connect.")
+    if not _credentials_configured():
+        raise HTTPException(status_code=503, detail="NouGen node credentials are not configured.")
+    return {"token": mcp_oauth.issue_local_access_token(), "scope": "node"}
 try:
     from space_router import router as _inference_router
     app.include_router(_inference_router)
@@ -1092,6 +1124,34 @@ async def tenant_vault_context(
         yield tenant
     finally:
         core.reset_active_vault(tokens)
+
+
+async def capture_vault_context(
+    x_ngs_token: Optional[str] = Header(None, alias="X-NGS-Token"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    x_nougen_lane: Optional[str] = Header(None, alias="X-NouGen-Lane"),
+    token: Optional[str] = Query(None),
+):
+    """Accept ordinary node credentials or the extension's capture-only grant."""
+    supplied = x_ngs_token or authorization or token
+    if authorization and authorization.lower().startswith("bearer "):
+        supplied = authorization[7:].strip()
+    try:
+        tenant = _verify_token_sync(x_ngs_token=x_ngs_token,
+                                    authorization=authorization, token=token)
+    except HTTPException:
+        tenant_id = mcp_oauth.issued_token_tenant(supplied or "")
+        if not tenant_id:
+            raise
+        tenant = tenants.Tenant(tenant_id=tenant_id,
+                                label="NouGen Capture extension",
+                                vault_dir=tenants.vault_dir_for(tenant_id, core.GLOBAL_DIR))
+    lane = x_nougen_lane or tenant.lane or "default"
+    context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id, lane=lane)
+    try:
+        yield tenant
+    finally:
+        core.reset_active_vault(context_tokens)
 
 # --- API Endpoints ---
 
@@ -1666,7 +1726,8 @@ def search(req: SearchRequest, response: Response,
     # — indistinguishable from "searched everywhere, matched nothing". That is
     # the difference between an empty answer and an unasked question.
     tier2_deferred = sweep_report.get("tier2_deferred") or []
-    if sweep_report.get("errored") or lanes_timed_out or tier2_deferred:
+    if (sweep_report.get("errored") or lanes_timed_out or tier2_deferred
+            or sweep_report.get("lanes_skipped")):
         errored = sweep_report.get("errored") or []
         if lanes_timed_out:
             title = (f"federation: {len(lanes_timed_out)} lane(s) "
@@ -1685,6 +1746,9 @@ def search(req: SearchRequest, response: Response,
             "event_type": "FEDERATION_STATUS",
             "title": title,
             "content": json.dumps({
+                "complete": False,
+                "upstream_coverage": sweep_report.get("upstream_coverage"),
+                "lanes_skipped": sweep_report.get("lanes_skipped"),
                 "errored": errored,
                 "lanes_timed_out": lanes_timed_out,
                 "lanes": sweep_report.get("lanes"),
@@ -1789,7 +1853,7 @@ async def recall_endpoint(
 
 @app.post("/capture")
 def capture_shard(req: CaptureRequest,
-                  _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+                  _tenant: tenants.Tenant = Depends(capture_vault_context)):
     """Single-shard capture for user agents.
 
     `status` stays "ok" for the HTTP contract; whether a shard was actually
@@ -4252,6 +4316,82 @@ else:
         "serve the vault UI.",
         file=sys.stderr,
     )
+
+
+@node_mcp.tool()
+@_offloaded
+def semantic_context_assemble(query: str, state_json: str = "{}", budget_bytes: int = 8000) -> dict:
+    """Bound I + G + R(Q) + active task state; corrections must be caller-authorized.
+
+    The budget covers serialized context only. Inspect ready and missing_required;
+    retrieval_complete is separate and does not assert recall fidelity.
+    """
+    from nougen_shards.context_policy import context_from_json
+    try:
+        return context_from_json(query, state_json, budget_bytes)
+    except (TypeError, ValueError, KeyError) as exc:
+        return {'error': str(exc)}
+
+
+
+@node_mcp.tool()
+@_offloaded
+def context_task_checkpoint(session_id: str, state_json: str, provenance: str) -> str:
+    """Append verified compact task state for one session; never pass credentials."""
+    from nougen_shards.nougen_context import append_task_state
+    try:
+        if len(state_json) > 16000:
+            raise ValueError("state_json exceeds 16000 characters")
+        return json.dumps(append_task_state(session_id, json.loads(state_json), provenance=provenance))
+    except (TypeError, ValueError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@node_mcp.tool()
+@_offloaded
+def context_task_current(session_id: str) -> str:
+    """Read current task checkpoint for the exact session, without transcript replay."""
+    from nougen_shards.nougen_context import current_task_state
+    return json.dumps(current_task_state(session_id), ensure_ascii=False)
+
+
+@node_mcp.tool()
+@_offloaded
+def context_feedback(packet_json: str, feedback_json: str) -> str:
+    """Measure omissions and receiver-reported context use; no inferred cognition score."""
+    from nougen_shards.context_policy import evaluate_context
+    try:
+        if max(len(packet_json), len(feedback_json)) > 1000000:
+            raise ValueError("feedback inputs exceed 1000000 characters")
+        return json.dumps(evaluate_context(json.loads(packet_json), **json.loads(feedback_json)))
+    except (TypeError, ValueError, KeyError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@node_mcp.tool()
+@_offloaded
+def context_correct(session_id: str, previous: str, current: str, provenance: str) -> str:
+    """Append a source-owner-authorized correction. Never persist a model proposal as authority."""
+    from nougen_shards.nougen_context import append_context_correction
+    try:
+        return json.dumps(append_context_correction(session_id, previous, current, provenance=provenance))
+    except (TypeError, ValueError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@node_mcp.tool()
+@_offloaded
+def context_session_assemble(session_id: str, query: str, state_json: str = "{}", budget_bytes: int = 8000) -> str:
+    """Compile federated recall with this session's durable task/correction state.
+
+    Omit recall from state_json for bounded live federation; supply recall for replay.
+    """
+    from nougen_shards.nougen_context import assemble_session_context
+    try:
+        return json.dumps(assemble_session_context(session_id, query, state_json, budget_bytes), ensure_ascii=False)
+    except (TypeError, ValueError, KeyError) as exc:
+        return json.dumps({'error': str(exc)})
+
 
 if __name__ == "__main__":
     import uvicorn

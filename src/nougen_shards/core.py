@@ -26,6 +26,20 @@ from nougen_time import InvalidTimestampError, format_log_time, now as nougen_no
 
 logger = logging.getLogger(__name__)
 
+# Request-local collector follows copy_context into both retrieval fan-outs.
+RETRIEVAL_FAILURES = ContextVar("nougen_retrieval_failures", default=None)
+
+
+def _note_retrieval_db_failure(index, exc):
+    failures = RETRIEVAL_FAILURES.get()
+    if failures is not None:
+        entry = {"store": f"local:db:{index}",
+                 "error": f"{type(exc).__name__}: {exc}",
+                 "failure_class": "database_unreadable"}
+        if entry not in failures:
+            failures.append(entry)
+
+
 #: Seconds a capture may wait for its embedding before storing NULL and
 #: leaving the row for embedding_backfill. Env-tunable per Rule 0.0 item 4;
 #: the literal is a fallback only.
@@ -1754,6 +1768,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
             if not fts_worked and db_hits == 0:
                 missed = True
         except (sqlite3.DatabaseError, OSError) as exc:
+            _note_retrieval_db_failure(i, exc)
             # ONE bad DB must not zero out the whole federated read. The try
             # around the FTS SQL below catches only sqlite3.OperationalError,
             # but a corrupt file raises sqlite3.DatabaseError ("database disk
@@ -1893,6 +1908,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         history.log_event(item["id"], i, "ACCESSED")
                         results.append(item)
                 except (sqlite3.DatabaseError, OSError) as exc:
+                    _note_retrieval_db_failure(i, exc)
                     logger.error("grid DB %s unreadable during fuzzy pass, skipping it: %s: %s",
                                  i, type(exc).__name__, exc)
                     try:
@@ -2276,6 +2292,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                 item["final_score"] = by_id.get(item["id"], 0.0)
                 db_rows.append(item)
         except (sqlite3.DatabaseError, OSError) as exc:
+            _note_retrieval_db_failure(i, exc)
             # ONE bad DB must not zero out the whole federated read - degrade
             # per DB: record it, skip it, keep scanning (see keyword lane for
             # the 2026-08-29 incident that mandates this).
@@ -2349,6 +2366,10 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
             if key not in item_map:
                 item_map[key] = item.copy()
             else:
+                locators = item_map[key].setdefault("source_locators", [])
+                for locator in item.get("source_locators", []):
+                    if locator not in locators:
+                        locators.append(locator)
                 for key_name, val in item.items():
                     if item_map[key].get(key_name) is None and val is not None:
                         item_map[key][key_name] = val
@@ -2474,6 +2495,7 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
                     item["final_score"] = 1.0
                     rows.append(item)
         except (sqlite3.DatabaseError, OSError) as exc:
+            _note_retrieval_db_failure(i, exc)
             logger.error("title lane: grid DB %s unreadable, skipping it: %s: %s", i, type(exc).__name__, exc)
         finally:  # get_connection opens a fresh handle per call; an unclosed one locks the file on Windows
             if conn is not None:
@@ -2612,6 +2634,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             if get_db_path(i).exists():
                 init_db(i)
         except (sqlite3.DatabaseError, OSError) as exc:
+            _note_retrieval_db_failure(i, exc)
             logger.error("grid DB %s unreadable during schema upgrade, skipping it: %s: %s",
                          i, type(exc).__name__, exc)
             continue
@@ -2934,6 +2957,7 @@ def locate_shard(shard_id: int) -> List[int]:
         except sqlite3.Error:
             continue
         except (sqlite3.DatabaseError, OSError) as exc:
+            _note_retrieval_db_failure(i, exc)
             # ONE bad DB must not zero out the whole federated read. The try
             # around the FTS SQL below catches only sqlite3.OperationalError,
             # but a corrupt file raises sqlite3.DatabaseError ("database disk
@@ -3016,6 +3040,7 @@ def mark_shard(shard_id: int, worked: bool, db_index: Optional[int] = None):
             else:
                 continue
         except (sqlite3.DatabaseError, OSError) as exc:
+            _note_retrieval_db_failure(i, exc)
             # Found by tests/test_grid_fanout_guard_invariant.py after TWO
             # careful human reads of this file missed it. It got the
             # open-inside-the-try placement in the first sweep but never the
@@ -3065,6 +3090,7 @@ def decay_utility_scores(factor: float = 0.95):
             conn.execute("UPDATE shards SET utility_score = utility_score * ?", (factor,))
             conn.commit()
         except (sqlite3.DatabaseError, OSError) as exc:
+            _note_retrieval_db_failure(i, exc)
             # ONE bad DB must not zero out the whole federated read. The try
             # around the FTS SQL below catches only sqlite3.OperationalError,
             # but a corrupt file raises sqlite3.DatabaseError ("database disk

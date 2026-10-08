@@ -28,6 +28,7 @@ from .graph import link_shards as link_shards, related_shards as related_shards
 from .gatekeeper import check_mutation_gate as check_mutation_gate
 from .temporal_fabric import TemporalEnvelope as TemporalEnvelope, TemporalFabric as TemporalFabric
 from .temporal_fabric import extract_temporal_mentions as extract_temporal_mentions
+from .end_of_turn_voice import resolve_end_of_turn as resolve_end_of_turn, EndOfTurnResolution as EndOfTurnResolution
 
 try:
     from .transcriber import NouGenTranscriber, TranscribeEngine

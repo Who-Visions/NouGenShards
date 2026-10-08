@@ -1366,5 +1366,76 @@ def main():
     # Start the FastMCP server with stdio transport
     mcp.run()
 
+
+@mcp.tool()
+def semantic_context_assemble(query: str, state_json: str = "{}", budget_bytes: int = 8000) -> str:
+    """Assemble bounded identity/global/recall/active state. Corrections must be caller-authorized.
+
+    state_json contains identity, global_state, recall arrays; compact active state;
+    optional corrections with qualified previous/current handles and provenance.
+    ready=False means required context is missing. Metadata is outside the payload budget.
+    """
+    from .context_policy import context_from_json
+    try:
+        return json.dumps(context_from_json(query, state_json, budget_bytes), ensure_ascii=False)
+    except (TypeError, ValueError, KeyError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+
+@mcp.tool()
+def context_task_checkpoint(session_id: str, state_json: str, provenance: str) -> str:
+    """Append verified compact task state for one session; never pass credentials."""
+    from .nougen_context import append_task_state
+    try:
+        if len(state_json) > 16000:
+            raise ValueError("state_json exceeds 16000 characters")
+        return json.dumps(append_task_state(session_id, json.loads(state_json), provenance=provenance))
+    except (TypeError, ValueError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@mcp.tool()
+def context_task_current(session_id: str) -> str:
+    """Read current task checkpoint for the exact session, without transcript replay."""
+    from .nougen_context import current_task_state
+    return json.dumps(current_task_state(session_id), ensure_ascii=False)
+
+
+@mcp.tool()
+def context_feedback(packet_json: str, feedback_json: str) -> str:
+    """Measure omissions and receiver-reported context use; no inferred cognition score."""
+    from .context_policy import evaluate_context
+    try:
+        if max(len(packet_json), len(feedback_json)) > 1000000:
+            raise ValueError("feedback inputs exceed 1000000 characters")
+        return json.dumps(evaluate_context(json.loads(packet_json), **json.loads(feedback_json)))
+    except (TypeError, ValueError, KeyError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@mcp.tool()
+def context_correct(session_id: str, previous: str, current: str, provenance: str) -> str:
+    """Append a source-owner-authorized correction. Never persist a model proposal as authority."""
+    from .nougen_context import append_context_correction
+    try:
+        return json.dumps(append_context_correction(session_id, previous, current, provenance=provenance))
+    except (TypeError, ValueError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@mcp.tool()
+def context_session_assemble(session_id: str, query: str, state_json: str = "{}", budget_bytes: int = 8000) -> str:
+    """Compile federated recall with this session's durable task/correction state.
+
+    Omit recall from state_json for bounded live federation; supply recall for replay.
+    """
+    from .nougen_context import assemble_session_context
+    try:
+        return json.dumps(assemble_session_context(session_id, query, state_json, budget_bytes), ensure_ascii=False)
+    except (TypeError, ValueError, KeyError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
 if __name__ == "__main__":
     main()

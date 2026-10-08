@@ -4364,9 +4364,10 @@ Other lanes see it on their next relay check.`,
     // call the answer complete when a source could not be read.
     const ttlDefaultH = Number(env.CLAIM_TTL_HOURS || 8);
     const now = Date.now();
-    let claimFiles = [], claimFilesTotal = 0, claimSourceOk = true, claimSourceError = null;
+    let claimFiles = [], claimFilesTotal = 0, claimListingEntries = 0, claimSourceOk = true, claimSourceError = null;
     try {
       const entries = await gh(env, `/contents/.handoffs/claims?ref=${env.RELAY_BRANCH}`);
+      claimListingEntries = entries.length;
       claimFilesTotal = entries.filter((e) => e.type === "file" && e.name.endsWith(".json")).length;
       // Subrequest budget: newest files only (stamp-first names order by time).
       claimFiles = orderLegIds(entries.filter((e) => e.type === "file" && e.name.endsWith(".json")).map((e) => e.name.replace(/\.json$/, "")))
@@ -4385,7 +4386,8 @@ Other lanes see it on their next relay check.`,
     // Each leg read is a GitHub subrequest; the Workers per-invocation cap
     // (50 on this plan) was blown at 60 legs + listing (live, 2026-09-24).
     const scanN = Math.min(Number(env.CLAIM_LEG_SCAN || 20), 25);
-    const { ids } = await listLegs(env);
+    const legListing = await listLegs(env);
+    const { ids } = legListing;
     const legRead = await mapPooled(ids.slice(0, scanN), 8, (id) => readLeg(env, id).then(({ rec }) => rec));
     const legUnreadable = legRead.filter((r) => !r.ok).length;
     const legOwners = [];
@@ -4400,9 +4402,13 @@ Other lanes see it on their next relay check.`,
     }
     // The contents API returns at most 1000 entries, alphabetically: at the
     // cap, the newest claim files may be exactly the ones missing.
-    const claimListingCapped = claimFilesTotal >= 1000;
-    const complete = claimSourceOk && !claimListingCapped && unreadable.length === 0 && legUnreadable === 0;
-    const sources = { claim_files: claimSourceOk ? claimFilesTotal : "unreadable", claim_files_read: claimFiles.length, claim_listing_capped: claimListingCapped, legs_scanned: legRead.length, leg_scan_window: scanN, ttl_hours: ttlDefaultH };
+    const claimListingCapped = claimListingEntries >= 1000;
+    const claimFilesUnscanned = Math.max(0, claimFilesTotal - claimFiles.length);
+    const legsUnscanned = Math.max(0, ids.length - legRead.length);
+    const legListingComplete = legListing.listingComplete === true;
+    const complete = claimSourceOk && !claimListingCapped && claimFilesUnscanned === 0
+      && legListingComplete && legsUnscanned === 0 && unreadable.length === 0 && legUnreadable === 0;
+    const sources = { claim_files: claimSourceOk ? claimFilesTotal : "unreadable", claim_files_read: claimFiles.length, claim_files_unscanned: claimFilesUnscanned, claim_listing_capped: claimListingCapped, legs_total: ids.length, legs_scanned: legRead.length, legs_unscanned: legsUnscanned, leg_listing_complete: legListingComplete, leg_scan_window: scanN, ttl_hours: ttlDefaultH };
     const lines = [];
     if (!active.length && !legOwners.length) lines.push("no active ownership found in either source" + (complete ? "" : " -- NOT complete, see sources"));
     if (active.length) {
@@ -4415,6 +4421,8 @@ Other lanes see it on their next relay check.`,
     }
     lines.push("", `_sources: ${sources.claim_files} claim file(s), newest ${sources.legs_scanned} legs scanned; complete=${complete}_`);
     if (claimListingCapped) lines.push("\u26A0\uFE0F claims directory listing hit the 1000-entry API cap; newest claim files may be missing (prune or archive .handoffs/claims/)");
+    if (claimFilesUnscanned || legsUnscanned) lines.push(`\u26A0\uFE0F bounded ownership sample: ${claimFilesUnscanned} claim file(s) and ${legsUnscanned} leg(s) unexamined; absence of ownership is not established`);
+    if (!legListingComplete) lines.push("\u26A0\uFE0F leg directory listing is incomplete");
     if (claimSourceError) lines.push(`\u26A0\uFE0F claim directory unreadable: ${claimSourceError}`);
     if (unreadable.length) lines.push(`\u26A0\uFE0F ${unreadable.length} claim file(s) unreadable: ` + unreadable.map((u) => u.file).join(", "));
     if (legUnreadable) lines.push(`\u26A0\uFE0F ${legUnreadable} leg(s) unreadable in the scan window`);

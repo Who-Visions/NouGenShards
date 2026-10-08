@@ -15,16 +15,30 @@ export function normalizeEndpoint(raw) {
   return u.origin;
 }
 
-export function buildPayload({ selection, pageText, url, title, now = new Date() }) {
+export function buildPayload({ selection, pageText, url, title, extraTags = [], author = "", now = new Date() }) {
   const body = String(selection || "").trim() || String(pageText || "").trim();
   if (!body) return null;
   const clipped = body.length > MAX_CONTENT;
   const text = clipped ? body.slice(0, MAX_CONTENT) : body;
   const host = hostOf(url);
   const kind = String(selection || "").trim() ? "selection" : "page";
-  const header = [`Source: ${url || "unknown"}`, `Captured: ${now.toISOString()}`, `Kind: ${kind}${clipped ? " (truncated)" : ""}`].join("\n");
+  const headerLines = [
+    `Source: ${url || "unknown"}`,
+    `Captured: ${now.toISOString()}`,
+    `Kind: ${kind}${clipped ? " (truncated)" : ""}`
+  ];
+  if (author && String(author).trim()) {
+    headerLines.push(`Author: ${String(author).trim()}`);
+  }
+  const header = headerLines.join("\n");
   const tags = [TAG, kind];
   if (host) tags.push(host);
+  if (Array.isArray(extraTags)) {
+    for (const t of extraTags) {
+      const clean = String(t || "").trim();
+      if (clean && !tags.includes(clean)) tags.push(clean);
+    }
+  }
   return {
     event_type: "KNOWLEDGE",
     title: `Web: ${(title || host || "untitled").slice(0, 120)}`,

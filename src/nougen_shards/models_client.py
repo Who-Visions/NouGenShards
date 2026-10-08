@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from . import keymaker
 from . import structured
+from .response_contract import response_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,16 @@ class LLMClient(ABC):
     @abstractmethod
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         """Send chat request."""
+
+    def chat_with_metadata(self, model: str, messages: list, stream: bool = False) -> dict:
+        """Compatibility wrapper returning text plus explicit unknown provenance.
+
+        Providers that expose response metadata should override this method.
+        The wrapper never infers provider identity from generated prose.
+        """
+        content = self.chat(model, messages, stream=stream)
+        meta = response_metadata(model, None, content, None)
+        return {"content": content, **meta.to_dict()}
 
     @abstractmethod
     def embed(self, model: str, text: str) -> list:
@@ -253,6 +264,12 @@ class AnthropicClient(LLMClient):
         except Exception as exc: # pylint: disable=broad-except
             return f"Error: {exc}"
 
+    def embed(self, model: str, text: str) -> list:
+        return []
+
+    def batch_embed(self, model: str, texts: List[str]) -> List[list]:
+        return [[] for _ in texts]
+
     def _stream_chat(self, response) -> str:
         full_content = ""
         for line in response:
@@ -268,12 +285,6 @@ class AnthropicClient(LLMClient):
                 except (json.JSONDecodeError, KeyError):
                     continue
         return full_content
-
-    def embed(self, model: str, text: str) -> list:
-        return []
-
-    def batch_embed(self, model: str, texts: List[str]) -> List[list]:
-        return [[] for _ in texts]
 
 
 class GeminiClient(LLMClient):
@@ -630,6 +641,45 @@ class OpenRouterClient(OpenAIClient):
         except Exception as exc: # pylint: disable=broad-except
             return f"Error: {exc}"
 
+    def chat_with_metadata(self, model: str, messages: list, stream: bool = False) -> dict:
+        """OpenRouter response with provider-reported model and finish state."""
+        if not self.api_key:
+            content = "Error: OR Key missing."
+            meta = response_metadata(model, None, content, None)
+            return {"content": content, **meta.to_dict()}
+        messages = self._inject_persona(messages)
+        payload = {"model": model, "messages": messages, "stream": stream}
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions", data=json.dumps(payload).encode(), method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Bearer {self.api_key or ''}")
+        req.add_header("HTTP-Referer", "https://whovisions.com")
+        req.add_header("X-OpenRouter-Title", "NouGenShards")
+        try:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
+                if stream:
+                    content = self._stream_chat(res)
+                    raw = {}
+                    actual, finish, refusal = None, None, None
+                else:
+                    raw = json.loads(res.read().decode())
+                    choice = (raw.get("choices") or [{}])[0]
+                    message = choice.get("message") or {}
+                    content = message.get("content", "") or ""
+                    actual = raw.get("model")
+                    finish = choice.get("finish_reason")
+                    refusal = message.get("refusal")
+            meta = response_metadata(model, actual, content, finish, refusal)
+            return {"content": content, "usage": self._extract_usage_metadata(raw) if not stream else {},
+                    **meta.to_dict()}
+        except Exception as exc:
+            content = f"Error: {exc}"
+            meta = response_metadata(model, None, content, None)
+            return {"content": content, "error": str(exc), **meta.to_dict()}
+
+
+
     def chat_with_fallback(self, model: str, messages: list,
                            fallback_models: Optional[list] = None, session_id: Optional[str] = None,
                            stream: bool = False, **kwargs) -> dict:
@@ -637,7 +687,9 @@ class OpenRouterClient(OpenAIClient):
         Executes a chat request with OpenRouter model fallback.
         """
         if not self.api_key:
-            return {"content": "Error: OR Key missing.", "model": "unknown"}
+            meta = response_metadata(model, None, "", None)
+            return {"content": "Error: OR Key missing.", "model": meta.actual_model,
+                    **meta.to_dict()}
 
         messages = self._inject_persona(messages)
         bounded_models = self.bounded_fallback_models(model, fallback_models)
@@ -673,15 +725,24 @@ class OpenRouterClient(OpenAIClient):
                 if not stream:
                     resp_data = json.loads(res.read().decode())
                     choice = resp_data.get("choices", [{}])[0]
+                    content = choice.get("message", {}).get("content", "") or ""
+                    meta = response_metadata(model, resp_data.get("model"), content,
+                                             choice.get("finish_reason"),
+                                             (choice.get("message") or {}).get("refusal"))
                     return {
-                        "content": choice.get("message", {}).get("content", ""),
-                        "model": resp_data.get("model", model),
+                        "content": content,
+                        "model": meta.actual_model,
+                        **meta.to_dict(),
                         "usage": self._extract_usage_metadata(resp_data),
                         "finish_reason": choice.get("finish_reason")
                     }
-                return {"content": self._stream_chat(res), "model": model}
+                content = self._stream_chat(res)
+                meta = response_metadata(model, None, content, None)
+                return {"content": content, "model": meta.actual_model, **meta.to_dict()}
         except Exception as exc:
-            return {"content": f"Error: {exc}", "model": "error"}
+            meta = response_metadata(model, None, "", None)
+            return {"content": f"Error: {exc}", "model": meta.actual_model,
+                    "error": str(exc), **meta.to_dict()}
 
     def structured_chat(self, model: str, messages: list, schema: dict,
                         fallback_models: Optional[list] = None, session_id: Optional[str] = None,
@@ -726,12 +787,19 @@ class OpenRouterClient(OpenAIClient):
         try:
             with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
                 resp_data = json.loads(res.read().decode())
-                content = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                choice = (resp_data.get("choices") or [{}])[0]
+                message = choice.get("message") or {}
+                content = message.get("content", "") or ""
+                meta = response_metadata(model, resp_data.get("model"), content,
+                                         choice.get("finish_reason"), message.get("refusal"))
 
                 try:
                     data = structured.parse_json_content(content)
                 except ValueError as e:
-                    return {"error": f"JSON Parse Failed: {e}", "raw": content}
+                    return {"error": f"JSON Parse Failed: {e}", "raw": content,
+                            "requested_model": meta.requested_model, "actual_model": meta.actual_model,
+                            "complete": meta.complete, "status": meta.status, "reason": meta.reason,
+                            "finish_reason": meta.finish_reason}
 
                 valid, errors = structured.validate_against_schema(data, schema)
 
@@ -739,7 +807,13 @@ class OpenRouterClient(OpenAIClient):
                     "data": data,
                     "valid": valid,
                     "errors": errors,
-                    "model": resp_data.get("model"),
+                    "model": meta.actual_model,
+                    "requested_model": meta.requested_model,
+                    "actual_model": meta.actual_model,
+                    "complete": meta.complete,
+                    "status": meta.status,
+                    "reason": meta.reason,
+                    "finish_reason": meta.finish_reason,
                     "usage": self._extract_usage_metadata(resp_data)
                 }
         except Exception as exc:

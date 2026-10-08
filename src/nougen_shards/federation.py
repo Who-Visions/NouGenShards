@@ -95,6 +95,8 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     failed. Lane errors and deadline misses used to reach a log line and nowhere
     else, so a degraded sweep was indistinguishable from an empty corpus.
     """
+    if sweep_report is None:
+        sweep_report = {}
     local_results = []
     external_results = []
     cloud_results = []
@@ -130,12 +132,18 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
             sweep_report.setdefault("errored", []).append(entry)
 
     def _fetch_local():
+        failures = []
+        token = core.RETRIEVAL_FAILURES.set(failures)
         try:
             return core.retrieve(query, limit=limit, query_embedding=query_embedding, domain_key=domain_key)
         except Exception as exc:
             logger.warning("local retrieve skipped: %s: %s", type(exc).__name__, exc)
             _note_lane("local", f"{type(exc).__name__}: {exc}")
             return []
+        finally:
+            core.RETRIEVAL_FAILURES.reset(token)
+            if failures:
+                sweep_report.setdefault("errored", []).extend(failures)
 
     def _fetch_external():
         if not external_configs:
@@ -254,7 +262,10 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
                 sweep_report["deadline_exceeded"] = True
                 _record_lane(name, "timeout", None)
             return default
-        _record_lane(name, "ok", len(out) if out is not None else 0)
+        errors = sweep_report.get("errored", [])
+        degraded = any(e.get("store", "").startswith(name + ":") or
+                       e.get("store") == f"lane:{name}" for e in errors)
+        _record_lane(name, "partial" if degraded else "ok", len(out) if out is not None else 0)
         return out
 
     executor = _lane_executor()
@@ -305,4 +316,11 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
             hit["machine_id"] = default_machine
 
     # Ship coverage WITH the rows, never only in a log line.
-    return FederatedResult(combined[:limit], lane_failures)
+    failures = list(sweep_report.get("errored") or [])
+    failures.extend({"store": "deferred", "error": str(store)}
+                    for store in sweep_report.get("tier2_deferred", []))
+    failures.extend({"store": f"lane:{name}", "error": "lane skipped"}
+                    for name in sweep_report.get("lanes_skipped", []))
+    result = FederatedResult(combined[:limit], failures)
+    result.coverage = dict(sweep_report)
+    return result
