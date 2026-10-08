@@ -38,9 +38,44 @@ export interface IntelligentComponentContract<T> {
   };
 }
 
+/** Remove tag syntax with a bounded scanner; never pass HTML delimiters downstream. */
+function plainTextSummary(input: string): string {
+  const text = input.slice(0, 400);
+  let output = '';
+  let inTag = false;
+  let quote = '';
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (!inTag && char === '<') {
+      const next = text[i + 1] || '';
+      if (/[A-Za-z/!?]/.test(next)) {
+        inTag = true;
+        quote = '';
+      } else {
+        output += '‹';
+      }
+      continue;
+    }
+    if (inTag) {
+      if (quote) {
+        if (char === quote) quote = '';
+      } else if (char === '"' || char === "'") {
+        quote = char;
+      } else if (char === '>') {
+        inTag = false;
+      }
+      continue;
+    }
+    output += char === '>' ? '›' : char;
+  }
+
+  return output.trim();
+}
+
 /**
  * Sanitizes a raw Shard into a bounded, model-safe projection.
- * Strips raw HTML and truncates text to protect agent context window.
+ * Removes bounded tag syntax and truncates text to protect agent context.
  */
 export function projectShardForAssistant(rawShard: {
   id: number;
@@ -63,10 +98,7 @@ export function projectShardForAssistant(rawShard: {
   }
 
   const provenance = tagsList.find((t) => t.startsWith('provenance:'))?.replace('provenance:', '') || 'unknown';
-  const cleanSummary = (rawShard.content || '')
-    .replace(/<[^>]*>?/gm, '')
-    .slice(0, 400)
-    .trim();
+  const cleanSummary = plainTextSummary(rawShard.content || '');
 
   return {
     id: rawShard.id,
