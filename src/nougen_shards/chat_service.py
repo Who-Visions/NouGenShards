@@ -210,7 +210,7 @@ def execute_tool(name, args):
                     except OverflowError as exc: raise ValueError("Formula result out of bounds") from exc
                 if not math.isfinite(result) or abs(result) > CHAT_WIDGET_LIMITS["numericMagnitude"]: raise ValueError("Formula result out of bounds")
                 return result
-            result = evaluate(formula)
+            evaluate(formula)
             result_label, unit = args.get("resultLabel", "Result"), args.get("unit", "")
             precision = args.get("precision", 2)
             if not isinstance(result_label, str) or not 1 <= len(result_label) <= 80 or not isinstance(unit, str) or len(unit) > 16 or isinstance(precision, bool) or not isinstance(precision, int) or not 0 <= precision <= 6: raise ValueError("Invalid calculator display")
