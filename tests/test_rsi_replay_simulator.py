@@ -1,6 +1,5 @@
 """Tests for Dream-RSI Replay Simulator & Dynamic Portfolio Scheduler."""
 
-import pytest
 from nougen_shards.rsi_replay_simulator import (
     CandidateRole,
     DiscoveryAttempt,
