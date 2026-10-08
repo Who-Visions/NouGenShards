@@ -1985,7 +1985,7 @@ export default function App() {
                       <dt>Shard Reference</dt>
                       <dd><code>25665@db1</code> (Accepted by Apollo / Hyperion Mesh)</dd>
                       <dt>Canonical Authority</dt>
-                      <dd><code>C:\Users\super\.nougen\shards</code></dd>
+                      <dd><code>~/.nougen/shards</code></dd>
                       <dt>Morph Ingestion</dt>
                       <dd>3 Candidates Evaluated (MorphScore range: 0.6430 - 0.7266)</dd>
                       <dt>Status</dt>
