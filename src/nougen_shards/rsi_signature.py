@@ -89,6 +89,8 @@ def evaluate_rsi_signature(
 ) -> RSISignatureResult:
     """Verifies whether NouGen shows true recursive self-improvement."""
     n = len(epochs)
+    if any(len(series) != n for series in (eta_history, search_scores, ood_scores)):
+        raise ValueError("eta, search, and OOD evidence must align with every epoch")
     if n < min_epochs:
         return RSISignatureResult(
             is_rsi_confirmed=False,
