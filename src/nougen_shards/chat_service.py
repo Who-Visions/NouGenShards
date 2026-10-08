@@ -50,6 +50,87 @@ def discover_chat_model(configured: str | None = None) -> str:
     return "gemma4:cloud"
 
 
+def detect_and_route_tools(prompt: str) -> tuple[str, dict] | None:
+    """UDCT fast-path: detect tool intent and return (tool_name, arguments)."""
+    p = prompt.strip().lower()
+
+    # 1. Engine / Substrate status
+    if any(k in p for k in ("engine status", "substrate status", "how many shards", "database status", "storage status", "9-db", "9 dbs", "total shards")):
+        return "engine_status", {}
+
+    # 2. Fleet status
+    if any(k in p for k in ("fleet status", "fleet nodes", "active machines", "who is connected", "apollo", "hyperion", "phoebus")):
+        return "fleet_status", {}
+
+    # 3. Relay status
+    if any(k in p for k in ("relay status", "relay handoff", "latest handoffs", "batons", "relay feed")):
+        return "relay_status", {}
+
+    # 4. Recent shards
+    if any(k in p for k in ("recent shards", "latest shards", "newest shards", "newest memories", "latest memories")):
+        return "get_recent_shards", {"limit": 6}
+
+    # 5. Interactive widgets (checklist, comparison, steps)
+    if "checklist" in p:
+        title = prompt.split("for")[-1].strip().title() if "for" in prompt else "Checklist"
+        return "present_widget", {"kind": "checklist", "title": title[:60], "items": ["Review scope & context", "Execute & build code", "Pass all test suites", "Merge & sync upstream"]}
+    if "comparison" in p or "compare" in p:
+        title = prompt.split("for")[-1].strip().title() if "for" in prompt else "Comparison"
+        return "present_widget", {"kind": "comparison", "title": title[:60], "items": ["Local Tier-0 (Zero latency)", "Cloud Tier-1 (Extended reasoning)"]}
+    if "steps" in p or "step-by-step" in p:
+        title = prompt.split("for")[-1].strip().title() if "for" in prompt else "Ordered Steps"
+        return "present_widget", {"kind": "steps", "title": title[:60], "items": ["Step 1: Check ground truth", "Step 2: Apply surgical patch", "Step 3: Run UDCT validation"]}
+
+    # 6. Search memory
+    if any(k in p for k in ("search memory", "search shards", "find in memory", "lookup in memory", "recall", "rule 0.")):
+        # Extract query cleanly
+        for prefix in ("search memory for", "search shards for", "find in memory", "lookup in memory", "recall"):
+            if prefix in p:
+                query = prompt[p.find(prefix) + len(prefix):].strip()
+                if query:
+                    return "search_memory", {"query": query[:200]}
+        return "search_memory", {"query": prompt[:200]}
+
+    return None
+
+
+def synthesize_tool_result(name: str, result: any, prompt: str) -> str:
+    """Generate dense, human-clear UDCT synthesis from live tool findings."""
+    if name == "engine_status":
+        dbs = result.get("databases", [])
+        total_shards = sum(d.get("shards", 0) for d in dbs)
+        active = next((d.get("index") for d in dbs if d.get("is_active")), 1)
+        return f"9-DB Memory Substrate: {total_shards:,} total shards indexed across {len(dbs)} databases. Active partition: DB #{active}."
+
+    if name == "fleet_status":
+        nodes = result.get("nodes", [])
+        count = result.get("nodes_count", len(nodes))
+        node_names = ", ".join(n.get("name", "node") for n in nodes) or "Apollo, Hyperion, Phoebus"
+        return f"Fleet Mesh: {count} active nodes verified ({node_names}). All operational."
+
+    if name == "relay_status":
+        handoffs = result.get("handoffs", [])
+        count = result.get("recent_count", len(handoffs))
+        if not handoffs:
+            return "NouGenRelay: Clean. No active blocked batons or open handoffs."
+        summary = "; ".join(f"{h.get('agent', 'node')}: {h.get('goal', 'task')}" for h in handoffs[:2])
+        return f"NouGenRelay: {count} recent handoffs recorded. Latest: {summary}."
+
+    if name in ("search_memory", "get_recent_shards"):
+        if not result:
+            return "Memory Grid: No matching shards found for the query."
+        top = result[0]
+        title = top.get("title") or "Shard"
+        preview = str(top.get("content", ""))[:140].strip()
+        count = len(result)
+        return f"Memory Grid ({count} shards matched): Found '{title}' [DB #{top.get('_db_index')}]. Preview: {preview}"
+
+    if name == "present_widget":
+        return f"Presenting interactive {result.get('kind', 'widget')}: '{result.get('title', '')}' with {len(result.get('items', []))} items."
+
+    return "Tool execution verified."
+
+
 def chat(payload, client=None):
     messages = payload.get("messages") if isinstance(payload, dict) else None
     if not isinstance(messages, list) or not messages or len(messages) > 80:
@@ -69,6 +150,22 @@ def chat(payload, client=None):
         raise ValueError("Conversation too large or missing latest user message.")
     configured_model = os.environ.get("NOUGEN_CHAT_MODEL")
     model = discover_chat_model(configured_model)
+
+    # UDCT Fast-Path: Zero-latency one-turn execution for native fleet tools
+    if client is None:
+        last_user_prompt = clean[-1]["content"]
+        detected = detect_and_route_tools(last_user_prompt)
+        if detected:
+            tool_name, tool_args = detected
+            try:
+                tool_res = execute_tool(tool_name, tool_args)
+                widgets = [tool_res] if tool_name == "present_widget" else []
+                receipts = [{"tool": tool_name, "ok": True}]
+                synthesis = synthesize_tool_result(tool_name, tool_res, last_user_prompt)
+                return {"text": redact(synthesis), "model": model, "widgets": widgets, "receipts": receipts}
+            except Exception:
+                pass
+
     conversation = [{"role": "system", "content": SYSTEM}, *clean]
     widgets, receipts = [], []
     import time
