@@ -58,7 +58,7 @@ def _checkout_branch(repo: Path):
     return head.rsplit("/", 1)[-1] if head.startswith("ref: refs/heads/") else None
 
 
-def find_relay_registry(home_dir=None):
+def find_relay_registry(home_dir=None, candidates=None):
     """Return the NouGenRelay clone that holds a `.handoffs/` registry, or None.
 
     An explicit $NOUGEN_RELAY_DIR / $FLEET_RELAY_DIR always wins. Otherwise a candidate checked
@@ -69,7 +69,7 @@ def find_relay_registry(home_dir=None):
     """
     explicit = {Path(os.environ[v].strip()).expanduser() for v in RELAY_DIR_ENV_VARS if os.environ.get(v, "").strip()}
     fallback = None
-    for cand in _relay_registry_candidates(home_dir):
+    for cand in (candidates if candidates is not None else _relay_registry_candidates(home_dir)):
         if not ((cand / ".handoffs").is_dir() and (cand / "src" / "nougen_relay").is_dir()):
             continue
         if cand in explicit:

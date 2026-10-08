@@ -3447,10 +3447,19 @@ def cmd_evidence(args):
             sys.exit(1)
 
 
-from .relay_registry import (
-    EX_CONFIG,
-    _relay_registry_candidates, find_relay_registry,
-)
+from . import relay_registry as _relay_registry
+
+# Preserve the CLI module's historical discovery hooks for callers and tests;
+# the implementation lives in relay_registry so other entry points share it.
+RELAY_DIR_ENV_VARS = _relay_registry.RELAY_DIR_ENV_VARS
+EX_CONFIG = _relay_registry.EX_CONFIG
+RELAY_REGISTRY_BRANCH = _relay_registry.RELAY_REGISTRY_BRANCH
+_checkout_branch = _relay_registry._checkout_branch
+_relay_registry_candidates = _relay_registry._relay_registry_candidates
+
+
+def find_relay_registry():
+    return _relay_registry.find_relay_registry(candidates=_relay_registry_candidates())
 
 
 def _import_relay_main(registry):
