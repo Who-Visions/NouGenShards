@@ -15,14 +15,14 @@
   "definitions": {
     "Formula": {
       "oneOf": [
-        {"type":"object","properties":{"op":{"const":"input"},"key":{"type":"string","maxLength":32}},"required":["op","key"]},
+        {"type":"object","properties":{"op":{"const":"input"},"key":{"type":"string","pattern":"^[a-zA-Z0-9_-]{1,32}$","maxLength":32}},"required":["op","key"]},
         {"type":"object","properties":{"op":{"const":"const"},"value":{"type":"number"}},"required":["op","value"]},
         {"type":"object","properties":{"op":{"const":"neg"},"value":{"$ref":"#/definitions/Formula"}},"required":["op","value"]},
         {"type":"object","properties":{"op":{"enum":["add","sub","mul","div","pow"]},"left":{"$ref":"#/definitions/Formula"},"right":{"$ref":"#/definitions/Formula"}},"required":["op","left","right"]}
       ]
     },
     "CalculatorInput": {
-      "type":"object","properties":{"key":{"type":"string","maxLength":32},"label":{"type":"string","maxLength":80},"value":{"type":"number"},"min":{"type":"number"},"max":{"type":"number"},"step":{"type":"number"},"unit":{"type":"string","maxLength":16}},"required":["key","label","value","min","max","step"]
+      "type":"object","properties":{"key":{"type":"string","pattern":"^[a-zA-Z0-9_-]{1,32}$","maxLength":32},"label":{"type":"string","maxLength":80},"value":{"type":"number"},"min":{"type":"number"},"max":{"type":"number"},"step":{"type":"number"},"unit":{"type":"string","maxLength":16}},"required":["key","label","value","min","max","step"]
     },
     "ChartPoint": {
       "type":"object","properties":{"x":{"type":"string","maxLength":64},"y":{"type":"number"}},"required":["x","y"]

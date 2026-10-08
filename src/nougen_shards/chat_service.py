@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import re
 import sys
 from pathlib import Path
 from .chat_widget_ir import CHAT_WIDGET_IR_VERSION, CHAT_WIDGET_KINDS, CHAT_WIDGET_LIMITS, PRESENT_WIDGET_PARAMETERS
@@ -177,7 +178,7 @@ def execute_tool(name, args):
                 if not isinstance(field, dict): raise ValueError("Invalid calculator input")
                 key, label = field.get("key"), field.get("label")
                 value, minimum, maximum, step = (field.get(k) for k in ("value", "min", "max", "step"))
-                if not isinstance(key, str) or not 1 <= len(key) <= 32 or key in keys or not isinstance(label, str) or not 1 <= len(label) <= 80:
+                if not isinstance(key, str) or not re.match(r"^[a-zA-Z0-9_-]{1,32}$", key) or key in keys or not isinstance(label, str) or not 1 <= len(label) <= 80:
                     raise ValueError("Invalid calculator input")
                 limit = CHAT_WIDGET_LIMITS["numericMagnitude"]
                 if any(isinstance(n, bool) or not isinstance(n, (int, float)) for n in (value, minimum, maximum, step)) or not all(math.isfinite(n) for n in (value, minimum, maximum, step)) or abs(minimum) > limit or abs(maximum) > limit or minimum >= maximum or not minimum <= value <= maximum or step <= 0:

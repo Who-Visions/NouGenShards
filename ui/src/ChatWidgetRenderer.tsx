@@ -16,8 +16,12 @@ type Props = {
 const ICON: Record<Widget['kind'], string> = { checklist:'☑', comparison:'↔', steps:'1–2', metric_grid:'#', calculator:'∑', chart:'▥' };
 const COLORS = ['var(--accent)','var(--accent-green)','var(--accent-purple)','var(--danger)'];
 
-function Calculator({widget, values={}, onValue}: {widget:Extract<Widget,{kind:'calculator'}>;values?:Props['values'];onValue:Props['onValue']}) {
-  const inputValues=Object.fromEntries(widget.inputs.map(field=>[field.key,values[field.key] ?? field.value])) as Record<string,number|null>;
+function Calculator({widget, widgetIndex=0, values={}, onValue}: {widget:Extract<Widget,{kind:'calculator'}>;widgetIndex?:number;values?:Props['values'];onValue:Props['onValue']}) {
+  const inputValues=Object.fromEntries(widget.inputs.map(field=>{
+    const namespacedKey=`${widgetIndex}-${field.key}`;
+    const hasVal=values && Object.prototype.hasOwnProperty.call(values,namespacedKey);
+    return [field.key, hasVal ? values[namespacedKey] : field.value];
+  })) as Record<string,number|null>;
   let result: number | undefined, error='';
   try {
     for (const field of widget.inputs) { const value=inputValues[field.key]; if (typeof value!=='number' || value<field.min || value>field.max) throw new Error(`Enter ${field.label} between ${field.min} and ${field.max}.`); }
@@ -58,7 +62,7 @@ export default function ChatWidgetRenderer({widget,messageId,index,checks={},val
     {widget.kind==='metric_grid'&&<div className="widget-metric-grid">{widget.items.map((item,j)=><div key={j} className="metric-chip-card"><span className="metric-text">{item}</span></div>)}</div>}
     {widget.kind==='comparison'&&<div className="widget-comparison-grid">{widget.items.map((item,j)=><div key={j} className="comparison-column-card"><p>{item}</p></div>)}</div>}
     {widget.kind==='steps'&&<ol className="widget-steps-list">{widget.items.map((item,j)=><li key={j}>{item}</li>)}</ol>}
-    {widget.kind==='calculator'&&<Calculator widget={widget} values={values} onValue={(key,value)=>onValue(`${index}-${key}`,value)}/>}
+    {widget.kind==='calculator'&&<Calculator widget={widget} widgetIndex={index} values={values} onValue={(key,value)=>onValue(`${index}-${key}`,value)}/>}
     {widget.kind==='chart'&&<Chart widget={widget}/>}
   </section>;
 }
