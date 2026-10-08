@@ -113,6 +113,10 @@ def evaluate_rsi_signature(
     n = len(epochs)
     if any(len(series) != n for series in (eta_history, search_scores, ood_scores)):
         raise ValueError("eta, search, and OOD evidence must align with every epoch")
+    if any(not math.isfinite(value)
+           for series in (epochs, eta_history, search_scores, ood_scores)
+           for value in series):
+        raise ValueError("epochs, eta, search, and OOD evidence must be finite")
     if n < min_epochs:
         return RSISignatureResult(
             is_rsi_confirmed=False,
