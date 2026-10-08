@@ -37,6 +37,10 @@ def _ensure_importable():
 
 def main() -> int:
     _ensure_importable()
+    if sys.argv[1:] == ["chat"]:
+        from nougen_shards.chat_service import main as chat_main
+        chat_main()
+        return 0
     try:
         from nougen_shards.cli import main as cli_main
     except Exception as exc:  # noqa: BLE001 - report any import failure cleanly

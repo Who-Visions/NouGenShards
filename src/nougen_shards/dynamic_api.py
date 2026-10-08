@@ -2,6 +2,7 @@ import os
 import json
 import sqlite3
 import glob
+import re
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from . import core
@@ -118,6 +119,9 @@ def search_shards(query="", limit=40):
     query = (query or "").strip().lower()
     results = []
 
+    words = [re.sub(r'[^a-zA-Z0-9_]', '', w) for w in query.split() if len(re.sub(r'[^a-zA-Z0-9_]', '', w)) > 1]
+    fts_expr = ' OR '.join(f'"{w}"*' for w in words) if words else query
+
     for db_idx in range(1, core.MAX_DB_COUNT + 1):
         db_path = os.path.join(_shards_dir(), f"nougen_shards_{db_idx}.db")
         if not os.path.exists(db_path):
@@ -143,23 +147,40 @@ def search_shards(query="", limit=40):
                         "final_score": None
                     })
             else:
-                words = [w for w in query.split() if w]
-                sql = "SELECT id, title, content, utility_score, timestamp, tags FROM shards WHERE "
-                conditions = []
-                params = []
-                for w in words:
-                    conditions.append("(LOWER(title) LIKE ? OR LOWER(content) LIKE ? OR LOWER(tags) LIKE ?)")
-                    like_w = f"%{w}%"
-                    params.extend([like_w, like_w, like_w])
+                matched_rows = []
+                # Try FTS5 first for sub-10ms BM25 ranking
+                try:
+                    cur.execute(
+                        "SELECT s.id, s.title, s.content, s.utility_score, s.timestamp, s.tags, fts.rank "
+                        "FROM shards_fts fts "
+                        "JOIN shards s ON s.id = fts.rowid "
+                        "WHERE shards_fts MATCH ? "
+                        "ORDER BY fts.rank LIMIT 20",
+                        (fts_expr,)
+                    )
+                    matched_rows = cur.fetchall()
+                except Exception:
+                    matched_rows = []
 
-                sql += " AND ".join(conditions) + " ORDER BY id DESC LIMIT 20"
-                cur.execute(sql, params)
-                rows = cur.fetchall()
+                # Fallback to parameterized LIKE if FTS yielded no results or errored
+                if not matched_rows:
+                    sql = "SELECT id, title, content, utility_score, timestamp, tags, -1.0 FROM shards WHERE "
+                    conditions = []
+                    params = []
+                    search_tokens = words if words else [query]
+                    for w in search_tokens:
+                        conditions.append("(LOWER(title) LIKE ? OR LOWER(content) LIKE ? OR LOWER(tags) LIKE ?)")
+                        like_w = f"%{w}%"
+                        params.extend([like_w, like_w, like_w])
+                    sql += " AND ".join(conditions) + " ORDER BY id DESC LIMIT 20"
+                    cur.execute(sql, params)
+                    matched_rows = cur.fetchall()
 
-                for r in rows:
+                for r in matched_rows:
                     title_l = (r[1] or "").lower()
                     content_l = (r[2] or "").lower()
                     tags_l = (r[5] or "").lower()
+                    rank_val = r[6] if len(r) > 6 else 0.0
 
                     score = 0.5
                     if query in title_l:
@@ -171,7 +192,17 @@ def search_shards(query="", limit=40):
                     if any(w in tags_l for w in words):
                         score += 0.1
 
-                    score = min(1.0, score * float(r[3] or 1.0))
+                    # Boost canon locks and bibles
+                    if 'canon lock' in title_l or 'master canon lock' in title_l:
+                        score += 0.25
+                    if 'character hub' in title_l or 'series thesis' in title_l:
+                        score += 0.20
+
+                    # Factor in BM25 rank if present
+                    if rank_val < 0:
+                        score += min(0.3, (-rank_val) * 0.02)
+
+                    final_score = min(1.0, score * float(r[3] or 1.0))
 
                     results.append({
                         "id": r[0],
@@ -181,7 +212,7 @@ def search_shards(query="", limit=40):
                         "timestamp": r[4] or "",
                         "tags": r[5] or "",
                         "_db_index": db_idx,
-                        "final_score": round(score, 2)
+                        "final_score": round(final_score, 3)
                     })
             conn.close()
         except Exception:

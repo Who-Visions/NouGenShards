@@ -1,3 +1,4 @@
+import { recoverMessages, validWidgets, buildContext } from './chatPersistence';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // ---------------------------------------------------------------------------
@@ -151,10 +152,12 @@ interface RelayEntry {
   acknowledged_by: string;
 }
 
-type Tab = 'search' | 'substrate' | 'fleet' | 'tracker' | 'relay' | 'stats';
+type Tab = 'search' | 'chat' | 'design' | 'substrate' | 'fleet' | 'tracker' | 'relay' | 'stats';
 
 const TABS: { key: Tab; label: string; icon: string }[] = [
+  { key: 'chat', label: 'Chat', icon: '💬' },
   { key: 'search', label: 'Search Memory', icon: '🔍' },
+  { key: 'design', label: 'Design Intelligence', icon: '🎨' },
   { key: 'substrate', label: 'Storage', icon: '💾' },
   { key: 'fleet', label: 'Your Machines', icon: '💻' },
   { key: 'tracker', label: 'Token & Cost Meter', icon: '⚡' },
@@ -177,7 +180,7 @@ function getModelDisplayMeta(model: string, provider: string) {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('search');
+  const [tab, setTab] = useState<Tab>('chat');
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Shard[]>([]);
   const [identity, setIdentity] = useState<any>(null);
@@ -196,12 +199,91 @@ export default function App() {
   const [selectedShard, setSelectedShard] = useState<Shard | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [clockEastern, setClockEastern] = useState<string>(getLiveEasternClock);
+  const [designWeights, setDesignWeights] = useState({
+    hierarchy: 4,
+    contrast: 3,
+    alignment: 4,
+    whitespace: 5,
+    grouping: 4,
+    typography: 4,
+    action: 3,
+  });
+  const [activeWidgetSample, setActiveWidgetSample] = useState<'calculator' | 'diagram' | 'checklist' | 'multivariant'>('calculator');
+  const [activeRecipeServings, setActiveRecipeServings] = useState(4);
+  const [checkedAuditItems, setCheckedAuditItems] = useState<Record<string, boolean>>({
+    contrast45: true,
+    visualHierarchy: true,
+    whitespaceConsistent: true,
+    actionProminence: false,
+  });
+  const [selectedVariant, setSelectedVariant] = useState<'cyber' | 'minimal' | 'glass'>('cyber');
+  const [designSubTab, setDesignSubTab] = useState<'audit' | 'streaming' | 'principles' | 'receipts' | 'intelligent'>('intelligent');
+
+  const [chatRecoveryNotice] = useState(() => {
+    try {
+      const raw = localStorage.getItem('nougen.chat.v1');
+      if (!raw) return '';
+      try {
+        const saved = JSON.parse(raw);
+        if (saved?.version !== 1 || !Array.isArray(saved.messages)) throw new Error('Unsupported saved conversation');
+        return '';
+      } catch {
+        localStorage.setItem('nougen.chat.recovery.v1', raw);
+        return 'A damaged conversation was preserved for recovery. This chat starts empty.';
+      }
+    } catch { return 'Device storage is unavailable. This conversation may not survive closing the app.'; }
+  });
+  const [chatMessages, setChatMessages] = useState<Array<{
+    id: string;
+    role: 'user' | 'assistant';
+    text: string;
+    timestamp: string;
+    uiComponent?: 'calculator' | 'diagram' | 'checklist' | 'comparison' | 'audit_box' | 'pipeline-trace';
+    uiData?: any;
+    isError?: boolean;
+    widgets?: Array<{ kind: string; title: string; items: string[] }>;
+    widgetChecks?: Record<string, boolean>;
+    isStreaming?: boolean;
+  }>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('nougen.chat.v1') || 'null');
+      if (saved?.version !== 1 || !Array.isArray(saved.messages)) return [];
+      return recoverMessages(saved.messages);
+    } catch { return []; }
+  });
+  const [chatArchives, setChatArchives] = useState<Array<{ id: string; title: string; messages: any[] }>>(() => {
+    try { const rows = JSON.parse(localStorage.getItem('nougen.chat.archives.v1') || '[]'); return Array.isArray(rows) ? rows.filter(r => typeof r?.id === 'string' && typeof r.title === 'string' && Array.isArray(r.messages)).slice(-20) : []; } catch { return []; }
+  });
+  const [chatStorageError, setChatStorageError] = useState('');
+  const chatBusyRef = useRef(false);
+  const chatRequestRef = useRef<{ controller: AbortController; id: string } | null>(null);
+  useEffect(() => {
+    try { localStorage.setItem('nougen.chat.v1', JSON.stringify({ version: 1, messages: chatMessages.slice(-500) })); setChatStorageError(''); }
+    catch { setChatStorageError('Conversation could not be saved on this device.'); }
+  }, [chatMessages]);
+  const [chatInput, setChatInput] = useState(() => { try { return localStorage.getItem('nougen.chat.draft.v1') || ''; } catch { return ''; } });
+  useEffect(() => { try { localStorage.setItem('nougen.chat.draft.v1', chatInput); } catch { setChatStorageError('Draft could not be saved on this device.'); } }, [chatInput]);
+  const [chatIsTyping, setChatIsTyping] = useState(false);
+  const [activeLaneModel, setActiveLaneModel] = useState('gemma4:e2b-local');
+  const [promptLayerLabel, setPromptLayerLabel] = useState<'prod' | 'dev' | 'eval'>('prod');
+  const [calcExpression, setCalcExpression] = useState('256 * 1024 / 4');
+  const [calcResult, setCalcResult] = useState<string | null>(null);
+  const [autonomousHarnessActive, setAutonomousHarnessActive] = useState(false);
+  const [harnessStepCount, setHarnessStepCount] = useState(0);
+  const chatScrollBottomRef = useRef<HTMLDivElement>(null);
+  const autonomousLoopRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const requestVersions = useRef({usage: 0, stats: 0, search: 0});
   const queryRef = useRef(query);
   queryRef.current = query;
   const searchController = useRef<AbortController | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const memoryDialog = useRef<HTMLDialogElement>(null);
+
+  // Auto-scroll chat smoothly whenever messages or streaming updates
+  useEffect(() => {
+    chatScrollBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages, chatIsTyping]);
 
   useEffect(() => {
     const dialog = memoryDialog.current;
@@ -722,6 +804,206 @@ export default function App() {
           </section>
         )}
 
+        {/* TAB 1.5: Intelligent Chat Lane (Conversational with Generative UI) */}
+        {tab === 'chat' && (
+          <section className="panel fade-in chat-lane-panel">
+            <div className="chat-top-bar">
+              <span className="lane-title">Chat</span>
+              <div className="chat-lane-controls">
+                {chatArchives.length > 0 && <select aria-label="Saved conversations" value="" disabled={chatIsTyping} onChange={e => {
+                  const saved = chatArchives.find(a => a.id === e.target.value);
+                  if (saved) {
+                    const archives = chatMessages.length ? [...chatArchives, { id: crypto.randomUUID(), title: chatMessages.find(m => m.role === 'user')?.text.slice(0, 60) || 'Conversation', messages: chatMessages.slice(-500) }].slice(-20) : chatArchives;
+                    try { localStorage.setItem('nougen.chat.archives.v1', JSON.stringify(archives)); setChatArchives(archives); setChatMessages(recoverMessages(saved.messages)); setChatInput(''); }
+                    catch { setChatStorageError('Could not save the current conversation. History was not switched.'); }
+                  }
+                }}><option value="">History</option>{chatArchives.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}</select>}
+                <button className="ghost-btn mini" disabled={chatIsTyping} onClick={() => {
+                  if (chatMessages.length) {
+                    const archive = { id: crypto.randomUUID(), title: chatMessages.find(m => m.role === 'user')?.text.slice(0, 60) || 'Conversation', messages: chatMessages.slice(-500) };
+                    const archives = [...chatArchives, archive].slice(-20);
+                    try { localStorage.setItem('nougen.chat.archives.v1', JSON.stringify(archives)); setChatArchives(archives); }
+                    catch { setChatStorageError('Could not archive this conversation. New chat was not started.'); return; }
+                  }
+                  setChatMessages([]); setChatInput('');
+                }}>New chat</button>
+              </div>
+            </div>
+
+            {(chatRecoveryNotice || chatStorageError) && <p role="alert">{chatStorageError || chatRecoveryNotice}</p>}
+            {/* Chat Message Stream */}
+            <div className="chat-messages-container">
+              {chatMessages.filter(msg => msg.id !== 'welcome-1' && msg.id !== 'welcome-reset').map((msg) => (
+                <div key={msg.id} className={`chat-message-bubble ${msg.role}-bubble fade-in`}>
+                  {msg.widgets?.map((widget, index) => (
+                    <section className={`chat-model-widget ${widget.kind}`} key={`${msg.id}-${index}`} aria-label={widget.title}>
+                      <div className="widget-header-title">
+                        <span className="widget-icon">
+                          {widget.kind === 'checklist' && '📋'}
+                          {widget.kind === 'comparison' && '⚖️'}
+                          {widget.kind === 'steps' && '🔢'}
+                          {widget.kind === 'metric_grid' && '📊'}
+                        </span>
+                        <h3>{widget.title}</h3>
+                      </div>
+                      {widget.kind === 'checklist' && (
+                        <div className="widget-checklist-group">
+                          {widget.items.map((item, j) => (
+                            <label key={j} className="widget-check-label">
+                              <input
+                                type="checkbox"
+                                aria-label={item}
+                                checked={Boolean(msg.widgetChecks?.[`${index}-${j}`])}
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  setChatMessages((prev) =>
+                                    prev.map((m) =>
+                                      m.id === msg.id
+                                        ? { ...m, widgetChecks: { ...m.widgetChecks, [`${index}-${j}`]: checked } }
+                                        : m
+                                    )
+                                  );
+                                }}
+                              />
+                              <span>{item}</span>
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                      {widget.kind === 'metric_grid' && (
+                        <div className="widget-metric-grid">
+                          {widget.items.map((item, j) => (
+                            <div key={j} className="metric-chip-card">
+                              <span className="metric-text">{item}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {widget.kind === 'comparison' && (
+                        <div className="widget-comparison-grid">
+                          {widget.items.map((item, j) => (
+                            <div key={j} className="comparison-column-card">
+                              <p>{item}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {widget.kind === 'steps' && (
+                        <ol className="widget-steps-list">
+                          {widget.items.map((item, j) => (
+                            <li key={j}>{item}</li>
+                          ))}
+                        </ol>
+                      )}
+                    </section>
+                  ))}
+                  <div className="message-header-row">
+                    <span className="message-author">
+                      {msg.role === 'user' ? 'You' : 'NouGen'}
+                    </span>
+                    <span className="message-time">{msg.timestamp}</span>
+                  </div>
+
+                  <div className="message-text-content">
+                    <p>
+                      {msg.text}
+                      {msg.isStreaming && <span className="streaming-cursor">▍</span>}
+                    </p>
+                  </div>
+
+                </div>
+              ))}
+
+              {chatIsTyping && (
+                <div className="chat-message-bubble assistant-bubble typing-bubble">
+                  <span className="typing-dots">
+                    <span>.</span><span>.</span><span>.</span> Thinking…
+                  </span>
+                </div>
+              )}
+              {/* Auto-scroll anchor */}
+              <div ref={chatScrollBottomRef} />
+            </div>
+
+            {/* Chat Input Bar */}
+            <form
+              className="chat-input-bar"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const q = chatInput.trim();
+                if (!q || chatBusyRef.current) return;
+                chatBusyRef.current = true;
+
+                const userMsg = {
+                  id: `user-${Date.now()}`,
+                  role: 'user' as const,
+                  text: q,
+                  timestamp: formatEasternTime(new Date().toISOString()),
+                };
+
+                setChatMessages((prev) => [...prev, userMsg]);
+                setChatInput('');
+                setChatIsTyping(true);
+
+                // Asynchronous live tool execution and conversational synthesis
+                (async () => {
+                  let fullReply = '';
+
+                  // Every message is resolved by the model using the conversation history.
+                  {
+                    const controller = new AbortController();
+                    const requestId = crypto.randomUUID();
+                    chatRequestRef.current = { controller, id: requestId };
+                    const timer = setTimeout(() => controller.abort(), 100000);
+                    let widgets: Array<{ kind: string; title: string; items: string[] }> = [];
+                    let isError = false;
+                    try {
+                      const messages = buildContext([...chatMessages, userMsg]);
+                      let data: any;
+                      if (tauriInvoke) {
+                        data = await withTimeout(tauriInvoke('chat', { payload: { messages, request_id: requestId } }), 100000);
+                      } else {
+                      const response = await fetch('/api/chat', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ messages }), signal: controller.signal,
+                      });
+                      data = await response.json();
+                      if (!response.ok) throw new Error(data.error || 'Chat is unavailable.');
+                      }
+                      if (data.error || typeof data.text !== 'string') throw new Error(data.error || 'Chat is unavailable.');
+                      widgets = validWidgets(data.widgets);
+                      fullReply = data.text;
+                    } catch (error) {
+                      isError = true;
+                      fullReply = error instanceof Error ? error.message : 'Chat could not connect. Please retry.';
+                    } finally { clearTimeout(timer); chatRequestRef.current = null; chatBusyRef.current = false; setChatIsTyping(false); }
+                    setChatMessages(prev => [...prev, { id: `asst-${Date.now()}`, role: 'assistant' as const, text: fullReply, widgets, isError, timestamp: formatEasternTime(new Date().toISOString()) }]);
+                    return;
+                  }
+                })();
+              }}
+            >
+              <input
+                type="text"
+                className="chat-text-input"
+                placeholder="Message NouGen"
+                aria-label="Message NouGen"
+                maxLength={24000}
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+              />
+              {chatIsTyping && <button type="button" className="ghost-btn mini" onClick={() => {
+                const pending = chatRequestRef.current;
+                pending?.controller.abort();
+                if (tauriInvoke && pending) void tauriInvoke('cancel_chat', { requestId: pending.id });
+              }}>Stop</button>}
+              <button type="submit" className="primary-cyber-btn mini chat-send-btn" disabled={chatIsTyping || !chatInput.trim()}>
+                Send
+              </button>
+            </form>
+          </section>
+        )}
+
         {/* TAB 2: Memory Storage (9 DBs) */}
         {tab === 'substrate' && (
           <section className="panel fade-in">
@@ -1101,6 +1383,638 @@ export default function App() {
               <summary>View Technical Data</summary>
               <pre className="stats-code-block">{JSON.stringify(stats ?? { available: false }, null, 2)}</pre>
             </details>
+          </section>
+        )}
+
+        {/* TAB 7: Design Intelligence Console (Gary Simon UI/UX + Streaming Declarative UI) */}
+        {tab === 'design' && (
+          <section className="panel fade-in design-intelligence-panel">
+            {/* Top Sub-Navigation Bar */}
+            <div className="design-subnav-row">
+              <div className="design-subnav-chips">
+                <button
+                  className={`chip ${designSubTab === 'intelligent' ? 'active' : ''}`}
+                  onClick={() => setDesignSubTab('intelligent')}
+                >
+                  🧠 Intelligent Shard Explorer
+                </button>
+                <button
+                  className={`chip ${designSubTab === 'audit' ? 'active' : ''}`}
+                  onClick={() => setDesignSubTab('audit')}
+                >
+                  📊 Design Quality Index
+                </button>
+                <button
+                  className={`chip ${designSubTab === 'streaming' ? 'active' : ''}`}
+                  onClick={() => setDesignSubTab('streaming')}
+                >
+                  ⚡ Streaming UI Sandbox
+                </button>
+                <button
+                  className={`chip ${designSubTab === 'principles' ? 'active' : ''}`}
+                  onClick={() => setDesignSubTab('principles')}
+                >
+                  🎓 Gary Simon Crash Course
+                </button>
+                <button
+                  className={`chip ${designSubTab === 'receipts' ? 'active' : ''}`}
+                  onClick={() => setDesignSubTab('receipts')}
+                >
+                  📜 Shard & Relay Receipts
+                </button>
+              </div>
+
+              <div className="design-status-pill">
+                <span className="live-pulse-dot" />
+                <span>Deterministic Heuristic Engine v0.1</span>
+              </div>
+            </div>
+
+            {/* SUB-PANEL 0: Intelligent Shard Explorer (assistant-ui Deterministic Boundary) */}
+            {designSubTab === 'intelligent' && (
+              <div className="design-intelligent-view">
+                <div className="intelligent-header-card card-lift">
+                  <div className="intelligent-meta-row">
+                    <span className="intelligent-tag">&lt;assistant-ui:deterministic-boundary&gt;</span>
+                    <span className="intelligent-badge">UI = R(S, C, P) ACTIVE</span>
+                  </div>
+                  <h3>Intelligent Shard Explorer & Capability Boundary</h3>
+                  <p className="card-desc">
+                    Sanitized DTO projections expose verified memory shards to agent vision without raw SQLite or script execution leaks.
+                    Mutations require typed validation and explicit Dave GM approval.
+                  </p>
+                  <div className="formula-box">
+                    <code>S = 9-DB FTS5 Substrate | C = Typed Component Contract | P = Gatekeeper Policy Gateway</code>
+                  </div>
+                </div>
+
+                <div className="intelligent-cards-grid">
+                  <div className="intelligent-shard-card card-lift">
+                    <div className="card-top-row">
+                      <span className="shard-id-pill">Shard 30377@db7</span>
+                      <span className="gate-pill verified">PROVENANCE: DAV3</span>
+                    </div>
+                    <h4>NouGen Intelligent UI: assistant-ui Deterministic Boundary & Shard Explorer Contract</h4>
+                    <p className="shard-snippet">
+                      Core Architectural Invariant: UI = Render(State, Contract, Permissions). Exposes sanitized DOM projections to local models with explicit mutation gating.
+                    </p>
+                    <div className="capability-cluster">
+                      <span className="cap-chip read">✓ Visibility: Sanitized DTO</span>
+                      <span className="cap-chip read">✓ Inspect Full Text</span>
+                      <span className="cap-chip gate">🔒 Morph: GM Approval Req</span>
+                      <span className="cap-chip gate">🔒 Relay: GM Approval Req</span>
+                    </div>
+                    <div className="card-actions-row">
+                      <button
+                        className="primary-cyber-btn mini"
+                        onClick={() => {
+                          setSearchTerm('30377');
+                          setTab('search');
+                        }}
+                      >
+                        🔍 Inspect in Shards
+                      </button>
+                      <button
+                        className="ghost-btn mini"
+                        onClick={() => {
+                          alert('Dry-run policy check: Read action permitted under current AUTHORITY.md policy.');
+                        }}
+                      >
+                        ⚡ Check Action Gate
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="intelligent-shard-card card-lift">
+                    <div className="card-top-row">
+                      <span className="shard-id-pill">Shard 30216@db8</span>
+                      <span className="gate-pill verified">PROVENANCE: DAV3</span>
+                    </div>
+                    <h4>Recurse Invariant: Polite Transcript Pacing & Zero Rehearsal Protocol</h4>
+                    <p className="shard-snippet">
+                      Zero LLM Vibe Guessing / Rehearsal. Retrieves ground truth from shards and live OS state rather than rehearsing speculative assumptions.
+                    </p>
+                    <div className="capability-cluster">
+                      <span className="cap-chip read">✓ Visibility: Sanitized DTO</span>
+                      <span className="cap-chip read">✓ Deduplication: tube:&lt;id&gt;</span>
+                      <span className="cap-chip read">✓ Pacing: 12.0s</span>
+                      <span className="cap-chip gate">🔒 Grid Mutation: Gated</span>
+                    </div>
+                    <div className="card-actions-row">
+                      <button
+                        className="primary-cyber-btn mini"
+                        onClick={() => {
+                          setSearchTerm('30216');
+                          setTab('search');
+                        }}
+                      >
+                        🔍 Inspect in Shards
+                      </button>
+                      <button
+                        className="ghost-btn mini"
+                        onClick={() => {
+                          alert('Dry-run policy check: Read action permitted under current AUTHORITY.md policy.');
+                        }}
+                      >
+                        ⚡ Check Action Gate
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* SUB-PANEL 1: Design Quality Index Audit */}
+            {designSubTab === 'audit' && (
+              <div className="design-audit-view">
+                <div className="design-overview-card card-lift">
+                  <div className="dqi-score-block">
+                    <span className="dqi-badge">DESIGN QUALITY INDEX</span>
+                    <div className="dqi-hero-number">
+                      {Math.round(
+                        ((designWeights.hierarchy +
+                          designWeights.contrast +
+                          designWeights.alignment +
+                          designWeights.whitespace +
+                          designWeights.grouping +
+                          designWeights.typography +
+                          designWeights.action) /
+                          35) *
+                          100
+                      )}
+                      <span className="dqi-denom">/ 100</span>
+                    </div>
+                    <span className="dqi-verdict">
+                      {Math.round(
+                        ((designWeights.hierarchy +
+                          designWeights.contrast +
+                          designWeights.alignment +
+                          designWeights.whitespace +
+                          designWeights.grouping +
+                          designWeights.typography +
+                          designWeights.action) /
+                          35) *
+                          100
+                      ) >= 85
+                        ? '✨ PRODUCTION GRADE'
+                        : Math.round(
+                            ((designWeights.hierarchy +
+                              designWeights.contrast +
+                              designWeights.alignment +
+                              designWeights.whitespace +
+                              designWeights.grouping +
+                              designWeights.typography +
+                              designWeights.action) /
+                              35) *
+                              100
+                          ) >= 70
+                        ? '⚡ NEEDS REFINEMENT'
+                        : '⚠️ HIGH COGNITIVE LOAD'}
+                    </span>
+                    <p className="dqi-formula-caption">
+                      Formula: <code>Q_UI = w_h·H + w_c·C + w_a·A + w_s·S + w_u·U</code> (Evaluated across 7 Gary Simon core dimensions)
+                    </p>
+                  </div>
+
+                  <div className="dqi-sliders-block">
+                    <h3 className="section-subheading">Deterministic Constraint Weights</h3>
+                    <div className="slider-control-grid">
+                      <label className="slider-control-row">
+                        <span className="slider-label">Visual Hierarchy (Scale & Weight)</span>
+                        <input
+                          type="range"
+                          min="1"
+                          max="5"
+                          value={designWeights.hierarchy}
+                          onChange={(e) => setDesignWeights({ ...designWeights, hierarchy: Number(e.target.value) })}
+                        />
+                        <span className="slider-val">{designWeights.hierarchy}/5</span>
+                      </label>
+
+                      <label className="slider-control-row">
+                        <span className="slider-label">Color & Contrast (4.5:1 WCAG AA)</span>
+                        <input
+                          type="range"
+                          min="1"
+                          max="5"
+                          value={designWeights.contrast}
+                          onChange={(e) => setDesignWeights({ ...designWeights, contrast: Number(e.target.value) })}
+                        />
+                        <span className="slider-val">{designWeights.contrast}/5</span>
+                      </label>
+
+                      <label className="slider-control-row">
+                        <span className="slider-label">Alignment & Edge Anchor</span>
+                        <input
+                          type="range"
+                          min="1"
+                          max="5"
+                          value={designWeights.alignment}
+                          onChange={(e) => setDesignWeights({ ...designWeights, alignment: Number(e.target.value) })}
+                        />
+                        <span className="slider-val">{designWeights.alignment}/5</span>
+                      </label>
+
+                      <label className="slider-control-row">
+                        <span className="slider-label">White Space & Breathability</span>
+                        <input
+                          type="range"
+                          min="1"
+                          max="5"
+                          value={designWeights.whitespace}
+                          onChange={(e) => setDesignWeights({ ...designWeights, whitespace: Number(e.target.value) })}
+                        />
+                        <span className="slider-val">{designWeights.whitespace}/5</span>
+                      </label>
+
+                      <label className="slider-control-row">
+                        <span className="slider-label">Proximity & Spatial Grouping</span>
+                        <input
+                          type="range"
+                          min="1"
+                          max="5"
+                          value={designWeights.grouping}
+                          onChange={(e) => setDesignWeights({ ...designWeights, grouping: Number(e.target.value) })}
+                        />
+                        <span className="slider-val">{designWeights.grouping}/5</span>
+                      </label>
+
+                      <label className="slider-control-row">
+                        <span className="slider-label">Typography & Line Measure</span>
+                        <input
+                          type="range"
+                          min="1"
+                          max="5"
+                          value={designWeights.typography}
+                          onChange={(e) => setDesignWeights({ ...designWeights, typography: Number(e.target.value) })}
+                        />
+                        <span className="slider-val">{designWeights.typography}/5</span>
+                      </label>
+
+                      <label className="slider-control-row">
+                        <span className="slider-label">Primary Call to Action (Affordance)</span>
+                        <input
+                          type="range"
+                          min="1"
+                          max="5"
+                          value={designWeights.action}
+                          onChange={(e) => setDesignWeights({ ...designWeights, action: Number(e.target.value) })}
+                        />
+                        <span className="slider-val">{designWeights.action}/5</span>
+                      </label>
+                    </div>
+
+                    <div className="dqi-actions-row">
+                      <button
+                        className="ghost-btn mini"
+                        onClick={() =>
+                          setDesignWeights({
+                            hierarchy: 4,
+                            contrast: 3,
+                            alignment: 4,
+                            whitespace: 5,
+                            grouping: 4,
+                            typography: 4,
+                            action: 3,
+                          })
+                        }
+                      >
+                        Reset Defaults
+                      </button>
+                      <button
+                        className="primary-cyber-btn mini"
+                        onClick={() => {
+                          setDesignWeights({
+                            hierarchy: 5,
+                            contrast: 5,
+                            alignment: 5,
+                            whitespace: 5,
+                            grouping: 5,
+                            typography: 5,
+                            action: 5,
+                          });
+                        }}
+                      >
+                        ⚡ Enforce 100% Strict Rules
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Audit Checklist from Gary Simon's Course */}
+                <div className="design-checklist-card card-lift">
+                  <h3 className="section-subheading">Interactive Gary Simon UI/UX Heuristic Checklist</h3>
+                  <p className="card-desc">
+                    Directly maps Gary Simon's 6-hour video principles to deterministic design unit tests:
+                  </p>
+                  <div className="checklist-items">
+                    <label className="checklist-item">
+                      <input
+                        type="checkbox"
+                        checked={checkedAuditItems.contrast45}
+                        onChange={(e) => setCheckedAuditItems({ ...checkedAuditItems, contrast45: e.target.checked })}
+                      />
+                      <div>
+                        <strong>WCAG AA 4.5:1 Minimum Contrast (27:12 Semantic Color)</strong>
+                        <p>Text elements use high-contrast primary foreground against tinted dark backgrounds. No washed-out gray on dark gray.</p>
+                      </div>
+                    </label>
+
+                    <label className="checklist-item">
+                      <input
+                        type="checkbox"
+                        checked={checkedAuditItems.visualHierarchy}
+                        onChange={(e) => setCheckedAuditItems({ ...checkedAuditItems, visualHierarchy: e.target.checked })}
+                      />
+                      <div>
+                        <strong>Visual Hierarchy & Scale (15:14 Design Fundamentals)</strong>
+                        <p>Hero display titles stand distinct from body copy by at least 2 font weight tiers and 1.8x font scale ratio.</p>
+                      </div>
+                    </label>
+
+                    <label className="checklist-item">
+                      <input
+                        type="checkbox"
+                        checked={checkedAuditItems.whitespaceConsistent}
+                        onChange={(e) => setCheckedAuditItems({ ...checkedAuditItems, whitespaceConsistent: e.target.checked })}
+                      />
+                      <div>
+                        <strong>Whitespace & Proximity (01:03:19 Spatial Grouping)</strong>
+                        <p>Internal card padding (16px) is smaller than external card margin (24px) to preserve Gestalt proximity grouping.</p>
+                      </div>
+                    </label>
+
+                    <label className="checklist-item">
+                      <input
+                        type="checkbox"
+                        checked={checkedAuditItems.actionProminence}
+                        onChange={(e) => setCheckedAuditItems({ ...checkedAuditItems, actionProminence: e.target.checked })}
+                      />
+                      <div>
+                        <strong>Primary Action Affordance (49:47 Hero Composition)</strong>
+                        <p>Single primary button stands out with vibrant accent fill; secondary actions use muted ghost borders.</p>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* SUB-PANEL 2: Streaming Declarative UI Sandbox */}
+            {designSubTab === 'streaming' && (
+              <div className="design-streaming-view">
+                <div className="streaming-controls-bar">
+                  <span>De-branded Declarative Component Compiler Preview:</span>
+                  <div className="widget-sample-picker">
+                    {(['calculator', 'diagram', 'checklist', 'multivariant'] as const).map((w) => (
+                      <button
+                        key={w}
+                        className={`chip mini ${activeWidgetSample === w ? 'active' : ''}`}
+                        onClick={() => setActiveWidgetSample(w)}
+                      >
+                        {w === 'calculator' && '🧮 Interactive Calculator'}
+                        {w === 'diagram' && '📊 Architecture Graph'}
+                        {w === 'checklist' && '📋 Task Widget'}
+                        {w === 'multivariant' && '🎨 Rakit Multivariant'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="streaming-sandbox-card card-lift">
+                  {/* Sample 1: Interactive Calculator Widget */}
+                  {activeWidgetSample === 'calculator' && (
+                    <div className="interactive-widget-box">
+                      <div className="widget-header">
+                        <div>
+                          <span className="component-tag">&lt;ui:recipe-calculator&gt;</span>
+                          <h4>Fleet Inference VRAM & Scaling Calculator</h4>
+                        </div>
+                        <span className="widget-live-badge">HYDRATED LIVE</span>
+                      </div>
+                      <div className="widget-body">
+                        <p className="widget-prompt-context">
+                          Prompt: <em>"Calculate quantization memory footprint and throughput across Apollo, Hyperion, and Phoebus"</em>
+                        </p>
+                        <div className="interactive-slider-cluster">
+                          <label className="calculator-param-row">
+                            <span>Serving Fleet Concurrency: <strong>{activeRecipeServings} parallel sessions</strong></span>
+                            <input
+                              type="range"
+                              min="1"
+                              max="16"
+                              value={activeRecipeServings}
+                              onChange={(e) => setActiveRecipeServings(Number(e.target.value))}
+                            />
+                          </label>
+                          <div className="calculated-metrics-grid">
+                            <div className="metric-pill">
+                              <span className="m-label">VRAM Requirement</span>
+                              <span className="m-val">{(activeRecipeServings * 1.85 + 2.4).toFixed(1)} GB</span>
+                            </div>
+                            <div className="metric-pill">
+                              <span className="m-label">Token Generation Rate</span>
+                              <span className="m-val">{Math.round(480 / activeRecipeServings)} tok/s</span>
+                            </div>
+                            <div className="metric-pill">
+                              <span className="m-label">Local Edge GPU Cost</span>
+                              <span className="m-val accent-green glow-green">$0.00 / hr</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Sample 2: Architecture Graph */}
+                  {activeWidgetSample === 'diagram' && (
+                    <div className="interactive-widget-box">
+                      <div className="widget-header">
+                        <div>
+                          <span className="component-tag">&lt;ui:architecture-graph&gt;</span>
+                          <h4>NouGen Intelligence & Fleet Relay Map</h4>
+                        </div>
+                        <span className="widget-live-badge">RENDERED DETERMINISTICALLY</span>
+                      </div>
+                      <div className="widget-body">
+                        <div className="fleet-ascii-graph">
+                          <div className="graph-node-block">
+                            <div className="g-node">Tauri v2 Desktop HUD</div>
+                            <div className="g-arrow">▼ IPC / WebMCP Bridge</div>
+                            <div className="g-node highlight">Local Python Shard Substrate (.nougen)</div>
+                            <div className="g-arrow">▼ SQLite WAL FTS5</div>
+                            <div className="g-node">9-DB Grid (25665@db1)</div>
+                          </div>
+                          <div className="graph-side-legend">
+                            <h5>Connected Fleet Stadiums</h5>
+                            <ul>
+                              <li>🟢 Apollo (192.168.1.16) — Sol-Ai (Gemma 4 Heavy)</li>
+                              <li>🔵 Hyperion (192.168.1.187) — Yukiai (Tactical Edge)</li>
+                              <li>🟣 Phoebus (192.168.1.78) — Keadracode (Backbone)</li>
+                            </ul>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Sample 3: Checklist Widget */}
+                  {activeWidgetSample === 'checklist' && (
+                    <div className="interactive-widget-box">
+                      <div className="widget-header">
+                        <div>
+                          <span className="component-tag">&lt;ui:ephemeral-checklist&gt;</span>
+                          <h4>Pre-Deployment Release Hardening</h4>
+                        </div>
+                        <span className="widget-live-badge">ACTIVE STATE</span>
+                      </div>
+                      <div className="widget-body">
+                        <div className="ephemeral-checklist">
+                          <label className="check-row">
+                            <input type="checkbox" defaultChecked />
+                            <span>Run Gary Simon 4.5:1 Contrast & Hierarchy Verification</span>
+                          </label>
+                          <label className="check-row">
+                            <input type="checkbox" defaultChecked />
+                            <span>Verify Frameless Tauri Chrome (Minimize, Maximize, Close IPC)</span>
+                          </label>
+                          <label className="check-row">
+                            <input type="checkbox" defaultChecked />
+                            <span>Capture FTS5 Persistent Memory Shard (25665@db1)</span>
+                          </label>
+                          <label className="check-row">
+                            <input type="checkbox" defaultChecked />
+                            <span>Emit Fleet Relay Receipt to <code>g-whoentertains</code></span>
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Sample 4: Multivariant Theme Switcher (RakitUI de-branded pattern) */}
+                  {activeWidgetSample === 'multivariant' && (
+                    <div className="interactive-widget-box">
+                      <div className="widget-header">
+                        <div>
+                          <span className="component-tag">&lt;ui:multivariant-selector&gt;</span>
+                          <h4>Deterministic Design System Selector</h4>
+                        </div>
+                        <span className="widget-live-badge">MULTI-VARIANT</span>
+                      </div>
+                      <div className="widget-body">
+                        <div className="variant-buttons-row">
+                          {(['cyber', 'minimal', 'glass'] as const).map((v) => (
+                            <button
+                              key={v}
+                              className={`chip ${selectedVariant === v ? 'active' : ''}`}
+                              onClick={() => setSelectedVariant(v)}
+                            >
+                              {v === 'cyber' && '⚡ Cyber Neon HUD'}
+                              {v === 'minimal' && '📐 Minimal Modernist'}
+                              {v === 'glass' && '💎 Translucent Glass'}
+                            </button>
+                          ))}
+                        </div>
+                        <div className={`variant-preview-card variant-${selectedVariant}`}>
+                          <h5>Selected Mode: {selectedVariant.toUpperCase()}</h5>
+                          <p>
+                            Design Tokens dynamically adapt spacing, typography scale, and accent border radiuses without breaking layout constraints.
+                          </p>
+                          <div className="sample-button-group">
+                            <button className="primary-cyber-btn mini">Confirm Action</button>
+                            <button className="ghost-btn mini">Cancel</button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* SUB-PANEL 3: Gary Simon Lessons & Principles */}
+            {designSubTab === 'principles' && (
+              <div className="design-principles-view">
+                <div className="lessons-grid">
+                  <div className="lesson-card card-lift">
+                    <span className="timestamp-badge">15:14</span>
+                    <h4>Design Fundamentals</h4>
+                    <p>
+                      Hierarchy, contrast, alignment, whitespace, spatial grouping, and typography form the immutable foundation. An interface fails not from lack of decoration, but from lack of clear visual direction.
+                    </p>
+                  </div>
+
+                  <div className="lesson-card card-lift">
+                    <span className="timestamp-badge">27:12</span>
+                    <h4>Semantic Color & Contrast</h4>
+                    <p>
+                      Color should convey meaning rather than just aesthetics. WCAG AA compliance requires at least 4.5:1 contrast for normal text and 3:1 for large text. Never sacrifice legibility for subtle style.
+                    </p>
+                  </div>
+
+                  <div className="lesson-card card-lift">
+                    <span className="timestamp-badge">49:47</span>
+                    <h4>Hero Composition</h4>
+                    <p>
+                      The primary call to action must immediately dominate the visual focal point. Secondary elements should recede gracefully using muted colors and lower visual weight.
+                    </p>
+                  </div>
+
+                  <div className="lesson-card card-lift">
+                    <span className="timestamp-badge">01:03:19</span>
+                    <h4>Spatial Grouping & Proximity</h4>
+                    <p>
+                      Related elements must sit closer to each other than unrelated elements. Increasing internal card whitespace without increasing external margins causes visual confusion.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* SUB-PANEL 4: Shard & Relay Receipts */}
+            {designSubTab === 'receipts' && (
+              <div className="design-receipts-view">
+                <div className="receipt-card card-lift">
+                  <div className="receipt-header">
+                    <span className="receipt-icon">📜</span>
+                    <h4>Persistent Memory Shard Capture Receipt</h4>
+                    <span className="receipt-badge ok">STORED IN 9-DB GRID</span>
+                  </div>
+                  <div className="receipt-body">
+                    <dl className="receipt-dl">
+                      <dt>Shard Reference</dt>
+                      <dd><code>25665@db1</code> (Accepted by Apollo / Hyperion Mesh)</dd>
+                      <dt>Canonical Authority</dt>
+                      <dd><code>C:\Users\super\.nougen\shards</code></dd>
+                      <dt>Morph Ingestion</dt>
+                      <dd>3 Candidates Evaluated (MorphScore range: 0.6430 - 0.7266)</dd>
+                      <dt>Status</dt>
+                      <dd>Immutable FTS5 Wal Record Committed</dd>
+                    </dl>
+                  </div>
+                </div>
+
+                <div className="receipt-card card-lift">
+                  <div className="receipt-header">
+                    <span className="receipt-icon">🛰️</span>
+                    <h4>Fleet Relay Dispatch Receipt</h4>
+                    <span className="receipt-badge ok">PUBLISHED TO REGISTRY</span>
+                  </div>
+                  <div className="receipt-body">
+                    <dl className="receipt-dl">
+                      <dt>Relay ID</dt>
+                      <dd><code>20261008T041603Z__chatgpt-app__g-whoentertains</code></dd>
+                      <dt>Origin Lane</dt>
+                      <dd>Antigravity Coach (PX13 Hyperion 192.168.1.187)</dd>
+                      <dt>Target Registry</dt>
+                      <dd><code>.handoffs/</code> Fleet Mesh Synced</dd>
+                      <dt>Verification</dt>
+                      <dd>Zero Mock Data — Built with Local Deterministic Rules</dd>
+                    </dl>
+                  </div>
+                </div>
+              </div>
+            )}
           </section>
         )}
 
