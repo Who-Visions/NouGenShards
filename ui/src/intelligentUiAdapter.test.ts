@@ -22,6 +22,17 @@ describe('Intelligent UI Adapter Deterministic Boundary', () => {
     expect(projection.supportedActions.length).toBeGreaterThan(0);
   });
 
+  it('removes malformed and quoted markup without leaving HTML delimiters', () => {
+    const projection = projectShardForAssistant({
+      id: 1,
+      title: 'untrusted',
+      content: '<script src="x>y">alert(1)</script><img src=x onerror=alert(1)><script',
+    });
+
+    expect(projection.summary).not.toMatch(/[<>]/);
+    expect(projection.summary).toContain('alert(1)');
+  });
+
   it('enforces mutation gates deterministically', () => {
     // Read action passes without approval
     const readGate = evaluateActionGate('inspect_content', false);
