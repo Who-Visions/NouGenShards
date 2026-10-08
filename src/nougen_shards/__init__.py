@@ -28,6 +28,8 @@ _EXPORTS = {
     "SecretInfo": ("cloudflare", "SecretInfo"),
     "NouGenTranscriber": ("transcriber", "NouGenTranscriber"),
     "TranscribeEngine": ("transcriber", "TranscribeEngine"),
+    "resolve_end_of_turn": ("end_of_turn_voice", "resolve_end_of_turn"),
+    "EndOfTurnResolution": ("end_of_turn_voice", "EndOfTurnResolution"),
 }
 __all__ = list(_EXPORTS)
 
