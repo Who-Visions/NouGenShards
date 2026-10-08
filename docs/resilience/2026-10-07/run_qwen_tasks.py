@@ -1,9 +1,7 @@
 import concurrent.futures
 import json
-import sys
 import urllib.request
 from pathlib import Path
-sys.path.insert(0, r"C:\Users\super\Outpost\NouGen\src")
 from nougen_shards.space_orchestration import resolve_hf_credential
 ROOT = Path(__file__).parent
 TASKS = {

@@ -14,7 +14,7 @@ python -m unittest -q test_resilience_core
 The dispatch scripts resolve credentials through Keymaker in process memory and write
 results beside themselves. Running them sends the specified task or local reference
 code to the named WhoVisions Space. They require an installed nougen_shards package;
-the existing explicit Windows source path is retained for the originating workstation.
+install it from the repository with `python -m pip install -e .` before execution.
 No credentials are included. The saved status is an observation from dispatch time,
 not a live monitor. Generated model output must be reviewed before use.
 
