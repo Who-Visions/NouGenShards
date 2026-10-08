@@ -19,6 +19,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from typing import Optional, Sequence
+from zoneinfo import ZoneInfo
 
 from . import persona
 
@@ -188,11 +189,9 @@ def resolve_end_of_turn(
 
     if now is None:
         now = datetime.datetime.now(datetime.timezone.utc)
-    # Convert to Eastern time (Florida standard)
-    # Offset EDT is UTC-4, EST is UTC-5; use timezone-aware or -4 default for EDT
-    edt_tz = datetime.timezone(datetime.timedelta(hours=-4))
-    edt_dt = now.astimezone(edt_tz)
-    time_slot = _get_time_slot(edt_dt)
+    # Resolve Eastern civil time with daylight-saving transitions.
+    eastern_dt = now.astimezone(ZoneInfo("America/New_York"))
+    time_slot = _get_time_slot(eastern_dt)
 
     # Resolve signals via persona.py
     texts = [user_query] if user_query else []
@@ -202,7 +201,7 @@ def resolve_end_of_turn(
         texts,
         surfaces=["terminal", "relay"],
         tz="America/New_York",
-        hours=[edt_dt.hour],
+        hours=[eastern_dt.hour],
         role="owner",
     )
     resolved_persona = persona.resolve(sig)
@@ -229,7 +228,7 @@ def resolve_end_of_turn(
         "discovery": "💡 LEVERAGE [UNLOCKED]",
         "decision": "⚖️ VECTOR [RESOLVED]",
     }
-    head_banner = f"🪐 {agent.upper()} // {outcome_icons.get(outcome, outcome.upper())} ({edt_dt.strftime('%I:%M %p EDT')})"
+    head_banner = f"🪐 {agent.upper()} // {outcome_icons.get(outcome, outcome.upper())} ({eastern_dt.strftime('%I:%M %p %Z')})"
 
     # Beat 2: Evidence Tuple
     ev_list = []
