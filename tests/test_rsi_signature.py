@@ -52,6 +52,16 @@ def test_rsi_signature_rejects_insufficient_epochs():
 # --- classify_epochs / credit_table -------------------------------------------------------
 import pytest  # noqa: E402
 
+
+@pytest.mark.parametrize("series_index", [0, 1, 2])
+@pytest.mark.parametrize("length", [0, 1, 5, 7])
+def test_rsi_signature_rejects_unaligned_evidence(series_index, length):
+    epochs = list(range(6))
+    evidence = [epochs.copy(), epochs.copy(), epochs.copy()]
+    evidence[series_index] = list(range(length))
+    with pytest.raises(ValueError, match="align with every epoch"):
+        evaluate_rsi_signature(epochs, *evidence)
+
 from nougen_shards.rsi_signature import EpochRecord, classify_epochs, credit_table, epoch_series  # noqa: E402
 
 
