@@ -54,21 +54,21 @@ def detect_and_route_tools(prompt: str) -> tuple[str, dict] | None:
     """UDCT fast-path: detect tool intent and return (tool_name, arguments)."""
     p = prompt.strip().lower()
 
-    # 1. Engine / Substrate status
+    # 1. Recent shards / memories
+    if any(k in p for k in ("recent shards", "latest shards", "newest shards", "recent memories", "newest memories", "latest memories")):
+        return "get_recent_shards", {"limit": 6}
+
+    # 2. Engine / Substrate status
     if any(k in p for k in ("engine status", "substrate status", "how many shards", "database status", "storage status", "9-db", "9 dbs", "total shards")):
         return "engine_status", {}
 
-    # 2. Fleet status
+    # 3. Fleet status
     if any(k in p for k in ("fleet status", "fleet nodes", "active machines", "who is connected", "apollo", "hyperion", "phoebus")):
         return "fleet_status", {}
 
-    # 3. Relay status
+    # 4. Relay status
     if any(k in p for k in ("relay status", "relay handoff", "latest handoffs", "batons", "relay feed")):
         return "relay_status", {}
-
-    # 4. Recent shards
-    if any(k in p for k in ("recent shards", "latest shards", "newest shards", "newest memories", "latest memories")):
-        return "get_recent_shards", {"limit": 6}
 
     # 5. Interactive widgets (checklist, comparison, steps)
     if "checklist" in p:
@@ -82,9 +82,8 @@ def detect_and_route_tools(prompt: str) -> tuple[str, dict] | None:
         return "present_widget", {"kind": "steps", "title": title[:60], "items": ["Step 1: Check ground truth", "Step 2: Apply surgical patch", "Step 3: Run UDCT validation"]}
 
     # 6. Search memory
-    if any(k in p for k in ("search memory", "search shards", "find in memory", "lookup in memory", "recall", "rule 0.")):
-        # Extract query cleanly
-        for prefix in ("search memory for", "search shards for", "find in memory", "lookup in memory", "recall"):
+    if any(k in p for k in ("search memory", "search memories", "search shards", "find in memory", "lookup in memory", "query memory", "recall", "rule 0.")):
+        for prefix in ("search memories for", "search memory for", "search shards for", "find in memory", "lookup in memory", "query memory for", "recall"):
             if prefix in p:
                 query = prompt[p.find(prefix) + len(prefix):].strip()
                 if query:
