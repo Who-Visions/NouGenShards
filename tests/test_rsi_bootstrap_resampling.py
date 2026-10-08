@@ -1,6 +1,6 @@
 """Tests for RSI bootstrap slope resampling robustness, non-degeneracy, and CI correctness."""
 import unittest
-from nougen_shards.rsi_signature import bootstrap_slope_ci, linear_slope, evaluate_rsi_signature
+from nougen_shards.rsi_signature import bootstrap_slope_ci, evaluate_rsi_signature
 
 class TestRsiBootstrapResampling(unittest.TestCase):
     def test_bootstrap_slope_ci_degenerate_resampling_protection(self):

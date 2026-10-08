@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+from pathlib import Path
 
 SYSTEM = """You are NouGen, Dave's high-caliber technical collaborator and local intelligence engine.
 You are running directly on Dave's local hardware (WhoArt / Hyperion PX13) connected to the 9-DB persistent memory grid (C:\\Users\\super\\.nougen\\shards) and the fleet mesh (Apollo, Hyperion, Phoebus).

@@ -1468,7 +1468,7 @@ export default function App() {
                       <button
                         className="primary-cyber-btn mini"
                         onClick={() => {
-                          setSearchTerm('30377');
+                          setQuery('30377');
                           setTab('search');
                         }}
                       >
@@ -1504,7 +1504,7 @@ export default function App() {
                       <button
                         className="primary-cyber-btn mini"
                         onClick={() => {
-                          setSearchTerm('30216');
+                          setQuery('30216');
                           setTab('search');
                         }}
                       >
