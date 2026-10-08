@@ -53,7 +53,7 @@ Use consistent monochrome line icons; pair unfamiliar symbols with labels.
 
 ## dataViz
 
-Use labelled axes and text status; color alone never conveys meaning. Preserve data-bearing bar lengths, baselines, scales and area encodings when applying visual metaphors. Decorative integration belongs outside measured geometry. Missing evidence is unavailable, not zero.
+Use labelled axes and text status; color alone never conveys meaning. Preserve data-bearing bar lengths, baselines, scales and area encodings when applying visual metaphors. Pair each series with a visible label and provide a keyboard-accessible data table. Keep calculator formulas bounded and deterministic. Decorative integration belongs outside measured geometry. Missing evidence is unavailable, not zero.
 
 ## stateGrammar
 
