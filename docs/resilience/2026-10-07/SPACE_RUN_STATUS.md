@@ -11,4 +11,6 @@
 - No paid hardware, subscriptions, deployments or Space source changes were made. No AI output has yet been accepted or executed.
 - Local baseline verification: python -m unittest -q test_resilience_core: 21 tests passed.
 
+Follow-up: all three direct Qwen requests reached the client timeout without returning usable responses. The sanitized qwen_journal.json, qwen_budget.json and qwen_evidence.json records preserve TimeoutError outcomes. Active inference slots demonstrated execution, but no successful completed review or generated implementation is claimed.
+
 Before applying generated code, review actual responses, check truncation/finish_reason, and add meaningful regression tests. Model responses are proposals, never formal proof or production certification. Continue all inspection and verification through NouGen Context Mode.
