@@ -232,6 +232,15 @@ button:hover {
   display: inline-block;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .progress-card,
+  .progress-bar-fill,
+  .spinner {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }

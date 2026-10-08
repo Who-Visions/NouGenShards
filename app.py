@@ -952,11 +952,11 @@ app = FastAPI(
 
 @app.middleware("http")
 async def chrome_extension_cors(request: Request, call_next):
-    """CORS only for the local extension pairing and capture endpoints."""
+    """CORS only for the token-gated capture endpoint."""
     path = request.url.path
     origin = request.headers.get("origin", "")
-    allowed = path in {"/extension/connect", "/capture"} and origin.startswith("chrome-extension://")
-    if request.method == "OPTIONS" and path in {"/extension/connect", "/capture"} and allowed:
+    allowed = path == "/capture" and origin.startswith("chrome-extension://")
+    if request.method == "OPTIONS" and path == "/capture" and allowed:
         response = Response(status_code=204)
     else:
         response = await call_next(request)
@@ -969,24 +969,6 @@ async def chrome_extension_cors(request: Request, call_next):
     return response
 
 
-@app.post("/extension/connect")
-async def connect_chrome_extension(request: Request):
-    """Issue a capture-only token to the extension on this computer."""
-    import ipaddress
-
-    peer = request.client.host if request.client else ""
-    try:
-        if not ipaddress.ip_address(peer).is_loopback:
-            raise ValueError("not loopback")
-    except ValueError:
-        raise HTTPException(status_code=403, detail="Connect from this computer only.")
-    if not request.headers.get("origin", "").startswith("chrome-extension://"):
-        raise HTTPException(status_code=403, detail="Open this from the NouGen Capture extension.")
-    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
-        raise HTTPException(status_code=415, detail="Use the NouGen Capture extension to connect.")
-    if not _credentials_configured():
-        raise HTTPException(status_code=503, detail="NouGen node credentials are not configured.")
-    return {"token": mcp_oauth.issue_local_access_token(), "scope": "node"}
 try:
     from space_router import router as _inference_router
     app.include_router(_inference_router)

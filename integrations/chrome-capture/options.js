@@ -9,36 +9,27 @@ const msg = (text, isError = false) => {
 
 chrome.storage.local.get(["endpoint", "token"]).then(({ endpoint, token }) => {
   $("endpoint").value = endpoint || "http://127.0.0.1:4444";
-  if (token) msg("Already connected. You can reconnect any time.");
+  $("token").value = token || "";
+  if (token) msg("Connection settings loaded.");
 });
 
-$("connect").addEventListener("click", async () => {
+$("save").addEventListener("click", async () => {
   const origin = normalizeEndpoint($("endpoint").value);
   if (!origin) return msg("Enter a valid NouGen address.", true);
-  let parsed;
-  try { parsed = new URL(origin); } catch { return msg("Enter a valid NouGen address.", true); }
-  if (parsed.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname)) {
-    return msg("One-click connect works with NouGen on this computer. Remote nodes need a different setup.", true);
-  }
+  const token = $("token").value.trim();
+  if (!token) return msg("Enter your NouGen node token.", true);
 
   const granted = await chrome.permissions.request({ origins: [`${origin}/*`] });
   if (!granted) return msg("Chrome needs permission to connect to your NouGen node.", true);
 
-  const button = $("connect");
+  const button = $("save");
   button.disabled = true;
-  msg("Connecting…");
+  msg("Saving connection…");
   try {
-    const response = await fetch(`${origin}/extension/connect`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.token) throw new Error(data.detail || `NouGen returned ${response.status}.`);
-    await chrome.storage.local.set({ endpoint: origin, token: data.token });
-    msg("Connected. You’re ready to capture pages.");
+    await chrome.storage.local.set({ endpoint: origin, token });
+    msg("Saved. NouGen Capture is ready.");
   } catch (error) {
-    msg(`Could not connect. ${error.message || "Check that NouGen is running."}`, true);
+    msg(`Could not save connection. ${error.message || "Try again."}`, true);
   } finally {
     button.disabled = false;
   }

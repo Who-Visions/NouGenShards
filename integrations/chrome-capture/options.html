@@ -7,10 +7,13 @@
 <link rel="stylesheet" href="options.css">
 <main>
   <h1>NouGen Capture</h1>
-  <p class="meta">Connect once. Then use the NouGen button to save pages and selections.</p>
-  <label for="endpoint">NouGen on this computer</label>
+  <p class="meta">Enter the NouGen address and node token from your NouGen setup.</p>
+  <label for="endpoint">NouGen address</label>
   <input id="endpoint" value="http://127.0.0.1:4444" autocomplete="off" aria-label="NouGen address">
-  <button id="connect" type="button">Connect to NouGen</button>
+  <p class="meta">Remote nodes must use HTTPS. Local nodes can use HTTP.</p>
+  <label for="token">Node token</label>
+  <input id="token" type="password" autocomplete="off" spellcheck="false" aria-label="NouGen node token">
+  <button id="save" type="button">Save connection</button>
   <p id="msg" role="status"></p>
 </main>
 <script type="module" src="options.js"></script>

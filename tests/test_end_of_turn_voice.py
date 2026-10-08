@@ -63,3 +63,10 @@ def test_render_markdown():
     assert "**Scoreboard Evidence:**" in md
     assert "- **Changed**: file_a.py; file_b.py" in md
     assert "Kaedra Soul Voice" in md
+
+
+def test_winter_uses_eastern_standard_time_and_correct_slot():
+    fixed_time = datetime.datetime(2026, 1, 15, 10, 30, tzinfo=datetime.timezone.utc)
+    result = eov.resolve_end_of_turn("success", now=fixed_time)
+    assert result.time_slot == "night"
+    assert "05:30 AM EST" in result.head_banner
