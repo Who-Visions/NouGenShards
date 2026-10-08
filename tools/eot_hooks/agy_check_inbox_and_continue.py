@@ -58,17 +58,20 @@ def _log(event: dict, out: dict) -> None:
         pass
 
 
-def _read_cursor() -> float:
+def _read_cursor() -> tuple[int, str]:
     try:
-        return float(json.loads(EOT_CURSOR.read_text(encoding="utf-8")).get("mtime", 0))
+        data = json.loads(EOT_CURSOR.read_text(encoding="utf-8"))
+        if "mtime_ns" in data:
+            return int(data["mtime_ns"]), str(data.get("name", ""))
+        return int(float(data.get("mtime", 0)) * 1_000_000_000), ""
     except Exception:
-        return 0.0
+        return 0, ""
 
 
-def _write_cursor(mtime: float) -> None:
+def _write_cursor(cursor: tuple[int, str]) -> None:
     try:
         EOT_CURSOR.parent.mkdir(parents=True, exist_ok=True)
-        EOT_CURSOR.write_text(json.dumps({"mtime": mtime}), encoding="utf-8")
+        EOT_CURSOR.write_text(json.dumps({"mtime_ns": cursor[0], "name": cursor[1]}), encoding="utf-8")
     except Exception:
         pass
 
@@ -90,36 +93,50 @@ def _write_seen_legs(seen: set) -> None:
     except Exception:
         pass
 
-def _check_unread_inbox() -> tuple[list[str], float]:
+def _check_unread_inbox() -> tuple[list[str], tuple[int, str] | None]:
     if not INBOX.is_dir():
-        return [], 0.0
+        return [], None
     cursor = _read_cursor()
     cursor_resolved = EOT_CURSOR.resolve() if EOT_CURSOR.exists() else None
 
     try:
-        entries = sorted(
-            (
-                p for p in INBOX.iterdir()
-                if p.is_file()
-                and p.name.endswith(".json")
-                and (cursor_resolved is None or p.resolve() != cursor_resolved)
-                and p.stat().st_mtime > cursor
-            ),
-            key=lambda p: p.stat().st_mtime,
-        )
+        inbox_paths = [INBOX, INBOX / "archive"]
+        keyed_entries = []
+        for inbox in inbox_paths:
+            if not inbox.is_dir():
+                continue
+            for path in inbox.glob("*.json"):
+                if path.is_file() and (cursor_resolved is None or path.resolve() != cursor_resolved):
+                    key = (path.stat().st_mtime_ns, str(path.relative_to(INBOX)))
+                    if key > cursor:
+                        keyed_entries.append((key, path))
+        keyed_entries.sort(key=lambda item: item[0])
     except Exception:
-        return [], 0.0
+        return [], None
 
-    if not entries:
-        return [], 0.0
+    if not keyed_entries:
+        return [], None
 
-    latest_mtime = max(p.stat().st_mtime for p in entries)
+    # Consume the oldest bounded page and advance only through that page. The
+    # old code selected the newest five but moved the cursor to the newest file
+    # in the whole queue, skipping any older unread entries between turns.
+    page = keyed_entries[:MAX_SHOWN]
+    latest_cursor = page[-1][0]
     seen_legs = _read_seen_legs()
     messages = []
     new_leg_ids = set()
-    for p in entries[-MAX_SHOWN:]:
+    seen_messages = set()
+    for _, p in page:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
+            identity = str(data.get("message_id") or "|".join((
+                str(data.get("source") or data.get("sender") or ""),
+                str(data.get("timestamp") or ""),
+                str(data.get("text") or ""),
+            )))
+            if identity in seen_messages:
+                continue
+            seen_messages.add(identity)
             leg = data.get("leg_id")
             # Skip if we've already surfaced this exact leg_id
             if leg and leg in seen_legs:
@@ -130,16 +147,17 @@ def _check_unread_inbox() -> tuple[list[str], float]:
             if len(text) > MAX_TEXT:
                 text = text[:MAX_TEXT].rstrip() + "…"
             sender = data.get("sender") or "unknown"
+            message_id = data.get("message_id") or p.name
             if leg:
-                messages.append(f"[Leg {leg}] via {sender}: {text}")
+                messages.append(f"[Message {message_id}; Leg {leg}] via {sender}: {text}")
             else:
-                messages.append(f"[{sender}]: {text}")
+                messages.append(f"[Message {message_id}] [{sender}]: {text}")
         except Exception:
             messages.append(f"[Unparseable] {p.name}")
     # Persist newly seen leg_ids
     if new_leg_ids:
         _write_seen_legs(seen_legs | new_leg_ids)
-    return messages, latest_mtime
+    return messages, latest_cursor
 
 
 def _broadcast_to_blade():
@@ -268,6 +286,9 @@ def main() -> int:
     active_claims = _check_active_my_claims()
     is_stop_event = "terminationReason" in payload or "fullyIdle" in payload
 
+    if latest_mtime is not None:
+        _write_cursor(latest_mtime)
+
     if unread or active_claims:
         sections = []
         if unread:
@@ -281,8 +302,6 @@ def main() -> int:
             "Under NO circumstances may you stop or respond with a bare acknowledgment. FINISH THE WORK:\n"
             + "\n\n".join(sections)
         )
-        if unread:
-            _write_cursor(latest_mtime)
         if is_stop_event:
             out = {
                 "decision": "continue",

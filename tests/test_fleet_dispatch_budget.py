@@ -23,7 +23,10 @@ def test_configured_route_request_budget(tmp_path, monkeypatch, explicit, floor,
 
     def respond(request, timeout):
         assert json.loads(request.data)["max_tokens"] == expected
-        return io.BytesIO(b'{"choices":[{"message":{"content":"ok"}}]}')
+        return io.BytesIO(json.dumps({
+            "model": "fixture",
+            "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+        }).encode())
 
     monkeypatch.setattr(fleet.urllib.request, "urlopen", respond)
     options = {} if explicit is None else {"max_tokens": explicit}

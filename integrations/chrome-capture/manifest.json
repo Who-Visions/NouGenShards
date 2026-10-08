@@ -1,19 +1,28 @@
 {
   "manifest_version": 3,
   "name": "NouGen: Capture, Tube, Morph",
-  "version": "0.2.0",
-  "description": "Send a selection, a YouTube video or a whole page to your NouGen shard vault.",
+  "version": "0.3.0",
+  "description": "Send a selection, a YouTube video or a whole page to your NouGen shard vault with side panel intelligence.",
   "minimum_chrome_version": "116",
   "icons": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" },
-  "permissions": ["contextMenus", "storage", "activeTab", "scripting", "notifications"],
+  "permissions": ["contextMenus", "storage", "activeTab", "scripting", "notifications", "sidePanel"],
   "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
   "background": { "service_worker": "background.js", "type": "module" },
   "action": { "default_title": "NouGen", "default_popup": "popup.html", "default_icon": { "16": "icon16.png", "48": "icon48.png" } },
   "options_ui": { "page": "options.html", "open_in_tab": true },
+  "side_panel": { "default_path": "sidepanel.html" },
   "commands": {
     "capture-selection": {
       "suggested_key": { "default": "Alt+Shift+S" },
       "description": "Capture the selection (or page) to shards"
+    },
+    "morph-page": {
+      "suggested_key": { "default": "Alt+Shift+M" },
+      "description": "Morph the active page into distilled shards"
+    },
+    "tube-page": {
+      "suggested_key": { "default": "Alt+Shift+T" },
+      "description": "Send active YouTube video to NouGenTube"
     }
   }
 }

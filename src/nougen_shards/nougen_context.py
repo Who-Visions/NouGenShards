@@ -698,3 +698,103 @@ def synthesize_sandbox(handle: str, instruction: str = "Summarize the core findi
         "handle": handle,
         "error": res.get("error", "Ollama synthesis unavailable")
     }
+
+
+def append_task_state(session_id: str, state: dict, *, provenance: str) -> dict:
+    """Append a compact task checkpoint; old states remain independently readable."""
+    from .context_policy import TASK_FIELDS, canonical
+    if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 200:
+        raise ValueError("session_id must contain 1..200 characters")
+    if not isinstance(state, dict) or set(state) - TASK_FIELDS:
+        raise ValueError("invalid compact task state fields")
+    if not isinstance(provenance, str) or not provenance.strip():
+        raise ValueError("provenance is required")
+    body = canonical(state)
+    if len(body.encode('utf-8')) > 16000:
+        raise ValueError("task state exceeds 16000 UTF-8 bytes")
+    conn = get_context_connection()
+    try:
+        cursor = conn.execute(
+            "INSERT INTO ctx_events (timestamp, type, content, metadata) VALUES (?, ?, ?, ?)",
+            (_utc_now_iso(), 'TASK_STATE', body, canonical({'session_id': session_id, 'provenance': provenance})))
+        conn.commit()
+        return {'event_id': cursor.lastrowid, 'session_id': session_id, 'status': 'persisted'}
+    finally:
+        conn.close()
+
+
+def current_task_state(session_id: str) -> dict:
+    """Read the latest append-only checkpoint for exactly one execution lineage."""
+    conn = get_context_connection()
+    try:
+        # Session match in SQL keeps another session's active state out of context.
+        row = conn.execute(
+            "SELECT id, content, metadata FROM ctx_events WHERE type = 'TASK_STATE' "
+            "AND json_extract(metadata, '$.session_id') = ? ORDER BY id DESC LIMIT 1",
+            (session_id,)).fetchone()
+        if row is None:
+            return {'session_id': session_id, 'state': None}
+        return {'session_id': session_id, 'event_id': row['id'],
+                'state': json.loads(row['content']), 'provenance': json.loads(row['metadata'])['provenance']}
+    finally:
+        conn.close()
+
+
+def append_context_correction(session_id: str, previous: str, current: str, *, provenance: str) -> dict:
+    """Persist an owner-authorized supersession link without editing either shard."""
+    from .context_policy import canonical, resolve_current
+    if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 200:
+        raise ValueError('session_id must contain 1..200 characters')
+    correction = {'previous': previous, 'current': current, 'provenance': provenance}
+    resolve_current([], [correction])  # validate references; absence is allowed in the durable log
+    conn = get_context_connection()
+    try:
+        cursor = conn.execute(
+            'INSERT INTO ctx_events (timestamp, type, content, metadata) VALUES (?, ?, ?, ?)',
+            (_utc_now_iso(), 'CONTEXT_CORRECTION', canonical(correction), canonical({'session_id': session_id})))
+        conn.commit()
+        return {'event_id': cursor.lastrowid, 'status': 'persisted', 'session_id': session_id}
+    finally:
+        conn.close()
+
+
+def context_corrections(session_id: str) -> list[dict]:
+    """Read correction provenance for one lineage, preserving append order."""
+    conn = get_context_connection()
+    try:
+        rows = conn.execute(
+            "SELECT content FROM ctx_events WHERE type = 'CONTEXT_CORRECTION' "
+            "AND json_extract(metadata, '$.session_id') = ? ORDER BY id", (session_id,)).fetchall()
+        return [json.loads(row['content']) for row in rows]
+    finally:
+        conn.close()
+
+
+def assemble_session_context(session_id: str, query: str, state_json: str = '{}', budget_bytes: int = 8000) -> dict:
+    """Consume federated recall plus exact-session task/correction state.
+
+    Explicit recall (including []) bypasses network retrieval for deterministic
+    replay. Omitted recall uses the existing bounded federation lane.
+    """
+    from .context_policy import context_from_json
+    if not isinstance(state_json, str) or len(state_json) > 1_000_000:
+        raise ValueError('state_json exceeds 1000000 characters')
+    if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 200:
+        raise ValueError('session_id must contain 1..200 characters')
+    state = json.loads(state_json)
+    if not isinstance(state, dict):
+        raise ValueError('state_json must be an object')
+    # Validate before any retrieval or DB work.
+    context_from_json(query, state_json, budget_bytes)
+    if 'recall' not in state:
+        from .federation import federated_retrieve
+        result = federated_retrieve(query, limit=20)
+        state['recall'] = list(result)
+        state['upstream_complete'] = getattr(result, 'complete', None)
+    state['active'] = current_task_state(session_id)['state']
+    state['corrections'] = context_corrections(session_id)
+    packet = context_from_json(query, json.dumps(state), budget_bytes)
+    if state.get('upstream_complete') is False and not state.get('recall'):
+        packet['ready'] = False
+        packet['readiness_reasons'] = ['incomplete_retrieval_without_candidates']
+    return packet
