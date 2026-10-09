@@ -3441,11 +3441,12 @@ def cmd_cua(args):
     )
     action = getattr(args, "cua_action", "status")
 
+    import time
     if action == "status":
         print("🖥️  NouGen CUA (Computer-Using Agent) & Open Kitchen Engine")
         print("   Status: ONLINE & AVAILABLE")
         print("   Prims: HeadlessHandoffSession · OpenKitchenAbortController · ActionCard · GenerativePanel")
-        vault = SecuredVaultDetokenizer()
+        _ = SecuredVaultDetokenizer()
         print("   Vault: Zero-Knowledge Tokenized Ready")
         sky = AtmosphericSkyEngine.get_atmospheric_state()
         print(f"   Atmosphere: {sky['phase'].upper()} (Lat: {sky['coordinates']['lat']}, Lon: {sky['coordinates']['lon']})")
@@ -3454,10 +3455,10 @@ def cmd_cua(args):
     if action == "handoff":
         goal = args.goal
         session = HeadlessHandoffSession()
-        res = session.start(goal=goal)
+        _ = session.start(goal=goal)
         print(f"🚀 Started CUA Handoff Session: {session.session_id}")
         print(f"   Goal: {goal}")
-        print(f"   Open Kitchen Feed: Monitoring active (abort armed)")
+        print("   Open Kitchen Feed: Monitoring active (abort armed)")
         return
 
     if action == "card":
