@@ -1,6 +1,23 @@
 """Tests for RSI bootstrap slope resampling robustness, non-degeneracy, and CI correctness."""
+
+import random
 import unittest
 from nougen_shards.rsi_signature import bootstrap_slope_ci, evaluate_rsi_signature
+
+
+def test_noisy_four_epochs_do_not_claim_positive_slope():
+    # Exhaustive 4**4 paired draws have percentile bounds [-4, 6].
+    # The old sampler returned [1.1, 1.1] for every resample count.
+    low, high = bootstrap_slope_ci([0, 1, 2, 3], [0, 3, -1, 5])
+    assert low < 0 < high
+
+
+def test_reproducible_without_modifying_global_random_state():
+    state = random.getstate()
+    first = bootstrap_slope_ci([0, 1, 2, 3], [0, 3, -1, 5])
+    assert bootstrap_slope_ci([0, 1, 2, 3], [0, 3, -1, 5]) == first
+    assert random.getstate() == state
+
 
 class TestRsiBootstrapResampling(unittest.TestCase):
     def test_bootstrap_slope_ci_degenerate_resampling_protection(self):
@@ -28,6 +45,7 @@ class TestRsiBootstrapResampling(unittest.TestCase):
         result = evaluate_rsi_signature(epochs, eta, search, ood)
         self.assertTrue(result.is_rsi_confirmed)
         self.assertGreater(result.ci_lower, 0.0)
+
 
 if __name__ == '__main__':
     unittest.main()

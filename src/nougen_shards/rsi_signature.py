@@ -9,6 +9,7 @@ between search and out-of-distribution (OOD) sealed cases is not widening.
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -65,7 +66,8 @@ def bootstrap_slope_ci(
         return 0.0, 0.0
 
     slopes: List[float] = []
-    seed = 42
+    # A local RNG preserves reproducibility without modulo low-bit cycles.
+    rng = random.Random(42)
     max_attempts = n_resamples * 5
     attempts = 0
 
@@ -74,8 +76,7 @@ def bootstrap_slope_ci(
         resampled_x = []
         resampled_y = []
         for _ in range(n):
-            seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
-            idx = seed % n
+            idx = rng.randrange(n)
             resampled_x.append(x_series[idx])
             resampled_y.append(y_series[idx])
 
@@ -110,6 +111,8 @@ def evaluate_rsi_signature(
 ) -> RSISignatureResult:
     """Verifies whether NouGen shows true recursive self-improvement."""
     n = len(epochs)
+    if any(len(series) != n for series in (eta_history, search_scores, ood_scores)):
+        raise ValueError("eta, search, and OOD evidence must align with every epoch")
     if n < min_epochs:
         return RSISignatureResult(
             is_rsi_confirmed=False,
