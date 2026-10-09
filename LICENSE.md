@@ -1,4 +1,4 @@
-# Who Visions Source-Available License (v1.0)
+# Who Visions Source-Available License (v1.1)
 
 Copyright © 2020–present Who Visions LLC. All rights reserved.
 
@@ -8,7 +8,7 @@ This is a **source-available** license. This software is **not open source**. Th
 
 Who Visions LLC owns the original code and documentation in this repository. The permissions below are limited permissions to use the Software; they do not transfer ownership.
 
-Third-party code, assets, and other materials that carry separate copyright, license, or attribution notices are excluded from this license and remain governed by their own notices and terms. This license does not replace or expand any third-party license.
+Third-party code, assets, and other materials that carry separate copyright, license, or attribution notices are excluded from this license and remain governed by their own notices and terms. This license does not replace or expand any third-party license. Version 1.1 applies to copies distributed or accessed under these terms on or after October 9, 2026; it does not withdraw permissions validly granted under earlier license versions for earlier copies.
 
 ## 2. Permitted Use
 
