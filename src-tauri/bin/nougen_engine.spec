@@ -4,14 +4,21 @@
 # Build via build-sidecar.ps1 (which sets distpath so the .exe lands in bin/).
 import os
 
-from PyInstaller.utils.hooks import collect_submodules
-
 # SPECPATH is injected by PyInstaller; resolve the repo `src` from it.
 SRC = os.path.abspath(os.path.join(SPECPATH, "..", "..", "src"))
 
-# Pull in the whole engine package plus its optional submodules so the frozen
-# binary can serve search / status / stats without the dev tree present.
-hidden = collect_submodules("nougen_shards")
+# Python's analysis follows the bootstrap's static imports. These chat modules
+# are imported by command dispatch or tool execution and must be frozen too.
+# Avoid collecting every unrelated engine submodule into the desktop sidecar.
+hidden = [
+    "nougen_shards.chat_service",
+    "nougen_shards.chat_widget_ir",
+    "nougen_shards.credential_patterns",
+    "nougen_shards.brain_scan.redaction",
+    "nougen_shards.dynamic_api",
+    "nougen_shards.dashboard_live",
+    "nougen_shards.cli",
+]
 
 a = Analysis(
     ["sidecar_bootstrap.py"],

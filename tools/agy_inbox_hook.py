@@ -61,7 +61,15 @@ def _cursor() -> tuple[int, str] | None:
         data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
         return int(data["mtime_ns"]), str(data["name"])
     except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return None
+        # Upgrade the previous Phoebus hook's seconds-based cursor in place.
+        # Without this migration, installing this hook would seed to the newest
+        # file and silently skip the unconsumed backlog (including archives).
+        legacy = Path.home() / ".nougen" / "state" / "agy_drain_cursor.json"
+        try:
+            seconds = float(json.loads(legacy.read_text(encoding="utf-8"))["mtime"])
+            return int(seconds * 1_000_000_000), ""
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
 
 
 def _save_cursor(value: tuple[int, str]) -> None:
@@ -73,14 +81,17 @@ def _save_cursor(value: tuple[int, str]) -> None:
 
 def _entries() -> list[tuple[tuple[int, str], Path]]:
     out = []
-    for inbox in INBOX_DIRS:
+    # `agy msg --clear-inbox` archives rather than deletes. An archive move is
+    # not proof of model consumption, so keep unconsumed files readable there.
+    inboxes = [candidate for inbox in INBOX_DIRS for candidate in (inbox, inbox / "archive")]
+    for inbox in inboxes:
         if not inbox.is_dir():
             continue
         for path in inbox.glob("*.json"):
             if path.name.startswith("."):
                 continue
             try:
-                out.append(((path.stat().st_mtime_ns, path.name), path))
+                out.append(((path.stat().st_mtime_ns, str(path)), path))
             except OSError:
                 continue
     return sorted(out, key=lambda x: x[0])
@@ -96,18 +107,30 @@ def read_new_messages(*, replay_existing: bool = False) -> list[str]:
         return []
     selected = entries if cursor is None else [e for e in entries if e[0] > cursor]
     messages: list[str] = []
+    seen_messages: set[str] = set()
     used = 0
     for key, path in selected:
         try:
             env: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-            target = str(env.get("target", "antigravity")).lower()
+            target = str(env.get("target", "antigravity")).lower().rsplit(":", 1)[-1]
             if target not in TARGETS:
+                _save_cursor(key)
                 continue
             source = _redact_sensitive_text(
                 str(env.get("sender") or env.get("source") or "unknown")[:160])
             text = env.get("text") or env.get("content") or env.get("message")
             if not isinstance(text, str) or not text.strip():
+                _save_cursor(key)
                 continue
+            identity = str(env.get("message_id") or "|".join((
+                str(env.get("source") or env.get("sender") or ""),
+                str(env.get("timestamp") or ""),
+                text,
+            )))
+            if identity in seen_messages:
+                _save_cursor(key)
+                continue
+            seen_messages.add(identity)
             domain = _redact_sensitive_text(str(env.get("domain") or "").lower())
             goal = _redact_sensitive_text(str(env.get("goal") or ""))
 
@@ -137,7 +160,8 @@ def read_new_messages(*, replay_existing: bool = False) -> list[str]:
             else:
                 badge = "📡 NOTICE"
 
-            header = f"{emoji} {badge} from @{source}"
+            receipt_id = str(env.get("message_id") or path.name)
+            header = f"{emoji} {badge} from @{source} | Message ID: {receipt_id}"
             if goal:
                 header += f" | Goal: {goal}"
             if domain:
@@ -149,15 +173,19 @@ def read_new_messages(*, replay_existing: bool = False) -> list[str]:
                 break
             messages.append(rendered)
             used += len(rendered)
+            _save_cursor(key)
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             continue
-        finally:
-            _save_cursor(key)
     return messages
 
 
 def register_agy_session(event: dict) -> None:
     """Registers active Antigravity session into ~/.nougen/agy_sessions.json mirroring cc-msg."""
+    # The direct-session pipe below exists on Windows only. The Phoebus Unix
+    # socket is an inbox writer, not a session endpoint; registering it as an
+    # active Agy session would create a false live-delivery address.
+    if os.name != "nt":
+        return
     try:
         import platform
         reg_path = Path.home() / ".nougen" / "agy_sessions.json"

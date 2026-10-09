@@ -87,12 +87,8 @@ class LiveControlPlane:
     def __init__(self, home_dir: Optional[Path] = None, relay_root: Optional[Path] = None):
         self.home_dir = home_dir or (Path.home() / ".nougen")
         self.state_dir = self.home_dir / "state"
-        self.relay_root = relay_root or (Path(__file__).resolve().parents[2] / "NouGenRelay")
-        if not self.relay_root.exists():
-            # Fallback to local sibling or repo
-            alt_relay = Path(__file__).resolve().parents[3] / "NouGenRelay"
-            if alt_relay.exists():
-                self.relay_root = alt_relay
+        from .relay_registry import find_relay_registry
+        self.relay_root = Path(relay_root) if relay_root is not None else find_relay_registry(self.home_dir)
 
         self.fleet_nodes = get_fleet_nodes(self.home_dir)
         self.local_hostname = socket.gethostname()
@@ -391,9 +387,9 @@ class LiveControlPlane:
 
     def pending_relays(self, limit: int = 10) -> Dict[str, Any]:
         """Read open relay batons without claiming, acknowledging, or mutating them."""
-        handoffs = self.relay_root / ".handoffs"
+        handoffs = self.relay_root / ".handoffs" if self.relay_root else None
         open_items = []
-        if handoffs.exists():
+        if handoffs is not None and handoffs.exists():
             files = sorted(handoffs.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
             for path in files:
                 try:
@@ -409,7 +405,8 @@ class LiveControlPlane:
                     "status": data.get("status", "open"),
                     "goal": str(data.get("goal") or "(no goal)")[:1000],
                 })
-        return {"open": len(open_items), "shown": min(limit, len(open_items)),
+        return {"available": handoffs is not None and handoffs.is_dir(),
+                "open": len(open_items), "shown": min(limit, len(open_items)),
                 "relays": open_items[:limit], "acknowledged": False}
 
     def render_pending_inline(self, limit: int = 10) -> str:
@@ -467,38 +464,60 @@ class LiveControlPlane:
         }
 
     def relays(self, limit: int = 5) -> Dict[str, Any]:
-        """Surfaces open legs, active claims, latest handoffs, and ACK state."""
-        handoffs_dir = self.relay_root / ".handoffs"
-        handoff_files = []
-        if handoffs_dir.exists():
-            files = sorted(handoffs_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
-            for f in files[:limit]:
-                try:
-                    data = json.loads(f.read_text(encoding="utf-8"))
-                    handoff_files.append({
-                        "file": f.name,
-                        "agent": data.get("agent"),
-                        "goal": data.get("goal"),
-                        "created_at": data.get("created_at") or data.get("when")
-                    })
-                except Exception:
-                    pass
-
-        # Check claims
-        claims_file = self.relay_root / ".claims.json"
+        """Read the canonical registry, preserving missing/unreadable evidence."""
+        limit = max(0, int(limit))
+        errors = []
+        handoffs = []
         claims = []
-        if claims_file.exists():
+        counts = {}
+        handoffs_dir = self.relay_root / ".handoffs" if self.relay_root else None
+        available = handoffs_dir is not None and handoffs_dir.is_dir()
+        handoff_total = 0
+        claim_total = 0
+        if not available:
+            errors.append({"source": str(handoffs_dir) if handoffs_dir else "relay registry",
+                           "error": "registry missing or not configured"})
+        else:
             try:
-                claims = json.loads(claims_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-
-        return {
-            "handoffs_count": len(handoff_files),
-            "recent_handoffs": handoff_files,
-            "active_claims": claims,
-            "timestamp": time.time()
-        }
+                files = sorted(handoffs_dir.glob("*.json"), reverse=True)
+                handoff_total = len(files)
+                for path in files:
+                    try:
+                        data = json.loads(path.read_text(encoding="utf-8"))
+                        if not isinstance(data, dict):
+                            raise ValueError("handoff record must be an object")
+                        status = str(data.get("status", "open"))
+                        counts[status] = counts.get(status, 0) + 1
+                        if len(handoffs) < limit:
+                            handoffs.append({"file": path.name, "agent": data.get("agent"),
+                                             "goal": data.get("goal"), "status": status,
+                                             "created_at": data.get("created_utc") or data.get("created_at") or data.get("when")})
+                    except (OSError, ValueError) as exc:
+                        errors.append({"source": str(path), "error": str(exc)})
+                claims_dir = handoffs_dir / "claims"
+                if claims_dir.exists():
+                    claim_paths = sorted(claims_dir.glob("*.json"))
+                    claim_total = len(claim_paths)
+                    for path in claim_paths:
+                        try:
+                            claim = json.loads(path.read_text(encoding="utf-8"))
+                            if not isinstance(claim, dict):
+                                raise ValueError("claim record must be an object")
+                            from datetime import datetime
+                            created = datetime.fromisoformat(str(claim["created_utc"]).replace("Z", "+00:00")).timestamp()
+                            ttl = float(claim.get("ttl_hours", 8))
+                            if claim.get("status") != "released" and created + ttl * 3600 > time.time():
+                                claims.append(claim)
+                        except (OSError, ValueError, KeyError, TypeError) as exc:
+                            errors.append({"source": str(path), "error": str(exc)})
+            except OSError as exc:
+                errors.append({"source": str(handoffs_dir), "error": str(exc)})
+        return {"relay_root": str(self.relay_root) if self.relay_root else None,
+                "available": available, "complete": available and not errors,
+                "errors": errors, "handoffs_count": handoff_total,
+                "handoffs_shown": len(handoffs), "handoff_status_counts": counts,
+                "recent_handoffs": handoffs, "claim_files_count": claim_total,
+                "active_claims": claims, "timestamp": time.time()}
 
     def tracker(self) -> Dict[str, Any]:
         """Surfaces token tracker freshness per lane."""
@@ -517,6 +536,8 @@ class LiveControlPlane:
 
     def watch(self) -> Dict[str, Any]:
         """Surfaces relay daemon and watcher freshness."""
+        if self.relay_root is None:
+            return {"ok": False, "error": "relay registry missing or not configured"}
         wake_file = self.relay_root / ".relay" / "wake.signal"
         wake_freshness = None
         if wake_file.exists():

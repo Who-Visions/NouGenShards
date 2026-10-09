@@ -11,5 +11,11 @@ button { margin-top: var(--space-5); min-height: var(--target-touch); padding: 0
   background: var(--accent); color: var(--control-ink); border: 0; border-radius: var(--radius-md); font: inherit; cursor: pointer;
   transition: background var(--motion-fast) var(--motion-ease); }
 button:hover { filter: brightness(1.08); }
+.presets-row { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); flex-wrap: wrap; }
+.preset-btn { margin-top: 0; min-height: 1.8rem; padding: 2px var(--space-3); font-size: var(--type-meta); background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+.preset-btn:hover { background: var(--panel-hover); filter: none; }
+.actions-row { display: flex; gap: var(--space-3); align-items: center; }
+.secondary-btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+.secondary-btn:hover { background: var(--panel-hover); filter: none; }
 .meta { color: var(--muted); font-size: var(--type-meta); margin: var(--space-2) 0 0; }
 #msg { margin-top: var(--space-4); color: var(--accent-green); min-height: 1.5em; }
