@@ -55,6 +55,13 @@ def bootstrap_slope_ci(
     alpha: float = 0.05,
 ) -> Tuple[float, float]:
     """Computes bootstrap confidence interval for the regression slope with degeneracy protection."""
+    if len(x_series) != len(y_series):
+        raise ValueError("x_series and y_series must have the same length")
+    if isinstance(n_resamples, bool) or not isinstance(n_resamples, int) or n_resamples <= 0:
+        raise ValueError("n_resamples must be a positive integer")
+    if not math.isfinite(alpha) or not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be finite and strictly between 0 and 1")
+
     n = len(x_series)
     if n < 3:
         slope = linear_slope(x_series, y_series)
