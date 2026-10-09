@@ -1394,6 +1394,91 @@ def cmd_usage(args):
         print(f"   · {m['provider']}/{m['model']}: {m['total_tokens']:,} tok, ${m['estimated_cost']:.2f}")
 
 
+def cmd_amv(args):
+    """NouGenAMV workload report and non-persisting cost simulator."""
+    from . import amv_usage
+
+    if args.amv_action == "report":
+        rows, malformed = amv_usage.read_usage_events(args.ledger)
+        summary = amv_usage.summarize_events(rows)
+        summary["malformed_lines"] = malformed
+        summary["ledger_path"] = str(args.ledger or amv_usage.default_ledger_path())
+        if args.json:
+            print(json.dumps(summary, indent=2))
+            return
+        print("NouGenAMV observed workload report")
+        print(f"AMV attempts: {summary['events']}; malformed ledger lines: {malformed}")
+        actual_charges = summary['actual_new_api_charges_usd']
+        charges_str = f"${actual_charges:.4f}" if actual_charges is not None else "unavailable (incomplete billed events)"
+        print(f"Verified completed jobs: {summary['verified_completed_jobs']}; actual new API charges: {charges_str}")
+        per_job = summary["actual_cost_per_verified_job_usd"]
+        print("Actual API charges per verified job: " + (f"${per_job:.4f}" if per_job is not None else "unavailable (no verified jobs or unknown charges)"))
+        if not summary["by_stage"]:
+            print("No NouGenAMV stage events have been recorded yet.")
+            return
+        print("Stage                    Runs  Done  Failed  Exact  Est.  Unavail   Input   Output  Frames   GPU s   CPU s    kWh")
+        for stage, data in sorted(summary["by_stage"].items()):
+            print(f"{stage:<24}{data['attempts']:>5}{data['completed']:>6}{data['failed']:>8}"
+                  f"{data['exact_invocations']:>7}{data['estimated_invocations']:>6}{data['unavailable_invocations']:>9}"
+                  f"{data['input_tokens']:>9,}{data['output_tokens']:>9,}{data['video_frames']:>8,}"
+                  f"{data['gpu_seconds']:>8.2f}{data['cpu_seconds']:>8.2f}{data['energy_kwh']:>8.4f}")
+            if data["exact_invocations"] or data["estimated_invocations"]:
+                print(f"  exact input/output/cache: {data['exact_input_tokens']:,} / {data['exact_output_tokens']:,} / {data['exact_cached_tokens']:,}; "
+                      f"estimated: {data['estimated_input_tokens']:,} / {data['estimated_output_tokens']:,} / {data['estimated_cached_tokens']:,}")
+            print(f"  retries: {data['retries']}; cache hits: {data['cache_hits']}; distinct jobs: {data['jobs_seen']}; verified jobs: {data['verified_jobs']}; "
+                  f"assets: {data['asset_count']}; max VRAM/RAM: {data['max_peak_vram_mb'] or 0:.0f}/{data['max_peak_ram_mb'] or 0:.0f} MB; "
+                  f"energy known on {data['energy_known_events']} attempts")
+            if data["energy_known_events"] == 0:
+                print(" " * 24 + "Energy unavailable for this stage.")
+        print("Cloud-equivalent pricing is not applied without an explicit dated rate card.")
+        return
+
+    values = {
+        "shots": args.shots,
+        "input_tokens_per_shot": args.input_tokens_per_shot,
+        "output_tokens_per_shot": args.output_tokens_per_shot,
+        "input_rate": args.input_rate,
+        "output_rate": args.output_rate,
+        "cached_fraction": args.cached_fraction,
+        "cache_rate": args.cache_rate,
+        "energy_kwh": args.energy_kwh,
+        "electricity_rate": args.electricity_rate,
+        "hardware_purchase_usd": args.hardware_purchase_usd,
+        "device_hours": args.device_hours,
+        "expected_hardware_lifetime_hours": args.expected_hardware_lifetime_hours,
+    }
+    if args.interactive:
+        prompts = (
+            ("shots", "Analyzed shots"),
+            ("input_tokens_per_shot", "Estimated input tokens per shot"),
+            ("output_tokens_per_shot", "Estimated output tokens per shot"),
+            ("input_rate", "Illustrative input USD per million tokens"),
+            ("output_rate", "Illustrative output USD per million tokens"),
+        )
+        for key, label in prompts:
+            raw = input(f"{label} [{values[key]}]: ").strip()
+            if raw:
+                values[key] = float(raw) if key.endswith("rate") else int(raw)
+    result = amv_usage.simulate_workload(**values)
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+    print(result["label"])
+    print(f"Analyzed video shots: {result['shots']:,}")
+    print(f"Estimated uncached input tokens: {result['input_tokens']:,}")
+    print(f"Estimated cached input tokens:  {result['cached_input_tokens']:,}")
+    print(f"Estimated output tokens:        {result['output_tokens']:,}")
+    print(f"Cloud-equivalent estimate:      ${result['cloud_equivalent_usd']:.3f}")
+    print(f"New API charges:                ${result['new_api_charges_usd']:.2f}")
+    if result["local_energy_kwh"] is not None:
+        energy_cost = result["local_energy_cost_usd"]
+        print(f"Local energy:                   {result['local_energy_kwh']:.4f} kWh")
+        print("Local energy estimate:          " + (f"${energy_cost:.4f}" if energy_cost is not None else "rate not provided"))
+    if result["hardware_allocation_usd"] is not None:
+        print(f"Hardware allocation estimate:   ${result['hardware_allocation_usd']:.4f}")
+    print("This scenario is never written to the production usage ledger.")
+
+
 def cmd_ctx(args):
     """Handles NouGenContext commands."""
     if args.action == "init":
@@ -2017,6 +2102,33 @@ def get_parser():
     p_usage.add_argument("--period", default=None,
                          help="Reporting window (24h | week | month | quarter | year | all)")
     p_usage.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_amv = subparsers.add_parser("amv", help="NouGenAMV workload accounting laboratory")
+    amv_actions = p_amv.add_subparsers(dest="amv_action", required=True)
+    p_amv_report = amv_actions.add_parser("report", help="Report observed AMV stage usage and compute")
+    p_amv_report.add_argument("--ledger", help="Usage JSONL path (defaults to FLEET_USAGE_LEDGER)")
+    p_amv_report.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_amv_sim = amv_actions.add_parser("simulate", help="Simulate cloud-equivalent and local energy costs")
+    p_amv_sim.add_argument("--shots", type=int, default=250)
+    p_amv_sim.add_argument("--input-tokens-per-shot", type=int, default=1800)
+    p_amv_sim.add_argument("--output-tokens-per-shot", type=int, default=250)
+    p_amv_sim.add_argument("--input-rate", type=float, default=0.50,
+                           help="Illustrative USD per million uncached input tokens")
+    p_amv_sim.add_argument("--output-rate", type=float, default=1.05,
+                           help="Illustrative USD per million output tokens")
+    p_amv_sim.add_argument("--cache-rate", type=float,
+                           help="Illustrative USD per million cached input tokens; defaults to input rate")
+    p_amv_sim.add_argument("--cached-fraction", type=float, default=0.0)
+    p_amv_sim.add_argument("--energy-kwh", type=float, help="Measured or estimated local energy for scenario")
+    p_amv_sim.add_argument("--electricity-rate", type=float, help="USD per kWh for scenario")
+    p_amv_sim.add_argument("--hardware-purchase-usd", type=float,
+                           help="Optional hardware cost used only for allocation simulation")
+    p_amv_sim.add_argument("--device-hours", type=float,
+                           help="Device hours allocated to this scenario")
+    p_amv_sim.add_argument("--expected-hardware-lifetime-hours", type=float,
+                           help="Expected usable lifetime for the hardware allocation")
+    p_amv_sim.add_argument("--interactive", action="store_true", help="Prompt to edit the illustrative inputs")
+    p_amv_sim.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_stats = subparsers.add_parser("stats", help="Historical analytics")
     p_stats.add_argument("--period", choices=["24h", "week", "month", "quarter", "year"],
@@ -3944,7 +4056,7 @@ def main():
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
         "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
-        "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
+        "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage, "amv": cmd_amv,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr, "claim": cmd_claim,
         "tree": cmd_tree, "cua": cmd_cua, "tube": cmd_tube, "arxiv": cmd_arxiv,
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
