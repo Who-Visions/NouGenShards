@@ -72,6 +72,15 @@ def test_rsi_signature_rejects_nonfinite_evidence(series_index, value, position)
         evaluate_rsi_signature(*series)
 
 
+@pytest.mark.parametrize("series_index", [0, 1, 2, 3])
+@pytest.mark.parametrize("value", [1e308, -1e308])
+def test_rsi_signature_rejects_overflowed_statistics(series_index, value):
+    series = [list(range(6)) for _ in range(4)]
+    series[series_index] = [value] * 6
+    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
+        evaluate_rsi_signature(*series)
+
+
 from nougen_shards.rsi_signature import EpochRecord, classify_epochs, credit_table, epoch_series  # noqa: E402
 
 

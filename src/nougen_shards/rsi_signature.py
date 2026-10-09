@@ -114,6 +114,8 @@ def evaluate_rsi_signature(
     # 2. Transfer gap: gap = search_score - ood_score
     gaps = [s - o for s, o in zip(search_scores, ood_scores)]
     gap_slope = linear_slope(x, gaps)
+    if not all(math.isfinite(value) for value in (slope, ci_low, ci_high, gap_slope)):
+        raise ValueError("derived RSI statistics must be finite")
     gap_widening = gap_slope > 0.05  # Divergence threshold
 
     # 3. Decision rule: slope > 0 with 95% CI > 0, and transfer gap not widening
