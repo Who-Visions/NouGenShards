@@ -104,7 +104,13 @@ def relay_feed():
                         'status': data.get('state') or data.get('status') or 'unknown', 'live_status': data.get('state') or data.get('status') or 'unknown', 'acknowledged_by': data.get('acknowledged_by')})
     return records
 
-if __name__ == '__main__':
+def main():
+    if len(sys.argv) != 2 or sys.argv[1] not in {'fleet_nodes', 'identity', 'relay_feed'}:
+        raise SystemExit('Expected one of: fleet_nodes, identity, relay_feed')
     command = sys.argv[1]
     value = {'fleet_nodes': fleet_nodes, 'identity': identity, 'relay_feed': relay_feed}[command]()
     print(json.dumps(value))
+
+
+if __name__ == '__main__':
+    main()

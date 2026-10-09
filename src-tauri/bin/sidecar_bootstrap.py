@@ -41,6 +41,11 @@ def main() -> int:
         from nougen_shards.chat_service import main as chat_main
         chat_main()
         return 0
+    if len(sys.argv) == 3 and sys.argv[1] == "dashboard" and sys.argv[2] in {"fleet_nodes", "identity"}:
+        from nougen_shards.dashboard_live import main as dashboard_main
+        sys.argv = ["dashboard_live", sys.argv[2]]
+        dashboard_main()
+        return 0
     try:
         from nougen_shards.cli import main as cli_main
     except Exception as exc:  # noqa: BLE001 - report any import failure cleanly

@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +9,19 @@ from unittest.mock import patch
 from nougen_shards import dashboard_live, dynamic_api
 
 class DashboardDiscoveryTests(unittest.TestCase):
+    def test_dashboard_identity_is_available_through_frozen_sidecar_dispatch(self):
+        bootstrap = Path(__file__).parents[1] / 'src-tauri' / 'bin' / 'sidecar_bootstrap.py'
+        with tempfile.TemporaryDirectory() as directory:
+            env = {**os.environ, 'NOUGEN_HOME': directory}
+            result = subprocess.run(
+                [sys.executable, str(bootstrap), 'dashboard', 'identity'],
+                capture_output=True, text=True, env=env, timeout=10,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        identity = json.loads(result.stdout)
+        self.assertTrue(identity['hostname'])
+        self.assertEqual(identity['registered_nodes'], 0)
+
     def test_registry_probe_preserves_missing_remote_hardware(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
