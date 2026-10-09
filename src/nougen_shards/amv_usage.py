@@ -315,12 +315,15 @@ def event_from_provider_response(
     if usage_is_exact:
         if cache_status == "exact" and cached > raw_input:
             raise ValueError("cached prompt tokens exceed total prompt tokens")
+        if usage_format == "openai-compatible" and reasoning > raw_output:
+            raise ValueError("reasoning tokens exceed completion tokens")
         uncached = raw_input - cached if cache_status == "exact" else raw_input
+        non_reasoning_output = raw_output - reasoning if usage_format == "openai-compatible" else raw_output
         fields.update(
             token_measurement="exact",
             usage_source="provider_reported",
             input_tokens=uncached,
-            output_tokens=raw_output,
+            output_tokens=non_reasoning_output,
             cached_tokens=cached,
             cache_measurement=cache_status,
             reasoning_tokens=reasoning,
@@ -565,21 +568,44 @@ def summarize_events(events: list[dict]) -> dict:
             bucket["gpu_utilization_sum"] / bucket["gpu_utilization_events"]
             if bucket["gpu_utilization_events"] else None
         )
-    verified_job_ids = {
-        event.get("job_id") for event in events
-        if event.get("source") == "NouGenAMV" and event.get("verification_status") == "passed"
-    }
-    total_actual_charges = sum(
-        float(event.get("actual_new_api_charges_usd") or 0) for event in events
-        if event.get("source") == "NouGenAMV"
+    job_stages: dict[str, list[dict]] = {}
+    for event in events:
+        if event.get("source") == "NouGenAMV" and event.get("job_id"):
+            job_stages.setdefault(event["job_id"], []).append(event)
+
+    verified_job_ids = set()
+    for job_id, j_events in job_stages.items():
+        has_passed_terminal = any(
+            e.get("stage") in {"export", "render"} and e.get("verification_status") == "passed"
+            for e in j_events
+        )
+        has_failed = any(
+            e.get("status") == "failed" or e.get("verification_status") == "failed"
+            for e in j_events
+        )
+        if has_passed_terminal and not has_failed:
+            verified_job_ids.add(job_id)
+
+    has_missing_billed_charge = any(
+        e.get("pricing_basis") == "provider_billed" and e.get("actual_new_api_charges_usd") is None
+        for e in events if e.get("source") == "NouGenAMV"
     )
+    if has_missing_billed_charge:
+        total_actual_charges = None
+    else:
+        total_actual_charges = sum(
+            float(event.get("actual_new_api_charges_usd") or 0.0) for event in events
+            if event.get("source") == "NouGenAMV"
+        )
     verified_jobs = len(verified_job_ids)
     return {
         "events": sum(v["attempts"] for v in stages.values()),
         "verified_completed_jobs": verified_jobs,
         "actual_new_api_charges_usd": total_actual_charges,
         "actual_cost_per_verified_job_usd": (
-            total_actual_charges / verified_jobs if verified_jobs else None
+            (total_actual_charges / verified_jobs)
+            if (total_actual_charges is not None and verified_jobs)
+            else None
         ),
         "by_stage": stages,
     }

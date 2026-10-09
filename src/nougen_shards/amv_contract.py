@@ -120,8 +120,8 @@ class SourceAsset:
         _validate_project_uri(self.project_uri, "project_uri")
         if self.fps_num <= 0 or self.fps_den <= 0 or self.duration_frames <= 0:
             raise ValueError("source FPS and duration must be positive")
-        if self.rights_status == "authorized" and not self.rights_evidence_ref:
-            raise ValueError("authorized assets require rights_evidence_ref")
+        if self.rights_status == "authorized" and (not self.rights_evidence_ref or not self.rights_evidence_ref.strip()):
+            raise ValueError("authorized assets require non-empty rights_evidence_ref")
         if self.rights_status not in ("authorized", "review", "blocked"):
             raise ValueError("unsupported rights_status")
 

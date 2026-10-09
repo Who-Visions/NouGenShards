@@ -1408,9 +1408,11 @@ def cmd_amv(args):
             return
         print("NouGenAMV observed workload report")
         print(f"AMV attempts: {summary['events']}; malformed ledger lines: {malformed}")
-        print(f"Verified completed jobs: {summary['verified_completed_jobs']}; actual new API charges: ${summary['actual_new_api_charges_usd']:.4f}")
+        actual_charges = summary['actual_new_api_charges_usd']
+        charges_str = f"${actual_charges:.4f}" if actual_charges is not None else "unavailable (incomplete billed events)"
+        print(f"Verified completed jobs: {summary['verified_completed_jobs']}; actual new API charges: {charges_str}")
         per_job = summary["actual_cost_per_verified_job_usd"]
-        print("Actual API charges per verified job: " + (f"${per_job:.4f}" if per_job is not None else "unavailable (no verified jobs)"))
+        print("Actual API charges per verified job: " + (f"${per_job:.4f}" if per_job is not None else "unavailable (no verified jobs or unknown charges)"))
         if not summary["by_stage"]:
             print("No NouGenAMV stage events have been recorded yet.")
             return

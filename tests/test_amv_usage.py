@@ -235,14 +235,14 @@ def test_exact_token_events_require_model_and_all_usage_fields():
 
 def test_append_is_idempotent_and_report_aggregates_stage_compute(tmp_path):
     ledger = tmp_path / "usage.jsonl"
-    event = _event(verification_status="passed")
+    event = _event(stage="export", verification_status="passed")
     assert append_usage_event(event, ledger) is True
     assert append_usage_event(event, ledger) is False
     rows, malformed = read_usage_events(ledger)
     report = summarize_events(rows)
     assert malformed == 0
     assert report["events"] == 1
-    stage = report["by_stage"]["scene_description"]
+    stage = report["by_stage"]["export"]
     assert stage["exact_invocations"] == 1
     assert stage["input_tokens"] == 120
     assert stage["video_frames"] == 4
@@ -255,7 +255,7 @@ def test_append_is_idempotent_and_report_aggregates_stage_compute(tmp_path):
 
 def test_nougen_amv_report_cli_reads_the_fleet_ledger(tmp_path):
     ledger = tmp_path / "usage.jsonl"
-    append_usage_event(_event(verification_status="passed"), ledger)
+    append_usage_event(_event(stage="export", verification_status="passed"), ledger)
     env = dict(os.environ)
     env["FLEET_USAGE_LEDGER"] = str(ledger)
     src = str(Path(__file__).resolve().parents[1] / "src")
@@ -267,7 +267,7 @@ def test_nougen_amv_report_cli_reads_the_fleet_ledger(tmp_path):
     report = json.loads(completed.stdout)
     assert report["events"] == 1
     assert report["verified_completed_jobs"] == 1
-    assert report["by_stage"]["scene_description"]["video_frames"] == 4
+    assert report["by_stage"]["export"]["video_frames"] == 4
 
 
 def test_simulator_cli_reports_illustrative_values_without_writing_ledger(tmp_path):
