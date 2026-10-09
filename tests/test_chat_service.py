@@ -99,6 +99,34 @@ def test_model_directs_widget_then_synthesizes():
         execute_tool("exec", {"command": "arbitrary"})
 
 
+def test_model_receives_specific_calculator_repair_hint_and_retries(monkeypatch):
+    monkeypatch.setenv("NOUGEN_CHAT_MODEL", "gemma4:cloud")
+
+    class Client:
+        calls = 0
+        def chat(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {"message": {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "present_widget", "arguments": {
+                    "kind": "calculator", "title": "Double", "inputs": [{"key": "x", "label": "X", "min": 0, "max": 10, "step": 1}],
+                    "formula": {"op": "mul", "left": {"op": "input", "key": "x"}, "right": {"op": "const", "value": 2}}
+                }}}]}}
+            if self.calls == 2:
+                hint = kwargs["messages"][-1]["content"]
+                assert "numeric value" in hint
+                return {"message": {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "present_widget", "arguments": {
+                    "kind": "calculator", "title": "Double", "inputs": [{"key": "x", "label": "X", "value": 2, "min": 0, "max": 10, "step": 1}],
+                    "formula": {"op": "mul", "left": {"op": "input", "key": "x"}, "right": {"op": "const", "value": 2}},
+                    "resultLabel": "Double", "unit": "", "precision": 0
+                }}}]}}
+            return {"message": {"content": "The calculator is ready."}}
+
+    result = chat({"messages": [{"role": "user", "content": "Make an editable calculator that doubles X."}]}, Client())
+    assert len(result["widgets"]) == 1
+    assert result["widgets"][0]["inputs"][0]["value"] == 2
+    assert result["receipts"] == [{"tool": "present_widget", "ok": False}, {"tool": "present_widget", "ok": True}]
+
+
 @pytest.mark.parametrize("args", [{"kind": "html", "title": "x", "items": ["x"]}, {"kind": "steps", "title": "x", "items": ["x"] * 13}, {"kind": "checklist", "title": "x", "items": [None]}])
 def test_malformed_widgets_rejected(args):
     from nougen_shards.chat_service import execute_tool
