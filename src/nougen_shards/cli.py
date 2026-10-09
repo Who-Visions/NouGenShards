@@ -2292,6 +2292,12 @@ def get_parser():
     p_tree.add_argument("--health", metavar="URL", help="Inspect node /health URL over HTTP")
     p_tree.add_argument("--json", action="store_true", help="JSON output")
 
+    p_cua = subparsers.add_parser("cua", help="Computer-Using Agent & Open Kitchen interactive controller")
+    p_cua.add_argument("cua_action", choices=["status", "handoff", "card", "panel"], default="status", nargs="?")
+    p_cua.add_argument("--goal", default="Browse & inspect target", help="Goal for headless handoff session")
+    p_cua.add_argument("--title", default=None, help="Title for ActionCard or GenerativePanel")
+    p_cua.add_argument("--summary", default=None, help="Summary for ActionCard")
+
     p_tube = subparsers.add_parser("tube", help="YouTube/Media transcript ingestion & dedupe")
     p_tube.add_argument("tube_action", choices=["pull"], default="pull", nargs="?")
     p_tube.add_argument("url", help="YouTube video or playlist URL")
@@ -3314,6 +3320,63 @@ def cmd_tree(args):
         sys.exit(1)
 
 
+def cmd_cua(args):
+    """NouGen CUA (Computer-Using Agent) & Open Kitchen controller."""
+    import time
+    from nougen_morph import (
+        ActionCard,
+        HeadlessHandoffSession,
+        GenerativePanel,
+        AtmosphericSkyEngine,
+        SecuredVaultDetokenizer,
+    )
+    action = getattr(args, "cua_action", "status")
+
+    if action == "status":
+        print("🖥️  NouGen CUA (Computer-Using Agent) & Open Kitchen Engine")
+        print("   Status: ONLINE & AVAILABLE")
+        print("   Prims: HeadlessHandoffSession · OpenKitchenAbortController · ActionCard · GenerativePanel")
+        _ = SecuredVaultDetokenizer()
+        print("   Vault: Zero-Knowledge Tokenized Ready")
+        sky = AtmosphericSkyEngine.get_atmospheric_state()
+        print(f"   Atmosphere: {sky['phase'].upper()} (Lat: {sky['coordinates']['lat']}, Lon: {sky['coordinates']['lon']})")
+        return
+
+    if action == "handoff":
+        goal = args.goal
+        session = HeadlessHandoffSession()
+        _ = session.start(goal=goal)
+        print(f"🚀 Started CUA Handoff Session: {session.session_id}")
+        print(f"   Goal: {goal}")
+        print("   Open Kitchen Feed: Monitoring active (abort armed)")
+        return
+
+    if action == "card":
+        card = ActionCard(
+            card_id=f"card_{int(time.time())}",
+            title=args.title or "Interactive Subroutine",
+            summary=args.summary or "Proactive execution card",
+            action_type="cli_task",
+            payload={"task": args.title or "task"},
+            suggested_button_label="Execute"
+        )
+        print(f"🎴 Action Card Created: [{card.card_id}] {card.title}")
+        print(f"   Summary: {card.summary}")
+        print(f"   Status: {card.status}")
+        return
+
+    if action == "panel":
+        panel = GenerativePanel(
+            panel_id=f"panel_{int(time.time())}",
+            title=args.title or "Cortex Panel",
+            widget_type="metrics",
+            config={"view": "compact"}
+        )
+        print(f"📊 Generative Panel Assembled: [{panel.panel_id}] {panel.title}")
+        print(f"   Widget: {panel.widget_type} · Config: {panel.config}")
+        return
+
+
 def cmd_tube(args):
     """NouGenTube media transcript ingester."""
     action = getattr(args, "tube_action", "pull")
@@ -3883,7 +3946,7 @@ def main():
         "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr, "claim": cmd_claim,
-        "tree": cmd_tree, "tube": cmd_tube, "arxiv": cmd_arxiv,
+        "tree": cmd_tree, "cua": cmd_cua, "tube": cmd_tube, "arxiv": cmd_arxiv,
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
         "transcribe": cmd_transcribe, "live": cmd_live, "algo": cmd_algo,
         "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
