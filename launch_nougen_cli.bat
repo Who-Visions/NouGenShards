@@ -1,6 +1,6 @@
 @echo off
 title NouGen CLI Console
-cd /d C:\Users\super\Outpost\NouGen
+cd /d %USERPROFILE%\Outpost\NouGen
 
 REM Optional auto-update check (respects %NOUGEN_NO_AUTO_UPDATE% and --no-update)
 if "%1"=="--no-update" goto skip_update

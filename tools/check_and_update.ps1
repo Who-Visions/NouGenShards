@@ -6,7 +6,7 @@
 #>
 [CmdletBinding()]
 param (
-    [string]$RepoPath = "C:\Users\super\Outpost\NouGen",
+    [string]$RepoPath = "$env:USERPROFILE\Outpost\NouGen",
     [string]$Remote = "origin",
     [int]$FetchTimeoutSec = 8,
     [switch]$NoUpdate = $false
