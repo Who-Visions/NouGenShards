@@ -44,8 +44,11 @@ def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "dashboard" and sys.argv[2] in {"fleet_nodes", "identity"}:
         from nougen_shards.dashboard_live import main as dashboard_main
         sys.argv = ["dashboard_live", sys.argv[2]]
-        dashboard_main()
-        return 0
+        try:
+            return dashboard_main()
+        except Exception as exc:  # noqa: BLE001 - keep tracebacks off the UI channel
+            sys.stderr.write(f"dashboard command failed: {type(exc).__name__}: {exc}\n")
+            return 1
     try:
         from nougen_shards.cli import main as cli_main
     except Exception as exc:  # noqa: BLE001 - report any import failure cleanly
