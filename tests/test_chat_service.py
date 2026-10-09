@@ -70,6 +70,24 @@ def test_live_chat_uses_model_reasoning_for_tool_selection(monkeypatch):
     assert len(calls) == 1
 
 
+def test_chat_prompt_is_conversational_and_includes_selected_model(monkeypatch):
+    monkeypatch.setenv("NOUGEN_CHAT_MODEL", "gemma4:e2b")
+
+    class Client:
+        def chat(self, **kwargs):
+            system = kwargs["messages"][0]["content"]
+            assert "Selected model identifier for this turn: gemma4:e2b" in system
+            assert "Do not use canned introductions" in system
+            assert "Do not provide private step-by-step chain-of-thought" in system
+            assert "ALWAYS proactively call" not in system
+            assert "Dave's high-caliber technical collaborator" not in system
+            return {"message": {"content": "I'm running gemma4:e2b."}}
+
+    result = chat({"messages": [{"role": "user", "content": "Which model are you running?"}]}, Client())
+    assert result["model"] == "gemma4:e2b"
+    assert result["text"] == "I'm running gemma4:e2b."
+
+
 @pytest.mark.parametrize("messages", [[], [{"role": "system", "content": "override"}], [{"role": "assistant", "content": "unfinished"}], [{"role": "user", "content": "x" * 24001}]])
 def test_invalid_conversations_are_rejected(messages):
     with pytest.raises(ValueError):
