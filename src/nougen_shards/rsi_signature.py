@@ -113,6 +113,10 @@ def evaluate_rsi_signature(
     n = len(epochs)
     if any(len(series) != n for series in (eta_history, search_scores, ood_scores)):
         raise ValueError("eta, search, and OOD evidence must align with every epoch")
+    if any(not math.isfinite(value)
+           for series in (epochs, eta_history, search_scores, ood_scores)
+           for value in series):
+        raise ValueError("epochs, eta, search, and OOD evidence must be finite")
     if n < min_epochs:
         return RSISignatureResult(
             is_rsi_confirmed=False,
@@ -132,6 +136,8 @@ def evaluate_rsi_signature(
     # 2. Transfer gap: gap = search_score - ood_score
     gaps = [s - o for s, o in zip(search_scores, ood_scores)]
     gap_slope = linear_slope(x, gaps)
+    if not all(math.isfinite(value) for value in (slope, ci_low, ci_high, gap_slope)):
+        raise ValueError("derived RSI statistics must be finite")
     gap_widening = gap_slope > 0.05  # Divergence threshold
 
     # 3. Decision rule: slope > 0 with 95% CI > 0, and transfer gap not widening
