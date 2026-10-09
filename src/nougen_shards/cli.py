@@ -3432,6 +3432,7 @@ def cmd_tree(args):
 
 def cmd_cua(args):
     """NouGen CUA (Computer-Using Agent) & Open Kitchen controller."""
+    import time
     from nougen_morph import (
         ActionCard,
         HeadlessHandoffSession,
@@ -3441,7 +3442,6 @@ def cmd_cua(args):
     )
     action = getattr(args, "cua_action", "status")
 
-    import time
     if action == "status":
         print("🖥️  NouGen CUA (Computer-Using Agent) & Open Kitchen Engine")
         print("   Status: ONLINE & AVAILABLE")
