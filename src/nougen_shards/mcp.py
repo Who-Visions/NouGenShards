@@ -1437,5 +1437,39 @@ def context_session_assemble(session_id: str, query: str, state_json: str = "{}"
         return json.dumps({'error': str(exc)})
 
 
+@mcp.tool()
+def nougen_web_fetch(url: str, max_chars: int = 16000) -> str:
+    """Fetch one public web page into a bounded, provenance-rich untrusted-source envelope.
+
+    Only public HTTP(S) targets are allowed. robots.txt is honored; login cookies,
+    JavaScript execution, and bot-control evasion are not used.
+    """
+    from dataclasses import asdict
+    from .web_research import WebResearchClient, WebResearchError
+    try:
+        record = asdict(WebResearchClient().fetch(url))
+        record["text"] = record["text"][:max(0, min(int(max_chars), 30000))]
+        return json.dumps(record, ensure_ascii=False, default=str)
+    except (WebResearchError, TypeError, ValueError) as exc:
+        return json.dumps({"error": str(exc), "untrusted_source": True}, ensure_ascii=False)
+
+
+@mcp.tool()
+def nougen_web_crawl(url: str, max_pages: int = 10, max_depth: int = 2,
+                     max_chars_per_page: int = 4000) -> str:
+    """BFS-crawl a small same-origin public site, with per-page provenance and error records."""
+    from .web_research import WebResearchClient, WebResearchError
+    try:
+        result = WebResearchClient().crawl(
+            url,
+            max_pages=max(1, min(int(max_pages), 25)),
+            max_depth=max(0, min(int(max_depth), 4)),
+            max_chars_per_page=max(0, min(int(max_chars_per_page), 12000)),
+        )
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except (WebResearchError, TypeError, ValueError) as exc:
+        return json.dumps({"error": str(exc), "untrusted_source": True}, ensure_ascii=False)
+
+
 if __name__ == "__main__":
     main()
