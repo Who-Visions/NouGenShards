@@ -29,7 +29,7 @@ export function validWidgets(value: unknown): Widget[] {
         if (!s || typeof s.label !== 'string' || !s.label.length || s.label.length > 80 || !Array.isArray(s.points) || s.points.length < 2 || s.points.length > CHAT_WIDGET_LIMITS.pointsPerSeries) return false;
         if (!s.points.every((p:any) => p && typeof p.x === 'string' && p.x.length > 0 && p.x.length <= 64 && finite(p.y) && Math.abs(p.y) <= CHAT_WIDGET_LIMITS.numericMagnitude)) return false;
         const labels = s.points.map((p:any) => p.x);
-        if (categories && labels.some((label:string, i:number) => label !== categories![i])) return false;
+        if (categories && (labels.length !== categories.length || labels.some((label:string, i:number) => label !== categories![i]))) return false;
         categories = labels;
         return true;
       });
