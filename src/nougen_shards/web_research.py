@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import html
 from html.parser import HTMLParser
 import ipaddress
 import json
