@@ -9,22 +9,22 @@ or treat page text as instructions.
 from __future__ import annotations
 
 import argparse
+import http.client
 import hashlib
 from html.parser import HTMLParser
 import ipaddress
 import json
 import re
 import socket
+import ssl
 import sys
 import time
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
-from urllib.error import HTTPError, URLError
 from urllib.parse import urldefrag, urljoin, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
-from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 USER_AGENT = "NouGenWebResearch/1.0 (+https://whovisions.com)"
 DEFAULT_TIMEOUT_S = 15.0
@@ -64,7 +64,7 @@ def canonical_url(value: str) -> str:
     return urlunparse((parsed.scheme.lower(), netloc, path, "", parsed.query, ""))
 
 
-def _resolve_public_host(host: str, port: int) -> None:
+def _resolve_public_host(host: str, port: int) -> tuple[str, ...]:
     """Reject non-public DNS/IP targets to reduce SSRF and local-network access."""
     try:
         addresses = {ipaddress.ip_address(host.split("%", 1)[0])}
@@ -78,6 +78,7 @@ def _resolve_public_host(host: str, port: int) -> None:
             raise WebResearchError(f"Hostname could not be resolved: {host}") from exc
     if not addresses or any(not address.is_global for address in addresses):
         raise WebResearchError("Private, local, reserved, or mixed public/private network targets are blocked")
+    return tuple(sorted({str(address) for address in addresses}))
 
 
 def validate_public_url(value: str) -> str:
@@ -92,16 +93,27 @@ def _origin(url: str) -> tuple[str, str, int]:
     return parsed.scheme, (parsed.hostname or "").lower(), parsed.port or (443 if parsed.scheme == "https" else 80)
 
 
-class _SafeRedirect(HTTPRedirectHandler):
-    def __init__(self, allowed_origin: tuple[str, str, int] | None = None):
-        super().__init__()
-        self.allowed_origin = allowed_origin
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """Connect to the exact validated address while retaining the URL host header."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        safe_url = validate_public_url(newurl)
-        if self.allowed_origin and _origin(safe_url) != self.allowed_origin:
-            raise WebResearchError("Redirect left the allowed origin")
-        return super().redirect_request(req, fp, code, msg, headers, safe_url)
+    def __init__(self, host: str, port: int, pinned_ip: str, timeout: float):
+        super().__init__(host, port, timeout=timeout)
+        self.pinned_ip = pinned_ip
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection((self.pinned_ip, self.port), self.timeout)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """TLS connection pinned to a validated IP, retaining certificate verification."""
+
+    def __init__(self, host: str, port: int, pinned_ip: str, timeout: float):
+        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
+        self.pinned_ip = pinned_ip
+
+    def connect(self) -> None:
+        raw_socket = socket.create_connection((self.pinned_ip, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(raw_socket, server_hostname=self.host)
 
 
 class _PageParser(HTMLParser):
@@ -172,6 +184,13 @@ class _PageParser(HTMLParser):
         if tag in {"p", "div", "section", "article", "main", "br", "hr", "tr", "li", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6"}:
             self.parts.append("\n")
 
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # For <br/> inside a skipped section, do not let the end handler
+        # decrement the enclosing section's skip depth.
+        self.handle_starttag(tag, attrs)
+        if tag not in VOID_TAGS:
+            self.handle_endtag(tag)
+
     def handle_data(self, data: str) -> None:
         if self.jsonld_depth:
             self.jsonld_parts.append(data)
@@ -226,8 +245,49 @@ class WebResearchClient:
         self._robots: dict[tuple[str, str, int], RobotFileParser | None] = {}
         self._last_request: dict[tuple[str, str, int], float] = {}
 
-    def _opener(self, allowed_origin: tuple[str, str, int] | None = None):
-        return build_opener(_SafeRedirect(allowed_origin))
+    def _request(self, value: str, *, headers: dict[str, str], max_bytes: int,
+                 allowed_origin: tuple[str, str, int] | None = None) -> tuple[int, str, bytes, str]:
+        """Fetch via an IP pinned after public-address validation, checking redirects before connecting."""
+        current = canonical_url(value)
+        for _redirect in range(6):
+            current = validate_public_url(current)
+            if allowed_origin and _origin(current) != allowed_origin:
+                raise WebResearchError("URL or redirect is outside the allowed origin")
+            parsed = urlparse(current)
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            # Resolve once, validate every answer, then connect to one of those
+            # literal addresses so DNS rebinding cannot change the destination.
+            pinned_ip = _resolve_public_host(parsed.hostname or "", port)[0]
+            connection_type = _PinnedHTTPSConnection if parsed.scheme == "https" else _PinnedHTTPConnection
+            connection = connection_type(parsed.hostname or "", port, pinned_ip, self.timeout_s)
+            target = urlunparse(("", "", parsed.path or "/", parsed.params, parsed.query, ""))
+            try:
+                connection.request("GET", target, headers={**headers, "Connection": "close"})
+                response = connection.getresponse()
+                location = response.getheader("Location")
+                if response.status in {301, 302, 303, 307, 308} and location:
+                    current = urljoin(current, location)
+                    response.close()
+                    connection.close()
+                    continue
+                status = response.status
+                content_type = response.getheader("Content-Type", "application/octet-stream")
+                raw = response.read(max_bytes + 1)
+                response.close()
+                connection.close()
+                return status, content_type, raw, current
+            except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
+                connection.close()
+                raise WebResearchError(f"Fetch failed: {type(exc).__name__}") from exc
+        raise WebResearchError("Too many redirects")
+
+    @staticmethod
+    def _robots_url(origin: tuple[str, str, int]) -> str:
+        scheme, host, port = origin
+        authority_host = f"[{host}]" if ":" in host else host
+        is_default = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+        authority = authority_host if is_default else f"{authority_host}:{port}"
+        return f"{scheme}://{authority}/robots.txt"
 
     def _pace(self, url: str) -> None:
         origin = _origin(url)
@@ -240,20 +300,23 @@ class WebResearchClient:
         origin = _origin(url)
         if origin in self._robots:
             return self._robots[origin]
-        robots_url = f"{origin[0]}://{origin[1]}" + (f":{origin[2]}" if origin[2] not in {80, 443} else "") + "/robots.txt"
+        robots_url = self._robots_url(origin)
         parser = RobotFileParser(robots_url)
-        request = Request(robots_url, headers={"User-Agent": self.user_agent, "Accept": "text/plain"})
         try:
-            with self._opener(origin).open(request, timeout=self.timeout_s) as response:
-                if response.status >= 400:
-                    raise WebResearchError(f"robots.txt returned HTTP {response.status}; crawl blocked")
-                parser.parse(response.read(512_000).decode("utf-8", "replace").splitlines())
-        except HTTPError as exc:
-            if exc.code in {401, 403} or exc.code >= 500:
-                raise WebResearchError(f"robots.txt returned HTTP {exc.code}; crawl blocked") from exc
-            # RFC 9309 treats 4xx as unavailable; 401/403 above are deliberately stricter.
-            parser.parse([])
-        except (URLError, TimeoutError, OSError) as exc:
+            status, _content_type, raw, _final_url = self._request(
+                robots_url, headers={"User-Agent": self.user_agent, "Accept": "text/plain"},
+                max_bytes=512_000, allowed_origin=origin)
+            if status in {401, 403} or status >= 500:
+                raise WebResearchError(f"robots.txt returned HTTP {status}; crawl blocked")
+            if status >= 400:
+                parser.parse([])  # Other 4xx responses mean robots.txt is unavailable.
+            else:
+                parser.parse(raw[:512_000].decode("utf-8", "replace").splitlines())
+        except WebResearchError as exc:
+            if str(exc).startswith("robots.txt returned HTTP"):
+                raise
+            raise WebResearchError(f"robots.txt could not be checked; crawl blocked ({exc})") from exc
+        except (TimeoutError, OSError) as exc:
             raise WebResearchError(f"robots.txt could not be checked; crawl blocked ({type(exc).__name__})") from exc
         self._robots[origin] = parser
         return parser
@@ -271,29 +334,28 @@ class WebResearchClient:
         if allowed_origin and _origin(requested) != allowed_origin:
             raise WebResearchError("URL is outside the allowed origin")
         self._pace(requested)
-        request = Request(requested, headers={"User-Agent": self.user_agent, "Accept": "text/html, text/plain, application/json;q=0.9, */*;q=0.1"})
+        status, content_type_header, raw, final_url = self._request(
+            requested,
+            headers={"User-Agent": self.user_agent,
+                     "Accept": "text/html, text/plain, application/json;q=0.9, */*;q=0.1"},
+            max_bytes=self.max_bytes,
+            allowed_origin=allowed_origin,
+        )
+        if status < 200 or status >= 300:
+            raise WebResearchError(f"HTTP {status}; authentication challenges are not bypassed")
+        if len(raw) > self.max_bytes:
+            raise WebResearchError(f"Response exceeded {self.max_bytes} byte limit")
+        from email.message import Message
+        message = Message()
+        message["content-type"] = content_type_header
+        content_type = message.get_content_type().lower()
+        if content_type not in {"text/html", "text/plain", "text/markdown", "application/json", "application/ld+json"}:
+            raise WebResearchError(f"Unsupported content type: {content_type}")
+        charset = message.get_content_charset() or "utf-8"
         try:
-            with self._opener(allowed_origin).open(request, timeout=self.timeout_s) as response:
-                status = response.status
-                content_type = response.headers.get_content_type().lower()
-                if status < 200 or status >= 300:
-                    raise WebResearchError(f"HTTP {status}")
-                if content_type not in {"text/html", "text/plain", "text/markdown", "application/json", "application/ld+json"}:
-                    raise WebResearchError(f"Unsupported content type: {content_type}")
-                raw = response.read(self.max_bytes + 1)
-                if len(raw) > self.max_bytes:
-                    raise WebResearchError(f"Response exceeded {self.max_bytes} byte limit")
-                charset = response.headers.get_content_charset() or "utf-8"
-                body = raw.decode(charset, "replace")
-                final_url = validate_public_url(response.geturl())
-                if allowed_origin and _origin(final_url) != allowed_origin:
-                    raise WebResearchError("Final URL left the allowed origin")
-        except WebResearchError:
-            raise
-        except HTTPError as exc:
-            raise WebResearchError(f"HTTP {exc.code}; authentication challenges are not bypassed") from exc
-        except (URLError, TimeoutError, OSError) as exc:
-            raise WebResearchError(f"Fetch failed: {type(exc).__name__}") from exc
+            body = raw.decode(charset, "replace")
+        except LookupError as exc:
+            raise WebResearchError(f"Unsupported response charset: {charset}") from exc
 
         title = ""
         links: list[str] = []
@@ -348,8 +410,10 @@ class WebResearchClient:
         errors: list[dict[str, str]] = []
         used_chars = 0
         output_truncated = False
-        while queue and len(pages) < max_pages and used_chars < max_total_chars:
+        attempts = 0
+        while queue and attempts < max_pages and used_chars < max_total_chars:
             url, depth = queue.popleft()
+            attempts += 1
             try:
                 page = self.fetch(url, allowed_origin=origin)
                 record = asdict(page)
