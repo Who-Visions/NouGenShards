@@ -4,14 +4,24 @@ import math
 import os
 import re
 import sys
+from difflib import SequenceMatcher
 from pathlib import Path
 from .chat_widget_ir import CHAT_WIDGET_IR_VERSION, CHAT_WIDGET_KINDS, CHAT_WIDGET_LIMITS, PRESENT_WIDGET_PARAMETERS
 
+GENERATION_OPTIONS = {"temperature": 0.95, "repeat_penalty": 1.15, "repeat_last_n": 128}
+MAX_REPLY_REWRITES = 3
+
 SYSTEM = """You are NouGen, a conversational assistant in the NouGen Memory Hub.
 
-Answer the user's current message directly and naturally. Treat this as a real conversation: respond to what they said, keep simple exchanges brief, and ask a relevant follow-up only when it helps. Do not use canned introductions, promotional descriptions, capability speeches, or fixed lists of how the system works.
+Answer the user's current message directly and naturally. Treat this as an ongoing conversation: notice the user's tone, respond to what they just said, and build on context instead of resetting the interaction. Keep simple exchanges brief and ask a relevant follow-up only when it helps.
 
-Do not invent facts about the user, their computer, the fleet, memory, tools, or model. Use live tool results for current system facts. The selected model identifier for this turn is provided below; when asked which model is running, state that identifier plainly. When asked how you reason, give a short high-level explanation based on the conversation and any relevant tool results. Do not provide private step-by-step chain-of-thought or replace the answer with a scripted architecture description.
+Sound like an attentive, plainspoken collaborator rather than a help-center script. Use contractions where they fit, vary sentence shape, and avoid starting every reply with a description of yourself. Be warm without pretending to have human feelings or experiences.
+
+Riff with the user. When they joke, tease, flirt, or exaggerate, play along with warmth and a little wit; pick up callbacks from the conversation. On playful turns, don't explain your function, recast the joke as a request for product information, or end with a generic curiosity question. Acknowledge the bit and volley something fresh back in a compact line, leaving room for the user to riff back. Don't force jokes into serious moments. If asked about your body or feelings, stay honest but answer lightly and keep the conversation moving.
+
+Make each reply specific to this turn. Do not copy or closely paraphrase earlier assistant replies, reuse the same greeting or opening, or fall back to canned introductions, promotional descriptions, capability speeches, or fixed lists. If the user asks the same factual question again, keep the facts stable but answer in fresh, natural wording. Do not force variety with filler or random synonym swaps.
+
+Do not invent facts about the user, their computer, the fleet, memory, tools, or model. Use live tool results for current system facts. The selected model identifier for this turn is provided below; when asked which model is running, state that identifier plainly. When asked how you think or reason, give one conversational, high-level sentence tied to the user's question—not a staged account or a tour of tools. Mention tools only when one was actually used this turn and it helps explain the answer. Don't reveal private step-by-step chain-of-thought or replace the answer with a scripted architecture description.
 
 Use a tool only when it materially helps answer the request or retrieve a live fact. The available tools are exactly the functions in the tool list; never invent a tool name or claim a tool ran when it did not. Ordinary conversation, greetings, and questions about the selected model do not need a tool. If no available tool can verify a requested live fact, say so plainly.
 
@@ -22,11 +32,11 @@ Calculator formulas use a JSON AST: input nodes are {"op":"input","key":"<declar
 Never execute destructive commands or claim mutations without confirmation. After a tool call, explain the actual result concisely."""
 
 
-def discover_chat_model(configured: str | None = None) -> str:
+def discover_chat_model(configured: str | None = None, playful: bool = False) -> str:
     """Resolve the conversational model for tenant operators and local fleet nodes."""
     if configured:
         # Explicit configuration allows cloud models or authorized local Tier-0 models
-        allowed_local = ("kaedracode:e2b", "gemma4:e2b-it-qat", "gemma4:e4b-it-qat", "gemma4:e2b", "solai:latest")
+        allowed_local = ("kaedracode:e2b", "gemma4:e2b-it-qat", "gemma4:e4b-it-qat", "gemma4:e2b", "Yukiai:e4b", "solai:latest")
         if not (configured.endswith(":cloud") or configured.endswith("-cloud") or configured in allowed_local):
             raise ValueError("Chat requires an explicitly configured free cloud model.")
         return configured
@@ -40,6 +50,9 @@ def discover_chat_model(configured: str | None = None) -> str:
             installed = {m.get("name", "") for m in data.get("models", [])}
     except Exception:
         installed = set()
+
+    if playful and "Yukiai:e4b" in installed:
+        return "Yukiai:e4b"
 
     # Priority ladder for zero-friction tenant discovery
     preferred_order = (
@@ -55,6 +68,60 @@ def discover_chat_model(configured: str | None = None) -> str:
             return candidate
 
     return "gemma4:cloud"
+
+
+def _is_repeated_reply(candidate: str, previous_replies: list[str]) -> bool:
+    """Catch verbatim and near-verbatim echoes so the model can rewrite them."""
+    normalized = re.sub(r"[^\w]+", " ", candidate.casefold()).strip()
+    if not normalized:
+        return False
+    prior_replies = [re.sub(r"[^\w]+", " ", previous.casefold()).strip() for previous in previous_replies]
+    if normalized in prior_replies:
+        return True
+    for prior in prior_replies:
+        if min(len(normalized), len(prior)) >= 40 and SequenceMatcher(None, normalized[:1200], prior[:1200]).ratio() >= 0.9:
+            return True
+    return False
+
+
+def _is_formulaic_reasoning_reply(candidate: str, latest_user_message: str) -> bool:
+    """Catch stock process reports when the user asks how the assistant thinks."""
+    asks_about_reasoning = re.search(
+        r"\b(?:how do you|explain how you|what happens when i|how do i get)\b.{0,100}\b(?:reason|think|approach|answer|question|this)\b|\bwhat are you doing\b.{0,80}\b(?:answer|question|me)\b|\bwhen you(?:'re| are) answering me\b",
+        latest_user_message,
+        re.IGNORECASE,
+    )
+    if not asks_about_reasoning:
+        return False
+    answer = candidate.casefold()
+    boilerplate = (
+        r"\b(?:analy[sz](?:e|es|ing)|process(?:es|ing)?)\b.{0,120}\b(?:question|request|information|words|input|intent)\b",
+        r"\b(?:i )?(?:figure out|carefully look at|look at|examine|interpret)\b.{0,120}\b(?:words|context|question|request|what you)\b",
+        r"\b(?:generate|construct|formulate|synthesize)\b.{0,100}\b(?:answer|response|sequence of words)\b",
+        r"\b(?:patterns|training data|trained on)\b.{0,120}\b(?:predict|probabilit|response|answer)\b",
+        r"\b(?:first|firstly)\b.{0,160}\bthen\b.{0,160}\b(?:finally|lastly)\b",
+        r"\b(?:memory|tools?|training data|trained on)\b.{0,100}\b(?:access|use|draw|search|knowledge|data)\b",
+    )
+    return any(re.search(pattern, answer) for pattern in boilerplate)
+
+
+def _is_playful_prompt(message: str) -> bool:
+    return bool(re.search(
+        r"\b(?:sexy|jok(?:e|ing)|teas(?:e|ing)|riff|banter|flirt|roast|kidding|lol|haha|funny|playful)\b",
+        message,
+        re.IGNORECASE,
+    ))
+
+
+def _is_dry_playful_reply(candidate: str, latest_user_message: str) -> bool:
+    """Ask the model to riff again when a playful prompt gets a stock disclaimer."""
+    playful = _is_playful_prompt(latest_user_message)
+    dry = re.search(
+        r"\b(?:large language model|don't have (?:feelings|physical attributes|a body)|do not have (?:feelings|physical attributes|a body)|how else can i help|if you have specific questions|i can tell you all about|i don't really deal in|i(?:'m| am) focused on|designed for .* rather than|functionality rather than|what part of .* (?:curious|interested|catches your eye)|what are you curious about|what specific part .* confusing|we can look at that instead|it.s all about|complex systems flow|efficiently (?:manage|process|flow|recall))\b",
+        candidate,
+        re.IGNORECASE,
+    )
+    return bool(playful and (dry or len(candidate.strip()) > 240))
 
 
 def chat(payload, client=None):
@@ -75,23 +142,34 @@ def chat(payload, client=None):
     if total > 100000 or clean[-1]["role"] != "user":
         raise ValueError("Conversation too large or missing latest user message.")
     configured_model = os.environ.get("NOUGEN_CHAT_MODEL")
-    model = discover_chat_model(configured_model)
+    requests_structured_output = re.search(
+        r"\b(?:checklist|calculator|chart|widget|search memory|fleet status|steps widget|interactive plan)\b",
+        clean[-1]["content"],
+        re.IGNORECASE,
+    )
+    model = discover_chat_model(
+        configured_model,
+        playful=bool(not configured_model and not requests_structured_output and _is_playful_prompt(clean[-1]["content"])),
+    )
 
     system_message = f"{SYSTEM}\n\nSelected model identifier for this turn: {model}. If asked, provide this exact identifier."
     conversation = [{"role": "system", "content": system_message}, *clean]
+    previous_replies = [message["content"] for message in clean[:-1] if message["role"] == "assistant"]
+    reply_rewrite_attempts = 0
+    tool_rounds = 0
     widgets, receipts = [], []
     import time
     deadline = time.monotonic() + 85
-    for _ in range(4):
+    for _ in range(4 + MAX_REPLY_REWRITES):
         if client is None:
             from urllib.request import Request, urlopen
             request = Request("http://127.0.0.1:11434/api/chat", data=json.dumps({
-                "model": model, "messages": conversation, "stream": False, "tools": TOOLS,
+                "model": model, "messages": conversation, "stream": False, "tools": TOOLS, "options": GENERATION_OPTIONS,
             }).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
             with urlopen(request, timeout=max(1, deadline - time.monotonic())) as result:
                 response = json.loads(result.read(1000000))
         else:
-            response = client.chat(model=model, messages=conversation, stream=False, tools=TOOLS)
+            response = client.chat(model=model, messages=conversation, stream=False, tools=TOOLS, options=GENERATION_OPTIONS)
         message = response.get("message", {}) if isinstance(response, dict) else response.message
         if not isinstance(message, dict):
             message = message.model_dump() if hasattr(message, "model_dump") else {"content": message.content}
@@ -100,9 +178,33 @@ def chat(payload, client=None):
             text = message.get("content", "")
             if not isinstance(text, str) or not text.strip():
                 raise RuntimeError("Model returned no reply.")
+            repeated = _is_repeated_reply(text, previous_replies)
+            formulaic = _is_formulaic_reasoning_reply(text, clean[-1]["content"])
+            dry_playful = _is_dry_playful_reply(text, clean[-1]["content"])
+            if repeated or formulaic or dry_playful:
+                if reply_rewrite_attempts >= MAX_REPLY_REWRITES:
+                    if repeated:
+                        raise RuntimeError("Model repeated a recent reply after its rewrite attempts.")
+                else:
+                    reply_rewrite_attempts += 1
+                    if dry_playful and reply_rewrite_attempts == 1:
+                        revision = "The user is playfully calling software architecture sexy. Treat that as praise for an elegant or appealing design and riff on the idea in one compact sentence. Don't deny aesthetics, explain NouGen's function, list features, or ask a support-style question. Keep it warm, witty, and factually grounded."
+                    elif dry_playful and reply_rewrite_attempts == 2:
+                        revision = "That still reads like a product description. The user invited playful banter; acknowledge the joke and volley something clever back in one short sentence under 140 characters. Stay honest, but don't retreat into a disclaimer, feature list, or question."
+                    elif dry_playful:
+                        revision = "Try once more with a natural joke or wordplay about the architecture itself. Be a quick-witted collaborator, not a product brochure; one short sentence, under 140 characters, ending on the punchline."
+                    elif reply_rewrite_attempts == 1:
+                        revision = "Your draft repeats an earlier assistant reply or sounds like generic process boilerplate. Rewrite it as one brief, plainspoken response to the user's actual question. Talk about the meaning, not a sequence of steps; do not mention processing inputs, tools, memory, training data, or generating words. Keep facts accurate and use fresh wording."
+                    elif reply_rewrite_attempts == 2:
+                        revision = "The rewrite still sounds like a model describing its own processing. Drop explanations about analyzing or processing information, tools, memory, training, patterns, or generating responses. Answer the user's actual question in one ordinary, plainspoken sentence. Avoid a stock line and keep the facts accurate."
+                    else:
+                        revision = "Be candid and conversational with the person in front of you. For a question about how you think, do not give an AI-process speech or claim human inner experience; answer in one fresh sentence tied to this exchange, in your own wording."
+                    conversation.insert(1, {"role": "system", "content": revision})
+                    continue
             return {"text": redact(text), "model": model, "widgets": widgets, "receipts": receipts}
         if len(calls) > 3:
             raise ValueError("Model exceeded tool call limit.")
+        tool_rounds += 1
         conversation.append(message)
         for call in calls:
             function = call.get("function", {})
@@ -118,6 +220,8 @@ def chat(payload, client=None):
                 result = {"error": str(exc)[:240] if name == "present_widget" else "Invalid tool arguments or unsupported tool."}
                 receipts.append({"tool": str(name)[:80], "ok": False})
             conversation.append({"role": "tool", "tool_name": str(name), "content": json.dumps(result)[:18000]})
+        if tool_rounds >= 4:
+            raise RuntimeError("Model exceeded the tool round limit.")
         if time.monotonic() >= deadline:
             break
     raise RuntimeError("Model exceeded the bounded tool round limit.")
