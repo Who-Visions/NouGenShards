@@ -27,10 +27,10 @@ test('context keeps the latest turn within backend limits and omits errors', () 
 
 test('calculator and chart widgets validate and recover interactive values', () => {
   const calculator={kind:'calculator',title:'Estimate',inputs:[{key:'n',label:'Value',value:3,min:0,max:10,step:1}],formula:{op:'mul',left:{op:'input',key:'n'},right:{op:'const',value:2}},resultLabel:'Total',unit:'',precision:0};
-  const chart={kind:'chart',title:'Trend',chartType:'line',xLabel:'Year',yLabel:'Count',series:[{label:'Observed',points:[{x:'2024',y:2},{x:'2025',y:5}]}]};
+  const chart={kind:'chart',title:'Trend',chartType:'line',xLabel:'Year',yLabel:'Count',series:[{label:'Observed',points:[{x:'2024',y:2},{x:'2025',y:5},{x:'2026',y:8}]}]};
   assert.equal(validWidgets([calculator,chart]).length,2);
-  const misalignedChart={...chart,series:[...chart.series,{label:'Forecast',points:[{x:'2024',y:3},{x:'2025',y:7},{x:'2026',y:9}]}]};
-  assert.equal(validWidgets([misalignedChart]).length,0,'different category counts must be rejected before render');
+  const truncatedChart={...chart,series:[...chart.series,{label:'Forecast',points:[{x:'2024',y:3},{x:'2025',y:7}]}]};
+  assert.equal(validWidgets([truncatedChart]).length,0,'a later series missing categories must be rejected before render');
   assert.equal(evaluateFormula(calculator.formula,{n:4}),8);
   const [recovered]=recoverMessages([{id:'m',role:'assistant',text:'Estimate',timestamp:'now',widgets:[calculator,chart],widgetValues:{'0-n':4,'bad':'x'}}]);
   assert.equal(recovered.widgetValues['0-n'],4);
