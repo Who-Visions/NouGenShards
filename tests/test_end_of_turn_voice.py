@@ -1,6 +1,11 @@
 import datetime
 import pytest
 from nougen_shards import end_of_turn_voice as eov
+from nougen_shards import resolve_end_of_turn, EndOfTurnResolution
+
+def test_public_package_exports_preserve_voice_api():
+    assert resolve_end_of_turn is eov.resolve_end_of_turn
+    assert EndOfTurnResolution is eov.EndOfTurnResolution
 
 def test_resolve_end_of_turn_success_deterministic():
     fixed_time = datetime.datetime(2026, 10, 7, 5, 30, tzinfo=datetime.timezone.utc)  # 01:30 EDT
