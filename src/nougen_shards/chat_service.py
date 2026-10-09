@@ -16,6 +16,7 @@ When asked about relays, handoffs, fleet nodes, engine health, or memory shards:
 ALWAYS proactively call the appropriate tools (`relay_status`, `fleet_status`, `engine_status`, `search_memory`) to retrieve live verified facts instead of guessing or saying you lack tools.
 When presenting multi-item comparisons, plans, or checklists, use `present_widget`.
 Use its calculator for a useful what-if model with editable bounded inputs, and its chart for grounded numeric trends or comparisons. Keep ordinary answers conversational; never invent data or hide assumptions. A widget is optional and should clarify the answer.
+For calculator widgets, every input must include `key`, `label`, `value`, `min`, `max`, and `step`. `value` is the initial editable value and must be within the range. Preserve values explicitly supplied by the user. Verify that each formula input key matches a declared input. If required values are unavailable, ask a concise follow-up instead of emitting an incomplete widget.
 For calculator formulas, emit a JSON AST: input nodes are {"op":"input","key":"<declared input key>"}, constants are {"op":"const","value":12}, unary negation uses {"op":"neg","value":<node>}, and binary nodes use {"op":"add|sub|mul|div|pow","left":<node>,"right":<node>}. Never emit code, an expression string, or a `calculation` field. For monthly interest use div(mul(input principal, input annual_rate), const 1200); declare keys exactly as referenced.
 Never execute destructive commands or claim mutations without confirmation. After tool calls, synthesize the actual live findings with clarity and precision."""
 
@@ -109,8 +110,10 @@ def chat(payload, client=None):
                 if name == "present_widget":
                     widgets.append(result)
                 receipts.append({"tool": name, "ok": True})
-            except (ValueError, TypeError, KeyError):
-                result = {"error": "Invalid tool arguments or unsupported tool."}
+            except (ValueError, TypeError, KeyError) as exc:
+                # Give the model a bounded schema hint so it can repair malformed
+                # widget IR on the next tool round. Keep other failures opaque.
+                result = {"error": str(exc)[:240] if name == "present_widget" else "Invalid tool arguments or unsupported tool."}
                 receipts.append({"tool": str(name)[:80], "ok": False})
             conversation.append({"role": "tool", "tool_name": str(name), "content": json.dumps(result)[:18000]})
         if time.monotonic() >= deadline:
@@ -181,8 +184,12 @@ def execute_tool(name, args):
                 if not isinstance(key, str) or not re.match(r"^[a-zA-Z0-9_-]{1,32}$", key) or key in keys or not isinstance(label, str) or not 1 <= len(label) <= 80:
                     raise ValueError("Invalid calculator input")
                 limit = CHAT_WIDGET_LIMITS["numericMagnitude"]
-                if any(isinstance(n, bool) or not isinstance(n, (int, float)) for n in (value, minimum, maximum, step)) or not all(math.isfinite(n) for n in (value, minimum, maximum, step)) or abs(minimum) > limit or abs(maximum) > limit or minimum >= maximum or not minimum <= value <= maximum or step <= 0:
-                    raise ValueError("Invalid calculator range")
+                numeric = {"value": value, "min": minimum, "max": maximum, "step": step}
+                for field_name, number in numeric.items():
+                    if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number):
+                        raise ValueError(f"Calculator input '{key}' requires a numeric {field_name}.")
+                if abs(minimum) > limit or abs(maximum) > limit or minimum >= maximum or not minimum <= value <= maximum or step <= 0:
+                    raise ValueError(f"Calculator input '{key}' needs min < max, value within range, and a positive step.")
                 if field.get("unit", "") and (not isinstance(field["unit"], str) or len(field["unit"]) > 16): raise ValueError("Invalid unit")
                 keys.add(key)
             def evaluate(node, depth=0):
@@ -241,7 +248,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "engine_status", "description": "Read actual local 9-DB memory engine status, total shards, and active database index.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "fleet_status", "description": "Read connected fleet machine nodes (Apollo, Hyperion, Phoebus) and their local model status.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "relay_status", "description": "Read recent fleet handoff batons and multi-machine relay activity from NouGenRelay.", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "present_widget", "description": "Emit a structured NouGen chat-widget IR instance. Calculator formula is a JSON AST: {op:input,key:<declared key>}, {op:const,value:<number>}, {op:neg,value:<node>}, or binary {op:add|sub|mul|div|pow,left:<node>,right:<node>}; never use a calculation or expression field. Choose a bounded calculator for useful what-if analysis, a labeled chart for grounded numeric trends/comparisons, or checklist/comparison/steps/metric_grid when useful. Never invent chart values; explain assumptions.", "parameters": PRESENT_WIDGET_PARAMETERS}},
+    {"type": "function", "function": {"name": "present_widget", "description": "Emit a structured NouGen chat-widget IR instance. For calculators, every input MUST include key, label, value, min, max, and step; value is the editable initial value within min/max. Example input: {key:'x',label:'X',value:2,min:0,max:10,step:1}. Calculator formula is a JSON AST: {op:input,key:<declared key>}, {op:const,value:<number>}, {op:neg,value:<node>}, or binary {op:add|sub|mul|div|pow,left:<node>,right:<node>}; never use a calculation or expression field. Choose a bounded calculator for useful what-if analysis, a labeled chart for grounded numeric trends/comparisons, or checklist/comparison/steps/metric_grid when useful. Never invent chart values; explain assumptions.", "parameters": PRESENT_WIDGET_PARAMETERS}},
 ]
 
 
