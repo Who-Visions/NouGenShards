@@ -432,6 +432,18 @@ def test_bootstrap_slope_ci_rejects_nonfinite_derived_slopes(monkeypatch):
         bootstrap_slope_ci([1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0])
 
 
+def test_evaluate_rsi_signature_rejects_nonfinite_gaps():
+    """Verify that gaps containing NaN/Inf or overflowing subtraction raise ValueError."""
+    epochs = [1, 2, 3, 4, 5]
+    eta = [1.0, 2.0, 3.0, 4.0, 5.0]
+    search = [1e308, 0.6, 0.7, 0.8, 0.9]
+    ood = [-1e308, 0.55, 0.6, 0.65, 0.7]
+
+    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
+        evaluate_rsi_signature(epochs, eta, search, ood)
+
+
+
 
 
 
