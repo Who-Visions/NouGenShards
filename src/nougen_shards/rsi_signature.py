@@ -278,7 +278,12 @@ def credit_table(total_gain: float, ablation_deltas: Dict[str, float], min_fract
 
     credited = {k: v for k, v in ablation_deltas.items() if v > 0}
     explained = sum(credited.values())
+    if not math.isfinite(explained):
+        raise ValueError("derived RSI statistics must be finite")
     frac = explained / total_gain if total_gain > 0 else 0.0
+    if not math.isfinite(frac):
+        raise ValueError("derived RSI statistics must be finite")
     return {"credited": credited, "explained": explained, "fraction": frac,
             "attributed": total_gain > 0 and frac >= min_fraction}
+
 

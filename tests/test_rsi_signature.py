@@ -443,6 +443,13 @@ def test_evaluate_rsi_signature_rejects_nonfinite_gaps():
         evaluate_rsi_signature(epochs, eta, search, ood)
 
 
+def test_credit_table_rejects_overflowing_explained_sum():
+    """Verify that ablation values causing float overflow in explained sum raise ValueError."""
+    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
+        credit_table(1.0, {"a": 1e308, "b": 1e308})
+
+
+
 
 
 
