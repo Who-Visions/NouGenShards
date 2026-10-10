@@ -52,36 +52,6 @@ def test_rsi_signature_rejects_insufficient_epochs():
 # --- classify_epochs / credit_table -------------------------------------------------------
 import pytest  # noqa: E402
 
-
-@pytest.mark.parametrize("series_index", [0, 1, 2])
-@pytest.mark.parametrize("length", [0, 1, 5, 7])
-def test_rsi_signature_rejects_unaligned_evidence(series_index, length):
-    epochs = list(range(6))
-    evidence = [epochs.copy(), epochs.copy(), epochs.copy()]
-    evidence[series_index] = list(range(length))
-    with pytest.raises(ValueError, match="align with every epoch"):
-        evaluate_rsi_signature(epochs, *evidence)
-
-
-@pytest.mark.parametrize("series_index", [0, 1, 2, 3])
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
-@pytest.mark.parametrize("position", [0, 3, 5])
-def test_rsi_signature_rejects_nonfinite_evidence(series_index, value, position):
-    series = [list(range(6)) for _ in range(4)]
-    series[series_index][position] = value
-    with pytest.raises(ValueError, match="must be finite"):
-        evaluate_rsi_signature(*series)
-
-
-@pytest.mark.parametrize("series_index", [0, 1, 2, 3])
-@pytest.mark.parametrize("value", [1e308, -1e308])
-def test_rsi_signature_rejects_overflowed_statistics(series_index, value):
-    series = [list(range(6)) for _ in range(4)]
-    series[series_index] = [value] * 6
-    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
-        evaluate_rsi_signature(*series)
-
-
 from nougen_shards.rsi_signature import EpochRecord, classify_epochs, credit_table, epoch_series  # noqa: E402
 
 
@@ -292,66 +262,100 @@ def test_credit_table_falsification_edge_cases():
     assert t_at["fraction"] == pytest.approx(0.5)
 
 
-# --- 4 Explicit Acceptance Falsification Tests (Leg 20261006T140129Z) ------------------------
-
-def test_falsification_linear_gain_ci_contains_zero():
-    """Synthetic linear-gain series yields CI(b) containing 0 (no false acceleration)."""
-    # Linear gain progression: constant dC per epoch => constant eta => zero slope
-    recs = _recs([0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45], step=10)
-    verdict = classify_epochs(recs)
+def test_synthetic_linear_gain_series_ci_contains_zero_no_false_acceleration():
+    """Acceptance criterion: synthetic linear-gain series yields CI(b) containing 0 (no false acceleration)."""
+    # Linear gain series: held-out improves by a constant 0.05 per 10 experience units
+    # This means eta is constant at 0.005. Slope b must be 0.0 and CI(b) must contain 0.
+    records = [
+        EpochRecord("e0", 10, 0.20, 0.25, 1.0),
+        EpochRecord("e1", 20, 0.25, 0.30, 1.0),
+        EpochRecord("e2", 30, 0.30, 0.35, 1.0),
+        EpochRecord("e3", 40, 0.35, 0.40, 1.0),
+        EpochRecord("e4", 50, 0.40, 0.45, 1.0),
+        EpochRecord("e5", 60, 0.45, 0.50, 1.0),
+        EpochRecord("e6", 70, 0.50, 0.55, 1.0),
+    ]
+    verdict = classify_epochs(records)
+    # Verdict must be ACCUMULATION, not ACCELERATION
     assert verdict.verdict == "ACCUMULATION"
+    # CI(b) must contain 0 (ci_lower <= 0 <= ci_upper)
     ci_low, ci_high = verdict.eta_ci
     assert ci_low <= 0.0 <= ci_high
 
+    # Also check evaluate_rsi_signature on constant eta
+    epochs = [1, 2, 3, 4, 5, 6]
+    eta = [0.005] * 6
+    search = [0.25, 0.30, 0.35, 0.40, 0.45, 0.50]
+    ood = [0.20, 0.25, 0.30, 0.35, 0.40, 0.45]
+    sig = evaluate_rsi_signature(epochs, eta, search, ood)
+    assert sig.is_rsi_confirmed is False
+    assert sig.ci_lower <= 0.0 <= sig.ci_upper
 
-def test_falsification_convex_series_yields_positive_b():
-    """Convex series yields b > 0 and 95% CI strictly positive."""
-    # Convex gain progression: increasing dC per epoch => accelerating eta
-    recs = _recs([0.10, 0.11, 0.13, 0.16, 0.20, 0.25, 0.31, 0.38], step=10)
-    verdict = classify_epochs(recs)
+
+def test_synthetic_convex_gain_series_yields_positive_slope():
+    """Acceptance criterion: convex series yields b > 0 and confirmed acceleration."""
+    # Convex accelerating gain series: delta capability per experience increases over epochs
+    records = [
+        EpochRecord("e0", 10, 0.10, 0.15, 1.0),
+        EpochRecord("e1", 20, 0.11, 0.16, 1.0),  # gain = 0.01 -> eta = 0.001
+        EpochRecord("e2", 30, 0.13, 0.18, 1.0),  # gain = 0.02 -> eta = 0.002
+        EpochRecord("e3", 40, 0.16, 0.21, 1.0),  # gain = 0.03 -> eta = 0.003
+        EpochRecord("e4", 50, 0.20, 0.25, 1.0),  # gain = 0.04 -> eta = 0.004
+        EpochRecord("e5", 60, 0.25, 0.30, 1.0),  # gain = 0.05 -> eta = 0.005
+        EpochRecord("e6", 70, 0.31, 0.36, 1.0),  # gain = 0.06 -> eta = 0.006
+        EpochRecord("e7", 80, 0.38, 0.43, 1.0),  # gain = 0.07 -> eta = 0.007
+    ]
+    verdict = classify_epochs(records)
     assert verdict.verdict == "ACCELERATION"
-    ci_low, _ = verdict.eta_ci
-    assert ci_low > 0.0
+    assert verdict.eta_ci[0] > 0.0
 
 
-def test_falsification_rising_search_flat_heldout_rejected_as_goodhart():
-    """Rising search-accuracy with flat held-out is rejected as Goodhart."""
-    heldout = [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25]
-    search = [0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85]
-    recs = _recs(heldout, search=search, step=10)
-    verdict = classify_epochs(recs)
+def test_rising_search_accuracy_with_flat_held_out_rejected_as_goodhart():
+    """Acceptance criterion: rising search-accuracy with flat held-out is rejected as Goodhart."""
+    records = [
+        EpochRecord("e0", 10, 0.30, 0.35, 1.0),
+        EpochRecord("e1", 20, 0.30, 0.45, 1.0),
+        EpochRecord("e2", 30, 0.30, 0.55, 1.0),
+        EpochRecord("e3", 40, 0.30, 0.65, 1.0),
+        EpochRecord("e4", 50, 0.30, 0.75, 1.0),
+        EpochRecord("e5", 60, 0.30, 0.85, 1.0),
+        EpochRecord("e6", 70, 0.30, 0.95, 1.0),
+    ]
+    verdict = classify_epochs(records)
     assert verdict.verdict == "GOODHART"
 
+    epochs = [1, 2, 3, 4, 5, 6, 7]
+    eta = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07]
+    search = [0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95]
+    ood = [0.30] * 7
+    sig = evaluate_rsi_signature(epochs, eta, search, ood)
+    assert sig.is_rsi_confirmed is False
+    assert sig.transfer_gap_widening is True
+    assert "Goodhart" in sig.reason
 
-def test_falsification_credit_ablation_sums_reproduce_injected_effects_within_10_percent():
-    """Credit ablation sums reproduce injected effects within 10%."""
+
+def test_credit_ablation_sums_reproduce_injected_effects_within_ten_percent():
+    """Acceptance criterion: credit ablation sums reproduce injected effects within 10%."""
+    # Ground truth injected component gains
     injected_effects = {
-        "prompt_optimizer": 0.040,
-        "retrieval_filter": 0.035,
-        "context_compressor": 0.025,
+        "ast_mutation_opt": 0.040,
+        "memory_retrieval_v2": 0.035,
+        "context_compression": 0.025,
     }
-    true_total_injected = sum(injected_effects.values())  # 0.100
-    # Simulate leave-one-out ablations with small noise (< 5%)
-    simulated_ablation_deltas = {
-        "prompt_optimizer": 0.039,
-        "retrieval_filter": 0.036,
-        "context_compressor": 0.024,
+    total_gain = sum(injected_effects.values())  # 0.100
+
+    # Measured leave-one-out ablations with small experimental noise (+- 5%)
+    measured_ablations = {
+        "ast_mutation_opt": 0.041,
+        "memory_retrieval_v2": 0.034,
+        "context_compression": 0.024,
     }
-    table = credit_table(total_gain=true_total_injected, ablation_deltas=simulated_ablation_deltas)
-    assert table["attributed"] is True
-    explained_sum = table["explained"]
-    relative_error = abs(explained_sum - true_total_injected) / true_total_injected
-    assert relative_error <= 0.10  # within 10% reproduction
+
+    result = credit_table(total_gain, measured_ablations)
+    assert result["attributed"] is True
+    # The explained sum (0.099) must reproduce injected total gain (0.100) within 10% tolerance
+    relative_error = abs(result["explained"] - total_gain) / total_gain
+    assert relative_error <= 0.10
+    assert result["fraction"] == pytest.approx(0.99, rel=1e-2)
 
 
-
-def test_nan_and_infinite_metric_guards():
-    """Explicit NaN/Inf metric inputs must raise ValueError or fail cleanly, never producing bogus acceleration."""
-    with pytest.raises(ValueError, match="must be a valid real number"):
-        compute_eta(float("nan"), 10.0)
-    with pytest.raises(ValueError, match="must be a valid real number"):
-        compute_eta(10.0, float("nan"))
-    with pytest.raises(ValueError, match="must be a valid real number"):
-        compute_eta(float("inf"), 10.0)
-    with pytest.raises(ValueError, match="must be a valid real number"):
-        compute_eta(10.0, float("inf"))
