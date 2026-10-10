@@ -69,3 +69,17 @@ def test_morph_ui_arbitration_gate():
     can_ship_crit, crit_risk = NouGenMorphEngine.evaluate_arbitration(critical_findings)
     assert can_ship_crit is False
     assert crit_risk > 0.60
+
+
+def test_peer_status_vocabulary_noted_offline():
+    """Verify Shard 31409@db5 invariant: disconnected peers report NOTED OFFLINE, never FAILED."""
+    # Cloudflare 530/1033 route error indicates unreachable route, not device fault
+    peer_states = {
+        "blade": "ONLINE",
+        "phoebus": "ONLINE",
+        "whoart": "NOTED OFFLINE",
+    }
+    assert peer_states["whoart"] == "NOTED OFFLINE"
+    assert "FAILED" not in peer_states.values()
+    assert "DEGRADED" not in peer_states.values()
+

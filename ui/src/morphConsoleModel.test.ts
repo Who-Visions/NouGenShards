@@ -27,6 +27,10 @@ describe('Morph Intelligent UI Console Models & Gates', () => {
     const conflict = getStatusBadgeStyle('conflict');
     expect(conflict.color).toBe('#f87171');
 
+    const notedOffline = getStatusBadgeStyle('noted_offline');
+    expect(notedOffline.color).toBe('#94a3b8');
+    expect(notedOffline.border).toBe('#64748b');
+
     const simulation = getStatusBadgeStyle('simulation');
     expect(simulation.color).toBe('#9ca3af');
   });

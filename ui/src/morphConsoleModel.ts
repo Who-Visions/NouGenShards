@@ -15,7 +15,7 @@
 
 export type ViewTab = 'SPEC' | 'AGENTS' | 'RESULTS' | 'PROVENANCE' | 'DECISIONS' | 'TASKS';
 
-export type StateBadge = 'verified' | 'pending' | 'conflict' | 'simulation';
+export type StateBadge = 'verified' | 'pending' | 'conflict' | 'noted_offline' | 'simulation';
 
 export interface SpecRequirement {
   id: string;
@@ -40,7 +40,7 @@ export interface AgentLaneModel {
   commitSha: string;
   budgetTokens: number;
   runtimeMs: number;
-  status: 'online' | 'busy' | 'offline';
+  status: 'online' | 'busy' | 'noted_offline' | 'offline';
 }
 
 export interface TestOutcome {
@@ -107,6 +107,9 @@ export function getStatusBadgeStyle(status: StateBadge): { color: string; backgr
       return { color: '#fbbf24', background: 'rgba(245, 158, 11, 0.1)', border: '#f59e0b' };
     case 'conflict':
       return { color: '#f87171', background: 'rgba(239, 68, 68, 0.1)', border: '#ef4444' };
+    case 'noted_offline':
+      // Shard 31409@db5: NOTED OFFLINE for portable peers is informational, NOT failed/red alarm
+      return { color: '#94a3b8', background: 'rgba(148, 163, 184, 0.1)', border: '#64748b' };
     case 'simulation':
     default:
       return { color: '#9ca3af', background: 'rgba(156, 163, 175, 0.1)', border: '#6b7280' };
