@@ -381,3 +381,26 @@ def test_evaluate_rsi_signature_rejects_nonfinite_derived_statistics(monkeypatch
         evaluate_rsi_signature(epochs, eta, search, ood)
 
 
+def test_epoch_series_rejects_nonfinite_metrics():
+    """EpochRecord fields with NaN/Inf must be rejected."""
+    with pytest.raises(ValueError, match="all epoch metrics must be finite"):
+        epoch_series([
+            EpochRecord("e1", 10, 0.5, 0.5),
+            EpochRecord("e2", 20, float("nan"), 0.6),
+        ])
+    with pytest.raises(ValueError, match="all epoch metrics must be finite"):
+        epoch_series([
+            EpochRecord("e1", 10, 0.5, 0.5),
+            EpochRecord("e2", 20, 0.6, float("inf")),
+        ])
+
+
+def test_classify_epochs_rejects_nonfinite_gap_floor(monkeypatch):
+    """Nonfinite GAP_CI_ENV floor must be rejected."""
+    monkeypatch.setenv("NOUGEN_RSI_GAP_SLOPE_MIN", "nan")
+    recs = _recs([0.10, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16])
+    with pytest.raises(ValueError, match="gap floor must be finite"):
+        classify_epochs(recs)
+
+
+

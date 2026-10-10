@@ -173,6 +173,9 @@ class EpochVerdict:
 
 def epoch_series(records: Sequence[EpochRecord], compute_normalized: bool = True) -> Tuple[List[float], List[float], List[float]]:
     """(gains, eta, gaps). eta_t = gain / new experience [/ compute]; experience must strictly increase."""
+    for r in records:
+        if not all(math.isfinite(v) for v in (r.heldout, r.search, r.compute)) or not math.isfinite(r.experience):
+            raise ValueError(f"all epoch metrics must be finite ({r.epoch})")
     gains, eta = [], []
     for prev, cur in zip(records, records[1:]):
         d_exp = cur.experience - prev.experience
@@ -205,7 +208,11 @@ def classify_epochs(records: Sequence[EpochRecord], *, min_epochs: Optional[int]
         return EpochVerdict("INSUFFICIENT_DATA", eta, (0.0, 0.0), (0.0, 0.0), mean_gain)
     eta_ci = bootstrap_slope_ci(list(range(len(eta))), eta)
     gap_ci = bootstrap_slope_ci(list(range(len(gaps))), gaps)
+    if not all(math.isfinite(v) for v in (eta_ci[0], eta_ci[1], gap_ci[0], gap_ci[1], mean_gain)):
+        raise ValueError("derived RSI statistics must be finite")
     gap_floor = float(os.environ.get(GAP_CI_ENV, "0"))
+    if not math.isfinite(gap_floor):
+        raise ValueError("gap floor must be finite")
     if gap_ci[0] > gap_floor:
         verdict = "GOODHART"
     elif eta_ci[0] > 0:
@@ -215,6 +222,7 @@ def classify_epochs(records: Sequence[EpochRecord], *, min_epochs: Optional[int]
     else:
         verdict = "NO_GAIN"
     return EpochVerdict(verdict, eta, eta_ci, gap_ci, mean_gain)
+
 
 
 def credit_table(total_gain: float, ablation_deltas: Dict[str, float], min_fraction: float = 0.5) -> Dict[str, object]:
