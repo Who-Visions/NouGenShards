@@ -354,3 +354,30 @@ def test_nan_and_infinite_metric_guards():
         compute_eta(float("inf"), 10.0)
     with pytest.raises(ValueError, match="must be a valid real number"):
         compute_eta(10.0, float("inf"))
+
+
+def test_evaluate_rsi_signature_rejects_nonfinite_inputs():
+    """Inputs to evaluate_rsi_signature containing NaN/Inf must raise ValueError."""
+    epochs = [1, 2, 3, 4, 5]
+    eta = [1.0, 2.0, float("nan"), 4.0, 5.0]
+    search = [0.5, 0.6, 0.7, 0.8, 0.9]
+    ood = [0.5, 0.55, 0.6, 0.65, 0.7]
+
+    with pytest.raises(ValueError, match="epochs, eta, search, and OOD evidence must be finite"):
+        evaluate_rsi_signature(epochs, eta, search, ood)
+
+
+def test_evaluate_rsi_signature_rejects_nonfinite_derived_statistics(monkeypatch):
+    """Derived statistics (slope, CI, gap slope) containing NaN/Inf must raise ValueError."""
+    epochs = [1, 2, 3, 4, 5]
+    eta = [1.0, 2.0, 3.0, 4.0, 5.0]
+    search = [0.5, 0.6, 0.7, 0.8, 0.9]
+    ood = [0.5, 0.55, 0.6, 0.65, 0.7]
+
+    # Force linear_slope to return float('nan') on valid finite inputs
+    monkeypatch.setattr("nougen_shards.rsi_signature.linear_slope", lambda x, y: float("nan"))
+
+    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
+        evaluate_rsi_signature(epochs, eta, search, ood)
+
+
