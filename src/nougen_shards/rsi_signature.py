@@ -9,6 +9,8 @@ between search and out-of-distribution (OOD) sealed cases is not widening.
 from __future__ import annotations
 
 import math
+import numbers
+import operator
 import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -57,8 +59,18 @@ def bootstrap_slope_ci(
     """Computes bootstrap confidence interval for the regression slope with degeneracy protection."""
     if len(x_series) != len(y_series):
         raise ValueError("x_series and y_series must have the same length")
-    if isinstance(n_resamples, bool) or not isinstance(n_resamples, int) or n_resamples <= 0:
+    try:
+        if isinstance(n_resamples, bool) or (
+            not isinstance(n_resamples, numbers.Integral)
+            and not hasattr(n_resamples, "__index__")
+        ):
+            raise TypeError
+        n_resamples_val = operator.index(n_resamples)
+        if n_resamples_val <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
         raise ValueError("n_resamples must be a positive integer")
+    n_resamples = n_resamples_val
     if not math.isfinite(alpha) or not 0.0 < alpha < 1.0:
         raise ValueError("alpha must be finite and strictly between 0 and 1")
 

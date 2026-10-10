@@ -28,6 +28,22 @@ def test_rejects_invalid_resample_count(n_resamples):
         bootstrap_slope_ci([0, 1, 2, 3], [0, 3, -1, 5], n_resamples=n_resamples)
 
 
+def test_accepts_numpy_integral_resample_count():
+    import numpy as np
+
+    ci = bootstrap_slope_ci([0, 1, 2, 3], [0, 3, -1, 5], n_resamples=np.int64(20))
+    assert isinstance(ci, tuple) and len(ci) == 2
+
+
+def test_custom_indexable_integral_resample_count():
+    class CustomIndex:
+        def __index__(self):
+            return 25
+
+    ci = bootstrap_slope_ci([0, 1, 2, 3], [0, 3, -1, 5], n_resamples=CustomIndex())
+    assert isinstance(ci, tuple) and len(ci) == 2
+
+
 @pytest.mark.parametrize("alpha", [-0.1, 0.0, 1.0, 1.2, float("nan"), float("inf")])
 def test_rejects_invalid_confidence_level(alpha):
     with pytest.raises(ValueError, match="alpha must be finite and strictly between 0 and 1"):
