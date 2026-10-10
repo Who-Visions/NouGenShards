@@ -115,7 +115,11 @@ def bootstrap_slope_ci(
     high_idx = int(math.ceil((1.0 - alpha / 2.0) * m)) - 1
     low_idx = max(0, min(low_idx, m - 1))
     high_idx = max(0, min(high_idx, m - 1))
-    return slopes[low_idx], slopes[high_idx]
+    ci_low, ci_high = slopes[low_idx], slopes[high_idx]
+    if not math.isfinite(ci_low) or not math.isfinite(ci_high):
+        raise ValueError("derived RSI statistics must be finite")
+    return ci_low, ci_high
+
 
 
 def evaluate_rsi_signature(

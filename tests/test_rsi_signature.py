@@ -423,6 +423,16 @@ def test_linear_slope_rejects_nonfinite_inputs():
         linear_slope([1.0, 2.0], [float("inf"), 3.0])
 
 
+def test_bootstrap_slope_ci_rejects_nonfinite_derived_slopes(monkeypatch):
+    """If internal linear_slope produces a nonfinite value during bootstrapping, bootstrap_slope_ci raises ValueError."""
+    # Force linear_slope to return NaN on valid inputs
+    monkeypatch.setattr("nougen_shards.rsi_signature.linear_slope", lambda x, y: float("nan"))
+    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
+        from nougen_shards.rsi_signature import bootstrap_slope_ci
+        bootstrap_slope_ci([1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0])
+
+
+
 
 
 
