@@ -230,8 +230,17 @@ def credit_table(total_gain: float, ablation_deltas: Dict[str, float], min_fract
 
     The gain counts as attributed only if positively credited changes explain >= min_fraction of it.
     """
+    if not math.isfinite(total_gain):
+        raise ValueError("total_gain must be a finite real number")
+    if not math.isfinite(min_fraction) or min_fraction < 0:
+        raise ValueError("min_fraction must be a non-negative finite real number")
+    for k, v in ablation_deltas.items():
+        if not math.isfinite(v):
+            raise ValueError(f"ablation delta for {k} must be a finite real number")
+
     credited = {k: v for k, v in ablation_deltas.items() if v > 0}
     explained = sum(credited.values())
     frac = explained / total_gain if total_gain > 0 else 0.0
     return {"credited": credited, "explained": explained, "fraction": frac,
             "attributed": total_gain > 0 and frac >= min_fraction}
+

@@ -403,4 +403,17 @@ def test_classify_epochs_rejects_nonfinite_gap_floor(monkeypatch):
         classify_epochs(recs)
 
 
+def test_credit_table_rejects_nonfinite_inputs():
+    """Nonfinite total_gain, min_fraction, or ablation_deltas must be rejected."""
+    with pytest.raises(ValueError, match="total_gain must be a finite real number"):
+        credit_table(float("nan"), {"a": 0.1})
+    with pytest.raises(ValueError, match="min_fraction must be a non-negative finite real number"):
+        credit_table(0.1, {"a": 0.1}, min_fraction=float("nan"))
+    with pytest.raises(ValueError, match="min_fraction must be a non-negative finite real number"):
+        credit_table(0.1, {"a": 0.1}, min_fraction=-0.1)
+    with pytest.raises(ValueError, match="ablation delta for b must be a finite real number"):
+        credit_table(0.1, {"a": 0.1, "b": float("inf")})
+
+
+
 
