@@ -2,7 +2,7 @@
 name: "nougen-core"
 version: "0.5.0"
 description: "Matte instrument surfaces for the NouGen fleet workbench."
-colors: {"--bg": "#141414", "--panel": "#202020", "--panel-solid": "#202020", "--panel-2": "#282828", "--panel-hover": "#333333", "--line": "#777777", "--line-glow": "#777777", "--text": "#f2eee6", "--muted": "#bdb8ad", "--accent": "#e8b86d", "--accent-2": "#e8b86d", "--accent-purple": "#c8bfad", "--accent-green": "#a9c79b", "--danger": "#ffb4ab", "--warn": "#e8b86d", "--focus": "#e8b86d", "--control-ink": "#141414"}
+colors: {"--bg": "#141414", "--panel": "#202020", "--panel-solid": "#202020", "--panel-2": "#282828", "--panel-hover": "#333333", "--line": "#777777", "--line-glow": "#777777", "--text": "#f2eee6", "--muted": "#bdb8ad", "--accent": "#e8b86d", "--accent-2": "#e8b86d", "--accent-purple": "#c8bfad", "--accent-green": "#a9c79b", "--status-verified-text": "#a9c79b", "--status-verified-border": "#a9c79b", "--status-pending-text": "#e8b86d", "--status-pending-border": "#e8b86d", "--status-conflict-text": "#ffb4ab", "--status-conflict-border": "#ffb4ab", "--status-offline-text": "#bdb8ad", "--status-offline-border": "#777777", "--status-sim-text": "#bdb8ad", "--status-sim-border": "#777777", "--danger": "#ffb4ab", "--warn": "#e8b86d", "--focus": "#e8b86d", "--control-ink": "#141414"}
 ---
 
 # nougen-core
