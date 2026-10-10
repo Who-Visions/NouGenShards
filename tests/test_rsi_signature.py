@@ -415,5 +415,14 @@ def test_credit_table_rejects_nonfinite_inputs():
         credit_table(0.1, {"a": 0.1, "b": float("inf")})
 
 
+def test_linear_slope_rejects_nonfinite_inputs():
+    """linear_slope must reject series containing NaN/Inf."""
+    with pytest.raises(ValueError, match="x_series and y_series elements must be finite"):
+        linear_slope([1.0, float("nan")], [2.0, 3.0])
+    with pytest.raises(ValueError, match="x_series and y_series elements must be finite"):
+        linear_slope([1.0, 2.0], [float("inf"), 3.0])
+
+
+
 
 

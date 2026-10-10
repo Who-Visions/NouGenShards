@@ -39,13 +39,21 @@ def linear_slope(x_series: Sequence[float], y_series: Sequence[float]) -> float:
     n = len(x_series)
     if n != len(y_series) or n < 2:
         return 0.0
+    for x, y in zip(x_series, y_series):
+        if not math.isfinite(x) or not math.isfinite(y):
+            raise ValueError("x_series and y_series elements must be finite")
     mean_x = sum(x_series) / n
     mean_y = sum(y_series) / n
     denom = sum((x - mean_x) ** 2 for x in x_series)
     if denom == 0.0:
         return 0.0
     numer = sum((x - mean_x) * (y - mean_y) for x, y in zip(x_series, y_series))
-    return numer / denom
+    slope = numer / denom
+    if not math.isfinite(slope):
+        raise ValueError("derived RSI statistics must be finite")
+    return slope
+
+
 
 
 def bootstrap_slope_ci(
