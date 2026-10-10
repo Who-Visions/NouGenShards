@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import stat
 from dataclasses import asdict, dataclass
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -327,8 +327,18 @@ def create_receipt(
 def verify_receipt(
     receipt: Union[DecisionReceipt, dict[str, Any]],
     expected_public_key: Union[Ed25519PublicKey, str, bytes, None] = None,
+    expected_receipt_id: Optional[str] = None,
+    expected_epoch: Optional[str] = None,
+    expected_evaluator_hash: Optional[str] = None,
+    expected_dataset_hash: Optional[str] = None,
+    expected_decision: Optional[bool] = None,
+    expected_context: Optional[EvaluationContext] = None,
+    candidate_hash: Optional[str] = None,
 ) -> bool:
-    """Verify a DecisionReceipt against an expected public key (or its embedded public key)."""
+    """Verify a DecisionReceipt against an expected public key and expected evaluation fields.
+
+    Prevents replay attacks across distinct candidates or evaluations within an epoch.
+    """
     if isinstance(receipt, dict):
         try:
             receipt = DecisionReceipt.from_dict(receipt)
@@ -336,6 +346,29 @@ def verify_receipt(
             return False
     elif not isinstance(receipt, DecisionReceipt):
         return False
+
+    if expected_decision is not None and receipt.decision != expected_decision:
+        return False
+    if expected_receipt_id is not None and receipt.receipt_id != expected_receipt_id:
+        return False
+    if expected_epoch is not None and receipt.epoch != expected_epoch:
+        return False
+    if expected_evaluator_hash is not None and receipt.evaluator_hash != expected_evaluator_hash:
+        return False
+    if expected_dataset_hash is not None and receipt.dataset_hash != expected_dataset_hash:
+        return False
+
+    if expected_context is not None:
+        if receipt.epoch != expected_context.epoch:
+            return False
+        if receipt.evaluator_hash != expected_context.evaluator_hash:
+            return False
+        if receipt.dataset_hash != expected_context.dataset_hash:
+            return False
+        if candidate_hash is not None:
+            expected_id = EvaluationLedger.receipt_id(expected_context, candidate_hash)
+            if receipt.receipt_id != expected_id:
+                return False
 
     pub_to_use = expected_public_key if expected_public_key is not None else receipt.public_key
     return verify_decision(
@@ -365,3 +398,21 @@ def sign_context_decision(
         dataset_hash=context.dataset_hash,
         decision=decision,
     )
+
+
+def verify_context_decision(
+    receipt: Union[DecisionReceipt, dict[str, Any]],
+    context: EvaluationContext,
+    candidate_hash: str,
+    expected_decision: Optional[bool] = None,
+    public_key: Union[Ed25519PublicKey, str, bytes, None] = None,
+) -> bool:
+    """Verify an artifact decision receipt against the exact EvaluationContext and candidate hash."""
+    return verify_receipt(
+        receipt=receipt,
+        expected_public_key=public_key,
+        expected_context=context,
+        candidate_hash=candidate_hash,
+        expected_decision=expected_decision,
+    )
+

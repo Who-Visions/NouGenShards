@@ -14,6 +14,7 @@ from nougen_shards.rsi_receipts import (
     receipt_payload,
     sign_context_decision,
     sign_decision,
+    verify_context_decision,
     verify_decision,
     verify_receipt,
 )
@@ -265,3 +266,45 @@ def test_malformed_inputs_gracefully_rejected(tmp_key_file):
     assert not verify_decision(pub_hex, "r", "e", "ev", "ds", True, signature="a" * 127)  # wrong length
     assert not verify_decision(pub_hex, "r", "e", "ev", "ds", True, signature=b"short-bytes")
     assert not verify_decision("invalid-pubkey", "r", "e", "ev", "ds", True, signature="a" * 128)
+
+
+def test_verify_receipt_enforces_caller_expectations_and_prevents_replay(tmp_key_file, sample_context):
+    """Falsification test: receipts for candidate A cannot be replayed for candidate B."""
+    _, key, pub_hex = tmp_key_file
+
+    candidate_a = "sha256-candidate-a-solution"
+    candidate_b = "sha256-candidate-b-solution"
+
+    # Genuine receipt created for candidate A
+    receipt_a = sign_context_decision(
+        key=key,
+        context=sample_context,
+        candidate_hash=candidate_a,
+        decision=True,
+    )
+
+    # Validating candidate A against its own context succeeds
+    assert verify_context_decision(
+        receipt=receipt_a,
+        context=sample_context,
+        candidate_hash=candidate_a,
+        expected_decision=True,
+        public_key=pub_hex,
+    )
+
+    # Replaying candidate A's receipt while evaluating candidate B MUST fail
+    assert not verify_context_decision(
+        receipt=receipt_a,
+        context=sample_context,
+        candidate_hash=candidate_b,
+        expected_decision=True,
+        public_key=pub_hex,
+    )
+
+    # Explicit expectation checks prevent tampering / substitution
+    assert not verify_receipt(receipt_a, pub_hex, expected_receipt_id="wrong-receipt-id")
+    assert not verify_receipt(receipt_a, pub_hex, expected_epoch="wrong-epoch")
+    assert not verify_receipt(receipt_a, pub_hex, expected_evaluator_hash="wrong-evaluator")
+    assert not verify_receipt(receipt_a, pub_hex, expected_dataset_hash="wrong-dataset")
+    assert not verify_receipt(receipt_a, pub_hex, expected_decision=False)
+
