@@ -1,0 +1,29 @@
+{
+  "handoff_id": "20261010T102308Z__whoart__antigravity",
+  "created_utc": "2026-10-10T10:23:08Z",
+  "machine": "whoart",
+  "agent": "antigravity",
+  "branch": "fix/rsi-finite-evidence",
+  "goal": "Reject nonfinite derived RSI arithmetic and enforce strict parameter validation across all statistical evaluation layers",
+  "scope": [
+    "src/nougen_shards/rsi_signature.py",
+    "tests/test_rsi_signature.py",
+    "tests/test_rsi_bootstrap_resampling.py",
+    "docs/distribution-boundary-map.md"
+  ],
+  "commits": [
+    "008c634 fix(rsi): reject nonfinite gaps subtraction in evaluate_rsi_signature",
+    "857eb1c fix(rsi): validate bootstrap_slope_ci confidence interval boundaries are finite",
+    "5eea7af Merge origin/fix/rsi-finite-evidence into fix/rsi-finite-evidence: preserve nonfinite derived RSI rejection with bootstrap degeneracy protection",
+    "fb214c2 fix(rsi): reject nonfinite elements and overflow in linear_slope",
+    "b2b64bd fix(rsi): enforce finite values in causal credit attribution table",
+    "f9bcb1a fix(rsi): reject nonfinite epoch metrics and derived classify statistics",
+    "6550134 fix(rsi): reject nonfinite derived RSI statistics and validate bootstrap parameters"
+  ],
+  "verification": {
+    "command": "python -m pytest tests/test_rsi_signature.py tests/test_rsi_bootstrap_resampling.py",
+    "passed": 108,
+    "failed": 0,
+    "status": "PASS"
+  }
+}
