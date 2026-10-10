@@ -84,9 +84,9 @@
   --status-sim-bg: rgba(85, 80, 71, 0.08);
   --status-sim-border: #76716a;
   --status-sim-text: #555047;
-  --status-verified-bg: rgba(30, 126, 52, 0.10);
-  --status-verified-border: #1e7e34;
-  --status-verified-text: #1e7e34;
+  --status-verified-bg: rgba(20, 90, 50, 0.10);
+  --status-verified-border: #145a32;
+  --status-verified-text: #145a32;
   --text: #202020;
 }
 
