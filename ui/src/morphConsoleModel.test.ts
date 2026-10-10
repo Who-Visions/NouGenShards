@@ -16,23 +16,23 @@ import {
 } from './morphConsoleModel';
 
 describe('Morph Intelligent UI Console Models & Gates', () => {
-  it('enforces semantic color invariant strictly', () => {
+  it('enforces semantic color invariant strictly using theme tokens', () => {
     const verified = getStatusBadgeStyle('verified');
-    expect(verified.color).toBe('#4ade80');
-    expect(verified.border).toBe('#22c55e');
+    expect(verified.color).toContain('--status-verified-text');
+    expect(verified.border).toContain('--status-verified-border');
 
     const pending = getStatusBadgeStyle('pending');
-    expect(pending.color).toBe('#fbbf24');
+    expect(pending.color).toContain('--status-pending-text');
 
     const conflict = getStatusBadgeStyle('conflict');
-    expect(conflict.color).toBe('#f87171');
+    expect(conflict.color).toContain('--status-conflict-text');
 
     const notedOffline = getStatusBadgeStyle('noted_offline');
-    expect(notedOffline.color).toBe('#94a3b8');
-    expect(notedOffline.border).toBe('#64748b');
+    expect(notedOffline.color).toContain('--status-offline-text');
+    expect(notedOffline.border).toContain('--status-offline-border');
 
     const simulation = getStatusBadgeStyle('simulation');
-    expect(simulation.color).toBe('#9ca3af');
+    expect(simulation.color).toContain('--status-sim-text');
   });
 
   it('enforces operator mutation gate for decision approvals', () => {

@@ -102,17 +102,37 @@ export interface MorphConsoleState {
 export function getStatusBadgeStyle(status: StateBadge): { color: string; background: string; border: string } {
   switch (status) {
     case 'verified':
-      return { color: '#4ade80', background: 'rgba(34, 197, 94, 0.1)', border: '#22c55e' };
+      return {
+        color: 'var(--status-verified-text, #a9c79b)',
+        background: 'var(--status-verified-bg, rgba(169, 199, 155, 0.12))',
+        border: 'var(--status-verified-border, #a9c79b)',
+      };
     case 'pending':
-      return { color: '#fbbf24', background: 'rgba(245, 158, 11, 0.1)', border: '#f59e0b' };
+      return {
+        color: 'var(--status-pending-text, #e8b86d)',
+        background: 'var(--status-pending-bg, rgba(232, 184, 109, 0.12))',
+        border: 'var(--status-pending-border, #e8b86d)',
+      };
     case 'conflict':
-      return { color: '#f87171', background: 'rgba(239, 68, 68, 0.1)', border: '#ef4444' };
+      return {
+        color: 'var(--status-conflict-text, #ffb4ab)',
+        background: 'var(--status-conflict-bg, rgba(255, 180, 171, 0.12))',
+        border: 'var(--status-conflict-border, #ffb4ab)',
+      };
     case 'noted_offline':
       // Shard 31409@db5: NOTED OFFLINE for portable peers is informational, NOT failed/red alarm
-      return { color: '#94a3b8', background: 'rgba(148, 163, 184, 0.1)', border: '#64748b' };
+      return {
+        color: 'var(--status-offline-text, #bdb8ad)',
+        background: 'var(--status-offline-bg, rgba(189, 184, 173, 0.10))',
+        border: 'var(--status-offline-border, #777777)',
+      };
     case 'simulation':
     default:
-      return { color: '#9ca3af', background: 'rgba(156, 163, 175, 0.1)', border: '#6b7280' };
+      return {
+        color: 'var(--status-sim-text, #bdb8ad)',
+        background: 'var(--status-sim-bg, rgba(189, 184, 173, 0.10))',
+        border: 'var(--status-sim-border, #777777)',
+      };
   }
 }
 
