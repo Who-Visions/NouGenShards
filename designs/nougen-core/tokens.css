@@ -33,6 +33,21 @@
   --space-4: 1rem;
   --space-5: 1.5rem;
   --space-6: 2rem;
+  --status-conflict-bg: rgba(255, 180, 171, 0.12);
+  --status-conflict-border: #ffb4ab;
+  --status-conflict-text: #ffb4ab;
+  --status-offline-bg: rgba(189, 184, 173, 0.10);
+  --status-offline-border: #777777;
+  --status-offline-text: #bdb8ad;
+  --status-pending-bg: rgba(232, 184, 109, 0.12);
+  --status-pending-border: #e8b86d;
+  --status-pending-text: #e8b86d;
+  --status-sim-bg: rgba(189, 184, 173, 0.10);
+  --status-sim-border: #777777;
+  --status-sim-text: #bdb8ad;
+  --status-verified-bg: rgba(169, 199, 155, 0.12);
+  --status-verified-border: #a9c79b;
+  --status-verified-text: #a9c79b;
   --target-min: 1.5rem;
   --target-touch: 2.75rem;
   --text: #f2eee6;
@@ -57,6 +72,21 @@
   --panel-2: #eee9df;
   --panel-hover: #e1dbce;
   --panel-solid: #ffffff;
+  --status-conflict-bg: rgba(166, 37, 32, 0.10);
+  --status-conflict-border: #a62520;
+  --status-conflict-text: #a62520;
+  --status-offline-bg: rgba(85, 80, 71, 0.08);
+  --status-offline-border: #76716a;
+  --status-offline-text: #555047;
+  --status-pending-bg: rgba(118, 80, 19, 0.10);
+  --status-pending-border: #765013;
+  --status-pending-text: #765013;
+  --status-sim-bg: rgba(85, 80, 71, 0.08);
+  --status-sim-border: #76716a;
+  --status-sim-text: #555047;
+  --status-verified-bg: rgba(20, 90, 50, 0.10);
+  --status-verified-border: #145a32;
+  --status-verified-text: #145a32;
   --text: #202020;
 }
 
