@@ -256,6 +256,7 @@ def resolve_model(model_id):
 # impressive one: cache-reads are priced as cache-reads, not as fresh input.
 DOC = "doc"   # first-party documented list price (any vendor)
 EST = "est"
+UNKNOWN_PRICE = "unknown_price"
 MODEL_PRICING = {
     # ---- Claude: first-party list prices ----
     "claude-fable-5":             (10.00, 50.00, 1.000, DOC),
@@ -315,10 +316,6 @@ MODEL_PRICING = {
     # gpt-oss is open-weights; runs free via OpenRouter/local. Nominal host est.
     "gpt-oss-120b-medium":        (0.10, 0.40, 0.010, EST),
 }
-# Unknown model: conservative estimate so the bill never silently reads $0.
-DEFAULT_PRICING = (1.00, 4.00, 0.100, EST)
-
-
 # Local Ollama/Gemma models and OpenRouter ':free' routes cost $0 — they are
 # tracked for VOLUME, not spend (the fleet enforces a hard-free policy).
 FREE_LOCAL_MODELS = {
@@ -332,9 +329,9 @@ def price_for(model_name):
     ' (estimated)' suffix the Antigravity fallback parser appends."""
     key = (model_name or "").replace(" (estimated)", "").strip()
     # Free lanes: local Ollama/Gemma + OpenRouter ':free' routes.
-    if key.endswith(":free") or key in FREE_LOCAL_MODELS:
+    if key.startswith("local/") or key.endswith(":free") or key in FREE_LOCAL_MODELS:
         return (0.0, 0.0, 0.0, DOC)
-    return MODEL_PRICING.get(key, DEFAULT_PRICING)
+    return MODEL_PRICING.get(key, (None, None, None, UNKNOWN_PRICE))
 
 
 def model_bill(model_name, d):
@@ -345,6 +342,8 @@ def model_bill(model_name, d):
     them. Returns (cost_usd, source_tag).
     """
     inp, out, cache_read, src = price_for(model_name)
+    if inp is None or out is None or cache_read is None:
+        return None, UNKNOWN_PRICE
     cost = (
         d.get("input_tokens", 0) * inp
         + d.get("cache_creation_input_tokens", 0) * inp * 1.25
@@ -946,7 +945,11 @@ def parse_gemini_cli():
     files = sorted(set(files))
 
     cutoff_date = CUTOFF.date() - timedelta(days=1)
-    limit_date = LIMIT_UPPER.date() + timedelta(days=1)
+    # LIMIT_UPPER uses datetime.max as the open-ended default. Do not add a day
+    # to date.max on platforms that cannot represent year 10000.
+    limit_date = LIMIT_UPPER.date()
+    if limit_date < datetime.max.date():
+        limit_date += timedelta(days=1)
     local_tz = datetime.now().astimezone().tzinfo
 
     for f in files:
@@ -1100,11 +1103,10 @@ def parse_gemini_cli():
     return by_day, by_model, totals, scanned_files, records, exact_cnt, est_cnt
 
 
-# --- Parse Fleet Usage Ledger (forward, EXACT: local Ollama/Gemma, OpenRouter, HF) ---
+# --- Parse Fleet Usage Ledger (preserve exact, estimated, and unavailable counts) ---
 # Append-only JSONL written by fleet_usage_proxy.py + instrumented fleet clients.
-# Each line: {timestamp, provider, lane, model, input_tokens, output_tokens,
-# cached_tokens, reasoning_tokens, source}. These are exact counts from each
-# lane's own API response (ollama prompt_eval_count/eval_count; OpenRouter usage).
+# Legacy rows may contain provider-reported counts; newer rows explicitly identify
+# provider-reported, tokenizer-measured, estimated, or unavailable usage.
 def parse_fleet_usage():
     by_day = defaultdict(lambda: defaultdict(int))
     by_model = defaultdict(lambda: defaultdict(int))
@@ -1138,6 +1140,21 @@ def parse_fleet_usage():
             ot = int(rec.get("output_tokens") or 0)
             cr = int(rec.get("cached_tokens") or 0)
             rt = int(rec.get("reasoning_tokens") or 0)
+            measurement = rec.get("token_measurement")
+            if measurement not in {"exact", "estimated", "unavailable"}:
+                if isinstance(rec.get("exact"), bool):
+                    measurement = "exact" if rec["exact"] else "estimated"
+                else:
+                    measurement = "unavailable"
+            exact = measurement == "exact"
+            pricing_basis = rec.get("pricing_basis")
+            price_source = price_for(model)[3]
+            pricing_status = rec.get("pricing_status")
+            if pricing_status not in {"known", "unknown", "not_applicable"}:
+                if pricing_basis in {"free_local", "subscription_included", "deterministic"}:
+                    pricing_status = "not_applicable"
+                else:
+                    pricing_status = "unknown" if price_source == UNKNOWN_PRICE else "known"
 
             day = ts.strftime("%Y-%m-%d")
             by_day[day]["input_tokens"] += it
@@ -1145,10 +1162,13 @@ def parse_fleet_usage():
             by_day[day]["cache_read_input_tokens"] += cr
             by_day[day]["reasoning_tokens"] += rt
 
-            by_model[model]["input_tokens"] += it
-            by_model[model]["output_tokens"] += ot
-            by_model[model]["cache_read_input_tokens"] += cr
-            by_model[model]["reasoning_tokens"] += rt
+            # Keep unproven legacy counts in the fleet volume totals, but omit
+            # them from per-model shadow pricing until measurement provenance exists.
+            if measurement != "unavailable":
+                by_model[model]["input_tokens"] += it
+                by_model[model]["output_tokens"] += ot
+                by_model[model]["cache_read_input_tokens"] += cr
+                by_model[model]["reasoning_tokens"] += rt
 
             totals["input_tokens"] += it
             totals["output_tokens"] += ot
@@ -1164,9 +1184,46 @@ def parse_fleet_usage():
                 "cache_creation": 0,
                 "cache_read": cr,
                 "reasoning": rt,
-                "exact": True,
+                "exact": exact,
                 "session_id": rec.get("lane") or "fleet",
                 "source_file": os.path.basename(FLEET_USAGE_LEDGER),
+                "event_source": rec.get("source"),
+                "measurement": measurement,
+                "usage_source": rec.get("usage_source") or (
+                    "provider_reported" if measurement == "exact" else
+                    "estimated" if measurement == "estimated" else "unavailable"
+                ),
+                "cache_measurement": rec.get("cache_measurement", "exact" if "cached_tokens" in rec else "unavailable"),
+                "event_id": rec.get("event_id"),
+                "trace_id": rec.get("trace_id") or rec.get("job_id"),
+                "job_id": rec.get("job_id"),
+                "model_id": rec.get("model_id") or model,
+                "model_version": rec.get("model_version"),
+                "pricing_status": pricing_status,
+                "execution_location": rec.get("execution_location"),
+                "compute_ms": rec.get("compute_ms", rec.get("duration_ms")),
+                "cost_usd": rec.get("cost_usd"),
+                "stage": rec.get("stage"),
+                "node": rec.get("node"),
+                "attempt": rec.get("attempt"),
+                "cache_hit": rec.get("cache_hit"),
+                "duration_ms": rec.get("duration_ms"),
+                "cpu_seconds": rec.get("cpu_seconds"),
+                "gpu_seconds": rec.get("gpu_seconds"),
+                "energy_kwh": rec.get("energy_kwh"),
+                "energy_measurement": rec.get("energy_measurement"),
+                "video_frames": rec.get("video_frames"),
+                "audio_samples": rec.get("audio_samples"),
+                "asset_count": rec.get("asset_count"),
+                "cpu_utilization_pct": rec.get("cpu_utilization_pct"),
+                "gpu_utilization_pct": rec.get("gpu_utilization_pct"),
+                "peak_vram_mb": rec.get("peak_vram_mb"),
+                "peak_ram_mb": rec.get("peak_ram_mb"),
+                "network_bytes": rec.get("network_bytes"),
+                "network_latency_ms": rec.get("network_latency_ms"),
+                "verification_status": rec.get("verification_status"),
+                "actual_new_api_charges_usd": rec.get("actual_new_api_charges_usd"),
+                "pricing_basis": rec.get("pricing_basis"),
             })
             records += 1
 
@@ -1176,6 +1233,9 @@ def parse_fleet_usage():
 def compute_and_print_split(invocations, title):
     exact_tok = 0
     est_tok = 0
+    unavailable_events = 0
+    unpriced_events = 0
+    unpriced_tokens = 0
     exact_cost = 0.0
     est_cost = 0.0
     
@@ -1194,13 +1254,25 @@ def compute_and_print_split(invocations, title):
             "output_tokens": ot,
             "reasoning_tokens": rt
         })
-        
-        if inv.get("exact", True):
+
+        measurement = inv.get("measurement")
+        if measurement not in {"exact", "estimated", "unavailable"}:
+            measurement = "exact" if inv.get("exact", True) else "estimated"
+        if measurement == "unavailable":
+            unavailable_events += 1
+            continue
+        if cost is None:
+            unpriced_events += 1
+            unpriced_tokens += tot
+
+        if measurement == "exact":
             exact_tok += tot
-            exact_cost += cost
+            if cost is not None:
+                exact_cost += cost
         else:
             est_tok += tot
-            est_cost += cost
+            if cost is not None:
+                est_cost += cost
             
     blended_tok = exact_tok + est_tok
     blended_cost = exact_cost + est_cost
@@ -1213,9 +1285,13 @@ def compute_and_print_split(invocations, title):
     print(f"Confidence (within telemetry):      {confidence:.1f}%")
     print(f"True lifetime usage:                >= {fmt(blended_tok)}")
     print()
-    print(f"Exact shadow cost:                  ${exact_cost:,.2f}")
-    print(f"Estimated shadow cost:              ${est_cost:,.2f}")
-    print(f"Blended shadow cost:                ${blended_cost:,.2f}")
+    print(f"Known-price exact shadow subtotal:   ${exact_cost:,.2f}")
+    print(f"Known-price estimated subtotal:      ${est_cost:,.2f}")
+    print(f"Known-price shadow subtotal:         ${blended_cost:,.2f}")
+    print(f"Unavailable-usage invocations:      {unavailable_events}")
+    print(f"Unknown-price invocations/tokens:   {unpriced_events} / {fmt(unpriced_tokens)}")
+    if unpriced_events:
+        print("Unknown model prices are excluded; totals above are partial known-price subtotals.")
     print("----------------------------------------------------------------------\n")
 
 
@@ -1292,6 +1368,8 @@ def print_cache_health_report(invocations):
 
 def get_model_bucket(model_name):
     m_clean = model_name.replace(" (estimated)", "").strip().lower()
+    if price_for(model_name)[3] == UNKNOWN_PRICE:
+        return "unpriced"
     
     if "opus" in m_clean:
         if "thinking" in m_clean:
@@ -1317,6 +1395,8 @@ def get_model_bucket(model_name):
         return "local_free"
     
     inp, out, cr, src = price_for(model_name)
+    if inp is None:
+        return "unpriced"
     if inp >= 5.0:
         return "premium_cloud"
     elif inp >= 1.5:
@@ -1329,10 +1409,11 @@ def get_model_bucket(model_name):
 
 def print_model_class_buckets(invocations):
     buckets = {
-        "Premium cloud usage": {"tokens": 0, "cost": 0.0},
-        "Standard cloud usage": {"tokens": 0, "cost": 0.0},
-        "Cheap cloud usage": {"tokens": 0, "cost": 0.0},
-        "Local/free usage": {"tokens": 0, "cost": 0.0}
+        "Premium cloud usage": {"tokens": 0, "cost": 0.0, "unpriced_tokens": 0},
+        "Standard cloud usage": {"tokens": 0, "cost": 0.0, "unpriced_tokens": 0},
+        "Cheap cloud usage": {"tokens": 0, "cost": 0.0, "unpriced_tokens": 0},
+        "Local/free usage": {"tokens": 0, "cost": 0.0, "unpriced_tokens": 0},
+        "Unknown-price usage": {"tokens": 0, "cost": 0.0, "unpriced_tokens": 0},
     }
     
     for inv in invocations:
@@ -1353,17 +1434,25 @@ def print_model_class_buckets(invocations):
             b = "Standard cloud usage"
         elif cls in ("cheap_cloud", "cheap_or_local"):
             b = "Cheap cloud usage"
+        elif cls == "unpriced":
+            b = "Unknown-price usage"
         else:
             b = "Local/free usage"
             
         buckets[b]["tokens"] += total
-        buckets[b]["cost"] += cost
+        if cost is None:
+            buckets[b]["unpriced_tokens"] += total
+        else:
+            buckets[b]["cost"] += cost
         
     print("======================================================================")
     print("MODEL CLASS BUCKETS REPORT")
     print("======================================================================")
     for name, data in buckets.items():
-        print(f"{name:<25} total {fmt(data['tokens']):>16} tokens   ${data['cost']:,.2f}")
+        suffix = f"${data['cost']:,.2f} known-price subtotal"
+        if data["unpriced_tokens"]:
+            suffix += f"; {fmt(data['unpriced_tokens'])} tokens unpriced"
+        print(f"{name:<25} total {fmt(data['tokens']):>16} tokens   {suffix}")
     print()
 
 
@@ -1496,10 +1585,15 @@ tgi, tgo, tgcc, tgcr, tgrt = cols(gc_totals)
 print(f"{'TOTAL':<12}{fmt(tgi):>14}{fmt(tgo):>14}{fmt(tgcr):>16}{fmt(tgrt):>14}\n")
 compute_and_print_split([inv for inv in ALL_INVOCATIONS if inv["source"] == "Gemini CLI"], "Gemini CLI")
 
-# 3d. Fleet Usage Ledger (forward, exact: local Ollama/Gemma, OpenRouter, HF)
+# 3d. Fleet Usage Ledger (provider-reported, estimated, unavailable)
 fl_day, fl_model, fl_totals, fl_records = parse_fleet_usage()
 print("--- Fleet Usage Ledger (Local Ollama/Gemma + OpenRouter + HF) ---")
-print(f"Invocations tracked: {fl_records} (exact, from each lane's API response)\n")
+fl_invocations = [inv for inv in ALL_INVOCATIONS if inv["source"].startswith("Fleet:")]
+fl_measurements = defaultdict(int)
+for inv in fl_invocations:
+    fl_measurements[inv.get("measurement", "unavailable")] += 1
+print(f"Invocations tracked: {fl_records} ({fl_measurements['exact']} exact, "
+      f"{fl_measurements['estimated']} estimated, {fl_measurements['unavailable']} unavailable)\n")
 hdr_fl = f"{'Day':<12}{'input':>14}{'output':>14}{'cache-read':>16}{'reasoning':>14}"
 print(hdr_fl)
 print("-" * len(hdr_fl))
@@ -1509,6 +1603,58 @@ for day in sorted(fl_day):
 print("-" * len(hdr_fl))
 tfi, tfo, tfcc, tfcr, tfrt = cols(fl_totals)
 print(f"{'TOTAL':<12}{fmt(tfi):>14}{fmt(tfo):>14}{fmt(tfcr):>16}{fmt(tfrt):>14}\n")
+
+# AMV workload rows share the fleet ledger but retain their own stage, compute,
+# and measurement fields. TokenTracker must not turn unavailable counts into
+# exact zeros or treat hardware work as token generation.
+amv_rows = [inv for inv in ALL_INVOCATIONS if inv.get("event_source") == "NouGenAMV"]
+if amv_rows:
+    print("--- NouGenAMV Workload Attribution ---")
+    by_stage = defaultdict(lambda: defaultdict(float))
+    for inv in amv_rows:
+        stage = inv.get("stage") or "unknown"
+        stats = by_stage[stage]
+        stats["attempts"] += 1
+        stats["exact"] += inv.get("measurement") == "exact"
+        stats["estimated"] += inv.get("measurement") == "estimated"
+        stats["unavailable"] += inv.get("measurement") == "unavailable"
+        stats["cache_unavailable"] += inv.get("cache_measurement") == "unavailable"
+        stats["input_tokens"] += inv.get("input_tokens", 0)
+        stats["output_tokens"] += inv.get("output_tokens", 0)
+        stats["video_frames"] += inv.get("video_frames") or 0
+        stats["audio_samples"] += inv.get("audio_samples") or 0
+        stats["cpu_seconds"] += inv.get("cpu_seconds") or 0
+        stats["gpu_seconds"] += inv.get("gpu_seconds") or 0
+        stats["energy_kwh"] += inv.get("energy_kwh") or 0
+        stats["retries"] += int((inv.get("attempt") or 1) > 1)
+        stats["assets"] += inv.get("asset_count") or 0
+        stats["network_bytes"] += inv.get("network_bytes") or 0
+        if inv.get("job_id"):
+            stats.setdefault("jobs", set()).add(inv["job_id"])
+        if inv.get("verification_status") == "passed":
+            if inv.get("job_id"):
+                stats.setdefault("verified_jobs", set()).add(inv["job_id"])
+        if inv.get("energy_measurement") == "measured":
+            stats["energy_measured"] += 1
+        elif inv.get("energy_measurement") == "estimated":
+            stats["energy_estimated"] += 1
+        if inv.get("peak_vram_mb") is not None:
+            stats["peak_vram_mb"] = max(stats["peak_vram_mb"], inv["peak_vram_mb"])
+        if inv.get("peak_ram_mb") is not None:
+            stats["peak_ram_mb"] = max(stats["peak_ram_mb"], inv["peak_ram_mb"])
+    print("Stage                  Runs Exact Est Unavail Cache? Retry JobsOK       In      Out    Frames  GPU s CPU s PeakVRAM PeakRAM  NetMiB     kWh")
+    for stage, stats in sorted(by_stage.items()):
+        print(f"{stage:<22}{int(stats['attempts']):>5}{int(stats['exact']):>5}{int(stats['estimated']):>4}{int(stats['unavailable']):>8}"
+              f"{int(stats['cache_unavailable']):>7}{int(stats['retries']):>6}{len(stats.get('verified_jobs', set())):>7}"
+              f"{fmt(int(stats['input_tokens'])):>9}{fmt(int(stats['output_tokens'])):>9}"
+              f"{fmt(int(stats['video_frames'])):>9}{stats['gpu_seconds']:>7.2f}"
+              f"{stats['cpu_seconds']:>6.2f}{stats['peak_vram_mb']:>9.0f}{stats['peak_ram_mb']:>8.0f}"
+              f"{stats['network_bytes'] / (1024 * 1024):>9.2f}{stats['energy_kwh']:>9.4f}")
+    actual_charges = sum(inv.get("actual_new_api_charges_usd") or 0 for inv in amv_rows)
+    verified_jobs = {inv.get("job_id") for inv in amv_rows
+                     if inv.get("job_id") and inv.get("verification_status") == "passed"}
+    print(f"Verified completed jobs: {len(verified_jobs)}; actual new API charges: ${actual_charges:.4f}.")
+    print("Cloud-equivalent rates are not applied to this workload report.\n")
 
 # 4. Model Breakdown
 all_models = defaultdict(lambda: defaultdict(int))
@@ -1549,22 +1695,30 @@ if all_models:
     grand_total_cold = 0.0
     total_cache_reads = 0
     used_estimate = False
+    unpriced_model_count = 0
+    unpriced_token_count = 0
     for model in sorted(all_models, key=lambda m: -sum(all_models[m].values())):
         i, o, cc, cr, rt = cols(all_models[model])
         total = i + o + cc + cr + rt
         grand_total_tokens += total
         total_cache_reads += cr
         cost, src = model_bill(model, all_models[model])
-        grand_total_cost += cost
+        if cost is None:
+            unpriced_model_count += 1
+            unpriced_token_count += total
+        else:
+            grand_total_cost += cost
         # Cold-boot: every input-side token (input + cache-creation + cache-read)
         # charged at full fresh-input rate; reasoning billed as output.
         inp_rate, out_rate, _crr, _s = price_for(model)
-        grand_total_cold += ((i + cc + cr) * inp_rate + (o + rt) * out_rate) / 1_000_000
+        if inp_rate is not None and out_rate is not None:
+            grand_total_cold += ((i + cc + cr) * inp_rate + (o + rt) * out_rate) / 1_000_000
         if src == EST:
             used_estimate = True
-        tag = "~" if src == EST else " "
+        tag = "~" if src == EST else ("?" if src == UNKNOWN_PRICE else " ")
+        display_cost = f"${cost:,.2f}" if cost is not None else "unpriced"
         print(f"  {model:<{mw}}  total {fmt(total):>16}   "
-              f"(in {fmt(i + cc)}, out {fmt(o)}, cache-read {fmt(cr)}, reasoning {fmt(rt)})  {tag}${cost:,.2f}")
+              f"(in {fmt(i + cc)}, out {fmt(o)}, cache-read {fmt(cr)}, reasoning {fmt(rt)})  {tag}{display_cost}")
 
     # --- Honest API-equivalent shadow bill --------------------------------------
     # What these tokens WOULD have cost at first-party API list prices, with
@@ -1582,11 +1736,16 @@ if all_models:
     print("\n======================================================================")
     print("API-EQUIVALENT SHADOW BILL  (hypothetical reference, NOT realized savings)")
     print("======================================================================")
-    print(f"Realistic cost (cache-reads billed as cache): ${grand_total_cost:,.2f}")
-    print(f"COLD-BOOT cost (no cache, every token fresh): ${grand_total_cold:,.2f}")
-    print(f"What caching saved vs cold-boot:              ${grand_total_cold - grand_total_cost:,.2f}")
+    print(f"Known-price shadow subtotal (cache-aware):    ${grand_total_cost:,.2f}")
+    print(f"Known-price cold-boot subtotal:               ${grand_total_cold:,.2f}")
+    print(f"Known-price cache delta:                      ${grand_total_cold - grand_total_cost:,.2f}")
+    print(f"Unpriced models/tokens excluded:              {unpriced_model_count} / {fmt(unpriced_token_count)}")
+    if unpriced_model_count:
+        print("Totals are partial known-price subtotals; unknown prices are not imputed.")
     if used_estimate:
-        print("  ~ = model priced from an estimate, not a first-party doc")
+        print("  ~ = model rate is an estimate, not a first-party documented rate")
+    if unpriced_model_count:
+        print("  ? = no rate catalog entry; shadow cost is unavailable")
     print(f"Cache-reads as share of all tokens:         {cache_share:.1f}%  "
           f"(billed ~10% of input - why naive math inflates)")
     if sub_cost > 0:
@@ -1611,6 +1770,8 @@ if all_models:
             "cache_read": 0,
             "reasoning": 0,
             "cost": 0.0,
+            "unpriced_count": 0,
+            "unpriced_tokens": 0,
             "count": 0
         })
         for inv in ALL_INVOCATIONS:
@@ -1657,7 +1818,11 @@ if all_models:
             c_stats["cache_creation"] += cc
             c_stats["cache_read"] += cr
             c_stats["reasoning"] += rt
-            c_stats["cost"] += cost
+            if cost is None:
+                c_stats["unpriced_count"] += 1
+                c_stats["unpriced_tokens"] += it + ot + cc + cr + rt
+            else:
+                c_stats["cost"] += cost
             c_stats["count"] += 1
             
         print("======================================================================")
@@ -1673,6 +1838,8 @@ if all_models:
         total_cr = 0
         total_rt = 0
         total_cost = 0.0
+        total_unpriced_count = 0
+        total_unpriced_tokens = 0
         
         _ordered = ["Anthropic (Claude Code)", "Google (Antigravity)", "Google (Gemini CLI)",
                     "OpenAI (Codex)", "Local (Ollama/Gemma)", "OpenRouter (free)", "HuggingFace (free)"]
@@ -1694,11 +1861,20 @@ if all_models:
             total_cr += cr
             total_rt += rt
             total_cost += cost
+            total_unpriced_count += c_stats["unpriced_count"]
+            total_unpriced_tokens += c_stats["unpriced_tokens"]
             
-            print(f"{company:<30}{fmt(inv_cnt):>12}{fmt(it):>16}{fmt(ot):>14}{fmt(cr):>16}{fmt(rt):>14}  ${cost:10.2f}")
+            cost_text = f"${cost:10.2f} known" + (
+                f"; {c_stats['unpriced_count']} unpriced invocations/{fmt(c_stats['unpriced_tokens'])} tokens"
+                if c_stats["unpriced_count"] else ""
+            )
+            print(f"{company:<30}{fmt(inv_cnt):>12}{fmt(it):>16}{fmt(ot):>14}{fmt(cr):>16}{fmt(rt):>14}  {cost_text}")
             
         print("-" * len(hdr_prov))
-        print(f"{'TOTAL':<30}{fmt(total_inv):>12}{fmt(total_in):>16}{fmt(total_out):>14}{fmt(total_cr):>16}{fmt(total_rt):>14}  ${total_cost:10.2f}")
+        total_cost_text = f"${total_cost:10.2f} known subtotal"
+        if total_unpriced_count:
+            total_cost_text += f"; {total_unpriced_count} unpriced/{fmt(total_unpriced_tokens)} tokens"
+        print(f"{'TOTAL':<30}{fmt(total_inv):>12}{fmt(total_in):>16}{fmt(total_out):>14}{fmt(total_cr):>16}{fmt(total_rt):>14}  {total_cost_text}")
         print("======================================================================\n")
 
 print()

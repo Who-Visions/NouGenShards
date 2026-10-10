@@ -62,7 +62,7 @@ def bootstrap_slope_ci(
     n_resamples: int = 200,
     alpha: float = 0.05,
 ) -> Tuple[float, float]:
-    """Computes bootstrap confidence interval for the regression slope."""
+    """Computes bootstrap confidence interval for the regression slope with degeneracy protection."""
     if len(x_series) != len(y_series):
         raise ValueError("x_series and y_series must have the same length")
     if isinstance(n_resamples, bool) or not isinstance(n_resamples, int) or n_resamples <= 0:
@@ -71,27 +71,50 @@ def bootstrap_slope_ci(
         raise ValueError("alpha must be finite and strictly between 0 and 1")
 
     n = len(x_series)
+
     if n < 3:
         slope = linear_slope(x_series, y_series)
         return slope, slope
 
+    # Check if original x_series has zero variance
+    mean_orig_x = sum(x_series) / n
+    if sum((x - mean_orig_x) ** 2 for x in x_series) == 0.0:
+        return 0.0, 0.0
+
     slopes: List[float] = []
     # A local RNG preserves reproducibility without modulo low-bit cycles.
     rng = random.Random(42)
-    for i in range(n_resamples):
+    max_attempts = n_resamples * 5
+    attempts = 0
+
+    while len(slopes) < n_resamples and attempts < max_attempts:
+        attempts += 1
         resampled_x = []
         resampled_y = []
-        for j in range(n):
+        for _ in range(n):
             idx = rng.randrange(n)
             resampled_x.append(x_series[idx])
             resampled_y.append(y_series[idx])
+
+        # Reject degenerate resample where all x are identical to prevent zero-variance attenuation bias
+        mean_rx = sum(resampled_x) / n
+        denom = sum((x - mean_rx) ** 2 for x in resampled_x)
+        if denom == 0.0:
+            continue
+
         slopes.append(linear_slope(resampled_x, resampled_y))
 
+    # Fallback if too many resamples were rejected
+    if not slopes:
+        base_slope = linear_slope(x_series, y_series)
+        return base_slope, base_slope
+
     slopes.sort()
-    low_idx = int(math.floor((alpha / 2.0) * n_resamples))
-    high_idx = int(math.ceil((1.0 - alpha / 2.0) * n_resamples)) - 1
-    low_idx = max(0, min(low_idx, n_resamples - 1))
-    high_idx = max(0, min(high_idx, n_resamples - 1))
+    m = len(slopes)
+    low_idx = int(math.floor((alpha / 2.0) * m))
+    high_idx = int(math.ceil((1.0 - alpha / 2.0) * m)) - 1
+    low_idx = max(0, min(low_idx, m - 1))
+    high_idx = max(0, min(high_idx, m - 1))
     return slopes[low_idx], slopes[high_idx]
 
 

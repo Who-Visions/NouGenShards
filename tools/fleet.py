@@ -35,6 +35,11 @@ for _s in (sys.stdout, sys.stderr):  # Windows consoles default to cp1252; never
         pass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request, urllib.error, urllib.parse
+try:
+    from nougen_shards.response_contract import response_metadata
+except ModuleNotFoundError:  # direct ``python tools/fleet.py`` checkout execution
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+    from nougen_shards.response_contract import response_metadata
 
 MCP_CONFIG = os.path.expanduser(r"~\.gemini\antigravity-ide\mcp_config.json")
 
@@ -248,6 +253,14 @@ def _rank(kind: str) -> int:
     return dict(PRIORITY).get(kind, 9)
 
 
+class ResponseContractError(RuntimeError):
+    """An HTTP success that did not satisfy the complete-response contract."""
+    def __init__(self, metadata: dict):
+        self.metadata = metadata
+        super().__init__(f"response {metadata.get('status')}: {metadata.get('reason')} "
+                         f"(requested={metadata.get('requested_model')}, "
+                         f"actual={metadata.get('actual_model')})")
+
 class Fleet:
     def __init__(self, config_path: str = MCP_CONFIG, include_local: bool = True,
                  include_vertex: bool | None = None, privacy: bool | None = None):
@@ -322,8 +335,8 @@ class Fleet:
         return g
 
     # ---------- transport ----------
-    def _call(self, route: dict, prompt, timeout: int = 120,
-              max_tokens: int = 2048, temperature: float = 0.0) -> str:
+    def _call_once(self, route: dict, prompt, timeout: int = 120,
+                   max_tokens: int = 2048, temperature: float = 0.0) -> dict:
         """prompt: a string (sent as one user message) or a ready chat list [{"role", "content"}, ...]."""
         if (getattr(self, "privacy", False) or privacy_mode()) and not is_private_url(route["url"]):
             raise PrivacyError(f"privacy mode: refused cloud route {route['name']} "
@@ -337,8 +350,8 @@ class Fleet:
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        if route.get("fallbacks"):
-            payload["models"] = [route["model"], *route["fallbacks"]]
+        # Keep this request pinned to its declared model. Server-side fallback
+        # can silently turn one reviewer into a different model.
         body = json.dumps(payload).encode()
         hdrs = {"Content-Type": "application/json", **route["headers"]}
         # Vertex-style routes carry a short-lived token minted per call, not a
@@ -348,7 +361,47 @@ class Fleet:
         req = urllib.request.Request(route["url"] + "/chat/completions", data=body, headers=hdrs)
         with urllib.request.urlopen(req, timeout=timeout) as r:
             j = json.load(r)
-        return (j.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+        choice = (j.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        content = message.get("content", "") or ""
+        meta = response_metadata(route["model"], j.get("model"), content,
+                                 choice.get("finish_reason"), message.get("refusal"))
+        return {"content": content, **meta.to_dict(), "usage": j.get("usage") or {},
+                "route": route.get("name")}
+
+    def call_with_metadata(self, route: dict, prompt, timeout: int = 120,
+                           max_tokens: int = 2048, temperature: float = 0.0) -> dict:
+        """Return response text and provider-derived metadata, retrying length once."""
+        deadline = time.monotonic() + timeout
+        effective_tokens = max(max_tokens, route.get("min_tokens", 0))
+        result = self._call_once(route, prompt, timeout, effective_tokens, temperature)
+        attempts = [dict(result, max_tokens=effective_tokens)]
+        remaining = deadline - time.monotonic()
+        if (not result["complete"] and result["reason"] == "token_limit"
+                and effective_tokens < 8192 and remaining > 0):
+            retry_tokens = min(max(effective_tokens * 2, 4096), 8192)
+            try:
+                result = self._call_once(route, prompt, remaining, retry_tokens, temperature)
+                attempts.append(dict(result, max_tokens=retry_tokens))
+            except Exception as exc:
+                # Keep the original partial response when the bounded retry
+                # fails; never replace it with a success or discard its evidence.
+                result["retry_error"] = {"type": type(exc).__name__,
+                                         "http_status": getattr(exc, "code", None)}
+                attempts.append({"status": "failed", **result["retry_error"],
+                                 "requested_model": route["model"], "max_tokens": retry_tokens})
+            result["retry"] = {"kind": "pinned_model_token_limit", "max_tokens": retry_tokens}
+        result["attempts"] = attempts
+        return result
+
+    def _call(self, route: dict, prompt, timeout: int = 120,
+              max_tokens: int = 2048, temperature: float = 0.0) -> str:
+        """String-compatible call; incomplete responses surface as typed failures."""
+        result = self.call_with_metadata(route, prompt, timeout, max_tokens, temperature)
+        if not result["complete"] or not result["identity_verified"]:
+            raise ResponseContractError(result)
+        return result["content"]
+
 
     # ---------- health ----------
     def probe(self, timeout: int = 25, workers: int = 16, verbose: bool = True) -> list[dict]:

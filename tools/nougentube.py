@@ -88,6 +88,7 @@ EXTRACT_CHARS = _env("NOUGEN_TUBE_EXTRACT_CHARS", 2000, int)
 EVENT_TYPE = _env("NOUGEN_TUBE_EVENT_TYPE", "INGEST")
 LANGS = [l.strip() for l in
          _env("NOUGEN_TUBE_LANGS", "en;en-US;en-GB").split(";") if l.strip()]
+DELAY_S = _env("NOUGEN_TUBE_DELAY_S", 12.0, float)
 
 _VIDEO_ID_RE = re.compile(
     r"(?:youtu\.be/|youtube\.com/(?:watch\?(?:[^#]*&)?v=|shorts/|embed/|live/))"
@@ -525,6 +526,9 @@ def run_manifest(manifest_path: Path, dry_run: bool, limit: int) -> Dict[str, in
                 state.setdefault("done", {})[vid] = datetime.now(
                     timezone.utc).isoformat()
                 save_state(state_file, state)  # heal-on-crash: save per video
+            if DELAY_S > 0 and processed < len(sources):
+                import time
+                time.sleep(DELAY_S)
     return counts
 
 

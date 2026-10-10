@@ -2,11 +2,14 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { execFile } from 'child_process';
 import path from 'path';
+import { existsSync } from 'fs';
 
 // Vite API plugin that bridges browser requests directly to live dynamic Python CLI, SQLite databases, and handoff markdown files
 function liveNougenApiPlugin() {
-  const pythonPath = process.env.NOUGEN_PYTHON || (process.platform === 'win32' ? 'python.exe' : 'python3');
+  let activeChats = 0;
   const projectRoot = path.resolve(__dirname);
+  const venvPython = path.resolve(projectRoot, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+  const pythonPath = process.env.NOUGEN_PYTHON || (existsSync(venvPython) ? venvPython : (process.platform === 'win32' ? 'python.exe' : 'python3'));
 
   const runPythonCli = (args: string[]): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -158,6 +161,66 @@ function liveNougenApiPlugin() {
             res.end(fleetCache!.value); return;
           }
 
+          if (endpoint === 'chat') {
+            if (req.method !== 'POST') { res.statusCode = 405; res.end('{}'); return; }
+            if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) { res.statusCode = 403; res.end('{}'); return; }
+            if (!req.headers['content-type']?.startsWith('application/json')) { res.statusCode = 415; res.end('{}'); return; }
+            let body = '';
+            for await (const chunk of req) {
+              body += chunk.toString('utf-8');
+              if (Buffer.byteLength(body) > 420000) { res.statusCode = 413; res.end('{}'); return; }
+            }
+            if (activeChats >= 2) { res.statusCode = 429; res.end(JSON.stringify({ error: 'Chat is busy. Please retry shortly.' })); return; }
+            activeChats += 1;
+            const child = execFile(pythonPath, ['-m', 'nougen_shards.chat_service'], {
+              cwd: projectRoot,
+              env: { ...process.env, PYTHONPATH: path.join(projectRoot, 'src'), PYTHONIOENCODING: 'utf-8' },
+              timeout: 95000, maxBuffer: 1024 * 1024,
+            }, (err, stdout) => {
+              activeChats -= 1;
+              if (err) { res.statusCode = 503; res.end(JSON.stringify({ error: 'Conversational model unavailable. Please retry.' })); }
+              else {
+                try {
+                  const result = JSON.parse(stdout.trim());
+                  if (result.error) res.statusCode = result.code === 'invalid_request' ? 400 : 503;
+                  res.end(JSON.stringify(result));
+                } catch { res.statusCode = 502; res.end(JSON.stringify({ error: 'Invalid backend response.' })); }
+              }
+            });
+            res.on('close', () => { if (!res.writableEnded) child.kill(); });
+            child.stdin?.end(body);
+            return;
+          }
+
+          // Universal Tool Dispatcher: Run any NouGen CLI tool command
+          if (endpoint === 'exec') {
+            const cmd = url.searchParams.get('cmd') || '';
+            const argsStr = url.searchParams.get('args') || '';
+            const argsList = [cmd, ...argsStr.split(' ').filter(Boolean)];
+            execFile(
+              pythonPath,
+              ['-m', 'nougen_shards.cli', ...argsList],
+              {
+                cwd: projectRoot,
+                env: {
+                  ...process.env,
+                  PYTHONPATH: path.join(projectRoot, 'src'),
+                  PYTHONIOENCODING: 'utf-8',
+                },
+                maxBuffer: 10 * 1024 * 1024,
+                timeout: 30000,
+              },
+              (err, stdout, stderr) => {
+                if (err) {
+                  res.end(JSON.stringify({ output: stdout || stderr || String(err), isError: true }));
+                } else {
+                  res.end(JSON.stringify({ output: stdout.trim(), isError: false }));
+                }
+              }
+            );
+            return;
+          }
+
           next();
         } catch (err: any) {
           res.statusCode = 500;
@@ -174,6 +237,7 @@ export default defineConfig({
   plugins: [react(), liveNougenApiPlugin()],
   clearScreen: false,
   server: {
+    host: '127.0.0.1',
     port: 5173,
     strictPort: true,
   },
