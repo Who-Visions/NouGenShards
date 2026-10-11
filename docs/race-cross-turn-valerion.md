@@ -39,7 +39,7 @@ Provenance labels: `paper` = stated in the source. `ours` = proposed NouGenShard
 | RACE piece | NouGenShards piece | Status |
 |---|---|---|
 | Reasoning spend per step | `reasoning_governor.py` (advisory), `coach_governor.py` (hard lease) | exists; no per-step necessity test |
-| Likelihood of a known answer | `decision/backends/ollama_prob.py`: reads token logprobs from Ollama with `think:false` | **exists**, the local lane gives logprobs |
+| Likelihood of a known answer | `decision/backends/ollama_prob.py`: reads the first-token logprobs of option letters (`num_predict` 1) | **partial**: only single-token option choices; it cannot score a multi-token reference action |
 | Constrained JSON loses probabilities | `decision/calibration.py`: "constrained decoding gives no probabilities" | known constraint; use `ollama_prob` path for scored decisions |
 | Keep only reasoning that supports later steps | distill/consolidate pipelines reason per item, no cover check | gap |
 | Training on removal labels | none, and NouGen does not train its models | out of scope |
@@ -50,10 +50,12 @@ The part that fits without training: a model-free-to-cheap check on whether a re
 
 1. **Where it applies.** The e2b judgement calls where reasoning eats the token budget (E-series reasoning channel,
    Rule 0.5.1: `max_tokens` ≥ 1400). Target: `consolidate.py` decisions and `decision/` classifications.
-2. **Reference answers.** Each item already has a known-good answer in the eval fixture (`consolidate_v1.jsonl`,
-   `trap_audit_v1.jsonl`). Those are the reference actions.
+2. **Reference answers.** The eval fixtures (`consolidate_v1.jsonl`, `trap_audit_v1.jsonl`) exist only as
+   uncommitted files in the main checkout, not on `main`. Commit them before this step can use them. Reference
+   actions must be single-token choices unless sequence scoring is added (see step 3).
 3. **Cover test.** For a fixed item, compute the logprob of the reference answer with and without a candidate
-   reasoning block, through the `ollama_prob` path. Drop the block only if the drop is under ε. This is the LoGiC
+   reasoning block. `ollama_prob` cannot do this as-is: it sets `num_predict` to 1 and reads only the first token,
+   so a sequence-scoring backend is required first. Drop the block only if the drop is under ε. This is the LoGiC
    step on a single item, not a trajectory.
 4. **Measure.** Tokens saved vs decision accuracy on the frozen fixture (dev to tune ε, heldout to gate).
    Report both, the same way as the consolidation eval.
@@ -69,7 +71,8 @@ The part that fits without training: a model-free-to-cheap check on whether a re
 
 ## 6. Open questions
 
-- Does the local Ollama lane return logprobs for the E-series models in practice? `ollama_prob.py` assumes so; not verified here.
+- Does the local Ollama lane return logprobs for the E-series models in practice? Not verified here. `ollama_prob.py`
+  reads first-token logprobs only, so the cover test also needs a sequence-scoring backend.
 - What ε works on our fixtures? Unknown until the dev sweep runs.
 - Preprint, two days old at time of writing. Check the numbers against the final version before quoting them.
 
