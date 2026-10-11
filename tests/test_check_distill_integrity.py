@@ -8,7 +8,6 @@ import importlib.util
 import pathlib
 import sqlite3
 
-import pytest
 
 from nougen_shards import distill
 
