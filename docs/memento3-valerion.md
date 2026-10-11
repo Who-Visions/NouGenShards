@@ -93,7 +93,7 @@ The narrow version that fits the existing code and tests a single claim:
 ougen_distill.db`.
   363 distilled shards with status done; 0 stale, 0 orphan, 0 dangling, 0 scene lag.
   Total rows: 376 distilled, 2,316 atoms, 3,702 entities, 4,726 mentions, 2,401 edges, 200 scenes, 1 persona.
-- Fault-injection tests: `tests/test_check_distill_integrity.py`, 6 passed. Each check fires on a planted
+- Fault-injection tests: `tests/test_check_distill_integrity.py`, 9 passed. Each check fires on a planted
   fault and stays silent on a clean sidecar. The live zero is trustworthy only because these pass.
 
 ## Not done

@@ -49,7 +49,11 @@ def build(tmp_path, *, stale=False, orphan=False, dangling=False, lag=False):
 
 
 def fake_source(keys):
-    return {k: SRC[k] for k in keys if k in SRC}
+    return {k: SRC[k] for k in keys if k in SRC}, set()
+
+
+def unreadable_source(keys):
+    return {}, set(keys)
 
 
 def kinds(report):
@@ -82,3 +86,26 @@ def test_check_is_read_only(tmp_path):
     before = conn.execute("SELECT COUNT(*) FROM distilled").fetchone()[0]
     cdi.check(conn, fake_source)
     assert conn.execute("SELECT COUNT(*) FROM distilled").fetchone()[0] == before
+
+
+def test_leftover_derived_rows_after_failed_redistill_are_caught(tmp_path):
+    conn = build(tmp_path)
+    conn.execute("UPDATE distilled SET status='error: ValueError' WHERE shard_key='1_10'")
+    conn.commit()
+    assert "leftover" in kinds(cdi.check(conn, fake_source))
+
+
+def test_unreadable_source_is_not_reported_as_orphan(tmp_path):
+    report = cdi.check(build(tmp_path), unreadable_source)
+    assert "orphan" not in kinds(report)
+    assert "unreadable" in kinds(report)
+
+
+def test_vault_source_never_creates_a_missing_db(tmp_path, monkeypatch):
+    from nougen_shards import core
+
+    missing = tmp_path / "nope.db"
+    monkeypatch.setattr(core, "get_db_path", lambda index: missing)
+    rows, unreadable = cdi.vault_source(["10@1"])
+    assert rows == {} and unreadable == {"10@1"}
+    assert not missing.exists()
