@@ -36,18 +36,34 @@ def compute_eta(delta_capability: float, delta_experience: float) -> float:
     return delta_capability / delta_experience
 
 
+def _finite(value) -> bool:
+    """True for a finite real. Ints pass without a float conversion (which overflows
+    past ~1e308), matching the input check in evaluate_rsi_signature."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return True
+    try:
+        return math.isfinite(value)
+    except (OverflowError, TypeError):
+        return False
+
+
 def linear_slope(x_series: Sequence[float], y_series: Sequence[float]) -> float:
     """Computes ordinary least squares slope."""
     n = len(x_series)
     if n != len(y_series) or n < 2:
         return 0.0
+    if not all(_finite(x) and _finite(y) for x, y in zip(x_series, y_series)):
+        raise ValueError("x_series and y_series elements must be finite")
     mean_x = sum(x_series) / n
     mean_y = sum(y_series) / n
     denom = sum((x - mean_x) ** 2 for x in x_series)
     if denom == 0.0:
         return 0.0
     numer = sum((x - mean_x) * (y - mean_y) for x, y in zip(x_series, y_series))
-    return numer / denom
+    slope = numer / denom
+    if not _finite(slope):
+        raise ValueError("derived RSI statistics must be finite")
+    return slope
 
 
 def bootstrap_slope_ci(
@@ -118,7 +134,10 @@ def bootstrap_slope_ci(
     high_idx = int(math.ceil((1.0 - alpha / 2.0) * m)) - 1
     low_idx = max(0, min(low_idx, m - 1))
     high_idx = max(0, min(high_idx, m - 1))
-    return slopes[low_idx], slopes[high_idx]
+    ci_low, ci_high = slopes[low_idx], slopes[high_idx]
+    if not (_finite(ci_low) and _finite(ci_high)):
+        raise ValueError("derived RSI statistics must be finite")
+    return ci_low, ci_high
 
 
 def evaluate_rsi_signature(
@@ -159,6 +178,8 @@ def evaluate_rsi_signature(
 
     # 2. Transfer gap: gap = search_score - ood_score
     gaps = [s - o for s, o in zip(search_scores, ood_scores)]
+    if not all(_finite(g) for g in gaps):
+        raise ValueError("derived RSI statistics must be finite")
     gap_slope = linear_slope(x, gaps)
     if not all(math.isfinite(value) for value in (slope, ci_low, ci_high, gap_slope)):
         raise ValueError("derived RSI statistics must be finite")
@@ -212,6 +233,9 @@ class EpochVerdict:
 
 def epoch_series(records: Sequence[EpochRecord], compute_normalized: bool = True) -> Tuple[List[float], List[float], List[float]]:
     """(gains, eta, gaps). eta_t = gain / new experience [/ compute]; experience must strictly increase."""
+    for r in records:
+        if not all(_finite(v) for v in (r.experience, r.heldout, r.search, r.compute)):
+            raise ValueError(f"all epoch metrics must be finite ({r.epoch})")
     gains, eta = [], []
     for prev, cur in zip(records, records[1:]):
         d_exp = cur.experience - prev.experience
@@ -244,7 +268,11 @@ def classify_epochs(records: Sequence[EpochRecord], *, min_epochs: Optional[int]
         return EpochVerdict("INSUFFICIENT_DATA", eta, (0.0, 0.0), (0.0, 0.0), mean_gain)
     eta_ci = bootstrap_slope_ci(list(range(len(eta))), eta)
     gap_ci = bootstrap_slope_ci(list(range(len(gaps))), gaps)
+    if not all(_finite(v) for v in (*eta_ci, *gap_ci, mean_gain)):
+        raise ValueError("derived RSI statistics must be finite")
     gap_floor = float(os.environ.get(GAP_CI_ENV, "0"))
+    if not _finite(gap_floor):
+        raise ValueError("gap floor must be finite")
     if gap_ci[0] > gap_floor:
         verdict = "GOODHART"
     elif eta_ci[0] > 0:
@@ -261,8 +289,19 @@ def credit_table(total_gain: float, ablation_deltas: Dict[str, float], min_fract
 
     The gain counts as attributed only if positively credited changes explain >= min_fraction of it.
     """
+    if not _finite(total_gain):
+        raise ValueError("total_gain must be a finite real number")
+    if not _finite(min_fraction) or min_fraction < 0:
+        raise ValueError("min_fraction must be a non-negative finite real number")
+    for k, v in ablation_deltas.items():
+        if not _finite(v):
+            raise ValueError(f"ablation delta for {k} must be a finite real number")
     credited = {k: v for k, v in ablation_deltas.items() if v > 0}
     explained = sum(credited.values())
+    if not _finite(explained):
+        raise ValueError("derived RSI statistics must be finite")
     frac = explained / total_gain if total_gain > 0 else 0.0
+    if not _finite(frac):
+        raise ValueError("derived RSI statistics must be finite")
     return {"credited": credited, "explained": explained, "fraction": frac,
             "attributed": total_gain > 0 and frac >= min_fraction}

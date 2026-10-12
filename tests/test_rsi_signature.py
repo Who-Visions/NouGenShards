@@ -389,3 +389,55 @@ def test_credit_ablation_sums_reproduce_injected_effects_within_ten_percent():
     assert result["fraction"] == pytest.approx(0.99, rel=1e-2)
 
 
+# --- Nonfinite hardening ported from fix/rsi-finite-evidence (closed PR #772) ----------------
+
+
+def test_linear_slope_rejects_nonfinite_inputs():
+    with pytest.raises(ValueError, match="x_series and y_series elements must be finite"):
+        linear_slope([1.0, float("nan")], [2.0, 3.0])
+    with pytest.raises(ValueError, match="x_series and y_series elements must be finite"):
+        linear_slope([1.0, 2.0], [float("inf"), 3.0])
+
+
+def test_bootstrap_slope_ci_rejects_nonfinite_derived_slopes(monkeypatch):
+    monkeypatch.setattr("nougen_shards.rsi_signature.linear_slope", lambda x, y: float("nan"))
+    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
+        bootstrap_slope_ci([1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0])
+
+
+def test_evaluate_rsi_signature_rejects_overflowing_gaps():
+    # Each input is finite; search - ood overflows to inf.
+    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
+        evaluate_rsi_signature([1, 2, 3, 4, 5], [1.0, 2.0, 3.0, 4.0, 5.0],
+                               [1e308, 0.6, 0.7, 0.8, 0.9], [-1e308, 0.55, 0.6, 0.65, 0.7])
+
+
+def test_epoch_series_rejects_nonfinite_metrics():
+    with pytest.raises(ValueError, match="all epoch metrics must be finite"):
+        epoch_series([EpochRecord("e1", 10, 0.5, 0.5), EpochRecord("e2", 20, float("nan"), 0.6)])
+    with pytest.raises(ValueError, match="all epoch metrics must be finite"):
+        epoch_series([EpochRecord("e1", 10, 0.5, 0.5), EpochRecord("e2", 20, 0.6, float("inf"))])
+
+
+def test_classify_epochs_rejects_nonfinite_gap_floor(monkeypatch):
+    monkeypatch.setenv("NOUGEN_RSI_GAP_SLOPE_MIN", "nan")
+    with pytest.raises(ValueError, match="gap floor must be finite"):
+        classify_epochs(_recs([0.10, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16]))
+
+
+def test_credit_table_rejects_nonfinite_inputs():
+    with pytest.raises(ValueError, match="total_gain must be a finite real number"):
+        credit_table(float("nan"), {"a": 0.1})
+    with pytest.raises(ValueError, match="min_fraction must be a non-negative finite real number"):
+        credit_table(0.1, {"a": 0.1}, min_fraction=float("nan"))
+    with pytest.raises(ValueError, match="min_fraction must be a non-negative finite real number"):
+        credit_table(0.1, {"a": 0.1}, min_fraction=-0.1)
+    with pytest.raises(ValueError, match="ablation delta for b must be a finite real number"):
+        credit_table(0.1, {"a": 0.1, "b": float("inf")})
+
+
+def test_credit_table_rejects_overflowing_explained_sum():
+    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
+        credit_table(1.0, {"a": 1e308, "b": 1e308})
+
+
