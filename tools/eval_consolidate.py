@@ -17,6 +17,8 @@ Both are reported separately. A failing "proposed" check is a gap, not a regress
 
 The fixture is frozen by sha256 (evals/consolidate_v1.lock.json). Dev is for revising the
 guard; heldout is the gate. Shadow mode: reads only, a local model is not needed.
+
+Exit codes: 0 pass, 1 a heldout "spec" check failed, 2 no lock file, 3 fixture changed.
 """
 
 from __future__ import annotations
@@ -123,6 +125,13 @@ def main() -> int:
     for split in ("dev", "heldout"):
         report[split] = score([r for r in rows if r["split"] == split])
     print(json.dumps(report, indent=2, ensure_ascii=False))
+    # The gate reads heldout only (AHL), and only "spec" checks: a failing
+    # "proposed" check is a known gap, not a regression, so it stays informational.
+    regressions = [f for f in report["heldout"]["failures"] if f["tag"] == "spec"]
+    if regressions:
+        ids = ", ".join(f"{f['id']}/{f['proposal']}" for f in regressions)
+        print(f"heldout spec regression ({len(regressions)}): {ids}", file=sys.stderr)
+        return 1
     return 0
 
 
