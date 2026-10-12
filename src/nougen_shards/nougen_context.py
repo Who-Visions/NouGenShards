@@ -211,6 +211,12 @@ def search_context(query: str, limit: int = 5):
     the SAME projection (id/timestamp/type/content/metadata) as the FTS path so
     callers see a stable schema either way.
     """
+    # Tokenize and quote terms to prevent FTS5 operator and punctuation syntax errors
+    words = [t for t in re.findall(r"\w+", query) if len(t) >= 2]
+    if not words:
+        words = [query.strip().replace('"', '""')]
+    match_expr = " OR ".join(f'"{w}"' for w in words if w)
+
     conn = get_context_connection()
     try:
         cursor = conn.execute("""
@@ -220,7 +226,7 @@ def search_context(query: str, limit: int = 5):
             WHERE ctx_events_fts MATCH ?
             ORDER BY bm25(ctx_events_fts) ASC
             LIMIT ?
-        """, (query, limit))
+        """, (match_expr, limit))
         return [dict(row) for row in cursor.fetchall()]
     except sqlite3.OperationalError:
         pattern = f"%{query}%"
