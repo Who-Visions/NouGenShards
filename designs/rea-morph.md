@@ -28,4 +28,13 @@ Full scored records: `rea-morph-scored.json` beside this file.
 - **authorized-subject-boundary** is the strongest and it agrees with the [AI-unlock video](ai-unlock-video-morph.md): entitlement to the subject is the dividing line, enforced at intake, not left to intent. This belongs in the valerion/nougenmorph intake gate.
 - **evidence-bundle + open-question ledger** is the most NouGen-shaped idea: a leg that carries what was found *and what is still unknown* beats a prose summary, and pairs with the changelog morph's `end-by-reporting-where-work-lives` (a `lives_at` pointer).
 
-Nothing here is implemented. It is recorded so the next lane builds on it instead of re-morphing rea a third time.
+## Implementation status
+
+NouGen now has a canonical `skills/ghidra/SKILL.md` entry for the official NSA
+Ghidra framework and the existing REA provider. It documents setup checks,
+evidence provenance, authorized read-only analysis, and the current boundary:
+REA's experimental Windows P0 path is limited to native x86-64 PE targets, so
+it does not cover Dreamcast binaries. This is workflow guidance, not a bundled
+Ghidra distribution or a claim that the REA MCP server is registered in every
+NouGen client. The other held morph candidates remain unimplemented pending
+their targeted tests.
