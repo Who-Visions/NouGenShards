@@ -599,7 +599,8 @@ def verify(cfg: MirrorConfig, query: str, limit: int = 5) -> dict:
     if not cfg.mirror_db.exists():
         return {"status": "error", "detail": f"no mirror DB at {cfg.mirror_db}"}
     tokens = [t for t in "".join(c if c.isalnum() else " " for c in query).split() if t]
-    match = " OR ".join(f'"{t}"' for t in tokens) if tokens else f'"{query.replace(\'"\', \'""\')}"'
+    escaped_query = query.replace('"', '""')
+    match = " OR ".join(f'"{t}"' for t in tokens) if tokens else f'"{escaped_query}"'
     conn = sqlite3.connect(f"file:{cfg.mirror_db}?mode=ro", uri=True)
     try:
         try:

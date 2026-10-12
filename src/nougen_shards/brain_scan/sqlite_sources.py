@@ -518,7 +518,8 @@ def _extract_generic(conn: sqlite3.Connection, path: Path,
     for name, cols in tables.items():
         if not cols:
             continue
-        col_list = ", ".join(f'"{c.replace(\'"\', \'""\")}"' for c in sorted(cols))
+        safe_cols = [c.replace('"', '""') for c in sorted(cols)]
+        col_list = ", ".join(f'"{c}"' for c in safe_cols)
         safe_name = name.replace('"', '""')
         try:
             rows = _row_iter(conn, f'SELECT {col_list} FROM "{safe_name}"')
