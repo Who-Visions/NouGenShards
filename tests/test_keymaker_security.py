@@ -141,3 +141,38 @@ def test_csv_export_survives_an_unreadable_row(km_keyring):
     conn.commit(); conn.close()
     km.ingest_secret("ANOTHER_KEY", "also-fine")  # used to raise AttributeError in _export_to_csv
     assert km.get_secret("ANOTHER_KEY") == "also-fine"
+
+
+# Names the connectors interpolate into SQL. Each must be refused at
+# registration, not stored and then silently skipped on every read.
+_BAD_IDENTIFIERS = ['a"b', 'x; DROP TABLE secrets', 'ok\n', '1abc', 'a b', '', None]
+
+
+@pytest.mark.parametrize("bad", _BAD_IDENTIFIERS)
+@pytest.mark.parametrize("field", ["table_name", "title_col", "content_col"])
+def test_register_external_db_rejects_unsafe_identifier(km, field, bad):
+    names = {"table_name": "tbl", "title_col": "t", "content_col": "c", field: bad}
+    with pytest.raises(ValueError, match=field):
+        km.register_external_db("postgres://u:pass@host:5432/db", **names)
+    assert km.list_external_dbs() == []
+
+
+@pytest.mark.parametrize("bad", _BAD_IDENTIFIERS)
+@pytest.mark.parametrize("field", ["table_name", "title_col", "content_col"])
+def test_register_local_vault_rejects_unsafe_identifier(km, tmp_path, field, bad):
+    names = {"table_name": "shards", "title_col": "title", "content_col": "content", field: bad}
+    with pytest.raises(ValueError, match=field):
+        km.register_local_vault(str(tmp_path / "v.db"), **names)
+    assert km.list_local_vaults() == []
+
+
+@pytest.mark.xfail(strict=True, raises=sqlite3.OperationalError, reason=(
+    "pre-existing: init_vault() creates local_vaults with last_connected and no "
+    "UNIQUE(path)/registered_at, so register_local_vault's CREATE IF NOT EXISTS is "
+    "a no-op and its INSERT ... registered_at ... ON CONFLICT(path) fails. Needs a "
+    "schema migration; remove this marker when that lands."))
+def test_register_local_vault_accepts_plain_identifiers(km, tmp_path):
+    km.register_local_vault(str(tmp_path / "v.db"), "shards", "title", "_content2")
+    rows = km.list_local_vaults()
+    assert [(r["table_name"], r["title_col"], r["content_col"]) for r in rows] == [
+        ("shards", "title", "_content2")]
