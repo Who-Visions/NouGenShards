@@ -441,3 +441,41 @@ def test_credit_table_rejects_overflowing_explained_sum():
         credit_table(1.0, {"a": 1e308, "b": 1e308})
 
 
+# Review on #795: finite inputs whose intermediates overflow must raise ValueError,
+# not leak OverflowError or return inf.
+
+
+def test_linear_slope_rejects_overflowing_variance():
+    # (x - mean) ** 2 used to raise OverflowError here.
+    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
+        linear_slope([-1e200, 0.0, 1e200], [1.0, 2.0, 3.0])
+
+
+def test_evaluate_rsi_signature_rejects_overflowing_epochs():
+    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
+        evaluate_rsi_signature([-1e200, 0.0, 1e200, 2e200], [1.0, 2.0, 3.0, 4.0],
+                               [0.5, 0.6, 0.7, 0.8], [0.5, 0.6, 0.7, 0.8])
+
+
+def test_bootstrap_slope_ci_rejects_overflowing_variance():
+    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
+        bootstrap_slope_ci([-1e200, 0.0, 1e200, 2e200], [1.0, 2.0, 3.0, 4.0])
+
+
+def test_epoch_series_rejects_overflowing_eta():
+    # Positive, finite compute so small that gain / experience / compute is inf.
+    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
+        epoch_series([EpochRecord("e1", 10, 0.0, 0.0), EpochRecord("e2", 20, 1.0, 1.0, compute=5e-324)])
+
+
+def test_classify_epochs_does_not_return_overflowed_eta():
+    # Used to return INSUFFICIENT_DATA with eta=[inf] before any finite check ran.
+    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
+        classify_epochs([EpochRecord("e1", 10, 0.0, 0.0), EpochRecord("e2", 20, 1.0, 1.0, compute=5e-324)])
+
+
+def test_epoch_series_rejects_overflowing_gaps():
+    with pytest.raises(ValueError, match="derived RSI statistics must be finite"):
+        epoch_series([EpochRecord("e1", 10, -1e308, 1e308), EpochRecord("e2", 20, -1e308, 1e308)])
+
+

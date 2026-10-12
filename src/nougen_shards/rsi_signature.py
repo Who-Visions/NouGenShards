@@ -47,6 +47,18 @@ def _finite(value) -> bool:
         return False
 
 
+def _sum_sq_dev(values: Sequence[float]) -> float:
+    """Sum of squared deviations from the mean, raising ValueError on overflow."""
+    try:
+        mean = sum(values) / len(values)
+        total = sum((v - mean) * (v - mean) for v in values)
+    except OverflowError:
+        raise ValueError("derived RSI statistics must be finite") from None
+    if not (_finite(mean) and _finite(total)):
+        raise ValueError("derived RSI statistics must be finite")
+    return total
+
+
 def linear_slope(x_series: Sequence[float], y_series: Sequence[float]) -> float:
     """Computes ordinary least squares slope."""
     n = len(x_series)
@@ -54,12 +66,19 @@ def linear_slope(x_series: Sequence[float], y_series: Sequence[float]) -> float:
         return 0.0
     if not all(_finite(x) and _finite(y) for x, y in zip(x_series, y_series)):
         raise ValueError("x_series and y_series elements must be finite")
-    mean_x = sum(x_series) / n
-    mean_y = sum(y_series) / n
-    denom = sum((x - mean_x) ** 2 for x in x_series)
+    # Finite inputs can still overflow here: `**` and huge-int division raise
+    # OverflowError, while `*`, `/` and sum() silently return inf. Catch both.
+    try:
+        mean_x = sum(x_series) / n
+        mean_y = sum(y_series) / n
+        denom = sum((x - mean_x) * (x - mean_x) for x in x_series)
+        numer = sum((x - mean_x) * (y - mean_y) for x, y in zip(x_series, y_series))
+    except OverflowError:
+        raise ValueError("derived RSI statistics must be finite") from None
+    if not all(_finite(v) for v in (mean_x, mean_y, denom, numer)):
+        raise ValueError("derived RSI statistics must be finite")
     if denom == 0.0:
         return 0.0
-    numer = sum((x - mean_x) * (y - mean_y) for x, y in zip(x_series, y_series))
     slope = numer / denom
     if not _finite(slope):
         raise ValueError("derived RSI statistics must be finite")
@@ -95,9 +114,10 @@ def bootstrap_slope_ci(
         slope = linear_slope(x_series, y_series)
         return slope, slope
 
+    if not all(_finite(v) for v in (*x_series, *y_series)):
+        raise ValueError("x_series and y_series elements must be finite")
     # Check if original x_series has zero variance
-    mean_orig_x = sum(x_series) / n
-    if sum((x - mean_orig_x) ** 2 for x in x_series) == 0.0:
+    if _sum_sq_dev(x_series) == 0.0:
         return 0.0, 0.0
 
     slopes: List[float] = []
@@ -116,9 +136,7 @@ def bootstrap_slope_ci(
             resampled_y.append(y_series[idx])
 
         # Reject degenerate resample where all x are identical to prevent zero-variance attenuation bias
-        mean_rx = sum(resampled_x) / n
-        denom = sum((x - mean_rx) ** 2 for x in resampled_x)
-        if denom == 0.0:
+        if _sum_sq_dev(resampled_x) == 0.0:
             continue
 
         slopes.append(linear_slope(resampled_x, resampled_y))
@@ -244,9 +262,19 @@ def epoch_series(records: Sequence[EpochRecord], compute_normalized: bool = True
         if cur.compute <= 0:
             raise ValueError(f"compute must be positive ({cur.epoch})")
         g = cur.heldout - prev.heldout
+        try:
+            e = g / d_exp / (cur.compute if compute_normalized else 1.0)
+        except OverflowError:
+            raise ValueError(f"derived RSI statistics must be finite ({cur.epoch})") from None
+        # Finite inputs can still overflow: a tiny positive compute (5e-324) sends eta to inf.
+        if not (_finite(g) and _finite(e)):
+            raise ValueError(f"derived RSI statistics must be finite ({cur.epoch})")
         gains.append(g)
-        eta.append(g / d_exp / (cur.compute if compute_normalized else 1.0))
-    return gains, eta, [r.search - r.heldout for r in records]
+        eta.append(e)
+    gaps = [r.search - r.heldout for r in records]
+    if not all(_finite(g) for g in gaps):
+        raise ValueError("derived RSI statistics must be finite")
+    return gains, eta, gaps
 
 
 # A perfectly monotone trend over n epochs has best-case exact one-sided p = 1/n! (Kendall):
