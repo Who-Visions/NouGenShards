@@ -131,7 +131,8 @@ def test_consolidation_pipeline(monkeypatch):
     try:
         rule = conn.execute("SELECT confidence_score FROM semantic_knowledge WHERE subject = 'Memory'").fetchone()
         assert rule is not None
-        assert rule["confidence_score"] > 1.0  # Boosted on conflict
+        # Corroboration saturates at the ceiling (dream.SEMANTIC_CONFIDENCE_MAX); it no longer grows past 1.0.
+        assert rule["confidence_score"] == 1.0
     finally:
         conn.close()
 
