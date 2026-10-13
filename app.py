@@ -2776,10 +2776,11 @@ def recall_graph(query: str, depth: int = 1, limit: int = 10) -> dict:
     """Graph memory recall: entity mentions and multi-hop relation walk across shards."""
     try:
         from nougen_shards import graph, vector_graph
-        try:
-            return vector_graph.search_graph(query, depth=depth, limit=limit)
-        except Exception:
-            return graph.query_subgraph(query, depth=depth, limit=limit)
+        search = getattr(vector_graph, "search_graph", None) or getattr(graph, "query_subgraph", None)
+        if search is None:
+            return {"error": "recall_graph: no graph search backend is installed on this node; "
+                             "use recall_related with a shard id", "query": query, "nodes": [], "edges": []}
+        return search(query, depth=depth, limit=limit)
     except Exception as e:
         return {"error": str(e), "query": query, "nodes": [], "edges": []}
 
@@ -3286,9 +3287,25 @@ def recall_layered(query: str, token_budget: int = 1200) -> list:
 
 @node_mcp.tool()
 @_offloaded
-def recall_related(shard_id: int, db_index: int = 1, relation: Optional[str] = None) -> dict:
-    """Retrieve related memory shards via graph topology."""
-    return _unwrap_sync(recall_graph)(query=str(shard_id), depth=1, limit=10)
+def recall_related(shard_id: int, db_index: int = 1, relation: Optional[str] = None,
+                   limit: int = 10) -> dict:
+    """Shards linked to shard_id in the graph mesh, walking edges in either direction."""
+    from nougen_shards import graph
+    related = graph.related_shards(shard_id, db_index, relation, limit)
+    return {"shard_id": shard_id, "db_index": db_index, "relation": relation,
+            "count": len(related), "related": related}
+
+
+@node_mcp.tool()
+@_offloaded
+def link_shards(src_id: int, dst_id: int, relation: str = "relates",
+                src_db: int = 1, dst_db: int = 1) -> dict:
+    """Create a graph edge src -[relation]-> dst between two existing shards."""
+    from nougen_shards import graph
+    created = graph.link_shards(src_id, dst_id, relation, src_db, dst_db)
+    return {"created": bool(created), "src": f"{src_id}@{src_db}", "dst": f"{dst_id}@{dst_db}",
+            "relation": relation,
+            "note": None if created else "no edge: a shard was missing, both ids are the same shard, or the edge already exists"}
 
 
 @node_mcp.tool()
