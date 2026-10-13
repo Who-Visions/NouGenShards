@@ -2663,7 +2663,14 @@ def _nougenmsg_read(target: Optional[str] = None, limit: int = 10) -> dict:
             "correlation_id": raw.get("correlation_id") or raw.get("leg_id"),
             "file": os.path.basename(f),
         })
-    node_label = os.environ.get("NOUGEN_NODE_NAME") or machine.get_current_node()
+    # get_current_node lives in nougen_shards.nougenmsg, not in machine. Looking it up on
+    # machine raised AttributeError and failed every nougenmsg_search call.
+    try:
+        from nougen_shards.nougenmsg import get_current_node
+        default_label = get_current_node()
+    except Exception:
+        default_label = "unknown"
+    node_label = os.environ.get("NOUGEN_NODE_NAME") or default_label
     return {"complete": True, "node": node_label,
             "target": target or "all", "scanned": scanned, "returned": len(out), "messages": out}
 
