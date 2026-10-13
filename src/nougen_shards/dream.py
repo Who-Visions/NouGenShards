@@ -60,8 +60,27 @@ def _retire_shard(shard: Dict[str, Any], errors: List[Dict[str, Any]]) -> bool:
         conn.close()
 
 
+SEMANTIC_CONFIDENCE_STEP = 0.1
+SEMANTIC_CONFIDENCE_MAX = 1.0
+
+
+def upsert_semantic_rule(conn, subject: str, predicate: str, domain_key: str, timestamp: str) -> None:
+    """Record one corroborating observation; confidence saturates at SEMANTIC_CONFIDENCE_MAX."""
+    conn.execute("""
+        INSERT INTO semantic_knowledge (subject, predicate, domain_key, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(subject, predicate) DO UPDATE SET
+            confidence_score = MIN(?, confidence_score + ?),
+            updated_at = excluded.updated_at
+    """, (subject, predicate, domain_key, timestamp, SEMANTIC_CONFIDENCE_MAX, SEMANTIC_CONFIDENCE_STEP))
+
+
 def fetch_high_utility_shards(limit: int = 50) -> List[Dict[str, Any]]:
-    """Retrieve the top shards by utility score across the federated database cluster."""
+    """Retrieve the top shards by utility score across the federated database cluster.
+
+    Each record carries the `_db_index` it came from, so the same shard id on two
+    databases stays distinguishable downstream.
+    """
     top_shards = []
     for i in range(1, core.MAX_DB_COUNT + 1):
         if not core.get_db_path(i).exists():
@@ -70,7 +89,9 @@ def fetch_high_utility_shards(limit: int = 50) -> List[Dict[str, Any]]:
         try:
             cursor = conn.execute("SELECT id, title, content, utility_score FROM shards ORDER BY utility_score DESC LIMIT ?", (limit,))
             for row in cursor:
-                top_shards.append(dict(row))
+                record = dict(row)
+                record["_db_index"] = i
+                top_shards.append(record)
         except sqlite3.OperationalError:
             pass
         finally:
@@ -292,13 +313,7 @@ def consolidate_episodic_data(limit: int = 10) -> Dict[str, Any]:
                     if not sub or not pred:
                         continue
 
-                    conn.execute("""
-                        INSERT INTO semantic_knowledge (subject, predicate, domain_key, updated_at)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(subject, predicate) DO UPDATE SET
-                            confidence_score = confidence_score + 0.1,
-                            updated_at = excluded.updated_at
-                    """, (sub.strip(), pred.strip(), shard.get("domain_key", "global"), timestamp))
+                    upsert_semantic_rule(conn, sub, pred, shard.get("domain_key", "global"), timestamp)
                     shard_rules.append({"subject": sub, "predicate": pred})
 
                 # Only mark consolidated / count the shard when at least one

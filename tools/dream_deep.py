@@ -135,13 +135,7 @@ def upsert_invariants(invs, domain_key, db_index=1):
     n = 0
     try:
         for inv in invs:
-            conn.execute("""
-                INSERT INTO semantic_knowledge (subject, predicate, domain_key, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(subject, predicate) DO UPDATE SET
-                    confidence_score = confidence_score + 0.1,
-                    updated_at = excluded.updated_at
-            """, (inv["subject"].strip(), inv["predicate"].strip(), domain_key, ts))
+            dream_mod.upsert_semantic_rule(conn, inv["subject"].strip(), inv["predicate"].strip(), domain_key, ts)
             n += 1
         conn.commit()
     finally:
@@ -163,7 +157,8 @@ def main():
 
     picks = [] if args.skip_picks else load_digest_picks(vault)
     top_shards = [
-        {"title": s["title"], "content": (s["content"] or "")[:CONTENT_CAP], "source": f"db:{s['id']}"}
+        {"title": s["title"], "content": (s["content"] or "")[:CONTENT_CAP], "source": f"db:{s['id']}",
+         "db_index": s.get("_db_index"), "shard_key": f"db{s.get('_db_index')}:{s['id']}"}
         for s in dream_mod.fetch_high_utility_shards(limit=args.sft_top)
         if s.get("content")
     ]
