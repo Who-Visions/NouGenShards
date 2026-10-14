@@ -1731,7 +1731,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 extra_rows: list = []
                 if (fts_ran_clean and fts_query is not None
                         and os.environ.get("NOUGEN_INGEST_RESCUE", "1") != "0"
-                        and len(res or []) < limit):
+                        and (len(res or []) < limit or _id_like_token(query))):
                     try:
                         r_dom = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
                         r_dom_params = () if domain_key in (None, "*") else (domain_key,)
@@ -1747,7 +1747,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                             FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
                             WHERE {r_dom}{not_in}shards_fts MATCH ?
                             ORDER BY bm25_score ASC, s.id ASC LIMIT ?
-                        """, (*r_dom_params, *have_ids, fts_query, limit - len(res or []))).fetchall()
+                        """, (*r_dom_params, *have_ids, fts_query, max(1, limit - len(res or [])))).fetchall()
                         if extra:
                             extra_rows = list(extra)
                             res = list(res or []) + extra_rows
@@ -2511,6 +2511,15 @@ def _norm_title(s) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip().casefold()
 
 
+def _id_like_token(query) -> bool:
+    """Identifier-shaped query: one token, 6+ chars, contains a digit (video id, commit,
+    request id). Opt-out NOUGEN_TOKEN_EXACT_TIER=0."""
+    if os.environ.get("NOUGEN_TOKEN_EXACT_TIER", "1").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    q = (query or "").strip()
+    return len(q) >= 6 and not any(c.isspace() for c in q) and any(c.isdigit() for c in q)
+
+
 def _title_hit(qnorm: str, title) -> bool:
     """Known-item match: the query IS the title (case/whitespace-insensitive), or a
     long query is the start of a longer title (callers paste truncated titles)."""
@@ -2847,9 +2856,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     # are noise, and the shard that actually contains it was being dropped by fusion
     # (relay 20261014T154801Z item 3). Natural-language queries never qualify.
     qtok = (query or "").strip()
-    token_mode = (
-        os.environ.get("NOUGEN_TOKEN_EXACT_TIER", "1").strip().lower() not in ("0", "false", "no", "off")
-        and len(qtok) >= 6 and not any(c.isspace() for c in qtok) and any(c.isdigit() for c in qtok))
+    token_mode = _id_like_token(query)
     for item in scored_results:
         item["_token_exact"] = bool(
             token_mode and (qtok in str(item.get("title") or "") or qtok in str(item.get("content") or "")))
