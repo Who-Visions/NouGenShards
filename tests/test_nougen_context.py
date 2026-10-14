@@ -309,3 +309,16 @@ def test_ctx_execute_skips_real_sandbox_failures(monkeypatch, capsys):
                         lambda *a, **k: "Execution failed (Exit 1):\nboom")
     cli._ctx_execute_and_record("throw 1")
     assert "[recorded handle=" not in capsys.readouterr().err
+
+
+def test_untrusted_shell_runtime_is_refused(monkeypatch):
+    """WG-1191: untrusted callers cannot run a shell interpreter."""
+    monkeypatch.setenv("NOUGEN_ENABLE_SANDBOX", "1")
+    out = nougen_sandbox.execute_sandboxed("echo hi", language="shell")
+    assert out.startswith("Error:") and "reserved for trusted callers" in out
+
+
+def test_trusted_shell_runtime_still_runs(monkeypatch):
+    monkeypatch.setenv("NOUGEN_ENABLE_SANDBOX", "1")
+    out = nougen_sandbox.execute_sandboxed("echo trusted-ok", language="shell", trusted=True)
+    assert "trusted-ok" in out
