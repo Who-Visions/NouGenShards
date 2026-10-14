@@ -260,16 +260,19 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         return _run
 
     def _record_lane(name, status, rows):
-        _lane_reliability_record(name, status)
         """Per-lane elapsed and row count, for tuning the deadline on evidence.
 
         The deadline was argued about for a day on end-to-end latency alone,
         which cannot say WHICH lane was slow or whether it returned anything.
         """
-        if sweep_report is None:
-            return
         t0 = _lane_started.get(name)
         t1 = _lane_started.get(name + ":done")
+        # A lane that never got a worker slot tells us nothing about the lane itself
+        # (the pool was saturated), so it does not count against its reliability.
+        if t0 is not None:
+            _lane_reliability_record(name, status)
+        if sweep_report is None:
+            return
         if t0 is None:
             elapsed = None            # never got a worker slot
         elif t1 is None:

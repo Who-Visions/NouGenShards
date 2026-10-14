@@ -65,3 +65,15 @@ def test_healthy_lane_keeps_full_budget(monkeypatch, fresh_reliability):
     for _ in range(40):
         federation._lane_reliability_record("local", "ok")
     assert federation._lane_budget_s("local", 20.0) > 18.0
+
+
+def test_canon_event_type_is_fetched_by_keyword_path(tmp_path, monkeypatch):
+    """The elevated score can only grant a canon lock if the row carries event_type."""
+    monkeypatch.setattr(core, "GLOBAL_DIR", tmp_path)
+    monkeypatch.setattr(core, "get_db_path", lambda i: tmp_path / f"t_{i}.db")
+    core.init_db(1)
+    core.capture("CANON", "Lock title zzcanonqq1", "canon body zzcanonqq1 locked", domain_key="global")
+    monkeypatch.setenv("NOUGEN_ELEVATED_SCORE", "1")
+    rows = core.retrieve("zzcanonqq1", limit=3)
+    assert rows and rows[0].get("event_type") == "CANON"
+

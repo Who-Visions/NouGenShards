@@ -1747,7 +1747,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         dom_params = () if domain_key in (None, "*") else (domain_key,)
                         ing_clause, ing_params = _ingest_filter_sql("s", include_research)
                         cursor = conn.execute(f"""
-                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                            SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                                    s.embedding, s.tags, s.domain_key, s.density_score,
                                    bm25(shards_fts, 5.0, 1.0) as bm25_score  -- a title hit outweighs a body hit
                             FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
@@ -1782,7 +1782,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         not_in = (f"s.id NOT IN ({','.join('?' for _ in have_ids)}) AND "
                                   if have_ids else "")
                         extra = conn.execute(f"""
-                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                            SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                                    s.embedding, s.tags, s.domain_key, s.density_score,
                                    bm25(shards_fts, 5.0, 1.0) as bm25_score
                             FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
@@ -1823,7 +1823,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     # filter instead; NOUGEN_LIKE_ON_FTS_MISS=1 restores the scan.
                     try:
                         cursor = conn.execute(f"""
-                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                            SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                                    s.embedding, s.tags, s.domain_key, s.density_score
                             FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
                             WHERE {dom_clause.replace("domain_key", "s.domain_key")}shards_fts MATCH ?
@@ -1833,7 +1833,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         cursor = None
                 if cursor is None:
                     cursor = conn.execute(f"""
-                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        SELECT id, timestamp, title, content, event_type, utility_score, embedding, tags, domain_key, density_score
                         FROM shards
                         WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
                         ORDER BY utility_score DESC, id ASC LIMIT ?
@@ -1988,7 +1988,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     sim_by_id = {rid: sim for sim, rid in keep}
                     placeholders = ",".join("?" * len(keep))
                     full = conn.execute(f"""
-                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        SELECT id, timestamp, title, content, event_type, utility_score, embedding, tags, domain_key, density_score
                         FROM shards WHERE id IN ({placeholders})
                     """, tuple(rid for _, rid in keep)).fetchall()
                     fuzzy = []
@@ -2593,7 +2593,7 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
                 return rows
             conn = get_connection(i)
             for row in conn.execute(f"""
-                    SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                    SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                            s.embedding, s.tags, s.domain_key, s.density_score
                     FROM shards s WHERE {dom_clause}{ing_clause}s.title LIKE ? ESCAPE '\\'
                     ORDER BY s.id DESC LIMIT ?""", (*dom_params, *ing_params, pattern, limit)):
