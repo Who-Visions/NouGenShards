@@ -29,6 +29,17 @@ except ImportError:
 # Backwards-compatible alias for any caller still importing the old name.
 FastMCP = MCPServer
 
+def _tool_gate(env_var: str, tool: str) -> Optional[str]:
+    """Opt-in gate for MCP tools that read files, fetch URLs, or deploy workers.
+
+    A prompt-injected client must not get these by default (WG-1175/WG-1777).
+    Returns an error string when the gate is closed, else None.
+    """
+    if os.environ.get(env_var, "").strip().lower() in ("1", "true", "yes", "on"):
+        return None
+    return f"Error: {tool} is disabled by default. Set {env_var}=1 to enable it."
+
+
 from .core import capture, mark_shard, compile_recall_packet
 from . import nougen_context
 from . import nougen_sandbox
@@ -343,6 +354,9 @@ def fetch_web_sandboxed(url: str, label: Optional[str] = None) -> str:
         url: The web URL to fetch.
         label: Optional descriptive label for indexing.
     """
+    gated = _tool_gate("NOUGEN_ENABLE_FILE_TOOLS", "fetch_web_sandboxed")
+    if gated:
+        return gated
     res = nougen_context.fetch_and_index_web(url, label=label)
     if "error" in res:
         return f"Error: {res['error']}"
@@ -366,6 +380,9 @@ def analyze_file_sandboxed(file_path: str, query: Optional[str] = None) -> str:
         file_path: Absolute or relative path to file on disk.
         query: Optional string/keyword to filter matching lines.
     """
+    gated = _tool_gate("NOUGEN_ENABLE_FILE_TOOLS", "analyze_file_sandboxed")
+    if gated:
+        return gated
     res = nougen_context.analyze_file(file_path, query=query)
     if "error" in res:
         return f"Error: {res['error']}"
@@ -827,6 +844,9 @@ def cf_deploy_worker(directory_path: str = "") -> str:
     Args:
         directory_path: Absolute or relative path to the worker project directory. Defaults to current directory.
     """
+    gated = _tool_gate("NOUGEN_ENABLE_CF_TOOLS", "cf_deploy_worker")
+    if gated:
+        return gated
     import json
     from pathlib import Path
     from . import cloudflare
