@@ -1,6 +1,4 @@
 """Flagged elevations: score blend (NOUGEN_ELEVATED_SCORE) and adaptive lane budget."""
-import importlib
-import os
 
 import pytest
 
