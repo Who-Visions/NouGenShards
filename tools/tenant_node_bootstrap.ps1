@@ -70,7 +70,7 @@ if (-not $healthy) { throw "node did not become healthy on port $Port" }
 # official Windows binary into the user's own folder. No admin rights needed.
 function Ensure-Cloudflared {
   if (Get-Command cloudflared -ErrorAction SilentlyContinue) { return }
-  $localBin = Join-Path $env:LOCALAPPDATA 'NouGenin'
+  $localBin = Join-Path $env:LOCALAPPDATA 'NouGen\bin'
   New-Item -ItemType Directory -Force -Path $localBin | Out-Null
   $exe = Join-Path $localBin 'cloudflared.exe'
   if (-not (Test-Path $exe)) {
