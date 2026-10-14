@@ -121,10 +121,37 @@ function Ensure-Cloudflared {
 }
 Ensure-Cloudflared
 
+if ($Hostname) {
+  # Pinned tenant: a named tunnel. Its token arrives through this tenant's own
+  # enrolment session, so the node and the tunnel stay bound to one account.
+  $bytes = New-Object byte[] 24
+  [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+  $session = [Convert]::ToBase64String($bytes).Replace('+','-').Replace('/','_').TrimEnd('=')
+  $begin = @{ session = $session; eml = $Email; node_url = "https://$Hostname"; token = $tok; pinned = $true } | ConvertTo-Json
+  $started = Invoke-RestMethod -Method Post -Uri "$Gateway/tenant/enroll/begin" -ContentType 'application/json' -Body $begin
+  Write-Host "Opening your browser to sign in as $Email ..."
+  Start-Process $started.login_url
+  $tt = $null
+  for ($i = 0; $i -lt 200 -and -not $tt; $i++) {
+    Start-Sleep -Seconds 3
+    $st = Invoke-RestMethod -Method Get -Uri "$Gateway/tenant/enroll/status?session=$session"
+    if ($st.status -eq 'enrolled') { $tt = $st.tunnel_token }
+    elseif ($st.status -eq 'expired') { throw 'enrolment expired; run the setup again' }
+  }
+  if (-not $tt) { throw 'sign-in was not completed in time; run the setup again' }
+  Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'" |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  # The token goes through the environment, not the command line.
+  $env:TUNNEL_TOKEN = $tt
+  $null = Start-Background -File 'cloudflared' -Arguments @('tunnel','run') -LogFile (Join-Path $stateDir 'tunnel.log')
+  Remove-Item Env:TUNNEL_TOKEN -ErrorAction SilentlyContinue
+  Write-Host "Your node is live at https://$Hostname. Leave this window open."
+  exit 0
+}
+
 # Tunnel: quick tunnel (no account). A named hostname is optional.
 $tlog = Join-Path $stateDir 'tunnel.log'
 $tunnelArgs = @('tunnel','--url',"http://127.0.0.1:$Port")
-if ($Hostname) { $tunnelArgs = @('tunnel','--url',"http://127.0.0.1:$Port",'--hostname',$Hostname) }
 # Re-runs replace the old tunnel for this port instead of stacking another one.
 Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'" |
   Where-Object { $_.CommandLine -match [regex]::Escape("127.0.0.1:$Port") } |
@@ -134,8 +161,8 @@ $url = $null
 for ($i = 0; $i -lt 60 -and -not $url; $i++) {
   Start-Sleep -Seconds 2
   if (Test-Path $tlog) {
-    # Only the tunnel's own hostname: never a URL that merely appears in the log.
-    $pattern = if ($Hostname) { 'https://' + [regex]::Escape($Hostname) } else { 'https://[a-z0-9-]+\.trycloudflare\.com' }
+    # Only the quick tunnel's own hostname: never a URL that merely appears in the log.
+    $pattern = 'https://[a-z0-9-]+\.trycloudflare\.com'
     $m = Select-String -Path $tlog -Pattern $pattern | Select-Object -Last 1
     if ($m) { $url = $m.Matches[0].Value }
   }
