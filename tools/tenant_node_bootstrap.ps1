@@ -64,7 +64,9 @@ $url = $null
 for ($i = 0; $i -lt 60 -and -not $url; $i++) {
   Start-Sleep -Seconds 2
   if (Test-Path $tlog) {
-    $m = Select-String -Path $tlog -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com|https://\S+\.(?:com|net|org)' | Select-Object -Last 1
+    # Only the tunnel's own hostname: never a URL that merely appears in the log.
+    $pattern = if ($Hostname) { 'https://' + [regex]::Escape($Hostname) } else { 'https://[a-z0-9-]+\.trycloudflare\.com' }
+    $m = Select-String -Path $tlog -Pattern $pattern | Select-Object -Last 1
     if ($m) { $url = $m.Matches[0].Value }
   }
 }
