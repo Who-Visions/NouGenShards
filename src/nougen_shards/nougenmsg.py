@@ -171,6 +171,19 @@ def _live_pipe_names() -> List[str]:
         return glob.glob(r"\\.\pipe\LOCAL\*")
 
 
+def _read_socket_reply(sock) -> bytes:
+    """Read the receiver's newline-terminated reply in full, not one recv (WG-1031)."""
+    buf = b""
+    while True:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        buf += chunk
+        if b"\n" in buf:
+            break
+    return buf
+
+
 def _confirm_socket_ack(raw: bytes) -> bool:
     """True only for the receiver's explicit delivery ack (WG-1031).
 
@@ -486,7 +499,7 @@ class AgentPinger:
                             s.connect(sock)
                             s.sendall(json.dumps(payload).encode("utf-8") + b"\n")
                             # Sending bytes is not delivery: wait for the receiver's ack.
-                            ack_ok = _confirm_socket_ack(s.recv(65536))
+                            ack_ok = _confirm_socket_ack(_read_socket_reply(s))
                         finally:
                             s.close()
                         pipe_delivered = pipe_delivered or ack_ok
