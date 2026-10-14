@@ -140,7 +140,8 @@ def batch_execute_sandboxed(commands: list, queries: list = None) -> dict:
         lang = item.get("language", "python")
         timeout = item.get("timeout", 10)
 
-        out = execute_sandboxed(code, language=lang, timeout=timeout, trusted=True, bypass_gatekeeper=False)
+        # Public MCP entry point: untrusted, so the opt-in and the shell refusal apply.
+        out = execute_sandboxed(code, language=lang, timeout=timeout, trusted=False, bypass_gatekeeper=False)
         is_err = "Error:" in out or "Execution failed" in out
         preview = out[:250].replace("\r", "")
         results.append({
