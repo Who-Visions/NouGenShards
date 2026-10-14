@@ -1479,6 +1479,20 @@ def cmd_amv(args):
     print("This scenario is never written to the production usage ledger.")
 
 
+# Exact failure strings nougen_sandbox.execute_sandboxed returns. Matching these
+# (not any "Error:" prefix) keeps a successful script that prints "Error: ..."
+# recorded instead of silently dropped.
+_SANDBOX_FAILURE_PREFIXES = (
+    "Error: Sandboxed ",
+    "Error: Runtime '",
+    "Error: Shell runtime",
+    "Error: Unsupported language",
+    "Error: Execution timed out",
+    "Error: Sandbox execution failed",
+    "Execution failed (Exit ",
+)
+
+
 def _ctx_execute_and_record(code, bypass_gatekeeper=False):
     """Run sandboxed code, print it, and record the run so `ctx search` finds it.
 
@@ -1491,7 +1505,7 @@ def _ctx_execute_and_record(code, bypass_gatekeeper=False):
     else:
         output = nougen_sandbox.execute_sandboxed(code)
     print(output)
-    if output.startswith(("Error:", "Execution failed")):
+    if output.startswith(_SANDBOX_FAILURE_PREFIXES):
         return
     handle = "ncode_" + hashlib.sha256(output.encode("utf-8")).hexdigest()[:12]
     nougen_context.store_sandbox(handle, output, summary=code[:200])

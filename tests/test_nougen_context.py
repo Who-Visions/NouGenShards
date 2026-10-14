@@ -289,3 +289,23 @@ def test_ctx_execute_records_event_and_sandbox_handle(monkeypatch, capsys):
     assert any(h["event_type"] == "ctx_execute" for h in hits)
     handle = captured.err.split("handle=")[1].split("]")[0]
     assert nougen_context.fetch_sandbox(handle).strip() == "ctx-record-marker"
+
+
+def test_ctx_execute_records_successful_output_that_starts_with_error(monkeypatch, capsys):
+    """A script that prints 'Error: ...' on success is data, not a failure (Codex P2)."""
+    from nougen_shards import cli
+    nougen_context.init_context_db(clean_slate=True)
+    monkeypatch.setattr(cli.nougen_sandbox, "execute_sandboxed", lambda *a, **k: "Error: no records")
+    cli._ctx_execute_and_record("console.log('Error: no records')")
+    captured = capsys.readouterr()
+    assert "[recorded handle=ncode_" in captured.err
+    assert nougen_context.search_events("no records", limit=5)
+
+
+def test_ctx_execute_skips_real_sandbox_failures(monkeypatch, capsys):
+    from nougen_shards import cli
+    nougen_context.init_context_db(clean_slate=True)
+    monkeypatch.setattr(cli.nougen_sandbox, "execute_sandboxed",
+                        lambda *a, **k: "Execution failed (Exit 1):\nboom")
+    cli._ctx_execute_and_record("throw 1")
+    assert "[recorded handle=" not in capsys.readouterr().err
