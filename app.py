@@ -4123,6 +4123,16 @@ def _scope_base_url(scope) -> str:
     return f"{proto}://{host}" if host else ""
 
 
+# Tools a tenant identity may call on the node. Everything else touches the host
+# machine or the owner's shared services and stays owner-only.
+TENANT_MCP_TOOLS = frozenset({
+    # Vault-bound reads and writes only (they resolve through the active tenant vault).
+    # Context-session tools are excluded: their session DB is shared across identities.
+    "capture_experience", "recall_memory", "recall_layered", "recall_related",
+    "search", "get_shard", "mark_utility",
+})
+
+
 class _TokenGatedMCP:
     """ASGI gate for the /mcp mount: same deny-by-default semantics as
     verify_token (503 unconfigured, 401 mismatch), but accepts the token as
@@ -4199,6 +4209,41 @@ class _TokenGatedMCP:
                 await self._reject(send, 401, "Invalid node token.",
                                    scope=scope)
                 return
+            if tenant.tenant_id != "owner":
+                # Tenants get only their own vault's tools. Anything that touches this
+                # machine (code execution, deploys, relays, NouGenMsg, local scans, the
+                # owner's Ollama) is refused before it reaches the MCP server.
+                orig_receive = receive
+                chunks = []
+                more = True
+                while more:
+                    msg = await orig_receive()
+                    if msg.get("type") != "http.request":
+                        break
+                    chunks.append(msg.get("body", b""))
+                    more = msg.get("more_body", False)
+                raw = b"".join(chunks)
+                try:
+                    payload = json.loads(raw or b"null")
+                except ValueError:
+                    payload = None
+                calls = payload if isinstance(payload, list) else [payload]
+                for call in calls:
+                    if not isinstance(call, dict) or call.get("method") != "tools/call":
+                        continue
+                    name = (call.get("params") or {}).get("name")
+                    if name not in TENANT_MCP_TOOLS:
+                        await self._reject(send, 403, f"tool {name} is not available to this identity")
+                        return
+                replayed = [False]
+
+                async def replay_receive():
+                    if not replayed[0]:
+                        replayed[0] = True
+                        return {"type": "http.request", "body": raw, "more_body": False}
+                    return await orig_receive()
+
+                receive = replay_receive
             context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
             try:
                 await self.inner(scope, receive, send)
