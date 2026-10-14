@@ -1490,6 +1490,34 @@ def _temporal_decay(ts_str: Optional[str], now: datetime) -> float:
         return 1.0
 
 
+def elevated_final_score(
+    bm25_raw: float,
+    utility_base: float,
+    density: float,
+    age_days: float,
+    half_life_days: float = 90.0,
+    is_canon_lock: bool = False,
+    utility_floor: float = 0.25,
+) -> float:
+    """Flagged alternative to the blend in _process_fts_result (NOUGEN_ELEVATED_SCORE=1).
+
+    Lexical gain is monotone in match strength and bounded in [0, 1): FTS5 bm25 is
+    more negative for stronger matches, so the gain is 1 - exp(-|bm25|/10). The
+    spec's exp(-|bm25|/10) inverts that, the bug the existing scorer documents.
+    Utility decays on a 90-day half-life, with a floor so old canon never vanishes;
+    a canon lock is age-invariant.
+    """
+    lexical_gain = 1.0 - math.exp(-abs(float(bm25_raw)) / 10.0)
+    decay = 1.0 if is_canon_lock else math.pow(0.5, max(0.0, age_days) / half_life_days)
+    effective_utility = max(utility_floor, utility_base * decay)
+    tripartite = (0.50 * effective_utility) + (0.30 * max(0.0, min(1.0, density))) + (0.20 * lexical_gain)
+    return lexical_gain * tripartite
+
+
+def _elevated_scoring_enabled() -> bool:
+    return os.environ.get("NOUGEN_ELEVATED_SCORE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _process_fts_result(row, db_index, query_embedding, now: datetime):
     """Helper to score a single FTS result via the weighted relevance blend."""
     item = hydrate(dict(row))
@@ -1540,6 +1568,19 @@ def _process_fts_result(row, db_index, query_embedding, now: datetime):
 
     # 4. Final relevance: a weighted blend of the likelihood signal and the decayed utility score
     item["final_score"] = (likelihood * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
+    if _elevated_scoring_enabled():
+        age_days = 0.0
+        try:
+            dt = datetime.fromisoformat(str(item.get("timestamp")).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_days = max(0.0, (now - dt).total_seconds() / 86400.0)
+        except Exception:
+            age_days = 0.0
+        item["final_score"] = elevated_final_score(
+            item["bm25_score"], float(item.get("utility_score") or 0.0),
+            float(item.get("density_score") if item.get("density_score") is not None else 1.0),
+            age_days, is_canon_lock=str(item.get("event_type") or "").upper() == "CANON")
     return item
 
 
@@ -1706,7 +1747,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         dom_params = () if domain_key in (None, "*") else (domain_key,)
                         ing_clause, ing_params = _ingest_filter_sql("s", include_research)
                         cursor = conn.execute(f"""
-                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                            SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                                    s.embedding, s.tags, s.domain_key, s.density_score,
                                    bm25(shards_fts, 5.0, 1.0) as bm25_score  -- a title hit outweighs a body hit
                             FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
@@ -1741,7 +1782,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         not_in = (f"s.id NOT IN ({','.join('?' for _ in have_ids)}) AND "
                                   if have_ids else "")
                         extra = conn.execute(f"""
-                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                            SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                                    s.embedding, s.tags, s.domain_key, s.density_score,
                                    bm25(shards_fts, 5.0, 1.0) as bm25_score
                             FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
@@ -1782,7 +1823,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     # filter instead; NOUGEN_LIKE_ON_FTS_MISS=1 restores the scan.
                     try:
                         cursor = conn.execute(f"""
-                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                            SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                                    s.embedding, s.tags, s.domain_key, s.density_score
                             FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
                             WHERE {dom_clause.replace("domain_key", "s.domain_key")}shards_fts MATCH ?
@@ -1792,7 +1833,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         cursor = None
                 if cursor is None:
                     cursor = conn.execute(f"""
-                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        SELECT id, timestamp, title, content, event_type, utility_score, embedding, tags, domain_key, density_score
                         FROM shards
                         WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
                         ORDER BY utility_score DESC, id ASC LIMIT ?
@@ -1947,7 +1988,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     sim_by_id = {rid: sim for sim, rid in keep}
                     placeholders = ",".join("?" * len(keep))
                     full = conn.execute(f"""
-                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        SELECT id, timestamp, title, content, event_type, utility_score, embedding, tags, domain_key, density_score
                         FROM shards WHERE id IN ({placeholders})
                     """, tuple(rid for _, rid in keep)).fetchall()
                     fuzzy = []
@@ -2552,7 +2593,7 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
                 return rows
             conn = get_connection(i)
             for row in conn.execute(f"""
-                    SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                    SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                            s.embedding, s.tags, s.domain_key, s.density_score
                     FROM shards s WHERE {dom_clause}{ing_clause}s.title LIKE ? ESCAPE '\\'
                     ORDER BY s.id DESC LIMIT ?""", (*dom_params, *ing_params, pattern, limit)):
