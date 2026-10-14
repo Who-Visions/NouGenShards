@@ -1,6 +1,6 @@
 """Operator: issue a one-time invite for a tenant's node.
 
-  python tools/tenant_invite.py fabian.v@gmail.com
+  python tools/tenant_invite.py <invitee-email>
 Prints the invite code to hand to the tenant. Code is single-use and expires.
 Writes KV "invite:<code>" in the TENANTS namespace (needs wrangler auth loaded).
 """

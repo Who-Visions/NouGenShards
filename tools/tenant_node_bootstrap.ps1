@@ -5,7 +5,7 @@ Creates a private NouGen node: its own vault, its own tenant token, served on
 loopback and exposed through the tenant's own Cloudflare tunnel. Nothing here
 touches the owner's node, vault, relays or tokens.
 
-  .\tools\tenant_node_bootstrap.ps1 -TenantId fabian -Hostname fabian-node.example.com
+  .\tools\tenant_node_bootstrap.ps1 -TenantId <tenant-id> -Hostname <tenant-hostname>
 #>
 param(
   [Parameter(Mandatory)] [string]$TenantId,
