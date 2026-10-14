@@ -32,7 +32,9 @@ if (-not $tok) { throw 'tenant mint failed (tenant may already exist; use the to
 
 # Node: loopback only, bound to this tenant's vault.
 $env:NGS_NODE_TOKEN = $tok
-Start-Process -WindowStyle Hidden -FilePath $py `
+# Background server runs under pythonw (no console window).
+$pyw = Join-Path $root '.venv\Scripts\pythonw.exe'
+Start-Process -WindowStyle Hidden -FilePath $pyw `
   -ArgumentList @('-m','uvicorn','app:app','--host','127.0.0.1','--port',"$Port") `
   -WorkingDirectory $root
 
