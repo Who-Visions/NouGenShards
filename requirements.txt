@@ -46,7 +46,7 @@ cryptography==50.0.1
     #   nougen-shards (pyproject.toml)
     #   google-auth
     #   pyjwt
-fastapi==0.141.1
+fastapi==0.142.2
     # via
     #   nougen-shards (pyproject.toml)
     #   gradio
