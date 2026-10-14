@@ -282,10 +282,10 @@ def test_ctx_execute_records_event_and_sandbox_handle(monkeypatch, capsys):
     from nougen_shards import cli
     nougen_context.init_context_db(clean_slate=True)
     cli._ctx_execute_and_record("console.log('ctx-record-marker')")
-    out = capsys.readouterr().out
-    assert "ctx-record-marker" in out
-    assert "[recorded handle=ncode_" in out
+    captured = capsys.readouterr()
+    assert "ctx-record-marker" in captured.out
+    assert "[recorded handle=ncode_" in captured.err
     hits = nougen_context.search_events("ctx-record-marker", limit=5)
     assert any(h["event_type"] == "ctx_execute" for h in hits)
-    handle = out.split("handle=")[1].split("]")[0]
+    handle = captured.err.split("handle=")[1].split("]")[0]
     assert nougen_context.fetch_sandbox(handle).strip() == "ctx-record-marker"

@@ -1486,7 +1486,10 @@ def _ctx_execute_and_record(code, bypass_gatekeeper=False):
     (Rule 0.14); only the handle and a bounded preview go to the event log.
     """
     import hashlib
-    output = nougen_sandbox.execute_sandboxed(code, bypass_gatekeeper=bypass_gatekeeper)
+    if bypass_gatekeeper:
+        output = nougen_sandbox.execute_sandboxed(code, bypass_gatekeeper=True)
+    else:
+        output = nougen_sandbox.execute_sandboxed(code)
     print(output)
     if output.startswith(("Error:", "Execution failed")):
         return
@@ -1497,7 +1500,7 @@ def _ctx_execute_and_record(code, bypass_gatekeeper=False):
         f"{code[:500]}\n-> {output[:500]}",
         {"handle": handle, "bytes": len(output.encode("utf-8"))},
     )
-    print(f"[recorded handle={handle}]")
+    print(f"[recorded handle={handle}]", file=sys.stderr)
 
 
 def cmd_ctx(args):
