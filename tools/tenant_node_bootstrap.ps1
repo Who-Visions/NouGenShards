@@ -17,6 +17,18 @@ param(
   [int]$Port = 4460
 )
 $ErrorActionPreference = 'Stop'
+# Stop only the tunnel this tenant started before: its launcher PID is recorded and
+# its children are stopped with it. Other cloudflared processes are left alone.
+function Stop-OwnTunnel {
+  param([string]$PidFile)
+  if (-not (Test-Path $PidFile)) { return }
+  $launcher = [int](Get-Content $PidFile -Raw)
+  Get-CimInstance Win32_Process -Filter "ParentProcessId=$launcher" |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  Stop-Process -Id $launcher -Force -ErrorAction SilentlyContinue
+  Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
+}
+
 # Every child process is created with no console window and its output captured.
 # Nothing here may open a visible terminal on the tenant's machine.
 # Background processes (node, tunnel) run with no window and write their output to a
@@ -122,6 +134,8 @@ function Ensure-Cloudflared {
 Ensure-Cloudflared
 
 if ($Hostname) {
+  # The named tunnel's ingress is set to this port in the account; any other port would not route.
+  if ($Port -ne 4460) { throw 'a pinned hostname requires -Port 4460' }
   # Pinned tenant: a named tunnel. Its token arrives through this tenant's own
   # enrolment session, so the node and the tunnel stay bound to one account.
   $bytes = New-Object byte[] 24
@@ -139,12 +153,20 @@ if ($Hostname) {
     elseif ($st.status -eq 'expired') { throw 'enrolment expired; run the setup again' }
   }
   if (-not $tt) { throw 'sign-in was not completed in time; run the setup again' }
-  Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'" |
-    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  $pidFile = Join-Path $stateDir 'tunnel.pid'
+  Stop-OwnTunnel -PidFile $pidFile
   # The token goes through the environment, not the command line.
   $env:TUNNEL_TOKEN = $tt
-  $null = Start-Background -File 'cloudflared' -Arguments @('tunnel','run') -LogFile (Join-Path $stateDir 'tunnel.log')
+  $launcher = Start-Background -File 'cloudflared' -Arguments @('tunnel','run') -LogFile (Join-Path $stateDir 'tunnel.log')
   Remove-Item Env:TUNNEL_TOKEN -ErrorAction SilentlyContinue
+  $launcher.Id | Set-Content -Path $pidFile
+  # Verify the route before reporting success.
+  $live = $false
+  for ($i = 0; $i -lt 45 -and -not $live; $i++) {
+    Start-Sleep -Seconds 2
+    try { $live = (Invoke-WebRequest -UseBasicParsing -Uri "https://$Hostname/health" -TimeoutSec 5).StatusCode -eq 200 } catch { }
+  }
+  if (-not $live) { throw "tunnel started but https://$Hostname/health did not answer; see $(Join-Path $stateDir 'tunnel.log')" }
   Write-Host "Your node is live at https://$Hostname. Leave this window open."
   exit 0
 }
@@ -152,11 +174,10 @@ if ($Hostname) {
 # Tunnel: quick tunnel (no account). A named hostname is optional.
 $tlog = Join-Path $stateDir 'tunnel.log'
 $tunnelArgs = @('tunnel','--url',"http://127.0.0.1:$Port")
-# Re-runs replace the old tunnel for this port instead of stacking another one.
-Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'" |
-  Where-Object { $_.CommandLine -match [regex]::Escape("127.0.0.1:$Port") } |
-  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-$null = Start-Background -File 'cloudflared' -Arguments $tunnelArgs -LogFile $tlog
+# Re-runs replace only this tenant's previous quick tunnel.
+Stop-OwnTunnel -PidFile (Join-Path $stateDir 'tunnel.pid')
+$launcher = Start-Background -File 'cloudflared' -Arguments $tunnelArgs -LogFile $tlog
+$launcher.Id | Set-Content -Path (Join-Path $stateDir 'tunnel.pid')
 $url = $null
 for ($i = 0; $i -lt 60 -and -not $url; $i++) {
   Start-Sleep -Seconds 2
