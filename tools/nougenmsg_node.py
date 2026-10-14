@@ -50,6 +50,7 @@ import uuid
 import os
 import queue
 import socket
+import threading
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -284,6 +285,48 @@ def record(msg: dict) -> Path:
     return path
 
 
+MAX_INFLIGHT = int(os.environ.get("NOUGEN_AGY_MSG_MAX_INFLIGHT", "16") or 16)
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a cap on concurrent handlers.
+
+    A burst of POST /msg used to spawn one thread per connection without limit,
+    which can pin the node. Past the cap the server answers 503 at once and
+    closes the socket, so the sender retries instead of queuing forever.
+    """
+    daemon_threads = True
+
+    def __init__(self, *args, max_inflight: int = MAX_INFLIGHT, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._slots = threading.BoundedSemaphore(max(1, int(max_inflight)))
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            try:
+                # Drain the request first: closing with unread bytes resets the
+                # socket before the client can read the 503.
+                request.settimeout(1)
+                request.recv(65536)
+                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\n"
+                                b"Content-Length: 0\r\nConnection: close\r\n\r\n")
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -439,8 +482,7 @@ def main() -> int:
         flush=True)
     ok, detail = registry_parity_ok()
     print("[nougenmsg_node] registry_parity={} ({})".format("ok" if ok else "MISMATCH", detail), flush=True)
-    server = ThreadingHTTPServer((bind, port), Handler)
-    server.daemon_threads = True
+    server = BoundedThreadingHTTPServer((bind, port), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
