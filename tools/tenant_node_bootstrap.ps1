@@ -9,7 +9,7 @@ touches the owner's node, vault, relays or tokens.
 #>
 param(
   [Parameter(Mandatory)] [string]$TenantId,
-  [Parameter(Mandatory)] [string]$Hostname,
+  [string]$Hostname = '',
   [int]$Port = 4460
 )
 $ErrorActionPreference = 'Stop'
@@ -34,10 +34,23 @@ Start-Process -WindowStyle Hidden -FilePath $py `
   -ArgumentList @('-m','uvicorn','app:app','--host','127.0.0.1','--port',"$Port") `
   -WorkingDirectory $root
 
-# Tunnel: the tenant's own Cloudflare tunnel (cloudflared must be logged in).
-Start-Process -WindowStyle Hidden -FilePath 'cloudflared' `
-  -ArgumentList @('tunnel','--url',"http://127.0.0.1:$Port",'--hostname',$Hostname)
+# Tunnel: a free quick tunnel needs no account. A named hostname is optional.
+$tlog = Join-Path $env:TEMP "tenant-$TenantId-tunnel.log"
+$tunnelArgs = @('tunnel','--url',"http://127.0.0.1:$Port")
+if ($Hostname) { $tunnelArgs = @('tunnel','--url',"http://127.0.0.1:$Port",'--hostname',$Hostname) }
+Start-Process -WindowStyle Hidden -FilePath 'cloudflared' -ArgumentList $tunnelArgs `
+  -RedirectStandardError $tlog
+$url = $null
+for ($i = 0; $i -lt 60 -and -not $url; $i++) {
+  Start-Sleep -Seconds 2
+  if (Test-Path $tlog) {
+    $m = Select-String -Path $tlog -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com|https://\S+\.(?:com|net|org)' | Select-Object -Last 1
+    if ($m) { $url = $m.Matches[0].Value }
+  }
+}
+if (-not $url) { throw "tunnel did not come up; see $tlog" }
 
-Write-Host "node_url=https://$Hostname"
-Write-Host "tenant token (send privately to the gateway operator, do not post it):"
-Write-Host $tok
+Write-Host ""
+Write-Host "Send these two lines to the gateway operator (private, not in chat logs):"
+Write-Host "node_url=$url"
+Write-Host "token=$tok"
