@@ -1676,6 +1676,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 return db_rows, missed
             conn = get_connection(i)
             fts_worked = False
+            fts_ran_clean = False
             db_hits = 0
             fts_query = _build_fts_match_query(query)
             if fts_query is not None:
@@ -1713,6 +1714,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                             ORDER BY bm25_score ASC, s.id ASC LIMIT ?
                         """, (*dom_params, *ing_params, match_expr, limit))
                         res = cursor.fetchall()
+                        fts_ran_clean = True
                     except sqlite3.OperationalError:
                         res = None
                     if res:
@@ -1733,12 +1735,32 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 like_query = f"%{query}%"
                 dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
                 dom_params = () if domain_key in (None, "*") else (domain_key,)
-                cursor = conn.execute(f"""
-                    SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
-                    FROM shards
-                    WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
-                    ORDER BY utility_score DESC, id ASC LIMIT ?
-                """, (*dom_params, like_query, like_query, limit))
+                cursor = None
+                if fts_ran_clean and fts_query is not None and os.environ.get("NOUGEN_LIKE_ON_FTS_MISS", "0") != "1":
+                    # The index is healthy and the ingest-filtered pass came up
+                    # empty. This fallback exists to surface rows that pass skipped
+                    # (e.g. ingested transcripts), and a full LIKE scan of every
+                    # multi-GB shard DB measured ~6s on a hit and ~27s on a miss,
+                    # which timed out the gateway's blade lane ("fanout blade:miss").
+                    # Ask the trigram index for the same rows without the ingest
+                    # filter instead; NOUGEN_LIKE_ON_FTS_MISS=1 restores the scan.
+                    try:
+                        cursor = conn.execute(f"""
+                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                                   s.embedding, s.tags, s.domain_key, s.density_score
+                            FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
+                            WHERE {dom_clause.replace("domain_key", "s.domain_key")}shards_fts MATCH ?
+                            ORDER BY s.utility_score DESC, s.id ASC LIMIT ?
+                        """, (*dom_params, fts_query, limit))
+                    except sqlite3.OperationalError:
+                        cursor = None
+                if cursor is None:
+                    cursor = conn.execute(f"""
+                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        FROM shards
+                        WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
+                        ORDER BY utility_score DESC, id ASC LIMIT ?
+                    """, (*dom_params, like_query, like_query, limit))
                 for row in cursor:
                     item = hydrate(dict(row))
                     item["_db_index"] = i
