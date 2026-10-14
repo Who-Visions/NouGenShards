@@ -2785,7 +2785,10 @@ def cmd_cf(args):
             etag = res.get("result", {}).get("etag", "live")
             print(f"✅ Deployed [{res['worker_name']}] successfully! (ETag: {etag})")
             print(f"  • Entry Point: {res['entry_point']}")
-            print(f"  • Live URL:    https://{res['worker_name']}.whoentertains.workers.dev")
+            from . import endpoints
+            live = endpoints.worker_live_url(res['worker_name'])
+            if live:
+                print(f"  • Live URL:    {live}")
         except Exception as e:
             print(f"❌ Deploy failed: {e}")
             sys.exit(1)
