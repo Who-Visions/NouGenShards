@@ -361,29 +361,38 @@ def test_tenant_federation_never_reads_owner_local_vaults(monkeypatch):
     assert asked == [], "tenant federation consulted owner local vaults"
 
 
-def test_tenant_cannot_reach_host_or_relay_tools_over_http():
-    """A tenant token on the node's public MCP route may use shard tools only.
-    Relay, messaging, deploy, sandbox and local-scan tools are refused before the
-    MCP server sees them."""
-    from fastapi.testclient import TestClient
-    import app as node
+def test_tenant_cannot_reach_host_or_relay_tools_over_http(tenant_node):
+    """A tenant token on the node's MCP gate may call shard tools only. Relay,
+    messaging, deploy, sandbox and local-scan tools are refused before the MCP
+    server sees them. The owner is not restricted."""
+    reached = []
 
-    token = tenants.mint_tenant("tenant-gate-check", "Gate check")
-    headers = {"x-ngs-token": token, "accept": "application/json, text/event-stream",
-               "content-type": "application/json"}
+    async def inner(scope, receive, send):
+        body = b""
+        more = True
+        while more:
+            msg = await receive()
+            body += msg.get("body", b"")
+            more = msg.get("more_body", False)
+        reached.append(json.loads(body or b"null"))
+        out = b"{}"
+        await send({"type": "http.response.start", "status": 200,
+                    "headers": [(b"content-type", b"application/json")]})
+        await send({"type": "http.response.body", "body": out})
+
+    gated = TestClient(node._TokenGatedMCP(inner))
 
     def call(name):
         return {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                 "params": {"name": name, "arguments": {}}}
 
-    with TestClient(node.app) as client:
-        client.post("/mcp/", headers=headers, json={
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                       "clientInfo": {"name": "t", "version": "0"}}})
-        for blocked in ("relay_open", "nougenmsg_send", "cf_deploy_worker",
-                        "execute_sandboxed_code", "run_brain_scan"):
-            r = client.post("/mcp/", headers=headers, json=call(blocked))
-            assert r.status_code == 403, (blocked, r.status_code)
-        allowed = client.post("/mcp/", headers=headers, json=call("get_memory_stats"))
-        assert allowed.status_code == 200, allowed.status_code
+    tenant_headers = _auth(tenant_node["token_a"])
+    for blocked in ("relay_open", "nougenmsg_send", "cf_deploy_worker",
+                    "execute_sandboxed_code", "run_brain_scan"):
+        r = gated.post("/", headers=tenant_headers, json=call(blocked))
+        assert r.status_code == 403, (blocked, r.status_code)
+    assert reached == [], "blocked tools reached the MCP server"
+
+    allowed = gated.post("/", headers=tenant_headers, json=call("get_memory_stats"))
+    assert allowed.status_code == 200
+    assert reached and reached[0]["params"]["name"] == "get_memory_stats"
