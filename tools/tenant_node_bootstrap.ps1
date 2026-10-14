@@ -10,7 +10,7 @@ touches the owner's node, vault, relays or tokens.
 param(
   [Parameter(Mandatory)] [string]$TenantId,
   [Parameter(Mandatory)] [string]$Invite,
-  [string]$Gateway = 'https://shards.nougenai.com',
+  [string]$Gateway = 'https://fleet.nougenai.com',
   [string]$Hostname = '',
   [int]$Port = 4460
 )

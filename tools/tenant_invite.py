@@ -15,7 +15,7 @@ with os.fdopen(fd, "w", encoding="utf-8") as fh:
     json.dump([{"key": "invite:" + code, "value": json.dumps(record)}], fh)
 try:
     subprocess.run(["npx", "--no-install", "wrangler", "kv", "bulk", "put", tmp,
-                    "--binding", "TENANTS", "--remote"], cwd=Path(__file__).resolve().parent.parent,
+                    "--binding", "TENANTS", "--remote"], cwd=Path(os.environ.get("TENANT_WORKER_DIR", Path(__file__).resolve().parent.parent.parent / "nougen-fleet-mcp")),
                    check=True, shell=os.name == "nt", encoding="utf-8", errors="replace")
 finally:
     Path(tmp).unlink(missing_ok=True)
