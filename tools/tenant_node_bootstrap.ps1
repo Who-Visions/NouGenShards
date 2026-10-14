@@ -87,9 +87,27 @@ for ($i = 0; $i -lt 60 -and -not $url; $i++) {
 }
 if (-not $url) { throw "tunnel did not come up; see $tlog" }
 
-# Register (or re-register) with the gateway. The gateway probes the node with this
-# token before it stores or updates anything.
-$body = @{ code = $Invite; eml = $Email; node_url = $url; token = $tok } | ConvertTo-Json
-$reply = Invoke-RestMethod -Method Post -Uri "$Gateway/tenant/register" -ContentType 'application/json' -Body $body
-Write-Host "registered: $($reply.enrolled) -> $($reply.node_url)"
+if ($Invite) {
+  # Legacy path: an operator-issued invite code.
+  $body = @{ code = $Invite; eml = $Email; node_url = $url; token = $tok } | ConvertTo-Json
+  $reply = Invoke-RestMethod -Method Post -Uri "$Gateway/tenant/register" -ContentType 'application/json' -Body $body
+  Write-Host "registered: $($reply.enrolled) -> $($reply.node_url)"
+} else {
+  # Default path: sign in with the Google account for this email. No code to copy.
+  $bytes = New-Object byte[] 24
+  [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+  $session = [Convert]::ToBase64String($bytes).Replace('+','-').Replace('/','_').TrimEnd('=')
+  $begin = @{ session = $session; eml = $Email; node_url = $url; token = $tok } | ConvertTo-Json
+  $started = Invoke-RestMethod -Method Post -Uri "$Gateway/tenant/enroll/begin" -ContentType 'application/json' -Body $begin
+  Write-Host "Opening your browser to sign in as $Email ..."
+  Start-Process $started.login_url
+  $enrolled = $false
+  for ($i = 0; $i -lt 200 -and -not $enrolled; $i++) {
+    Start-Sleep -Seconds 3
+    $st = Invoke-RestMethod -Method Get -Uri "$Gateway/tenant/enroll/status?session=$session"
+    if ($st.status -eq 'enrolled') { $enrolled = $true; Write-Host "enrolled: $($st.enrolled) -> $url" }
+    elseif ($st.status -eq 'expired') { throw 'enrolment expired; run the setup again' }
+  }
+  if (-not $enrolled) { throw 'sign-in was not completed in time; run the setup again' }
+}
 Write-Host "Your node is live. Leave this window open."
