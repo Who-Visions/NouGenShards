@@ -66,6 +66,26 @@ for ($i = 0; $i -lt 90 -and -not $healthy; $i++) {
 }
 if (-not $healthy) { throw "node did not become healthy on port $Port" }
 
+# Install cloudflared if it is missing: winget first, then a direct download of the
+# official Windows binary into the user's own folder. No admin rights needed.
+function Ensure-Cloudflared {
+  if (Get-Command cloudflared -ErrorAction SilentlyContinue) { return }
+  $localBin = Join-Path $env:LOCALAPPDATA 'NouGenin'
+  New-Item -ItemType Directory -Force -Path $localBin | Out-Null
+  $exe = Join-Path $localBin 'cloudflared.exe'
+  if (-not (Test-Path $exe)) {
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+      winget install --id Cloudflare.cloudflared --silent --accept-package-agreements --accept-source-agreements | Out-Null
+      if (Get-Command cloudflared -ErrorAction SilentlyContinue) { return }
+    }
+    $url = 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe'
+    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $exe
+  }
+  $env:Path = "$localBin;$env:Path"
+  if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) { throw 'cloudflared could not be installed' }
+}
+Ensure-Cloudflared
+
 # Tunnel: quick tunnel (no account). A named hostname is optional.
 $tlog = Join-Path $stateDir 'tunnel.log'
 $tunnelArgs = @('tunnel','--url',"http://127.0.0.1:$Port")
