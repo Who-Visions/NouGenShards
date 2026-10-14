@@ -14,6 +14,7 @@ param(
   [string]$Invite = '',
   [string]$Gateway = 'https://fleet.nougenai.com',
   [string]$Hostname = '',
+  [switch]$QuickTunnel,
   [int]$Port = 4460
 )
 $ErrorActionPreference = 'Stop'
@@ -133,15 +134,21 @@ function Ensure-Cloudflared {
 }
 Ensure-Cloudflared
 
-if ($Hostname) {
-  # The named tunnel's ingress is set to this port in the account; any other port would not route.
-  if ($Port -ne 4460) { throw 'a pinned hostname requires -Port 4460' }
+if ($Hostname -or (-not $QuickTunnel -and -not $Invite)) {
+  # Named tunnel. With -Hostname the tenant was provisioned by an operator; without it
+  # the gateway provisions a tunnel for this email after Google sign-in. Either way the
+  # port is the one the tunnel's ingress routes to.
+  if ($Port -ne 4460) { throw 'a named tunnel requires -Port 4460' }
   # Pinned tenant: a named tunnel. Its token arrives through this tenant's own
   # enrolment session, so the node and the tunnel stay bound to one account.
   $bytes = New-Object byte[] 24
   [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
   $session = [Convert]::ToBase64String($bytes).Replace('+','-').Replace('/','_').TrimEnd('=')
-  $begin = @{ session = $session; eml = $Email; node_url = "https://$Hostname"; token = $tok; pinned = $true } | ConvertTo-Json
+  if ($Hostname) {
+    $begin = @{ session = $session; eml = $Email; node_url = "https://$Hostname"; token = $tok; pinned = $true } | ConvertTo-Json
+  } else {
+    $begin = @{ session = $session; eml = $Email; token = $tok; auto = $true } | ConvertTo-Json
+  }
   $started = Invoke-RestMethod -Method Post -Uri "$Gateway/tenant/enroll/begin" -ContentType 'application/json' -Body $begin
   Write-Host "Opening your browser to sign in as $Email ..."
   Start-Process $started.login_url
@@ -149,7 +156,10 @@ if ($Hostname) {
   for ($i = 0; $i -lt 200 -and -not $tt; $i++) {
     Start-Sleep -Seconds 3
     $st = Invoke-RestMethod -Method Get -Uri "$Gateway/tenant/enroll/status?session=$session"
-    if ($st.status -eq 'enrolled') { $tt = $st.tunnel_token }
+    if ($st.status -eq 'enrolled') {
+      $tt = $st.tunnel_token
+      if (-not $Hostname -and $st.hostname) { $Hostname = $st.hostname }
+    }
     elseif ($st.status -eq 'expired') { throw 'enrolment expired; run the setup again' }
   }
   if (-not $tt) { throw 'sign-in was not completed in time; run the setup again' }
