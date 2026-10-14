@@ -9,6 +9,8 @@ touches the owner's node, vault, relays or tokens.
 #>
 param(
   [Parameter(Mandatory)] [string]$TenantId,
+  [Parameter(Mandatory)] [string]$Invite,
+  [string]$Gateway = 'https://shards.nougenai.com',
   [string]$Hostname = '',
   [int]$Port = 4460
 )
@@ -50,7 +52,9 @@ for ($i = 0; $i -lt 60 -and -not $url; $i++) {
 }
 if (-not $url) { throw "tunnel did not come up; see $tlog" }
 
-Write-Host ""
-Write-Host "Send these two lines to the gateway operator (private, not in chat logs):"
-Write-Host "node_url=$url"
-Write-Host "token=$tok"
+# Register with the gateway automatically. The gateway verifies the node answers
+# with this token before it stores anything. Nothing is pasted by hand.
+$body = @{ code = $Invite; node_url = $url; token = $tok } | ConvertTo-Json
+$reply = Invoke-RestMethod -Method Post -Uri "$Gateway/tenant/register" -ContentType 'application/json' -Body $body
+Write-Host "registered: $($reply.enrolled) -> $($reply.node_url)"
+Write-Host "Your node is live. Leave this window open."
