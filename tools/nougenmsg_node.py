@@ -303,22 +303,27 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
     def process_request(self, request, client_address):
         if not self._slots.acquire(blocking=False):
-            try:
-                # Drain the request first: closing with unread bytes resets the
-                # socket before the client can read the 503.
-                request.settimeout(1)
-                request.recv(65536)
-                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\n"
-                                b"Content-Length: 0\r\nConnection: close\r\n\r\n")
-            except OSError:
-                pass
-            self.shutdown_request(request)
+            # Reject off the accept loop: a silent client must not stall it.
+            threading.Thread(target=self._reject_overload, args=(request,), daemon=True).start()
             return
         try:
             super().process_request(request, client_address)
         except Exception:
             self._slots.release()
             raise
+
+    def _reject_overload(self, request):
+        try:
+            # Drain the request first: closing with unread bytes resets the
+            # socket before the client can read the 503.
+            request.settimeout(1)
+            request.recv(65536)
+            request.sendall(b"HTTP/1.1 503 Service Unavailable\r\n"
+                            b"Content-Length: 0\r\nConnection: close\r\n\r\n")
+        except OSError:
+            pass
+        finally:
+            self.shutdown_request(request)
 
     def process_request_thread(self, request, client_address):
         try:
