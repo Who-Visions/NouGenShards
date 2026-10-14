@@ -29,6 +29,23 @@ except ImportError:
 # Backwards-compatible alias for any caller still importing the old name.
 FastMCP = MCPServer
 
+def _file_root_gate(path: str) -> Optional[str]:
+    """Confine analyze_file_sandboxed reads to one root (WG-1175, Codex P1).
+
+    NOUGEN_FILE_TOOLS_ROOT wins; otherwise the repository root. A path that
+    resolves outside it (including via symlinks or '..') is refused.
+    """
+    from pathlib import Path
+    root = Path(os.environ.get("NOUGEN_FILE_TOOLS_ROOT", "")
+                or Path(__file__).resolve().parents[2]).resolve()
+    target = Path(path).expanduser().resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return f"Error: path is outside the allowed root {root} (set NOUGEN_FILE_TOOLS_ROOT to widen)."
+    return None
+
+
 def _tool_gate(env_var: str, tool: str) -> Optional[str]:
     """Opt-in gate for MCP tools that read files, fetch URLs, or deploy workers.
 
@@ -383,6 +400,9 @@ def analyze_file_sandboxed(file_path: str, query: Optional[str] = None) -> str:
     gated = _tool_gate("NOUGEN_ENABLE_FILE_TOOLS", "analyze_file_sandboxed")
     if gated:
         return gated
+    outside = _file_root_gate(file_path)
+    if outside:
+        return outside
     res = nougen_context.analyze_file(file_path, query=query)
     if "error" in res:
         return f"Error: {res['error']}"
@@ -876,6 +896,9 @@ def cf_run_ai(prompt: str, model: str = "@cf/meta/llama-3.1-8b-instruct") -> str
         prompt: User instruction or query for the edge model.
         model: Model identifier (e.g. '@cf/meta/llama-3.1-8b-instruct', '@cf/qwen/qwen3-30b-a3b-fp8', '@cf/google/gemma-4-26b-a4b-it').
     """
+    gated = _tool_gate("NOUGEN_ENABLE_CF_TOOLS", "cf_run_ai")
+    if gated:
+        return gated
     from . import cloudflare
     try:
         cf = cloudflare.CloudflareClient()
