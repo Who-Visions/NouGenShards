@@ -38,6 +38,46 @@ _LANE_EXECUTOR = None
 _LANE_EXECUTOR_LOCK = threading.Lock()
 
 
+# Adaptive per-lane budget (flag NOUGEN_ADAPTIVE_LANE_TIMEOUT=1, default off).
+# Each lane keeps a Beta(alpha, beta) reliability posterior from its recent
+# outcomes; a lane that keeps timing out gets a smaller budget so one hung
+# gateway does not hold the whole recall for the full deadline. The floor is
+# env-tunable because a local lane legitimately takes ~10s on a full recall.
+_LANE_RELIABILITY: dict = {}
+_LANE_RELIABILITY_LOCK = threading.Lock()
+
+
+def _adaptive_lane_timeout_enabled() -> bool:
+    return os.environ.get("NOUGEN_ADAPTIVE_LANE_TIMEOUT", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _lane_reliability_record(name: str, status: str) -> None:
+    ok = status in ("ok", "partial")
+    with _LANE_RELIABILITY_LOCK:
+        a, b = _LANE_RELIABILITY.get(name, (1.0, 1.0))
+        if ok:
+            a += 1.0
+        else:
+            b += 1.0
+        _LANE_RELIABILITY[name] = (a, b)
+
+
+def _lane_budget_s(name: str, deadline_s: float) -> float:
+    """Seconds this lane may take. Full deadline unless the adaptive flag is on."""
+    if not _adaptive_lane_timeout_enabled():
+        return deadline_s
+    try:
+        floor = float(os.environ.get("NOUGEN_LANE_MIN_DEADLINE_S", "5.0"))
+    except ValueError:
+        floor = 5.0
+    with _LANE_RELIABILITY_LOCK:
+        a, b = _LANE_RELIABILITY.get(name, (1.0, 1.0))
+    expected = a / (a + b)
+    # Mean-reliability budget: a lane that succeeds ~always gets the full deadline,
+    # one that always times out is held to the floor.
+    return max(min(floor, deadline_s), min(deadline_s, deadline_s * expected))
+
+
 def _lane_pool_size() -> int:
     try:
         return max(4, int(os.environ.get("NOUGEN_FED_LANE_POOL", "16")))
@@ -220,6 +260,7 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         return _run
 
     def _record_lane(name, status, rows):
+        _lane_reliability_record(name, status)
         """Per-lane elapsed and row count, for tuning the deadline on evidence.
 
         The deadline was argued about for a day on end-to-end latency alone,
@@ -242,7 +283,8 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         }
 
     def _lane_result(future, name, default):
-        remaining = deadline_s - (_time.monotonic() - started)
+        budget = _lane_budget_s(name, deadline_s)
+        remaining = min(deadline_s, budget) - (_time.monotonic() - started)
         try:
             out = future.result(timeout=max(0.1, remaining))
         except concurrent.futures.TimeoutError:
