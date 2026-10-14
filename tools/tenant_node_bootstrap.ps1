@@ -134,7 +134,7 @@ function Ensure-Cloudflared {
 }
 Ensure-Cloudflared
 
-if ($Hostname -or -not $QuickTunnel) {
+if ($Hostname -or (-not $QuickTunnel -and -not $Invite)) {
   # Named tunnel. With -Hostname the tenant was provisioned by an operator; without it
   # the gateway provisions a tunnel for this email after Google sign-in. Either way the
   # port is the one the tunnel's ingress routes to.
