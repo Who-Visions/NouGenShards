@@ -387,12 +387,12 @@ def test_tenant_cannot_reach_host_or_relay_tools_over_http(tenant_node):
                 "params": {"name": name, "arguments": {}}}
 
     tenant_headers = _auth(tenant_node["token_a"])
-    for blocked in ("relay_open", "nougenmsg_send", "cf_deploy_worker",
-                    "execute_sandboxed_code", "run_brain_scan"):
+    for blocked in ("relay_open_legs", "nougenmsg", "fleet_send", "dav1d_exec",
+                    "github_repo_read", "context_task_checkpoint", "vault_list"):
         r = gated.post("/", headers=tenant_headers, json=call(blocked))
         assert r.status_code == 403, (blocked, r.status_code)
     assert reached == [], "blocked tools reached the MCP server"
 
-    allowed = gated.post("/", headers=tenant_headers, json=call("get_memory_stats"))
+    allowed = gated.post("/", headers=tenant_headers, json=call("recall_memory"))
     assert allowed.status_code == 200
-    assert reached and reached[0]["params"]["name"] == "get_memory_stats"
+    assert reached and reached[0]["params"]["name"] == "recall_memory"

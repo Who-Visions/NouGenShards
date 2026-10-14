@@ -4126,10 +4126,10 @@ def _scope_base_url(scope) -> str:
 # Tools a tenant identity may call on the node. Everything else touches the host
 # machine or the owner's shared services and stays owner-only.
 TENANT_MCP_TOOLS = frozenset({
-    "recall_memory", "recall_layered", "recall_related", "search_context",
-    "capture_experience", "add_shard", "mark_utility", "link_shards", "get_memory_stats",
-    "context_task_checkpoint", "context_task_current", "context_session_assemble",
-    "semantic_context_assemble", "context_feedback", "context_correct",
+    # Vault-bound reads and writes only (they resolve through the active tenant vault).
+    # Context-session tools are excluded: their session DB is shared across identities.
+    "capture_experience", "recall_memory", "recall_layered", "recall_related",
+    "search", "get_shard", "mark_utility",
 })
 
 
