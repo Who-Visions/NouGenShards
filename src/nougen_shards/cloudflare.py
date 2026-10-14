@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 CF_API = "https://api.cloudflare.com/client/v4"
 DEFAULT_TOKEN_KEYS = ("CLOUDFLARE_API_TOKEN_NOUGEN_FULL", "CLOUDFLARE_API_TOKEN", "NOUGEN_CF_AI_TOKEN")
 DEFAULT_ACCOUNT_KEYS = ("CLOUDFLARE_ACCOUNT_ID", "NOUGEN_CF_ACCOUNT_ID")
-FLEET_GATEWAY_URL = "https://nougen-fleet-mcp.whoentertains.workers.dev"
+# The fleet gateway is resolved at call time (see endpoints.py); there is no default host.
 
 
 @dataclass
@@ -146,14 +146,19 @@ class CloudflareClient:
         # Check fleet gateway
         gw_status = "UNKNOWN"
         gw_latency_ms = None
-        try:
-            t_gw = time.perf_counter()
-            req_gw = urllib.request.Request(f"{FLEET_GATEWAY_URL}/", headers={"User-Agent": "NouGen-Probe/1.0"})
-            with urllib.request.urlopen(req_gw, timeout=5) as r:
-                gw_latency_ms = round((time.perf_counter() - t_gw) * 1000, 1)
-                gw_status = "ONLINE" if r.status in (200, 404, 405) else f"HTTP_{r.status}"
-        except Exception as e:
-            gw_status = f"OFFLINE ({type(e).__name__})"
+        from . import endpoints
+        gateway_url = endpoints.fleet_gateway_url()
+        if not gateway_url:
+            gw_status = "NOT_CONFIGURED"
+        else:
+            try:
+                t_gw = time.perf_counter()
+                req_gw = urllib.request.Request(f"{gateway_url}/", headers={"User-Agent": "NouGen-Probe/1.0"})
+                with urllib.request.urlopen(req_gw, timeout=5) as r:
+                    gw_latency_ms = round((time.perf_counter() - t_gw) * 1000, 1)
+                    gw_status = "ONLINE" if r.status in (200, 404, 405) else f"HTTP_{r.status}"
+            except Exception as e:
+                gw_status = f"OFFLINE ({type(e).__name__})"
 
         return {
             "account_id": self.account_id,
@@ -161,7 +166,7 @@ class CloudflareClient:
             "token_valid": token_ok,
             "api_latency_ms": latency_ms,
             "active_workers": len(workers),
-            "gateway_url": FLEET_GATEWAY_URL,
+            "gateway_url": gateway_url,
             "gateway_status": gw_status,
             "gateway_latency_ms": gw_latency_ms
         }

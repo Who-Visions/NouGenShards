@@ -841,7 +841,7 @@ def cf_deploy_worker(directory_path: str = "") -> str:
             "worker_name": res.get("worker_name"),
             "entry_point": res.get("entry_point"),
             "etag": res.get("result", {}).get("etag", "live"),
-            "live_url": f"https://{res.get('worker_name')}.whoentertains.workers.dev"
+            "live_url": __import__("nougen_shards.endpoints", fromlist=["worker_live_url"]).worker_live_url(res.get("worker_name"))
         }, indent=2)
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)})
