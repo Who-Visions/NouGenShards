@@ -19,6 +19,20 @@ param(
 $ErrorActionPreference = 'Stop'
 # Every child process is created with no console window and its output captured.
 # Nothing here may open a visible terminal on the tenant's machine.
+# Background processes (node, tunnel) run with no window and write their output to a
+# log file, so nothing blocks on a full pipe and the tunnel URL can be read back.
+function Start-Background {
+  param([string]$File, [string[]]$Arguments, [string]$LogFile, [string]$WorkDir)
+  $cmdline = '"' + $File + '" ' + (($Arguments) -join ' ') + ' > "' + $LogFile + '" 2>&1'
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = 'cmd.exe'
+  $psi.Arguments = '/d /c "' + $cmdline + '"'
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  if ($WorkDir) { $psi.WorkingDirectory = $WorkDir }
+  return [System.Diagnostics.Process]::Start($psi)
+}
+
 function Invoke-Quiet {
   param([string]$File, [string[]]$Arguments, [switch]$Wait)
   $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -77,7 +91,7 @@ $env:NGS_NODE_TOKEN = $tok
 $alive = $false
 try { $alive = (Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/health" -TimeoutSec 3).StatusCode -eq 200 } catch { }
 if (-not $alive) {
-  $null = Invoke-Quiet -File $pyw -Arguments @('-m','uvicorn','app:app','--host','127.0.0.1','--port',"$Port")
+  $null = Start-Background -File $pyw -Arguments @('-m','uvicorn','app:app','--host','127.0.0.1','--port',"$Port") -LogFile (Join-Path $stateDir 'node.log') -WorkDir $root
 }
 # Wait for the node to answer before anything is registered (cold starts take a while).
 $healthy = $false
@@ -95,7 +109,7 @@ if ($Hostname) { $tunnelArgs = @('tunnel','--url',"http://127.0.0.1:$Port",'--ho
 Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'" |
   Where-Object { $_.CommandLine -match [regex]::Escape("127.0.0.1:$Port") } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-$null = Invoke-Quiet -File 'cloudflared' -Arguments $tunnelArgs
+$null = Start-Background -File 'cloudflared' -Arguments $tunnelArgs -LogFile $tlog
 $url = $null
 for ($i = 0; $i -lt 60 -and -not $url; $i++) {
   Start-Sleep -Seconds 2
