@@ -1720,12 +1720,48 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     if res:
                         via_or_retry = match_expr is not fts_query
                         break
+                # Ingest rescue: bulk-ingest rows (event types in
+                # bulk_ingest_event_types, e.g. NouGenTube transcripts) are held out
+                # of default recall so papers do not drown agent memory. But when
+                # the filtered pass leaves slots unfilled, an exact all-terms match
+                # in the ingest population beats an empty slot -- a rare ID such as
+                # a video id otherwise returns semantic neighbours and never the
+                # one shard that contains it. Filtered hits keep their place; this
+                # only appends. NOUGEN_INGEST_RESCUE=0 disables it.
+                extra_rows: list = []
+                if (fts_ran_clean and fts_query is not None
+                        and os.environ.get("NOUGEN_INGEST_RESCUE", "1") != "0"
+                        and len(res or []) < limit):
+                    try:
+                        r_dom = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
+                        r_dom_params = () if domain_key in (None, "*") else (domain_key,)
+                        if not _ingest_filter_sql("s", include_research)[0]:
+                            raise sqlite3.OperationalError("no ingest filter active")
+                        have_ids = [r["id"] for r in (res or [])]
+                        not_in = (f"s.id NOT IN ({','.join('?' for _ in have_ids)}) AND "
+                                  if have_ids else "")
+                        extra = conn.execute(f"""
+                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                                   s.embedding, s.tags, s.domain_key, s.density_score,
+                                   bm25(shards_fts, 5.0, 1.0) as bm25_score
+                            FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
+                            WHERE {r_dom}{not_in}shards_fts MATCH ?
+                            ORDER BY bm25_score ASC, s.id ASC LIMIT ?
+                        """, (*r_dom_params, *have_ids, fts_query, limit - len(res or []))).fetchall()
+                        if extra:
+                            extra_rows = list(extra)
+                            res = list(res or []) + extra_rows
+                    except sqlite3.OperationalError:
+                        pass
                 if res:
+                    rescued_ids = {r["id"] for r in extra_rows}
                     for row in res:
                         accessed.append(row["id"])
                         item = _process_fts_result(row, i, query_embedding, query_now)
                         if via_or_retry:
                             item["_or_retry"] = True
+                        if row["id"] in rescued_ids:
+                            item["_ingest_rescue"] = True
                         db_rows.append(item)
                     fts_worked = True
 
@@ -2802,7 +2838,9 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     # the one signal that is unambiguous. Within a tier the tripartite order holds.
     qnorm = _norm_title(query) if _title_lane_enabled() else ""
     for item in scored_results:
-        item["_title_exact"] = _title_hit(qnorm, item.get("title"))
+        # Rescued ingest rows fill empty slots only; they never take the
+        # exact-title tier above filtered memory hits.
+        item["_title_exact"] = (not item.get("_ingest_rescue")) and _title_hit(qnorm, item.get("title"))
     scored_results.sort(
         key=lambda x: (not x["_title_exact"], bool(x.get("_expired")), -x["utility_score_tripartite"],
                        x.get("_db_index", 0), x.get("id", 0)))
