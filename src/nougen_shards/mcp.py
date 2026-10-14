@@ -29,6 +29,34 @@ except ImportError:
 # Backwards-compatible alias for any caller still importing the old name.
 FastMCP = MCPServer
 
+def _file_root_gate(path: str) -> Optional[str]:
+    """Confine analyze_file_sandboxed reads to one root (WG-1175, Codex P1).
+
+    NOUGEN_FILE_TOOLS_ROOT wins; otherwise the repository root. A path that
+    resolves outside it (including via symlinks or '..') is refused.
+    """
+    from pathlib import Path
+    root = Path(os.environ.get("NOUGEN_FILE_TOOLS_ROOT", "")
+                or Path(__file__).resolve().parents[2]).resolve()
+    target = Path(path).expanduser().resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return f"Error: path is outside the allowed root {root} (set NOUGEN_FILE_TOOLS_ROOT to widen)."
+    return None
+
+
+def _tool_gate(env_var: str, tool: str) -> Optional[str]:
+    """Opt-in gate for MCP tools that read files, fetch URLs, or deploy workers.
+
+    A prompt-injected client must not get these by default (WG-1175/WG-1777).
+    Returns an error string when the gate is closed, else None.
+    """
+    if os.environ.get(env_var, "").strip().lower() in ("1", "true", "yes", "on"):
+        return None
+    return f"Error: {tool} is disabled by default. Set {env_var}=1 to enable it."
+
+
 from .core import capture, mark_shard, compile_recall_packet
 from . import nougen_context
 from . import nougen_sandbox
@@ -343,6 +371,9 @@ def fetch_web_sandboxed(url: str, label: Optional[str] = None) -> str:
         url: The web URL to fetch.
         label: Optional descriptive label for indexing.
     """
+    gated = _tool_gate("NOUGEN_ENABLE_FILE_TOOLS", "fetch_web_sandboxed")
+    if gated:
+        return gated
     res = nougen_context.fetch_and_index_web(url, label=label)
     if "error" in res:
         return f"Error: {res['error']}"
@@ -366,6 +397,12 @@ def analyze_file_sandboxed(file_path: str, query: Optional[str] = None) -> str:
         file_path: Absolute or relative path to file on disk.
         query: Optional string/keyword to filter matching lines.
     """
+    gated = _tool_gate("NOUGEN_ENABLE_FILE_TOOLS", "analyze_file_sandboxed")
+    if gated:
+        return gated
+    outside = _file_root_gate(file_path)
+    if outside:
+        return outside
     res = nougen_context.analyze_file(file_path, query=query)
     if "error" in res:
         return f"Error: {res['error']}"
@@ -827,6 +864,9 @@ def cf_deploy_worker(directory_path: str = "") -> str:
     Args:
         directory_path: Absolute or relative path to the worker project directory. Defaults to current directory.
     """
+    gated = _tool_gate("NOUGEN_ENABLE_CF_TOOLS", "cf_deploy_worker")
+    if gated:
+        return gated
     import json
     from pathlib import Path
     from . import cloudflare
@@ -856,6 +896,9 @@ def cf_run_ai(prompt: str, model: str = "@cf/meta/llama-3.1-8b-instruct") -> str
         prompt: User instruction or query for the edge model.
         model: Model identifier (e.g. '@cf/meta/llama-3.1-8b-instruct', '@cf/qwen/qwen3-30b-a3b-fp8', '@cf/google/gemma-4-26b-a4b-it').
     """
+    gated = _tool_gate("NOUGEN_ENABLE_CF_TOOLS", "cf_run_ai")
+    if gated:
+        return gated
     from . import cloudflare
     try:
         cf = cloudflare.CloudflareClient()
