@@ -167,13 +167,12 @@ if ($Hostname) {
     try { $live = (Invoke-WebRequest -UseBasicParsing -Uri "https://$Hostname/health" -TimeoutSec 5).StatusCode -eq 200 } catch { }
   }
   if (-not $live) { throw "tunnel started but https://$Hostname/health did not answer; see $(Join-Path $stateDir 'tunnel.log')" }
-  # The tenant connects straight to their own node: no shared gateway in the path.
-  # The node's consent page asks for the node token, so it goes on the clipboard.
-  Set-Clipboard -Value $tok
+  # The front door stays shards.nougenai.com/mcp. After Google sign-in the gateway
+  # routes this tenant's calls to this node only; nothing falls back to shared nodes.
   Write-Host ""
   Write-Host "Your node is live at https://$Hostname. Leave this window open."
-  Write-Host "Add this connector URL in Gemini/Claude/ChatGPT:  https://$Hostname/mcp"
-  Write-Host "When the sign-in page asks for a token, paste (Ctrl+V). It is already on your clipboard."
+  Write-Host "Add this connector URL in Gemini/Claude/ChatGPT:  https://shards.nougenai.com/mcp"
+  Write-Host "Sign in with Google as $Email. Your calls are routed to this node only."
   exit 0
 }
 
