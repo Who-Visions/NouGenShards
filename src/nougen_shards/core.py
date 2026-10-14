@@ -1728,6 +1728,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 # a video id otherwise returns semantic neighbours and never the
                 # one shard that contains it. Filtered hits keep their place; this
                 # only appends. NOUGEN_INGEST_RESCUE=0 disables it.
+                extra_rows: list = []
                 if (fts_ran_clean and fts_query is not None
                         and os.environ.get("NOUGEN_INGEST_RESCUE", "1") != "0"
                         and len(res or []) < limit):
@@ -1748,15 +1749,19 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                             ORDER BY bm25_score ASC, s.id ASC LIMIT ?
                         """, (*r_dom_params, *have_ids, fts_query, limit - len(res or []))).fetchall()
                         if extra:
-                            res = list(res or []) + list(extra)
+                            extra_rows = list(extra)
+                            res = list(res or []) + extra_rows
                     except sqlite3.OperationalError:
                         pass
                 if res:
+                    rescued_ids = {r["id"] for r in extra_rows}
                     for row in res:
                         accessed.append(row["id"])
                         item = _process_fts_result(row, i, query_embedding, query_now)
                         if via_or_retry:
                             item["_or_retry"] = True
+                        if row["id"] in rescued_ids:
+                            item["_ingest_rescue"] = True
                         db_rows.append(item)
                     fts_worked = True
 
@@ -2833,7 +2838,9 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     # the one signal that is unambiguous. Within a tier the tripartite order holds.
     qnorm = _norm_title(query) if _title_lane_enabled() else ""
     for item in scored_results:
-        item["_title_exact"] = _title_hit(qnorm, item.get("title"))
+        # Rescued ingest rows fill empty slots only; they never take the
+        # exact-title tier above filtered memory hits.
+        item["_title_exact"] = (not item.get("_ingest_rescue")) and _title_hit(qnorm, item.get("title"))
     scored_results.sort(
         key=lambda x: (not x["_title_exact"], bool(x.get("_expired")), -x["utility_score_tripartite"],
                        x.get("_db_index", 0), x.get("id", 0)))

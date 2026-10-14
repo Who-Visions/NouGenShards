@@ -75,3 +75,16 @@ def test_exact_ingest_row_fills_an_underfilled_filtered_pass():
     titles = [r.get("title") for r in rows]
     assert "Note about rescuetokenab12" in titles
     assert "Transcript" in titles, titles
+
+
+def test_rescued_ingest_row_does_not_take_title_exact_tier():
+    bulk = _bulk_type()
+    if bulk is None:
+        pytest.skip("no bulk ingest event types configured")
+    shards.capture("KNOWLEDGE", "Memory about exacttitleqx7", "memory note body mentions exacttitleqx7",
+                   domain_key="global")
+    shards.capture(bulk, "exacttitleqx7", "ingested transcript body for exacttitleqx7", domain_key="global")
+    rows = shards.retrieve("exacttitleqx7", limit=5)
+    rescued = [r for r in rows if r.get("title") == "exacttitleqx7"]
+    assert rescued and rescued[0].get("_ingest_rescue") is True
+    assert rescued[0].get("_title_exact") is False, "rescued ingest row took the exact-title tier"
