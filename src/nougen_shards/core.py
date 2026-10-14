@@ -1720,6 +1720,37 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     if res:
                         via_or_retry = match_expr is not fts_query
                         break
+                # Ingest rescue: bulk-ingest rows (event types in
+                # bulk_ingest_event_types, e.g. NouGenTube transcripts) are held out
+                # of default recall so papers do not drown agent memory. But when
+                # the filtered pass leaves slots unfilled, an exact all-terms match
+                # in the ingest population beats an empty slot -- a rare ID such as
+                # a video id otherwise returns semantic neighbours and never the
+                # one shard that contains it. Filtered hits keep their place; this
+                # only appends. NOUGEN_INGEST_RESCUE=0 disables it.
+                if (fts_ran_clean and fts_query is not None
+                        and os.environ.get("NOUGEN_INGEST_RESCUE", "1") != "0"
+                        and len(res or []) < limit):
+                    try:
+                        r_dom = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
+                        r_dom_params = () if domain_key in (None, "*") else (domain_key,)
+                        if not _ingest_filter_sql("s", include_research)[0]:
+                            raise sqlite3.OperationalError("no ingest filter active")
+                        have_ids = [r["id"] for r in (res or [])]
+                        not_in = (f"s.id NOT IN ({','.join('?' for _ in have_ids)}) AND "
+                                  if have_ids else "")
+                        extra = conn.execute(f"""
+                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                                   s.embedding, s.tags, s.domain_key, s.density_score,
+                                   bm25(shards_fts, 5.0, 1.0) as bm25_score
+                            FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
+                            WHERE {r_dom}{not_in}shards_fts MATCH ?
+                            ORDER BY bm25_score ASC, s.id ASC LIMIT ?
+                        """, (*r_dom_params, *have_ids, fts_query, limit - len(res or []))).fetchall()
+                        if extra:
+                            res = list(res or []) + list(extra)
+                    except sqlite3.OperationalError:
+                        pass
                 if res:
                     for row in res:
                         accessed.append(row["id"])

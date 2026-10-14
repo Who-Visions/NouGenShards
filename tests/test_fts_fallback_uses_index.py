@@ -60,3 +60,18 @@ def test_short_query_uses_like_fallback_without_error():
     shards.capture("TEST", "short", "hi there friend", domain_key="global")
     rows = shards.retrieve("hi", limit=3)
     assert isinstance(rows, list)
+
+
+def test_exact_ingest_row_fills_an_underfilled_filtered_pass():
+    """Ingest row with an exact term is appended when filtered hits do not fill the page."""
+    bulk = _bulk_type()
+    if bulk is None:
+        pytest.skip("no bulk ingest event types configured")
+    shards.capture("KNOWLEDGE", "Note about rescuetokenab12", "memory note mentions rescuetokenab12",
+                   domain_key="global")
+    shards.capture(bulk, "Transcript", "transcript body contains rescuetokenab12 as its video id",
+                   domain_key="global")
+    rows = shards.retrieve("rescuetokenab12", limit=5)
+    titles = [r.get("title") for r in rows]
+    assert "Note about rescuetokenab12" in titles
+    assert "Transcript" in titles, titles
