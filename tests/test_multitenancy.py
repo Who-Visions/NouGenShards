@@ -359,3 +359,31 @@ def test_tenant_federation_never_reads_owner_local_vaults(monkeypatch):
     finally:
         core.reset_active_vault(token)
     assert asked == [], "tenant federation consulted owner local vaults"
+
+
+def test_tenant_cannot_reach_host_or_relay_tools_over_http():
+    """A tenant token on the node's public MCP route may use shard tools only.
+    Relay, messaging, deploy, sandbox and local-scan tools are refused before the
+    MCP server sees them."""
+    from fastapi.testclient import TestClient
+    import app as node
+
+    token = tenants.mint_tenant("tenant-gate-check", "Gate check")
+    headers = {"x-ngs-token": token, "accept": "application/json, text/event-stream",
+               "content-type": "application/json"}
+
+    def call(name):
+        return {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": name, "arguments": {}}}
+
+    with TestClient(node.app) as client:
+        client.post("/mcp/", headers=headers, json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "t", "version": "0"}}})
+        for blocked in ("relay_open", "nougenmsg_send", "cf_deploy_worker",
+                        "execute_sandboxed_code", "run_brain_scan"):
+            r = client.post("/mcp/", headers=headers, json=call(blocked))
+            assert r.status_code == 403, (blocked, r.status_code)
+        allowed = client.post("/mcp/", headers=headers, json=call("get_memory_stats"))
+        assert allowed.status_code == 200, allowed.status_code
