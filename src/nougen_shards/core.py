@@ -2451,6 +2451,25 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
     return merged
 
 
+def _has_exact_query_tokens(query: str, item: dict) -> bool:
+    """Whether a keyword candidate contains every literal FTS query token.
+
+    FTS rescue already admits exact all-terms matches from the ingest population,
+    but RRF can bury them under semantic neighbours. This predicate builds a
+    separate, narrowly scoped RRF lane for literal token matches.
+    """
+    fts_query = _build_fts_match_query(query)
+    if not fts_query:
+        return False
+    tokens = [token.replace('""', '"') for token in
+              re.findall(r'"((?:[^"]|"")*)"', fts_query)]
+    if not tokens:
+        return False
+    text = f"{item.get('title') or ''}\n{item.get('content') or ''}"
+    return all(re.search(rf"(?<!\w){re.escape(token)}(?!\w)", text, re.IGNORECASE)
+               for token in tokens)
+
+
 def _get_reranker():
     """Lazy-load and cache the cross-encoder reranker. Returns None if unavailable
     so callers degrade gracefully to the RRF ordering (no hard dependency)."""
@@ -2738,8 +2757,18 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             vector_results = future_vector.result()
             
         lanes = [keyword_results, vector_results]
+        exact_token_results = [item for item in keyword_results
+                               if _has_exact_query_tokens(query, item)]
+        lane_weights = [1.0, 1.0]
+        if exact_token_results:
+            # Literal all-token hits get an independent RRF vote. This prevents
+            # semantic neighbours from displacing exact IDs while preserving
+            # positional fusion within the keyword and vector lanes.
+            lanes.append(exact_token_results)
+            lane_weights.append(1.0)
         if _title_lane_enabled():
             lanes.append(_title_retrieve(query, candidate_limit, active_domain, include_research))
+            lane_weights.append(1.0)
         if use_distill:
             # Sidecar lanes (atoms FTS + entity graph) join the fusion only once a
             # distillation sidecar exists; before that this is a cheap stat().
@@ -2747,10 +2776,12 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
                 from . import distill  # pylint: disable=import-outside-toplevel
                 if distill.available():
                     lanes.append(distill.atoms_lane(query, candidate_limit, include_research, active_domain))
+                    lane_weights.append(1.0)
                     lanes.append(distill.graph_lane(query, candidate_limit, include_research, active_domain))
+                    lane_weights.append(1.0)
             except Exception as exc:  # a derived index must never break recall
                 logger.warning("distill lanes skipped: %s: %s", type(exc).__name__, exc)
-        return reciprocal_rank_fusion(lanes, k=60)
+        return reciprocal_rank_fusion(lanes, k=60, weights=lane_weights)
 
     if domain_key != "*" and not explicit_domain:
         # Implicit CWD-domain: scoped-plus-global fusion, not scoped-else-
