@@ -171,6 +171,20 @@ def _live_pipe_names() -> List[str]:
         return glob.glob(r"\\.\pipe\LOCAL\*")
 
 
+def _confirm_socket_ack(raw: bytes) -> bool:
+    """True only for the receiver's explicit delivery ack (WG-1031).
+
+    tools/agy_sock_server.py replies {"status": "delivered", "inbox_files": [...]}
+    after it writes the message. Bytes accepted by a socket prove nothing.
+    """
+    try:
+        ack = json.loads(raw.decode("utf-8", errors="replace").strip() or "{}")
+    except ValueError:
+        return False
+    return (isinstance(ack, dict) and ack.get("status") == "delivered"
+            and bool(ack.get("inbox_files")))
+
+
 class AgentPinger:
     """Delivers live pings directly into agent context, named pipes, and session inboxes."""
 
@@ -467,10 +481,15 @@ class AgentPinger:
                 for sock in glob.glob("/tmp/agy-socks/*.sock"):
                     try:
                         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                        s.connect(sock)
-                        s.sendall(json.dumps(payload).encode("utf-8") + b"\n")
-                        s.close()
-                        pipe_delivered = True
+                        try:
+                            s.settimeout(5)
+                            s.connect(sock)
+                            s.sendall(json.dumps(payload).encode("utf-8") + b"\n")
+                            # Sending bytes is not delivery: wait for the receiver's ack.
+                            ack_ok = _confirm_socket_ack(s.recv(65536))
+                        finally:
+                            s.close()
+                        pipe_delivered = pipe_delivered or ack_ok
                     except Exception:
                         pass
             except Exception:
