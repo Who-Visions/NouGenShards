@@ -39,7 +39,7 @@ if (Test-Path $tokFile) {
   $tok = $state.token
   if (-not $Email) { $Email = $state.email }
 } else {
-  if (-not $Invite -or -not $Email) { throw 'first run needs -Email and -Invite' }
+  if (-not $Email) { throw 'first run needs -Email' }
   $env:NOUGEN_VAULT_DIR = $vault
   $tok = & $py -c "import sys; sys.argv=['nougen','tenant','mint','$TenantId','--label','Tenant $TenantId']; from nougen_shards.cli import main; main()" 2>$null |
     Select-String -Pattern 'Token: (\S+)' | ForEach-Object { $_.Matches[0].Groups[1].Value }
