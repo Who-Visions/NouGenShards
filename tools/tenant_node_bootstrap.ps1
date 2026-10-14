@@ -51,20 +51,37 @@ if (Test-Path $tokFile) {
 # Node: loopback only, bound to this tenant's vault, under pythonw (no console window).
 $env:NOUGEN_VAULT_DIR = $vault
 $env:NGS_NODE_TOKEN = $tok
-Start-Process -WindowStyle Hidden -FilePath $pyw `
-  -ArgumentList @('-m','uvicorn','app:app','--host','127.0.0.1','--port',"$Port") `
-  -WorkingDirectory $root
+$alive = $false
+try { $alive = (Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/health" -TimeoutSec 3).StatusCode -eq 200 } catch { }
+if (-not $alive) {
+  Start-Process -WindowStyle Hidden -FilePath $pyw `
+    -ArgumentList @('-m','uvicorn','app:app','--host','127.0.0.1','--port',"$Port") `
+    -WorkingDirectory $root
+}
+# Wait for the node to answer before anything is registered (cold starts take a while).
+$healthy = $false
+for ($i = 0; $i -lt 90 -and -not $healthy; $i++) {
+  Start-Sleep -Seconds 2
+  try { $healthy = (Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/health" -TimeoutSec 3).StatusCode -eq 200 } catch { }
+}
+if (-not $healthy) { throw "node did not become healthy on port $Port" }
 
 # Tunnel: quick tunnel (no account). A named hostname is optional.
 $tlog = Join-Path $stateDir 'tunnel.log'
 $tunnelArgs = @('tunnel','--url',"http://127.0.0.1:$Port")
 if ($Hostname) { $tunnelArgs = @('tunnel','--url',"http://127.0.0.1:$Port",'--hostname',$Hostname) }
+# Re-runs replace the old tunnel for this port instead of stacking another one.
+Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'" |
+  Where-Object { $_.CommandLine -match [regex]::Escape("127.0.0.1:$Port") } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Process -WindowStyle Hidden -FilePath 'cloudflared' -ArgumentList $tunnelArgs -RedirectStandardError $tlog
 $url = $null
 for ($i = 0; $i -lt 60 -and -not $url; $i++) {
   Start-Sleep -Seconds 2
   if (Test-Path $tlog) {
-    $m = Select-String -Path $tlog -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com|https://\S+\.(?:com|net|org)' | Select-Object -Last 1
+    # Only the tunnel's own hostname: never a URL that merely appears in the log.
+    $pattern = if ($Hostname) { 'https://' + [regex]::Escape($Hostname) } else { 'https://[a-z0-9-]+\.trycloudflare\.com' }
+    $m = Select-String -Path $tlog -Pattern $pattern | Select-Object -Last 1
     if ($m) { $url = $m.Matches[0].Value }
   }
 }
