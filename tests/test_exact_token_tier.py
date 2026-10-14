@@ -39,3 +39,16 @@ def test_env_disables(monkeypatch):
     shards.capture("KNOWLEDGE", "Off", "has tok12345 here", domain_key="global")
     rows = shards.retrieve("tok12345", limit=3)
     assert all(r.get("_token_exact") is False for r in rows)
+
+
+def test_id_token_in_ingest_row_surfaces_even_when_page_is_full():
+    bulk = (shards.bulk_ingest_event_types() or [None])[0]
+    if bulk is None:
+        pytest.skip("no bulk ingest types")
+    for n in range(8):
+        shards.capture("KNOWLEDGE", f"Filler about qx9zz1 {n}", f"filler body qx9zz1 number {n}",
+                       domain_key="global")
+    shards.capture(bulk, "Transcript", "video id Zk3mP9xQw2L lives only in this ingested transcript",
+                   domain_key="global")
+    rows = shards.retrieve("Zk3mP9xQw2L", limit=3)
+    assert rows and rows[0]["title"] == "Transcript"
