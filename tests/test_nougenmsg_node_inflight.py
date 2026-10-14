@@ -6,8 +6,6 @@ import threading
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
-import pytest
-
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 
 
