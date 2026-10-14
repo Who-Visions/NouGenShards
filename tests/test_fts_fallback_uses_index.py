@@ -53,3 +53,10 @@ def test_like_scan_opt_in(monkeypatch):
     monkeypatch.setenv("NOUGEN_LIKE_ON_FTS_MISS", "1")
     rows = shards.retrieve("optintokenqq7", limit=3)
     assert any("optintokenqq7" in (r.get("content") or "") for r in rows)
+
+
+def test_short_query_uses_like_fallback_without_error():
+    """All tokens < 3 chars -> no FTS expression; must take the LIKE path, not raise."""
+    shards.capture("TEST", "short", "hi there friend", domain_key="global")
+    rows = shards.retrieve("hi", limit=3)
+    assert isinstance(rows, list)

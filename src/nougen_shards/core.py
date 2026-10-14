@@ -1676,6 +1676,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 return db_rows, missed
             conn = get_connection(i)
             fts_worked = False
+            fts_ran_clean = False
             db_hits = 0
             fts_query = _build_fts_match_query(query)
             if fts_query is not None:
@@ -1697,7 +1698,6 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 # appended FTS rows in `results` and then double-append the same
                 # shards via the fallback (which scrambled retrieval ordering).
                 res = None
-                fts_ran_clean = False
                 via_or_retry = False
                 for match_expr in attempts:
                     try:
