@@ -1479,6 +1479,27 @@ def cmd_amv(args):
     print("This scenario is never written to the production usage ledger.")
 
 
+def _ctx_execute_and_record(code, bypass_gatekeeper=False):
+    """Run sandboxed code, print it, and record the run so `ctx search` finds it.
+
+    The full output is persisted to the sandbox under a content-hash handle
+    (Rule 0.14); only the handle and a bounded preview go to the event log.
+    """
+    import hashlib
+    output = nougen_sandbox.execute_sandboxed(code, bypass_gatekeeper=bypass_gatekeeper)
+    print(output)
+    if output.startswith(("Error:", "Execution failed")):
+        return
+    handle = "ncode_" + hashlib.sha256(output.encode("utf-8")).hexdigest()[:12]
+    nougen_context.store_sandbox(handle, output, summary=code[:200])
+    nougen_context.log_event(
+        "ctx_execute",
+        f"{code[:500]}\n-> {output[:500]}",
+        {"handle": handle, "bytes": len(output.encode("utf-8"))},
+    )
+    print(f"[recorded handle={handle}]")
+
+
 def cmd_ctx(args):
     """Handles NouGenContext commands."""
     if args.action == "init":
@@ -1495,13 +1516,13 @@ def cmd_ctx(args):
                 ans = input("Do you want to override this gate and proceed? [y/N]: ").strip().lower()
                 if ans in ["y", "yes"]:
                     print("🔓 Gate override approved by GM.")
-                    print(nougen_sandbox.execute_sandboxed(args.input, bypass_gatekeeper=True))
+                    _ctx_execute_and_record(args.input, bypass_gatekeeper=True)
                 else:
                     print("🚫 Action aborted.")
             else:
                 print("🚫 Action aborted.")
         else:
-            print(nougen_sandbox.execute_sandboxed(args.input))
+            _ctx_execute_and_record(args.input)
     elif args.action == "search":
         if not args.input:
             print("Error: Usage: nougen ctx search <query> [--limit <n>]")

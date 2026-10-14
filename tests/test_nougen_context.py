@@ -274,3 +274,18 @@ def test_cloud_fallback_requires_explicit_model(monkeypatch):
     monkeypatch.setenv("NOUGEN_OLLAMA_CLOUD_MODEL", "some-cloud-tag")
     nc.query_ollama("hello")
     assert any(urlparse(u).hostname == "cloud.example.invalid" for u in seen)
+
+
+def test_ctx_execute_records_event_and_sandbox_handle(monkeypatch, capsys):
+    """`nougen ctx execute` must log an event (so `ctx search` finds it) and
+    persist the full output under a handle (Rule 0.14)."""
+    from nougen_shards import cli
+    nougen_context.init_context_db(clean_slate=True)
+    cli._ctx_execute_and_record("console.log('ctx-record-marker')")
+    out = capsys.readouterr().out
+    assert "ctx-record-marker" in out
+    assert "[recorded handle=ncode_" in out
+    hits = nougen_context.search_events("ctx-record-marker", limit=5)
+    assert any(h["event_type"] == "ctx_execute" for h in hits)
+    handle = out.split("handle=")[1].split("]")[0]
+    assert nougen_context.fetch_sandbox(handle).strip() == "ctx-record-marker"
