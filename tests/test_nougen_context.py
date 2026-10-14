@@ -309,3 +309,29 @@ def test_ctx_execute_skips_real_sandbox_failures(monkeypatch, capsys):
                         lambda *a, **k: "Execution failed (Exit 1):\nboom")
     cli._ctx_execute_and_record("throw 1")
     assert "[recorded handle=" not in capsys.readouterr().err
+
+
+def test_untrusted_shell_runtime_is_refused(monkeypatch):
+    """WG-1191: untrusted callers cannot run a shell interpreter."""
+    monkeypatch.setenv("NOUGEN_ENABLE_SANDBOX", "1")
+    out = nougen_sandbox.execute_sandboxed("echo hi", language="shell")
+    assert out.startswith("Error:") and "reserved for trusted callers" in out
+
+
+def test_trusted_shell_runtime_still_runs(monkeypatch):
+    monkeypatch.setenv("NOUGEN_ENABLE_SANDBOX", "1")
+    out = nougen_sandbox.execute_sandboxed("echo trusted-ok", language="shell", trusted=True)
+    assert "trusted-ok" in out
+
+
+def test_batch_tool_is_untrusted_and_refuses_shell(monkeypatch):
+    """Codex P1: the public batch tool must not bypass the shell refusal or the opt-in."""
+    monkeypatch.setenv("NOUGEN_ENABLE_SANDBOX", "1")
+    res = nougen_sandbox.batch_execute_sandboxed([{"label": "x", "language": "shell", "code": "echo hi"}])
+    assert "reserved for trusted callers" in str(res)
+
+
+def test_batch_tool_requires_opt_in(monkeypatch):
+    monkeypatch.delenv("NOUGEN_ENABLE_SANDBOX", raising=False)
+    res = nougen_sandbox.batch_execute_sandboxed([{"label": "x", "language": "python", "code": "print(1)"}])
+    assert "disabled by default" in str(res)

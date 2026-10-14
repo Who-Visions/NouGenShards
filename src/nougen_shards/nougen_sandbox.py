@@ -11,6 +11,9 @@ def sandbox_enabled() -> bool:
     return os.getenv("NOUGEN_ENABLE_SANDBOX", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+_SHELL_LANGUAGES = frozenset({"shell", "bash", "sh", "zsh", "cmd", "bat", "powershell", "ps1"})
+
+
 def execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10,
                       trusted: bool = False, bypass_gatekeeper: bool = False):
     """
@@ -31,6 +34,12 @@ def execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10
         return ("Error: Sandboxed code execution is disabled by default for safety. "
                 "It allows arbitrary code to run on this machine. "
                 "Set NOUGEN_ENABLE_SANDBOX=1 to enable it.")
+    # WG-1191: untrusted callers (MCP, `nougen ctx execute`) may not drop into a
+    # shell interpreter. A shell turns any string into arbitrary commands, so
+    # it stays reserved for trusted internal callers.
+    if not trusted and language.lower() in _SHELL_LANGUAGES:
+        return (f"Error: shell runtime '{language}' is reserved for trusted callers. "
+                "Use javascript or python, or pass trusted=True from internal code.")
 
     # Create temp file for code
     if language in ["javascript", "typescript"]:
@@ -131,7 +140,8 @@ def batch_execute_sandboxed(commands: list, queries: list = None) -> dict:
         lang = item.get("language", "python")
         timeout = item.get("timeout", 10)
 
-        out = execute_sandboxed(code, language=lang, timeout=timeout, trusted=True, bypass_gatekeeper=False)
+        # Public MCP entry point: untrusted, so the opt-in and the shell refusal apply.
+        out = execute_sandboxed(code, language=lang, timeout=timeout, trusted=False, bypass_gatekeeper=False)
         is_err = "Error:" in out or "Execution failed" in out
         preview = out[:250].replace("\r", "")
         results.append({
