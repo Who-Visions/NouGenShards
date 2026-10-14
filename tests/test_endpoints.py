@@ -36,10 +36,39 @@ def test_worker_live_url_uses_resolved_subdomain(monkeypatch, tmp_path):
     assert endpoints.worker_live_url("api") == "https://api.acme.workers.dev"
 
 
-def test_no_operator_hosts_hardcoded_in_runtime():
+# Operator-only deployables. These are the operator's own fleet-gateway snapshots,
+# deployed by the operator with their own vars. They are never installed on a tenant
+# machine. Every other deployable must carry no operator host.
+OPERATOR_ONLY = {"tools/nougen-fleet-mcp-patched.js"}
+DEPLOYABLE_DIRS = ("edge", "packages", "tools")
+DEPLOYABLE_SUFFIXES = (".js", ".mjs", ".ts", ".jsonc", ".toml")
+OPERATOR_HOST_ANY = re.compile(r"[a-z0-9-]+\.nougenai\.com|whoentertains\.workers\.dev|nougenai-nougenshards\.hf\.space")
+
+
+def _scan(paths):
     offenders = []
-    for path in RUNTIME.rglob("*.py"):
+    for path in paths:
         for n, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-            if OPERATOR_HOST.search(line) and not line.lstrip().startswith("#"):
-                offenders.append(f"{path.relative_to(ROOT)}:{n}")
+            if OPERATOR_HOST_ANY.search(line) and not line.lstrip().startswith(("#", "//")):
+                offenders.append(f"{path.relative_to(ROOT).as_posix()}:{n}")
+    return offenders
+
+
+def test_no_operator_hosts_hardcoded_in_runtime():
+    python_files = list(RUNTIME.rglob("*.py"))
+    offenders = _scan(p for p in python_files
+                      if "wargames" not in p.parts)
+    assert not offenders, offenders
+
+
+def test_no_operator_hosts_in_tenant_deployables():
+    deployables = []
+    for d in DEPLOYABLE_DIRS:
+        base = ROOT / d
+        if not base.is_dir():
+            continue
+        for p in base.rglob("*"):
+            if p.suffix in DEPLOYABLE_SUFFIXES and "node_modules" not in p.parts                     and "reports" not in p.parts and "example" not in p.name                     and p.relative_to(ROOT).as_posix() not in OPERATOR_ONLY:
+                deployables.append(p)
+    offenders = _scan(deployables)
     assert not offenders, offenders
