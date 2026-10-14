@@ -76,7 +76,12 @@ class TokenFuse:
             return cls._instance
 
     def _load_ledger(self):
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        # Status must stay readable when the state dir cannot be created (read-only
+        # home, a file at that path): start with an empty in-memory ledger.
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
         if FUSE_STORE.exists():
             try:
                 with open(FUSE_STORE, "r", encoding="utf-8") as f:
@@ -87,8 +92,8 @@ class TokenFuse:
                 pass
 
     def _save_ledger(self):
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
         try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
             with open(FUSE_STORE, "w", encoding="utf-8") as f:
                 json.dump({
                     "session_id": self.session_id,
