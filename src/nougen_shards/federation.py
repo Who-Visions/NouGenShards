@@ -109,7 +109,12 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     else:
         external_configs = []
         cloud_configs = []
-    vault_configs = keymaker.list_local_vaults()
+    # Sibling local vaults are the owner's stores. A tenant reads only its own
+    # bound vault (core.retrieve below), never the owner's registered vaults.
+    if core.active_tenant_id() == "owner":
+        vault_configs = keymaker.list_local_vaults()
+    else:
+        vault_configs = []
 
     # Coverage honesty. A lane that errors or misses the deadline is a HOLE IN
     # THE CORPUS, and a hole that reaches only a log line is invisible to the
