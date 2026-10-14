@@ -2841,9 +2841,21 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         # Rescued ingest rows fill empty slots only; they never take the
         # exact-title tier above filtered memory hits.
         item["_title_exact"] = (not item.get("_ingest_rescue")) and _title_hit(qnorm, item.get("title"))
+    # Exact-token tier: an identifier-shaped query (one token, 6+ chars, has a digit:
+    # a video id, a PR/commit id, a request id) that appears verbatim in a shard's
+    # title or body ranks with the known-item tier. Vector neighbours of an opaque id
+    # are noise, and the shard that actually contains it was being dropped by fusion
+    # (relay 20261014T154801Z item 3). Natural-language queries never qualify.
+    qtok = (query or "").strip()
+    token_mode = (
+        os.environ.get("NOUGEN_TOKEN_EXACT_TIER", "1").strip().lower() not in ("0", "false", "no", "off")
+        and len(qtok) >= 6 and not any(c.isspace() for c in qtok) and any(c.isdigit() for c in qtok))
+    for item in scored_results:
+        item["_token_exact"] = bool(
+            token_mode and (qtok in str(item.get("title") or "") or qtok in str(item.get("content") or "")))
     scored_results.sort(
-        key=lambda x: (not x["_title_exact"], bool(x.get("_expired")), -x["utility_score_tripartite"],
-                       x.get("_db_index", 0), x.get("id", 0)))
+        key=lambda x: (not (x["_title_exact"] or x["_token_exact"]), bool(x.get("_expired")),
+                       -x["utility_score_tripartite"], x.get("_db_index", 0), x.get("id", 0)))
     
     # Dynamic Thresholding / Drop bottom 50% if we have many candidates
     if scored_results:
@@ -2853,7 +2865,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         else:
             surviving = scored_results
         # Filter anything below dynamic threshold (e.g. 0.05)
-        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.05 or it["_title_exact"]]
+        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.05 or it["_title_exact"] or it["_token_exact"]]
         if not surviving and scored_results:
             surviving = [scored_results[0]]
     else:
