@@ -189,7 +189,7 @@ pyasn1-modules==0.4.2
     # via google-auth
 pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
     # via cffi
-pydantic==2.13.5
+pydantic==2.14.0
     # via
     #   nougen-shards (pyproject.toml)
     #   fastapi
@@ -198,7 +198,7 @@ pydantic==2.13.5
     #   mcp-types
     #   ollama
     #   openai
-pydantic-core==2.46.5
+pydantic-core==2.50.0
     # via pydantic
 pydub==0.25.1
     # via gradio
