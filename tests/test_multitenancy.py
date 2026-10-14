@@ -6,6 +6,7 @@ import json
 import secrets
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -339,3 +340,22 @@ def test_health_is_generic_until_authenticated(tenant_node, monkeypatch):
     assert authed.status_code == 200
     assert authed.json()["tenant_id"] == "tenant-a"
     assert set(calls) == {"tenant-a"}
+
+
+def test_tenant_federation_never_reads_owner_local_vaults(monkeypatch):
+    """A tenant's federated_retrieve must not consult the owner's registered
+    local vaults. Regression: the local_vault lane searched every registered
+    vault for every caller, so a fresh tenant could recall owner shards."""
+    from nougen_shards import core, federation, keymaker
+
+    asked = []
+    monkeypatch.setattr(keymaker, "list_local_vaults", lambda: asked.append(1) or [{"name": "owner", "path": "/nowhere"}])
+    monkeypatch.setattr(keymaker, "list_external_dbs", lambda: [])
+    monkeypatch.setattr(keymaker, "list_cloud_nodes", lambda: [])
+    monkeypatch.setattr(core, "retrieve", lambda *a, **k: [])
+    token = core.bind_active_vault(Path(tempfile.mkdtemp()), "probe-tenant")
+    try:
+        federation.federated_retrieve("anything", limit=3)
+    finally:
+        core.reset_active_vault(token)
+    assert asked == [], "tenant federation consulted owner local vaults"
