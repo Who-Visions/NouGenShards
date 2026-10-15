@@ -2448,10 +2448,12 @@ def get_parser():
     p_cua.add_argument("--title", default=None, help="Title for ActionCard or GenerativePanel")
     p_cua.add_argument("--summary", default=None, help="Summary for ActionCard")
 
-    p_tube = subparsers.add_parser("tube", help="YouTube/Media transcript ingestion & dedupe")
-    p_tube.add_argument("tube_action", choices=["pull"], default="pull", nargs="?")
+    p_tube = subparsers.add_parser("tube", aliases=["nougentube"], help="YouTube/Media transcript ingestion & dedupe")
+    p_tube.add_argument("tube_action", choices=["pull", "ingest", "preview"], default="ingest", nargs="?")
     p_tube.add_argument("url", help="YouTube video or playlist URL")
     p_tube.add_argument("--dry-run", action="store_true", help="Do not capture shards")
+    p_tube.add_argument("--limit", type=int, default=1, help="Max videos to ingest")
+
 
     p_arxiv = subparsers.add_parser("arxiv", help="Autonomous arXiv research & shard capture")
     p_arxiv.add_argument("arxiv_action", choices=["search", "ingest"], default="search")
@@ -3532,24 +3534,25 @@ def cmd_cua(args):
 
 def cmd_tube(args):
     """NouGenTube media transcript ingester."""
-    action = getattr(args, "tube_action", "pull")
-    if action == "pull":
-        url = args.url
-        print(f"📺 NouGenTube pulling: {url}")
-        try:
-            prev_argv = sys.argv
-            sys.argv = ["tube", url]
-            if getattr(args, "dry_run", False):
-                sys.argv.append("--dry-run")
-            try:
-                tube.main()
-            finally:
-                sys.argv = prev_argv
-        except SystemExit:
-            pass
-        except Exception as e:
-            print(f"[ERROR] Tube ingest failed: {e}", file=sys.stderr)
-            sys.exit(1)
+    action = getattr(args, "tube_action", "ingest")
+    url = getattr(args, "url", None)
+    dry_run = getattr(args, "dry_run", False) or (action == "preview")
+    limit = getattr(args, "limit", 1)
+
+    print(f"📺 NouGenTube {'previewing' if dry_run else 'ingesting'}: {url} (limit: {limit})")
+    try:
+        cmd_args = [url]
+        if dry_run:
+            cmd_args.append("--dry-run")
+        if limit:
+            cmd_args.extend(["--limit", str(limit)])
+        tube.main(cmd_args)
+    except SystemExit:
+        pass
+    except Exception as e:
+        print(f"[ERROR] Tube ingest failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
 
 
 def cmd_arxiv(args):
@@ -4099,7 +4102,8 @@ def main():
         "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage, "amv": cmd_amv,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr, "claim": cmd_claim,
-        "tree": cmd_tree, "cua": cmd_cua, "tube": cmd_tube, "arxiv": cmd_arxiv,
+        "tree": cmd_tree, "cua": cmd_cua, "tube": cmd_tube, "nougentube": cmd_tube, "arxiv": cmd_arxiv,
+
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
         "transcribe": cmd_transcribe, "live": cmd_live, "algo": cmd_algo,
         "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
