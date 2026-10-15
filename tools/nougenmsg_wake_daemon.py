@@ -31,12 +31,24 @@ NOISE_RE = re.compile(
 
 
 def resolve_watch_dirs() -> List[Path]:
-    relay_root = Path(os.environ.get("NOUGEN_RELAY_DIR", str(HOME / "Outpost" / "NouGenRelay")))
+    raw_inbox = os.environ.get("NOUGEN_AGY_INBOX")
+    custom_inbox = Path(raw_inbox) if raw_inbox else (HOME / ".nougen" / "agy_inbox")
+
+    raw_relay = os.environ.get("NOUGEN_RELAY_DIR", str(HOME / "Outpost" / "NouGenRelay"))
+    relay_path = Path(raw_relay)
+    # If NOUGEN_RELAY_DIR is pointed directly at .handoffs, normalize root to parent
+    if relay_path.name == ".handoffs":
+        relay_root = relay_path.parent
+        handoffs_dir = relay_path
+    else:
+        relay_root = relay_path
+        handoffs_dir = relay_root / ".handoffs"
+
     candidates = [
         HOME / ".gemini" / "config" / "inbox",
-        HOME / ".nougen" / "agy_inbox",
+        custom_inbox,
         relay_root / ".relay" / "wake",
-        relay_root / ".handoffs",
+        handoffs_dir,
     ]
     watchtower_relay = HOME / "Watchtower" / "NouGen" / "NouGenRelay-main" / ".relay" / "wake"
     try:
