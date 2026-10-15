@@ -2,6 +2,7 @@
 must get them from the trigram index rather than a LIKE scan of every row."""
 # pylint: disable=protected-access
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -88,3 +89,36 @@ def test_rescued_ingest_row_does_not_take_title_exact_tier():
     rescued = [r for r in rows if r.get("title") == "exacttitleqx7"]
     assert rescued and rescued[0].get("_ingest_rescue") is True
     assert rescued[0].get("_title_exact") is False, "rescued ingest row took the exact-title tier"
+
+
+def test_exact_ingest_tokens_get_an_rrf_vote_against_vector_neighbours(monkeypatch):
+    """Exact ID matches should survive fusion with a stronger semantic neighbour."""
+    bulk = _bulk_type()
+    if bulk is None:
+        pytest.skip("no bulk ingest event types configured")
+    shards.capture("DECISION", "Decision note", "decision body also contains NL0yDYXAQ0E",
+                   domain_key="global", density_score=1.0, utility=1.0)
+    shards.capture(bulk, "Transcript", "captured video NL0yDYXAQ0E", domain_key="global")
+    semantic_neighbour = {
+        "id": 999, "_db_index": 99, "title": "Related video analysis",
+        "content": "Semantically related but does not contain the exact video id",
+        "utility_score": 2.0, "density_score": 1.0,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    monkeypatch.setenv("NOUGEN_DISTILL_LANES", "0")
+    monkeypatch.setattr(shards, "_title_lane_enabled", lambda: False)
+    monkeypatch.setattr(shards, "_vector_retrieve", lambda *args, **kwargs: [semantic_neighbour])
+
+    rows = shards.retrieve("NL0yDYXAQ0E", limit=2, query_embedding=[1.0], domain_key="global")
+
+    titles = [row["title"] for row in rows]
+    assert set(titles) == {"Decision note", "Transcript"}
+
+
+def test_exact_token_lane_requires_all_literal_tokens():
+    assert shards._has_exact_query_tokens(
+        "Argon NL0yDYXAQ0E", {"content": "Argon video NL0yDYXAQ0E capture"})
+    assert not shards._has_exact_query_tokens(
+        "Argon NL0yDYXAQ0E", {"content": "Argon video xNL0yDYXAQ0E capture"})
+    assert not shards._has_exact_query_tokens(
+        "Argon NL0yDYXAQ0E", {"content": "Argon video capture"})
