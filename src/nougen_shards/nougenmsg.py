@@ -813,6 +813,11 @@ class NouGenMsgBus:
         supplied = dict(supplied or {})
         current = get_current_node()
         lane = cls._sender_lane(supplied)
+        if lane:
+            # Bookkeeping only: record that this lane spoke, for reply routing.
+            # Nothing here changes where a message is delivered.
+            from .lane_presence import default_presence
+            default_presence().heartbeat(lane, time.time())
         claimed_machine = supplied.get("machine")
         conflicts = list(supplied.get("conflicts") or [])
         if claimed_machine and claimed_machine != current:
