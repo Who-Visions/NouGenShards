@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
+import zlib
 
 import numpy as np
 from nougen_time import InvalidTimestampError, format_log_time, now as nougen_now, parse as parse_time
@@ -1632,6 +1633,7 @@ def elevated_final_score(
     utility_base: float,
     density: float,
     age_days: float,
+    half_life_days: float = 90.0,
     is_canon_lock: bool = False,
     utility_floor: float = 0.25,
 ) -> float:
