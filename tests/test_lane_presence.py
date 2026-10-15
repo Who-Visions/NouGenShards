@@ -39,3 +39,17 @@ def test_live_lanes_lists_only_fresh():
     p.heartbeat("a", now=0)
     p.heartbeat("b", now=100)
     assert p.live_lanes(now=110) == ["b"]
+
+
+def test_default_registry_is_a_singleton():
+    from nougen_shards.lane_presence import default_presence
+    assert default_presence() is default_presence()
+
+
+def test_origin_envelope_records_speaking_lane():
+    import time
+    from nougen_shards import nougenmsg
+    from nougen_shards.lane_presence import default_presence
+    default_presence()._seen.clear()
+    nougenmsg.NouGenMsgBus._origin_envelope({"lane": "whoart", "session_id": "s1"})
+    assert default_presence().is_live("whoart", now=time.time())

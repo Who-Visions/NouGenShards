@@ -39,3 +39,14 @@ class LanePresence:
 
     def live_lanes(self, now: float) -> list:
         return sorted(name for name in self._seen if self.is_live(name, now))
+
+
+_DEFAULT: Optional[LanePresence] = None
+
+
+def default_presence() -> LanePresence:
+    """Process-wide registry, fed by message envelopes."""
+    global _DEFAULT
+    if _DEFAULT is None:
+        _DEFAULT = LanePresence()
+    return _DEFAULT
