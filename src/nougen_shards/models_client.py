@@ -537,7 +537,7 @@ class OpenRouterClient(OpenAIClient):
             req = urllib.request.Request(f"{self.base_url}/models", method="GET")
             if self.api_key:
                 req.add_header("Authorization", f"Bearer {self.api_key}")
-            req.add_header("HTTP-Referer", "https://whovisions.com")
+            req.add_header("HTTP-Referer", os.environ.get("NOUGEN_HTTP_REFERER", "https://github.com/Who-Visions/NouGenShards"))
             req.add_header("X-OpenRouter-Title", "NouGenShards")
             with urllib.request.urlopen(req, timeout=15) as res:
                 data = json.loads(res.read().decode())
@@ -630,7 +630,7 @@ class OpenRouterClient(OpenAIClient):
         )
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.api_key or ''}")
-        req.add_header("HTTP-Referer", "https://whovisions.com")
+        req.add_header("HTTP-Referer", os.environ.get("NOUGEN_HTTP_REFERER", "https://github.com/Who-Visions/NouGenShards"))
         req.add_header("X-OpenRouter-Title", "NouGenShards")
         try:
             with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as res:
@@ -717,7 +717,7 @@ class OpenRouterClient(OpenAIClient):
         )
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.api_key or ''}")
-        req.add_header("HTTP-Referer", "https://whovisions.com")
+        req.add_header("HTTP-Referer", os.environ.get("NOUGEN_HTTP_REFERER", "https://github.com/Who-Visions/NouGenShards"))
         req.add_header("X-OpenRouter-Title", "NouGenShards")
 
         try:
@@ -781,7 +781,7 @@ class OpenRouterClient(OpenAIClient):
         )
         req.add_header("Content-Type", "application/json")
         req.add_header("Authorization", f"Bearer {self.api_key or ''}")
-        req.add_header("HTTP-Referer", "https://whovisions.com")
+        req.add_header("HTTP-Referer", os.environ.get("NOUGEN_HTTP_REFERER", "https://github.com/Who-Visions/NouGenShards"))
         req.add_header("X-OpenRouter-Title", "NouGenShards")
 
         try:
@@ -848,7 +848,7 @@ class WhoVisionsCloudClient(LLMClient):
 
     def list_models(self) -> list:
         # Return canonical cloud models
-        return ["gemma4:cloud", "qwen3.5:cloud", "whovisions/brain-v1", "openrouter/auto"]
+        return ["gemma4:cloud", "qwen3.5:cloud", "openrouter/auto"]
 
     def chat(self, model: Optional[str] = None, messages: Optional[list] = None, stream: bool = False) -> str:
         # Support chat(messages=[...]) or chat(model, messages)

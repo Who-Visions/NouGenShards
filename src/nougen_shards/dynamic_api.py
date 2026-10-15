@@ -23,7 +23,7 @@ DAILIES_DIR = os.path.join(TRACKER_DIR, "dailies")
 
 def get_machine_breakdown(scope='local', period='week'):
     """
-    scope: 'local' (whoart alone) or 'fleet' (whoart + blade1tb + phoebus)
+    scope: 'local' (this machine alone) or 'fleet' (this machine + NOUGEN_PEER_NODES)
     period: '24h', 'week', 'month', 'quarter', 'year', 'all'
     """
     days_map = {

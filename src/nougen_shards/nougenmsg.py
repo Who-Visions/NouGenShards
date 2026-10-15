@@ -16,6 +16,7 @@ import re
 import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
+from .fleet_nodes import fleet_nodes as configured_fleet_nodes, local_node
 
 # Every child (ssh, scp) spawns windowless: a console child of a console-less
 # parent (MCP server, hook, pythonw) otherwise opens a terminal window.
@@ -747,8 +748,8 @@ class NouGenMsgBus:
         if not raw or raw == 'all':
             return ('fleet', 'all')
 
-        coach_routes, _ = fleet_identity_maps()
-        known_nodes = {'blade', 'whoart', 'phoebus', 'local', 'fleet', *coach_routes}
+        coach_routes, machine_routes = fleet_identity_maps()
+        known_nodes = {local_node(), *configured_fleet_nodes(), 'local', 'fleet', *coach_routes, *machine_routes, *_known_fleet_hosts()}
         known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'agents', 'all'}
         # Model lanes carry the model in the agent slot: '@ollama:gemma4:31b-cloud'
         # -> ('local', 'ollama:gemma4:31b-cloud'); '@blade:openrouter:nvidia/x'
@@ -876,7 +877,7 @@ class NouGenMsgBus:
         # addressed node it means "this node's agent lanes"; elsewhere it is not
         # ours to deliver, and saying so beats an empty dict.
         fleet_nodes = {normalize_fleet_node(n) for n in os.environ.get(
-            "NOUGEN_FLEET_NODES", "blade,whoart,phoebus").split(",") if n.strip()}
+            "NOUGEN_PEER_NODES", "").split(",") if n.strip()}
         if family in fleet_nodes:
             if family != (get_current_node() or "").lower():
                 return {"skipped": f"addressed to {family}, not this node"}
@@ -1169,7 +1170,7 @@ class NouGenMsgBus:
         curr = get_current_node()
         results = {curr: cls.live_ping(target=target, text=text, origin=origin,
                                        models_async=background)}
-        fleet_nodes = {"blade", "whoart", "phoebus"}
+        fleet_nodes = {local_node(), *configured_fleet_nodes()}
         # A standalone/external clone has no private fleet to broadcast into;
         # only fan out to the other two boxes when this IS one of them.
         nodes = sorted(fleet_nodes - {curr}) if curr in fleet_nodes else []
@@ -1277,8 +1278,8 @@ class NouGenMsgBus:
             explicit = os.environ.get(f"NOUGEN_NODE_{node.upper()}_IP")
             if explicit:
                 return explicit
-            if node in ("blade", "apollo"):
-                return "blade1tb.local"
+            if node == local_node():
+                return f"{local_node()}.local"
             return f"{node}.local"
 
         def up(node: str) -> bool:
