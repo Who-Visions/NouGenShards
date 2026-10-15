@@ -1,6 +1,6 @@
 """Write-ahead buffer API: the HF hallway, mounted in the node app.
 
-Front door (shards.nougenai.com) -> this hallway -> node rooms.
+Front door -> this hallway -> node rooms.
 
 POST /v1/shards/capture  token-auth; durable (SQLite + JSONL) before 200.
 GET  /v1/shards/pending  ?node=<name>&limit=200 ; unacked shards for a node.
