@@ -1,4 +1,5 @@
 import importlib.util
+import threading
 import sys
 from pathlib import Path
 
@@ -58,3 +59,28 @@ def test_pending_ack_drain_roundtrip(client):
 def test_empty_content_is_400(client):
     r = client.post("/v1/shards/capture", json={"title": "a", "content": "  "}, headers=H)
     assert r.status_code == 400
+
+
+def test_fanout_runs_in_background_and_acks_on_success(client, monkeypatch, tmp_path):
+    import hf_space_app_t as mod
+    done = threading.Event()
+    sent = []
+
+    def fake_post(url, record):
+        sent.append((url, record["content_sha256"]))
+        done.set()
+        return True
+
+    monkeypatch.setattr(mod, "NODE_URLS", {"blade": "https://blade.example/ingest"})
+    monkeypatch.setattr(mod, "_post_to_node", fake_post)
+    r = client.post("/v1/shards/capture", json={"title": "fan", "content": "fanout body"}, headers=H)
+    assert r.status_code == 200
+    assert done.wait(5)
+    assert sent and sent[0][0] == "https://blade.example/ingest"
+    # the blade ack is recorded, so blade has nothing pending
+    import time
+    for _ in range(50):
+        if mod.buffer().pending_for("blade") == []:
+            break
+        time.sleep(0.05)
+    assert mod.buffer().pending_for("blade") == []

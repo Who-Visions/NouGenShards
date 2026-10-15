@@ -14,11 +14,18 @@ from typing import List, Optional
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
+import json
+import threading
+import urllib.request
+
 from nougen_shards.wal_buffer import WriteAheadBuffer
 
 DB_PATH = os.environ.get("WAL_DB_PATH", "/data/pending_shards.db")
 MIRROR_PATH = os.environ.get("WAL_MIRROR_PATH", "/data/wal.jsonl")
 TOKEN = os.environ.get("WAL_BEARER_TOKEN", "")
+# name=url pairs, e.g. "blade=https://shards.nougenai.com/v1/shards/ingest,..."
+NODE_URLS = dict(p.split("=", 1) for p in os.environ.get("WAL_NODE_URLS", "").split(",") if "=" in p)
+NODE_TOKEN = os.environ.get("WAL_NODE_TOKEN", "")
 
 app = FastAPI(title="NouGen shard WAL", version="0.1.0")
 _buf: Optional[WriteAheadBuffer] = None
@@ -58,10 +65,30 @@ class AckIn(BaseModel):
 @app.post("/v1/shards/capture", dependencies=[Depends(require_bearer)])
 def capture(body: CaptureIn):
     try:
-        res = buffer().capture(body.model_dump())
+        record = body.model_dump()
+        res = buffer().capture(record)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if NODE_URLS:
+        # Spec step 2: fan out in the background; the 200 does not wait on nodes.
+        threading.Thread(target=_fanout, args=(record,), daemon=True).start()
     return {"status": "ok", **res}
+
+
+def _post_to_node(url: str, record: dict) -> bool:
+    req = urllib.request.Request(url, data=json.dumps(record).encode("utf-8"), method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          "X-NGS-Token": NODE_TOKEN})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return 200 <= resp.status < 300
+    except OSError:
+        return False
+
+
+def _fanout(record: dict) -> None:
+    targets = {name: (lambda rec, u=url: _post_to_node(u, rec)) for name, url in NODE_URLS.items()}
+    buffer().fanout(record, targets)
 
 
 @app.get("/v1/shards/pending", dependencies=[Depends(require_bearer)])
