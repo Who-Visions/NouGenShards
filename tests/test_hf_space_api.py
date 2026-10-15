@@ -1,68 +1,77 @@
-import importlib.util
+import importlib
 import threading
-import sys
-from pathlib import Path
+import time
 
 import pytest
 
 pytest.importorskip("fastapi")
+from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-APP = Path(__file__).resolve().parents[1] / "hf_space" / "app.py"
+H = {"X-NGS-Token": "t0ken"}
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
+def wal(tmp_path, monkeypatch):
     monkeypatch.setenv("WAL_DB_PATH", str(tmp_path / "p.db"))
-    monkeypatch.setenv("WAL_MIRROR_PATH", str(tmp_path / "wal.jsonl"))
+    monkeypatch.setenv("WAL_MIRROR_PATH", str(tmp_path / "wal" / "wal.jsonl"))
     monkeypatch.setenv("WAL_BEARER_TOKEN", "t0ken")
-    spec = importlib.util.spec_from_file_location("hf_space_app_t", APP)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["hf_space_app_t"] = mod
-    spec.loader.exec_module(mod)
-    return TestClient(mod.app)
+    monkeypatch.delenv("WAL_NODE_URLS", raising=False)
+    from nougen_shards import wal_api
+    mod = importlib.reload(wal_api)
+    app = FastAPI()
+    app.include_router(mod.router)
+    return mod, TestClient(app)
 
 
-H = {"Authorization": "Bearer t0ken"}
+def test_capture_requires_token(wal):
+    _, c = wal
+    assert c.post("/v1/shards/capture", json={"title": "a", "content": "x"}).status_code == 401
 
 
-def test_capture_requires_bearer(client):
-    r = client.post("/v1/shards/capture", json={"title": "a", "content": "x"})
-    assert r.status_code == 401
+def test_wal_token_header_also_accepted(wal):
+    _, c = wal
+    r = c.post("/v1/shards/capture", json={"title": "a", "content": "x"}, headers={"X-WAL-Token": "t0ken"})
+    assert r.status_code == 200
 
 
-def test_no_token_configured_fails_closed(client, monkeypatch):
-    monkeypatch.setenv("WAL_BEARER_TOKEN", "")
-    import hf_space_app_t as mod
+def test_no_token_configured_fails_closed(wal):
+    mod, c = wal
     mod.TOKEN = ""
-    r = client.post("/v1/shards/capture", json={"title": "a", "content": "x"}, headers=H)
+    r = c.post("/v1/shards/capture", json={"title": "a", "content": "x"}, headers=H)
     assert r.status_code == 503
 
 
-def test_capture_returns_stored_true_via_buffer(client):
-    r = client.post("/v1/shards/capture", json={"title": "a", "content": "hello"}, headers=H)
-    assert r.status_code == 200
-    body = r.json()
+def test_capture_returns_stored_true_via_buffer(wal):
+    _, c = wal
+    body = c.post("/v1/shards/capture", json={"title": "a", "content": "hello"}, headers=H).json()
     assert body["stored"] is True and body["via"] == "hf-cloud-buffer"
 
 
-def test_pending_ack_drain_roundtrip(client):
-    client.post("/v1/shards/capture", json={"title": "a", "content": "one"}, headers=H)
-    p = client.get("/v1/shards/pending", params={"node": "blade"}, headers=H).json()
+def test_pending_ack_drain_roundtrip(wal):
+    _, c = wal
+    c.post("/v1/shards/capture", json={"title": "a", "content": "one"}, headers=H)
+    p = c.get("/v1/shards/pending", params={"node": "blade"}, headers=H).json()
     assert len(p["shards"]) == 1
     shas = [s["content_sha256"] for s in p["shards"]]
-    a = client.post("/v1/shards/ack", json={"node": "blade", "shas": shas}, headers=H).json()
+    a = c.post("/v1/shards/ack", json={"node": "blade", "shas": shas}, headers=H).json()
     assert a["newly_acked"] == 1
-    assert client.get("/v1/shards/pending", params={"node": "blade"}, headers=H).json()["shards"] == []
+    assert c.get("/v1/shards/pending", params={"node": "blade"}, headers=H).json()["shards"] == []
 
 
-def test_empty_content_is_400(client):
-    r = client.post("/v1/shards/capture", json={"title": "a", "content": "  "}, headers=H)
-    assert r.status_code == 400
+def test_empty_content_is_400(wal):
+    _, c = wal
+    assert c.post("/v1/shards/capture", json={"title": "a", "content": "  "}, headers=H).status_code == 400
 
 
-def test_fanout_runs_in_background_and_acks_on_success(client, monkeypatch, tmp_path):
-    import hf_space_app_t as mod
+def test_health_is_open_and_reports_commit_state(wal):
+    _, c = wal
+    body = c.get("/v1/shards/health").json()
+    assert body["ok"] is True and body["dataset_commits"] is False
+
+
+def test_fanout_runs_in_background_and_acks_on_success(wal, monkeypatch):
+    mod, c = wal
     done = threading.Event()
     sent = []
 
@@ -73,14 +82,16 @@ def test_fanout_runs_in_background_and_acks_on_success(client, monkeypatch, tmp_
 
     monkeypatch.setattr(mod, "NODE_URLS", {"blade": "https://blade.example/ingest"})
     monkeypatch.setattr(mod, "_post_to_node", fake_post)
-    r = client.post("/v1/shards/capture", json={"title": "fan", "content": "fanout body"}, headers=H)
-    assert r.status_code == 200
+    assert c.post("/v1/shards/capture", json={"title": "fan", "content": "fanout body"}, headers=H).status_code == 200
     assert done.wait(5)
-    assert sent and sent[0][0] == "https://blade.example/ingest"
-    # the blade ack is recorded, so blade has nothing pending
-    import time
+    assert sent[0][0] == "https://blade.example/ingest"
     for _ in range(50):
         if mod.buffer().pending_for("blade") == []:
             break
         time.sleep(0.05)
     assert mod.buffer().pending_for("blade") == []
+
+
+def test_standalone_space_entry_mounts_the_router(wal):
+    from hf_space import app as space_app  # noqa: F401
+    assert "/v1/shards/capture" in space_app.app.openapi()["paths"]
