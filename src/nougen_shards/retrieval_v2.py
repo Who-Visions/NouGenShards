@@ -15,6 +15,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence, get_args
 from zoneinfo import ZoneInfo
+from .fleet_nodes import fleet_nodes as configured_fleet_nodes, local_node
 
 
 @dataclass(frozen=True)
@@ -432,10 +433,12 @@ def compile_intent(
         if any(alias and alias.casefold() in folded for alias in (entity.id, *entity.aliases)):
             found.append(entity.id)
 
+    peers = set(configured_fleet_nodes())
+    multiple_machines = (len(found) >= 3) or (bool(peers) and peers.issubset(found))
+
     metric = None
     if re.search(r"\b(tokens?|token usage|usage)\b", folded) or (
-        {"blade1tb", "phoebus", "whoart"}.issubset(found)
-        and re.search(r"\bytd\b|year to date|this year", folded)
+        multiple_machines and re.search(r"\bytd\b|year to date|this year", folded)
     ):
         metric = "token_usage"
     elif re.search(r"\b(cost|spend|price)\b", folded):
@@ -451,9 +454,7 @@ def compile_intent(
         intent_kind = "LOOKUP"
 
     fleet_cues = ("fleet", "all machine", "all-machine", "all machines", "every machine")
-    fleet_scope = any(cue in folded for cue in fleet_cues) or {
-        "blade1tb", "phoebus", "whoart"
-    }.issubset(found)
+    fleet_scope = any(cue in folded for cue in fleet_cues) or multiple_machines
     scope = "FLEET" if fleet_scope else ("MACHINE" if found else "LOCAL")
     if re.search(r"\bytd\b|year to date|this year", folded):
         period, year = "YTD", local_now.year

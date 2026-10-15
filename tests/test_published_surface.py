@@ -224,3 +224,37 @@ def test_placeholders_are_not_flagged():
     for ok in (r"C:\Users\<user>\Watchtower\vault", "~/Watchtower/vault",
                r"%USERPROFILE%\Watchtower\vault"):
         assert not MACHINE.search(ok), f"false positive on the suggested fix: {ok}"
+
+# --- private files by NAME -------------------------------------------------
+# Content scans miss a whole private document that has no account name in it.
+# The tax audit and the agent handoff registry shipped this way: the regexes
+# above found nothing in them, so the file itself has to be the thing blocked.
+PRIVATE_PATH = re.compile(
+    r"(^|/)(\.handoffs|\.sessions|handoffs)(/|$)"
+    r"|(^|/)[^/]*tax[^/]*\.(md|txt|csv|json|ndjson)$"
+    r"|(^|/)[^/]*catalog[^/]*\.ndjson$"
+    r"|(^|/)ops/launchd(/|$)",
+    re.IGNORECASE,
+)
+
+
+def test_no_private_files_are_published_by_name():
+    """Blocks owner-private documents by filename, independent of content."""
+    hits = [rel for rel in _tracked_files()
+            if PRIVATE_PATH.search(rel) and not rel.endswith(".gitkeep")]
+    assert not hits, (
+        "Private-by-name files on a public repo:\n"
+        + "\n".join(f"  {h}" for h in hits)
+        + "\n\nMove these out of the tree. Add the path to .gitignore so they "
+          "are not re-added. Filename-only check: a private document can carry "
+          "no account name at all."
+    )
+
+
+def test_the_private_path_rule_fires():
+    assert PRIVATE_PATH.search(".handoffs/20260816T232004Z__whoart__codex.md")
+    assert PRIVATE_PATH.search("docs/tax-audit-2026.md")
+    assert PRIVATE_PATH.search("docs/wargame-catalog/catalog.ndjson")
+    assert PRIVATE_PATH.search("ops/launchd/com.example.plist.template")
+    assert not PRIVATE_PATH.search("src/nougen_shards/cloudflare.py")
+    assert not PRIVATE_PATH.search("docs/handoffs.md")
