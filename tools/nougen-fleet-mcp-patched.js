@@ -1,3 +1,38 @@
+// HF hallway capture (owner-approved routing). Returns a tool result when the
+// hallway accepted the shard durably, else null so the caller falls back.
+async function hallwayCapture(env, payload, args) {
+  const url = env.HALLWAY_CAPTURE_URL;
+  const token = env.HALLWAY_BEARER_TOKEN;
+  if (!url || !token) return null;
+  const body = {
+    title: payload.title,
+    content: payload.content,
+    event_type: payload.event_type,
+    tags: payload.tags,
+    event_time: args.event_time || null,
+    via: env.CONNECTOR_LANE || "fleet-mcp",
+  };
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) return null;
+    const j = await resp.json();
+    if (j && j.stored === true) {
+      const text = JSON.stringify({ captured: true, via: j.via || "hf-cloud-buffer",
+        content_sha256: j.content_sha256, duplicate: !!j.duplicate });
+      return { content: [{ type: "text", text: `captured successfully via hallway (${j.via || "hf-cloud-buffer"})` }],
+               structuredContent: { captured: true, via: j.via || "hf-cloud-buffer" } };
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
@@ -4879,6 +4914,11 @@ Other lanes see it on their next relay check.`,
     if (typeof args.event_time === "string" && args.event_time.trim()) {
       payload.event_time_original = args.event_time.trim();
     }
+    // Hallway first (owner architecture: front door -> HF hallway -> node room).
+    // Active only when HALLWAY_CAPTURE_URL is configured; any failure falls back
+    // to the direct node call below, so a down hallway never loses a write.
+    const hallway = await hallwayCapture(env, payload, args);
+    if (hallway) return hallway;
     const result = await shardCall(env, env.SHARD_TOOL_CAPTURE || "capture_experience", payload);
 
     // Deciding whether the write landed used to be `captured === false`, which
