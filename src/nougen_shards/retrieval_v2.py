@@ -15,7 +15,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence, get_args
 from zoneinfo import ZoneInfo
-from .fleet_nodes import fleet_nodes as configured_fleet_nodes, local_node
+from .fleet_nodes import fleet_nodes as configured_fleet_nodes
 
 
 @dataclass(frozen=True)
