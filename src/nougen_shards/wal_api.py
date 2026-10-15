@@ -7,7 +7,7 @@ GET  /v1/shards/pending  ?node=<name>&limit=200 ; unacked shards for a node.
 POST /v1/shards/ack      {node, shas}; a node's durable receipt.
 GET  /v1/shards/health   liveness and whether dataset commits are on.
 
-Auth: X-NGS-Token or X-WAL-Token must equal WAL_BEARER_TOKEN (fallback
+Auth: X-NGS-Token, X-WAL-Token or Authorization: Bearer must equal WAL_BEARER_TOKEN (fallback
 NGS_NODE_TOKEN). Fails closed with 503 when neither is configured.
 """
 from __future__ import annotations
@@ -59,10 +59,15 @@ def start_dataset_commits() -> bool:
 
 
 def require_token(x_ngs_token: Optional[str] = Header(default=None),
-                  x_wal_token: Optional[str] = Header(default=None)) -> None:
+                  x_wal_token: Optional[str] = Header(default=None),
+                  authorization: Optional[str] = Header(default=None)) -> None:
     if not TOKEN:
         raise HTTPException(status_code=503, detail="WAL token not configured")
-    presented = x_wal_token or x_ngs_token or ""
+    bearer = ""
+    scheme, _, rest = (authorization or "").partition(" ")
+    if scheme.lower() == "bearer":
+        bearer = rest.strip()
+    presented = x_wal_token or x_ngs_token or bearer or ""
     if not presented or not secrets.compare_digest(presented, TOKEN):
         raise HTTPException(status_code=401, detail="unauthorized")
 

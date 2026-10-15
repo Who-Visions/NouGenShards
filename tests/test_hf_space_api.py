@@ -95,3 +95,17 @@ def test_fanout_runs_in_background_and_acks_on_success(wal, monkeypatch):
 def test_standalone_space_entry_mounts_the_router(wal):
     from hf_space import app as space_app  # noqa: F401
     assert "/v1/shards/capture" in space_app.app.openapi()["paths"]
+
+
+def test_authorization_bearer_is_accepted(wal):
+    _, c = wal
+    r = c.post("/v1/shards/capture", json={"title": "a", "content": "bearer"},
+               headers={"Authorization": "Bearer t0ken"})
+    assert r.status_code == 200
+
+
+def test_wrong_bearer_is_rejected(wal):
+    _, c = wal
+    r = c.post("/v1/shards/capture", json={"title": "a", "content": "bearer"},
+               headers={"Authorization": "Bearer nope"})
+    assert r.status_code == 401
