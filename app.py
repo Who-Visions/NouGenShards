@@ -1030,6 +1030,13 @@ try:
     app.include_router(_inference_router)
 except Exception as _router_err:
     print(f"[WARN] Inference router not mounted: {_router_err}", file=sys.stderr)
+
+try:
+    from nougen_shards import wal_api as _wal_api
+    app.include_router(_wal_api.router)
+    _wal_api.start_dataset_commits()
+except Exception as _wal_err:
+    print(f"[WARN] WAL hallway not mounted: {_wal_err}", file=sys.stderr)
 if not _serve_docs:
     print(
         "[WARN] Interactive API docs not mounted: host is network-exposed "
