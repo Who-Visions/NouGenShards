@@ -87,3 +87,35 @@ def test_module_singleton_resolve():
     res = resolve("proceed", user_id="dav3")
     assert res.top_intent is not None
     assert res.top_intent.intent_id == "workflow.closed_loop_continue"
+
+
+def test_in_memory_store_persists_across_calls():
+    store = IdiolectStore(db_path=":memory:")
+    store.learn_term("user1", "orbit", "celestial_loop", "astronomy", confidence=0.9)
+    terms = store.get_terms_for_user("user1")
+    assert len(terms) == 1
+    assert terms[0].term == "orbit"
+
+
+def test_word_boundary_isolation(mem_engine):
+    # 'and' is seeded, but substrings inside other words must not trigger it
+    res_cmd = mem_engine.resolve_intent("show command history", user_id="dav3")
+    assert res_cmd.top_intent is None or res_cmd.top_intent.intent_id != "workflow.closed_loop_continue"
+
+    res_under = mem_engine.resolve_intent("understand the system architecture", user_id="dav3")
+    assert res_under.top_intent is None or res_under.top_intent.intent_id != "workflow.closed_loop_continue"
+
+    # Actual standalone 'and' must trigger
+    res_and = mem_engine.resolve_intent("and", user_id="dav3")
+    assert res_and.top_intent is not None
+    assert res_and.top_intent.intent_id == "workflow.closed_loop_continue"
+
+
+def test_tenant_isolation(tmp_path):
+    store_a = IdiolectStore(db_path=str(tmp_path / "tenant_a.db"), tenant_id="tenant_a")
+    store_b = IdiolectStore(db_path=str(tmp_path / "tenant_b.db"), tenant_id="tenant_b")
+
+    store_a.learn_term("operator", "cipher", "secret_key")
+    assert len(store_a.get_terms_for_user("operator")) == 1
+    assert len(store_b.get_terms_for_user("operator")) == 0
+

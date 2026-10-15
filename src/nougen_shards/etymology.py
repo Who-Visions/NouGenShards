@@ -335,21 +335,33 @@ class IdiolectStore:
 
     SCHEMA_VERSION = 1
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: Optional[str] = None, tenant_id: Optional[str] = None):
+        self.tenant_id = tenant_id or os.environ.get("NOUGEN_TENANT_ID", "default")
+        self._mem_conn: Optional[sqlite3.Connection] = None
         if db_path is None:
             env_val = os.environ.get(ENV_IDIOLECT_DB)
             if env_val:
                 db_path = env_val
             else:
-                DEFAULT_IDIOLECT_DB_DIR.mkdir(parents=True, exist_ok=True)
-                db_path = str(DEFAULT_IDIOLECT_DB_DIR / "idiolect_vault.db")
+                vault_dir = os.environ.get("NOUGEN_VAULT_DIR")
+                base_dir = (Path(vault_dir) / "idiolect") if vault_dir else DEFAULT_IDIOLECT_DB_DIR
+                if self.tenant_id != "default":
+                    base_dir = base_dir / self.tenant_id
+                base_dir.mkdir(parents=True, exist_ok=True)
+                db_path = str(base_dir / "idiolect_vault.db")
 
         self.db_path = db_path
         if self.db_path != ":memory:":
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        else:
+            self._mem_conn = sqlite3.connect(":memory:")
+            self._mem_conn.row_factory = sqlite3.Row
+            self._mem_conn.execute("PRAGMA foreign_keys = ON;")
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
+        if self._mem_conn is not None:
+            return self._mem_conn
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
@@ -538,6 +550,15 @@ class EtymologyEngine:
         max_entropy = math.log2(len(norm)) if len(norm) > 1 else 1.0
         return round(entropy / max_entropy, 4) if max_entropy > 0 else 0.0
 
+    @staticmethod
+    def _match_boundary(pattern: str, text: str) -> bool:
+        """Matches a pattern ensuring boundaries are respected across alphanumeric and symbol tokens."""
+        if not pattern:
+            return False
+        prefix = r"(?<!\w)" if pattern[0].isalnum() else ""
+        suffix = r"(?!\w)" if pattern[-1].isalnum() else ""
+        return bool(re.search(prefix + re.escape(pattern) + suffix, text))
+
     def resolve_intent(self, phrase: str, user_id: str = "default",
                        context: Optional[Dict[str, Any]] = None) -> IntentResolutionResult:
         """
@@ -555,9 +576,14 @@ class EtymologyEngine:
         # 3. User Idiolect Lookup (Scoped strictly to user_id)
         user_terms = self.store.get_terms_for_user(user_id)
         user_metaphors = self.store.get_metaphors_for_user(user_id)
-
-        matching_terms = [t for t in user_terms if t.term in norm_phrase]
-        matching_metaphors = [m for m in user_metaphors if m["phrase_pattern"] in norm_phrase]
+        matching_terms = [
+            t for t in user_terms
+            if self._match_boundary(t.term, norm_phrase)
+        ]
+        matching_metaphors = [
+            m for m in user_metaphors
+            if self._match_boundary(m["phrase_pattern"], norm_phrase)
+        ]
 
         # 4. Historical Outcome Recall
         history_outcomes = self.store.get_history_outcomes(user_id, phrase_match=norm_phrase, limit=10)
