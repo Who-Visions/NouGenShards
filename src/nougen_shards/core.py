@@ -3111,8 +3111,8 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             surviving = scored_results[:max(limit, cutoff)]
         else:
             surviving = scored_results
-        # Filter anything below dynamic threshold (e.g. 0.05)
-        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.05 or it["_title_exact"] or it.get("_token_exact")]
+        # Filter anything below dynamic threshold (e.g. 0.01)
+        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.01 or it["_title_exact"] or it.get("_token_exact")]
         if not surviving and scored_results:
             surviving = [scored_results[0]]
     else:
