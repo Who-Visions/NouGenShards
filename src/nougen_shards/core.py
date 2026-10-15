@@ -9,12 +9,14 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import socket
 import sqlite3
 import threading as _threading
 import time
 from contextvars import ContextVar, copy_context
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -721,23 +723,33 @@ def resolve_domain_from_path(target_path: Optional[str] = None) -> str:
     return "global"
 
 
+def elevated_compression_density(content: str) -> float:
+    """Elevated offline information density proxy using zlib compression ratios.
+
+    Subtracts the static 11-byte zlib header/trailer overhead before dividing,
+    and applies a sigmoid length penalty so shards under 64 characters cannot
+    saturate the density ceiling.
+    """
+    raw = content.encode("utf-8")
+    n = len(raw)
+    if n == 0:
+        return 0.0
+    compressed_len = max(1, len(zlib.compress(raw, level=6)) - 11)
+    raw_ratio = min(1.0, compressed_len / n)
+    length_gate = 1.0 / (1.0 + math.exp(-(n - 64) / 16.0))
+    return float(raw_ratio * length_gate)
+
+
 def compression_density(content: str) -> float:
-    """Local, offline density estimate: gzip ratio as a proxy for surprisal.
+    """Local, offline density estimate: elevated zlib ratio with sigmoid length gate.
 
     Exposed separately from `calculate_contrastive_perplexity` so bulk callers
-    can opt out of the per-item LLM round trip. Scoring an import of six
-    figures of records through a model is not viable — each unreachable
-    provider costs a connection timeout, and even a live local model would
-    serialize the whole ingest behind inference.
+    can opt out of the per-item LLM round trip.
     """
     if not content:
-        return 1.0
-    import zlib
+        return 0.0
     try:
-        compressed_len = len(zlib.compress(content.encode('utf-8')))
-        raw_len = len(content.encode('utf-8'))
-        compression_ratio = compressed_len / max(1, raw_len)
-        return float(min(1.0, max(0.1, compression_ratio * 1.5)))
+        return elevated_compression_density(content)
     except Exception:
         return 0.5
 
@@ -1342,6 +1354,131 @@ def capture(event_type: str, title: str, content: str,
         dconn.close()
 
 
+@dataclass(frozen=True)
+class CanonicalShardRef:
+    """Deterministic content-addressed shard URI and composite key resolver.
+
+    Eliminates primary key collisions across the 9 SQLite cluster databases
+    where integer IDs repeat from 1 to N in every file.
+    """
+    db_index: int
+    shard_id: int
+    content_hash: str
+
+    @classmethod
+    def compute_hash(cls, domain_key: str, title: str, content: str, origin_ts: str) -> str:
+        payload = f"{domain_key.strip()}|{title.strip()}|{content.strip()}|{origin_ts.strip()}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    def verify_mutation_target(self, row_domain: str, row_title: str, row_content: str, row_ts: str) -> bool:
+        actual_hash = self.compute_hash(row_domain, row_title, row_content, row_ts)
+        return actual_hash == self.content_hash
+
+
+def shards_amend(
+    ref: CanonicalShardRef,
+    new_content: Optional[str] = None,
+    new_title: Optional[str] = None,
+    new_utility: Optional[float] = None
+) -> bool:
+    """Amends a shard only if the target row's CanonicalShardRef cryptographically matches."""
+    if not get_db_path(ref.db_index).exists():
+        return False
+    init_db(ref.db_index)
+    conn = get_connection(ref.db_index)
+    try:
+        row = conn.execute(
+            "SELECT domain_key, title, content, timestamp FROM shards WHERE id = ?",
+            (ref.shard_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if not ref.verify_mutation_target(
+            row["domain_key"] or "", row["title"] or "", row["content"] or "", row["timestamp"] or ""
+        ):
+            logger.error("shards_amend rejected: hash mismatch for ref %s", ref)
+            return False
+        updates = []
+        params = []
+        if new_content is not None:
+            updates.append("content = ?")
+            params.append(new_content)
+        if new_title is not None:
+            updates.append("title = ?")
+            params.append(new_title)
+        if new_utility is not None:
+            updates.append("utility_score = ?")
+            params.append(new_utility)
+        if not updates:
+            return True
+        params.append(ref.shard_id)
+        cur = conn.execute(f"UPDATE shards SET {', '.join(updates)} WHERE id = ?", tuple(params))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def shards_retract(ref: CanonicalShardRef, reason: str = "Retracted by cognitive unlearning") -> bool:
+    """Retracts a shard by flooring utility to 0.0001, appending a tombstone, and verifying hash."""
+    if not get_db_path(ref.db_index).exists():
+        return False
+    init_db(ref.db_index)
+    conn = get_connection(ref.db_index)
+    try:
+        row = conn.execute(
+            "SELECT domain_key, title, content, timestamp, tags FROM shards WHERE id = ?",
+            (ref.shard_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if not ref.verify_mutation_target(
+            row["domain_key"] or "", row["title"] or "", row["content"] or "", row["timestamp"] or ""
+        ):
+            logger.error("shards_retract rejected: hash mismatch for ref %s", ref)
+            return False
+        existing_tags = row["tags"] or ""
+        new_tags = f"{existing_tags},retracted,tombstone".strip(",")
+        tombstone = f"\n[TOMBSTONE: {reason} at {datetime.now(timezone.utc).isoformat()}]"
+        updated_content = (row["content"] or "") + tombstone
+        cur = conn.execute(
+            "UPDATE shards SET utility_score = 0.0001, tags = ?, content = ? WHERE id = ?",
+            (new_tags, updated_content, ref.shard_id)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def shards_forget(ref: CanonicalShardRef) -> bool:
+    """Suppresses a shard completely after CanonicalShardRef verification."""
+    if not get_db_path(ref.db_index).exists():
+        return False
+    init_db(ref.db_index)
+    conn = get_connection(ref.db_index)
+    try:
+        row = conn.execute(
+            "SELECT domain_key, title, content, timestamp FROM shards WHERE id = ?",
+            (ref.shard_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if not ref.verify_mutation_target(
+            row["domain_key"] or "", row["title"] or "", row["content"] or "", row["timestamp"] or ""
+        ):
+            logger.error("shards_forget rejected: hash mismatch for ref %s", ref)
+            return False
+        cur = conn.execute(
+            "UPDATE shards SET utility_score = 0.0, tags = 'forgotten,suppressed' WHERE id = ?",
+            (ref.shard_id,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def mark_verified(shard_id: int, db_index: int, valid_until: Optional[str] = None) -> bool:
     """Record that a shard was re-confirmed true now, optionally moving its
     validity window (Toujou). Returns False when the row does not exist."""
@@ -1495,7 +1632,6 @@ def elevated_final_score(
     utility_base: float,
     density: float,
     age_days: float,
-    half_life_days: float = 90.0,
     is_canon_lock: bool = False,
     utility_floor: float = 0.25,
 ) -> float:
@@ -1523,19 +1659,8 @@ def _process_fts_result(row, db_index, query_embedding, now: datetime):
     item = hydrate(dict(row))
     item["_db_index"] = db_index
     # 1. Likelihood Part A: BM25 (The Adjacency Score)
-    # FTS5 bm25() returns negative values where *more negative == stronger match*
-    # (the query orders bm25_score ASC for exactly this reason). Taking abs() folds
-    # strong and weak matches onto the same magnitude and inverts the signal — a
-    # strong hit (-8 -> 0.11) scored *below* a weak one (-0.5 -> 0.67). A raw
-    # logistic 1/(1+e^bm25) fixed the inversion but saturates: measured corpus
-    # scores span roughly -6 (weak single-token) to -90 (near-exact multi-term),
-    # and the logistic maps ALL of them to ~1.0, so keyword strength contributed
-    # a constant and stale high-utility rows outranked near-exact fresh matches.
-    # Map through a rational saturation x/(x+half) instead: still monotonically
-    # increasing in match strength and bounded in [0, 1), but discriminating
-    # across the whole measured range. `half` is the bm25 magnitude that scores
-    # 0.5 (env NOUGEN_BM25_HALF_SCORE; fallback from the measured corpus span).
-    strength = max(0.0, -item["bm25_score"])
+    bm25_raw = float(item.get("bm25_score", 0.0) or 0.0)
+    strength = max(0.0, -bm25_raw)
     norm_bm25 = strength / (strength + _bm25_half_score())
 
     # 2. Likelihood Part B: Semantic (The Latent Score)
@@ -1553,20 +1678,42 @@ def _process_fts_result(row, db_index, query_embedding, now: datetime):
             except Exception:
                 sem_score = 0.0
 
-    # Synthesize Coherent Likelihood (Module 9). When the caller supplied no
-    # query embedding the semantic lane is ABSENT, not zero-valued: weighting a
-    # missing sensor as 0 capped likelihood at WEIGHT_BM25 and let the decayed
-    # utility prior dominate every keyword-only retrieval. Renormalize over the
-    # signal that actually exists (broken-sensor absence, HARDENING inv. 4).
+    # Synthesize Coherent Likelihood (Module 9).
     if query_embedding is None:
         likelihood = norm_bm25
     else:
         likelihood = (norm_bm25 * WEIGHT_BM25) + (sem_score * WEIGHT_SEMANTIC)
 
-    # 3. Temporal decay factor (half-life of 30 days) to prevent stale successful sessions from dominating results
-    decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), now)
+    # 3. Density & Temporal decay
+    density = float(item.get("density_score") if item.get("density_score") is not None else 1.0)
+    age_days = 0.0
+    ts_str = item.get("timestamp")
+    if ts_str:
+        try:
+            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_days = max(0.0, (now - dt).total_seconds() / 86400.0)
+        except Exception:
+            age_days = 0.0
 
-    # 4. Final relevance: a weighted blend of the likelihood signal and the decayed utility score
+    is_canon = bool(item.get("is_canon_lock") or (item.get("tags") and "canon" in str(item.get("tags")).lower()))
+    utility_base = float(item.get("utility_score") if item.get("utility_score") is not None else 1.0)
+
+    # Compute elevated score component and decayed utility
+    decayed_utility = utility_base * _temporal_decay(item.get("timestamp"), now)
+
+    elevated_score = elevated_final_score(
+        bm25_raw=bm25_raw,
+        utility_base=utility_base,
+        density=density,
+        age_days=age_days,
+        half_life_days=90.0,
+        is_canon_lock=is_canon,
+    )
+    item["elevated_score"] = elevated_score
+
+    # 4. Final relevance: weighted blend of likelihood and decayed utility
     item["final_score"] = (likelihood * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
     if _elevated_scoring_enabled():
         age_days = 0.0
@@ -1663,6 +1810,19 @@ def _retrieve_db_workers() -> int:
     return max(1, n)
 
 
+def elevated_lane_timeout(
+    alpha: float,
+    beta_param: float,
+    max_deadline: float = 20.0,
+    min_deadline: float = 1.5
+) -> float:
+    """Thompson-sampling adaptive timeout proportional to lane reliability."""
+    expected_reliability = alpha / (alpha + beta_param)
+    sampled_trust = random.betavariate(alpha, beta_param)
+    blended = 0.7 * expected_reliability + 0.3 * sampled_trust
+    return max(min_deadline, min(max_deadline, max_deadline * blended))
+
+
 def _run_db_scans(scan_fn):
     """Run scan_fn(i) for every grid DB concurrently; yield (i, result) in DB order.
 
@@ -1682,7 +1842,12 @@ def _run_db_scans(scan_fn):
         futures = {i: executor.submit(copy_context().run, scan_fn, i)
                    for i in range(1, MAX_DB_COUNT + 1)}
         for i in range(1, MAX_DB_COUNT + 1):
-            yield i, futures[i].result()
+            timeout_s = elevated_lane_timeout(alpha=10.0, beta_param=1.0, max_deadline=20.0, min_deadline=1.5)
+            try:
+                yield i, futures[i].result(timeout=timeout_s)
+            except concurrent.futures.TimeoutError:
+                logger.warning("grid DB %d timed out after %.2fs under adaptive timeout", i, timeout_s)
+                yield i, ([], True)
 
 
 def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[List[float]] = None,
@@ -2903,9 +3068,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             relevance = 1.0 if raw_rel > 0 else 0.5
 
         decay = _temporal_decay(item.get("timestamp"), score_now)
-        density = item.get("density_score", 1.0)
+        density = float(item.get("density_score") if item.get("density_score") is not None else 1.0)
 
-        u_shard = (1.0 * relevance) * decay * density
+        # Elevated tripartite utility formulation:
+        u_shard = (1.0 * relevance) * decay * max(0.25, density)
         item["utility_score_tripartite"] = u_shard
         scored_results.append(item)
     
@@ -2944,7 +3110,7 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
         else:
             surviving = scored_results
         # Filter anything below dynamic threshold (e.g. 0.05)
-        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.05 or it["_title_exact"] or it["_token_exact"]]
+        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.05 or it["_title_exact"] or it.get("_token_exact")]
         if not surviving and scored_results:
             surviving = [scored_results[0]]
     else:
