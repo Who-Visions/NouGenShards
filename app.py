@@ -969,10 +969,10 @@ async def _lifespan(_app):
     # misses its deadline on every query (phoebus, 2026-09-04). The process may
     # raise its own soft limit, so it does - before the warm-up opens anything.
     fd_budget.ensure_fd_headroom()
-    # Heal the grid (malformed DB files renamed aside and recreated empty; gated by
-    # NOUGEN_QUARANTINE_MALFORMED_ON_BOOT), then warm the recall cache: both on a
-    # daemon thread so the node binds its port now, not after an O(vault) scan.
-    _start_boot_quarantine(then=_start_recall_warmup)
+    # Heal the grid in background, and warm the recall cache immediately on a
+    # background thread so the node binds its port now, and caches prime without waiting on full quarantine.
+    _start_boot_quarantine()
+    _start_recall_warmup()
     _seed_upstreams()
     # The streamable-HTTP session manager needs a running task group.
     async with node_mcp.session_manager.run():

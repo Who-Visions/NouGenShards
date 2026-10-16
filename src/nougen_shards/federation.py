@@ -4,7 +4,6 @@ import os
 import threading
 from . import core
 from . import machine
-from .connectors.sql import query_external_dbs
 from .connectors.cloud import query_cloud_shards
 from .connectors.local_vault import query_local_vaults
 from . import keymaker
@@ -194,6 +193,7 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         if not external_configs:
             return []
         try:
+            from .connectors.sql import query_external_dbs
             return query_external_dbs(query, external_configs, limit=limit)
         except Exception as exc:
             logger.warning("external DBs skipped: %s: %s", type(exc).__name__, exc)
