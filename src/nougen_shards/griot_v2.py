@@ -39,6 +39,7 @@ from nougen_shards.retrieval_v2 import (
     next_recovery_action,
     reciprocal_rank_fusion,
 )
+from .fleet_nodes import fleet_nodes as configured_fleet_nodes, local_node
 
 
 # ============================================================
@@ -200,7 +201,8 @@ def gather_griot_archive(
     failures_list = []
     supplied_statuses = {status.node_name: status for status in (node_statuses or ())}
     simulated_failures = simulated_node_failures or {}
-    fleet_nodes = ("whoart", "blade1tb", "phoebus")
+    fleet_nodes = tuple(dict.fromkeys((*configured_fleet_nodes(), local_node(), *simulated_failures.keys(), *supplied_statuses.keys()))
+    )
     for node in fleet_nodes:
         if node in simulated_failures:
             err = simulated_failures[node]

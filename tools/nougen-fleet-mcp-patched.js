@@ -1,3 +1,102 @@
+// HF hallway capture (owner-approved routing) with Adaptive Hallway Circuit Breaker.
+// Guarantees sub-second failover when HF Space is PAUSED (206/503) or unreachable.
+const HALLWAY_CIRCUIT_TTL_MS = 60_000;
+const HALLWAY_DEADLINE_MS = 3_500;
+const hallwayCircuitState = new Map(); // routeKey -> { status: 'CLOSED'|'OPEN'|'HALF_OPEN', openedAt: number, reason: string }
+
+function isHallwayRouteHealthy(routeKey) {
+  const entry = hallwayCircuitState.get(routeKey);
+  if (!entry) return true;
+  if (entry.status === "OPEN" && Date.now() - entry.openedAt > HALLWAY_CIRCUIT_TTL_MS) {
+    hallwayCircuitState.set(routeKey, { status: "HALF_OPEN", openedAt: entry.openedAt, reason: entry.reason });
+    return true;
+  }
+  return entry.status !== "OPEN";
+}
+
+function recordHallwayRouteOutcome(routeKey, ok, reason = "") {
+  if (ok) {
+    hallwayCircuitState.delete(routeKey);
+  } else {
+    hallwayCircuitState.set(routeKey, {
+      status: "OPEN",
+      openedAt: Date.now(),
+      reason: reason || "upstream_fault",
+    });
+  }
+}
+
+async function computeHallwayIdempotencyHash(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf))
+    .slice(0, 12)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function hallwayCapture(env, payload, args) {
+  const url = env.HALLWAY_CAPTURE_URL || (env.SHARD_GATEWAY_URL ? `${env.SHARD_GATEWAY_URL.replace(/\/+$/, "")}/v1/shards/capture` : null);
+  const token = env.HALLWAY_BEARER_TOKEN;
+  if (!url || !token) return null;
+  if (!isHallwayRouteHealthy("hf_hallway")) return null;
+
+  const body = {
+    title: payload.title,
+    content: payload.content,
+    event_type: payload.event_type,
+    tags: payload.tags,
+    event_time: args.event_time || null,
+    via: env.CONNECTOR_LANE || "fleet-mcp",
+  };
+  const bodyStr = JSON.stringify(body);
+  const idempotencyKey = await computeHallwayIdempotencyHash(bodyStr);
+
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`,
+        "X-NouGen-Idempotency": idempotencyKey,
+      },
+      body: bodyStr,
+      signal: AbortSignal.timeout(Number(env.HALLWAY_TIMEOUT_MS) || HALLWAY_DEADLINE_MS),
+    });
+
+    // HF Space returns 206 when paused/building or 503 when container fails to wake
+    if (resp.status !== 200 && resp.status !== 201) {
+      recordHallwayRouteOutcome("hf_hallway", false, `http_${resp.status}_space_paused_or_unavailable`);
+      return null;
+    }
+
+    const j = await resp.json();
+    if (j && j.stored === true) {
+      recordHallwayRouteOutcome("hf_hallway", true);
+      const resultMeta = {
+        captured: true,
+        via: j.via || "hf-cloud-buffer",
+        content_sha256: j.content_sha256 || null,
+        duplicate: Boolean(j.duplicate),
+        idempotencyKey,
+      };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `captured successfully via hallway (${resultMeta.via}) [sha256: ${resultMeta.content_sha256 || "n/a"}, duplicate: ${resultMeta.duplicate}]`,
+          },
+        ],
+        structuredContent: resultMeta,
+      };
+    }
+    recordHallwayRouteOutcome("hf_hallway", false, "hallway_stored_false");
+    return null;
+  } catch (err) {
+    recordHallwayRouteOutcome("hf_hallway", false, String(err));
+    return null;
+  }
+}
+
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
@@ -1110,8 +1209,8 @@ function peerConfig(env, name) {
   const legacy = upper === "PHOEBUS";
   const origin = env[upper + "_ORIGIN"] || (legacy ? env.PHOEBUS_ORIGIN || "https://phoebus.nougenai.com" : "");
   const token = env[upper + "_TOKEN"] || (legacy ? env.PHOEBUS_TOKEN : void 0);
-  const budget = Number(env[upper + "_TIMEOUT_MS"]) || Number(env.PEER_TIMEOUT_MS) || (legacy ? Number(env.PHOEBUS_TIMEOUT_MS) : 0) || 45000;
-  const grace = Number(env[upper + "_GRACE_MS"]) || Number(env.PEER_GRACE_MS) || (legacy ? Number(env.PHOEBUS_GRACE_MS) : 0) || 25000;
+  const budget = Number(env[upper + "_TIMEOUT_MS"]) || Number(env.PEER_TIMEOUT_MS) || (legacy ? Number(env.PHOEBUS_TIMEOUT_MS) : 0) || 6500;
+  const grace = Number(env[upper + "_GRACE_MS"]) || Number(env.PEER_GRACE_MS) || (legacy ? Number(env.PHOEBUS_GRACE_MS) : 0) || 6500;
   return { name, origin, token, budget, grace };
 }
 __name(peerConfig, "peerConfig");
@@ -1138,6 +1237,9 @@ async function shardCallFanout(env, toolName, args) {
   // double the wait on the half that is already slower, and the retry path
   // exists for transient blade faults, not for a best-effort extra origin.
   const peerPromises = configured.map((p) => {
+    if (!isHallwayRouteHealthy(`recall_${p.name}`)) {
+      return Promise.resolve({ ok: false, e: { message: "circuit_open" } });
+    }
     const peerEnv = { ...env, SHARD_GATEWAY_URL: p.origin, SHARD_HTTP_TIMEOUT_MS: p.budget, SHARD_SSE_TIMEOUT_MS: p.budget, SHARD_CALL_MAX_ATTEMPTS: 1 };
     if (p.token) peerEnv.SHARD_GATEWAY_TOKEN = p.token;
     return fanoutSettle(shardCallDirect(peerEnv, toolName, args));
@@ -1157,12 +1259,16 @@ async function shardCallFanout(env, toolName, args) {
   const arms = [{ name: "blade", res: primary }, ...configured.map((p, i) => ({ name: p.name, res: peerResults[i] }))];
   for (const arm of arms) {
     if (arm.res.ok && !arm.res.v?.isError) {
+      if (arm.name !== "blade") recordHallwayRouteOutcome(`recall_${arm.name}`, true);
       ok.push({ name: arm.name, result: arm.res.v });
       status[arm.name] = "ok";
     } else if (arm.res.ok) {
+      if (arm.name !== "blade") recordHallwayRouteOutcome(`recall_${arm.name}`, false, "gateway_isError");
       status[arm.name] = "gateway returned isError";
     } else {
-      status[arm.name] = String(arm.res.e?.message || arm.res.e).slice(0, 200);
+      const msg = String(arm.res.e?.message || arm.res.e).slice(0, 200);
+      if (arm.name !== "blade" && msg !== "circuit_open") recordHallwayRouteOutcome(`recall_${arm.name}`, false, msg);
+      status[arm.name] = msg;
     }
   }
   // A peer with no origin was never dialed -- that is a config gap, not a
@@ -4879,6 +4985,11 @@ Other lanes see it on their next relay check.`,
     if (typeof args.event_time === "string" && args.event_time.trim()) {
       payload.event_time_original = args.event_time.trim();
     }
+    // Hallway first (owner architecture: front door -> HF hallway -> node room).
+    // Active only when HALLWAY_CAPTURE_URL is configured; any failure falls back
+    // to the direct node call below, so a down hallway never loses a write.
+    const hallway = await hallwayCapture(env, payload, args);
+    if (hallway) return hallway;
     const result = await shardCall(env, env.SHARD_TOOL_CAPTURE || "capture_experience", payload);
 
     // Deciding whether the write landed used to be `captured === false`, which

@@ -1,0 +1,15 @@
+{"phase": "identity", "fleet": {"node": "example-node"}}
+{"phase": "distill", "chunk": 1, "chunks": 2, "characters": 13900, "model": "gemma4:cloud"}
+{"phase": "gather", "chunk": 1, "candidate": 1, "title": "Sharder keeps append-only history"}
+{"phase": "judge", "title": "Sharder keeps append-only history", "action": "CAPTURE", "reason": "New durable rule, not present in existing shards"}
+{"candidate": {"title": "Sharder keeps append-only history"}, "decision": {"action": "CAPTURE", "reason": "New durable rule, not present in existing shards"}, "outcome": {"status": "capture_attempted"}}
+{"phase": "gather", "chunk": 1, "candidate": 2, "title": "Weekly status chatter"}
+{"phase": "judge", "title": "Weekly status chatter", "action": "SKIP", "reason": "Transient, no lasting value"}
+{"candidate": {"title": "Weekly status chatter"}, "decision": {"action": "SKIP", "reason": "Transient, no lasting value"}, "outcome": {"status": "skipped"}}
+{"phase": "distill", "chunk": 2, "chunks": 2, "characters": 4210, "model": "gemma4:cloud"}
+{"phase": "gather", "chunk": 2, "candidate": 1, "title": "Retention policy amendment"}
+{"phase": "judge", "title": "Retention policy amendment", "action": "AMEND", "reason": "Extends an existing shard"}
+{"candidate": {"title": "Retention policy amendment"}, "decision": {"action": "AMEND", "reason": "Extends an existing shard"}, "outcome": {"status": "amend_blocked"}}
+{"phase": "gather", "chunk": 2, "candidate": 2, "title": "Old cutover note"}
+{"phase": "judge", "title": "Old cutover note", "action": "RETRACT", "reason": "Superseded by a newer shard"}
+{"candidate": {"title": "Old cutover note"}, "decision": {"action": "RETRACT", "reason": "Superseded by a newer shard"}, "outcome": {"status": "retracted"}}

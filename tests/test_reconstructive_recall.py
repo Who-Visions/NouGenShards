@@ -251,3 +251,8 @@ def test_reciprocal_rank_fusion_deterministic():
     assert fused[0]["id"] == "doc_b"
 
 
+@pytest.fixture(autouse=True)
+def _owner_fleet_env(monkeypatch):
+    """These tests assert a three-machine fleet. Declare it here, not in code."""
+    monkeypatch.setenv("NOUGEN_NODE_NAME", "blade1tb")
+    monkeypatch.setenv("NOUGEN_PEER_NODES", "phoebus,whoart")

@@ -20,8 +20,6 @@ from . import nougen_sandbox
 from . import federation
 from . import history
 from . import router
-from .connectors.cloud import push_to_cloud, pull_from_cloud
-from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
 from . import dream
 from . import evolution
 from . import assurance
@@ -431,6 +429,7 @@ def cmd_pr(args):
 
 def cmd_brain(args):
     """Universal AI Memory Forensic Engine."""
+    from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
     if args.action == "scan":
         candidates = scan_environment(
             project_path=str(getattr(args, 'project')) if getattr(args, 'project', None) else None, 
@@ -1479,6 +1478,44 @@ def cmd_amv(args):
     print("This scenario is never written to the production usage ledger.")
 
 
+# Exact failure strings nougen_sandbox.execute_sandboxed returns. Matching these
+# (not any "Error:" prefix) keeps a successful script that prints "Error: ..."
+# recorded instead of silently dropped.
+_SANDBOX_FAILURE_PREFIXES = (
+    "Error: Sandboxed ",
+    "Error: Runtime '",
+    "Error: Shell runtime",
+    "Error: Unsupported language",
+    "Error: Execution timed out",
+    "Error: Sandbox execution failed",
+    "Execution failed (Exit ",
+)
+
+
+def _ctx_execute_and_record(code, bypass_gatekeeper=False):
+    """Run sandboxed code, print it, and record the run so `ctx search` finds it.
+
+    The full output is persisted to the sandbox under a content-hash handle
+    (Rule 0.14); only the handle and a bounded preview go to the event log.
+    """
+    import hashlib
+    if bypass_gatekeeper:
+        output = nougen_sandbox.execute_sandboxed(code, bypass_gatekeeper=True)
+    else:
+        output = nougen_sandbox.execute_sandboxed(code)
+    print(output)
+    if output.startswith(_SANDBOX_FAILURE_PREFIXES):
+        return
+    handle = "ncode_" + hashlib.sha256(output.encode("utf-8")).hexdigest()[:12]
+    nougen_context.store_sandbox(handle, output, summary=code[:200])
+    nougen_context.log_event(
+        "ctx_execute",
+        f"{code[:500]}\n-> {output[:500]}",
+        {"handle": handle, "bytes": len(output.encode("utf-8"))},
+    )
+    print(f"[recorded handle={handle}]", file=sys.stderr)
+
+
 def cmd_ctx(args):
     """Handles NouGenContext commands."""
     if args.action == "init":
@@ -1495,13 +1532,13 @@ def cmd_ctx(args):
                 ans = input("Do you want to override this gate and proceed? [y/N]: ").strip().lower()
                 if ans in ["y", "yes"]:
                     print("🔓 Gate override approved by GM.")
-                    print(nougen_sandbox.execute_sandboxed(args.input, bypass_gatekeeper=True))
+                    _ctx_execute_and_record(args.input, bypass_gatekeeper=True)
                 else:
                     print("🚫 Action aborted.")
             else:
                 print("🚫 Action aborted.")
         else:
-            print(nougen_sandbox.execute_sandboxed(args.input))
+            _ctx_execute_and_record(args.input)
     elif args.action == "search":
         if not args.input:
             print("Error: Usage: nougen ctx search <query> [--limit <n>]")
@@ -1800,6 +1837,7 @@ def cmd_node(args):
             finally:
                 conn.close()
         
+        from .connectors.cloud import push_to_cloud
         print(f"[*] Pushing {len(all_shards)} shards to {args.url}...")
         res = push_to_cloud(all_shards, args.url, args.token)
         print(f"✅ Sync result: {res.get('status')} (Count: {res.get('count')})")
@@ -1812,6 +1850,7 @@ def cmd_node(args):
             print("Error: --token <token> is required for pull.")
             return
         
+        from .connectors.cloud import pull_from_cloud
         print(f"[*] Pulling shards from {args.url}...")
         remote_shards = pull_from_cloud(args.url, args.token)
         print(f"[*] Pulled {len(remote_shards)} shards. Ingesting locally...")
@@ -2410,10 +2449,12 @@ def get_parser():
     p_cua.add_argument("--title", default=None, help="Title for ActionCard or GenerativePanel")
     p_cua.add_argument("--summary", default=None, help="Summary for ActionCard")
 
-    p_tube = subparsers.add_parser("tube", help="YouTube/Media transcript ingestion & dedupe")
-    p_tube.add_argument("tube_action", choices=["pull"], default="pull", nargs="?")
+    p_tube = subparsers.add_parser("tube", aliases=["nougentube"], help="YouTube/Media transcript ingestion & dedupe")
+    p_tube.add_argument("tube_action", choices=["pull", "ingest", "preview"], default="ingest", nargs="?")
     p_tube.add_argument("url", help="YouTube video or playlist URL")
     p_tube.add_argument("--dry-run", action="store_true", help="Do not capture shards")
+    p_tube.add_argument("--limit", type=int, default=1, help="Max videos to ingest")
+
 
     p_arxiv = subparsers.add_parser("arxiv", help="Autonomous arXiv research & shard capture")
     p_arxiv.add_argument("arxiv_action", choices=["search", "ingest"], default="search")
@@ -2785,7 +2826,10 @@ def cmd_cf(args):
             etag = res.get("result", {}).get("etag", "live")
             print(f"✅ Deployed [{res['worker_name']}] successfully! (ETag: {etag})")
             print(f"  • Entry Point: {res['entry_point']}")
-            print(f"  • Live URL:    https://{res['worker_name']}.whoentertains.workers.dev")
+            from . import endpoints
+            live = endpoints.worker_live_url(res['worker_name'])
+            if live:
+                print(f"  • Live URL:    {live}")
         except Exception as e:
             print(f"❌ Deploy failed: {e}")
             sys.exit(1)
@@ -3491,24 +3535,25 @@ def cmd_cua(args):
 
 def cmd_tube(args):
     """NouGenTube media transcript ingester."""
-    action = getattr(args, "tube_action", "pull")
-    if action == "pull":
-        url = args.url
-        print(f"📺 NouGenTube pulling: {url}")
-        try:
-            prev_argv = sys.argv
-            sys.argv = ["tube", url]
-            if getattr(args, "dry_run", False):
-                sys.argv.append("--dry-run")
-            try:
-                tube.main()
-            finally:
-                sys.argv = prev_argv
-        except SystemExit:
-            pass
-        except Exception as e:
-            print(f"[ERROR] Tube ingest failed: {e}", file=sys.stderr)
-            sys.exit(1)
+    action = getattr(args, "tube_action", "ingest")
+    url = getattr(args, "url", None)
+    dry_run = getattr(args, "dry_run", False) or (action == "preview")
+    limit = getattr(args, "limit", 1)
+
+    print(f"📺 NouGenTube {'previewing' if dry_run else 'ingesting'}: {url} (limit: {limit})")
+    try:
+        cmd_args = [url]
+        if dry_run:
+            cmd_args.append("--dry-run")
+        if limit:
+            cmd_args.extend(["--limit", str(limit)])
+        tube.main(cmd_args)
+    except SystemExit:
+        pass
+    except Exception as e:
+        print(f"[ERROR] Tube ingest failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
 
 
 def cmd_arxiv(args):
@@ -4058,7 +4103,8 @@ def main():
         "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage, "amv": cmd_amv,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr, "claim": cmd_claim,
-        "tree": cmd_tree, "cua": cmd_cua, "tube": cmd_tube, "arxiv": cmd_arxiv,
+        "tree": cmd_tree, "cua": cmd_cua, "tube": cmd_tube, "nougentube": cmd_tube, "arxiv": cmd_arxiv,
+
         "viz": cmd_viz, "msg": cmd_msg, "evidence": cmd_evidence,
         "transcribe": cmd_transcribe, "live": cmd_live, "algo": cmd_algo,
         "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,

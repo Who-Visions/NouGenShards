@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import time
 import urllib.error
@@ -205,9 +206,27 @@ def autostart_enabled() -> bool:
     return str(raw).strip().lower() not in {"0", "false", "no", "off"}
 
 
+def discrete_gpu_env(base: dict | None = None) -> dict:
+    """Environment for ``ollama serve`` that prefers a discrete NVIDIA GPU.
+
+    On hybrid machines (AMD integrated + NVIDIA discrete) Ollama can select the
+    integrated GPU through ROCm. Its "VRAM" is carved from system RAM, so models
+    land in RAM and the pagefile while the discrete card sits idle. When
+    ``nvidia-smi`` is on PATH, hide AMD devices from ROCm. A machine with no
+    NVIDIA card is left untouched, and an explicit HIP_VISIBLE_DEVICES wins.
+    """
+    env = dict(os.environ if base is None else base)
+    if "HIP_VISIBLE_DEVICES" not in env and shutil.which("nvidia-smi", path=env.get("PATH")):
+        env["HIP_VISIBLE_DEVICES"] = "-1"
+    return env
+
+
 def ensure_ollama_url(*, autostart: bool | None = None,
                       wait_s: float | None = None) -> str | None:
     """Discover a live ollama, igniting a cold daemon once if allowed.
+
+    The daemon is started with :func:`discrete_gpu_env`, so on hybrid-graphics
+    machines models load into the discrete card's VRAM, not shared system RAM.
 
     There is no ollama autostart on this box, so an unattended lane firing at 3 AM
     meets a cold daemon and loses its whole fleet step unless it starts one itself
@@ -223,7 +242,7 @@ def ensure_ollama_url(*, autostart: bool | None = None,
 
     binary = os.environ.get("NOUGEN_OLLAMA_BIN", "ollama")
     try:
-        subprocess.Popen([binary, "serve"],
+        subprocess.Popen([binary, "serve"], env=discrete_gpu_env(),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          stdin=subprocess.DEVNULL,
                          creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))

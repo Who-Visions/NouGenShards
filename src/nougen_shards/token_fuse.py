@@ -76,7 +76,12 @@ class TokenFuse:
             return cls._instance
 
     def _load_ledger(self):
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        # Status must stay readable when the state dir cannot be created (read-only
+        # home, a file at that path): start with an empty in-memory ledger.
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
         if FUSE_STORE.exists():
             try:
                 with open(FUSE_STORE, "r", encoding="utf-8") as f:
@@ -87,8 +92,8 @@ class TokenFuse:
                 pass
 
     def _save_ledger(self):
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
         try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
             with open(FUSE_STORE, "w", encoding="utf-8") as f:
                 json.dump({
                     "session_id": self.session_id,
@@ -187,6 +192,28 @@ class TokenFuse:
                 "tripped": self.tripped
             }
 
+    def status(self) -> Dict[str, Any]:
+        """Read-only snapshot for the token_fuse_status MCP tool; never raises."""
+        with self._lock:
+            total = self.cumulative_tokens
+            limit = self.max_session_tokens or 1
+            return {
+                "session_id": self.session_id,
+                "tripped": self.tripped,
+                "trip_reason": self.trip_reason,
+                "cumulative_tokens": total,
+                "max_session_tokens": self.max_session_tokens,
+                "max_task_tokens": self.max_task_tokens,
+                "session_used_pct": round(100.0 * total / limit, 2),
+                "warn": total >= self.warn_pct * limit,
+                "active_tasks": self.active_tasks_count,
+                "max_tasks": self.max_tasks,
+                "tasks": {k: {"model": v.model, "total_tokens": v.total_tokens,
+                              "invocations": v.invocations, "active": v.active}
+                          for k, v in self.tasks.items()},
+                "ledger": str(FUSE_STORE),
+            }
+
     def close_task(self, task_id: str):
         with self._lock:
             if task_id in self.tasks:
@@ -199,3 +226,8 @@ class TokenFuse:
             self.tripped = False
             self.trip_reason = ""
             self._save_ledger()
+
+
+def get_hypervisor_status() -> Dict[str, Any]:
+    """Module-level entry used by app.py's token_fuse_status tool."""
+    return TokenFuse.get_instance().status()

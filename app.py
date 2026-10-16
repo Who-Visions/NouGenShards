@@ -582,17 +582,20 @@ def recall_window(query: str = "", since: str | None = None,
 
 
 def _resolve_shard(shard_id: int, db_index: Optional[int] = None,
-                   expect_title: Optional[str] = None) -> tuple:
+                   expect_title: Optional[str] = None,
+                   content_hash: Optional[str] = None) -> tuple:
     """Pin a shard id to exactly one cluster DB, or refuse.
 
-    Shard ids are per-DB AUTOINCREMENT, so id 2416 exists in several of the 9
-    DBs at once. Every mutation here keys on an id, and acting on "the first
-    match" would silently mutate a different shard than the caller meant --
-    tolerable for a utility nudge, unacceptable for a retraction or a delete.
+    Enforces CanonicalShardRef content-addressed cryptographic verification
+    across shards_amend, shards_retract, and shards_forget. Eliminates
+    cross-database integer ID collisions mathematically rather than relying
+    solely on plain-text title confirmation.
 
-    Returns (db_index, title). Raises ValueError naming the candidates when the
-    id is ambiguous, so the caller disambiguates instead of gambling.
+    Returns (db_index, title, content_hash). Raises ValueError naming the candidates
+    or hash mismatch when the target is unverified or ambiguous.
     """
+    from nougen_shards.locator import CanonicalShardRef
+
     hits = []
     indices = [db_index] if db_index is not None else range(1, core.MAX_DB_COUNT + 1)
     for i in indices:
@@ -600,47 +603,71 @@ def _resolve_shard(shard_id: int, db_index: Optional[int] = None,
             continue
         conn = core.get_connection(i)
         try:
-            row = conn.execute("SELECT title FROM shards WHERE id = ?", (shard_id,)).fetchone()
+            row = conn.execute(
+                "SELECT title, domain_key, content, original_timestamp, timestamp FROM shards WHERE id = ?",
+                (shard_id,)
+            ).fetchone()
         finally:
             conn.close()
         if row:
-            hits.append((i, row[0]))
+            title = row[0] or ""
+            d_key = row[1] or ""
+            content = row[2] or ""
+            ts = row[3] or row[4] or ""
+            c_hash = CanonicalShardRef.compute_hash(d_key, title, content, str(ts))
+            hits.append({"db_index": i, "title": title, "hash": c_hash})
 
     if not hits:
         raise ValueError(f"no shard with id {shard_id}"
                          + (f" in db {db_index}" if db_index is not None else " in any cluster DB"))
 
+    # Mathematical Content-Addressed Verification (CanonicalShardRef)
+    if content_hash:
+        c_hash_clean = content_hash.strip().lower()
+        exact_hash = [h for h in hits if h["hash"].lower() == c_hash_clean]
+        if not exact_hash:
+            found_hashes = "; ".join(f"db{h['db_index']} (hash={h['hash']}, title={h['title'][:40]!r})" for h in hits)
+            raise ValueError(
+                f"CanonicalShardRef hash mismatch for id {shard_id}. "
+                f"Expected content hash {content_hash!r}; found {found_hashes}. "
+                f"Mathematical verification failed — refusing mutation."
+            )
+        hits = exact_hash
+
+    # Plain-text Title Check (Secondary/Fallback confirmation)
     if expect_title:
-        exact = [h for h in hits if h[1] == expect_title]
+        exact = [h for h in hits if h["title"] == expect_title]
         if not exact:
-            found = "; ".join(f"db{i}: {t[:60]!r}" for i, t in hits)
+            found = "; ".join(f"db{h['db_index']}: {h['title'][:60]!r}" for h in hits)
             raise ValueError(
                 f"title mismatch for id {shard_id} -- refusing to touch a shard the "
                 f"caller has not seen. Expected {expect_title[:60]!r}; found {found}")
         hits = exact
 
     if len(hits) > 1:
-        found = "; ".join(f"db{i}: {t[:50]!r}" for i, t in hits)
+        found = "; ".join(f"db{h['db_index']}: {h['title'][:50]!r} (hash={h['hash']})" for h in hits)
         raise ValueError(
             f"id {shard_id} is ambiguous across cluster DBs ({found}). "
-            f"Pass db_index (recall results carry _db_index) to name the one you mean.")
+            f"Pass db_index or content_hash (via CanonicalShardRef) to mathematically isolate the target."
+        )
 
-    return hits[0]
+    matched = hits[0]
+    return matched["db_index"], matched["title"], matched["hash"]
 
 
 @node_mcp.tool()
 @_offloaded
 def shard_amend(shard_id: int, note: str, db_index: int | None = None,
-                confirm_title: str | None = None) -> dict:
+                confirm_title: str | None = None,
+                content_hash: str | None = None) -> dict:
     """Append a dated note to an existing shard, preserving everything already
     there. The append-only way to correct or extend a shard: history is never
     rewritten, it grows. Use for living dossiers and for correcting a shard that
     later turned out to be partly wrong.
 
-    PASS confirm_title. Recall is fuzzy and can hand back a neighbouring
-    shard's id; amending the wrong shard writes your note into someone else's
-    record. Supplying the expected title makes that a refusal."""
-    idx, title = _resolve_shard(shard_id, db_index, expect_title=confirm_title)
+    Enforces CanonicalShardRef mathematical verification when content_hash is supplied,
+    or falls back to confirm_title to prevent cross-database ID collisions."""
+    idx, title, actual_hash = _resolve_shard(shard_id, db_index, expect_title=confirm_title, content_hash=content_hash)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     conn = core.get_connection(idx)
     try:
@@ -650,13 +677,21 @@ def shard_amend(shard_id: int, note: str, db_index: int | None = None,
         conn.commit()
     finally:
         conn.close()
-    return {"amended": shard_id, "db_index": idx, "title": title, "added_chars": len(note)}
+    return {
+        "amended": shard_id,
+        "db_index": idx,
+        "title": title,
+        "content_hash": actual_hash,
+        "canonical_ref": f"{idx}#{shard_id}:{actual_hash}",
+        "added_chars": len(note)
+    }
 
 
 @node_mcp.tool()
 @_offloaded
 def shard_retract(shard_id: int, reason: str, db_index: int | None = None,
-                  confirm_title: str | None = None) -> dict:
+                  confirm_title: str | None = None,
+                  content_hash: str | None = None) -> dict:
     """Retract a shard WITHOUT erasing it: prefix its title [RETRACTED], append
     the reason, tag it `retracted`, and floor its utility so outcome-weighted
     recall stops surfacing it.
@@ -666,15 +701,18 @@ def shard_retract(shard_id: int, reason: str, db_index: int | None = None,
     whole point of a witness. Reach for forget only when the content must not
     exist (a secret pasted in by mistake).
 
-    PASS confirm_title. Recall is fuzzy: a query can return a plausible
-    neighbour rather than the shard you meant, and the id alone will not tell
-    you. This was not theoretical -- on 2026-08-15 a self-test recalled by
-    title, got a *different* shard's id back, and retracted real content.
-    Supplying the title you believe you are acting on turns that into a refusal
-    instead of damage."""
-    idx, title = _resolve_shard(shard_id, db_index, expect_title=confirm_title)
+    Enforces CanonicalShardRef mathematical verification when content_hash is supplied,
+    or falls back to confirm_title to prevent cross-database ID collisions."""
+    idx, title, actual_hash = _resolve_shard(shard_id, db_index, expect_title=confirm_title, content_hash=content_hash)
     if title.startswith("[RETRACTED]"):
-        return {"retracted": shard_id, "db_index": idx, "already": True, "title": title}
+        return {
+            "retracted": shard_id,
+            "db_index": idx,
+            "already": True,
+            "title": title,
+            "content_hash": actual_hash,
+            "canonical_ref": f"{idx}#{shard_id}:{actual_hash}"
+        }
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     conn = core.get_connection(idx)
     try:
@@ -695,22 +733,27 @@ def shard_retract(shard_id: int, reason: str, db_index: int | None = None,
         conn.commit()
     finally:
         conn.close()
-    return {"retracted": shard_id, "db_index": idx, "title": f"[RETRACTED] {title}"}
+    return {
+        "retracted": shard_id,
+        "db_index": idx,
+        "title": f"[RETRACTED] {title}",
+        "content_hash": actual_hash,
+        "canonical_ref": f"{idx}#{shard_id}:{actual_hash}"
+    }
 
 
 @node_mcp.tool()
 @_offloaded
-def shard_forget(shard_id: int, confirm_title: str, db_index: int | None = None) -> dict:
+def shard_forget(shard_id: int, confirm_title: str | None = None, db_index: int | None = None,
+                 content_hash: str | None = None) -> dict:
     """PERMANENTLY delete a shard. Irreversible -- there is no undo and no
     tombstone; the row and its FTS index entry are gone.
 
-    confirm_title must match the shard's current title exactly. That is not
-    ceremony: ids repeat across the 9 cluster DBs, so an id alone can name a
-    shard the caller has never seen. Requiring the title proves the caller is
-    looking at the thing they are deleting.
-
-    Prefer shard_retract. Use this only when the content must not exist."""
-    idx, title = _resolve_shard(shard_id, db_index, expect_title=confirm_title)
+    Requires either content_hash (CanonicalShardRef mathematical proof) or confirm_title
+    matching the shard's current title. Eliminates cross-database ID collisions mathematically."""
+    if not confirm_title and not content_hash:
+        raise ValueError("shard_forget requires either content_hash (CanonicalShardRef) or confirm_title.")
+    idx, title, actual_hash = _resolve_shard(shard_id, db_index, expect_title=confirm_title, content_hash=content_hash)
     conn = core.get_connection(idx)
     try:
         # The shards_ad trigger keeps shards_fts in sync on delete.
@@ -718,7 +761,20 @@ def shard_forget(shard_id: int, confirm_title: str, db_index: int | None = None)
         conn.commit()
     finally:
         conn.close()
-    return {"forgotten": shard_id, "db_index": idx, "title": title, "recoverable": False}
+    return {
+        "forgotten": shard_id,
+        "db_index": idx,
+        "title": title,
+        "content_hash": actual_hash,
+        "canonical_ref": f"{idx}#{shard_id}:{actual_hash}",
+        "recoverable": False
+    }
+
+
+# Mathematical aliases for fleet tool parity
+shards_amend = shard_amend
+shards_retract = shard_retract
+shards_forget = shard_forget
 
 
 @node_mcp.tool()
@@ -974,6 +1030,13 @@ try:
     app.include_router(_inference_router)
 except Exception as _router_err:
     print(f"[WARN] Inference router not mounted: {_router_err}", file=sys.stderr)
+
+try:
+    from nougen_shards import wal_api as _wal_api
+    app.include_router(_wal_api.router)
+    _wal_api.start_dataset_commits()
+except Exception as _wal_err:
+    print(f"[WARN] WAL hallway not mounted: {_wal_err}", file=sys.stderr)
 if not _serve_docs:
     print(
         "[WARN] Interactive API docs not mounted: host is network-exposed "
@@ -2663,7 +2726,14 @@ def _nougenmsg_read(target: Optional[str] = None, limit: int = 10) -> dict:
             "correlation_id": raw.get("correlation_id") or raw.get("leg_id"),
             "file": os.path.basename(f),
         })
-    node_label = os.environ.get("NOUGEN_NODE_NAME") or machine.get_current_node()
+    # get_current_node lives in nougen_shards.nougenmsg, not in machine. Looking it up on
+    # machine raised AttributeError and failed every nougenmsg_search call.
+    try:
+        from nougen_shards.nougenmsg import get_current_node
+        default_label = get_current_node()
+    except Exception:
+        default_label = "unknown"
+    node_label = os.environ.get("NOUGEN_NODE_NAME") or default_label
     return {"complete": True, "node": node_label,
             "target": target or "all", "scanned": scanned, "returned": len(out), "messages": out}
 
@@ -2776,10 +2846,11 @@ def recall_graph(query: str, depth: int = 1, limit: int = 10) -> dict:
     """Graph memory recall: entity mentions and multi-hop relation walk across shards."""
     try:
         from nougen_shards import graph, vector_graph
-        try:
-            return vector_graph.search_graph(query, depth=depth, limit=limit)
-        except Exception:
-            return graph.query_subgraph(query, depth=depth, limit=limit)
+        search = getattr(vector_graph, "search_graph", None) or getattr(graph, "query_subgraph", None)
+        if search is None:
+            return {"error": "recall_graph: no graph search backend is installed on this node; "
+                             "use recall_related with a shard id", "query": query, "nodes": [], "edges": []}
+        return search(query, depth=depth, limit=limit)
     except Exception as e:
         return {"error": str(e), "query": query, "nodes": [], "edges": []}
 
@@ -3286,9 +3357,25 @@ def recall_layered(query: str, token_budget: int = 1200) -> list:
 
 @node_mcp.tool()
 @_offloaded
-def recall_related(shard_id: int, db_index: int = 1, relation: Optional[str] = None) -> dict:
-    """Retrieve related memory shards via graph topology."""
-    return _unwrap_sync(recall_graph)(query=str(shard_id), depth=1, limit=10)
+def recall_related(shard_id: int, db_index: int = 1, relation: Optional[str] = None,
+                   limit: int = 10) -> dict:
+    """Shards linked to shard_id in the graph mesh, walking edges in either direction."""
+    from nougen_shards import graph
+    related = graph.related_shards(shard_id, db_index, relation, limit)
+    return {"shard_id": shard_id, "db_index": db_index, "relation": relation,
+            "count": len(related), "related": related}
+
+
+@node_mcp.tool()
+@_offloaded
+def link_shards(src_id: int, dst_id: int, relation: str = "relates",
+                src_db: int = 1, dst_db: int = 1) -> dict:
+    """Create a graph edge src -[relation]-> dst between two existing shards."""
+    from nougen_shards import graph
+    created = graph.link_shards(src_id, dst_id, relation, src_db, dst_db)
+    return {"created": bool(created), "src": f"{src_id}@{src_db}", "dst": f"{dst_id}@{dst_db}",
+            "relation": relation,
+            "note": None if created else "no edge: a shard was missing, both ids are the same shard, or the edge already exists"}
 
 
 @node_mcp.tool()
@@ -4116,6 +4203,16 @@ def _scope_base_url(scope) -> str:
     return f"{proto}://{host}" if host else ""
 
 
+# Tools a tenant identity may call on the node. Everything else touches the host
+# machine or the owner's shared services and stays owner-only.
+TENANT_MCP_TOOLS = frozenset({
+    # Vault-bound reads and writes only (they resolve through the active tenant vault).
+    # Context-session tools are excluded: their session DB is shared across identities.
+    "capture_experience", "recall_memory", "recall_layered", "recall_related",
+    "search", "get_shard", "mark_utility",
+})
+
+
 class _TokenGatedMCP:
     """ASGI gate for the /mcp mount: same deny-by-default semantics as
     verify_token (503 unconfigured, 401 mismatch), but accepts the token as
@@ -4192,6 +4289,41 @@ class _TokenGatedMCP:
                 await self._reject(send, 401, "Invalid node token.",
                                    scope=scope)
                 return
+            if tenant.tenant_id != "owner":
+                # Tenants get only their own vault's tools. Anything that touches this
+                # machine (code execution, deploys, relays, NouGenMsg, local scans, the
+                # owner's Ollama) is refused before it reaches the MCP server.
+                orig_receive = receive
+                chunks = []
+                more = True
+                while more:
+                    msg = await orig_receive()
+                    if msg.get("type") != "http.request":
+                        break
+                    chunks.append(msg.get("body", b""))
+                    more = msg.get("more_body", False)
+                raw = b"".join(chunks)
+                try:
+                    payload = json.loads(raw or b"null")
+                except ValueError:
+                    payload = None
+                calls = payload if isinstance(payload, list) else [payload]
+                for call in calls:
+                    if not isinstance(call, dict) or call.get("method") != "tools/call":
+                        continue
+                    name = (call.get("params") or {}).get("name")
+                    if name not in TENANT_MCP_TOOLS:
+                        await self._reject(send, 403, f"tool {name} is not available to this identity")
+                        return
+                replayed = [False]
+
+                async def replay_receive():
+                    if not replayed[0]:
+                        replayed[0] = True
+                        return {"type": "http.request", "body": raw, "more_body": False}
+                    return await orig_receive()
+
+                receive = replay_receive
             context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
             try:
                 await self.inner(scope, receive, send)

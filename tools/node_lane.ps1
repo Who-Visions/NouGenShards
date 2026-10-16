@@ -186,17 +186,38 @@ switch ($Action) {
     }
 
     'stop' {
+        # Stop EVERY uvicorn listener on the port and its ngs_node_serve launcher.
+        # 2026-10-13: two listeners shared 4444 (one from 10/12); stopping only the
+        # first left the stale one serving old code after a "successful" restart.
         $running = Get-NodePid
-        $listener = Get-ListenerPid
-        if (-not $running -and -not $listener) { 'node not running'; break }
-        if ($listener) {
-            Stop-Process -Id $listener -Force -Confirm:$false
+        $stopped = @()
+        $conns = Get-NetTCPConnection -State Listen -LocalPort ([int]$Port) -ErrorAction SilentlyContinue
+        foreach ($owner in ($conns | Select-Object -ExpandProperty OwningProcess -Unique)) {
+            $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$owner"
+            if (-not $proc -or $proc.Name -notlike 'python*' -or $proc.CommandLine -notmatch '-m uvicorn app:app') {
+                throw "port $Port is owned by an unexpected process (pid $owner); refusing to manage it"
+            }
+            $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.ParentProcessId)"
+            Stop-Process -Id $owner -Force -Confirm:$false -ErrorAction SilentlyContinue
+            $stopped += $owner
+            if ($parent -and $parent.CommandLine -match 'ngs_node_serve\.py') {
+                Stop-Process -Id $parent.ProcessId -Force -Confirm:$false -ErrorAction SilentlyContinue
+                $stopped += $parent.ProcessId
+            }
         }
-        if ($running -and $running -ne $listener) {
+        if ($running -and ($stopped -notcontains $running)) {
             Stop-Process -Id $running -Force -Confirm:$false -ErrorAction SilentlyContinue
+            $stopped += $running
         }
         Remove-Item $PidFile -ErrorAction SilentlyContinue
-        "node stopped (launcher=$running listener=$listener)"
+        if (-not $stopped) { 'node not running'; break }
+        $deadline = (Get-Date).AddSeconds(15)
+        while ((Get-Date) -lt $deadline -and (Get-NetTCPConnection -State Listen -LocalPort ([int]$Port) -ErrorAction SilentlyContinue)) { Start-Sleep -Milliseconds 500 }
+        if (Get-NetTCPConnection -State Listen -LocalPort ([int]$Port) -ErrorAction SilentlyContinue) {
+            "node stop INCOMPLETE: port $Port still has a listener after stopping $($stopped -join ',')"
+            exit 1
+        }
+        "node stopped (pids $($stopped -join ','))"
         break
     }
 

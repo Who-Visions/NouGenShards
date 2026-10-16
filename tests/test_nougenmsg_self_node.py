@@ -1,3 +1,4 @@
+import pytest
 """A node-name target ('@blade') must reach that node's agent lanes.
 
 Before the fix live_ping matched no family branch for a node name, so the
@@ -38,7 +39,7 @@ def test_other_node_target_is_skipped_not_empty(monkeypatch):
 def test_fleet_nodes_env_override(monkeypatch):
     calls = []
     _stub_pingers(monkeypatch, calls)
-    monkeypatch.setenv("NOUGEN_FLEET_NODES", "blade,newbox")
+    monkeypatch.setenv("NOUGEN_PEER_NODES", "blade,newbox")
     monkeypatch.setattr(m, "get_current_node", lambda: "newbox")
     res = m.NouGenMsgBus.live_ping(target="newbox", text="hi")
     assert "claude_pipes" in res
@@ -62,3 +63,10 @@ def test_origin_envelope_carries_coach_and_machine(monkeypatch):
     envelope = m.NouGenMsgBus._origin_envelope()
     assert envelope["machine"] == "whoart"
     assert envelope["coach"] == "hyperion"
+
+
+@pytest.fixture(autouse=True)
+def _owner_fleet_env(monkeypatch):
+    """These tests assert a three-machine fleet. Declare it here, not in code."""
+    monkeypatch.setenv("NOUGEN_NODE_NAME", "blade")
+    monkeypatch.setenv("NOUGEN_PEER_NODES", "blade,whoart,phoebus")

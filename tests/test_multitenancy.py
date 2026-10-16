@@ -6,6 +6,7 @@ import json
 import secrets
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -339,3 +340,59 @@ def test_health_is_generic_until_authenticated(tenant_node, monkeypatch):
     assert authed.status_code == 200
     assert authed.json()["tenant_id"] == "tenant-a"
     assert set(calls) == {"tenant-a"}
+
+
+def test_tenant_federation_never_reads_owner_local_vaults(monkeypatch):
+    """A tenant's federated_retrieve must not consult the owner's registered
+    local vaults. Regression: the local_vault lane searched every registered
+    vault for every caller, so a fresh tenant could recall owner shards."""
+    from nougen_shards import core, federation, keymaker
+
+    asked = []
+    monkeypatch.setattr(keymaker, "list_local_vaults", lambda: asked.append(1) or [{"name": "owner", "path": "/nowhere"}])
+    monkeypatch.setattr(keymaker, "list_external_dbs", lambda: [])
+    monkeypatch.setattr(keymaker, "list_cloud_nodes", lambda: [])
+    monkeypatch.setattr(core, "retrieve", lambda *a, **k: [])
+    token = core.bind_active_vault(Path(tempfile.mkdtemp()), "probe-tenant")
+    try:
+        federation.federated_retrieve("anything", limit=3)
+    finally:
+        core.reset_active_vault(token)
+    assert asked == [], "tenant federation consulted owner local vaults"
+
+
+def test_tenant_cannot_reach_host_or_relay_tools_over_http(tenant_node):
+    """A tenant token on the node's MCP gate may call shard tools only. Relay,
+    messaging, deploy, sandbox and local-scan tools are refused before the MCP
+    server sees them. The owner is not restricted."""
+    reached = []
+
+    async def inner(scope, receive, send):
+        body = b""
+        more = True
+        while more:
+            msg = await receive()
+            body += msg.get("body", b"")
+            more = msg.get("more_body", False)
+        reached.append(json.loads(body or b"null"))
+        out = b"{}"
+        await send({"type": "http.response.start", "status": 200,
+                    "headers": [(b"content-type", b"application/json")]})
+        await send({"type": "http.response.body", "body": out})
+
+    gated = TestClient(node._TokenGatedMCP(inner))
+
+    def call(name):
+        return {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": name, "arguments": {}}}
+
+    tenant_headers = _auth(tenant_node["token_a"])
+    for blocked in ("relay_open_legs", "nougenmsg", "fleet_send", "dav1d_exec",
+                    "github_repo_read", "context_task_checkpoint", "vault_list"):
+        r = gated.post("/", headers=tenant_headers, json=call(blocked))
+        assert r.status_code == 403, (blocked, r.status_code)
+    assert reached == [], "blocked tools reached the MCP server"
+
+    allowed = gated.post("/", headers=tenant_headers, json=call("recall_memory"))
+    assert allowed.status_code == 200
+    assert reached and reached[0]["params"]["name"] == "recall_memory"

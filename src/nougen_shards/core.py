@@ -9,15 +9,18 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import socket
 import sqlite3
 import threading as _threading
 import time
 from contextvars import ContextVar, copy_context
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
+import zlib
 
 import numpy as np
 from nougen_time import InvalidTimestampError, format_log_time, now as nougen_now, parse as parse_time
@@ -721,23 +724,33 @@ def resolve_domain_from_path(target_path: Optional[str] = None) -> str:
     return "global"
 
 
+def elevated_compression_density(content: str) -> float:
+    """Elevated offline information density proxy using zlib compression ratios.
+
+    Subtracts the static 11-byte zlib header/trailer overhead before dividing,
+    and applies a sigmoid length penalty so shards under 64 characters cannot
+    saturate the density ceiling.
+    """
+    raw = content.encode("utf-8")
+    n = len(raw)
+    if n == 0:
+        return 0.0
+    compressed_len = max(1, len(zlib.compress(raw, level=6)) - 11)
+    raw_ratio = min(1.0, compressed_len / n)
+    length_gate = 1.0 / (1.0 + math.exp(-(n - 64) / 16.0))
+    return float(raw_ratio * length_gate)
+
+
 def compression_density(content: str) -> float:
-    """Local, offline density estimate: gzip ratio as a proxy for surprisal.
+    """Local, offline density estimate: elevated zlib ratio with sigmoid length gate.
 
     Exposed separately from `calculate_contrastive_perplexity` so bulk callers
-    can opt out of the per-item LLM round trip. Scoring an import of six
-    figures of records through a model is not viable — each unreachable
-    provider costs a connection timeout, and even a live local model would
-    serialize the whole ingest behind inference.
+    can opt out of the per-item LLM round trip.
     """
     if not content:
-        return 1.0
-    import zlib
+        return 0.0
     try:
-        compressed_len = len(zlib.compress(content.encode('utf-8')))
-        raw_len = len(content.encode('utf-8'))
-        compression_ratio = compressed_len / max(1, raw_len)
-        return float(min(1.0, max(0.1, compression_ratio * 1.5)))
+        return elevated_compression_density(content)
     except Exception:
         return 0.5
 
@@ -1342,6 +1355,131 @@ def capture(event_type: str, title: str, content: str,
         dconn.close()
 
 
+@dataclass(frozen=True)
+class CanonicalShardRef:
+    """Deterministic content-addressed shard URI and composite key resolver.
+
+    Eliminates primary key collisions across the 9 SQLite cluster databases
+    where integer IDs repeat from 1 to N in every file.
+    """
+    db_index: int
+    shard_id: int
+    content_hash: str
+
+    @classmethod
+    def compute_hash(cls, domain_key: str, title: str, content: str, origin_ts: str) -> str:
+        payload = f"{domain_key.strip()}|{title.strip()}|{content.strip()}|{origin_ts.strip()}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    def verify_mutation_target(self, row_domain: str, row_title: str, row_content: str, row_ts: str) -> bool:
+        actual_hash = self.compute_hash(row_domain, row_title, row_content, row_ts)
+        return actual_hash == self.content_hash
+
+
+def shards_amend(
+    ref: CanonicalShardRef,
+    new_content: Optional[str] = None,
+    new_title: Optional[str] = None,
+    new_utility: Optional[float] = None
+) -> bool:
+    """Amends a shard only if the target row's CanonicalShardRef cryptographically matches."""
+    if not get_db_path(ref.db_index).exists():
+        return False
+    init_db(ref.db_index)
+    conn = get_connection(ref.db_index)
+    try:
+        row = conn.execute(
+            "SELECT domain_key, title, content, timestamp FROM shards WHERE id = ?",
+            (ref.shard_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if not ref.verify_mutation_target(
+            row["domain_key"] or "", row["title"] or "", row["content"] or "", row["timestamp"] or ""
+        ):
+            logger.error("shards_amend rejected: hash mismatch for ref %s", ref)
+            return False
+        updates = []
+        params = []
+        if new_content is not None:
+            updates.append("content = ?")
+            params.append(new_content)
+        if new_title is not None:
+            updates.append("title = ?")
+            params.append(new_title)
+        if new_utility is not None:
+            updates.append("utility_score = ?")
+            params.append(new_utility)
+        if not updates:
+            return True
+        params.append(ref.shard_id)
+        cur = conn.execute(f"UPDATE shards SET {', '.join(updates)} WHERE id = ?", tuple(params))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def shards_retract(ref: CanonicalShardRef, reason: str = "Retracted by cognitive unlearning") -> bool:
+    """Retracts a shard by flooring utility to 0.0001, appending a tombstone, and verifying hash."""
+    if not get_db_path(ref.db_index).exists():
+        return False
+    init_db(ref.db_index)
+    conn = get_connection(ref.db_index)
+    try:
+        row = conn.execute(
+            "SELECT domain_key, title, content, timestamp, tags FROM shards WHERE id = ?",
+            (ref.shard_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if not ref.verify_mutation_target(
+            row["domain_key"] or "", row["title"] or "", row["content"] or "", row["timestamp"] or ""
+        ):
+            logger.error("shards_retract rejected: hash mismatch for ref %s", ref)
+            return False
+        existing_tags = row["tags"] or ""
+        new_tags = f"{existing_tags},retracted,tombstone".strip(",")
+        tombstone = f"\n[TOMBSTONE: {reason} at {datetime.now(timezone.utc).isoformat()}]"
+        updated_content = (row["content"] or "") + tombstone
+        cur = conn.execute(
+            "UPDATE shards SET utility_score = 0.0001, tags = ?, content = ? WHERE id = ?",
+            (new_tags, updated_content, ref.shard_id)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def shards_forget(ref: CanonicalShardRef) -> bool:
+    """Suppresses a shard completely after CanonicalShardRef verification."""
+    if not get_db_path(ref.db_index).exists():
+        return False
+    init_db(ref.db_index)
+    conn = get_connection(ref.db_index)
+    try:
+        row = conn.execute(
+            "SELECT domain_key, title, content, timestamp FROM shards WHERE id = ?",
+            (ref.shard_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if not ref.verify_mutation_target(
+            row["domain_key"] or "", row["title"] or "", row["content"] or "", row["timestamp"] or ""
+        ):
+            logger.error("shards_forget rejected: hash mismatch for ref %s", ref)
+            return False
+        cur = conn.execute(
+            "UPDATE shards SET utility_score = 0.0, tags = 'forgotten,suppressed' WHERE id = ?",
+            (ref.shard_id,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def mark_verified(shard_id: int, db_index: int, valid_until: Optional[str] = None) -> bool:
     """Record that a shard was re-confirmed true now, optionally moving its
     validity window (Toujou). Returns False when the row does not exist."""
@@ -1490,24 +1628,41 @@ def _temporal_decay(ts_str: Optional[str], now: datetime) -> float:
         return 1.0
 
 
+def elevated_final_score(
+    bm25_raw: float,
+    utility_base: float,
+    density: float,
+    age_days: float,
+    half_life_days: float = 90.0,
+    is_canon_lock: bool = False,
+    utility_floor: float = 0.25,
+) -> float:
+    """Flagged alternative to the blend in _process_fts_result (NOUGEN_ELEVATED_SCORE=1).
+
+    Lexical gain is monotone in match strength and bounded in [0, 1): FTS5 bm25 is
+    more negative for stronger matches, so the gain is 1 - exp(-|bm25|/10). The
+    spec's exp(-|bm25|/10) inverts that, the bug the existing scorer documents.
+    Utility decays on a 90-day half-life, with a floor so old canon never vanishes;
+    a canon lock is age-invariant.
+    """
+    lexical_gain = 1.0 - math.exp(-abs(float(bm25_raw)) / 10.0)
+    decay = 1.0 if is_canon_lock else math.pow(0.5, max(0.0, age_days) / half_life_days)
+    effective_utility = max(utility_floor, utility_base * decay)
+    tripartite = (0.50 * effective_utility) + (0.30 * max(0.0, min(1.0, density))) + (0.20 * lexical_gain)
+    return lexical_gain * tripartite
+
+
+def _elevated_scoring_enabled() -> bool:
+    return os.environ.get("NOUGEN_ELEVATED_SCORE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _process_fts_result(row, db_index, query_embedding, now: datetime):
     """Helper to score a single FTS result via the weighted relevance blend."""
     item = hydrate(dict(row))
     item["_db_index"] = db_index
     # 1. Likelihood Part A: BM25 (The Adjacency Score)
-    # FTS5 bm25() returns negative values where *more negative == stronger match*
-    # (the query orders bm25_score ASC for exactly this reason). Taking abs() folds
-    # strong and weak matches onto the same magnitude and inverts the signal — a
-    # strong hit (-8 -> 0.11) scored *below* a weak one (-0.5 -> 0.67). A raw
-    # logistic 1/(1+e^bm25) fixed the inversion but saturates: measured corpus
-    # scores span roughly -6 (weak single-token) to -90 (near-exact multi-term),
-    # and the logistic maps ALL of them to ~1.0, so keyword strength contributed
-    # a constant and stale high-utility rows outranked near-exact fresh matches.
-    # Map through a rational saturation x/(x+half) instead: still monotonically
-    # increasing in match strength and bounded in [0, 1), but discriminating
-    # across the whole measured range. `half` is the bm25 magnitude that scores
-    # 0.5 (env NOUGEN_BM25_HALF_SCORE; fallback from the measured corpus span).
-    strength = max(0.0, -item["bm25_score"])
+    bm25_raw = float(item.get("bm25_score", 0.0) or 0.0)
+    strength = max(0.0, -bm25_raw)
     norm_bm25 = strength / (strength + _bm25_half_score())
 
     # 2. Likelihood Part B: Semantic (The Latent Score)
@@ -1525,21 +1680,56 @@ def _process_fts_result(row, db_index, query_embedding, now: datetime):
             except Exception:
                 sem_score = 0.0
 
-    # Synthesize Coherent Likelihood (Module 9). When the caller supplied no
-    # query embedding the semantic lane is ABSENT, not zero-valued: weighting a
-    # missing sensor as 0 capped likelihood at WEIGHT_BM25 and let the decayed
-    # utility prior dominate every keyword-only retrieval. Renormalize over the
-    # signal that actually exists (broken-sensor absence, HARDENING inv. 4).
+    # Synthesize Coherent Likelihood (Module 9).
     if query_embedding is None:
         likelihood = norm_bm25
     else:
         likelihood = (norm_bm25 * WEIGHT_BM25) + (sem_score * WEIGHT_SEMANTIC)
 
-    # 3. Temporal decay factor (half-life of 30 days) to prevent stale successful sessions from dominating results
-    decayed_utility = item["utility_score"] * _temporal_decay(item.get("timestamp"), now)
+    # 3. Density & Temporal decay
+    density = float(item.get("density_score") if item.get("density_score") is not None else 1.0)
+    age_days = 0.0
+    ts_str = item.get("timestamp")
+    if ts_str:
+        try:
+            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_days = max(0.0, (now - dt).total_seconds() / 86400.0)
+        except Exception:
+            age_days = 0.0
 
-    # 4. Final relevance: a weighted blend of the likelihood signal and the decayed utility score
+    is_canon = bool(item.get("is_canon_lock") or (item.get("tags") and "canon" in str(item.get("tags")).lower()))
+    utility_base = float(item.get("utility_score") if item.get("utility_score") is not None else 1.0)
+
+    # Compute elevated score component and decayed utility
+    decayed_utility = utility_base * _temporal_decay(item.get("timestamp"), now)
+
+    elevated_score = elevated_final_score(
+        bm25_raw=bm25_raw,
+        utility_base=utility_base,
+        density=density,
+        age_days=age_days,
+        half_life_days=90.0,
+        is_canon_lock=is_canon,
+    )
+    item["elevated_score"] = elevated_score
+
+    # 4. Final relevance: weighted blend of likelihood and decayed utility
     item["final_score"] = (likelihood * WEIGHT_LIKELIHOOD) + (decayed_utility * WEIGHT_PRIOR)
+    if _elevated_scoring_enabled():
+        age_days = 0.0
+        try:
+            dt = datetime.fromisoformat(str(item.get("timestamp")).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_days = max(0.0, (now - dt).total_seconds() / 86400.0)
+        except Exception:
+            age_days = 0.0
+        item["final_score"] = elevated_final_score(
+            item["bm25_score"], float(item.get("utility_score") or 0.0),
+            float(item.get("density_score") if item.get("density_score") is not None else 1.0),
+            age_days, is_canon_lock=str(item.get("event_type") or "").upper() == "CANON")
     return item
 
 
@@ -1622,6 +1812,19 @@ def _retrieve_db_workers() -> int:
     return max(1, n)
 
 
+def elevated_lane_timeout(
+    alpha: float,
+    beta_param: float,
+    max_deadline: float = 20.0,
+    min_deadline: float = 1.5
+) -> float:
+    """Thompson-sampling adaptive timeout proportional to lane reliability."""
+    expected_reliability = alpha / (alpha + beta_param)
+    sampled_trust = random.betavariate(alpha, beta_param)
+    blended = 0.7 * expected_reliability + 0.3 * sampled_trust
+    return max(min_deadline, min(max_deadline, max_deadline * blended))
+
+
 def _run_db_scans(scan_fn):
     """Run scan_fn(i) for every grid DB concurrently; yield (i, result) in DB order.
 
@@ -1641,7 +1844,12 @@ def _run_db_scans(scan_fn):
         futures = {i: executor.submit(copy_context().run, scan_fn, i)
                    for i in range(1, MAX_DB_COUNT + 1)}
         for i in range(1, MAX_DB_COUNT + 1):
-            yield i, futures[i].result()
+            timeout_s = elevated_lane_timeout(alpha=10.0, beta_param=1.0, max_deadline=20.0, min_deadline=1.5)
+            try:
+                yield i, futures[i].result(timeout=timeout_s)
+            except concurrent.futures.TimeoutError:
+                logger.warning("grid DB %d timed out after %.2fs under adaptive timeout", i, timeout_s)
+                yield i, ([], True)
 
 
 def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[List[float]] = None,
@@ -1676,6 +1884,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 return db_rows, missed
             conn = get_connection(i)
             fts_worked = False
+            fts_ran_clean = False
             db_hits = 0
             fts_query = _build_fts_match_query(query)
             if fts_query is not None:
@@ -1705,7 +1914,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                         dom_params = () if domain_key in (None, "*") else (domain_key,)
                         ing_clause, ing_params = _ingest_filter_sql("s", include_research)
                         cursor = conn.execute(f"""
-                            SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                            SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                                    s.embedding, s.tags, s.domain_key, s.density_score,
                                    bm25(shards_fts, 5.0, 1.0) as bm25_score  -- a title hit outweighs a body hit
                             FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
@@ -1713,17 +1922,54 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                             ORDER BY bm25_score ASC, s.id ASC LIMIT ?
                         """, (*dom_params, *ing_params, match_expr, limit))
                         res = cursor.fetchall()
+                        fts_ran_clean = True
                     except sqlite3.OperationalError:
                         res = None
                     if res:
                         via_or_retry = match_expr is not fts_query
                         break
+                # Ingest rescue: bulk-ingest rows (event types in
+                # bulk_ingest_event_types, e.g. NouGenTube transcripts) are held out
+                # of default recall so papers do not drown agent memory. But when
+                # the filtered pass leaves slots unfilled, an exact all-terms match
+                # in the ingest population beats an empty slot -- a rare ID such as
+                # a video id otherwise returns semantic neighbours and never the
+                # one shard that contains it. Filtered hits keep their place; this
+                # only appends. NOUGEN_INGEST_RESCUE=0 disables it.
+                extra_rows: list = []
+                if (fts_ran_clean and fts_query is not None
+                        and os.environ.get("NOUGEN_INGEST_RESCUE", "1") != "0"
+                        and (len(res or []) < limit or _id_like_token(query))):
+                    try:
+                        r_dom = "" if domain_key in (None, "*") else "s.domain_key = ? AND "
+                        r_dom_params = () if domain_key in (None, "*") else (domain_key,)
+                        if not _ingest_filter_sql("s", include_research)[0]:
+                            raise sqlite3.OperationalError("no ingest filter active")
+                        have_ids = [r["id"] for r in (res or [])]
+                        not_in = (f"s.id NOT IN ({','.join('?' for _ in have_ids)}) AND "
+                                  if have_ids else "")
+                        extra = conn.execute(f"""
+                            SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
+                                   s.embedding, s.tags, s.domain_key, s.density_score,
+                                   bm25(shards_fts, 5.0, 1.0) as bm25_score
+                            FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
+                            WHERE {r_dom}{not_in}shards_fts MATCH ?
+                            ORDER BY bm25_score ASC, s.id ASC LIMIT ?
+                        """, (*r_dom_params, *have_ids, fts_query, max(1, limit - len(res or [])))).fetchall()
+                        if extra:
+                            extra_rows = list(extra)
+                            res = list(res or []) + extra_rows
+                    except sqlite3.OperationalError:
+                        pass
                 if res:
+                    rescued_ids = {r["id"] for r in extra_rows}
                     for row in res:
                         accessed.append(row["id"])
                         item = _process_fts_result(row, i, query_embedding, query_now)
                         if via_or_retry:
                             item["_or_retry"] = True
+                        if row["id"] in rescued_ids:
+                            item["_ingest_rescue"] = True
                         db_rows.append(item)
                     fts_worked = True
 
@@ -1733,12 +1979,32 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 like_query = f"%{query}%"
                 dom_clause = "" if domain_key in (None, "*") else "domain_key = ? AND "
                 dom_params = () if domain_key in (None, "*") else (domain_key,)
-                cursor = conn.execute(f"""
-                    SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
-                    FROM shards
-                    WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
-                    ORDER BY utility_score DESC, id ASC LIMIT ?
-                """, (*dom_params, like_query, like_query, limit))
+                cursor = None
+                if fts_ran_clean and fts_query is not None and os.environ.get("NOUGEN_LIKE_ON_FTS_MISS", "0") != "1":
+                    # The index is healthy and the ingest-filtered pass came up
+                    # empty. This fallback exists to surface rows that pass skipped
+                    # (e.g. ingested transcripts), and a full LIKE scan of every
+                    # multi-GB shard DB measured ~6s on a hit and ~27s on a miss,
+                    # which timed out the gateway's blade lane ("fanout blade:miss").
+                    # Ask the trigram index for the same rows without the ingest
+                    # filter instead; NOUGEN_LIKE_ON_FTS_MISS=1 restores the scan.
+                    try:
+                        cursor = conn.execute(f"""
+                            SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
+                                   s.embedding, s.tags, s.domain_key, s.density_score
+                            FROM shards s JOIN shards_fts ON s.id = shards_fts.rowid
+                            WHERE {dom_clause.replace("domain_key", "s.domain_key")}shards_fts MATCH ?
+                            ORDER BY s.utility_score DESC, s.id ASC LIMIT ?
+                        """, (*dom_params, fts_query, limit))
+                    except sqlite3.OperationalError:
+                        cursor = None
+                if cursor is None:
+                    cursor = conn.execute(f"""
+                        SELECT id, timestamp, title, content, event_type, utility_score, embedding, tags, domain_key, density_score
+                        FROM shards
+                        WHERE {dom_clause}(title LIKE ? OR content LIKE ?)
+                        ORDER BY utility_score DESC, id ASC LIMIT ?
+                    """, (*dom_params, like_query, like_query, limit))
                 for row in cursor:
                     item = hydrate(dict(row))
                     item["_db_index"] = i
@@ -1889,7 +2155,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     sim_by_id = {rid: sim for sim, rid in keep}
                     placeholders = ",".join("?" * len(keep))
                     full = conn.execute(f"""
-                        SELECT id, timestamp, title, content, utility_score, embedding, tags, domain_key, density_score
+                        SELECT id, timestamp, title, content, event_type, utility_score, embedding, tags, domain_key, density_score
                         FROM shards WHERE id IN ({placeholders})
                     """, tuple(rid for _, rid in keep)).fetchall()
                     fuzzy = []
@@ -2393,6 +2659,25 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
     return merged
 
 
+def _has_exact_query_tokens(query: str, item: dict) -> bool:
+    """Whether a keyword candidate contains every literal FTS query token.
+
+    FTS rescue already admits exact all-terms matches from the ingest population,
+    but RRF can bury them under semantic neighbours. This predicate builds a
+    separate, narrowly scoped RRF lane for literal token matches.
+    """
+    fts_query = _build_fts_match_query(query)
+    if not fts_query:
+        return False
+    tokens = [token.replace('""', '"') for token in
+              re.findall(r'"((?:[^"]|"")*)"', fts_query)]
+    if not tokens:
+        return False
+    text = f"{item.get('title') or ''}\n{item.get('content') or ''}"
+    return all(re.search(rf"(?<!\w){re.escape(token)}(?!\w)", text, re.IGNORECASE)
+               for token in tokens)
+
+
 def _get_reranker():
     """Lazy-load and cache the cross-encoder reranker. Returns None if unavailable
     so callers degrade gracefully to the RRF ordering (no hard dependency)."""
@@ -2453,6 +2738,15 @@ def _norm_title(s) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip().casefold()
 
 
+def _id_like_token(query) -> bool:
+    """Identifier-shaped query: one token, 6+ chars, contains a digit (video id, commit,
+    request id). Opt-out NOUGEN_TOKEN_EXACT_TIER=0."""
+    if os.environ.get("NOUGEN_TOKEN_EXACT_TIER", "1").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    q = (query or "").strip()
+    return len(q) >= 6 and not any(c.isspace() for c in q) and any(c.isdigit() for c in q)
+
+
 def _title_hit(qnorm: str, title) -> bool:
     """Known-item match: the query IS the title (case/whitespace-insensitive), or a
     long query is the start of a longer title (callers paste truncated titles)."""
@@ -2485,7 +2779,7 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
                 return rows
             conn = get_connection(i)
             for row in conn.execute(f"""
-                    SELECT s.id, s.timestamp, s.title, s.content, s.utility_score,
+                    SELECT s.id, s.timestamp, s.title, s.content, s.event_type, s.utility_score,
                            s.embedding, s.tags, s.domain_key, s.density_score
                     FROM shards s WHERE {dom_clause}{ing_clause}s.title LIKE ? ESCAPE '\\'
                     ORDER BY s.id DESC LIMIT ?""", (*dom_params, *ing_params, pattern, limit)):
@@ -2680,8 +2974,18 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             vector_results = future_vector.result()
             
         lanes = [keyword_results, vector_results]
+        exact_token_results = [item for item in keyword_results
+                               if _has_exact_query_tokens(query, item)]
+        lane_weights = [1.0, 1.0]
+        if exact_token_results:
+            # Literal all-token hits get an independent RRF vote. This prevents
+            # semantic neighbours from displacing exact IDs while preserving
+            # positional fusion within the keyword and vector lanes.
+            lanes.append(exact_token_results)
+            lane_weights.append(1.0)
         if _title_lane_enabled():
             lanes.append(_title_retrieve(query, candidate_limit, active_domain, include_research))
+            lane_weights.append(1.0)
         if use_distill:
             # Sidecar lanes (atoms FTS + entity graph) join the fusion only once a
             # distillation sidecar exists; before that this is a cheap stat().
@@ -2689,10 +2993,12 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
                 from . import distill  # pylint: disable=import-outside-toplevel
                 if distill.available():
                     lanes.append(distill.atoms_lane(query, candidate_limit, include_research, active_domain))
+                    lane_weights.append(1.0)
                     lanes.append(distill.graph_lane(query, candidate_limit, include_research, active_domain))
+                    lane_weights.append(1.0)
             except Exception as exc:  # a derived index must never break recall
                 logger.warning("distill lanes skipped: %s: %s", type(exc).__name__, exc)
-        return reciprocal_rank_fusion(lanes, k=60)
+        return reciprocal_rank_fusion(lanes, k=60, weights=lane_weights)
 
     if domain_key != "*" and not explicit_domain:
         # Implicit CWD-domain: scoped-plus-global fusion, not scoped-else-
@@ -2764,9 +3070,10 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             relevance = 1.0 if raw_rel > 0 else 0.5
 
         decay = _temporal_decay(item.get("timestamp"), score_now)
-        density = item.get("density_score", 1.0)
+        density = float(item.get("density_score") if item.get("density_score") is not None else 1.0)
 
-        u_shard = (1.0 * relevance) * decay * density
+        # Elevated tripartite utility formulation:
+        u_shard = (1.0 * relevance) * decay * max(0.25, density)
         item["utility_score_tripartite"] = u_shard
         scored_results.append(item)
     
@@ -2780,10 +3087,22 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
     # the one signal that is unambiguous. Within a tier the tripartite order holds.
     qnorm = _norm_title(query) if _title_lane_enabled() else ""
     for item in scored_results:
-        item["_title_exact"] = _title_hit(qnorm, item.get("title"))
+        # Rescued ingest rows fill empty slots only; they never take the
+        # exact-title tier above filtered memory hits.
+        item["_title_exact"] = (not item.get("_ingest_rescue")) and _title_hit(qnorm, item.get("title"))
+    # Exact-token tier: an identifier-shaped query (one token, 6+ chars, has a digit:
+    # a video id, a PR/commit id, a request id) that appears verbatim in a shard's
+    # title or body ranks with the known-item tier. Vector neighbours of an opaque id
+    # are noise, and the shard that actually contains it was being dropped by fusion
+    # (relay 20261014T154801Z item 3). Natural-language queries never qualify.
+    qtok = (query or "").strip()
+    token_mode = _id_like_token(query)
+    for item in scored_results:
+        item["_token_exact"] = bool(
+            token_mode and (qtok in str(item.get("title") or "") or qtok in str(item.get("content") or "")))
     scored_results.sort(
-        key=lambda x: (not x["_title_exact"], bool(x.get("_expired")), -x["utility_score_tripartite"],
-                       x.get("_db_index", 0), x.get("id", 0)))
+        key=lambda x: (not (x["_title_exact"] or x["_token_exact"]), bool(x.get("_expired")),
+                       -x["utility_score_tripartite"], x.get("_db_index", 0), x.get("id", 0)))
     
     # Dynamic Thresholding / Drop bottom 50% if we have many candidates
     if scored_results:
@@ -2792,8 +3111,8 @@ def retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] 
             surviving = scored_results[:max(limit, cutoff)]
         else:
             surviving = scored_results
-        # Filter anything below dynamic threshold (e.g. 0.05)
-        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.05 or it["_title_exact"]]
+        # Filter anything below dynamic threshold (e.g. 0.01)
+        surviving = [it for it in surviving if it["utility_score_tripartite"] >= 0.01 or it["_title_exact"] or it.get("_token_exact")]
         if not surviving and scored_results:
             surviving = [scored_results[0]]
     else:
