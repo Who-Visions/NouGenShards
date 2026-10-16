@@ -62,7 +62,6 @@ from . import nougen_context
 from . import nougen_sandbox
 from . import evolution
 from . import skills as skill_registry
-from .brain_scan import scan_environment, run_import
 
 from .history import HistoryEngine
 from .federation import federated_retrieve
@@ -516,6 +515,7 @@ def run_brain_scan(project_path: Optional[str] = None, include_unknown: bool = F
         project_path: Optional path to a specific project directory to scan.
         include_unknown: If True, scans for unknown dotfolders as well.
     """
+    from .brain_scan import scan_environment
     candidates = scan_environment(project_path=project_path, include_unknown=include_unknown)
     
     high = [c for c in candidates if c.score_tier == "high"]
@@ -549,6 +549,7 @@ def run_brain_import(project_path: Optional[str] = None, source_filter: Optional
         source_filter: Filter by specific tool (e.g., 'claude', 'gemini').
         dry_run: If True, only estimates the import size without writing to the database. Set to False to actually ingest shards.
     """
+    from .brain_scan import run_import
     result = run_import(
         project_path=project_path,
         include_unknown=False,
