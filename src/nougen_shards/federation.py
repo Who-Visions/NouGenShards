@@ -4,9 +4,9 @@ import os
 import threading
 from . import core
 from . import machine
-from .connectors.sql import query_external_dbs
 from .connectors.cloud import query_cloud_shards
 from .connectors.local_vault import query_local_vaults
+from .connectors import query_external_dbs
 from . import keymaker
 from typing import List, Optional
 

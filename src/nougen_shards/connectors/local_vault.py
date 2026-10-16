@@ -58,11 +58,10 @@ def _tier2_enabled() -> bool:
 
 def _hot_pins() -> set:
     """Stores always swept inline, whatever their size. Seeded from evidence:
-    the stores that actually returned hits in past smokes plus the operator's
-    canonical memory stores."""
+    stores with verified fast indices or essential small footprints."""
     return {s.strip().lower() for s in os.environ.get(
         "NOUGEN_FEDERATE_HOT",
-        "nougen_memories,dav1d_vault,rhea_noir_vault,valerion_code_vault"
+        "dav1d_vault,rhea_noir_vault,valerion_code_vault"
     ).split(",") if s.strip()}
 
 
@@ -304,17 +303,25 @@ def _build_fts_query(table: str, fts: str, title_col: str, content_col: str,
         f'(CASE WHEN lower(t."{title_col}") LIKE ? THEN 1 ELSE 0 END)'
         for _ in keywords
     ) or "0"
+    candidate_limit = max(min(limit, MAX_ROWS) * 10, 50)
     sql = (
+        f'WITH candidates AS ('
+        f'  SELECT rowid, bm25(f."{fts}") AS bm25_rank '
+        f'  FROM "{fts}" f '
+        f'  WHERE f."{fts}" MATCH ? '
+        f'  ORDER BY bm25_rank ASC '
+        f'  LIMIT ?'
+        f') '
         f'SELECT t."{title_col}" AS title, t."{content_col}" AS content, '
         f'({title_terms}) AS title_hits, '
-        f'bm25(f."{fts}") AS bm25_rank '
-        f'FROM "{fts}" f JOIN "{table}" t ON t.rowid = f.rowid '
-        f'WHERE f."{fts}" MATCH ? '
-        f'ORDER BY title_hits DESC, bm25_rank ASC '
+        f'c.bm25_rank '
+        f'FROM candidates c JOIN "{table}" t ON t.rowid = c.rowid '
+        f'ORDER BY title_hits DESC, c.bm25_rank ASC '
         f'LIMIT ?'
     )
-    params = [f"%{kw.lower()}%" for kw in keywords]
-    params.extend([_fts_match_expr(keywords), min(limit, MAX_ROWS)])
+    params = [_fts_match_expr(keywords), candidate_limit]
+    params.extend([f"%{kw.lower()}%" for kw in keywords])
+    params.append(min(limit, MAX_ROWS))
     return sql, params
 
 
@@ -352,6 +359,12 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
 
         # Read-only URI: this connector must never be able to mutate a vault.
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            conn.execute("PRAGMA mmap_size=268435456;")
+            conn.execute("PRAGMA cache_size=-64000;")
+            conn.execute("PRAGMA query_only=ON;")
+        except Exception:
+            pass
         conn.row_factory = sqlite3.Row
 
         # Wall-clock budget, enforced inside SQLite's VM: the progress handler

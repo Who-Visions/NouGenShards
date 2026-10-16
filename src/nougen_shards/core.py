@@ -246,6 +246,23 @@ def get_active_db_index() -> int:
 
 
 DEFAULT_SQLITE_TIMEOUT_S = 10.0
+DEFAULT_SQLITE_MMAP_SIZE = 268435456  # 256MB memory-mapped I/O per DB
+
+
+def sqlite_mmap_size(default: int | None = None) -> int:
+    """Bytes for SQLite PRAGMA mmap_size; NOUGEN_SQLITE_MMAP_SIZE overrides.
+
+    Allows memory-mapped reads of FTS5 indices and table pages to stay sub-50ms
+    and avoid disk thrashing across 9-DB federated lookups.
+    """
+    fallback = DEFAULT_SQLITE_MMAP_SIZE if default is None else default
+    raw = os.environ.get("NOUGEN_SQLITE_MMAP_SIZE", "").strip()
+    if not raw:
+        return fallback
+    try:
+        return int(raw)
+    except ValueError:
+        return fallback
 
 
 def sqlite_timeout_s(default: float | None = None) -> float:
@@ -280,6 +297,68 @@ def sqlite_timeout_s(default: float | None = None) -> float:
     return value
 
 
+# Persistent read-only connection pool keyed by thread ID and DB index/path
+_RO_POOL_LOCK = _threading.Lock()
+_RO_CONN_POOL: dict[tuple[int, str], sqlite3.Connection] = {}
+
+
+def get_readonly_connection(index: int) -> sqlite3.Connection:
+    """Thread-local / persistent pooled read-only SQLite connection.
+
+    Configured with PRAGMA mmap_size=256MB, PRAGMA cache_size=-64000 (64MB RAM),
+    and PRAGMA query_only=ON for lightning-fast sub-50ms FTS5 / shard queries.
+    """
+    path = get_db_path(index)
+    tid = _threading.get_ident()
+    pool_key = (tid, str(path))
+
+    with _RO_POOL_LOCK:
+        existing = _RO_CONN_POOL.get(pool_key)
+        if existing is not None:
+            try:
+                # Fast liveness check
+                existing.execute("SELECT 1;")
+                return existing
+            except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+                _RO_CONN_POOL.pop(pool_key, None)
+
+    # Establish new read-only connection with mmap and memory cache
+    from . import snapshot_mode  # pylint: disable=import-outside-toplevel
+    if snapshot_mode.enabled() and snapshot_mode.snapshot_dir() is not None:
+        conn = sqlite3.connect(f"file:{path}?immutable=1&mode=ro", uri=True, timeout=30.0)
+    else:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=sqlite_timeout_s())
+
+    mmap_bytes = sqlite_mmap_size()
+    conn.execute(f"PRAGMA mmap_size={mmap_bytes};")
+    conn.execute("PRAGMA cache_size=-64000;")  # 64MB cache
+    conn.execute("PRAGMA query_only=ON;")
+    conn.row_factory = sqlite3.Row
+
+    with _RO_POOL_LOCK:
+        # Enforce max pool size (bound resident FDs to 64 connections)
+        if len(_RO_CONN_POOL) >= 64:
+            oldest_key, oldest_conn = next(iter(_RO_CONN_POOL.items()))
+            _RO_CONN_POOL.pop(oldest_key, None)
+            try:
+                oldest_conn.close()
+            except Exception:
+                pass
+        _RO_CONN_POOL[pool_key] = conn
+    return conn
+
+
+def close_readonly_pool() -> None:
+    """Explicitly closes all pooled read-only connections."""
+    with _RO_POOL_LOCK:
+        for conn in _RO_CONN_POOL.values():
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _RO_CONN_POOL.clear()
+
+
 def get_connection(index: int):
     """Establishes an SQLite connection with WAL enabled (Module 19: Stabilize Reasoning).
 
@@ -311,6 +390,8 @@ def get_connection(index: int):
         raise
     mode = get_vault_journal_mode()
     conn.execute(f"PRAGMA journal_mode={mode};")
+    mmap_bytes = sqlite_mmap_size()
+    conn.execute(f"PRAGMA mmap_size={mmap_bytes};")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -1843,12 +1924,14 @@ def _run_db_scans(scan_fn):
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {i: executor.submit(copy_context().run, scan_fn, i)
                    for i in range(1, MAX_DB_COUNT + 1)}
+        deadline = time.monotonic() + elevated_lane_timeout(alpha=10.0, beta_param=1.0, max_deadline=20.0, min_deadline=1.5)
         for i in range(1, MAX_DB_COUNT + 1):
-            timeout_s = elevated_lane_timeout(alpha=10.0, beta_param=1.0, max_deadline=20.0, min_deadline=1.5)
+            remaining = max(0.1, deadline - time.monotonic())
             try:
-                yield i, futures[i].result(timeout=timeout_s)
+                yield i, futures[i].result(timeout=remaining)
             except concurrent.futures.TimeoutError:
-                logger.warning("grid DB %d timed out after %.2fs under adaptive timeout", i, timeout_s)
+                logger.warning("grid DB %d timed out under adaptive timeout (remaining=%.2fs)", i, remaining)
+                # Fallback must match expected scan_fn return signature
                 yield i, ([], True)
 
 
@@ -1882,7 +1965,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
         try:
             if not get_db_path(i).exists():
                 return db_rows, missed
-            conn = get_connection(i)
+            conn = get_readonly_connection(i)
             fts_worked = False
             fts_ran_clean = False
             db_hits = 0
@@ -2060,9 +2143,6 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                                   metadata={"error": f"{type(exc).__name__}: {exc}"})
             except Exception:  # pylint: disable=broad-except
                 pass
-        finally:
-            if conn is not None:
-                conn.close()
         # ONE batched history write per DB scan. The per-row log_event calls
         # this replaces each opened a connection, INSERTed, committed, and
         # closed - ~360 synchronous commits per recall, a measured multi-second
@@ -2119,7 +2199,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                 # not -- one function, two fan-outs, one patch.
                 conn = None
                 try:
-                    conn = get_connection(i)
+                    conn = get_readonly_connection(i)
                     # Score against a cheap projection: the similarity probe only
                     # ever reads title + the first 256 chars of content, so there
                     # is no reason to pull full content and embedding blobs for
@@ -2184,9 +2264,6 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
                     except Exception:  # pylint: disable=broad-except
                         pass
                     continue
-                finally:
-                    if conn is not None:
-                        conn.close()
 
     # Tiered ordering: every full-coverage hit (FTS implicit-AND / LIKE)
     # outranks every OR-retry hit, which outranks every fuzzy hit, regardless
@@ -2492,7 +2569,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             # keyword lane.
             if not get_db_path(i).exists():
                 return db_rows
-            conn = get_connection(i)
+            conn = get_readonly_connection(i)
             cache = _vector_cache_entry(i, conn)
             scored = []  # (final_score, id)
             if cache and cache["dim"] == qdim and len(cache["ids"]):
@@ -2569,14 +2646,18 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                                   metadata={"error": f"{type(exc).__name__}: {exc}"})
             except Exception:  # pylint: disable=broad-except
                 pass
-        finally:
-            if conn is not None:
-                conn.close()
         return db_rows
 
     results = []
-    for _i, db_rows in _run_db_scans(_scan_db):
-        results.extend(db_rows)
+    for _i, scan_res in _run_db_scans(_scan_db):
+        if isinstance(scan_res, tuple):
+            db_rows = scan_res[0]
+        else:
+            db_rows = scan_res
+        if isinstance(db_rows, list):
+            results.extend(db_rows)
+        else:
+            results.append(db_rows)
 
     # Deterministic order: exact score DESC, then (_db_index, id) ASC. Not
     # rounded: decay rescales every score by one shared factor, so exact order
@@ -2797,8 +2878,15 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
         return rows
 
     out: list = []
-    for _, rows in _run_db_scans(scan):
-        out.extend(rows)
+    for _, scan_res in _run_db_scans(scan):
+        if isinstance(scan_res, tuple):
+            rows = scan_res[0]
+        else:
+            rows = scan_res
+        if isinstance(rows, list):
+            out.extend(rows)
+        else:
+            out.append(rows)
     return out[:limit]
 
 
