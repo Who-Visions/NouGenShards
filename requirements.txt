@@ -240,7 +240,7 @@ rpds-py==2026.6.3
     # via
     #   jsonschema
     #   referencing
-safehttpx==0.1.7
+safehttpx==0.2.0
     # via gradio
 semantic-version==2.10.0
     # via gradio
