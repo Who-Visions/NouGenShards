@@ -3,11 +3,18 @@ from __future__ import annotations
 import ast
 import concurrent.futures
 import math
+import os
+import shlex
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+
+ALLOWED_VERIFY_BINARIES = frozenset({"pytest", "python", "python3", "ruff", "true"})
+SHELL_METACHAR_TOKENS = frozenset({";", "&&", "||", "|", "`", "$("})
 
 
 @dataclass(frozen=True)
@@ -228,6 +235,40 @@ class SpeculativeSwarmExecutor:
             ],
         }
 
+    @staticmethod
+    def _parse_safe_verification_argv(verification_cmd: str) -> List[str]:
+        cmd_str = verification_cmd.strip()
+        if not cmd_str or cmd_str in ("true", "cd ."):
+            return [sys.executable, "-c", "pass"]
+        for bad in SHELL_METACHAR_TOKENS:
+            if bad in cmd_str:
+                raise ValueError(f"Unsafe shell metacharacter '{bad}' in verification_cmd")
+        argv = shlex.split(cmd_str, posix=(os.name != "nt"))
+        if not argv:
+            return [sys.executable, "-c", "pass"]
+        binary = Path(argv[0]).stem.lower()
+        if binary not in ALLOWED_VERIFY_BINARIES:
+            raise ValueError(f"Disallowed verification binary: {argv[0]}")
+        if binary in ("python", "python3"):
+            argv[0] = sys.executable
+        elif binary == "pytest":
+            argv = [sys.executable, "-m", "pytest", *argv[1:]]
+        return argv
+
+    @staticmethod
+    def _evaluate_postconditions(source_code: str, assertions: List[str]) -> Tuple[bool, str]:
+        if not assertions:
+            return True, ""
+        namespace: Dict[str, Any] = {}
+        try:
+            exec(compile(source_code, "<speculative_candidate>", "exec"), namespace)
+            for expr in assertions:
+                if not bool(eval(expr, namespace)):
+                    return False, f"POSTCONDITION_FAILED: {expr}"
+        except Exception as exc:
+            return False, f"POSTCONDITION_ERROR: {exc}"
+        return True, ""
+
     def _run_branch_in_isolated_sandbox(
         self, node: TacticalNode, branch: SpeculativeBranch
     ) -> Dict[str, Any]:
@@ -245,19 +286,57 @@ class SpeculativeSwarmExecutor:
                 "utility_score": 0.0,
             }
 
+        rel_target = Path(node.target_file)
+        if rel_target.is_absolute() or ".." in rel_target.parts:
+            return {
+                "branch_id": branch.branch_id,
+                "lane_id": branch.lane_id,
+                "code": generated_code,
+                "passed_contract": False,
+                "passed_tests": False,
+                "violations": [f"INVALID_TARGET_PATH: {node.target_file}"],
+                "utility_score": 0.0,
+            }
+
+        try:
+            argv = self._parse_safe_verification_argv(node.verification_cmd)
+        except ValueError as exc:
+            return {
+                "branch_id": branch.branch_id,
+                "lane_id": branch.lane_id,
+                "code": generated_code,
+                "passed_contract": False,
+                "passed_tests": False,
+                "violations": [str(exc)],
+                "utility_score": 0.0,
+            }
+
         with tempfile.TemporaryDirectory(prefix=f"nougen_spec_{branch.branch_id}_") as tmp_dir:
-            sandbox_file = Path(tmp_dir) / Path(node.target_file).name
+            sandbox_file = Path(tmp_dir) / rel_target
+            sandbox_file.parent.mkdir(parents=True, exist_ok=True)
             sandbox_file.write_text(generated_code, encoding="utf-8")
 
+            env = os.environ.copy()
+            existing_py_path = env.get("PYTHONPATH", "")
+            py_parts = [str(tmp_dir), str(self.repo_root)]
+            if existing_py_path:
+                py_parts.append(existing_py_path)
+            env["PYTHONPATH"] = os.pathsep.join(py_parts)
+
             proc = subprocess.run(
-                node.verification_cmd,
-                shell=True,
+                argv,
+                shell=False,
                 cwd=tmp_dir,
+                env=env,
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
-            passed_tests = proc.returncode == 0
+            post_ok, post_err = self._evaluate_postconditions(
+                generated_code, node.contract.postcondition_assertions
+            )
+            passed_tests = (proc.returncode == 0) and post_ok
+            stderr_combined = proc.stderr if post_ok else f"{proc.stderr}\n{post_err}".strip()
 
             # Local Iris PRM scores the code quality and invariant alignment at $0 cost
             prm_reward = self._score_prm(
@@ -273,8 +352,8 @@ class SpeculativeSwarmExecutor:
                 "code": generated_code,
                 "passed_contract": True,
                 "passed_tests": passed_tests,
-                "violations": [],
-                "stderr": proc.stderr,
+                "violations": [] if post_ok else [post_err],
+                "stderr": stderr_combined,
                 "utility_score": round(utility, 4),
             }
 
