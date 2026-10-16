@@ -208,6 +208,14 @@ function toolIsWrite(name) {
   return Boolean(t && t.annotations && t.annotations.readOnlyHint === false);
 }
 __name(toolIsWrite, "toolIsWrite");
+function tenantAllowedTools(env, auth) {
+  // If tenant has specific allowed tools configured in TENANTS KV or env, enforce them
+  if (auth && auth.allowedTools && Array.isArray(auth.allowedTools)) {
+    return new Set(auth.allowedTools);
+  }
+  return null;
+}
+__name(tenantAllowedTools, "tenantAllowedTools");
 function googleAllowed(env) {
   return new Set((env.GOOGLE_ALLOWED_EMAILS || "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean));
 }
@@ -245,9 +253,17 @@ async function issueTokens(env, keyId, email, lane) {
   };
 }
 __name(issueTokens, "issueTokens");
-function identityStillEnrolled(env, payload) {
+async function identityStillEnrolled(env, payload) {
   if ((payload.key || "").startsWith("g-")) {
-    return googleAllowed(env).has((payload.eml || "").toLowerCase());
+    const eml = (payload.eml || "").toLowerCase();
+    if (googleAllowed(env).has(eml)) return true;
+    if (env.TENANTS && typeof env.TENANTS.get === "function") {
+      try {
+        const allowed = await env.TENANTS.get(`allow:${eml}`);
+        if (allowed === "1" || allowed === "true") return true;
+      } catch (_) {}
+    }
+    return false;
   }
   return fleetKeys(env).has(payload.key);
 }
@@ -258,8 +274,27 @@ async function authenticate(request, env) {
   const presented = m[1].trim();
   const payload = await verifyBlob(env, presented);
   if (payload && payload.typ === "access") {
-    if (!identityStillEnrolled(env, payload)) return null;
-    return { key: payload.key, lane: payload.ln || null, static: false };
+    if (!await identityStillEnrolled(env, payload)) return null;
+    let allowedTools = null;
+    let tenantNodeUrl = null;
+    if (payload.eml && env.TENANTS && typeof env.TENANTS.get === "function") {
+      try {
+        const tRaw = await env.TENANTS.get(`tenant:${payload.eml.toLowerCase()}`);
+        if (tRaw) {
+          const tData = JSON.parse(tRaw);
+          if (tData.node_url) tenantNodeUrl = tData.node_url;
+          if (tData.tools && Array.isArray(tData.tools)) allowedTools = tData.tools;
+        }
+      } catch (_) {}
+    }
+    return {
+      key: payload.key,
+      lane: payload.ln || null,
+      static: false,
+      email: payload.eml || null,
+      nodeUrl: tenantNodeUrl,
+      allowedTools: allowedTools
+    };
   }
   // Static fleet key as the bearer: the path for server-side MCP clients that
   // cannot run the OAuth code flow. Identity and lane are the key's name; a
@@ -501,7 +536,7 @@ async function handleToken(request, env) {
   if (grant === "refresh_token") {
     const payload = await verifyBlob(env, form.get("refresh_token") || "");
     if (!payload || payload.typ !== "refresh") return json({ error: "invalid_grant" }, 400);
-    if (!identityStillEnrolled(env, payload)) return json({ error: "invalid_grant" }, 400);
+    if (!await identityStillEnrolled(env, payload)) return json({ error: "invalid_grant" }, 400);
     return json(await issueTokens(env, payload.key, payload.eml, payload.ln));
   }
   return json({ error: "unsupported_grant_type" }, 400);
@@ -563,7 +598,14 @@ async function handleGoogleCallback(request, env, url) {
   if (!vr.ok) return json({ error: "google_token_invalid" }, 401);
   const info = await vr.json();
   const email = (info.email || "").toLowerCase();
-  if (info.aud !== env.GOOGLE_CLIENT_ID || info.email_verified !== "true" || !googleAllowed(env).has(email)) {
+  let emailAllowed = googleAllowed(env).has(email);
+  if (!emailAllowed && env.TENANTS && typeof env.TENANTS.get === "function") {
+    try {
+      const allowed = await env.TENANTS.get(`allow:${email}`);
+      if (allowed === "1" || allowed === "true") emailAllowed = true;
+    } catch (_) {}
+  }
+  if (info.aud !== env.GOOGLE_CLIENT_ID || info.email_verified !== "true" || !emailAllowed) {
     return json({
       error: "forbidden",
       error_description: `${email || "that account"} is not on the fleet allowlist`
@@ -6205,8 +6247,16 @@ async function handleRpc(msg, env, keyId, auth = null) {
     });
   }
   if (method === "ping") return reply({});
-  if (method === "tools/list") return reply({ tools: TOOLS });
+  if (method === "tools/list") {
+    const allowed = tenantAllowedTools(env, auth);
+    const visible = allowed ? TOOLS.filter((t) => allowed.has(t.name)) : TOOLS;
+    return reply({ tools: visible });
+  }
   if (method === "tools/call") {
+    const allowed = tenantAllowedTools(env, auth);
+    if (allowed && !allowed.has(params?.name)) {
+      return fail(-32603, `tenant ${auth.email || auth.key} is not authorized for tool: ${params?.name}`);
+    }
     const handler = HANDLERS[params?.name];
     if (!handler) return fail(-32602, `unknown tool: ${params?.name}`);
     if (laneIsReadOnly(env, auth) && toolIsWrite(params?.name)) {
@@ -6234,6 +6284,12 @@ async function handleMcp(request, env, origin) {
   }
   const keyId = auth.key;
   env = laneEnv(env, auth.lane);
+  if (auth.nodeUrl) {
+    env = Object.assign(Object.create(env), {
+      SHARD_GATEWAY_URL: auth.nodeUrl,
+      HALLWAY_CAPTURE_URL: `${auth.nodeUrl.replace(/\/+$/, "")}/v1/shards/capture`
+    });
+  }
   let body;
   try {
     body = await request.json();
