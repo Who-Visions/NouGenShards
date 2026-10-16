@@ -260,7 +260,7 @@ def sqlite_mmap_size(default: int | None = None) -> int:
     if not raw:
         return fallback
     try:
-        val = int(raw)
+        return int(raw)
     except ValueError:
         return fallback
 
