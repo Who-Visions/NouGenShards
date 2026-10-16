@@ -336,6 +336,14 @@ def get_readonly_connection(index: int) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
 
     with _RO_POOL_LOCK:
+        # Enforce max pool size (bound resident FDs to 64 connections)
+        if len(_RO_CONN_POOL) >= 64:
+            oldest_key, oldest_conn = next(iter(_RO_CONN_POOL.items()))
+            _RO_CONN_POOL.pop(oldest_key, None)
+            try:
+                oldest_conn.close()
+            except Exception:
+                pass
         _RO_CONN_POOL[pool_key] = conn
     return conn
 
@@ -1923,6 +1931,7 @@ def _run_db_scans(scan_fn):
                 yield i, futures[i].result(timeout=remaining)
             except concurrent.futures.TimeoutError:
                 logger.warning("grid DB %d timed out under adaptive timeout (remaining=%.2fs)", i, remaining)
+                # Fallback must match expected scan_fn return signature
                 yield i, ([], True)
 
 
@@ -2869,8 +2878,15 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
         return rows
 
     out: list = []
-    for _, rows in _run_db_scans(scan):
-        out.extend(rows)
+    for _, scan_res in _run_db_scans(scan):
+        if isinstance(scan_res, tuple):
+            rows = scan_res[0]
+        else:
+            rows = scan_res
+        if isinstance(rows, list):
+            out.extend(rows)
+        else:
+            out.append(rows)
     return out[:limit]
 
 
