@@ -23,6 +23,7 @@ WORKER_JS_PATH = Path(__file__).resolve().parent / "nougen-fleet-mcp-patched.js"
 OLD_GATEWAY_HOST = "shards.nougenai.com"
 NEW_GATEWAY_URL = "https://blade.nougenai.com"
 DEFAULT_HALLWAY_CAPTURE_URL = f"{NEW_GATEWAY_URL}/v1/shards/capture"
+TENANTS_KV_NAMESPACE_ID = "a875e814816547079ce0c877e9a91dd1"
 
 BASE_URL = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/workers/scripts/{SCRIPT_NAME}"
 
@@ -122,6 +123,17 @@ def main() -> None:
             "name": "HALLWAY_CAPTURE_URL",
             "text": DEFAULT_HALLWAY_CAPTURE_URL,
         })
+
+    # Ensure TENANTS KV namespace is bound for dynamic tenant routing
+    has_tenants_kv = any(b.get("type") == "kv_namespace" and b.get("name") == "TENANTS" for b in updated_bindings)
+    if not has_tenants_kv:
+        print(f"      Injecting kv_namespace binding TENANTS -> {TENANTS_KV_NAMESPACE_ID}")
+        updated_bindings.append({
+            "type": "kv_namespace",
+            "name": "TENANTS",
+            "namespace_id": TENANTS_KV_NAMESPACE_ID,
+        })
+        preserved_types.add("kv_namespace")
 
     # Verify HALLWAY_BEARER_TOKEN exists on the worker
     if "HALLWAY_BEARER_TOKEN" not in existing_secrets:
