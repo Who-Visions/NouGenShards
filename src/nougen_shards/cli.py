@@ -20,8 +20,6 @@ from . import nougen_sandbox
 from . import federation
 from . import history
 from . import router
-from .connectors.cloud import push_to_cloud, pull_from_cloud
-from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
 from . import dream
 from . import evolution
 from . import assurance
@@ -431,6 +429,7 @@ def cmd_pr(args):
 
 def cmd_brain(args):
     """Universal AI Memory Forensic Engine."""
+    from .brain_scan import scan_environment, run_import, print_scan_report, print_import_report
     if args.action == "scan":
         candidates = scan_environment(
             project_path=str(getattr(args, 'project')) if getattr(args, 'project', None) else None, 
@@ -1838,6 +1837,7 @@ def cmd_node(args):
             finally:
                 conn.close()
         
+        from .connectors.cloud import push_to_cloud
         print(f"[*] Pushing {len(all_shards)} shards to {args.url}...")
         res = push_to_cloud(all_shards, args.url, args.token)
         print(f"✅ Sync result: {res.get('status')} (Count: {res.get('count')})")
@@ -1850,6 +1850,7 @@ def cmd_node(args):
             print("Error: --token <token> is required for pull.")
             return
         
+        from .connectors.cloud import pull_from_cloud
         print(f"[*] Pulling shards from {args.url}...")
         remote_shards = pull_from_cloud(args.url, args.token)
         print(f"[*] Pulled {len(remote_shards)} shards. Ingesting locally...")

@@ -28,8 +28,15 @@ from pathlib import Path
 from typing import Optional
 
 from . import core
+import threading
+import time
 
 logger = logging.getLogger(__name__)
+
+# Discovery cache for zero-latency skill lookups (Module 19: Stabilize Reasoning)
+_SKILLS_CACHE_LOCK = threading.Lock()
+_CACHED_SKILLS: Optional[tuple[float, list[Skill]]] = None
+_CACHE_TTL_S = 30.0  # 30-second TTL to balance freshness and sub-millisecond retrieval
 
 # Directory name searched under each root, and under the vault.
 _FALLBACK_SKILLS_DIRNAME = "skills"
@@ -152,12 +159,30 @@ def _load_file(path: Path, fallback_name: str) -> Optional[Skill]:
     return Skill(name=name, description=description, path=path, body=body)
 
 
+def invalidate_cache() -> None:
+    """Clear the cached default-roots skill discovery roster."""
+    global _CACHED_SKILLS
+    with _SKILLS_CACHE_LOCK:
+        _CACHED_SKILLS = None
+
+
 def discover(roots: Optional[list[Path]] = None) -> list[Skill]:
     """Find every skill across the resolved roots.
 
     Earlier roots win on name collision, so an explicitly configured directory
     can shadow a packaged skill of the same name.
     """
+    global _CACHED_SKILLS
+    now = time.monotonic()
+
+    # Serve from cache if using default roots and TTL is still valid
+    if roots is None:
+        with _SKILLS_CACHE_LOCK:
+            if _CACHED_SKILLS is not None:
+                cached_time, cached_list = _CACHED_SKILLS
+                if (now - cached_time) < _CACHE_TTL_S:
+                    return cached_list
+
     found: dict[str, Skill] = {}
     for root in roots if roots is not None else resolve_skill_roots():
         if not root.is_dir():
@@ -180,7 +205,11 @@ def discover(roots: Optional[list[Path]] = None) -> list[Skill]:
             if skill and skill.name not in found:
                 found[skill.name] = skill
 
-    return sorted(found.values(), key=lambda s: s.name)
+    result = sorted(found.values(), key=lambda s: s.name)
+    if roots is None:
+        with _SKILLS_CACHE_LOCK:
+            _CACHED_SKILLS = (now, result)
+    return result
 
 
 def get(name: str, roots: Optional[list[Path]] = None) -> Optional[Skill]:
