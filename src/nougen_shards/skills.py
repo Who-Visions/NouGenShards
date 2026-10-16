@@ -159,6 +159,13 @@ def _load_file(path: Path, fallback_name: str) -> Optional[Skill]:
     return Skill(name=name, description=description, path=path, body=body)
 
 
+def invalidate_cache() -> None:
+    """Clear the cached default-roots skill discovery roster."""
+    global _CACHED_SKILLS
+    with _SKILLS_CACHE_LOCK:
+        _CACHED_SKILLS = None
+
+
 def discover(roots: Optional[list[Path]] = None) -> list[Skill]:
     """Find every skill across the resolved roots.
 

@@ -128,9 +128,10 @@ def main() -> None:
         print("      [WARN] 'HALLWAY_BEARER_TOKEN' is not in worker secret_text bindings!")
         print("             hallwayCapture() will return null until this secret is set.")
 
+    secret_count = len(existing_secrets)
     print(
-        f"      Preserving {len(updated_bindings)} binding(s) and "
-        f"{len(existing_secrets)} secret(s): {sorted(existing_secrets)}"
+        f"      Preserving {len(updated_bindings)} plain/resource binding(s) and "
+        f"{secret_count} secret_text binding(s)."
     )
 
     # 2. Build metadata

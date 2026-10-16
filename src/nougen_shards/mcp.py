@@ -712,6 +712,7 @@ def evolve_skill(instruction: str) -> str:
     """
     result = evolution.run_autonomous_evolution(instruction)
     if result.get("verified"):
+        skill_registry.invalidate_cache()
         return (
             f"✅ Skill '{instruction}' evolved and verified.\n"
             f"Skill ID: {result['skill_id']}\n"
