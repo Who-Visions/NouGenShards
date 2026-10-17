@@ -5,7 +5,7 @@ Sovereign deterministic execution engine transmuted from Christopher Howard's
 *Breakthrough to Success* (7 CDs / 64 Tracks + 34-Page Workbook).
 """
 
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, Optional, Sequence, Union
 
 from .wfo import WFOCriterionResult, WFOEngine, WFOResult
 from .values import DRIVER_CATALOG, ValueConflictResolution, ValueEntry, ValuesMatrix

@@ -9,7 +9,7 @@ Provenance:
 
 from dataclasses import dataclass
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 
 EFFECT_PATTERNS = re.compile(

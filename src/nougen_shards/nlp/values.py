@@ -7,7 +7,7 @@ Provenance:
 - Reviewed By: Antigravity Coach (UDCT Architecture Solver)
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
