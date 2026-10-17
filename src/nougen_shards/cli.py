@@ -2525,7 +2525,40 @@ def get_parser():
     p_mrsb.add_argument("--unit", "-u", type=int, default=None, help="Unit number (1-8) for recursive lesson ledger")
     p_mrsb.add_argument("--json", action="store_true", help="Machine-readable JSON output")
 
+    # Breakthrough to Success NLP Engine (NouGenMorph)
+    p_nlp = subparsers.add_parser("nlp", help="Breakthrough NLP Engine: WFO, Values, Decision Destroyer, Timeline, Directives")
+    p_nlp.add_argument("nlp_action", nargs="?", default="wfo",
+                       choices=["wfo", "values", "destroy", "timeline", "directives", "breakthrough"],
+                       help="NLP engine action to execute")
+    p_nlp.add_argument("target", nargs="?", default="", help="Goal statement, limiting decision, or comma-separated values")
+    p_nlp.add_argument("--days", type=int, default=7, help="Horizon days for timeline future-pacing")
+    p_nlp.add_argument("--json", action="store_true", help="Emit JSON output")
+
     return parser
+
+
+def cmd_nlp(args):
+    """Breakthrough to Success NLP Engine CLI handler."""
+    import json as _json
+    from .nlp import BreakthroughEngine
+    engine = BreakthroughEngine()
+    action = getattr(args, "nlp_action", "wfo")
+    target = getattr(args, "target", "") or ""
+    if action == "wfo":
+        out = engine.wfo.evaluate(target).to_dict()
+    elif action == "values":
+        vals = [v.strip() for v in target.split(",") if v.strip()] if target else ["Freedom", "Competency", "Security", "Self-Expression", "Belonging"]
+        h = engine.values.build_hierarchy(vals)
+        out = {"hierarchy": [v.to_dict() for v in h]}
+    elif action == "destroy":
+        out = engine.destroyer.destroy_limiting_decision(target).to_dict()
+    elif action == "timeline":
+        out = engine.timeline.future_pace(target, horizon_days=getattr(args, "days", 7)).to_dict()
+    elif action == "directives":
+        out = engine.unconscious.audit_telemetry().to_dict()
+    else:
+        out = engine.run_breakthrough(target, horizon_days=getattr(args, "days", 7))
+    print(_json.dumps(out, indent=2))
 
 
 def cmd_mrsb(args):
@@ -3959,7 +3992,7 @@ def main():
         "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
         "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep, "open": cmd_open,
         "facts": cmd_facts, "mrsb": cmd_mrsb,
-        "wargame": cmd_wargame,
+        "wargame": cmd_wargame, "nlp": cmd_nlp,
     }
     if args.command in cmds:
         cmds[args.command](args)
