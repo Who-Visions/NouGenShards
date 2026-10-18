@@ -29,6 +29,7 @@ RANGE_START = None
 RANGE_END = None
 COMPARE_N = None
 LANES = False
+CODEX_ONLY = False
 
 # argparse CLI: preserves the legacy positional days arg and --month / --by-provider,
 # and adds dynamic ranges (--days/--weeks/--start/--end) + a --compare period diff.
@@ -75,6 +76,8 @@ if "--demo-tc" not in sys.argv and __name__ == "__main__":
                          help="full analytics dashboard: 24h/WTD/MTD/QTD/HTD/YTD comparisons + records (highest day/week/month/streak)")
     _parser.add_argument("--by-provider", action="store_true",
                          help="group the Fleet usage ledger rows by provider")
+    _parser.add_argument("--codex-only", action="store_true",
+                         help="scan and report only Codex rollout usage")
     _a, _ = _parser.parse_known_args()
 
     MONTH = _a.month
@@ -83,6 +86,7 @@ if "--demo-tc" not in sys.argv and __name__ == "__main__":
     RANGE_END = _a.end
     COMPARE_N = _a.compare
     LANES = _a.lanes
+    CODEX_ONLY = _a.codex_only
 
     if _a.days is not None:
         DAYS = _a.days
@@ -1409,6 +1413,24 @@ def _fmt_window_time(dt):
 
 
 # --- Main Reporting ---
+if CODEX_ONLY:
+    print("Token usage monitor - Codex only")
+    print(f"window: {_fmt_window_time(CUTOFF)} -> {_fmt_window_time(NOW)}")
+    print("scope: [EXACT CODEX ROLLOUT TOKEN COUNTERS]")
+    print("--- OpenAI Codex (Granular Rollout Parsing) ---")
+    cx_day, _cx_model, cx_totals, cx_files, cx_records = parse_codex()
+    print(f"Sessions scanned: {cx_files}   Usage events: {cx_records}\n")
+    hdr_cx = f"{'Day':<12}{'input':>14}{'output':>14}{'cache-read':>16}{'reasoning':>14}"
+    print(hdr_cx)
+    print("-" * len(hdr_cx))
+    for day in sorted(cx_day):
+        i, o, _cc, cr, rt = cols(cx_day[day])
+        print(f"{day:<12}{fmt(i):>14}{fmt(o):>14}{fmt(cr):>16}{fmt(rt):>14}")
+    print("-" * len(hdr_cx))
+    txi, txo, _txcc, txcr, txrt = cols(cx_totals)
+    print(f"{'TOTAL':<12}{fmt(txi):>14}{fmt(txo):>14}{fmt(txcr):>16}{fmt(txrt):>14}")
+    sys.exit(0)
+
 print("\n======================================================================")
 if RANGE_START or RANGE_END:
     print(f"Token usage monitor — range {CUTOFF:%Y-%m-%d} -> {LIMIT_UPPER - timedelta(days=1):%Y-%m-%d}")

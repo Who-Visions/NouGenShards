@@ -3,11 +3,8 @@ Covers session DB, FTS5 BM25 search, WAL concurrency, sandbox execution,
 checkpoints, Ollama GPU acceleration, SSRF URL filters, AST & schema analysis,
 and context promotion to persistent shards.
 """
-import os
 import json
-import sqlite3
 import pytest
-from pathlib import Path
 from nougen_shards import nougen_context as nc
 from nougen_shards import nougen_sandbox as ns
 
