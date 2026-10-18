@@ -104,3 +104,27 @@ def test_main_requires_a_source():
         assert exc.code == 2
     else:
         raise AssertionError("expected argparse to reject a bare invocation")
+
+
+def test_render_ascii_fallback(capsys):
+    state = sv.replay(FIXTURE.read_text(encoding="utf-8").splitlines())
+    console = Console(record=True, width=80, file=io.StringIO(), force_terminal=True, legacy_windows=False)
+    console.print(sv.render(state, ascii_mode=True))
+    text = console.export_text()
+    
+    # ASCII box characters
+    assert "+-" in text
+    assert "| " in text or "|" in text
+    assert "CAPTURE" in text
+    assert "AMEND" in text
+
+
+def test_render_80_columns():
+    state = sv.replay(FIXTURE.read_text(encoding="utf-8").splitlines())
+    console = Console(record=True, width=80, file=io.StringIO(), force_terminal=True)
+    console.print(sv.render(state, ascii_mode=False))
+    lines = console.export_text().splitlines()
+    
+    # Assert every line respects terminal width
+    for line in lines:
+        assert len(line) <= 80

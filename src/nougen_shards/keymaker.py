@@ -813,6 +813,40 @@ def list_cloud_nodes() -> list:
         conn.close()
 
 
+CANONICAL_ALIASES = {
+    "ARLAI_API_KEY": ["ARLIAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
+    "ARLIAI_API_KEY": ["ARLAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
+    "OLLAMA_MRSB_OLLAMA_KEY": ["OLLAMA_MRSB_OLLAMAA_KEY"],
+    "OLLAMA_MRSB_OLLAMAA_KEY": ["OLLAMA_MRSB_OLLAMA_KEY"],
+    "OPENROUTER_API_KEY": [
+        "OPENROUTER_KEY_WHOENTERTAINS_GMAIL_COM",
+        "OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM",
+        "OPENROUTER_KEY_AIWITHDAV3_GMAIL_COM",
+        "OPENROUTER_KEY_NOUGENAI_GMAIL_COM",
+        "OPENROUTER_WHOENTERTAINS",
+        "OPENROUTER_DAVEMERALUS",
+        "OPENROUTER_NOUGENAI",
+        "OPENROUTER_OPENROUTER_OPENROUTER_API_KEY",
+        "OPENROUTER_KEY_UNASSIGNED",
+        "OpenRouter_key_unlabeled",
+        "WhoE_openr_2",
+        "WhoE_openr_3",
+        "WhoE_openr_4"
+    ],
+    "OPENROUTER_OPENROUTER_OPENROUTER_API_KEY": ["OPENROUTER_API_KEY"],
+    "OPENROUTER_KEY_EATSRUGER_GMAIL_COM": ["OPENROUTER_KEY_EATSUGER_GMAIL_COM"],
+    "OPENROUTER_KEY_EATSUGER_GMAIL_COM": ["OPENROUTER_KEY_EATSRUGER_GMAIL_COM"],
+    "OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM": ["OPENROUTER_DAVEMERALUS"],
+    "OPENROUTER_DAVEMERALUS": ["OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM"],
+    "GEMINI_API_KEY": ["GOOGLE_API_KEY", "GEMINI_API_KEY_FALLBACK", "GEMINI_API_KEY_FALLBACK_2"],
+    "GOOGLE_API_KEY": ["GEMINI_API_KEY", "GEMINI_API_KEY_FALLBACK"],
+    "HUGGINGFACE_API_KEY": ["HUGGINGFACE_API_TOKEN", "HF_SPACE_API_KEY", "HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HUGGINGFACE_KEY_WHOENTERTAINS_GMAIL_COM", "Agy_HF_Api", "HF_TOKEN_NOUGENAI"],
+    "HUGGINGFACE_API_TOKEN": ["HUGGINGFACE_API_KEY", "HF_SPACE_API_KEY", "HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HUGGINGFACE_KEY_WHOENTERTAINS_GMAIL_COM", "HF_TOKEN_NOUGENAI"],
+    "HF_TOKEN": ["HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HF_TOKEN_NOUGENAI", "HUGGINGFACE_API_KEY", "HUGGINGFACE_API_TOKEN", "HF_SPACE_API_KEY"],
+    "HF_TOKEN_NOUGENAI": ["HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HF_TOKEN", "HUGGINGFACE_API_KEY", "HUGGINGFACE_API_TOKEN"],
+}
+
+
 def _read_secret_row(db_path: Path, key: str) -> Optional[str]:
     """Fetches one key from one store, strictly read-only; None on any failure."""
     try:
@@ -841,12 +875,19 @@ def get_secret(key: str) -> Optional[str]:
         return env_val.strip()
 
     if not _probe_enabled():
-        return _read_secret_row(DB_PATH, key)
+        val = _read_secret_row(DB_PATH, key)
+        if val is not None:
+            return val
+        for alias in CANONICAL_ALIASES.get(key, []):
+            alias_val = _read_secret_row(DB_PATH, alias)
+            if alias_val is not None:
+                return alias_val
+        return None
 
     resolution = resolve_secrets_store()
-    value = _read_secret_row(resolution["active"], key)
-    if value is not None:
-        return value
+    val = _read_secret_row(resolution["active"], key)
+    if val is not None:
+        return val
 
     # Absent from the active store: check the other live candidates before
     # concluding "never ingested" (the moved-vault trap, measured 2026-08-15).
@@ -874,37 +915,7 @@ def get_secret(key: str) -> Optional[str]:
             return found
         logger.warning(msg)
     # Check canonical fallback aliases for common typo/drift pairs (Defect O11)
-    canonical_aliases = {
-        "ARLAI_API_KEY": ["ARLIAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
-        "ARLIAI_API_KEY": ["ARLAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
-        "OLLAMA_MRSB_OLLAMA_KEY": ["OLLAMA_MRSB_OLLAMAA_KEY"],
-        "OLLAMA_MRSB_OLLAMAA_KEY": ["OLLAMA_MRSB_OLLAMA_KEY"],
-        "OPENROUTER_API_KEY": [
-            "OPENROUTER_KEY_WHOENTERTAINS_GMAIL_COM",
-            "OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM",
-            "OPENROUTER_KEY_AIWITHDAV3_GMAIL_COM",
-            "OPENROUTER_KEY_NOUGENAI_GMAIL_COM",
-            "OPENROUTER_WHOENTERTAINS",
-            "OPENROUTER_DAVEMERALUS",
-            "OPENROUTER_NOUGENAI",
-            "OPENROUTER_OPENROUTER_OPENROUTER_API_KEY",
-            "OPENROUTER_KEY_UNASSIGNED",
-            "OpenRouter_key_unlabeled",
-            "WhoE_openr_2",
-            "WhoE_openr_3",
-            "WhoE_openr_4"
-        ],
-        "OPENROUTER_OPENROUTER_OPENROUTER_API_KEY": ["OPENROUTER_API_KEY"],
-        "OPENROUTER_KEY_EATSRUGER_GMAIL_COM": ["OPENROUTER_KEY_EATSUGER_GMAIL_COM"],
-        "OPENROUTER_KEY_EATSUGER_GMAIL_COM": ["OPENROUTER_KEY_EATSRUGER_GMAIL_COM"],
-        "OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM": ["OPENROUTER_DAVEMERALUS"],
-        "OPENROUTER_DAVEMERALUS": ["OPENROUTER_KEY_DAVEMERALUS_GMAIL_COM"],
-        "GEMINI_API_KEY": ["GOOGLE_API_KEY", "GEMINI_API_KEY_FALLBACK", "GEMINI_API_KEY_FALLBACK_2"],
-        "GOOGLE_API_KEY": ["GEMINI_API_KEY", "GEMINI_API_KEY_FALLBACK"],
-        "HUGGINGFACE_API_KEY": ["HUGGINGFACE_API_TOKEN", "HF_SPACE_API_KEY", "HUGGINGFACE_KEY_WHOENTERTAINS_GMAIL_COM", "Agy_HF_Api"],
-        "HUGGINGFACE_API_TOKEN": ["HUGGINGFACE_API_KEY", "HF_SPACE_API_KEY", "HUGGINGFACE_KEY_WHOENTERTAINS_GMAIL_COM"],
-    }
-    for alias in canonical_aliases.get(key, []):
+    for alias in CANONICAL_ALIASES.get(key, []):
         alias_val = _read_secret_row(resolution["active"], alias)
         if alias_val is not None:
             return alias_val
@@ -995,9 +1006,10 @@ ENV_KEY_ALIASES: dict[str, list[str]] = {
     "GOOGLE_API_KEY": ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_KEY"],
     "OPENAI_API_KEY": ["OPENAI_API_KEY", "OPENAI_KEY"],
     "ANTHROPIC_API_KEY": ["ANTHROPIC_API_KEY", "ANTHROPIC_KEY", "CLAUDE_KEY"],
-    "HUGGINGFACE_API_KEY": ["HUGGINGFACE_API_KEY", "HF_TOKEN", "HF_API_KEY", "HUGGING_FACE_HUB_TOKEN"],
-    "HUGGING_FACE_HUB_TOKEN": ["HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY"],
-    "HF_TOKEN": ["HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY"],
+    "HUGGINGFACE_API_KEY": ["HUGGINGFACE_API_KEY", "HF_TOKEN", "HF_TOKEN_NOUGENAI", "HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HF_API_KEY", "HUGGING_FACE_HUB_TOKEN"],
+    "HUGGING_FACE_HUB_TOKEN": ["HF_TOKEN", "HF_TOKEN_NOUGENAI", "HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HUGGINGFACE_API_KEY", "HF_API_KEY"],
+    "HF_TOKEN": ["HF_TOKEN", "HF_TOKEN_NOUGENAI", "HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HUGGINGFACE_API_KEY", "HF_API_KEY"],
+    "HF_TOKEN_NOUGENAI": ["HF_TOKEN_NOUGENAI", "HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "HF_TOKEN", "HUGGINGFACE_API_KEY"],
     "OPENROUTER_API_KEY": ["OPENROUTER_API_KEY", "OPENROUTER_KEY"],
     "ARLIAI_API_KEY": ["ARLIAI_API_KEY", "ARLAI_API_KEY"],
     "ARLAI_API_KEY": ["ARLIAI_API_KEY", "ARLAI_API_KEY"],

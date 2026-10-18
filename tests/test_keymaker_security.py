@@ -14,7 +14,9 @@ import pytest
 
 @pytest.fixture
 def km(tmp_path, monkeypatch):
-    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(tmp_path / "vault"))
+    vault_dir = tmp_path / "vault"
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(vault_dir))
+    monkeypatch.setenv("NOUGEN_SECRETS_VAULT_DIR", str(vault_dir))
     monkeypatch.setenv("NOUGEN_ALLOW_PLAINTEXT_VAULT", "1")
     # The escape hatch only applies when `import keyring` fails. CI has no
     # keyring, but a macOS dev box does, so `_protect` wrote these fixtures
@@ -23,6 +25,7 @@ def km(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "keyring", None)
     import nougen_shards.keymaker as keymaker
     importlib.reload(keymaker)
+    keymaker._PROBE_CACHE.clear()
     yield keymaker
 
 
@@ -141,6 +144,21 @@ def test_csv_export_survives_an_unreadable_row(km_keyring):
     conn.commit(); conn.close()
     km.ingest_secret("ANOTHER_KEY", "also-fine")  # used to raise AttributeError in _export_to_csv
     assert km.get_secret("ANOTHER_KEY") == "also-fine"
+
+
+def test_hf_token_nougenai_alias_resolution(km):
+    km.init_vault()
+    # Ingest under canonical full key name
+    km.ingest_secret("HUGGINGFACE_KEY_NOUGENAI_GMAIL_COM", "hf_test_token_secret_123")
+    
+    # Must resolve via HF_TOKEN, HF_TOKEN_NOUGENAI, HUGGINGFACE_API_KEY, and HUGGINGFACE_API_TOKEN
+    assert km.get_secret("HF_TOKEN_NOUGENAI") == "hf_test_token_secret_123"
+    assert km.get_secret("HF_TOKEN") == "hf_test_token_secret_123"
+    assert km.get_secret("HUGGINGFACE_API_KEY") == "hf_test_token_secret_123"
+    assert km.get_secret("HUGGINGFACE_API_TOKEN") == "hf_test_token_secret_123"
+    assert km.resolve_secret_for_var("HF_TOKEN_NOUGENAI") == "hf_test_token_secret_123"
+    assert km.resolve_secret_for_var("HF_TOKEN") == "hf_test_token_secret_123"
+    assert km.resolve_secret_for_var("HUGGINGFACE_API_KEY") == "hf_test_token_secret_123"
 
 
 # Names the connectors interpolate into SQL. Each must be refused at

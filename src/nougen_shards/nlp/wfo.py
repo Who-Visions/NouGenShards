@@ -290,7 +290,7 @@ class WFOEngine:
         # 9. Attractor Basin (7-10 Reference Successes / Milestones)
         refs = spec.get("attractor_basin") or spec.get("references") or spec.get("steps")
         if isinstance(refs, (list, tuple)):
-            c9_pass = len(refs) >= 3
+            c9_pass = len(refs) >= 7
             c9_ev = f"{len(refs)} attractor references/steps provided"
         elif isinstance(refs, int):
             c9_pass = refs >= 7

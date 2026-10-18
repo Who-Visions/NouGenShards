@@ -197,23 +197,30 @@ def apply_line(state: RunState, line: str) -> None:
         state.note(text, "dim")
 
 
-def _header(state: RunState) -> Panel:
+def _header(state: RunState, ascii_mode: bool = False) -> Panel:
+    box_style = box.ASCII if ascii_mode else box.ROUNDED
     line = Text.assemble(
-        ("model ", "dim"), (state.model or "?", "bold"),
-        ("    fleet ", "dim"), (state.identity or "waiting", "bold"),
+        ("model ", "dim"), (state.model or "?", "bold cyan"),
+        ("    node ", "dim"), (state.identity or "waiting", "bold green"),
         ("    replay" if state.replay else f"    elapsed {state.elapsed():.1f}s", "dim"),
     )
-    return Panel(line, title="shard run", border_style="cyan", box=box.ROUNDED)
+    return Panel(line, title="shard run", border_style="cyan", box=box_style)
 
 
-def _progress(state: RunState) -> Table:
+def _progress(state: RunState, ascii_mode: bool = False) -> Table:
     total = state.chunk_total or 0
     done = state.chunks_done
     grid = Table.grid(expand=True, padding=(0, 1))
     grid.add_column(style="dim", no_wrap=True)
     grid.add_column(ratio=1)
     grid.add_column(justify="right", no_wrap=True)
-    grid.add_row("chunks", ProgressBar(total=max(total, 1), completed=done), f"{done}/{total}")
+    bar = ProgressBar(
+        total=max(total, 1),
+        completed=done,
+        complete_style="cyan",
+        finished_style="bold green",
+    )
+    grid.add_row("chunks", bar, f"{done}/{total}")
     counts = state.counts()
     judged = Text.assemble(*[
         item
@@ -224,14 +231,15 @@ def _progress(state: RunState) -> Table:
     return grid
 
 
-def _candidates(state: RunState) -> Table:
-    table = Table(box=box.SIMPLE_HEAD, expand=True, show_edge=False)
+def _candidates(state: RunState, ascii_mode: bool = False) -> Table:
+    box_style = box.ASCII_DOUBLE_HEAD if ascii_mode else box.SIMPLE_HEAD
+    table = Table(box=box_style, expand=True, show_edge=False)
     table.add_column("#", justify="right", style="dim", no_wrap=True)
     table.add_column("chunk", justify="right", style="dim", no_wrap=True)
-    table.add_column("title", ratio=3, overflow="ellipsis", no_wrap=True)
+    table.add_column("title", ratio=4, overflow="ellipsis", no_wrap=True)
     table.add_column("judge", no_wrap=True)
     table.add_column("outcome", no_wrap=True)
-    table.add_column("reason", ratio=2, overflow="ellipsis", no_wrap=True, style="dim")
+    table.add_column("reason", ratio=3, overflow="ellipsis", no_wrap=True, style="dim")
 
     if not state.candidates:
         table.add_row("", "", Text("no candidates yet", style="dim"), "", "", "")
@@ -251,9 +259,10 @@ def _candidates(state: RunState) -> Table:
     return table
 
 
-def _events(state: RunState) -> Panel:
+def _events(state: RunState, ascii_mode: bool = False) -> Panel:
+    box_style = box.ASCII if ascii_mode else box.ROUNDED
     body: Group | Text = Group(*state.log) if state.log else Text("waiting for the sharder...", style="dim")
-    return Panel(body, title="events", border_style="dim", box=box.ROUNDED)
+    return Panel(body, title="events", border_style="dim", box=box_style)
 
 
 def _footer(state: RunState) -> Text:
@@ -275,8 +284,14 @@ def _footer(state: RunState) -> Text:
     return Text.assemble(*parts)
 
 
-def render(state: RunState) -> Group:
-    return Group(_header(state), _progress(state), _candidates(state), _events(state), _footer(state))
+def render(state: RunState, ascii_mode: bool = False) -> Group:
+    return Group(
+        _header(state, ascii_mode=ascii_mode),
+        _progress(state, ascii_mode=ascii_mode),
+        _candidates(state, ascii_mode=ascii_mode),
+        _events(state, ascii_mode=ascii_mode),
+        _footer(state),
+    )
 
 
 def _pump(stream: IO[str], queue: "Queue[tuple[str, Optional[str]]]", tag: str) -> None:
@@ -294,26 +309,27 @@ def _consume(
     console: Console,
     refresh: float,
     proc: Optional[subprocess.Popen] = None,
+    ascii_mode: bool = False,
 ) -> None:
-    with Live(render(state), console=console, refresh_per_second=refresh) as live:
+    with Live(render(state, ascii_mode=ascii_mode), console=console, refresh_per_second=refresh) as live:
         while sources:
             try:
                 _, line = queue.get(timeout=0.25)
             except Empty:
-                live.update(render(state))
+                live.update(render(state, ascii_mode=ascii_mode))
                 continue
             if line is None:
                 sources -= 1
             else:
                 apply_line(state, line)
-            live.update(render(state))
+            live.update(render(state, ascii_mode=ascii_mode))
         if proc is not None:
             state.exit_code = proc.wait()
         state.finished_at = time.monotonic()
-        live.update(render(state))
+        live.update(render(state, ascii_mode=ascii_mode))
 
 
-def run_command(cmd: list[str], console: Console, refresh: float = 8.0) -> int:
+def run_command(cmd: list[str], console: Console, refresh: float = 8.0, ascii_mode: bool = False) -> int:
     """Run a sharder command, rendering its stderr and stdout as they arrive."""
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     proc = subprocess.Popen(
@@ -330,7 +346,7 @@ def run_command(cmd: list[str], console: Console, refresh: float = 8.0) -> int:
         threading.Thread(target=_pump, args=(stream, queue, tag), daemon=True).start()
 
     state = RunState()
-    _consume(state, queue, sources=2, console=console, refresh=refresh, proc=proc)
+    _consume(state, queue, sources=2, console=console, refresh=refresh, proc=proc, ascii_mode=ascii_mode)
     return state.exit_code or 0
 
 
@@ -360,24 +376,25 @@ def main(argv: Optional[list[str]] = None) -> int:
     source.add_argument("--replay", metavar="FILE", type=Path, help="render a saved run log once")
     source.add_argument("--stdin", action="store_true", help="render a run log piped on stdin")
     parser.add_argument("--refresh", type=float, default=8.0, help="redraws per second (default 8)")
+    parser.add_argument("--ascii", action="store_true", help="use pure ASCII box and header characters")
     args = parser.parse_args(own)
 
     console = Console()
     if args.replay:
         with args.replay.open(encoding="utf-8", errors="replace") as fh:
             state = replay(fh)
-        console.print(render(state))
+        console.print(render(state, ascii_mode=args.ascii))
         return 1 if state.failures() else 0
 
     if args.stdin:
         queue: "Queue[tuple[str, Optional[str]]]" = Queue()
         threading.Thread(target=_pump, args=(sys.stdin, queue, "in"), daemon=True).start()
-        _consume(RunState(), queue, sources=1, console=console, refresh=args.refresh)
+        _consume(RunState(), queue, sources=1, console=console, refresh=args.refresh, ascii_mode=args.ascii)
         return 0
 
     if not cmd:
         parser.error("give a command after --, or use --replay FILE / --stdin")
-    return run_command(cmd, console, args.refresh)
+    return run_command(cmd, console, args.refresh, ascii_mode=args.ascii)
 
 
 if __name__ == "__main__":
