@@ -16,6 +16,7 @@ import re
 import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
+from .fleet_nodes import fleet_nodes as configured_fleet_nodes, local_node
 
 # Every child (ssh, scp) spawns windowless: a console child of a console-less
 # parent (MCP server, hook, pythonw) otherwise opens a terminal window.
@@ -169,6 +170,33 @@ def _live_pipe_names() -> List[str]:
         return ["\\\\.\\pipe\\" + n for n in os.listdir("\\\\.\\pipe\\")]
     except OSError:
         return glob.glob(r"\\.\pipe\LOCAL\*")
+
+
+def _read_socket_reply(sock) -> bytes:
+    """Read the receiver's newline-terminated reply in full, not one recv (WG-1031)."""
+    buf = b""
+    while True:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        buf += chunk
+        if b"\n" in buf:
+            break
+    return buf
+
+
+def _confirm_socket_ack(raw: bytes) -> bool:
+    """True only for the receiver's explicit delivery ack (WG-1031).
+
+    tools/agy_sock_server.py replies {"status": "delivered", "inbox_files": [...]}
+    after it writes the message. Bytes accepted by a socket prove nothing.
+    """
+    try:
+        ack = json.loads(raw.decode("utf-8", errors="replace").strip() or "{}")
+    except ValueError:
+        return False
+    return (isinstance(ack, dict) and ack.get("status") == "delivered"
+            and bool(ack.get("inbox_files")))
 
 
 class AgentPinger:
@@ -467,10 +495,15 @@ class AgentPinger:
                 for sock in glob.glob("/tmp/agy-socks/*.sock"):
                     try:
                         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                        s.connect(sock)
-                        s.sendall(json.dumps(payload).encode("utf-8") + b"\n")
-                        s.close()
-                        pipe_delivered = True
+                        try:
+                            s.settimeout(5)
+                            s.connect(sock)
+                            s.sendall(json.dumps(payload).encode("utf-8") + b"\n")
+                            # Sending bytes is not delivery: wait for the receiver's ack.
+                            ack_ok = _confirm_socket_ack(_read_socket_reply(s))
+                        finally:
+                            s.close()
+                        pipe_delivered = pipe_delivered or ack_ok
                     except Exception:
                         pass
             except Exception:
@@ -715,8 +748,8 @@ class NouGenMsgBus:
         if not raw or raw == 'all':
             return ('fleet', 'all')
 
-        coach_routes, _ = fleet_identity_maps()
-        known_nodes = {'blade', 'whoart', 'phoebus', 'local', 'fleet', *coach_routes}
+        coach_routes, machine_routes = fleet_identity_maps()
+        known_nodes = {local_node(), *configured_fleet_nodes(), 'local', 'fleet', *coach_routes, *machine_routes, *_known_fleet_hosts()}
         known_agents = {'claude', 'antigravity', 'codex', 'ollama', 'openrouter', 'agents', 'all'}
         # Model lanes carry the model in the agent slot: '@ollama:gemma4:31b-cloud'
         # -> ('local', 'ollama:gemma4:31b-cloud'); '@blade:openrouter:nvidia/x'
@@ -781,6 +814,11 @@ class NouGenMsgBus:
         supplied = dict(supplied or {})
         current = get_current_node()
         lane = cls._sender_lane(supplied)
+        if lane:
+            # Bookkeeping only: record that this lane spoke, for reply routing.
+            # Nothing here changes where a message is delivered.
+            from .lane_presence import default_presence
+            default_presence().heartbeat(lane, time.time())
         claimed_machine = supplied.get("machine")
         conflicts = list(supplied.get("conflicts") or [])
         if claimed_machine and claimed_machine != current:
@@ -839,7 +877,7 @@ class NouGenMsgBus:
         # addressed node it means "this node's agent lanes"; elsewhere it is not
         # ours to deliver, and saying so beats an empty dict.
         fleet_nodes = {normalize_fleet_node(n) for n in os.environ.get(
-            "NOUGEN_FLEET_NODES", "blade,whoart,phoebus").split(",") if n.strip()}
+            "NOUGEN_PEER_NODES", "").split(",") if n.strip()}
         if family in fleet_nodes:
             if family != (get_current_node() or "").lower():
                 return {"skipped": f"addressed to {family}, not this node"}
@@ -1132,7 +1170,7 @@ class NouGenMsgBus:
         curr = get_current_node()
         results = {curr: cls.live_ping(target=target, text=text, origin=origin,
                                        models_async=background)}
-        fleet_nodes = {"blade", "whoart", "phoebus"}
+        fleet_nodes = {local_node(), *configured_fleet_nodes()}
         # A standalone/external clone has no private fleet to broadcast into;
         # only fan out to the other two boxes when this IS one of them.
         nodes = sorted(fleet_nodes - {curr}) if curr in fleet_nodes else []
@@ -1240,8 +1278,8 @@ class NouGenMsgBus:
             explicit = os.environ.get(f"NOUGEN_NODE_{node.upper()}_IP")
             if explicit:
                 return explicit
-            if node in ("blade", "apollo"):
-                return "blade1tb.local"
+            if node == local_node():
+                return f"{local_node()}.local"
             return f"{node}.local"
 
         def up(node: str) -> bool:

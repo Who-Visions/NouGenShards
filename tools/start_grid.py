@@ -287,15 +287,17 @@ def _start_node(node_token):
             "NOUGEN_KIMI_MODEL", "moonshotai/Kimi-K3")
         print(f"rhea kimi model: {env['NOUGEN_RHEA_MODEL']}")
     log = SCRATCH / "ngs_node.log"
-    python_exe = REPO / ".venv" / "Scripts" / "python.exe"
+    # Console-suppression law: background servers run under pythonw with no
+    # console window (CREATE_NO_WINDOW), never python.exe.
+    python_exe = REPO / ".venv" / "Scripts" / "pythonw.exe"
     if not python_exe.is_file():
-        python_exe = Path(sys.executable)
+        python_exe = Path(sys.executable).with_name("pythonw.exe")
     with open(log, "ab") as fh:
         proc = subprocess.Popen(
             [str(python_exe), "-m",
              "uvicorn", "app:app", "--host", BIND, "--port", PORT],
             cwd=str(REPO), env=env, stdout=fh, stderr=subprocess.STDOUT,
-            creationflags=DETACHED)
+            creationflags=NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
     print(f"node starting pid={proc.pid} log={log}")
     # Importing the full HUD plus the nine-database substrate can exceed a
     # minute on a cold boot. Keep the deadline environment-shaped so a slow

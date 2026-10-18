@@ -8,7 +8,7 @@ import { existsSync } from 'fs';
 function liveNougenApiPlugin() {
   let activeChats = 0;
   const projectRoot = path.resolve(__dirname);
-  const venvPython = path.join(projectRoot, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+  const venvPython = path.resolve(projectRoot, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
   const pythonPath = process.env.NOUGEN_PYTHON || (existsSync(venvPython) ? venvPython : (process.platform === 'win32' ? 'python.exe' : 'python3'));
 
   const runPythonCli = (args: string[]): Promise<string> => {
@@ -167,7 +167,7 @@ function liveNougenApiPlugin() {
             if (!req.headers['content-type']?.startsWith('application/json')) { res.statusCode = 415; res.end('{}'); return; }
             let body = '';
             for await (const chunk of req) {
-              body += chunk.toString();
+              body += chunk.toString('utf-8');
               if (Buffer.byteLength(body) > 420000) { res.statusCode = 413; res.end('{}'); return; }
             }
             if (activeChats >= 2) { res.statusCode = 429; res.end(JSON.stringify({ error: 'Chat is busy. Please retry shortly.' })); return; }
@@ -237,6 +237,7 @@ export default defineConfig({
   plugins: [react(), liveNougenApiPlugin()],
   clearScreen: false,
   server: {
+    host: '127.0.0.1',
     port: 5173,
     strictPort: true,
   },

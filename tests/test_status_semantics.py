@@ -1,3 +1,4 @@
+import pytest
 """Regression tests for relay directive 20260913T174622Z."""
 from nougen_shards.status_semantics import (
     Observation,
@@ -170,3 +171,9 @@ def test_tracker_stale_never_overrides_recent_relay_liveness():
     assert node.derived_state == "LIVE_TRACKER_STALE"
     assert node.derived_state != "OFFLINE_CONFIRMED"
 
+
+@pytest.fixture(autouse=True)
+def _owner_fleet_env(monkeypatch):
+    """These tests assume the owner's three-machine fleet. Declare it here, not in code."""
+    monkeypatch.setenv("NOUGEN_NODE_NAME", "blade1tb")
+    monkeypatch.setenv("NOUGEN_PEER_NODES", "whoart,phoebus")

@@ -1667,7 +1667,11 @@ def push_handoff_to_space(agent: Optional[str] = None, handoff_id: Optional[str]
     handoff_id = data.get("handoff_id") or target_path.stem
 
     # Resolve Space URL
-    space_url = os.environ.get("HF_SPACE_URL", "https://whovisions-nga-hgf-space.hf.space").rstrip("/")
+    from . import endpoints
+    space_url = endpoints.hf_space_url()
+    if not space_url:
+        _make_console().print("[yellow]No Space configured (set HF_SPACE_URL or endpoints.json); staying local.[/yellow]")
+        return
 
     # Resolve Token
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_API_KEY")
@@ -1724,7 +1728,11 @@ def pull_handoff_from_space(agent: Optional[str] = None):
         agent = detect_current_agent()
 
     # Resolve Space URL
-    space_url = os.environ.get("HF_SPACE_URL", "https://whovisions-nga-hgf-space.hf.space").rstrip("/")
+    from . import endpoints
+    space_url = endpoints.hf_space_url()
+    if not space_url:
+        _make_console().print("[yellow]No Space configured (set HF_SPACE_URL or endpoints.json); staying local.[/yellow]")
+        return
 
     # Resolve Token
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_API_KEY")

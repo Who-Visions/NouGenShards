@@ -8,6 +8,7 @@ import ctypes.wintypes
 import hashlib
 import logging
 import os
+import re
 import sqlite3
 import csv
 import json
@@ -661,6 +662,27 @@ def ingest_service_account(json_data: str):
         print(f"  [!] Error ingesting service account: {exc}")
 
 
+_SQL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _require_identifiers(table_name: str, title_col: str, content_col: str) -> None:
+    """Reject a registration whose names cannot be safely interpolated into SQL.
+
+    The connectors (connectors/local_vault.py, connectors/sql.py) interpolate
+    these names into queries and already skip rows that fail the same whitelist,
+    so a bad row could never reach a query. Checking here as well makes the
+    registration fail loudly instead of storing a row that is silently ignored
+    on every read. fullmatch, not match, for the trailing-newline reason given
+    in connectors/sql.is_valid_identifier.
+    """
+    for label, value in (("table_name", table_name), ("title_col", title_col),
+                         ("content_col", content_col)):
+        if not isinstance(value, str) or not _SQL_IDENTIFIER.fullmatch(value):
+            raise ValueError(
+                f"{label} must be a plain SQL identifier (letters, digits, "
+                f"underscore; not starting with a digit), got {value!r}")
+
+
 def register_local_vault(path: str, table_name: str, title_col: str, content_col: str):
     """Register a local SQLite vault as a federated read source.
 
@@ -676,6 +698,7 @@ def register_local_vault(path: str, table_name: str, title_col: str, content_col
     credentials) but is re-validated at query time, so moving or deleting a vault
     degrades that source instead of breaking federation.
     """
+    _require_identifiers(table_name, title_col, content_col)
     init_vault()
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute('''
@@ -720,6 +743,7 @@ def list_local_vaults() -> list:
 
 def register_external_db(uri: str, table_name: str, title_col: str, content_col: str):
     """Registers a new external database connection."""
+    _require_identifiers(table_name, title_col, content_col)
     init_vault()
     conn = sqlite3.connect(str(DB_PATH))
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')

@@ -58,6 +58,8 @@ one costs a moment's reading.
 - **`nougen-ctx/`** — enforce NouGen Rule 0.0 & Context Mode. Use context-mode tools
   (`ctx_execute`, `ctx_execute_file`, `ctx_batch_execute`, `ctx_search`, `ctx_index`)
   instead of raw terminal output to save 98% context window.
+- **`ghidra/`** — use NSA Ghidra directly or through REA when the target and provider
+  support it; check the provider contract and preserve evidence coordinates.
 
 ## Writing one
 

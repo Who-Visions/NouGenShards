@@ -1,23 +1,36 @@
 import { normalizeEndpoint } from "./capture.js";
+
 const $ = (id) => document.getElementById(id);
-const msg = (t) => { $("msg").textContent = t; };
+const msg = (text, isError = false) => {
+  const el = $("msg");
+  el.textContent = text;
+  el.style.color = isError ? "var(--danger)" : "var(--accent-green)";
+};
 
 chrome.storage.local.get(["endpoint", "token"]).then(({ endpoint, token }) => {
-  $("endpoint").value = endpoint || "";
-  // Never echo the saved token back into the page.
-  $("token").placeholder = token ? "Saved (hidden). Type to replace." : "";
+  $("endpoint").value = endpoint || "http://127.0.0.1:4444";
+  $("token").value = token || "";
+  if (token) msg("Connection settings loaded.");
 });
 
 $("save").addEventListener("click", async () => {
   const origin = normalizeEndpoint($("endpoint").value);
-  const typed = $("token").value.trim();
-  const token = typed || (await chrome.storage.local.get("token")).token || "";
-  if (!origin) return msg("Endpoint must be https (or http on localhost).");
-  if (!token) return msg("Token is required.");
-  // Host access is requested for exactly this origin, not all sites.
-  const ok = await chrome.permissions.request({ origins: [`${origin}/*`] });
-  if (!ok) return msg("Permission to reach that endpoint was declined.");
-  await chrome.storage.local.set({ endpoint: origin, token });
-  $("token").value = "";
-  msg("Saved.");
+  if (!origin) return msg("Enter a valid NouGen address.", true);
+  const token = $("token").value.trim();
+  if (!token) return msg("Enter your NouGen node token.", true);
+
+  const granted = await chrome.permissions.request({ origins: [`${origin}/*`] });
+  if (!granted) return msg("Chrome needs permission to connect to your NouGen node.", true);
+
+  const button = $("save");
+  button.disabled = true;
+  msg("Saving connection…");
+  try {
+    await chrome.storage.local.set({ endpoint: origin, token });
+    msg("Saved. NouGen Capture is ready.");
+  } catch (error) {
+    msg(`Could not save connection. ${error.message || "Try again."}`, true);
+  } finally {
+    button.disabled = false;
+  }
 });

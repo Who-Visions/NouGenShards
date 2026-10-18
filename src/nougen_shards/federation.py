@@ -4,9 +4,9 @@ import os
 import threading
 from . import core
 from . import machine
-from .connectors.sql import query_external_dbs
 from .connectors.cloud import query_cloud_shards
 from .connectors.local_vault import query_local_vaults
+from .connectors import query_external_dbs
 from . import keymaker
 from typing import List, Optional
 
@@ -36,6 +36,46 @@ logger = logging.getLogger(__name__)
 #: than failing it, and env-first per Rule 0.2.
 _LANE_EXECUTOR = None
 _LANE_EXECUTOR_LOCK = threading.Lock()
+
+
+# Adaptive per-lane budget (flag NOUGEN_ADAPTIVE_LANE_TIMEOUT=1, default off).
+# Each lane keeps a Beta(alpha, beta) reliability posterior from its recent
+# outcomes; a lane that keeps timing out gets a smaller budget so one hung
+# gateway does not hold the whole recall for the full deadline. The floor is
+# env-tunable because a local lane legitimately takes ~10s on a full recall.
+_LANE_RELIABILITY: dict = {}
+_LANE_RELIABILITY_LOCK = threading.Lock()
+
+
+def _adaptive_lane_timeout_enabled() -> bool:
+    return os.environ.get("NOUGEN_ADAPTIVE_LANE_TIMEOUT", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _lane_reliability_record(name: str, status: str) -> None:
+    ok = status in ("ok", "partial")
+    with _LANE_RELIABILITY_LOCK:
+        a, b = _LANE_RELIABILITY.get(name, (1.0, 1.0))
+        if ok:
+            a += 1.0
+        else:
+            b += 1.0
+        _LANE_RELIABILITY[name] = (a, b)
+
+
+def _lane_budget_s(name: str, deadline_s: float) -> float:
+    """Seconds this lane may take. Full deadline unless the adaptive flag is on."""
+    if not _adaptive_lane_timeout_enabled():
+        return deadline_s
+    try:
+        floor = float(os.environ.get("NOUGEN_LANE_MIN_DEADLINE_S", "5.0"))
+    except ValueError:
+        floor = 5.0
+    with _LANE_RELIABILITY_LOCK:
+        a, b = _LANE_RELIABILITY.get(name, (1.0, 1.0))
+    expected = a / (a + b)
+    # Mean-reliability budget: a lane that succeeds ~always gets the full deadline,
+    # one that always times out is held to the floor.
+    return max(min(floor, deadline_s), min(deadline_s, deadline_s * expected))
 
 
 def _lane_pool_size() -> int:
@@ -95,6 +135,8 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     failed. Lane errors and deadline misses used to reach a log line and nowhere
     else, so a degraded sweep was indistinguishable from an empty corpus.
     """
+    if sweep_report is None:
+        sweep_report = {}
     local_results = []
     external_results = []
     cloud_results = []
@@ -107,7 +149,12 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     else:
         external_configs = []
         cloud_configs = []
-    vault_configs = keymaker.list_local_vaults()
+    # Sibling local vaults are the owner's stores. A tenant reads only its own
+    # bound vault (core.retrieve below), never the owner's registered vaults.
+    if core.active_tenant_id() == "owner":
+        vault_configs = keymaker.list_local_vaults()
+    else:
+        vault_configs = []
 
     # Coverage honesty. A lane that errors or misses the deadline is a HOLE IN
     # THE CORPUS, and a hole that reaches only a log line is invisible to the
@@ -130,12 +177,18 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
             sweep_report.setdefault("errored", []).append(entry)
 
     def _fetch_local():
+        failures = []
+        token = core.RETRIEVAL_FAILURES.set(failures)
         try:
             return core.retrieve(query, limit=limit, query_embedding=query_embedding, domain_key=domain_key)
         except Exception as exc:
             logger.warning("local retrieve skipped: %s: %s", type(exc).__name__, exc)
             _note_lane("local", f"{type(exc).__name__}: {exc}")
             return []
+        finally:
+            core.RETRIEVAL_FAILURES.reset(token)
+            if failures:
+                sweep_report.setdefault("errored", []).extend(failures)
 
     def _fetch_external():
         if not external_configs:
@@ -212,10 +265,14 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         The deadline was argued about for a day on end-to-end latency alone,
         which cannot say WHICH lane was slow or whether it returned anything.
         """
-        if sweep_report is None:
-            return
         t0 = _lane_started.get(name)
         t1 = _lane_started.get(name + ":done")
+        # A lane that never got a worker slot tells us nothing about the lane itself
+        # (the pool was saturated), so it does not count against its reliability.
+        if t0 is not None:
+            _lane_reliability_record(name, status)
+        if sweep_report is None:
+            return
         if t0 is None:
             elapsed = None            # never got a worker slot
         elif t1 is None:
@@ -229,7 +286,8 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
         }
 
     def _lane_result(future, name, default):
-        remaining = deadline_s - (_time.monotonic() - started)
+        budget = _lane_budget_s(name, deadline_s)
+        remaining = min(deadline_s, budget) - (_time.monotonic() - started)
         try:
             out = future.result(timeout=max(0.1, remaining))
         except concurrent.futures.TimeoutError:
@@ -254,7 +312,10 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
                 sweep_report["deadline_exceeded"] = True
                 _record_lane(name, "timeout", None)
             return default
-        _record_lane(name, "ok", len(out) if out is not None else 0)
+        errors = sweep_report.get("errored", [])
+        degraded = any(e.get("store", "").startswith(name + ":") or
+                       e.get("store") == f"lane:{name}" for e in errors)
+        _record_lane(name, "partial" if degraded else "ok", len(out) if out is not None else 0)
         return out
 
     executor = _lane_executor()
@@ -305,4 +366,11 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
             hit["machine_id"] = default_machine
 
     # Ship coverage WITH the rows, never only in a log line.
-    return FederatedResult(combined[:limit], lane_failures)
+    failures = list(sweep_report.get("errored") or [])
+    failures.extend({"store": "deferred", "error": str(store)}
+                    for store in sweep_report.get("tier2_deferred", []))
+    failures.extend({"store": f"lane:{name}", "error": "lane skipped"}
+                    for name in sweep_report.get("lanes_skipped", []))
+    result = FederatedResult(combined[:limit], failures)
+    result.coverage = dict(sweep_report)
+    return result

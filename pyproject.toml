@@ -77,6 +77,7 @@ test = [
 [project.scripts]
 nougen = "nougen_shards.cli:main"
 nougen-mcp = "nougen_shards.mcp:main"
+nougen-web = "nougen_shards.web_research:main"
 nougen-time = "nougen_time.__main__:main"
 
 [tool.setuptools.packages.find]

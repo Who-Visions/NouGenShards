@@ -43,3 +43,42 @@ export function shardRef(result) {
   if (!result || result.captured !== true || result.shard_id == null) return null;
   return result.db_index != null ? `${result.db_index}:${result.shard_id}` : String(result.shard_id);
 }
+
+// Checks node liveness/status. Works against /health or /status.
+export async function checkNodeHealth(origin, token, fetchImpl = fetch, timeoutMs = 4000) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const headers = token ? { "X-NGS-Token": token } : {};
+    let lastErr = null;
+    let resp = await fetchImpl(`${origin}/health`, {
+      method: "GET",
+      headers,
+      signal: ctl.signal,
+    }).catch((err) => { lastErr = err; return null; });
+
+    if (!resp || !resp.ok) {
+      // Fallback to /status if /health is not available
+      resp = await fetchImpl(`${origin}/status`, {
+        method: "GET",
+        headers,
+        signal: ctl.signal,
+      }).catch((err) => { lastErr = err; return null; });
+    }
+
+    if (!resp) return { ok: false, error: String((lastErr && lastErr.message) || lastErr || "Network unreachable") };
+    if (!resp.ok) return { ok: false, status: resp.status, error: `HTTP ${resp.status}` };
+    const data = await resp.json().catch(() => ({}));
+    return { ok: true, status: resp.status, data };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Searches shards via MCP tool search_shards
+export async function searchShards(origin, token, query, fetchImpl = fetch) {
+  const out = await mcpCall(origin, token, "search_shards", { query: String(query || "").trim(), limit: 10 }, fetchImpl);
+  return Array.isArray(out) ? out : (out?.shards || out?.results || []);
+}

@@ -29,12 +29,39 @@ except ImportError:
 # Backwards-compatible alias for any caller still importing the old name.
 FastMCP = MCPServer
 
+def _file_root_gate(path: str) -> Optional[str]:
+    """Confine analyze_file_sandboxed reads to one root (WG-1175, Codex P1).
+
+    NOUGEN_FILE_TOOLS_ROOT wins; otherwise the repository root. A path that
+    resolves outside it (including via symlinks or '..') is refused.
+    """
+    from pathlib import Path
+    root = Path(os.environ.get("NOUGEN_FILE_TOOLS_ROOT", "")
+                or Path(__file__).resolve().parents[2]).resolve()
+    target = Path(path).expanduser().resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return f"Error: path is outside the allowed root {root} (set NOUGEN_FILE_TOOLS_ROOT to widen)."
+    return None
+
+
+def _tool_gate(env_var: str, tool: str) -> Optional[str]:
+    """Opt-in gate for MCP tools that read files, fetch URLs, or deploy workers.
+
+    A prompt-injected client must not get these by default (WG-1175/WG-1777).
+    Returns an error string when the gate is closed, else None.
+    """
+    if os.environ.get(env_var, "").strip().lower() in ("1", "true", "yes", "on"):
+        return None
+    return f"Error: {tool} is disabled by default. Set {env_var}=1 to enable it."
+
+
 from .core import capture, mark_shard, compile_recall_packet
 from . import nougen_context
 from . import nougen_sandbox
 from . import evolution
 from . import skills as skill_registry
-from .brain_scan import scan_environment, run_import
 
 from .history import HistoryEngine
 from .federation import federated_retrieve
@@ -343,6 +370,9 @@ def fetch_web_sandboxed(url: str, label: Optional[str] = None) -> str:
         url: The web URL to fetch.
         label: Optional descriptive label for indexing.
     """
+    gated = _tool_gate("NOUGEN_ENABLE_FILE_TOOLS", "fetch_web_sandboxed")
+    if gated:
+        return gated
     res = nougen_context.fetch_and_index_web(url, label=label)
     if "error" in res:
         return f"Error: {res['error']}"
@@ -366,6 +396,12 @@ def analyze_file_sandboxed(file_path: str, query: Optional[str] = None) -> str:
         file_path: Absolute or relative path to file on disk.
         query: Optional string/keyword to filter matching lines.
     """
+    gated = _tool_gate("NOUGEN_ENABLE_FILE_TOOLS", "analyze_file_sandboxed")
+    if gated:
+        return gated
+    outside = _file_root_gate(file_path)
+    if outside:
+        return outside
     res = nougen_context.analyze_file(file_path, query=query)
     if "error" in res:
         return f"Error: {res['error']}"
@@ -479,6 +515,7 @@ def run_brain_scan(project_path: Optional[str] = None, include_unknown: bool = F
         project_path: Optional path to a specific project directory to scan.
         include_unknown: If True, scans for unknown dotfolders as well.
     """
+    from .brain_scan import scan_environment
     candidates = scan_environment(project_path=project_path, include_unknown=include_unknown)
     
     high = [c for c in candidates if c.score_tier == "high"]
@@ -512,6 +549,7 @@ def run_brain_import(project_path: Optional[str] = None, source_filter: Optional
         source_filter: Filter by specific tool (e.g., 'claude', 'gemini').
         dry_run: If True, only estimates the import size without writing to the database. Set to False to actually ingest shards.
     """
+    from .brain_scan import run_import
     result = run_import(
         project_path=project_path,
         include_unknown=False,
@@ -674,6 +712,7 @@ def evolve_skill(instruction: str) -> str:
     """
     result = evolution.run_autonomous_evolution(instruction)
     if result.get("verified"):
+        skill_registry.invalidate_cache()
         return (
             f"✅ Skill '{instruction}' evolved and verified.\n"
             f"Skill ID: {result['skill_id']}\n"
@@ -827,6 +866,9 @@ def cf_deploy_worker(directory_path: str = "") -> str:
     Args:
         directory_path: Absolute or relative path to the worker project directory. Defaults to current directory.
     """
+    gated = _tool_gate("NOUGEN_ENABLE_CF_TOOLS", "cf_deploy_worker")
+    if gated:
+        return gated
     import json
     from pathlib import Path
     from . import cloudflare
@@ -841,7 +883,7 @@ def cf_deploy_worker(directory_path: str = "") -> str:
             "worker_name": res.get("worker_name"),
             "entry_point": res.get("entry_point"),
             "etag": res.get("result", {}).get("etag", "live"),
-            "live_url": f"https://{res.get('worker_name')}.whoentertains.workers.dev"
+            "live_url": __import__("nougen_shards.endpoints", fromlist=["worker_live_url"]).worker_live_url(res.get("worker_name"))
         }, indent=2)
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)})
@@ -856,6 +898,9 @@ def cf_run_ai(prompt: str, model: str = "@cf/meta/llama-3.1-8b-instruct") -> str
         prompt: User instruction or query for the edge model.
         model: Model identifier (e.g. '@cf/meta/llama-3.1-8b-instruct', '@cf/qwen/qwen3-30b-a3b-fp8', '@cf/google/gemma-4-26b-a4b-it').
     """
+    gated = _tool_gate("NOUGEN_ENABLE_CF_TOOLS", "cf_run_ai")
+    if gated:
+        return gated
     from . import cloudflare
     try:
         cf = cloudflare.CloudflareClient()
@@ -1177,7 +1222,11 @@ def add_shard(content: str, title: Optional[str] = None, tags: Optional[List[str
             content=content,
             tags=tags or ["mcp", "voice"],
         )
-        return json.dumps({"status": "ok" if ok else "failed", "title": t_val, "tags": tags}, indent=2)
+        if isinstance(ok, dict):
+            is_success = ok.get("status") in ("ok", "success", "captured", "durable") or ok.get("success") is True or (bool(ok.get("shard_id")) and "error" not in ok)
+        else:
+            is_success = bool(ok)
+        return json.dumps({"status": "ok" if is_success else "failed", "title": t_val, "tags": tags}, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -1365,6 +1414,111 @@ def main():
     """Main entry point for the MCP server."""
     # Start the FastMCP server with stdio transport
     mcp.run()
+
+
+@mcp.tool()
+def semantic_context_assemble(query: str, state_json: str = "{}", budget_bytes: int = 8000) -> str:
+    """Assemble bounded identity/global/recall/active state. Corrections must be caller-authorized.
+
+    state_json contains identity, global_state, recall arrays; compact active state;
+    optional corrections with qualified previous/current handles and provenance.
+    ready=False means required context is missing. Metadata is outside the payload budget.
+    """
+    from .context_policy import context_from_json
+    try:
+        return json.dumps(context_from_json(query, state_json, budget_bytes), ensure_ascii=False)
+    except (TypeError, ValueError, KeyError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+
+@mcp.tool()
+def context_task_checkpoint(session_id: str, state_json: str, provenance: str) -> str:
+    """Append verified compact task state for one session; never pass credentials."""
+    from .nougen_context import append_task_state
+    try:
+        if len(state_json) > 16000:
+            raise ValueError("state_json exceeds 16000 characters")
+        return json.dumps(append_task_state(session_id, json.loads(state_json), provenance=provenance))
+    except (TypeError, ValueError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@mcp.tool()
+def context_task_current(session_id: str) -> str:
+    """Read current task checkpoint for the exact session, without transcript replay."""
+    from .nougen_context import current_task_state
+    return json.dumps(current_task_state(session_id), ensure_ascii=False)
+
+
+@mcp.tool()
+def context_feedback(packet_json: str, feedback_json: str) -> str:
+    """Measure omissions and receiver-reported context use; no inferred cognition score."""
+    from .context_policy import evaluate_context
+    try:
+        if max(len(packet_json), len(feedback_json)) > 1000000:
+            raise ValueError("feedback inputs exceed 1000000 characters")
+        return json.dumps(evaluate_context(json.loads(packet_json), **json.loads(feedback_json)))
+    except (TypeError, ValueError, KeyError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@mcp.tool()
+def context_correct(session_id: str, previous: str, current: str, provenance: str) -> str:
+    """Append a source-owner-authorized correction. Never persist a model proposal as authority."""
+    from .nougen_context import append_context_correction
+    try:
+        return json.dumps(append_context_correction(session_id, previous, current, provenance=provenance))
+    except (TypeError, ValueError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@mcp.tool()
+def context_session_assemble(session_id: str, query: str, state_json: str = "{}", budget_bytes: int = 8000) -> str:
+    """Compile federated recall with this session's durable task/correction state.
+
+    Omit recall from state_json for bounded live federation; supply recall for replay.
+    """
+    from .nougen_context import assemble_session_context
+    try:
+        return json.dumps(assemble_session_context(session_id, query, state_json, budget_bytes), ensure_ascii=False)
+    except (TypeError, ValueError, KeyError) as exc:
+        return json.dumps({'error': str(exc)})
+
+
+@mcp.tool()
+def nougen_web_fetch(url: str, max_chars: int = 16000) -> str:
+    """Fetch one public web page into a bounded, provenance-rich untrusted-source envelope.
+
+    Only public HTTP(S) targets are allowed. robots.txt is honored; login cookies,
+    JavaScript execution, and bot-control evasion are not used.
+    """
+    from dataclasses import asdict
+    from .web_research import WebResearchClient, WebResearchError
+    try:
+        record = asdict(WebResearchClient().fetch(url))
+        record["text"] = record["text"][:max(0, min(int(max_chars), 30000))]
+        return json.dumps(record, ensure_ascii=False, default=str)
+    except (WebResearchError, TypeError, ValueError) as exc:
+        return json.dumps({"error": str(exc), "untrusted_source": True}, ensure_ascii=False)
+
+
+@mcp.tool()
+def nougen_web_crawl(url: str, max_pages: int = 10, max_depth: int = 2,
+                     max_chars_per_page: int = 4000) -> str:
+    """BFS-crawl a small same-origin public site, with per-page provenance and error records."""
+    from .web_research import WebResearchClient, WebResearchError
+    try:
+        result = WebResearchClient().crawl(
+            url,
+            max_pages=max(1, min(int(max_pages), 25)),
+            max_depth=max(0, min(int(max_depth), 4)),
+            max_chars_per_page=max(0, min(int(max_chars_per_page), 12000)),
+        )
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except (WebResearchError, TypeError, ValueError) as exc:
+        return json.dumps({"error": str(exc), "untrusted_source": True}, ensure_ascii=False)
+
 
 if __name__ == "__main__":
     main()

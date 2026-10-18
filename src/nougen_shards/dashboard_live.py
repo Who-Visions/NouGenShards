@@ -45,7 +45,10 @@ def local_hardware():
 def fleet_nodes(home=None):
     home = Path(home or os.environ.get('NOUGEN_HOME', str(Path.home() / '.nougen')))
     config = read_json(home / 'nodes.json', {})
-    hosts = read_json(home / 'fleet_hosts.json', {}).get('nodes', {})
+    config = {key: node for key, node in config.items() if isinstance(key, str) and isinstance(node, dict)} if isinstance(config, dict) else {}
+    hosts_doc = read_json(home / 'fleet_hosts.json', {})
+    hosts = hosts_doc.get('nodes', {}) if isinstance(hosts_doc, dict) else {}
+    hosts = hosts if isinstance(hosts, dict) else {}
     hostname = socket.gethostname()
     try:
         local_ip = socket.gethostbyname(hostname)
@@ -54,10 +57,15 @@ def fleet_nodes(home=None):
     hardware = local_hardware()
     def probe(item):
         key, node = item
-        address = hosts.get(node.get('transport_node'), {}).get('ip') or node.get('ip') or node.get('host')
-        is_local = address in ('127.0.0.1', 'localhost', local_ip, hostname) or hostname.lower() in [str(a).lower() for a in node.get('aliases', [])]
+        transport = hosts.get(node.get('transport_node'))
+        transport = transport if isinstance(transport, dict) else {}
+        address = transport.get('ip') or node.get('ip') or node.get('host')
+        aliases = node.get('aliases', [])
+        aliases = aliases if isinstance(aliases, list) else []
+        is_local = address in ('127.0.0.1', 'localhost', local_ip, hostname) or hostname.lower() in [str(a).lower() for a in aliases]
         target = '127.0.0.1' if is_local else address
         ports = node.get('ports', [])
+        ports = ports if isinstance(ports, list) else []
         health = None
         for port in [p for p in ports if p in (4444, 8766)]:
             health = get_json(f'http://{target}:{port}/health')
@@ -104,7 +112,18 @@ def relay_feed():
                         'status': data.get('state') or data.get('status') or 'unknown', 'live_status': data.get('state') or data.get('status') or 'unknown', 'acknowledged_by': data.get('acknowledged_by')})
     return records
 
-if __name__ == '__main__':
+def main():
+    if len(sys.argv) != 2 or sys.argv[1] not in {'fleet_nodes', 'identity', 'relay_feed'}:
+        raise SystemExit('Expected one of: fleet_nodes, identity, relay_feed')
     command = sys.argv[1]
-    value = {'fleet_nodes': fleet_nodes, 'identity': identity, 'relay_feed': relay_feed}[command]()
+    try:
+        value = {'fleet_nodes': fleet_nodes, 'identity': identity, 'relay_feed': relay_feed}[command]()
+    except Exception as exc:
+        print(f'dashboard command failed: {type(exc).__name__}: {exc}', file=sys.stderr)
+        return 1
     print(json.dumps(value))
+    return 0
+
+
+if __name__ == '__main__':
+    main()

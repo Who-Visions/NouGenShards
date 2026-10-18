@@ -159,4 +159,39 @@ def stamp(item: dict, node: str | None = None) -> dict:
         return item
     db = item.get("_db_index", item.get("db_index"))
     item["locator"] = format_locator(sid, db, node)
+    title = item.get("title") or ""
+    d_key = item.get("domain_key") or ""
+    content = item.get("content") or ""
+    ts = item.get("original_timestamp") or item.get("timestamp") or ""
+    c_hash = CanonicalShardRef.compute_hash(d_key, title, content, str(ts))
+    item["content_hash"] = c_hash
+    if db is not None:
+        item["canonical_ref"] = f"{item['locator']}:{c_hash}"
     return item
+
+
+
+import hashlib
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class CanonicalShardRef:
+    """Deterministic content-addressed shard reference and composite key resolver.
+
+    Resolves integer primary key collisions across multi-database clusters.
+    """
+
+    db_index: int
+    shard_id: int
+    content_hash: str
+
+    @classmethod
+    def compute_hash(cls, domain_key: str, title: str, content: str, origin_ts: str) -> str:
+        payload = f"{domain_key.strip()}|{title.strip()}|{content.strip()}|{origin_ts.strip()}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    def verify_mutation_target(self, row_domain: str, row_title: str, row_content: str, row_ts: str) -> bool:
+        actual_hash = self.compute_hash(row_domain, row_title, row_content, row_ts)
+        return actual_hash == self.content_hash
+

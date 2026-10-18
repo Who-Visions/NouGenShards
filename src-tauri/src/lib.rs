@@ -223,6 +223,55 @@ async fn relay_feed() -> Result<String, String> {
   engine_json(&raw)
 }
 
+/// Run a bounded dashboard read through the shared Python implementation.
+fn run_dashboard(command: &str) -> Result<String, String> {
+  if !matches!(command, "fleet_nodes" | "identity") {
+    return Err("Unsupported dashboard command".into());
+  }
+  let raw = if let Some(side) = sidecar_path() {
+    let mut cmd = Command::new(side);
+    cmd.args(["dashboard", command]);
+    prepare(&mut cmd);
+    let child = cmd.spawn().map_err(|e| format!("Failed to launch engine sidecar: {e}"))?;
+    wait_with_timeout(child)?
+  } else {
+    let root = repo_root();
+    let src = root.join("src");
+    let mut tried: Vec<&str> = Vec::new();
+    let mut output = None;
+    for prog in python_candidates() {
+      let mut cmd = Command::new(prog);
+      cmd.args(["-m", "nougen_shards.dashboard_live", command])
+        .current_dir(&root)
+        .env("PYTHONPATH", &src);
+      prepare(&mut cmd);
+      match cmd.spawn() {
+        Ok(child) => {
+          output = Some(wait_with_timeout(child)?);
+          break;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => tried.push(prog),
+        Err(e) => return Err(format!("Failed to launch dashboard backend ({prog}): {e}")),
+      }
+    }
+    output.ok_or_else(|| format!(
+      "Python engine not found. Install Python 3 (tried: {}) or bundle the sidecar.",
+      tried.join(", ")
+    ))?
+  };
+  engine_json(&raw)
+}
+
+#[tauri::command]
+async fn fleet_nodes() -> Result<String, String> {
+  run_dashboard("fleet_nodes")
+}
+
+#[tauri::command]
+async fn identity() -> Result<String, String> {
+  run_dashboard("identity")
+}
+
 #[derive(serde::Deserialize)]
 pub struct AuditInput {
   pub foreground: String,
@@ -491,6 +540,8 @@ pub fn run() {
       memory_stats,
       token_usage,
       relay_feed,
+      fleet_nodes,
+      identity,
       audit_component,
       terminal_intent,
       minimize_window,
@@ -510,6 +561,18 @@ pub fn run() {
 #[cfg(test)]
 mod chat_integration_tests {
   use super::*;
+  #[test]
+  fn desktop_dashboard_commands_return_structured_json() {
+    let identity_raw = tauri::async_runtime::block_on(identity()).expect("identity command failed");
+    let identity: serde_json::Value = serde_json::from_str(&identity_raw).expect("identity was not JSON");
+    assert!(identity["hostname"].as_str().is_some_and(|host| !host.is_empty()));
+
+    let nodes_raw = tauri::async_runtime::block_on(fleet_nodes()).expect("fleet_nodes command failed");
+    let nodes: serde_json::Value = serde_json::from_str(&nodes_raw).expect("fleet_nodes was not JSON");
+    assert!(nodes.as_array().is_some(), "fleet_nodes must return a JSON array");
+    assert!(nodes.as_array().is_some_and(|items| items.iter().any(|node| node["is_local"] == true)));
+  }
+
   #[test]
   #[ignore = "requires newly built sidecar next to test executable and signed-in Ollama cloud"]
   fn bundled_chat_uses_model_and_history() {

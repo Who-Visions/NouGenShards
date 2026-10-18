@@ -1,52 +1,36 @@
 #!/usr/bin/env python3
 """Antigravity end-of-turn check hook: check inbox and continue work.
 
-Hooks into PostInvocation / Stop events in Antigravity.
-Checks ~/.nougen/agy_inbox for incoming unread messages or relay legs.
-Maintains its own end-of-turn cursor (~/.nougen/state/agy_eot_cursor.json)
-so that PreInvocation drains do not clear the work before end-of-turn evaluates it.
-
-If unread inbox items exist:
-- In PostInvocation: returns terminationBehavior="force_continue" and injectSteps with the notification.
-- In Stop: returns decision="continue" and reason prompt directing the agent to inspect inbox and continue work.
-When all inbox work has been processed, updates cursor and exits cleanly allowing normal stop.
+Unified PreInvocation Drain + Stop/PostInvocation Continuation Gate for Antigravity CLI.
+Enforces:
+  1. 24h staleness cutoff (Shard 27321@db9)
+  2. Ack / Turn-Sync / 403 / 429 noise suppression (Shard 20261@db3)
+  3. Task-vs-Status classification (prevents wasted turns on status receipts)
+  4. Atomic cursor advance so messages are injected exactly once.
 """
+from __future__ import annotations
+
 import json
 import os
 import socket
+import sys
 import time
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Add ~/.nougen/bin to sys.path to leverage wake daemon primitives
+sys.path.insert(0, str(Path.home() / ".nougen" / "bin"))
+from nougenmsg_wake_daemon import (
+    load_cursor,
+    resolve_watch_dirs,
+    save_cursor,
+    scan_unseen_actionable,
+)
+
 HOME = Path.home()
 OBSERVATORY = Path(os.environ.get("NOUGEN_OBSERVATORY", str(HOME / "The Observatory")))
-INBOX = Path(os.environ.get("NOUGEN_AGY_INBOX", str(HOME / ".nougen" / "agy_inbox")))
-EOT_CURSOR = Path(os.environ.get("NOUGEN_AGY_EOT_CURSOR", str(HOME / ".nougen" / "state" / "agy_eot_cursor.json")))
-SEEN_LEGS = Path(os.environ.get("NOUGEN_AGY_SEEN_LEGS", str(HOME / ".nougen" / "state" / "agy_eot_seen_legs.json")))
 DEBUG_LOG = HOME / ".nougen" / "state" / "hook_debug.log"
-MAX_SHOWN = 5
-MAX_TEXT = 300
-MAX_SEEN_LEGS = 500  # rolling window to prevent unbounded growth
-
-
-def _load_codex_pipe():
-    """Import the pipe adapter as a package so its relative imports resolve."""
-    import importlib
-    import sys
-
-    source_roots = (
-        HOME / ".nougen" / "src",
-        HOME / ".nougen" / "src" / "nougenshards" / "src",
-        Path(__file__).resolve().parents[2] / "src",
-    )
-    for source_root in source_roots:
-        if (source_root / "nougen_shards" / "codex_pipe.py").is_file():
-            source_root = str(source_root)
-            if source_root not in sys.path:
-                sys.path.insert(0, source_root)
-            break
-    return importlib.import_module("nougen_shards.codex_pipe")
 
 
 def _log(event: dict, out: dict) -> None:
@@ -58,90 +42,6 @@ def _log(event: dict, out: dict) -> None:
         pass
 
 
-def _read_cursor() -> float:
-    try:
-        return float(json.loads(EOT_CURSOR.read_text(encoding="utf-8")).get("mtime", 0))
-    except Exception:
-        return 0.0
-
-
-def _write_cursor(mtime: float) -> None:
-    try:
-        EOT_CURSOR.parent.mkdir(parents=True, exist_ok=True)
-        EOT_CURSOR.write_text(json.dumps({"mtime": mtime}), encoding="utf-8")
-    except Exception:
-        pass
-
-
-
-def _read_seen_legs() -> set:
-    try:
-        return set(json.loads(SEEN_LEGS.read_text(encoding="utf-8")).get("legs", []))
-    except Exception:
-        return set()
-
-
-def _write_seen_legs(seen: set) -> None:
-    try:
-        SEEN_LEGS.parent.mkdir(parents=True, exist_ok=True)
-        # Keep only the most recent MAX_SEEN_LEGS entries (sorted for stability)
-        trimmed = sorted(seen)[-MAX_SEEN_LEGS:]
-        SEEN_LEGS.write_text(json.dumps({"legs": trimmed}), encoding="utf-8")
-    except Exception:
-        pass
-
-def _check_unread_inbox() -> tuple[list[str], float]:
-    if not INBOX.is_dir():
-        return [], 0.0
-    cursor = _read_cursor()
-    cursor_resolved = EOT_CURSOR.resolve() if EOT_CURSOR.exists() else None
-
-    try:
-        entries = sorted(
-            (
-                p for p in INBOX.iterdir()
-                if p.is_file()
-                and p.name.endswith(".json")
-                and (cursor_resolved is None or p.resolve() != cursor_resolved)
-                and p.stat().st_mtime > cursor
-            ),
-            key=lambda p: p.stat().st_mtime,
-        )
-    except Exception:
-        return [], 0.0
-
-    if not entries:
-        return [], 0.0
-
-    latest_mtime = max(p.stat().st_mtime for p in entries)
-    seen_legs = _read_seen_legs()
-    messages = []
-    new_leg_ids = set()
-    for p in entries[-MAX_SHOWN:]:
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            leg = data.get("leg_id")
-            # Skip if we've already surfaced this exact leg_id
-            if leg and leg in seen_legs:
-                continue
-            if leg:
-                new_leg_ids.add(leg)
-            text = str(data.get("text") or "").strip()
-            if len(text) > MAX_TEXT:
-                text = text[:MAX_TEXT].rstrip() + "…"
-            sender = data.get("sender") or "unknown"
-            if leg:
-                messages.append(f"[Leg {leg}] via {sender}: {text}")
-            else:
-                messages.append(f"[{sender}]: {text}")
-        except Exception:
-            messages.append(f"[Unparseable] {p.name}")
-    # Persist newly seen leg_ids
-    if new_leg_ids:
-        _write_seen_legs(seen_legs | new_leg_ids)
-    return messages, latest_mtime
-
-
 def _broadcast_to_blade():
     """Emit turn sync to Blade sessions over MsgNode and named pipes (background/non-blocking)."""
     try:
@@ -151,7 +51,7 @@ def _broadcast_to_blade():
         nougen_cli = str(OBSERVATORY / "NouGen" / "nougenshards" / ".venv" / "bin" / "nougen")
         if os.path.exists(nougen_cli):
             subprocess.Popen([nougen_cli, "msg", "emit", "--all", msg_text], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
+
         # 2. Remote Blade named pipes over SSH
         ps_script = f"""
 $msg = @{{
@@ -176,33 +76,14 @@ foreach ($p in $pipes) {{
 """
         import base64
         enc = base64.b64encode(ps_script.encode('utf-16le')).decode('ascii')
-        target, key_path = _pipe_forward_target()
-        if not target:
-            return  # no forward target configured for this node
-        cmd = ["ssh"] + (["-i", key_path] if key_path else []) + [
+        key_path = os.path.expanduser("~/.ssh/kaedra_swarm_key")
+        subprocess.Popen([
+            "ssh", "-i", key_path,
             "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=2",
-            target, "powershell", "-NoProfile", "-EncodedCommand", enc,
-        ]
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            "super@10.0.0.87", "powershell", "-NoProfile", "-EncodedCommand", enc
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
-
-
-def _pipe_forward_target() -> tuple[str, str]:
-    """SSH target (user@host) and optional key for forwarding a wake to a peer's pipe.
-
-    Env NOUGEN_PIPE_FORWARD_SSH / NOUGEN_PIPE_FORWARD_KEY, else the untracked
-    ~/.nougen/pipe_forward.json {"ssh": "...", "key": "..."}. Unset = no forward.
-    """
-    target = os.environ.get("NOUGEN_PIPE_FORWARD_SSH", "")
-    key = os.environ.get("NOUGEN_PIPE_FORWARD_KEY", "")
-    if not target:
-        try:
-            cfg = json.loads((HOME / ".nougen" / "pipe_forward.json").read_text(encoding="utf-8"))
-            target, key = cfg.get("ssh", ""), key or cfg.get("key", "")
-        except Exception:
-            pass
-    return target, os.path.expanduser(key) if key else ""
 
 
 def _check_active_my_claims() -> list[str]:
@@ -215,8 +96,6 @@ def _check_active_my_claims() -> list[str]:
     my_claims = []
     my_host = socket.gethostname().lower()
     for cdir in claims_dirs:
-        # Windows refuses to traverse untrusted mount points (WinError 448);
-        # an unreadable claims dir is skipped, never allowed to crash Stop.
         try:
             if not cdir.is_dir():
                 continue
@@ -237,53 +116,63 @@ def _check_active_my_claims() -> list[str]:
     return my_claims
 
 
-def main() -> int:
-    # --- AUTOMATED EVERY-TURN CODEX BEACON ---
-    try:
-        import sys, json, types, time
-        for mod_name in ['numpy', 'sqlalchemy']:
-            if mod_name not in sys.modules:
-                m = types.ModuleType(mod_name)
-                if mod_name == 'numpy': m.ndarray = object
-                elif mod_name == 'sqlalchemy':
-                    m.create_engine = lambda *a, **k: None
-                    m.text = lambda *a, **k: None
-                sys.modules[mod_name] = m
-        codex_pipe = _load_codex_pipe()
-        ts = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-        codex_pipe.deliver(f'AUTOMATED EVERY-TURN BEACON [{ts}]: Antigravity turn completed.', origin={'original_sender': 'phoebus/antigravity'}, thread_id='01a0ab83-b0ec-7180-a52f-7933296fd704')
-    except Exception:
-        pass
-    # ------------------------------------------
+def format_injection_banner(messages: list[dict]) -> str:
+    lines = [
+        "=== LIVE NOUGENMSG BATON INBOX (ATOMIC DRAIN) ===",
+        "Rule: Execute if a message below assigns or claims an open task.",
+        "If a message is purely a status receipt with no open work, note it in one line and stop.",
+        "Do NOT send ack-msg or Turn Sync echoes back onto the bus.",
+        "--------------------------------------------------",
+    ]
+    for m in messages:
+        prio = str(m.get("priority", "normal")).upper()
+        lines.append(f"[{prio}] From @{m.get('sender', 'fleet')}: {m.get('body', '')}")
+    lines.append("==================================================")
+    return "\n".join(lines)
 
+
+def main() -> int:
     try:
         payload = json.load(sys.stdin)
     except Exception:
         payload = {}
 
-    # Broadcast turn status to Blade sessions on every turn completion
-    _broadcast_to_blade()
+    event_name = payload.get("hook_event_name", "")
+    is_preinvocation = event_name == "PreInvocation" or "invocationNum" in payload
+    is_stop_event = event_name == "Stop" or "terminationReason" in payload or "fullyIdle" in payload
 
-    unread, latest_mtime = _check_unread_inbox()
+    # Broadcast turn status to Blade sessions on turn stop
+    if is_stop_event:
+        _broadcast_to_blade()
+
+    watch_dirs = resolve_watch_dirs()
+    watermark, seen = load_cursor()
+    messages = scan_unseen_actionable(watch_dirs, watermark, seen)
     active_claims = _check_active_my_claims()
-    is_stop_event = "terminationReason" in payload or "fullyIdle" in payload
 
-    if unread or active_claims:
+    # Advance cursor atomically BEFORE emitting so a crash never loops the same message
+    if messages:
+        new_watermark = max([watermark] + [m["mtime"] for m in messages])
+        for m in messages:
+            seen.add(m["digest"])
+        save_cursor(new_watermark, seen)
+
+    if messages or active_claims:
         sections = []
-        if unread:
-            sections.append("Unread fleet inbox messages/claims detected at end of turn:\n" + "\n".join(f"- {msg}" for msg in unread))
+        if messages:
+            sections.append(format_injection_banner(messages))
         if active_claims:
             sections.append("Active declared lane claims requiring execution:\n" + "\n".join(f"- {claim}" for claim in active_claims))
 
-        prompt_reason = (
-            "🚨 [HARDCADE CLAIM & WORK ENFORCEMENT ACTIVE]\n"
-            "MANDATE: If any message represents a claim, relay leg, or assigned task, you MUST execute the substantive physical engineering work immediately (write code, run tests, land artifacts).\n"
-            "Under NO circumstances may you stop or respond with a bare acknowledgment. FINISH THE WORK:\n"
-            + "\n\n".join(sections)
-        )
-        if unread:
-            _write_cursor(latest_mtime)
-        if is_stop_event:
+        prompt_reason = "\n\n".join(sections)
+
+        if is_preinvocation:
+            out = {
+                "injectSteps": [
+                    {"ephemeralMessage": prompt_reason}
+                ]
+            }
+        elif is_stop_event:
             out = {
                 "decision": "continue",
                 "reason": prompt_reason
@@ -296,52 +185,11 @@ def main() -> int:
                 "terminationBehavior": "force_continue"
             }
     else:
-        if is_stop_event:
-            # Trigger detached, non-blocking Emma end-of-turn dynamic announcement
-            try:
-                speak_script = HOME / "The Observatory" / "NouGen" / "speak.py"
-                transcript_path = payload.get("transcriptPath")
-                announcement = "Turn complete" + (f", {os.environ['NOUGEN_OPERATOR_NAME']}" if os.environ.get("NOUGEN_OPERATOR_NAME") else "") + ". Standing by."
-
-                # Dynamically extract the last meaningful conclusion from the actual assistant response
-                if transcript_path and os.path.isfile(transcript_path):
-                    try:
-                        with open(transcript_path, "r", encoding="utf-8", errors="ignore") as tf:
-                            lines = tf.readlines()
-                            for line in reversed(lines):
-                                try:
-                                    entry = json.loads(line)
-                                    if entry.get("type") == "PLANNER_RESPONSE" and entry.get("content"):
-                                        c = entry["content"].strip()
-                                        # Grab the last paragraph or sentence
-                                        paragraphs = [p.strip() for p in c.split("\n\n") if p.strip() and not p.strip().startswith("```") and not p.strip().startswith("#")]
-                                        if paragraphs:
-                                            last_p = paragraphs[-1].replace("*", "").replace("`", "").strip()
-                                            # Clean markdown and keep it punchy (1-2 sentences)
-                                            sentences = [s.strip() for s in last_p.split(".") if s.strip()]
-                                            if sentences:
-                                                candidate = sentences[-1] if len(sentences[-1]) > 15 else (sentences[-2] + ". " + sentences[-1] if len(sentences) > 1 else sentences[0])
-                                                if len(candidate) > 10:
-                                                    announcement = candidate[:140].strip()
-                                                    if not announcement.endswith("."):
-                                                        announcement += "."
-                                            break
-                                except Exception:
-                                    continue
-                    except Exception:
-                        pass
-
-                if speak_script.is_file():
-                    subprocess.Popen(
-                        [sys.executable, str(speak_script), announcement],
-                        env={**os.environ, "NOUGEN_VOICE": os.environ.get("NOUGEN_VOICE") or "af_river", "NOUGEN_SPEED": "1.05"},
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        start_new_session=True
-                    )
-            except Exception:
-                pass
-
+        if is_preinvocation:
+            out = {
+                "injectSteps": []
+            }
+        elif is_stop_event:
             out = {
                 "decision": "allow"
             }
@@ -352,7 +200,8 @@ def main() -> int:
             }
 
     _log(payload, out)
-    print(json.dumps(out))
+    sys.stdout.write(json.dumps(out) + "\n")
+    sys.stdout.flush()
     return 0
 
 

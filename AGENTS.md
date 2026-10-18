@@ -27,3 +27,13 @@ keymaker genuinely lacks the credential.
 
 Hosted app and repo text never carries a personal name. Refer to people by role ("operator").
 <!-- /nougen-directive:keymaker-first -->
+
+# Tenant nodes (root directives)
+
+These directives tell any agent how to set up or change a tenant's own NouGen node.
+
+- A tenant runs its own NouGenShards on its own machine with its own vault, relays and NouGenMsg. The shared gateway forwards only shard tools for that tenant's token. Never copy a tenant's data, tokens or relay config into shared infrastructure.
+- Never give a tenant the owner token (`NGS_NODE_TOKEN`), owner relay credentials, or owner peer pipes.
+- Create tenants with `nougen tenant mint <tenant_id> --label "<label>"`. Store the printed token only in the tenant's own environment. Never print it into logs, chat or commits.
+- Tenant vaults live under the tenant directory. Recall and search must never read sibling or owner local vaults. A regression test guards this (`tests/test_multitenancy.py`).
+- Changes to this repo go through a branch, a pull request, and a merge only after the tenancy tests pass (`PYTHONPATH=src pytest tests/test_multitenancy.py tests/test_mcp_oauth.py`).

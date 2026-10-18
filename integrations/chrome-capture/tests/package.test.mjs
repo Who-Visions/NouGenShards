@@ -14,9 +14,12 @@ export function referencedFiles() {
   const out = new Set(Object.values(m.icons || {}));
   out.add(m.background.service_worker);
   out.add(m.action.default_popup); out.add(m.options_ui.page);
+  if (m.side_panel?.default_path) out.add(m.side_panel.default_path);
   Object.values(m.action.default_icon || {}).forEach((f) => out.add(f));
   for (const f of [m.background.service_worker]) for (const x of read(f).matchAll(/from "\.\/([^"]+)"/g)) out.add(x[1]);
-  for (const f of [m.action.default_popup, m.options_ui.page])
+  const htmlFiles = [m.action.default_popup, m.options_ui.page];
+  if (m.side_panel?.default_path) htmlFiles.push(m.side_panel.default_path);
+  for (const f of htmlFiles)
     for (const x of read(f).matchAll(/(?:src|href)="([^"#]+\.(?:js|css))"/g)) out.add(x[1]);
   for (const x of read("background.js").matchAll(/iconUrl: "([^"]+)"/g)) out.add(x[1]);
   return [...out];

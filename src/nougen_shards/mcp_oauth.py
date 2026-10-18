@@ -98,6 +98,17 @@ def issued_token_tenant(token: str) -> Optional[str]:
     return tenant_id if isinstance(tenant_id, str) and tenant_id else None
 
 
+def issue_local_access_token(client_id: str = "nougen-chrome-capture") -> str:
+    """Mint an in-memory OAuth access token for a locally paired client."""
+    access_token = secrets.token_urlsafe(32)
+    _tokens[access_token] = {
+        "client_id": client_id,
+        "issued_at": _now(),
+        "tenant_id": "owner",
+    }
+    return access_token
+
+
 def public_base_url(request: Request) -> str:
     """Absolute origin clients should use for callbacks and metadata.
 

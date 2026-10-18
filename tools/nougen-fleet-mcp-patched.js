@@ -1,3 +1,102 @@
+// HF hallway capture (owner-approved routing) with Adaptive Hallway Circuit Breaker.
+// Guarantees sub-second failover when HF Space is PAUSED (206/503) or unreachable.
+const HALLWAY_CIRCUIT_TTL_MS = 60_000;
+const HALLWAY_DEADLINE_MS = 3_500;
+const hallwayCircuitState = new Map(); // routeKey -> { status: 'CLOSED'|'OPEN'|'HALF_OPEN', openedAt: number, reason: string }
+
+function isHallwayRouteHealthy(routeKey) {
+  const entry = hallwayCircuitState.get(routeKey);
+  if (!entry) return true;
+  if (entry.status === "OPEN" && Date.now() - entry.openedAt > HALLWAY_CIRCUIT_TTL_MS) {
+    hallwayCircuitState.set(routeKey, { status: "HALF_OPEN", openedAt: entry.openedAt, reason: entry.reason });
+    return true;
+  }
+  return entry.status !== "OPEN";
+}
+
+function recordHallwayRouteOutcome(routeKey, ok, reason = "") {
+  if (ok) {
+    hallwayCircuitState.delete(routeKey);
+  } else {
+    hallwayCircuitState.set(routeKey, {
+      status: "OPEN",
+      openedAt: Date.now(),
+      reason: reason || "upstream_fault",
+    });
+  }
+}
+
+async function computeHallwayIdempotencyHash(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf))
+    .slice(0, 12)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function hallwayCapture(env, payload, args) {
+  const url = env.HALLWAY_CAPTURE_URL || (env.SHARD_GATEWAY_URL ? `${env.SHARD_GATEWAY_URL.replace(/\/+$/, "")}/v1/shards/capture` : null);
+  const token = env.HALLWAY_BEARER_TOKEN;
+  if (!url || !token) return null;
+  if (!isHallwayRouteHealthy("hf_hallway")) return null;
+
+  const body = {
+    title: payload.title,
+    content: payload.content,
+    event_type: payload.event_type,
+    tags: payload.tags,
+    event_time: args.event_time || null,
+    via: env.CONNECTOR_LANE || "fleet-mcp",
+  };
+  const bodyStr = JSON.stringify(body);
+  const idempotencyKey = await computeHallwayIdempotencyHash(bodyStr);
+
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`,
+        "X-NouGen-Idempotency": idempotencyKey,
+      },
+      body: bodyStr,
+      signal: AbortSignal.timeout(Number(env.HALLWAY_TIMEOUT_MS) || HALLWAY_DEADLINE_MS),
+    });
+
+    // HF Space returns 206 when paused/building or 503 when container fails to wake
+    if (resp.status !== 200 && resp.status !== 201) {
+      recordHallwayRouteOutcome("hf_hallway", false, `http_${resp.status}_space_paused_or_unavailable`);
+      return null;
+    }
+
+    const j = await resp.json();
+    if (j && j.stored === true) {
+      recordHallwayRouteOutcome("hf_hallway", true);
+      const resultMeta = {
+        captured: true,
+        via: j.via || "hf-cloud-buffer",
+        content_sha256: j.content_sha256 || null,
+        duplicate: Boolean(j.duplicate),
+        idempotencyKey,
+      };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `captured successfully via hallway (${resultMeta.via}) [sha256: ${resultMeta.content_sha256 || "n/a"}, duplicate: ${resultMeta.duplicate}]`,
+          },
+        ],
+        structuredContent: resultMeta,
+      };
+    }
+    recordHallwayRouteOutcome("hf_hallway", false, "hallway_stored_false");
+    return null;
+  } catch (err) {
+    recordHallwayRouteOutcome("hf_hallway", false, String(err));
+    return null;
+  }
+}
+
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
@@ -109,6 +208,14 @@ function toolIsWrite(name) {
   return Boolean(t && t.annotations && t.annotations.readOnlyHint === false);
 }
 __name(toolIsWrite, "toolIsWrite");
+function tenantAllowedTools(env, auth) {
+  // If tenant has specific allowed tools configured in TENANTS KV or env, enforce them
+  if (auth && auth.allowedTools && Array.isArray(auth.allowedTools)) {
+    return new Set(auth.allowedTools);
+  }
+  return null;
+}
+__name(tenantAllowedTools, "tenantAllowedTools");
 function googleAllowed(env) {
   return new Set((env.GOOGLE_ALLOWED_EMAILS || "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean));
 }
@@ -146,9 +253,17 @@ async function issueTokens(env, keyId, email, lane) {
   };
 }
 __name(issueTokens, "issueTokens");
-function identityStillEnrolled(env, payload) {
+async function identityStillEnrolled(env, payload) {
   if ((payload.key || "").startsWith("g-")) {
-    return googleAllowed(env).has((payload.eml || "").toLowerCase());
+    const eml = (payload.eml || "").toLowerCase();
+    if (googleAllowed(env).has(eml)) return true;
+    if (env.TENANTS && typeof env.TENANTS.get === "function") {
+      try {
+        const allowed = await env.TENANTS.get(`allow:${eml}`);
+        if (allowed === "1" || allowed === "true") return true;
+      } catch (_) {}
+    }
+    return false;
   }
   return fleetKeys(env).has(payload.key);
 }
@@ -159,8 +274,27 @@ async function authenticate(request, env) {
   const presented = m[1].trim();
   const payload = await verifyBlob(env, presented);
   if (payload && payload.typ === "access") {
-    if (!identityStillEnrolled(env, payload)) return null;
-    return { key: payload.key, lane: payload.ln || null, static: false };
+    if (!await identityStillEnrolled(env, payload)) return null;
+    let allowedTools = null;
+    let tenantNodeUrl = null;
+    if (payload.eml && env.TENANTS && typeof env.TENANTS.get === "function") {
+      try {
+        const tRaw = await env.TENANTS.get(`tenant:${payload.eml.toLowerCase()}`);
+        if (tRaw) {
+          const tData = JSON.parse(tRaw);
+          if (tData.node_url) tenantNodeUrl = tData.node_url;
+          if (tData.tools && Array.isArray(tData.tools)) allowedTools = tData.tools;
+        }
+      } catch (_) {}
+    }
+    return {
+      key: payload.key,
+      lane: payload.ln || null,
+      static: false,
+      email: payload.eml || null,
+      nodeUrl: tenantNodeUrl,
+      allowedTools: allowedTools
+    };
   }
   // Static fleet key as the bearer: the path for server-side MCP clients that
   // cannot run the OAuth code flow. Identity and lane are the key's name; a
@@ -402,7 +536,7 @@ async function handleToken(request, env) {
   if (grant === "refresh_token") {
     const payload = await verifyBlob(env, form.get("refresh_token") || "");
     if (!payload || payload.typ !== "refresh") return json({ error: "invalid_grant" }, 400);
-    if (!identityStillEnrolled(env, payload)) return json({ error: "invalid_grant" }, 400);
+    if (!await identityStillEnrolled(env, payload)) return json({ error: "invalid_grant" }, 400);
     return json(await issueTokens(env, payload.key, payload.eml, payload.ln));
   }
   return json({ error: "unsupported_grant_type" }, 400);
@@ -464,7 +598,14 @@ async function handleGoogleCallback(request, env, url) {
   if (!vr.ok) return json({ error: "google_token_invalid" }, 401);
   const info = await vr.json();
   const email = (info.email || "").toLowerCase();
-  if (info.aud !== env.GOOGLE_CLIENT_ID || info.email_verified !== "true" || !googleAllowed(env).has(email)) {
+  let emailAllowed = googleAllowed(env).has(email);
+  if (!emailAllowed && env.TENANTS && typeof env.TENANTS.get === "function") {
+    try {
+      const allowed = await env.TENANTS.get(`allow:${email}`);
+      if (allowed === "1" || allowed === "true") emailAllowed = true;
+    } catch (_) {}
+  }
+  if (info.aud !== env.GOOGLE_CLIENT_ID || info.email_verified !== "true" || !emailAllowed) {
     return json({
       error: "forbidden",
       error_description: `${email || "that account"} is not on the fleet allowlist`
@@ -1110,8 +1251,8 @@ function peerConfig(env, name) {
   const legacy = upper === "PHOEBUS";
   const origin = env[upper + "_ORIGIN"] || (legacy ? env.PHOEBUS_ORIGIN || "https://phoebus.nougenai.com" : "");
   const token = env[upper + "_TOKEN"] || (legacy ? env.PHOEBUS_TOKEN : void 0);
-  const budget = Number(env[upper + "_TIMEOUT_MS"]) || Number(env.PEER_TIMEOUT_MS) || (legacy ? Number(env.PHOEBUS_TIMEOUT_MS) : 0) || 45000;
-  const grace = Number(env[upper + "_GRACE_MS"]) || Number(env.PEER_GRACE_MS) || (legacy ? Number(env.PHOEBUS_GRACE_MS) : 0) || 25000;
+  const budget = Number(env[upper + "_TIMEOUT_MS"]) || Number(env.PEER_TIMEOUT_MS) || (legacy ? Number(env.PHOEBUS_TIMEOUT_MS) : 0) || 6500;
+  const grace = Number(env[upper + "_GRACE_MS"]) || Number(env.PEER_GRACE_MS) || (legacy ? Number(env.PHOEBUS_GRACE_MS) : 0) || 6500;
   return { name, origin, token, budget, grace };
 }
 __name(peerConfig, "peerConfig");
@@ -1138,6 +1279,9 @@ async function shardCallFanout(env, toolName, args) {
   // double the wait on the half that is already slower, and the retry path
   // exists for transient blade faults, not for a best-effort extra origin.
   const peerPromises = configured.map((p) => {
+    if (!isHallwayRouteHealthy(`recall_${p.name}`)) {
+      return Promise.resolve({ ok: false, e: { message: "circuit_open" } });
+    }
     const peerEnv = { ...env, SHARD_GATEWAY_URL: p.origin, SHARD_HTTP_TIMEOUT_MS: p.budget, SHARD_SSE_TIMEOUT_MS: p.budget, SHARD_CALL_MAX_ATTEMPTS: 1 };
     if (p.token) peerEnv.SHARD_GATEWAY_TOKEN = p.token;
     return fanoutSettle(shardCallDirect(peerEnv, toolName, args));
@@ -1157,12 +1301,16 @@ async function shardCallFanout(env, toolName, args) {
   const arms = [{ name: "blade", res: primary }, ...configured.map((p, i) => ({ name: p.name, res: peerResults[i] }))];
   for (const arm of arms) {
     if (arm.res.ok && !arm.res.v?.isError) {
+      if (arm.name !== "blade") recordHallwayRouteOutcome(`recall_${arm.name}`, true);
       ok.push({ name: arm.name, result: arm.res.v });
       status[arm.name] = "ok";
     } else if (arm.res.ok) {
+      if (arm.name !== "blade") recordHallwayRouteOutcome(`recall_${arm.name}`, false, "gateway_isError");
       status[arm.name] = "gateway returned isError";
     } else {
-      status[arm.name] = String(arm.res.e?.message || arm.res.e).slice(0, 200);
+      const msg = String(arm.res.e?.message || arm.res.e).slice(0, 200);
+      if (arm.name !== "blade" && msg !== "circuit_open") recordHallwayRouteOutcome(`recall_${arm.name}`, false, msg);
+      status[arm.name] = msg;
     }
   }
   // A peer with no origin was never dialed -- that is a config gap, not a
@@ -4364,9 +4512,10 @@ Other lanes see it on their next relay check.`,
     // call the answer complete when a source could not be read.
     const ttlDefaultH = Number(env.CLAIM_TTL_HOURS || 8);
     const now = Date.now();
-    let claimFiles = [], claimFilesTotal = 0, claimSourceOk = true, claimSourceError = null;
+    let claimFiles = [], claimFilesTotal = 0, claimListingEntries = 0, claimSourceOk = true, claimSourceError = null;
     try {
       const entries = await gh(env, `/contents/.handoffs/claims?ref=${env.RELAY_BRANCH}`);
+      claimListingEntries = entries.length;
       claimFilesTotal = entries.filter((e) => e.type === "file" && e.name.endsWith(".json")).length;
       // Subrequest budget: newest files only (stamp-first names order by time).
       claimFiles = orderLegIds(entries.filter((e) => e.type === "file" && e.name.endsWith(".json")).map((e) => e.name.replace(/\.json$/, "")))
@@ -4385,7 +4534,8 @@ Other lanes see it on their next relay check.`,
     // Each leg read is a GitHub subrequest; the Workers per-invocation cap
     // (50 on this plan) was blown at 60 legs + listing (live, 2026-09-24).
     const scanN = Math.min(Number(env.CLAIM_LEG_SCAN || 20), 25);
-    const { ids } = await listLegs(env);
+    const legListing = await listLegs(env);
+    const { ids } = legListing;
     const legRead = await mapPooled(ids.slice(0, scanN), 8, (id) => readLeg(env, id).then(({ rec }) => rec));
     const legUnreadable = legRead.filter((r) => !r.ok).length;
     const legOwners = [];
@@ -4400,9 +4550,13 @@ Other lanes see it on their next relay check.`,
     }
     // The contents API returns at most 1000 entries, alphabetically: at the
     // cap, the newest claim files may be exactly the ones missing.
-    const claimListingCapped = claimFilesTotal >= 1000;
-    const complete = claimSourceOk && !claimListingCapped && unreadable.length === 0 && legUnreadable === 0;
-    const sources = { claim_files: claimSourceOk ? claimFilesTotal : "unreadable", claim_files_read: claimFiles.length, claim_listing_capped: claimListingCapped, legs_scanned: legRead.length, leg_scan_window: scanN, ttl_hours: ttlDefaultH };
+    const claimListingCapped = claimListingEntries >= 1000;
+    const claimFilesUnscanned = Math.max(0, claimFilesTotal - claimFiles.length);
+    const legsUnscanned = Math.max(0, ids.length - legRead.length);
+    const legListingComplete = legListing.listingComplete === true;
+    const complete = claimSourceOk && !claimListingCapped && claimFilesUnscanned === 0
+      && legListingComplete && legsUnscanned === 0 && unreadable.length === 0 && legUnreadable === 0;
+    const sources = { claim_files: claimSourceOk ? claimFilesTotal : "unreadable", claim_files_read: claimFiles.length, claim_files_unscanned: claimFilesUnscanned, claim_listing_capped: claimListingCapped, legs_total: ids.length, legs_scanned: legRead.length, legs_unscanned: legsUnscanned, leg_listing_complete: legListingComplete, leg_scan_window: scanN, ttl_hours: ttlDefaultH };
     const lines = [];
     if (!active.length && !legOwners.length) lines.push("no active ownership found in either source" + (complete ? "" : " -- NOT complete, see sources"));
     if (active.length) {
@@ -4415,6 +4569,8 @@ Other lanes see it on their next relay check.`,
     }
     lines.push("", `_sources: ${sources.claim_files} claim file(s), newest ${sources.legs_scanned} legs scanned; complete=${complete}_`);
     if (claimListingCapped) lines.push("\u26A0\uFE0F claims directory listing hit the 1000-entry API cap; newest claim files may be missing (prune or archive .handoffs/claims/)");
+    if (claimFilesUnscanned || legsUnscanned) lines.push(`\u26A0\uFE0F bounded ownership sample: ${claimFilesUnscanned} claim file(s) and ${legsUnscanned} leg(s) unexamined; absence of ownership is not established`);
+    if (!legListingComplete) lines.push("\u26A0\uFE0F leg directory listing is incomplete");
     if (claimSourceError) lines.push(`\u26A0\uFE0F claim directory unreadable: ${claimSourceError}`);
     if (unreadable.length) lines.push(`\u26A0\uFE0F ${unreadable.length} claim file(s) unreadable: ` + unreadable.map((u) => u.file).join(", "));
     if (legUnreadable) lines.push(`\u26A0\uFE0F ${legUnreadable} leg(s) unreadable in the scan window`);
@@ -4871,6 +5027,11 @@ Other lanes see it on their next relay check.`,
     if (typeof args.event_time === "string" && args.event_time.trim()) {
       payload.event_time_original = args.event_time.trim();
     }
+    // Hallway first (owner architecture: front door -> HF hallway -> node room).
+    // Active only when HALLWAY_CAPTURE_URL is configured; any failure falls back
+    // to the direct node call below, so a down hallway never loses a write.
+    const hallway = await hallwayCapture(env, payload, args);
+    if (hallway) return hallway;
     const result = await shardCall(env, env.SHARD_TOOL_CAPTURE || "capture_experience", payload);
 
     // Deciding whether the write landed used to be `captured === false`, which
@@ -6086,8 +6247,16 @@ async function handleRpc(msg, env, keyId, auth = null) {
     });
   }
   if (method === "ping") return reply({});
-  if (method === "tools/list") return reply({ tools: TOOLS });
+  if (method === "tools/list") {
+    const allowed = tenantAllowedTools(env, auth);
+    const visible = allowed ? TOOLS.filter((t) => allowed.has(t.name)) : TOOLS;
+    return reply({ tools: visible });
+  }
   if (method === "tools/call") {
+    const allowed = tenantAllowedTools(env, auth);
+    if (allowed && !allowed.has(params?.name)) {
+      return fail(-32603, `tenant ${auth.email || auth.key} is not authorized for tool: ${params?.name}`);
+    }
     const handler = HANDLERS[params?.name];
     if (!handler) return fail(-32602, `unknown tool: ${params?.name}`);
     if (laneIsReadOnly(env, auth) && toolIsWrite(params?.name)) {
@@ -6115,6 +6284,12 @@ async function handleMcp(request, env, origin) {
   }
   const keyId = auth.key;
   env = laneEnv(env, auth.lane);
+  if (auth.nodeUrl) {
+    env = Object.assign(Object.create(env), {
+      SHARD_GATEWAY_URL: auth.nodeUrl,
+      HALLWAY_CAPTURE_URL: `${auth.nodeUrl.replace(/\/+$/, "")}/v1/shards/capture`
+    });
+  }
   let body;
   try {
     body = await request.json();

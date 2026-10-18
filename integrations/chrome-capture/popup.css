@@ -1,12 +1,99 @@
 /* Styled only from nougen-core tokens (nougen-tokens.css). */
 body { margin: 0; width: 22.5rem; background: var(--bg); color: var(--text); font: var(--type-body)/var(--line-body) var(--font-main); }
 main { padding: var(--space-4); }
-h1 { font-size: 1.125rem; margin: 0 0 var(--space-3); }
+.popup-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-3); }
+h1 { font-size: 1.125rem; margin: 0; color: var(--accent); }
+.status-badge { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--type-meta); padding: 2px var(--space-2); border-radius: var(--radius-sm); background: var(--panel-2); }
+.status-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.status-badge.online .dot { background: var(--accent-green); box-shadow: 0 0 4px var(--accent-green); }
+.status-badge.offline .dot { background: var(--danger); }
+.tab-preview { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); margin-bottom: var(--space-3); display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.tab-title { font-size: var(--type-meta); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.badge { font-size: 0.75rem; padding: 1px 6px; border-radius: 2px; font-weight: 600; display: none; }
+.badge.youtube { display: inline-block; background: #e02828; color: #fff; }
 button { display: block; width: 100%; min-height: var(--target-touch); margin-top: var(--space-2); padding: 0 var(--space-4);
   background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius-md); font: inherit; text-align: left; cursor: pointer; }
 button:hover { background: var(--panel-hover); }
 #morph { background: var(--accent); color: var(--control-ink); border: 0; }
-label { display: block; margin: var(--space-4) 0 var(--space-2); font-size: var(--type-meta); color: var(--muted); }
+label { display: block; margin: var(--space-3) 0 var(--space-1); font-size: var(--type-meta); color: var(--muted); }
 input { width: 100%; box-sizing: border-box; min-height: var(--target-touch); padding: 0 var(--space-3); background: var(--panel); color: var(--text);
   border: 1px solid var(--line); border-radius: var(--radius-md); font: inherit; }
 .meta { color: var(--muted); font-size: var(--type-meta); margin: var(--space-3) 0 0; display: block; }
+.footer-links { display: flex; justify-content: space-between; align-items: center; margin-top: var(--space-3); }
+.footer-links a { text-decoration: underline; cursor: pointer; }
+
+/* Progress Card & Animations */
+.progress-card {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+  animation: fadeIn 200ms var(--motion-ease);
+}
+
+.progress-bar-wrap {
+  width: 100%;
+  height: 6px;
+  background: var(--panel-2);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  position: relative;
+}
+
+.progress-bar-fill {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent) 0%, #ffdf9e 50%, var(--accent) 100%);
+  background-size: 200% 100%;
+  border-radius: var(--radius-sm);
+  transition: width 350ms cubic-bezier(0.4, 0, 0.2, 1);
+  animation: shimmer 1.6s infinite linear;
+}
+
+.progress-status-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.progress-status-text {
+  font-size: var(--type-meta);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--panel-2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: inline-block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-card,
+  .progress-bar-fill,
+  .spinner {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}

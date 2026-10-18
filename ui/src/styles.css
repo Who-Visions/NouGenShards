@@ -3553,3 +3553,43 @@ summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .chat-model-widget input { flex: 0 0 auto; width: auto; }
 
 .chat-model-widget.comparison ol { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 16px; padding-inline-start: 20px; }
+
+.chat-calculator { display: grid; gap: 12px; }
+.calculator-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 8px 12px; }
+.chat-model-widget .calculator-field { display: grid; gap: 4px; margin: 0; min-width: 0; }
+.calculator-field > span, .calculator-result > span { color: var(--muted); font-size: .875rem; }
+.chat-model-widget .calculator-field input { width: 100%; min-height: 40px; border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; background: var(--bg); color: var(--text); font: inherit; font-variant-numeric: tabular-nums; }
+.chat-model-widget input:focus-visible, .chat-model-widget summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.calculator-result { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+.calculator-result output { font-family: var(--font-mono); font-size: 1rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.chat-chart { min-width: 0; }
+.chat-chart svg { display: block; width: 100%; height: auto; max-height: 340px; overflow: visible; }
+.chart-gridline { stroke: var(--line); stroke-width: .7; opacity: .65; }
+.chart-axis { stroke: var(--muted); stroke-width: 1; }
+.chart-tick { fill: var(--muted); font: 10px var(--font-mono); }
+.chart-axis-label { fill: var(--text); font: 11px var(--font-sans); }
+.chart-series { fill: none; stroke-width: 2.5; }
+.series-1 { stroke-dasharray: 6 3; }.series-2 { stroke-dasharray: 2 3; }.series-3 { stroke-dasharray: 8 2 2 2; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 6px 0 10px; }
+.chart-legend span { display: inline-flex; align-items: center; gap: 7px; font-size: .85rem; }
+.chart-legend i { width: 14px; height: 0; border: 0; border-top: 3px solid var(--series-color); }
+.chart-data summary { min-height: 32px; width: fit-content; cursor: pointer; color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.chart-table-scroll { max-width: 100%; overflow-x: auto; }
+.chart-data table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.chart-data caption { text-align: left; padding: 6px 0; color: var(--muted); }
+.chart-data th, .chart-data td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+.chart-data th:first-child { text-align: left; }
+@media (max-width: 480px) { .chat-model-widget { padding: 10px; } .chat-chart svg { min-width: 430px; } .chat-chart { overflow-x: auto; } }
+
+/* Compact navigation and readable native history control at phone widths. */
+.chat-lane-controls { min-width: 0; flex-wrap: wrap; }
+.chat-lane-controls select { min-width: 0; max-width: min(54vw, 20rem); min-height: 40px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--text); font: inherit; }
+@media (max-width: 1100px) {
+  .tabs { min-width: 0; flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: thin; }
+  .tabs > .tab { flex: 0 0 auto; width: max-content; min-width: max-content; white-space: nowrap; }
+  .tabs .tab-label { white-space: nowrap; }
+}
+@media (max-width: 480px) {
+  .chat-lane-controls { width: 100%; justify-content: space-between; }
+  .chat-lane-controls select { flex: 1 1 0; max-width: none; }
+}

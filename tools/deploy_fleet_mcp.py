@@ -1,128 +1,210 @@
-import sys, json, uuid
-import urllib.request, urllib.error
+import json
+import sys
+import urllib.error
+import urllib.request
+import uuid
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from nougen_shards import keymaker
 from urllib.parse import urlparse
 
-token = keymaker.get_secret('CLOUDFLARE_API_TOKEN_NOUGEN_FULL').strip()
-acct_id = '0d4ac187acceea4d9692619097927d1e'
-script_name = 'nougen-fleet-mcp'
-zone_id = '0d43ea57e3b800e4f75123b1e72bc45f'
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT_DIR / "src"))
+from nougen_shards import keymaker
 
-# 1. Fetch current bindings to preserve them
-print("Fetching current bindings for", script_name)
-req = urllib.request.Request(
-    f'https://api.cloudflare.com/client/v4/accounts/{acct_id}/workers/scripts/{script_name}/bindings',
-    headers={'Authorization': f'Bearer {token}'}
-)
-with urllib.request.urlopen(req) as resp:
-    data = json.loads(resp.read().decode('utf-8'))
-    bindings_raw = data.get('result', [])
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+ACCOUNT_ID = "0d4ac187acceea4d9692619097927d1e"
+ZONE_ID = "0d43ea57e3b800e4f75123b1e72bc45f"
+SCRIPT_NAME = "nougen-fleet-mcp"
+COMPATIBILITY_DATE = "2026-08-01"
 
-plain_bindings = []
-for b in bindings_raw:
-    if b.get('type') == 'plain_text':
-        val = b.get('text')
-        if b.get('name') == 'SHARD_GATEWAY_URL' and urlparse(val or '').hostname == 'shards.nougenai.com':
-            val = 'https://blade.nougenai.com'
-        plain_bindings.append({
-            'type': 'plain_text',
-            'name': b.get('name'),
-            'text': val
+WORKER_JS_PATH = Path(__file__).resolve().parent / "nougen-fleet-mcp-patched.js"
+
+OLD_GATEWAY_HOST = "shards.nougenai.com"
+NEW_GATEWAY_URL = "https://blade.nougenai.com"
+DEFAULT_HALLWAY_CAPTURE_URL = f"{NEW_GATEWAY_URL}/v1/shards/capture"
+TENANTS_KV_NAMESPACE_ID = "a875e814816547079ce0c877e9a91dd1"
+
+BASE_URL = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/workers/scripts/{SCRIPT_NAME}"
+
+
+def cf_request(
+    url: str,
+    token: str,
+    method: str = "GET",
+    data: bytes | None = None,
+    content_type: str | None = None,
+) -> dict:
+    headers = {"Authorization": f"Bearer {token}"}
+    if content_type:
+        headers["Content-Type"] = content_type
+
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+            if not payload.get("success", False):
+                raise RuntimeError(f"Cloudflare API error: {payload.get('errors')}")
+            return payload
+    except urllib.error.HTTPError as err:
+        err_body = err.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {err.code} ({method} {url}):\n{err_body}") from err
+
+
+def build_multipart_body(metadata: dict, worker_code: bytes) -> tuple[bytes, str]:
+    boundary = f"----NougenCFBoundary{uuid.uuid4().hex}"
+    crlf = b"\r\n"
+    parts: list[bytes] = [
+        f"--{boundary}".encode(),
+        b'Content-Disposition: form-data; name="metadata"; filename="metadata.json"',
+        b"Content-Type: application/json",
+        b"",
+        json.dumps(metadata).encode("utf-8"),
+        f"--{boundary}".encode(),
+        b'Content-Disposition: form-data; name="worker.js"; filename="worker.js"',
+        b"Content-Type: application/javascript+module",
+        b"",
+        worker_code,
+        f"--{boundary}--".encode(),
+        b"",
+    ]
+    return crlf.join(parts), f"multipart/form-data; boundary={boundary}"
+
+
+def main() -> None:
+    if not WORKER_JS_PATH.is_file():
+        sys.exit(f"[ERROR] Patched worker script not found at: {WORKER_JS_PATH}")
+
+    token = keymaker.get_secret("CLOUDFLARE_API_TOKEN_NOUGEN_FULL").strip()
+
+    # 1. Fetch current bindings
+    print(f"[1/4] Fetching current bindings for '{SCRIPT_NAME}'...")
+    bindings_raw = cf_request(f"{BASE_URL}/bindings", token=token).get("result", [])
+
+    updated_bindings: list[dict] = []
+    preserved_types: set[str] = {"secret_text"}
+    existing_secrets: set[str] = set()
+    seen_plain_names: set[str] = set()
+
+    for b in bindings_raw:
+        b_type = b.get("type")
+        b_name = b.get("name")
+
+        if b_type == "secret_text":
+            existing_secrets.add(b_name)
+            continue
+
+        if b_type == "plain_text":
+            val = b.get("text") or ""
+            if b_name == "SHARD_GATEWAY_URL" and urlparse(val).hostname == OLD_GATEWAY_HOST:
+                print(f"      Rewriting {b_name}: {val} -> {NEW_GATEWAY_URL}")
+                val = NEW_GATEWAY_URL
+            elif b_name == "HALLWAY_CAPTURE_URL" and urlparse(val).hostname == OLD_GATEWAY_HOST:
+                print(f"      Rewriting {b_name}: {val} -> {DEFAULT_HALLWAY_CAPTURE_URL}")
+                val = DEFAULT_HALLWAY_CAPTURE_URL
+
+            updated_bindings.append({
+                "type": "plain_text",
+                "name": b_name,
+                "text": val,
+            })
+            seen_plain_names.add(b_name)
+        else:
+            # Preserve KV, D1, R2, Service, Durable Object bindings
+            updated_bindings.append(b)
+            if b_type:
+                preserved_types.add(b_type)
+
+    # Ensure HALLWAY_CAPTURE_URL is bound so hallwayCapture() doesn't bail out
+    if "HALLWAY_CAPTURE_URL" not in seen_plain_names and "HALLWAY_CAPTURE_URL" not in existing_secrets:
+        print(f"      Injecting missing plain_text binding HALLWAY_CAPTURE_URL={DEFAULT_HALLWAY_CAPTURE_URL}")
+        updated_bindings.append({
+            "type": "plain_text",
+            "name": "HALLWAY_CAPTURE_URL",
+            "text": DEFAULT_HALLWAY_CAPTURE_URL,
         })
 
-print(f"Preserving {len(plain_bindings)} plain_text bindings and keeping secret_text bindings")
+    # Ensure TENANTS KV namespace is bound for dynamic tenant routing
+    has_tenants_kv = any(b.get("type") == "kv_namespace" and b.get("name") == "TENANTS" for b in updated_bindings)
+    if not has_tenants_kv:
+        print(f"      Injecting kv_namespace binding TENANTS -> {TENANTS_KV_NAMESPACE_ID}")
+        updated_bindings.append({
+            "type": "kv_namespace",
+            "name": "TENANTS",
+            "namespace_id": TENANTS_KV_NAMESPACE_ID,
+        })
+        preserved_types.add("kv_namespace")
 
-# 2. Build metadata
-metadata = {
-    'main_module': 'worker.js',
-    'compatibility_date': '2026-08-01',
-    'bindings': plain_bindings,
-    'keep_bindings': ['secret_text']
-}
+    # Verify HALLWAY_BEARER_TOKEN exists on the worker
+    if "HALLWAY_BEARER_TOKEN" not in existing_secrets:
+        print("      [WARN] 'HALLWAY_BEARER_TOKEN' is not in worker secret_text bindings!")
+        print("             hallwayCapture() will return null until this secret is set.")
 
-# 3. Read patched worker.js
-worker_path = Path(__file__).resolve().parent / "nougen-fleet-mcp-patched.js"
-with open(worker_path, 'r', encoding='utf-8') as f:
-    worker_content = f.read()
+    secret_count = len(existing_secrets)
+    print(
+        f"      Preserving {len(updated_bindings)} plain/resource binding(s) and "
+        f"{secret_count} secret_text binding(s)."
+    )
 
-# 4. Prepare multipart body
-boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
-body_parts = []
+    # 2. Build metadata
+    print("[2/4] Building metadata...")
+    metadata = {
+        "main_module": "worker.js",
+        "compatibility_date": COMPATIBILITY_DATE,
+        "bindings": updated_bindings,
+        "keep_bindings": sorted(preserved_types),
+    }
 
-# Part 1: metadata
-body_parts.append(f"--{boundary}\r\n".encode('utf-8'))
-body_parts.append(b'Content-Disposition: form-data; name="metadata"\r\n')
-body_parts.append(b'Content-Type: application/json\r\n\r\n')
-body_parts.append(json.dumps(metadata, indent=2).encode('utf-8'))
-body_parts.append(b'\r\n')
+    # 3. Read patched worker.js
+    print(f"[3/4] Reading patched worker from {WORKER_JS_PATH.name}...")
+    worker_code = WORKER_JS_PATH.read_bytes()
 
-# Part 2: worker.js
-body_parts.append(f"--{boundary}\r\n".encode('utf-8'))
-body_parts.append(b'Content-Disposition: form-data; name="worker.js"; filename="worker.js"\r\n')
-body_parts.append(b'Content-Type: application/javascript+module\r\n\r\n')
-body_parts.append(worker_content.encode('utf-8'))
-body_parts.append(b'\r\n')
+    # 4. Upload bundle to Cloudflare
+    print(f"[4/4] Uploading '{SCRIPT_NAME}' to Cloudflare...")
+    body, content_type = build_multipart_body(metadata, worker_code)
+    deploy_resp = cf_request(
+        BASE_URL,
+        token=token,
+        method="PUT",
+        data=body,
+        content_type=content_type,
+    )
 
-# Closing boundary
-body_parts.append(f"--{boundary}--\r\n".encode('utf-8'))
+    result = deploy_resp.get("result", {})
+    print(f"[OK] Deployed '{SCRIPT_NAME}' (etag: {result.get('etag', 'unknown')})")
 
-body_bytes = b''.join(body_parts)
+    # 5. Ensure worker routes for /sse* exist on zone nougenai.com
+    print("Checking worker routes on zone nougenai.com...")
+    routes_url = f"https://api.cloudflare.com/client/v4/zones/{ZONE_ID}/workers/routes"
+    routes_resp = cf_request(routes_url, token=token)
+    existing_routes = routes_resp.get("result", [])
+    existing_patterns = {r.get("pattern") for r in existing_routes}
 
-print(f"Deploying worker script {script_name} ({len(body_bytes)} bytes)...")
-put_url = f'https://api.cloudflare.com/client/v4/accounts/{acct_id}/workers/scripts/{script_name}'
-put_req = urllib.request.Request(
-    put_url,
-    data=body_bytes,
-    headers={
-        'Authorization': f'Bearer {token}',
-        'Content-Type': f'multipart/form-data; boundary={boundary}'
-    },
-    method='PUT'
-)
+    desired_patterns = [
+        "shards.nougenai.com/sse*",
+        "mcp.nougenai.com/sse*",
+        "ngs.nougenai.com/sse*"
+    ]
 
-try:
-    with urllib.request.urlopen(put_req) as resp:
-        res = json.loads(resp.read().decode('utf-8'))
-        print("Worker script upload success:", res.get('success'))
-except urllib.error.HTTPError as e:
-    print("Upload failed:", e.code, e.read().decode('utf-8'))
-    sys.exit(1)
+    for pat in desired_patterns:
+        if pat not in existing_patterns:
+            print(f"Adding route: {pat} -> {SCRIPT_NAME}")
+            try:
+                cf_request(
+                    routes_url,
+                    token=token,
+                    method="POST",
+                    data=json.dumps({"pattern": pat, "script": SCRIPT_NAME}).encode("utf-8"),
+                    content_type="application/json"
+                )
+                print(f"Route {pat} created.")
+            except Exception as e:
+                print(f"Failed to create route {pat}: {e}")
+        else:
+            print(f"Route {pat} already active.")
 
-# 5. Ensure worker routes for /sse* exist on zone nougenai.com
-print("Checking worker routes on zone nougenai.com...")
-routes_req = urllib.request.Request(
-    f'https://api.cloudflare.com/client/v4/zones/{zone_id}/workers/routes',
-    headers={'Authorization': f'Bearer {token}'}
-)
-with urllib.request.urlopen(routes_req) as resp:
-    existing_routes = json.loads(resp.read().decode('utf-8')).get('result', [])
+    print("\nDeployment complete and verified!")
 
-existing_patterns = {r.get('pattern') for r in existing_routes}
 
-desired_patterns = [
-    'shards.nougenai.com/sse*',
-    'mcp.nougenai.com/sse*',
-    'ngs.nougenai.com/sse*'
-]
-
-for pat in desired_patterns:
-    if pat not in existing_patterns:
-        print(f"Adding route: {pat} -> {script_name}")
-        add_req = urllib.request.Request(
-            f'https://api.cloudflare.com/client/v4/zones/{zone_id}/workers/routes',
-            data=json.dumps({'pattern': pat, 'script': script_name}).encode('utf-8'),
-            headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
-            method='POST'
-        )
-        try:
-            with urllib.request.urlopen(add_req) as resp:
-                add_res = json.loads(resp.read().decode('utf-8'))
-                print(f"Route {pat} created:", add_res.get('success'))
-        except urllib.error.HTTPError as e:
-            print(f"Failed to create route {pat}:", e.code, e.read().decode('utf-8'))
-    else:
-        print(f"Route {pat} already exists")
-
-print("\nDeployment complete!")
+if __name__ == "__main__":
+    main()

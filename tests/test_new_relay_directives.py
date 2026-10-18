@@ -1,6 +1,13 @@
+import pytest
 import os
 from nougen_shards.status_semantics import classify_node_offline_reason, StatusLevel
 from nougen_shards.keymaker import enforce_deepseek_auth_boundary
+
+
+@pytest.fixture(autouse=True)
+def _owner_fleet_env(monkeypatch):
+    """The whoart rule is owner-fleet behaviour; declare the fleet here, not in code."""
+    monkeypatch.setenv("NOUGEN_PEER_NODES", "whoart,phoebus,blade")
 
 
 def test_classify_node_offline_reason_whoart():

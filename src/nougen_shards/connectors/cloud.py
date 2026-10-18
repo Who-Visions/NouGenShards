@@ -292,9 +292,34 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3,
                     # (not in _NET_ERRORS) and abort the whole federation sweep.
                     if not isinstance(r, dict):
                         continue
+                    if r.get("event_type") == "FEDERATION_STATUS":
+                        coverage = r.get("content", {})
+                        if isinstance(coverage, str):
+                            coverage = json.loads(coverage)
+                        if not isinstance(coverage, dict):
+                            raise ValueError("invalid upstream federation coverage")
+                        if sweep_report is not None:
+                            sweep_report.setdefault("upstream_coverage", []).append(
+                                {"store": f"cloud:{name}", "coverage": coverage})
+                            if (coverage.get("complete") is False or coverage.get("errored")
+                                    or coverage.get("lanes_timed_out")
+                                    or coverage.get("tier2_deferred") or coverage.get("lanes_skipped")):
+                                sweep_report.setdefault("errored", []).append({
+                                    "store": f"cloud:{name}",
+                                    "error": "upstream recall coverage incomplete",
+                                    "failure_class": "upstream_incomplete"})
+                        continue
+                    source_db = r.get("_db_index", r.get("db_index"))
+                    locator = {"node": name, "peer_id": conf['id'],
+                               "db_index": source_db, "shard_id": r.get("id")}
+                    # JSON tuple encoding keeps separators in node/DB/IDs unambiguous.
+                    identity = json.dumps([conf['id'], source_db, r.get('id')], separators=(',', ':'))
                     # Normalize to local shard shape
                     results.append({
-                        "id": f"cloud_{conf['id']}_{r.get('id')}",
+                        "id": f"cloud_{identity}",
+                        "source_locator": locator,
+                        "source_locators": [locator],
+                        "machine_id": r.get("machine_id") or name,
                         "event_type": f"CLOUD_{r.get('event_type', 'SHARD')}",
                         "title": r.get('title', 'Untitled Cloud Shard'),
                         "content": r.get('content', ''),
@@ -303,7 +328,8 @@ def query_cloud_shards(query: str, cloud_configs: list, limit: int = 3,
                         "access_count": r.get('access_count', 0),
                         "file_hash": r.get('file_hash', ''),
                         "final_score": r.get('final_score', 0.45),
-                        "_db_index": f"cloud_{name}"
+                        "_db_index": f"cloud_{name}",
+                        "source_db_index": source_db
                     })
         except _NET_ERRORS as exc:
             # Resilient (one unreachable node must not kill federation) but no
