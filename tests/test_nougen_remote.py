@@ -61,3 +61,21 @@ def test_inject_to_antigravity_fallback(monkeypatch, tmp_path):
     assert doc["text"] == "unit test ping from iPhone 14"
     assert doc["body"] == "unit test ping from iPhone 14"
     assert doc["target"] == "antigravity"
+
+
+def test_crd_host_status_and_gestures():
+    mod = _load_nougen_remote()
+    crd = mod.get_crd_host_status()
+    assert crd["ok"] is True
+    assert crd["service_name"] == "chromoting"
+    assert "touch_mode" in crd["gestures"]
+    assert "trackpad_mode" in crd["gestures"]
+
+
+def test_dispatch_screen_input_simulated(monkeypatch):
+    mod = _load_nougen_remote()
+    monkeypatch.setenv("NOUGEN_REMOTE_DISABLE_CONSOLE_PULSE", "1")
+    res_touch = mod.dispatch_screen_input({"mode": "touch", "action": "left_click", "norm_x": 0.5, "norm_y": 0.5})
+    assert res_touch["ok"] is True
+    res_pad = mod.dispatch_screen_input({"mode": "trackpad", "action": "right_click", "dx": 15, "dy": -10})
+    assert res_pad["ok"] is True

@@ -222,6 +222,154 @@ DESIGN_CHOICES_100 = [
     ])
 ]
 
+
+def get_crd_host_status() -> dict:
+    """Inspects Google Chrome Remote Desktop (chromoting) service & host config per GCP Windows CRD architecture."""
+    host_exe = Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")) / "Google" / "Chrome Remote Desktop" / "CurrentVersion" / "remoting_start_host.exe"
+    unpriv_cfg = Path(os.environ.get("ProgramData", "C:\\ProgramData")) / "Google" / "Chrome Remote Desktop" / "host_unprivileged.json"
+    host_id_fp = None
+    xmpp_domain = None
+    if unpriv_cfg.exists():
+        try:
+            j = json.loads(unpriv_cfg.read_text(encoding="utf-8"))
+            raw_id = str(j.get("host_id") or "")
+            host_id_fp = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:12] if raw_id else None
+            xmpp = str(j.get("xmpp_login") or "")
+            xmpp_domain = xmpp.split("@")[-1] if "@" in xmpp else None
+        except Exception:
+            pass
+
+    svc_running = False
+    try:
+        out = subprocess.check_output(
+            ["powershell.exe", "-NoProfile", "-Command", "(Get-Service -Name chromoting -ErrorAction SilentlyContinue).Status"],
+            text=True,
+            timeout=3,
+            creationflags=0x08000000 if platform.system() == "Windows" else 0,
+        ).strip()
+        svc_running = out.lower() in ("running", "4")
+    except Exception:
+        svc_running = False
+
+    return {
+        "ok": True,
+        "service_name": "chromoting",
+        "service_running": svc_running,
+        "host_binary_present": host_exe.exists(),
+        "host_enrolled": bool(host_id_fp),
+        "host_id_fingerprint": host_id_fp,
+        "service_domain": xmpp_domain,
+        "web_access_url": "https://remotedesktop.google.com/access",
+        "web_support_url": "https://remotedesktop.google.com/support",
+        "gestures": {
+            "touch_mode": ["1-finger tap: left-click at (x,y)", "2-finger tap: right-click", "3-finger tap: middle-click", "2-finger drag: scroll", "pinch: zoom"],
+            "trackpad_mode": ["1-finger swipe: move cursor (dx,dy)", "1-finger tap: left-click", "2-finger tap: right-click", "3-finger tap: middle-click", "touch-hold-drag: select/drag"]
+        }
+    }
+
+
+def capture_screen_frame(max_width: int = 960, quality: int = 60) -> dict:
+    """Captures live Windows desktop frame as base64 JPEG for mobile CRD viewport."""
+    try:
+        import io
+        from PIL import ImageGrab
+        img = ImageGrab.grab()
+        sw, sh = img.size
+        if sw > max_width:
+            ratio = max_width / float(sw)
+            img = img.resize((max_width, int(sh * ratio)))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        user32 = ctypes.windll.user32
+
+        class _POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        pt = _POINT()
+        user32.GetCursorPos(ctypes.byref(pt))
+        return {
+            "ok": True,
+            "screen_width": sw,
+            "screen_height": sh,
+            "cursor_x": pt.x,
+            "cursor_y": pt.y,
+            "jpeg_b64": b64,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def dispatch_screen_input(payload: dict) -> dict:
+    """Executes Chrome Remote Desktop Touch/Trackpad gestures & special keys via Win32 user32."""
+    if os.environ.get("NOUGEN_REMOTE_DISABLE_CONSOLE_PULSE") == "1":
+        return {"ok": True, "simulated": True, "action": payload.get("action", "click")}
+    try:
+        user32 = ctypes.windll.user32
+        sw = user32.GetSystemMetrics(0) or 1920
+        sh = user32.GetSystemMetrics(1) or 1080
+        mode = payload.get("mode", "touch")
+        action = payload.get("action", "left_click")
+
+        class _POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        pt = _POINT()
+        user32.GetCursorPos(ctypes.byref(pt))
+        tx, ty = pt.x, pt.y
+
+        if mode == "touch" and "norm_x" in payload and "norm_y" in payload:
+            tx = max(0, min(sw - 1, int(float(payload["norm_x"]) * sw)))
+            ty = max(0, min(sh - 1, int(float(payload["norm_y"]) * sh)))
+            user32.SetCursorPos(tx, ty)
+        elif mode == "trackpad":
+            dx = int(float(payload.get("dx", 0)))
+            dy = int(float(payload.get("dy", 0)))
+            tx = max(0, min(sw - 1, pt.x + dx))
+            ty = max(0, min(sh - 1, pt.y + dy))
+            user32.SetCursorPos(tx, ty)
+
+        # Win32 mouse_event flags
+        MOUSEEVENTF_LEFTDOWN = 0x0002
+        MOUSEEVENTF_LEFTUP = 0x0004
+        MOUSEEVENTF_RIGHTDOWN = 0x0008
+        MOUSEEVENTF_RIGHTUP = 0x0010
+        MOUSEEVENTF_MIDDLEDOWN = 0x0020
+        MOUSEEVENTF_MIDDLEUP = 0x0040
+        MOUSEEVENTF_WHEEL = 0x0800
+
+        if action == "left_click":
+            user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+            user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        elif action == "double_click":
+            for _ in range(2):
+                user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        elif action == "right_click":
+            user32.mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
+            user32.mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+        elif action == "middle_click":
+            user32.mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, 0, 0)
+            user32.mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, 0)
+        elif action == "scroll":
+            delta = int(payload.get("wheel_delta", -120))
+            user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta, 0)
+        elif action == "key":
+            vk_map = {
+                "esc": 0x1B, "tab": 0x09, "enter": 0x0D, "win": 0x5B,
+                "backspace": 0x08, "space": 0x20, "up": 0x26, "down": 0x28,
+                "left": 0x25, "right": 0x27,
+            }
+            key_name = str(payload.get("key", "")).lower()
+            vk = vk_map.get(key_name, 0)
+            if vk:
+                user32.keybd_event(vk, 0, 0, 0)
+                user32.keybd_event(vk, 0, 2, 0)
+
+        return {"ok": True, "action": action, "mode": mode, "cursor_x": tx, "cursor_y": ty}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 def get_inbox_status(limit: int = 5) -> dict:
     """Inspect ~/.nougen/agy_inbox and cursor state to confirm Antigravity consumption."""
     inbox_dir = Path.home() / ".nougen" / "agy_inbox"
@@ -733,6 +881,79 @@ HTML_PWA = """<!DOCTYPE html>
 
     function haptic() { if (navigator.vibrate) navigator.vibrate(12); }
 
+
+    let crdInputMode = "touch";
+    let crdTimer = null;
+    function setCrdInputMode(m) {
+      crdInputMode = m;
+      document.getElementById("crd-touch-btn").classList.toggle("active", m === "touch");
+      document.getElementById("crd-pad-btn").classList.toggle("active", m === "trackpad");
+    }
+    async function refreshScreenFrame() {
+      if (currentMode !== "desktop") return;
+      try {
+        const r = await fetch("/api/v1/screen/frame");
+        const d = await r.json();
+        if (d.ok && d.jpeg_b64) {
+          document.getElementById("crd-screen-img").src = "data:image/jpeg;base64," + d.jpeg_b64;
+        }
+      } catch (e) {}
+    }
+    async function handleCrdClick(e) {
+      haptic();
+      const img = document.getElementById("crd-screen-img");
+      const rect = img.getBoundingClientRect();
+      const nx = (e.clientX - rect.left) / Math.max(1, rect.width);
+      const ny = (e.clientY - rect.top) / Math.max(1, rect.height);
+      await fetch("/api/v1/screen/input", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({token, mode: crdInputMode, action: "left_click", norm_x: nx, norm_y: ny})
+      });
+      setTimeout(refreshScreenFrame, 180);
+    }
+    async function handleCrdRightClick(e) {
+      e.preventDefault();
+      haptic();
+      const img = document.getElementById("crd-screen-img");
+      const rect = img.getBoundingClientRect();
+      const nx = (e.clientX - rect.left) / Math.max(1, rect.width);
+      const ny = (e.clientY - rect.top) / Math.max(1, rect.height);
+      await fetch("/api/v1/screen/input", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({token, mode: crdInputMode, action: "right_click", norm_x: nx, norm_y: ny})
+      });
+      setTimeout(refreshScreenFrame, 180);
+    }
+    async function sendCrdKey(k) {
+      haptic();
+      await fetch("/api/v1/screen/input", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({token, mode: crdInputMode, action: "key", key: k})
+      });
+      setTimeout(refreshScreenFrame, 180);
+    }
+    async function sendCrdAction(act) {
+      haptic();
+      await fetch("/api/v1/screen/input", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({token, mode: crdInputMode, action: act})
+      });
+      setTimeout(refreshScreenFrame, 180);
+    }
+    async function sendCrdScroll(delta) {
+      haptic();
+      await fetch("/api/v1/screen/input", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({token, mode: crdInputMode, action: "scroll", wheel_delta: delta})
+      });
+      setTimeout(refreshScreenFrame, 180);
+    }
+
     function setMode(mode) {
       currentMode = mode;
       haptic();
@@ -985,6 +1206,14 @@ class RemoteHandler(BaseHTTPRequestHandler):
             self._send_json(get_inbox_status())
             return
 
+        if path == "/api/v1/crd":
+            self._send_json(get_crd_host_status())
+            return
+
+        if path == "/api/v1/screen/frame":
+            self._send_json(capture_screen_frame())
+            return
+
         self._send_json({"error": "Not found"}, 404)
 
     def do_POST(self):
@@ -1039,6 +1268,10 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 return
             res = execute_terminal_command(command)
             self._send_json(res)
+            return
+
+        if path == "/api/v1/screen/input":
+            self._send_json(dispatch_screen_input(payload))
             return
 
         if path == "/api/v1/launch":
