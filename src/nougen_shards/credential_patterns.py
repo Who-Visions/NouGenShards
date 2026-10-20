@@ -77,7 +77,7 @@ def _pem(kind: str) -> str:
     return "-----BEGIN " + (kind + " " if kind else "") + "PRIVATE" + " KEY-----"
 
 # Bump whenever SHAPES, CONTROLS, or brain_scan.redaction's patterns change.
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 __all__ = ["VERSION", "SHAPES", "EMBEDDED", "MARKERS", "LOW_CONFIDENCE",
            "self_test", "StaleBackingSetError",
@@ -121,6 +121,10 @@ SHAPES: dict[str, str] = {
     "slack bot xoxb-": "xox" + "b-1234567890-1234567890-" + "H" * 24,
     "slack user xoxp-": "xox" + "p-1234567890-1234567890-1234567890-" + "M" * 32,
     "google AIza": "AI" + "za" + "K" * 35,
+    "google oauth ya29": "ya" + "29" + "." + "a0" + "K" * 40,
+    "google stitch AQ": "AQ" + "." + "Ab8" + "K" * 36,
+    "google refresh 1//0": "1" + "//" + "0g" + "K" * 40,
+    "ref tools key": _p("ref", "a" * 20)[:-1],
     "aws access key AKIA": "AK" + "IA" + "I" * 16,
     "aws session ASIA": "AS" + "IA" + "I" * 16,
     "aws secret bare (named)": "aws_secret_access_key = " + "J" * 40,

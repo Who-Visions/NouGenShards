@@ -22,6 +22,10 @@ export const SECRET_PATTERNS: [RegExp, string][] = [
   // AWS: AKIA (long-term) and ASIA (STS temporary) keys.
   [/(?:AKIA|ASIA)[0-9A-Z]{16}/g, "<REDACTED_AWS_ACCESS_KEY>"],
   [/AIza[0-9A-Za-z_-]{30,}/g, "<REDACTED_GOOGLE_KEY>"],
+  [/ya29\.[0-9A-Za-z_-]{20,}/g, "<REDACTED_GOOGLE_OAUTH_TOKEN>"],
+  [/AQ\.[0-9A-Za-z_-]{24,}/g, "<REDACTED_GOOGLE_AQ_TOKEN>"],
+  [/1\/\/0[0-9A-Za-z_-]{30,}/g, "<REDACTED_GOOGLE_REFRESH_TOKEN>"],
+  [/\bref-[0-9a-f]{20,}\b/g, "<REDACTED_REF_KEY>"],
   [/xox[baprs]-[A-Za-z0-9-]{10,}/g, "<REDACTED_SLACK_TOKEN>"],
   // Match the token itself; do not consume a leading delimiter (that corrupted
   // surrounding JSON and missed adjacent tokens).

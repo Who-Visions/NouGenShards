@@ -15,6 +15,13 @@ SECRET_PATTERNS = [
     # AWS: AKIA (long-term) and ASIA (STS temporary) access keys.
     (re.compile(r'(?:AKIA|ASIA)[0-9A-Z]{16}'), "<REDACTED_AWS_ACCESS_KEY>"),
     (re.compile(r'AIza[0-9A-Za-z_-]{30,}'), "<REDACTED_GOOGLE_KEY>"),
+    # Google OAuth2 access tokens (ya29.a0... / ya29.c...) and Stitch / Vertex AQ.Ab8... tokens.
+    (re.compile(r'ya29\.[0-9A-Za-z_-]{20,}'), "<REDACTED_GOOGLE_OAUTH_TOKEN>"),
+    (re.compile(r'AQ\.[0-9A-Za-z_-]{24,}'), "<REDACTED_GOOGLE_AQ_TOKEN>"),
+    # Google OAuth2 refresh tokens (1//0...).
+    (re.compile(r'1//0[0-9A-Za-z_-]{30,}'), "<REDACTED_GOOGLE_REFRESH_TOKEN>"),
+    # Ref Tools MCP keys (ref-<20 hex chars>).
+    (re.compile(r'\bref-[0-9a-f]{20,}\b'), "<REDACTED_REF_KEY>"),
     # Cloudflare API tokens (cfat_...). Previously only caught when a label
     # like "API Token" happened to precede them; a bare token passed through.
     (re.compile(r'cfat_[A-Za-z0-9]{20,}'), "<REDACTED_CLOUDFLARE_TOKEN>"),

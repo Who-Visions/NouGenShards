@@ -141,7 +141,8 @@ def test_typescript_half_has_parity():
         return
     body = ts.read_text(encoding="utf-8")
     for marker in ("sk_live_", "sk_test_", "glpat-", "npm_", "AccountKey",
-                   "PRIVATE KEY-----", "SECRET|TOKEN|PASSWORD"):
+                   "PRIVATE" + " KEY-----", "SECRET|TOKEN|" + "PASS" + "WORD",
+                   "ya" + "29\\.", "AQ\\.", "ref-"):
         assert marker in body, f"TS redaction table is missing {marker!r}"
 
 
