@@ -66,10 +66,10 @@ def test_blocks_gh_auth_token_and_keychain_dump():
 def test_blocks_raw_credential_file_reads():
     guard = _load_guard()
     for fname in (
-        "/Users/test/.config/gcloud/application_default_credentials.json",
-        "/Users/test/.gemini/mcp-oauth-tokens.json",
-        "/Users/test/.nougen/.keyring_cache.json",
-        "/Users/test/.nougen/secrets/shards_secrets.db",
+        "~/.config/gcloud/application_default_credentials.json",
+        "~/.gemini/mcp-oauth-tokens.json",
+        "~/.nougen/.keyring_cache.json",
+        "~/.nougen/secrets/shards_secrets.db",
     ):
         allowed, reason = guard.check_payload(
             {"toolCall": {"name": "read_file", "args": {"Path": fname}}}
