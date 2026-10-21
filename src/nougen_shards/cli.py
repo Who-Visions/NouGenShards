@@ -2601,6 +2601,17 @@ def get_parser():
     p_destiny_evolve.add_argument("--json", action="store_true")
 
     # War Games: deterministic adversarial scenarios (docs/wargames-doctrine.md §83).
+    p_st = subparsers.add_parser("stadium", help="Stadium model: shard tickets, rosters, verified call-ups")
+    st_sub = p_st.add_subparsers(dest="stadium_action")
+    st_sub.add_parser("health", help="Which vaults (stadiums) can answer right now")
+    p_st_t = st_sub.add_parser("ticket", help="Every seat holding a ticket (file_hash), across vaults")
+    p_st_t.add_argument("ticket")
+    p_st_c = st_sub.add_parser("callup", help="Bring one shard on stage: roster, budget, hash-verified")
+    p_st_c.add_argument("ticket")
+    p_st_c.add_argument("--roster", nargs="*", default=None, help="Tickets allowed this play (default: just this one)")
+    p_st_c.add_argument("--budget", type=int, default=5, help="Call-ups allowed this play")
+    p_st_c.add_argument("--full", action="store_true", help="Print the whole content, not a preview")
+
     p_wg = subparsers.add_parser("wargame", help="War Games: fight a scenario against adaptive failure")
     wg_sub = p_wg.add_subparsers(dest="wargame_action")
     p_wg_list = wg_sub.add_parser("list", help="List built-in scenarios")
@@ -3878,6 +3889,12 @@ def cmd_tunnel(args):
         sys.exit(1)
 
 
+def cmd_stadium(args):
+    """Stadium model: read-only shard tickets and verified call-ups (see nougen_shards.stadium)."""
+    from . import stadium  # pylint: disable=import-outside-toplevel
+    raise SystemExit(stadium.cli_main(args))
+
+
 def cmd_time(args):
     """Dynamic local and canonical fleet time (NouGenTime)."""
     try:
@@ -4143,7 +4160,7 @@ def main():
         "tunnel": cmd_tunnel, "destiny": cmd_destiny, "wake": cmd_wake, "wispr": cmd_wispr, "studio": cmd_studio,
         "cf": cmd_cf, "sweep": cmd_sweep, "zombies": cmd_sweep, "open": cmd_open,
         "facts": cmd_facts, "mrsb": cmd_mrsb,
-        "wargame": cmd_wargame, "nlp": cmd_nlp,
+        "wargame": cmd_wargame, "nlp": cmd_nlp, "stadium": cmd_stadium,
     }
     if args.command in cmds:
         cmds[args.command](args)
