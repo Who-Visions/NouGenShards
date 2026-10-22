@@ -59,7 +59,8 @@ def test_thread_qos_control():
 
 
 def test_darwin_admission_normal_pressure():
-    with patch.object(darwin_gate, "get_memory_pressure_level", return_value=1), \
+    with patch.object(darwin_gate, "is_darwin", return_value=True), \
+         patch.object(darwin_gate, "get_memory_pressure_level", return_value=1), \
          patch.object(darwin_gate, "get_apple_silicon_vram_headroom_gb", return_value=8.0), \
          patch.object(darwin_gate, "_ollama_residents", return_value=[]):
         v = darwin_gate.check_darwin_admission("gemma4:e2b-qat")
@@ -68,7 +69,8 @@ def test_darwin_admission_normal_pressure():
 
 
 def test_darwin_admission_oversized_model_refused():
-    with patch.object(darwin_gate, "get_memory_pressure_level", return_value=1), \
+    with patch.object(darwin_gate, "is_darwin", return_value=True), \
+         patch.object(darwin_gate, "get_memory_pressure_level", return_value=1), \
          patch.object(darwin_gate, "get_apple_silicon_vram_headroom_gb", return_value=2.0), \
          patch.object(darwin_gate, "_ollama_residents", return_value=[]):
         v = darwin_gate.check_darwin_admission("gemma4:e4b")  # needs 9.52 GB
@@ -77,7 +79,8 @@ def test_darwin_admission_oversized_model_refused():
 
 
 def test_darwin_admission_warning_pressure_defers_cold_load():
-    with patch.object(darwin_gate, "get_memory_pressure_level", return_value=2), \
+    with patch.object(darwin_gate, "is_darwin", return_value=True), \
+         patch.object(darwin_gate, "get_memory_pressure_level", return_value=2), \
          patch.object(darwin_gate, "get_apple_silicon_vram_headroom_gb", return_value=6.0), \
          patch.object(darwin_gate, "_ollama_residents", return_value=[]):
         v = darwin_gate.check_darwin_admission("gemma4:e4b")
@@ -87,7 +90,8 @@ def test_darwin_admission_warning_pressure_defers_cold_load():
 
 
 def test_darwin_admission_warning_pressure_allows_resident_model():
-    with patch.object(darwin_gate, "get_memory_pressure_level", return_value=2), \
+    with patch.object(darwin_gate, "is_darwin", return_value=True), \
+         patch.object(darwin_gate, "get_memory_pressure_level", return_value=2), \
          patch.object(darwin_gate, "get_apple_silicon_vram_headroom_gb", return_value=6.0), \
          patch.object(darwin_gate, "_ollama_residents", return_value=[{"name": "gemma4:e2b"}]):
         v = darwin_gate.check_darwin_admission("gemma4:e2b")
@@ -96,7 +100,8 @@ def test_darwin_admission_warning_pressure_allows_resident_model():
 
 
 def test_darwin_admission_critical_pressure_halts():
-    with patch.object(darwin_gate, "get_memory_pressure_level", return_value=4), \
+    with patch.object(darwin_gate, "is_darwin", return_value=True), \
+         patch.object(darwin_gate, "get_memory_pressure_level", return_value=4), \
          patch.object(darwin_gate, "_ollama_residents", return_value=[{"name": "gemma4:e2b"}]):
         v = darwin_gate.check_darwin_admission("gemma4:e2b")
         assert v.ok is False
@@ -118,7 +123,8 @@ def test_dynamic_sqlite_scaling():
         compressor_stored_gb=20.0, compressor_occupied_gb=5.0,
         compression_ratio=4.0, page_size=4096,
     )
-    with patch.object(darwin_gate, "get_darwin_vm_telemetry", return_value=norm_vm), \
+    with patch.object(darwin_gate, "is_darwin", return_value=True), \
+         patch.object(darwin_gate, "get_darwin_vm_telemetry", return_value=norm_vm), \
          patch.object(darwin_gate, "get_memory_pressure_level", return_value=1):
         assert darwin_gate.get_scaled_sqlite_cache_size(64000) == -64000
         assert darwin_gate.get_scaled_sqlite_mmap_size(268435456) == 268435456
@@ -130,7 +136,8 @@ def test_dynamic_sqlite_scaling():
         compressor_stored_gb=20.0, compressor_occupied_gb=11.0,
         compression_ratio=1.8, page_size=4096,
     )
-    with patch.object(darwin_gate, "get_darwin_vm_telemetry", return_value=warn_vm), \
+    with patch.object(darwin_gate, "is_darwin", return_value=True), \
+         patch.object(darwin_gate, "get_darwin_vm_telemetry", return_value=warn_vm), \
          patch.object(darwin_gate, "get_memory_pressure_level", return_value=2):
         assert darwin_gate.get_scaled_sqlite_cache_size(64000) == -16000
         assert darwin_gate.get_scaled_sqlite_mmap_size(268435456) == 33554432
@@ -142,7 +149,8 @@ def test_dynamic_sqlite_scaling():
         compressor_stored_gb=25.0, compressor_occupied_gb=18.0,
         compression_ratio=1.38, page_size=4096,
     )
-    with patch.object(darwin_gate, "get_darwin_vm_telemetry", return_value=crit_vm), \
+    with patch.object(darwin_gate, "is_darwin", return_value=True), \
+         patch.object(darwin_gate, "get_darwin_vm_telemetry", return_value=crit_vm), \
          patch.object(darwin_gate, "get_memory_pressure_level", return_value=4):
         assert darwin_gate.get_scaled_sqlite_cache_size(64000) == -4000
         assert darwin_gate.get_scaled_sqlite_mmap_size(268435456) == 0
