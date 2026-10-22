@@ -329,9 +329,11 @@ def get_readonly_connection(index: int) -> sqlite3.Connection:
     else:
         conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=sqlite_timeout_s())
 
-    mmap_bytes = sqlite_mmap_size()
+    from .darwin_gate import get_scaled_sqlite_cache_size, get_scaled_sqlite_mmap_size
+    mmap_bytes = get_scaled_sqlite_mmap_size(sqlite_mmap_size())
     conn.execute(f"PRAGMA mmap_size={mmap_bytes};")
-    conn.execute("PRAGMA cache_size=-64000;")  # 64MB cache
+    cache_kb = get_scaled_sqlite_cache_size(64000)
+    conn.execute(f"PRAGMA cache_size={cache_kb};")  # dynamically scaled (4MB-64MB)
     conn.execute("PRAGMA query_only=ON;")
     conn.row_factory = sqlite3.Row
 
@@ -390,8 +392,11 @@ def get_connection(index: int):
         raise
     mode = get_vault_journal_mode()
     conn.execute(f"PRAGMA journal_mode={mode};")
-    mmap_bytes = sqlite_mmap_size()
+    from .darwin_gate import get_scaled_sqlite_cache_size, get_scaled_sqlite_mmap_size
+    mmap_bytes = get_scaled_sqlite_mmap_size(sqlite_mmap_size())
     conn.execute(f"PRAGMA mmap_size={mmap_bytes};")
+    cache_kb = get_scaled_sqlite_cache_size(64000)
+    conn.execute(f"PRAGMA cache_size={cache_kb};")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -2415,6 +2420,8 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
             return entry
         return None
     try:
+        from .darwin_gate import demote_to_background_qos
+        demote_to_background_qos()
         entry = _VECTOR_CACHE.get(i)
         if entry is not None and entry["sig"] == sig and entry["path"] == path:
             return entry

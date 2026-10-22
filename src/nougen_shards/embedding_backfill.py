@@ -64,6 +64,11 @@ VRAM_CHECK_EVERY = int(os.environ.get("NOUGEN_VRAM_CHECK_EVERY", "64"))  # rows 
 
 def _vram_used_mib() -> Optional[int]:
     import subprocess
+    import platform
+    if platform.system() == "Darwin":
+        from .darwin_gate import get_darwin_vm_telemetry
+        vm = get_darwin_vm_telemetry()
+        return int((vm.wired_ram_gb + vm.compressor_occupied_gb) * 1024)
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
@@ -147,6 +152,11 @@ def count_pending(vault_dir: str) -> dict:
 
 def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool = True,
                 progress: bool = True) -> dict:
+    import platform
+    if platform.system() == "Darwin":
+        from .darwin_gate import demote_to_background_qos
+        demote_to_background_qos()
+
     conn = sqlite3.connect(db)
     done = 0
     failed = 0
@@ -169,6 +179,20 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
         # than the embedding it guards. Interval is env-tunable.
         for start in range(0, len(rows), batch):
             chunk = rows[start:start + batch]
+
+            # Darwin Jetsam memory pressure guard: pause if memory is tight
+            if platform.system() == "Darwin":
+                from .darwin_gate import get_memory_pressure_level, PRESSURE_WARNING, get_memory_pressure_name
+                pressure = get_memory_pressure_level()
+                if pressure >= PRESSURE_WARNING:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "darwin_gate: macOS memory pressure is %s (level %s); pausing backfill",
+                        get_memory_pressure_name(pressure), pressure
+                    )
+                    time.sleep(3)
+                    continue
+
             if (start // max(batch, 1)) % max(VRAM_CHECK_EVERY // max(batch, 1), 1) == 0:
                 used = _vram_used_mib()
                 if used is not None and used > VRAM_CEILING_MIB:
