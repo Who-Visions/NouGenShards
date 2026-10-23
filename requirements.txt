@@ -41,7 +41,7 @@ colorama==0.4.6
     #   nougen-shards (pyproject.toml)
     #   tqdm
     #   typer
-cryptography==50.0.1
+cryptography==50.0.2
     # via
     #   nougen-shards (pyproject.toml)
     #   google-auth
@@ -139,9 +139,9 @@ markupsafe==3.0.3
     # via
     #   gradio
     #   jinja2
-mcp==2.2.0
+mcp==2.3.0
     # via nougen-shards (pyproject.toml)
-mcp-types==2.2.0
+mcp-types==2.3.0
     # via mcp
 mdurl==0.1.2
     # via markdown-it-py
@@ -189,7 +189,7 @@ pyasn1-modules==0.4.2
     # via google-auth
 pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
     # via cffi
-pydantic==2.14.0
+pydantic==2.14.1
     # via
     #   nougen-shards (pyproject.toml)
     #   fastapi
@@ -198,13 +198,13 @@ pydantic==2.14.0
     #   mcp-types
     #   ollama
     #   openai
-pydantic-core==2.50.0
+pydantic-core==2.50.1
     # via pydantic
 pydub==0.25.1
     # via gradio
 pygments==2.21.0
     # via rich
-pyjwt==2.15.0
+pyjwt==2.15.1
     # via mcp
 pyparsing==3.3.3
     # via httplib2
@@ -305,7 +305,7 @@ uritemplate==4.2.0
     # via google-api-python-client
 urllib3==2.8.0
     # via requests
-uvicorn==0.53.0
+uvicorn==0.54.0
     # via
     #   nougen-shards (pyproject.toml)
     #   gradio
