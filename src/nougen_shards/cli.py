@@ -1138,6 +1138,8 @@ def cmd_search(args):
 
     # Use Federation for unified search
     sweep_report: dict = {}
+    if getattr(args, 'fast', False):
+        shards.FAST_LOCAL.set(True)
     results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding,
                                             domain_key=domain_key, sweep_report=sweep_report)
     dropped = sweep_report.get("lanes_timed_out") or []
@@ -2093,6 +2095,7 @@ def get_parser():
     p_search.add_argument("--json", action="store_true", help="Machine-readable output")
     p_search.add_argument("--domain", help="Explicit domain boundary key filter override")
     p_search.add_argument("--dual", action="store_true", help="Use dual-system memory recall (episodic + semantic rules)")
+    p_search.add_argument("--fast", action="store_true", help="Ultra low-latency fast local keyword search (skips remote/external lanes)")
 
     p_assure = subparsers.add_parser("assure", help="Label a claim through Iris evidence assurance")
     p_assure.add_argument("claim")
