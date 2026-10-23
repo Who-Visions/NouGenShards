@@ -542,7 +542,9 @@ def _export_to_csv():
                 try:
                     plain = _unprotect(stored)
                     fp = _fingerprint(plain) if plain is not None else "unreadable"
-                except OSError:
+                except Exception:
+                    # Any row this platform can't decrypt (e.g. a Windows DPAPI blob on macOS) is
+                    # listed as unreadable; the audit ledger still gets written.
                     fp = "unreadable"
                 writer.writerow([row_id, key, fp, _is_encrypted(stored), rotated])
     except sqlite3.Error:
@@ -565,7 +567,10 @@ def ingest_secret(key: str, value: str):
         """, (key, _protect(value, key), timestamp))
         conn.commit()
         print(f"  [+] Ingested: {key} (Value Redacted)")
-        _export_to_csv()
+        try:
+            _export_to_csv()
+        except Exception as exc:  # the audit ledger is best-effort; the secret is already stored
+            print(f"  [i] Audit ledger not updated on this platform: {type(exc).__name__}")
     except sqlite3.Error as exc:
         print(f"  [!] Error ingesting {key}: {exc}")
     finally:
