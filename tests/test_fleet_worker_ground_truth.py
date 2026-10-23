@@ -45,3 +45,21 @@ def test_deploy_tool_does_not_claim_deployed():
 
 def test_static_worker_list_is_labeled():
     assert "static_config_not_live" in _handler("cf_list_workers")
+
+
+def test_shards_status_validates_health_body():
+    body = _handler("shards_status")
+    # The health verdict must come from the response body, never res.ok
+    # alone: a paused HF Space answered every path with HTTP 206 + a
+    # generic HTML shell and read as "health ok" for nine days
+    # (2026-10-14 to 2026-10-23) while the platform had it paused.
+    assert "healthBodyProvesNode" in body
+    assert "invalid_health_body" in body
+    assert 'res.ok ? "ok"' not in body
+
+
+def test_health_body_proof_requires_node_json():
+    # The proof is the node's own /health contract from app.py:
+    # a JSON object carrying status "ignited" and a node name.
+    assert "function healthBodyProvesNode" in SRC
+    assert '"ignited"' in SRC
