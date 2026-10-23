@@ -139,9 +139,9 @@ markupsafe==3.0.3
     # via
     #   gradio
     #   jinja2
-mcp==2.2.0
+mcp==2.3.0
     # via nougen-shards (pyproject.toml)
-mcp-types==2.2.0
+mcp-types==2.3.0
     # via mcp
 mdurl==0.1.2
     # via markdown-it-py
