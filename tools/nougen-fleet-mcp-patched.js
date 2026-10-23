@@ -1445,6 +1445,21 @@ function httpFailureReason(status, raw) {
   return null;
 }
 __name(httpFailureReason, "httpFailureReason");
+// A live NouGen node answers /health with its own JSON -- app.py returns
+// {"status": "ignited", "node": <origin>, ...}. A 2xx alone proves nothing:
+// a paused Hugging Face Space answered every path with HTTP 206 and the
+// same generic HF HTML shell, and a status-code-only check read that as
+// "health ok" for nine days (2026-10-14 to 2026-10-23) while the Space sat
+// paused by the platform. The body is the verdict, not the code.
+function healthBodyProvesNode(raw) {
+  try {
+    const body = JSON.parse(String(raw || ""));
+    if (!body || typeof body !== "object") return false;
+    if (typeof body.node !== "string" || !body.node) return false;
+    return ["ignited", "ok", "healthy", "up", "green"].includes(body.status);
+  } catch { return false; }
+}
+__name(healthBodyProvesNode, "healthBodyProvesNode");
 function routeFailureReason(err) {
   const name = err?.name || "";
   const msg = String(err?.message || err || "");
@@ -4731,7 +4746,18 @@ Other lanes see it on their next relay check.`,
       const p = { route: r.name, host, primary: Boolean(r.primary), circuit: circuitState(env, r), checked_utc: (/* @__PURE__ */ new Date()).toISOString() };
       try {
         const res = await fetch(r.origin.replace(/\/$/, "") + "/health", { headers: await shardHeaders(renv), signal: AbortSignal.timeout(probeMs) });
-        p.health = res.ok ? "ok" : httpFailureReason(res.status, await res.text().catch(() => "")) || "http_" + res.status;
+        const rawHealth = await res.text().catch(() => "");
+        if (!res.ok) {
+          p.health = httpFailureReason(res.status, rawHealth) || "http_" + res.status;
+        } else if (healthBodyProvesNode(rawHealth)) {
+          p.health = "ok";
+        } else {
+          // 2xx but not the node's own health JSON: a platform shell, proxy
+          // placeholder, or paused host answering in the node's place.
+          // Never "ok" -- see healthBodyProvesNode.
+          p.health = "invalid_health_body";
+          p.health_detail = String(rawHealth || "").replace(/\s+/g, " ").slice(0, 120);
+        }
       } catch (err) { p.health = routeFailureReason(err); }
       // /health can be answered while the /mcp/ serve path is dead (split-brain
       // of 2026-08-25), so the serve path is what decides "usable".
