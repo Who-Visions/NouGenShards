@@ -369,11 +369,16 @@ class AgentPinger:
         registered_count = len(sessions)
         if target_session:
             target = str(target_session).strip().casefold()
+            live_names = {
+                os.path.basename(str(pipe).replace("/", "\\\\")).casefold()
+                for pipe in AgentPinger._discover_claude_endpoints()
+            }
             selected = {
                 sock: entry for sock, entry in sessions.items()
+                if os.path.basename(str(sock).replace("/", "\\\\")).casefold() in live_names
                 if target in {
                     str((entry or {}).get("session_id") or "").casefold(),
-                    os.path.basename(str(sock)).casefold(),
+                    os.path.basename(str(sock).replace("/", "\\\\")).casefold(),
                 }
             }
             if len(selected) != 1:
