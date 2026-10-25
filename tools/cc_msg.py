@@ -17,7 +17,6 @@ import argparse
 import datetime
 import json
 import os
-import re
 import socket
 import sys
 import urllib.request

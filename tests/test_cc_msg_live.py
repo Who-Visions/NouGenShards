@@ -1,8 +1,5 @@
 import json
-import os
 from types import SimpleNamespace
-
-import pytest
 
 from nougen_shards.nougenmsg import AgentPinger
 from tools import cc_msg
