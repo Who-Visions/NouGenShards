@@ -336,7 +336,11 @@ class AgentPinger:
         return (auth_line + chr(10) + user_line + chr(10)).encode("utf-8")
 
     @staticmethod
-    def ping_claude(prompt: str, origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def ping_claude(
+        prompt: str,
+        origin: Optional[Dict[str, Any]] = None,
+        target_session: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Deliver a NouGenMsg into every live, registered Claude Code session
         over its own messaging socket, and drop the same message in the Claude
         inbox for the UserPromptSubmit drain hook. Sessions whose socket no
@@ -362,6 +366,27 @@ class AgentPinger:
         for sid, entry in registry.items():
             if sid != "sessions" and isinstance(entry, dict) and entry.get("token") and entry.get("socket"):
                 sessions[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
+        registered_count = len(sessions)
+        if target_session:
+            target = str(target_session).strip().casefold()
+            selected = {
+                sock: entry for sock, entry in sessions.items()
+                if target in {
+                    str((entry or {}).get("session_id") or "").casefold(),
+                    os.path.basename(str(sock)).casefold(),
+                }
+            }
+            if len(selected) != 1:
+                reason = "not_found" if not selected else "ambiguous"
+                return {
+                    "delivered": [], "pruned": [], "registered": registered_count,
+                    "inbox_file": None, "delivery_verified": False, "errors": [],
+                    "target_session": target_session,
+                    "error": f"target_session_{reason}",
+                    "note": "targeted delivery requires exactly one registered Claude session; no message was sent",
+                }
+            sessions = selected
+
         delivered, pruned, errors = [], [], []
         for sock, entry in list(sessions.items()):
             token = str((entry or {}).get("token") or "")
@@ -407,30 +432,33 @@ class AgentPinger:
                 os.replace(tmp, reg_path)
             except OSError:
                 pass
-        # inbox copy for the drain hook (and for sessions that start later)
+        # A targeted delivery must never leave a second copy in the shared
+        # Claude inbox: another session could drain it and receive the wrong
+        # project's message.
         inbox_file = None
-        try:
-            inbox_dir = AgentPinger._claude_inbox_dir()
-            os.makedirs(inbox_dir, exist_ok=True)
-            inbox_file = os.path.join(inbox_dir, f"ping_{int(time.time() * 1000)}.json")
-            with open(inbox_file, "w", encoding="utf-8") as f:
-                _msg_session = resolve_session()
-                _msg_host = resolve_origin_host()
-                json.dump({"source": source, "sender": origin.get("original_sender") if origin else source,
-                           "origin": origin, "target": "claude", "text": prompt, "timestamp": time.time(),
-                           "delivered_live": bool(delivered), "delivered_to": [d.get("session_id") for d in delivered],
-                           **({"session": _msg_session} if _msg_session else {}),
-                           **({"origin_host": _msg_host} if _msg_host else {})}, f, indent=2)
-        except OSError:
-            inbox_file = None
+        if not target_session:
+            try:
+                inbox_dir = AgentPinger._claude_inbox_dir()
+                os.makedirs(inbox_dir, exist_ok=True)
+                inbox_file = os.path.join(inbox_dir, f"ping_{int(time.time() * 1000)}.json")
+                with open(inbox_file, "w", encoding="utf-8") as f:
+                    _msg_session = resolve_session()
+                    _msg_host = resolve_origin_host()
+                    json.dump({"source": source, "sender": origin.get("original_sender") if origin else source,
+                               "origin": origin, "target": "claude", "text": prompt, "timestamp": time.time(),
+                               "delivered_live": bool(delivered), "delivered_to": [d.get("session_id") for d in delivered],
+                               **({"session": _msg_session} if _msg_session else {}),
+                               **({"origin_host": _msg_host} if _msg_host else {})}, f, indent=2)
+            except OSError:
+                inbox_file = None
         if not sessions and not delivered:
             note = ("no registered live Claude Code session (SessionStart hook (nougenmsg_register.py on blade, nougenmsg_wake.py on phoebus) has not run, "
                     "or every registered session is gone); inbox file dropped for the drain hook")
         else:
             note = (f"socket write accepted by {len(delivered)} live session(s); the harness writes no ack, "
                     "the receiver's context is the proof")
-        return {"delivered": delivered, "pruned": pruned, "registered": len(sessions), "inbox_file": inbox_file,
-                "delivery_verified": False, "errors": errors, "note": note}
+        return {"delivered": delivered, "pruned": pruned, "registered": registered_count, "inbox_file": inbox_file,
+                "delivery_verified": False, "errors": errors, "target_session": target_session, "note": note}
 
     @staticmethod
     def ping_antigravity(
@@ -1422,14 +1450,15 @@ class NouGenMsgBus:
 
     @classmethod
     def search_messages(cls, query: str, target: str = "all", limit: int = 20, timeout_s: float = 3.0, as_contract: bool = False) -> Any:
-        """Search across active and archived inbox messages using indexed FTS5 + fast scanner.
+        """Search active and archived inboxes through a persistent incremental FTS5 index.
         Fulfills the Hurricane Kick 2/3 Search Contract:
         {complete, query, normalized_query, results, checked_sources, timed_out_sources, ordering_basis, coverage_hash}
         """
         import time
         import hashlib
+        import sqlite3
 
-        t_start = time.time()
+        t_start = time.monotonic()
         q_raw = query or ""
         q_norm = q_raw.strip().lower()
 
@@ -1446,68 +1475,135 @@ class NouGenMsgBus:
         if not q_norm:
             return empty_res if as_contract else []
 
+        target = (target or "all").strip().lower()
         inbox_dirs = []
         if target in ("antigravity", "all"):
-            inbox_dirs.extend([
-                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
-                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox")),
-                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox", "archive")),
-                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox", "archive")),
-            ])
+            agy_gemini = os.environ.get("NOUGEN_GEMINI_INBOX", os.path.join("~", ".gemini", "config", "inbox"))
+            agy_nougen = os.environ.get("NOUGEN_AGY_INBOX", os.path.join("~", ".nougen", "agy_inbox"))
+            inbox_dirs.extend([os.path.expanduser(agy_gemini), os.path.expanduser(agy_nougen),
+                               os.path.join(os.path.expanduser(agy_gemini), "archive"),
+                               os.path.join(os.path.expanduser(agy_nougen), "archive")])
         if target in ("codex", "all"):
-            inbox_dirs.extend([
-                os.path.expanduser(os.path.join("~", ".codex", "inbox")),
-                os.path.expanduser(os.path.join("~", ".codex", "inbox", "archive")),
-            ])
+            codex = os.environ.get("NOUGEN_CODEX_INBOX", os.path.join("~", ".codex", "inbox"))
+            codex = os.path.expanduser(codex)
+            inbox_dirs.extend([codex, os.path.join(codex, "archive")])
+        if target in ("claude", "all"):
+            claude = os.path.expanduser(os.environ.get("NOUGEN_CLAUDE_INBOX", os.path.join("~", ".nougen", "claude_inbox")))
+            inbox_dirs.extend([claude, os.path.join(claude, "archive")])
 
-        checked_sources = [d for d in inbox_dirs if os.path.exists(d)]
-        timed_out_sources = []
+        checked_sources = sorted({os.path.abspath(d) for d in inbox_dirs if os.path.isdir(d)})
+        timed_out_sources = set()
         all_files = []
-        for d in checked_sources:
+        source_by_path = {}
+        for directory in checked_sources:
             try:
-                for entry in os.scandir(d):
-                    if entry.name.endswith(".json") and entry.is_file():
-                        all_files.append((entry.path, entry.stat().st_mtime))
-            except Exception:
-                pass
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        if not entry.name.lower().endswith(".json") or not entry.is_file():
+                            continue
+                        try:
+                            path = os.path.abspath(entry.path)
+                            mtime = entry.stat().st_mtime
+                        except OSError:
+                            timed_out_sources.add(directory)
+                            continue
+                        all_files.append((path, mtime))
+                        source_by_path[path] = directory
+            except OSError:
+                timed_out_sources.add(directory)
+        all_files.sort(key=lambda item: item[1], reverse=True)
 
-        # Sort files newest first
-        all_files.sort(key=lambda x: x[1], reverse=True)
-        cov_hash = hashlib.sha256(f"{len(all_files)}:{all_files[0][1] if all_files else 0}".encode("utf-8")).hexdigest()[:16]
+        # The FTS table was present but never populated by search_messages,
+        # forcing every query to parse thousands of inbox JSON files again.
+        # Index changed entries within the request budget and resume on the
+        # next query. Warm searches only stat entries and hit SQLite FTS.
+        index_complete = True
+        conn = None
+        indexed = {}
+        try:
+            conn = sqlite3.connect(cls._get_msg_index_db(), timeout=1.0)
+            conn.execute("PRAGMA busy_timeout=1000")
+            cls._init_msg_fts5(conn)
+            indexed = {str(path): float(mtime) for path, mtime in conn.execute("SELECT file_path, mtime FROM messages_meta")}
+            pending = [(path, mtime) for path, mtime in all_files if indexed.get(path) != mtime]
+            for offset, (fpath, mtime) in enumerate(pending):
+                if time.monotonic() - t_start >= max(0.05, timeout_s):
+                    index_complete = False
+                    timed_out_sources.update(source_by_path[p] for p, _ in pending[offset:])
+                    break
+                try:
+                    with open(fpath, "rb") as fp:
+                        raw = fp.read()
+                    data = json.loads(raw.decode("utf-8", errors="replace"))
+                    if not isinstance(data, dict):
+                        data = {}
+                    message_id = str(data.get("message_id") or data.get("id") or "")
+                    source = str(data.get("source") or data.get("origin") or "")
+                    sender = str(data.get("sender") or data.get("agent") or "")
+                    body = raw.decode("utf-8", errors="replace")
+                    conn.execute("DELETE FROM messages_fts WHERE file_path = ?", (fpath,))
+                    conn.execute("INSERT OR REPLACE INTO messages_meta (file_path, mtime, message_id, source, sender, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                                 (fpath, mtime, message_id, source, sender, data.get("timestamp")))
+                    conn.execute("INSERT INTO messages_fts (file_path, message_id, source, sender, text) VALUES (?, ?, ?, ?, ?)",
+                                 (fpath, message_id, source, sender, body))
+                    indexed[fpath] = mtime
+                except (OSError, ValueError, sqlite3.Error):
+                    index_complete = False
+                    timed_out_sources.add(source_by_path[fpath])
+            conn.commit()
+
+            tokens = [token for token in re.findall(r"[\w\d#-]+", q_norm) if re.search(r"[\w\d]", token)]
+            if not tokens:
+                tokens = [q_norm]
+            fts_query = " AND ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+            where = ["messages_fts MATCH ?"]
+            params = [fts_query]
+            source_filters = []
+            for directory in checked_sources:
+                prefix = directory.rstrip("\\/") + os.sep
+                source_filters.append("substr(messages_meta.file_path, 1, length(?)) = ?")
+                params.extend([prefix, prefix])
+            if source_filters:
+                where.append("(" + " OR ".join(source_filters) + ")")
+            sql = ("SELECT messages_meta.file_path, messages_meta.mtime FROM messages_fts "
+                   "JOIN messages_meta USING (file_path) WHERE " + " AND ".join(["(" + clause + ")" for clause in where]) +
+                   " ORDER BY messages_meta.mtime DESC LIMIT ?")
+            params.append(max(1, limit) * 5)
+            rows = conn.execute(sql, params).fetchall() if checked_sources else []
+        except sqlite3.Error:
+            # FTS5 is optional in some Python builds. Preserve bounded search
+            # behavior there rather than failing the NouGenMsg tool outright.
+            index_complete = False
+            timed_out_sources.update(checked_sources)
+            rows = [(path, mtime) for path, mtime in all_files]
+        finally:
+            if conn is not None:
+                conn.close()
 
         matches = []
         seen = set()
-        q_bytes = q_norm.encode("utf-8", errors="ignore")
-        # Split search tokens for multi-term matching (e.g. "PR #671", "formal proof runtime")
-        tokens = [t.encode("utf-8", errors="ignore") for t in re.findall(r"[\w\d#\-]+", q_norm)]
-        if not tokens:
-            tokens = [q_bytes]
-
-        is_complete = True
-        for fpath, mtime in all_files:
-            if time.time() - t_start > timeout_s:
-                is_complete = False
-                timed_out_sources.append(os.path.dirname(fpath))
+        tokens_bytes = [token.encode("utf-8", errors="ignore") for token in re.findall(r"[\w\d#-]+", q_norm) if re.search(r"[\w\d]", token)]
+        for fpath, mtime in rows:
+            if len(matches) >= max(1, limit):
                 break
-            if len(matches) >= limit:
+            if time.monotonic() - t_start >= max(0.05, timeout_s):
+                index_complete = False
+                timed_out_sources.add(source_by_path.get(fpath, os.path.dirname(fpath)))
                 break
             try:
+                if os.path.getmtime(fpath) != mtime:
+                    continue
                 with open(fpath, "rb") as fp:
                     raw = fp.read()
-                raw_lower = raw.lower()
-                # Fast check: all tokens must be present in raw bytes
-                if not all(tok in raw_lower for tok in tokens):
+                if tokens_bytes and not all(token in raw.lower() for token in tokens_bytes):
                     continue
-
                 data = json.loads(raw.decode("utf-8", errors="replace"))
                 if not isinstance(data, dict):
                     continue
-
                 identity = data.get("message_id") or f"{data.get('source')}|{data.get('timestamp')}|{fpath}"
                 if identity in seen:
                     continue
                 seen.add(identity)
-
                 data["_file"] = os.path.basename(fpath)
                 data["_mtime"] = mtime
                 if "text" not in data and "content" in data:
@@ -1515,16 +1611,18 @@ class NouGenMsgBus:
                 if not data.get("sender") and data.get("source"):
                     data["sender"] = data["source"]
                 matches.append(data)
-            except Exception:
+            except (OSError, ValueError):
                 continue
 
+        newest = all_files[0][1] if all_files else 0
+        cov_hash = hashlib.sha256(f"{len(all_files)}:{newest}:{len(indexed)}".encode("utf-8")).hexdigest()[:16]
         contract = {
-            "complete": is_complete,
+            "complete": index_complete and not timed_out_sources,
             "query": q_raw,
             "normalized_query": q_norm,
             "results": matches,
-            "checked_sources": list(set(checked_sources)),
-            "timed_out_sources": list(set(timed_out_sources)),
+            "checked_sources": checked_sources,
+            "timed_out_sources": sorted(timed_out_sources),
             "ordering_basis": "mtime_desc",
             "coverage_hash": cov_hash
         }

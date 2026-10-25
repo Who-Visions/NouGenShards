@@ -16,11 +16,21 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
+import re
 import socket
 import sys
 import urllib.request
 import urllib.error
 from pathlib import Path
+from typing import Optional, Tuple
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SRC_PATH = str(_REPO_ROOT / "src")
+if _SRC_PATH not in sys.path:
+    sys.path.insert(0, _SRC_PATH)
+
+from nougen_shards.nougenmsg import AgentPinger
 
 DEFAULT_PORT = 8766
 DEFAULT_LOCAL_HOST = "127.0.0.1"
@@ -59,35 +69,63 @@ def send_pipe(pipe_name: str, payload: dict) -> bool:
         return False
 
 
-def send_claude_live_socket(content: str) -> bool:
-    """Delivers directly into Claude Code active sessions on Windows via live named pipes."""
-    if sys.platform != "win32":
-        return False
-    reg_path = Path.home() / ".nougen" / "state" / "claude_sessions.json"
-    if not reg_path.exists():
-        return False
+def _claude_sessions() -> list[dict]:
+    """Read the canonical NouGen Claude registry without exposing credentials."""
+    reg_path = Path(AgentPinger._cc_registry_path())
     try:
-        sessions = json.loads(reg_path.read_text(encoding="utf-8"))
-        if not isinstance(sessions, dict) or not sessions:
-            return False
-        delivered_any = False
-        for s_id, s_info in sessions.items():
-            sock = s_info.get("socket") or s_info.get("sock_path")
-            token = s_info.get("token", "")
-            if not sock or not token:
-                continue
-            auth_line = json.dumps({"type": "auth", "token": token})
-            user_line = json.dumps({"type": "user", "message": {"role": "user", "content": content}})
-            raw = (auth_line + "\n" + user_line + "\n").encode("utf-8")
-            try:
-                with open(sock, "w+b", buffering=0) as f:
-                    f.write(raw)
-                delivered_any = True
-            except Exception:
-                pass
-        return delivered_any
-    except Exception:
-        return False
+        registry = json.loads(reg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(registry, dict):
+        return []
+
+    sessions = {}
+    nested = registry.get("sessions")
+    if isinstance(nested, dict):
+        for socket_path, info in nested.items():
+            if isinstance(info, dict) and info.get("socket") and info.get("token"):
+                sessions[str(info["socket"])] = dict(info, session_id=info.get("session_id") or socket_path)
+    for session_id, info in registry.items():
+        if session_id != "sessions" and isinstance(info, dict) and info.get("socket") and info.get("token"):
+            sessions[str(info["socket"])] = dict(info, session_id=info.get("session_id") or session_id)
+    return list(sessions.values())
+
+
+def resolve_claude_session(target: str) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve a Claude alias only when exactly one live session is unambiguous."""
+    sessions = _claude_sessions()
+    live_names = {os.path.basename(p.replace("/", "\\")).casefold() for p in AgentPinger._discover_claude_endpoints()}
+    target = (target or "").strip().casefold()
+
+    if target in {"claude", "claude-live"}:
+        ids = {
+            str(s.get("session_id") or "")
+            for s in sessions
+            if os.path.basename(str(s.get("socket") or "").replace("/", "\\")).casefold() in live_names
+            and s.get("session_id")
+        }
+        if len(ids) == 1:
+            return next(iter(ids)), None
+        if not ids:
+            return None, "No registered live Claude session was found."
+        return None, "More than one live Claude session is registered; pass its session UUID with --to."
+
+    try:
+        import uuid
+        uuid.UUID(target)
+    except (ValueError, AttributeError):
+        return None, "Claude target must be @claude or a registered session UUID."
+    matches = {str(s.get("session_id")) for s in sessions if str(s.get("session_id") or "").casefold() == target}
+    if len(matches) == 1:
+        return next(iter(matches)), None
+    return None, "That Claude session UUID is not registered on this machine."
+
+
+def send_claude_live_socket(content: str, target_session: Optional[str] = None) -> dict:
+    """Send through NouGen's canonical Claude transport, optionally to one session."""
+    if sys.platform != "win32" and target_session is None:
+        return {"delivered": [], "errors": [{"error": "live Claude sockets require Windows"}]}
+    return AgentPinger.ping_claude(content, target_session=target_session)
 
 
 def main() -> int:
@@ -143,26 +181,49 @@ def main() -> int:
         "origin_host": socket.gethostname().lower(),
     }
 
-    # 1. Attempt HTTP Transport
+    session_target = target_raw in {"claude", "claude-live"}
+    if not session_target:
+        try:
+            import uuid
+            uuid.UUID(target_raw)
+            session_target = True
+        except (ValueError, AttributeError):
+            pass
+
+    # A Claude alias or UUID is a direct, single-session route. Do not queue it
+    # through the generic HTTP bus or fan it out to every Claude session.
     delivered = False
     result = {}
-    try:
-        result = send_http(host, DEFAULT_PORT, payload)
-        delivered = result.get("delivered", False) or result.get("ok", False)
-    except Exception:
-        # 2. Fallback to Named Pipe on Windows
-        if sys.platform == "win32" and host == DEFAULT_LOCAL_HOST:
-            delivered = send_pipe("LOCAL\\agy-msg", payload)
-            result = {"delivered": delivered, "transport": "named_pipe"}
+    if session_target:
+        session_id, selection_error = resolve_claude_session(target_raw)
+        if selection_error:
+            print(f"Failed to resolve Claude target: {selection_error}", file=sys.stderr)
+            return 1
+        result = send_claude_live_socket(f"[{parsed.sender}] {summary}\n\n{full_text}", session_id)
+        delivered = bool(result.get("delivered"))
+        result["transport"] = "claude_live_socket"
+        result["session_id"] = session_id
+    else:
+        try:
+            result = send_http(host, DEFAULT_PORT, payload)
+            delivered = result.get("delivered", False) or result.get("ok", False)
+        except Exception:
+            # 2. Fallback to Named Pipe on Windows
+            if sys.platform == "win32" and host == DEFAULT_LOCAL_HOST:
+                delivered = send_pipe("LOCAL\\agy-msg", payload)
+                result = {"delivered": delivered, "transport": "named_pipe"}
 
     # 3. Direct Live Claude Session Ingestion if on Blade
-    if target_raw in ("blade", "claude", "all", "broadcast"):
+    if target_raw in ("blade", "all", "broadcast"):
         claude_live = send_claude_live_socket(f"[{parsed.sender}] {summary}\n\n{full_text}")
-        if claude_live:
+        if claude_live.get("delivered"):
             result["claude_live"] = True
 
     if delivered:
-        print(f"Delivered to {target_raw} [{host}] -> {result.get('file', result.get('transport', 'ok'))}")
+        status = result.get("file", result.get("transport", "ok"))
+        if result.get("delivery_verified") is False and result.get("transport") == "claude_live_socket":
+            status += " (socket accepted; Claude provides no delivery acknowledgement)"
+        print(f"Delivered to {target_raw} [{host}] -> {status}")
         return 0
     else:
         print(f"Failed to deliver message to {target_raw} [{host}]", file=sys.stderr)
