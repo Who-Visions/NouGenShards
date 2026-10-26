@@ -9,6 +9,15 @@ from .connectors.local_vault import query_local_vaults
 from .connectors import query_external_dbs
 from . import keymaker
 from typing import List, Optional
+from enum import Enum
+
+
+class VaultId(str, Enum):
+    """Canonical 3-vault federation ids (restored from federation/models.py, a826dcf0)."""
+    BLADE = "blade"
+    PHOEBUS = "phoebus"
+    WHOART = "whoart"
+
 
 logger = logging.getLogger(__name__)
 
