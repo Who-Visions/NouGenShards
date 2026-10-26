@@ -1921,18 +1921,38 @@ def _run_db_scans(scan_fn):
         for i in range(1, MAX_DB_COUNT + 1):
             yield i, scan_fn(i)
         return
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+    # Not a `with` block: the context manager's exit joins every worker, so a
+    # scan that outlives the deadline would hold the whole recall hostage after
+    # its result had already been written off. Dropped scans finish in the
+    # background and are discarded.
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    try:
         futures = {i: executor.submit(copy_context().run, scan_fn, i)
                    for i in range(1, MAX_DB_COUNT + 1)}
         deadline = time.monotonic() + elevated_lane_timeout(alpha=10.0, beta_param=1.0, max_deadline=20.0, min_deadline=1.5)
-        for i in range(1, MAX_DB_COUNT + 1):
-            remaining = max(0.1, deadline - time.monotonic())
-            try:
-                yield i, futures[i].result(timeout=remaining)
-            except concurrent.futures.TimeoutError:
-                logger.warning("grid DB %d timed out under adaptive timeout (remaining=%.2fs)", i, remaining)
-                # Fallback must match expected scan_fn return signature
-                yield i, ([], True)
+        # Collect in COMPLETION order against one shared deadline, then yield in
+        # DB order. Waiting on futures[1] first let a single slow DB spend the
+        # whole budget, after which DBs 2..9 were declared timed out with 0.10s
+        # "remaining" even though their scans had long finished (blade
+        # 2026-10-26: 8 of 9 grid DBs dropped on a cold cache, recall returned
+        # only side-lane doc mirrors).
+        done: dict = {}
+        by_future = {f: i for i, f in futures.items()}
+        try:
+            for fut in concurrent.futures.as_completed(
+                    futures.values(), timeout=max(0.1, deadline - time.monotonic())):
+                done[by_future[fut]] = fut.result()
+        except concurrent.futures.TimeoutError:
+            pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    for i in range(1, MAX_DB_COUNT + 1):
+        if i in done:
+            yield i, done[i]
+        else:
+            logger.warning("grid DB %d missed the shared scan deadline", i)
+            # Fallback must match expected scan_fn return signature
+            yield i, ([], True)
 
 
 def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[List[float]] = None,
@@ -2670,6 +2690,69 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     return top_results
 
 
+def _parse_weight_map(raw: str) -> dict:
+    """"KEY:1.3,other:0.6" -> {"key": 1.3, "other": 0.6}; malformed entries are skipped."""
+    out: dict = {}
+    for part in (raw or "").split(","):
+        if ":" not in part:
+            continue
+        key, _, val = part.partition(":")
+        try:
+            out[key.strip().lower()] = float(val)
+        except ValueError:
+            continue
+    return out
+
+
+#: Operator memory outranks mirrors. Defaults are fallbacks only; the env wins.
+#: Relay 20261026T210020Z: "/search buries operator DECISION shards under doc
+#: mirrors and Bash-error captures". RRF fuses by position, so a DECISION that is
+#: #4 in the keyword lane and a doc dump that is #3 in a vault lane tie; these
+#: priors are the only place the KIND of shard is allowed to speak.
+_RECALL_EVENT_TYPE_WEIGHTS_FALLBACK = "DECISION:1.3,CANON:1.3,CORRECTION:1.25,DOCTRINE:1.2,LOCAL_VAULT:0.8,IMPORT:0.7,INGEST:0.7"
+_RECALL_TAG_WEIGHTS_FALLBACK = "bash-error:0.6,docs:0.8,indexer:0.8"
+_RECALL_TITLE_PREFIX_WEIGHTS_FALLBACK = "Bash error [:0.6"
+
+
+def recall_prior_multiplier(item: dict) -> float:
+    """Multiplier for a candidate's fused score from its event_type, tags and title shape.
+
+    1.0 is neutral. Env-shaped: NOUGEN_RECALL_EVENT_TYPE_WEIGHTS,
+    NOUGEN_RECALL_TAG_WEIGHTS, NOUGEN_RECALL_TITLE_PREFIX_WEIGHTS, each
+    "key:mult,key:mult"; NOUGEN_RECALL_PRIORS=0 disables all three. Several
+    matching tag weights multiply, but one tag is counted once.
+    """
+    if os.environ.get("NOUGEN_RECALL_PRIORS", "1").strip().lower() in ("0", "false", "no", "off"):
+        return 1.0
+    mult = 1.0
+    et_weights = _parse_weight_map(os.environ.get("NOUGEN_RECALL_EVENT_TYPE_WEIGHTS", _RECALL_EVENT_TYPE_WEIGHTS_FALLBACK))
+    et = str(item.get("event_type") or "").strip().lower()
+    if et and et in et_weights:
+        mult *= et_weights[et]
+    tag_weights = _parse_weight_map(os.environ.get("NOUGEN_RECALL_TAG_WEIGHTS", _RECALL_TAG_WEIGHTS_FALLBACK))
+    if tag_weights:
+        raw_tags = item.get("tags")
+        tags: List[str] = []
+        if isinstance(raw_tags, (list, tuple)):
+            tags = [str(t) for t in raw_tags]
+        elif raw_tags:
+            try:
+                parsed = json.loads(str(raw_tags))
+                tags = [str(t) for t in parsed] if isinstance(parsed, list) else [str(raw_tags)]
+            except Exception:
+                tags = [t.strip() for t in str(raw_tags).split(",")]
+        for tag in {t.strip().lower() for t in tags}:
+            if tag in tag_weights:
+                mult *= tag_weights[tag]
+    prefix_weights = _parse_weight_map(os.environ.get("NOUGEN_RECALL_TITLE_PREFIX_WEIGHTS", _RECALL_TITLE_PREFIX_WEIGHTS_FALLBACK))
+    title = str(item.get("title") or "").lower()
+    for prefix, w in prefix_weights.items():
+        if prefix and title.startswith(prefix):
+            mult *= w
+            break
+    return mult
+
+
 def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
                            weights: Optional[List[float]] = None) -> List[dict]:
     """
@@ -2727,7 +2810,7 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
     for key, item in item_map.items():
         consensus_score = rrf_scores[key]
         decayed_utility = item.get("utility_score", 1.0) * _temporal_decay(item.get("timestamp"), merge_now)
-        item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3))
+        item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3)) * recall_prior_multiplier(item)
         merged.append(item)
 
     # Tie-break fields are stringified: grid rows carry int _db_index/id while
