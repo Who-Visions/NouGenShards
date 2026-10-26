@@ -1813,9 +1813,14 @@ def search(req: SearchRequest, response: Response,
 @app.get("/v1/health/local")
 async def local_health():
     """Local vault health check for 3-vault federation peers."""
-    from nougen_shards.federation.models import VaultId
-    machine_id = os.environ.get("NOUGEN_MACHINE_ID", "local")
-    vault_raw = os.environ.get("NOUGEN_VAULT_ID", "whoart").lower()
+    from nougen_shards.federation import VaultId
+    from nougen_shards import machine as _machine
+    _host = _machine.host_label() or _machine.hostname()
+    machine_id = os.environ.get("NOUGEN_MACHINE_ID") or _host or "local"
+    # Default the vault id to the host family (blade1tb -> blade); "whoart" was a
+    # hardcoded default that misreported every other node's identity.
+    _family = next((v.value for v in VaultId if (_host or "").lower().startswith(v.value)), None)
+    vault_raw = (os.environ.get("NOUGEN_VAULT_ID") or _family or "whoart").lower()
     instance_id = os.environ.get("NOUGEN_INSTANCE_ID", f"{machine_id}-default")
     try:
         vid = VaultId(vault_raw)
@@ -3812,7 +3817,10 @@ def control_plane_adherence_evaluate(declared_edges_json: str, observed_events_j
 @_offloaded
 def morph_atom_catalog() -> dict:
     """Canonical registry mapping 2026-10-01 research atoms into native NouGen fleet primitives."""
-    from nougen_shards.nougen_morph_atoms import NouGenMorphCatalog
+    try:
+        from nougen_shards.nougen_morph_atoms import NouGenMorphCatalog
+    except ImportError as exc:
+        return {"status": "unavailable", "error": f"nougen_morph_atoms not shipped in this build: {exc}"}
     atoms = NouGenMorphCatalog.get_all_atoms()
     return {k: v.to_dict() for k, v in atoms.items()}
 
@@ -3834,7 +3842,10 @@ def morph_holistic_gate(
     tolerance: float = 0.0,
 ) -> dict:
     """Holistic promotion gate: blocks promotion on benchmark gain if truth, adherence, memory fidelity, or safety regress."""
-    from nougen_shards.nougen_morph_atoms import HolisticPromotionGate
+    try:
+        from nougen_shards.nougen_morph_atoms import HolisticPromotionGate
+    except ImportError as exc:
+        return {"status": "unavailable", "error": f"nougen_morph_atoms not shipped in this build: {exc}"}
     base = {
         "benchmark_score": baseline_benchmark,
         "truth": baseline_truth,
