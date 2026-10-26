@@ -1814,8 +1814,13 @@ def search(req: SearchRequest, response: Response,
 async def local_health():
     """Local vault health check for 3-vault federation peers."""
     from nougen_shards.federation import VaultId
-    machine_id = os.environ.get("NOUGEN_MACHINE_ID", "local")
-    vault_raw = os.environ.get("NOUGEN_VAULT_ID", "whoart").lower()
+    from nougen_shards import machine as _machine
+    _host = _machine.host_label() or _machine.hostname()
+    machine_id = os.environ.get("NOUGEN_MACHINE_ID") or _host or "local"
+    # Default the vault id to the host family (blade1tb -> blade); "whoart" was a
+    # hardcoded default that misreported every other node's identity.
+    _family = next((v.value for v in VaultId if (_host or "").lower().startswith(v.value)), None)
+    vault_raw = (os.environ.get("NOUGEN_VAULT_ID") or _family or "whoart").lower()
     instance_id = os.environ.get("NOUGEN_INSTANCE_ID", f"{machine_id}-default")
     try:
         vid = VaultId(vault_raw)
