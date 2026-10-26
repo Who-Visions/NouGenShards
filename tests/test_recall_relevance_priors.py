@@ -92,3 +92,41 @@ def test_run_db_scans_one_slow_db_does_not_starve_the_rest(monkeypatch):
     assert out[1] == ([], True)
     assert all(out[i] == ([f"db{i}"], False) for i in range(2, core.MAX_DB_COUNT + 1)), out
     assert elapsed < 3.0
+
+
+def test_scan_pool_is_shared_and_bounded(monkeypatch):
+    """Codex P1 on PR #878: stragglers must not accumulate unbounded threads.
+    Every recall must reuse one process-wide pool whose size honours the env cap."""
+    monkeypatch.setenv("NOUGEN_SCAN_POOL_WORKERS", "3")
+    monkeypatch.setattr(core, "_SCAN_POOL", None)
+    pool_a = core._scan_pool(4)
+    pool_b = core._scan_pool(4)
+    assert pool_a is pool_b
+    assert pool_a._max_workers == 3
+    monkeypatch.delenv("NOUGEN_SCAN_POOL_WORKERS")
+    monkeypatch.setenv("NOUGEN_SCAN_POOL_RECALLS", "2")
+    assert core._scan_pool_capacity(4) == 8
+    monkeypatch.setattr(core, "_SCAN_POOL", None)
+
+
+def test_repeated_recalls_during_a_stuck_scan_do_not_spawn_more_threads(monkeypatch):
+    monkeypatch.setenv("NOUGEN_SCAN_POOL_WORKERS", "4")
+    monkeypatch.setattr(core, "_SCAN_POOL", None)
+    monkeypatch.setattr(core, "_retrieve_db_workers", lambda: 4)
+    monkeypatch.setattr(core, "elevated_lane_timeout", lambda **k: 0.3)
+    release = threading.Event()
+
+    def scan(i):
+        if i == 1:
+            release.wait(10.0)
+            return (["late"], False)
+        return ([f"db{i}"], False)
+
+    try:
+        for _ in range(3):
+            list(core._run_db_scans(scan))
+        pool = core._scan_pool(4)
+        assert len(pool._threads) <= 4, len(pool._threads)
+    finally:
+        release.set()
+        monkeypatch.setattr(core, "_SCAN_POOL", None)

@@ -1906,6 +1906,53 @@ def elevated_lane_timeout(
     return max(min_deadline, min(max_deadline, max_deadline * blended))
 
 
+_SCAN_POOL = None
+_SCAN_POOL_LOCK = _threading.Lock()
+# Logged fallback only: env NOUGEN_SCAN_POOL_WORKERS / NOUGEN_SCAN_POOL_RECALLS win.
+_SCAN_POOL_RECALLS_FALLBACK = 3
+
+
+def _scan_pool_capacity(workers: int) -> int:
+    """Bound on outstanding grid scans for the whole process.
+
+    env NOUGEN_SCAN_POOL_WORKERS wins; the fallback allows a few concurrent
+    recalls' worth of scans (workers * NOUGEN_SCAN_POOL_RECALLS, default 3) so
+    normal overlap never queues, while a slow or locked DB can only pin that
+    many threads no matter how many recalls pile up behind it.
+    """
+    raw = os.environ.get("NOUGEN_SCAN_POOL_WORKERS", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            logger.warning("NOUGEN_SCAN_POOL_WORKERS=%r is not an int; using fallback", raw)
+    raw_recalls = os.environ.get("NOUGEN_SCAN_POOL_RECALLS", "").strip()
+    recalls = _SCAN_POOL_RECALLS_FALLBACK
+    if raw_recalls:
+        try:
+            recalls = max(1, int(raw_recalls))
+        except ValueError:
+            logger.warning("NOUGEN_SCAN_POOL_RECALLS=%r is not an int; using fallback %d",
+                           raw_recalls, _SCAN_POOL_RECALLS_FALLBACK)
+    else:
+        logger.debug("NOUGEN_SCAN_POOL_RECALLS unset; fallback %d concurrent recalls",
+                     _SCAN_POOL_RECALLS_FALLBACK)
+    return max(workers, workers * recalls)
+
+
+def _scan_pool(workers: int):
+    """Lazily build the single bounded ThreadPoolExecutor shared by all recalls."""
+    global _SCAN_POOL  # pylint: disable=global-statement
+    import concurrent.futures  # pylint: disable=import-outside-toplevel
+    with _SCAN_POOL_LOCK:
+        if _SCAN_POOL is None:
+            cap = _scan_pool_capacity(workers)
+            _SCAN_POOL = concurrent.futures.ThreadPoolExecutor(
+                max_workers=cap, thread_name_prefix="ngs-grid-scan")
+            logger.info("grid scan pool created: %d worker(s)", cap)
+        return _SCAN_POOL
+
+
 def _run_db_scans(scan_fn):
     """Run scan_fn(i) for every grid DB concurrently; yield (i, result) in DB order.
 
@@ -1921,31 +1968,36 @@ def _run_db_scans(scan_fn):
         for i in range(1, MAX_DB_COUNT + 1):
             yield i, scan_fn(i)
         return
-    # Not a `with` block: the context manager's exit joins every worker, so a
-    # scan that outlives the deadline would hold the whole recall hostage after
-    # its result had already been written off. Dropped scans finish in the
-    # background and are discarded.
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    # One process-wide, bounded pool instead of a fresh executor per recall
+    # (Codex P1 on PR #878): a per-request executor shut down with wait=False
+    # left every straggler thread alive, so repeated recalls during a slow or
+    # locked scan accumulated threads without cap. Dropped scans still finish
+    # in the background and are discarded, but outstanding scans are bounded by
+    # the pool size and later recalls queue instead of spawning more threads.
+    executor = _scan_pool(workers)
+    futures = {i: executor.submit(copy_context().run, scan_fn, i)
+               for i in range(1, MAX_DB_COUNT + 1)}
+    deadline = time.monotonic() + elevated_lane_timeout(alpha=10.0, beta_param=1.0, max_deadline=20.0, min_deadline=1.5)
+    # Collect in COMPLETION order against one shared deadline, then yield in
+    # DB order. Waiting on futures[1] first let a single slow DB spend the
+    # whole budget, after which DBs 2..9 were declared timed out with 0.10s
+    # "remaining" even though their scans had long finished (blade
+    # 2026-10-26: 8 of 9 grid DBs dropped on a cold cache, recall returned
+    # only side-lane doc mirrors).
+    done: dict = {}
+    by_future = {f: i for i, f in futures.items()}
     try:
-        futures = {i: executor.submit(copy_context().run, scan_fn, i)
-                   for i in range(1, MAX_DB_COUNT + 1)}
-        deadline = time.monotonic() + elevated_lane_timeout(alpha=10.0, beta_param=1.0, max_deadline=20.0, min_deadline=1.5)
-        # Collect in COMPLETION order against one shared deadline, then yield in
-        # DB order. Waiting on futures[1] first let a single slow DB spend the
-        # whole budget, after which DBs 2..9 were declared timed out with 0.10s
-        # "remaining" even though their scans had long finished (blade
-        # 2026-10-26: 8 of 9 grid DBs dropped on a cold cache, recall returned
-        # only side-lane doc mirrors).
-        done: dict = {}
-        by_future = {f: i for i, f in futures.items()}
-        try:
-            for fut in concurrent.futures.as_completed(
-                    futures.values(), timeout=max(0.1, deadline - time.monotonic())):
-                done[by_future[fut]] = fut.result()
-        except concurrent.futures.TimeoutError:
-            pass
+        for fut in concurrent.futures.as_completed(
+                futures.values(), timeout=max(0.1, deadline - time.monotonic())):
+            done[by_future[fut]] = fut.result()
+    except concurrent.futures.TimeoutError:
+        pass
     finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+        # Queued-but-not-started scans are cancelled so they never occupy a
+        # pool slot; running stragglers finish and are dropped.
+        for fut in futures.values():
+            if not fut.done():
+                fut.cancel()
     for i in range(1, MAX_DB_COUNT + 1):
         if i in done:
             yield i, done[i]
