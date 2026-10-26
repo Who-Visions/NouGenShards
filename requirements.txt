@@ -174,7 +174,7 @@ packaging==26.3
     #   huggingface-hub
 pandas==3.0.3
     # via gradio
-pillow==13.0.0
+pillow==12.3.0
     # via gradio
 proto-plus==1.28.4
     # via google-api-core
