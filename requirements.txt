@@ -21,7 +21,7 @@ attrs==26.1.0
     #   referencing
 audioop-lts==0.2.2 ; python_full_version >= '3.13'
     # via gradio
-brotli==1.2.0
+brotli==1.2.1
     # via gradio
 certifi==2026.10.19
     # via
@@ -50,7 +50,7 @@ fastapi==0.142.2
     # via
     #   nougen-shards (pyproject.toml)
     #   gradio
-filelock==3.32.5
+filelock==4.2.1
     # via huggingface-hub
 fsspec==2026.9.0
     # via
@@ -174,7 +174,7 @@ packaging==26.3
     #   huggingface-hub
 pandas==3.0.3
     # via gradio
-pillow==12.3.0
+pillow==13.0.0
     # via gradio
 proto-plus==1.28.4
     # via google-api-core
