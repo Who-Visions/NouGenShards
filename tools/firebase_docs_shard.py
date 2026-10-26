@@ -62,6 +62,9 @@ def fetch(url: str) -> str | None:
         except urllib.error.HTTPError as e:
             if e.code in (404, 410):
                 return None
+            if e.code == 429:  # 24 pages lost to 429s on the 2026-10-26 re-run; honour Retry-After
+                time.sleep(min(int(e.headers.get("Retry-After") or 0) or 20 * (attempt + 1), 120))
+                continue
         except (urllib.error.URLError, TimeoutError):
             pass
         time.sleep(1 + 2 * attempt)
