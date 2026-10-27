@@ -32,7 +32,7 @@ if sys.platform == "win32":
         pass
 
 # Directories
-PRETRAIN_DIR = Path(r"C:\Users\super\.nougen\pretrain")
+PRETRAIN_DIR = Path.home() / ".nougen" / "pretrain"
 TURNS_DIR = PRETRAIN_DIR / "turns"
 PROGRESS_DB = PRETRAIN_DIR / "pretrain_progress.db"
 
