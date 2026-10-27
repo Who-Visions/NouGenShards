@@ -116,6 +116,9 @@ def isolated_msg_home(tmp_path_factory, monkeypatch):
     import os as real_os
     from nougen_shards import nougenmsg
     home = tmp_path_factory.mktemp("msg_home")
+    # NOUGEN_ROOT is honoured first by nougenmsg._home(); the host's real
+    # runtime root must not override the throwaway home during tests.
+    monkeypatch.delenv("NOUGEN_ROOT", raising=False)
     monkeypatch.setattr(nougenmsg, "os", _HomeOs(real_os, home))
     yield home
 
@@ -126,3 +129,58 @@ def _fleet_hosts_fixture(monkeypatch):
     they neither depend on nor touch the developer's ~/.nougen/fleet_hosts.json."""
     from pathlib import Path
     monkeypatch.setenv("NOUGEN_FLEET_HOSTS_FILE", str(Path(__file__).parent / "fixtures" / "fleet_hosts.json"))
+
+
+@pytest.fixture(scope="session")
+def shared_mcp_client():
+    """The one lifespan-entered node client for the whole process.
+
+    ``StreamableHTTPSessionManager.run()`` may run once per instance, and the
+    node builds one instance at import, so every module that drives ``/mcp``
+    through the real app shares this client and swaps ``core.GLOBAL_DIR`` /
+    ``node.NODE_TOKEN`` around it at module scope (tool handlers and the token
+    gate read both at call time).
+    """
+    import tempfile
+    from pathlib import Path
+    from fastapi.testclient import TestClient
+    import app as node
+    from nougen_shards import core
+
+    import os as _os
+    import threading as _threading
+    import time as _time
+
+    vault = Path(tempfile.mkdtemp(prefix="ngs_shared_mcp_vault_"))
+    saved = (core.GLOBAL_DIR, core.get_db_path)
+    # The lifespan now outlives one module, so none of the node's background
+    # loops may keep running against whatever GLOBAL_DIR a later module swaps
+    # in: no recall warm-up, no listener self-check. The boot-quarantine pass
+    # is awaited below so it finishes against the throwaway vault.
+    quiet = {"NOUGEN_WARMUP": "0", "NOUGEN_LISTENER_SELFCHECK_S": "0"}
+    saved_env = {k: _os.environ.get(k) for k in quiet}
+    _os.environ.update(quiet)
+    core.GLOBAL_DIR = vault
+    core.get_db_path = lambda index: vault / f"mcp_{index}.db"
+    core.init_db(1)
+    client = TestClient(node.app)
+    try:
+        client.__enter__()  # lifespan runs against the throwaway vault
+        deadline = _time.monotonic() + 30
+        while _time.monotonic() < deadline and any(
+                t.name.startswith("nougen-") and t.is_alive() for t in _threading.enumerate()):
+            _time.sleep(0.05)
+    finally:
+        # Hand the process-wide vault back right away: the client stays open
+        # for the whole session, but every other module must see its own
+        # GLOBAL_DIR, not this one.
+        core.GLOBAL_DIR, core.get_db_path = saved
+        for k, v in saved_env.items():
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
+    try:
+        yield client
+    finally:
+        client.__exit__(None, None, None)
