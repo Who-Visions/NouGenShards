@@ -689,7 +689,8 @@ def ingest_service_account(json_data: str):
 
         # Store metadata in DB
         ingest_secret(f"GCP_SA_{project_id.upper()}", client_email)
-        print(f"  [+] Service Account for {project_id} stored at {target_path}")
+        # Path deliberately not echoed: the secrets vault location stays out of console logs.
+        print(f"  [+] Service Account for {project_id} stored in the service_accounts vault")
 
     except (json.JSONDecodeError, OSError) as exc:
         print(f"  [!] Error ingesting service account: {exc}")
@@ -1242,7 +1243,7 @@ if __name__ == "__main__":
         print(f"[*] Migrated {COUNT} legacy plaintext secrets to DPAPI encryption.")
     elif CMD == "init":
         init_vault()
-        print(f"[*] Keymaker initialized at {vault_dir().absolute()}")
+        print("[*] Keymaker initialized (run `nougen auth status` for the vault location)")
     elif CMD == "add" and len(sys.argv) == 4:
         ingest_secret(sys.argv[2], sys.argv[3])
     elif CMD == "sa" and len(sys.argv) == 3:

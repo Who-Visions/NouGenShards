@@ -24,8 +24,6 @@ os.environ["NGS_NODE_TOKEN"] = TEST_TOKEN
 os.environ["NOUGEN_HOME"] = _tmp
 os.environ["NOUGEN_VAULT_DIR"] = os.path.join(_tmp, ".vault")
 
-from fastapi.testclient import TestClient  # noqa: E402
-
 import app as node  # noqa: E402
 import nougen_shards.core as core  # noqa: E402
 
