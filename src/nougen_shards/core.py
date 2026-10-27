@@ -1908,6 +1908,14 @@ def elevated_lane_timeout(
 
 _SCAN_POOL = None
 _SCAN_POOL_LOCK = _threading.Lock()
+# How many grid DBs the most recent _run_db_scans in THIS context wrote off as
+# deadline misses. Warm-up reads it to decide whether the vector cache is built.
+_SCAN_MISSES: ContextVar[int] = ContextVar("ngs_scan_misses", default=-1)
+
+
+def last_scan_miss_count() -> int:
+    """Grid DBs dropped by the last scan in this context; -1 if none ran yet."""
+    return _SCAN_MISSES.get()
 # Logged fallback only: env NOUGEN_SCAN_POOL_WORKERS / NOUGEN_SCAN_POOL_RECALLS win.
 _SCAN_POOL_RECALLS_FALLBACK = 3
 
@@ -1998,6 +2006,7 @@ def _run_db_scans(scan_fn):
         for fut in futures.values():
             if not fut.done():
                 fut.cancel()
+    _SCAN_MISSES.set(sum(1 for i in range(1, MAX_DB_COUNT + 1) if i not in done))
     for i in range(1, MAX_DB_COUNT + 1):
         if i in done:
             yield i, done[i]

@@ -130,3 +130,25 @@ def test_repeated_recalls_during_a_stuck_scan_do_not_spawn_more_threads(monkeypa
     finally:
         release.set()
         monkeypatch.setattr(core, "_SCAN_POOL", None)
+
+
+def test_run_db_scans_reports_miss_count_for_warmup(monkeypatch):
+    monkeypatch.setattr(core, "_retrieve_db_workers", lambda: 4)
+    monkeypatch.setattr(core, "elevated_lane_timeout", lambda **k: 0.4)
+    monkeypatch.setattr(core, "_SCAN_POOL", None)
+    release = threading.Event()
+
+    def scan(i):
+        if i in (1, 2):
+            release.wait(5.0)
+        return ([f"db{i}"], False)
+
+    try:
+        list(core._run_db_scans(scan))
+        assert core.last_scan_miss_count() == 2
+        release.set()
+        list(core._run_db_scans(lambda i: ([f"db{i}"], False)))
+        assert core.last_scan_miss_count() == 0
+    finally:
+        release.set()
+        monkeypatch.setattr(core, "_SCAN_POOL", None)
