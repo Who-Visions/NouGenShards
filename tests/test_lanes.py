@@ -68,9 +68,9 @@ def test_bind_address_in_env_is_sanitized_to_a_dialable_host():
 
 
 def test_explicit_host_list_comes_first_in_order():
-    env = {"NOUGEN_OLLAMA_HOSTS": "http://whoart.local:11434, http://10.0.0.9:11436"}
+    env = {"NOUGEN_OLLAMA_HOSTS": "http://ollama-a.example.test:11434, http://ollama-b.example.test:11436"}
     urls = [h["url"] for h in lanes.candidate_hosts(env)]
-    assert urls[:2] == ["http://whoart.local:11434", "http://10.0.0.9:11436"]
+    assert urls[:2] == ["http://ollama-a.example.test:11434", "http://ollama-b.example.test:11436"]
 
 
 def test_fallback_host_is_used_only_after_probe_confirms():
