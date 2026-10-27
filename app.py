@@ -70,7 +70,7 @@ node_mcp = MCPServer(
         "nougentube_ingest writes the resulting memories to the grid. "
         "NouGen-Verse tools analyze, plan and suggest repairs for user-provided drafts; "
         "NouGenTime tools format timestamps in Eastern Time with canonical UTC. "
-        "nougen_media_transcribe uses local Whisper for YouTube videos up to 30 minutes. "
+        "nougentube is subtitle-first with no length cap and falls back to local Whisper; nougen_media_transcribe is Whisper-only for YouTube videos up to NOUGEN_WHISPER_MAX_SECONDS (default 30 minutes). "
         "GitHub inspection and skill lookup are read-only; GitHub README capture writes a shard. "
         "ShadowDweller search retrieves Veilverse material from the shared shard grid."
     ),
@@ -3518,11 +3518,23 @@ def nougentube_transcript(url: str) -> dict:
     }
 
 
+# Logged fallback only; env NOUGEN_WHISPER_MAX_SECONDS wins. Local Whisper on the
+# node's GPU is bounded by wall time, not by what the operator wants to ingest,
+# so the cap belongs to the Whisper path alone: subtitle extraction has no cap.
+_WHISPER_MAX_SECONDS_FALLBACK = 1800
+
+
+def _whisper_max_seconds() -> int:
+    return _env_int("NOUGEN_WHISPER_MAX_SECONDS", _WHISPER_MAX_SECONDS_FALLBACK)
+
+
 @node_mcp.tool()
 @_offloaded
 def nougen_media_transcribe(url: str, language: Optional[str] = None,
                             whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
-    """Transcribe a YouTube video with local Whisper; videos over 30 minutes are rejected."""
+    """Transcribe a YouTube video with local Whisper. Videos longer than
+    NOUGEN_WHISPER_MAX_SECONDS (fallback 1800) are rejected; use ``nougentube``
+    for subtitle-first extraction with no length cap."""
     if not url or len(url) > 2048:
         raise ValueError("provide one YouTube video URL (maximum 2048 characters)")
     from urllib.parse import urlsplit
@@ -3547,8 +3559,12 @@ def nougen_media_transcribe(url: str, language: Optional[str] = None,
                            "noplaylist": True}) as ydl:
         metadata = ydl.extract_info(url.strip(), download=False)
     duration = (metadata or {}).get("duration")
-    if not isinstance(duration, (int, float)) or duration <= 0 or duration > 1800:
-        raise ValueError("video duration must be known and no longer than 30 minutes")
+    max_seconds = _whisper_max_seconds()
+    if not isinstance(duration, (int, float)) or duration <= 0 or duration > max_seconds:
+        raise ValueError(
+            f"video duration must be known and no longer than {max_seconds} seconds "
+            f"(NOUGEN_WHISPER_MAX_SECONDS) for local Whisper; nougentube extracts "
+            f"subtitles first with no length cap")
     from nougen_shards.transcriber import NouGenTranscriber
     with tempfile.TemporaryDirectory(prefix="nougen_transcribe_") as output_dir:
         transcriber = NouGenTranscriber(output_dir=output_dir, whisper_model=whisper_model)
@@ -3572,8 +3588,59 @@ def nougen_media_transcribe(url: str, language: Optional[str] = None,
 @_offloaded
 def nougentube(url: str, language: Optional[str] = None,
                whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
-    """Transcribe and summarize video/audio with subtitle-first extraction and local Whisper fallback."""
-    return _unwrap_sync(nougen_media_transcribe)(url=url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
+    """Transcribe a YouTube video subtitle-first (youtube-transcript-api / yt-dlp
+    subtitles, no length cap), falling back to local Whisper only when no
+    transcript exists. ``auto_shard`` captures the transcript into the active
+    vault through the NouGenTube pipeline (deduplicated per video id)."""
+    if not url or len(url) > 2048:
+        raise ValueError("provide one YouTube video URL (maximum 2048 characters)")
+    from urllib.parse import urlsplit
+    parsed = urlsplit(url.strip())
+    allowed_hosts = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+    if parsed.scheme not in {"http", "https"} or (parsed.hostname or "").lower() not in allowed_hosts:
+        raise ValueError("NouGenTube accepts YouTube video URLs only")
+    clean = url.strip()
+    tube = _load_nougentube()
+    video_id = tube.extract_video_id(clean)
+    if not video_id or tube.is_playlist(clean):
+        raise ValueError("URL must identify one YouTube video, not a playlist")
+    fetch_transcript = getattr(tube, "fetch_transcript", None)
+    transcript, tier = ("", None)
+    if callable(fetch_transcript):
+        try:
+            transcript, tier = fetch_transcript(video_id, clean)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("nougentube: subtitle extraction failed for %s (%s); trying Whisper",
+                           video_id, type(exc).__name__)
+            transcript, tier = ("", None)
+    if not transcript:
+        out = _unwrap_sync(nougen_media_transcribe)(url=clean, language=language,
+                                                    whisper_model=whisper_model, auto_shard=auto_shard)
+        out["transcript_source"] = "whisper"
+        out["fallback"] = "whisper"
+        return out
+    fetch_metadata = getattr(tube, "fetch_metadata", None)
+    metadata = fetch_metadata(clean, video_id) if callable(fetch_metadata) else {}
+    metadata = metadata or {}
+    shard_status = None
+    if auto_shard:
+        process_video = getattr(tube, "process_video", None)
+        if callable(process_video):
+            shard_status = process_video(clean, dry_run=False)
+    return {
+        "title": metadata.get("title"),
+        "source": clean,
+        "language": language,
+        "duration_seconds": metadata.get("duration"),
+        "transcript": transcript[:20000],
+        "transcript_truncated": len(transcript) > 20000,
+        "transcript_source": tier,
+        "sharded": bool(shard_status) and str(shard_status).startswith(("captured", "skipped-dup")),
+        "shard_status": shard_status,
+        "model": None,
+        "fallback": "none",
+        "metadata": metadata,
+    }
 
 
 @node_mcp.tool()
