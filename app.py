@@ -1388,26 +1388,61 @@ async def capture_vault_context(
 
 # Logged fallback only; env NOUGEN_HEALTH_COVERAGE_TTL_S wins.
 _HEALTH_COVERAGE_TTL_S_FALLBACK = 30.0
-_COVERAGE_CACHE: dict = {"at": 0.0, "value": None}
+_HEALTH_COVERAGE_WAIT_S_FALLBACK = 5.0
+_COVERAGE_CACHE: dict = {"at": 0.0, "value": None, "refreshing": False}
 _COVERAGE_LOCK = threading.Lock()
 
 
-def cached_substrate_coverage(now: Optional[float] = None) -> dict:
-    """_substrate_coverage() memoised for NOUGEN_HEALTH_COVERAGE_TTL_S seconds.
+def cached_substrate_coverage(now: Optional[float] = None, wait_s: Optional[float] = None) -> dict:
+    """_substrate_coverage() memoised for NOUGEN_HEALTH_COVERAGE_TTL_S seconds,
+    served stale-while-revalidate.
 
     Health probes arrive every few seconds from peers, watchdogs and tunnels;
     recounting nine shard tables for each one is wasted I/O that competes with
-    recall and warm-up. One computation per TTL window, shared by all callers.
+    recall and warm-up. Past the TTL the LAST snapshot is returned at once
+    (tagged "stale": true) and one background refresh is started; only the very
+    first call, with nothing cached yet, waits for the count, and then at most
+    NOUGEN_HEALTH_COVERAGE_WAIT_S (logged fallback 5s) before answering with a
+    placeholder. whoart 2026-10-27: under memory starvation the nine COUNT(*)
+    took 37.5s and every peer probe timed out although the node was serving.
     """
     ttl = _env_float("NOUGEN_HEALTH_COVERAGE_TTL_S", _HEALTH_COVERAGE_TTL_S_FALLBACK)
     t = time.monotonic() if now is None else now
     with _COVERAGE_LOCK:
         cached = _COVERAGE_CACHE["value"]
-        if cached is not None and t - _COVERAGE_CACHE["at"] < ttl:
-            return cached
-        value = _substrate_coverage()
-        _COVERAGE_CACHE.update({"at": t, "value": value})
-        return value
+        fresh = cached is not None and t - _COVERAGE_CACHE["at"] < ttl
+        refreshing = _COVERAGE_CACHE.get("refreshing", False)
+        if cached is not None and (fresh or refreshing):
+            return dict(cached, stale=not fresh)
+        _COVERAGE_CACHE["refreshing"] = True
+
+    def _refresh():
+        try:
+            value = _substrate_coverage()
+            with _COVERAGE_LOCK:
+                _COVERAGE_CACHE.update({"at": time.monotonic() if now is None else now, "value": value})
+        except Exception as exc:  # pylint: disable=broad-except
+            logging.getLogger(__name__).warning("coverage refresh failed: %s: %s", type(exc).__name__, exc)
+        finally:
+            with _COVERAGE_LOCK:
+                _COVERAGE_CACHE["refreshing"] = False
+                _COVERAGE_CACHE.get("done", threading.Event()).set()
+
+    done = threading.Event()
+    with _COVERAGE_LOCK:
+        _COVERAGE_CACHE["done"] = done
+    threading.Thread(target=_refresh, name="nougen-coverage-refresh", daemon=True).start()
+    if cached is not None:
+        return dict(cached, stale=True)
+    # Nothing cached yet: bound the wait so a cold node still answers probes.
+    budget = _env_float("NOUGEN_HEALTH_COVERAGE_WAIT_S", _HEALTH_COVERAGE_WAIT_S_FALLBACK) if wait_s is None else wait_s
+    done.wait(budget)
+    with _COVERAGE_LOCK:
+        value = _COVERAGE_CACHE["value"]
+    if value is not None:
+        return dict(value, stale=False)
+    return {"databases_mounted": 0, "databases_expected": core.MAX_DB_COUNT, "shards": 0,
+            "span": {}, "pending": True, "stale": True}
 
 
 def _substrate_coverage() -> dict:
@@ -2044,11 +2079,13 @@ async def local_health():
     coverage = await asyncio.to_thread(cached_substrate_coverage)
     db_present = coverage.get("databases_mounted", 0)
     db_expected = coverage.get("databases_expected", 9)
-    healthy = db_present == db_expected
+    healthy = db_present == db_expected or bool(coverage.get("pending"))
 
     return {
         "healthy": healthy,
         "current": True,
+        "coverage_stale": bool(coverage.get("stale")),
+        "coverage_pending": bool(coverage.get("pending")),
         "vault_id": vid.value,
         "machine_id": machine_id,
         "instance_id": instance_id,
