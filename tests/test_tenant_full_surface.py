@@ -97,7 +97,9 @@ def test_every_registered_tool_is_labelled():
     report = tenant_policy.classify(_registered_tool_names())
     assert report["unclassified"] == [], (
         "label these in nougen_shards/tenant_policy.py before shipping: "
-        f"{report['unclassified']}")
+        f"{report['unclassified']} (policy file={tenant_policy.__file__}, "
+        f"scoped={len(tenant_policy.TENANT_SCOPED)}, owner_only={len(tenant_policy.OWNER_ONLY)}, "
+        f"xoah_in_owner_only={sorted(n for n in tenant_policy.OWNER_ONLY if 'xoah' in n)})")
     assert report["double_labelled"] == []
     assert report["stale_labels"] == [], report["stale_labels"]
     assert len(report["tenant"]) > 40, "the tenant surface regressed to a stub"
@@ -243,9 +245,13 @@ def test_tenant_relay_leg_lands_in_tenant_vault_not_owner_home(client, tenant_au
     assert leg_id in _text(r.json()["result"])
 
 
-def test_tenant_vault_put_uses_tenant_secrets_db(client, tenant_auth):
+def test_tenant_vault_put_uses_tenant_secrets_db(client, tenant_auth, monkeypatch):
     import time
     started = time.time() - 1
+    # This test pins WHICH secrets DB a tenant write lands in, not the cipher.
+    # POSIX CI runners have no DPAPI and no `keyring` backend, where keymaker
+    # fails closed; allow the plaintext path for this throwaway tmp vault only.
+    monkeypatch.setenv("NOUGEN_ALLOW_PLAINTEXT_VAULT", "1")
     r = client.post("/mcp/", headers=tenant_auth, json=_rpc(
         "tools/call", {"name": "vault_put",
                        "arguments": {"key": "ACME_KEY", "value": "s3cr3t-value"}}))
