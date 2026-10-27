@@ -11,7 +11,8 @@ import nougen_shards.core as core
 
 
 WARMUP_SUPPORT = ("_env_int", "_env_float", "_utc_now_iso", "_WARMUP_STATE",
-                  "_WARMUP_MAX_PASSES_FALLBACK", "_WARMUP_PAUSE_S_FALLBACK")
+                  "_WARMUP_MAX_PASSES_FALLBACK", "_WARMUP_PAUSE_S_FALLBACK",
+                  "_WARMUP_EMBED_TIMEOUT_S_FALLBACK", "_warm_query_embedding")
 
 
 def _load(names):

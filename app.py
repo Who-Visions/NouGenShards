@@ -936,6 +936,32 @@ def _env_float(name: str, fallback: float) -> float:
         return fallback
 
 
+# Logged fallback only; env NOUGEN_WARMUP_EMBED_TIMEOUT_S wins.
+_WARMUP_EMBED_TIMEOUT_S_FALLBACK = 120.0
+
+
+def _warm_query_embedding(timeout_s: float) -> dict:
+    """Load the recall embedding model once with a generous budget.
+
+    Returns {"ready": bool, "model": str, "seconds": float, "error": str|None}.
+    Never raises: a lane without ollama still warms its grid.
+    """
+    model = os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text")
+    started = time.perf_counter()
+    try:
+        from nougen_shards.embedding_backfill import embed as _embed  # pylint: disable=import-outside-toplevel
+        vec = _embed("warmup", model, timeout=timeout_s)
+        ready = bool(vec)
+        err = None if ready else "empty embedding"
+    except Exception as exc:  # pylint: disable=broad-except
+        ready, err = False, f"{type(exc).__name__}: {exc}"
+    secs = round(time.perf_counter() - started, 1)
+    logging.getLogger(__name__).log(logging.INFO if ready else logging.WARNING,
+                                    "warm-up embedding model %s %s in %.1fs%s", model,
+                                    "ready" if ready else "unavailable", secs, f": {err}" if err else "")
+    return {"ready": ready, "model": model, "seconds": secs, "error": err}
+
+
 def warmup_status() -> dict:
     """Copy of the warm-up state; "warm" is True only once no grid DB was dropped."""
     st = dict(_WARMUP_STATE)
@@ -971,6 +997,14 @@ def _start_recall_warmup() -> None:
         pause_s = _env_float("NOUGEN_WARMUP_PAUSE_S", _WARMUP_PAUSE_S_FALLBACK)
         _WARMUP_STATE.update({"status": "warming", "passes": 0, "misses": None, "started_utc": _utc_now_iso()})
         try:
+            # Load the query-embedding model FIRST. core's per-query embed budget
+            # (NOUGEN_QUERY_EMBED_TIMEOUT, ~6s) is sized for a resident model; a
+            # cold load on a CPU-only ollama measured 60s on whoart 2026-10-26,
+            # so every recall degraded to keyword-only until something else
+            # happened to load it. One long-budget embed here pays that once and
+            # pins the model with the backfill keep_alive.
+            _WARMUP_STATE["embed"] = _warm_query_embedding(
+                _env_float("NOUGEN_WARMUP_EMBED_TIMEOUT_S", _WARMUP_EMBED_TIMEOUT_S_FALLBACK))
             # One pass used to be the whole warm-up, but on a cold 9-DB grid one
             # retrieve exhausts the shared scan deadline, caches only the DBs
             # that finished, and leaves the rest cold until real traffic pays
