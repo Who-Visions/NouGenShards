@@ -124,12 +124,13 @@ def expand_playlist(url: str) -> List[str]:
 
 # ------------------------------------------------------------------- fetching
 
-def _fetch_via_transcript_api(video_id: str) -> Optional[str]:
-    """Tier 1: youtube-transcript-api. Returns timestamped text or None."""
+def _fetch_via_transcript_api(video_id: str, languages: Optional[List[str]] = None) -> Optional[str]:
+    """Tier 1: youtube-transcript-api. Returns timestamped text or None.
+    ``languages`` overrides the NOUGEN_TUBE_LANGS preference for one call."""
     try:
         from youtube_transcript_api import YouTubeTranscriptApi  # lazy
         api = YouTubeTranscriptApi()
-        fetched = api.fetch(video_id, languages=LANGS)
+        fetched = api.fetch(video_id, languages=list(languages) if languages else LANGS)
         lines = []
         for entry in fetched:
             start = getattr(entry, "start", None)
@@ -171,8 +172,9 @@ def _parse_vtt(text: str) -> str:
     return "\n\n".join(lines)
 
 
-def _fetch_via_ytdlp(url: str) -> Optional[str]:
-    """Tier 2: yt-dlp auto/manual subs, parsed from VTT in a temp dir."""
+def _fetch_via_ytdlp(url: str, languages: Optional[List[str]] = None) -> Optional[str]:
+    """Tier 2: yt-dlp auto/manual subs, parsed from VTT in a temp dir.
+    ``languages`` overrides the NOUGEN_TUBE_LANGS preference for one call."""
     try:
         import yt_dlp  # lazy
         with tempfile.TemporaryDirectory(prefix="nougentube_") as tmp:
@@ -180,7 +182,7 @@ def _fetch_via_ytdlp(url: str) -> Optional[str]:
                 "skip_download": True,
                 "writesubtitles": True,
                 "writeautomaticsub": True,
-                "subtitleslangs": LANGS,
+                "subtitleslangs": list(languages) if languages else LANGS,
                 "subtitlesformat": "vtt",
                 "outtmpl": os.path.join(tmp, "sub"),
                 "quiet": True,
@@ -201,16 +203,19 @@ def _fetch_via_ytdlp(url: str) -> Optional[str]:
         return None
 
 
-def fetch_transcript(video_id: str, url: str) -> Tuple[Optional[str], Optional[str]]:
+def fetch_transcript(video_id: str, url: str,
+                     languages: Optional[List[str]] = None) -> Tuple[Optional[str], Optional[str]]:
     """Tiered fetch: transcript-api first, yt-dlp autosubs second.
 
     Returns (text, tier_name); (None, None) means both tiers failed and the
     caller should capture a metadata-only stub — never abort the batch.
+    ``languages`` (caption language codes, most preferred first) overrides the
+    NOUGEN_TUBE_LANGS default for this call only.
     """
-    text = _fetch_via_transcript_api(video_id)
+    text = _fetch_via_transcript_api(video_id, languages)
     if text:
         return text, "youtube-transcript-api"
-    text = _fetch_via_ytdlp(url)
+    text = _fetch_via_ytdlp(url, languages)
     if text:
         return text, "yt-dlp-autosubs"
     return None, None
