@@ -3606,9 +3606,19 @@ def nougentube(url: str, language: Optional[str] = None,
         raise ValueError("URL must identify one YouTube video, not a playlist")
     fetch_transcript = getattr(tube, "fetch_transcript", None)
     transcript, tier = ("", None)
+    language_honored = False
     if callable(fetch_transcript):
+        import inspect as _inspect
         try:
-            transcript, tier = fetch_transcript(video_id, clean)
+            accepts_languages = "languages" in _inspect.signature(fetch_transcript).parameters
+        except (TypeError, ValueError):
+            accepts_languages = False
+        try:
+            if language and accepts_languages:
+                transcript, tier = fetch_transcript(video_id, clean, languages=[language])
+                language_honored = bool(transcript)
+            else:
+                transcript, tier = fetch_transcript(video_id, clean)
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning("nougentube: subtitle extraction failed for %s (%s); trying Whisper",
                            video_id, type(exc).__name__)
@@ -3630,7 +3640,10 @@ def nougentube(url: str, language: Optional[str] = None,
     return {
         "title": metadata.get("title"),
         "source": clean,
-        "language": language,
+        # Only claim a language the subtitle fetch actually selected; a module
+        # without language selection reports None rather than echoing the ask.
+        "language": language if language_honored else None,
+        "language_requested": language,
         "duration_seconds": metadata.get("duration"),
         "transcript": transcript[:20000],
         "transcript_truncated": len(transcript) > 20000,

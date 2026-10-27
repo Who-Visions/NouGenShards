@@ -26,7 +26,7 @@ LONG = 1801
 
 
 def _fakes(monkeypatch, *, transcript, duration=LONG):
-    calls = {"whisper": [], "sharded": []}
+    calls = {"whisper": [], "sharded": [], "languages": []}
 
     class Tube:
         @staticmethod
@@ -38,7 +38,8 @@ def _fakes(monkeypatch, *, transcript, duration=LONG):
             return False
 
         @staticmethod
-        def fetch_transcript(video_id, url):
+        def fetch_transcript(video_id, url, languages=None):
+            calls["languages"].append(languages)
             return transcript, ("youtube-transcript-api" if transcript else None)
 
         @staticmethod
@@ -131,3 +132,43 @@ def test_media_transcribe_cap_comes_from_env(monkeypatch):
     assert node._whisper_max_seconds() == node._WHISPER_MAX_SECONDS_FALLBACK == 1800
     monkeypatch.setenv("NOUGEN_WHISPER_MAX_SECONDS", "7200")
     assert node._whisper_max_seconds() == 7200
+
+
+def test_requested_language_is_passed_to_the_subtitle_fetch(monkeypatch):
+    calls = _fakes(monkeypatch, transcript="[00:00] subtitulos")
+    result, text = _wire("nougentube", {"url": URL, "language": "es"})
+    assert not result.is_error, text
+    body = json.loads(text)
+    assert calls["languages"] == [["es"]]
+    assert body["language"] == "es" and body["language_requested"] == "es"
+
+
+def test_language_is_not_claimed_when_the_module_cannot_select_it(monkeypatch):
+    _fakes(monkeypatch, transcript="[00:00] english captions")
+
+    class OldTube:
+        extract_video_id = staticmethod(lambda url: url.rsplit("=", 1)[-1])
+        is_playlist = staticmethod(lambda url: False)
+
+        @staticmethod
+        def fetch_transcript(video_id, url):
+            return "[00:00] english captions", "youtube-transcript-api"
+
+        @staticmethod
+        def fetch_metadata(url, video_id):
+            return {"title": "T", "duration": LONG}
+
+    monkeypatch.setattr(node, "_load_nougentube", lambda: OldTube)
+    result, text = _wire("nougentube", {"url": URL, "language": "es"})
+    body = json.loads(text)
+    assert body["language"] is None and body["language_requested"] == "es"
+
+
+def test_tube_fetch_transcript_threads_languages_to_both_tiers(monkeypatch):
+    from nougen_shards import tube
+    seen = []
+    monkeypatch.setattr(tube, "_fetch_via_transcript_api", lambda vid, languages=None: seen.append(("api", languages)) or None)
+    monkeypatch.setattr(tube, "_fetch_via_ytdlp", lambda url, languages=None: seen.append(("ytdlp", languages)) or "[00:00] x")
+    text, tier = tube.fetch_transcript("abc", "https://youtu.be/abc", languages=["fr", "en"])
+    assert tier == "yt-dlp-autosubs" and text.startswith("[00:00]")
+    assert seen == [("api", ["fr", "en"]), ("ytdlp", ["fr", "en"])]
