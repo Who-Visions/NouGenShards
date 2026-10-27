@@ -102,7 +102,7 @@ overwritten fixtures before).
 testing (a sequential scan that cannot finish inside its timeout, single-threaded fetching
 that stalls a pipeline, worker processes that outlive a client) is engineered away in the same
 turn: cursor-based batch rotation across runs, bounded-concurrency prefetch, and process-tree
-termination on disconnect (`taskkill /T /F /PID` on Windows, so no orphaned workers accumulate).
+termination on disconnect (`taskkill /T /F /PID <pid>` on Windows, with the PID of the worker's root process, as `tools/relay_live.py` does with `proc.pid`, so no orphaned workers accumulate).
 A known limitation written at the end of a turn is not a receipt item.
 
 **Production build gate (web applications).** Stop any dev server holding the target port.
