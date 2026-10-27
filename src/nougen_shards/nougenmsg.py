@@ -1447,17 +1447,21 @@ class NouGenMsgBus:
             return empty_res if as_contract else []
 
         inbox_dirs = []
+        nougen_home = os.environ.get("NOUGEN_HOME") or os.path.expanduser(os.path.join("~", ".nougen"))
+        user_home = os.path.expanduser("~")
         if target in ("antigravity", "all"):
             inbox_dirs.extend([
-                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
-                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox")),
-                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox", "archive")),
-                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox", "archive")),
+                os.path.join(user_home, ".gemini", "config", "inbox"),
+                os.path.join(nougen_home, "agy_inbox"),
+                os.path.join(user_home, "agy_inbox"),
+                os.path.join(user_home, ".gemini", "config", "inbox", "archive"),
+                os.path.join(nougen_home, "agy_inbox", "archive"),
+                os.path.join(user_home, "agy_inbox", "archive"),
             ])
         if target in ("codex", "all"):
             inbox_dirs.extend([
-                os.path.expanduser(os.path.join("~", ".codex", "inbox")),
-                os.path.expanduser(os.path.join("~", ".codex", "inbox", "archive")),
+                os.path.join(user_home, ".codex", "inbox"),
+                os.path.join(user_home, ".codex", "inbox", "archive"),
             ])
 
         checked_sources = [d for d in inbox_dirs if os.path.exists(d)]
