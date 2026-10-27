@@ -976,6 +976,7 @@ def _start_recall_warmup() -> None:
             # restart; whoart's fan-out missed its 25s grace meanwhile). Keep
             # passing until a retrieve drops no grid DB, or the pass budget ends.
             for n in range(1, max_passes + 1):
+                core.begin_scan_miss_tracking()
                 core.retrieve("warmup", limit=1, domain_key="*")
                 misses = core.last_scan_miss_count()
                 _WARMUP_STATE.update({"passes": n, "misses": misses})

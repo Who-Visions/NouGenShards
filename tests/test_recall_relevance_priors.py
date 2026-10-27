@@ -9,6 +9,7 @@ mirrors and Bash-error captures. Two causes, two pins:
 """
 import threading
 import time
+from contextvars import copy_context
 
 from nougen_shards import core
 
@@ -144,11 +145,18 @@ def test_run_db_scans_reports_miss_count_for_warmup(monkeypatch):
         return ([f"db{i}"], False)
 
     try:
-        list(core._run_db_scans(scan))
+        core.begin_scan_miss_tracking()
+        # The vector lane runs its scans under copy_context().run(); the miss
+        # count must still reach the caller that began tracking.
+        copy_context().run(lambda: list(core._run_db_scans(scan)))
         assert core.last_scan_miss_count() == 2
         release.set()
+        core.begin_scan_miss_tracking()
         list(core._run_db_scans(lambda i: ([f"db{i}"], False)))
         assert core.last_scan_miss_count() == 0
+        assert core.last_scan_miss_count.__doc__  # tracked, not -1
+        core.begin_scan_miss_tracking()
+        assert core.last_scan_miss_count() == -1
     finally:
         release.set()
         monkeypatch.setattr(core, "_SCAN_POOL", None)
