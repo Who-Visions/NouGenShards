@@ -101,7 +101,12 @@ def test_every_registered_tool_is_labelled():
         f"scoped={len(tenant_policy.TENANT_SCOPED)}, owner_only={len(tenant_policy.OWNER_ONLY)}, "
         f"xoah_in_owner_only={sorted(n for n in tenant_policy.OWNER_ONLY if 'xoah' in n)})")
     assert report["double_labelled"] == []
-    assert report["stale_labels"] == [], report["stale_labels"]
+    # Owner-only labels may name tools that only exist where a plugin is
+    # installed (the xoah canon tools register from the node's plugin dir, so
+    # CI never sees them): a stale OWNER_ONLY label is harmless. A stale
+    # TENANT_SCOPED label is a typo that silently grants nothing, so it fails.
+    stale_scoped = sorted(set(report["stale_labels"]) & tenant_policy.TENANT_SCOPED)
+    assert stale_scoped == [], f"TENANT_SCOPED names not registered on this node: {stale_scoped}"
     assert len(report["tenant"]) > 40, "the tenant surface regressed to a stub"
 
 

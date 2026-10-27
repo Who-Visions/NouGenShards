@@ -61,7 +61,9 @@ OWNER_ONLY: frozenset[str] = frozenset({
     "nougentube_transcript", "nougen_media_transcribe", "nougentube", "transcribe_media",
     # owner GitHub token
     "github_repo_inspect", "github_repo_read", "github_repo_capture_readme",
-    # author-exclusive IP / personas
+    # author-exclusive IP / personas (xoah_* register from the node plugin dir
+    # and exist only where that plugin is installed; labelled here so a node
+    # that has them never exposes them)
     "shadow_dweller_search",
     "ask_xoah", "xoah_active_scars", "xoah_conservation", "xoah_precedents", "xoah_pressure",
     "xoah_relationship", "xoah_self", "xoah_then_vs_now", "xoah_throne", "xoah_unwritten",
