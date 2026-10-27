@@ -33,6 +33,26 @@ def test_env_preferred_wins_only_if_served_and_allowed():
     assert lanes.pick_model(tags, preferred="not-served:e2b", exclude=[]) == "dav1d:e2b"
 
 
+def test_colon_cloud_convention_is_gated_like_dash_cloud():
+    # review P2 (1): `gemma4:cloud` must not leak past allow_cloud=False
+    tags = ["gemma4:cloud", "qwen3:cloud"]
+    assert lanes.is_cloud("gemma4:cloud") and lanes.is_cloud("gemma4:31b-cloud")
+    assert lanes.pick_model(tags, exclude=[]) is None
+    assert lanes.pick_model(tags, allow_cloud=True, exclude=[]) == "gemma4:cloud"
+
+
+def test_preferred_model_on_a_later_host_beats_small_model_on_an_earlier_host():
+    # review P2 (2): env-preferred > custom e2b/e4b must hold ACROSS hosts, not per host
+    probe = fake_prober({"http://a:11434": ["dav1d:e2b"], "http://b:11434": ["sol-ai:e4b", "gemma4:e4b"]})
+    env = {"NOUGEN_OLLAMA_HOSTS": "http://a:11434,http://b:11434", "NOUGEN_LANE_MODEL": "sol-ai:e4b"}
+    lane = lanes.resolve_lane(env=env, prober=probe, exclude=[])
+    assert (lane["host"], lane["model"]) == ("http://b:11434", "sol-ai:e4b")
+    # and a preferred tag that is banned or unserved falls back to the earlier host
+    env["NOUGEN_LANE_MODEL"] = "gemma4:12b"
+    lane = lanes.resolve_lane(env=env, prober=probe, exclude=[])
+    assert (lane["host"], lane["model"]) == ("http://a:11434", "dav1d:e2b")
+
+
 def test_embedding_models_and_excluded_personas_are_skipped():
     tags = ["nomic-embed-text:latest", "kaedra:e4b", "dav1d:e2b"]
     assert lanes.pick_model(tags, exclude=["kaedra"]) == "dav1d:e2b"

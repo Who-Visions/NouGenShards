@@ -103,7 +103,10 @@ def default_prober(timeout: float = 3.0) -> Prober:
 # Models
 # --------------------------------------------------------------------------------------
 def is_cloud(tag: str) -> bool:
-    return tag.lower().endswith(CLOUD_SUFFIX)
+    """Both Ollama cloud conventions: ``name:31b-cloud`` and ``name:cloud``
+    (matches chat_service.discover_chat_model)."""
+    low = tag.lower()
+    return low.endswith(CLOUD_SUFFIX) or low.endswith(":cloud")
 
 
 def is_custom(tag: str) -> bool:
@@ -224,15 +227,31 @@ def resolve_lane(
     e = os.environ if env is None else env
     probe = prober or default_prober()
     preferred = e.get(f"NOUGEN_{purpose.upper()}_MODEL") or e.get("NOUGEN_LANE_MODEL")
-    tried: List[Dict[str, Any]] = []
-    for host in candidate_hosts(e):
-        tags = probe(host["url"])
-        model = pick_model(tags, allow_cloud=allow_cloud, preferred=preferred, exclude=exclude)
-        tried.append({"url": host["url"], "source": host["source"], "served": len(tags), "picked": model})
+    hosts = candidate_hosts(e)
+    served: Dict[str, List[str]] = {h["url"]: probe(h["url"]) for h in hosts}  # one probe per host
+    tried: List[Dict[str, Any]] = [
+        {"url": h["url"], "source": h["source"], "served": len(served[h["url"]]), "picked": None} for h in hosts]
+
+    def ready(host: Dict[str, str], model: str) -> Dict[str, Any]:
+        for t in tried:
+            if t["url"] == host["url"]:
+                t["picked"] = model
+        key = resolve_secret("OLLAMA_API_KEY", e) if is_cloud(model) else {"fp": None}
+        return {"status": "ready", "purpose": purpose, "host": host["url"], "host_source": host["source"],
+                "model": model, "served_count": len(served[host["url"]]), "api_key_fp": key.get("fp"),
+                "tried": tried}
+
+    # Pass 1: the env-preferred tag wins on ANY host before the small-model fallback is
+    # considered anywhere (documented order: env-preferred > custom e2b/e4b > gemma4 e2b/e4b).
+    if preferred:
+        for host in hosts:
+            if pick_model([preferred] if preferred in served[host["url"]] else [],
+                          allow_cloud=allow_cloud, preferred=preferred, exclude=exclude):
+                return ready(host, preferred)
+    # Pass 2: first host that serves any selectable model.
+    for host in hosts:
+        model = pick_model(served[host["url"]], allow_cloud=allow_cloud, exclude=exclude)
         if model:
-            key = resolve_secret("OLLAMA_API_KEY", e) if is_cloud(model) else {"fp": None}
-            return {"status": "ready", "purpose": purpose, "host": host["url"],
-                    "host_source": host["source"], "model": model, "served_count": len(tags),
-                    "api_key_fp": key.get("fp"), "tried": tried}
+            return ready(host, model)
     return {"status": "deterministic_only", "purpose": purpose, "host": None, "host_source": None,
             "model": None, "served_count": 0, "api_key_fp": None, "tried": tried}
