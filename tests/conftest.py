@@ -116,6 +116,9 @@ def isolated_msg_home(tmp_path_factory, monkeypatch):
     import os as real_os
     from nougen_shards import nougenmsg
     home = tmp_path_factory.mktemp("msg_home")
+    # NOUGEN_ROOT is honoured first by nougenmsg._home(); the host's real
+    # runtime root must not override the throwaway home during tests.
+    monkeypatch.delenv("NOUGEN_ROOT", raising=False)
     monkeypatch.setattr(nougenmsg, "os", _HomeOs(real_os, home))
     yield home
 

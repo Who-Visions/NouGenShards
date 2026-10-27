@@ -138,6 +138,8 @@ if VAULT_SOURCE != "default":
 else:
     logger.info("NouGen vault: %s", GLOBAL_DIR)
 
+OWNER_TENANT_ID = "owner"
+
 _ACTIVE_VAULT_DIR: ContextVar[Optional[Path]] = ContextVar(
     "nougen_active_vault_dir", default=None)
 _ACTIVE_TENANT_ID: ContextVar[Optional[str]] = ContextVar(
@@ -153,7 +155,7 @@ def active_vault_dir() -> Path:
 
 def active_tenant_id() -> str:
     """Request-local tenant; unset local/CLI work retains owner behaviour."""
-    return _ACTIVE_TENANT_ID.get() or "owner"
+    return _ACTIVE_TENANT_ID.get() or OWNER_TENANT_ID
 
 
 def active_lane() -> str:
@@ -182,6 +184,51 @@ def reset_active_vault(tokens: tuple) -> None:
         vault_token, tenant_token = tokens
     _ACTIVE_TENANT_ID.reset(tenant_token)
     _ACTIVE_VAULT_DIR.reset(vault_token)
+
+
+_OWNER_HOME_ENV_VARS = ("NOUGEN_ROOT",)
+_OWNER_HOME_FALLBACK_LOGGED = False
+
+
+def owner_home() -> Path:
+    """The owner's runtime root (relay, inboxes, secrets, destinies live under it).
+
+    Resolution: NOUGEN_ROOT -> ~/.nougen (fallback, logged once). NOUGEN_HOME is
+    the *code* home (Watchtower/NouGen) and deliberately not consulted.
+    """
+    global _OWNER_HOME_FALLBACK_LOGGED
+    for var in _OWNER_HOME_ENV_VARS:
+        raw = os.environ.get(var, "").strip()
+        if raw:
+            return Path(raw).expanduser()
+    if not _OWNER_HOME_FALLBACK_LOGGED:
+        _OWNER_HOME_FALLBACK_LOGGED = True
+        logger.info("owner_home: %s unset; falling back to ~/.nougen", "/".join(_OWNER_HOME_ENV_VARS))
+    return Path.home() / ".nougen"
+
+
+def is_tenant_context() -> bool:
+    """True inside a request bound to a non-owner tenant."""
+    return vault_context_is_set() and active_tenant_id() != OWNER_TENANT_ID
+
+
+def active_home() -> Path:
+    """Identity-scoped runtime root.
+
+    A tenant request resolves to its own vault dir, so relay legs, message inboxes,
+    secrets and destinies all live under ``<tenant_vault>/`` and never under the
+    owner's ``~/.nougen``. Owner and CLI work resolve to :func:`owner_home`.
+    """
+    if is_tenant_context():
+        return active_vault_dir()
+    return owner_home()
+
+
+def active_subdir(*parts: str) -> Path:
+    """``active_home()/<parts>`` created on first use (tenants must never fall back to owner paths)."""
+    target = active_home().joinpath(*parts)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
 
 
 def _ensure_active_vault_dir() -> Path:

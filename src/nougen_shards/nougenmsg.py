@@ -67,6 +67,61 @@ def resolve_origin_host() -> str:
         return ""
 
 
+def _home() -> str:
+    """Identity-scoped NouGen root.
+
+    Tenant -> its own vault dir. Owner -> ``NOUGEN_ROOT`` else ``~/.nougen``,
+    resolved through this module's ``os.path.expanduser`` so the test-suite
+    home shim (conftest ``isolated_msg_home``) keeps owner writes out of the
+    operator's real inboxes.
+    """
+    from . import core
+    if core.is_tenant_context():
+        return str(core.active_home())
+    raw = os.environ.get("NOUGEN_ROOT", "").strip()
+    if raw:
+        return raw
+    return os.path.expanduser(os.path.join("~", ".nougen"))
+
+
+def _tenant_scope() -> bool:
+    """True when serving a tenant: file inboxes under its own root only, no machine pipes."""
+    from . import core
+    return core.is_tenant_context()
+
+
+def _with_archives(dirs, archive):
+    out = []
+    for d in dirs:
+        out.append(d)
+        if archive:
+            out.append(os.path.join(d, "archive"))
+    return out
+
+
+def _agy_inbox_dirs(archive: bool = False) -> List[str]:
+    """Antigravity inboxes for the active identity.
+
+    Owner paths are expanded as whole ``~/...`` strings (not ``~`` alone) so
+    tests that stub ``expanduser`` per path keep working.
+    """
+    if _tenant_scope():
+        return _with_archives([os.path.join(_home(), "inbox", "antigravity")], archive)
+    agy_raw = os.environ.get("NOUGEN_AGY_INBOX_DIR", "").strip()  # same override agy_msg.py honours
+    return _with_archives([
+        os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
+        agy_raw or os.path.join(_home(), "agy_inbox"),
+    ], archive)
+
+
+def _codex_inbox_dirs(archive: bool = False) -> List[str]:
+    if _tenant_scope():
+        return _with_archives([os.path.join(_home(), "inbox", "codex")], archive)
+    raw = os.environ.get("NOUGEN_CODEX_INBOX", "").strip()
+    base = raw or os.path.expanduser(os.path.join("~", ".codex", "inbox"))
+    return _with_archives([base], archive)
+
+
 def fleet_hosts_path() -> Path:
     """Where this machine's fleet map lives. Public code ships no fleet names:
     a box without this file is "standalone" and routes only to itself."""
@@ -164,7 +219,7 @@ def get_current_node() -> str:
 
 def _live_pipe_names() -> List[str]:
     """Named pipes the kernel holds right now (empty off Windows)."""
-    if os.name != "nt":
+    if os.name != "nt" or _tenant_scope():
         return []
     try:
         return ["\\\\.\\pipe\\" + n for n in os.listdir("\\\\.\\pipe\\")]
@@ -217,7 +272,8 @@ class AgentPinger:
         # invocation (WT as default console host ignores CREATE_NO_WINDOW
         # for some launch paths) and cost ~1s of PowerShell startup.
         candidates: List[str] = list(_live_pipe_names())
-        candidates.extend(glob.glob(r"\\.\pipe\LOCAL\cc-msg-*"))
+        if not _tenant_scope():
+            candidates.extend(glob.glob(r"\\.\pipe\LOCAL\cc-msg-*"))
         allowed = re.compile(r"^\\\\\.\\pipe\\(?:LOCAL\\)?(?:cc-msg|claude)[-\\\w.]*$", re.I)
         return sorted({pipe for pipe in candidates if pipe and allowed.fullmatch(pipe)})
 
@@ -281,12 +337,12 @@ class AgentPinger:
         """Per-user registry of live Claude Code sessions {socket -> {token, ...}},
         written by the SessionStart hook: nougenmsg_register.py (nested {"sessions": {socket: entry}}) or nougenmsg_wake.py (top-level {session_id: entry}); env NOUGEN_CC_SESSIONS."""
         raw = os.environ.get("NOUGEN_CC_SESSIONS", "").strip()
-        return raw or os.path.expanduser(os.path.join("~", ".nougen", "cc_sessions.json"))
+        return raw or os.path.join(_home(), "cc_sessions.json")
 
     @staticmethod
     def _claude_inbox_dir() -> str:
         raw = os.environ.get("NOUGEN_CLAUDE_INBOX", "").strip()
-        return raw or os.path.expanduser(os.path.join("~", ".nougen", "claude_inbox"))
+        return raw or os.path.join(_home(), "claude_inbox")
 
     @staticmethod
     def _pipe_retries() -> int:
@@ -441,10 +497,7 @@ class AgentPinger:
         origin: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Drops live event notification into Antigravity session inbox across both locations and notifies local AgyMsg bus."""
-        inboxes = [
-            os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
-            os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox"))
-        ]
+        inboxes = _agy_inbox_dirs()
         filename = f"ping_{int(time.time() * 1000)}.json"
         written_files = []
 
@@ -481,7 +534,7 @@ class AgentPinger:
 
         # Dispatch to live local Win32 Named Pipe if present
         pipe_delivered = False
-        if os.name == "nt":
+        if os.name == "nt" and not _tenant_scope():
             try:
                 pipe_path = r"\\.\pipe\LOCAL\agy-msg-antigravity"
                 pipe_payload = (json.dumps(payload) + "\n").encode("utf-8")
@@ -535,7 +588,7 @@ class AgentPinger:
     @staticmethod
     def _drop_codex_inbox(prompt: str, origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
-        inbox_dir = os.path.expanduser(os.path.join("~", ".codex", "inbox"))
+        inbox_dir = _codex_inbox_dirs()[0]
         os.makedirs(inbox_dir, exist_ok=True)
         filename = f"ping_{int(time.time() * 1000)}.json"
         filepath = os.path.join(inbox_dir, filename)
@@ -922,7 +975,7 @@ class NouGenMsgBus:
         try:
             import sqlite3
             import uuid
-            db_path = os.path.expanduser(os.path.join("~", ".nougen", "messages.db"))
+            db_path = os.path.join(_home(), "messages.db")
             if os.path.exists(db_path):
                 msg_id = envelope.get("id") or f"msg_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
                 with sqlite3.connect(db_path, timeout=5) as conn:
@@ -1221,7 +1274,7 @@ class NouGenMsgBus:
         # --peers reported Antigravity "active" while no server held the pipe.
         live = set(_live_pipe_names())
         agy_pipes = sorted(p for p in live if re.search(r"\\agy-msg-", p, re.I))
-        agy_reg = os.path.expanduser(os.path.join("~", ".nougen", "agy_sessions.json"))
+        agy_reg = os.path.join(_home(), "agy_sessions.json")
         stale_agy: List[str] = []
         if os.path.exists(agy_reg):
             try:
@@ -1242,8 +1295,8 @@ class NouGenMsgBus:
         except Exception:
             pass
 
-        inbox_gemini = os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox"))
-        inbox_codex = os.path.expanduser(os.path.join("~", ".codex", "inbox"))
+        inbox_gemini = _agy_inbox_dirs()[0]
+        inbox_codex = _codex_inbox_dirs()[0]
 
         gemini_messages = len(glob.glob(os.path.join(inbox_gemini, "*.json"))) if os.path.exists(inbox_gemini) else 0
         codex_messages = len(glob.glob(os.path.join(inbox_codex, "*.json"))) if os.path.exists(inbox_codex) else 0
@@ -1310,13 +1363,7 @@ class NouGenMsgBus:
     @classmethod
     def read_inbox(cls, target: str = "antigravity", limit: int = 10) -> List[Dict[str, Any]]:
         """Reads recent unread messages from agent inbox across all registered directories."""
-        inbox_dirs = (
-            [
-                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
-                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox"))
-            ] if target == "antigravity"
-            else [os.path.expanduser(os.path.join("~", ".codex", "inbox"))]
-        )
+        inbox_dirs = _agy_inbox_dirs() if target == "antigravity" else _codex_inbox_dirs()
 
         all_files = []
         for d in inbox_dirs:
@@ -1366,13 +1413,7 @@ class NouGenMsgBus:
         """Bulk archive is destructive to unread state and requires confirmation."""
         if not confirmed:
             raise ValueError("bulk inbox clearing requires confirmed=True; prefer exact message ACK")
-        inbox_dirs = (
-            [
-                os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
-                os.path.expanduser(os.path.join("~", ".nougen", "agy_inbox"))
-            ] if target == "antigravity"
-            else [os.path.expanduser(os.path.join("~", ".codex", "inbox"))]
-        )
+        inbox_dirs = _agy_inbox_dirs() if target == "antigravity" else _codex_inbox_dirs()
 
         count = 0
         for inbox_dir in inbox_dirs:
@@ -1391,7 +1432,7 @@ class NouGenMsgBus:
 
     @classmethod
     def _get_msg_index_db(cls) -> str:
-        base = os.environ.get("NOUGEN_HOME") or os.path.join(os.path.expanduser("~"), ".nougen")
+        base = _home()
         cache_dir = os.path.join(base, "cache")
         os.makedirs(cache_dir, exist_ok=True)
         return os.path.join(cache_dir, "nougenmsg_index.db")
@@ -1447,22 +1488,13 @@ class NouGenMsgBus:
             return empty_res if as_contract else []
 
         inbox_dirs = []
-        nougen_home = os.environ.get("NOUGEN_HOME") or os.path.expanduser(os.path.join("~", ".nougen"))
-        user_home = os.path.expanduser("~")
         if target in ("antigravity", "all"):
-            inbox_dirs.extend([
-                os.path.join(user_home, ".gemini", "config", "inbox"),
-                os.path.join(nougen_home, "agy_inbox"),
-                os.path.join(user_home, "agy_inbox"),
-                os.path.join(user_home, ".gemini", "config", "inbox", "archive"),
-                os.path.join(nougen_home, "agy_inbox", "archive"),
-                os.path.join(user_home, "agy_inbox", "archive"),
-            ])
+            inbox_dirs.extend(_agy_inbox_dirs(archive=True))
+            if not _tenant_scope():
+                legacy = os.path.join(os.path.expanduser("~"), "agy_inbox")
+                inbox_dirs.extend([legacy, os.path.join(legacy, "archive")])
         if target in ("codex", "all"):
-            inbox_dirs.extend([
-                os.path.join(user_home, ".codex", "inbox"),
-                os.path.join(user_home, ".codex", "inbox", "archive"),
-            ])
+            inbox_dirs.extend(_codex_inbox_dirs(archive=True))
 
         checked_sources = [d for d in inbox_dirs if os.path.exists(d)]
         timed_out_sources = []
@@ -1536,12 +1568,12 @@ class NouGenMsgBus:
 
     @classmethod
     def _inbound_policy_path(cls) -> str:
-        base = os.environ.get("NOUGEN_HOME") or os.path.join(os.path.expanduser("~"), ".nougen")
+        base = _home()
         return os.path.join(base, "inbound_policy.json")
 
     @classmethod
     def _idle_subs_path(cls) -> str:
-        base = os.environ.get("NOUGEN_HOME") or os.path.join(os.path.expanduser("~"), ".nougen")
+        base = _home()
         return os.path.join(base, "idle_subscriptions.json")
 
     @classmethod

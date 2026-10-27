@@ -790,8 +790,6 @@ def vault_put(key: str, value: str) -> dict:
 
     Returns a SHA-256 fingerprint (first 12 hex) so the caller can prove the
     stored value matches what they intended without the value being echoed."""
-    if core.active_tenant_id() != "owner":
-        raise PermissionError("the secrets vault is owner-only")
     from nougen_shards import keymaker
     keymaker.init_vault()
     keymaker.ingest_secret(key, value)
@@ -799,7 +797,8 @@ def vault_put(key: str, value: str) -> dict:
     return {"key": key,
             "stored": stored == value,
             "fingerprint": hashlib.sha256(value.encode()).hexdigest()[:12],
-            "vault": str(keymaker.DB_PATH)}
+            "vault": str(keymaker.db_path()),
+            "tenant": core.active_tenant_id()}
 
 
 @node_mcp.tool()
@@ -809,14 +808,12 @@ def vault_list() -> list:
 
     Enough to answer "is this credential present, and is it the one I think?"
     (compare fingerprints) without the vault becoming readable."""
-    if core.active_tenant_id() != "owner":
-        raise PermissionError("the secrets vault is owner-only")
     from nougen_shards import keymaker
     out = []
-    if not keymaker.DB_PATH.exists():
+    if not keymaker.db_path().exists():
         return out
     import sqlite3 as _sq
-    conn = _sq.connect(str(keymaker.DB_PATH))
+    conn = _sq.connect(str(keymaker.db_path()))
     try:
         rows = conn.execute("SELECT secret_key, last_rotated FROM secrets ORDER BY secret_key").fetchall()
     finally:
@@ -3219,12 +3216,22 @@ def fleet_send(message: str, target: str, priority: str = "high") -> dict:
     return NouGenMsgBus.emit_fleet(text=message, target=clean_target, background=_msg_fanout_async())
 
 
+def _relay_handoffs_dir() -> "Path":
+    """Relay board for the active identity: ``active_home()/relay/.handoffs``.
+
+    Owner -> NOUGEN_ROOT (fallback ~/.nougen); tenant -> its own vault, so a
+    tenant never lists, claims or writes the owner's legs.
+    """
+    from pathlib import Path
+    return Path(core.active_home()) / "relay" / ".handoffs"
+
+
 @node_mcp.tool()
 @_offloaded
 def relay_open_legs(limit: int = 15) -> list:
     """List open cross-node handoff legs from the NouGenRelay board."""
     from pathlib import Path
-    handoffs_dir = Path.home() / ".nougen" / "relay" / ".handoffs"
+    handoffs_dir = _relay_handoffs_dir()
     if not handoffs_dir.exists():
         return []
     legs = []
@@ -3258,7 +3265,7 @@ def _safe_claims_path(claims_dir: "Path", leg_id: str, suffix: str) -> "Path":
 def relay_claim_leg(leg_id: str, claimed_by: str = "phoebus/antigravity") -> dict:
     """Claim an open relay leg atomically to prevent duplicate swarm execution."""
     from pathlib import Path
-    claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
+    claims_dir = _relay_handoffs_dir() / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
     claim_path = _safe_claims_path(claims_dir, leg_id, "__autonomous.json")
     claim_data = {
@@ -3285,7 +3292,7 @@ def relay_create_leg(
     from pathlib import Path
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     leg_id = f"{stamp}__phoebus__antigravity"
-    handoffs_dir = Path.home() / ".nougen" / "relay" / ".handoffs"
+    handoffs_dir = _relay_handoffs_dir()
     handoffs_dir.mkdir(parents=True, exist_ok=True)
     md_content = f"""# 🤝 Git Handoff — phoebus / antigravity
 
@@ -3318,7 +3325,7 @@ def relay_ack_leg(
 ) -> dict:
     """Settle and acknowledge an open relay leg with mandatory Hardcade proof tuple."""
     from pathlib import Path
-    claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
+    claims_dir = _relay_handoffs_dir() / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
     ack_path = _safe_claims_path(claims_dir, leg_id, "__ack.json")
     ack_data = {
@@ -4468,14 +4475,80 @@ def _scope_base_url(scope) -> str:
     return f"{proto}://{host}" if host else ""
 
 
-# Tools a tenant identity may call on the node. Everything else touches the host
-# machine or the owner's shared services and stays owner-only.
-TENANT_MCP_TOOLS = frozenset({
-    # Vault-bound reads and writes only (they resolve through the active tenant vault).
-    # Context-session tools are excluded: their session DB is shared across identities.
-    "capture_experience", "recall_memory", "recall_layered", "recall_related",
-    "search", "get_shard", "mark_utility",
-})
+# Tenant tool policy lives in nougen_shards.tenant_policy: every node tool is
+# labelled TENANT_SCOPED (binds to the identity's own vault/home) or OWNER_ONLY,
+# and tests/test_tenant_full_surface.py fails on any unlabelled tool.
+from nougen_shards import tenant_policy
+
+# Back-compat alias for importers/tests that referenced the old static set.
+TENANT_MCP_TOOLS = tenant_policy.TENANT_SCOPED
+
+
+class _TenantListingFilter:
+    """ASGI ``send`` wrapper: buffers a tools/list response and drops tools the
+    tenant may not call. Handles both plain JSON and streamable-HTTP SSE bodies
+    (``data: {...}`` lines). Anything unparseable passes through untouched."""
+
+    def __init__(self, send, tenant_id: str):
+        self._send = send
+        self._tenant_id = tenant_id
+        self._start = None
+        self._chunks = []
+
+    @staticmethod
+    def _filter_rpc(obj, tenant_id):
+        if (isinstance(obj, dict) and isinstance(obj.get("result"), dict)
+                and isinstance(obj["result"].get("tools"), list)):
+            obj["result"]["tools"] = tenant_policy.filter_tool_listing(
+                obj["result"]["tools"], tenant_id)
+        return obj
+
+    def _rewrite(self, body: bytes, content_type: str) -> bytes:
+        text = body.decode("utf-8", errors="replace")
+        if "text/event-stream" in content_type:
+            out = []
+            for line in text.split("\n"):
+                if line.startswith("data:"):
+                    try:
+                        obj = json.loads(line[5:].strip())
+                    except ValueError:
+                        out.append(line)
+                        continue
+                    out.append("data: " + json.dumps(self._filter_rpc(obj, self._tenant_id)))
+                else:
+                    out.append(line)
+            return "\n".join(out).encode("utf-8")
+        try:
+            obj = json.loads(text)
+        except ValueError:
+            return body
+        if isinstance(obj, list):
+            obj = [self._filter_rpc(o, self._tenant_id) for o in obj]
+        else:
+            obj = self._filter_rpc(obj, self._tenant_id)
+        return json.dumps(obj).encode("utf-8")
+
+    async def __call__(self, message):
+        kind = message.get("type")
+        if kind == "http.response.start":
+            self._start = message
+            return
+        if kind == "http.response.body":
+            self._chunks.append(message.get("body", b""))
+            if message.get("more_body", False):
+                return
+            headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                       for k, v in (self._start or {}).get("headers", [])}
+            body = self._rewrite(b"".join(self._chunks), headers.get("content-type", ""))
+            start = dict(self._start or {"type": "http.response.start", "status": 200, "headers": []})
+            start["headers"] = [(k, v) for k, v in start.get("headers", [])
+                                if k.decode("latin-1").lower() != "content-length"]
+            start["headers"].append((b"content-length", str(len(body)).encode()))
+            await self._send(start)
+            await self._send({"type": "http.response.body", "body": body, "more_body": False})
+            self._start, self._chunks = None, []
+            return
+        await self._send(message)
 
 
 class _TokenGatedMCP:
@@ -4554,10 +4627,13 @@ class _TokenGatedMCP:
                 await self._reject(send, 401, "Invalid node token.",
                                    scope=scope)
                 return
-            if tenant.tenant_id != "owner":
-                # Tenants get only their own vault's tools. Anything that touches this
-                # machine (code execution, deploys, relays, NouGenMsg, local scans, the
-                # owner's Ollama) is refused before it reaches the MCP server.
+            if tenant.tenant_id != tenant_policy.OWNER_TENANT_ID:
+                # A tenant gets the full NouGen surface bound to its own root
+                # (vault, secrets, relay, inbox, destinies) and never the owner's
+                # machine, agents or shared services. tools/call is checked
+                # against the policy before it reaches the MCP server, and the
+                # tools/list reply is rewritten to the same set so the client
+                # only ever sees what this identity may call.
                 orig_receive = receive
                 chunks = []
                 more = True
@@ -4573,11 +4649,17 @@ class _TokenGatedMCP:
                 except ValueError:
                     payload = None
                 calls = payload if isinstance(payload, list) else [payload]
+                lists_tools = False
                 for call in calls:
-                    if not isinstance(call, dict) or call.get("method") != "tools/call":
+                    if not isinstance(call, dict):
+                        continue
+                    method = call.get("method")
+                    if method == "tools/list":
+                        lists_tools = True
+                    if method != "tools/call":
                         continue
                     name = (call.get("params") or {}).get("name")
-                    if name not in TENANT_MCP_TOOLS:
+                    if not tenant_policy.allowed_for(tenant.tenant_id, name):
                         await self._reject(send, 403, f"tool {name} is not available to this identity")
                         return
                 replayed = [False]
@@ -4589,6 +4671,8 @@ class _TokenGatedMCP:
                     return await orig_receive()
 
                 receive = replay_receive
+                if lists_tools:
+                    send = _TenantListingFilter(send, tenant.tenant_id)
             context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
             try:
                 await self.inner(scope, receive, send)
