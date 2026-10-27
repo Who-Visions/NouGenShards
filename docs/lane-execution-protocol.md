@@ -25,6 +25,54 @@ ends at Stage 7 and nowhere else.
   `BLOCKED: <exact blocker>` with everything else landed. Honesty is not a bailout; hiding a
   blocker is.
 
+## 2a. Five zero-tolerance anti-stall laws (v2.0, 2026-10-27)
+
+Each law names the bailout it eliminates and the mechanism that enforces it here.
+
+**Law 1: no "still open" lists for code you can edit.** A secondary defect found during
+verification (score compression, empty defaults, duplicate keys, a missing manifest
+pattern, a hardcoded persona, a TDZ error, a broken selector) is fixed and re-verified in
+the same turn. Only a defect that needs an external credential or a third-party decision
+may be deferred, and only as `BLOCKED: <exact blocker>`.
+
+**Law 2: complete the full inventory on the first pass.** Given an explicit list or matrix
+(files, drivers, platforms, nodes), audit and execute every item before reporting. The
+receipt lists the inventory with one status per item; a subset is not a pass.
+
+**Law 3: never yield on background work.** A turn does not end while a test suite, scraper,
+inference run, deploy or browser batch is still running. On this harness: start the job
+with a bounded wait in the same turn (`until <condition>; do sleep N; done` with a deadline
+sized to the job, or `Monitor` for a stream), read the output, act on it. Do not chain
+sleeps to dodge the tool's limit; if a job genuinely outlives one tool call, the next turn
+resumes from the completion notification without an operator prompt and still ends on the
+receipt, not on "waiting". Finish with zero dangling tasks.
+
+**Law 4: safe interception over refusal stalls.** Testing automation against live external
+targets (ATS forms, APIs, checkout or submit flows) never pauses for a dry-run menu. Enforce
+a network interceptor at the harness layer: allow read-only loads and assets; intercept and
+abort every terminal state-mutating request (`POST`/`PUT`/`PATCH`/`DELETE` to an external
+origin) at the submit boundary; assert the intercepted payload carries the synthetic
+profile fields and zero real PII; verify every form control visually (before/after element
+screenshot delta plus a non-empty DOM value).
+
+**Law 5: always close with push, PR, shard and relay.** Verified commits never wait on a
+local branch for "push and pr". When tests and harness checks pass: `git push`, `gh pr
+create` or `gh pr edit`, `shards_capture(title, content)`, `relay_create(goal, message)`
+(not routed to `whoart` unless directed). Then the receipt.
+
+## 2b. Hardware and data safety invariants
+
+- **Thermal guard.** Sustained local inference or browser batches on Blade watch GPU
+  temperature (`nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader`). At or above
+  `NOUGEN_GPU_MAX_C` (env; logged fallback 80) pause in-loop, re-check, resume. Thermal
+  pressure delays a stage; it never skips one.
+- **Zero real-PII contamination in harnesses.** Before any automated fill or test run,
+  assert the active storage identity is the synthetic fixture, not the operator's real
+  profile or credentials, because sync daemons and local servers overwrite fixtures.
+- **No hardcoded personas.** No fallback prompt, resume, scorer or default bound to one
+  person's background, degree or certifications. Bind to the active profile dynamically or
+  return an explicit empty or missing state (Rule 0.2 #6 applies to people as well as ports).
+
 ## 3. The deterministic loop
 
 Stages run in order. Skipping a failed stage is not allowed; `--skip` and `--keep-going` on
@@ -99,16 +147,31 @@ fingerprints only in output.
 Only when Stages 1 through 6 have succeeded (or a gate is `BLOCKED` by something outside
 the toolset) does control return to the operator.
 
+## 3a. Gate checklist before the receipt
+
+Every line must be true before the final message is written:
+
+- Every file, platform or node in the objective's scope was audited and executed (zero skipped targets).
+- Every in-repo defect found during testing was fixed and re-verified (zero fixable "still open" items).
+- Every background shell has completed and been cleaned up (zero dangling tasks).
+- The full suite ran and passed, or the pre-existing failures were proven on the base branch and listed by test id.
+- The branch is pushed and the PR is created or updated with the evidence.
+- The shard is captured and the relay leg or handoff is recorded.
+
 ## 4. Required terminal output
 
-The final message is the receipt and nothing else:
+The final message is the receipt and nothing else. Only items that strictly need an
+external human (another developer's licensing decision, rotating an external credential)
+appear under `External Operator Gates`; everything else is `FIXED & VERIFIED`:
 
 ```
 Lane & Objective: [lane_id] - [goal]
 Recall: OK | Build: OK (N/N tests, <command>) | Harden: OK | Commit: <sha> | PR: <url>
-Shard: <id@db> | Relay: <leg_id> | Blocked: none | <exact blocker>
+Shard: <id@db> | Relay: <leg_id>
+Inventory: <item>: FIXED & VERIFIED | ... (one line per item in scope)
 Changes landed: <exact paths> - <architectural delta in one line each>
 Verification: <exact command> -> <pass count>; <live proof if delivery was claimed>
+External Operator Gates: none | <exact blocker needing a human>
 ```
 
 A receipt without a commit SHA, PR URL, test count and shard id is not a receipt; keep
