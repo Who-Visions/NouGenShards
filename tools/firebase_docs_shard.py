@@ -21,9 +21,13 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
-os.environ["NOUGEN_VAULT_DIR"] = str(Path.home() / ".nougen" / "shards")  # absolute: never a stray cwd .vault
+# Keep an explicitly configured absolute vault (tenant/isolated installs); a missing or relative value
+# would resolve against cwd (the stray-.vault trap), so fall back to the canonical absolute path.
+if not os.path.isabs(os.environ.get("NOUGEN_VAULT_DIR", "")):
+    os.environ["NOUGEN_VAULT_DIR"] = str(Path.home() / ".nougen" / "shards")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 from nougen_shards.core import capture  # noqa: E402
@@ -54,6 +58,19 @@ SKIP = ("/docs/auth/android", "/docs/auth/ios", "/docs/auth/flutter", "/docs/aut
         "/docs/app-check/cpp", "/docs/firestore/solutions/", "/docs/firestore/enterprise/", "/docs/reference/")
 
 
+def retry_after(value: str | None, default: float) -> float:
+    """Seconds to wait from a Retry-After header (delta-seconds or HTTP-date), capped at 120."""
+    try:
+        return min(max(float(value), 0), 120)
+    except (TypeError, ValueError):
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+        return min(max((when - datetime.now(timezone.utc)).total_seconds(), 0), 120)
+    except (TypeError, ValueError):
+        return default
+
+
 def fetch(url: str) -> str | None:
     for attempt in range(3):
         try:
@@ -63,7 +80,7 @@ def fetch(url: str) -> str | None:
             if e.code in (404, 410):
                 return None
             if e.code == 429:  # 24 pages lost to 429s on the 2026-10-26 re-run; honour Retry-After
-                time.sleep(min(int(e.headers.get("Retry-After") or 0) or 20 * (attempt + 1), 120))
+                time.sleep(retry_after(e.headers.get("Retry-After"), 20 * (attempt + 1)))
                 continue
         except (urllib.error.URLError, TimeoutError):
             pass
