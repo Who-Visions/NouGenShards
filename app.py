@@ -1000,6 +1000,81 @@ def _start_recall_warmup() -> None:
     _threading.Thread(target=_run, name="nougen-recall-warmup", daemon=True).start()
 
 
+# Logged fallbacks only; env NOUGEN_LISTENER_SELFCHECK_S / _FAILS / NGS_PORT win.
+_LISTENER_SELFCHECK_S_FALLBACK = 60.0
+_LISTENER_SELFCHECK_FAILS_FALLBACK = 3
+_LISTENER_SELFCHECK_EXIT_CODE = 3
+_LISTENER_STATE: dict = {"status": "pending", "port": None, "consecutive_failures": 0, "checks": 0}
+
+
+def _listener_port() -> Optional[int]:
+    for name in ("NGS_PORT", "NOUGEN_NODE_PORT", "PORT"):
+        raw = os.environ.get(name, "").strip()
+        if raw:
+            try:
+                return int(raw)
+            except ValueError:
+                logging.getLogger(__name__).warning("%s=%r is not a port; ignoring", name, raw)
+    return None
+
+
+def _probe_listener(port: int, timeout_s: float = 2.0) -> bool:
+    import socket  # pylint: disable=import-outside-toplevel
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout_s):
+            return True
+    except OSError:
+        return False
+
+
+def listener_selfcheck_status() -> dict:
+    return dict(_LISTENER_STATE)
+
+
+def _start_listener_selfcheck(exit_fn=None) -> None:
+    """Exit the process when our own accept loop is dead.
+
+    whoart 2026-10-26: uvicorn stayed alive for hours after its listening socket
+    died (asyncio "Accept failed on a socket ... WinError 64"), so every
+    process-based supervisor saw a healthy PID while :4444 refused connections
+    and the scheduled task could not rebind. A node that cannot accept its own
+    TCP connect NOUGEN_LISTENER_SELFCHECK_FAILS times in a row (every
+    NOUGEN_LISTENER_SELFCHECK_S seconds) exits with code 3 so the lane
+    supervisor / watchdog restarts it. 0 disables. No port in env = disabled.
+    """
+    interval = _env_float("NOUGEN_LISTENER_SELFCHECK_S", _LISTENER_SELFCHECK_S_FALLBACK)
+    port = _listener_port()
+    if interval <= 0 or port is None:
+        _LISTENER_STATE.update({"status": "disabled", "port": port})
+        return
+    fails_needed = _env_int("NOUGEN_LISTENER_SELFCHECK_FAILS", _LISTENER_SELFCHECK_FAILS_FALLBACK)
+    _exit = exit_fn or os._exit  # pylint: disable=protected-access
+    log = logging.getLogger(__name__)
+    _LISTENER_STATE.update({"status": "running", "port": port, "interval_s": interval, "fails_needed": fails_needed})
+
+    def _run():
+        # First probe only after one interval: the socket is not bound until
+        # uvicorn finishes startup, and a long grid warm-up must not count.
+        while True:
+            time.sleep(interval)
+            ok = _probe_listener(port)
+            _LISTENER_STATE["checks"] += 1
+            if ok:
+                _LISTENER_STATE["consecutive_failures"] = 0
+                continue
+            _LISTENER_STATE["consecutive_failures"] += 1
+            log.warning("listener self-check: 127.0.0.1:%d refused (%d/%d)", port,
+                        _LISTENER_STATE["consecutive_failures"], fails_needed)
+            if _LISTENER_STATE["consecutive_failures"] >= fails_needed:
+                _LISTENER_STATE["status"] = "dead"
+                log.critical("listener self-check: accept loop dead on :%d; exiting %d for the supervisor to rebind",
+                             port, _LISTENER_SELFCHECK_EXIT_CODE)
+                _exit(_LISTENER_SELFCHECK_EXIT_CODE)
+                return
+
+    threading.Thread(target=_run, name="nougen-listener-selfcheck", daemon=True).start()
+
+
 def _start_boot_quarantine(then=None) -> None:
     """Heal the grid on a daemon thread, then run `then` (the recall warm-up).
 
@@ -1041,6 +1116,7 @@ async def _lifespan(_app):
     # background thread so the node binds its port now, and caches prime without waiting on full quarantine.
     _start_boot_quarantine()
     _start_recall_warmup()
+    _start_listener_selfcheck()
     _seed_upstreams()
     # The streamable-HTTP session manager needs a running task group.
     async with node_mcp.session_manager.run():
@@ -1940,6 +2016,7 @@ async def local_health():
         "newest_timestamp": coverage.get("span", {}).get("latest"),
         "warm": warmup_status()["warm"],
         "warmup": warmup_status(),
+        "listener": listener_selfcheck_status(),
     }
 
 
