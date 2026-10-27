@@ -73,6 +73,71 @@ create` or `gh pr edit`, `shards_capture(title, content)`, `relay_create(goal, m
   person's background, degree or certifications. Bind to the active profile dynamically or
   return an explicit empty or missing state (Rule 0.2 #6 applies to people as well as ports).
 
+## 2c. v3 laws (2026-10-27)
+
+These extend 2a and 2b. Where a v2 rule and a v3 rule overlap, the stricter one binds.
+
+**Real and live state only.** No simulated UI state: no timer-driven progress that eases
+toward a fixed percentage, no hardcoded fit scores, no placeholder personas. A discrete
+backend job (scrape, score, batch) streams real events (NDJSON or SSE) from the worker to the
+UI as they happen. A single atomic call with no sub-steps shows an honest indeterminate
+state, never invented stage labels. Empty or unscored states are explicit.
+
+**Visual and DOM verification.** A UI, styling, palette, autofill or animation change is
+verified in a real headless browser against an authenticated session before the turn ends
+(Playwright, or the `browser-automation` skill). Web routes: HTTP 200, no redirect to login
+or not-found, zero console errors, zero page errors, zero failed requests, no horizontal
+overflow, non-empty rendered text. Form-filling scripts: before/after element screenshot
+delta per visible field plus a non-empty rendered DOM value. Reporting "the page loads on the
+server" without seeing the rendered result is a failed gate.
+
+**Live external targets.** Testing against job portals, application forms or external APIs
+runs behind a harness-level interceptor: allow read-only loads; abort every POST, PUT, PATCH
+and DELETE to an external origin at the submit boundary; assert the intercepted payload
+carries the synthetic profile fields and no real personal data. Before any automated fill,
+assert the storage identity is the synthetic fixture (sync daemons and local servers have
+overwritten fixtures before).
+
+**Operational bottlenecks fixed in-loop.** A structural or performance failure found during
+testing (a sequential scan that cannot finish inside its timeout, single-threaded fetching
+that stalls a pipeline, worker processes that outlive a client) is engineered away in the same
+turn: cursor-based batch rotation across runs, bounded-concurrency prefetch, and process-tree
+termination on disconnect (`taskkill /T /F /PID <pid>` on Windows, with the PID of the worker's root process, as `tools/relay_live.py` does with `proc.pid`, so no orphaned workers accumulate).
+A known limitation written at the end of a turn is not a receipt item.
+
+**Production build gate (web applications).** Stop any dev server holding the target port.
+After a branch switch, cherry-pick or rebase that moved route files, purge the stale build
+cache (`.next`) before the production build. The production build must compile with zero
+missing-module errors, the production server must start, and the full Playwright sweep runs
+against that live build. Type checking alone never passes this gate.
+
+**Full inventory on the UI side too.** A request to change motion, progress reporting or
+theming audits the whole route tree first and applies the pattern to every tab and every
+long-running route in the same pass, not one page at a time.
+
+**Multi-lane synthesis.** A comparison across fleet lanes (Kaedra, Dav1d, Rhea, the free
+cloud lanes) never accepts one lane's truncated answer: raise the token limit, re-ask a lane
+whose output stopped mid-thought, synthesize one complete diff, then implement the top-leverage
+items directly.
+
+**Rebase and branch safety.** Before a cherry-pick, rebase or branch switch on a shared repo
+whose upstream may have moved: create a backup tag and a git bundle first
+(`git tag lane-backup-<date>` and `git bundle create <file> --all`), so no work is lost.
+
+**Merge governance.** Where a collaborator owns merges on a repo, the lane opens or updates
+the PR against the designated integration branch and leaves the merge to them. Where the lane
+holds merge rights (this fleet's NouGenShards merges use `gh pr merge --squash --admin` after
+CI and review threads are green), the merge is part of the loop, not an operator request.
+
+**Conflict resolution.** Never reintroduce a hardcoded model tag or personal identifying
+information during a conflict. Resolve toward env-first dynamic resolution and sanitized defaults.
+
+**Pre-exit self-check.** Before the final message, answer four questions. Did I mention a
+defect, timeout, build error, missing manifest entry or unverified tab that I can fix now? Did
+I claim a UI or extension change works without a rendered DOM and screenshot check? Did any
+command fail or remain running? Would the operator's natural reply be "keep trying", "check
+every tab", "push it" or "finish what you skipped"? Any yes means keep working.
+
 ## 3. The deterministic loop
 
 Stages run in order. Skipping a failed stage is not allowed; `--skip` and `--keep-going` on
@@ -167,6 +232,7 @@ appear under `External Operator Gates`; everything else is `FIXED & VERIFIED`:
 ```
 Lane & Objective: [lane_id] - [goal]
 Recall: OK | Build: OK (N/N tests, <command>) | Harden: OK | Commit: <sha> | PR: <url>
+Browser: <route or form>: HTTP 200, console 0, failed requests 0, overflow none, delta <n>/<n> fields | Build: <production build result>
 Shard: <id@db> | Relay: <leg_id>
 Inventory: <item>: FIXED & VERIFIED | ... (one line per item in scope)
 Changes landed: <exact paths> - <architectural delta in one line each>
