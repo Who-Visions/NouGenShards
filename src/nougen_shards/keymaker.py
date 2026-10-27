@@ -484,12 +484,9 @@ def vault_dir() -> Path:
     Tenant: ``<tenant_vault>/secrets`` so ``vault_put`` from a tenant session can
     never read or write the owner's keyring.
     """
-    try:
-        from . import core
-        if core.is_tenant_context():
-            return Path(core.active_home()) / TENANT_SECRETS_DIRNAME
-    except Exception:  # core import cycle at CLI start: owner semantics
-        pass
+    from . import core  # no try/except: a failed tenant check must not fall open to the owner keyring
+    if core.is_tenant_context():
+        return Path(core.active_home()) / TENANT_SECRETS_DIRNAME
     return VAULT_DIR
 
 

@@ -125,6 +125,10 @@ def _codex_inbox_dirs(archive: bool = False) -> List[str]:
 def fleet_hosts_path() -> Path:
     """Where this machine's fleet map lives. Public code ships no fleet names:
     a box without this file is "standalone" and routes only to itself."""
+    if _tenant_scope():
+        # A tenant has no view of the owner's fleet: its own (normally absent)
+        # host map lives under its root, so peer resolution yields no peers.
+        return Path(_home()) / "fleet_hosts.json"
     override = os.environ.get("NOUGEN_FLEET_HOSTS_FILE", "").strip()
     return Path(override).expanduser() if override else Path.home() / ".nougen" / "fleet_hosts.json"
 
@@ -336,12 +340,12 @@ class AgentPinger:
     def _cc_registry_path() -> str:
         """Per-user registry of live Claude Code sessions {socket -> {token, ...}},
         written by the SessionStart hook: nougenmsg_register.py (nested {"sessions": {socket: entry}}) or nougenmsg_wake.py (top-level {session_id: entry}); env NOUGEN_CC_SESSIONS."""
-        raw = os.environ.get("NOUGEN_CC_SESSIONS", "").strip()
+        raw = "" if _tenant_scope() else os.environ.get("NOUGEN_CC_SESSIONS", "").strip()
         return raw or os.path.join(_home(), "cc_sessions.json")
 
     @staticmethod
     def _claude_inbox_dir() -> str:
-        raw = os.environ.get("NOUGEN_CLAUDE_INBOX", "").strip()
+        raw = "" if _tenant_scope() else os.environ.get("NOUGEN_CLAUDE_INBOX", "").strip()
         return raw or os.path.join(_home(), "claude_inbox")
 
     @staticmethod

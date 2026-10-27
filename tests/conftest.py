@@ -129,3 +129,31 @@ def _fleet_hosts_fixture(monkeypatch):
     they neither depend on nor touch the developer's ~/.nougen/fleet_hosts.json."""
     from pathlib import Path
     monkeypatch.setenv("NOUGEN_FLEET_HOSTS_FILE", str(Path(__file__).parent / "fixtures" / "fleet_hosts.json"))
+
+
+@pytest.fixture(scope="session")
+def shared_mcp_client():
+    """The one lifespan-entered node client for the whole process.
+
+    ``StreamableHTTPSessionManager.run()`` may run once per instance, and the
+    node builds one instance at import, so every module that drives ``/mcp``
+    through the real app shares this client and swaps ``core.GLOBAL_DIR`` /
+    ``node.NODE_TOKEN`` around it at module scope (tool handlers and the token
+    gate read both at call time).
+    """
+    import tempfile
+    from pathlib import Path
+    from fastapi.testclient import TestClient
+    import app as node
+    from nougen_shards import core
+
+    vault = Path(tempfile.mkdtemp(prefix="ngs_shared_mcp_vault_"))
+    saved = (core.GLOBAL_DIR, core.get_db_path)
+    core.GLOBAL_DIR = vault
+    core.get_db_path = lambda index: vault / f"mcp_{index}.db"
+    core.init_db(1)
+    try:
+        with TestClient(node.app) as c:
+            yield c
+    finally:
+        core.GLOBAL_DIR, core.get_db_path = saved

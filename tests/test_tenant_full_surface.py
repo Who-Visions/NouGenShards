@@ -29,8 +29,6 @@ os.environ["NOUGEN_SECRETS_VAULT"] = str(OWNER_HOME / "secrets")
 os.environ["NOUGEN_TENANTS_FILE"] = str(_tmp / "tenants.json")
 os.environ["NOUGEN_TENANT_VAULT_ROOT"] = str(_tmp / "tenants")
 
-from fastapi.testclient import TestClient  # noqa: E402
-
 import app as node  # noqa: E402
 import nougen_shards.core as core  # noqa: E402
 from nougen_shards import destiny, keymaker, nougenmsg, tenant_policy, tenants  # noqa: E402
@@ -68,7 +66,7 @@ def tenant_auth(tenant_token):
 
 
 @pytest.fixture(scope="module")
-def client():
+def client(shared_mcp_client):
     vault = _tmp / "owner_vault"
     vault.mkdir()
     saved = (core.GLOBAL_DIR, core.get_db_path, node.NODE_TOKEN)
@@ -77,8 +75,7 @@ def client():
     node.NODE_TOKEN = TEST_TOKEN
     core.init_db(1)
     try:
-        with TestClient(node.app) as c:
-            yield c
+        yield shared_mcp_client  # lifespan entered once per process (conftest)
     finally:
         core.GLOBAL_DIR, core.get_db_path, node.NODE_TOKEN = saved
 
@@ -106,15 +103,66 @@ def test_every_registered_tool_is_labelled():
     assert len(report["tenant"]) > 40, "the tenant surface regressed to a stub"
 
 
-def test_env_can_widen_and_narrow_tenant_set(monkeypatch):
-    monkeypatch.setenv("NOUGEN_TENANT_EXTRA_TOOLS", "ask_rhea")
+def test_env_can_widen_and_narrow_tenant_set_but_never_grant_owner_only(monkeypatch):
+    monkeypatch.setenv("NOUGEN_TENANT_EXTRA_TOOLS", "ask_rhea,some_future_tool")
     monkeypatch.setenv("NOUGEN_TENANT_DENY_TOOLS", "search")
-    assert tenant_policy.tenant_allowed("ask_rhea")
+    assert not tenant_policy.tenant_allowed("ask_rhea"), "extras must not pierce the owner-only floor"
+    assert tenant_policy.tenant_allowed("some_future_tool")
     assert not tenant_policy.tenant_allowed("search")
     monkeypatch.delenv("NOUGEN_TENANT_EXTRA_TOOLS")
     monkeypatch.delenv("NOUGEN_TENANT_DENY_TOOLS")
-    assert not tenant_policy.tenant_allowed("ask_rhea")
+    assert not tenant_policy.tenant_allowed("some_future_tool")
     assert tenant_policy.allowed_for("owner", "ask_rhea")
+
+
+def test_tenant_call_with_non_object_params_is_refused(client, tenant_auth):
+    r = client.post("/mcp/", headers=tenant_auth, json=_rpc("tools/call", ["nougen_time_now"]))
+    assert r.status_code == 403
+    r = client.post("/mcp/", headers=tenant_auth, json=[
+        _rpc("tools/call", {"name": "nougen_time_now", "arguments": {}}, id_=1),
+        _rpc("tools/call", {"name": "fleet_send", "arguments": {}}, id_=2)])
+    assert r.status_code == 403, "an owner-only call hidden in a batch must refuse the whole batch"
+
+
+def test_tenant_env_overrides_do_not_redirect_to_owner_paths(monkeypatch):
+    monkeypatch.setenv("NOUGEN_CC_SESSIONS", str(OWNER_HOME / "cc_sessions.json"))
+    monkeypatch.setenv("NOUGEN_CLAUDE_INBOX", str(OWNER_HOME / "claude_inbox"))
+    monkeypatch.setenv("NOUGEN_CODEX_INBOX", str(OWNER_HOME / "codex_inbox"))
+    tokens = core.bind_active_vault(_tenant_vault(), TENANT_ID)
+    try:
+        assert Path(nougenmsg.AgentPinger._cc_registry_path()).is_relative_to(_tenant_vault())
+        assert Path(nougenmsg.AgentPinger._claude_inbox_dir()).is_relative_to(_tenant_vault())
+        assert Path(nougenmsg._codex_inbox_dirs()[0]).is_relative_to(_tenant_vault())
+        assert nougenmsg.fleet_hosts_path() == _tenant_vault() / "fleet_hosts.json"
+    finally:
+        core.reset_active_vault(tokens)
+    assert nougenmsg.AgentPinger._cc_registry_path() == str(OWNER_HOME / "cc_sessions.json")
+
+
+def test_listing_filter_flush_emits_withheld_start_and_keeps_crlf():
+    sent = []
+
+    async def sink(msg):
+        sent.append(msg)
+
+    f = node._TenantListingFilter(sink, TENANT_ID)
+
+    async def run():
+        await f({"type": "http.response.start", "status": 200, "headers": []})
+        await f({"type": "http.response.body", "body": b"partial", "more_body": True})
+        await f.flush()
+        payload = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"tools": [
+            {"name": "search"}, {"name": "fleet_send"}]}})
+        await f({"type": "http.response.start", "status": 200,
+                 "headers": [(b"content-type", b"text/event-stream")]})
+        await f({"type": "http.response.body", "body": ("data: " + payload + "\r\n\r\n").encode(),
+                 "more_body": False})
+
+    asyncio.run(run())
+    assert sent[0]["status"] == 200 and sent[1]["body"] == b"partial"
+    out = sent[3]["body"].decode()
+    assert out.endswith("\r\n\r\n")
+    assert "fleet_send" not in out and "search" in out
 
 
 # --- 2. tools/list ----------------------------------------------------------------
@@ -196,6 +244,8 @@ def test_tenant_relay_leg_lands_in_tenant_vault_not_owner_home(client, tenant_au
 
 
 def test_tenant_vault_put_uses_tenant_secrets_db(client, tenant_auth):
+    import time
+    started = time.time() - 1
     r = client.post("/mcp/", headers=tenant_auth, json=_rpc(
         "tools/call", {"name": "vault_put",
                        "arguments": {"key": "ACME_KEY", "value": "s3cr3t-value"}}))
@@ -204,8 +254,12 @@ def test_tenant_vault_put_uses_tenant_secrets_db(client, tenant_auth):
     assert not result.get("isError"), result
     text = _text(result)
     assert "s3cr3t-value" not in text
-    assert (_tenant_vault() / "secrets" / keymaker.DB_FILENAME).exists()
-    assert not keymaker.DB_PATH.exists(), "tenant secret reached the owner keyring"
+    tenant_db = _tenant_vault() / "secrets" / keymaker.DB_FILENAME
+    assert tenant_db.exists()
+    owner_db = keymaker.DB_PATH
+    assert owner_db != tenant_db
+    if owner_db.exists():  # another module may have imported app with a real keyring path
+        assert owner_db.stat().st_mtime < started, "tenant secret reached the owner keyring"
 
 
 def test_destiny_and_nougenmsg_resolve_inside_tenant_context():

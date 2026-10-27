@@ -47,7 +47,7 @@ def _rpc(method, params=None, id_=1):
 # tests share one lifespan-entered client (module scope) instead of the
 # per-test clients the REST suite uses.
 @pytest.fixture(scope="module")
-def client():
+def client(shared_mcp_client):
     from pathlib import Path
     vault = Path(tempfile.mkdtemp(prefix="ngs_mcp_vault_"))
     saved = (core.GLOBAL_DIR, core.get_db_path, node.NODE_TOKEN)
@@ -56,8 +56,7 @@ def client():
     node.NODE_TOKEN = TEST_TOKEN
     core.init_db(1)
     try:
-        with TestClient(node.app) as c:  # context manager runs the lifespan
-            yield c
+        yield shared_mcp_client  # lifespan entered once per process (conftest)
     finally:
         core.GLOBAL_DIR, core.get_db_path, node.NODE_TOKEN = saved
 

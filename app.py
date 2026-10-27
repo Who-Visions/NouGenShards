@@ -4508,13 +4508,15 @@ class _TenantListingFilter:
         if "text/event-stream" in content_type:
             out = []
             for line in text.split("\n"):
-                if line.startswith("data:"):
+                eol = "\r" if line.endswith("\r") else ""
+                bare = line[:-1] if eol else line
+                if bare.startswith("data:"):
                     try:
-                        obj = json.loads(line[5:].strip())
+                        obj = json.loads(bare[5:].strip())
                     except ValueError:
                         out.append(line)
                         continue
-                    out.append("data: " + json.dumps(self._filter_rpc(obj, self._tenant_id)))
+                    out.append("data: " + json.dumps(self._filter_rpc(obj, self._tenant_id)) + eol)
                 else:
                     out.append(line)
             return "\n".join(out).encode("utf-8")
@@ -4527,6 +4529,18 @@ class _TenantListingFilter:
         else:
             obj = self._filter_rpc(obj, self._tenant_id)
         return json.dumps(obj).encode("utf-8")
+
+    async def flush(self):
+        """Emit whatever was withheld if the inner app ended without a final
+        body chunk (exception after response.start), so the client still gets
+        a response instead of a hung connection."""
+        if self._start is None and not self._chunks:
+            return
+        start = self._start or {"type": "http.response.start", "status": 500, "headers": []}
+        body = b"".join(self._chunks)
+        self._start, self._chunks = None, []
+        await self._send(start)
+        await self._send({"type": "http.response.body", "body": body, "more_body": False})
 
     async def __call__(self, message):
         kind = message.get("type")
@@ -4658,7 +4672,13 @@ class _TokenGatedMCP:
                         lists_tools = True
                     if method != "tools/call":
                         continue
-                    name = (call.get("params") or {}).get("name")
+                    params = call.get("params")
+                    if params is None:
+                        params = {}
+                    if not isinstance(params, dict):
+                        await self._reject(send, 403, "tools/call params must be an object")
+                        return
+                    name = params.get("name")
                     if not tenant_policy.allowed_for(tenant.tenant_id, name):
                         await self._reject(send, 403, f"tool {name} is not available to this identity")
                         return
@@ -4678,6 +4698,8 @@ class _TokenGatedMCP:
                 await self.inner(scope, receive, send)
             finally:
                 core.reset_active_vault(context_tokens)
+                if isinstance(send, _TenantListingFilter):
+                    await send.flush()
             return
         await self.inner(scope, receive, send)
 

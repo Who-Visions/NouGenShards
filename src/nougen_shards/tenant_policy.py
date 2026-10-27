@@ -91,8 +91,18 @@ def _env_set(var: str) -> frozenset[str]:
 
 
 def tenant_allowed_names() -> frozenset[str]:
-    """Effective tenant set: TENANT_SCOPED + env extras - env denies."""
-    return (TENANT_SCOPED | _env_set(_ENV_EXTRA)) - _env_set(_ENV_DENY)
+    """Effective tenant set: TENANT_SCOPED + env extras - env denies.
+
+    Extras are an operator knob on the node process (a tenant cannot set this
+    node's environment), and they still cannot grant an OWNER_ONLY tool: that
+    floor is code, not configuration.
+    """
+    extra = _env_set(_ENV_EXTRA)
+    refused = extra & OWNER_ONLY
+    if refused:
+        logger.warning("tenant_policy: %s cannot grant owner-only tools, ignored: %s",
+                       _ENV_EXTRA, ",".join(sorted(refused)))
+    return (TENANT_SCOPED | (extra - OWNER_ONLY)) - _env_set(_ENV_DENY)
 
 
 def tenant_allowed(name: object) -> bool:
