@@ -139,8 +139,8 @@ fingerprints only in output.
    sources: keep ids, paths, line ranges, error codes.
 2. `relay_create(goal, message)`: final commit SHA, PR URL, verification status, and what is
    `BLOCKED` if anything. Do not route to `whoart` unless directed. On this repo's CLI the
-   same record is `./tools/nougen handoff create -a <agent> -g "<goal>" -M <note file>` then
-   `handoff rebuild-db`.
+   same record is `sh tools/nougen handoff create -a <agent> -g "<goal>" -M <note file>` then
+   `sh tools/nougen handoff rebuild-db`.
 
 ### Stage 7: terminal receipt
 
@@ -174,8 +174,9 @@ Verification: <exact command> -> <pass count>; <live proof if delivery was claim
 External Operator Gates: none | <exact blocker needing a human>
 ```
 
-A receipt without a commit SHA, PR URL, test count and shard id is not a receipt; keep
-working.
+A receipt without a commit SHA, test count and shard id is not a receipt; keep
+working. The PR URL is required unless the run used the documented `--no-pr` local path,
+which writes `PR: none (--no-pr local experiment)` instead.
 
 ## 5. Tool and flag reference (verified 2026-10-27)
 
@@ -188,4 +189,4 @@ working.
 | `shards_capture` | fleet connector | `title`, `content` |
 | `tools/nougen_loop.py` | this repo | `--goal --paths -m --body --repo --apply --skip {recall,build,harden,commit,pr,shard,dream,evolve,handoff} --no-pr --on-current-branch --keep-going --json` |
 | `~/.nougen/bin/lane_claim.py` | fleet bin | `check <paths>`, `claim <paths> -g "<goal>"`, `release`, `status` |
-| `./tools/nougen handoff` | this repo | `create -a <agent> -g "<goal>" -M <file>`, `rebuild-db` |
+| `sh tools/nougen handoff` (the file is tracked as 100644; invoke through `sh`, not `./`) | this repo | `create -a <agent> -g "<goal>" -M <file>`, `rebuild-db` |
