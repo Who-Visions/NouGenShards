@@ -264,6 +264,8 @@ class AgentPinger:
     @staticmethod
     def _discover_claude_endpoints() -> List[str]:
         """Return deduplicated, allow-listed Claude IPC endpoints."""
+        if _tenant_scope():
+            return []  # a tenant never reaches the host's Claude sockets or pipes
         if os.name != "nt":
             return sorted(set(
                 glob.glob("/tmp/cc-socks/*.sock")
@@ -403,6 +405,14 @@ class AgentPinger:
         longer opens are pruned from the registry. There is no ack on the wire,
         so delivery_verified stays False by design: the receiver's context is
         the proof, never the byte count (shard 17142)."""
+        if _tenant_scope():
+            inbox_dir = AgentPinger._claude_inbox_dir()
+            os.makedirs(inbox_dir, exist_ok=True)
+            fp = os.path.join(inbox_dir, f"ping_{int(time.time() * 1000)}.json")
+            with open(fp, "w", encoding="utf-8") as f:
+                json.dump({"prompt": prompt, "origin": origin or {}, "tenant_scope": "file-inbox-only"}, f, indent=2)
+            return {"status": "saved", "file": fp, "pipe_delivered": False,
+                    "tenant_scope": "file-inbox-only"}
         source = f"NouGenMsg-{get_current_node()}"
         text = f"NouGenMsg from {source}: {prompt}"
         reg_path = AgentPinger._cc_registry_path()
@@ -538,7 +548,11 @@ class AgentPinger:
 
         # Dispatch to live local Win32 Named Pipe if present
         pipe_delivered = False
-        if os.name == "nt" and not _tenant_scope():
+        if _tenant_scope():
+            # File-inbox only: neither the Win32 named pipe nor the POSIX
+            # /tmp/agy-socks transport is the tenant's to use.
+            pass
+        elif os.name == "nt":
             try:
                 pipe_path = r"\\.\pipe\LOCAL\agy-msg-antigravity"
                 pipe_payload = (json.dumps(payload) + "\n").encode("utf-8")

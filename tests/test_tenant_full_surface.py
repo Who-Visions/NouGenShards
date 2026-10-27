@@ -315,3 +315,40 @@ def test_owner_home_prefers_env_and_logs_fallback(monkeypatch, caplog):
     with caplog.at_level("INFO", logger="nougen_shards.core"):
         assert core.owner_home() == Path.home() / ".nougen"
     assert any("falling back to ~/.nougen" in r.message for r in caplog.records)
+
+
+def test_tenant_get_secret_reads_only_the_tenant_db(monkeypatch):
+    monkeypatch.setenv("ACME_ONLY_KEY", "owner-process-env-value")
+    monkeypatch.setenv("NOUGEN_ALLOW_PLAINTEXT_VAULT", "1")
+    tokens = core.bind_active_vault(_tenant_vault(), TENANT_ID)
+    try:
+        assert keymaker.get_secret("ACME_ONLY_KEY") is None, "tenant read fell through to the node env"
+        keymaker.init_vault()
+        keymaker.ingest_secret("ACME_ONLY_KEY", "tenant-value")
+        assert keymaker.get_secret("ACME_ONLY_KEY") == "tenant-value"
+    finally:
+        core.reset_active_vault(tokens)
+    assert keymaker.get_secret("ACME_ONLY_KEY") == "owner-process-env-value"
+
+
+def test_tenant_messages_never_touch_host_sockets(monkeypatch, tmp_path):
+    import socket as _socket
+
+    class _NoSocket:
+        def __init__(self, *a, **k):
+            raise AssertionError("tenant message opened a host socket")
+
+    monkeypatch.setattr(_socket, "socket", _NoSocket)
+    monkeypatch.setattr(nougenmsg.AgentPinger, "_write_windows_named_pipe",
+                        staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("named pipe used"))))
+    monkeypatch.setattr(nougenmsg.glob, "glob", lambda pattern: [str(tmp_path / "fake.sock")])
+    tokens = core.bind_active_vault(_tenant_vault(), TENANT_ID)
+    try:
+        assert nougenmsg.AgentPinger._discover_claude_endpoints() == []
+        out = nougenmsg.AgentPinger.ping_antigravity("hello tenant")
+        assert out.get("pipe_delivered") is False
+        out = nougenmsg.AgentPinger.ping_claude("hello tenant")
+        assert out.get("tenant_scope") == "file-inbox-only"
+        assert Path(out["file"]).is_relative_to(_tenant_vault())
+    finally:
+        core.reset_active_vault(tokens)

@@ -904,10 +904,21 @@ def get_secret(key: str) -> Optional[str]:
     Checks environment variables first (Rule 0.0: env -> config -> runtime probe),
     then queries the active secrets vault, alias fallbacks, and live candidate stores.
     """
+    from . import core
+    if core.is_tenant_context():
+        # Tenant reads never consult the node's environment, the owner's
+        # store, legacy candidates or the keyring cache: only the tenant DB.
+        val = _read_secret_row(db_path(), key)
+        if val is not None:
+            return val
+        for alias in CANONICAL_ALIASES.get(key, []):
+            alias_val = _read_secret_row(db_path(), alias)
+            if alias_val is not None:
+                return alias_val
+        return None
     env_val = os.getenv(key) or os.getenv(f"NOUGEN_{key}")
     if env_val:
         return env_val.strip()
-
     if not _probe_enabled():
         val = _read_secret_row(db_path(), key)
         if val is not None:
