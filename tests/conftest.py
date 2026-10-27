@@ -152,8 +152,15 @@ def shared_mcp_client():
     core.GLOBAL_DIR = vault
     core.get_db_path = lambda index: vault / f"mcp_{index}.db"
     core.init_db(1)
+    client = TestClient(node.app)
     try:
-        with TestClient(node.app) as c:
-            yield c
+        client.__enter__()  # lifespan runs against the throwaway vault
     finally:
+        # Hand the process-wide vault back right away: the client stays open
+        # for the whole session, but every other module must see its own
+        # GLOBAL_DIR, not this one.
         core.GLOBAL_DIR, core.get_db_path = saved
+    try:
+        yield client
+    finally:
+        client.__exit__(None, None, None)
