@@ -147,19 +147,39 @@ def shared_mcp_client():
     import app as node
     from nougen_shards import core
 
+    import os as _os
+    import threading as _threading
+    import time as _time
+
     vault = Path(tempfile.mkdtemp(prefix="ngs_shared_mcp_vault_"))
     saved = (core.GLOBAL_DIR, core.get_db_path)
+    # The lifespan now outlives one module, so none of the node's background
+    # loops may keep running against whatever GLOBAL_DIR a later module swaps
+    # in: no recall warm-up, no listener self-check. The boot-quarantine pass
+    # is awaited below so it finishes against the throwaway vault.
+    quiet = {"NOUGEN_WARMUP": "0", "NOUGEN_LISTENER_SELFCHECK_S": "0"}
+    saved_env = {k: _os.environ.get(k) for k in quiet}
+    _os.environ.update(quiet)
     core.GLOBAL_DIR = vault
     core.get_db_path = lambda index: vault / f"mcp_{index}.db"
     core.init_db(1)
     client = TestClient(node.app)
     try:
         client.__enter__()  # lifespan runs against the throwaway vault
+        deadline = _time.monotonic() + 30
+        while _time.monotonic() < deadline and any(
+                t.name.startswith("nougen-") and t.is_alive() for t in _threading.enumerate()):
+            _time.sleep(0.05)
     finally:
         # Hand the process-wide vault back right away: the client stays open
         # for the whole session, but every other module must see its own
         # GLOBAL_DIR, not this one.
         core.GLOBAL_DIR, core.get_db_path = saved
+        for k, v in saved_env.items():
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
     try:
         yield client
     finally:
