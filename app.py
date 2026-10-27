@@ -1003,8 +1003,16 @@ def _start_recall_warmup() -> None:
             # so every recall degraded to keyword-only until something else
             # happened to load it. One long-budget embed here pays that once and
             # pins the model with the backfill keep_alive.
-            _WARMUP_STATE["embed"] = _warm_query_embedding(
-                _env_float("NOUGEN_WARMUP_EMBED_TIMEOUT_S", _WARMUP_EMBED_TIMEOUT_S_FALLBACK))
+            # On its own thread (Codex P2 on #885): a stalled or blackholed
+            # OLLAMA_HOST would otherwise hold the grid passes for the whole
+            # embed budget and leave the recall cache cold meanwhile.
+            embed_timeout = _env_float("NOUGEN_WARMUP_EMBED_TIMEOUT_S", _WARMUP_EMBED_TIMEOUT_S_FALLBACK)
+            _WARMUP_STATE["embed"] = {"ready": False, "status": "loading"}
+
+            def _embed_bg():
+                _WARMUP_STATE["embed"] = _warm_query_embedding(embed_timeout)
+
+            _threading.Thread(target=_embed_bg, name="nougen-embed-warmup", daemon=True).start()
             # One pass used to be the whole warm-up, but on a cold 9-DB grid one
             # retrieve exhausts the shared scan deadline, caches only the DBs
             # that finished, and leaves the rest cold until real traffic pays

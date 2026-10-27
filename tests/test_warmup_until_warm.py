@@ -13,11 +13,20 @@ def _wait_status(final=("warm", "cold", "error"), timeout=5.0):
     return dict(node_app._WARMUP_STATE)
 
 
-def test_warmup_preloads_embedding_model_before_grid_passes(monkeypatch):
-    order = []
-    monkeypatch.setattr(node_app, "_warm_query_embedding",
-                        lambda t: order.append(("embed", t)) or {"ready": True, "model": "m", "seconds": 0.1, "error": None})
-    monkeypatch.setattr(core, "retrieve", lambda *a, **k: order.append(("retrieve",)))
+def test_warmup_preloads_embedding_model_without_blocking_grid_passes(monkeypatch):
+    """Embedding load starts first but on its own thread: a stalled OLLAMA_HOST
+    must not keep the grid cold (Codex P2 on #885)."""
+    import threading
+    release = threading.Event()
+    seen = []
+
+    def slow_embed(t):
+        seen.append(("embed", t))
+        release.wait(5.0)
+        return {"ready": True, "model": "m", "seconds": 0.1, "error": None}
+
+    monkeypatch.setattr(node_app, "_warm_query_embedding", slow_embed)
+    monkeypatch.setattr(core, "retrieve", lambda *a, **k: seen.append(("retrieve",)))
     monkeypatch.setattr(core, "last_scan_miss_count", lambda: 0)
     monkeypatch.setattr(core, "get_db_path", lambda i: type("P", (), {"exists": staticmethod(lambda: True)})())
     monkeypatch.setenv("NOUGEN_WARMUP_EMBED_TIMEOUT_S", "77")
@@ -25,8 +34,14 @@ def test_warmup_preloads_embedding_model_before_grid_passes(monkeypatch):
     monkeypatch.setattr(node_app, "_WARMUP_STATE", {"status": "pending", "passes": 0, "misses": None})
     node_app._start_recall_warmup()
     st = _wait_status()
-    assert order[0] == ("embed", 77.0) and order[1] == ("retrieve",)
-    assert st["embed"]["ready"] is True and st["status"] == "warm"
+    assert st["status"] == "warm", "grid warmed while the embedding load was still blocked"
+    assert st["embed"] == {"ready": False, "status": "loading"}
+    assert ("embed", 77.0) in seen and ("retrieve",) in seen
+    release.set()
+    t0 = time.monotonic()
+    while not node_app._WARMUP_STATE["embed"].get("ready") and time.monotonic() - t0 < 3:
+        time.sleep(0.02)
+    assert node_app._WARMUP_STATE["embed"]["ready"] is True
 
 
 def test_warm_query_embedding_never_raises(monkeypatch):
