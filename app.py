@@ -23,6 +23,8 @@ from pydantic import BaseModel
 import gradio as gr
 import subprocess
 import time
+import asyncio
+import threading
 
 
 # Add src to path for absolute imports
@@ -1266,6 +1268,30 @@ async def capture_vault_context(
 
 # --- API Endpoints ---
 
+# Logged fallback only; env NOUGEN_HEALTH_COVERAGE_TTL_S wins.
+_HEALTH_COVERAGE_TTL_S_FALLBACK = 30.0
+_COVERAGE_CACHE: dict = {"at": 0.0, "value": None}
+_COVERAGE_LOCK = threading.Lock()
+
+
+def cached_substrate_coverage(now: Optional[float] = None) -> dict:
+    """_substrate_coverage() memoised for NOUGEN_HEALTH_COVERAGE_TTL_S seconds.
+
+    Health probes arrive every few seconds from peers, watchdogs and tunnels;
+    recounting nine shard tables for each one is wasted I/O that competes with
+    recall and warm-up. One computation per TTL window, shared by all callers.
+    """
+    ttl = _env_float("NOUGEN_HEALTH_COVERAGE_TTL_S", _HEALTH_COVERAGE_TTL_S_FALLBACK)
+    t = time.monotonic() if now is None else now
+    with _COVERAGE_LOCK:
+        cached = _COVERAGE_CACHE["value"]
+        if cached is not None and t - _COVERAGE_CACHE["at"] < ttl:
+            return cached
+        value = _substrate_coverage()
+        _COVERAGE_CACHE.update({"at": t, "value": value})
+        return value
+
+
 def _substrate_coverage() -> dict:
     """Per-database mount state for the shard grid.
 
@@ -1893,7 +1919,11 @@ async def local_health():
     except ValueError:
         vid = VaultId.WHOART
 
-    coverage = _substrate_coverage()
+    # Coverage runs nine COUNT(*) queries. Called synchronously from this async
+    # handler it blocked uvicorn's event loop, and while warm-up had the grid
+    # busy a peer saw /v1/health/local take 19.7s against its 25s grace (whoart
+    # 2026-10-26). Serve a TTL-cached snapshot computed off the loop instead.
+    coverage = await asyncio.to_thread(cached_substrate_coverage)
     db_present = coverage.get("databases_mounted", 0)
     db_expected = coverage.get("databases_expected", 9)
     healthy = db_present == db_expected
