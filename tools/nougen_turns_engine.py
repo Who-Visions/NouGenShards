@@ -17,7 +17,6 @@ import httpx
 import argparse
 import datetime
 import json
-import os
 import random
 import sqlite3
 import sys
@@ -303,15 +302,15 @@ async def run_engine(target_turns: int = 1000000, concurrency: int = 3, model: s
     current_turns = current["turns"]
     current_dialogues = current["dialogues"]
     
-    print(f"\n=======================================================")
-    print(f"🌊 NouGen 1M Turns Engine Starting")
-    print(f"=======================================================")
+    print("\n=======================================================")
+    print("🌊 NouGen 1M Turns Engine Starting")
+    print("=======================================================")
     print(f"Model: {model}")
     print(f"Active Turns in Vault: {current_turns:,} / {target_turns:,}")
     print(f"Active Dialogues: {current_dialogues:,}")
     print(f"Concurrency Slots: {concurrency}")
     print(f"Storage: {TURNS_DIR}")
-    print(f"=======================================================\n")
+    print("=======================================================\n")
     
     if current_turns >= target_turns:
         print(f"Goal already reached! Total turns: {current_turns:,}")
@@ -411,12 +410,12 @@ async def run_engine(target_turns: int = 1000000, concurrency: int = 3, model: s
     conn.close()
     
     total_elapsed = time.time() - start_time
-    print(f"\n=======================================================")
-    print(f"✅ Session Finished!")
+    print("\n=======================================================")
+    print("✅ Session Finished!")
     print(f"Turns Added: {turns_generated_this_run:,}")
     print(f"Tokens Generated: {tokens_generated_this_run:,}")
     print(f"Time Elapsed: {datetime.timedelta(seconds=int(total_elapsed))}")
-    print(f"=======================================================\n")
+    print("=======================================================\n")
 
 def print_stats():
     stats = get_current_stats()
