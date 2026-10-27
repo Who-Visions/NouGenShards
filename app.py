@@ -23,6 +23,8 @@ from pydantic import BaseModel
 import gradio as gr
 import subprocess
 import time
+import asyncio
+import threading
 
 
 # Add src to path for absolute imports
@@ -900,6 +902,47 @@ def _registered_upstreams() -> list:
         return []
 
 
+# Logged fallbacks only; env NOUGEN_WARMUP_MAX_PASSES / NOUGEN_WARMUP_PAUSE_S win.
+_WARMUP_MAX_PASSES_FALLBACK = 8
+_WARMUP_PAUSE_S_FALLBACK = 1.0
+#: Live warm-up state, surfaced on /v1/health/local as "warm"/"warmup" so a
+#: fan-out peer can tell a cold lane from a broken one and size its grace.
+_WARMUP_STATE: dict = {"status": "pending", "passes": 0, "misses": None}
+
+
+def _utc_now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def _env_int(name: str, fallback: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return fallback
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logging.getLogger(__name__).warning("%s=%r is not an int; fallback %d", name, raw, fallback)
+        return fallback
+
+
+def _env_float(name: str, fallback: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return fallback
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logging.getLogger(__name__).warning("%s=%r is not a number; fallback %s", name, raw, fallback)
+        return fallback
+
+
+def warmup_status() -> dict:
+    """Copy of the warm-up state; "warm" is True only once no grid DB was dropped."""
+    st = dict(_WARMUP_STATE)
+    st["warm"] = st.get("status") == "warm" or not _warmup_enabled()
+    return st
+
+
 def _warmup_enabled() -> bool:
     return os.environ.get("NOUGEN_WARMUP", "1").strip().lower() not in ("0", "false", "no", "off")
 
@@ -923,11 +966,36 @@ def _start_recall_warmup() -> None:
 
     def _run():
         started = time.perf_counter()
+        log = logging.getLogger(__name__)
+        max_passes = _env_int("NOUGEN_WARMUP_MAX_PASSES", _WARMUP_MAX_PASSES_FALLBACK)
+        pause_s = _env_float("NOUGEN_WARMUP_PAUSE_S", _WARMUP_PAUSE_S_FALLBACK)
+        _WARMUP_STATE.update({"status": "warming", "passes": 0, "misses": None, "started_utc": _utc_now_iso()})
         try:
-            core.retrieve("warmup", limit=1, domain_key="*")
-            logging.getLogger(__name__).info("recall warm-up done in %.1fs", time.perf_counter() - started)
+            # One pass used to be the whole warm-up, but on a cold 9-DB grid one
+            # retrieve exhausts the shared scan deadline, caches only the DBs
+            # that finished, and leaves the rest cold until real traffic pays
+            # for them (blade 2026-10-26: ~3 min of deadline misses after every
+            # restart; whoart's fan-out missed its 25s grace meanwhile). Keep
+            # passing until a retrieve drops no grid DB, or the pass budget ends.
+            for n in range(1, max_passes + 1):
+                core.begin_scan_miss_tracking()
+                core.retrieve("warmup", limit=1, domain_key="*")
+                misses = core.last_scan_miss_count()
+                _WARMUP_STATE.update({"passes": n, "misses": misses})
+                if misses <= 0:
+                    _WARMUP_STATE["status"] = "warm"
+                    break
+                log.info("recall warm-up pass %d/%d: %d grid DB(s) still cold", n, max_passes, misses)
+                time.sleep(pause_s)
+            else:
+                _WARMUP_STATE["status"] = "cold"
+            log.info("recall warm-up %s after %d pass(es) in %.1fs", _WARMUP_STATE["status"],
+                     _WARMUP_STATE["passes"], time.perf_counter() - started)
         except Exception as exc:  # pylint: disable=broad-except
-            logging.getLogger(__name__).warning("recall warm-up skipped: %s: %s", type(exc).__name__, exc)
+            _WARMUP_STATE.update({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+            log.warning("recall warm-up skipped: %s: %s", type(exc).__name__, exc)
+        finally:
+            _WARMUP_STATE["seconds"] = round(time.perf_counter() - started, 1)
 
     _threading.Thread(target=_run, name="nougen-recall-warmup", daemon=True).start()
 
@@ -1199,6 +1267,30 @@ async def capture_vault_context(
         core.reset_active_vault(context_tokens)
 
 # --- API Endpoints ---
+
+# Logged fallback only; env NOUGEN_HEALTH_COVERAGE_TTL_S wins.
+_HEALTH_COVERAGE_TTL_S_FALLBACK = 30.0
+_COVERAGE_CACHE: dict = {"at": 0.0, "value": None}
+_COVERAGE_LOCK = threading.Lock()
+
+
+def cached_substrate_coverage(now: Optional[float] = None) -> dict:
+    """_substrate_coverage() memoised for NOUGEN_HEALTH_COVERAGE_TTL_S seconds.
+
+    Health probes arrive every few seconds from peers, watchdogs and tunnels;
+    recounting nine shard tables for each one is wasted I/O that competes with
+    recall and warm-up. One computation per TTL window, shared by all callers.
+    """
+    ttl = _env_float("NOUGEN_HEALTH_COVERAGE_TTL_S", _HEALTH_COVERAGE_TTL_S_FALLBACK)
+    t = time.monotonic() if now is None else now
+    with _COVERAGE_LOCK:
+        cached = _COVERAGE_CACHE["value"]
+        if cached is not None and t - _COVERAGE_CACHE["at"] < ttl:
+            return cached
+        value = _substrate_coverage()
+        _COVERAGE_CACHE.update({"at": t, "value": value})
+        return value
+
 
 def _substrate_coverage() -> dict:
     """Per-database mount state for the shard grid.
@@ -1827,7 +1919,11 @@ async def local_health():
     except ValueError:
         vid = VaultId.WHOART
 
-    coverage = _substrate_coverage()
+    # Coverage runs nine COUNT(*) queries. Called synchronously from this async
+    # handler it blocked uvicorn's event loop, and while warm-up had the grid
+    # busy a peer saw /v1/health/local take 19.7s against its 25s grace (whoart
+    # 2026-10-26). Serve a TTL-cached snapshot computed off the loop instead.
+    coverage = await asyncio.to_thread(cached_substrate_coverage)
     db_present = coverage.get("databases_mounted", 0)
     db_expected = coverage.get("databases_expected", 9)
     healthy = db_present == db_expected
@@ -1842,6 +1938,8 @@ async def local_health():
         "db_expected": db_expected,
         "shard_count": coverage.get("shards", 0),
         "newest_timestamp": coverage.get("span", {}).get("latest"),
+        "warm": warmup_status()["warm"],
+        "warmup": warmup_status(),
     }
 
 

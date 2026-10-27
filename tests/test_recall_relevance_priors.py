@@ -9,6 +9,7 @@ mirrors and Bash-error captures. Two causes, two pins:
 """
 import threading
 import time
+from contextvars import copy_context
 
 from nougen_shards import core
 
@@ -127,6 +128,35 @@ def test_repeated_recalls_during_a_stuck_scan_do_not_spawn_more_threads(monkeypa
             list(core._run_db_scans(scan))
         pool = core._scan_pool(4)
         assert len(pool._threads) <= 4, len(pool._threads)
+    finally:
+        release.set()
+        monkeypatch.setattr(core, "_SCAN_POOL", None)
+
+
+def test_run_db_scans_reports_miss_count_for_warmup(monkeypatch):
+    monkeypatch.setattr(core, "_retrieve_db_workers", lambda: 4)
+    monkeypatch.setattr(core, "elevated_lane_timeout", lambda **k: 0.4)
+    monkeypatch.setattr(core, "_SCAN_POOL", None)
+    release = threading.Event()
+
+    def scan(i):
+        if i in (1, 2):
+            release.wait(5.0)
+        return ([f"db{i}"], False)
+
+    try:
+        core.begin_scan_miss_tracking()
+        # The vector lane runs its scans under copy_context().run(); the miss
+        # count must still reach the caller that began tracking.
+        copy_context().run(lambda: list(core._run_db_scans(scan)))
+        assert core.last_scan_miss_count() == 2
+        release.set()
+        core.begin_scan_miss_tracking()
+        list(core._run_db_scans(lambda i: ([f"db{i}"], False)))
+        assert core.last_scan_miss_count() == 0
+        assert core.last_scan_miss_count.__doc__  # tracked, not -1
+        core.begin_scan_miss_tracking()
+        assert core.last_scan_miss_count() == -1
     finally:
         release.set()
         monkeypatch.setattr(core, "_SCAN_POOL", None)

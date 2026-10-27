@@ -1908,6 +1908,34 @@ def elevated_lane_timeout(
 
 _SCAN_POOL = None
 _SCAN_POOL_LOCK = _threading.Lock()
+# Deadline-miss tracking for warm-up. The holder is a LIST placed in a
+# ContextVar by begin_scan_miss_tracking(); lanes that run under
+# copy_context().run() inherit the same list object, so a miss recorded inside
+# the vector lane's context still reaches the caller that started tracking
+# (Codex P2 on PR #880: a plain int ContextVar set inside the lane never
+# propagated back, and the caller read the title lane's count or -1).
+_SCAN_MISSES: ContextVar[Optional[list]] = ContextVar("ngs_scan_misses", default=None)
+
+
+def begin_scan_miss_tracking() -> list:
+    """Start collecting per-lane grid-DB miss counts for retrieves in this context."""
+    holder: list = []
+    _SCAN_MISSES.set(holder)
+    return holder
+
+
+def _record_scan_misses(count: int) -> None:
+    holder = _SCAN_MISSES.get()
+    if holder is not None:
+        holder.append(count)
+
+
+def last_scan_miss_count() -> int:
+    """Worst per-lane miss count since begin_scan_miss_tracking(); -1 if no scan ran."""
+    holder = _SCAN_MISSES.get()
+    if not holder:
+        return -1
+    return max(holder)
 # Logged fallback only: env NOUGEN_SCAN_POOL_WORKERS / NOUGEN_SCAN_POOL_RECALLS win.
 _SCAN_POOL_RECALLS_FALLBACK = 3
 
@@ -1998,6 +2026,7 @@ def _run_db_scans(scan_fn):
         for fut in futures.values():
             if not fut.done():
                 fut.cancel()
+    _record_scan_misses(sum(1 for i in range(1, MAX_DB_COUNT + 1) if i not in done))
     for i in range(1, MAX_DB_COUNT + 1):
         if i in done:
             yield i, done[i]
