@@ -44,7 +44,10 @@ def _newest_text(limit=1800):
     files = _handoff_files()
     if not files:
         return "(no handoffs in registry yet)"
-    newest = max(files, key=os.path.getmtime)
+    # Prefer a manual handoff: an auto-stub (session ended without one) carries
+    # only git state, so it is shown only when no manual handoff exists at all.
+    manual = [f for f in files if not os.path.basename(f).endswith("_auto.md")]
+    newest = max(manual or files, key=os.path.getmtime)
     try:
         return Path(newest).read_text(encoding="utf-8", errors="replace")[:limit]
     except Exception:
