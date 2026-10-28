@@ -23,7 +23,9 @@ from pathlib import Path
 
 # Repo root resolves from this file (tools/ sits one level under the root); env wins.
 REPO = Path(os.environ.get("NOUGEN_REPO") or Path(__file__).resolve().parents[1])
-HANDOFF_DIR = Path(os.environ.get("NOUGEN_HANDOFF_DIR", str(REPO / ".handoffs")))
+# Same registry the handoff CLI writes (nougen_shards.handoff._default_handoff_dir).
+# The old default was the repo's stale .handoffs folder, so the guard never saw new handoffs.
+HANDOFF_DIR = Path(os.environ.get("NOUGEN_HANDOFF_DIR") or (Path.home() / ".nougen" / "handoffs"))
 SESS_DIR = HANDOFF_DIR / ".sessions"
 AGENT = os.environ.get("NOUGEN_AGENT", "claude-cli")
 
