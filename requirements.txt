@@ -176,7 +176,7 @@ pandas==3.0.3
     # via gradio
 pillow==12.3.0
     # via gradio
-proto-plus==1.28.4
+proto-plus==1.29.0
     # via google-api-core
 protobuf==7.36.2
     # via
