@@ -21,7 +21,8 @@ all failures are swallowed so a hook can never wedge the session.
 import sys, os, json, glob, time, subprocess, datetime
 from pathlib import Path
 
-REPO = Path(os.environ.get("NOUGEN_REPO", str(Path(__file__).resolve().parents[1])))
+# Repo root resolves from this file (tools/ sits one level under the root); env wins.
+REPO = Path(os.environ.get("NOUGEN_REPO") or Path(__file__).resolve().parents[1])
 HANDOFF_DIR = Path(os.environ.get("NOUGEN_HANDOFF_DIR", str(REPO / ".handoffs")))
 SESS_DIR = HANDOFF_DIR / ".sessions"
 AGENT = os.environ.get("NOUGEN_AGENT", "claude-cli")
@@ -103,7 +104,7 @@ def main():
                           "⚠️ Uncommitted work exists and no handoff has been written this "
                           "session. Before you stop for the user, write one: "
                           "`python -m nougen_shards.cli handoff create -a " + AGENT +
-                          " -g \"<goal>\" -m \"<summary>\"` then `handoff rebuild-db`.")
+                          " -g \"<goal>\" -M <note-file>` (-M, never -m, for multi-line notes) then `handoff rebuild-db`.")
         return
 
     if mode == "sessionend":
