@@ -66,7 +66,11 @@ import keymaker_peel as kp
 db = Path(os.environ.get("NOUGEN_SECRETS_DB") or (home / "secrets" / "shards_secrets.db"))
 out = []
 if not os.environ.get("OPENROUTER_API_KEY"):
-    rows = kp.load(os.environ.get("NOUGEN_OPENROUTER_KEY_LABEL", "OPENROUTER_KEY_NOUGENAI"), db=db)
+    try:
+        rows = kp.load(os.environ.get("NOUGEN_OPENROUTER_KEY_LABEL", "OPENROUTER_KEY_NOUGENAI"), db=db)
+    except Exception as exc:
+        rows = []
+        print(f"rhea free lane: keymaker lookup failed ({type(exc).__name__})", file=sys.stderr)
     if rows:
         label, value, _ = rows[0]
         out.append("OPENROUTER_API_KEY=" + value)
@@ -101,11 +105,13 @@ sys.stdout.write("\n".join(out))
     $ErrorActionPreference = 'Continue'
     try { $lines = $py | & $Python - 2>&1 } finally { $ErrorActionPreference = $prevEap }
     foreach ($line in $lines) {
-        $s = [string]$line
+        $s = ([string]$line).TrimStart([char]0xFEFF)
         if ($s -match '^(OPENROUTER_API_KEY|NGS_INFERENCE_TOKENS)=(.+)$') {
             Set-Item -Path ("Env:" + $Matches[1]) -Value $Matches[2]
-        } elseif ($s) {
-            $s   # fingerprint / count lines only
+        } elseif ($line -is [System.Management.Automation.ErrorRecord] -and $s) {
+            # Echo stderr only (fingerprints / counts). A stdout line that misses
+            # the regex is dropped, never printed: it could carry a value.
+            $s
         }
     }
 }
