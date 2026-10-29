@@ -67,7 +67,9 @@ db = Path(os.environ.get("NOUGEN_SECRETS_DB") or (home / "secrets" / "shards_sec
 out = []
 if not os.environ.get("OPENROUTER_API_KEY"):
     try:
-        rows = kp.load(os.environ.get("NOUGEN_OPENROUTER_KEY_LABEL", "OPENROUTER_KEY_NOUGENAI"), db=db)
+        # OPENROUTER_KEY_NOUGENAI (start_grid.py's default) exists in neither
+        # blade store; OPENROUTER_API_KEY is the label actually ingested.
+        rows = kp.load(os.environ.get("NOUGEN_OPENROUTER_KEY_LABEL", "OPENROUTER_API_KEY"), db=db)
     except Exception as exc:
         rows = []
         print(f"rhea free lane: keymaker lookup failed ({type(exc).__name__})", file=sys.stderr)
