@@ -1207,7 +1207,8 @@ def capture(event_type: str, title: str, content: str,
             source_uri: Optional[str] = None,
             utility: Optional[float] = None,
             valid_until: Optional[str] = None,
-            consolidate: Optional[bool] = None) -> bool:
+            consolidate: Optional[bool] = None,
+            poe: Optional[dict] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants).
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
@@ -1236,6 +1237,14 @@ def capture(event_type: str, title: str, content: str,
     content = redact_content(str(content))
     if tags:
         tags = [redact_content(str(tag)) for tag in tags]
+
+    # Truth Anchor: a completion-tagged shard must carry proof of execution.
+    from . import poe_gate as _poe  # pylint: disable=import-outside-toplevel
+    allowed, poe_errors = _poe.check(tags, content, poe)
+    if not allowed:
+        logger.warning("capture: rejected unproven completion claim %r: %s",
+                       title, "; ".join(poe_errors))
+        return False
 
     # Opt-in write-time consolidation (consolidate.py): tags a fact that supersedes,
     # conflicts with, or duplicates a neighbour. Never blocks or alters the write.
