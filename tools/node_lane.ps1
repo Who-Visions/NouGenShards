@@ -51,6 +51,65 @@ function Get-NodeToken {
     return $tok
 }
 
+function Set-RheaLaneEnv {
+    # Fill OPENROUTER_API_KEY and NGS_INFERENCE_TOKENS from the keymaker when
+    # the operator has not set them. Label and patterns are env-overridable
+    # (same knobs as start_grid.py); the store path follows NOUGEN_SECRETS_DB.
+    if ($env:OPENROUTER_API_KEY -and $env:NGS_INFERENCE_TOKENS) { 'rhea lanes: both set by env'; return }
+    $env:PYTHONPATH = Join-Path $Root 'src'
+    $py = @'
+import os, sys
+from pathlib import Path
+home = Path(os.environ.get("NOUGEN_ROOT") or (Path.home() / ".nougen"))
+sys.path.insert(0, str(home / "bin"))
+import keymaker_peel as kp
+db = Path(os.environ.get("NOUGEN_SECRETS_DB") or (home / "secrets" / "shards_secrets.db"))
+out = []
+if not os.environ.get("OPENROUTER_API_KEY"):
+    rows = kp.load(os.environ.get("NOUGEN_OPENROUTER_KEY_LABEL", "OPENROUTER_KEY_NOUGENAI"), db=db)
+    if rows:
+        label, value, _ = rows[0]
+        out.append("OPENROUTER_API_KEY=" + value)
+        print(f"rhea free lane: openrouter key {label} fp={kp.fingerprint(value)}", file=sys.stderr)
+    else:
+        print("rhea free lane: no openrouter key found (agent lane degraded)", file=sys.stderr)
+if not os.environ.get("NGS_INFERENCE_TOKENS"):
+    toks = {}
+    pats = [p for p in os.environ.get("NOUGEN_HF_TOKEN_PATTERNS", "%HF_%,%HUGGING%").split(",") if p]
+    for pat in pats:
+        for store in (db, None):
+            try:
+                rows = kp.load(pat, db=store, min_len=20)
+            except Exception:
+                continue
+            for _label, value, _rot in rows:
+                if value.startswith("hf_"):
+                    toks[kp.fingerprint(value)] = value
+    if toks:
+        out.append("NGS_INFERENCE_TOKENS=" + ",".join(toks.values()))
+        print(f"rhea kimi lane: {len(toks)} fleet hf token(s) wired", file=sys.stderr)
+    else:
+        print("rhea kimi lane: no hf tokens found", file=sys.stderr)
+sys.stdout.write("\n".join(out))
+'@
+    # Feed the script over stdin: a multi-line `-c` argument is re-quoted by
+    # PowerShell's native-command marshalling and reached Python mangled
+    # (SyntaxError, 2026-10-29). Fingerprint lines arrive on stderr; under
+    # $ErrorActionPreference='Stop' they would abort the start, so relax it
+    # for this call only - a missing key degrades Rhea, it must not stop the node.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $lines = $py | & $Python - 2>&1 } finally { $ErrorActionPreference = $prevEap }
+    foreach ($line in $lines) {
+        $s = [string]$line
+        if ($s -match '^(OPENROUTER_API_KEY|NGS_INFERENCE_TOKENS)=(.+)$') {
+            Set-Item -Path ("Env:" + $Matches[1]) -Value $Matches[2]
+        } elseif ($s) {
+            $s   # fingerprint / count lines only
+        }
+    }
+}
+
 function Get-NodePid {
     if (-not (Test-Path $PidFile)) { return $null }
     $id = (Get-Content $PidFile -Raw).Trim()
@@ -143,6 +202,14 @@ switch ($Action) {
         # resident generation model burned the full 6s default and a matrix-build wait burned 5s.
         if (-not $env:NOUGEN_QUERY_EMBED_TIMEOUT)   { $env:NOUGEN_QUERY_EMBED_TIMEOUT   = '2.5' }
         if (-not $env:NOUGEN_VECTOR_CACHE_WAIT_S)   { $env:NOUGEN_VECTOR_CACHE_WAIT_S   = '1' }
+        # Rhea's inference lanes (2026-10-29): a node started here carried no
+        # OPENROUTER_API_KEY / NGS_INFERENCE_TOKENS, so rhea_noir raised "no
+        # inference lane available (free + kimi both down)" and ask_xoah came
+        # back brain=none. start_grid.py already wires both from the keymaker;
+        # mirror it so the two launchers agree. Env wins; values travel
+        # python -> this process -> child env, same as Get-NodeToken, and only
+        # fingerprints/counts are ever printed.
+        Set-RheaLaneEnv
         $env:PYTHONPATH       = Join-Path $Root 'src'
 
         $proc = Start-Process -FilePath $Python -ArgumentList 'tools\ngs_node_serve.py' `
