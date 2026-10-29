@@ -2,8 +2,6 @@
 # (gradio <=6.31.0 pins pillow<13; pillow 13 needs Python>=3.11, project supports 3.10).
 # Each entry expires 2026-12-31 so the gate re-arms automatically; see docs/security-exceptions.md-style review before extending.
 
-# filelock: fixed upstream only in a version blocked by the dependency cap above
-CVE-2026-112940 exp:2026-12-31
 # pillow: fixed upstream only in a version blocked by the dependency cap above
 CVE-2026-112390 exp:2026-12-31
 CVE-2026-112392 exp:2026-12-31
