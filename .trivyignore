@@ -1,0 +1,35 @@
+# Time-boxed risk acceptance (GM order 2026-10-28). Remove entries when gradio lifts its pillow<13 cap
+# (gradio <=6.31.0 pins pillow<13; pillow 13 needs Python>=3.11, project supports 3.10).
+# Each entry expires 2026-12-31 so the gate re-arms automatically; see docs/security-exceptions.md-style review before extending.
+
+# filelock: fixed upstream only in a version blocked by the dependency cap above
+CVE-2026-112940 exp:2026-12-31
+# pillow: fixed upstream only in a version blocked by the dependency cap above
+CVE-2026-112390 exp:2026-12-31
+CVE-2026-112392 exp:2026-12-31
+CVE-2026-112393 exp:2026-12-31
+CVE-2026-112397 exp:2026-12-31
+CVE-2026-112398 exp:2026-12-31
+CVE-2026-112399 exp:2026-12-31
+CVE-2026-112400 exp:2026-12-31
+CVE-2026-112402 exp:2026-12-31
+CVE-2026-112403 exp:2026-12-31
+CVE-2026-112404 exp:2026-12-31
+CVE-2026-112405 exp:2026-12-31
+CVE-2026-112406 exp:2026-12-31
+CVE-2026-112892 exp:2026-12-31
+CVE-2026-112893 exp:2026-12-31
+CVE-2026-112894 exp:2026-12-31
+CVE-2026-112895 exp:2026-12-31
+CVE-2026-112896 exp:2026-12-31
+CVE-2026-112897 exp:2026-12-31
+CVE-2026-112900 exp:2026-12-31
+CVE-2026-112902 exp:2026-12-31
+CVE-2026-96637 exp:2026-12-31
+CVE-2026-96639 exp:2026-12-31
+CVE-2026-96640 exp:2026-12-31
+CVE-2026-96642 exp:2026-12-31
+CVE-2026-96643 exp:2026-12-31
+CVE-2026-96644 exp:2026-12-31
+CVE-2026-96778 exp:2026-12-31
+GHSA-78g4-xqwv-q3g8 exp:2026-12-31
