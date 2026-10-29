@@ -13,7 +13,7 @@ import pytest
 
 
 @pytest.fixture
-def km(tmp_path, monkeypatch):
+def km(tmp_path, monkeypatch, dpapi_stand_in):
     vault_dir = tmp_path / "vault"
     monkeypatch.setenv("NOUGEN_VAULT_DIR", str(vault_dir))
     monkeypatch.setenv("NOUGEN_SECRETS_VAULT_DIR", str(vault_dir))
@@ -25,6 +25,7 @@ def km(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "keyring", None)
     import nougen_shards.keymaker as keymaker
     importlib.reload(keymaker)
+    dpapi_stand_in(keymaker)
     keymaker._PROBE_CACHE.clear()
     yield keymaker
 
@@ -113,7 +114,7 @@ class _FakeKeyring:
 
 
 @pytest.fixture
-def km_keyring(tmp_path, monkeypatch):
+def km_keyring(tmp_path, monkeypatch, dpapi_stand_in):
     monkeypatch.setenv("NOUGEN_VAULT_DIR", str(tmp_path / "vault"))
     monkeypatch.delenv("NOUGEN_ALLOW_PLAINTEXT_VAULT", raising=False)
     monkeypatch.setenv("NOUGEN_DISABLE_KEYCHAIN_POPUP", "1")  # headless: reads use the cache only
@@ -121,6 +122,7 @@ def km_keyring(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "keyring", fake)
     import nougen_shards.keymaker as keymaker
     importlib.reload(keymaker)
+    dpapi_stand_in(keymaker)
     monkeypatch.setattr(keymaker, "_KEYRING_CACHE_FILE", tmp_path / "keyring_cache.json")
     yield keymaker, fake
 

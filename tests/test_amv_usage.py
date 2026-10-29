@@ -204,6 +204,7 @@ def test_tracker_leaves_unknown_model_unpriced_and_frames_unavailable(tmp_path):
     isolated_home.mkdir()
     env = dict(os.environ)
     env["HOME"] = str(isolated_home)
+    env["USERPROFILE"] = str(isolated_home)  # expanduser reads this on Windows
     env["FLEET_USAGE_LEDGER"] = str(ledger)
     src = str(Path(__file__).resolve().parents[1] / "src")
     env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
