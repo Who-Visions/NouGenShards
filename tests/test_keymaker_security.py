@@ -194,3 +194,23 @@ def test_register_local_vault_accepts_plain_identifiers(km, tmp_path):
     rows = km.list_local_vaults()
     assert [(r["table_name"], r["title_col"], r["content_col"]) for r in rows] == [
         ("shards", "title", "_content2")]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="DPAPI is available on Windows")
+def test_dpapi_row_off_windows_does_not_break_ingest(km):
+    # A Windows-synced DPAPI row in a POSIX vault must read as unreadable in the
+    # audit ledger, not crash ingest_secret after the new row was committed.
+    import base64
+    km.init_vault()
+    blob = km._DPAPI_PREFIX + base64.b64encode(km._DPAPI_MAGIC + b"\x00" * 24).decode()
+    conn = sqlite3.connect(str(km.DB_PATH))
+    conn.execute("INSERT INTO secrets (secret_key, secret_value, last_rotated) VALUES (?, ?, ?)",
+                 ("WINDOWS_ROW", blob, "2026-01-01 00:00:00"))
+    conn.commit()
+    conn.close()
+    km.ingest_secret("NEW_KEY", "new-value")
+    assert km.get_secret("NEW_KEY") == "new-value"
+    with pytest.raises(OSError):
+        km._unprotect(blob)
+    ledger = open(km.CSV_PATH, encoding="utf-8").read()
+    assert "WINDOWS_ROW" in ledger and "unreadable" in ledger

@@ -148,6 +148,11 @@ class _DataBlob(ctypes.Structure):
 
 def _dpapi_call(func_name: str, data: bytes) -> bytes:
     """Invokes CryptProtectData/CryptUnprotectData on the given bytes."""
+    # A vault synced from a Windows node can carry DPAPI rows onto macOS/Linux.
+    # Raise the OSError callers already handle, not AttributeError on `windll`,
+    # which escaped _export_to_csv and failed ingest_secret after its commit.
+    if not hasattr(ctypes, "windll"):
+        raise OSError(f"{func_name} unavailable: DPAPI is Windows-only")
     blob_in = _DataBlob(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)),
                                               ctypes.POINTER(ctypes.c_char)))
     blob_out = _DataBlob()
