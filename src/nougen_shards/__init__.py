@@ -20,6 +20,8 @@ _EXPORTS = {
     "link_shards": ("graph", "link_shards"),
     "related_shards": ("graph", "related_shards"),
     "check_mutation_gate": ("gatekeeper", "check_mutation_gate"),
+    "ShardGate": ("shard_gate", "ShardGate"),
+    "ShardEvidenceRejectionError": ("shard_gate", "ShardEvidenceRejectionError"),
     "TemporalEnvelope": ("temporal_fabric", "TemporalEnvelope"),
     "TemporalFabric": ("temporal_fabric", "TemporalFabric"),
     "extract_temporal_mentions": ("temporal_fabric", "extract_temporal_mentions"),
