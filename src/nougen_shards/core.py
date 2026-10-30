@@ -1208,7 +1208,8 @@ def capture(event_type: str, title: str, content: str,
             utility: Optional[float] = None,
             valid_until: Optional[str] = None,
             consolidate: Optional[bool] = None,
-            poe: Optional[dict] = None) -> bool:
+            poe: Optional[dict] = None,
+            evidence: Optional[dict] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants).
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
@@ -1240,7 +1241,8 @@ def capture(event_type: str, title: str, content: str,
 
     # Truth Anchor: a completion-tagged shard must carry proof of execution.
     from . import poe_gate as _poe  # pylint: disable=import-outside-toplevel
-    allowed, poe_errors = _poe.check(tags, content, poe)
+    allowed, poe_errors = _poe.check(tags, content, poe if poe is not None else evidence,
+                                     event_type=event_type, title=title)
     if not allowed:
         logger.warning("capture: rejected unproven completion claim %r: %s",
                        title, "; ".join(poe_errors))
