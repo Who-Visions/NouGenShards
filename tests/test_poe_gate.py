@@ -94,3 +94,40 @@ def test_completion_tags_are_configurable(monkeypatch):
     monkeypatch.setenv("NOUGEN_POE_COMPLETION_TAGS", "shipped")
     assert poe_gate.is_completion_claim(["shipped"])
     assert not poe_gate.is_completion_claim(["fixed"])
+
+
+# --- merged from the Antigravity shard_gate draft (wip/agy-shard-gate-*) ------
+
+def test_completion_event_type_is_a_claim():
+    assert not shards.capture("bugfix", "patched the relay", "it works")
+
+
+def test_hash_prefixed_tag_is_a_claim():
+    assert not shards.capture("note", "patched", "x", tags=["#fix"])
+
+
+def test_scoreboard_evidence_kwarg_accepts_commitless_fix():
+    ev = {"command": "curl -s localhost:8765/health", "exit_code": 0, "stdout": '{"ok": true}'}
+    assert shards.capture("fix", "gateway restarted", "ok", tags=["fixed"], evidence=ev)
+
+
+def test_scoreboard_fence_key_value_lines_accepted():
+    body = "restarted\n```scoreboard\ncommand: netstat -ano | findstr :8765\nexit_code: 0\nstdout: LISTENING\n```"
+    assert shards.capture("fix", "gateway restarted", body, tags=["resolved"])
+
+
+def test_scoreboard_evidence_with_failing_exit_is_rejected():
+    ev = {"command": "pytest", "exit_code": 2, "stdout": "1 failed"}
+    assert not shards.capture("fix", "x", "x", tags=["fixed"], evidence=ev)
+
+
+def test_scoreboard_evidence_without_output_is_rejected():
+    ev = {"command": "pytest", "exit_code": 0, "stdout": ""}
+    assert not shards.capture("fix", "x", "x", tags=["fixed"], evidence=ev)
+
+
+def test_success_text_is_ignored_unless_text_detect_is_on(monkeypatch):
+    assert shards.capture("note", "relay mirror", "upstream says all tests passed", tags=["relay"])
+    monkeypatch.setenv("NOUGEN_POE_TEXT_DETECT", "1")
+    assert not shards.capture("note", "relay mirror", "upstream says all tests passed", tags=["relay"])
+    assert not shards.capture("note", "[RESOLVED] relay", "body", tags=["relay"])
