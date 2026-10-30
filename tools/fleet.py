@@ -369,6 +369,7 @@ class Fleet:
             if e.code != 400 or "reasoning" not in payload or b"Reasoning is mandatory" not in e.read():
                 raise
             del payload["reasoning"]  # a few endpoints refuse to turn it off
+            payload["max_tokens"] = max(payload["max_tokens"], 2048)  # and they spend the budget reasoning first
             req = urllib.request.Request(route["url"] + "/chat/completions", data=json.dumps(payload).encode(), headers=hdrs)
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 j = json.load(r)
