@@ -4,8 +4,10 @@ A shard that claims completion ("fixed", "resolved", "verified", ...) is durable
 memory that later sessions trust. Prompt rules ask agents not to claim success
 without evidence; this gate enforces it at the write.
 
-A shard is a completion claim when its event_type or a tag says so (and, opt-in,
-when its title or body matches a success phrase). It must then carry either:
+A shard is a completion claim when a tag says so (and, opt-in, when its
+event_type or its title/body says so). Event types like FIX are how the fleet
+logs work in progress, so gating them by default would silently drop those
+writes; NOUGEN_POE_EVENT_DETECT=1 turns that on. It must then carry either:
 
   * a full PoE block that `PoEValidator.validate_poe_block` accepts (existing
     commit, passing test run with stdout hash, observer attestation), or
@@ -74,7 +76,8 @@ def claim_reason(tags: Optional[List[str]], event_type: str = "",
                  title: str = "", content: str = "") -> Optional[str]:
     """Why this shard counts as a completion claim, or None if it does not."""
     event = str(event_type or "").strip().lower()
-    if event and event in completion_events():
+    if (os.getenv("NOUGEN_POE_EVENT_DETECT") == "1"
+            and event and event in completion_events()):
         return f"event_type '{event}'"
     wanted = completion_tags()
     for tag in tags or []:
