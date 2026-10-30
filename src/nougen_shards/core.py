@@ -19,7 +19,7 @@ from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 import zlib
 
 import numpy as np
@@ -1207,7 +1207,8 @@ def capture(event_type: str, title: str, content: str,
             source_uri: Optional[str] = None,
             utility: Optional[float] = None,
             valid_until: Optional[str] = None,
-            consolidate: Optional[bool] = None) -> bool:
+            consolidate: Optional[bool] = None,
+            evidence: Optional[Mapping[str, Any]] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants).
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
@@ -1236,6 +1237,19 @@ def capture(event_type: str, title: str, content: str,
     content = redact_content(str(content))
     if tags:
         tags = [redact_content(str(tag)) for tag in tags]
+
+    # Enforce Layer 4 Truth Anchor Shard Gate (Rule 0.11 & AUTHORITY.md Directive):
+    # Success/completion claims must carry verified scoreboard execution evidence.
+    if os.environ.get("NOUGEN_SHARD_GATE_ENFORCE", "1") == "1":
+        from .shard_gate import ShardGate  # pylint: disable=import-outside-toplevel
+        ShardGate.evaluate_shard(
+            title=title,
+            content=content,
+            event_type=event_type,
+            tags=tags,
+            evidence=evidence,
+            raise_on_reject=True,
+        )
 
     # Opt-in write-time consolidation (consolidate.py): tags a fact that supersedes,
     # conflicts with, or duplicates a neighbour. Never blocks or alters the write.
