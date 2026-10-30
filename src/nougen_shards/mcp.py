@@ -157,13 +157,22 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
     else:
         shards_list = federated_retrieve(query, limit=limit, sweep_report=sweep_report)
     dropped = sweep_report.get("lanes_timed_out") or []
+    # A lane that ERRORED (vault offline, gateway 530) is as much a hole as one
+    # that timed out; reporting only timeouts let an offline vault read as
+    # "nothing there".
+    errored = [str(e.get("store", "?")) + ": " + str(e.get("error", ""))[:120]
+               for e in sweep_report.get("errored") or [] if isinstance(e, dict)]
+    holes = ""
+    if dropped:
+        holes += (f"{len(dropped)} lane(s) ({', '.join(dropped)}) missed the "
+                  f"{sweep_report.get('deadline_s')}s recall deadline. ")
+    if errored:
+        holes += f"{len(errored)} lane(s) failed: {'; '.join(errored)}. "
     if not shards_list:
-        if dropped:
+        if holes:
             return ("Recall INCOMPLETE — no answer, not an empty substrate: "
-                    f"{len(dropped)} lane(s) ({', '.join(dropped)}) missed the "
-                    f"{sweep_report.get('deadline_s')}s recall deadline. "
-                    "Retry, or raise NOUGEN_RECALL_DEADLINE_S; do NOT conclude "
-                    "the substrate holds nothing on this query.")
+                    + holes + "Retry, or raise NOUGEN_RECALL_DEADLINE_S; do NOT "
+                    "conclude the substrate holds nothing on this query.")
         return "No relevant shards found in the memory substrate."
     budget = os.environ.get("NOUGEN_RECALL_TOKEN_BUDGET", "").strip()
     # Unbounded used to be the default; one 994k-char screenplay shard then
@@ -181,11 +190,9 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
         _distill.mark_sent(session_id, sent)
     else:
         packet = compile_recall_packet(shards_list, token_budget=token_budget)
-    if dropped:
-        packet += ("\n\n[COVERAGE WARNING] Partial result: "
-                   f"{len(dropped)} lane(s) ({', '.join(dropped)}) missed the "
-                   f"{sweep_report.get('deadline_s')}s recall deadline. "
-                   "Shards below are real; absence below proves nothing.")
+    if holes:
+        packet += ("\n\n[COVERAGE WARNING] Partial result: " + holes
+                   + "Shards below are real; absence below proves nothing.")
     return packet
 
 @mcp.tool()
@@ -1164,6 +1171,9 @@ def search_shards(query: str, limit: int = 5, context_budget: int = 0) -> str:
         if context_budget < 0 or limit < 1 or limit > 100:
             raise ValueError("context_budget must be nonnegative and limit must be 1..100")
         results = federated_retrieve(query, limit=limit * 4 if context_budget else limit)
+        # Read coverage before any slicing: a slice drops FederatedResult's flags.
+        coverage = {"complete": getattr(results, "complete", True),
+                    "lane_failures": list(getattr(results, "lane_failures", []))}
         if context_budget:
             from .context_packet import graph_context_packet
             from . import core
@@ -1196,8 +1206,11 @@ def search_shards(query: str, limit: int = 5, context_budget: int = 0) -> str:
             packet = graph_context_packet(query, results[:limit], results[limit:],
                                           token_budget=context_budget, max_results=limit,
                                           load_dependency=load_dependency)
+            if isinstance(packet, dict):
+                packet.setdefault("coverage", coverage)
             return json.dumps(packet, default=str, indent=2)
-        return json.dumps({"query": query, "count": len(results), "shards": results}, default=str, indent=2)
+        return json.dumps({"query": query, "count": len(results), "coverage": coverage,
+                           "shards": results}, default=str, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
