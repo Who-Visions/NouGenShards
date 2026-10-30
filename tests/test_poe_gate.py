@@ -98,7 +98,9 @@ def test_completion_tags_are_configurable(monkeypatch):
 
 # --- merged from the Antigravity shard_gate draft (wip/agy-shard-gate-*) ------
 
-def test_completion_event_type_is_a_claim():
+def test_completion_event_type_is_a_claim_only_when_enabled(monkeypatch):
+    assert shards.capture("bugfix", "patched the relay", "it works")
+    monkeypatch.setenv("NOUGEN_POE_EVENT_DETECT", "1")
     assert not shards.capture("bugfix", "patched the relay", "it works")
 
 
