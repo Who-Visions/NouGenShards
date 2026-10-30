@@ -3676,7 +3676,11 @@ def apply_skills(task: str) -> dict:
 @_offloaded
 def list_skills() -> dict:
     """List all available operational skills."""
-    return _unwrap_sync(nougen_skill_search)(task="", limit=20)
+    from nougen_shards import skills
+    return {"skills": [
+        {"name": item.name, "description": item.description, "summary": item.summary}
+        for item in skills.discover()
+    ]}
 
 
 @node_mcp.tool()
