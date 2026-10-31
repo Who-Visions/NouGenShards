@@ -296,8 +296,7 @@ def write_kit(tenant_id: str, token: str, tunnel_token: str, port: int,
     kit_dir = base / "tenant-kits" / tenant_id
     kit_dir.mkdir(parents=True, exist_ok=True)
     vals = dict(tenant_id=tenant_id, token=token, tunnel_token=tunnel_token, port=port,
-                dedicated_ps=f"$env:NOUGEN_DEDICATED_TENANT = '{tenant_id}'
-" if dedicated else "",
+                dedicated_ps=f"$env:NOUGEN_DEDICATED_TENANT = '{tenant_id}'\n" if dedicated else "",
                 dedicated_sh=f" NOUGEN_DEDICATED_TENANT='{tenant_id}'" if dedicated else "")
     for name, template in (("join.ps1", KIT_PS1), ("join.sh", KIT_SH)):
         path = kit_dir / name

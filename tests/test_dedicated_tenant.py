@@ -1,4 +1,6 @@
 """NOUGEN_DEDICATED_TENANT promotes one tenant to owner on its own machine."""
+import pytest
+
 from nougen_shards import tenant_policy, tenants
 
 
@@ -29,8 +31,9 @@ def test_dedicated_tenant_becomes_owner_only_for_itself(tmp_path, monkeypatch):
 def test_duplicate_digest_is_refused_even_when_dedicated(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     monkeypatch.setenv("NOUGEN_DEDICATED_TENANT", "ann")
-    tenants.register_tenant("cat", "Cat", "tok-a", path=tmp_path / "tenants.json")
-    assert tenants.resolve_token("tok-a", "owner", tmp_path / "o") is None
+    with pytest.raises(tenants.TenantRegistryError):
+        tenants.register_tenant("cat", "Cat", "tok-a", path=tmp_path / "tenants.json")
+        tenants.resolve_token("tok-a", "owner", tmp_path / "o")
 
 
 def test_kit_is_not_dedicated_unless_asked(tmp_path):
