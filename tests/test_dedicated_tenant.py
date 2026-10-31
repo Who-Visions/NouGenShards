@@ -29,8 +29,11 @@ def test_dedicated_tenant_becomes_owner_only_for_itself(tmp_path, monkeypatch):
 def test_colliding_digest_never_early_returns_as_owner(tmp_path, monkeypatch):
     from types import SimpleNamespace
     digest = tenants.token_sha256("tok-shared")
-    rec = lambda tid: SimpleNamespace(tenant_id=tid, label=tid, token_sha256=digest, lane="tenant",
-                                      allow_federation=False)
+
+    def rec(tid):
+        return SimpleNamespace(tenant_id=tid, label=tid, token_sha256=digest, lane="tenant",
+                               allow_federation=False)
+
     monkeypatch.setattr(tenants, "load_registry", lambda *a, **k: [rec("ann"), rec("bob")])
     monkeypatch.setenv("NOUGEN_DEDICATED_TENANT", "ann")
     assert tenants.resolve_token("tok-shared", "owner", tmp_path / "o") is None
