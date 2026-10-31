@@ -1,3 +1,9 @@
+# Read first: LLM_README.md
+
+Every lane entering NouGen reads [`LLM_README.md`](LLM_README.md) before working — the doctrine
+primer (authority, evidence rule, how Shards memory works, canon discipline, permission posture).
+The GM's live word outranks it.
+
 # UI design
 
 Before changing a NouGen UI, read root DESIGN.md and the applicable brand package.
