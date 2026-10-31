@@ -2048,6 +2048,8 @@ def cmd_tenant(args):
         print()
         print("NEXT (the only thing left): send the person this folder, privately:")
         print(f"    {res.kit_dir}")
+        print("  It holds their tokens and lives in a temporary folder: delete it once it is")
+        print("  sent. 'nougen tenant onboard <email>' rebuilds it any time.")
         print("  On Windows they right-click join.ps1 > Run with PowerShell. That is all.")
         print(f"  Their address: {res.node_url}  ({res.probe_reading})")
         print("  Check any time with: nougen tenant status " + res.email)

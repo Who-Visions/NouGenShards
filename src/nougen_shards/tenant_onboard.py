@@ -18,6 +18,7 @@ import re
 import secrets
 import socket
 import ssl
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -285,7 +286,13 @@ exec cloudflared tunnel run --token {tunnel_token}
 
 def write_kit(tenant_id: str, token: str, tunnel_token: str, port: int,
               root: Optional[Path] = None) -> Path:
-    base = Path(root) if root else Path(os.environ.get("NOUGEN_ROOT") or Path.home() / ".nougen")
+    """Write the join kit for the tenant's computer.
+
+    The kit holds the node and tunnel tokens, so by default it goes to a private (0700)
+    throwaway folder, not into the owner's persistent ~/.nougen. Re-running onboard
+    rebuilds it at any time, so nothing needs to be kept. Pass `root` to choose a folder.
+    """
+    base = Path(root) if root else Path(tempfile.mkdtemp(prefix="nougen-kit-"))
     kit_dir = base / "tenant-kits" / tenant_id
     kit_dir.mkdir(parents=True, exist_ok=True)
     vals = dict(tenant_id=tenant_id, token=token, tunnel_token=tunnel_token, port=port)

@@ -1,6 +1,8 @@
 """tenant onboard / status against an in-memory Cloudflare."""
 import json
+import os
 import re
+from pathlib import Path
 
 import pytest
 
@@ -130,3 +132,27 @@ def test_existing_tunnel_port_is_kept(env):
                                                 "service": "http://127.0.0.1:4460"}]}}
     second = to.onboard("a@b.co", name="Ann", cf=cf, **env)
     assert "4460" in (second.kit_dir / "join.ps1").read_text()
+
+
+def test_default_kit_is_a_private_temp_folder_not_the_owner_home(monkeypatch, tmp_path):
+    import stat
+    monkeypatch.setenv("NOUGEN_ROOT", str(tmp_path / "owner-root"))
+    kit = to.write_kit("alex-shards", "tok-node", "tok-tunnel", 4444)
+    try:
+        assert not str(kit).startswith(str(tmp_path / "owner-root"))
+        assert not str(kit).startswith(str(Path.home() / ".nougen"))
+        if os.name != "nt":
+            assert stat.S_IMODE(kit.parent.parent.stat().st_mode) == 0o700
+            assert stat.S_IMODE((kit / "join.sh").stat().st_mode) == 0o600
+    finally:
+        import shutil
+        shutil.rmtree(kit.parent.parent, ignore_errors=True)
+
+
+def test_worker_authenticates_a_routed_tenant_node_with_the_tenants_own_token():
+    js = (Path(__file__).resolve().parents[1] / "tools" / "nougen-fleet-mcp-patched.js").read_text(encoding="utf-8")
+    routed = js[js.index("if (auth.nodeUrl) {"):]
+    routed = routed[:routed.index("});")]
+    assert "SHARD_GATEWAY_TOKEN: auth.nodeToken" in routed
+    assert "env.SHARD_GATEWAY_TOKEN" not in routed  # never forward the owner's global token
+    assert "nodeToken: tenantNodeToken" in js
