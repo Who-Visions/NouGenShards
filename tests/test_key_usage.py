@@ -83,6 +83,18 @@ def test_cloud_credentials_do_not_get_the_node_token_record(vault):
     assert key_usage.usage_for("NGS_NODE_TOKEN")["auth"]["header"] == "X-NGS-Token"
 
 
+def test_node_token_host_comes_from_endpoints_config(vault, monkeypatch):
+    from nougen_shards import endpoints
+    monkeypatch.setattr(endpoints, "fleet_gateway_url", lambda: "https://gw.example.test")
+    record = key_usage.usage_for("NGS_NODE_TOKEN")
+    assert record["base_url"] == "https://gw.example.test"
+    assert record["mcp"] == {"url": "https://gw.example.test/mcp/", "type": "http"}
+    monkeypatch.setattr(endpoints, "fleet_gateway_url", lambda: None)
+    unset = key_usage.usage_for("NGS_NODE_TOKEN")
+    assert "base_url" not in unset and "mcp" not in unset
+    assert unset["auth"]["header"] == "X-NGS-Token"
+
+
 def test_overrides_use_the_tenant_aware_db_path(vault, tmp_path, monkeypatch):
     tenant_db = tmp_path / "tenant" / "shards_secrets.db"
     tenant_db.parent.mkdir()

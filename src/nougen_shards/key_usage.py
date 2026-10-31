@@ -104,9 +104,8 @@ _BUILTIN: list[dict[str, Any]] = [
     {
         "provider": "NouGen node / gateway",
         "prefixes": ["NGS_NODE"],  # not "NGS_": NGS_CLOUD_CREDENTIALS is a "url,token" pair, not a node token
-        "base_url": "https://shards.nougenai.com",
+        "resolve": "fleet_gateway",  # host comes from endpoints config, never hardcoded here
         "auth": {"header": "X-NGS-Token", "scheme": "{key}"},
-        "mcp": {"url": "https://shards.nougenai.com/mcp/", "type": "http"},
         "notes": [
             "/mcp/ needs the trailing slash; auth is X-NGS-Token, not Authorization.",
             "Cloudflare returns 403 to Python's default User-Agent; send a normal one.",
@@ -248,7 +247,13 @@ def usage_for(key: str) -> Optional[dict[str, Any]]:
     record = _override(key) or _builtin(key)
     if record is None:
         return None
-    out = {k: v for k, v in record.items() if k != "prefixes"}
+    out = {k: v for k, v in record.items() if k not in ("prefixes", "resolve")}
+    if record.get("resolve") == "fleet_gateway":
+        from . import endpoints  # operator hosts are configured, not hardcoded in runtime code
+        gateway = endpoints.fleet_gateway_url()
+        if gateway:
+            out["base_url"] = gateway
+            out["mcp"] = {"url": gateway + "/mcp/", "type": "http"}
     out["key_name"] = key
     out["curl"] = _curl(key, out)
     return out
