@@ -938,8 +938,8 @@ class NouGenMsgBus:
         model = model or None
         # Model lanes ride on 'all' broadcasts by default (GM 2026-09-08: the
         # fleet includes its models). NOUGEN_MSG_MODEL_LANES_ON_ALL=0 opts out
-        # for a chatty lane that should not wake a model on every ping.
-        models_on_all = os.environ.get("NOUGEN_MSG_MODEL_LANES_ON_ALL", "1").strip().lower() \
+        # (default) so @all reaches agent sessions only; =1 opts model lanes back in.
+        models_on_all = os.environ.get("NOUGEN_MSG_MODEL_LANES_ON_ALL", "0").strip().lower() \
             not in ("0", "false", "no")
 
         # A node-name target ('@blade') matched no family branch, so the node it
