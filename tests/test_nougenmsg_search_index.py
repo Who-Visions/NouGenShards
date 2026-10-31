@@ -20,7 +20,7 @@ def test_search_incrementally_indexes_all_message_lanes(tmp_path, monkeypatch):
         "NOUGEN_GEMINI_INBOX": tmp_path / "gemini",
         "NOUGEN_AGY_INBOX": tmp_path / "agy",
         "NOUGEN_CLAUDE_INBOX": tmp_path / "claude",
-        "NOUGEN_HOME": tmp_path / "nougen-home",
+        "NOUGEN_ROOT": tmp_path / "nougen-home",
     }
     for name, path in inboxes.items():
         monkeypatch.setenv(name, str(path))
@@ -43,7 +43,7 @@ def test_search_incrementally_indexes_all_message_lanes(tmp_path, monkeypatch):
     assert claude_result["complete"] is True
     assert [message["message_id"] for message in claude_result["results"]] == ["claude-1"]
 
-    db = inboxes["NOUGEN_HOME"] / "cache" / "nougenmsg_index.db"
+    db = inboxes["NOUGEN_ROOT"] / "cache" / "nougenmsg_index.db"
     with sqlite3.connect(db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages_meta").fetchone()[0] == 4
 
@@ -51,7 +51,7 @@ def test_search_incrementally_indexes_all_message_lanes(tmp_path, monkeypatch):
 def test_search_reindexes_changed_messages(tmp_path, monkeypatch):
     inbox = tmp_path / "codex"
     monkeypatch.setenv("NOUGEN_CODEX_INBOX", str(inbox))
-    monkeypatch.setenv("NOUGEN_HOME", str(tmp_path / "nougen-home"))
+    monkeypatch.setenv("NOUGEN_ROOT", str(tmp_path / "nougen-home"))
     message = inbox / "message.json"
     _write_message(message, "mutable-1", "old search phrase")
 

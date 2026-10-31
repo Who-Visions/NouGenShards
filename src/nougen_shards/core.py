@@ -138,6 +138,8 @@ if VAULT_SOURCE != "default":
 else:
     logger.info("NouGen vault: %s", GLOBAL_DIR)
 
+OWNER_TENANT_ID = "owner"
+
 _ACTIVE_VAULT_DIR: ContextVar[Optional[Path]] = ContextVar(
     "nougen_active_vault_dir", default=None)
 _ACTIVE_TENANT_ID: ContextVar[Optional[str]] = ContextVar(
@@ -153,7 +155,7 @@ def active_vault_dir() -> Path:
 
 def active_tenant_id() -> str:
     """Request-local tenant; unset local/CLI work retains owner behaviour."""
-    return _ACTIVE_TENANT_ID.get() or "owner"
+    return _ACTIVE_TENANT_ID.get() or OWNER_TENANT_ID
 
 
 def active_lane() -> str:
@@ -182,6 +184,51 @@ def reset_active_vault(tokens: tuple) -> None:
         vault_token, tenant_token = tokens
     _ACTIVE_TENANT_ID.reset(tenant_token)
     _ACTIVE_VAULT_DIR.reset(vault_token)
+
+
+_OWNER_HOME_ENV_VARS = ("NOUGEN_ROOT",)
+_OWNER_HOME_FALLBACK_LOGGED = False
+
+
+def owner_home() -> Path:
+    """The owner's runtime root (relay, inboxes, secrets, destinies live under it).
+
+    Resolution: NOUGEN_ROOT -> ~/.nougen (fallback, logged once). NOUGEN_HOME is
+    the *code* home (Watchtower/NouGen) and deliberately not consulted.
+    """
+    global _OWNER_HOME_FALLBACK_LOGGED
+    for var in _OWNER_HOME_ENV_VARS:
+        raw = os.environ.get(var, "").strip()
+        if raw:
+            return Path(raw).expanduser()
+    if not _OWNER_HOME_FALLBACK_LOGGED:
+        _OWNER_HOME_FALLBACK_LOGGED = True
+        logger.info("owner_home: %s unset; falling back to ~/.nougen", "/".join(_OWNER_HOME_ENV_VARS))
+    return Path.home() / ".nougen"
+
+
+def is_tenant_context() -> bool:
+    """True inside a request bound to a non-owner tenant."""
+    return vault_context_is_set() and active_tenant_id() != OWNER_TENANT_ID
+
+
+def active_home() -> Path:
+    """Identity-scoped runtime root.
+
+    A tenant request resolves to its own vault dir, so relay legs, message inboxes,
+    secrets and destinies all live under ``<tenant_vault>/`` and never under the
+    owner's ``~/.nougen``. Owner and CLI work resolve to :func:`owner_home`.
+    """
+    if is_tenant_context():
+        return active_vault_dir()
+    return owner_home()
+
+
+def active_subdir(*parts: str) -> Path:
+    """``active_home()/<parts>`` created on first use (tenants must never fall back to owner paths)."""
+    target = active_home().joinpath(*parts)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
 
 
 def _ensure_active_vault_dir() -> Path:
@@ -1160,7 +1207,9 @@ def capture(event_type: str, title: str, content: str,
             source_uri: Optional[str] = None,
             utility: Optional[float] = None,
             valid_until: Optional[str] = None,
-            consolidate: Optional[bool] = None) -> bool:
+            consolidate: Optional[bool] = None,
+            poe: Optional[dict] = None,
+            evidence: Optional[dict] = None) -> bool:
     """Saves a unit of experience (Module 5: Extract Invariants).
 
     `sensitivity` is 'normal' (default, plaintext -- the existing corpus),
@@ -1189,6 +1238,15 @@ def capture(event_type: str, title: str, content: str,
     content = redact_content(str(content))
     if tags:
         tags = [redact_content(str(tag)) for tag in tags]
+
+    # Truth Anchor: a completion-tagged shard must carry proof of execution.
+    from . import poe_gate as _poe  # pylint: disable=import-outside-toplevel
+    allowed, poe_errors = _poe.check(tags, content, poe if poe is not None else evidence,
+                                     event_type=event_type, title=title)
+    if not allowed:
+        logger.warning("capture: rejected unproven completion claim %r: %s",
+                       title, "; ".join(poe_errors))
+        return False
 
     # Opt-in write-time consolidation (consolidate.py): tags a fact that supersedes,
     # conflicts with, or duplicates a neighbour. Never blocks or alters the write.
@@ -1906,6 +1964,81 @@ def elevated_lane_timeout(
     return max(min_deadline, min(max_deadline, max_deadline * blended))
 
 
+_SCAN_POOL = None
+_SCAN_POOL_LOCK = _threading.Lock()
+# Deadline-miss tracking for warm-up. The holder is a LIST placed in a
+# ContextVar by begin_scan_miss_tracking(); lanes that run under
+# copy_context().run() inherit the same list object, so a miss recorded inside
+# the vector lane's context still reaches the caller that started tracking
+# (Codex P2 on PR #880: a plain int ContextVar set inside the lane never
+# propagated back, and the caller read the title lane's count or -1).
+_SCAN_MISSES: ContextVar[Optional[list]] = ContextVar("ngs_scan_misses", default=None)
+
+
+def begin_scan_miss_tracking() -> list:
+    """Start collecting per-lane grid-DB miss counts for retrieves in this context."""
+    holder: list = []
+    _SCAN_MISSES.set(holder)
+    return holder
+
+
+def _record_scan_misses(count: int) -> None:
+    holder = _SCAN_MISSES.get()
+    if holder is not None:
+        holder.append(count)
+
+
+def last_scan_miss_count() -> int:
+    """Worst per-lane miss count since begin_scan_miss_tracking(); -1 if no scan ran."""
+    holder = _SCAN_MISSES.get()
+    if not holder:
+        return -1
+    return max(holder)
+# Logged fallback only: env NOUGEN_SCAN_POOL_WORKERS / NOUGEN_SCAN_POOL_RECALLS win.
+_SCAN_POOL_RECALLS_FALLBACK = 3
+
+
+def _scan_pool_capacity(workers: int) -> int:
+    """Bound on outstanding grid scans for the whole process.
+
+    env NOUGEN_SCAN_POOL_WORKERS wins; the fallback allows a few concurrent
+    recalls' worth of scans (workers * NOUGEN_SCAN_POOL_RECALLS, default 3) so
+    normal overlap never queues, while a slow or locked DB can only pin that
+    many threads no matter how many recalls pile up behind it.
+    """
+    raw = os.environ.get("NOUGEN_SCAN_POOL_WORKERS", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            logger.warning("NOUGEN_SCAN_POOL_WORKERS=%r is not an int; using fallback", raw)
+    raw_recalls = os.environ.get("NOUGEN_SCAN_POOL_RECALLS", "").strip()
+    recalls = _SCAN_POOL_RECALLS_FALLBACK
+    if raw_recalls:
+        try:
+            recalls = max(1, int(raw_recalls))
+        except ValueError:
+            logger.warning("NOUGEN_SCAN_POOL_RECALLS=%r is not an int; using fallback %d",
+                           raw_recalls, _SCAN_POOL_RECALLS_FALLBACK)
+    else:
+        logger.debug("NOUGEN_SCAN_POOL_RECALLS unset; fallback %d concurrent recalls",
+                     _SCAN_POOL_RECALLS_FALLBACK)
+    return max(workers, workers * recalls)
+
+
+def _scan_pool(workers: int):
+    """Lazily build the single bounded ThreadPoolExecutor shared by all recalls."""
+    global _SCAN_POOL  # pylint: disable=global-statement
+    import concurrent.futures  # pylint: disable=import-outside-toplevel
+    with _SCAN_POOL_LOCK:
+        if _SCAN_POOL is None:
+            cap = _scan_pool_capacity(workers)
+            _SCAN_POOL = concurrent.futures.ThreadPoolExecutor(
+                max_workers=cap, thread_name_prefix="ngs-grid-scan")
+            logger.info("grid scan pool created: %d worker(s)", cap)
+        return _SCAN_POOL
+
+
 def _run_db_scans(scan_fn):
     """Run scan_fn(i) for every grid DB concurrently; yield (i, result) in DB order.
 
@@ -1921,18 +2054,44 @@ def _run_db_scans(scan_fn):
         for i in range(1, MAX_DB_COUNT + 1):
             yield i, scan_fn(i)
         return
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {i: executor.submit(copy_context().run, scan_fn, i)
-                   for i in range(1, MAX_DB_COUNT + 1)}
-        deadline = time.monotonic() + elevated_lane_timeout(alpha=10.0, beta_param=1.0, max_deadline=20.0, min_deadline=1.5)
-        for i in range(1, MAX_DB_COUNT + 1):
-            remaining = max(0.1, deadline - time.monotonic())
-            try:
-                yield i, futures[i].result(timeout=remaining)
-            except concurrent.futures.TimeoutError:
-                logger.warning("grid DB %d timed out under adaptive timeout (remaining=%.2fs)", i, remaining)
-                # Fallback must match expected scan_fn return signature
-                yield i, ([], True)
+    # One process-wide, bounded pool instead of a fresh executor per recall
+    # (Codex P1 on PR #878): a per-request executor shut down with wait=False
+    # left every straggler thread alive, so repeated recalls during a slow or
+    # locked scan accumulated threads without cap. Dropped scans still finish
+    # in the background and are discarded, but outstanding scans are bounded by
+    # the pool size and later recalls queue instead of spawning more threads.
+    executor = _scan_pool(workers)
+    futures = {i: executor.submit(copy_context().run, scan_fn, i)
+               for i in range(1, MAX_DB_COUNT + 1)}
+    deadline = time.monotonic() + elevated_lane_timeout(alpha=10.0, beta_param=1.0, max_deadline=20.0, min_deadline=1.5)
+    # Collect in COMPLETION order against one shared deadline, then yield in
+    # DB order. Waiting on futures[1] first let a single slow DB spend the
+    # whole budget, after which DBs 2..9 were declared timed out with 0.10s
+    # "remaining" even though their scans had long finished (blade
+    # 2026-10-26: 8 of 9 grid DBs dropped on a cold cache, recall returned
+    # only side-lane doc mirrors).
+    done: dict = {}
+    by_future = {f: i for i, f in futures.items()}
+    try:
+        for fut in concurrent.futures.as_completed(
+                futures.values(), timeout=max(0.1, deadline - time.monotonic())):
+            done[by_future[fut]] = fut.result()
+    except concurrent.futures.TimeoutError:
+        pass
+    finally:
+        # Queued-but-not-started scans are cancelled so they never occupy a
+        # pool slot; running stragglers finish and are dropped.
+        for fut in futures.values():
+            if not fut.done():
+                fut.cancel()
+    _record_scan_misses(sum(1 for i in range(1, MAX_DB_COUNT + 1) if i not in done))
+    for i in range(1, MAX_DB_COUNT + 1):
+        if i in done:
+            yield i, done[i]
+        else:
+            logger.warning("grid DB %d missed the shared scan deadline", i)
+            # Fallback must match expected scan_fn return signature
+            yield i, ([], True)
 
 
 def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[List[float]] = None,
@@ -2670,6 +2829,69 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     return top_results
 
 
+def _parse_weight_map(raw: str) -> dict:
+    """"KEY:1.3,other:0.6" -> {"key": 1.3, "other": 0.6}; malformed entries are skipped."""
+    out: dict = {}
+    for part in (raw or "").split(","):
+        if ":" not in part:
+            continue
+        key, _, val = part.partition(":")
+        try:
+            out[key.strip().lower()] = float(val)
+        except ValueError:
+            continue
+    return out
+
+
+#: Operator memory outranks mirrors. Defaults are fallbacks only; the env wins.
+#: Relay 20261026T210020Z: "/search buries operator DECISION shards under doc
+#: mirrors and Bash-error captures". RRF fuses by position, so a DECISION that is
+#: #4 in the keyword lane and a doc dump that is #3 in a vault lane tie; these
+#: priors are the only place the KIND of shard is allowed to speak.
+_RECALL_EVENT_TYPE_WEIGHTS_FALLBACK = "DECISION:1.3,CANON:1.3,CORRECTION:1.25,DOCTRINE:1.2,LOCAL_VAULT:0.8,IMPORT:0.7,INGEST:0.7"
+_RECALL_TAG_WEIGHTS_FALLBACK = "bash-error:0.6,docs:0.8,indexer:0.8"
+_RECALL_TITLE_PREFIX_WEIGHTS_FALLBACK = "Bash error [:0.6"
+
+
+def recall_prior_multiplier(item: dict) -> float:
+    """Multiplier for a candidate's fused score from its event_type, tags and title shape.
+
+    1.0 is neutral. Env-shaped: NOUGEN_RECALL_EVENT_TYPE_WEIGHTS,
+    NOUGEN_RECALL_TAG_WEIGHTS, NOUGEN_RECALL_TITLE_PREFIX_WEIGHTS, each
+    "key:mult,key:mult"; NOUGEN_RECALL_PRIORS=0 disables all three. Several
+    matching tag weights multiply, but one tag is counted once.
+    """
+    if os.environ.get("NOUGEN_RECALL_PRIORS", "1").strip().lower() in ("0", "false", "no", "off"):
+        return 1.0
+    mult = 1.0
+    et_weights = _parse_weight_map(os.environ.get("NOUGEN_RECALL_EVENT_TYPE_WEIGHTS", _RECALL_EVENT_TYPE_WEIGHTS_FALLBACK))
+    et = str(item.get("event_type") or "").strip().lower()
+    if et and et in et_weights:
+        mult *= et_weights[et]
+    tag_weights = _parse_weight_map(os.environ.get("NOUGEN_RECALL_TAG_WEIGHTS", _RECALL_TAG_WEIGHTS_FALLBACK))
+    if tag_weights:
+        raw_tags = item.get("tags")
+        tags: List[str] = []
+        if isinstance(raw_tags, (list, tuple)):
+            tags = [str(t) for t in raw_tags]
+        elif raw_tags:
+            try:
+                parsed = json.loads(str(raw_tags))
+                tags = [str(t) for t in parsed] if isinstance(parsed, list) else [str(raw_tags)]
+            except Exception:
+                tags = [t.strip() for t in str(raw_tags).split(",")]
+        for tag in {t.strip().lower() for t in tags}:
+            if tag in tag_weights:
+                mult *= tag_weights[tag]
+    prefix_weights = _parse_weight_map(os.environ.get("NOUGEN_RECALL_TITLE_PREFIX_WEIGHTS", _RECALL_TITLE_PREFIX_WEIGHTS_FALLBACK))
+    title = str(item.get("title") or "").lower()
+    for prefix, w in prefix_weights.items():
+        if prefix and title.startswith(prefix):
+            mult *= w
+            break
+    return mult
+
+
 def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
                            weights: Optional[List[float]] = None) -> List[dict]:
     """
@@ -2727,7 +2949,7 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60,
     for key, item in item_map.items():
         consensus_score = rrf_scores[key]
         decayed_utility = item.get("utility_score", 1.0) * _temporal_decay(item.get("timestamp"), merge_now)
-        item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3))
+        item["final_score"] = consensus_score * (0.7 + (decayed_utility * 0.3)) * recall_prior_multiplier(item)
         merged.append(item)
 
     # Tie-break fields are stringified: grid rows carry int _db_index/id while

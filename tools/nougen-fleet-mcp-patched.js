@@ -277,12 +277,14 @@ async function authenticate(request, env) {
     if (!await identityStillEnrolled(env, payload)) return null;
     let allowedTools = null;
     let tenantNodeUrl = null;
+    let tenantNodeToken = null;
     if (payload.eml && env.TENANTS && typeof env.TENANTS.get === "function") {
       try {
         const tRaw = await env.TENANTS.get(`tenant:${payload.eml.toLowerCase()}`);
         if (tRaw) {
           const tData = JSON.parse(tRaw);
           if (tData.node_url) tenantNodeUrl = tData.node_url;
+          if (typeof tData.token === "string" && tData.token) tenantNodeToken = tData.token;
           if (tData.tools && Array.isArray(tData.tools)) allowedTools = tData.tools;
         }
       } catch (_) {}
@@ -293,6 +295,7 @@ async function authenticate(request, env) {
       static: false,
       email: payload.eml || null,
       nodeUrl: tenantNodeUrl,
+      nodeToken: tenantNodeToken,
       allowedTools: allowedTools
     };
   }
@@ -6313,6 +6316,10 @@ async function handleMcp(request, env, origin) {
   if (auth.nodeUrl) {
     env = Object.assign(Object.create(env), {
       SHARD_GATEWAY_URL: auth.nodeUrl,
+      // The tenant's node authenticates with the tenant's own token. Never fall back to the
+      // worker-global SHARD_GATEWAY_TOKEN here: that is the owner's credential, and this
+      // URL is a tenant-controlled host.
+      SHARD_GATEWAY_TOKEN: auth.nodeToken || "",
       HALLWAY_CAPTURE_URL: `${auth.nodeUrl.replace(/\/+$/, "")}/v1/shards/capture`
     });
   }

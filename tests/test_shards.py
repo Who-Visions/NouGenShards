@@ -448,3 +448,25 @@ def test_capture_stamps_machine_hostname(setup_test_env):
     finally:
         conn.close()
 
+
+def test_federated_lane_weight_prioritizes_core_substrate(monkeypatch):
+    """Verify federated RRF defaults preserve core substrate priority over side lanes."""
+    import os
+    from nougen_shards import core as c
+    monkeypatch.delenv("NOUGEN_FED_LANE_WEIGHT", raising=False)
+    core_hit = [{"id": 10, "_db_index": 1, "title": "Target Core Shard", "content": "Exact knowledge"}]
+    vault_hits = [
+        {"id": f"v{i}", "title": f"Loosely Matching Doc {i}", "content": "Broad noise"}
+        for i in range(1, 5)
+    ]
+    try:
+        lane_w = float(os.environ.get("NOUGEN_FED_LANE_WEIGHT", "0.20"))
+    except ValueError:
+        lane_w = 0.20
+    merged = c.reciprocal_rank_fusion([core_hit, [], [], vault_hits], k=60, weights=[1.0, lane_w, lane_w, lane_w])
+    assert len(merged) >= 2
+    assert merged[0]["title"] == "Target Core Shard"
+    assert merged[0]["final_score"] > merged[1]["final_score"]
+
+
+

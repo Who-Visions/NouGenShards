@@ -32,8 +32,14 @@ Hosted app and repo text never carries a personal name. Refer to people by role 
 
 These directives tell any agent how to set up or change a tenant's own NouGen node.
 
-- A tenant runs its own NouGenShards on its own machine with its own vault, relays and NouGenMsg. The shared gateway forwards only shard tools for that tenant's token. Never copy a tenant's data, tokens or relay config into shared infrastructure.
+- A tenant runs its own NouGenShards on its own machine with its own vault, relays and NouGenMsg. On a shared node a tenant token gets the full NouGen tool surface scoped to the tenant's own root (`<NOUGEN_TENANT_VAULT_ROOT>/<tenant_id>/`: shards, secrets, relay legs, message inboxes, destinies), never a shard-only stub (operator decision 2026-10-14, vault shard 30954). Tools that touch the host machine, the owner's agents, hardware, GitHub token, shared session store or author IP stay owner-only; the labels live in `nougen_shards/tenant_policy.py` and `tests/test_tenant_full_surface.py` fails on any unlabelled tool. Never copy a tenant's data, tokens or relay config into the owner's vault or relay.
 - Never give a tenant the owner token (`NGS_NODE_TOKEN`), owner relay credentials, or owner peer pipes.
 - Create tenants with `nougen tenant mint <tenant_id> --label "<label>"`. Store the printed token only in the tenant's own environment. Never print it into logs, chat or commits.
 - Tenant vaults live under the tenant directory. Recall and search must never read sibling or owner local vaults. A regression test guards this (`tests/test_multitenancy.py`).
 - Changes to this repo go through a branch, a pull request, and a merge only after the tenancy tests pass (`PYTHONPATH=src pytest tests/test_multitenancy.py tests/test_mcp_oauth.py`).
+
+---
+
+## Rule 0.10: Autonomous Lane Execution Protocol (binding, 2026-10-27)
+
+Every lane that takes a NouGenShards objective runs the closed loop in `docs/lane-execution-protocol.md`: claim + recall, scoped implementation, self-healing build, hardening, branch + PR (never the default branch, never `git add -A`), durable shard + relay handoff, and a terminal receipt with commit SHA, PR URL, test count, shard id and relay leg. A turn may not end on a diagnosis when the toolset can land the fix. A gate that is genuinely outside the toolset (missing credential, branch protection, operator-only action) is reported as `BLOCKED: <exact blocker>` in the receipt, never hidden and never softened into "next steps for you".

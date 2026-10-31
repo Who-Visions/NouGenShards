@@ -350,6 +350,9 @@ class Fleet:
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        # OpenRouter models reason by default and can spend the whole budget, returning nothing.
+        if route.get("kind") == "openrouter" and os.environ.get("NOUGEN_OPENROUTER_REASONING", "").lower() != "on":
+            payload["reasoning"] = {"enabled": False}
         # Keep this request pinned to its declared model. Server-side fallback
         # can silently turn one reviewer into a different model.
         body = json.dumps(payload).encode()
@@ -358,9 +361,22 @@ class Fleet:
         # static key baked into the registry.
         if route.get("token_fn"):
             hdrs["Authorization"] = f'Bearer {route["token_fn"]()}'
+        call_started = time.monotonic()
         req = urllib.request.Request(route["url"] + "/chat/completions", data=body, headers=hdrs)
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            j = json.load(r)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                j = json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code != 400 or "reasoning" not in payload or b"Reasoning is mandatory" not in e.read():
+                raise
+            del payload["reasoning"]  # a few endpoints refuse to turn it off
+            payload["max_tokens"] = max(payload["max_tokens"], 2048)  # and they spend the budget reasoning first
+            req = urllib.request.Request(route["url"] + "/chat/completions", data=json.dumps(payload).encode(), headers=hdrs)
+            # Bound the retry by what's left of the caller's original timeout, not the
+            # full value again -- the first attempt already spent part of the budget.
+            retry_timeout = max(1, timeout - (time.monotonic() - call_started))
+            with urllib.request.urlopen(req, timeout=retry_timeout) as r:
+                j = json.load(r)
         choice = (j.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         content = message.get("content", "") or ""
