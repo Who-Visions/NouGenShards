@@ -64,7 +64,7 @@ def env(tmp_path, monkeypatch):
 
 
 def test_identity_from_email_and_name():
-    assert to.derive_identity("emailforfabian.v@gmail.com", "Fabian", None, None)[0] == "fabian-shards"
+    assert to.derive_identity("alex.q@example.com", "Alex", None, None)[0] == "alex-shards"
     assert to.derive_identity("Jo.Doe+x@a.io", None, None, None)[0] == "jo-doe-shards"
     with pytest.raises(to.OnboardError):
         to.derive_identity("nope", None, None, None)
