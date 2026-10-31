@@ -39,6 +39,8 @@ def test_curl_example_references_the_name_never_a_value(vault):
     keymaker.ingest_secret("EXA_API_KEY", "sk-real-looking-value-123456")
     record = key_usage.usage_for("EXA_API_KEY")
     assert "$EXA_API_KEY" in record["curl"]
+    assert "-X POST" in record["curl"] and '"https://api.exa.ai/search"' in record["curl"]
+    assert not record["curl"].startswith("#")
     assert "sk-real-looking-value-123456" not in json.dumps(key_usage.describe("EXA_API_KEY"))
     assert "sk-real-looking-value-123456" not in key_usage.format_usage("EXA_API_KEY")
 
@@ -68,3 +70,25 @@ def test_describe_reports_presence_without_the_value(vault):
     described = key_usage.describe("EXA_API_KEY")
     assert described["present"] is True
     assert "abc-secret-value-9999" not in json.dumps(described)
+
+
+def test_example_without_a_resource_path_is_flagged_as_auth_only(vault):
+    record = key_usage.usage_for("SERPAPI_KEY")
+    assert record["curl"].startswith("# auth-only template")
+    assert key_usage.usage_for("TMDB_KEY")["curl"].endswith('/3/configuration"')
+
+
+def test_cloud_credentials_do_not_get_the_node_token_record(vault):
+    assert key_usage.usage_for("NGS_CLOUD_CREDENTIALS") is None
+    assert key_usage.usage_for("NGS_NODE_TOKEN")["auth"]["header"] == "X-NGS-Token"
+
+
+def test_overrides_use_the_tenant_aware_db_path(vault, tmp_path, monkeypatch):
+    tenant_db = tmp_path / "tenant" / "shards_secrets.db"
+    tenant_db.parent.mkdir()
+    monkeypatch.setattr(keymaker, "db_path", lambda: tenant_db)
+    key_usage.set_usage("ACME_API_KEY", {"provider": "Acme (tenant)"})
+    assert tenant_db.is_file()
+    assert key_usage.usage_for("ACME_API_KEY")["provider"] == "Acme (tenant)"
+    monkeypatch.setattr(keymaker, "db_path", lambda: tmp_path / "shards_secrets.db")
+    assert key_usage.usage_for("ACME_API_KEY") is None

@@ -27,6 +27,7 @@ BEARER = {"header": "Authorization", "scheme": "Bearer {key}"}
 _BUILTIN: list[dict[str, Any]] = [
     {
         "provider": "Exa",
+        "example": {"path": "/search", "method": "POST", "body": '{"query": "test", "numResults": 1}'},
         "prefixes": ["EXA_", "EXA"],
         "base_url": "https://api.exa.ai",
         "auth": {"header": "x-api-key", "scheme": "{key}"},
@@ -42,6 +43,7 @@ _BUILTIN: list[dict[str, Any]] = [
     },
     {
         "provider": "OpenRouter",
+        "example": {"path": "/models"},
         "prefixes": ["OPENROUTER", "OPENR"],
         "base_url": "https://openrouter.ai/api/v1",
         "auth": BEARER,
@@ -58,6 +60,7 @@ _BUILTIN: list[dict[str, Any]] = [
     },
     {
         "provider": "Ollama Cloud",
+        "example": {"path": "/tags"},
         "prefixes": ["OLLAMACLOUD", "OLLAMA"],
         "base_url": "https://ollama.com/api",
         "auth": BEARER,
@@ -66,6 +69,7 @@ _BUILTIN: list[dict[str, Any]] = [
     },
     {
         "provider": "Google Gemini",
+        "example": {"path": "/models"},
         "prefixes": ["GEMINI", "GOOGLE_API"],
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
         "auth": {"header": "x-goog-api-key", "scheme": "{key}"},
@@ -73,6 +77,7 @@ _BUILTIN: list[dict[str, Any]] = [
     },
     {
         "provider": "Anthropic",
+        "example": {"path": "/models"},
         "prefixes": ["ANTHROPIC"],
         "base_url": "https://api.anthropic.com/v1",
         "auth": {"header": "x-api-key", "scheme": "{key}"},
@@ -81,6 +86,7 @@ _BUILTIN: list[dict[str, Any]] = [
     },
     {
         "provider": "OpenAI",
+        "example": {"path": "/models"},
         "prefixes": ["OPENAI"],
         "base_url": "https://api.openai.com/v1",
         "auth": BEARER,
@@ -88,6 +94,7 @@ _BUILTIN: list[dict[str, Any]] = [
     },
     {
         "provider": "Cloudflare",
+        "example": {"path": "/user/tokens/verify"},
         "prefixes": ["CLOUDFLARE"],
         "base_url": "https://api.cloudflare.com/client/v4",
         "auth": BEARER,
@@ -96,7 +103,7 @@ _BUILTIN: list[dict[str, Any]] = [
     },
     {
         "provider": "NouGen node / gateway",
-        "prefixes": ["NGS_NODE", "NGS_"],
+        "prefixes": ["NGS_NODE"],  # not "NGS_": NGS_CLOUD_CREDENTIALS is a "url,token" pair, not a node token
         "base_url": "https://shards.nougenai.com",
         "auth": {"header": "X-NGS-Token", "scheme": "{key}"},
         "mcp": {"url": "https://shards.nougenai.com/mcp/", "type": "http"},
@@ -108,6 +115,7 @@ _BUILTIN: list[dict[str, Any]] = [
     },
     {
         "provider": "Tavily",
+        "example": {"path": "/search", "method": "POST", "body": '{"query": "test", "max_results": 1}'},
         "prefixes": ["TAVILY"],
         "base_url": "https://api.tavily.com",
         "auth": BEARER,
@@ -123,6 +131,7 @@ _BUILTIN: list[dict[str, Any]] = [
     },
     {
         "provider": "TMDB",
+        "example": {"path": "/configuration"},
         "prefixes": ["TMDB"],
         "base_url": "https://api.themoviedb.org/3",
         "auth": BEARER,
@@ -139,6 +148,7 @@ _BUILTIN: list[dict[str, Any]] = [
     },
     {
         "provider": "Notion",
+        "example": {"path": "/users/me"},
         "prefixes": ["NOTION"],
         "base_url": "https://api.notion.com/v1",
         "auth": BEARER,
@@ -154,6 +164,7 @@ _BUILTIN: list[dict[str, Any]] = [
     },
     {
         "provider": "GitHub",
+        "example": {"path": "/user"},
         "prefixes": ["GITHUB"],
         "base_url": "https://api.github.com",
         "auth": BEARER,
@@ -162,6 +173,7 @@ _BUILTIN: list[dict[str, Any]] = [
     },
     {
         "provider": "GitLab",
+        "example": {"path": "/user"},
         "prefixes": ["GITLAB"],
         "base_url": "https://gitlab.com/api/v4",
         "auth": {"header": "PRIVATE-TOKEN", "scheme": "{key}"},
@@ -177,7 +189,8 @@ _BUILTIN: list[dict[str, Any]] = [
 
 
 def _db_path():
-    return keymaker.DB_PATH
+    # tenant-aware: a tenant session must read and write its own vault, not the owner's
+    return keymaker.db_path()
 
 
 def _ensure_table(conn: sqlite3.Connection) -> None:
@@ -242,12 +255,20 @@ def usage_for(key: str) -> Optional[dict[str, Any]]:
 
 
 def _curl(key: str, record: dict[str, Any]) -> Optional[str]:
-    """A copy-paste example that references the key by $NAME, never by value."""
+    """A copy-paste example that references the key by $NAME, never by value.
+
+    Providers with an `example` ({path, method, body}) get a real request. Others
+    get an auth-only template (the base URL is not an API operation), flagged as such.
+    """
     base = record.get("base_url")
     if not base:
         return None
     auth = record.get("auth") or {}
+    example = record.get("example") or {}
+    base = base.rstrip("/") + example["path"] if example.get("path") else base
     parts = ["curl -s"]
+    if example.get("method") and example["method"] != "GET":
+        parts.append(f"-X {example['method']}")
     if auth.get("header"):
         parts.append(f'-H "{auth["header"]}: {auth["scheme"].replace("{key}", "$" + key)}"')
     for name, value in (record.get("extra_headers") or {}).items():
@@ -255,8 +276,14 @@ def _curl(key: str, record: dict[str, Any]) -> Optional[str]:
     url = base
     if auth.get("query"):
         url += ("&" if "?" in url else "?") + f"{auth['query']}=${key}"
+    if example.get("body"):
+        parts.append('-H "content-type: application/json"')
+        parts.append(f"-d '{example['body']}'")
     parts.append(f'"{url}"')  # double quotes so the shell expands $KEY
-    return " ".join(parts)
+    line = " ".join(parts)
+    if example.get("path"):
+        return line
+    return "# auth-only template; append the provider's resource path: " + line
 
 
 def describe(key: str) -> dict[str, Any]:
