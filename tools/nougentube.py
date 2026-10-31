@@ -146,6 +146,17 @@ def _fetch_via_transcript_api(video_id: str) -> Optional[str]:
         return None
 
 
+def _fetch_via_innertube(video_id: str) -> Optional[str]:
+    """Tier 1b: YouTube's own player endpoint, caption tracks picked manual-first (see nougentube_study)."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import nougentube_study as study  # sibling module, stdlib only
+        return study.fetch_via_innertube(video_id, LANGS)
+    except Exception as exc:  # noqa: BLE001 - any failure falls to the next tier
+        logger.info("tier-1b innertube failed for %s: %s", video_id, exc)
+        return None
+
+
 _VTT_TAG_RE = re.compile(r"<[^>]*>")
 _VTT_TS_RE = re.compile(r"^(\d+):(\d\d):(\d\d)\.\d+\s+-->")
 
@@ -211,6 +222,9 @@ def fetch_transcript(video_id: str, url: str) -> Tuple[Optional[str], Optional[s
     text = _fetch_via_transcript_api(video_id)
     if text:
         return text, "youtube-transcript-api"
+    text = _fetch_via_innertube(video_id)
+    if text:
+        return text, "innertube-android"
     text = _fetch_via_ytdlp(url)
     if text:
         return text, "yt-dlp-autosubs"
@@ -534,6 +548,40 @@ def run_manifest(manifest_path: Path, dry_run: bool, limit: int) -> Dict[str, in
 
 # ------------------------------------------------------------------------ CLI
 
+def _study_main(args) -> int:
+    """Export / summarise / ask / prompt for ONE video. Reads only; writes no shard."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import nougentube_study as study
+    vid = extract_video_id(args.source or "")
+    if not vid:
+        print("study commands need one video URL", file=sys.stderr)
+        return 2
+    text, tier = fetch_transcript(vid, args.source)
+    segs = study.parse_segments(text or "")
+    if not segs:
+        print(f"no transcript could be fetched for {vid} (tried every tier)", file=sys.stderr)
+        return 1
+    title = fetch_metadata(args.source, vid).get("title") or vid
+    try:
+        if args.export:
+            print(study.export(segs, args.export, vid, title))
+        elif args.prompt:
+            print(study.handoff_prompt(title, segs, lang=args.lang, timestamps=not args.no_timestamps))
+        else:
+            if args.summary:
+                r = study.summarize(title, segs, args.length, args.lang, not args.no_timestamps)
+            else:
+                r = study.chat(title, segs, args.ask)
+            print(r["text"])
+            if r["dropped"]:
+                print(f"\n[{len(r['dropped'])} line(s) left out: the transcript did not support them]", file=sys.stderr)
+            print(f"\n[transcript tier: {tier}; model: {study.OLLAMA_MODEL}; revisions: {r['revisions']}]", file=sys.stderr)
+    except study.StudyError as exc:
+        print(f"nougentube: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         prog="nougentube", description=__doc__.splitlines()[0])
@@ -547,7 +595,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="stop after N videos (0 = no limit)")
     ap.add_argument("--print-config", action="store_true",
                     help="show every resolved value and its source")
+    study = ap.add_argument_group("study (work on one video; nothing is captured unless you omit these)")
+    study.add_argument("--export", choices=["txt", "md", "srt", "vtt"], help="print the transcript in this format")
+    study.add_argument("--summary", action="store_true", help="summarise with the local model (verified against the transcript)")
+    study.add_argument("--length", choices=["short", "medium", "long"], default="medium", help="summary length")
+    study.add_argument("--lang", default="en", help="summary language code")
+    study.add_argument("--no-timestamps", action="store_true", help="summary without timestamps")
+    study.add_argument("--ask", metavar="QUESTION", help="answer a question from the transcript, citing moments")
+    study.add_argument("--prompt", action="store_true", help="print a paste-ready prompt (task + transcript) for another chat")
     args = ap.parse_args(argv)
+
+    if args.export or args.summary or args.ask or args.prompt:
+        return _study_main(args)
 
     if args.print_config:
         for name, value, source in _CONFIG_SOURCES:

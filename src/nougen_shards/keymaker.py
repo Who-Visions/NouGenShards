@@ -148,6 +148,11 @@ class _DataBlob(ctypes.Structure):
 
 def _dpapi_call(func_name: str, data: bytes) -> bytes:
     """Invokes CryptProtectData/CryptUnprotectData on the given bytes."""
+    # A vault synced from a Windows node can carry DPAPI rows onto macOS/Linux.
+    # Raise the OSError callers already handle, not AttributeError on `windll`,
+    # which escaped _export_to_csv and failed ingest_secret after its commit.
+    if not hasattr(ctypes, "windll"):
+        raise OSError(f"{func_name} unavailable: DPAPI is Windows-only")
     blob_in = _DataBlob(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)),
                                               ctypes.POINTER(ctypes.c_char)))
     blob_out = _DataBlob()
@@ -468,25 +473,53 @@ def resolve_secrets_store(refresh: bool = False) -> dict:
     return result
 
 
+# Owner-process defaults, kept for importers; every in-module access goes
+# through the resolvers below so a tenant request lands in its own vault.
 VAULT_DIR = resolve_secrets_vault_dir()
 DB_PATH = VAULT_DIR / DB_FILENAME
 CSV_PATH = VAULT_DIR / "shards_secrets.csv"
 SECRETS_JSON_DIR = VAULT_DIR / "service_accounts"
+TENANT_SECRETS_DIRNAME = "secrets"
+
+
+def vault_dir() -> Path:
+    """Secrets vault for the active identity.
+
+    Owner: ``NOUGEN_SECRETS_VAULT`` / ``~/.nougen/secrets`` (module constants).
+    Tenant: ``<tenant_vault>/secrets`` so ``vault_put`` from a tenant session can
+    never read or write the owner's keyring.
+    """
+    from . import core  # no try/except: a failed tenant check must not fall open to the owner keyring
+    if core.is_tenant_context():
+        return Path(core.active_home()) / TENANT_SECRETS_DIRNAME
+    return VAULT_DIR
+
+
+def db_path() -> Path:
+    return vault_dir() / DB_FILENAME
+
+
+def csv_path() -> Path:
+    return vault_dir() / "shards_secrets.csv"
+
+
+def secrets_json_dir() -> Path:
+    return vault_dir() / "service_accounts"
 
 
 def init_vault():
     """Initializes the vault database schema."""
-    VAULT_DIR.mkdir(parents=True, exist_ok=True)
-    SECRETS_JSON_DIR.mkdir(parents=True, exist_ok=True)
+    vault_dir().mkdir(parents=True, exist_ok=True)
+    secrets_json_dir().mkdir(parents=True, exist_ok=True)
     # Restrict the vault to the owner on POSIX (Windows relies on per-file ACLs).
     if os.name != "nt":
-        for d in (VAULT_DIR, SECRETS_JSON_DIR):
+        for d in (vault_dir(), secrets_json_dir()):
             try:
                 os.chmod(d, 0o700)
             except OSError:
                 pass
 
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS secrets (
@@ -530,19 +563,21 @@ def init_vault():
 
 def _export_to_csv():
     """Exports a metadata-only audit ledger. NEVER writes secret values to disk."""
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT id, secret_key, secret_value, last_rotated FROM secrets")
         rows = cursor.fetchall()
-        with open(CSV_PATH, "w", newline="", encoding="utf-8") as f_out:
+        with open(csv_path(), "w", newline="", encoding="utf-8") as f_out:
             writer = csv.writer(f_out)
             writer.writerow(["id", "secret_key", "fingerprint_sha256_12", "encrypted", "last_rotated"])
             for row_id, key, stored, rotated in rows:
                 try:
                     plain = _unprotect(stored)
                     fp = _fingerprint(plain) if plain is not None else "unreadable"
-                except OSError:
+                except Exception:
+                    # Any row this platform can't decrypt (e.g. a Windows DPAPI blob on macOS) is
+                    # listed as unreadable; the audit ledger still gets written.
                     fp = "unreadable"
                 writer.writerow([row_id, key, fp, _is_encrypted(stored), rotated])
     except sqlite3.Error:
@@ -557,7 +592,7 @@ def ingest_secret(key: str, value: str):
     """
     init_vault()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     try:
         conn.execute("""
             INSERT OR REPLACE INTO secrets (secret_key, secret_value, last_rotated)
@@ -565,7 +600,10 @@ def ingest_secret(key: str, value: str):
         """, (key, _protect(value, key), timestamp))
         conn.commit()
         print(f"  [+] Ingested: {key} (Value Redacted)")
-        _export_to_csv()
+        try:
+            _export_to_csv()
+        except Exception as exc:  # the audit ledger is best-effort; the secret is already stored
+            print(f"  [i] Audit ledger not updated on this platform: {type(exc).__name__}")
     except sqlite3.Error as exc:
         print(f"  [!] Error ingesting {key}: {exc}")
     finally:
@@ -632,7 +670,7 @@ def ingest_service_account(json_data: str):
         init_vault()
 
         file_name = f"{project_id}_service_account.json"
-        target_path = SECRETS_JSON_DIR / file_name
+        target_path = secrets_json_dir() / file_name
 
         # This file holds the SA private key. On POSIX create it owner-only from
         # the start (O_CREAT|0o600) so there is no window where it is world/group
@@ -656,7 +694,8 @@ def ingest_service_account(json_data: str):
 
         # Store metadata in DB
         ingest_secret(f"GCP_SA_{project_id.upper()}", client_email)
-        print(f"  [+] Service Account for {project_id} stored at {target_path}")
+        # Path deliberately not echoed: the secrets vault location stays out of console logs.
+        print(f"  [+] Service Account for {project_id} stored in the service_accounts vault")
 
     except (json.JSONDecodeError, OSError) as exc:
         print(f"  [!] Error ingesting service account: {exc}")
@@ -700,7 +739,7 @@ def register_local_vault(path: str, table_name: str, title_col: str, content_col
     """
     _require_identifiers(table_name, title_col, content_col)
     init_vault()
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     conn.execute('''
         CREATE TABLE IF NOT EXISTS local_vaults (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -729,9 +768,9 @@ def register_local_vault(path: str, table_name: str, title_col: str, content_col
 
 def list_local_vaults() -> list:
     """Registered local SQLite vaults. Missing table or DB means none."""
-    if not DB_PATH.exists():
+    if not db_path().exists():
         return []
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     conn.row_factory = sqlite3.Row
     try:
         return [dict(r) for r in conn.execute("SELECT * FROM local_vaults").fetchall()]
@@ -745,7 +784,7 @@ def register_external_db(uri: str, table_name: str, title_col: str, content_col:
     """Registers a new external database connection."""
     _require_identifiers(table_name, title_col, content_col)
     init_vault()
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     # The URI usually embeds DB credentials (user:pass@host) — protect it at
     # rest like any other secret instead of storing the connection string raw.
@@ -759,9 +798,9 @@ def register_external_db(uri: str, table_name: str, title_col: str, content_col:
 
 def list_external_dbs() -> list:
     """Returns all registered external database configurations."""
-    if not DB_PATH.exists():
+    if not db_path().exists():
         return []
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute("SELECT * FROM external_dbs").fetchall()
@@ -788,7 +827,7 @@ def list_external_dbs() -> list:
 def register_cloud_node(url: str, name: str):
     """Registers a new remote NouGenShards cloud node."""
     init_vault()
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     conn.execute('''
         INSERT OR REPLACE INTO cloud_nodes (url, name, last_connected)
@@ -800,9 +839,9 @@ def register_cloud_node(url: str, name: str):
 
 def list_cloud_nodes() -> list:
     """Returns all registered cloud node configurations."""
-    if not DB_PATH.exists():
+    if not db_path().exists():
         return []
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute("SELECT * FROM cloud_nodes").fetchall()
@@ -814,6 +853,8 @@ def list_cloud_nodes() -> list:
 
 
 CANONICAL_ALIASES = {
+    "EXA_API_KEY": ["EXA_API_KEY_1", "EXA_API_KEY_2", "EXA_API_KEY_3", "EXA_API_KEY_4"],
+    "CLOUDFLARE_API_TOKEN": ["CLOUDFLARE_API_TOKEN_NOUGEN_FULL", "CLOUDFLARE_API_TOKEN_WHOENTERTAINS"],
     "ARLAI_API_KEY": ["ARLIAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
     "ARLIAI_API_KEY": ["ARLAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
     "OLLAMA_MRSB_OLLAMA_KEY": ["OLLAMA_MRSB_OLLAMAA_KEY"],
@@ -870,16 +911,27 @@ def get_secret(key: str) -> Optional[str]:
     Checks environment variables first (Rule 0.0: env -> config -> runtime probe),
     then queries the active secrets vault, alias fallbacks, and live candidate stores.
     """
-    env_val = os.getenv(key) or os.getenv(f"NOUGEN_{key}")
-    if env_val:
-        return env_val.strip()
-
-    if not _probe_enabled():
-        val = _read_secret_row(DB_PATH, key)
+    from . import core
+    if core.is_tenant_context():
+        # Tenant reads never consult the node's environment, the owner's
+        # store, legacy candidates or the keyring cache: only the tenant DB.
+        val = _read_secret_row(db_path(), key)
         if val is not None:
             return val
         for alias in CANONICAL_ALIASES.get(key, []):
-            alias_val = _read_secret_row(DB_PATH, alias)
+            alias_val = _read_secret_row(db_path(), alias)
+            if alias_val is not None:
+                return alias_val
+        return None
+    env_val = os.getenv(key) or os.getenv(f"NOUGEN_{key}")
+    if env_val:
+        return env_val.strip()
+    if not _probe_enabled():
+        val = _read_secret_row(db_path(), key)
+        if val is not None:
+            return val
+        for alias in CANONICAL_ALIASES.get(key, []):
+            alias_val = _read_secret_row(db_path(), alias)
             if alias_val is not None:
                 return alias_val
         return None
@@ -947,9 +999,9 @@ def get_secret(key: str) -> Optional[str]:
 
 def list_providers() -> list:
     """Returns a list of keys currently stored in the vault."""
-    if not DB_PATH.exists():
+    if not db_path().exists():
         return []
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT secret_key FROM secrets")
@@ -962,9 +1014,9 @@ def list_providers() -> list:
 
 def migrate_to_encrypted() -> int:
     """Re-encrypts any legacy plaintext rows in place. Returns count migrated."""
-    if not DB_PATH.exists():
+    if not db_path().exists():
         return 0
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path()))
     migrated = 0
     try:
         rows = conn.execute("SELECT secret_key, secret_value FROM secrets").fetchall()
@@ -1209,7 +1261,7 @@ if __name__ == "__main__":
         print(f"[*] Migrated {COUNT} legacy plaintext secrets to DPAPI encryption.")
     elif CMD == "init":
         init_vault()
-        print(f"[*] Keymaker initialized at {VAULT_DIR.absolute()}")
+        print("[*] Keymaker initialized (run `nougen auth status` for the vault location)")
     elif CMD == "add" and len(sys.argv) == 4:
         ingest_secret(sys.argv[2], sys.argv[3])
     elif CMD == "sa" and len(sys.argv) == 3:
@@ -1226,4 +1278,3 @@ if __name__ == "__main__":
             print(f"[*] Auto-enved {res['repo']}: {res['populated_count']} keys written to {res['path']}")
     else:
         print("Invalid command or arguments.")
-

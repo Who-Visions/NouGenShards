@@ -80,6 +80,37 @@ a:focus-visible { outline: 2px solid orange; }
             self.assertIn('Keep the interface calm', files['DESIGN.md'])
             self.assertIn('gradient', files['mutations.json'])
             self.assertIn('linear-gradient', css.read_text())
+    def test_check_reads_artifacts_as_utf8_regardless_of_platform_encoding(self):
+        """sakura-bloom (non-ASCII prose) reported manifest.json stale on Windows
+        right after a fresh compile: artifacts are written as UTF-8 but were read
+        back with the platform default (cp1252), so the comparison never matched."""
+        import contextlib
+        import io
+        import locale
+        import sys
+        from unittest import mock
+        spec = dict(self.spec)
+        spec['description'] = 'Sakura Shōten — café surfaces'
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / 'pkg'
+            out.mkdir()
+            spec_path = Path(directory) / 'design.json'
+            spec_path.write_text(json.dumps(spec), encoding='utf-8')
+            for name, body in design.render(spec).items():
+                (out / name).write_text(body, encoding='utf-8', newline='\n')
+            printed = io.StringIO()
+            patches = [mock.patch.object(sys, 'argv', ['nougendesigns.py', 'check', str(spec_path), str(out)]),
+                       mock.patch.object(locale, 'getpreferredencoding', lambda do_setlocale=True: 'cp1252')]
+            if hasattr(locale, 'getencoding'):
+                patches.append(mock.patch.object(locale, 'getencoding', lambda: 'cp1252'))
+            with contextlib.ExitStack() as stack:
+                for patch in patches:
+                    stack.enter_context(patch)
+                with contextlib.redirect_stdout(printed):
+                    code = design.main()
+            self.assertEqual(code, 0, printed.getvalue())
+            self.assertIn('"passed": true', printed.getvalue().replace('"passed":true', '"passed": true'))
+
 
 if __name__ == '__main__':
     unittest.main()

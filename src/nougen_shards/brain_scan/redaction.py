@@ -32,7 +32,7 @@ SECRET_PATTERNS = [
     # secret rule missed it because it sat in source code as a bare assignment
     # with no credential-shaped label in front of it.
     (re.compile(r'ntn_[A-Za-z0-9]{20,}'), "<REDACTED_NOTION_TOKEN>"),
-    (re.compile(r'secret_[A-Za-z0-9]{40,}'), "<REDACTED_NOTION_TOKEN>"),
+    (re.compile(r'\bsecret_[A-Za-z0-9]{40,}'), "<REDACTED_NOTION_TOKEN>"),
     # NouGen token: match the token itself; do not consume a leading delimiter
     # (consuming it corrupted surrounding JSON and missed adjacent tokens).
     (re.compile(r'nougen_[a-z]+_token_[A-Za-z0-9]+'), "<REDACTED_NOUGEN_TOKEN>"),

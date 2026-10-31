@@ -160,6 +160,7 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
     conn = sqlite3.connect(db)
     done = 0
     failed = 0
+    deferred: dict = {}
     try:
         has_ver = _has_col(conn, "shards", "schema_version")
         conn.execute("PRAGMA busy_timeout=15000;")
@@ -186,12 +187,19 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
                 pressure = get_memory_pressure_level()
                 if pressure >= PRESSURE_WARNING:
                     import logging
-                    logging.getLogger(__name__).warning(
-                        "darwin_gate: macOS memory pressure is %s (level %s); pausing backfill",
-                        get_memory_pressure_name(pressure), pressure
-                    )
-                    time.sleep(3)
-                    continue
+                    # Wait for the pressure to clear and then process THIS chunk; never skip it
+                    # (a skipped chunk stays embedding IS NULL while the run reports success).
+                    deadline = time.monotonic() + float(os.environ.get("NOUGEN_BACKFILL_PRESSURE_WAIT_S", "600"))
+                    while pressure >= PRESSURE_WARNING and time.monotonic() < deadline:
+                        logging.getLogger(__name__).warning(
+                            "darwin_gate: macOS memory pressure is %s (level %s); pausing backfill",
+                            get_memory_pressure_name(pressure), pressure
+                        )
+                        time.sleep(3)
+                        pressure = get_memory_pressure_level()
+                    if pressure >= PRESSURE_WARNING:
+                        deferred = {"deferred": "memory pressure", "remaining": len(rows) - start}
+                        break
 
             if (start // max(batch, 1)) % max(VRAM_CHECK_EVERY // max(batch, 1), 1) == 0:
                 used = _vram_used_mib()
@@ -225,7 +233,9 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
                 print(f"    {os.path.basename(db)}: {done}/{len(rows)} embedded, {failed} failed", flush=True)
     finally:
         conn.close()
-    return {"db": os.path.basename(db), "embedded": done, "failed": failed}
+    result = {"db": os.path.basename(db), "embedded": done, "failed": failed}
+    result.update(deferred)
+    return result
 
 
 def _flush(conn, batch, has_ver):

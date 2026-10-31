@@ -10,11 +10,65 @@ The accident was doing the isolating. This makes it explicit: every test gets it
 own empty secrets vault, so no test can read, mutate, or leak real credentials.
 A test that wants a specific location can still set the env var itself.
 """
+import gc
 import os
+import tempfile
 
 import pytest
 
-from nougen_shards import keymaker
+from nougen_shards import core, keymaker
+
+# The read-only connection pool keeps SQLite handles open across calls. On
+# Windows an open handle blocks deleting the file, so every test fixture that
+# yields from a TemporaryDirectory failed teardown with WinError 32/267. Module
+# fixtures tear down before conftest ones, so a conftest fixture would close the
+# pool too late; closing it inside cleanup runs at the right moment everywhere.
+_tempdir_cleanup = tempfile.TemporaryDirectory.cleanup
+
+
+def _cleanup_closing_pool(self):
+    core.close_readonly_pool()
+    gc.collect()  # unreferenced sqlite3 connections close only when collected
+    _tempdir_cleanup(self)
+
+
+tempfile.TemporaryDirectory.cleanup = _cleanup_closing_pool
+
+
+def _dpapi_usable() -> bool:
+    try:
+        keymaker._dpapi_call("CryptProtectData", b"probe")
+        return True
+    except OSError:
+        return False
+
+
+# Sandboxed or service shells on Windows get ERROR_ACCESS_DENIED from DPAPI
+# even though the code path is fine. Swap in a reversible stand-in only there,
+# so the keymaker logic stays covered instead of failing on the host.
+_DPAPI_FAKE = os.name == "nt" and not _dpapi_usable()
+
+
+def _fake_dpapi_call(func_name, data):
+    # Real blobs start with _DPAPI_MAGIC and the read path detects layers by it.
+    magic = keymaker._DPAPI_MAGIC
+    if func_name == "CryptProtectData":
+        return magic + bytes(b ^ 0x5A for b in data)
+    if not data.startswith(magic):
+        raise OSError(f"{func_name} failed (DPAPI)")
+    return bytes(b ^ 0x5A for b in data[len(magic):])
+
+
+@pytest.fixture(autouse=True)
+def dpapi_stand_in(monkeypatch):
+    """Returns ``apply(module)`` so tests that reload keymaker can re-patch it."""
+    def apply(module):
+        if _DPAPI_FAKE:
+            monkeypatch.setattr(module, "_dpapi_call", _fake_dpapi_call)
+        return module
+
+    apply(keymaker)
+    return apply
 
 
 @pytest.fixture(autouse=True)
@@ -116,6 +170,9 @@ def isolated_msg_home(tmp_path_factory, monkeypatch):
     import os as real_os
     from nougen_shards import nougenmsg
     home = tmp_path_factory.mktemp("msg_home")
+    # NOUGEN_ROOT is honoured first by nougenmsg._home(); the host's real
+    # runtime root must not override the throwaway home during tests.
+    monkeypatch.delenv("NOUGEN_ROOT", raising=False)
     monkeypatch.setattr(nougenmsg, "os", _HomeOs(real_os, home))
     yield home
 
@@ -126,3 +183,58 @@ def _fleet_hosts_fixture(monkeypatch):
     they neither depend on nor touch the developer's ~/.nougen/fleet_hosts.json."""
     from pathlib import Path
     monkeypatch.setenv("NOUGEN_FLEET_HOSTS_FILE", str(Path(__file__).parent / "fixtures" / "fleet_hosts.json"))
+
+
+@pytest.fixture(scope="session")
+def shared_mcp_client():
+    """The one lifespan-entered node client for the whole process.
+
+    ``StreamableHTTPSessionManager.run()`` may run once per instance, and the
+    node builds one instance at import, so every module that drives ``/mcp``
+    through the real app shares this client and swaps ``core.GLOBAL_DIR`` /
+    ``node.NODE_TOKEN`` around it at module scope (tool handlers and the token
+    gate read both at call time).
+    """
+    import tempfile
+    from pathlib import Path
+    from fastapi.testclient import TestClient
+    import app as node
+    from nougen_shards import core
+
+    import os as _os
+    import threading as _threading
+    import time as _time
+
+    vault = Path(tempfile.mkdtemp(prefix="ngs_shared_mcp_vault_"))
+    saved = (core.GLOBAL_DIR, core.get_db_path)
+    # The lifespan now outlives one module, so none of the node's background
+    # loops may keep running against whatever GLOBAL_DIR a later module swaps
+    # in: no recall warm-up, no listener self-check. The boot-quarantine pass
+    # is awaited below so it finishes against the throwaway vault.
+    quiet = {"NOUGEN_WARMUP": "0", "NOUGEN_LISTENER_SELFCHECK_S": "0"}
+    saved_env = {k: _os.environ.get(k) for k in quiet}
+    _os.environ.update(quiet)
+    core.GLOBAL_DIR = vault
+    core.get_db_path = lambda index: vault / f"mcp_{index}.db"
+    core.init_db(1)
+    client = TestClient(node.app)
+    try:
+        client.__enter__()  # lifespan runs against the throwaway vault
+        deadline = _time.monotonic() + 30
+        while _time.monotonic() < deadline and any(
+                t.name.startswith("nougen-") and t.is_alive() for t in _threading.enumerate()):
+            _time.sleep(0.05)
+    finally:
+        # Hand the process-wide vault back right away: the client stays open
+        # for the whole session, but every other module must see its own
+        # GLOBAL_DIR, not this one.
+        core.GLOBAL_DIR, core.get_db_path = saved
+        for k, v in saved_env.items():
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
+    try:
+        yield client
+    finally:
+        client.__exit__(None, None, None)

@@ -255,15 +255,26 @@ def check_darwin_admission(model: str, need_gb: Optional[float] = None) -> "Verd
     residents = _ollama_residents()
     names = tuple(m.get("name", "?") for m in residents)
     need = need_gb if need_gb is not None else MEASURED_LOAD_GB.get(model)
-    if need is None:
-        need = 2.0  # safe conservative fallback
 
     if model in names:
         # Already resident in Metal/unified memory — only KV cache expansion needed
         if pressure == PRESSURE_WARNING:
             # Under warning, allow resident models if KV footprint is modest
-            return Verdict(True, f"already resident under {p_name} pressure", need_gb=need, residents=names)
-        return Verdict(True, "already resident in unified memory", need_gb=need, residents=names)
+            return Verdict(True, f"already resident under {p_name} pressure", need_gb=need or 0.0, residents=names)
+        return Verdict(True, "already resident in unified memory", need_gb=need or 0.0, residents=names)
+
+    if need is None:
+        # No measured footprint = no admission, same rule as the non-Darwin gate. Guessing a
+        # small size would let an arbitrarily large new model cold-load and exhaust unified
+        # memory, the failure this gate exists to prevent.
+        return Verdict(
+            False,
+            f"no measured load size for {model!r}; measure it and add it to MEASURED_LOAD_GB, "
+            f"or pass need_gb, before it can be cold-loaded on macOS.",
+            free_gb=get_apple_silicon_vram_headroom_gb(),
+            need_gb=0.0,
+            residents=names,
+        )
 
     # 3. Under warning pressure (level 2), refuse cold-loading large models
     if pressure == PRESSURE_WARNING:

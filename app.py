@@ -23,6 +23,8 @@ from pydantic import BaseModel
 import gradio as gr
 import subprocess
 import time
+import asyncio
+import threading
 
 
 # Add src to path for absolute imports
@@ -68,7 +70,7 @@ node_mcp = MCPServer(
         "nougentube_ingest writes the resulting memories to the grid. "
         "NouGen-Verse tools analyze, plan and suggest repairs for user-provided drafts; "
         "NouGenTime tools format timestamps in Eastern Time with canonical UTC. "
-        "nougen_media_transcribe uses local Whisper for YouTube videos up to 30 minutes. "
+        "nougentube is subtitle-first with no length cap and falls back to local Whisper; nougen_media_transcribe is Whisper-only for YouTube videos up to NOUGEN_WHISPER_MAX_SECONDS (default 30 minutes). "
         "GitHub inspection and skill lookup are read-only; GitHub README capture writes a shard. "
         "ShadowDweller search retrieves Veilverse material from the shared shard grid."
     ),
@@ -788,8 +790,6 @@ def vault_put(key: str, value: str) -> dict:
 
     Returns a SHA-256 fingerprint (first 12 hex) so the caller can prove the
     stored value matches what they intended without the value being echoed."""
-    if core.active_tenant_id() != "owner":
-        raise PermissionError("the secrets vault is owner-only")
     from nougen_shards import keymaker
     keymaker.init_vault()
     keymaker.ingest_secret(key, value)
@@ -797,7 +797,8 @@ def vault_put(key: str, value: str) -> dict:
     return {"key": key,
             "stored": stored == value,
             "fingerprint": hashlib.sha256(value.encode()).hexdigest()[:12],
-            "vault": str(keymaker.DB_PATH)}
+            "vault": str(keymaker.db_path()),
+            "tenant": core.active_tenant_id()}
 
 
 @node_mcp.tool()
@@ -807,14 +808,12 @@ def vault_list() -> list:
 
     Enough to answer "is this credential present, and is it the one I think?"
     (compare fingerprints) without the vault becoming readable."""
-    if core.active_tenant_id() != "owner":
-        raise PermissionError("the secrets vault is owner-only")
     from nougen_shards import keymaker
     out = []
-    if not keymaker.DB_PATH.exists():
+    if not keymaker.db_path().exists():
         return out
     import sqlite3 as _sq
-    conn = _sq.connect(str(keymaker.DB_PATH))
+    conn = _sq.connect(str(keymaker.db_path()))
     try:
         rows = conn.execute("SELECT secret_key, last_rotated FROM secrets ORDER BY secret_key").fetchall()
     finally:
@@ -900,6 +899,73 @@ def _registered_upstreams() -> list:
         return []
 
 
+# Logged fallbacks only; env NOUGEN_WARMUP_MAX_PASSES / NOUGEN_WARMUP_PAUSE_S win.
+_WARMUP_MAX_PASSES_FALLBACK = 8
+_WARMUP_PAUSE_S_FALLBACK = 1.0
+#: Live warm-up state, surfaced on /v1/health/local as "warm"/"warmup" so a
+#: fan-out peer can tell a cold lane from a broken one and size its grace.
+_WARMUP_STATE: dict = {"status": "pending", "passes": 0, "misses": None}
+
+
+def _utc_now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def _env_int(name: str, fallback: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return fallback
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logging.getLogger(__name__).warning("%s=%r is not an int; fallback %d", name, raw, fallback)
+        return fallback
+
+
+def _env_float(name: str, fallback: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return fallback
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logging.getLogger(__name__).warning("%s=%r is not a number; fallback %s", name, raw, fallback)
+        return fallback
+
+
+# Logged fallback only; env NOUGEN_WARMUP_EMBED_TIMEOUT_S wins.
+_WARMUP_EMBED_TIMEOUT_S_FALLBACK = 120.0
+
+
+def _warm_query_embedding(timeout_s: float) -> dict:
+    """Load the recall embedding model once with a generous budget.
+
+    Returns {"ready": bool, "model": str, "seconds": float, "error": str|None}.
+    Never raises: a lane without ollama still warms its grid.
+    """
+    model = os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text")
+    started = time.perf_counter()
+    try:
+        from nougen_shards.embedding_backfill import embed as _embed  # pylint: disable=import-outside-toplevel
+        vec = _embed("warmup", model, timeout=timeout_s)
+        ready = bool(vec)
+        err = None if ready else "empty embedding"
+    except Exception as exc:  # pylint: disable=broad-except
+        ready, err = False, f"{type(exc).__name__}: {exc}"
+    secs = round(time.perf_counter() - started, 1)
+    logging.getLogger(__name__).log(logging.INFO if ready else logging.WARNING,
+                                    "warm-up embedding model %s %s in %.1fs%s", model,
+                                    "ready" if ready else "unavailable", secs, f": {err}" if err else "")
+    return {"ready": ready, "model": model, "seconds": secs, "error": err}
+
+
+def warmup_status() -> dict:
+    """Copy of the warm-up state; "warm" is True only once no grid DB was dropped."""
+    st = dict(_WARMUP_STATE)
+    st["warm"] = st.get("status") == "warm" or not _warmup_enabled()
+    return st
+
+
 def _warmup_enabled() -> bool:
     return os.environ.get("NOUGEN_WARMUP", "1").strip().lower() not in ("0", "false", "no", "off")
 
@@ -923,13 +989,129 @@ def _start_recall_warmup() -> None:
 
     def _run():
         started = time.perf_counter()
+        log = logging.getLogger(__name__)
+        max_passes = _env_int("NOUGEN_WARMUP_MAX_PASSES", _WARMUP_MAX_PASSES_FALLBACK)
+        pause_s = _env_float("NOUGEN_WARMUP_PAUSE_S", _WARMUP_PAUSE_S_FALLBACK)
+        _WARMUP_STATE.update({"status": "warming", "passes": 0, "misses": None, "started_utc": _utc_now_iso()})
         try:
-            core.retrieve("warmup", limit=1, domain_key="*")
-            logging.getLogger(__name__).info("recall warm-up done in %.1fs", time.perf_counter() - started)
+            # Load the query-embedding model FIRST. core's per-query embed budget
+            # (NOUGEN_QUERY_EMBED_TIMEOUT, ~6s) is sized for a resident model; a
+            # cold load on a CPU-only ollama measured 60s on whoart 2026-10-26,
+            # so every recall degraded to keyword-only until something else
+            # happened to load it. One long-budget embed here pays that once and
+            # pins the model with the backfill keep_alive.
+            # On its own thread (Codex P2 on #885): a stalled or blackholed
+            # OLLAMA_HOST would otherwise hold the grid passes for the whole
+            # embed budget and leave the recall cache cold meanwhile.
+            embed_timeout = _env_float("NOUGEN_WARMUP_EMBED_TIMEOUT_S", _WARMUP_EMBED_TIMEOUT_S_FALLBACK)
+            _WARMUP_STATE["embed"] = {"ready": False, "status": "loading"}
+
+            def _embed_bg():
+                _WARMUP_STATE["embed"] = _warm_query_embedding(embed_timeout)
+
+            _threading.Thread(target=_embed_bg, name="nougen-embed-warmup", daemon=True).start()
+            # One pass used to be the whole warm-up, but on a cold 9-DB grid one
+            # retrieve exhausts the shared scan deadline, caches only the DBs
+            # that finished, and leaves the rest cold until real traffic pays
+            # for them (blade 2026-10-26: ~3 min of deadline misses after every
+            # restart; whoart's fan-out missed its 25s grace meanwhile). Keep
+            # passing until a retrieve drops no grid DB, or the pass budget ends.
+            for n in range(1, max_passes + 1):
+                core.begin_scan_miss_tracking()
+                core.retrieve("warmup", limit=1, domain_key="*")
+                misses = core.last_scan_miss_count()
+                _WARMUP_STATE.update({"passes": n, "misses": misses})
+                if misses <= 0:
+                    _WARMUP_STATE["status"] = "warm"
+                    break
+                log.info("recall warm-up pass %d/%d: %d grid DB(s) still cold", n, max_passes, misses)
+                time.sleep(pause_s)
+            else:
+                _WARMUP_STATE["status"] = "cold"
+            log.info("recall warm-up %s after %d pass(es) in %.1fs", _WARMUP_STATE["status"],
+                     _WARMUP_STATE["passes"], time.perf_counter() - started)
         except Exception as exc:  # pylint: disable=broad-except
-            logging.getLogger(__name__).warning("recall warm-up skipped: %s: %s", type(exc).__name__, exc)
+            _WARMUP_STATE.update({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+            log.warning("recall warm-up skipped: %s: %s", type(exc).__name__, exc)
+        finally:
+            _WARMUP_STATE["seconds"] = round(time.perf_counter() - started, 1)
 
     _threading.Thread(target=_run, name="nougen-recall-warmup", daemon=True).start()
+
+
+# Logged fallbacks only; env NOUGEN_LISTENER_SELFCHECK_S / _FAILS / NGS_PORT win.
+_LISTENER_SELFCHECK_S_FALLBACK = 60.0
+_LISTENER_SELFCHECK_FAILS_FALLBACK = 3
+_LISTENER_SELFCHECK_EXIT_CODE = 3
+_LISTENER_STATE: dict = {"status": "pending", "port": None, "consecutive_failures": 0, "checks": 0}
+
+
+def _listener_port() -> Optional[int]:
+    for name in ("NGS_PORT", "NOUGEN_NODE_PORT", "PORT"):
+        raw = os.environ.get(name, "").strip()
+        if raw:
+            try:
+                return int(raw)
+            except ValueError:
+                logging.getLogger(__name__).warning("%s=%r is not a port; ignoring", name, raw)
+    return None
+
+
+def _probe_listener(port: int, timeout_s: float = 2.0) -> bool:
+    import socket  # pylint: disable=import-outside-toplevel
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout_s):
+            return True
+    except OSError:
+        return False
+
+
+def listener_selfcheck_status() -> dict:
+    return dict(_LISTENER_STATE)
+
+
+def _start_listener_selfcheck(exit_fn=None) -> None:
+    """Exit the process when our own accept loop is dead.
+
+    whoart 2026-10-26: uvicorn stayed alive for hours after its listening socket
+    died (asyncio "Accept failed on a socket ... WinError 64"), so every
+    process-based supervisor saw a healthy PID while :4444 refused connections
+    and the scheduled task could not rebind. A node that cannot accept its own
+    TCP connect NOUGEN_LISTENER_SELFCHECK_FAILS times in a row (every
+    NOUGEN_LISTENER_SELFCHECK_S seconds) exits with code 3 so the lane
+    supervisor / watchdog restarts it. 0 disables. No port in env = disabled.
+    """
+    interval = _env_float("NOUGEN_LISTENER_SELFCHECK_S", _LISTENER_SELFCHECK_S_FALLBACK)
+    port = _listener_port()
+    if interval <= 0 or port is None:
+        _LISTENER_STATE.update({"status": "disabled", "port": port})
+        return
+    fails_needed = _env_int("NOUGEN_LISTENER_SELFCHECK_FAILS", _LISTENER_SELFCHECK_FAILS_FALLBACK)
+    _exit = exit_fn or os._exit  # pylint: disable=protected-access
+    log = logging.getLogger(__name__)
+    _LISTENER_STATE.update({"status": "running", "port": port, "interval_s": interval, "fails_needed": fails_needed})
+
+    def _run():
+        # First probe only after one interval: the socket is not bound until
+        # uvicorn finishes startup, and a long grid warm-up must not count.
+        while True:
+            time.sleep(interval)
+            ok = _probe_listener(port)
+            _LISTENER_STATE["checks"] += 1
+            if ok:
+                _LISTENER_STATE["consecutive_failures"] = 0
+                continue
+            _LISTENER_STATE["consecutive_failures"] += 1
+            log.warning("listener self-check: 127.0.0.1:%d refused (%d/%d)", port,
+                        _LISTENER_STATE["consecutive_failures"], fails_needed)
+            if _LISTENER_STATE["consecutive_failures"] >= fails_needed:
+                _LISTENER_STATE["status"] = "dead"
+                log.critical("listener self-check: accept loop dead on :%d; exiting %d for the supervisor to rebind",
+                             port, _LISTENER_SELFCHECK_EXIT_CODE)
+                _exit(_LISTENER_SELFCHECK_EXIT_CODE)
+                return
+
+    threading.Thread(target=_run, name="nougen-listener-selfcheck", daemon=True).start()
 
 
 def _start_boot_quarantine(then=None) -> None:
@@ -973,6 +1155,7 @@ async def _lifespan(_app):
     # background thread so the node binds its port now, and caches prime without waiting on full quarantine.
     _start_boot_quarantine()
     _start_recall_warmup()
+    _start_listener_selfcheck()
     _seed_upstreams()
     # The streamable-HTTP session manager needs a running task group.
     async with node_mcp.session_manager.run():
@@ -1199,6 +1382,65 @@ async def capture_vault_context(
         core.reset_active_vault(context_tokens)
 
 # --- API Endpoints ---
+
+# Logged fallback only; env NOUGEN_HEALTH_COVERAGE_TTL_S wins.
+_HEALTH_COVERAGE_TTL_S_FALLBACK = 30.0
+_HEALTH_COVERAGE_WAIT_S_FALLBACK = 5.0
+_COVERAGE_CACHE: dict = {"at": 0.0, "value": None, "refreshing": False}
+_COVERAGE_LOCK = threading.Lock()
+
+
+def cached_substrate_coverage(now: Optional[float] = None, wait_s: Optional[float] = None) -> dict:
+    """_substrate_coverage() memoised for NOUGEN_HEALTH_COVERAGE_TTL_S seconds,
+    served stale-while-revalidate.
+
+    Health probes arrive every few seconds from peers, watchdogs and tunnels;
+    recounting nine shard tables for each one is wasted I/O that competes with
+    recall and warm-up. Past the TTL the LAST snapshot is returned at once
+    (tagged "stale": true) and one background refresh is started; only the very
+    first call, with nothing cached yet, waits for the count, and then at most
+    NOUGEN_HEALTH_COVERAGE_WAIT_S (logged fallback 5s) before answering with a
+    placeholder. whoart 2026-10-27: under memory starvation the nine COUNT(*)
+    took 37.5s and every peer probe timed out although the node was serving.
+    """
+    ttl = _env_float("NOUGEN_HEALTH_COVERAGE_TTL_S", _HEALTH_COVERAGE_TTL_S_FALLBACK)
+    t = time.monotonic() if now is None else now
+    with _COVERAGE_LOCK:
+        cached = _COVERAGE_CACHE["value"]
+        fresh = cached is not None and t - _COVERAGE_CACHE["at"] < ttl
+        refreshing = _COVERAGE_CACHE.get("refreshing", False)
+        if cached is not None and (fresh or refreshing):
+            return dict(cached, stale=not fresh)
+        _COVERAGE_CACHE["refreshing"] = True
+
+    def _refresh():
+        try:
+            value = _substrate_coverage()
+            with _COVERAGE_LOCK:
+                _COVERAGE_CACHE.update({"at": time.monotonic() if now is None else now, "value": value})
+        except Exception as exc:  # pylint: disable=broad-except
+            logging.getLogger(__name__).warning("coverage refresh failed: %s: %s", type(exc).__name__, exc)
+        finally:
+            with _COVERAGE_LOCK:
+                _COVERAGE_CACHE["refreshing"] = False
+                _COVERAGE_CACHE.get("done", threading.Event()).set()
+
+    done = threading.Event()
+    with _COVERAGE_LOCK:
+        _COVERAGE_CACHE["done"] = done
+    threading.Thread(target=_refresh, name="nougen-coverage-refresh", daemon=True).start()
+    if cached is not None:
+        return dict(cached, stale=True)
+    # Nothing cached yet: bound the wait so a cold node still answers probes.
+    budget = _env_float("NOUGEN_HEALTH_COVERAGE_WAIT_S", _HEALTH_COVERAGE_WAIT_S_FALLBACK) if wait_s is None else wait_s
+    done.wait(budget)
+    with _COVERAGE_LOCK:
+        value = _COVERAGE_CACHE["value"]
+    if value is not None:
+        return dict(value, stale=False)
+    return {"databases_mounted": 0, "databases_expected": core.MAX_DB_COUNT, "shards": 0,
+            "span": {}, "pending": True, "stale": True}
+
 
 def _substrate_coverage() -> dict:
     """Per-database mount state for the shard grid.
@@ -1813,23 +2055,34 @@ def search(req: SearchRequest, response: Response,
 @app.get("/v1/health/local")
 async def local_health():
     """Local vault health check for 3-vault federation peers."""
-    from nougen_shards.federation.models import VaultId
-    machine_id = os.environ.get("NOUGEN_MACHINE_ID", "local")
-    vault_raw = os.environ.get("NOUGEN_VAULT_ID", "whoart").lower()
+    from nougen_shards.federation import VaultId
+    from nougen_shards import machine as _machine
+    _host = _machine.host_label() or _machine.hostname()
+    machine_id = os.environ.get("NOUGEN_MACHINE_ID") or _host or "local"
+    # Default the vault id to the host family (blade1tb -> blade); "whoart" was a
+    # hardcoded default that misreported every other node's identity.
+    _family = next((v.value for v in VaultId if (_host or "").lower().startswith(v.value)), None)
+    vault_raw = (os.environ.get("NOUGEN_VAULT_ID") or _family or "whoart").lower()
     instance_id = os.environ.get("NOUGEN_INSTANCE_ID", f"{machine_id}-default")
     try:
         vid = VaultId(vault_raw)
     except ValueError:
         vid = VaultId.WHOART
 
-    coverage = _substrate_coverage()
+    # Coverage runs nine COUNT(*) queries. Called synchronously from this async
+    # handler it blocked uvicorn's event loop, and while warm-up had the grid
+    # busy a peer saw /v1/health/local take 19.7s against its 25s grace (whoart
+    # 2026-10-26). Serve a TTL-cached snapshot computed off the loop instead.
+    coverage = await asyncio.to_thread(cached_substrate_coverage)
     db_present = coverage.get("databases_mounted", 0)
     db_expected = coverage.get("databases_expected", 9)
-    healthy = db_present == db_expected
+    healthy = db_present == db_expected or bool(coverage.get("pending"))
 
     return {
         "healthy": healthy,
         "current": True,
+        "coverage_stale": bool(coverage.get("stale")),
+        "coverage_pending": bool(coverage.get("pending")),
         "vault_id": vid.value,
         "machine_id": machine_id,
         "instance_id": instance_id,
@@ -1837,6 +2090,9 @@ async def local_health():
         "db_expected": db_expected,
         "shard_count": coverage.get("shards", 0),
         "newest_timestamp": coverage.get("span", {}).get("latest"),
+        "warm": warmup_status()["warm"],
+        "warmup": warmup_status(),
+        "listener": listener_selfcheck_status(),
     }
 
 
@@ -2960,12 +3216,22 @@ def fleet_send(message: str, target: str, priority: str = "high") -> dict:
     return NouGenMsgBus.emit_fleet(text=message, target=clean_target, background=_msg_fanout_async())
 
 
+def _relay_handoffs_dir() -> "Path":
+    """Relay board for the active identity: ``active_home()/relay/.handoffs``.
+
+    Owner -> NOUGEN_ROOT (fallback ~/.nougen); tenant -> its own vault, so a
+    tenant never lists, claims or writes the owner's legs.
+    """
+    from pathlib import Path
+    return Path(core.active_home()) / "relay" / ".handoffs"
+
+
 @node_mcp.tool()
 @_offloaded
 def relay_open_legs(limit: int = 15) -> list:
     """List open cross-node handoff legs from the NouGenRelay board."""
     from pathlib import Path
-    handoffs_dir = Path.home() / ".nougen" / "relay" / ".handoffs"
+    handoffs_dir = _relay_handoffs_dir()
     if not handoffs_dir.exists():
         return []
     legs = []
@@ -2999,7 +3265,7 @@ def _safe_claims_path(claims_dir: "Path", leg_id: str, suffix: str) -> "Path":
 def relay_claim_leg(leg_id: str, claimed_by: str = "phoebus/antigravity") -> dict:
     """Claim an open relay leg atomically to prevent duplicate swarm execution."""
     from pathlib import Path
-    claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
+    claims_dir = _relay_handoffs_dir() / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
     claim_path = _safe_claims_path(claims_dir, leg_id, "__autonomous.json")
     claim_data = {
@@ -3026,7 +3292,7 @@ def relay_create_leg(
     from pathlib import Path
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     leg_id = f"{stamp}__phoebus__antigravity"
-    handoffs_dir = Path.home() / ".nougen" / "relay" / ".handoffs"
+    handoffs_dir = _relay_handoffs_dir()
     handoffs_dir.mkdir(parents=True, exist_ok=True)
     md_content = f"""# 🤝 Git Handoff — phoebus / antigravity
 
@@ -3059,7 +3325,7 @@ def relay_ack_leg(
 ) -> dict:
     """Settle and acknowledge an open relay leg with mandatory Hardcade proof tuple."""
     from pathlib import Path
-    claims_dir = Path.home() / ".nougen" / "relay" / ".handoffs" / "claims"
+    claims_dir = _relay_handoffs_dir() / "claims"
     claims_dir.mkdir(parents=True, exist_ok=True)
     ack_path = _safe_claims_path(claims_dir, leg_id, "__ack.json")
     ack_data = {
@@ -3252,11 +3518,23 @@ def nougentube_transcript(url: str) -> dict:
     }
 
 
+# Logged fallback only; env NOUGEN_WHISPER_MAX_SECONDS wins. Local Whisper on the
+# node's GPU is bounded by wall time, not by what the operator wants to ingest,
+# so the cap belongs to the Whisper path alone: subtitle extraction has no cap.
+_WHISPER_MAX_SECONDS_FALLBACK = 1800
+
+
+def _whisper_max_seconds() -> int:
+    return _env_int("NOUGEN_WHISPER_MAX_SECONDS", _WHISPER_MAX_SECONDS_FALLBACK)
+
+
 @node_mcp.tool()
 @_offloaded
 def nougen_media_transcribe(url: str, language: Optional[str] = None,
                             whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
-    """Transcribe a YouTube video with local Whisper; videos over 30 minutes are rejected."""
+    """Transcribe a YouTube video with local Whisper. Videos longer than
+    NOUGEN_WHISPER_MAX_SECONDS (fallback 1800) are rejected; use ``nougentube``
+    for subtitle-first extraction with no length cap."""
     if not url or len(url) > 2048:
         raise ValueError("provide one YouTube video URL (maximum 2048 characters)")
     from urllib.parse import urlsplit
@@ -3281,8 +3559,12 @@ def nougen_media_transcribe(url: str, language: Optional[str] = None,
                            "noplaylist": True}) as ydl:
         metadata = ydl.extract_info(url.strip(), download=False)
     duration = (metadata or {}).get("duration")
-    if not isinstance(duration, (int, float)) or duration <= 0 or duration > 1800:
-        raise ValueError("video duration must be known and no longer than 30 minutes")
+    max_seconds = _whisper_max_seconds()
+    if not isinstance(duration, (int, float)) or duration <= 0 or duration > max_seconds:
+        raise ValueError(
+            f"video duration must be known and no longer than {max_seconds} seconds "
+            f"(NOUGEN_WHISPER_MAX_SECONDS) for local Whisper; nougentube extracts "
+            f"subtitles first with no length cap")
     from nougen_shards.transcriber import NouGenTranscriber
     with tempfile.TemporaryDirectory(prefix="nougen_transcribe_") as output_dir:
         transcriber = NouGenTranscriber(output_dir=output_dir, whisper_model=whisper_model)
@@ -3306,8 +3588,72 @@ def nougen_media_transcribe(url: str, language: Optional[str] = None,
 @_offloaded
 def nougentube(url: str, language: Optional[str] = None,
                whisper_model: str = "tiny", auto_shard: bool = False) -> dict:
-    """Transcribe and summarize video/audio with subtitle-first extraction and local Whisper fallback."""
-    return _unwrap_sync(nougen_media_transcribe)(url=url, language=language, whisper_model=whisper_model, auto_shard=auto_shard)
+    """Transcribe a YouTube video subtitle-first (youtube-transcript-api / yt-dlp
+    subtitles, no length cap), falling back to local Whisper only when no
+    transcript exists. ``auto_shard`` captures the transcript into the active
+    vault through the NouGenTube pipeline (deduplicated per video id)."""
+    if not url or len(url) > 2048:
+        raise ValueError("provide one YouTube video URL (maximum 2048 characters)")
+    from urllib.parse import urlsplit
+    parsed = urlsplit(url.strip())
+    allowed_hosts = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+    if parsed.scheme not in {"http", "https"} or (parsed.hostname or "").lower() not in allowed_hosts:
+        raise ValueError("NouGenTube accepts YouTube video URLs only")
+    clean = url.strip()
+    tube = _load_nougentube()
+    video_id = tube.extract_video_id(clean)
+    if not video_id or tube.is_playlist(clean):
+        raise ValueError("URL must identify one YouTube video, not a playlist")
+    fetch_transcript = getattr(tube, "fetch_transcript", None)
+    transcript, tier = ("", None)
+    language_honored = False
+    if callable(fetch_transcript):
+        import inspect as _inspect
+        try:
+            accepts_languages = "languages" in _inspect.signature(fetch_transcript).parameters
+        except (TypeError, ValueError):
+            accepts_languages = False
+        try:
+            if language and accepts_languages:
+                transcript, tier = fetch_transcript(video_id, clean, languages=[language])
+                language_honored = bool(transcript)
+            else:
+                transcript, tier = fetch_transcript(video_id, clean)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("nougentube: subtitle extraction failed for %s (%s); trying Whisper",
+                           video_id, type(exc).__name__)
+            transcript, tier = ("", None)
+    if not transcript:
+        out = _unwrap_sync(nougen_media_transcribe)(url=clean, language=language,
+                                                    whisper_model=whisper_model, auto_shard=auto_shard)
+        out["transcript_source"] = "whisper"
+        out["fallback"] = "whisper"
+        return out
+    fetch_metadata = getattr(tube, "fetch_metadata", None)
+    metadata = fetch_metadata(clean, video_id) if callable(fetch_metadata) else {}
+    metadata = metadata or {}
+    shard_status = None
+    if auto_shard:
+        process_video = getattr(tube, "process_video", None)
+        if callable(process_video):
+            shard_status = process_video(clean, dry_run=False)
+    return {
+        "title": metadata.get("title"),
+        "source": clean,
+        # Only claim a language the subtitle fetch actually selected; a module
+        # without language selection reports None rather than echoing the ask.
+        "language": language if language_honored else None,
+        "language_requested": language,
+        "duration_seconds": metadata.get("duration"),
+        "transcript": transcript[:20000],
+        "transcript_truncated": len(transcript) > 20000,
+        "transcript_source": tier,
+        "sharded": bool(shard_status) and str(shard_status).startswith(("captured", "skipped-dup")),
+        "shard_status": shard_status,
+        "model": None,
+        "fallback": "none",
+        "metadata": metadata,
+    }
 
 
 @node_mcp.tool()
@@ -3330,7 +3676,11 @@ def apply_skills(task: str) -> dict:
 @_offloaded
 def list_skills() -> dict:
     """List all available operational skills."""
-    return _unwrap_sync(nougen_skill_search)(task="", limit=20)
+    from nougen_shards import skills
+    return {"skills": [
+        {"name": item.name, "description": item.description, "summary": item.summary}
+        for item in skills.discover()
+    ]}
 
 
 @node_mcp.tool()
@@ -3812,7 +4162,10 @@ def control_plane_adherence_evaluate(declared_edges_json: str, observed_events_j
 @_offloaded
 def morph_atom_catalog() -> dict:
     """Canonical registry mapping 2026-10-01 research atoms into native NouGen fleet primitives."""
-    from nougen_shards.nougen_morph_atoms import NouGenMorphCatalog
+    try:
+        from nougen_shards.nougen_morph_atoms import NouGenMorphCatalog
+    except ImportError as exc:
+        return {"status": "unavailable", "error": f"nougen_morph_atoms not shipped in this build: {exc}"}
     atoms = NouGenMorphCatalog.get_all_atoms()
     return {k: v.to_dict() for k, v in atoms.items()}
 
@@ -3834,7 +4187,10 @@ def morph_holistic_gate(
     tolerance: float = 0.0,
 ) -> dict:
     """Holistic promotion gate: blocks promotion on benchmark gain if truth, adherence, memory fidelity, or safety regress."""
-    from nougen_shards.nougen_morph_atoms import HolisticPromotionGate
+    try:
+        from nougen_shards.nougen_morph_atoms import HolisticPromotionGate
+    except ImportError as exc:
+        return {"status": "unavailable", "error": f"nougen_morph_atoms not shipped in this build: {exc}"}
     base = {
         "benchmark_score": baseline_benchmark,
         "truth": baseline_truth,
@@ -4203,14 +4559,94 @@ def _scope_base_url(scope) -> str:
     return f"{proto}://{host}" if host else ""
 
 
-# Tools a tenant identity may call on the node. Everything else touches the host
-# machine or the owner's shared services and stays owner-only.
-TENANT_MCP_TOOLS = frozenset({
-    # Vault-bound reads and writes only (they resolve through the active tenant vault).
-    # Context-session tools are excluded: their session DB is shared across identities.
-    "capture_experience", "recall_memory", "recall_layered", "recall_related",
-    "search", "get_shard", "mark_utility",
-})
+# Tenant tool policy lives in nougen_shards.tenant_policy: every node tool is
+# labelled TENANT_SCOPED (binds to the identity's own vault/home) or OWNER_ONLY,
+# and tests/test_tenant_full_surface.py fails on any unlabelled tool.
+from nougen_shards import tenant_policy
+
+# Back-compat alias for importers/tests that referenced the old static set.
+TENANT_MCP_TOOLS = tenant_policy.TENANT_SCOPED
+
+
+class _TenantListingFilter:
+    """ASGI ``send`` wrapper: buffers a tools/list response and drops tools the
+    tenant may not call. Handles both plain JSON and streamable-HTTP SSE bodies
+    (``data: {...}`` lines). Anything unparseable passes through untouched."""
+
+    def __init__(self, send, tenant_id: str):
+        self._send = send
+        self._tenant_id = tenant_id
+        self._start = None
+        self._chunks = []
+
+    @staticmethod
+    def _filter_rpc(obj, tenant_id):
+        if (isinstance(obj, dict) and isinstance(obj.get("result"), dict)
+                and isinstance(obj["result"].get("tools"), list)):
+            obj["result"]["tools"] = tenant_policy.filter_tool_listing(
+                obj["result"]["tools"], tenant_id)
+        return obj
+
+    def _rewrite(self, body: bytes, content_type: str) -> bytes:
+        text = body.decode("utf-8", errors="replace")
+        if "text/event-stream" in content_type:
+            out = []
+            for line in text.split("\n"):
+                eol = "\r" if line.endswith("\r") else ""
+                bare = line[:-1] if eol else line
+                if bare.startswith("data:"):
+                    try:
+                        obj = json.loads(bare[5:].strip())
+                    except ValueError:
+                        out.append(line)
+                        continue
+                    out.append("data: " + json.dumps(self._filter_rpc(obj, self._tenant_id)) + eol)
+                else:
+                    out.append(line)
+            return "\n".join(out).encode("utf-8")
+        try:
+            obj = json.loads(text)
+        except ValueError:
+            return body
+        if isinstance(obj, list):
+            obj = [self._filter_rpc(o, self._tenant_id) for o in obj]
+        else:
+            obj = self._filter_rpc(obj, self._tenant_id)
+        return json.dumps(obj).encode("utf-8")
+
+    async def flush(self):
+        """Emit whatever was withheld if the inner app ended without a final
+        body chunk (exception after response.start), so the client still gets
+        a response instead of a hung connection."""
+        if self._start is None and not self._chunks:
+            return
+        start = self._start or {"type": "http.response.start", "status": 500, "headers": []}
+        body = b"".join(self._chunks)
+        self._start, self._chunks = None, []
+        await self._send(start)
+        await self._send({"type": "http.response.body", "body": body, "more_body": False})
+
+    async def __call__(self, message):
+        kind = message.get("type")
+        if kind == "http.response.start":
+            self._start = message
+            return
+        if kind == "http.response.body":
+            self._chunks.append(message.get("body", b""))
+            if message.get("more_body", False):
+                return
+            headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                       for k, v in (self._start or {}).get("headers", [])}
+            body = self._rewrite(b"".join(self._chunks), headers.get("content-type", ""))
+            start = dict(self._start or {"type": "http.response.start", "status": 200, "headers": []})
+            start["headers"] = [(k, v) for k, v in start.get("headers", [])
+                                if k.decode("latin-1").lower() != "content-length"]
+            start["headers"].append((b"content-length", str(len(body)).encode()))
+            await self._send(start)
+            await self._send({"type": "http.response.body", "body": body, "more_body": False})
+            self._start, self._chunks = None, []
+            return
+        await self._send(message)
 
 
 class _TokenGatedMCP:
@@ -4289,10 +4725,13 @@ class _TokenGatedMCP:
                 await self._reject(send, 401, "Invalid node token.",
                                    scope=scope)
                 return
-            if tenant.tenant_id != "owner":
-                # Tenants get only their own vault's tools. Anything that touches this
-                # machine (code execution, deploys, relays, NouGenMsg, local scans, the
-                # owner's Ollama) is refused before it reaches the MCP server.
+            if tenant.tenant_id != tenant_policy.OWNER_TENANT_ID:
+                # A tenant gets the full NouGen surface bound to its own root
+                # (vault, secrets, relay, inbox, destinies) and never the owner's
+                # machine, agents or shared services. tools/call is checked
+                # against the policy before it reaches the MCP server, and the
+                # tools/list reply is rewritten to the same set so the client
+                # only ever sees what this identity may call.
                 orig_receive = receive
                 chunks = []
                 more = True
@@ -4308,11 +4747,23 @@ class _TokenGatedMCP:
                 except ValueError:
                     payload = None
                 calls = payload if isinstance(payload, list) else [payload]
+                lists_tools = False
                 for call in calls:
-                    if not isinstance(call, dict) or call.get("method") != "tools/call":
+                    if not isinstance(call, dict):
                         continue
-                    name = (call.get("params") or {}).get("name")
-                    if name not in TENANT_MCP_TOOLS:
+                    method = call.get("method")
+                    if method == "tools/list":
+                        lists_tools = True
+                    if method != "tools/call":
+                        continue
+                    params = call.get("params")
+                    if params is None:
+                        params = {}
+                    if not isinstance(params, dict):
+                        await self._reject(send, 403, "tools/call params must be an object")
+                        return
+                    name = params.get("name")
+                    if not tenant_policy.allowed_for(tenant.tenant_id, name):
                         await self._reject(send, 403, f"tool {name} is not available to this identity")
                         return
                 replayed = [False]
@@ -4324,11 +4775,15 @@ class _TokenGatedMCP:
                     return await orig_receive()
 
                 receive = replay_receive
+                if lists_tools:
+                    send = _TenantListingFilter(send, tenant.tenant_id)
             context_tokens = core.bind_active_vault(tenant.vault_dir, tenant.tenant_id)
             try:
                 await self.inner(scope, receive, send)
             finally:
                 core.reset_active_vault(context_tokens)
+                if isinstance(send, _TenantListingFilter):
+                    await send.flush()
             return
         await self.inner(scope, receive, send)
 

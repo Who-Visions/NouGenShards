@@ -9,6 +9,15 @@ from .connectors.local_vault import query_local_vaults
 from .connectors import query_external_dbs
 from . import keymaker
 from typing import List, Optional
+from enum import Enum
+
+
+class VaultId(str, Enum):
+    """Canonical 3-vault federation ids (restored from federation/models.py, a826dcf0)."""
+    BLADE = "blade"
+    PHOEBUS = "phoebus"
+    WHOART = "whoart"
+
 
 logger = logging.getLogger(__name__)
 
@@ -351,10 +360,10 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
     # same rank (measured 2026-08-30: top hit 'AuthContext.tsx' over real
     # shards). Core stays 1.0; the side lanes get NOUGEN_FED_LANE_WEIGHT.
     try:
-        lane_weight = float(_os.environ.get("NOUGEN_FED_LANE_WEIGHT", "0.35"))
+        lane_weight = float(_os.environ.get("NOUGEN_FED_LANE_WEIGHT", "0.20"))
     except ValueError:
-        logger.warning("NOUGEN_FED_LANE_WEIGHT invalid; falling back to 0.35")
-        lane_weight = 0.35
+        logger.warning("NOUGEN_FED_LANE_WEIGHT invalid; falling back to 0.20")
+        lane_weight = 0.20
     combined = core.reciprocal_rank_fusion(
         [local_results, external_results, cloud_results, vault_results], k=60,
         weights=[1.0, lane_weight, lane_weight, lane_weight])

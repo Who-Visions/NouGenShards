@@ -167,3 +167,62 @@ def test_vram_gate_integration(monkeypatch):
     v = vram_gate.check_vram("gemma4:e2b-qat")
     assert isinstance(v, vram_gate.Verdict)
     assert isinstance(v.ok, bool)
+
+
+def _admission_env(monkeypatch, *, residents=(), headroom=100.0, pressure=1):
+    monkeypatch.setattr(darwin_gate, "get_memory_pressure_level", lambda: pressure)
+    monkeypatch.setattr(darwin_gate, "_ollama_residents", lambda: [{"name": n} for n in residents])
+    monkeypatch.setattr(darwin_gate, "get_apple_silicon_vram_headroom_gb", lambda: headroom)
+
+
+def test_unmeasured_model_is_refused_not_guessed_as_2gb(monkeypatch):
+    _admission_env(monkeypatch, headroom=100.0)  # plenty of headroom: the old 2 GB guess would admit
+    v = darwin_gate.check_darwin_admission("brand-new-405b:latest")
+    assert v.ok is False
+    assert "no measured load size" in v.reason
+
+
+def test_unmeasured_model_is_admitted_with_an_explicit_need(monkeypatch):
+    _admission_env(monkeypatch, headroom=100.0)
+    assert darwin_gate.check_darwin_admission("brand-new-405b:latest", need_gb=3.0).ok is True
+
+
+def test_unmeasured_but_already_resident_model_is_still_allowed(monkeypatch):
+    _admission_env(monkeypatch, residents=("brand-new-405b:latest",))
+    assert darwin_gate.check_darwin_admission("brand-new-405b:latest").ok is True
+
+
+def _backfill_db(tmp_path, n):
+    import sqlite3
+    db = tmp_path / "v.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE shards (id INTEGER PRIMARY KEY, title TEXT, content TEXT, embedding BLOB)")
+    conn.executemany("INSERT INTO shards (id, title, content) VALUES (?,?,?)", [(i, f"t{i}", f"c{i}") for i in range(n)])
+    conn.commit()
+    conn.close()
+    return str(db)
+
+
+def test_backfill_waits_out_memory_pressure_and_still_embeds_the_chunk(tmp_path, monkeypatch):
+    from nougen_shards import embedding_backfill as eb
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    levels = iter([2, 2, 1])
+    monkeypatch.setattr(darwin_gate, "get_memory_pressure_level", lambda: next(levels, 1))
+    monkeypatch.setattr(darwin_gate, "demote_to_background_qos", lambda: None)
+    monkeypatch.setattr(eb.time, "sleep", lambda s: None)
+    monkeypatch.setattr(eb, "embed", lambda *a, **k: [0.1, 0.2])
+    monkeypatch.setattr(eb, "embed_many", lambda texts, model: [[0.1, 0.2] for _ in texts])
+    res = eb.backfill_db(_backfill_db(tmp_path, 3), "m", execute=True, batch=3, probe=False, progress=False)
+    assert res["embedded"] == 3 and "deferred" not in res
+
+
+def test_backfill_reports_deferred_when_pressure_never_clears(tmp_path, monkeypatch):
+    from nougen_shards import embedding_backfill as eb
+    monkeypatch.setenv("NOUGEN_BACKFILL_PRESSURE_WAIT_S", "0")
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(darwin_gate, "get_memory_pressure_level", lambda: 2)
+    monkeypatch.setattr(darwin_gate, "demote_to_background_qos", lambda: None)
+    monkeypatch.setattr(eb.time, "sleep", lambda s: None)
+    res = eb.backfill_db(_backfill_db(tmp_path, 3), "m", execute=True, batch=3, probe=False, progress=False)
+    assert res["embedded"] == 0
+    assert res["deferred"] == "memory pressure" and res["remaining"] == 3

@@ -254,3 +254,33 @@ def test_fixture_values_are_identifiable_as_synthetic_by_a_scanner(monkeypatch):
         assert padding.search(sample), (
             f"{name!r} has no padding run, so a scanner cannot tell it from a "
             f"live key found in a transcript")
+
+
+def test_old_form_notion_secret_token_is_redacted():
+    """The old Notion integration form, secret_ plus 40+ alphanumerics.
+
+    Until 2026-10-29 this rule never fired: redaction.py held a literal
+    backspace byte where the word boundary was meant, so the compiled pattern
+    required a 0x08 character in front of the token. Found by the parity test
+    in NouGen Shards Light, which runs the same samples through this module and
+    its JavaScript port and requires identical output.
+    """
+    from nougen_shards.brain_scan import redaction
+    token = "secret_" + "Q" * 44
+    out = redaction.redact_content("NOTION=" + token + " and bare " + token)
+    assert "Q" * 44 not in out
+    assert "<REDACTED_NOTION_TOKEN>" in out or "<REDACTED_SECRET>" in out
+    assert redaction.redact_content("bare " + token) == "bare <REDACTED_NOTION_TOKEN>"
+
+
+def test_redaction_source_carries_no_stray_control_bytes():
+    """A control byte inside a pattern string silently changes what it matches.
+
+    Tab, newline and carriage return are ordinary file content; anything else
+    in the 0x00-0x1F range is an invisible character an escape was meant to be.
+    """
+    import pathlib
+    from nougen_shards.brain_scan import redaction
+    raw = pathlib.Path(redaction.__file__).read_bytes()
+    stray = [hex(b) for b in raw if b < 0x20 and b not in (0x09, 0x0A, 0x0D)]
+    assert not stray, f"stray control bytes in redaction.py: {stray}"

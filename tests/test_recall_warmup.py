@@ -10,11 +10,25 @@ import pytest
 import nougen_shards.core as core
 
 
+WARMUP_SUPPORT = ("_env_int", "_env_float", "_utc_now_iso", "_WARMUP_STATE",
+                  "_WARMUP_MAX_PASSES_FALLBACK", "_WARMUP_PAUSE_S_FALLBACK",
+                  "_WARMUP_EMBED_TIMEOUT_S_FALLBACK", "_warm_query_embedding")
+
+
 def _load(names):
     tree = ast.parse(Path("app.py").read_text(encoding="utf-8"))
+    # Warm-up now leans on small module-level helpers and state (env readers,
+    # logged fallbacks, _WARMUP_STATE); pull those in alongside the functions
+    # so the AST slice behaves like the module.
+    names = list(names) + list(WARMUP_SUPPORT)
     fns = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
-    assert len(fns) == len(names), f"missing {set(names) - {f.name for f in fns}}"
-    ns = {"os": __import__("os"), "core": core, "time": __import__("time"), "logging": __import__("logging")}
+    fns += [n for n in tree.body if isinstance(n, (ast.Assign, ast.AnnAssign))
+            and any(getattr(t, "id", None) in names for t in (n.targets if isinstance(n, ast.Assign) else [n.target]))]
+    found = {getattr(n, "name", None) or getattr(getattr(n, "targets", [None])[0], "id", None)
+             or getattr(getattr(n, "target", None), "id", None) for n in fns}
+    assert set(names) <= found, f"missing {set(names) - found}"
+    ns = {"os": __import__("os"), "core": core, "time": __import__("time"), "logging": __import__("logging"),
+          "datetime": __import__("datetime")}
     exec(compile(ast.fix_missing_locations(ast.Module(body=fns, type_ignores=[])), "app.py", "exec"), ns)
     return ns
 

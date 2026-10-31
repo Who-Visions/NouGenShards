@@ -90,6 +90,9 @@ def test_mcp_six_tool_sequence_isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(lane_claim, "CLAIMS_DIR", claims_dir)
     monkeypatch.setattr(lane_claim, "AGENT", "synthetic_agent")
     monkeypatch.setattr(lane_claim, "MACHINE", "synthetic_box")
+    # The node env vars outrank MACHINE; a fleet machine sets them.
+    monkeypatch.delenv("NOUGEN_NODE", raising=False)
+    monkeypatch.delenv("NOUGEN_MACHINE", raising=False)
     monkeypatch.setattr(lane_claim, "replicate_to_nougen_shards", lambda claim: True)
     monkeypatch.setattr(lane_claim, "dispatch_lane_wake", lambda claim, cmd=None: True)
 

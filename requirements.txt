@@ -21,9 +21,9 @@ attrs==26.1.0
     #   referencing
 audioop-lts==0.2.2 ; python_full_version >= '3.13'
     # via gradio
-brotli==1.2.0
+brotli==1.2.1
     # via gradio
-certifi==2026.7.22
+certifi==2026.10.19
     # via
     #   httpcore
     #   httpx
@@ -41,7 +41,7 @@ colorama==0.4.6
     #   nougen-shards (pyproject.toml)
     #   tqdm
     #   typer
-cryptography==50.0.1
+cryptography==50.0.2
     # via
     #   nougen-shards (pyproject.toml)
     #   google-auth
@@ -50,7 +50,7 @@ fastapi==0.142.2
     # via
     #   nougen-shards (pyproject.toml)
     #   gradio
-filelock==3.32.5
+filelock==4.2.1
     # via huggingface-hub
 fsspec==2026.9.0
     # via
@@ -67,7 +67,7 @@ google-auth==2.58.1
     #   google-api-python-client
     #   google-auth-httplib2
     #   google-auth-oauthlib
-google-auth-httplib2==0.4.2
+google-auth-httplib2==0.4.4
     # via
     #   nougen-shards (pyproject.toml)
     #   google-api-python-client
@@ -92,11 +92,11 @@ h11==0.16.0
     #   uvicorn
 hf-gradio==0.4.1
     # via gradio
-hf-xet==1.6.0 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
+hf-xet==1.7.0 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
     # via huggingface-hub
 httpcore==1.0.9
     # via httpx
-httpcore2==2.13.1 ; sys_platform != 'emscripten'
+httpcore2==2.14.0 ; sys_platform != 'emscripten'
     # via httpx2
 httplib2==0.32.0
     # via
@@ -109,7 +109,7 @@ httpx==0.28.1
     #   huggingface-hub
     #   ollama
     #   safehttpx
-httpx2==2.13.1
+httpx2==2.14.0
     # via
     #   mcp
     #   openai
@@ -139,9 +139,9 @@ markupsafe==3.0.3
     # via
     #   gradio
     #   jinja2
-mcp==2.2.0
+mcp==2.3.0
     # via nougen-shards (pyproject.toml)
-mcp-types==2.2.0
+mcp-types==2.3.0
     # via mcp
 mdurl==0.1.2
     # via markdown-it-py
@@ -176,7 +176,7 @@ pandas==3.0.3
     # via gradio
 pillow==12.3.0
     # via gradio
-proto-plus==1.28.4
+proto-plus==1.29.0
     # via google-api-core
 protobuf==7.36.2
     # via
@@ -189,7 +189,7 @@ pyasn1-modules==0.4.2
     # via google-auth
 pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
     # via cffi
-pydantic==2.14.0
+pydantic==2.14.1
     # via
     #   nougen-shards (pyproject.toml)
     #   fastapi
@@ -198,13 +198,13 @@ pydantic==2.14.0
     #   mcp-types
     #   ollama
     #   openai
-pydantic-core==2.50.0
+pydantic-core==2.50.1
     # via pydantic
 pydub==0.25.1
     # via gradio
 pygments==2.21.0
     # via rich
-pyjwt==2.15.0
+pyjwt==2.15.1
     # via mcp
 pyparsing==3.3.3
     # via httplib2
@@ -214,7 +214,7 @@ python-multipart==0.0.32
     # via
     #   gradio
     #   mcp
-pytz==2026.4
+pytz==2026.5
     # via gradio
 pywin32==312 ; sys_platform == 'win32'
     # via mcp
@@ -305,7 +305,7 @@ uritemplate==4.2.0
     # via google-api-python-client
 urllib3==2.8.0
     # via requests
-uvicorn==0.53.0
+uvicorn==0.54.0
     # via
     #   nougen-shards (pyproject.toml)
     #   gradio
