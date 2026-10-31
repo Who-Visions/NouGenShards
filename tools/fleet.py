@@ -361,6 +361,7 @@ class Fleet:
         # static key baked into the registry.
         if route.get("token_fn"):
             hdrs["Authorization"] = f'Bearer {route["token_fn"]()}'
+        call_started = time.monotonic()
         req = urllib.request.Request(route["url"] + "/chat/completions", data=body, headers=hdrs)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -371,7 +372,10 @@ class Fleet:
             del payload["reasoning"]  # a few endpoints refuse to turn it off
             payload["max_tokens"] = max(payload["max_tokens"], 2048)  # and they spend the budget reasoning first
             req = urllib.request.Request(route["url"] + "/chat/completions", data=json.dumps(payload).encode(), headers=hdrs)
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            # Bound the retry by what's left of the caller's original timeout, not the
+            # full value again -- the first attempt already spent part of the budget.
+            retry_timeout = max(1, timeout - (time.monotonic() - call_started))
+            with urllib.request.urlopen(req, timeout=retry_timeout) as r:
                 j = json.load(r)
         choice = (j.get("choices") or [{}])[0]
         message = choice.get("message") or {}
