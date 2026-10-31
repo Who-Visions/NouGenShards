@@ -179,28 +179,33 @@ def resolve_token(token: Optional[str], owner_token: Optional[str], owner_vault_
     if not token:
         return None
     supplied_hash = token_sha256(token)
-    matches: list[Tenant] = []
 
     if owner_token:
         owner_hash = token_sha256(owner_token)
         if hmac.compare_digest(supplied_hash, owner_hash):
             return Tenant(OWNER_TENANT_ID, "Owner", Path(owner_vault_dir), lane="owner", allow_federation=True)
 
-    for record in load_registry():
-        if hmac.compare_digest(supplied_hash, record.token_sha256):
-            matches.append(Tenant(
-                record.tenant_id,
-                record.label,
-                vault_dir_for(record.tenant_id, owner_vault_dir),
-                lane=record.lane,
-                allow_federation=record.allow_federation,
-            ))
-
+    hits = [r for r in load_registry() if hmac.compare_digest(supplied_hash, r.token_sha256)]
     # Ambiguous credentials are configuration errors from an authorization
-    # perspective: do not let record order decide which vault opens.
-    if len(matches) != 1:
+    # perspective: do not let record order decide which vault opens. Checked BEFORE
+    # the dedicated promotion so a colliding digest can never early-return as owner.
+    if len(hits) != 1:
         return None
-    return matches[0]
+    record = hits[0]
+
+    # A machine that belongs to one tenant opts in by naming it; that tenant is
+    # then this node's owner. Unset, as on every shared node, nothing changes.
+    dedicated = os.environ.get("NOUGEN_DEDICATED_TENANT", "").strip()
+    if dedicated and hmac.compare_digest(record.tenant_id, dedicated):
+        return Tenant(OWNER_TENANT_ID, record.label, Path(owner_vault_dir),
+                      lane="owner", allow_federation=record.allow_federation)
+    return Tenant(
+        record.tenant_id,
+        record.label,
+        vault_dir_for(record.tenant_id, owner_vault_dir),
+        lane=record.lane,
+        allow_federation=record.allow_federation,
+    )
 
 
 def tenant_by_id(tenant_id: str, owner_vault_dir: Path) -> Optional[Tenant]:
@@ -241,17 +246,44 @@ def mint_tenant(
     allow_federation: bool = False,
 ) -> str:
     """Generate a credential, persist only its digest, and return it once."""
+    token = secrets.token_urlsafe(32)
+    register_tenant(tenant_id, label, token, path=path, lane=lane,
+                    allow_federation=allow_federation)
+    return token
+
+
+def remove_tenant(tenant_id: str, path: Optional[Path] = None) -> bool:
+    """Drop a tenant record (credential rotation). Returns whether one existed."""
+    registry_path = Path(path) if path is not None else tenants_file()
+    records = load_registry(registry_path)
+    kept = [record for record in records if record.tenant_id != tenant_id]
+    if len(kept) == len(records):
+        return False
+    _write_registry(registry_path, kept)
+    return True
+
+
+def register_tenant(
+    tenant_id: str,
+    label: str,
+    token: str,
+    path: Optional[Path] = None,
+    lane: Optional[str] = None,
+    allow_federation: bool = False,
+) -> None:
+    """Persist only the digest of an already-issued credential."""
     if not TENANT_ID_RE.fullmatch(tenant_id) or tenant_id == OWNER_TENANT_ID:
         raise TenantRegistryError(f"invalid or reserved tenant_id: {tenant_id!r}")
     if not label or not label.strip():
         raise TenantRegistryError("label must not be empty")
+    if not token:
+        raise TenantRegistryError("token must not be empty")
 
     registry_path = Path(path) if path is not None else tenants_file()
     records = load_registry(registry_path)
     if any(record.tenant_id == tenant_id for record in records):
         raise TenantRegistryError(f"tenant_id already exists: {tenant_id}")
 
-    token = secrets.token_urlsafe(32)
     records.append(TenantRecord(
         tenant_id=tenant_id,
         label=label.strip(),
@@ -259,6 +291,10 @@ def mint_tenant(
         lane=lane,
         allow_federation=allow_federation,
     ))
+    _write_registry(registry_path, records)
+
+
+def _write_registry(registry_path: Path, records: list) -> None:
     payload = {"tenants": [record.as_dict() for record in records]}
 
     registry_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -273,4 +309,3 @@ def mint_tenant(
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
-    return token

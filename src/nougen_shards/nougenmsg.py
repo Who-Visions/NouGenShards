@@ -936,11 +936,14 @@ class NouGenMsgBus:
         family, _, model = target.partition(":")
         family = normalize_fleet_node(family)
         model = model or None
-        # Model lanes ride on 'all' broadcasts by default (GM 2026-09-08: the
-        # fleet includes its models). NOUGEN_MSG_MODEL_LANES_ON_ALL=0 opts out
-        # for a chatty lane that should not wake a model on every ping.
-        models_on_all = os.environ.get("NOUGEN_MSG_MODEL_LANES_ON_ALL", "1").strip().lower() \
-            not in ("0", "false", "no")
+        # An 'all' broadcast reaches real session lanes only (claude pipes, antigravity,
+        # codex). Model lanes are opt-in: GM 2026-10-30 reversed the 2026-09-08 default
+        # after a Gemini @all directive woke ollama:gemma4:e2b and unconfigured
+        # openrouter lanes, which echoed unverified replies and missing-key errors into
+        # ~/.nougen/claude_inbox. NOUGEN_MSG_MODEL_LANES_ON_ALL=1 restores it; an
+        # explicit '@ollama[:model]' or '@openrouter[:model]' target always works.
+        models_on_all = os.environ.get("NOUGEN_MSG_MODEL_LANES_ON_ALL", "0").strip().lower() \
+            in ("1", "true", "yes")
 
         # A node-name target ('@blade') matched no family branch, so the node it
         # addressed returned {} and woke nobody while the caller saw "delivered"
