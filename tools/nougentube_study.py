@@ -109,8 +109,14 @@ def pick_caption_track(tracks: List[Dict[str, Any]], langs: List[str]) -> Option
     def code(t): return str(t.get("languageCode", ""))
     for pool in ([t for t in tracks if manual(t)], [t for t in tracks if not manual(t)]):
         for want in langs:
+            # Exact code match wins over a regional-base match across the WHOLE pool,
+            # so an en-GB track earlier in the list can't shadow a later en-US track
+            # when the caller asked for en-US specifically.
             for t in pool:
-                if code(t) == want or code(t).split("-")[0] == want.split("-")[0]:
+                if code(t) == want:
+                    return t
+            for t in pool:
+                if code(t).split("-")[0] == want.split("-")[0]:
                     return t
         for t in pool:
             if code(t).startswith("en"):
@@ -202,7 +208,12 @@ def select_windows(segs: List[Dict[str, Any]], question: str, span: int = 60, to
         score = sum(1 for w in _words(" ".join(s["text"] for s in win)) if w in q)
         windows.append((score, i, win))
         i = max(j, i + 1)
-    best = sorted([w for w in windows if w[0] > 0], key=lambda w: (-w[0], w[1]))[:top]
+    scored = [w for w in windows if w[0] > 0]
+    # No window shares a word with the question (e.g. "Who is the speaker?" against a
+    # transcript that names them but not with that exact word) -- fall back to the
+    # start of the transcript instead of claiming it has none, so the model can at
+    # least try and say so itself if it genuinely can't answer.
+    best = sorted(scored, key=lambda w: (-w[0], w[1]))[:top] if scored else windows[:top]
     return [w[2] for w in sorted(best, key=lambda w: w[1])]
 
 
@@ -243,6 +254,9 @@ def verify_answer(answer: str, segs: List[Dict[str, Any]], tolerance: int = 20) 
     digits that the transcript never contains. Returns (kept text, [{text, why}])."""
     starts = [s["start"] for s in segs]
     corpus = re.sub(r",(?=\d)", "", " ".join(s["text"] for s in segs).lower())
+    # Whole numeric tokens only -- a plain substring check would let "99" pass just
+    # because it occurs inside "1999" somewhere in the transcript.
+    corpus_numbers = set(_NUM_RE.findall(corpus.replace(",", "")))
     end = (starts[-1] + 30) if starts else 0
     kept, dropped = [], []
     for sent in _sentences(answer):
@@ -256,7 +270,7 @@ def verify_answer(answer: str, segs: List[Dict[str, Any]], tolerance: int = 20) 
             body = _TS_RE.sub(" ", sent)
             for num in _NUM_RE.findall(body):
                 digits = num.replace(",", "")
-                if len(digits.replace(".", "")) >= 2 and digits not in corpus:
+                if len(digits.replace(".", "")) >= 2 and digits not in corpus_numbers:
                     why = f"the figure {digits} is not in the transcript"
                     break
         (dropped if why else kept).append({"text": sent, "why": why} if why else sent)  # type: ignore[arg-type]

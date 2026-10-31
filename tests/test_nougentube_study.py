@@ -45,6 +45,13 @@ def test_caption_track_choice_prefers_manual_then_language_then_english():
     assert study.pick_caption_track([], ["en"]) is None
 
 
+def test_caption_track_exact_language_beats_an_earlier_regional_match():
+    en_gb = {"languageCode": "en-GB", "baseUrl": "gb"}
+    en_us = {"languageCode": "en-US", "baseUrl": "us"}
+    assert study.pick_caption_track([en_gb, en_us], ["en-US"])["baseUrl"] == "us"
+    assert study.pick_caption_track([en_us, en_gb], ["en-US"])["baseUrl"] == "us"
+
+
 def test_json3_parse_skips_sound_cues_and_empty_events():
     data = {"events": [{"tStartMs": 1000, "segs": [{"utf8": "Hello "}, {"utf8": "there\n"}]}, {"tStartMs": 3000, "segs": [{"utf8": "[Music]"}]}, {"tStartMs": 4000}, {"tStartMs": 65000, "segs": [{"utf8": "Second"}]}]}
     assert study.parse_json3(data) == [{"start": 1, "text": "Hello there"}, {"start": 65, "text": "Second"}]
@@ -101,6 +108,16 @@ def test_chat_picks_the_windows_that_share_the_question_words():
         study.build_chat_prompt("T", [], "anything")
 
 
+def test_chat_falls_back_to_the_transcript_when_no_window_shares_a_question_word():
+    # "speaker" never appears in the transcript text itself, so every window scores 0 --
+    # this must fall back to the transcript, not claim there is none.
+    segs = [{"start": 0, "text": "Doctor Ada Lin explains the engine design"}, {"start": 60, "text": "She concludes with safety margins"}]
+    wins = study.select_windows(segs, "Who is the speaker?", span=60)
+    assert wins and any("Ada Lin" in s["text"] for w in wins for s in w)
+    m = study.build_chat_prompt("T", segs, "Who is the speaker?")
+    assert "Ada Lin" in m[1]["content"]
+
+
 def test_verifier_drops_sentences_that_cite_missing_moments_or_invent_figures():
     ans = ("The host tests a 4070 card (0:09). It renders in 7 seconds (1:05). It costs 999 dollars (1:05). "
            "He concludes at (30:00). Thanks are given (62:10).")
@@ -110,6 +127,16 @@ def test_verifier_drops_sentences_that_cite_missing_moments_or_invent_figures():
     assert {d["why"].split(",")[0] for d in dropped} == {"the figure 999 is not in the transcript", "cites 30:00"}
     kept2, dropped2 = study.verify_answer("", SEGS)
     assert kept2 == "" and dropped2 == []
+
+
+def test_verifier_rejects_a_figure_that_only_substring_matches_a_larger_number():
+    # Transcript has "1999" -- a claimed "99" must NOT pass just because "99" occurs
+    # inside "1999" as a substring; it never appears as its own token.
+    segs = [{"start": 0, "text": "the device launched in 1999 to acclaim"}]
+    kept, dropped = study.verify_answer("It sold 99 million units.", segs)
+    assert kept == "" and dropped[0]["why"] == "the figure 99 is not in the transcript"
+    kept2, dropped2 = study.verify_answer("It launched in 1999.", segs)
+    assert kept2 == "It launched in 1999." and dropped2 == []
 
 
 def test_a_refused_answer_is_sent_back_once_with_the_reasons_then_what_survives_is_reported():
