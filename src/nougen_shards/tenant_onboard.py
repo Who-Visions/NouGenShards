@@ -256,6 +256,7 @@ KIT_PS1 = r"""# NouGen tenant join kit for {tenant_id}. Double-click, or right-c
 $ErrorActionPreference = 'Stop'
 $env:NGS_NODE_TOKEN = '{token}'
 $env:NGS_PORT = '{port}'
+$env:NOUGEN_DEDICATED_TENANT = '{tenant_id}'
 $repo = if ($env:NOUGEN_HOME) {{ $env:NOUGEN_HOME }} else {{ Join-Path $HOME 'Watchtower\NouGenShards' }}
 if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) {{
     Write-Host 'Installing cloudflared...'
@@ -276,7 +277,7 @@ cloudflared tunnel run --token {tunnel_token}
 
 KIT_SH = """#!/bin/sh
 # NouGen tenant join kit for {tenant_id}. Contains secrets: keep private.
-export NGS_NODE_TOKEN='{token}' NGS_PORT='{port}'
+export NGS_NODE_TOKEN='{token}' NGS_PORT='{port}' NOUGEN_DEDICATED_TENANT='{tenant_id}'
 command -v cloudflared >/dev/null || {{ echo 'Install cloudflared first: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/'; exit 1; }}
 REPO="${{NOUGEN_HOME:-$HOME/NouGenShards}}"
 [ -f "$REPO/app.py" ] && (cd "$REPO" && nohup python app.py >/dev/null 2>&1 &)

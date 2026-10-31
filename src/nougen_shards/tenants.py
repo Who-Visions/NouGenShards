@@ -186,8 +186,15 @@ def resolve_token(token: Optional[str], owner_token: Optional[str], owner_vault_
         if hmac.compare_digest(supplied_hash, owner_hash):
             return Tenant(OWNER_TENANT_ID, "Owner", Path(owner_vault_dir), lane="owner", allow_federation=True)
 
+    # A machine that belongs to one tenant opts in by naming it; that tenant is
+    # then this node's owner. Unset, as on every shared node, nothing changes.
+    dedicated = os.environ.get("NOUGEN_DEDICATED_TENANT", "").strip()
+
     for record in load_registry():
         if hmac.compare_digest(supplied_hash, record.token_sha256):
+            if dedicated and hmac.compare_digest(record.tenant_id, dedicated):
+                return Tenant(OWNER_TENANT_ID, record.label, Path(owner_vault_dir),
+                              lane="owner", allow_federation=record.allow_federation)
             matches.append(Tenant(
                 record.tenant_id,
                 record.label,
