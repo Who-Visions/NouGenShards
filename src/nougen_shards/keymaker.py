@@ -853,6 +853,8 @@ def list_cloud_nodes() -> list:
 
 
 CANONICAL_ALIASES = {
+    "EXA_API_KEY": ["EXA_API_KEY_1", "EXA_API_KEY_2", "EXA_API_KEY_3", "EXA_API_KEY_4"],
+    "CLOUDFLARE_API_TOKEN": ["CLOUDFLARE_API_TOKEN_NOUGEN_FULL", "CLOUDFLARE_API_TOKEN_WHOENTERTAINS"],
     "ARLAI_API_KEY": ["ARLIAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
     "ARLIAI_API_KEY": ["ARLAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
     "OLLAMA_MRSB_OLLAMA_KEY": ["OLLAMA_MRSB_OLLAMAA_KEY"],
@@ -1276,4 +1278,3 @@ if __name__ == "__main__":
             print(f"[*] Auto-enved {res['repo']}: {res['populated_count']} keys written to {res['path']}")
     else:
         print("Invalid command or arguments.")
-
