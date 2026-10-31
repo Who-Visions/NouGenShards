@@ -264,7 +264,7 @@ if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) {{
 }}
 if (Test-NetConnection 127.0.0.1 -Port {port} -InformationLevel Quiet -WarningAction SilentlyContinue) {{
     Write-Host 'Your node is already running.'
-}} elseif (Test-Path (Join-Path $repo 'app.py')) {{
+{dedicated_running_ps1}}} elseif (Test-Path (Join-Path $repo 'app.py')) {{
     Write-Host "Starting your node from $repo ..."
     Start-Process -WindowStyle Hidden -FilePath python -ArgumentList 'app.py' -WorkingDirectory $repo
 }} else {{
@@ -301,7 +301,11 @@ def write_kit(tenant_id: str, token: str, tunnel_token: str, port: int,
     kit_dir.mkdir(parents=True, exist_ok=True)
     vals = dict(tenant_id=tenant_id, token=token, tunnel_token=tunnel_token, port=port,
                 dedicated_ps1=f"$env:NOUGEN_DEDICATED_TENANT = '{tenant_id}'\n" if dedicated else "",
-                dedicated_sh=f"export NOUGEN_DEDICATED_TENANT='{tenant_id}'\n" if dedicated else "")
+                dedicated_sh=f"export NOUGEN_DEDICATED_TENANT='{tenant_id}'\n" if dedicated else "",
+                # the setting only reaches a node THIS kit starts; say so instead of implying it applied
+                dedicated_running_ps1=("    Write-Host 'Dedicated mode only applies to a node this kit starts. "
+                                       "Stop the running node, then run this kit again.' -ForegroundColor Yellow\n")
+                if dedicated else "")
     for name, template in (("join.ps1", KIT_PS1), ("join.sh", KIT_SH)):
         path = kit_dir / name
         path.write_text(template.format(**vals), encoding="utf-8", newline="\n")

@@ -47,3 +47,11 @@ def test_join_kit_only_sets_dedicated_when_asked(tmp_path):
     ded = to.write_kit("ann", "tok", "tun", 4444, root=tmp_path / "b", dedicated=True)
     assert "$env:NOUGEN_DEDICATED_TENANT = 'ann'" in (ded / "join.ps1").read_text()
     assert "export NOUGEN_DEDICATED_TENANT='ann'" in (ded / "join.sh").read_text()
+
+
+def test_dedicated_kit_warns_when_a_node_is_already_running(tmp_path):
+    from nougen_shards import tenant_onboard as to
+    ded = (to.write_kit("ann", "tok", "tun", 4444, root=tmp_path / "d", dedicated=True) / "join.ps1").read_text()
+    assert "Dedicated mode only applies to a node this kit starts" in ded
+    plain = (to.write_kit("ann", "tok", "tun", 4444, root=tmp_path / "p") / "join.ps1").read_text()
+    assert "Dedicated mode" not in plain
