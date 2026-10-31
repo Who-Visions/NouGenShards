@@ -503,6 +503,17 @@ def cmd_auth(args):
         keymaker.ingest_secret(key_map[provider], args.input)
         print(f"✅ API key for {provider} saved to vault.")
 
+    elif args.action == "usage":
+        from . import key_usage
+        if not args.provider:
+            print("Error: Usage: nougen auth usage <KEY_NAME> [--json]")
+            return 1
+        if getattr(args, "json", False):
+            print(json.dumps(key_usage.describe(args.provider), indent=2))
+        else:
+            print(key_usage.format_usage(args.provider))
+        return 0
+
     elif args.action == "check":
         from . import auth_check
         keys = keymaker.list_providers()
@@ -2111,7 +2122,7 @@ def get_parser():
                         help="Persona to embody (NouGen, Sol-Ai, Rhea, DavOs, Iris, Kaedra, Griot, Kronos)")
 
     p_auth = subparsers.add_parser("auth", help="Manage keys")
-    p_auth.add_argument("action", choices=["set-key", "list", "check", "auto-env"])
+    p_auth.add_argument("action", choices=["set-key", "list", "check", "auto-env", "usage"])
     p_auth.add_argument("provider", nargs="?")
     p_auth.add_argument("input", nargs="?")
     p_auth.add_argument("--all", action="store_true", help="Auto-env all Outpost repositories")
