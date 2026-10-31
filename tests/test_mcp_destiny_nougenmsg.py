@@ -48,6 +48,7 @@ def test_nougenmsg_search_mcp_tool(tmp_path, monkeypatch):
     # Monkeypatch home
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("NOUGEN_HOME", str(tmp_path / "nougen_home"))
 
     # Test NouGenMsgBus.search_messages
     res = NouGenMsgBus.search_messages("Hurricane kick")
