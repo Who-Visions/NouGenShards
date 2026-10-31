@@ -182,10 +182,19 @@ def dedicated_tenant() -> str:
     invalid value, for example one with a non-ASCII character, is ignored with a warning
     instead of raising, so one bad environment variable cannot break token resolution
     for every caller on the node (hmac.compare_digest raises TypeError on non-ASCII str).
+
+    Non-ASCII is rejected BEFORE lowercasing, not after: some Unicode characters (e.g.
+    U+212A KELVIN SIGN) case-fold to a plain ASCII letter under str.lower(), which would
+    otherwise let a non-ASCII value slip through validation as a valid-looking tenant id.
     """
-    raw = os.environ.get("NOUGEN_DEDICATED_TENANT", "").strip().lower()
+    raw = os.environ.get("NOUGEN_DEDICATED_TENANT", "").strip()
     if not raw:
         return ""
+    if not raw.isascii():
+        logging.getLogger(__name__).warning(
+            "NOUGEN_DEDICATED_TENANT=%r is not ASCII; ignoring it (no owner promotion)", raw)
+        return ""
+    raw = raw.lower()
     if not TENANT_ID_RE.fullmatch(raw):
         logging.getLogger(__name__).warning(
             "NOUGEN_DEDICATED_TENANT=%r is not a valid tenant id; ignoring it (no owner promotion)", raw)

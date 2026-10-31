@@ -34,6 +34,20 @@ def test_non_ascii_env_value_is_ignored_not_fatal(tmp_path, monkeypatch):
     assert tenants.resolve_token("tok-b", "owner", tmp_path / "o").tenant_id == "bob"
 
 
+def test_unicode_case_fold_to_ascii_is_still_rejected(tmp_path, monkeypatch):
+    """U+212A KELVIN SIGN lowercases to plain ASCII 'k' under str.lower(). Validation
+    must reject non-ASCII input BEFORE lowercasing, or this slips through as tenant 'k'."""
+    path = tmp_path / "tenants.json"
+    monkeypatch.setattr(tenants, "tenants_file", lambda: path)
+    monkeypatch.setenv("NOUGEN_TENANT_VAULT_ROOT", str(tmp_path / "t"))
+    tenants.register_tenant("k", "K-tenant", "tok-k", path=path)
+    monkeypatch.setenv("NOUGEN_DEDICATED_TENANT", "K")  # KELVIN SIGN, .lower() == "k"
+    assert tenants.dedicated_tenant() == ""
+    got = tenants.resolve_token("tok-k", "owner", tmp_path / "o")
+    assert got.tenant_id == "k"
+    assert got.vault_dir != tmp_path / "o"
+
+
 def test_env_value_is_case_and_space_insensitive(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     monkeypatch.setenv("NOUGEN_DEDICATED_TENANT", "  ANN ")
