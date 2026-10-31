@@ -179,35 +179,33 @@ def resolve_token(token: Optional[str], owner_token: Optional[str], owner_vault_
     if not token:
         return None
     supplied_hash = token_sha256(token)
-    matches: list[Tenant] = []
 
     if owner_token:
         owner_hash = token_sha256(owner_token)
         if hmac.compare_digest(supplied_hash, owner_hash):
             return Tenant(OWNER_TENANT_ID, "Owner", Path(owner_vault_dir), lane="owner", allow_federation=True)
 
+    hits = [r for r in load_registry() if hmac.compare_digest(supplied_hash, r.token_sha256)]
+    # Ambiguous credentials are configuration errors from an authorization
+    # perspective: do not let record order decide which vault opens. Checked BEFORE
+    # the dedicated promotion so a colliding digest can never early-return as owner.
+    if len(hits) != 1:
+        return None
+    record = hits[0]
+
     # A machine that belongs to one tenant opts in by naming it; that tenant is
     # then this node's owner. Unset, as on every shared node, nothing changes.
     dedicated = os.environ.get("NOUGEN_DEDICATED_TENANT", "").strip()
-
-    for record in load_registry():
-        if hmac.compare_digest(supplied_hash, record.token_sha256):
-            if dedicated and hmac.compare_digest(record.tenant_id, dedicated):
-                return Tenant(OWNER_TENANT_ID, record.label, Path(owner_vault_dir),
-                              lane="owner", allow_federation=record.allow_federation)
-            matches.append(Tenant(
-                record.tenant_id,
-                record.label,
-                vault_dir_for(record.tenant_id, owner_vault_dir),
-                lane=record.lane,
-                allow_federation=record.allow_federation,
-            ))
-
-    # Ambiguous credentials are configuration errors from an authorization
-    # perspective: do not let record order decide which vault opens.
-    if len(matches) != 1:
-        return None
-    return matches[0]
+    if dedicated and hmac.compare_digest(record.tenant_id, dedicated):
+        return Tenant(OWNER_TENANT_ID, record.label, Path(owner_vault_dir),
+                      lane="owner", allow_federation=record.allow_federation)
+    return Tenant(
+        record.tenant_id,
+        record.label,
+        vault_dir_for(record.tenant_id, owner_vault_dir),
+        lane=record.lane,
+        allow_federation=record.allow_federation,
+    )
 
 
 def tenant_by_id(tenant_id: str, owner_vault_dir: Path) -> Optional[Tenant]:

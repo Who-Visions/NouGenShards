@@ -2045,7 +2045,8 @@ def cmd_tenant(args):
             return
         res = tenant_onboard.onboard(
             target, name=args.name, tenant_id=args.id, label=args.label,
-            domain=args.domain, port=args.port, rotate=args.rotate, dry_run=args.dry_run)
+            domain=args.domain, port=args.port, rotate=args.rotate, dry_run=args.dry_run,
+            dedicated=getattr(args, 'dedicated', False))
     except (tenants.TenantRegistryError, tenant_onboard.OnboardError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return
@@ -2292,6 +2293,7 @@ def get_parser():
     p_tenant.add_argument("--domain", help="onboard: tenant hostname domain (default: env/existing tenants)")
     p_tenant.add_argument("--port", type=int, help="onboard: the tenant node's local port (default NGS_PORT or 4444)")
     p_tenant.add_argument("--rotate", action="store_true", help="onboard: issue a fresh token and repair everything")
+    p_tenant.add_argument("--dedicated", action="store_true", help="onboard: the kit makes this tenant the OWNER of the machine it runs on (single-tenant machines only)")
     p_tenant.add_argument("--dry-run", action="store_true", help="onboard: show the plan, change nothing")
     p_tenant.add_argument("--json", action="store_true", help="onboard: machine-readable result")
 
