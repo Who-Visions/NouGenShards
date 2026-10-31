@@ -1278,22 +1278,3 @@ if __name__ == "__main__":
             print(f"[*] Auto-enved {res['repo']}: {res['populated_count']} keys written to {res['path']}")
     else:
         print("Invalid command or arguments.")
-
-
-# How to use a credential travels with the credential, so a caller never has to
-# rediscover a provider's header. Keyed by secret-name prefix, longest match wins.
-PROVIDER_USAGE = {
-    "EXA_": {"base_url": "https://api.exa.ai", "header": "x-api-key: {key}",
-             "mcp": "https://mcp.exa.ai/mcp", "docs": "https://exa.ai/docs/llms.txt"},
-    "CLOUDFLARE_API_TOKEN": {"base_url": "https://api.cloudflare.com/client/v4",
-                             "header": "Authorization: Bearer {key}",
-                             "docs": "https://developers.cloudflare.com/api/"},
-    "OPENROUTER_": {"base_url": "https://openrouter.ai/api/v1", "header": "Authorization: Bearer {key}",
-                    "docs": "https://openrouter.ai/docs"},
-}
-
-
-def provider_usage(key: str) -> Optional[dict]:
-    """Usage notes for a secret name. Never contains the secret value."""
-    matches = [prefix for prefix in PROVIDER_USAGE if key.startswith(prefix)]
-    return dict(PROVIDER_USAGE[max(matches, key=len)]) if matches else None
