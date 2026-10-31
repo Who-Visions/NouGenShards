@@ -256,8 +256,7 @@ KIT_PS1 = r"""# NouGen tenant join kit for {tenant_id}. Double-click, or right-c
 $ErrorActionPreference = 'Stop'
 $env:NGS_NODE_TOKEN = '{token}'
 $env:NGS_PORT = '{port}'
-$env:NOUGEN_DEDICATED_TENANT = '{tenant_id}'
-$repo = if ($env:NOUGEN_HOME) {{ $env:NOUGEN_HOME }} else {{ Join-Path $HOME 'Watchtower\NouGenShards' }}
+{dedicated_ps}$repo = if ($env:NOUGEN_HOME) {{ $env:NOUGEN_HOME }} else {{ Join-Path $HOME 'Watchtower\NouGenShards' }}
 if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) {{
     Write-Host 'Installing cloudflared...'
     winget install --id Cloudflare.cloudflared -e --accept-source-agreements --accept-package-agreements
@@ -277,7 +276,7 @@ cloudflared tunnel run --token {tunnel_token}
 
 KIT_SH = """#!/bin/sh
 # NouGen tenant join kit for {tenant_id}. Contains secrets: keep private.
-export NGS_NODE_TOKEN='{token}' NGS_PORT='{port}' NOUGEN_DEDICATED_TENANT='{tenant_id}'
+export NGS_NODE_TOKEN='{token}' NGS_PORT='{port}'{dedicated_sh}
 command -v cloudflared >/dev/null || {{ echo 'Install cloudflared first: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/'; exit 1; }}
 REPO="${{NOUGEN_HOME:-$HOME/NouGenShards}}"
 [ -f "$REPO/app.py" ] && (cd "$REPO" && nohup python app.py >/dev/null 2>&1 &)
@@ -286,7 +285,7 @@ exec cloudflared tunnel run --token {tunnel_token}
 
 
 def write_kit(tenant_id: str, token: str, tunnel_token: str, port: int,
-              root: Optional[Path] = None) -> Path:
+              root: Optional[Path] = None, dedicated: bool = False) -> Path:
     """Write the join kit for the tenant's computer.
 
     The kit holds the node and tunnel tokens, so by default it goes to a private (0700)
@@ -296,7 +295,10 @@ def write_kit(tenant_id: str, token: str, tunnel_token: str, port: int,
     base = Path(root) if root else Path(tempfile.mkdtemp(prefix="nougen-kit-"))
     kit_dir = base / "tenant-kits" / tenant_id
     kit_dir.mkdir(parents=True, exist_ok=True)
-    vals = dict(tenant_id=tenant_id, token=token, tunnel_token=tunnel_token, port=port)
+    vals = dict(tenant_id=tenant_id, token=token, tunnel_token=tunnel_token, port=port,
+                dedicated_ps=f"$env:NOUGEN_DEDICATED_TENANT = '{tenant_id}'
+" if dedicated else "",
+                dedicated_sh=f" NOUGEN_DEDICATED_TENANT='{tenant_id}'" if dedicated else "")
     for name, template in (("join.ps1", KIT_PS1), ("join.sh", KIT_SH)):
         path = kit_dir / name
         path.write_text(template.format(**vals), encoding="utf-8", newline="\n")
@@ -329,6 +331,7 @@ class Result:
 def onboard(email: str, name: Optional[str] = None, tenant_id: Optional[str] = None,
             label: Optional[str] = None, domain: Optional[str] = None,
             port: Optional[int] = None, rotate: bool = False, dry_run: bool = False,
+            dedicated: bool = False,
             cf=None, registry_path: Optional[Path] = None,
             kit_root: Optional[Path] = None,
             prober: Callable[[str], tuple] = probe) -> Result:
@@ -389,7 +392,7 @@ def onboard(email: str, name: Optional[str] = None, tenant_id: Optional[str] = N
     steps.append(f"worker: {email} allowed and routed to {node_url}")
 
     # 4. the join kit for the tenant's computer
-    kit_dir = write_kit(tid, token, tunnel_token, port, kit_root)
+    kit_dir = write_kit(tid, token, tunnel_token, port, kit_root, dedicated=dedicated)
     steps.append(f"kit: {kit_dir}")
 
     status, reading = prober(node_url)

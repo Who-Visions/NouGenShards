@@ -192,9 +192,6 @@ def resolve_token(token: Optional[str], owner_token: Optional[str], owner_vault_
 
     for record in load_registry():
         if hmac.compare_digest(supplied_hash, record.token_sha256):
-            if dedicated and hmac.compare_digest(record.tenant_id, dedicated):
-                return Tenant(OWNER_TENANT_ID, record.label, Path(owner_vault_dir),
-                              lane="owner", allow_federation=record.allow_federation)
             matches.append(Tenant(
                 record.tenant_id,
                 record.label,
@@ -207,7 +204,11 @@ def resolve_token(token: Optional[str], owner_token: Optional[str], owner_vault_
     # perspective: do not let record order decide which vault opens.
     if len(matches) != 1:
         return None
-    return matches[0]
+    match = matches[0]
+    if dedicated and hmac.compare_digest(match.tenant_id, dedicated):
+        return Tenant(OWNER_TENANT_ID, match.label, Path(owner_vault_dir),
+                      lane="owner", allow_federation=match.allow_federation)
+    return match
 
 
 def tenant_by_id(tenant_id: str, owner_vault_dir: Path) -> Optional[Tenant]:
