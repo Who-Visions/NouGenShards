@@ -2020,17 +2020,50 @@ def cmd_dashboard(args):
 
 
 def cmd_tenant(args):
-    """Mint additional node credentials without persisting plaintext tokens."""
-    if args.action != "mint":
-        return
+    """Mint, onboard or check isolated node tenants (plaintext tokens are never persisted)."""
+    from . import tenant_onboard
+
+    target = args.tenant_id
     try:
-        token = tenants.mint_tenant(args.tenant_id, args.label)
-    except tenants.TenantRegistryError as exc:
+        if args.action == "mint":
+            if not target or not args.label:
+                print("Error: mint needs a tenant id and --label", file=sys.stderr)
+                return
+            token = tenants.mint_tenant(target, args.label)
+            print(f"Tenant: {target}")
+            print(f"Token: {token}")
+            print("Save this token now; it is stored only as a SHA-256 hash and cannot be shown again.")
+            return
+        if not target:
+            print(f"Error: {args.action} needs the tenant's email address", file=sys.stderr)
+            return
+        if args.action == "status":
+            checks = tenant_onboard.status(target)
+            for ok, line in checks:
+                print(("OK   " if ok else "FIX  ") + line)
+            print("ALL GOOD" if all(ok for ok, _ in checks) else "Not ready yet - see FIX lines above.")
+            return
+        res = tenant_onboard.onboard(
+            target, name=args.name, tenant_id=args.id, label=args.label,
+            domain=args.domain, port=args.port, rotate=args.rotate, dry_run=args.dry_run)
+    except (tenants.TenantRegistryError, tenant_onboard.OnboardError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return
-    print(f"Tenant: {args.tenant_id}")
-    print(f"Token: {token}")
-    print("Save this token now; it is stored only as a SHA-256 hash and cannot be shown again.")
+    if args.json:
+        print(json.dumps(res.as_dict(), indent=2))
+        return
+    print(f"Tenant {res.tenant_id} for {res.email}")
+    for line in res.steps:
+        print(f"  - {line}")
+    if res.kit_dir:
+        print()
+        print("NEXT (the only thing left): send the person this folder, privately:")
+        print(f"    {res.kit_dir}")
+        print("  It holds their tokens and lives in a temporary folder: delete it once it is")
+        print("  sent. 'nougen tenant onboard <email>' rebuilds it any time.")
+        print("  On Windows they right-click join.ps1 > Run with PowerShell. That is all.")
+        print(f"  Their address: {res.node_url}  ({res.probe_reading})")
+        print("  Check any time with: nougen tenant status " + res.email)
 
 
 def cmd_facts(args):
@@ -2249,9 +2282,18 @@ def get_parser():
     p_node.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_tenant = subparsers.add_parser("tenant", help="Manage isolated node tenants")
-    p_tenant.add_argument("action", choices=["mint"])
-    p_tenant.add_argument("tenant_id", help="Lowercase tenant slug")
-    p_tenant.add_argument("--label", required=True, help="Human-readable tenant label")
+    p_tenant.add_argument("action", choices=["mint", "onboard", "status"],
+                          help="onboard <email> does everything; status <email> checks it; "
+                               "mint <tenant_id> only issues a token")
+    p_tenant.add_argument("tenant_id", nargs="?", help="mint: tenant slug; onboard/status: the person's email")
+    p_tenant.add_argument("--label", help="Human-readable tenant label")
+    p_tenant.add_argument("--name", help="onboard: the person's name (derives the tenant slug and label)")
+    p_tenant.add_argument("--id", help="onboard: override the derived tenant slug")
+    p_tenant.add_argument("--domain", help="onboard: tenant hostname domain (default: env/existing tenants)")
+    p_tenant.add_argument("--port", type=int, help="onboard: the tenant node's local port (default NGS_PORT or 4444)")
+    p_tenant.add_argument("--rotate", action="store_true", help="onboard: issue a fresh token and repair everything")
+    p_tenant.add_argument("--dry-run", action="store_true", help="onboard: show the plan, change nothing")
+    p_tenant.add_argument("--json", action="store_true", help="onboard: machine-readable result")
 
     p_doctor = subparsers.add_parser("doctor", help="Check system health")
     p_doctor.add_argument("--json", action="store_true", help="Machine-readable output")
