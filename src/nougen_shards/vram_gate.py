@@ -52,6 +52,10 @@ class Verdict:
 
 
 def _free_vram_gb() -> float:
+    import platform
+    if platform.system() == "Darwin":
+        from .darwin_gate import get_apple_silicon_vram_headroom_gb
+        return get_apple_silicon_vram_headroom_gb()
     out = subprocess.run(
         ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
         capture_output=True, text=True, timeout=15)
@@ -166,6 +170,11 @@ def check_vram(model: str, need_gb: float | None = None,
 
     if ":cloud" in model or model.endswith("-cloud") or "/cloud" in model:
         return Verdict(True, f"admitted to Ollama Cloud gateway ({model}); zero local VRAM footprint")
+
+    import platform
+    if platform.system() == "Darwin":
+        from .darwin_gate import check_darwin_admission
+        return check_darwin_admission(model, need_gb=need_gb)
 
     need = need_gb if need_gb is not None else MEASURED_LOAD_GB.get(model)
     if need is None:
