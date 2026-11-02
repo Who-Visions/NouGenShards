@@ -27,6 +27,7 @@ import json
 import glob
 import time
 import struct
+import functools
 import logging
 import sqlite3
 import urllib.request
@@ -57,7 +58,10 @@ def _discover_port(base: str) -> str:
     return candidates[0]
 
 
-OLLAMA_HOST = _normalize_host(os.environ.get("OLLAMA_HOST"))
+@functools.lru_cache(maxsize=1)
+def ollama_host() -> str:
+    """Resolved once per process, on first use, so importing this module never probes the network."""
+    return _normalize_host(os.environ.get("OLLAMA_HOST"))
 
 
 def _keep_alive():
@@ -92,7 +96,7 @@ def embed(text: str, model: str, timeout: float = 60.0) -> Optional[List[float]]
     """Single embedding via ollama /api/embed. Returns None on failure."""
     body = json.dumps({"model": model, "input": text, "keep_alive": _keep_alive()}).encode("utf-8")
     req = urllib.request.Request(
-        f"{OLLAMA_HOST}/api/embed", data=body,
+        f"{ollama_host()}/api/embed", data=body,
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -119,7 +123,7 @@ def embed_many(texts: List[str], model: str, timeout: float = 180.0) -> Optional
     """
     body = json.dumps({"model": model, "input": texts, "keep_alive": _keep_alive()}).encode("utf-8")
     req = urllib.request.Request(
-        f"{OLLAMA_HOST}/api/embed", data=body,
+        f"{ollama_host()}/api/embed", data=body,
         headers={"Content-Type": "application/json"},
     )
     try:
