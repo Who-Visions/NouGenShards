@@ -167,6 +167,8 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
     done = 0
     failed = 0
     try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shards'").fetchone():
+            return {"db": os.path.basename(db), "skipped": "no shards table"}
         has_ver = _has_col(conn, "shards", "schema_version")
         conn.execute("PRAGMA busy_timeout=15000;")
         rows = conn.execute(
