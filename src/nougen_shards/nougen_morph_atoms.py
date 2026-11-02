@@ -8,7 +8,8 @@ probe, don't assume; log the miss rather than crash the caller.
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List
 
 from .arxiv_radar import _load_module, find_radar_root
 
@@ -43,3 +44,58 @@ def run_morph_atom_catalog(query: str = "", limit: int = 20) -> Dict[str, Any]:
         }
     except Exception as e:  # noqa: BLE001 - any failure here is a non-fatal degrade
         return {"status": "error", "available": True, "error": str(e)}
+
+
+@dataclass(frozen=True)
+class MorphAtom:
+    source: str
+    claim: str
+    confidence: Any = None
+    evidence_type: Any = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+class NouGenMorphCatalog:
+    """The contract app.py calls; atoms come only from captured morph_gate evidence."""
+
+    @staticmethod
+    def get_all_atoms(limit: int = 200) -> Dict[str, MorphAtom]:
+        res = run_morph_atom_catalog(limit=limit)
+        rows = (res.get("result") or {}).get("atoms") or []
+        return {
+            f"{r.get('source')}::{r.get('claim')}": MorphAtom(
+                r.get("source"), r.get("claim"), r.get("confidence"), r.get("evidence_type")
+            )
+            for r in rows
+        }
+
+
+@dataclass(frozen=True)
+class PromotionDecision:
+    candidate_id: str
+    promoted: bool
+    benchmark_gain: float
+    regressions: List[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+class HolisticPromotionGate:
+    """A benchmark gain cannot buy a regression on any other measured dimension."""
+
+    @staticmethod
+    def evaluate_promotion(
+        candidate_id: str,
+        baseline: Dict[str, float],
+        candidate: Dict[str, float],
+        regression_tolerance: float = 0.0,
+    ) -> PromotionDecision:
+        gain = candidate["benchmark_score"] - baseline["benchmark_score"]
+        regressions = [
+            k for k, base in baseline.items()
+            if k != "benchmark_score" and base - candidate[k] > regression_tolerance
+        ]
+        return PromotionDecision(candidate_id, gain > 0 and not regressions, gain, regressions)
