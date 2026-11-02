@@ -27,6 +27,7 @@ import json
 import glob
 import time
 import struct
+import logging
 import sqlite3
 import urllib.request
 from typing import List, Optional
@@ -34,13 +35,26 @@ from typing import List, Optional
 def _normalize_host(h: str) -> str:
     """ollama client target. Handles missing scheme/port and 0.0.0.0 bind addr."""
     from urllib.parse import urlparse
-    h = (h or "").strip() or "http://127.0.0.1:11434"
+    h = (h or "").strip() or "http://127.0.0.1"
     if "://" not in h:
         h = "http://" + h
     h = h.replace("0.0.0.0", "127.0.0.1")  # bind-all is not a connectable target
     if not urlparse(h).port:
-        h = h.rstrip("/") + ":11434"
+        h = h.rstrip("/") + ":" + _discover_port(h.rstrip("/"))
     return h.rstrip("/")
+
+
+def _discover_port(base: str) -> str:
+    """The daemon's port moves on this fleet (11434 and 11436 both seen); probe, then log the fallback."""
+    candidates = [p for p in (os.environ.get("OLLAMA_PORT"), "11434", "11436") if p]
+    for p in candidates:
+        try:
+            urllib.request.urlopen(f"{base}:{p}/api/tags", timeout=1.5)
+            return p
+        except Exception:  # pylint: disable=broad-except
+            continue
+    logging.getLogger(__name__).warning("no ollama daemon answered on %s; using %s", candidates, candidates[0])
+    return candidates[0]
 
 
 OLLAMA_HOST = _normalize_host(os.environ.get("OLLAMA_HOST"))
@@ -137,6 +151,8 @@ def count_pending(vault_dir: str) -> dict:
     for db in _vault_dbs(vault_dir):
         conn = sqlite3.connect(db)
         try:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shards'").fetchone():
+                continue  # archive/side DBs in the vault dir carry no shards table
             total = conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
             pending = conn.execute("SELECT COUNT(*) FROM shards WHERE embedding IS NULL").fetchone()[0]
             out[os.path.basename(db)] = (pending, total)
