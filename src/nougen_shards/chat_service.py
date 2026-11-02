@@ -34,9 +34,11 @@ Never execute destructive commands or claim mutations without confirmation. Afte
 
 def discover_chat_model(configured: str | None = None, playful: bool = False) -> str:
     """Resolve the conversational model for tenant operators and local fleet nodes."""
+    # A node may fill the stock e2b slot with its own build.
+    local_e2b = os.environ.get("NOUGEN_LOCAL_E2B_MODEL") or "gemma4:e2b"
     if configured:
         # Explicit configuration allows cloud models or authorized local Tier-0 models
-        allowed_local = ("kaedracode:e2b", "gemma4:e2b-it-qat", "gemma4:e4b-it-qat", "gemma4:e2b", "Yukiai:e4b", "solai:latest")
+        allowed_local = ("kaedracode:e2b", "gemma4:e2b-it-qat", "gemma4:e4b-it-qat", "gemma4:e2b", "Yukiai:e4b", "solai:latest", local_e2b)
         if not (configured.endswith(":cloud") or configured.endswith("-cloud") or configured in allowed_local):
             raise ValueError("Chat requires an explicitly configured free cloud model.")
         return configured
@@ -59,7 +61,7 @@ def discover_chat_model(configured: str | None = None, playful: bool = False) ->
         "kaedracode:e2b",
         "gemma4:e2b-it-qat",
         "gemma4:e4b-it-qat",
-        "gemma4:e2b",
+        local_e2b,
         "gemma4:cloud",
         "solai:latest",
     )

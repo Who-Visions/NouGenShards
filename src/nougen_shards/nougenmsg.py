@@ -694,7 +694,8 @@ class AgentPinger:
         """
         current = get_current_node()
         machine = current if node in ("local", "", None, current) else node
-        return AgentPinger._OLLAMA_DEFAULTS.get(machine, AgentPinger._OLLAMA_FALLBACK)
+        fallback = os.environ.get("NOUGEN_LOCAL_E2B_MODEL") or AgentPinger._OLLAMA_FALLBACK
+        return AgentPinger._OLLAMA_DEFAULTS.get(machine, fallback)
 
     @staticmethod
     def _drop_model_reply(lane: str, model: str, reply: str,

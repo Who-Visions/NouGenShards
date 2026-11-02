@@ -17,6 +17,7 @@ verdict instead of raising, so callers can route to the fleet or skip:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import urllib.request
 from dataclasses import dataclass
@@ -39,6 +40,10 @@ MEASURED_LOAD_GB = {
     "deepseek-ocr:3b": 6.9,
     "nomic-embed-text:latest": 0.4,
 }
+# A node's own build in the stock e2b slot admits at the stock size until measured.
+_local_e2b = os.environ.get("NOUGEN_LOCAL_E2B_MODEL")
+if _local_e2b:
+    MEASURED_LOAD_GB.setdefault(_local_e2b, MEASURED_LOAD_GB["gemma4:e2b"])
 SAFETY_MARGIN_GB = 0.4  # display/compositor churn headroom
 
 
