@@ -1149,10 +1149,15 @@ def cmd_search(args):
 
     # Use Federation for unified search
     sweep_report: dict = {}
+    fast_token = None
     if getattr(args, 'fast', False):
-        shards.FAST_LOCAL.set(True)
-    results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding,
-                                            domain_key=domain_key, sweep_report=sweep_report)
+        fast_token = shards.FAST_LOCAL.set(True)
+    try:
+        results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding,
+                                                domain_key=domain_key, sweep_report=sweep_report)
+    finally:
+        if fast_token is not None:
+            shards.FAST_LOCAL.reset(fast_token)
     dropped = sweep_report.get("lanes_timed_out") or []
     incomplete = bool(dropped or sweep_report.get("errored") or
                       sweep_report.get("tier2_deferred") or sweep_report.get("lanes_skipped"))
