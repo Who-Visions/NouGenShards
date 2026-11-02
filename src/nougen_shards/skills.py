@@ -132,6 +132,7 @@ class Skill:
     description: str
     path: Path
     body: str = field(repr=False, default="")
+    tier: str = ""
 
     @property
     def summary(self) -> str:
@@ -156,7 +157,12 @@ def _load_file(path: Path, fallback_name: str) -> Optional[Skill]:
             if candidate:
                 description = candidate[:200]
                 break
-    return Skill(name=name, description=description, path=path, body=body)
+    return Skill(name=name, description=description, path=path, body=body,
+                 tier=meta.get("tier", "").strip().upper())
+
+
+def _include_candidates() -> bool:
+    return os.environ.get("NOUGEN_SKILLS_INCLUDE_CANDIDATES", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def invalidate_cache() -> None:
@@ -202,6 +208,9 @@ def discover(roots: Optional[list[Path]] = None) -> list[Skill]:
             elif entry.suffix.lower() == ".md" and entry.name != "SKILL.md":
                 skill = _load_file(entry, entry.stem)
 
+            if skill and skill.tier == "CANDIDATE" and not _include_candidates():
+                # Dream-evolved candidates are unverified; they must not govern live work.
+                continue
             if skill and skill.name not in found:
                 found[skill.name] = skill
 
