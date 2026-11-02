@@ -6,6 +6,7 @@ import re
 import sys
 from difflib import SequenceMatcher
 from pathlib import Path
+from . import ollama_host
 from .chat_widget_ir import CHAT_WIDGET_IR_VERSION, CHAT_WIDGET_KINDS, CHAT_WIDGET_LIMITS, PRESENT_WIDGET_PARAMETERS
 
 GENERATION_OPTIONS = {"temperature": 0.95, "repeat_penalty": 1.15, "repeat_last_n": 128}
@@ -32,6 +33,11 @@ Calculator formulas use a JSON AST: input nodes are {"op":"input","key":"<declar
 Never execute destructive commands or claim mutations without confirmation. After a tool call, explain the actual result concisely."""
 
 
+def _ollama_url() -> str:
+    """The live local daemon; the port moves between boxes, so probe it."""
+    return ollama_host.discover_ollama_url(timeout=1.5) or ollama_host.resolve_ollama_url(log=False)
+
+
 def discover_chat_model(configured: str | None = None, playful: bool = False) -> str:
     """Resolve the conversational model for tenant operators and local fleet nodes."""
     # A node may fill the stock e2b slot with its own build.
@@ -46,7 +52,7 @@ def discover_chat_model(configured: str | None = None, playful: bool = False) ->
     # Probing local Ollama daemon for installed models
     try:
         from urllib.request import Request, urlopen
-        req = Request("http://127.0.0.1:11434/api/tags", headers={"Content-Type": "application/json"})
+        req = Request(f"{_ollama_url()}/api/tags", headers={"Content-Type": "application/json"})
         with urlopen(req, timeout=1.5) as res:
             data = json.loads(res.read(500000))
             installed = {m.get("name", "") for m in data.get("models", [])}
@@ -165,7 +171,7 @@ def chat(payload, client=None):
     for _ in range(4 + MAX_REPLY_REWRITES):
         if client is None:
             from urllib.request import Request, urlopen
-            request = Request("http://127.0.0.1:11434/api/chat", data=json.dumps({
+            request = Request(f"{_ollama_url()}/api/chat", data=json.dumps({
                 "model": model, "messages": conversation, "stream": False, "tools": TOOLS, "options": GENERATION_OPTIONS,
             }).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
             with urlopen(request, timeout=max(1, deadline - time.monotonic())) as result:

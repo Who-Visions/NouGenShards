@@ -693,9 +693,11 @@ class AgentPinger:
         build. Key off the serving machine instead.
         """
         current = get_current_node()
-        machine = current if node in ("local", "", None, current) else node
-        fallback = os.environ.get("NOUGEN_LOCAL_E2B_MODEL") or AgentPinger._OLLAMA_FALLBACK
-        return AgentPinger._OLLAMA_DEFAULTS.get(machine, fallback)
+        is_local = node in ("local", "", None, current)
+        machine = current if is_local else node
+        # The slot names a tag on THIS box; a remote node may not hold it.
+        slot = os.environ.get("NOUGEN_LOCAL_E2B_MODEL") if is_local else None
+        return AgentPinger._OLLAMA_DEFAULTS.get(machine, slot or AgentPinger._OLLAMA_FALLBACK)
 
     @staticmethod
     def _drop_model_reply(lane: str, model: str, reply: str,
