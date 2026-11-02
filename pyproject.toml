@@ -64,6 +64,10 @@ tube = [
 transcribe = [
     "faster-whisper>=1.1.0",
 ]
+# Optional real driver for nougen_shards.browser_toolset; the core is stdlib only.
+browser = [
+    "playwright>=1.48",
+]
 
 test = [
     "pytest>=7",
