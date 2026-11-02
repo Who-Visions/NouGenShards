@@ -160,6 +160,34 @@ def test_approval_required_then_approved():
         r.approve_pending("nope")
 
 
+def test_approval_covers_one_execution():
+    driver = FakeDriver()
+    r = runner(driver)
+    click = block("left_click", {"target": {"type": "ref", "ref": "submit"}})
+    r.run_batch([click])
+    r.approve_pending(next(iter(r.pending)))
+    assert "is_error" not in r.run_batch([click])[0]
+    assert r.run_batch([click])[0]["is_error"]
+    assert driver.calls == ["left_click"]
+
+
+def test_confirm_sees_the_page_each_call_runs_on():
+    class Navigating(FakeDriver):
+        def call(self, member, tool_input):
+            super().call(member, tool_input)
+            self.url = "https://example.com/next"
+            return "done"
+
+    driver = Navigating()
+    pages = []
+    run = make_confirmed_runner(driver, ScopePolicy(UrlPolicy(["example.com"])),
+                                lambda c: pages.append(c["page"]) or True, AuditLog())
+    results = run([block("left_click", {"target": {"type": "ref", "ref": "a"}}, id_="a"),
+                   block("left_click", {"target": {"type": "ref", "ref": "b"}}, id_="b")])
+    assert not any(x.get("is_error") for x in results)
+    assert pages == ["https://example.com/", "https://example.com/next"]
+
+
 def test_confirmed_runner_asks_and_respects_no():
     driver = FakeDriver()
     asked = []
@@ -209,7 +237,8 @@ def test_real_browser_end_to_end(tmp_path):
 
     page = (b"<title>Local</title><h1>Hello</h1><div hidden>secret-hidden</div>"
             b"<button onclick=\"document.title='clicked'\">Press</button>"
-            b"<img src='http://203.0.113.9/x.png'>")
+            b"<img src='http://203.0.113.9/x.png'>"
+            b"<script>new WebSocket('ws://localhost:1/x')</script>")
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -238,6 +267,8 @@ def test_real_browser_end_to_end(tmp_path):
         assert "Hello" in out[1]["content"][0]["text"]
         assert "secret-hidden" not in out[1]["content"][0]["text"]
         assert "[ref_1]" in out[2]["content"][0]["text"]
+        r.run_batch([block("wait", {"duration": 1})])
+        assert driver.blocked_sockets == 1
         click = block("left_click", {"target": {"type": "ref", "ref": "ref_1"}})
         assert r.run_batch([click])[0]["is_error"]
         r.approve_pending(next(iter(r.pending)))

@@ -191,6 +191,10 @@ class ScopePolicy:
     def approve(self, key: str) -> None:
         self._approved.add(key)
 
+    def consume(self, key: str) -> None:
+        """An approval covers one execution: a second submit asks again."""
+        self._approved.discard(key)
+
     def decide(self, member: str, tool_input: dict, page: str = "") -> Decision:
         if member not in self.members():
             return Decision(BLOCK, f"{member} is not enabled in this toolset")
@@ -302,6 +306,7 @@ class ToolsetRunner:
     policy: ScopePolicy
     audit: AuditLog = field(default_factory=AuditLog.from_env)
     pending: dict = field(default_factory=dict)
+    confirm: Optional[Callable[[dict], bool]] = None
 
     def __post_init__(self) -> None:
         self.toolset = self.policy.toolset
@@ -357,6 +362,11 @@ class ToolsetRunner:
         except Exception:
             page = ""
         decision = self.policy.decide(member, tool_input, page)
+        if decision.verdict == APPROVAL_REQUIRED and self.confirm is not None and self.confirm(
+            {"member": member, "page": page, "input": AuditLog.scrub(tool_input)}
+        ):
+            self.policy.approve(decision.approval_key)
+            decision = self.policy.decide(member, tool_input, page)
         if decision.verdict == BLOCK:
             self.audit.record(self.toolset, member, tool_input, page, decision, "blocked")
             return self._result(tool_use_id, f"Error: {decision.reason}", is_error=True), False
@@ -370,6 +380,7 @@ class ToolsetRunner:
                 f"Error: approval_required: {decision.reason}. Not executed.",
                 is_error=True,
             ), False
+        self.policy.consume(decision.approval_key)
         if member not in self.implemented:
             self.audit.record(self.toolset, member, tool_input, page, decision, "unimplemented")
             return self._result(
@@ -443,15 +454,24 @@ class PlaywrightDriver:
         )
         self._context = self._browser.new_context(service_workers="block")
         self._context.route("**/*", self._guard)
+        self._context.route_web_socket(re.compile(".*"), self._guard_socket)
+        self.blocked_sockets = 0
         self._page = self._context.new_page()
         self._next_ref = 0
 
     def _guard(self, route) -> None:
-        url = route.request.url.replace("ws://", "http://", 1).replace("wss://", "https://", 1)
+        url = route.request.url
         if url.startswith(("data:", "blob:")) or self.url_policy.allows(url):
             route.continue_()
         else:
             route.abort("blockedbyclient")
+
+    def _guard_socket(self, socket) -> None:
+        url = re.sub(r"^ws(s?)://", r"http\1://", socket.url, flags=re.IGNORECASE)
+        if self.url_policy.allows(url):
+            socket.connect_to_server()
+        else:  # never connected, so nothing leaves the browser
+            self.blocked_sockets += 1
 
     def implemented(self) -> Iterable[str]:
         return {"navigate", "screenshot", "read_page", "get_page_text", "left_click", "type",
@@ -526,21 +546,5 @@ def make_confirmed_runner(
     confirm: Callable[[dict], bool],
     audit: Optional[AuditLog] = None,
 ) -> Callable[[list[dict]], list[dict]]:
-    """Wrap a runner so approval_required calls ask ``confirm`` and run on a yes."""
-    runner = ToolsetRunner(driver, policy, audit or AuditLog.from_env())
-
-    def run(blocks: list[dict]) -> list[dict]:
-        wanted = []
-        for block in blocks:
-            if block.get("type") != "tool_use":
-                continue
-            page = driver.page_url()
-            decision = policy.decide(block.get("name", ""), block.get("input") or {}, page)
-            if decision.verdict == APPROVAL_REQUIRED and confirm(
-                {"member": block.get("name"), "page": page, "input": AuditLog.scrub(block.get("input") or {})}
-            ):
-                policy.approve(decision.approval_key)
-            wanted.append(block)
-        return runner.run_batch(wanted)
-
-    return run
+    """Wrap a runner so approval_required calls ask ``confirm`` as they are reached."""
+    return ToolsetRunner(driver, policy, audit or AuditLog.from_env(), confirm=confirm).run_batch
