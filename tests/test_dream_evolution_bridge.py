@@ -1,8 +1,8 @@
 """Tests for the recursive Dream-to-Evolution bridge.
 
 Verifies that semantic invariants consolidated during dream cycles are recursively
-synthesized into progressive skills, held at CANDIDATE until they have a real task, and discoverable
-by the skill registry.
+synthesized into progressive skills, held at CANDIDATE until they have a real task, and kept out
+of skill discovery until then (visible only with NOUGEN_SKILLS_INCLUDE_CANDIDATES=1).
 """
 from pathlib import Path
 from unittest.mock import patch
@@ -28,7 +28,7 @@ def test_synthesize_skills_from_invariants_empty():
     assert dream.synthesize_skills_from_invariants(None) == []
 
 
-def test_synthesize_skills_from_invariants_creates_and_verifies_skills(dream_workspace):
+def test_synthesize_skills_from_invariants_creates_and_verifies_skills(dream_workspace, monkeypatch):
     """Extracted rules produce sandbox-verified progressive skills in the global skills directory."""
     rules = [
         {"subject": "FTS5Engine", "predicate": "always use MATCH syntax for rank scoring"},
@@ -61,9 +61,12 @@ def test_synthesize_skills_from_invariants_creates_and_verifies_skills(dream_wor
     assert "FTS5Engine" in meta["description"]
     assert "always use MATCH syntax" in body
 
-    # Verify discovery by the skills registry
-    discovered = skills.discover([dream_workspace / "skills"])
-    names = [s.name for s in discovered]
+    # Unverified candidates must not reach the registry that governs live work...
+    monkeypatch.delenv("NOUGEN_SKILLS_INCLUDE_CANDIDATES", raising=False)
+    assert [s.name for s in skills.discover([dream_workspace / "skills"])] == []
+    # ...but the packages are on disk and visible once an operator opts in.
+    monkeypatch.setenv("NOUGEN_SKILLS_INCLUDE_CANDIDATES", "1")
+    names = [s.name for s in skills.discover([dream_workspace / "skills"])]
     assert "evolved-fts5engine" in names
     assert "evolved-sandboxsecurity" in names
 
