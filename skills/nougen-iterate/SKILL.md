@@ -19,7 +19,7 @@ Evidence (YouTube DByAR5Su1Yw, 2026): "make it better" was sent 100 times to Son
 
 ## Enforce it (run after every round)
 
-`go run ./skills/nougen-iterate/check -plateau 3 [-max-rounds N] path/to/ITERATE.md`
+`go -C skills/nougen-iterate/check run . -plateau 3 [-max-rounds N] "$PWD/path/to/ITERATE.md"` (the file path must be absolute; `-C` changes directory)
 
 Exit 0 = CONTINUE. Exit 2 = STOP (plateau or cap): report the printed best round. Exit 1 = VIOLATION (a kept round with red tests, or a bad log): revert before doing anything else. Warnings flag rounds with no reference source and rounds that added lines with no score gain. Tests: `cd skills/nougen-iterate/check && go test ./...`.
 
