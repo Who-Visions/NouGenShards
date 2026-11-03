@@ -27,6 +27,8 @@ import json
 import glob
 import time
 import struct
+import functools
+import logging
 import sqlite3
 import urllib.request
 from typing import List, Optional
@@ -34,16 +36,32 @@ from typing import List, Optional
 def _normalize_host(h: str) -> str:
     """ollama client target. Handles missing scheme/port and 0.0.0.0 bind addr."""
     from urllib.parse import urlparse
-    h = (h or "").strip() or "http://127.0.0.1:11434"
+    h = (h or "").strip() or "http://127.0.0.1"
     if "://" not in h:
         h = "http://" + h
     h = h.replace("0.0.0.0", "127.0.0.1")  # bind-all is not a connectable target
     if not urlparse(h).port:
-        h = h.rstrip("/") + ":11434"
+        h = h.rstrip("/") + ":" + _discover_port(h.rstrip("/"))
     return h.rstrip("/")
 
 
-OLLAMA_HOST = _normalize_host(os.environ.get("OLLAMA_HOST"))
+def _discover_port(base: str) -> str:
+    """The daemon's port moves on this fleet (11434 and 11436 both seen); probe, then log the fallback."""
+    candidates = [p for p in (os.environ.get("OLLAMA_PORT"), "11434", "11436") if p]
+    for p in candidates:
+        try:
+            urllib.request.urlopen(f"{base}:{p}/api/tags", timeout=1.5)
+            return p
+        except Exception:  # pylint: disable=broad-except
+            continue
+    logging.getLogger(__name__).warning("no ollama daemon answered on %s; using %s", candidates, candidates[0])
+    return candidates[0]
+
+
+@functools.lru_cache(maxsize=1)
+def ollama_host() -> str:
+    """Resolved once per process, on first use, so importing this module never probes the network."""
+    return _normalize_host(os.environ.get("OLLAMA_HOST"))
 
 
 def _keep_alive():
@@ -78,7 +96,7 @@ def embed(text: str, model: str, timeout: float = 60.0) -> Optional[List[float]]
     """Single embedding via ollama /api/embed. Returns None on failure."""
     body = json.dumps({"model": model, "input": text, "keep_alive": _keep_alive()}).encode("utf-8")
     req = urllib.request.Request(
-        f"{OLLAMA_HOST}/api/embed", data=body,
+        f"{ollama_host()}/api/embed", data=body,
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -105,7 +123,7 @@ def embed_many(texts: List[str], model: str, timeout: float = 180.0) -> Optional
     """
     body = json.dumps({"model": model, "input": texts, "keep_alive": _keep_alive()}).encode("utf-8")
     req = urllib.request.Request(
-        f"{OLLAMA_HOST}/api/embed", data=body,
+        f"{ollama_host()}/api/embed", data=body,
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -137,6 +155,8 @@ def count_pending(vault_dir: str) -> dict:
     for db in _vault_dbs(vault_dir):
         conn = sqlite3.connect(db)
         try:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shards'").fetchone():
+                continue  # archive/side DBs in the vault dir carry no shards table
             total = conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
             pending = conn.execute("SELECT COUNT(*) FROM shards WHERE embedding IS NULL").fetchone()[0]
             out[os.path.basename(db)] = (pending, total)
@@ -151,6 +171,8 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
     done = 0
     failed = 0
     try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shards'").fetchone():
+            return {"db": os.path.basename(db), "skipped": "no shards table"}
         has_ver = _has_col(conn, "shards", "schema_version")
         conn.execute("PRAGMA busy_timeout=15000;")
         rows = conn.execute(
