@@ -9,7 +9,7 @@ Evidence (YouTube DByAR5Su1Yw, 2026): "make it better" was sent 100 times to Son
 
 ## Contract (every loop, every round)
 
-1. **Vision + rubric first.** Before round 1, write `ITERATE.md` in the target: goal, audience, 3-6 scored criteria (0-5), and things that must not change. The GM supplies the taste. If no vision is given, draft one in a single line and state it. Never iterate toward a bare "better".
+1. **Vision + rubric first.** Before round 1, copy `ITERATE.template.md` (next to this file) to `ITERATE.md` in the target and fill it in: goal, audience, 3-6 scored criteria (0-5), and things that must not change. The GM supplies the taste. If no vision is given, draft one in a single line and state it. Never iterate toward a bare "better".
 2. **Research step.** Each round looks at at least one outside reference first (award-winning sites, component libraries, competitor pages) via `nougen-web-research` or Exa. Record the source in the round log.
 3. **One change, measured.** Make one coherent change, then re-score it against the rubric. A judge on a different rung than the maker does the scoring.
 4. **Regression gate.** Run the project's tests plus a smoke check of every feature that worked before (load, primary flow, any toggles). If anything goes red, revert the round. A feature that silently stops working is a failure, not a trade-off.
