@@ -15,7 +15,7 @@ Evidence (YouTube DByAR5Su1Yw, 2026): "make it better" was sent 100 times to Son
 4. **Regression gate.** Run the project's tests plus a smoke check of every feature that worked before (load, primary flow, any toggles). If anything goes red, revert the round. A feature that silently stops working is a failure, not a trade-off.
 5. **Null and subtractive rounds are valid.** A round may ship nothing, or delete code, if that keeps or raises the score. Track the line count and flag growth that brings no score gain.
 6. **Plateau stop.** Stop after 3 consecutive rounds with no rubric gain, or once the round or cost cap is hit. Report the best-scoring round, not the last one.
-7. **Rung split.** Iterate on the cheap rung (custom e2b/e4b, then Sonnet-class) and judge on the expensive rung only (see `smart-ladder`). Cost tracks code volume, not quality.
+7. **Rung split.** Iterate on the free rung (custom e2b/e4b and free fleet lanes) and judge on the expensive rung only (see `smart-ladder`). Any paid route, Sonnet-class included, needs explicit GM approval for the task first (Rule 0.12). Cost tracks code volume, not quality.
 
 ## Enforce it (run after every round)
 
