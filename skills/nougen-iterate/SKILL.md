@@ -17,6 +17,12 @@ Evidence (YouTube DByAR5Su1Yw, 2026): "make it better" was sent 100 times to Son
 6. **Plateau stop.** Stop after 3 consecutive rounds with no rubric gain, or once the round or cost cap is hit. Report the best-scoring round, not the last one.
 7. **Rung split.** Iterate on the cheap rung (custom e2b/e4b, then Sonnet-class) and judge on the expensive rung only (see `smart-ladder`). Cost tracks code volume, not quality.
 
+## Enforce it (run after every round)
+
+`go run ./skills/nougen-iterate/check -plateau 3 [-max-rounds N] path/to/ITERATE.md`
+
+Exit 0 = CONTINUE. Exit 2 = STOP (plateau or cap): report the printed best round. Exit 1 = VIOLATION (a kept round with red tests, or a bad log): revert before doing anything else. Warnings flag rounds with no reference source and rounds that added lines with no score gain. Tests: `cd skills/nougen-iterate/check && go test ./...`.
+
 ## Round log (append to ITERATE.md)
 
 `| round | change | ref source | score before -> after | tests | lines +/- | kept/reverted |`
