@@ -22,15 +22,22 @@ const DROP_TAGS = new Set([
 /**
  * Clean & resolve relative URLs to absolute
  */
+const SAFE_SCHEMES = new Set(["http", "https", "mailto", "tel", "ftp"]);
+
 function cleanUrl(raw: string | null | undefined, base?: string): string {
   if (!raw) return "";
+  // Browsers ignore whitespace and control characters inside a scheme ("java\tscript:"), so strip
+  // them before looking, then allow only schemes a Markdown link should carry.
   const trimmed = raw.trim();
-  if (trimmed.startsWith("javascript:") || trimmed.startsWith("data:")) return "";
+  const probe = trimmed.replace(/[\u0000- \u007f]/g, "").toLowerCase();
+  const scheme = /^([a-z][a-z0-9+.-]*):/.exec(probe);
+  if (scheme && !SAFE_SCHEMES.has(scheme[1])) return "";
   if (!base) return trimmed;
   try {
-    return new URL(trimmed, base).href;
+    const url = new URL(trimmed, base);
+    return SAFE_SCHEMES.has(url.protocol.slice(0, -1)) ? url.href : "";
   } catch {
-    return trimmed;
+    return scheme ? "" : trimmed;
   }
 }
 
@@ -55,7 +62,7 @@ function renderGfmTable(table: Element, base?: string): string {
     const row: string[] = [];
     tr.querySelectorAll("th, td").forEach((cell) => {
       // Process cell contents inline
-      const text = (cell.textContent || "").replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
+      const text = (cell.textContent || "").replace(/\s+/g, " ").replace(/\\/g, "\\\\").replace(/\|/g, "\\|").trim(); // backslash first, so an escaped pipe stays escaped
       row.push(text);
     });
     if (row.length > 0) rows.push(row);
@@ -189,7 +196,7 @@ export function domToMarkdown(node: Node, baseUri?: string): string {
       return childrenMd.trim() ? `~~${childrenMd.trim()}~~` : "";
 
     case "code":
-      return `\`${childrenMd.replace(/`/g, "\\`")}\``;
+      return inlineCode(childrenMd);
 
     case "a": {
       const href = cleanUrl(el.getAttribute("href"), baseUri);
@@ -257,3 +264,12 @@ if (typeof window !== "undefined") {
   window.domToMarkdown = domToMarkdown;
 }
 
+
+// CommonMark inline code takes no backslash escapes: wrap in a backtick run longer than any inside,
+// padding with a space when the content starts or ends with a backtick.
+function inlineCode(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) || []).map((r) => r.length));
+  const fence = "`".repeat(longest + 1);
+  const pad = text.startsWith("`") || text.endsWith("`") ? " " : "";
+  return `${fence}${pad}${text}${pad}${fence}`;
+}
