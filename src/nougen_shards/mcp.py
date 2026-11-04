@@ -61,6 +61,7 @@ from .core import capture, mark_shard, compile_recall_packet
 from . import nougen_context
 from . import nougen_sandbox
 from . import evolution
+from . import hardcade_sfx
 from . import skills as skill_registry
 
 from .history import HistoryEngine
@@ -102,6 +103,9 @@ except TypeError:
     # Older builds predate the instructions kwarg; the apply_skills tool
     # still enforces skills, the roster just does not ride the handshake.
     mcp = MCPServer("NouGenShards", dependencies=["mcp"])
+
+# Hardcade SFX: every tool registered below plays its move when it lands.
+hardcade_sfx.install_on(mcp)
 
 # --- Memory Core (Shards) ---
 
