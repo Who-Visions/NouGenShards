@@ -163,7 +163,8 @@ def run_cli(command: str | None, argv: list[str], fn, *args, **kwargs):
     try:
         result = fn(*args, **kwargs)
     except SystemExit as exc:
-        _safe_play(lambda: cli_key(command, argv) if exc.code in (0, None) else "fail")
+        code = exc.code
+        _safe_play(lambda: cli_key(command, argv) if code in (0, None) else "fail")
         raise
     except BaseException:
         _safe_play(lambda: "fail")
