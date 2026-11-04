@@ -45,9 +45,11 @@ function cleanUrl(raw: string | null | undefined, base?: string): string {
  * Escapes markdown control characters in plain text nodes
  */
 function escapeMarkdownText(text: string): string {
+  // Inline markup anywhere; block markers (#, -, +, >, "1.") only where a line could start.
   return text
-    .replace(/\\/g, "\\\\")
-    .replace(/([*_{}[\]()#+\-.!|`])/g, "\\$1");
+    .replace(/([\\`*_[\]<>|~])/g, "\\$1")
+    .replace(/^(\s*)([#+\-])(?=\s|$)/, "$1\\$2")
+    .replace(/^(\s*\d+)([.)])(?=\s|$)/, "$1\\$2");
 }
 
 /**
@@ -61,9 +63,11 @@ function renderGfmTable(table: Element, base?: string): string {
   trs.forEach((tr) => {
     const row: string[] = [];
     tr.querySelectorAll("th, td").forEach((cell) => {
-      // Process cell contents inline
-      const text = (cell.textContent || "").replace(/\s+/g, " ").replace(/\\/g, "\\\\").replace(/\|/g, "\\|").trim(); // backslash first, so an escaped pipe stays escaped
-      row.push(text);
+      // The cell's own Markdown (links, emphasis, code kept), flattened to one line. Text is already
+      // escaped by domToMarkdown, so only the pipes that would end the cell need escaping here.
+      let md = "";
+      for (const child of Array.from(cell.childNodes)) md += domToMarkdown(child, base);
+      row.push(md.replace(/\s+/g, " ").replace(/(?<!\\)\|/g, "\\|").trim());
     });
     if (row.length > 0) rows.push(row);
   });
@@ -100,8 +104,11 @@ function renderGfmTable(table: Element, base?: string): string {
 export function domToMarkdown(node: Node, baseUri?: string): string {
   if (node.nodeType === Node.TEXT_NODE) {
     // Collapse internal whitespace for standard text nodes
-    const val = node.nodeValue || "";
-    return val.replace(/\s+/g, " ");
+    // Collapse whitespace, then escape what Markdown would read as markup, so a page's prose
+    // ("* not a list", "[not](a link)") comes back as the same text. Code is handled before
+    // children are rendered, so this never touches code content.
+    const val = (node.nodeValue || "").replace(/\s+/g, " ");
+    return escapeMarkdownText(val);
   }
 
   if (node.nodeType !== Node.ELEMENT_NODE) return "";
@@ -137,8 +144,11 @@ export function domToMarkdown(node: Node, baseUri?: string): string {
         break;
       }
     }
-    const codeContent = code.textContent || "";
-    return `\n\n\`\`\`${lang}\n${codeContent.replace(/\r\n/g, "\n")}\n\`\`\`\n\n`;
+    const codeContent = (code.textContent || "").replace(/\r\n/g, "\n");
+    // A fence longer than any backtick run inside, so a ``` line in the code can't close it.
+    const longest = Math.max(0, ...(codeContent.match(/`+/g) || []).map((r) => r.length));
+    const fence = "`".repeat(Math.max(3, longest + 1));
+    return `\n\n${fence}${lang}\n${codeContent}\n${fence}\n\n`;
   }
 
   // Invariant 4: Tabular Data Preservation
@@ -175,11 +185,14 @@ export function domToMarkdown(node: Node, baseUri?: string): string {
     case "ol": return `\n\n${childrenMd.trim()}\n\n`;
     case "li": {
       const parentTag = el.parentElement ? el.parentElement.tagName.toLowerCase() : "ul";
-      if (parentTag === "ol") {
-        const index = Array.from(el.parentElement?.children || []).indexOf(el) + 1;
-        return `${index}. ${childrenMd.trim()}\n`;
-      }
-      return `- ${childrenMd.trim()}\n`;
+      const marker = parentTag === "ol"
+        ? `${Array.from(el.parentElement?.children || []).indexOf(el) + 1}. `
+        : "- ";
+      // Continuation lines (a nested list, a second paragraph) indent under the marker, so a
+      // child list stays a child instead of becoming a sibling.
+      const [first, ...rest] = childrenMd.trim().replace(/\n{2,}/g, "\n").split("\n");
+      const pad = " ".repeat(marker.length);
+      return `${marker}${first}${rest.map((l) => `\n${l ? pad + l : ""}`).join("")}\n`;
     }
 
     case "strong":
@@ -196,7 +209,7 @@ export function domToMarkdown(node: Node, baseUri?: string): string {
       return childrenMd.trim() ? `~~${childrenMd.trim()}~~` : "";
 
     case "code":
-      return inlineCode(childrenMd);
+      return inlineCode(el.textContent || ""); // raw text: code spans take no escapes
 
     case "a": {
       const href = cleanUrl(el.getAttribute("href"), baseUri);
