@@ -5,6 +5,7 @@
 **Capture Shard**: `34863@db4` (Published: 2026-10-02, Captured: 2026-10-04)  
 **Duration**: 13m44s  
 **Target Fleet Modules**: NouGen Hardening Loop, Memory Optimization Telemetry, UDCT Safety & Architecture Invariants
+**Model IDs (Antigravity CLI, `agy models`, checked 2026-11-04)**: `gemini-4-argon-low`, `gemini-4-argon-medium`, `gemini-4-argon-high`. `argon_coach_plane.resolve_argon_model()` picks the tier from task complexity, falls back to a tier `agy models` actually serves, and honors `NOUGEN_ARGON_MODEL` as a pin. Re-check this list with `agy models`; it changes.
 
 ---
 
