@@ -315,3 +315,30 @@ def test_dag_to_dict_serializes_lanes():
     d = GamePlanDAG("p", "g", "h", [], [_step("a")], "", 0.0).to_dict()
     assert d["steps"][0]["assigned_lane"] == LaneTier.LOCAL_DAV1D.value
     json.dumps(d)
+
+
+def test_unrated_draft_stays_inside_the_caps():
+    calls = []
+    gov = BudgetGovernor(warmup_argon_calls=0)
+    coach = _coach(gov=gov, argon=lambda s, m: (calls.append(1) or _payload(), 1))
+    with pytest.raises(PermissionError):
+        coach.draft_playbook("g", "{}", "h")  # no complexity given: routine, not an override
+    assert calls == []
+
+
+def test_oversized_claims_are_trimmed_too():
+    coach = _coach()
+    packet, _ = coach.build_mst_projection("goal", [], {}, [f"claim-{i}-" + "c" * 100 for i in range(40)], max_chars=600)
+    assert len(packet) <= 600
+    assert json.loads(packet)["active_lane_claims"]  # the newest that fit are kept
+
+
+def test_duplicate_step_ids_are_rejected():
+    coach = _coach()
+    with pytest.raises(RuntimeError, match="repeats step id"):
+        coach.execute_playbook(GamePlanDAG("p", "g", "h", [], [_step("a"), _step("a")], "", 0.0))
+
+
+def test_nonnumeric_timeout_and_retries_fall_back():
+    dag = _coach(argon=lambda s, m: (_payload(timeout_s="soon", max_local_retries="many"), 1)).draft_playbook("g", "{}", "h")
+    assert dag.steps[0].timeout_s > 0 and dag.steps[0].max_local_retries > 0

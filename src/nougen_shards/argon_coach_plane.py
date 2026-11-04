@@ -213,6 +213,15 @@ def _strip_json_fences(raw: str) -> str:
     return text
 
 
+def _positive_int(value: Any, default: int) -> int:
+    """A model-supplied count or timeout: anything missing, non-numeric, or not positive is the default."""
+    try:
+        n = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return n if n > 0 else default
+
+
 def _tail(text: str, n: int) -> str:
     """The last n characters: a traceback's useful part is at the end, not in the log header."""
     text = text or ""
@@ -221,6 +230,12 @@ def _tail(text: str, n: int) -> str:
 
 def _topological(steps: List["PlayStep"]) -> List["PlayStep"]:
     """Steps in dependency order (stable for ties). Raises on an unknown dependency or a cycle."""
+    seen: Dict[str, int] = {}
+    for s in steps:
+        seen[s.step_id] = seen.get(s.step_id, 0) + 1
+    dupes = sorted(k for k, n in seen.items() if n > 1)
+    if dupes:
+        raise RuntimeError(f"Plan repeats step id(s) {', '.join(dupes)}; each step needs its own id.")
     by_id = {s.step_id: s for s in steps}
     for s in steps:
         for dep in s.depends_on:
@@ -313,6 +328,13 @@ class ArgonHeadCoach:
             packet["ast_signatures"] = {}
             packet["mission_goal"] = goal[: max(0, max_chars // 2)]
             serialized = dump(packet)
+        # Claims last: keep the newest ones that fit, then cut the goal further if even that is too big.
+        while len(serialized) > max_chars and packet["active_lane_claims"]:
+            packet["active_lane_claims"] = packet["active_lane_claims"][1:]
+            serialized = dump(packet)
+        while len(serialized) > max_chars and packet["mission_goal"]:
+            packet["mission_goal"] = packet["mission_goal"][: len(packet["mission_goal"]) // 2]
+            serialized = dump(packet)
         lineage_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
         return serialized, lineage_hash
 
@@ -321,7 +343,7 @@ class ArgonHeadCoach:
         goal: str,
         mst_packet: str,
         lineage_hash: str,
-        complexity_score: float = 1.0,
+        complexity_score: Optional[float] = None,
         is_architectural_fork: bool = False,
         local_fumble_count: int = 0,
         served_models: Optional[List[str]] = None,
@@ -330,10 +352,14 @@ class ArgonHeadCoach:
 
         The budget governor is asked first; a refusal raises PermissionError instead of calling Argon.
         """
-        allowed, reason = self.governor.can_summon_coach(complexity_score, is_architectural_fork, local_fumble_count)
-        if not allowed:
+        # An unrated request counts as routine work: it never reaches the override that skips the caps.
+        rated = complexity_score if complexity_score is not None else _env_num("NOUGEN_ARGON_DEFAULT_COMPLEXITY", 0.5)
+        allowed, reason = self.governor.can_summon_coach(rated, is_architectural_fork, local_fumble_count)
+        # Calling draft_playbook is itself the decision to plan, so only a budget cap refuses it here;
+        # "ROUTED_TO_FREE_SWARM" is advice for callers deciding whether to summon at all.
+        if not allowed and reason.startswith(("BUDGET_", "TOKEN_")):
             raise PermissionError(f"Argon not summoned: {reason}")
-        model = resolve_argon_model(complexity_score, served_models)
+        model = resolve_argon_model(rated, served_models)
         lanes = ", ".join(f"'{lane.value}'" for lane in FIELD_LANES)
         system_spec = (
             f"You are the NouGen Head Coach running on Antigravity Argon ({model}). "
@@ -357,8 +383,8 @@ class ArgonHeadCoach:
             if not verify:
                 # An empty check exits 0 and would "pass" anything.
                 raise ValueError(f"Step {s.get('step_id')} has no verification_cmd; every play needs a real gate.")
-            timeout_s = int(s.get("timeout_s", DEFAULT_TIMEOUT_S) or 0)
-            retries = int(s.get("max_local_retries", DEFAULT_RETRIES) or 0)
+            timeout_s = _positive_int(s.get("timeout_s"), DEFAULT_TIMEOUT_S)
+            retries = _positive_int(s.get("max_local_retries"), DEFAULT_RETRIES)
             steps.append(
                 PlayStep(
                     step_id=s["step_id"],
@@ -367,8 +393,8 @@ class ArgonHeadCoach:
                     objective=s["objective"],
                     prompt_template=s["prompt_template"],
                     verification_cmd=verify,
-                    timeout_s=timeout_s if timeout_s > 0 else DEFAULT_TIMEOUT_S,
-                    max_local_retries=retries if retries > 0 else DEFAULT_RETRIES,
+                    timeout_s=timeout_s,
+                    max_local_retries=retries,
                     depends_on=list(s.get("depends_on", [])),
                 )
             )
