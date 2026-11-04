@@ -992,10 +992,19 @@ class NouGenMsgBus:
         # ours to deliver, and saying so beats an empty dict.
         fleet_nodes = {normalize_fleet_node(n) for n in os.environ.get(
             "NOUGEN_PEER_NODES", "").split(",") if n.strip()}
-        if family in fleet_nodes:
-            if family != (get_current_node() or "").lower():
-                return {"skipped": f"addressed to {family}, not this node"}
+        current_node = (get_current_node() or "").lower()
+        # NOUGEN_PEER_NODES being unset/incomplete used to make a node-name
+        # target match nothing below, falling through to results == {} with
+        # no indication anything was wrong (2026-11-04: connector @blade ->
+        # results.blade == {} even though blade answered the call). Compare
+        # against this node's own name directly so a self-addressed target
+        # always resolves, regardless of that env var's contents.
+        if family == current_node or family in fleet_nodes:
+            if family != current_node:
+                return {"skipped": f"addressed to {family}, not this node ({current_node or 'unknown'})"}
             family, model = "agents", None
+        elif family not in ("claude", "all", "agents", "antigravity", "codex", "ollama", "openrouter"):
+            return {"error": f"unrecognized target {target!r}; nothing delivered"}
 
         if family in ["claude", "all", "agents"]:
             results["claude_pipes"] = AgentPinger.ping_claude(text, envelope)
