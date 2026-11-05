@@ -327,7 +327,7 @@ def find_legacy_stores(roots=None) -> list:
 # rows) so that "wrong store" and "never ingested" become distinguishable, and
 # a divergence fails loud instead of None.
 ENV_VAULT_PROBE = "NOUGEN_VAULT_PROBE"          # "0" disables discovery (tests)
-ENV_VAULT_DIVERGENCE = "NOUGEN_VAULT_DIVERGENCE"  # warn (default) | error | adopt
+ENV_VAULT_DIVERGENCE = "NOUGEN_VAULT_DIVERGENCE"  # adopt (default) | warn | error
 _DIVERGENCE_MODES = ("warn", "error", "adopt")
 
 
@@ -340,11 +340,13 @@ def _probe_enabled() -> bool:
 
 
 def _divergence_mode() -> str:
-    mode = os.getenv(ENV_VAULT_DIVERGENCE, "warn").strip().lower() or "warn"
+    # adopt by default: a key that exists in another live store is returned (read-only, with a
+    # warning) instead of dropped. warn reproduces the old behaviour (log, return None); error raises.
+    mode = os.getenv(ENV_VAULT_DIVERGENCE, "adopt").strip().lower() or "adopt"
     if mode not in _DIVERGENCE_MODES:
-        logger.warning("%s=%r is not one of %s; using 'warn'.",
+        logger.warning("%s=%r is not one of %s; using 'adopt'.",
                        ENV_VAULT_DIVERGENCE, mode, "|".join(_DIVERGENCE_MODES))
-        mode = "warn"
+        mode = "adopt"
     return mode
 
 
