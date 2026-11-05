@@ -327,3 +327,22 @@ non-repetitive outputs from runtime inputs rather than hardcoded content.
 
 First implementation: NOU (nougenai-next `backend/ai_news/udct.py`, script-level
 compiler). Applies to NouGenNews, NouGenFlix, NouGenTube, Phoebus and every agent voice.
+
+### UDCT character layer — Universal Dynamic Character Template
+
+Registry key: `nougen.lexicon.architecture.udct.character.v1` · Class: `ARCHITECTURAL_PATTERN`
+· Ratified by GM 2026-11-05 · Reference: `src/nougen_shards/performer/`
+
+The performance half of UDCT. A digital performer is procedurally driven from shared semantic
+inputs (script, audio, phonemes, emotion, intent, camera, timing, identity), never from
+hardcoded expressions or prerecorded clips: `P(t) = Resolve(I, S, A, E, C, t, σ)`.
+
+- Modules (each `evaluate(context) -> channels`, bounded): eyes, brows, cheeks, mouth (jaw +
+  lips), breathing, chest, shoulders, arms, head, body, hair.
+- Deterministic: no unseeded randomness; any frame can be sampled alone and out of order.
+- Priority: physical requirement (lip closure on m/b/p) > deliberate acting > ambient motion.
+- Rig adapters map channels to a backend (Blender shape keys first; Unreal, Three.js, USD next).
+
+Gate state 2026-11-05: deterministic semantic evaluation passes. Pending: phoneme coarticulation,
+a real NOU facial rig, armature + gaze IK, fixed-timestep hair springs, audio-frame sync, render
+checksums. The 2D triptych stills are visual direction, not a rig.
