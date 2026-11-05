@@ -4,6 +4,7 @@ import os
 import tempfile
 import shutil
 import sys
+from nougen_shards.assumption_check import scan_source
 from nougen_shards.gatekeeper import check_mutation_gate
 
 def sandbox_enabled() -> bool:
@@ -16,6 +17,23 @@ _SHELL_LANGUAGES = frozenset({"shell", "bash", "sh", "zsh", "cmd", "bat", "power
 
 def execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10,
                       trusted: bool = False, bypass_gatekeeper: bool = False):
+    """Run code, then attach the silent-assumption receipt if the code has risky patterns.
+
+    Clean code returns the output unchanged. Risky code keeps its output and
+    gets the receipt appended, so a reader sees the assumption before the number.
+    """
+    result = _execute_sandboxed(code, language=language, timeout=timeout,
+                                trusted=trusted, bypass_gatekeeper=bypass_gatekeeper)
+    if language.lower() in _SHELL_LANGUAGES:
+        return result
+    receipt = scan_source(code)
+    if receipt.clean:
+        return result
+    return f"{result}\n\n{receipt.render()}"
+
+
+def _execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10,
+                       trusted: bool = False, bypass_gatekeeper: bool = False):
     """
     Executes code in a sandboxed subprocess.
     Only stdout is returned; network is disabled if possible.
