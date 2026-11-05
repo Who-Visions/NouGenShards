@@ -184,6 +184,8 @@ class Hair:
 MODULES=(Eyes(),Brows(),Cheeks(),Mouth(),Breathing(),Chest(),Shoulders(),Arms(),Head(),Body(),Hair())
 LIMITS={'head.yaw':(-1.45,1.45),'head.pitch':(-.5,.5),'head.roll':(-.35,.35),
         'body.yaw':(-.8,.8),'eye.gaze_x':(-1,1),'eye.gaze_y':(-1,1)}
+SIGNED=('chest.turn','body.weight_shift','hair.lag','hair.idle')  # signed motion, bounded -1..1
+LIMITS.update({k:(-1,1) for k in SIGNED if k not in LIMITS})
 def evaluate(p:Performance,t:float)->dict[str,float]:
     if not 0<=t<=p.duration:raise ValueError('time outside performance')
     c=Context(p,t); out={}
@@ -195,7 +197,7 @@ def evaluate(p:Performance,t:float)->dict[str,float]:
     return out
 
 def frames(p:Performance,fps=30):
-    count=round(p.duration*fps)
+    count=int(p.duration*fps+1e-9)  # never sample past the end
     return [{'frame':f,'time':round(f/fps,6),'channels':evaluate(p,f/fps)} for f in range(count+1)]
 
 def demo():

@@ -14,4 +14,11 @@ class TestUDCT(unittest.TestCase):
     def test_turn(self):self.assertGreater(evaluate(self.p,4.9)['head.yaw'],0)
     def test_invalid_time(self):
         with self.assertRaises(ValueError):evaluate(self.p,7)
+class TestReview(unittest.TestCase):
+    def test_frames_stay_in_range(self):
+        import dataclasses; p=dataclasses.replace(demo(),duration=6.01)
+        self.assertLessEqual(frames(p)[-1]['time'],p.duration)
+    def test_signed_channels_keep_sign(self):
+        p=demo(); vals=[evaluate(p,t/10)['hair.idle'] for t in range(0,60)]
+        self.assertTrue(min(vals)<0<max(vals))
 if __name__=='__main__':unittest.main()
