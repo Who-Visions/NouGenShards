@@ -55,3 +55,12 @@ def test_sequence_and_in_take_repeat():
 def test_max_seconds():
     errs = validate([Part("intent", text="word " * 40)], rt(policy={"max_seconds": 5}))
     assert any("too long" in e for e in errs)
+
+
+def test_unicode_and_branded_opener():
+    parts = [Part(m, text=t) for m, t in zip(MODULES, ["你好", "今天下雨", "带一把伞", "注意安全", "明天见"])]
+    assert validate(parts, rt()) == []
+    brand = "Noo-ghen A.I. News"
+    errs = validate([Part("identity", text=brand + ", rates fell.")],
+                    rt(history=[brand + ", chips rose."], policy={"keep": [brand]}))
+    assert not [e for e in errs if "opener" in e]

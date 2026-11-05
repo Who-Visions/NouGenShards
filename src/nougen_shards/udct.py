@@ -48,7 +48,7 @@ class Generator(Protocol):
 
 
 def _norm(s: str) -> str:
-    return " ".join(re.sub(r"[^a-z0-9 ]+", " ", s.lower()).split())
+    return " ".join(re.sub(r"[^\w\s]+", " ", s.casefold()).split())
 
 
 def _shingles(s: str) -> set[str]:
@@ -87,7 +87,8 @@ def validate(parts: list[Part], runtime: Runtime) -> list[str]:
     dup = (_shingles(text) & seen) - exempt
     if dup:
         errs.append(f"repeats phrase: {sorted(dup)[0]}")
-    if text and _opener(text) in {_opener(h) for h in hist}:
+    branded = any(k.startswith(_opener(text)) or low.startswith(k) for k in keep if k)
+    if text and not branded and _opener(text) in {_opener(h) for h in hist}:
         errs.append(f"repeats opener: {_opener(text)}")
     total = sum(_seconds(p) for p in parts)
     if (mx := pol.get("max_seconds")) and total > mx:
