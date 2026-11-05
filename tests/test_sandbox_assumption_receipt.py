@@ -7,25 +7,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from nougen_shards import nougen_sandbox  # noqa: E402
 
 
-def _run(code, language="python"):
-    # Stub the subprocess layer: this test is about the receipt, not the runner.
-    with mock.patch.object(nougen_sandbox, "_execute_sandboxed", return_value="42"):
-        return nougen_sandbox.execute_sandboxed(code, language=language, trusted=True,
-                                                bypass_gatekeeper=True)
+def _run(code, language="python", **kwargs):
+    # Stub the subprocess layer: this test is about the gate, not the runner.
+    with mock.patch.object(nougen_sandbox, "_execute_sandboxed", return_value="42") as runner:
+        out = nougen_sandbox.execute_sandboxed(code, language=language, trusted=True,
+                                               bypass_gatekeeper=True, **kwargs)
+    return out, runner
 
 
-def test_clean_code_output_is_unchanged():
-    assert _run("print(6*7)") == "42"
+def test_clean_code_runs_and_returns_output_unchanged():
+    out, runner = _run("print(6*7)")
+    assert out == "42"
+    runner.assert_called_once()
 
 
-def test_risky_code_keeps_output_and_appends_receipt():
-    out = _run("total = df['x'].fillna(0).sum()")
-    assert out.startswith("42")
+def test_risky_code_is_blocked_before_it_runs():
+    out, runner = _run("total = df['x'].fillna(0).sum()")
+    assert out.startswith("Error: blocked by assumption check")
     assert "assumption check: 1 risky pattern" in out
+    runner.assert_not_called()
 
 
-def test_shell_output_is_never_annotated():
-    with mock.patch.object(nougen_sandbox, "_execute_sandboxed", return_value="ok"):
+def test_reviewer_can_allow_risky_code():
+    out, runner = _run("total = df['x'].fillna(0).sum()", allow_assumptions=True)
+    assert out == "42"
+    runner.assert_called_once()
+
+
+def test_shell_runtime_is_not_scanned():
+    with mock.patch.object(nougen_sandbox, "_execute_sandboxed", return_value="ok") as runner:
         out = nougen_sandbox.execute_sandboxed("x=$(d.get k 0)", language="bash",
                                                trusted=True, bypass_gatekeeper=True)
     assert out == "ok"
+    runner.assert_called_once()

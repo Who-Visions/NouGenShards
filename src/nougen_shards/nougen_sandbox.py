@@ -16,20 +16,20 @@ _SHELL_LANGUAGES = frozenset({"shell", "bash", "sh", "zsh", "cmd", "bat", "power
 
 
 def execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10,
-                      trusted: bool = False, bypass_gatekeeper: bool = False):
-    """Run code, then attach the silent-assumption receipt if the code has risky patterns.
+                      trusted: bool = False, bypass_gatekeeper: bool = False,
+                      allow_assumptions: bool = False):
+    """Run code only if it has no silent-assumption patterns (fillna(0), dict defaults of 0, ...).
 
-    Clean code returns the output unchanged. Risky code keeps its output and
-    gets the receipt appended, so a reader sees the assumption before the number.
+    Risky code is refused before it runs, so no side effects happen and the
+    reader gets the receipt instead of a plausible number. A reviewer who has
+    read the findings can pass allow_assumptions=True. Shell runtimes are not scanned.
     """
-    result = _execute_sandboxed(code, language=language, timeout=timeout,
-                                trusted=trusted, bypass_gatekeeper=bypass_gatekeeper)
-    if language.lower() in _SHELL_LANGUAGES:
-        return result
-    receipt = scan_source(code)
-    if receipt.clean:
-        return result
-    return f"{result}\n\n{receipt.render()}"
+    if language.lower() not in _SHELL_LANGUAGES and not allow_assumptions:
+        receipt = scan_source(code)
+        if not receipt.clean:
+            return f"Error: blocked by assumption check; nothing was run.\n{receipt.render()}"
+    return _execute_sandboxed(code, language=language, timeout=timeout,
+                              trusted=trusted, bypass_gatekeeper=bypass_gatekeeper)
 
 
 def _execute_sandboxed(code: str, language: str = "javascript", timeout: int = 10,
