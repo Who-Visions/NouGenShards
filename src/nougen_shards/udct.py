@@ -64,6 +64,13 @@ def _seconds(p: Part) -> float:
     return p.seconds or (len(p.text.split()) / WPS if p.kind == "words" else 0.0)
 
 
+def _sentences(text: str, keep: list[str]) -> list[str]:
+    """Normalized sentences with brand lines cut out first, so "A.I." never splits one."""
+    for k in keep:
+        text = re.sub(re.escape(k), " ", text, flags=re.I)
+    return [n for x in re.split(r"(?<=[.!?])\s+", text) if (n := _norm(x))]
+
+
 def validate(parts: list[Part], runtime: Runtime) -> list[str]:
     """Policy + uniqueness checks. Returns errors; empty means valid."""
     errs: list[str] = []
@@ -73,6 +80,11 @@ def validate(parts: list[Part], runtime: Runtime) -> list[str]:
     spoken = [_norm(p.text) for p in parts if p.kind == "words" and p.text.strip()]
     if len(spoken) != len(set(spoken)):
         errs.append("repeated module dialogue")
+    keep_raw = list(pol.get("keep", []))
+    sents = [x for p in parts if p.kind == "words" for x in _sentences(p.text, keep_raw)]
+    heads = [" ".join(x.split()[:2]) for x in sents if len(x.split()) >= 2]
+    if len(sents) != len(set(sents)) or len(heads) != len(set(heads)):
+        errs.append("repeats itself within the take")
     text = " ".join(p.text for p in parts if p.kind == "words")
     low = _norm(text)
     for ph in pol.get("prohibited", []):
@@ -82,12 +94,14 @@ def validate(parts: list[Part], runtime: Runtime) -> list[str]:
     hist = [h for h in runtime.history if _norm(h) not in keep]
     if _norm(text) in {_norm(h) for h in hist}:
         errs.append("exact repeat of history")
-    exempt = set().union(set(), *(_shingles(k) for k in keep))
-    seen = set().union(set(), *(_shingles(h) for h in hist))
-    dup = (_shingles(text) & seen) - exempt
+    seen = set().union(set(), *(_shingles(x) for h in hist for x in _sentences(h, keep_raw)))
+    dup = set().union(set(), *(_shingles(x) for x in sents)) & seen
     if dup:
         errs.append(f"repeats phrase: {sorted(dup)[0]}")
     branded = any(k.startswith(_opener(text)) or low.startswith(k) for k in keep if k)
+    old = {x for h in hist for x in _sentences(h, keep_raw) if len(x.split()) >= 2}
+    if again := sorted({x for x in sents if x in old and x not in keep}):
+        errs.append(f"repeats line: {again[0]}")
     if text and not branded and _opener(text) in {_opener(h) for h in hist}:
         errs.append(f"repeats opener: {_opener(text)}")
     total = sum(_seconds(p) for p in parts)
