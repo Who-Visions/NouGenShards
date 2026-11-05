@@ -74,3 +74,10 @@ def test_repeated_sentence_heads_in_one_take():
 def test_repeated_line_from_history():
     errs = validate([Part("handoff", text="Fresh words here. Here is how.")], rt(history=["Old intro. Here is how."]))
     assert "repeats line: here is how" in errs
+
+
+def test_dotted_brand_not_split_into_lines():
+    brand = "Noo-ghen A.I. News"
+    errs = validate([Part("identity", text=f"Noo, {brand}. Rates fell.")],
+                    rt(history=[f"It's Noo, {brand}. Chips rose."], policy={"keep": [brand]}))
+    assert not [e for e in errs if "repeat" in e]
