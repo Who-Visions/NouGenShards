@@ -1,5 +1,5 @@
 import unittest
-from nougen_shards.performer.engine import *
+from nougen_shards.performer.engine import LIMITS, demo, evaluate, frames
 class TestUDCT(unittest.TestCase):
     def setUp(self):self.p=demo()
     def test_repeatable(self):self.assertEqual(evaluate(self.p,2.3),evaluate(self.p,2.3))
