@@ -97,3 +97,41 @@ def test_derived_paths_hang_off_the_resolved_dir():
     assert keymaker.CSV_PATH.parent == keymaker.VAULT_DIR
     assert keymaker.SECRETS_JSON_DIR.parent == keymaker.VAULT_DIR
     assert keymaker.DB_PATH.name == keymaker.DB_FILENAME
+
+
+def test_key_in_another_live_store_is_returned_by_default(monkeypatch, tmp_path):
+    """A key that only lives in a non-active store used to be logged and dropped (warn).
+    The default now adopts it read-only, so callers get the key instead of None."""
+    active, other = tmp_path / "active.db", tmp_path / "other.db"
+    monkeypatch.delenv(keymaker.ENV_VAULT_DIVERGENCE, raising=False)
+    monkeypatch.delenv(keymaker.ENV_SECRETS_VAULT, raising=False)  # discovered, not pinned
+    monkeypatch.delenv("ONLY_IN_OTHER", raising=False)
+    monkeypatch.delenv("NOUGEN_ONLY_IN_OTHER", raising=False)
+    monkeypatch.setattr(keymaker, "_probe_enabled", lambda: True)
+    monkeypatch.setattr(keymaker, "resolve_secrets_store",
+                        lambda refresh=False: {"active": active, "live": [{"path": active}, {"path": other}]})
+    rows = {(other, "ONLY_IN_OTHER"): "value-from-other"}
+    monkeypatch.setattr(keymaker, "_read_secret_row", lambda p, k: rows.get((p, k)))
+    assert keymaker._divergence_mode() == "adopt"
+    assert keymaker.get_secret("ONLY_IN_OTHER") == "value-from-other"
+    monkeypatch.setenv(keymaker.ENV_VAULT_DIVERGENCE, "warn")
+    assert keymaker.get_secret("ONLY_IN_OTHER") is None  # the old behaviour, still selectable
+    monkeypatch.delenv(keymaker.ENV_VAULT_DIVERGENCE)
+    monkeypatch.setenv(keymaker.ENV_SECRETS_VAULT, str(tmp_path))  # a pinned store is honoured
+    assert keymaker._divergence_mode() == "warn"
+    assert keymaker.get_secret("ONLY_IN_OTHER") is None
+
+
+def test_active_store_alias_beats_another_store(monkeypatch, tmp_path):
+    """Adopting from another store must not replace a credential the active store holds under
+    its canonical alias (review: GOOGLE_API_KEY vs GEMINI_API_KEY)."""
+    key, aliases = next((k, v) for k, v in keymaker.CANONICAL_ALIASES.items() if v)
+    active, other = tmp_path / "active.db", tmp_path / "other.db"
+    for name in (keymaker.ENV_VAULT_DIVERGENCE, keymaker.ENV_SECRETS_VAULT, key, f"NOUGEN_{key}"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(keymaker, "_probe_enabled", lambda: True)
+    monkeypatch.setattr(keymaker, "resolve_secrets_store",
+                        lambda refresh=False: {"active": active, "live": [{"path": active}, {"path": other}]})
+    rows = {(active, aliases[0]): "current-alias-value", (other, key): "stale-other-value"}
+    monkeypatch.setattr(keymaker, "_read_secret_row", lambda p, k: rows.get((p, k)))
+    assert keymaker.get_secret(key) == "current-alias-value"
