@@ -73,6 +73,10 @@ def validate(parts: list[Part], runtime: Runtime) -> list[str]:
     spoken = [_norm(p.text) for p in parts if p.kind == "words" and p.text.strip()]
     if len(spoken) != len(set(spoken)):
         errs.append("repeated module dialogue")
+    sents = [_norm(x) for p in parts if p.kind == "words" for x in re.split(r"(?<=[.!?])\s+", p.text) if _norm(x)]
+    heads = [" ".join(x.split()[:2]) for x in sents if len(x.split()) >= 2]
+    if len(sents) != len(set(sents)) or len(heads) != len(set(heads)):
+        errs.append("repeats itself within the take")
     text = " ".join(p.text for p in parts if p.kind == "words")
     low = _norm(text)
     for ph in pol.get("prohibited", []):
@@ -88,6 +92,9 @@ def validate(parts: list[Part], runtime: Runtime) -> list[str]:
     if dup:
         errs.append(f"repeats phrase: {sorted(dup)[0]}")
     branded = any(k.startswith(_opener(text)) or low.startswith(k) for k in keep if k)
+    old = {_norm(x) for h in hist for x in re.split(r"(?<=[.!?])\s+", h) if len(_norm(x).split()) >= 2}
+    if again := sorted({x for x in sents if x in old and x not in keep}):
+        errs.append(f"repeats line: {again[0]}")
     if text and not branded and _opener(text) in {_opener(h) for h in hist}:
         errs.append(f"repeats opener: {_opener(text)}")
     total = sum(_seconds(p) for p in parts)

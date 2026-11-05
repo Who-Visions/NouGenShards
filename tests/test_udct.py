@@ -64,3 +64,13 @@ def test_unicode_and_branded_opener():
     errs = validate([Part("identity", text=brand + ", rates fell.")],
                     rt(history=[brand + ", chips rose."], policy={"keep": [brand]}))
     assert not [e for e in errs if "opener" in e]
+
+
+def test_repeated_sentence_heads_in_one_take():
+    parts = [Part(m, text=f"Noo here. Point {m}.") if m != "expression" else Part(m, "gesture") for m in MODULES]
+    assert "repeats itself within the take" in validate(parts, rt())
+
+
+def test_repeated_line_from_history():
+    errs = validate([Part("handoff", text="Fresh words here. Here is how.")], rt(history=["Old intro. Here is how."]))
+    assert "repeats line: here is how" in errs
