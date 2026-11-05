@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from . import keymaker
 from . import structured
+from .lane_header import LaneTools
 from .response_contract import response_metadata
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,17 @@ class ModelBudgetConfig:
 
 class LLMClient(ABC):
     """Abstract base class for all LLM clients."""
+
+    # Tools this lane has. Default is none, so a client must declare tools
+    # before a task that needs them is routed to it.
+    lane_tools: LaneTools = LaneTools("unnamed")
+
+    def _with_lane_header(self, messages: list) -> list:
+        """Prepend the lane's tool header once, so the model knows what it can check."""
+        header = {"role": "system", "content": self.lane_tools.header()}
+        if messages and messages[0] == header:
+            return list(messages)
+        return [header] + list(messages)
 
     @abstractmethod
     def is_alive(self) -> bool:
@@ -505,6 +517,8 @@ def _openrouter_fallback_limit() -> int:
 
 
 class OpenRouterClient(OpenAIClient):
+    lane_tools = LaneTools("openrouter")
+
     """Client for OpenRouter (Unified API)."""
     def __init__(self, api_key: Optional[str] = None):
         super().__init__(api_key=api_key or keymaker.get_secret("OPENROUTER_API_KEY"))
@@ -621,7 +635,7 @@ class OpenRouterClient(OpenAIClient):
     def chat(self, model: str, messages: list, stream: bool = False) -> str:
         if not self.api_key:
             return "Error: OR Key missing."
-        messages = self._inject_persona(messages)
+        messages = self._with_lane_header(self._inject_persona(messages))
         payload = {"model": model, "messages": messages, "stream": stream}
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
@@ -647,7 +661,7 @@ class OpenRouterClient(OpenAIClient):
             content = "Error: OR Key missing."
             meta = response_metadata(model, None, content, None)
             return {"content": content, **meta.to_dict()}
-        messages = self._inject_persona(messages)
+        messages = self._with_lane_header(self._inject_persona(messages))
         payload = {"model": model, "messages": messages, "stream": stream}
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions", data=json.dumps(payload).encode(), method="POST"
@@ -691,7 +705,7 @@ class OpenRouterClient(OpenAIClient):
             return {"content": "Error: OR Key missing.", "model": meta.actual_model,
                     **meta.to_dict()}
 
-        messages = self._inject_persona(messages)
+        messages = self._with_lane_header(self._inject_persona(messages))
         bounded_models = self.bounded_fallback_models(model, fallback_models)
         payload = {
             "model": model,
@@ -908,6 +922,8 @@ def find_best_model_from_list(models: List[str], persona_hint: Optional[str] = N
 
 
 class OllamaClient(LocalLLMClient):
+    lane_tools = LaneTools("ollama")
+
     """Client for local Ollama instance."""
     def __init__(self, base_url: str = "http://127.0.0.1:11434"):
         self.base_url = base_url
@@ -929,6 +945,7 @@ class OllamaClient(LocalLLMClient):
 
     def chat(self, model: str, messages: list, stream: bool = False,
              manual: bool = False) -> str:
+        messages = self._with_lane_header(messages)
         if ":cloud" in model or model.endswith("-cloud") or "/cloud" in model:
             try:
                 import ollama

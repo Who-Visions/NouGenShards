@@ -48,3 +48,12 @@ def test_route_picks_first_lane_that_fits():
 
 def test_route_returns_none_when_no_lane_fits():
     assert route([NEEDS_ARITHMETIC], [BARE, SEARCH]) is None
+
+
+def test_client_prepends_its_lane_header_once():
+    from nougen_shards.models_client import OllamaClient
+    client = OllamaClient.__new__(OllamaClient)
+    client.lane_tools = BARE
+    once = client._with_lane_header([{"role": "user", "content": "2+2?"}])
+    assert once[0] == {"role": "system", "content": BARE.header()}
+    assert client._with_lane_header(once) == once

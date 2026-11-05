@@ -50,6 +50,9 @@ class TestOllamaCloudClient(unittest.TestCase):
         self.assertEqual(content, 'Direct cloud response')
         mock_chat.assert_called_once_with(
             model='gemma4:cloud',
-            messages=[{'role': 'user', 'content': 'Ping'}],
+            messages=[
+                {'role': 'system', 'content': OllamaClient.lane_tools.header()},
+                {'role': 'user', 'content': 'Ping'},
+            ],
             stream=False,
         )
