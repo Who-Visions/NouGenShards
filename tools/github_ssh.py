@@ -9,6 +9,7 @@ Never prints private key material. Exit 0 = healthy, 1 = something to fix.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -64,7 +65,9 @@ def status() -> int:
     print(f"auth        : {'OK' if ok_auth else 'FAIL'} - {msg}")
     print(f"https->ssh  : {'on (global)' if on else 'off'}")
     for r in remotes():
-        tag = "ssh" if "git@" in r else ("ssh via rewrite" if on and "https://github.com/" in r else "https")
+        url = r.split()[1]
+        tag = "ssh" if url.startswith("git@github.com:") else (
+            "ssh via rewrite" if on and url.startswith(REWRITE_VAL) else "https")
         print(f"remote      : {r}  [{tag}]")
     return 0 if ok_auth and on else 1
 
@@ -82,13 +85,18 @@ def setup() -> int:
         print("no public key in ~/.ssh - run: ssh-keygen -t ed25519, then add the .pub at github.com/settings/ssh/new")
         return 1
     if not rewrite_on():
-        run("git", "config", "--global", "--add", REWRITE_KEY, REWRITE_VAL)
+        code, out = run("git", "config", "--global", "--add", REWRITE_KEY, REWRITE_VAL)
+        if code != 0 or not rewrite_on():
+            print(f"could not set the rewrite: {out or code}")
+            return 1
     print("https->ssh rewrite on")
     return test()
 
 
 def undo() -> int:
-    code, out = run("git", "config", "--global", "--unset-all", REWRITE_KEY)
+    # Remove only our value; other aliases under the same key stay.
+    code, out = run("git", "config", "--global", "--unset-all", REWRITE_KEY,
+                    "^" + re.escape(REWRITE_VAL) + "$")
     print("rewrite removed" if code == 0 else f"nothing to remove ({out or code})")
     return 0
 
