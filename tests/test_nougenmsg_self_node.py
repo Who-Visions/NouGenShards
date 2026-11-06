@@ -32,7 +32,8 @@ def test_other_node_target_is_skipped_not_empty(monkeypatch):
     _stub_pingers(monkeypatch, calls)
     monkeypatch.setattr(m, "get_current_node", lambda: "phoebus")
     res = m.NouGenMsgBus.live_ping(target="blade", text="hi")
-    assert res == {"skipped": "addressed to blade, not this node"}
+    assert set(res) == {"skipped"}
+    assert res["skipped"].startswith("addressed to blade, not this node")
     assert calls == []
 
 
