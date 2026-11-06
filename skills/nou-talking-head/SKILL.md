@@ -1,6 +1,6 @@
 ---
 name: nou-talking-head
-description: Use when NOU (the NouGen News anchor) or any fleet character needs to speak on camera — an intro, a news line, a talking-head clip, "make her talk", "lip-sync this", "make it more natural". Runs the method The operator locked on 2026-11-06: one audio-driven OmniAvatar pass from a still and a voice line, chunked at pauses across Hugging Face accounts. Stops the rejected paths (Wav2Lip over a still, animate-then-lip-sync, stacked post effects).
+description: Use when NOU (the NouGen News anchor) or any fleet character needs to speak on camera — an intro, a news line, a talking-head clip, "make her talk", "lip-sync this", "make it more natural". Runs the method the operator locked on 2026-11-06: one audio-driven OmniAvatar pass from a still and a voice line, chunked at pauses across Hugging Face accounts. Stops the rejected paths (Wav2Lip over a still, animate-then-lip-sync, stacked post effects).
 ---
 
 # NOU talking head
@@ -23,7 +23,7 @@ chunk. Run it with the sandbox off: it needs the network and the Keychain.
 
 1. **One pass, audio-driven.** The model moves the face from the voice. Never animate first and
    lip-sync on top, and never lip-sync over a still.
-2. **Don't add effects.** No zoom, grain, crossfades or extra clips unless the operator asks. When he says
+2. **Don't add effects.** No zoom, grain, crossfades or extra clips unless the operator asks. When they say
    "more natural", change one thing and say which.
 3. **Keys by name.** Accounts come from the Keymaker by key name (`ACCOUNTS` in the tool). Never
    print a token value. Listing keys means selecting the `secret_key` column only.
