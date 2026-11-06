@@ -79,3 +79,33 @@ def test_dispatch_screen_input_simulated(monkeypatch):
     assert res_touch["ok"] is True
     res_pad = mod.dispatch_screen_input({"mode": "trackpad", "action": "right_click", "dx": 15, "dy": -10})
     assert res_pad["ok"] is True
+
+
+def test_private_get_routes_require_token(monkeypatch):
+    import importlib
+    import sys
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    monkeypatch.setenv("NOUGEN_REMOTE_TOKEN", "test-token-123")
+    nr = importlib.reload(importlib.import_module("nougen_remote"))
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), nr.RemoteHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        def status(url):
+            try:
+                return urllib.request.urlopen(url, timeout=5).status
+            except urllib.error.HTTPError as e:
+                return e.code
+
+        assert status(base + "/api/v1/inbox") == 401
+        assert status(base + "/api/v1/inbox?token=wrong") == 401
+        assert status(base + "/api/v1/inbox?token=test-token-123") == 200
+        assert status(base + "/api/v1/health") == 200
+    finally:
+        srv.shutdown()

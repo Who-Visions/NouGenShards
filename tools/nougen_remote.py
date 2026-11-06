@@ -22,6 +22,7 @@ import sys
 import time
 import urllib.parse
 import hashlib
+import hmac
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -601,13 +602,15 @@ def remediate_host_health() -> dict:
 
 def remediate_relay_sync() -> dict:
     try:
-        relay_path = "~/Watchtower/NouGen/NouGenRelay"
-        if not os.path.exists(relay_path):
-            relay_path = "~/.nougen"
+        relay_path = os.path.expanduser(os.environ.get("NOUGEN_RELAY_REPO") or "~/Watchtower/NouGen/NouGenRelay")
+        if not os.path.isdir(os.path.join(relay_path, ".git")):
+            return {"ok": False, "error": f"relay repo not found at {relay_path} (set NOUGEN_RELAY_REPO)"}
         cmd = ["git", "-C", relay_path, "fetch", "origin", "main"]
-        subprocess.run(cmd, capture_output=True, timeout=10, creationflags=0x08000000 if platform.system() == "Windows" else 0)
-        inject_to_antigravity("autonomous_relay_sync_triggered", sender="iPhone 14")
-        return {"ok": True, "message": "NouGenRelay fast-forward fetch completed"}
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10, creationflags=0x08000000 if platform.system() == "Windows" else 0)
+        if res.returncode != 0:
+            return {"ok": False, "error": (res.stderr or res.stdout or "git fetch failed").strip()[-300:]}
+        inject_to_antigravity("autonomous_relay_sync_triggered", sender="iPhone")
+        return {"ok": True, "message": "NouGenRelay fetch completed"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -878,7 +881,7 @@ HTML_PWA = """<!DOCTYPE html>
     }
     async function pollInboxStatus() {
       try {
-        const r = await fetch("/api/v1/inbox");
+        const r = await fetch("/api/v1/inbox?token=" + encodeURIComponent(token));
         const d = await r.json();
         const pill = document.getElementById("inbox-pill");
         if (pill && d.recent && d.recent.length) {
@@ -903,7 +906,7 @@ HTML_PWA = """<!DOCTYPE html>
     async function refreshScreenFrame() {
       if (currentMode !== "desktop") return;
       try {
-        const r = await fetch("/api/v1/screen/frame");
+        const r = await fetch("/api/v1/screen/frame?token=" + encodeURIComponent(token));
         const d = await r.json();
         if (d.ok && d.jpeg_b64) {
           document.getElementById("crd-screen-img").src = "data:image/jpeg;base64," + d.jpeg_b64;
@@ -1019,7 +1022,7 @@ HTML_PWA = """<!DOCTYPE html>
 
     async function fetchTelemetry() {
       try {
-        const res = await fetch('/api/v1/telemetry?token=' + token);
+        const res = await fetch('/api/v1/telemetry?token=' + encodeURIComponent(token));
         const data = await res.json();
         if (data.gpu) {
           document.getElementById('gpu-temp').innerText = data.gpu.temp_c + '°C';
@@ -1057,7 +1060,8 @@ HTML_PWA = """<!DOCTYPE html>
       const stream = document.getElementById('chat-stream');
       const div = document.createElement('div');
       div.className = 'msg-bubble msg-agy';
-      div.innerHTML = '<div class="msg-sender" style="color: var(--accent-purple);">⚡ INJECTED INTO ANTIGRAVITY</div>' + text;
+      div.innerHTML = '<div class="msg-sender" style="color: var(--accent-purple);">⚡ INJECTED INTO ANTIGRAVITY</div>';
+      div.appendChild(document.createTextNode(String(text)));
       stream.appendChild(div);
       stream.scrollTop = stream.scrollHeight;
     }
@@ -1187,9 +1191,20 @@ class RemoteHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
 
+    def _get_authorized(self, parsed) -> bool:
+        given = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
+        if not given:
+            given = self.headers.get("Authorization", "").replace("Bearer ", "", 1)
+        return bool(TOKEN) and hmac.compare_digest(given.encode(), TOKEN.encode())
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        # Only the page shell and liveness are public; everything else is private state.
+        if path not in ("/", "/index.html", "/api/v1/health") and not self._get_authorized(parsed):
+            self._send_json({"error": "Unauthorized"}, 401)
+            return
 
         if path in ("/", "/index.html"):
             body = HTML_PWA.encode("utf-8")
