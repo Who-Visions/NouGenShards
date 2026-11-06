@@ -66,6 +66,7 @@ def test_live_chat_uses_model_reasoning_for_tool_selection(monkeypatch):
         return Response()
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("nougen_shards.ollama_host.discover_ollama_url", lambda **kwargs: "http://127.0.0.1:11999")
     result = chat({"messages": [{"role": "user", "content": "Compare two careful approaches to planning a large project."}]})
     assert result["text"] == "These approaches differ in their risk and timing."
     assert result["widgets"] == []

@@ -61,6 +61,7 @@ from .core import capture, mark_shard, compile_recall_packet
 from . import nougen_context
 from . import nougen_sandbox
 from . import evolution
+from . import hardcade_sfx
 from . import skills as skill_registry
 
 from .history import HistoryEngine
@@ -102,6 +103,9 @@ except TypeError:
     # Older builds predate the instructions kwarg; the apply_skills tool
     # still enforces skills, the roster just does not ride the handshake.
     mcp = MCPServer("NouGenShards", dependencies=["mcp"])
+
+# Hardcade SFX: every tool registered below plays its move when it lands.
+hardcade_sfx.install_on(mcp)
 
 # --- Memory Core (Shards) ---
 
@@ -1336,6 +1340,20 @@ def morph_gate(ref: str, claims: List[str]) -> str:
     """
     from .arxiv_radar import run_morph_gate
     res = run_morph_gate(ref=ref, claims=claims)
+    return json.dumps(res, default=str, indent=2)
+
+
+@mcp.tool()
+def morph_atom_catalog(query: str = "", limit: int = 20) -> str:
+    """
+    Catalog already morph_gate-verified (source, claim) pairs into named structural atoms.
+
+    Args:
+        query: optional substring filter over claim/title text.
+        limit: max atoms to return (default 20).
+    """
+    from .nougen_morph_atoms import run_morph_atom_catalog
+    res = run_morph_atom_catalog(query=query, limit=limit)
     return json.dumps(res, default=str, indent=2)
 
 

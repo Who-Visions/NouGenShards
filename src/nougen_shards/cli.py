@@ -11,6 +11,7 @@ import logging
 logger = logging.getLogger("nougen_shards.cli")
 from . import core as shards
 from . import keymaker
+from . import hardcade_sfx
 from .models_client import (
     get_best_available_client, OllamaClient,
     OpenAIClient, AnthropicClient, GeminiClient, HuggingFaceClient, OpenRouterClient, WhoVisionsCloudClient
@@ -1149,10 +1150,15 @@ def cmd_search(args):
 
     # Use Federation for unified search
     sweep_report: dict = {}
+    fast_token = None
     if getattr(args, 'fast', False):
-        shards.FAST_LOCAL.set(True)
-    results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding,
-                                            domain_key=domain_key, sweep_report=sweep_report)
+        fast_token = shards.FAST_LOCAL.set(True)
+    try:
+        results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding,
+                                                domain_key=domain_key, sweep_report=sweep_report)
+    finally:
+        if fast_token is not None:
+            shards.FAST_LOCAL.reset(fast_token)
     dropped = sweep_report.get("lanes_timed_out") or []
     incomplete = bool(dropped or sweep_report.get("errored") or
                       sweep_report.get("tier2_deferred") or sweep_report.get("lanes_skipped"))
@@ -4171,7 +4177,10 @@ def main():
         # Pure pass-through: argparse (3.13+) refuses to let a REMAINDER
         # positional swallow a leading option, so `nougen relay --help` and
         # `nougen relay -h` would die here instead of reaching the engine.
-        cmd_relay(argparse.Namespace(command="relay", relay_args=sys.argv[2:]))
+        hardcade_sfx.run_cli(
+            "relay", sys.argv[2:], cmd_relay,
+            argparse.Namespace(command="relay", relay_args=sys.argv[2:]),
+        )
         return
     if sys.argv[1] == "open":
         cmd_open(argparse.Namespace(command="open", open_args=sys.argv[2:]))
@@ -4190,7 +4199,7 @@ def main():
     # automatically interpret `nougen <query>` as `nougen search "<query>"`
     if len(sys.argv) > 1 and sys.argv[1] not in known_cmds and not sys.argv[1].startswith("-"):
         query_str = " ".join(sys.argv[1:])
-        cmd_search(argparse.Namespace(
+        hardcade_sfx.run_cli("search", [], cmd_search, argparse.Namespace(
             command="search",
             query=query_str,
             semantic=False,
@@ -4221,7 +4230,7 @@ def main():
         "wargame": cmd_wargame, "nlp": cmd_nlp, "stadium": cmd_stadium,
     }
     if args.command in cmds:
-        cmds[args.command](args)
+        hardcade_sfx.run_cli(args.command, sys.argv[2:], cmds[args.command], args)
     else:
         parser.print_help()
 

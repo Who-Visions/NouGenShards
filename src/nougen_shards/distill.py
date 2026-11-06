@@ -241,6 +241,105 @@ def distill_shard(conn: sqlite3.Connection, key: str, llm: Callable, model: str 
     return "done"
 
 
+def extract_structured(title: str, body: str) -> Optional[dict]:
+    """Deterministic, zero-LLM extractor for structured shards (Twitch Helix API endpoints
+    and NouGenStream session summaries). Returns an EXTRACT_SCHEMA-shaped dict or None."""
+    atoms: list[dict] = []
+    entities: list[dict] = []
+    relations: list[dict] = []
+
+    ep_m = re.search(r"(?:^|\n)ENDPOINT:\s*(GET|POST|PATCH|PUT|DELETE)\s+(https://api\.twitch\.tv/helix/([\w/\-]+))", body)
+    if ep_m or title.startswith("Twitch Helix API:"):
+        method = ep_m.group(1) if ep_m else (re.search(r"\((GET|POST|PATCH|PUT|DELETE)\s+", title) or [None, "GET"])[1]
+        url = ep_m.group(2) if ep_m else ""
+        path = "/" + ep_m.group(3) if ep_m else (re.search(r"(/[\w/\-]+)\)", title) or [None, ""])[1]
+        name = re.sub(r"^Twitch Helix API:\s*|\s*\([^)]*\)\s*$", "", title).strip() or path
+        sc_m = re.search(r"(?:^|\n)SCOPES:\s*([^\n]+)", body)
+        scopes = [s.strip() for s in (sc_m.group(1).split(",") if sc_m else []) if s.strip() and s.strip() != "none listed"]
+        entities.extend([
+            {"name": "Twitch Helix API", "kind": "tool"},
+            {"name": "NouGenStream", "kind": "project"},
+            {"name": name, "kind": "concept"},
+        ])
+        relations.append({"src": "NouGenStream", "rel": "uses", "dst": "Twitch Helix API"})
+        relations.append({"src": name, "rel": "part_of", "dst": "Twitch Helix API"})
+        atoms.append({"type": "fact", "text": f"Twitch Helix API endpoint {name} uses {method} {path or url} ({url})."})
+        if scopes:
+            atoms.append({"type": "constraint", "text": f"Twitch Helix API {name} ({method} {path}) requires OAuth scopes: {', '.join(scopes)}."})
+            for sc in scopes[:6]:
+                entities.append({"name": sc, "kind": "concept"})
+                relations.append({"src": name, "rel": "depends_on", "dst": sc})
+        else:
+            atoms.append({"type": "fact", "text": f"Twitch Helix API {name} ({method} {path}) requires an OAuth token with no extra scope."})
+        for line in body.splitlines():
+            s = line.strip()
+            if s.startswith("NOTE :"):
+                atoms.append({"type": "constraint", "text": f"Twitch Helix API {name}: {s[6:].strip()}"})
+            elif len(s) > 25 and not s.startswith(("SOURCE:", "ENDPOINT:", "SCOPES:", "Twitch Helix")) and s != name and len(atoms) < 6:
+                if any(s.startswith(w) for w in ("Starts ", "Gets ", "Creates ", "Updates ", "Deletes ", "Sends ", "Modifies ", "Bans ", "Unbans ", "Resolves ", "Snoozes ", "Searches ")):
+                    atoms.append({"type": "fact", "text": f"Twitch Helix API {name} ({method} {path}): {s}"})
+        return {"atoms": atoms[:8], "entities": entities[:20], "relations": relations[:20]}
+
+    if title.startswith("NouGenStream session ") or "| Frames encoded (live) |" in body:
+        entities.append({"name": "NouGenStream", "kind": "project"})
+        kv = {m.group(1).strip(): m.group(2).strip() for m in re.finditer(r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|$", body, re.M)
+              if m.group(1).strip() and not m.group(1).strip().startswith("-")}
+        dur = kv.get("Duration", "")
+        fps = kv.get("Average capture fps", "")
+        enc = kv.get("Encoder", "")
+        viewers = kv.get("Peak viewers", "0")
+        atoms.append({"type": "event", "text": f"{title} ran for {dur} at {fps} average capture fps with peak viewers {viewers} using encoder {enc}."})
+        if enc and enc != "none":
+            entities.append({"name": enc, "kind": "tool"})
+            relations.append({"src": "NouGenStream", "rel": "uses", "dst": enc})
+        for line in body.splitlines():
+            s = line.strip()
+            if s.startswith(("Viewer backlog drops:", "Policy decisions:", "Privacy mask:", "Model:")):
+                atype = "constraint" if s.startswith(("Policy", "Privacy")) else "fact"
+                atoms.append({"type": atype, "text": f"NouGenStream session telemetry: {s}"})
+                if s.startswith("Model:"):
+                    mod = re.split(r"\.\s", s.split("Model:", 1)[1] + " ", maxsplit=1)[0].strip().rstrip(".")   # keep dotted names like qwen3.5:cloud
+                    if mod and mod != "none":
+                        entities.append({"name": mod, "kind": "tool"})
+                        relations.append({"src": "NouGenStream", "rel": "uses", "dst": mod})
+        return {"atoms": atoms[:8], "entities": entities[:20], "relations": relations[:20]}
+
+    if ("Visual Asset" in title or "Asset Kit" in title or "Visual Pack" in title
+            or "assets/premium/" in body or "NouGenStream-visual-pack" in body):
+        entities.append({"name": "NouGenStream", "kind": "project"})
+        kit_name = "Purple Obsidian Asset Kit" if "Purple Obsidian" in body or "assets/premium/" in body else "NouGenStream Visual Pack"
+        entities.append({"name": kit_name, "kind": "File"})
+        relations.append({"src": kit_name, "rel": "part_of", "dst": "NouGenStream"})
+        atoms.append({"type": "fact", "text": f"{title}: {kit_name} registered for NouGenStream broadcast overlays, icons, splash, Now Playing cards, and stinger transitions."})
+        pal_m = re.findall(r"(#[0-9a-fA-F]{6})", body)
+        if pal_m:
+            uniq_hex = list(dict.fromkeys(h.lower() for h in pal_m))[:8]
+            atoms.append({"type": "constraint", "text": f"{kit_name} color palette anchors: {', '.join(uniq_hex)}."})
+        for m in re.finditer(r"`?((?:[\w\-]+/)*[\w\-]+\.(?:png|svg|ico|webm))`?\s*(?:\(|—|-|:)\s*([^\n]{5,120})", body):
+            fn, desc = m.group(1).strip(), m.group(2).strip(" ):")
+            entities.append({"name": fn, "kind": "File"})
+            relations.append({"src": fn, "rel": "part_of", "dst": kit_name})
+            if len(atoms) < 8:
+                atoms.append({"type": "fact", "text": f"{kit_name} asset {fn}: {desc}"})
+        return {"atoms": atoms[:8], "entities": entities[:20], "relations": relations[:20]}
+
+    return None
+
+
+def distill_structured_shard(conn: sqlite3.Connection, key: str) -> str:
+    """Zero-LLM fast path for structured shards (stream_session, Twitch Helix API).
+    Returns 'done', 'skip', 'unsupported', or 'empty'."""
+    rows = _load_rows([key])
+    item = rows.get(key)
+    if not item or not item.get("content"):
+        return "empty"
+    extracted = extract_structured(str(item.get("title") or ""), str(item["content"]))
+    if not extracted or not extracted.get("atoms"):
+        return "unsupported"
+    return distill_shard(conn, key, lambda _p, _s: extracted, model="deterministic-v1")
+
+
+
 # ------------------------------------------------------------------ L2 / L3
 
 def build_scenes(conn: sqlite3.Connection, llm: Callable, min_shards: int = SCENE_MIN, limit: int = 200) -> int:

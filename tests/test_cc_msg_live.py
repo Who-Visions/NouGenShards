@@ -112,3 +112,69 @@ def test_claude_alias_resolves_only_one_live_registered_session(tmp_path, monkey
     session_id, error = cc_msg.resolve_claude_session("claude")
     assert session_id is None
     assert "More than one" in error
+
+
+def test_endpoint_gone_handles_winerror_2_3_5():
+    err2 = OSError(2, "No such file or directory")
+    err2.winerror = 2
+    assert AgentPinger._endpoint_gone(err2) is True
+
+    err3 = OSError(3, "Path not found")
+    err3.winerror = 3
+    assert AgentPinger._endpoint_gone(err3) is True
+
+    err5 = PermissionError(13, "Access is denied")
+    err5.winerror = 5
+    assert AgentPinger._endpoint_gone(err5) is True
+
+    # Busy pipe or timeout (WinError 231 ERROR_PIPE_BUSY or 121 ERROR_SEM_TIMEOUT) is NOT gone
+    err_busy = OSError(231, "All pipe instances are busy")
+    err_busy.winerror = 231
+    assert AgentPinger._endpoint_gone(err_busy) is False
+
+
+def test_ping_claude_prunes_winerror_5(tmp_path, monkeypatch):
+    import nougen_shards.nougenmsg as nougenmsg
+
+    denied_pipe = r"\\.\pipe\LOCAL\cc-msg-denied"
+    notfound_pipe = r"\\.\pipe\LOCAL\cc-msg-notfound"
+    live_pipe = r"\\.\pipe\LOCAL\cc-msg-live"
+
+    def mock_write(path, raw):
+        if path == denied_pipe:
+            err = PermissionError(13, "Access is denied.")
+            err.winerror = 5
+            raise err
+        if path == notfound_pipe:
+            err = FileNotFoundError(2, "The system cannot find the file specified.")
+            err.winerror = 2
+            raise err
+        return len(raw)
+
+    monkeypatch.setattr(AgentPinger, "_write_windows_named_pipe", staticmethod(mock_write))
+    real_os = nougenmsg.os
+    monkeypatch.setattr(nougenmsg, "os", SimpleNamespace(
+        name="nt", path=real_os.path, environ=real_os.environ, replace=real_os.replace, makedirs=real_os.makedirs,
+    ))
+    monkeypatch.setattr(AgentPinger, "_pipe_retries", staticmethod(lambda: 1))
+
+    registry = tmp_path / "cc_sessions.json"
+    registry.write_text(json.dumps({"sessions": {
+        denied_pipe: {"session_id": "denied-session", "socket": denied_pipe, "token": "tok1"},
+        notfound_pipe: {"session_id": "notfound-session", "socket": notfound_pipe, "token": "tok2"},
+        live_pipe: {"session_id": "live-session", "socket": live_pipe, "token": "tok3"},
+    }}), encoding="utf-8")
+    monkeypatch.setattr(AgentPinger, "_cc_registry_path", staticmethod(lambda: str(registry)))
+    monkeypatch.setenv("NOUGEN_CC_SESSIONS", str(registry))
+    monkeypatch.setenv("NOUGEN_CLAUDE_INBOX", str(tmp_path / "claude_inbox"))
+
+    res = AgentPinger.ping_claude("broadcast ping")
+
+    assert [d["session_id"] for d in res["delivered"]] == ["live-session"]
+    assert denied_pipe in res["pruned"]
+    assert notfound_pipe in res["pruned"]
+
+    # Verify updated registry on disk has only live_pipe left
+    updated_reg = json.loads(registry.read_text(encoding="utf-8"))
+    assert list(updated_reg["sessions"].keys()) == [live_pipe]
+

@@ -58,11 +58,15 @@ dependencies = [
 # Optional because the core substrate never touches YouTube; only the tube
 # tool lazy-imports these, and it degrades with a clear message when absent.
 tube = [
-    "youtube-transcript-api>=0.6",
+    "youtube-transcript-api>=1.0",
     "yt-dlp>=2024.1.1",
 ]
 transcribe = [
     "faster-whisper>=1.1.0",
+]
+# Optional real driver for nougen_shards.browser_toolset; the core is stdlib only.
+browser = [
+    "playwright>=1.48",
 ]
 
 test = [
@@ -85,7 +89,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # War Games scenarios and schema ship with the wheel (nougen wargame list/run).
-nougen_shards = ["wargames/scenarios/*.json", "wargames/schema/*.json"]
+nougen_shards = ["wargames/scenarios/*.json", "wargames/schema/*.json", "sfx/*.json"]
 nougen_verse = ["data/*.json", "data/*.txt", "schemas/*.json"]
 
 [tool.pytest.ini_options]
