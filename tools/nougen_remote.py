@@ -38,6 +38,51 @@ TOKEN = os.environ.get("NOUGEN_REMOTE_TOKEN", "").strip()
 REMOTE_ROOT = os.path.realpath(os.environ.get("NOUGEN_REMOTE_ROOT") or str(Path.home()))
 WORKING_DIR = os.environ.get("NOUGEN_WORKING_DIR", str(Path.home()))
 
+# Google Sign-In: the app gets a signed Google ID token directly from
+# Android's own Credential Manager (real "Sign in with Google" - the native
+# account picker, no redirect broker, no PKCE dance). We verify it the
+# simple way Google itself provides: ask tokeninfo whether it's genuine,
+# check the audience is our client, check the email against our allowlist.
+GOOGLE_CLIENT_ID = os.environ.get("NOUGEN_GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_ALLOWED_EMAILS = {
+    e.strip().lower() for e in os.environ.get("NOUGEN_GOOGLE_ALLOWED_EMAILS", "").split(",") if e.strip()
+}
+_google_token_cache: dict[str, float] = {}  # id_token -> expiry epoch
+_GOOGLE_TOKEN_CACHE_TTL = 300  # seconds; re-check with Google after this
+
+
+def _google_id_token_valid(token: str) -> bool:
+    """Verify a Google ID token the app got from Credential Manager.
+
+    Cached for _GOOGLE_TOKEN_CACHE_TTL so every API call doesn't round-trip
+    to Google. tokeninfo is Google's own free verification endpoint.
+    """
+    if not token or not GOOGLE_CLIENT_ID or not GOOGLE_ALLOWED_EMAILS:
+        return False
+    now = time.time()
+    exp = _google_token_cache.get(token)
+    if exp and exp > now:
+        return True
+    try:
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/tokeninfo?id_token=" + urllib.parse.quote(token),
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            if resp.status != 200:
+                return False
+            info = json.loads(resp.read().decode("utf-8"))
+        if info.get("aud") != GOOGLE_CLIENT_ID:
+            return False
+        if info.get("email_verified") != "true":
+            return False
+        if info.get("email", "").lower() not in GOOGLE_ALLOWED_EMAILS:
+            return False
+        _google_token_cache[token] = now + _GOOGLE_TOKEN_CACHE_TTL
+        return True
+    except Exception:
+        return False
+
 SESSION_HISTORY: list[dict] = []
 MAX_HISTORY_TURNS = 8
 
@@ -1195,14 +1240,22 @@ class RemoteHandler(BaseHTTPRequestHandler):
         given = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
         if not given:
             given = self.headers.get("Authorization", "").replace("Bearer ", "", 1)
-        return bool(TOKEN) and hmac.compare_digest(given.encode(), TOKEN.encode())
+        if not given:
+            return False
+        if TOKEN and hmac.compare_digest(given.encode(), TOKEN.encode()):
+            return True
+        # Not the static token - might be a Google ID token from the app's
+        # Credential Manager sign-in.
+        return _google_id_token_valid(given)
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        # Only the page shell and liveness are public; everything else is private state.
-        if path not in ("/", "/index.html", "/api/v1/health") and not self._get_authorized(parsed):
+        # Only the page shell and liveness are public; everything else is
+        # private state.
+        public_paths = ("/", "/index.html", "/api/v1/health")
+        if path not in public_paths and not self._get_authorized(parsed):
             self._send_json({"error": "Unauthorized"}, 401)
             return
 
