@@ -1751,13 +1751,16 @@ function transcriptEvidence(body, structured) {
   let captured = 0;
   if (s) {
     // nougentube_transcript: {transcript_available, transcript}
-    if (s.transcript_available === true && typeof s.transcript === "string" && s.transcript.trim()) {
-      segments = Math.max(segments, stamps(s.transcript) || 1);
-    }
+    // Every media route returns a decoded `transcript` (subtitles or Whisper);
+    // a non-empty one is retrieval unless the node says transcript_available: false.
+    const hasTranscript = typeof s.transcript === "string" && s.transcript.trim() !== "" && s.transcript_available !== false;
+    if (hasTranscript) segments = Math.max(segments, stamps(s.transcript) || 1);
+    // `sharded` is also true for a captured-stub, so it counts only with a transcript.
+    if (hasTranscript && s.sharded === true) captured = Math.max(captured, 1);
     // nougentube_ingest: {counts: {captured: N}}. "captured-stub" (no transcript)
     // and "skipped-duplicate" are deliberately not evidence.
-    if (Number.isFinite(s.captured)) captured = s.captured;
-    else if (s.counts && Number.isFinite(s.counts.captured)) captured = s.counts.captured;
+    if (Number.isFinite(s.captured)) captured = Math.max(captured, s.captured);
+    else if (s.counts && Number.isFinite(s.counts.captured)) captured = Math.max(captured, s.counts.captured);
   } else {
     const m = String(body || "").match(/"captured"\s*:\s*(\d+)/);
     if (m) captured = Number(m[1]);

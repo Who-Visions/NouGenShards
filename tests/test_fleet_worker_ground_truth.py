@@ -77,3 +77,11 @@ def test_nougentube_requires_retrieval_evidence():
     assert "transcriptEvidence(" in body
     assert "retrieved: false" in body
     assert '"captured-stub"' in SRC  # documented as not evidence
+
+
+def test_media_evidence_reads_transcript_and_sharded():
+    # Codex review on #964: Whisper/native routes return transcript + sharded.
+    start = SRC.index("function transcriptEvidence(")
+    body = SRC[start:SRC.index('__name(transcriptEvidence, "transcriptEvidence");', start)]
+    assert "s.transcript_available !== false" in body
+    assert "hasTranscript && s.sharded === true" in body
