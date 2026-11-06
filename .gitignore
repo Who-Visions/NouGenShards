@@ -219,3 +219,6 @@ docs/handoffs/
 docs/wargame-catalog/
 *tax-audit*
 ops/launchd/
+
+# local git worktree checkouts
+wt/

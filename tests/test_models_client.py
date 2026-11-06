@@ -365,7 +365,11 @@ def test_ollama_batch_embed_fallback(mock_urlopen):
 
 def _fake_gate_with_ps(monkeypatch, resident_ps):
     """Gate that refuses unmeasured models; /api/ps is replaced by resident_ps."""
+    import platform
     from nougen_shards import vram_gate
+    # check_vram routes macOS to darwin_gate (real unified-memory headroom, real /api/ps).
+    # These tests pin the generic gate, so run it as a non-Darwin host on every machine.
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
     monkeypatch.setenv("NOUGEN_VRAM_GATE", "1")  # do not bypass under pytest
     monkeypatch.setattr(vram_gate, "MEASURED_LOAD_GB", {})
     monkeypatch.setattr(vram_gate, "_residents", lambda: resident_ps)

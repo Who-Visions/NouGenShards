@@ -365,12 +365,17 @@ class AgentPinger:
     @staticmethod
     def _endpoint_gone(exc: OSError) -> bool:
         """True only when the pipe/socket does not exist any more (the session
-        ended). Busy, timeout, and refused-while-alive are not 'gone'."""
+        ended) or is permanently unreachable (e.g. ERROR_ACCESS_DENIED when the
+        pipe server runs in another security context or elevation boundary).
+        Transient conditions like busy pipe or wait timeout are NOT 'gone'."""
         win = getattr(exc, "winerror", None)
         if win is not None:
-            return win in (2, 3)  # ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND
+            # 2: ERROR_FILE_NOT_FOUND
+            # 3: ERROR_PATH_NOT_FOUND
+            # 5: ERROR_ACCESS_DENIED (e.g. pipe created in elevated or different user context)
+            return win in (2, 3, 5)
         import errno
-        return getattr(exc, "errno", None) in (errno.ENOENT, errno.ECONNREFUSED)
+        return getattr(exc, "errno", None) in (errno.ENOENT, errno.ECONNREFUSED, errno.EACCES)
 
     @staticmethod
     def enforce_claim_execution(text: str) -> str:
@@ -494,14 +499,19 @@ class AgentPinger:
                         break  # no pipe/socket at all: retrying cannot help
                     time.sleep(AgentPinger._pipe_retry_wait_s())
             if last_exc is not None:
+                is_gone = AgentPinger._endpoint_gone(last_exc)
                 errors.append({"socket": sock, "error": str(last_exc), "winerror": getattr(last_exc, "winerror", None),
-                               "pruned": AgentPinger._endpoint_gone(last_exc)})
-                # Prune ONLY when the endpoint is gone. A busy pipe or a wait
+                               "pruned": is_gone})
+                # Prune when the endpoint is gone or permanently unreachable
+                # (WinError 2/3, WinError 5 Access Denied). A busy pipe or a wait
                 # timeout is the session being mid-turn (2026-09-02 20:36 EDT: a
                 # live session was dropped from the registry on one such timeout).
-                if AgentPinger._endpoint_gone(last_exc):
+                if is_gone:
                     pruned.append(sock)
                     sessions.pop(sock, None)
+                    print(f"[nougenmsg] pruned unreachable Claude endpoint {sock}: {last_exc}", file=sys.stderr, flush=True)
+                else:
+                    print(f"[nougenmsg] delivery error on Claude endpoint {sock} (retained): {last_exc}", file=sys.stderr, flush=True)
         if pruned:
             try:
                 registry["sessions"] = sessions
@@ -693,8 +703,11 @@ class AgentPinger:
         build. Key off the serving machine instead.
         """
         current = get_current_node()
-        machine = current if node in ("local", "", None, current) else node
-        return AgentPinger._OLLAMA_DEFAULTS.get(machine, AgentPinger._OLLAMA_FALLBACK)
+        is_local = node in ("local", "", None, current)
+        machine = current if is_local else node
+        # The slot names a tag on THIS box; a remote node may not hold it.
+        slot = os.environ.get("NOUGEN_LOCAL_E2B_MODEL") if is_local else None
+        return AgentPinger._OLLAMA_DEFAULTS.get(machine, slot or AgentPinger._OLLAMA_FALLBACK)
 
     @staticmethod
     def _drop_model_reply(lane: str, model: str, reply: str,

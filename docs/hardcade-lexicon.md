@@ -303,3 +303,46 @@ will hit it. Credit the origin by leg id — the lane carries no session id, so
 - **PERFECT GUARD** — never steal a method to route around a refusal.
 - **HADOUKEN** — the stolen instrument is persisted (committed, tested), not
   used once and dropped. Otherwise the next session re-derives it.
+
+## Architectural patterns
+
+### UDCT — Universal Dynamic Composition Template
+
+Registry key: `nougen.lexicon.architecture.udct.v1` · Class: `ARCHITECTURAL_PATTERN`
+· Ratified by GM 2026-11-04 · Reference: `src/nougen_shards/udct.py`
+
+A value-driven, modular composition architecture that generates context-aware,
+non-repetitive outputs from runtime inputs rather than hardcoded content.
+
+**Hardcode the contract, never the content.**
+
+| rule | meaning | enforced by |
+|---|---|---|
+| VALUE_DRIVEN | runtime values determine content | `Runtime` → injected generator |
+| MODULE_ADDITIVE | independent modules compose the output | `MODULES` (identity, situation, intent, expression, handoff) |
+| LEXICAL_VARIANCE | reject repeated language | in-take repeats, history exact / 5-gram / opener checks |
+| POLICY_ENFORCED | apply constraints before rendering | `validate()` prohibited, max_seconds, sequence |
+| DETERMINISTIC_EXECUTION | reproducible under pinned inputs and dependencies | seed + model_version in `Runtime` |
+| AUDITABLE_OUTPUT | record provenance, versions, validation | SHA-256 `hash`, attempts, errors |
+
+First implementation: NOU (nougenai-next `backend/ai_news/udct.py`, script-level
+compiler). Applies to NouGenNews, NouGenFlix, NouGenTube, Phoebus and every agent voice.
+
+### UDCT character layer — Universal Dynamic Character Template
+
+Registry key: `nougen.lexicon.architecture.udct.character.v1` · Class: `ARCHITECTURAL_PATTERN`
+· Ratified by GM 2026-11-05 · Reference: `src/nougen_shards/performer/`
+
+The performance half of UDCT. A digital performer is procedurally driven from shared semantic
+inputs (script, audio, phonemes, emotion, intent, camera, timing, identity), never from
+hardcoded expressions or prerecorded clips: `P(t) = Resolve(I, S, A, E, C, t, σ)`.
+
+- Modules (each `evaluate(context) -> channels`, bounded): eyes, brows, cheeks, mouth (jaw +
+  lips), breathing, chest, shoulders, arms, head, body, hair.
+- Deterministic: no unseeded randomness; any frame can be sampled alone and out of order.
+- Priority: physical requirement (lip closure on m/b/p) > deliberate acting > ambient motion.
+- Rig adapters map channels to a backend (Blender shape keys first; Unreal, Three.js, USD next).
+
+Gate state 2026-11-05: deterministic semantic evaluation passes. Pending: phoneme coarticulation,
+a real NOU facial rig, armature + gaze IK, fixed-timestep hair springs, audio-frame sync, render
+checksums. The 2D triptych stills are visual direction, not a rig.

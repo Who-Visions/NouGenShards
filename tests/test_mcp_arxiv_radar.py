@@ -83,6 +83,39 @@ def test_mcp_morph_gate_success(monkeypatch):
     assert res["evidence"]["confidence"] == 1.0
 
 
+def test_mcp_morph_atom_catalog_success(monkeypatch):
+    mock_catalog = MagicMock(return_value={
+        "status": "success",
+        "available": True,
+        "result": {
+            "status": "ok",
+            "dbs_scanned": 3,
+            "count": 1,
+            "atoms": [{
+                "source": "arXiv:2610.40758",
+                "claim": "named-grouping convention lifts accuracy by 14.5 to 16.5 points",
+                "confidence": 1.0,
+                "evidence_type": "paper_body",
+            }],
+        },
+    })
+    monkeypatch.setattr("nougen_shards.nougen_morph_atoms.run_morph_atom_catalog", mock_catalog)
+    res = json.loads(mcp.morph_atom_catalog(query="named-grouping", limit=5))
+    assert res["status"] == "success"
+    assert res["result"]["count"] == 1
+    assert res["result"]["atoms"][0]["confidence"] == 1.0
+    mock_catalog.assert_called_once_with(query="named-grouping", limit=5)
+
+
+def test_mcp_morph_atom_catalog_degraded_without_radar_repo(monkeypatch):
+    def _no_root():
+        return None
+    monkeypatch.setattr("nougen_shards.nougen_morph_atoms.find_radar_root", _no_root)
+    res = json.loads(mcp.morph_atom_catalog())
+    assert res["status"] == "degraded"
+    assert res["available"] is False
+
+
 import pytest
 
 

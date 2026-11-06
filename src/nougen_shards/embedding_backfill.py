@@ -27,6 +27,8 @@ import json
 import glob
 import time
 import struct
+import functools
+import logging
 import sqlite3
 import urllib.request
 from typing import List, Optional
@@ -34,16 +36,32 @@ from typing import List, Optional
 def _normalize_host(h: str) -> str:
     """ollama client target. Handles missing scheme/port and 0.0.0.0 bind addr."""
     from urllib.parse import urlparse
-    h = (h or "").strip() or "http://127.0.0.1:11434"
+    h = (h or "").strip() or "http://127.0.0.1"
     if "://" not in h:
         h = "http://" + h
     h = h.replace("0.0.0.0", "127.0.0.1")  # bind-all is not a connectable target
     if not urlparse(h).port:
-        h = h.rstrip("/") + ":11434"
+        h = h.rstrip("/") + ":" + _discover_port(h.rstrip("/"))
     return h.rstrip("/")
 
 
-OLLAMA_HOST = _normalize_host(os.environ.get("OLLAMA_HOST"))
+def _discover_port(base: str) -> str:
+    """The daemon's port moves on this fleet (11434 and 11436 both seen); probe, then log the fallback."""
+    candidates = [p for p in (os.environ.get("OLLAMA_PORT"), "11434", "11436") if p]
+    for p in candidates:
+        try:
+            urllib.request.urlopen(f"{base}:{p}/api/tags", timeout=1.5)
+            return p
+        except Exception:  # pylint: disable=broad-except
+            continue
+    logging.getLogger(__name__).warning("no ollama daemon answered on %s; using %s", candidates, candidates[0])
+    return candidates[0]
+
+
+@functools.lru_cache(maxsize=1)
+def ollama_host() -> str:
+    """Resolved once per process, on first use, so importing this module never probes the network."""
+    return _normalize_host(os.environ.get("OLLAMA_HOST"))
 
 
 def _keep_alive():
@@ -64,6 +82,11 @@ VRAM_CHECK_EVERY = int(os.environ.get("NOUGEN_VRAM_CHECK_EVERY", "64"))  # rows 
 
 def _vram_used_mib() -> Optional[int]:
     import subprocess
+    import platform
+    if platform.system() == "Darwin":
+        from .darwin_gate import get_darwin_vm_telemetry
+        vm = get_darwin_vm_telemetry()
+        return int((vm.wired_ram_gb + vm.compressor_occupied_gb) * 1024)
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
@@ -78,7 +101,7 @@ def embed(text: str, model: str, timeout: float = 60.0) -> Optional[List[float]]
     """Single embedding via ollama /api/embed. Returns None on failure."""
     body = json.dumps({"model": model, "input": text, "keep_alive": _keep_alive()}).encode("utf-8")
     req = urllib.request.Request(
-        f"{OLLAMA_HOST}/api/embed", data=body,
+        f"{ollama_host()}/api/embed", data=body,
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -105,7 +128,7 @@ def embed_many(texts: List[str], model: str, timeout: float = 180.0) -> Optional
     """
     body = json.dumps({"model": model, "input": texts, "keep_alive": _keep_alive()}).encode("utf-8")
     req = urllib.request.Request(
-        f"{OLLAMA_HOST}/api/embed", data=body,
+        f"{ollama_host()}/api/embed", data=body,
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -137,6 +160,8 @@ def count_pending(vault_dir: str) -> dict:
     for db in _vault_dbs(vault_dir):
         conn = sqlite3.connect(db)
         try:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shards'").fetchone():
+                continue  # archive/side DBs in the vault dir carry no shards table
             total = conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
             pending = conn.execute("SELECT COUNT(*) FROM shards WHERE embedding IS NULL").fetchone()[0]
             out[os.path.basename(db)] = (pending, total)
@@ -147,10 +172,18 @@ def count_pending(vault_dir: str) -> dict:
 
 def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool = True,
                 progress: bool = True) -> dict:
+    import platform
+    if platform.system() == "Darwin":
+        from .darwin_gate import demote_to_background_qos
+        demote_to_background_qos()
+
     conn = sqlite3.connect(db)
     done = 0
     failed = 0
+    deferred: dict = {}
     try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shards'").fetchone():
+            return {"db": os.path.basename(db), "skipped": "no shards table"}
         has_ver = _has_col(conn, "shards", "schema_version")
         conn.execute("PRAGMA busy_timeout=15000;")
         rows = conn.execute(
@@ -169,6 +202,27 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
         # than the embedding it guards. Interval is env-tunable.
         for start in range(0, len(rows), batch):
             chunk = rows[start:start + batch]
+
+            # Darwin Jetsam memory pressure guard: pause if memory is tight
+            if platform.system() == "Darwin":
+                from .darwin_gate import get_memory_pressure_level, PRESSURE_WARNING, get_memory_pressure_name
+                pressure = get_memory_pressure_level()
+                if pressure >= PRESSURE_WARNING:
+                    import logging
+                    # Wait for the pressure to clear and then process THIS chunk; never skip it
+                    # (a skipped chunk stays embedding IS NULL while the run reports success).
+                    deadline = time.monotonic() + float(os.environ.get("NOUGEN_BACKFILL_PRESSURE_WAIT_S", "600"))
+                    while pressure >= PRESSURE_WARNING and time.monotonic() < deadline:
+                        logging.getLogger(__name__).warning(
+                            "darwin_gate: macOS memory pressure is %s (level %s); pausing backfill",
+                            get_memory_pressure_name(pressure), pressure
+                        )
+                        time.sleep(3)
+                        pressure = get_memory_pressure_level()
+                    if pressure >= PRESSURE_WARNING:
+                        deferred = {"deferred": "memory pressure", "remaining": len(rows) - start}
+                        break
+
             if (start // max(batch, 1)) % max(VRAM_CHECK_EVERY // max(batch, 1), 1) == 0:
                 used = _vram_used_mib()
                 if used is not None and used > VRAM_CEILING_MIB:
@@ -201,7 +255,9 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
                 print(f"    {os.path.basename(db)}: {done}/{len(rows)} embedded, {failed} failed", flush=True)
     finally:
         conn.close()
-    return {"db": os.path.basename(db), "embedded": done, "failed": failed}
+    result = {"db": os.path.basename(db), "embedded": done, "failed": failed}
+    result.update(deferred)
+    return result
 
 
 def _flush(conn, batch, has_ver):

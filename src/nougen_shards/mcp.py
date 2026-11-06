@@ -1340,6 +1340,20 @@ def morph_gate(ref: str, claims: List[str]) -> str:
 
 
 @mcp.tool()
+def morph_atom_catalog(query: str = "", limit: int = 20) -> str:
+    """
+    Catalog already morph_gate-verified (source, claim) pairs into named structural atoms.
+
+    Args:
+        query: optional substring filter over claim/title text.
+        limit: max atoms to return (default 20).
+    """
+    from .nougen_morph_atoms import run_morph_atom_catalog
+    res = run_morph_atom_catalog(query=query, limit=limit)
+    return json.dumps(res, default=str, indent=2)
+
+
+@mcp.tool()
 def formal_verify_lean(code: str, allow_sorry: bool = False, timeout_seconds: float = 30.0) -> str:
     """
     Verify a Lean 4 formal mathematical proof against the Lean kernel. Enforces strict zero-placeholder ('no-sorry') standard by default.
