@@ -189,3 +189,156 @@ def test_fumble_halt_escalates_to_local_iris():
     assert res["status"] == "FUMBLE_HALTED"
     assert res["failed_step"] == "step_fail"
     assert "DIAGNOSIS" in res["iris_diagnosis"]
+
+
+# --- Review fixes (agy Argon low/medium/high review, 2026-11-04) -----------------------------
+
+import subprocess
+
+from nougen_shards.argon_coach_plane import GamePlanDAG, PlayStep, resolve_argon_model
+
+
+def _step(step_id, deps=(), cmd="true", retries=1):
+    return PlayStep(step_id=step_id, assigned_lane=LaneTier.LOCAL_DAV1D, target_files=[], objective=step_id,
+                    prompt_template=step_id, verification_cmd=cmd, timeout_s=5, max_local_retries=retries,
+                    depends_on=list(deps))
+
+
+def _coach(gov=None, verify=None, argon=None, worker=None):
+    return ArgonHeadCoach(
+        gov or BudgetGovernor(),
+        argon or (lambda s, m: ("{}", 1)),
+        worker or (lambda lane, p: ("ok", 1)),
+        verify or (lambda cmd, t: (0, "")),
+        lambda *a: None,
+    )
+
+
+def test_mst_packet_stays_valid_json_when_over_budget():
+    coach = _coach()
+    shards = [{"id": i, "title": f"t{i}", "content": "x" * 450, "density_score": 1, "utility_score": 1} for i in range(8)]
+    packet, _ = coach.build_mst_projection("goal", shards, {"a.py": "y" * 1200, "b.py": "z" * 1200}, [], max_chars=1500)
+    assert len(packet) <= 1500
+    data = json.loads(packet)  # a raw character cut would raise here
+    assert data["mission_goal"] == "goal"
+    assert len(data["high_density_shards"]) < 8
+
+
+def test_steps_run_in_dependency_order_even_when_listed_out_of_order():
+    ran = []
+    coach = _coach(worker=lambda lane, p: (ran.append(p) or "ok", 1))
+    dag = GamePlanDAG("p", "g", "h", [], [_step("b", deps=["a"]), _step("a")], "", 0.0)
+    assert coach.execute_playbook(dag)["status"] == "TOUCHDOWN"
+    assert ran == ["a", "b"]
+
+
+def test_unknown_dependency_and_cycle_are_rejected():
+    coach = _coach()
+    with pytest.raises(RuntimeError, match="not in the plan"):
+        coach.execute_playbook(GamePlanDAG("p", "g", "h", [], [_step("a", deps=["ghost"])], "", 0.0))
+    with pytest.raises(RuntimeError, match="cycle"):
+        coach.execute_playbook(GamePlanDAG("p", "g", "h", [], [_step("a", deps=["b"]), _step("b", deps=["a"])], "", 0.0))
+
+
+def test_verify_timeout_is_a_failed_attempt_not_a_crash_and_rollback_runs():
+    cmds = []
+
+    def verify(cmd, t):
+        cmds.append(cmd)
+        if cmd == "git checkout -- .":
+            return 0, "restored"
+        raise subprocess.TimeoutExpired(cmd, t)
+
+    coach = _coach(verify=verify)
+    dag = GamePlanDAG("p", "g", "h", [], [_step("a", cmd="pytest", retries=2)], "git checkout -- .", 0.0)
+    out = coach.execute_playbook(dag)
+    assert out["status"] == "FUMBLE_HALTED"
+    assert [t["exit_code"] for t in out["telemetry"]] == [124, 124]
+    assert out["rollback"]["exit_code"] == 0 and cmds[-1] == "git checkout -- ."
+
+
+def _payload(**step):
+    base = {"step_id": "s", "assigned_lane": LaneTier.LOCAL_DAV1D.value, "objective": "o", "prompt_template": "p",
+            "verification_cmd": "pytest"}
+    base.update(step)
+    return json.dumps({"steps": [base]})
+
+
+def test_draft_rejects_empty_verification_and_clamps_bad_numbers():
+    with pytest.raises(ValueError, match="verification_cmd"):
+        _coach(argon=lambda s, m: (_payload(verification_cmd="  "), 1)).draft_playbook("g", "{}", "h")
+    dag = _coach(argon=lambda s, m: (_payload(timeout_s=0, max_local_retries=-1), 1)).draft_playbook("g", "{}", "h")
+    assert dag.steps[0].timeout_s > 0 and dag.steps[0].max_local_retries > 0
+
+
+def test_draft_asks_the_governor_first():
+    calls = []
+    gov = BudgetGovernor(warmup_argon_calls=0)
+    coach = _coach(gov=gov, argon=lambda s, m: (calls.append(1) or _payload(), 1))
+    with pytest.raises(PermissionError):
+        coach.draft_playbook("g", "{}", "h", complexity_score=0.5)
+    assert calls == []
+
+
+def test_draft_reads_json_wrapped_in_prose_and_names_the_argon_model():
+    dag = _coach(argon=lambda s, m: (f"Here is the plan:\n```json\n{_payload()}\n```\nGood luck.", 1)).draft_playbook(
+        "g", "{}", "h", complexity_score=0.9, served_models=["gemini-4-argon-medium", "gemini-4-argon-high"])
+    assert dag.argon_model == "gemini-4-argon-high"
+
+
+def test_resolve_argon_model_tiers_pin_and_fallback(monkeypatch):
+    monkeypatch.delenv("NOUGEN_ARGON_MODEL", raising=False)
+    assert resolve_argon_model(0.9) == "gemini-4-argon-high"
+    assert resolve_argon_model(0.6) == "gemini-4-argon-medium"
+    assert resolve_argon_model(0.1) == "gemini-4-argon-low"
+    assert resolve_argon_model(0.9, served=["gemini-4-argon-medium"]) == "gemini-4-argon-medium"
+    monkeypatch.setenv("NOUGEN_ARGON_MODEL", "gemini-4-argon-low")
+    assert resolve_argon_model(0.99) == "gemini-4-argon-low"
+
+
+def test_governor_caps_warmup_and_token_share():
+    gov = BudgetGovernor(warmup_argon_calls=1, min_free_token_ratio=0.9)
+    assert gov.can_summon_coach(0.86, False, 0)[0] is True
+    gov.record_call(LaneTier.HEAD_COACH_ARGON, 10)
+    allowed, reason = gov.can_summon_coach(0.86, False, 0)
+    assert allowed is False and reason.startswith("BUDGET_WARMUP_CAP")
+    gov2 = BudgetGovernor(warmup_argon_calls=99, min_free_token_ratio=0.9)
+    gov2.record_call(LaneTier.HEAD_COACH_ARGON, 5000)
+    gov2.record_call(LaneTier.LOCAL_DAV1D, 100)
+    allowed, reason = gov2.can_summon_coach(0.86, False, 0)
+    assert allowed is False and reason.startswith("TOKEN_BUDGET_CAP")
+    assert gov2.can_summon_coach(0.95, False, 0)[0] is True  # the override still wins
+    assert 0 < gov2.free_invocation_ratio < 1
+
+
+def test_dag_to_dict_serializes_lanes():
+    d = GamePlanDAG("p", "g", "h", [], [_step("a")], "", 0.0).to_dict()
+    assert d["steps"][0]["assigned_lane"] == LaneTier.LOCAL_DAV1D.value
+    json.dumps(d)
+
+
+def test_unrated_draft_stays_inside_the_caps():
+    calls = []
+    gov = BudgetGovernor(warmup_argon_calls=0)
+    coach = _coach(gov=gov, argon=lambda s, m: (calls.append(1) or _payload(), 1))
+    with pytest.raises(PermissionError):
+        coach.draft_playbook("g", "{}", "h")  # no complexity given: routine, not an override
+    assert calls == []
+
+
+def test_oversized_claims_are_trimmed_too():
+    coach = _coach()
+    packet, _ = coach.build_mst_projection("goal", [], {}, [f"claim-{i}-" + "c" * 100 for i in range(40)], max_chars=600)
+    assert len(packet) <= 600
+    assert json.loads(packet)["active_lane_claims"]  # the newest that fit are kept
+
+
+def test_duplicate_step_ids_are_rejected():
+    coach = _coach()
+    with pytest.raises(RuntimeError, match="repeats step id"):
+        coach.execute_playbook(GamePlanDAG("p", "g", "h", [], [_step("a"), _step("a")], "", 0.0))
+
+
+def test_nonnumeric_timeout_and_retries_fall_back():
+    dag = _coach(argon=lambda s, m: (_payload(timeout_s="soon", max_local_retries="many"), 1)).draft_playbook("g", "{}", "h")
+    assert dag.steps[0].timeout_s > 0 and dag.steps[0].max_local_retries > 0

@@ -75,7 +75,7 @@ google-auth-oauthlib==1.4.1
     # via nougen-shards (pyproject.toml)
 googleapis-common-protos==1.75.4
     # via google-api-core
-gradio==6.30.0
+gradio==6.31.0
     # via nougen-shards (pyproject.toml)
 gradio-client==2.7.2
     # via
@@ -96,7 +96,7 @@ hf-xet==1.7.0 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or 
     # via huggingface-hub
 httpcore==1.0.9
     # via httpx
-httpcore2==2.14.0 ; sys_platform != 'emscripten'
+httpcore2==2.16.0 ; sys_platform != 'emscripten'
     # via httpx2
 httplib2==0.32.0
     # via
@@ -109,7 +109,7 @@ httpx==0.28.1
     #   huggingface-hub
     #   ollama
     #   safehttpx
-httpx2==2.14.0
+httpx2==2.16.0
     # via
     #   mcp
     #   openai
@@ -189,7 +189,7 @@ pyasn1-modules==0.4.2
     # via google-auth
 pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
     # via cffi
-pydantic==2.14.1
+pydantic==2.14.2
     # via
     #   nougen-shards (pyproject.toml)
     #   fastapi
@@ -198,7 +198,7 @@ pydantic==2.14.1
     #   mcp-types
     #   ollama
     #   openai
-pydantic-core==2.50.1
+pydantic-core==2.50.2
     # via pydantic
 pydub==0.25.1
     # via gradio
@@ -214,7 +214,7 @@ python-multipart==0.0.32
     # via
     #   gradio
     #   mcp
-pytz==2026.5
+pytz==2026.6
     # via gradio
 pywin32==312 ; sys_platform == 'win32'
     # via mcp
@@ -250,7 +250,7 @@ six==1.17.0
     # via python-dateutil
 sniffio==1.3.1
     # via openai
-sqlalchemy==2.0.54
+sqlalchemy==2.1.6
     # via nougen-shards (pyproject.toml)
 sse-starlette==3.4.11
     # via mcp
