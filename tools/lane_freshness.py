@@ -108,17 +108,14 @@ def _derive_threshold_hours(times):
 
 
 def _resolve_handoff_dir():
-    """Mirror nougen_shards.handoff: NOUGEN_HANDOFF_DIR env -> ~/.nougen/handoffs
-    -> legacy repo .handoffs. The CLI writes to the first existing one in that
-    order, so reading anything else measures a dead registry (2026-11-01: the
-    lane sat STALE at 260h while fresh handoffs landed in ~/.nougen/handoffs)."""
+    """Mirror nougen_shards.handoff: NOUGEN_HANDOFF_DIR env, else ~/.nougen/handoffs.
+    The runtime CLI defaults there even before the folder exists, so a legacy
+    repo .handoffs is never the live registry (2026-11-01: the lane sat STALE at
+    260h while fresh handoffs landed in ~/.nougen/handoffs)."""
     env = os.environ.get("NOUGEN_HANDOFF_DIR")
     if env:
         return Path(env)
-    home = Path.home() / ".nougen" / "handoffs"
-    if home.is_dir():
-        return home
-    return REPO / ".handoffs"
+    return Path.home() / ".nougen" / "handoffs"
 
 def check_lanes():
     vault = _resolve_vault_dir()
