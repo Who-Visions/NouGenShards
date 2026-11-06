@@ -343,6 +343,22 @@ def _trust_path() -> Path:
     return home() / "market" / "trusted.json"
 
 
+def _write_private(path: Path, data: bytes) -> None:
+    """Create a credential file readable by its owner only (0600, directory 0700).
+
+    The file is opened with O_EXCL and mode 0600, so no umask-wide copy ever exists on disk.
+    Windows ignores POSIX modes; there the user profile ACL already keeps other accounts out.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+
+
 def publisher_key() -> str:
     """Create this tenant's signing key on first use; return its public half."""
     path = home() / "market" / "publisher.key"
@@ -350,8 +366,7 @@ def publisher_key() -> str:
         key = serialization.load_pem_private_key(path.read_bytes(), password=None)
     else:
         key = Ed25519PrivateKey.generate()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(key.private_bytes(
+        _write_private(path, key.private_bytes(
             serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
         ))
     raw = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
@@ -451,7 +466,7 @@ body:JSON.stringify({target:$('to').value,text:$('m').value})});$('o').textConte
 def console_token() -> str:
     path = home() / "console.token"
     if not path.exists():
-        path.write_text(secrets.token_urlsafe(32), encoding="ascii")
+        _write_private(path, secrets.token_urlsafe(32).encode("ascii"))
     return path.read_text(encoding="ascii").strip()
 
 

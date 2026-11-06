@@ -360,8 +360,11 @@ def _query_one_vault(conf: dict, keywords: list, limit: int) -> tuple:
         # Read-only URI: this connector must never be able to mutate a vault.
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
         try:
-            conn.execute("PRAGMA mmap_size=268435456;")
-            conn.execute("PRAGMA cache_size=-64000;")
+            from ..darwin_gate import get_scaled_sqlite_cache_size, get_scaled_sqlite_mmap_size
+            mmap_bytes = get_scaled_sqlite_mmap_size(268435456)
+            cache_kb = get_scaled_sqlite_cache_size(64000)
+            conn.execute(f"PRAGMA mmap_size={mmap_bytes};")
+            conn.execute(f"PRAGMA cache_size={cache_kb};")
             conn.execute("PRAGMA query_only=ON;")
         except Exception:
             pass
