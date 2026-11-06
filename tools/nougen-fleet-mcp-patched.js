@@ -6031,13 +6031,11 @@ ${body}`,
     return text(body || "(no output)", result.structuredContent);
   },
   async nougenmsg_peers(args, env) {
-    return text(JSON.stringify({
-      peers: [
-        { name: "blade", host: "192.168.1.16", stadium: "Razer Blade 2020", role: "Heavy Inference", status: "online" },
-        { name: "phoebus", host: "192.168.1.78", stadium: "Mac Mini", role: "Backbone", status: "online" },
-        { name: "whoart", host: "192.168.1.187", stadium: "ProArt PX13", role: "Tactical/Edge (Hyperion)", status: "online" }
-      ]
-    }, null, 2));
+    // Peers come from Worker config (NOUGEN_PEERS_JSON), never from source.
+    let peers = [];
+    try { peers = JSON.parse((env && env.NOUGEN_PEERS_JSON) || "[]"); } catch { peers = []; }
+    if (!Array.isArray(peers)) peers = [];
+    return text(JSON.stringify({ peers, source: peers.length ? "NOUGEN_PEERS_JSON" : "unset" }, null, 2));
   },
   async promote_context_to_shard(args, env) {
     const unset = gatewayUnconfigured(env);
