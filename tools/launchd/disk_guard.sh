@@ -2,6 +2,7 @@
 # Phoebus low-disk guard (launchd com.nougen.diskguard, every 5 min).
 # Below 8 GB free: log who is holding space, clear only caches that rebuild themselves, notify.
 # Never touches user files, models, vaults, repos or agent memory.
+setopt null_glob  # an empty or missing cache dir must not abort the whole cleanup
 LOG=~/.nougen/logs/disk_guard.log
 mkdir -p ${LOG:h}
 free_gb() { df -k /System/Volumes/Data | awk 'NR==2{printf "%d", $4/1048576}'; }
