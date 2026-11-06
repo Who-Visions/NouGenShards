@@ -155,7 +155,7 @@ numpy==2.5.0 ; python_full_version >= '3.12'
     #   nougen-shards (pyproject.toml)
     #   gradio
     #   pandas
-oauthlib==4.0.0
+oauthlib==4.0.1
     # via requests-oauthlib
 ollama==0.6.2
     # via nougen-shards (pyproject.toml)
