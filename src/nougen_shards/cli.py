@@ -4185,6 +4185,9 @@ def main():
     if sys.argv[1] == "open":
         cmd_open(argparse.Namespace(command="open", open_args=sys.argv[2:]))
         return
+    if sys.argv[1] in ("auto", "boost", "plan", "compact", "find", "policy", "market", "console"):
+        from . import surface
+        sys.exit(surface.main(sys.argv[1:]))
 
     parser = get_parser()
 
