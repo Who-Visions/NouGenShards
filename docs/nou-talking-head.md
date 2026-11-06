@@ -1,6 +1,6 @@
 # NOU talking head (locked 2026-11-06)
 
-Dave locked this on 2026-11-06 at 10:50 AM EST ("Love it. lock it"). The reference take is
+The operator locked this on 2026-11-06 at 10:50 AM EST ("Love it. lock it"). The reference take is
 `NOU/lipsync/nou_intro_v5_omniavatar.mp4` in Drive. Shard 28080 records the lock.
 
 ## The method
