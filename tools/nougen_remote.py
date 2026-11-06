@@ -505,8 +505,10 @@ def execute_terminal_command(command: str) -> dict:
         elif not os.path.isabs(target_dir):
             target_dir = os.path.normpath(os.path.join(WORKING_DIR, target_dir))
         target_dir = os.path.realpath(target_dir)
-        inside = os.path.commonpath([REMOTE_ROOT, target_dir]) == REMOTE_ROOT
-        if inside and os.path.isdir(target_dir):
+        root = REMOTE_ROOT.rstrip(os.sep) + os.sep
+        if not (target_dir == REMOTE_ROOT or target_dir.startswith(root)):
+            return {"ok": False, "output": f"cd outside {REMOTE_ROOT} is not allowed", "cwd": WORKING_DIR}
+        if os.path.isdir(target_dir):
             WORKING_DIR = target_dir
             return {"ok": True, "output": f"Directory changed to: {WORKING_DIR}", "cwd": WORKING_DIR}
         else:
