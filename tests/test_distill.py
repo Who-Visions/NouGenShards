@@ -215,3 +215,17 @@ def test_distill_structured_shard_for_twitch_and_stream_session(vault):
     assert ak in asset_hits
 
 
+
+
+def test_extract_structured_keeps_dotted_models_and_full_asset_paths():
+    # Review on #961: a dotted model name must survive, and nested asset paths must keep their prefix.
+    s = distill.extract_structured(
+        "NouGenStream session 2026-11-06 01:00 (45m)",
+        "## Resident AI\nModel: qwen3.5:cloud. Tool calls: 5. Directed instructions: 2.")
+    assert s and {"name": "qwen3.5:cloud", "kind": "tool"} in s["entities"]
+    a = distill.extract_structured(
+        "NouGenStream Premium Visual Asset Kit (argon/assets)",
+        "# Kit\n- `assets/premium/overlays/privacy-mode.png`: 1920x1080 RGBA privacy shield overlay\n")
+    names = {e["name"] for e in a["entities"]}
+    assert "assets/premium/overlays/privacy-mode.png" in names
+    assert "overlays/privacy-mode.png" not in names

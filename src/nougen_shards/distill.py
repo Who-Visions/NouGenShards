@@ -298,7 +298,7 @@ def extract_structured(title: str, body: str) -> Optional[dict]:
                 atype = "constraint" if s.startswith(("Policy", "Privacy")) else "fact"
                 atoms.append({"type": atype, "text": f"NouGenStream session telemetry: {s}"})
                 if s.startswith("Model:"):
-                    mod = s.split("Model:", 1)[1].split(".", 1)[0].strip()
+                    mod = re.split(r"\.\s", s.split("Model:", 1)[1] + " ", maxsplit=1)[0].strip().rstrip(".")   # keep dotted names like qwen3.5:cloud
                     if mod and mod != "none":
                         entities.append({"name": mod, "kind": "tool"})
                         relations.append({"src": "NouGenStream", "rel": "uses", "dst": mod})
@@ -315,7 +315,7 @@ def extract_structured(title: str, body: str) -> Optional[dict]:
         if pal_m:
             uniq_hex = list(dict.fromkeys(h.lower() for h in pal_m))[:8]
             atoms.append({"type": "constraint", "text": f"{kit_name} color palette anchors: {', '.join(uniq_hex)}."})
-        for m in re.finditer(r"`?((?:assets/premium/|[\w\-]+/|)[\w\-]+\.(?:png|svg|ico|webm))`?\s*(?:\(|—|-|:)\s*([^\n]{5,120})", body):
+        for m in re.finditer(r"`?((?:[\w\-]+/)*[\w\-]+\.(?:png|svg|ico|webm))`?\s*(?:\(|—|-|:)\s*([^\n]{5,120})", body):
             fn, desc = m.group(1).strip(), m.group(2).strip(" ):")
             entities.append({"name": fn, "kind": "File"})
             relations.append({"src": fn, "rel": "part_of", "dst": kit_name})
