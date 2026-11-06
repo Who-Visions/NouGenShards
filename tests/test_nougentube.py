@@ -131,6 +131,19 @@ def test_dry_run_manifest_writes_no_state_file(monkeypatch, tmp_path):
     assert leftovers == []  # no state file, no anything
 
 
+# ------------------------------------------------------------------- resume
+
+@pytest.mark.parametrize("module", ["tool", "package"])
+def test_real_duplicate_capture_counts_as_stored(module):
+    """Against the real vault: a resumed video re-captures parts already stored."""
+    from nougen_shards import tube as package_tube
+    target = tube if module == "tool" else package_tube
+    body = f"Stored part for the resume path via {module}. " * 20
+    assert target.grid_capture("part one", body, ["youtube"], None) is True
+    assert target.grid_capture("part one", body, ["youtube"], None) is True
+    assert sum(1 for row in _all_rows() if row["title"] == "part one") == 1
+
+
 # ------------------------------------------------------------------- the era
 
 def test_publish_date_lands_in_timestamp_column(monkeypatch):
@@ -171,7 +184,8 @@ def test_oversized_transcript_splits_into_linked_parts(monkeypatch):
     for i, p in enumerate(captured, start=1):
         assert f"(part {i}/{len(captured)})" in p["title"]
         assert len(p["content"]) <= 3000  # every part respects the cap
-        assert f"tube:{VID}" in p["tags"]           # shared linking tag
+        assert f"tube-part:{VID}:{i}/{len(captured)}" in p["tags"]
+        assert (f"tube:{VID}" in p["tags"]) == (i == len(captured))  # dedupe marker lands last
         assert p["ts"] == "2024-05-01T00:00:00Z"    # every part keeps the era
         assert "Raw Capture (Verbatim)" in p["content"]
     assert "First-Pass Extract" in captured[0]["content"]

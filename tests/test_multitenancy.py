@@ -362,9 +362,11 @@ def test_tenant_federation_never_reads_owner_local_vaults(monkeypatch):
 
 
 def test_tenant_cannot_reach_host_or_relay_tools_over_http(tenant_node):
-    """A tenant token on the node's MCP gate may call shard tools only. Relay,
-    messaging, deploy, sandbox and local-scan tools are refused before the MCP
-    server sees them. The owner is not restricted."""
+    """A tenant token on the node's MCP gate gets the full surface scoped to its
+    own root (DECISION 30954): relay, messaging and its own secrets vault pass
+    through, bound to the tenant root. Tools that touch the host machine, the
+    owner's agents, GitHub token or shared session store are refused before the
+    MCP server sees them. The owner is not restricted."""
     reached = []
 
     async def inner(scope, receive, send):
@@ -387,12 +389,14 @@ def test_tenant_cannot_reach_host_or_relay_tools_over_http(tenant_node):
                 "params": {"name": name, "arguments": {}}}
 
     tenant_headers = _auth(tenant_node["token_a"])
-    for blocked in ("relay_open_legs", "nougenmsg", "fleet_send", "dav1d_exec",
-                    "github_repo_read", "context_task_checkpoint", "vault_list"):
+    for blocked in ("fleet_send", "dav1d_exec", "github_repo_read",
+                    "context_task_checkpoint", "ask_rhea", "tunnel_status"):
         r = gated.post("/", headers=tenant_headers, json=call(blocked))
         assert r.status_code == 403, (blocked, r.status_code)
     assert reached == [], "blocked tools reached the MCP server"
 
-    allowed = gated.post("/", headers=tenant_headers, json=call("recall_memory"))
-    assert allowed.status_code == 200
-    assert reached and reached[0]["params"]["name"] == "recall_memory"
+    for scoped in ("recall_memory", "relay_open_legs", "nougenmsg", "vault_list"):
+        allowed = gated.post("/", headers=tenant_headers, json=call(scoped))
+        assert allowed.status_code == 200, (scoped, allowed.status_code)
+    assert [r["params"]["name"] for r in reached] == [
+        "recall_memory", "relay_open_legs", "nougenmsg", "vault_list"]

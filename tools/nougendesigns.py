@@ -298,15 +298,15 @@ def main():
                          'artifacts': sorted(files), 'lintErrors': report['errors']}))
         return int(not report['passed'])
     if args.command == 'diff':
-        a, b = [json.loads(p.read_text()) for p in (args.before, args.after)]
+        a, b = [json.loads(p.read_text(encoding='utf-8')) for p in (args.before, args.after)]
         print(canonical({k: {'before': a.get(k), 'after': b.get(k)} for k in sorted(a.keys() | b.keys()) if a.get(k) != b.get(k)})); return 0
     spec = json.loads(args.spec.read_text(encoding='utf-8'))
     if args.command == 'lint':
-        result = lint(spec, args.css.read_text() if args.css else render(spec)['tokens.css'])
+        result = lint(spec, args.css.read_text(encoding='utf-8') if args.css else render(spec)['tokens.css'])
         print(canonical(result)); return int(not result['passed'])
     files = render(spec)
     if args.command == 'check':
-        stale = [name for name, body in files.items() if not (args.output / name).exists() or (args.output / name).read_text() != body]
+        stale = [name for name, body in files.items() if not (args.output / name).exists() or (args.output / name).read_text(encoding='utf-8') != body]
         print(canonical({'passed': not stale, 'stale': stale})); return int(bool(stale))
     args.output.mkdir(parents=True, exist_ok=True)
     for name, body in files.items():

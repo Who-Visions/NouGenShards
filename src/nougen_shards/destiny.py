@@ -60,11 +60,18 @@ def default_branch() -> str:
 
 
 def db_path() -> Path:
-    raw = os.environ.get("NOUGEN_DESTINY_DB", "").strip()
-    if raw:
-        return Path(raw)
+    """Destinies store for the active identity.
+
+    Owner: ``NOUGEN_DESTINY_DB`` override, else ``<vault>/destinies.db``. A tenant
+    request always resolves inside its own vault; the env override never applies
+    to it, so an operator setting cannot point tenants at the owner's store.
+    """
     from . import core
-    return Path(core.GLOBAL_DIR) / "destinies.db"
+    if not core.is_tenant_context():
+        raw = os.environ.get("NOUGEN_DESTINY_DB", "").strip()
+        if raw:
+            return Path(raw)
+    return Path(core.active_vault_dir()) / "destinies.db"
 
 
 def _now() -> str:
