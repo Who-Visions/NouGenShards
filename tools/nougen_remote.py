@@ -504,7 +504,7 @@ def execute_terminal_command(command: str) -> dict:
             target_dir = os.path.expanduser("~")
         elif not os.path.isabs(target_dir):
             target_dir = os.path.normpath(os.path.join(WORKING_DIR, target_dir))
-        target_dir = os.path.realpath(target_dir)
+        target_dir = os.path.normpath(os.path.realpath(target_dir))
         root = REMOTE_ROOT.rstrip(os.sep) + os.sep
         if not (target_dir == REMOTE_ROOT or target_dir.startswith(root)):
             return {"ok": False, "output": f"cd outside {REMOTE_ROOT} is not allowed", "cwd": WORKING_DIR}
