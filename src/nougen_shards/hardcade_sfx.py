@@ -180,6 +180,19 @@ def _safe_play(key_fn) -> None:
         pass
 
 
+def _reports_failure(result) -> bool:
+    """True when a tool returned normally but its payload says the call failed."""
+    if isinstance(result, dict):
+        if result.get("ok") is False or result.get("success") is False or result.get("isError") is True:
+            return True
+        if str(result.get("status", "")).lower() in ("error", "failed", "failure"):
+            return True
+        return bool(result.get("error"))
+    if isinstance(result, str):
+        return result.lstrip().lower().startswith(("error", "failed"))
+    return False
+
+
 def wrap_tool(fn):
     """Wrap an MCP tool so ``tool:<name>`` plays after the call returns."""
     key = f"tool:{fn.__name__}"
@@ -192,7 +205,7 @@ def wrap_tool(fn):
             except Exception:
                 _safe_play(lambda: "fail")
                 raise
-            _safe_play(lambda: key)
+            _safe_play(lambda: "fail" if _reports_failure(result) else key)
             return result
 
         return async_wrapper
@@ -204,7 +217,7 @@ def wrap_tool(fn):
         except Exception:
             _safe_play(lambda: "fail")
             raise
-        _safe_play(lambda: key)
+        _safe_play(lambda: "fail" if _reports_failure(result) else key)
         return result
 
     return wrapper

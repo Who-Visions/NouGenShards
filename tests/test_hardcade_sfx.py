@@ -157,3 +157,24 @@ def test_install_on_wraps_registered_tools(spawned, home):
 
     assert registered["capture_experience"]("x") == "x"
     assert _names(spawned) == ["hadouken.wav"]
+
+
+def test_tool_failure_payload_plays_fail(monkeypatch):
+    from nougen_shards import hardcade_sfx as sfx
+
+    played = []
+    monkeypatch.setattr(sfx, "play", lambda key: played.append(key) or True)
+
+    def ok_tool():
+        return {"ok": True}
+
+    def bad_tool():
+        return {"ok": False, "error": "nope"}
+
+    def err_text_tool():
+        return "Error: node unreachable"
+
+    sfx.wrap_tool(ok_tool)()
+    sfx.wrap_tool(bad_tool)()
+    sfx.wrap_tool(err_text_tool)()
+    assert played == ["tool:ok_tool", "fail", "fail"]
