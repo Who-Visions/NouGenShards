@@ -63,3 +63,25 @@ def test_health_body_proof_requires_node_json():
     # a JSON object carrying status "ignited" and a node name.
     assert "function healthBodyProvesNode" in SRC
     assert '"ignited"' in SRC
+
+
+def test_dav1d_results_carry_engine_attestation():
+    # 2026-11-06: an ollama dav1d:e2b answer was read as an AGY CLI run of a video.
+    assert "attestEngine(raw)" in _handler("dav1d_exec")
+    assert 'att.engine !== "agy-cli"' in _handler("dav1d_exec")
+    assert "attestEngine(raw)" in _handler("ask_dav1d")
+
+
+def test_nougentube_requires_retrieval_evidence():
+    body = _handler("nougentube")
+    assert "transcriptEvidence(" in body
+    assert "retrieved: false" in body
+    assert '"captured-stub"' in SRC  # documented as not evidence
+
+
+def test_media_evidence_reads_transcript_and_sharded():
+    # Codex review on #964: Whisper/native routes return transcript + sharded.
+    start = SRC.index("function transcriptEvidence(")
+    body = SRC[start:SRC.index('__name(transcriptEvidence, "transcriptEvidence");', start)]
+    assert "s.transcript_available !== false" in body
+    assert "hasTranscript && s.sharded === true" in body
