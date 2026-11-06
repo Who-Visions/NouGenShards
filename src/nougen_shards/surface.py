@@ -261,10 +261,16 @@ def get_plan(plan_id: str) -> dict:
     return plan
 
 
+def _plan_digest(plan: dict) -> str:
+    """Digest of everything approval covers: the goal and the body."""
+    payload = json.dumps({"goal": plan.get("goal", ""), "body": plan.get("body", "")}, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def approve_plan(plan_id: str) -> dict:
     plan = get_plan(plan_id)
     plan["status"] = "approved"
-    plan["digest"] = hashlib.sha256(plan["body"].encode("utf-8")).hexdigest()
+    plan["digest"] = _plan_digest(plan)
     _save(_plan_path(plan_id), plan)
     return plan
 
@@ -276,7 +282,7 @@ def plan_gate(plan_id: str) -> tuple[bool, str]:
         return True, "review skipped by policy"
     if mode == "auto" and not RISK_RE.search(plan["goal"] + " " + plan["body"]):
         return True, "low risk"
-    digest = hashlib.sha256(plan["body"].encode("utf-8")).hexdigest()
+    digest = _plan_digest(plan)
     if plan["status"] == "approved" and hmac.compare_digest(plan.get("digest", ""), digest):
         return True, "approved"
     return False, "needs approval"

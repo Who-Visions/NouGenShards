@@ -157,3 +157,14 @@ def test_console_sends_message(console):
     url, sent = console
     assert _call(url + "/api/message", "tok", json.dumps({"target": "n", "text": "hi"}).encode()) == 200
     assert sent == [("n", "hi")]
+
+
+def test_editing_goal_after_approval_needs_reapproval(tmp_path, monkeypatch):
+    import inspect
+    from nougen_shards import surface
+
+    src = inspect.getsource(surface.plan_gate) + inspect.getsource(surface.approve_plan)
+    assert "_plan_digest(plan)" in src
+    a = surface._plan_digest({"goal": "read logs", "body": "step"})
+    b = surface._plan_digest({"goal": "delete prod", "body": "step"})
+    assert a != b
