@@ -5,6 +5,7 @@ import glob
 import re
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
 from . import core
 
 _HOME = Path.home()
@@ -117,18 +118,22 @@ def get_machine_breakdown(scope='local', period='week'):
 
 def search_shards(query="", limit=40):
     query = (query or "").strip().lower()
-    results = []
 
     words = [re.sub(r'[^a-zA-Z0-9_]', '', w) for w in query.split() if len(re.sub(r'[^a-zA-Z0-9_]', '', w)) > 1]
     fts_expr = ' OR '.join(f'"{w}"*' for w in words) if words else query
 
-    for db_idx in range(1, core.MAX_DB_COUNT + 1):
+    def _query_db_worker(db_idx: int):
         db_path = os.path.join(_shards_dir(), f"nougen_shards_{db_idx}.db")
         if not os.path.exists(db_path):
-            continue
+            return []
+        db_hits = []
         try:
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
             cur = conn.cursor()
+            cur.execute("PRAGMA query_only = 1;")
+            cur.execute("PRAGMA mmap_size = 268435456;")
+            cur.execute("PRAGMA cache_size = -8000;")
+            cur.execute("PRAGMA temp_store = MEMORY;")
 
             if not query:
                 cur.execute(
@@ -136,7 +141,7 @@ def search_shards(query="", limit=40):
                 )
                 rows = cur.fetchall()
                 for r in rows:
-                    results.append({
+                    db_hits.append({
                         "id": r[0],
                         "title": r[1] or f"Memory #{r[0]}",
                         "content": r[2] or "",
@@ -204,7 +209,7 @@ def search_shards(query="", limit=40):
 
                     final_score = min(1.0, score * float(r[3] or 1.0))
 
-                    results.append({
+                    db_hits.append({
                         "id": r[0],
                         "title": r[1] or f"Memory #{r[0]}",
                         "content": r[2] or "",
@@ -217,13 +222,17 @@ def search_shards(query="", limit=40):
             conn.close()
         except Exception:
             pass
+        return db_hits
+
+    with ThreadPoolExecutor(max_workers=core.MAX_DB_COUNT) as executor:
+        all_shards = [h for sub in executor.map(_query_db_worker, range(1, core.MAX_DB_COUNT + 1)) for h in sub]
 
     if query:
-        results.sort(key=lambda x: (x.get("final_score", 0), x.get("id", 0)), reverse=True)
+        all_shards.sort(key=lambda x: (x.get("final_score", 0), x.get("id", 0)), reverse=True)
     else:
-        results.sort(key=lambda x: x.get("id", 0), reverse=True)
+        all_shards.sort(key=lambda x: x.get("id", 0), reverse=True)
 
-    return results[:limit]
+    return all_shards[:limit]
 
 def get_engine_status():
     databases = []
