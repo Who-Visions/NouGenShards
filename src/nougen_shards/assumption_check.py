@@ -61,8 +61,11 @@ def scan_source(source: str) -> AssumptionReceipt:
     lines = source.splitlines()
     findings: List[Finding] = []
     for number, text in enumerate(lines, start=1):
+        # Pair each line with the next so a handler split across lines
+        # ("except Exception:" then "return 0") is still seen as one statement.
+        window = text + ("\n" + lines[number] if number < len(lines) else "")
         for regex, reason in compiled:
-            if regex.search(text):
+            if regex.search(text) or (regex.pattern.startswith(r"\bexcept") and regex.search(window)):
                 findings.append(Finding(number, text, reason))
                 break
     return AssumptionReceipt(scanned_lines=len(lines), findings=tuple(findings))

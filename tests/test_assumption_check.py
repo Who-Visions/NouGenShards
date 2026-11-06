@@ -48,3 +48,10 @@ def test_gate_raises_on_findings_unless_allowed():
 
 def test_gate_passes_clean_source():
     assert gate_report("y = x + 1\n").clean
+
+
+def test_multiline_swallowed_exception_is_caught():
+    from nougen_shards.assumption_check import scan_source
+
+    assert not scan_source("try:\n    x()\nexcept Exception:\n    return 0\n").clean
+    assert scan_source("try:\n    x()\nexcept Exception:\n    raise\n").clean
