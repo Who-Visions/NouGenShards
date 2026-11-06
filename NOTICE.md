@@ -1,12 +1,17 @@
 # Notice
 
 ## Copyright
+
 Copyright © 2020–present Who Visions LLC. All rights reserved.
 
+Who Visions LLC owns the original NouGenShards code and documentation. Components or materials that carry separate copyright, license, or attribution notices remain governed by those notices; this notice does not replace or expand their terms.
+
 ## Trademarks
+
 **Who Visions**, **NouGen**, **NouGenShards**, and **Sol-Ai** are trademarks of Who Visions LLC. All other trademarks are the property of their respective owners.
 
 ## Source-Available Software
+
 This repository contains source-available software. Use is governed by the [Who Visions Source-Available License](./LICENSE.md).
 
 ---
