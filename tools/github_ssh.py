@@ -4,11 +4,13 @@
     python tools/github_ssh.py setup    # add global https->ssh rewrite, then test
     python tools/github_ssh.py test     # ssh -T + ls-remote through the rewrite
     python tools/github_ssh.py undo     # remove the global rewrite
+    python tools/github_ssh.py repos [DIR]  # transport of every repo one level under DIR
 
 Never prints private key material. Exit 0 = healthy, 1 = something to fix.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -21,9 +23,10 @@ SSH_DIR = Path.home() / ".ssh"
 TIMEOUT = 30
 
 
-def run(*cmd: str) -> tuple[int, str]:
+def run(*cmd: str, env: dict | None = None) -> tuple[int, str]:
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT,
+                           env={**os.environ, **env} if env else None)
         return p.returncode, (p.stdout + p.stderr).strip()
     except (OSError, subprocess.TimeoutExpired) as e:
         return 99, str(e)
@@ -47,8 +50,28 @@ def auth() -> tuple[bool, str]:
 
 
 def probe() -> tuple[bool, str]:
-    code, out = run("git", "ls-remote", PROBE_REPO, "HEAD")
-    return code == 0 and len(out.split()) >= 1, out[:120]
+    """ls-remote an https URL and prove it actually went over ssh.
+
+    GIT_TRACE shows the transport git spawned; credential prompts are disabled so an
+    https fallback cannot quietly succeed through the token helper.
+    """
+    code, out = run("git", "-c", "credential.helper=", "ls-remote", PROBE_REPO, "HEAD",
+                    env={"GIT_TRACE": "1", "GIT_TERMINAL_PROMPT": "0"})
+    via_ssh = bool(re.search(r"run_command: .*\bssh\b.*git@github\.com", out))
+    sha = next((l.split()[0] for l in out.splitlines() if l.endswith("\tHEAD")), "")
+    if code == 0 and sha and via_ssh:
+        return True, f"{sha[:12]} via ssh"
+    if code == 0 and sha:
+        return False, f"{sha[:12]} but over https - rewrite not in effect"
+    return False, out.splitlines()[-1][:120] if out else f"exit {code}"
+
+
+def transport(url: str, rewrite: bool) -> str:
+    if url.startswith(("git@github.com:", "ssh://git@github.com/")):
+        return "ssh"
+    if url.startswith(REWRITE_VAL):
+        return "ssh via rewrite" if rewrite else "https"
+    return "other"
 
 
 def remotes() -> list[str]:
@@ -65,10 +88,7 @@ def status() -> int:
     print(f"auth        : {'OK' if ok_auth else 'FAIL'} - {msg}")
     print(f"https->ssh  : {'on (global)' if on else 'off'}")
     for r in remotes():
-        url = r.split()[1]
-        tag = "ssh" if url.startswith("git@github.com:") else (
-            "ssh via rewrite" if on and url.startswith(REWRITE_VAL) else "https")
-        print(f"remote      : {r}  [{tag}]")
+        print(f"remote      : {r}  [{transport(r.split()[1], on)}]")
     return 0 if ok_auth and on else 1
 
 
@@ -101,9 +121,27 @@ def undo() -> int:
     return 0
 
 
+def repos(root: str | None = None) -> int:
+    """One level deep only - never walk a whole tree like Outpost."""
+    base = Path(root) if root else Path.cwd().parent
+    on = rewrite_on()
+    bad = 0
+    for d in sorted(p for p in base.iterdir() if (p / ".git").exists()):
+        code, out = run("git", "-C", str(d), "remote", "-v")
+        urls = sorted({l.split()[1] for l in out.splitlines() if l.strip()}) if code == 0 else []
+        for u in urls or ["(no remote)"]:
+            t = transport(u, on) if urls else "-"
+            bad += t == "https"
+            print(f"{t:16} {d.name:28} {u}")
+    print(f"{bad} github https remote(s) not covered" if bad else "all github remotes use ssh")
+    return 1 if bad else 0
+
+
 def main(argv: list[str]) -> int:
     cmds = {"status": status, "test": test, "setup": setup, "undo": undo}
     cmd = argv[1] if len(argv) > 1 else "status"
+    if cmd == "repos":
+        return repos(argv[2] if len(argv) > 2 else None)
     if cmd not in cmds:
         print(__doc__)
         return 2

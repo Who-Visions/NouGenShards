@@ -16,9 +16,17 @@ python tools/github_ssh.py status   # keys, live auth, rewrite on/off, this repo
 python tools/github_ssh.py setup    # turn on the rewrite, then test
 python tools/github_ssh.py test     # ssh -T plus a real ls-remote through the rewrite
 python tools/github_ssh.py undo     # turn the rewrite off
+python tools/github_ssh.py repos ..  # transport of every repo one level under a folder
 ```
 
 Exit 0 means healthy. It never prints private key material.
+
+`test` proves the transport, not just the result. It reads an `https://` URL with the
+credential helper and prompts switched off, then checks git's own trace for the `ssh`
+process. A read that worked over HTTPS fails with "over https - rewrite not in effect".
+
+`repos` looks one level deep only, never a whole tree (Rule 0.4). Point it at `Outpost`
+to see every checkout's remotes; it exits 1 if any GitHub remote would still use HTTPS.
 
 ## How it is wired
 
