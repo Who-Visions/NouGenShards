@@ -53,7 +53,7 @@ You are an agent lane entering the GM's NouGen fleet. This file exists because y
 
 ## 7. Scope discipline
 
-- Work from the recovered **155 open relay legs** unless the GM says otherwise. Do not chase the full registry (~6,200 records) on your own initiative.
+- Work from the recovered **155 open relay legs** unless the GM says otherwise. Do not chase the full registry on your own initiative.
 - Known deferred items stay deferred until the GM raises them (e.g., the `nougenai` org GitHub install for the tracker repo).
 - Proposals stay inside his stated scope. Ask before anything speculative or irreversible.
 
@@ -71,4 +71,4 @@ Assuming cloud-style sync/replication · treating a dark machine as an outage ·
 
 ---
 
-*Source: relay leg `20261023T071744Z__meta-app__g-whoentertains` (filed at the GM's direction). Amendments go through the GM only.*
+*Source: a GM-directed relay leg, 2026-10-23. Amendments go through the GM only.*
