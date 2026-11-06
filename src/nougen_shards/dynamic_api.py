@@ -5,6 +5,7 @@ import glob
 import re
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from . import core
 
@@ -225,7 +226,7 @@ def search_shards(query="", limit=40):
         return db_hits
 
     with ThreadPoolExecutor(max_workers=core.MAX_DB_COUNT) as executor:
-        all_shards = [h for sub in executor.map(_query_db_worker, range(1, core.MAX_DB_COUNT + 1)) for h in sub]
+        all_shards = [h for sub in (f.result() for f in [executor.submit(contextvars.copy_context().run, _query_db_worker, i) for i in range(1, core.MAX_DB_COUNT + 1)]) for h in sub]
 
     if query:
         all_shards.sort(key=lambda x: (x.get("final_score", 0), x.get("id", 0)), reverse=True)
