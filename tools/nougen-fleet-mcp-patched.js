@@ -1719,6 +1719,52 @@ function toolError(message) {
   return { content: [{ type: "text", text: "Error: " + message }], isError: true };
 }
 __name(toolError, "toolError");
+// Engine attestation (2026-11-06): blade's Dav1d routes return JSON naming the
+// engine that actually ran ("agy-cli" or "ollama" + model). Passed through raw,
+// a caller read a dav1d:e2b persona answer as an AGY CLI analysis of a video.
+// Every Dav1d result now leads with the engine, and says plainly when it was a
+// model answer with no tools rather than a CLI run.
+function attestEngine(raw) {
+  let p = null;
+  try { p = JSON.parse(raw); } catch (e) {}
+  const engine = p && typeof p.engine === "string" ? p.engine : null;
+  const model = p && typeof p.model === "string" ? p.model : null;
+  let header;
+  if (engine === "agy-cli") {
+    header = `[engine: agy-cli (real CLI run), exit ${p.exit_code ?? "?"}, host ${p.host ?? "?"}]`;
+  } else if (engine === "ollama") {
+    header = `[engine: ollama/${model ?? "?"}: a local model answer, NOT an AGY CLI run; it had no tools, no web and no video access, so treat any claims about external content as unverified]`;
+  } else {
+    header = "[engine: unattested: the node did not say what ran; treat this as unverified]";
+  }
+  return { header, engine, model, attested: engine !== null, parsed: p };
+}
+__name(attestEngine, "attestEngine");
+// Source verification for media routes: a transcript counts as retrieved only
+// when it carries real timestamped segments, and an ingest only when the node
+// reports captured shards. Anything else is not evidence of retrieval.
+function transcriptEvidence(body, structured) {
+  let s = structured && typeof structured === "object" ? structured : null;
+  if (!s) { try { const p = JSON.parse(body); if (p && typeof p === "object") s = p; } catch (e) {} }
+  const stamps = /* @__PURE__ */ __name((t) => (String(t || "").match(/\[?\b\d{1,2}:\d{2}(?::\d{2})?\]?\s+\S/g) || []).length, "stamps");
+  let segments = (String(body || "").match(/^\s*\[?\d{1,2}:\d{2}(?::\d{2})?\]?\s+\S/gm) || []).length;
+  let captured = 0;
+  if (s) {
+    // nougentube_transcript: {transcript_available, transcript}
+    if (s.transcript_available === true && typeof s.transcript === "string" && s.transcript.trim()) {
+      segments = Math.max(segments, stamps(s.transcript) || 1);
+    }
+    // nougentube_ingest: {counts: {captured: N}}. "captured-stub" (no transcript)
+    // and "skipped-duplicate" are deliberately not evidence.
+    if (Number.isFinite(s.captured)) captured = s.captured;
+    else if (s.counts && Number.isFinite(s.counts.captured)) captured = s.counts.captured;
+  } else {
+    const m = String(body || "").match(/"captured"\s*:\s*(\d+)/);
+    if (m) captured = Number(m[1]);
+  }
+  return { segments, captured, verified: segments > 0 || captured > 0 };
+}
+__name(transcriptEvidence, "transcriptEvidence");
 // Freshness signal for shard reads (relay leg 20260831T235317Z, item 4): the
 // blade/Space split-brain history means "which node answered" matters as
 // much as "when" - a recall that quietly hit a lagging replica should be
@@ -5260,7 +5306,14 @@ ${body}`,
       });
       const raw = await res.text();
       if (!res.ok) return toolError("dav1d /dav1d/exec " + res.status + ": " + raw.slice(0, 300));
-      return { content: [{ type: "text", text: raw }] };
+      const att = attestEngine(raw);
+      const structured = { engine: att.engine, model: att.model, attested: att.attested, agy_cli: att.engine === "agy-cli" };
+      // This tool promises an AGY CLI execution; anything else answering is a
+      // failure to deliver that, not a success with a different engine.
+      if (att.engine !== "agy-cli") {
+        return { content: [{ type: "text", text: "Error: dav1d_exec did not run the AGY CLI. " + att.header + "\n" + raw }], structuredContent: structured, isError: true };
+      }
+      return { content: [{ type: "text", text: att.header + "\n" + raw }], structuredContent: structured };
     } catch (err) {
       if (err.name === "AbortError") {
         return toolError(`dav1d_exec timed out waiting on blade (client bound ${innerTimeoutS}s + ${bufferMs}ms buffer) — Dav1d's own ${innerTimeoutS}s bound should have answered first; check blade's node directly if this recurs`);
@@ -5303,7 +5356,11 @@ ${body}`,
         return out;
       }
       if (!res.ok) return toolError("ask_dav1d /dav1d/ask " + res.status + ": " + raw.slice(0, 300));
-      return { content: [{ type: "text", text: raw }] };
+      const att = attestEngine(raw);
+      return {
+        content: [{ type: "text", text: att.header + "\n" + raw }],
+        structuredContent: { engine: att.engine, model: att.model, attested: att.attested, agy_cli: att.engine === "agy-cli" }
+      };
     } catch (err) {
       if (err.name === "AbortError") return toolError(`ask_dav1d timed out after ${timeoutS}s waiting on blade's ollama lane (cold load can take 5-30s; raise timeout or check ollama on blade)`);
       return toolError("ask_dav1d unreachable: " + (err.message || String(err)));
@@ -5567,55 +5624,46 @@ ${body}`,
     if (unset) return toolError(unset);
     const url = args.url || args.source;
     if (!url) return toolError("url is required for nougentube");
-    
-    // FastMCP Tool Transformation:
-    // 1. Native nougentube across fleet (Phoebus / Blade)
-    try {
-      const res = await shardCall(env, "nougentube", { url });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-
-    // 2. Subtitle extraction (nougentube_transcript on Phoebus / Blade / Space)
-    try {
-      const res = await shardCall(env, "nougentube_transcript", { url });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-
-    // 3. Media transcribe fallback
-    try {
-      const res = await shardCall(env, "transcribe_media", { source: url, url, language: args.language, whisper_model: args.whisper_model });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-
-    // 4. Whisper transcription fallback
-    try {
-      const res = await shardCall(env, "nougen_media_transcribe", {
-        url,
-        language: args.language || null,
-        whisper_model: args.whisper_model || "tiny",
-        auto_shard: args.auto_shard !== false
-      });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-
-    // 5. Grid YouTube ingest fallback
-    try {
-      const res = await shardCall(env, "youtube_ingest", {
-        url,
-        extract_chars: 2000,
-        shard: args.auto_shard !== false
-      });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-      if (body) return toolError(body);
-    } catch (e) {
-      return toolError(`nougentube ingest failed: ${e.message || String(e)}`);
+    const shard = args.auto_shard !== false;
+    // Each route must PROVE retrieval: timestamped transcript segments, or a node
+    // report of captured shards. A route that answers without that evidence (or
+    // a gateway 524) is recorded as failed and the next independent route runs;
+    // nothing is ever returned as retrieved without evidence.
+    const routes = [
+      ["nougentube", { url }],
+      ["nougentube_transcript", { url }],
+      ["transcribe_media", { source: url, url, language: args.language, whisper_model: args.whisper_model }],
+      ["nougen_media_transcribe", { url, language: args.language || null, whisper_model: args.whisper_model || "tiny", auto_shard: shard }],
+      ["youtube_ingest", { url, extract_chars: 2000, shard }]
+    ];
+    const failures = [];
+    for (const [tool, payload] of routes) {
+      try {
+        const res = await shardCall(env, tool, payload);
+        const body = (res.content || []).map((c) => c.text || "").join("\n");
+        if (res.isError || !body || body.includes("unknown tool")) {
+          failures.push(`${tool}: ${res.isError ? body.slice(0, 160) || "error" : body ? "unknown tool on node" : "empty reply"}`);
+          continue;
+        }
+        const ev = transcriptEvidence(body, res.structuredContent);
+        if (!ev.verified) {
+          failures.push(`${tool}: answered without transcript segments or captured shards (not evidence of retrieval)`);
+          continue;
+        }
+        const header = ev.segments > 0
+          ? `[transcript verified: ${ev.segments} timestamped segment(s) via ${tool}]`
+          : `[ingest verified: ${ev.captured} shard(s) captured on the node via ${tool}]`;
+        const structured = { ...(res.structuredContent || {}), retrieved: true, route: tool, segments: ev.segments, captured: ev.captured, failed_routes: failures };
+        return text(header + "\n" + body, structured);
+      } catch (e) {
+        failures.push(`${tool}: ${(e && e.message) || String(e)}`.slice(0, 200));
+      }
     }
-    return toolError("nougentube: all media and transcript routes failed");
+    return {
+      content: [{ type: "text", text: "Error: nougentube retrieved nothing; no route returned a transcript or captured shards. Nothing about this video is verified.\n" + failures.map((f) => "- " + f).join("\n") }],
+      structuredContent: { retrieved: false, failed_routes: failures },
+      isError: true
+    };
   },
   async transcribe_media(args, env) {
     const unset = gatewayUnconfigured(env);

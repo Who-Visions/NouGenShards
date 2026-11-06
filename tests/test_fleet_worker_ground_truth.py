@@ -63,3 +63,17 @@ def test_health_body_proof_requires_node_json():
     # a JSON object carrying status "ignited" and a node name.
     assert "function healthBodyProvesNode" in SRC
     assert '"ignited"' in SRC
+
+
+def test_dav1d_results_carry_engine_attestation():
+    # 2026-11-06: an ollama dav1d:e2b answer was read as an AGY CLI run of a video.
+    assert "attestEngine(raw)" in _handler("dav1d_exec")
+    assert 'att.engine !== "agy-cli"' in _handler("dav1d_exec")
+    assert "attestEngine(raw)" in _handler("ask_dav1d")
+
+
+def test_nougentube_requires_retrieval_evidence():
+    body = _handler("nougentube")
+    assert "transcriptEvidence(" in body
+    assert "retrieved: false" in body
+    assert '"captured-stub"' in SRC  # documented as not evidence
