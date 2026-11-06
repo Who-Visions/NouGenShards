@@ -38,51 +38,47 @@ TOKEN = os.environ.get("NOUGEN_REMOTE_TOKEN", "").strip()
 REMOTE_ROOT = os.path.realpath(os.environ.get("NOUGEN_REMOTE_ROOT") or str(Path.home()))
 WORKING_DIR = os.environ.get("NOUGEN_WORKING_DIR", str(Path.home()))
 
-# Google Sign-In: same identity broker shards/fleet.nougenai.com already runs
-# (nougen-fleet-mcp Worker, Google OAuth + GOOGLE_ALLOWED_EMAILS). A client here
-# authenticates there (PKCE authorization-code flow) and hands us the resulting
-# bearer; we verify it by using it against that broker, so the allowlist lives
-# in exactly one place, not duplicated locally.
-FLEET_ORIGIN = os.environ.get("NOUGEN_FLEET_ORIGIN", "https://fleet.nougenai.com").rstrip("/")
-ANDROID_PACKAGE = os.environ.get("NOUGEN_ANDROID_PACKAGE", "com.nougen.remote")
-ANDROID_CERT_SHA256 = os.environ.get(
-    "NOUGEN_ANDROID_CERT_SHA256",
-    "40:BD:5A:79:7A:95:9A:8D:DA:4E:CE:ED:05:56:79:CA:8A:EC:96:04:B0:A5:61:40:E2:BE:73:DC:3A:7D:6B:95",
-)
-_fleet_bearer_cache: dict[str, float] = {}  # token -> expiry epoch
-_FLEET_BEARER_CACHE_TTL = 300  # seconds; re-check with the broker after this
+# Google Sign-In: the app gets a signed Google ID token directly from
+# Android's own Credential Manager (real "Sign in with Google" - the native
+# account picker, no redirect broker, no PKCE dance). We verify it the
+# simple way Google itself provides: ask tokeninfo whether it's genuine,
+# check the audience is our client, check the email against our allowlist.
+GOOGLE_CLIENT_ID = os.environ.get("NOUGEN_GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_ALLOWED_EMAILS = {
+    e.strip().lower() for e in os.environ.get("NOUGEN_GOOGLE_ALLOWED_EMAILS", "").split(",") if e.strip()
+}
+_google_token_cache: dict[str, float] = {}  # id_token -> expiry epoch
+_GOOGLE_TOKEN_CACHE_TTL = 300  # seconds; re-check with Google after this
 
 
-def _fleet_bearer_valid(token: str) -> bool:
-    """Ask the fleet Google-OAuth broker whether this bearer still works.
+def _google_id_token_valid(token: str) -> bool:
+    """Verify a Google ID token the app got from Credential Manager.
 
-    Cached for _FLEET_BEARER_CACHE_TTL so every API call doesn't round-trip
-    to fleet.nougenai.com. A fleet_whoami call is cheap and side-effect-free.
+    Cached for _GOOGLE_TOKEN_CACHE_TTL so every API call doesn't round-trip
+    to Google. tokeninfo is Google's own free verification endpoint.
     """
-    if not token:
+    if not token or not GOOGLE_CLIENT_ID or not GOOGLE_ALLOWED_EMAILS:
         return False
     now = time.time()
-    exp = _fleet_bearer_cache.get(token)
+    exp = _google_token_cache.get(token)
     if exp and exp > now:
         return True
     try:
         req = urllib.request.Request(
-            FLEET_ORIGIN + "/mcp",
-            data=json.dumps({
-                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                "params": {"name": "fleet_whoami", "arguments": {}},
-            }).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer " + token,
-            },
-            method="POST",
+            "https://oauth2.googleapis.com/tokeninfo?id_token=" + urllib.parse.quote(token),
+            method="GET",
         )
         with urllib.request.urlopen(req, timeout=6) as resp:
             if resp.status != 200:
                 return False
-            json.loads(resp.read().decode("utf-8"))  # must at least parse
-        _fleet_bearer_cache[token] = now + _FLEET_BEARER_CACHE_TTL
+            info = json.loads(resp.read().decode("utf-8"))
+        if info.get("aud") != GOOGLE_CLIENT_ID:
+            return False
+        if info.get("email_verified") != "true":
+            return False
+        if info.get("email", "").lower() not in GOOGLE_ALLOWED_EMAILS:
+            return False
+        _google_token_cache[token] = now + _GOOGLE_TOKEN_CACHE_TTL
         return True
     except Exception:
         return False
@@ -1248,54 +1244,19 @@ class RemoteHandler(BaseHTTPRequestHandler):
             return False
         if TOKEN and hmac.compare_digest(given.encode(), TOKEN.encode()):
             return True
-        # Not the static token - might be a Google-OAuth bearer from fleet.nougenai.com.
-        return _fleet_bearer_valid(given)
+        # Not the static token - might be a Google ID token from the app's
+        # Credential Manager sign-in.
+        return _google_id_token_valid(given)
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        # Only the page shell, liveness, and the OAuth/App-Links plumbing are
-        # public; everything else is private state.
-        public_paths = ("/", "/index.html", "/api/v1/health", "/.well-known/assetlinks.json", "/oauth/callback")
+        # Only the page shell and liveness are public; everything else is
+        # private state.
+        public_paths = ("/", "/index.html", "/api/v1/health")
         if path not in public_paths and not self._get_authorized(parsed):
             self._send_json({"error": "Unauthorized"}, 401)
-            return
-
-        if path == "/.well-known/assetlinks.json":
-            body = json.dumps([{
-                "relation": ["delegate_permission/common.handle_all_urls"],
-                "target": {
-                    "namespace": "android_app",
-                    "package_name": ANDROID_PACKAGE,
-                    "sha256_cert_fingerprints": [ANDROID_CERT_SHA256],
-                },
-            }]).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-
-        if path == "/oauth/callback":
-            # Android App Links intercepts this URL and hands it to the app
-            # directly (no browser round-trip) once assetlinks.json verifies.
-            # This page is only seen as a fallback (verification not yet
-            # propagated, desktop browser, etc).
-            body = (
-                "<!doctype html><html><body style='background:#0C0C0E;color:#F2F2F5;"
-                "font-family:sans-serif;text-align:center;padding-top:40vh'>"
-                "<p>Sign-in complete. Return to the NouGenAI app.</p>"
-                "<p style='opacity:.5;font-size:12px'>If it didn't switch back automatically, "
-                "reopen NouGenAI manually.</p>"
-                "</body></html>"
-            ).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
             return
 
         if path in ("/", "/index.html"):
