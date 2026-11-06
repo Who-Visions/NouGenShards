@@ -38,6 +38,55 @@ TOKEN = os.environ.get("NOUGEN_REMOTE_TOKEN", "").strip()
 REMOTE_ROOT = os.path.realpath(os.environ.get("NOUGEN_REMOTE_ROOT") or str(Path.home()))
 WORKING_DIR = os.environ.get("NOUGEN_WORKING_DIR", str(Path.home()))
 
+# Google Sign-In: same identity broker shards/fleet.nougenai.com already runs
+# (nougen-fleet-mcp Worker, Google OAuth + GOOGLE_ALLOWED_EMAILS). A client here
+# authenticates there (PKCE authorization-code flow) and hands us the resulting
+# bearer; we verify it by using it against that broker, so the allowlist lives
+# in exactly one place, not duplicated locally.
+FLEET_ORIGIN = os.environ.get("NOUGEN_FLEET_ORIGIN", "https://fleet.nougenai.com").rstrip("/")
+ANDROID_PACKAGE = os.environ.get("NOUGEN_ANDROID_PACKAGE", "com.nougen.remote")
+ANDROID_CERT_SHA256 = os.environ.get(
+    "NOUGEN_ANDROID_CERT_SHA256",
+    "40:BD:5A:79:7A:95:9A:8D:DA:4E:CE:ED:05:56:79:CA:8A:EC:96:04:B0:A5:61:40:E2:BE:73:DC:3A:7D:6B:95",
+)
+_fleet_bearer_cache: dict[str, float] = {}  # token -> expiry epoch
+_FLEET_BEARER_CACHE_TTL = 300  # seconds; re-check with the broker after this
+
+
+def _fleet_bearer_valid(token: str) -> bool:
+    """Ask the fleet Google-OAuth broker whether this bearer still works.
+
+    Cached for _FLEET_BEARER_CACHE_TTL so every API call doesn't round-trip
+    to fleet.nougenai.com. A fleet_whoami call is cheap and side-effect-free.
+    """
+    if not token:
+        return False
+    now = time.time()
+    exp = _fleet_bearer_cache.get(token)
+    if exp and exp > now:
+        return True
+    try:
+        req = urllib.request.Request(
+            FLEET_ORIGIN + "/mcp",
+            data=json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "fleet_whoami", "arguments": {}},
+            }).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + token,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            if resp.status != 200:
+                return False
+            json.loads(resp.read().decode("utf-8"))  # must at least parse
+        _fleet_bearer_cache[token] = now + _FLEET_BEARER_CACHE_TTL
+        return True
+    except Exception:
+        return False
+
 SESSION_HISTORY: list[dict] = []
 MAX_HISTORY_TURNS = 8
 
@@ -1195,15 +1244,58 @@ class RemoteHandler(BaseHTTPRequestHandler):
         given = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
         if not given:
             given = self.headers.get("Authorization", "").replace("Bearer ", "", 1)
-        return bool(TOKEN) and hmac.compare_digest(given.encode(), TOKEN.encode())
+        if not given:
+            return False
+        if TOKEN and hmac.compare_digest(given.encode(), TOKEN.encode()):
+            return True
+        # Not the static token - might be a Google-OAuth bearer from fleet.nougenai.com.
+        return _fleet_bearer_valid(given)
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        # Only the page shell and liveness are public; everything else is private state.
-        if path not in ("/", "/index.html", "/api/v1/health") and not self._get_authorized(parsed):
+        # Only the page shell, liveness, and the OAuth/App-Links plumbing are
+        # public; everything else is private state.
+        public_paths = ("/", "/index.html", "/api/v1/health", "/.well-known/assetlinks.json", "/oauth/callback")
+        if path not in public_paths and not self._get_authorized(parsed):
             self._send_json({"error": "Unauthorized"}, 401)
+            return
+
+        if path == "/.well-known/assetlinks.json":
+            body = json.dumps([{
+                "relation": ["delegate_permission/common.handle_all_urls"],
+                "target": {
+                    "namespace": "android_app",
+                    "package_name": ANDROID_PACKAGE,
+                    "sha256_cert_fingerprints": [ANDROID_CERT_SHA256],
+                },
+            }]).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/oauth/callback":
+            # Android App Links intercepts this URL and hands it to the app
+            # directly (no browser round-trip) once assetlinks.json verifies.
+            # This page is only seen as a fallback (verification not yet
+            # propagated, desktop browser, etc).
+            body = (
+                "<!doctype html><html><body style='background:#0C0C0E;color:#F2F2F5;"
+                "font-family:sans-serif;text-align:center;padding-top:40vh'>"
+                "<p>Sign-in complete. Return to the NouGenAI app.</p>"
+                "<p style='opacity:.5;font-size:12px'>If it didn't switch back automatically, "
+                "reopen NouGenAI manually.</p>"
+                "</body></html>"
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         if path in ("/", "/index.html"):
