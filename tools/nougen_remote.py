@@ -1198,6 +1198,55 @@ def _google_id_token_valid(id_token: str) -> bool:
     return info.get("email", "").lower() in GOOGLE_ALLOWED_EMAILS
 
 
+SESSION_SECRET = os.environ.get("NOUGEN_SESSION_SECRET", "").strip()
+
+
+def _b64url_decode(s: str) -> bytes:
+    import base64
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def _session_token_valid(token: str) -> bool:
+    """App session minted by nougenai-agent's /session (same HMAC-SHA256 blob
+    shape, same shared secret), so a multi-account phone doesn't get Google's
+    account picker on every launch. Verified locally - no tokeninfo hop.
+    Fails closed when NOUGEN_SESSION_SECRET is unset."""
+    import base64
+    import hashlib
+    import time
+    if not SESSION_SECRET or not token:
+        return False
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != "v1":
+        return False
+    expected = base64.urlsafe_b64encode(
+        hmac.new(SESSION_SECRET.encode(), ("v1." + parts[1]).encode(), hashlib.sha256).digest()
+    ).rstrip(b"=").decode()
+    if not hmac.compare_digest(expected, parts[2]):
+        return False
+    try:
+        payload = json.loads(_b64url_decode(parts[1]).decode("utf-8"))
+    except Exception:
+        return False
+    if payload.get("typ") != "session":
+        return False
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)) or exp < time.time():
+        return False
+    return str(payload.get("eml", "")).lower() in GOOGLE_ALLOWED_EMAILS
+
+
+def _bearer_authorized(given: str) -> bool:
+    """One auth decision for every endpoint: static remote token, app session, or Google ID token."""
+    if not given:
+        return False
+    if bool(TOKEN) and hmac.compare_digest(given.encode(), TOKEN.encode()):
+        return True
+    if _session_token_valid(given):
+        return True
+    return _google_id_token_valid(given)
+
+
 class RemoteHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -1229,11 +1278,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
         given = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
         if not given:
             given = self.headers.get("Authorization", "").replace("Bearer ", "", 1)
-        if not given:
-            return False
-        if bool(TOKEN) and hmac.compare_digest(given.encode(), TOKEN.encode()):
-            return True
-        return _google_id_token_valid(given)
+        return _bearer_authorized(given)
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -1306,10 +1351,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
         # tools/* bridge) silently rejected a signed-in Google user even
         # after sign-in itself worked. Unify on the one auth check.
         given = payload.get("token") or self.headers.get("Authorization", "").replace("Bearer ", "", 1)
-        authorized = bool(TOKEN) and hmac.compare_digest(given.encode(), TOKEN.encode()) if given else False
-        if not authorized and given:
-            authorized = _google_id_token_valid(given)
-        if not authorized:
+        if not _bearer_authorized(given):
             self._send_json({"error": "Unauthorized", "ok": False}, 401)
             return
 
