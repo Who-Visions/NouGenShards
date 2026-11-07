@@ -579,6 +579,37 @@ def cmd_auth(args):
                 print(f"   Missing in vault: {', '.join(res['missing_vault'])}")
 
 
+def cmd_setup(args):
+    """One step for a new person: set up NouGen, redeem the invite, start the node."""
+    import subprocess
+    from pathlib import Path
+    from . import tenant_onboard
+
+    code = getattr(args, "code", None)
+    if not code:
+        if not sys.stdin.isatty():
+            print("Error: pass the invite code with --code.")
+            return 2
+        code = input("Invite code: ").strip()
+    try:
+        print("Setting up NouGen on this computer...")
+        cmd_init(argparse.Namespace(defaults=True, no_onboarding=False, json=False))
+        print("Joining your NouGen node...")
+        join_url = os.environ.get("NOUGEN_JOIN_URL", "")
+        values = tenant_onboard.redeem_invite(code, join_url)
+        kit_dir = tenant_onboard.write_kit(values["tenant_id"], values["token"], values["tunnel_token"],
+                                           values["port"], root=Path.home() / ".nougen")
+    except tenant_onboard.OnboardError as exc:
+        print(f"Error: {exc}")
+        return 1
+    script = kit_dir / ("join.ps1" if os.name == "nt" else "join.sh")
+    print(f"Your node address: {values['node_url']}")
+    print("Starting your node. Keep this window open.")
+    cmd = (["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)] if os.name == "nt"
+           else ["sh", str(script)])
+    return subprocess.call(cmd)
+
+
 def cmd_init(args):
     """Bootstrap the local shard layer, then adaptively onboard.
 
@@ -2124,6 +2155,9 @@ def get_parser():
     p_init.add_argument("--no-onboarding", action="store_true",
                         help="Create the substrate only; skip capability discovery")
     p_init.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_setup = subparsers.add_parser("setup", help="Set up NouGen and join with your invite code")
+    p_setup.add_argument("--code", help="Your invite code (asked for if omitted)")
 
     p_add = subparsers.add_parser("add", help="Save shard")
     p_add.add_argument("content", nargs="?")
@@ -4215,7 +4249,7 @@ def main():
 
     args = parser.parse_args()
     cmds = {
-        "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
+        "init": cmd_init, "setup": cmd_setup, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
