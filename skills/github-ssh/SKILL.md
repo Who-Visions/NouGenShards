@@ -49,6 +49,10 @@ to see every checkout's remotes; it exits 1 if any GitHub remote would still use
 
 - **`ssh -T git@github.com` exits 1 on success.** GitHub refuses a shell. Read the text
   ("successfully authenticated"), not the exit code. The tool already does this.
+- **The gh helper is still configured.** `status` lists every credential helper git
+  would run for `https://github.com/`. With the rewrite on they never fire for git, so
+  leave them: `gh` and gist URLs may still want them. If `status` says ACTIVE, the
+  rewrite is off and the helper that once filled the disk is back in the path.
 - **gh is separate.** `gh pr create` and other API calls use gh's token, not the key.
   A green SSH test says nothing about gh.
 - **Org access.** The key carries the account's permissions. A repo in another org

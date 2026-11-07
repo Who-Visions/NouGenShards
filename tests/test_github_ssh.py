@@ -45,3 +45,10 @@ def test_undo_targets_only_our_value(monkeypatch):
     monkeypatch.setattr(gs, "run", lambda *a, **k: (seen.setdefault("cmd", a), (0, ""))[1])
     gs.undo()
     assert seen["cmd"][-1] == "^https://github\.com/$"
+
+
+def test_helpers_parses_urlmatch(monkeypatch):
+    monkeypatch.setattr(gs, "run", lambda *a, **k: (0, "!gh auth git-credential\n"))
+    assert gs.helpers() == ["!gh auth git-credential"]
+    monkeypatch.setattr(gs, "run", lambda *a, **k: (1, ""))
+    assert gs.helpers() == []

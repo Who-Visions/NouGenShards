@@ -81,12 +81,21 @@ def remotes() -> list[str]:
     return sorted({l.split()[0] + " " + l.split()[1] for l in out.splitlines() if l.strip()})
 
 
+def helpers() -> list[str]:
+    """Credential helpers git would still run for https://github.com/ (none run over ssh)."""
+    code, out = run("git", "config", "--get-urlmatch", "credential.helper", REWRITE_VAL)
+    return [h for h in out.splitlines() if h.strip()] if code == 0 else []
+
+
 def status() -> int:
     ok_auth, msg = auth()
     on = rewrite_on()
     print(f"keys        : {', '.join(keys()) or 'NONE in ~/.ssh'}")
     print(f"auth        : {'OK' if ok_auth else 'FAIL'} - {msg}")
     print(f"https->ssh  : {'on (global)' if on else 'off'}")
+    for h in helpers():
+        note = "idle while the rewrite is on" if on else "ACTIVE on every https push/pull"
+        print(f"cred helper : {h}  [{note}]")
     for r in remotes():
         print(f"remote      : {r}  [{transport(r.split()[1], on)}]")
     return 0 if ok_auth and on else 1
