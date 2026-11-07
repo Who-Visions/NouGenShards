@@ -205,6 +205,45 @@ TOOLS: List[Dict[str, Any]] = [
             "message": {"type": "string", "description": "Optional note attached to the ack."},
         }, "required": []},
     }},
+    {"type": "function", "function": {
+        "name": "relay_read",
+        "description": "Read ONE relay handoff leg in full - its body carries the Recent Changes,"
+                       " Ongoing Investigations and Known Issues, i.e. the WHY and HOW behind a"
+                       " piece of work. relay_latest/relay_open only return metadata; use this"
+                       " to actually understand a leg before acting on it." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {
+            "handoff_id": {"type": "string", "description": "Leg id exactly as relay_latest/relay_open returned it."},
+        }, "required": ["handoff_id"]},
+    }},
+    {"type": "function", "function": {
+        "name": "relay_create",
+        "description": "Post a new relay handoff leg to the fleet - how you hand work to, or report"
+                       " progress for, the other agents. Writes to the relay registry. Use headed"
+                       " sections (Done / Next / Blocked) in the message." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {
+            "goal": {"type": "string", "description": "One-line goal of the leg."},
+            "message": {"type": "string", "description": "Structured body: what was done, what is next, what is blocked."},
+            "agent": {"type": "string", "description": "Lane to attribute the leg to. Default davos."},
+        }, "required": ["goal", "message"]},
+    }},
+    {"type": "function", "function": {
+        "name": "relay_claim_list",
+        "description": "Active lane claims: which agent on which machine is currently editing"
+                       " which files, and their stated goal. Check before touching shared files"
+                       " or proposing work that may already be in flight." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    }},
+    {"type": "function", "function": {
+        "name": "persona_resolve",
+        "description": "Who or what is this name? Resolves a person, fleet agent, node, persona,"
+                       " model or project to its canonical identity, with confidence (exact /"
+                       " alias / fuzzy / ambiguous / none) and a ready disambiguation sentence."
+                       " Call this BEFORE asserting who a name refers to; if confidence is not"
+                       " exact or alias, say you're not certain rather than guessing." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "The name exactly as the user wrote it."},
+        }, "required": ["name"]},
+    }},
 ]
 
 TOOL_NAMES = frozenset(t["function"]["name"] for t in TOOLS)
@@ -452,6 +491,63 @@ def _relay_ack(args: dict) -> dict:
     return {"acknowledged": bool(path), "path": str(path) if path else None}
 
 
+# --- DavOs's own wishlist (GM 2026-11-07: "take care of your child and raise
+# it"). Asked for: deep state visibility (the WHY/HOW of a project without
+# asking the operator) and tight loops (faster handoffs with other agents).
+# relay_latest/relay_open only ever returned leg METADATA - never the body
+# that carries Recent Changes / Investigations / Known Issues - and the app
+# could ack a leg but never create one. These close both gaps.
+
+def _relay_read(args: dict) -> dict:
+    from . import handoff
+    handoff_id = str(args.get("handoff_id", "")).strip()
+    if not handoff_id:
+        return {"error": "handoff_id is required for relay_read (get one from relay_latest/relay_open)"}
+    for path in handoff.get_handoff_files():
+        data = handoff._read_handoff(path)  # pylint: disable=protected-access
+        if not data:
+            continue
+        if path.stem == handoff_id or str(data.get("id", "")) == handoff_id:
+            return {"id": handoff_id, "path": str(path), "leg": data}
+    return {"error": f"no handoff leg with id {handoff_id!r}"}
+
+
+def _relay_create(args: dict) -> dict:
+    from . import handoff
+    goal = str(args.get("goal", "")).strip()
+    message = str(args.get("message", "")).strip()
+    if not goal or not message:
+        return {"error": "goal and message are required for relay_create"}
+    # Attributed to the app's own lane, not whichever agent the host shell
+    # happens to be configured as - the fleet should see these came from DavOs.
+    agent = str(args.get("agent", "")).strip() or "davos"
+    path = handoff.create_handoff(message=message, agent=agent, goal=goal)
+    return {"created": bool(path), "path": str(path) if path else None, "agent": agent, "goal": goal}
+
+
+def _relay_claim_list(args: dict) -> dict:
+    # tools/lane_claim.py is a script, not a package module - import by path,
+    # report unavailable truthfully if this checkout doesn't carry it.
+    import importlib.util
+    from pathlib import Path
+    script = Path(__file__).resolve().parents[2] / "tools" / "lane_claim.py"
+    if not script.exists():
+        return {"unavailable": True, "reason": "tools/lane_claim.py not on this checkout"}
+    spec = importlib.util.spec_from_file_location("nougen_lane_claim", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    claims = mod.active_claims()
+    return {"count": len(claims), "claims": claims}
+
+
+def _persona_resolve(args: dict) -> dict:
+    from . import davos_persona
+    name = str(args.get("name", "")).strip()
+    if not name:
+        return {"error": "name is required for persona_resolve"}
+    return davos_persona.resolve(name)
+
+
 def _nougenmsg_inbox(args: dict) -> dict:
     from nougen_shards.nougenmsg import NouGenMsgBus
     # read_inbox only distinguishes "antigravity" vs anything-else (-> codex
@@ -538,6 +634,10 @@ _DISPATCH: Dict[str, Callable[[dict], dict]] = {
     "nougenmsg_peers": _nougenmsg_peers,
     "nougenmsg_search": _nougenmsg_search,
     "relay_ack": _relay_ack,
+    "relay_read": _relay_read,
+    "relay_create": _relay_create,
+    "relay_claim_list": _relay_claim_list,
+    "persona_resolve": _persona_resolve,
 }
 
 

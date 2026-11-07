@@ -10,7 +10,8 @@ EXPECTED = ["fleet_whoami", "shards_search", "shards_recall",
             "rsi_status", "unfinished_destinies", "search_destinies",
             "get_destiny", "create_destiny", "mrsb_status", "mrsb_character",
             "mrsb_lineage", "mrsb_recall", "nougenmsg_peers",
-            "nougenmsg_search", "relay_ack"]
+            "nougenmsg_search", "relay_ack", "relay_read", "relay_create",
+            "relay_claim_list", "persona_resolve"]
 
 
 def test_tools_schema():
