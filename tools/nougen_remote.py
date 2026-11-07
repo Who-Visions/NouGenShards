@@ -1252,8 +1252,16 @@ class RemoteHandler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
 
-        token = payload.get("token") or self.headers.get("Authorization", "").replace("Bearer ", "")
-        if token != TOKEN:
+        # This used to be a standalone check against only the static TOKEN,
+        # never the Google ID token path do_GET's _get_authorized already
+        # had - so every POST endpoint (chat, terminal, inject_agy, and the
+        # new tools/* bridge) silently rejected a signed-in Google user even
+        # after sign-in itself worked. Unify on the one auth check.
+        given = payload.get("token") or self.headers.get("Authorization", "").replace("Bearer ", "", 1)
+        authorized = bool(TOKEN) and hmac.compare_digest(given.encode(), TOKEN.encode()) if given else False
+        if not authorized and given:
+            authorized = _google_id_token_valid(given)
+        if not authorized:
             self._send_json({"error": "Unauthorized", "ok": False}, 401)
             return
 
@@ -1318,6 +1326,21 @@ class RemoteHandler(BaseHTTPRequestHandler):
             inject_to_antigravity(prompt, sender="iPhone")
             reply = query_solai_chat(prompt, model=os.environ.get("NOUGEN_REMOTE_CHAT_MODEL", "dav1d:e2b"))
             self._send_json({"ok": True, "reply": reply})
+            return
+
+        if path.startswith("/api/v1/tools/"):
+            # HTTP bridge so edge-side callers (the nougenai-agent Cloudflare
+            # Worker, which cannot reach the local vault directly) can run
+            # Kaedra's existing read-mostly tool loop over this already-
+            # authenticated, already-tunneled connection, instead of standing
+            # up a second auth system against shards.nougenai.com.
+            tool_name = path[len("/api/v1/tools/"):]
+            from nougen_shards import kaedra_tools
+            if tool_name not in kaedra_tools.TOOL_NAMES:
+                self._send_json({"error": "unknown tool"}, 404)
+                return
+            result = kaedra_tools.dispatch(tool_name, payload)
+            self._send_json(result)
             return
 
         self._send_json({"error": "Endpoint not found"}, 404)
