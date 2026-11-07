@@ -150,7 +150,7 @@ TOOLS: List[Dict[str, Any]] = [
     }},
     {"type": "function", "function": {
         "name": "create_destiny",
-        "description": "Create a new destiny (long-horizon goal) record. Writes to the destiny registry.",
+        "description": "Create a new destiny (long-horizon goal) record. Writes to the destiny registry." + _CITE_RULE,
         "parameters": {"type": "object", "properties": {
             "title": {"type": "string", "description": "Short title."},
             "goal": {"type": "string", "description": "What this destiny is working toward."},
@@ -198,7 +198,7 @@ TOOLS: List[Dict[str, Any]] = [
     }},
     {"type": "function", "function": {
         "name": "relay_ack",
-        "description": "Acknowledge a relay handoff leg as received - commits to finishing it. Writes to the relay registry.",
+        "description": "Acknowledge a relay handoff leg as received - commits to finishing it. Writes to the relay registry." + _CITE_RULE,
         "parameters": {"type": "object", "properties": {
             "handoff_id": {"type": "string", "description": "Specific leg id to acknowledge."},
             "agent": {"type": "string", "description": "Filter to the most recent open leg from this agent."},

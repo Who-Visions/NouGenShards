@@ -28,7 +28,7 @@ from . import core
 from . import keymaker
 from . import temporal_fabric
 
-REPORTS_DIR_DEFAULT = r"C:\Users\super\Watchtower\NouGen\rsi"
+REPORTS_DIR_DEFAULT = os.path.join(os.path.expanduser("~"), "Watchtower", "NouGen", "rsi")
 EXA_API_URL = "https://api.exa.ai/search"
 EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 
@@ -39,7 +39,8 @@ def _env_path(name: str, fallback: str) -> str:
 
 
 def _repo_path() -> Path:
-    return Path(_env_path("NOUGEN_RSI_REPO", r"C:\Users\super\Watchtower\NouGenRemote-Android"))
+    default = os.path.join(os.path.expanduser("~"), "Watchtower", "NouGenRemote-Android")
+    return Path(_env_path("NOUGEN_RSI_REPO", default))
 
 
 def _reports_dir() -> Path:
@@ -71,10 +72,18 @@ def check_builds(repo: Path) -> Dict[str, Any]:
     return {"checked": True, **result}
 
 
-def check_self_update_health(version_url: str = "https://chat.nougenai.com/version") -> Dict[str, Any]:
-    """Confirms the self-update chain this lane depends on is actually alive."""
+def check_self_update_health(version_url: Optional[str] = None) -> Dict[str, Any]:
+    """Confirms the self-update chain this lane depends on is actually alive.
+
+    No operator host is hardcoded here (public-repo discipline) - the URL
+    comes from NOUGEN_RSI_SELF_UPDATE_URL or an explicit argument. Unset
+    means "not configured", not a guessed default.
+    """
+    resolved = version_url or os.environ.get("NOUGEN_RSI_SELF_UPDATE_URL")
+    if not resolved:
+        return {"ok": False, "reason": "NOUGEN_RSI_SELF_UPDATE_URL not set"}
     try:
-        req = urllib.request.Request(version_url, headers={"User-Agent": "nougen-rsi/1.0"})
+        req = urllib.request.Request(resolved, headers={"User-Agent": "nougen-rsi/1.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
             return {"ok": resp.status == 200, "status": resp.status, "body": json.loads(resp.read().decode())}
     except Exception as exc:  # pylint: disable=broad-except
