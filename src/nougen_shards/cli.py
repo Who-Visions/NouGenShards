@@ -23,6 +23,7 @@ from . import history
 from . import router
 from . import dream
 from . import evolution
+from . import rsi
 from . import assurance
 from . import tenants
 from . import agents
@@ -2009,6 +2010,41 @@ def cmd_evolve(args):
                 print(f"\n[Evolution Failed]: {summary.get('error')}")
 
 
+def cmd_rsi(args):
+    """Recursive Self-Improvement lane: gate-don't-write, propose-only."""
+    is_json = getattr(args, 'json', False)
+    if args.action == "run":
+        if not is_json:
+            print("[RSI] Checking target repo build + self-update health, proposing one improvement...")
+        summary = rsi.run()
+        if is_json:
+            print(json.dumps(summary, indent=2))
+        else:
+            print(f"\n[RSI Cycle Complete] status={summary['status']}")
+            print(f" - repo: {summary['repo']}")
+            print(f" - build ok: {summary['build'].get('ok')}")
+            print(f" - self-update healthy: {summary['self_update_health'].get('ok')}")
+            prop = summary.get("proposal", {})
+            if prop.get("title"):
+                print(f" - Proposal: {prop['title']} (risk={prop.get('risk')})")
+                print(f"   {prop.get('description', '')}")
+            else:
+                print(f" - No proposal this cycle: {prop.get('reason') or prop.get('error', 'unknown')}")
+            print(f" - Report: {summary['report_path']}")
+    elif args.action == "status":
+        reports_dir = rsi._reports_dir()
+        files = sorted(reports_dir.glob("rsi_*.json"), reverse=True)
+        if not files:
+            print(json.dumps({"status": "no_runs_yet"}) if is_json else "No RSI runs recorded yet.")
+            return
+        with open(files[0], "r", encoding="utf-8") as f:
+            latest = json.load(f)
+        if is_json:
+            print(json.dumps(latest, indent=2))
+        else:
+            print(f"Latest RSI run: {latest['timestamp_utc']} - status={latest['status']}")
+
+
 def cmd_dashboard(args):
     """Launches the Cortex HUD (Visual Dashboard)."""
     import uvicorn
@@ -2346,6 +2382,10 @@ def get_parser():
     p_evolve.add_argument("action", choices=["run"])
     p_evolve.add_argument("instruction", help="The task instruction to evolve a skill for")
     p_evolve.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_rsi = subparsers.add_parser("rsi", help="Recursive Self-Improvement lane (gate-don't-write, same family as dream/evolve)")
+    p_rsi.add_argument("action", choices=["run", "status"])
+    p_rsi.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_dashboard = subparsers.add_parser("dashboard", help="Launch visual Cortex HUD")
     p_dashboard.add_argument("--port", type=int, default=4444, help="Port to run on")
@@ -4220,7 +4260,7 @@ def main():
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
-        "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
+        "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve, "rsi": cmd_rsi,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage, "amv": cmd_amv,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr, "claim": cmd_claim,
         "tree": cmd_tree, "cua": cmd_cua, "tube": cmd_tube, "nougentube": cmd_tube, "arxiv": cmd_arxiv,

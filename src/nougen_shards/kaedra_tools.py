@@ -108,6 +108,23 @@ TOOLS: List[Dict[str, Any]] = [
             "message": {"type": "string", "description": "Message text to deliver."},
         }, "required": ["target", "message"]},
     }},
+    {"type": "function", "function": {
+        "name": "nougenmsg_inbox",
+        "description": "Read recent unread messages from a fleet agent's NouGenMsg inbox"
+                       " - the read half of nougenmsg_send." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {
+            "target": {"type": "string",
+                       "description": "Which inbox to read: \"antigravity\" (default) or \"codex\"."},
+            "limit": {"type": "integer", "description": "Max messages to return."},
+        }, "required": []},
+    }},
+    {"type": "function", "function": {
+        "name": "rsi_status",
+        "description": "Latest Recursive Self-Improvement cycle on this app: build health, self-update"
+                       " chain health, and the current proposed improvement (gate-don't-write - this"
+                       " reports a proposal, not a shipped change)." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    }},
 ]
 
 TOOL_NAMES = frozenset(t["function"]["name"] for t in TOOLS)
@@ -278,6 +295,39 @@ def _shards_capture(args: dict) -> dict:
     return {"captured": bool(res), "tags": tags}
 
 
+def _nougenmsg_inbox(args: dict) -> dict:
+    from nougen_shards.nougenmsg import NouGenMsgBus
+    # read_inbox only distinguishes "antigravity" vs anything-else (-> codex
+    # dirs); there is no third branch for "claude" today, so default stays
+    # antigravity - the inbox most fleet lanes actually drop pings into.
+    target = str(args.get("target", "antigravity")).strip() or "antigravity"
+    limit = _limit(args)
+    messages = NouGenMsgBus.read_inbox(target=target, limit=limit)
+    return {"target": target, "count": len(messages), "messages": messages}
+
+
+def _rsi_status(args: dict) -> dict:
+    from . import rsi as rsi_module
+    reports_dir = rsi_module._reports_dir()
+    files = sorted(reports_dir.glob("rsi_*.json"), reverse=True)
+    if not files:
+        return {"status": "no_runs_yet"}
+    import json as _json
+    with open(files[0], "r", encoding="utf-8") as f:
+        latest = _json.load(f)
+    prop = latest.get("proposal", {})
+    return {
+        "timestamp_utc": latest.get("timestamp_utc"),
+        "status": latest.get("status"),
+        "repo": latest.get("repo"),
+        "build_ok": latest.get("build", {}).get("ok"),
+        "self_update_healthy": latest.get("self_update_health", {}).get("ok"),
+        "self_update_live_version": (latest.get("self_update_health", {}).get("body") or {}).get("versionCode"),
+        "latest_proposal_title": prop.get("title"),
+        "latest_proposal_risk": prop.get("risk"),
+    }
+
+
 def _nougenmsg_send(args: dict) -> dict:
     from nougen_shards.nougenmsg import NouGenMsgBus, get_current_node
     target = str(args.get("target", "")).strip()
@@ -313,6 +363,8 @@ _DISPATCH: Dict[str, Callable[[dict], dict]] = {
     "reach_state": _reach_state,
     "shards_capture": _shards_capture,
     "nougenmsg_send": _nougenmsg_send,
+    "nougenmsg_inbox": _nougenmsg_inbox,
+    "rsi_status": _rsi_status,
 }
 
 
