@@ -997,6 +997,100 @@ function totalActivity(t) {
   return (t.input_tokens || 0) + (t.output_tokens || 0) + (t.cache_read || 0) + (t.cache_creation || 0);
 }
 __name(totalActivity, "totalActivity");
+
+// Cost rate table (USD per 1M tokens: input, output, cache_read, cache_creation, confidence).
+// "confirmed" = pulled from the provider's own current rate card. "guess" = no
+// published rate found for this exact model/field; a reasonable stand-in is used
+// so nothing silently drops out of a cost total, but it must never be presented
+// as exact. Matched by substring against the lowercased model name, first match
+// wins, most-specific patterns first -- mirrors the manual audit done 2026-11-06.
+var RATE_TABLE_VERSION = "tracker_rates/v1 (2026-11-06)";
+var RATE_TABLE = [
+  ["fable-5-1", 10.00, 50.00, 0.25, 12.50, "confirmed"],
+  ["fable 5.1", 10.00, 50.00, 0.25, 12.50, "confirmed"],
+  ["fable-5", 10.00, 50.00, 0.25, 12.50, "confirmed (prior-gen, same tier price)"],
+  ["mythos-5-1", 10.00, 50.00, 0.25, 12.50, "confirmed (same tier)"],
+  ["mythos 5.1", 10.00, 50.00, 0.25, 12.50, "confirmed (same tier)"],
+  ["opus-5-5", 4.00, 20.00, 0.20, 5.00, "confirmed"],
+  ["opus 5.5", 4.00, 20.00, 0.20, 5.00, "confirmed"],
+  ["opus-5", 5.00, 25.00, 0.50, 6.25, "confirmed (prior-gen table rate)"],
+  ["opus-4-8", 5.00, 25.00, 0.50, 6.25, "confirmed (table)"],
+  ["opus 4.8", 5.00, 25.00, 0.50, 6.25, "confirmed (table)"],
+  ["opus-4-6", 5.00, 25.00, 0.50, 6.25, "confirmed (table, 4.6==4.7/4.8 rate)"],
+  ["opus 4.6", 5.00, 25.00, 0.50, 6.25, "confirmed (table, 4.6==4.7/4.8 rate)"],
+  ["sonnet-5-5", 2.00, 10.00, 0.20, 2.50, "confirmed"],
+  ["sonnet 5.5", 2.00, 10.00, 0.20, 2.50, "confirmed"],
+  ["sonnet-5", 2.00, 10.00, 0.20, 2.50, "confirmed (prior-gen, same price as 5.5)"],
+  ["sonnet-4-6", 3.00, 15.00, 0.30, 3.75, "confirmed (table)"],
+  ["sonnet 4.6", 3.00, 15.00, 0.30, 3.75, "confirmed (table)"],
+  ["haiku-5-5", 0.10, 0.50, 0.01, 0.125, "guess: cache rate unpublished, assumed 1/10 input"],
+  ["haiku 5.5", 0.10, 0.50, 0.01, 0.125, "guess: cache rate unpublished, assumed 1/10 input"],
+  ["haiku-4-5", 1.00, 5.00, 0.10, 1.25, "confirmed i/o (table, 200K ctx); guess cache=1/10 input"],
+  ["gemini-4-argon", 2.00, 10.00, 0.10, 2.00, "confirmed (Google pricing page, thru 2026-11-30)"],
+  ["gemini 4 argon", 2.00, 10.00, 0.10, 2.00, "confirmed (Google pricing page, thru 2026-11-30)"],
+  ["gemini-3.1-pro", 2.00, 12.00, 0.20, 0, "confirmed (<=200K tier, search-verified)"],
+  ["gemini-3-flash", 0.50, 3.00, 0.05, 0.50, "confirmed i/o; guess cache=1/10 input"],
+  ["gemini-3.5-flash", 0.50, 3.00, 0.05, 0.50, "confirmed i/o; guess cache=1/10 input"],
+  ["gemini-2.5-flash", 0.50, 3.00, 0.05, 0.50, "guess: unverified this session, assumed gemini-3-flash tier"],
+  ["gemini-2.5-pro", 1.25, 10.00, 0.31, 1.25, "guess: legacy public rate, unverified this session"],
+  ["gpt-6-astra", 10.00, 50.00, 1.00, 10.00, "confirmed (OpenAI help page, search-verified)"],
+  ["gpt-6.1-sol", 2.00, 10.00, 0.20, 2.50, "guess: assumed gpt-6-sol tier (6.1 unconfirmed)"],
+  ["gpt-6-sol", 2.00, 10.00, 0.20, 2.50, "guess: assumed gpt-6-sol tier"],
+  ["gpt-5.6-sol", 2.00, 10.00, 0.20, 2.50, "guess: assumed gpt-6-sol tier"],
+  ["gpt-6-luna", 0.10, 0.50, 0.01, 0.10, "guess: aggregator-only, no official source"],
+  ["gpt-5.6-luna", 0.10, 0.50, 0.01, 0.10, "guess: assumed luna/cheapest tier"],
+  ["gpt-5.5", 0.10, 0.50, 0.01, 0.10, "guess: assumed luna/cheapest tier"],
+  ["gpt-5.4-mini", 0.15, 0.60, 0.015, 0.15, "guess: mini tier, no official source"],
+  ["gpt-5-codex-mini", 0.15, 0.60, 0.015, 0.15, "guess: codex-mini tier, no official source"],
+  ["gpt-5.1-codex-mini", 0.15, 0.60, 0.015, 0.15, "guess: codex-mini tier, no official source"],
+  ["gpt-5.1-codex-max", 5.00, 20.00, 0.50, 5.00, "guess: codex-max/premium tier, no official source"],
+  ["gpt-5.2-codex", 1.00, 5.00, 0.10, 1.00, "guess: codex-standard tier, no official source"],
+  ["gpt-5.6-terra", 1.00, 5.00, 0.10, 1.00, "guess: assumed mid-tier (terra)"],
+  ["gpt-5.4", 2.00, 10.00, 0.20, 2.00, "guess: assumed standard GPT tier"],
+  ["gpt-reserve", 0.50, 2.50, 0.05, 0.50, "guess: internal reserve/fallback lane, no published rate"],
+  ["codex-auto-review", 0.10, 0.50, 0.01, 0.10, "guess: no official rate, assumed cheapest/luna tier"],
+  ["gpt-oss-120b", 0, 0, 0, 0, "guess: open-weight model, assumed $0 (self-hosted/free lane)"],
+  ["gemma4", 0, 0, 0, 0, "confirmed: NouGen free local/cloud ollama lane, $0 by policy"],
+  ["gemini-m", 0.50, 3.00, 0.05, 0.50, "guess: unrecognized internal codename, assumed gemini-3-flash tier"],
+  ["auto-gemini-3", 0.50, 3.00, 0.05, 0.50, "guess: assumed gemini-3-flash tier (auto-router alias)"]
+];
+function rateFor(model) {
+  const m = String(model || "").toLowerCase();
+  if (m.includes("synthetic") || m === "(unknown)" || m === "unknown" || !m) return null;
+  for (const [pat, inp, out, cread, ccreate, confidence] of RATE_TABLE) {
+    if (m.includes(pat)) return { input: inp, output: out, cache_read: cread, cache_creation: ccreate, confidence };
+  }
+  return { input: 1.00, output: 5.00, cache_read: 0.10, cache_creation: 1.00, confidence: "guess: fully unrecognized model, assumed generic mid-tier -- check RATE_TABLE" };
+}
+__name(rateFor, "rateFor");
+// cold = price every token (incl. cache_read/cache_creation) at the full input
+// rate, as if no caching existed. cached = what was actually billed.
+function priceModel(model, t) {
+  const r = rateFor(model);
+  if (!r) return null;
+  const inp = t.input_tokens || 0, out = t.output_tokens || 0, cread = t.cache_read || 0, ccreate = t.cache_creation || 0;
+  const cold = (inp + cread + ccreate) * r.input / 1e6 + out * r.output / 1e6;
+  const cached = inp * r.input / 1e6 + cread * r.cache_read / 1e6 + ccreate * r.cache_creation / 1e6 + out * r.output / 1e6;
+  return { cold: round2(cold), cached: round2(cached), confidence: r.confidence };
+}
+__name(priceModel, "priceModel");
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+__name(round2, "round2");
+function priceModelsMap(models) {
+  const out = {};
+  let cold = 0, cached = 0, unpriced = [];
+  for (const [model, t] of Object.entries(models || {})) {
+    const p = priceModel(model, t);
+    if (!p) { unpriced.push(model); continue; }
+    out[model] = p;
+    cold += p.cold;
+    cached += p.cached;
+  }
+  return { by_model: out, cold: round2(cold), cached: round2(cached), unpriced, rate_table_version: RATE_TABLE_VERSION };
+}
+__name(priceModelsMap, "priceModelsMap");
 async function shardHeaders(env) {
   return {
     // blade's _TokenGatedMCP reads x-ngs-token (or ?token=) only — it never
@@ -2086,7 +2180,7 @@ var TOOLS = [
   {
     name: "tracker_daily",
     title: "Tracker Daily",
-    description: "One lane's usage daily for a date: token counts (exact + estimated), invocations, per-model breakdown.\n\nArgs: lane (e.g. 'blade1tb'), date (YYYY-MM-DD).",
+    description: "One lane's usage daily for a date: token counts (exact + estimated), invocations, per-model breakdown, and a priced `cost` field (cold = uncached-equivalent, cached = actual, per-model + total, each tagged confirmed/guess). The raw `sketch` debug array is stripped -- it carried no usage signal and was the single largest cause of context blowups on multi-day sweeps.\n\nArgs: lane (e.g. 'blade1tb'), date (YYYY-MM-DD).",
     inputSchema: {
       type: "object",
       properties: {
@@ -2101,7 +2195,7 @@ var TOOLS = [
   {
     name: "tracker_spend",
     title: "Tracker Spend Summary",
-    description: "Aggregate usage across dailies: invocations, exact token counts and total_activity, per lane. Dates are inclusive; omit lane to sweep all lanes. Spends a bounded subrequest budget: if the window needs more dailies than the budget allows, the result is marked partial:true and returns next_since \u2014 continue from there and sum the non-overlapping windows for an exact total. A total is only complete when complete:true. total_activity = input_tokens + output_tokens + cache_read + cache_creation (total_activity/v1); reasoning tokens are reported separately and not summed.\n\nArgs: lane (optional), since (YYYY-MM-DD, optional), until (YYYY-MM-DD, optional).",
+    description: "Aggregate usage across dailies: invocations, exact token counts, total_activity, and a per-model token breakdown, per lane -- plus a priced `cost` field (cold = uncached-equivalent, cached = actual; per-model and grand total; each model tagged confirmed/guess, never silently dropped). Dates are inclusive; omit lane to sweep all lanes. Spends a bounded subrequest budget: if the window needs more dailies than the budget allows, the result is marked partial:true and returns next_since \u2014 continue from there and sum the non-overlapping windows for an exact total (including per-model). A total is only complete when complete:true -- cost on a partial result will undercount. total_activity = input_tokens + output_tokens + cache_read + cache_creation (total_activity/v1); reasoning tokens are reported separately and not summed.\n\nArgs: lane (optional), since (YYYY-MM-DD, optional), until (YYYY-MM-DD, optional).",
     inputSchema: {
       type: "object",
       properties: {
@@ -4660,14 +4754,23 @@ Other lanes see it on their next relay check.`,
     return text(lines.join("\n"), { lanes, unreadable, complete: unreadable.length === 0 });
   },
   async tracker_daily(args, env) {
-    const daily = await trackerDaily(env, args.lane, args.date);
+    const raw = await trackerDaily(env, args.lane, args.date);
+    // `sketch` is an internal dedup/debug array (dozens of hashes) with no
+    // value to a caller and no bearing on token totals -- it was the single
+    // biggest cause of context blowups when sweeping many days (2026-11-06
+    // incident: a 10-day pull exhausted a subagent's budget on this field
+    // alone). Dropped here, not upstream, so the raw store stays untouched.
+    const { sketch, ...daily } = raw;
     const e = daily.exact || {};
+    const cost = priceModelsMap(daily.models);
+    daily.cost = cost;
     const md = [
       `**${args.lane} \u2014 ${args.date}**`,
       "",
       `invocations: ${daily.invocations ?? "?"}`,
       `exact tokens: in ${e.input_tokens ?? 0} / out ${e.output_tokens ?? 0} / cache-read ${e.cache_read ?? 0} / cache-create ${e.cache_creation ?? 0}`,
-      `models: ${Object.keys(daily.models || {}).join(", ") || "(none)"}`
+      `models: ${Object.keys(daily.models || {}).join(", ") || "(none)"}`,
+      `cost (USD, ${RATE_TABLE_VERSION}): cold $${cost.cold.toFixed(2)} / cached $${cost.cached.toFixed(2)}` + (cost.unpriced.length ? ` -- unpriced: ${cost.unpriced.join(", ")}` : "")
     ].join("\n");
     return text(md, daily);
   },
@@ -4692,7 +4795,8 @@ Other lanes see it on their next relay check.`,
         input_tokens: 0,
         output_tokens: 0,
         cache_read: 0,
-        cache_creation: 0
+        cache_creation: 0,
+        models: {}
       };
       // Oldest-first so next_since walks forward deterministically and a
       // caller summing consecutive windows reproduces the full total exactly.
@@ -4715,17 +4819,34 @@ Other lanes see it on their next relay check.`,
         totals.output_tokens += e.output_tokens || 0;
         totals.cache_read += e.cache_read || 0;
         totals.cache_creation += e.cache_creation || 0;
+        for (const [model, mt] of Object.entries(daily.models || {})) {
+          const acc = totals.models[model] || (totals.models[model] = { input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0 });
+          acc.input_tokens += mt.input_tokens || 0;
+          acc.output_tokens += mt.output_tokens || 0;
+          acc.cache_read += mt.cache_read || 0;
+          acc.cache_creation += mt.cache_creation || 0;
+        }
       }
       totals.total_activity = totalActivity(totals);
+      totals.cost = priceModelsMap(totals.models);
       perLane.push(totals);
     }
     const grand = perLane.reduce((acc, t) => {
       for (const k of ["days", "requested_days", "missing_days", "invocations", "input_tokens", "output_tokens", "cache_read", "cache_creation"]) {
         acc[k] = (acc[k] || 0) + t[k];
       }
+      acc.models = acc.models || {};
+      for (const [model, mt] of Object.entries(t.models)) {
+        const a = acc.models[model] || (acc.models[model] = { input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0 });
+        a.input_tokens += mt.input_tokens;
+        a.output_tokens += mt.output_tokens;
+        a.cache_read += mt.cache_read;
+        a.cache_creation += mt.cache_creation;
+      }
       return acc;
     }, {});
     grand.total_activity = totalActivity(grand);
+    grand.cost = priceModelsMap(grand.models);
     const nextSince = deferred.length ? deferred.map((d) => d.date).sort()[0] : null;
     const partial = failures.length > 0 || deferred.length > 0;
     const span = args.since || args.until ? ` (${args.since || "\u2026"} \u2192 ${args.until || "\u2026"})` : " (all time scanned)";
@@ -4740,6 +4861,7 @@ Other lanes see it on their next relay check.`,
       lines.push(`- **${t.lane}**: ${t.days}/${t.requested_days} days aggregated, ${t.invocations} invocations, in ${t.input_tokens.toLocaleString()} / out ${t.output_tokens.toLocaleString()}, activity ${t.total_activity.toLocaleString()}`);
     }
     lines.push("", `**Total**: ${grand.invocations || 0} invocations, in ${(grand.input_tokens || 0).toLocaleString()} / out ${(grand.output_tokens || 0).toLocaleString()}, activity ${grand.total_activity.toLocaleString()} (${TOTAL_ACTIVITY_VERSION} = ${TOTAL_ACTIVITY_DEF})`);
+    lines.push(`**Cost** (USD, ${RATE_TABLE_VERSION}${partial ? " -- PARTIAL, will undercount" : ""}): cold $${grand.cost.cold.toFixed(2)} / cached $${grand.cost.cached.toFixed(2)}` + (grand.cost.unpriced.length ? ` -- unpriced: ${grand.cost.unpriced.join(", ")}` : "") + " -- entries marked guess in by_model are not official rates.");
     if (partial) {
       lines.push(
         "",
