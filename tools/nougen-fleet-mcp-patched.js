@@ -6800,31 +6800,29 @@ const ONBOARD_PAGE = `<!doctype html>
   :root { --bg:#fbfaf7; --fg:#1d1d1f; --muted:#5b5b61; --card:#fff; --line:#d9d6cf; --accent:#2c5fd6; --ok:#1e7a46; --bad:#b3261e; }
   @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#15161a; --fg:#ededf0; --muted:#a6a6ad; --card:#1d1f25; --line:#3a3d46; --accent:#7aa2ff; --ok:#6fd39a; --bad:#ff8a80; } }
   :root[data-theme="dark"] { --bg:#15161a; --fg:#ededf0; --muted:#a6a6ad; --card:#1d1f25; --line:#3a3d46; --accent:#7aa2ff; --ok:#6fd39a; --bad:#ff8a80; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
-  main { max-width:32rem; margin:0 auto; padding:2rem 1rem; }
-  h1 { font-size:1.5rem; margin:0 0 .5rem; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:18px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
+  main { max-width:30rem; margin:0 auto; padding:2rem 1rem; }
+  h1 { font-size:1.6rem; margin:0 0 .5rem; }
   p { color:var(--muted); margin:.5rem 0 1.25rem; }
-  form { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1.25rem; }
-  label { display:block; font-weight:600; margin:.75rem 0 .25rem; }
-  input { width:100%; box-sizing:border-box; font:inherit; padding:.6rem .7rem; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); }
-  input:focus-visible, button:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
-  button { margin-top:1.25rem; width:100%; font:inherit; font-weight:600; padding:.7rem; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
+  form, .done { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1.25rem; }
+  label { display:block; font-weight:600; margin:0 0 .4rem; }
+  input { width:100%; box-sizing:border-box; font:inherit; padding:.75rem; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); }
+  input:focus-visible, button:focus-visible, summary:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  button { margin-top:1.25rem; width:100%; font:inherit; font-weight:600; padding:.8rem; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
   button[disabled] { opacity:.6; cursor:progress; }
-  #result { margin-top:1.25rem; }
-  #result .ok { color:var(--ok); font-weight:600; }
-  #result .err { color:var(--bad); font-weight:600; }
-  code { display:block; overflow-wrap:anywhere; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:.6rem; margin:.25rem 0 .75rem; }
+  .ok { color:var(--ok); font-weight:600; font-size:1.15rem; }
+  .err { color:var(--bad); font-weight:600; }
+  details { margin-top:1rem; }
+  code { display:block; overflow-wrap:anywhere; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.6rem; margin:.25rem 0 .75rem; }
   @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
 </style></head>
 <body><main>
   <h1>Join NouGen</h1>
-  <p>Enter the invite code you were sent and your name. This creates your private node.</p>
+  <p>Type the invite code you were sent, then press the button.</p>
   <form id="f" novalidate>
     <label for="code">Invite code</label>
-    <input id="code" name="code" autocomplete="off" required>
-    <label for="name">Your name</label>
-    <input id="name" name="name" autocomplete="name" required>
-    <button id="go" type="submit">Create my node</button>
+    <input id="code" name="code" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+    <button id="go" type="submit">Continue</button>
   </form>
   <div id="result" role="status" aria-live="polite"></div>
 </main>
@@ -6832,36 +6830,38 @@ const ONBOARD_PAGE = `<!doctype html>
   const f = document.getElementById("f");
   const go = document.getElementById("go");
   const out = document.getElementById("result");
-  function line(text, cls) { const p = document.createElement("p"); p.className = cls || ""; p.textContent = text; return p; }
-  function block(label, value) {
-    const l = document.createElement("div"); l.textContent = label;
-    const c = document.createElement("code"); c.textContent = value;
-    out.append(l, c);
-  }
+  function msg(text, cls) { const p = document.createElement("p"); p.className = cls || ""; p.textContent = text; return p; }
   f.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     out.replaceChildren();
     const code = document.getElementById("code").value.trim();
-    const name = document.getElementById("name").value.trim();
-    if (!code || !name) { out.append(line("Enter both the invite code and your name.", "err")); return; }
-    go.disabled = true; go.textContent = "Creating your node...";
+    if (!code) { out.append(msg("Type the invite code first.", "err")); return; }
+    go.disabled = true; go.textContent = "Working...";
     try {
       const resp = await fetch("/onboard/redeem", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ code, name }),
+        body: JSON.stringify({ code }),
       });
       const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) { out.append(line(data.error || "Something went wrong. Ask the operator for a new invite.", "err")); return; }
-      out.append(line("Your node is ready.", "ok"));
-      block("Node address", data.node_url);
-      block("Tenant id", data.tenant_id);
-      block("Node token (keep private)", data.token);
-      block("Tunnel token (keep private)", data.tunnel_token);
-      out.append(line("Save these values now. The invite code can't be used again."));
+      if (!resp.ok) { out.append(msg(data.error || "That code didn't work. Ask for a new one.", "err")); return; }
+      const setup = JSON.stringify({ node_url: data.node_url, token: data.token, tunnel_token: data.tunnel_token });
+      const box = document.createElement("div"); box.className = "done";
+      const ok = document.createElement("p"); ok.className = "ok"; ok.textContent = "You're all set.";
+      const copy = document.createElement("button"); copy.type = "button"; copy.textContent = "Copy my setup code";
+      copy.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(setup); copy.textContent = "Copied. Paste it into NouGen."; }
+        catch (e) { copy.textContent = "Select the text below and copy it."; }
+      });
+      const det = document.createElement("details");
+      const sum = document.createElement("summary"); sum.textContent = "Show the setup code";
+      const c = document.createElement("code"); c.textContent = setup;
+      det.append(sum, c);
+      box.append(ok, copy, det);
+      out.append(box);
     } catch (e) {
-      out.append(line("Could not reach the server. Check your connection and try again.", "err"));
+      out.append(msg("Couldn't reach the server. Check your internet and press Continue again.", "err"));
     } finally {
-      go.disabled = false; go.textContent = "Create my node";
+      go.disabled = false; go.textContent = "Continue";
     }
   });
 </script></body></html>`;
