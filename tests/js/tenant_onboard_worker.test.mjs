@@ -1,7 +1,27 @@
 // Run: node --test tests/js/tenant_onboard_worker.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { provisionTenant } from "../../tools/nougen-fleet-mcp-patched.js";
+import { provisionTenant, InviteClaim } from "../../tools/nougen-fleet-mcp-patched.js";
+
+// Fake Durable Object namespace: one real InviteClaim instance per invite code.
+function claimNamespace() {
+  const objects = new Map();
+  return {
+    idFromName: (name) => name,
+    get: (id) => {
+      if (!objects.has(id)) {
+        const data = new Map();
+        const state = { storage: {
+          get: async (k) => data.get(k),
+          put: async (k, v) => { data.set(k, v); },
+        } };
+        objects.set(id, new InviteClaim(state));
+      }
+      const obj = objects.get(id);
+      return { fetch: (url, init) => obj.fetch(new Request(url, init)) };
+    },
+  };
+}
 
 function memKv(seed = {}) {
   const m = new Map(Object.entries(seed));
@@ -34,8 +54,9 @@ function fakeCloudflare(log) {
   };
 }
 
-const env = (kv, log) => ({
+const env = (kv, log, claims = claimNamespace()) => ({
   TENANTS: kv,
+  INVITE_CLAIMS: claims,
   CLOUDFLARE_API_TOKEN_NOUGEN_FULL: "test-token",
   CLOUDFLARE_ACCOUNT_ID: "acct",
   CLOUDFLARE_API_BASE: "https://cf.test/client/v4",
@@ -69,7 +90,32 @@ test("an invite cannot be used twice", async () => {
   await withFetch(fakeCloudflare(log), () => provisionTenant(env(kv, log), { code: "abc", name: "Pat" }));
   await assert.rejects(
     withFetch(fakeCloudflare(log), () => provisionTenant(env(kv, log), { code: "abc", name: "Pat" })),
-    /not valid or was already used/);
+    /not valid or was already used|already used/);
+});
+
+test("two simultaneous redemptions of one invite: exactly one succeeds", async () => {
+  const log = [];
+  const kv = memKv({ "invite:race": JSON.stringify({ eml: "pat@example.com", exp: Date.now() / 1000 + 3600 }) });
+  const e = env(kv, log);
+  const results = await withFetch(fakeCloudflare(log), () =>
+    Promise.allSettled([
+      provisionTenant(e, { code: "race", name: "Pat" }),
+      provisionTenant(e, { code: "race", name: "Pat" }),
+    ]));
+  const fulfilled = results.filter((r) => r.status === "fulfilled");
+  assert.equal(fulfilled.length, 1, "only one redemption may succeed");
+  assert.match(results.find((r) => r.status === "rejected").reason.message, /being redeemed|already used/);
+});
+
+test("a failed run releases the claim so the invite can be retried", async () => {
+  const log = [];
+  const kv = memKv({ "invite:retry": JSON.stringify({ eml: "pat@example.com", exp: Date.now() / 1000 + 3600 }) });
+  const e = env(kv, log);
+  const failing = async () => new Response("nope", { status: 500 });
+  await assert.rejects(withFetch(failing, () => provisionTenant(e, { code: "retry", name: "Pat" })));
+  assert.ok(kv.m.has("invite:retry"), "invite survives a failed run");
+  const res = await withFetch(fakeCloudflare(log), () => provisionTenant(e, { code: "retry", name: "Pat" }));
+  assert.equal(res.email, "pat@example.com");
 });
 
 test("an expired invite is refused before any Cloudflare call", async () => {

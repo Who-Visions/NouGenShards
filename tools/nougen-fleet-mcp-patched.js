@@ -6664,6 +6664,23 @@ async function provisionTenant(env, input) {
   const port = Number(input.port || env.NGS_PORT || 4444);
 
   const cf = onboardCfClient(env);
+
+  // One Durable Object per invite code serializes redemptions, so two requests
+  // cannot both pass the check (KV reads alone can be stale for up to 60s).
+  await inviteCall(env, code, "claim", { eml: email });
+  try {
+    const result = await onboardSteps(cf, email, tid, host, nodeUrl, port, existing, kv);
+    await inviteCall(env, code, "consume");
+    await kv.delete("invite:" + code);
+    return result;
+  } catch (err) {
+    // Release the claim so the same invite can be retried after a failure.
+    await inviteCall(env, code, "release").catch(() => {});
+    throw err;
+  }
+}
+
+async function onboardSteps(cf, email, tid, host, nodeUrl, port, existing, kv) {
   const steps = [];
 
   // 1. credential: keep the one the tenant already has, otherwise mint a new one.
@@ -6687,9 +6704,6 @@ async function provisionTenant(env, input) {
   await kv.put("tenant-digest:" + tid, await onboardSha256Hex(token));
   steps.push(`worker: ${email} allowed and routed to ${nodeUrl}`);
 
-  // 4. consume the invite only now that everything above succeeded.
-  await kv.delete("invite:" + code);
-
   return {
     tenant_id: tid,
     email,
@@ -6699,6 +6713,68 @@ async function provisionTenant(env, input) {
     tunnel_token: tunnel.tunnelToken,
     steps,
   };
+}
+
+// Serializes redemptions of one invite. A Durable Object handles one request at a
+// time, so the check-and-set in "claim" cannot interleave. States:
+//   open -> claimed (lease) -> consumed (permanent); a failed run releases back to open.
+const INVITE_LEASE_MS = 120_000;
+
+export class InviteClaim {
+  constructor(state) {
+    this.state = state;
+    // Load once; afterwards check-and-set runs on memory with no await in between,
+    // so concurrent requests cannot interleave inside the check.
+    this.ready = (async () => {
+      this.rec = (await state.storage.get("claim")) || { status: "open" };
+    })();
+  }
+
+  async fetch(request) {
+    await this.ready;
+    const action = new URL(request.url).pathname.replace(/^\//, "");
+    const rec = this.rec;
+    const now = Date.now();
+    const save = async (next) => {
+      this.rec = next;
+      await this.state.storage.put("claim", next);
+    };
+    const reply = (body, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+    if (action === "claim") {
+      if (rec.status === "consumed") return reply({ error: "invite code is not valid or was already used" }, 409);
+      if (rec.status === "claimed" && rec.leaseUntil > now) {
+        return reply({ error: "this invite is being redeemed; try again in a minute" }, 409);
+      }
+      await save({ status: "claimed", leaseUntil: now + INVITE_LEASE_MS });
+      return reply({ ok: true });
+    }
+    if (action === "release") {
+      if (rec.status === "claimed") await save({ status: "open" });
+      return reply({ ok: true });
+    }
+    if (action === "consume") {
+      await save({ status: "consumed" });
+      return reply({ ok: true });
+    }
+    return reply({ error: "unknown action" }, 404);
+  }
+}
+
+async function inviteCall(env, code, action, body) {
+  if (!env.INVITE_CLAIMS) throw new OnboardError("INVITE_CLAIMS Durable Object binding is missing");
+  const stub = env.INVITE_CLAIMS.get(env.INVITE_CLAIMS.idFromName(code));
+  const resp = await stub.fetch("https://invite.internal/" + action, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  if (!resp.ok) {
+    const detail = await resp.json().catch(() => ({}));
+    throw new OnboardError(detail.error || `invite ${action} failed`);
+  }
+  return resp.json().catch(() => ({}));
 }
 
 async function handleOnboard(request, env) {
