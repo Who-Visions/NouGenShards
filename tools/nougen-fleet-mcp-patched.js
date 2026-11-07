@@ -6718,7 +6718,7 @@ async function onboardSteps(cf, email, tid, host, nodeUrl, port, existing, kv) {
 // Serializes redemptions of one invite. A Durable Object handles one request at a
 // time, so the check-and-set in "claim" cannot interleave. States:
 //   open -> claimed (lease) -> consumed (permanent); a failed run releases back to open.
-const INVITE_LEASE_MS = 120_000;
+const INVITE_LEASE_MS = 600_000; // 10 min: longer than any provisioning run, short enough to recover a crash
 
 export class InviteClaim {
   constructor(state) {

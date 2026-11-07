@@ -168,3 +168,21 @@ test("POST /onboard/redeem is still the API route", async () => {
   const resp = await worker.fetch(new Request("https://join.test/onboard/redeem", { method: "GET" }), {});
   assert.equal(resp.status, 405, "the API path is POST only, never a page");
 });
+
+test("a claim is still held after 2 minutes, so a slow run cannot be overlapped", async () => {
+  const realNow = Date.now;
+  let t = 1_000_000;
+  Date.now = () => t;
+  try {
+    const data = new Map();
+    const obj = new InviteClaim({ storage: { get: async (k) => data.get(k), put: async (k, v) => { data.set(k, v); } } });
+    const claim = () => obj.fetch(new Request("https://x/claim", { method: "POST", body: "{}" }));
+    assert.equal((await claim()).status, 200);
+    t += 2 * 60 * 1000; // 2 minutes later
+    assert.equal((await claim()).status, 409, "still leased at 2 minutes");
+    t += 11 * 60 * 1000; // past the 10-minute lease
+    assert.equal((await claim()).status, 200, "a crashed claim recovers after the lease");
+  } finally {
+    Date.now = realNow;
+  }
+});
