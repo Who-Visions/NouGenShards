@@ -108,6 +108,16 @@ TOOLS: List[Dict[str, Any]] = [
             "message": {"type": "string", "description": "Message text to deliver."},
         }, "required": ["target", "message"]},
     }},
+    {"type": "function", "function": {
+        "name": "nougenmsg_inbox",
+        "description": "Read recent unread messages from a fleet agent's NouGenMsg inbox"
+                       " - the read half of nougenmsg_send." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {
+            "target": {"type": "string",
+                       "description": "Which inbox to read: \"antigravity\" (default) or \"codex\"."},
+            "limit": {"type": "integer", "description": "Max messages to return."},
+        }, "required": []},
+    }},
 ]
 
 TOOL_NAMES = frozenset(t["function"]["name"] for t in TOOLS)
@@ -278,6 +288,17 @@ def _shards_capture(args: dict) -> dict:
     return {"captured": bool(res), "tags": tags}
 
 
+def _nougenmsg_inbox(args: dict) -> dict:
+    from nougen_shards.nougenmsg import NouGenMsgBus
+    # read_inbox only distinguishes "antigravity" vs anything-else (-> codex
+    # dirs); there is no third branch for "claude" today, so default stays
+    # antigravity - the inbox most fleet lanes actually drop pings into.
+    target = str(args.get("target", "antigravity")).strip() or "antigravity"
+    limit = _limit(args)
+    messages = NouGenMsgBus.read_inbox(target=target, limit=limit)
+    return {"target": target, "count": len(messages), "messages": messages}
+
+
 def _nougenmsg_send(args: dict) -> dict:
     from nougen_shards.nougenmsg import NouGenMsgBus, get_current_node
     target = str(args.get("target", "")).strip()
@@ -313,6 +334,7 @@ _DISPATCH: Dict[str, Callable[[dict], dict]] = {
     "reach_state": _reach_state,
     "shards_capture": _shards_capture,
     "nougenmsg_send": _nougenmsg_send,
+    "nougenmsg_inbox": _nougenmsg_inbox,
 }
 
 
