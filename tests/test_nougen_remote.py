@@ -5,6 +5,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 
 def _load_nougen_remote():
     repo_root = Path(__file__).resolve().parents[1]
@@ -107,5 +109,94 @@ def test_private_get_routes_require_token(monkeypatch):
         assert status(base + "/api/v1/inbox?token=wrong") == 401
         assert status(base + "/api/v1/inbox?token=test-token-123") == 200
         assert status(base + "/api/v1/health") == 200
+    finally:
+        srv.shutdown()
+
+
+def _stub_google_verify(monkeypatch):
+    """Stub google.oauth2.id_token.verify_oauth2_token with canned claims."""
+    pytest.importorskip("google.oauth2.id_token")
+    import google.oauth2.id_token as google_id_token
+
+    def _fake_verify(token, request, audience):
+        assert audience == "test-client-id.apps.googleusercontent.com"
+        if token == "good.token.here":
+            return {"email": "owner@example.com", "email_verified": True}
+        if token == "unverified.token.here":
+            return {"email": "owner@example.com", "email_verified": False}
+        if token == "outsider.token.here":
+            return {"email": "someone-else@example.com", "email_verified": True}
+        raise ValueError("invalid token")
+
+    monkeypatch.setattr(google_id_token, "verify_oauth2_token", _fake_verify)
+
+
+def test_google_id_token_valid(monkeypatch):
+    mod = _load_nougen_remote()
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
+    monkeypatch.setenv("GOOGLE_ALLOWED_EMAILS", "owner@example.com")
+    _stub_google_verify(monkeypatch)
+
+    assert mod._google_id_token_valid("good.token.here") is True
+    assert mod._google_id_token_valid("unverified.token.here") is False
+    assert mod._google_id_token_valid("outsider.token.here") is False
+    assert mod._google_id_token_valid("bad.token.here") is False
+    assert mod._google_id_token_valid("not-a-jwt") is False
+    assert mod._google_id_token_valid("") is False
+
+
+def test_google_id_token_valid_fails_closed_without_config(monkeypatch):
+    mod = _load_nougen_remote()
+    _stub_google_verify(monkeypatch)
+
+    # No client ID configured: even a token the stub would accept is refused.
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("NOUGEN_GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.setenv("GOOGLE_ALLOWED_EMAILS", "owner@example.com")
+    assert mod._google_id_token_valid("good.token.here") is False
+
+    # No allowlist configured: refused as well.
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
+    monkeypatch.setenv("GOOGLE_ALLOWED_EMAILS", "")
+    assert mod._google_id_token_valid("good.token.here") is False
+
+
+def test_post_accepts_valid_google_id_token(monkeypatch):
+    import importlib
+    import sys
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    monkeypatch.setenv("NOUGEN_REMOTE_TOKEN", "test-token-123")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
+    monkeypatch.setenv("GOOGLE_ALLOWED_EMAILS", "owner@example.com")
+    _stub_google_verify(monkeypatch)
+    nr = importlib.reload(importlib.import_module("nougen_remote"))
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), nr.RemoteHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        def post_status(token):
+            req = urllib.request.Request(
+                base + "/api/v1/chat",
+                data=b"{}",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                return urllib.request.urlopen(req, timeout=5).status
+            except urllib.error.HTTPError as e:
+                return e.code
+
+        # Valid Google token passes auth (400 = authed, missing text).
+        assert post_status("good.token.here") == 400
+        # Invalid Google token is refused before routing.
+        assert post_status("bad.token.here") == 401
+        # Static token still works.
+        assert post_status("test-token-123") == 400
     finally:
         srv.shutdown()
