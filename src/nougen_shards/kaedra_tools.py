@@ -125,6 +125,86 @@ TOOLS: List[Dict[str, Any]] = [
                        " reports a proposal, not a shipped change)." + _CITE_RULE,
         "parameters": {"type": "object", "properties": {}, "required": []},
     }},
+    {"type": "function", "function": {
+        "name": "unfinished_destinies",
+        "description": "Active and dormant destiny records (long-horizon goals) filterable by status/trigger." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {
+            "status": {"type": "string", "description": "Filter by status, e.g. active, dormant."},
+            "trigger": {"type": "string", "description": "Filter by trigger name."},
+        }, "required": []},
+    }},
+    {"type": "function", "function": {
+        "name": "search_destinies",
+        "description": "Search destiny records by title/goal text." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Search text."},
+            "limit": {"type": "integer", "description": "Max destinies to return."},
+        }, "required": ["query"]},
+    }},
+    {"type": "function", "function": {
+        "name": "get_destiny",
+        "description": "Fetch one destiny record by its integer id." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {
+            "destiny_id": {"type": "integer", "description": "The destiny's id."},
+        }, "required": ["destiny_id"]},
+    }},
+    {"type": "function", "function": {
+        "name": "create_destiny",
+        "description": "Create a new destiny (long-horizon goal) record. Writes to the destiny registry.",
+        "parameters": {"type": "object", "properties": {
+            "title": {"type": "string", "description": "Short title."},
+            "goal": {"type": "string", "description": "What this destiny is working toward."},
+            "branch": {"type": "string", "description": "Optional branch classification."},
+        }, "required": ["title", "goal"]},
+    }},
+    {"type": "function", "function": {
+        "name": "mrsb_status",
+        "description": "Status of the Learn With Mrs. B publishing project (SVGs, PDFs, KDP readiness)." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    }},
+    {"type": "function", "function": {
+        "name": "mrsb_character",
+        "description": "Character DNA/spec for a Mrs. B project character." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {
+            "char_key": {"type": "string", "description": "Character key, default mrs_b."},
+        }, "required": []},
+    }},
+    {"type": "function", "function": {
+        "name": "mrsb_lineage",
+        "description": "Lineage/provenance record for the Mrs. B project." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    }},
+    {"type": "function", "function": {
+        "name": "mrsb_recall",
+        "description": "Search shards scoped to the Mrs. B project." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Search text."},
+            "limit": {"type": "integer", "description": "Max results."},
+        }, "required": ["query"]},
+    }},
+    {"type": "function", "function": {
+        "name": "nougenmsg_peers",
+        "description": "Live reachability of every fleet peer node on the NouGenMsg bus." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    }},
+    {"type": "function", "function": {
+        "name": "nougenmsg_search",
+        "description": "Full-text search over past NouGenMsg bus messages." + _CITE_RULE,
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Search text."},
+            "target": {"type": "string", "description": "Which agent's messages to search, default \"all\"."},
+            "limit": {"type": "integer", "description": "Max messages to return."},
+        }, "required": ["query"]},
+    }},
+    {"type": "function", "function": {
+        "name": "relay_ack",
+        "description": "Acknowledge a relay handoff leg as received - commits to finishing it. Writes to the relay registry.",
+        "parameters": {"type": "object", "properties": {
+            "handoff_id": {"type": "string", "description": "Specific leg id to acknowledge."},
+            "agent": {"type": "string", "description": "Filter to the most recent open leg from this agent."},
+            "message": {"type": "string", "description": "Optional note attached to the ack."},
+        }, "required": []},
+    }},
 ]
 
 TOOL_NAMES = frozenset(t["function"]["name"] for t in TOOLS)
@@ -295,6 +375,83 @@ def _shards_capture(args: dict) -> dict:
     return {"captured": bool(res), "tags": tags}
 
 
+def _unfinished_destinies(args: dict) -> dict:
+    from . import destiny
+    return destiny.unfinished_destinies(status=args.get("status"), trigger=args.get("trigger"))
+
+
+def _search_destinies(args: dict) -> dict:
+    from . import destiny
+    query = str(args.get("query", "")).strip()
+    if not query:
+        return {"error": "query is required for search_destinies"}
+    return destiny.search_destinies(query, limit=_limit(args))
+
+
+def _get_destiny(args: dict) -> dict:
+    from . import destiny
+    destiny_id = args.get("destiny_id")
+    if destiny_id is None:
+        return {"error": "destiny_id is required for get_destiny"}
+    return destiny.get_destiny(int(destiny_id))
+
+
+def _create_destiny(args: dict) -> dict:
+    from . import destiny
+    title = str(args.get("title", "")).strip()
+    goal = str(args.get("goal", "")).strip()
+    if not title or not goal:
+        return {"error": "title and goal are required for create_destiny"}
+    return destiny.create_destiny(title, goal, branch=args.get("branch"))
+
+
+def _mrsb_status(args: dict) -> dict:
+    from . import mrsb
+    return mrsb.project_status()
+
+
+def _mrsb_character(args: dict) -> dict:
+    from . import mrsb
+    return mrsb.get_character_dna(str(args.get("char_key", "mrs_b")))
+
+
+def _mrsb_lineage(args: dict) -> dict:
+    from . import mrsb
+    return mrsb.get_lineage()
+
+
+def _mrsb_recall(args: dict) -> dict:
+    from . import mrsb
+    query = str(args.get("query", "")).strip()
+    if not query:
+        return {"error": "query is required for mrsb_recall"}
+    return {"hits": mrsb.recall_shards(query, limit=_limit(args))}
+
+
+def _nougenmsg_peers(args: dict) -> dict:
+    from .nougenmsg import NouGenMsgBus
+    return NouGenMsgBus.list_peers()
+
+
+def _nougenmsg_search(args: dict) -> dict:
+    from .nougenmsg import NouGenMsgBus
+    query = str(args.get("query", "")).strip()
+    if not query:
+        return {"error": "query is required for nougenmsg_search"}
+    return NouGenMsgBus.search_messages(query, target=str(args.get("target", "all")), limit=_limit(args))
+
+
+def _relay_ack(args: dict) -> dict:
+    from . import handoff
+    handoff_id = args.get("handoff_id")
+    agent = args.get("agent")
+    message = str(args.get("message", "")).strip()
+    if not handoff_id and not agent:
+        return {"error": "handoff_id or agent is required for relay_ack - acking 'the most recent' blind is too easy to get wrong"}
+    path = handoff.acknowledge_handoff(agent=agent, message=message, handoff_id=handoff_id)
+    return {"acknowledged": bool(path), "path": str(path) if path else None}
+
+
 def _nougenmsg_inbox(args: dict) -> dict:
     from nougen_shards.nougenmsg import NouGenMsgBus
     # read_inbox only distinguishes "antigravity" vs anything-else (-> codex
@@ -370,6 +527,17 @@ _DISPATCH: Dict[str, Callable[[dict], dict]] = {
     "nougenmsg_send": _nougenmsg_send,
     "nougenmsg_inbox": _nougenmsg_inbox,
     "rsi_status": _rsi_status,
+    "unfinished_destinies": _unfinished_destinies,
+    "search_destinies": _search_destinies,
+    "get_destiny": _get_destiny,
+    "create_destiny": _create_destiny,
+    "mrsb_status": _mrsb_status,
+    "mrsb_character": _mrsb_character,
+    "mrsb_lineage": _mrsb_lineage,
+    "mrsb_recall": _mrsb_recall,
+    "nougenmsg_peers": _nougenmsg_peers,
+    "nougenmsg_search": _nougenmsg_search,
+    "relay_ack": _relay_ack,
 }
 
 

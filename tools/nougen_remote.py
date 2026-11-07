@@ -1262,6 +1262,16 @@ class RemoteHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "node": platform.node(), "port": PORT, "design_choices": len(DESIGN_CHOICES_100)})
             return
 
+        if path == "/api/v1/tools":
+            # Single source of truth for the Worker's function-calling schema -
+            # kaedra_tools.TOOLS is already OpenAI-function-call shaped, so the
+            # Worker fetches this live instead of hand-duplicating a second
+            # copy of 19+ tool schemas in JS that would drift the moment one
+            # side changes without the other.
+            from nougen_shards import kaedra_tools
+            self._send_json({"tools": kaedra_tools.TOOLS})
+            return
+
         if path == "/api/v1/design-choices":
             self._send_json({"ok": True, "count": len(DESIGN_CHOICES_100), "choices": DESIGN_CHOICES_100})
             return
