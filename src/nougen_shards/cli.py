@@ -2021,9 +2021,12 @@ def cmd_rsi(args):
             print(json.dumps(summary, indent=2))
         else:
             print(f"\n[RSI Cycle Complete] status={summary['status']}")
+            print(f" - timestamp: {summary.get('temporal', {}).get('eastern_full', summary['timestamp_utc'])}")
             print(f" - repo: {summary['repo']}")
             print(f" - build ok: {summary['build'].get('ok')}")
             print(f" - self-update healthy: {summary['self_update_health'].get('ok')}")
+            exa = summary.get("exa_temporal_latest", {})
+            print(f" - exa temporal latest: ok={exa.get('ok')} ({len(exa.get('hits') or [])} hits since {exa.get('start_published_date', 'n/a')})")
             prop = summary.get("proposal", {})
             if prop.get("title"):
                 print(f" - Proposal: {prop['title']} (risk={prop.get('risk')})")

@@ -316,13 +316,18 @@ def _rsi_status(args: dict) -> dict:
     with open(files[0], "r", encoding="utf-8") as f:
         latest = _json.load(f)
     prop = latest.get("proposal", {})
+    exa = latest.get("exa_temporal_latest", {})
     return {
         "timestamp_utc": latest.get("timestamp_utc"),
+        "temporal": latest.get("temporal", {}).get("eastern_full"),
+        "bitemporal_event_id": (latest.get("bitemporal_receipt") or {}).get("event_id"),
         "status": latest.get("status"),
         "repo": latest.get("repo"),
         "build_ok": latest.get("build", {}).get("ok"),
         "self_update_healthy": latest.get("self_update_health", {}).get("ok"),
         "self_update_live_version": (latest.get("self_update_health", {}).get("body") or {}).get("versionCode"),
+        "exa_temporal_ok": exa.get("ok"),
+        "exa_hits_count": len(exa.get("hits") or []),
         "latest_proposal_title": prop.get("title"),
         "latest_proposal_risk": prop.get("risk"),
     }
