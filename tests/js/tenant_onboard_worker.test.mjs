@@ -1,7 +1,7 @@
 // Run: node --test tests/js/tenant_onboard_worker.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { provisionTenant, InviteClaim, ONBOARD_PAGE } from "../../tools/nougen-fleet-mcp-patched.js";
+import worker, { provisionTenant, InviteClaim, renderOnboardPage } from "../../tools/nougen-fleet-mcp-patched.js";
 
 // Fake Durable Object namespace: one real InviteClaim instance per invite code.
 function claimNamespace() {
@@ -142,9 +142,29 @@ test("the Cloudflare error does not echo the response body", async () => {
     (err) => /HTTP 403/.test(err.message) && !/secret-body-value/.test(err.message));
 });
 
-test("the onboarding page posts to the redeem endpoint and never injects server text as HTML", () => {
-  assert.match(ONBOARD_PAGE, /fetch\("\/onboard\/redeem"/);
-  assert.match(ONBOARD_PAGE, /textContent/);
-  assert.doesNotMatch(ONBOARD_PAGE, /innerHTML/);
-  assert.match(ONBOARD_PAGE, /prefers-reduced-motion/);
+test("the onboarding page is one button, with the code taken from the link", () => {
+  const html = renderOnboardPage("abc123");
+  assert.match(html, /const CODE = "abc123";/);
+  assert.match(html, /fetch\("\/onboard\/redeem"/);
+  assert.match(html, /textContent/);
+  assert.doesNotMatch(html, /innerHTML/);
+  assert.doesNotMatch(html, /<input/, "no typing for the person");
+  assert.match(html, /prefers-reduced-motion/);
+});
+
+test("a hostile code in the link cannot break out of the script", () => {
+  const html = renderOnboardPage('x</script><script>alert(1)</script>');
+  assert.doesNotMatch(html, /<\/script><script>alert/);
+});
+
+test("GET /onboard/<code> serves the page with the code and sends no-referrer", async () => {
+  const resp = await worker.fetch(new Request("https://join.test/onboard/abc123"), {});
+  assert.equal(resp.status, 200);
+  assert.equal(resp.headers.get("referrer-policy"), "no-referrer");
+  assert.match(await resp.text(), /const CODE = "abc123";/);
+});
+
+test("POST /onboard/redeem is still the API route", async () => {
+  const resp = await worker.fetch(new Request("https://join.test/onboard/redeem", { method: "GET" }), {});
+  assert.equal(resp.status, 405, "the API path is POST only, never a page");
 });

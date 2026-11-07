@@ -6792,7 +6792,10 @@ async function handleOnboard(request, env) {
 // Plain form for the person being onboarded: enter the invite code and a name.
 // Posts to /onboard/redeem and shows the node details. Server data is written with
 // textContent only.
-const ONBOARD_PAGE = `<!doctype html>
+// One-button page. The invite code arrives in the link, so the person clicks once.
+function renderOnboardPage(code) {
+  const safeCode = JSON.stringify(String(code || "")).replace(/</g, "\\u003c");
+  return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Join NouGen</title>
@@ -6801,76 +6804,83 @@ const ONBOARD_PAGE = `<!doctype html>
   @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#15161a; --fg:#ededf0; --muted:#a6a6ad; --card:#1d1f25; --line:#3a3d46; --accent:#7aa2ff; --ok:#6fd39a; --bad:#ff8a80; } }
   :root[data-theme="dark"] { --bg:#15161a; --fg:#ededf0; --muted:#a6a6ad; --card:#1d1f25; --line:#3a3d46; --accent:#7aa2ff; --ok:#6fd39a; --bad:#ff8a80; }
   body { margin:0; background:var(--bg); color:var(--fg); font:18px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
-  main { max-width:30rem; margin:0 auto; padding:2rem 1rem; }
+  main { max-width:30rem; margin:0 auto; padding:2.5rem 1rem; text-align:center; }
   h1 { font-size:1.6rem; margin:0 0 .5rem; }
   p { color:var(--muted); margin:.5rem 0 1.25rem; }
-  form, .done { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1.25rem; }
-  label { display:block; font-weight:600; margin:0 0 .4rem; }
-  input { width:100%; box-sizing:border-box; font:inherit; padding:.75rem; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); }
-  input:focus-visible, button:focus-visible, summary:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
-  button { margin-top:1.25rem; width:100%; font:inherit; font-weight:600; padding:.8rem; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
+  button { width:100%; font:inherit; font-weight:600; padding:1rem; border:0; border-radius:10px; background:var(--accent); color:#fff; cursor:pointer; }
   button[disabled] { opacity:.6; cursor:progress; }
+  button:focus-visible, summary:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
   .ok { color:var(--ok); font-weight:600; font-size:1.15rem; }
   .err { color:var(--bad); font-weight:600; }
+  .done { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1.25rem; margin-top:1.25rem; text-align:left; }
   details { margin-top:1rem; }
   code { display:block; overflow-wrap:anywhere; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.6rem; margin:.25rem 0 .75rem; }
   @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
 </style></head>
 <body><main>
-  <h1>Join NouGen</h1>
-  <p>Type the invite code you were sent, then press the button.</p>
-  <form id="f" novalidate>
-    <label for="code">Invite code</label>
-    <input id="code" name="code" autocomplete="off" autocapitalize="off" spellcheck="false" required>
-    <button id="go" type="submit">Continue</button>
-  </form>
+  <h1>Set up NouGen</h1>
+  <p>Press the button once. Nothing else to type.</p>
+  <button id="go" type="button">Set up my NouGen</button>
   <div id="result" role="status" aria-live="polite"></div>
 </main>
 <script>
-  const f = document.getElementById("f");
+  const CODE = ${safeCode};
   const go = document.getElementById("go");
   const out = document.getElementById("result");
   function msg(text, cls) { const p = document.createElement("p"); p.className = cls || ""; p.textContent = text; return p; }
-  f.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
+  go.addEventListener("click", async () => {
     out.replaceChildren();
-    const code = document.getElementById("code").value.trim();
-    if (!code) { out.append(msg("Type the invite code first.", "err")); return; }
-    go.disabled = true; go.textContent = "Working...";
+    if (!CODE) { out.append(msg("This link is missing its code. Ask for a new link.", "err")); return; }
+    go.disabled = true; go.textContent = "Setting up...";
     try {
       const resp = await fetch("/onboard/redeem", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ code: CODE }),
       });
       const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) { out.append(msg(data.error || "That code didn't work. Ask for a new one.", "err")); return; }
+      if (!resp.ok) { out.append(msg(data.error || "This link has expired. Ask for a new one.", "err")); return; }
       const setup = JSON.stringify({ node_url: data.node_url, token: data.token, tunnel_token: data.tunnel_token });
       const box = document.createElement("div"); box.className = "done";
       const ok = document.createElement("p"); ok.className = "ok"; ok.textContent = "You're all set.";
-      const copy = document.createElement("button"); copy.type = "button"; copy.textContent = "Copy my setup code";
-      copy.addEventListener("click", async () => {
-        try { await navigator.clipboard.writeText(setup); copy.textContent = "Copied. Paste it into NouGen."; }
-        catch (e) { copy.textContent = "Select the text below and copy it."; }
-      });
+      const sub = document.createElement("p"); sub.textContent = "Your NouGen node is ready. Keep this page; it has your setup code.";
       const det = document.createElement("details");
-      const sum = document.createElement("summary"); sum.textContent = "Show the setup code";
+      const sum = document.createElement("summary"); sum.textContent = "Show my setup code";
       const c = document.createElement("code"); c.textContent = setup;
       det.append(sum, c);
-      box.append(ok, copy, det);
+      box.append(ok, sub, det);
       out.append(box);
+      go.hidden = true;
     } catch (e) {
-      out.append(msg("Couldn't reach the server. Check your internet and press Continue again.", "err"));
+      out.append(msg("Couldn't reach the server. Check your internet and press the button again.", "err"));
     } finally {
-      go.disabled = false; go.textContent = "Continue";
+      go.disabled = false; go.textContent = "Set up my NouGen";
     }
   });
 </script></body></html>`;
+}
+
+function onboardPageResponse(code) {
+  return new Response(renderOnboardPage(code), {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; base-uri 'none'",
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer",
+    },
+  });
+}
 
 var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const origin = url.origin;
     const path = url.pathname.replace(/\/$/, "") || "/";
+    if (path.startsWith("/onboard/") && path !== "/onboard/redeem") {
+      if (request.method !== "GET") return new Response("GET only", { status: 405 });
+      let code = "";
+      try { code = decodeURIComponent(path.slice("/onboard/".length)); } catch { code = ""; }
+      return onboardPageResponse(code);
+    }
     switch (path) {
       case "/":
         return new Response(
@@ -6893,14 +6903,7 @@ var worker_default = {
       case "/token":
         return request.method === "POST" ? handleToken(request, env) : new Response("POST only", { status: 405 });
       case "/onboard":
-        if (request.method !== "GET") return new Response("GET only", { status: 405 });
-        return new Response(ONBOARD_PAGE, {
-          headers: {
-            "content-type": "text/html; charset=utf-8",
-            "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; base-uri 'none'",
-            "cache-control": "no-store",
-          },
-        });
+        return request.method === "GET" ? onboardPageResponse("") : new Response("GET only", { status: 405 });
       case "/onboard/redeem":
         return handleOnboard(request, env);
       case "/openapi.json":
@@ -6917,7 +6920,7 @@ export {
   __test__,
   provisionTenant,
   handleOnboard,
-  ONBOARD_PAGE,
+  renderOnboardPage,
   worker_default as default
 };
 //# sourceMappingURL=worker.js.map
