@@ -1177,12 +1177,19 @@ class RemoteHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, data: dict, status: int = 200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError) as exc:
+            # The caller gave up and closed the socket before we finished
+            # writing - normal under the Worker's own tool-bridge timeout
+            # (8s/15s retry), not a server fault. A full traceback here is
+            # log noise, not a finding; one line is the whole story.
+            print(f"[nougen_remote] client disconnected mid-response: {exc}")
 
     def do_OPTIONS(self):
         self.send_response(200)
