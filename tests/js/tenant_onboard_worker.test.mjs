@@ -1,7 +1,7 @@
 // Run: node --test tests/js/tenant_onboard_worker.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { provisionTenant, InviteClaim } from "../../tools/nougen-fleet-mcp-patched.js";
+import { provisionTenant, InviteClaim, ONBOARD_PAGE } from "../../tools/nougen-fleet-mcp-patched.js";
 
 // Fake Durable Object namespace: one real InviteClaim instance per invite code.
 function claimNamespace() {
@@ -140,4 +140,11 @@ test("the Cloudflare error does not echo the response body", async () => {
   await assert.rejects(
     withFetch(leaky, () => provisionTenant(env(kv, []), { code: "abc" })),
     (err) => /HTTP 403/.test(err.message) && !/secret-body-value/.test(err.message));
+});
+
+test("the onboarding page posts to the redeem endpoint and never injects server text as HTML", () => {
+  assert.match(ONBOARD_PAGE, /fetch\("\/onboard\/redeem"/);
+  assert.match(ONBOARD_PAGE, /textContent/);
+  assert.doesNotMatch(ONBOARD_PAGE, /innerHTML/);
+  assert.match(ONBOARD_PAGE, /prefers-reduced-motion/);
 });
