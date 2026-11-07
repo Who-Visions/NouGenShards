@@ -6478,6 +6478,241 @@ function openapiDocument(origin) {
   };
 }
 __name(openapiDocument, "openapiDocument");
+
+// ---------------------------------------------------------------------------
+// Tenant onboarding: redeem a one-time invite and provision the tenant's tunnel,
+// DNS record and worker routing. The Cloudflare token lives only in the Worker's
+// secret store, so the person onboarding needs no token on their own machine.
+// Port of src/nougen_shards/tenant_onboard.py (the local node registry step stays
+// on the owner's node; see the digest key written below).
+// Bindings: TENANTS (KV), CLOUDFLARE_API_TOKEN_NOUGEN_FULL (secret),
+// CLOUDFLARE_ACCOUNT_ID (var or secret), optional NOUGEN_TENANT_DOMAIN, CLOUDFLARE_API_BASE.
+// ---------------------------------------------------------------------------
+const ONBOARD_TENANT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+const ONBOARD_EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const ONBOARD_FALLBACK_DOMAIN = "nougenai.com";
+
+class OnboardError extends Error {}
+
+function onboardSlug(text, limit = 24) {
+  const s = String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return (s.slice(0, limit).replace(/-+$/, "")) || "tenant";
+}
+
+function onboardRandomBytes(n) {
+  const out = new Uint8Array(n);
+  crypto.getRandomValues(out);
+  return out;
+}
+
+function onboardB64(bytes) {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+function onboardB64Url(bytes) {
+  return onboardB64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function onboardSha256Hex(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function onboardCfClient(env) {
+  const token = env.CLOUDFLARE_API_TOKEN_NOUGEN_FULL;
+  const account = env.CLOUDFLARE_ACCOUNT_ID;
+  if (!token || !account) {
+    throw new OnboardError("Worker secrets CLOUDFLARE_API_TOKEN_NOUGEN_FULL and CLOUDFLARE_ACCOUNT_ID must be set");
+  }
+  const base = env.CLOUDFLARE_API_BASE || "https://api.cloudflare.com/client/v4";
+  return {
+    account,
+    async call(method, path, body, query) {
+      let url = base + path;
+      if (query) url += "?" + new URLSearchParams(query).toString();
+      const headers = { Authorization: `Bearer ${token}` };
+      const init = { method, headers };
+      if (body !== undefined) {
+        headers["Content-Type"] = "application/json";
+        init.body = JSON.stringify(body);
+      }
+      const resp = await fetch(url, init);
+      const text = await resp.text();
+      if (resp.status === 404 && method === "GET") return null;
+      let parsed;
+      try { parsed = JSON.parse(text); } catch { parsed = text; }
+      if (!resp.ok || (parsed && typeof parsed === "object" && parsed.success === false)) {
+        // Status and path only: the response body can echo sensitive input.
+        throw new OnboardError(`Cloudflare ${method} ${path} failed with HTTP ${resp.status}`);
+      }
+      if (parsed && typeof parsed === "object" && "success" in parsed) return parsed.result;
+      return parsed;
+    },
+  };
+}
+
+async function onboardZoneFor(cf, hostname) {
+  const parts = hostname.split(".");
+  for (let i = 0; i < parts.length - 1; i++) {
+    const zones = (await cf.call("GET", "/zones", undefined, { name: parts.slice(i).join(".") })) || [];
+    if (zones.length) return zones[0].id;
+  }
+  throw new OnboardError(`no Cloudflare zone on this account covers ${hostname}`);
+}
+
+function onboardTunnelIdFromToken(tunnelToken) {
+  if (!tunnelToken) return null;
+  try {
+    const padded = tunnelToken + "=".repeat((4 - (tunnelToken.length % 4)) % 4);
+    return JSON.parse(atob(padded)).t || null;
+  } catch {
+    return null;
+  }
+}
+
+async function onboardEnsureTunnel(cf, name, hostname, port, knownId) {
+  let found = [];
+  if (knownId) {
+    const got = await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel/${knownId}`);
+    if (got && !got.deleted_at) found = [got];
+  }
+  if (!found.length) {
+    found = (await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel`, undefined,
+      { name, is_deleted: "false" })) || [];
+  }
+  const created = !found.length;
+  let tunnelId;
+  if (created) {
+    const made = await cf.call("POST", `/accounts/${cf.account}/cfd_tunnel`, {
+      name, config_src: "cloudflare", tunnel_secret: onboardB64(onboardRandomBytes(32)),
+    });
+    tunnelId = made.id;
+  } else {
+    tunnelId = found[0].id;
+  }
+  // A live tunnel already names the tenant's real port; never overwrite it.
+  const current = (await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel/${tunnelId}/configurations`)) || {};
+  const rules = (current.config && current.config.ingress) || [];
+  const existingRule = rules.find((r) => r.hostname === hostname && String(r.service || "").startsWith("http://"));
+  if (existingRule) {
+    port = Number(existingRule.service.split(":").pop());
+  } else {
+    await cf.call("PUT", `/accounts/${cf.account}/cfd_tunnel/${tunnelId}/configurations`, {
+      config: { ingress: [
+        { hostname, service: `http://127.0.0.1:${port}` },
+        { service: "http_status:404" },
+      ] },
+    });
+  }
+  const token = await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel/${tunnelId}/token`);
+  if (typeof token !== "string" || !token) throw new OnboardError("Cloudflare returned no tunnel token");
+  return { tunnelId, tunnelToken: token.trim().replace(/^"|"$/g, ""), created, port };
+}
+
+async function onboardEnsureDns(cf, zone, hostname, tunnelId) {
+  const target = `${tunnelId}.cfargotunnel.com`;
+  const body = { type: "CNAME", name: hostname, content: target, proxied: true };
+  const existing = (await cf.call("GET", `/zones/${zone}/dns_records`, undefined, { name: hostname })) || [];
+  if (existing.length) {
+    if (existing[0].content !== target) {
+      await cf.call("PUT", `/zones/${zone}/dns_records/${existing[0].id}`, body);
+    }
+  } else {
+    await cf.call("POST", `/zones/${zone}/dns_records`, body);
+  }
+}
+
+async function onboardReadJson(kv, key) {
+  const raw = await kv.get(key);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+// Redeem a single-use invite and provision everything for that tenant.
+// Returns the values the tenant's own machine needs. The invite is consumed only
+// after every Cloudflare and KV step succeeds, so a failed run can be retried.
+async function provisionTenant(env, input) {
+  const code = String((input && input.code) || "").trim();
+  if (!code) throw new OnboardError("an invite code is required");
+  const kv = env.TENANTS;
+  if (!kv) throw new OnboardError("TENANTS KV binding is missing");
+
+  const invite = await onboardReadJson(kv, "invite:" + code);
+  if (!invite.eml) throw new OnboardError("invite code is not valid or was already used");
+  if (!(Number(invite.exp) > Date.now() / 1000)) throw new OnboardError("invite code has expired");
+  const email = String(invite.eml).trim().toLowerCase();
+  if (!ONBOARD_EMAIL_RE.test(email)) throw new OnboardError("invite is not tied to a valid email");
+
+  const existing = await onboardReadJson(kv, "tenant:" + email);
+  const explicitId = input.tenant_id ? String(input.tenant_id) : null;
+  const who = input.name || email.split("@")[0].split("+")[0];
+  const tid = explicitId || existing.tenant_id || `${onboardSlug(who)}-shards`;
+  if (!ONBOARD_TENANT_ID_RE.test(tid)) throw new OnboardError(`tenant id '${tid}' must be lowercase letters, digits, - or _ (max 32)`);
+
+  const domain = input.domain || env.NOUGEN_TENANT_DOMAIN || ONBOARD_FALLBACK_DOMAIN;
+  const hostFromRecord = existing.node_url ? new URL(existing.node_url).hostname : null;
+  const suffix = [...onboardRandomBytes(2)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const host = hostFromRecord || `${onboardSlug(tid, 20)}-${suffix}.${domain}`;
+  const nodeUrl = `https://${host}`;
+  const port = Number(input.port || env.NGS_PORT || 4444);
+
+  const cf = onboardCfClient(env);
+  const steps = [];
+
+  // 1. credential: keep the one the tenant already has, otherwise mint a new one.
+  const token = typeof existing.token === "string" && existing.token
+    ? existing.token
+    : onboardB64Url(onboardRandomBytes(32));
+  steps.push(existing.token ? "credential: already consistent" : "credential: minted");
+
+  // 2. tunnel + DNS
+  const zone = await onboardZoneFor(cf, host);
+  const prior = await onboardReadJson(kv, "tunnel:" + email);
+  const tunnel = await onboardEnsureTunnel(cf, `tenant-${tid}`, host, port,
+    onboardTunnelIdFromToken(prior.tunnel_token));
+  await onboardEnsureDns(cf, zone, host, tunnel.tunnelId);
+  steps.push(`tunnel: ${tunnel.created ? "created" : "reused"} tenant-${tid}; DNS ${host} points at it`);
+
+  // 3. worker routing (KV keyed by email). The digest lets the owner's node verify the token.
+  await kv.put("allow:" + email, "1");
+  await kv.put("tenant:" + email, JSON.stringify({ ...existing, token, node_url: nodeUrl, tenant_id: tid }));
+  await kv.put("tunnel:" + email, JSON.stringify({ tunnel_token: tunnel.tunnelToken, hostname: host }));
+  await kv.put("tenant-digest:" + tid, await onboardSha256Hex(token));
+  steps.push(`worker: ${email} allowed and routed to ${nodeUrl}`);
+
+  // 4. consume the invite only now that everything above succeeded.
+  await kv.delete("invite:" + code);
+
+  return {
+    tenant_id: tid,
+    email,
+    node_url: nodeUrl,
+    port: tunnel.port,
+    token,
+    tunnel_token: tunnel.tunnelToken,
+    steps,
+  };
+}
+
+async function handleOnboard(request, env) {
+  if (request.method !== "POST") return json({ error: "POST only" }, 405);
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "body must be JSON" }, 400); }
+  try {
+    return json(await provisionTenant(env, body || {}));
+  } catch (err) {
+    if (err instanceof OnboardError) return json({ error: err.message }, 400);
+    return json({ error: "onboarding failed; try again or ask the operator" }, 500);
+  }
+}
+
 var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -6504,6 +6739,8 @@ var worker_default = {
         return handleGoogleCallback(request, env, url);
       case "/token":
         return request.method === "POST" ? handleToken(request, env) : new Response("POST only", { status: 405 });
+      case "/onboard/redeem":
+        return handleOnboard(request, env);
       case "/openapi.json":
       case "/openapi":
         return json(openapiDocument(origin));
@@ -6516,6 +6753,8 @@ var worker_default = {
 };
 export {
   __test__,
+  provisionTenant,
+  handleOnboard,
   worker_default as default
 };
 //# sourceMappingURL=worker.js.map
