@@ -23,6 +23,7 @@ from . import history
 from . import router
 from . import dream
 from . import evolution
+from . import rsi
 from . import assurance
 from . import tenants
 from . import agents
@@ -1120,11 +1121,33 @@ def cmd_get(args):
         print(f"\n[... {len(content) - 2000} more characters — pass --full]")
 
 
+def cmd_window(args):
+    """Browse the substrate by time: `nougen window march`, `nougen window "last 30 minutes" --query gemini`."""
+    from nougen_shards import window as _window  # pylint: disable=import-outside-toplevel
+    res = _window.retrieve_window(args.when, query=getattr(args, "query", "") or "",
+                                  limit=getattr(args, "limit", None), tz=getattr(args, "tz", None) or None)
+    if getattr(args, "json", False):
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        print(_window.format_packet(res))
+
+
 def cmd_search(args):
     """Search for shards across local substrate and external DBs."""
     domain_key = getattr(args, 'domain', None)
     if domain_key is not None and type(domain_key).__name__ in ('MagicMock', 'Mock'):
         domain_key = None
+
+    # "nougen search march" / "search gemini in march": a period in the query
+    # is a time window, natively, same as the MCP gateway and the phone.
+    if isinstance(getattr(args, "query", None), str) and not getattr(args, "no_window", False):
+        from nougen_shards import window as _window  # pylint: disable=import-outside-toplevel
+        win, rest = _window.split_temporal(args.query)
+        if win is not None:
+            res = _window.retrieve_window(start_utc=win.start_utc, end_utc=win.end_utc, query=rest)
+            res["window"] = win.as_dict()
+            print(json.dumps(res, indent=2, default=str) if getattr(args, "json", False) else _window.format_packet(res))
+            return
 
     dual_flag = getattr(args, 'dual', False)
     if dual_flag is not False and type(dual_flag).__name__ not in ('MagicMock', 'Mock') and dual_flag:
@@ -2009,6 +2032,44 @@ def cmd_evolve(args):
                 print(f"\n[Evolution Failed]: {summary.get('error')}")
 
 
+def cmd_rsi(args):
+    """Recursive Self-Improvement lane: gate-don't-write, propose-only."""
+    is_json = getattr(args, 'json', False)
+    if args.action == "run":
+        if not is_json:
+            print("[RSI] Checking target repo build + self-update health, proposing one improvement...")
+        summary = rsi.run()
+        if is_json:
+            print(json.dumps(summary, indent=2))
+        else:
+            print(f"\n[RSI Cycle Complete] status={summary['status']}")
+            print(f" - timestamp: {summary.get('temporal', {}).get('eastern_full', summary['timestamp_utc'])}")
+            print(f" - repo: {summary['repo']}")
+            print(f" - build ok: {summary['build'].get('ok')}")
+            print(f" - self-update healthy: {summary['self_update_health'].get('ok')}")
+            exa = summary.get("exa_temporal_latest", {})
+            print(f" - exa temporal latest: ok={exa.get('ok')} ({len(exa.get('hits') or [])} hits since {exa.get('start_published_date', 'n/a')})")
+            prop = summary.get("proposal", {})
+            if prop.get("title"):
+                print(f" - Proposal: {prop['title']} (risk={prop.get('risk')})")
+                print(f"   {prop.get('description', '')}")
+            else:
+                print(f" - No proposal this cycle: {prop.get('reason') or prop.get('error', 'unknown')}")
+            print(f" - Report: {summary['report_path']}")
+    elif args.action == "status":
+        reports_dir = rsi._reports_dir()
+        files = sorted(reports_dir.glob("rsi_*.json"), reverse=True)
+        if not files:
+            print(json.dumps({"status": "no_runs_yet"}) if is_json else "No RSI runs recorded yet.")
+            return
+        with open(files[0], "r", encoding="utf-8") as f:
+            latest = json.load(f)
+        if is_json:
+            print(json.dumps(latest, indent=2))
+        else:
+            print(f"Latest RSI run: {latest['timestamp_utc']} - status={latest['status']}")
+
+
 def cmd_dashboard(args):
     """Launches the Cortex HUD (Visual Dashboard)."""
     import uvicorn
@@ -2147,6 +2208,14 @@ def get_parser():
     p_search.add_argument("--domain", help="Explicit domain boundary key filter override")
     p_search.add_argument("--dual", action="store_true", help="Use dual-system memory recall (episodic + semantic rules)")
     p_search.add_argument("--fast", action="store_true", help="Ultra low-latency fast local keyword search (skips remote/external lanes)")
+    p_search.add_argument("--no-window", action="store_true", help="Treat a time-looking query ('march') as plain text")
+
+    p_window = subparsers.add_parser("window", help="Browse the substrate by time ('march', 'last week', 'yesterday 7pm')")
+    p_window.add_argument("when", help="Time phrase: month, date, year, quarter, clock time, 'last N minutes/hours/days', range")
+    p_window.add_argument("--query", help="Narrow to shards in the window mentioning this text")
+    p_window.add_argument("--limit", type=int, help="Max records to list")
+    p_window.add_argument("--tz", help="IANA zone for day boundaries (default NOUGEN_TZ or UTC)")
+    p_window.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_assure = subparsers.add_parser("assure", help="Label a claim through Iris evidence assurance")
     p_assure.add_argument("claim")
@@ -2346,6 +2415,10 @@ def get_parser():
     p_evolve.add_argument("action", choices=["run"])
     p_evolve.add_argument("instruction", help="The task instruction to evolve a skill for")
     p_evolve.add_argument("--json", action="store_true", help="Machine-readable output")
+
+    p_rsi = subparsers.add_parser("rsi", help="Recursive Self-Improvement lane (gate-don't-write, same family as dream/evolve)")
+    p_rsi.add_argument("action", choices=["run", "status"])
+    p_rsi.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_dashboard = subparsers.add_parser("dashboard", help="Launch visual Cortex HUD")
     p_dashboard.add_argument("--port", type=int, default=4444, help="Port to run on")
@@ -4215,12 +4288,12 @@ def main():
 
     args = parser.parse_args()
     cmds = {
-        "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
+        "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "window": cmd_window, "assure": cmd_assure, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
-        "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve,
+        "doctor": cmd_doctor, "wishlist": cmd_wishlist, "brain": cmd_brain, "dream": cmd_dream, "evolve": cmd_evolve, "rsi": cmd_rsi,
         "dashboard": cmd_dashboard, "handoff": cmd_handoff, "usage": cmd_usage, "amv": cmd_amv,
         "tenant": cmd_tenant, "relay": cmd_relay, "pr": cmd_pr, "claim": cmd_claim,
         "tree": cmd_tree, "cua": cmd_cua, "tube": cmd_tube, "nougentube": cmd_tube, "arxiv": cmd_arxiv,

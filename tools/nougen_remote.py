@@ -35,6 +35,12 @@ if sys.platform == "win32":
 PORT = int(os.environ.get("NOUGEN_REMOTE_PORT", 8767))
 HOST = os.environ.get("NOUGEN_REMOTE_HOST", "0.0.0.0")
 TOKEN = os.environ.get("NOUGEN_REMOTE_TOKEN", "").strip()
+GOOGLE_CLIENT_ID = os.environ.get("NOUGEN_GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_ALLOWED_EMAILS = {
+    e.strip().lower()
+    for e in os.environ.get("NOUGEN_GOOGLE_ALLOWED_EMAILS", "").split(",")
+    if e.strip()
+}
 REMOTE_ROOT = os.path.realpath(os.environ.get("NOUGEN_REMOTE_ROOT") or str(Path.home()))
 WORKING_DIR = os.environ.get("NOUGEN_WORKING_DIR", str(Path.home()))
 
@@ -1171,18 +1177,95 @@ HTML_PWA = """<!DOCTYPE html>
 </html>
 """
 
+def _google_id_token_valid(id_token: str) -> bool:
+    # Mirrors nougenai-agent's worker.js verifyGoogleIdToken: the app's own
+    # Worker already verifies this same token before forwarding it here as
+    # the bearer, but this bridge is reachable on its own
+    # (droid.nougenai.com), so it has to verify independently rather than
+    # trust an unauthenticated caller.
+    if not id_token or not GOOGLE_CLIENT_ID:
+        return False
+    try:
+        url = "https://oauth2.googleapis.com/tokeninfo?id_token=" + urllib.parse.quote(id_token)
+        with urllib.request.urlopen(url, timeout=8) as resp:
+            info = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return False
+    if info.get("aud") != GOOGLE_CLIENT_ID:
+        return False
+    if info.get("email_verified") != "true":
+        return False
+    return info.get("email", "").lower() in GOOGLE_ALLOWED_EMAILS
+
+
+SESSION_SECRET = os.environ.get("NOUGEN_SESSION_SECRET", "").strip()
+
+
+def _b64url_decode(s: str) -> bytes:
+    import base64
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def _session_token_valid(token: str) -> bool:
+    """App session minted by nougenai-agent's /session (same HMAC-SHA256 blob
+    shape, same shared secret), so a multi-account phone doesn't get Google's
+    account picker on every launch. Verified locally - no tokeninfo hop.
+    Fails closed when NOUGEN_SESSION_SECRET is unset."""
+    import base64
+    import hashlib
+    import time
+    if not SESSION_SECRET or not token:
+        return False
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != "v1":
+        return False
+    expected = base64.urlsafe_b64encode(
+        hmac.new(SESSION_SECRET.encode(), ("v1." + parts[1]).encode(), hashlib.sha256).digest()
+    ).rstrip(b"=").decode()
+    if not hmac.compare_digest(expected, parts[2]):
+        return False
+    try:
+        payload = json.loads(_b64url_decode(parts[1]).decode("utf-8"))
+    except Exception:
+        return False
+    if payload.get("typ") != "session":
+        return False
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)) or exp < time.time():
+        return False
+    return str(payload.get("eml", "")).lower() in GOOGLE_ALLOWED_EMAILS
+
+
+def _bearer_authorized(given: str) -> bool:
+    """One auth decision for every endpoint: static remote token, app session, or Google ID token."""
+    if not given:
+        return False
+    if bool(TOKEN) and hmac.compare_digest(given.encode(), TOKEN.encode()):
+        return True
+    if _session_token_valid(given):
+        return True
+    return _google_id_token_valid(given)
+
+
 class RemoteHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
     def _send_json(self, data: dict, status: int = 200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError) as exc:
+            # The caller gave up and closed the socket before we finished
+            # writing - normal under the Worker's own tool-bridge timeout
+            # (8s/15s retry), not a server fault. A full traceback here is
+            # log noise, not a finding; one line is the whole story.
+            print(f"[nougen_remote] client disconnected mid-response: {exc}")
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -1195,7 +1278,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
         given = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
         if not given:
             given = self.headers.get("Authorization", "").replace("Bearer ", "", 1)
-        return bool(TOKEN) and hmac.compare_digest(given.encode(), TOKEN.encode())
+        return _bearer_authorized(given)
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -1222,6 +1305,16 @@ class RemoteHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/health":
             self._send_json({"ok": True, "node": platform.node(), "port": PORT, "design_choices": len(DESIGN_CHOICES_100)})
+            return
+
+        if path == "/api/v1/tools":
+            # Single source of truth for the Worker's function-calling schema -
+            # kaedra_tools.TOOLS is already OpenAI-function-call shaped, so the
+            # Worker fetches this live instead of hand-duplicating a second
+            # copy of 19+ tool schemas in JS that would drift the moment one
+            # side changes without the other.
+            from nougen_shards import kaedra_tools
+            self._send_json({"tools": kaedra_tools.TOOLS})
             return
 
         if path == "/api/v1/design-choices":
@@ -1252,8 +1345,13 @@ class RemoteHandler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
 
-        token = payload.get("token") or self.headers.get("Authorization", "").replace("Bearer ", "")
-        if token != TOKEN:
+        # This used to be a standalone check against only the static TOKEN,
+        # never the Google ID token path do_GET's _get_authorized already
+        # had - so every POST endpoint (chat, terminal, inject_agy, and the
+        # tools/* bridge) silently rejected a signed-in Google user even
+        # after sign-in itself worked. Unify on the one auth check.
+        given = payload.get("token") or self.headers.get("Authorization", "").replace("Bearer ", "", 1)
+        if not _bearer_authorized(given):
             self._send_json({"error": "Unauthorized", "ok": False}, 401)
             return
 
@@ -1318,6 +1416,21 @@ class RemoteHandler(BaseHTTPRequestHandler):
             inject_to_antigravity(prompt, sender="iPhone")
             reply = query_solai_chat(prompt, model=os.environ.get("NOUGEN_REMOTE_CHAT_MODEL", "dav1d:e2b"))
             self._send_json({"ok": True, "reply": reply})
+            return
+
+        if path.startswith("/api/v1/tools/"):
+            # HTTP bridge so edge-side callers (the nougenai-agent Cloudflare
+            # Worker, which cannot reach the local vault directly) can run
+            # Kaedra's existing read-mostly tool loop over this already-
+            # authenticated, already-tunneled connection, instead of standing
+            # up a second auth system against shards.nougenai.com.
+            tool_name = path[len("/api/v1/tools/"):]
+            from nougen_shards import kaedra_tools
+            if tool_name not in kaedra_tools.TOOL_NAMES:
+                self._send_json({"error": "unknown tool"}, 404)
+                return
+            result = kaedra_tools.dispatch(tool_name, payload)
+            self._send_json(result)
             return
 
         self._send_json({"error": "Endpoint not found"}, 404)
