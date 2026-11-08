@@ -189,11 +189,18 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
         rows = conn.execute(
             "SELECT id, title, content FROM shards WHERE embedding IS NULL"
         ).fetchall()
+        # Provider-aware: ollama when it answers, in-process onnx otherwise
+        # (embed_providers). `model` keeps its meaning: an ollama model name, or
+        # 'onnx[:repo]'.
+        from . import embed_providers  # pylint: disable=import-outside-toplevel
+        _embed_one = lambda text: embed_providers.embed_text(text, model)          # noqa: E731
+        _embed_batch = lambda texts: embed_providers.embed_texts(texts, model)     # noqa: E731
         if probe and rows:
             # Smoke-test one embedding before committing to the whole DB.
-            test = embed((rows[0][1] or "") + "\n" + (rows[0][2] or "")[:512], model)
+            test = _embed_one((rows[0][1] or "") + "\n" + (rows[0][2] or "")[:512])
             if not test:
-                return {"db": os.path.basename(db), "error": "embed endpoint unavailable (start ollama with --embeddings + valid model)"}
+                return {"db": os.path.basename(db),
+                        "error": "no embedding provider answered: " + embed_providers.describe_unavailable(model)}
         if not execute:
             return {"db": os.path.basename(db), "pending": len(rows), "would_write": True}
 
@@ -229,14 +236,14 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
                     time.sleep(3)  # GPU hot — let it cool before continuing
 
             texts = [((t or "") + "\n" + (c or ""))[:4000] for _, t, c in chunk]
-            vecs = embed_many(texts, model)
+            vecs = _embed_batch(texts)
 
             pending_batch = []
             if vecs is None:
                 # Batch endpoint failed (oversized payload, transient error) --
                 # fall back per text so one bad row cannot drop the whole chunk.
                 for (rid, title, content), text in zip(chunk, texts):
-                    vec = embed(text, model)
+                    vec = _embed_one(text)
                     if not vec:
                         failed += 1
                         continue
