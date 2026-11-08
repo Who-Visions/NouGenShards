@@ -33,7 +33,7 @@ def test_growing_type_is_retained_and_traced_to_its_module_global():
         key = f"{__name__}._Leaky"
         assert key in types_flagged
         assert f"{__name__}._Steady" not in types_flagged
-        leak = next(l for l in report["leaks"] if l["type"] == key)
+        leak = next(item for item in report["leaks"] if item["type"] == key)
         assert leak["root"] == "module lw_fake_server . REQUEST_LOG"
         assert leak["trace"][-1].startswith("list[")
         assert leak["fingerprint"] and len(leak["fingerprint"]) == 12
