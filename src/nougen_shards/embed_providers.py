@@ -28,7 +28,6 @@ them (or set ``NOUGEN_EMBED_AUTO_DOWNLOAD=1``). They live under
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import threading
