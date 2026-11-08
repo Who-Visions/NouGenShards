@@ -605,8 +605,12 @@ def _resolve_shard(shard_id: int, db_index: Optional[int] = None,
             continue
         conn = core.get_connection(i)
         try:
+            # `timestamp` only: the shards schema has no original_timestamp
+            # column (capture folds that parameter into timestamp), and core's
+            # CanonicalShardRef hashes over timestamp. Selecting the missing
+            # column raised "no such column" on every amend/retract/forget.
             row = conn.execute(
-                "SELECT title, domain_key, content, original_timestamp, timestamp FROM shards WHERE id = ?",
+                "SELECT title, domain_key, content, timestamp FROM shards WHERE id = ?",
                 (shard_id,)
             ).fetchone()
         finally:
@@ -615,7 +619,7 @@ def _resolve_shard(shard_id: int, db_index: Optional[int] = None,
             title = row[0] or ""
             d_key = row[1] or ""
             content = row[2] or ""
-            ts = row[3] or row[4] or ""
+            ts = row[3] or ""
             c_hash = CanonicalShardRef.compute_hash(d_key, title, content, str(ts))
             hits.append({"db_index": i, "title": title, "hash": c_hash})
 
