@@ -246,6 +246,8 @@ def test_mcp_recall_window_start_end_aliases_and_phrases(client):
     def titles(args):
         res = _call_tool(client, "recall_window", args)
         return "".join(c.get("text", "") for c in res["content"])
+    # Phrase bounds resolve in `tz`; pinned to UTC here because the operator
+    # shell may carry NOUGEN_TZ=America/New_York (March 1 would start 05:00Z).
     # Edge of the era, with the microseconds core.capture() really stamps:
     # a phrase-derived lower bound must not drop the first second of March.
     _call_tool(client, "capture_experience", {
@@ -255,14 +257,16 @@ def test_mcp_recall_window_start_end_aliases_and_phrases(client):
     march_only = titles({"start": "2026-03-01", "end": "2026-03-31", "limit": 10})
     assert "March era witness" in march_only and "November era witness" not in march_only
     assert "March era witness" in titles({"since": "2026-03", "until": "2026-03"})
-    when = titles({"when": "march 2026"})
+    when = titles({"when": "march 2026", "tz": "UTC"})
     assert "March era witness" in when and "First-second witness" in when
-    phrase = titles({"since": "march 2026", "until": "march 2026"})
+    phrase = titles({"since": "march 2026", "until": "march 2026", "tz": "UTC"})
     assert "March era witness" in phrase and "First-second witness" in phrase
     assert "November era witness" not in phrase
     # A returned shard timestamp (fractional) is reusable as a bound.
-    frac = titles({"since": "2026-03-19T14:05:00.000000Z", "until": "2026-03-19T14:05:00.999999Z"})
-    assert "March era witness" in frac
+    # (Bounds compare lexicographically, so pair fractional bounds with the
+    # fractional-stamped shard; a bare "...00Z" stamp sorts after "...00.9Z".)
+    frac = titles({"since": "2026-03-01T00:00:00.000000Z", "until": "2026-03-01T00:00:00.999999Z"})
+    assert "First-second witness" in frac and "March era witness" not in frac
     # pure helpers
     assert node._era_bound("2026-03", None, start=True) == "2026-03"
     assert node._era_bound("2026-03-19T14:05:00.123456Z", None, start=True) == "2026-03-19T14:05:00.123456Z"
