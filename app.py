@@ -756,21 +756,13 @@ def shard_forget(shard_id: int, confirm_title: str | None = None, db_index: int 
     if not confirm_title and not content_hash:
         raise ValueError("shard_forget requires either content_hash (CanonicalShardRef) or confirm_title.")
     idx, title, actual_hash = _resolve_shard(shard_id, db_index, expect_title=confirm_title, content_hash=content_hash)
-    conn = core.get_connection(idx)
-    try:
-        # The shards_ad trigger keeps shards_fts in sync on delete.
-        conn.execute("DELETE FROM shards WHERE id = ?", (shard_id,))
-        conn.commit()
-    finally:
-        conn.close()
-    return {
-        "forgotten": shard_id,
-        "db_index": idx,
-        "title": title,
-        "content_hash": actual_hash,
-        "canonical_ref": f"{idx}#{shard_id}:{actual_hash}",
-        "recoverable": False
-    }
+    # core.purge_shard removes the row (FTS via trigger) AND the dedup-map
+    # entry; deleting only the row left the hash behind, so re-capturing the
+    # same text was reported as a duplicate of a shard that no longer existed.
+    receipt = core.purge_shard(shard_id, idx, content_hash=actual_hash)
+    receipt["forgotten"] = shard_id
+    receipt.setdefault("title", title)
+    return receipt
 
 
 # Mathematical aliases for fleet tool parity

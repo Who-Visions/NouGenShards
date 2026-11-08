@@ -1256,6 +1256,41 @@ def cmd_assure(args):
     print("Operator gate required: yes")
 
 
+def cmd_forget(args):
+    """Suppress a shard (default, recoverable) or --purge it from every store."""
+    from . import core as _core  # pylint: disable=import-outside-toplevel
+    if args.purge:
+        try:
+            receipt = _core.purge_shard(args.id, args.db, confirm_title=args.confirm_title,
+                                        content_hash=args.content_hash)
+        except ValueError as exc:
+            print(f"refused: {exc}")
+            sys.exit(2)
+        print(json.dumps(receipt, indent=2, default=str))
+        return
+    conn = _core.get_connection(args.db)
+    try:
+        row = conn.execute("SELECT title, domain_key, content, timestamp FROM shards WHERE id = ?",
+                           (args.id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        print(f"refused: no shard with id {args.id} in db {args.db}")
+        sys.exit(2)
+    if args.confirm_title and (row["title"] or "") != args.confirm_title:
+        print(f"refused: title mismatch; found {str(row['title'])[:60]!r}")
+        sys.exit(2)
+    ts = row["timestamp"] or ""
+    c_hash = args.content_hash or _core.CanonicalShardRef.compute_hash(
+        row["domain_key"] or "", row["title"] or "", row["content"] or "", str(ts))
+    ref = _core.CanonicalShardRef(db_index=args.db, shard_id=args.id, content_hash=c_hash)
+    ok = _core.shards_forget(ref)
+    print(json.dumps({"suppressed": args.id if ok else None, "db_index": args.db, "recoverable": True,
+                      "note": "row, FTS entry and dedup hash remain; use --purge to delete"}, indent=2))
+    if not ok:
+        sys.exit(2)
+
+
 def cmd_mark(args):
     """Close the outcome loop (usefulness update)."""
     db_index = args.db
@@ -2242,6 +2277,16 @@ def get_parser():
     p_auth.add_argument("--json", action="store_true", help="Machine-readable output")
     p_auth.add_argument("--timeout", type=float, default=10.0,
                         help="Per-provider probe timeout in seconds (auth check)")
+
+    p_forget = subparsers.add_parser("forget", help="Suppress a shard (recoverable) or --purge it from every store")
+    p_forget.add_argument("id", type=int)
+    p_forget.add_argument("--db", type=int, required=True, help="Cluster DB index (1-9)")
+    p_forget.add_argument("--purge", action="store_true",
+                          help="Delete the row, its FTS entry and its dedup hash; irreversible")
+    p_forget.add_argument("--confirm-title", dest="confirm_title", default=None,
+                          help="Exact current title; required for --purge unless --content-hash is given")
+    p_forget.add_argument("--content-hash", dest="content_hash", default=None,
+                          help="CanonicalShardRef content hash (16 hex chars)")
 
     p_mark = subparsers.add_parser("mark", help="Update utility")
     p_mark.add_argument("id", type=int)
@@ -4289,7 +4334,7 @@ def main():
     args = parser.parse_args()
     cmds = {
         "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "window": cmd_window, "assure": cmd_assure, "chat": cmd_chat,
-        "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
+        "auth": cmd_auth, "mark": cmd_mark, "forget": cmd_forget, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
