@@ -19,6 +19,7 @@ from nougen_shards import core, recall_hook  # noqa: E402
 
 @pytest.fixture
 def vault(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOUGEN_RECALL_HOOK_NODE", "0")       # no live node in tests unless a test opts in
     # core resolves GLOBAL_DIR from NOUGEN_VAULT_DIR at import, which happened
     # before this fixture ran; repoint the live global as other suites do.
     monkeypatch.setenv("NOUGEN_VAULT_DIR", str(tmp_path))
@@ -92,6 +93,44 @@ def test_keyword_lane_wins_when_vector_lane_is_slow(vault, monkeypatch):
     r = recall_hook.recall_hook("keyword only please", budget_ms=300)
     assert r["tier"] == "keyword" and r["partial"] is True
     assert r["shards"][0]["ref"] == "7@db3"
+
+
+def test_node_lane_wins_when_it_answers(vault, monkeypatch):
+    import time
+    monkeypatch.setenv("NOUGEN_RECALL_HOOK_NODE", "1")
+    monkeypatch.setattr(recall_hook, "_node_search",
+                        lambda q, limit, timeout_s: [{"id": 11, "_db_index": 2, "title": "node hit", "content": "warm"}])
+
+    def slow_retrieve(*_a, **_k):
+        time.sleep(2.0)
+        return []
+
+    monkeypatch.setattr(core, "retrieve", slow_retrieve)
+    r = recall_hook.recall_hook("warm index please", budget_ms=500)
+    assert r["tier"] == "node" and r["partial"] is False
+    assert r["shards"][0]["ref"] == "11@db2"
+    assert r["elapsed_ms"] < 500
+
+
+def test_node_down_falls_through_to_in_process_lanes(vault, monkeypatch):
+    monkeypatch.setenv("NOUGEN_RECALL_HOOK_NODE", "1")
+
+    def refused(q, limit, timeout_s):
+        raise ConnectionRefusedError("no node on :4444")
+
+    monkeypatch.setattr(recall_hook, "_node_search", refused)
+    res = core.capture("test", "Node fallback", "The node is down but the keyword lane still answers.")
+    r = recall_hook.recall_hook("node is down keyword lane answers", budget_ms=5000)
+    assert r["tier"] in ("full", "keyword")
+    assert any(s["ref"].endswith(f"@db{res.get('db_index')}") for s in r["shards"]), r
+    assert "node" in r.get("errors", {})
+
+
+def test_node_disabled_by_env_never_calls_it(vault, monkeypatch):
+    called = []
+    monkeypatch.setattr(recall_hook, "_node_search", lambda *a, **k: called.append(1) or [])
+    recall_hook.recall_hook("node is off", budget_ms=2000)
+    assert called == []
 
 
 def test_claude_code_adapter_envelope(vault):
