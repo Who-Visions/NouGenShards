@@ -96,3 +96,15 @@ def test_format_packet_shape(grid):
     assert "Recorded: 48 shards; folded bulk: ARXIV_RESEARCH x40" in text
     assert "Busiest days: 2026-03-04 (40)" in text
     assert "blade" not in text or "#" in text   # locators, never bare ids
+
+
+def test_gateway_recall_window_accepts_era_bounds(grid):
+    """The fleet connector's era browser sends since/until, not `when`."""
+    from nougen_shards import mcp as gateway
+    out = gateway.recall_window(since="2026-03", until="2026-03", limit=4)
+    assert "Recorded: 48 shards" in out and "March 2026 .. March 2026" in out
+    out = gateway.recall_window(since="2026-03-19", until="2026-03-19")
+    assert "Recorded: 1 shards" in out and "Gemini Agent Upgrade" in out
+    out = gateway.recall_window(query="recall march 2026", limit=3)   # old fallback shape
+    assert "Window: March 2026" in out
+    assert gateway.recall_window(since="marral").startswith("Window recall: could not read since=")
