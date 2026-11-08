@@ -246,14 +246,27 @@ def test_mcp_recall_window_start_end_aliases_and_phrases(client):
     def titles(args):
         res = _call_tool(client, "recall_window", args)
         return "".join(c.get("text", "") for c in res["content"])
+    # Edge of the era, with the microseconds core.capture() really stamps:
+    # a phrase-derived lower bound must not drop the first second of March.
+    _call_tool(client, "capture_experience", {
+        "title": "First-second witness", "content": "stamped at the stroke of march",
+        "original_timestamp": "2026-03-01T00:00:00.123456Z",
+    })
     march_only = titles({"start": "2026-03-01", "end": "2026-03-31", "limit": 10})
     assert "March era witness" in march_only and "November era witness" not in march_only
     assert "March era witness" in titles({"since": "2026-03", "until": "2026-03"})
-    assert "March era witness" in titles({"when": "march 2026"})
+    when = titles({"when": "march 2026"})
+    assert "March era witness" in when and "First-second witness" in when
     phrase = titles({"since": "march 2026", "until": "march 2026"})
-    assert "March era witness" in phrase and "November era witness" not in phrase
+    assert "March era witness" in phrase and "First-second witness" in phrase
+    assert "November era witness" not in phrase
+    # A returned shard timestamp (fractional) is reusable as a bound.
+    frac = titles({"since": "2026-03-19T14:05:00.000000Z", "until": "2026-03-19T14:05:00.999999Z"})
+    assert "March era witness" in frac
     # pure helpers
     assert node._era_bound("2026-03", None, start=True) == "2026-03"
-    assert node._era_bound("march 2026", "UTC", start=True) == "2026-03-01T00:00:00Z"
+    assert node._era_bound("2026-03-19T14:05:00.123456Z", None, start=True) == "2026-03-19T14:05:00.123456Z"
+    assert node._era_bound("march 2026", "UTC", start=True) == "2026-03-01T00:00:00"
     assert node._era_bound("march 2026", "UTC", start=False) == "2026-03-31T23:59:59"
     assert node._exclusive_to_inclusive("2026-04-01T00:00:00Z") == "2026-03-31T23:59:59"
+    assert node._inclusive_lower("2026-03-01T00:00:00Z") < "2026-03-01T00:00:00.000001Z"
