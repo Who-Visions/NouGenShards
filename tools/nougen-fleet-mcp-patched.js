@@ -1054,9 +1054,25 @@ var RATE_TABLE = [
   ["gemini-m", 0.50, 3.00, 0.05, 0.50, "guess: unrecognized internal codename, assumed gemini-3-flash tier"],
   ["auto-gemini-3", 0.50, 3.00, 0.05, 0.50, "guess: assumed gemini-3-flash tier (auto-router alias)"]
 ];
+// Free-lane classification runs BEFORE the substring table and the paid
+// fallback (Codex P2 on #971): local ollama tags, custom fleet models,
+// OpenRouter ":free" routes and HF spaces are $0 by policy
+// (AGENTS.md free-lane mandate, tools/token_tracker.py::price_for). Without
+// this, `local/sol-ai:e4b` or `llama-3.3-70b-instruct:free` priced at the
+// generic mid-tier and tracker_daily invented spend for the free workload.
+const FREE_LANE_MARKERS = [
+  ":free", "local/", "ollama", "gemma", "sol-ai", "solai", "dav1d", "kaedra", "iris-ai",
+  "rhea-noir", "griot", "davos", "mrs-b", "yukiai", ":e2b", ":e4b", "-cloud", "gpt-oss",
+  "hf/", "huggingface", "qwen3-coder-next", "deepseek-v4", "glm-5.1",
+];
+function isFreeLane(m) {
+  return FREE_LANE_MARKERS.some((k) => m.includes(k));
+}
+__name(isFreeLane, "isFreeLane");
 function rateFor(model) {
   const m = String(model || "").toLowerCase();
   if (m.includes("synthetic") || m === "(unknown)" || m === "unknown" || !m) return null;
+  if (isFreeLane(m)) return { input: 0, output: 0, cache_read: 0, cache_creation: 0, confidence: "confirmed: free lane (local/ollama-cloud/openrouter :free/hf), $0 by policy" };
   for (const [pat, inp, out, cread, ccreate, confidence] of RATE_TABLE) {
     if (m.includes(pat)) return { input: inp, output: out, cache_read: cread, cache_creation: ccreate, confidence };
   }
@@ -1071,24 +1087,32 @@ function priceModel(model, t) {
   const inp = t.input_tokens || 0, out = t.output_tokens || 0, cread = t.cache_read || 0, ccreate = t.cache_creation || 0;
   const cold = (inp + cread + ccreate) * r.input / 1e6 + out * r.output / 1e6;
   const cached = inp * r.input / 1e6 + cread * r.cache_read / 1e6 + ccreate * r.cache_creation / 1e6 + out * r.output / 1e6;
-  return { cold: round2(cold), cached: round2(cached), confidence: r.confidence };
+  // Unrounded: callers aggregate these (priceModelsMap, continuation windows).
+  // Rounding here zeroed sub-cent buckets before they were summed (Codex P2).
+  return { cold, cached, confidence: r.confidence };
 }
 __name(priceModel, "priceModel");
 function round2(n) {
   return Math.round(n * 100) / 100;
 }
 __name(round2, "round2");
+// Display rounding keeps 4 decimals so a $0.004 bucket survives being summed
+// across 100 daily responses instead of reading as $0 in each.
+function round4(n) {
+  return Math.round(n * 1e4) / 1e4;
+}
+__name(round4, "round4");
 function priceModelsMap(models) {
   const out = {};
   let cold = 0, cached = 0, unpriced = [];
   for (const [model, t] of Object.entries(models || {})) {
     const p = priceModel(model, t);
     if (!p) { unpriced.push(model); continue; }
-    out[model] = p;
     cold += p.cold;
     cached += p.cached;
+    out[model] = { cold: round4(p.cold), cached: round4(p.cached), confidence: p.confidence };
   }
-  return { by_model: out, cold: round2(cold), cached: round2(cached), unpriced, rate_table_version: RATE_TABLE_VERSION };
+  return { by_model: out, cold: round4(cold), cached: round4(cached), unpriced, rate_table_version: RATE_TABLE_VERSION };
 }
 __name(priceModelsMap, "priceModelsMap");
 async function shardHeaders(env) {
