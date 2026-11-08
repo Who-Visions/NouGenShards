@@ -61,7 +61,8 @@ def self_identity() -> Identity:
         aliases=("davos", "nougenai assistant", "the app"),
         role="NouGenAI's assistant - the operator's working style embodied: local-first, "
              "evidence over memory, verified state over assumption; holds the mutation gates.",
-        home=os.environ.get("NOUGEN_DAVOS_LANE", "chat.nougenai.com -> droid bridge"),
+        # No operator host in shipped code (public repo); the real lane name is env-supplied.
+        home=os.environ.get("NOUGEN_DAVOS_LANE", "the NouGenAI app lane (Worker -> node bridge)"),
         source="builtin",
     )
 

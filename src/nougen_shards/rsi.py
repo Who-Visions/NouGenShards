@@ -249,6 +249,105 @@ def _record_bitemporal_receipt(summary: Dict[str, Any], instant_ms: int) -> Dict
     }
 
 
+def _http_json(url: str, headers: Optional[Dict[str, str]] = None, body: Optional[dict] = None,
+               timeout: int = 15) -> Dict[str, Any]:
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method="POST" if body is not None else "GET",
+                                 headers={"User-Agent": "nougen-rsi/1.0", **(headers or {})})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            try:
+                return {"ok": resp.status == 200, "status": resp.status, "body": json.loads(raw)}
+            except ValueError:
+                return {"ok": resp.status == 200, "status": resp.status, "body": raw[:200]}
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "status": exc.code, "error": exc.read().decode("utf-8", "replace")[:200]}
+    except Exception as exc:  # pylint: disable=broad-except
+        return {"ok": False, "error": str(exc)}
+
+
+def _mint_session(secret: str, email: str, ttl_s: int = 300) -> str:
+    """Same HMAC blob the Worker mints (v1.<b64url payload>.<b64url sig>) - lets the
+    canary prove the session path end to end without a Google token."""
+    import base64
+    import hashlib
+    import time
+    b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()  # noqa: E731
+    now = int(time.time())
+    body = b64(json.dumps({"typ": "session", "eml": email, "iat": now, "exp": now + ttl_s}).encode())
+    return f"v1.{body}." + b64(hmac.new(secret.encode(), ("v1." + body).encode(), hashlib.sha256).digest())
+
+
+def check_surfaces() -> Dict[str, Any]:
+    """
+    Canary over every live surface the app depends on. Every host comes from
+    env (public-repo discipline: no operator host in shipped code); a surface
+    whose env is unset is reported as skipped, never as failed.
+
+      NOUGEN_RSI_WORKER_URL    -> GET /health            (nougenai-agent Worker)
+      NOUGEN_RSI_BRIDGE_URL    -> GET /api/v1/health     (nougen_remote bridge)
+        + NOUGEN_REMOTE_TOKEN  -> GET /api/v1/tools      (tool surface non-empty)
+        + NOUGEN_SESSION_SECRET-> POST /api/v1/tools/fleet_whoami with a minted
+                                  session (the auth path the phone uses)
+    """
+    out: Dict[str, Any] = {}
+    worker = os.environ.get("NOUGEN_RSI_WORKER_URL", "").rstrip("/")
+    bridge = os.environ.get("NOUGEN_RSI_BRIDGE_URL", "").rstrip("/")
+    remote_token = os.environ.get("NOUGEN_REMOTE_TOKEN", "")
+    session_secret = os.environ.get("NOUGEN_SESSION_SECRET", "")
+    canary_email = os.environ.get("NOUGEN_RSI_CANARY_EMAIL", "")
+
+    out["worker_health"] = _http_json(worker + "/health") if worker else {"skipped": True, "reason": "NOUGEN_RSI_WORKER_URL not set"}
+    out["bridge_health"] = _http_json(bridge + "/api/v1/health") if bridge else {"skipped": True, "reason": "NOUGEN_RSI_BRIDGE_URL not set"}
+
+    if bridge and remote_token:
+        r = _http_json(bridge + "/api/v1/tools", headers={"Authorization": "Bearer " + remote_token})
+        count = len((r.get("body") or {}).get("tools", [])) if isinstance(r.get("body"), dict) else 0
+        r["tool_count"] = count
+        if r.get("ok") and count == 0:
+            r["ok"] = False
+            r["error"] = "tool surface is empty"
+        r.pop("body", None)
+        out["bridge_tools"] = r
+    else:
+        out["bridge_tools"] = {"skipped": True, "reason": "NOUGEN_RSI_BRIDGE_URL or NOUGEN_REMOTE_TOKEN not set"}
+
+    if bridge and session_secret and canary_email:
+        tok = _mint_session(session_secret, canary_email)
+        r = _http_json(bridge + "/api/v1/tools/fleet_whoami", headers={"Authorization": "Bearer " + tok}, body={})
+        r.pop("body", None)
+        out["session_path"] = r
+    else:
+        out["session_path"] = {"skipped": True, "reason": "NOUGEN_RSI_BRIDGE_URL, NOUGEN_SESSION_SECRET or NOUGEN_RSI_CANARY_EMAIL not set"}
+
+    out["degraded"] = [k for k, v in out.items() if isinstance(v, dict) and not v.get("skipped") and not v.get("ok")]
+    return out
+
+
+def _alert_degraded(status: str, surfaces: Dict[str, Any], build: Dict[str, Any], report_path: Path) -> Dict[str, Any]:
+    """Post a relay leg so the fleet sees a broken surface without anyone
+    opening the report. NOUGEN_RSI_ALERT=0 silences it (e.g. for a dry run)."""
+    if os.environ.get("NOUGEN_RSI_ALERT", "1") == "0":
+        return {"posted": False, "reason": "NOUGEN_RSI_ALERT=0"}
+    try:
+        from . import handoff
+        failing = surfaces.get("degraded", [])
+        lines = [f"## Active Incidents", f"- RSI canary status: **{status}**"]
+        for k in failing:
+            v = surfaces.get(k, {})
+            lines.append(f"- {k}: HTTP {v.get('status', '-')} {v.get('error', '')}".rstrip())
+        if not build.get("ok", True):
+            lines.append(f"- build: {build.get('error') or 'compile failed'}")
+        lines += ["", "## Recent Changes", f"- Report: {report_path}", "", "## Known Issues & Workarounds",
+                  "- Canary is read-only; it does not repair. A Coach lane should pick this up."]
+        path = handoff.create_handoff(message="\n".join(lines), agent="rsi",
+                                      goal=f"RSI canary {status}: {', '.join(failing) or 'build'}")
+        return {"posted": bool(path), "path": str(path) if path else None}
+    except Exception as exc:  # pylint: disable=broad-except
+        return {"posted": False, "error": str(exc)}
+
+
 def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[str, Any]:
     """
     One RSI cycle with Exa MCP temporal grounding and bitemporal provenance.
@@ -261,6 +360,7 @@ def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[st
 
     build = check_builds(repo)
     health = check_self_update_health()
+    surfaces = check_surfaces()
 
     recent_titles: List[str] = []
     try:
@@ -285,15 +385,24 @@ def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[st
         "repo": str(repo),
         "build": build,
         "self_update_health": health,
+        "surfaces": surfaces,
         "exa_temporal_latest": exa_temporal,
         "proposal": proposal,
         "applied": False,  # gate-don't-write: this module never flips this to true itself
-        "status": "ok" if build.get("ok", True) else "BUILD_BROKEN",
+        "status": ("BUILD_BROKEN" if not build.get("ok", True)
+                   else "DEGRADED" if (surfaces.get("degraded") or health.get("ok") is False)
+                   else "ok"),
     }
     summary["bitemporal_receipt"] = _record_bitemporal_receipt(summary, instant_ms)
 
-    report_path = _reports_dir() / f"rsi_{instant.utc_dt.strftime('%Y-%m-%d')}.json"
+    # Per-RUN filename, not per-day: on the 30-minute schedule a per-day name
+    # overwrote itself 48 times a day and a single test run could clobber the
+    # real result. Lexical sort == chronological, so "newest = last" still
+    # holds for rsi_status / `nougen rsi status`.
+    report_path = _reports_dir() / f"rsi_{instant.utc_dt.strftime('%Y-%m-%dT%H%M%SZ')}.json"
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
     summary["report_path"] = str(report_path)
+    if summary["status"] != "ok":
+        summary["alert"] = _alert_degraded(summary["status"], surfaces, build, report_path)
     return summary
