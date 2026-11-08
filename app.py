@@ -567,7 +567,9 @@ def substrate_coverage() -> dict:
 @node_mcp.tool()
 @_offloaded
 def recall_window(query: str = "", since: str | None = None,
-                  until: str | None = None, limit: int = 10) -> list:
+                  until: str | None = None, limit: int = 10,
+                  start: str | None = None, end: str | None = None,
+                  when: str | None = None, tz: str | None = None) -> list:
     """Browse the vault by ERA, newest first -- the date-filtered counterpart to
     recall_memory.
 
@@ -577,10 +579,62 @@ def recall_window(query: str = "", since: str | None = None,
 
     since/until are ISO prefixes and both are inclusive: since="2026-03",
     until="2026-03" is all of March; until="2026-03-14" covers that whole day.
+    start/end are aliases (some connectors advertise those names; before
+    this they were dropped and the call returned the newest shards with no
+    era filter at all). Any bound may also be a plain phrase ("march",
+    "last week", "yesterday 7pm"), and `when` names a whole period at once -
+    both resolved by nougen_shards.timewindow in `tz` (default NOUGEN_TZ/UTC).
     query is optional -- omit it to page an era, supply it to search within one.
     """
+    from nougen_shards import timewindow as _tw
+    since, until = since or start, until or end
+    if when:
+        win = _tw.parse_window(when, tz=tz)
+        if win is None:
+            raise ValueError(f"could not read when={when!r} as a time period")
+        since, until = _inclusive_lower(win.start_utc), _exclusive_to_inclusive(win.end_utc)
+    else:
+        since, until = _era_bound(since, tz, start=True), _era_bound(until, tz, start=False)
     return _window_search(query=query, since=since, until=until,
                           limit=max(1, min(limit, 50)))
+
+
+# ISO prefixes pass straight through as lexicographic bounds, fractional
+# seconds included: core.capture() stamps microseconds, and a returned shard
+# timestamp must stay reusable as a bound (Codex P2 on #980).
+_ISO_PREFIX = re.compile(r"^\d{4}(-\d{2}(-\d{2}([T ]\d{2}(:\d{2}(:\d{2}(\.\d+)?)?)?)?)?)?Z?$")
+
+
+def _exclusive_to_inclusive(end_utc: str) -> str:
+    """timewindow gives [start, end); _window_search pads `until` with U+FFFF so
+    it is inclusive to any precision, so hand it the last second before the
+    exclusive bound (covers 23:59:59.999999Z too)."""
+    from datetime import datetime, timedelta
+    dt = datetime.strptime(end_utc, "%Y-%m-%dT%H:%M:%SZ") - timedelta(seconds=1)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _inclusive_lower(start_utc: str) -> str:
+    """A generated lower bound must sort BEFORE every stamp in its first second.
+    '2026-03-01T00:00:00Z' > '2026-03-01T00:00:00.123456Z' lexicographically
+    ('Z' > '.'), which silently dropped the first second of every window;
+    without the Z the bound is a prefix of those stamps and sorts first."""
+    return start_utc[:-1] if start_utc.endswith("Z") else start_utc
+
+
+def _era_bound(value: Optional[str], tz: Optional[str], *, start: bool) -> Optional[str]:
+    """ISO prefixes pass through (lexicographic bounds, as before); a phrase is
+    resolved to the start (or inclusive end) of the period it names."""
+    v = (value or "").strip()
+    if not v:
+        return None
+    if _ISO_PREFIX.match(v):
+        return v
+    from nougen_shards import timewindow as _tw
+    win = _tw.parse_window(v, tz=tz)
+    if win is None:
+        raise ValueError(f"could not read {'since' if start else 'until'}={v!r} as a time")
+    return _inclusive_lower(win.start_utc) if start else _exclusive_to_inclusive(win.end_utc)
 
 
 def _resolve_shard(shard_id: int, db_index: Optional[int] = None,
