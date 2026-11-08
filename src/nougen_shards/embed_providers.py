@@ -209,26 +209,14 @@ def onnx_embed(texts: Sequence[str], repo: str = DEFAULT_ONNX_REPO) -> List[List
 
 # ------------------------------------------------------------- dispatchers
 
-def embed_text(text: str, model: Optional[str] = None, timeout: float = 60.0) -> Optional[List[float]]:
-    """One vector via the resolved provider, or None (never raises)."""
-    provider, name = resolve(model)
+def _call(provider: str, name: str, texts: List[str], timeout: float) -> Optional[List[List[float]]]:
+    """Run one provider over ``texts``; None on any failure (never raises)."""
     try:
         if provider == "ollama":
-            from .embedding_backfill import embed as _ollama_embed  # pylint: disable=import-outside-toplevel
-            return _ollama_embed(text, name, timeout=timeout)
-        if provider == "onnx":
-            return onnx_embed([text], name)[0]
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.debug("embed_text via %s failed: %s", provider, exc)
-    return None
-
-
-def embed_texts(texts: List[str], model: Optional[str] = None, timeout: float = 180.0) -> Optional[List[List[float]]]:
-    """One vector per text via the resolved provider, or None (never raises)."""
-    provider, name = resolve(model)
-    try:
-        if provider == "ollama":
-            from .embedding_backfill import embed_many  # pylint: disable=import-outside-toplevel
+            from .embedding_backfill import embed as _one, embed_many  # pylint: disable=import-outside-toplevel
+            if len(texts) == 1:
+                vec = _one(texts[0], name, timeout=timeout)
+                return [vec] if vec else None
             return embed_many(texts, name, timeout=timeout)
         if provider == "onnx":
             out: List[List[float]] = []
@@ -236,8 +224,53 @@ def embed_texts(texts: List[str], model: Optional[str] = None, timeout: float = 
                 out.extend(onnx_embed(texts[start:start + 32], name))
             return out
     except Exception as exc:  # pylint: disable=broad-except
-        logger.debug("embed_texts via %s failed: %s", provider, exc)
+        logger.debug("embed via %s/%s failed: %s", provider, name, exc)
     return None
+
+
+_FALLBACK_WARNED = False
+
+
+def _dispatch(texts: List[str], model: Optional[str], timeout: float) -> Optional[List[List[float]]]:
+    """Resolved provider first; in ``auto`` mode, if ollama stops answering
+    mid-process (server evicted, laptop lid, service restart) fall through to
+    the onnx lane when it is installed and re-pin the cached choice so the next
+    call does not pay the dead round-trip again. Explicit providers never fall
+    back: a forced ``ollama`` that is down must fail loudly, not silently
+    switch dimensions under a vault that was backfilled at 768."""
+    global _RESOLVED, _FALLBACK_WARNED  # pylint: disable=global-statement
+    provider, name = resolve(model)
+    out = _call(provider, name, texts, timeout)
+    if out is not None or provider != "ollama" or model is not None:
+        return out
+    if os.environ.get("NOUGEN_EMBED_PROVIDER", "auto").strip().lower() != "auto":
+        return None
+    if not (onnx_deps_present() and onnx_files_present(DEFAULT_ONNX_REPO)):
+        return None
+    out = _call("onnx", DEFAULT_ONNX_REPO, texts, timeout)
+    if out is not None:
+        with _LOCK:
+            _RESOLVED = ("onnx", DEFAULT_ONNX_REPO)
+        if not _FALLBACK_WARNED:
+            _FALLBACK_WARNED = True
+            logger.warning("embed provider: ollama %r stopped answering; switched to in-process onnx (%s, 384-d). "
+                           "Vectors stored at 768-d will not match until `nougen embed backfill --reembed`.",
+                           name, DEFAULT_ONNX_REPO)
+    return out
+
+
+def embed_text(text: str, model: Optional[str] = None, timeout: float = 60.0) -> Optional[List[float]]:
+    """One vector via the resolved provider, or None (never raises)."""
+    out = _dispatch([text], model, timeout)
+    return out[0] if out else None
+
+
+def embed_texts(texts: List[str], model: Optional[str] = None, timeout: float = 180.0) -> Optional[List[List[float]]]:
+    """One vector per text via the resolved provider, or None (never raises)."""
+    if not texts:
+        return []
+    out = _dispatch(list(texts), model, timeout)
+    return out if out and len(out) == len(texts) else None
 
 
 def describe_unavailable(model: Optional[str] = None) -> str:

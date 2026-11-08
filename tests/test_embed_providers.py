@@ -113,6 +113,73 @@ def test_backfill_uses_provider(vault, monkeypatch):
     assert out.get("embedded") == 1 and out.get("failed") == 0, out
 
 
+def test_auto_falls_back_to_onnx_when_ollama_dies_mid_process(vault, monkeypatch, caplog):
+    """Resolved to ollama at start, then the server stops answering: auto mode
+    switches to the installed onnx lane, re-pins, and warns exactly once."""
+    monkeypatch.setenv("NOUGEN_EMBED_PROVIDER", "auto")
+    monkeypatch.delenv("NOUGEN_EMBED_MODEL", raising=False)
+    monkeypatch.setattr(ep, "_ollama_reachable", lambda *a, **k: True)
+    monkeypatch.setattr(ep, "onnx_deps_present", lambda: True)
+    monkeypatch.setattr(ep, "onnx_files_present", lambda repo=None: True)
+    monkeypatch.setattr(ep, "onnx_embed", _fake_onnx)
+    monkeypatch.setattr(ep, "_FALLBACK_WARNED", False)
+    assert ep.resolve(refresh=True) == ("ollama", ep.DEFAULT_OLLAMA_MODEL)
+    from nougen_shards import embedding_backfill as bf
+    monkeypatch.setattr(bf, "embed", lambda *a, **k: None)        # server gone
+    monkeypatch.setattr(bf, "embed_many", lambda *a, **k: None)
+    with caplog.at_level(logging.WARNING, logger="nougen_shards.embed_providers"):
+        v = ep.embed_text("copper kettle")
+        vs = ep.embed_texts(["dawn", "whistle"])
+    assert v is not None and len(v) == 8
+    assert vs is not None and len(vs) == 2
+    assert ep.resolve() == ("onnx", ep.DEFAULT_ONNX_REPO), "re-pinned so the dead round-trip is not repeated"
+    assert sum("switched to in-process onnx" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_forced_ollama_never_falls_back(vault, monkeypatch):
+    monkeypatch.setenv("NOUGEN_EMBED_PROVIDER", "ollama")
+    monkeypatch.setattr(ep, "onnx_deps_present", lambda: True)
+    monkeypatch.setattr(ep, "onnx_files_present", lambda repo=None: True)
+    monkeypatch.setattr(ep, "onnx_embed", lambda *a, **k: pytest.fail("forced ollama must not touch onnx"))
+    ep.resolve(refresh=True)
+    from nougen_shards import embedding_backfill as bf
+    monkeypatch.setattr(bf, "embed", lambda *a, **k: None)
+    assert ep.embed_text("anything") is None
+
+
+def test_backfill_reembed_converges_mixed_dims(vault, monkeypatch):
+    """768-d rows left by a previous provider are re-embedded only with --reembed."""
+    monkeypatch.setenv("NOUGEN_EMBED_PROVIDER", "onnx")
+    monkeypatch.setattr(ep, "onnx_embed", _fake_onnx)
+    ep.resolve(refresh=True)
+    a = core.capture("test", "Fresh", "Embedded by the current 8-d lane.")
+    b = core.capture("test", "Stale", "Embedded long ago at 768-d.")
+    assert a.get("shard_id") and b.get("shard_id")
+    from nougen_shards import embedding_backfill as bf
+    conn = core.get_connection(int(b["db_index"]))
+    try:
+        conn.execute("UPDATE shards SET embedding=? WHERE id=?",
+                     (bf._pack([0.1] * 768), int(b["shard_id"])))  # pylint: disable=protected-access
+        conn.commit()
+    finally:
+        conn.close()
+    db = str(core.get_db_path(int(b["db_index"])))
+    plain = bf.backfill_db(db, "onnx", execute=False, progress=False)
+    assert plain.get("pending") == 0, plain
+    dry = bf.backfill_db(db, "onnx", execute=False, progress=False, reembed=True)
+    assert dry.get("pending") == 1 and dry.get("mismatched") == 1 and dry.get("provider_dim") == 8, dry
+    out = bf.backfill_db(db, "onnx", execute=True, progress=False, reembed=True)
+    assert out.get("embedded") == 1 and out.get("failed") == 0, out
+    conn = core.get_connection(int(b["db_index"]))
+    try:
+        lens = {r[0] for r in conn.execute("SELECT length(embedding) FROM shards").fetchall()}
+    finally:
+        conn.close()
+    assert lens == {8 * 4}, lens
+    again = bf.backfill_db(db, "onnx", execute=False, progress=False, reembed=True)
+    assert again.get("pending") == 0, "idempotent: nothing left once dims agree"
+
+
 @pytest.mark.skipif(not (ep.onnx_deps_present() and ep.onnx_files_present()),
                     reason="real onnx model not present; run `nougen embed fetch`")
 def test_real_minilm_paraphrase_recall(vault, monkeypatch):

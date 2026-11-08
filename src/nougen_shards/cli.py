@@ -1294,7 +1294,8 @@ def cmd_embed(args):
         vault = str(_core.active_vault_dir())
         model = args.model or os.environ.get("NOUGEN_EMBED_MODEL") or ep.DEFAULT_OLLAMA_MODEL
         for db in bf._vault_dbs(vault):  # pylint: disable=protected-access
-            print(json.dumps(bf.backfill_db(db, model, execute=args.execute, batch=args.batch), default=str))
+            print(json.dumps(bf.backfill_db(db, model, execute=args.execute, batch=args.batch,
+                                            reembed=args.reembed), default=str))
         return
 
 
@@ -2297,6 +2298,8 @@ def get_parser():
     p_eb.add_argument("--model", default=None, help="ollama model name, or 'onnx[:repo]'")
     p_eb.add_argument("--execute", action="store_true", help="Write (default is a dry run)")
     p_eb.add_argument("--batch", type=int, default=64)
+    p_eb.add_argument("--reembed", action="store_true",
+                      help="Also re-embed rows whose stored dimension differs from the provider's (after a provider switch)")
 
     p_mark = subparsers.add_parser("mark", help="Update utility")
     p_mark.add_argument("id", type=int)

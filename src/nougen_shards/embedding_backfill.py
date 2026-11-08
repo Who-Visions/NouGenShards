@@ -171,7 +171,16 @@ def count_pending(vault_dir: str) -> dict:
 
 
 def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool = True,
-                progress: bool = True) -> dict:
+                progress: bool = True, reembed: bool = False) -> dict:
+    """Embed rows with ``embedding IS NULL``.
+
+    ``reembed=True`` also re-embeds rows whose stored vector has a different
+    dimension from the resolved provider's (768-d nomic rows after a switch to
+    384-d MiniLM, or the reverse). Without it a provider switch leaves the
+    vector lane skipping every mismatched DB (core logs it once per DB); with
+    it the vault converges on one dimension and stays resumable, because a row
+    already at the right dimension is never touched.
+    """
     import platform
     if platform.system() == "Darwin":
         from .darwin_gate import demote_to_background_qos
@@ -186,23 +195,45 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
             return {"db": os.path.basename(db), "skipped": "no shards table"}
         has_ver = _has_col(conn, "shards", "schema_version")
         conn.execute("PRAGMA busy_timeout=15000;")
-        rows = conn.execute(
-            "SELECT id, title, content FROM shards WHERE embedding IS NULL"
-        ).fetchall()
         # Provider-aware: ollama when it answers, in-process onnx otherwise
         # (embed_providers). `model` keeps its meaning: an ollama model name, or
         # 'onnx[:repo]'.
         from . import embed_providers  # pylint: disable=import-outside-toplevel
         _embed_one = lambda text: embed_providers.embed_text(text, model)          # noqa: E731
         _embed_batch = lambda texts: embed_providers.embed_texts(texts, model)     # noqa: E731
-        if probe and rows:
-            # Smoke-test one embedding before committing to the whole DB.
-            test = _embed_one((rows[0][1] or "") + "\n" + (rows[0][2] or "")[:512])
-            if not test:
-                return {"db": os.path.basename(db),
-                        "error": "no embedding provider answered: " + embed_providers.describe_unavailable(model)}
+        where = "embedding IS NULL"
+        params: tuple = ()
+        dim = None
+        if probe or reembed:
+            # Smoke-test one embedding before committing to the whole DB. Its
+            # length is the provider's dimension, which --reembed needs to know
+            # which stored rows are stale.
+            sample = conn.execute("SELECT title, content FROM shards WHERE " + where + " LIMIT 1").fetchone() \
+                or conn.execute("SELECT title, content FROM shards LIMIT 1").fetchone()
+            if sample:
+                test = _embed_one((sample[0] or "") + "\n" + (sample[1] or "")[:512])
+                if not test:
+                    return {"db": os.path.basename(db),
+                            "error": "no embedding provider answered: " + embed_providers.describe_unavailable(model)}
+                dim = len(test)
+        if reembed and dim:
+            where = "(embedding IS NULL OR length(embedding) != ?)"
+            params = (dim * 4,)
+        rows = conn.execute(
+            "SELECT id, title, content FROM shards WHERE " + where, params
+        ).fetchall()
+        mismatched = 0
+        if reembed and dim:
+            mismatched = conn.execute(
+                "SELECT COUNT(*) FROM shards WHERE embedding IS NOT NULL AND length(embedding) != ?",
+                (dim * 4,)).fetchone()[0]
         if not execute:
-            return {"db": os.path.basename(db), "pending": len(rows), "would_write": True}
+            out = {"db": os.path.basename(db), "pending": len(rows), "would_write": True}
+            if dim:
+                out["provider_dim"] = dim
+            if reembed:
+                out["mismatched"] = mismatched
+            return out
 
         # VRAM is polled per batch, not per row: nvidia-smi is a subprocess spawn
         # (~50-100ms), and at one spawn per shard the probe costs more wall-clock
@@ -263,6 +294,10 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
     finally:
         conn.close()
     result = {"db": os.path.basename(db), "embedded": done, "failed": failed}
+    if dim:
+        result["provider_dim"] = dim
+    if reembed:
+        result["reembedded_mismatched"] = mismatched
     result.update(deferred)
     return result
 
@@ -287,6 +322,8 @@ def _main(argv=None):
     ap.add_argument("--model", default=os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text"))
     ap.add_argument("--execute", action="store_true")
     ap.add_argument("--batch", type=int, default=64)
+    ap.add_argument("--reembed", action="store_true",
+                    help="also re-embed rows whose stored dimension differs from the provider's")
     args = ap.parse_args(argv)
     if not args.vault:
         ap.error("--vault or NOUGEN_VAULT_DIR required")
@@ -298,7 +335,7 @@ def _main(argv=None):
     tot_t = sum(t for _, t in pend.values())
     print(f"pending (embedding IS NULL): {tot_p}/{tot_t} shards across {len(pend)} DBs")
     for db in _vault_dbs(args.vault):
-        res = backfill_db(db, args.model, execute=args.execute, batch=args.batch)
+        res = backfill_db(db, args.model, execute=args.execute, batch=args.batch, reembed=args.reembed)
         print(" ", res)
         if res.get("error"):
             print("\nABORT:", res["error"]); return 2
