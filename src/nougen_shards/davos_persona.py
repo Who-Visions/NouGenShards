@@ -61,7 +61,7 @@ def self_identity() -> Identity:
         aliases=("davos", "nougenai assistant", "the app"),
         role="NouGenAI's assistant - the operator's working style embodied: local-first, "
              "evidence over memory, verified state over assumption; holds the mutation gates.",
-        home=os.environ.get("NOUGEN_DAVOS_LANE", "chat.nougenai.com -> droid bridge"),
+        home=os.environ.get("NOUGEN_DAVOS_LANE", "droid bridge"),
         source="builtin",
     )
 
