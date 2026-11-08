@@ -53,14 +53,22 @@ def _node_token() -> Optional[str]:
         return None
 
 
-def _node_search(query: str, limit: int, timeout_s: float) -> list:
+#: Below this budget the node is asked for its fast path. Measured on WhoArt
+#: 2026-11-07 against the live node: fast=False 952 ms, fast=True 313 ms; an
+#: 800 ms hook cannot afford the former.
+NODE_FAST_BELOW_MS = 1500
+
+
+def _node_search(query: str, limit: int, timeout_s: float, token: Optional[str] = None) -> list:
     """POST /search on the NGS node. Raises on any failure; the caller fails open."""
     import urllib.request  # pylint: disable=import-outside-toplevel
-    token = _node_token()
+    token = token or _node_token()
     if not token:
         raise RuntimeError("no NGS_NODE_TOKEN")
     url = os.environ.get("NOUGEN_NODE_URL", DEFAULT_NODE_URL).rstrip("/") + "/search"
-    body = json.dumps({"query": query, "limit": limit, "fast": False}).encode("utf-8")
+    fast_env = os.environ.get("NOUGEN_RECALL_HOOK_NODE_FAST", "").strip().lower()
+    fast = fast_env in ("1", "true", "yes", "on") if fast_env else (timeout_s * 1000.0 < NODE_FAST_BELOW_MS)
+    body = json.dumps({"query": query, "limit": limit, "fast": fast}).encode("utf-8")
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json",
                                                            "X-NGS-Token": token})
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
@@ -113,10 +121,15 @@ def recall_hook(message: str, *, limit: int = DEFAULT_LIMIT, budget_ms: int = DE
     full: list = []
     keyword: list = []
     errors: dict[str, str] = {}
+    use_node = _node_enabled()
+
+    # Resolve the token on the calling thread: the keymaker import is not free
+    # and must not come out of the node lane's share of the budget.
+    node_token = _node_token() if use_node else None
 
     def run_node() -> None:
         try:
-            node.extend(_node_search(query, limit, budget_ms / 1000.0))
+            node.extend(_node_search(query, limit, budget_ms / 1000.0, token=node_token))
             node.append(None)
         except Exception as exc:  # node down, no token, slow: fall through
             errors["node"] = f"{type(exc).__name__}: {exc}"[:200]
@@ -135,7 +148,6 @@ def recall_hook(message: str, *, limit: int = DEFAULT_LIMIT, budget_ms: int = DE
         except Exception as exc:
             errors["keyword"] = f"{type(exc).__name__}: {exc}"[:200]
 
-    use_node = _node_enabled()
     t_node = threading.Thread(target=run_node, daemon=True, name="recall-hook-node") if use_node else None
     t_full = threading.Thread(target=run_full, daemon=True, name="recall-hook-full")
     t_kw = threading.Thread(target=run_keyword, daemon=True, name="recall-hook-keyword")

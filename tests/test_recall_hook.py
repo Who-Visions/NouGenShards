@@ -99,7 +99,7 @@ def test_node_lane_wins_when_it_answers(vault, monkeypatch):
     import time
     monkeypatch.setenv("NOUGEN_RECALL_HOOK_NODE", "1")
     monkeypatch.setattr(recall_hook, "_node_search",
-                        lambda q, limit, timeout_s: [{"id": 11, "_db_index": 2, "title": "node hit", "content": "warm"}])
+                        lambda q, limit, timeout_s, token=None: [{"id": 11, "_db_index": 2, "title": "node hit", "content": "warm"}])
 
     def slow_retrieve(*_a, **_k):
         time.sleep(2.0)
@@ -115,7 +115,7 @@ def test_node_lane_wins_when_it_answers(vault, monkeypatch):
 def test_node_down_falls_through_to_in_process_lanes(vault, monkeypatch):
     monkeypatch.setenv("NOUGEN_RECALL_HOOK_NODE", "1")
 
-    def refused(q, limit, timeout_s):
+    def refused(q, limit, timeout_s, token=None):
         raise ConnectionRefusedError("no node on :4444")
 
     monkeypatch.setattr(recall_hook, "_node_search", refused)
