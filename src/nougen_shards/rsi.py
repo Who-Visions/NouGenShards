@@ -442,10 +442,12 @@ def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[st
         summary["tool_count_delta"] = now_tools - prev_tools
 
     report_path = _reports_dir() / f"rsi_{instant.utc_dt.strftime('%Y-%m-%dT%H%M%SZ')}.json"
-    with open(report_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
     summary["report_path"] = str(report_path)
 
+    # Decide the alert BEFORE writing, so the report on disk is complete:
+    # rsi_status (the phone) and `nougen rsi status` read the file, and an
+    # earlier version wrote it first and attached `alert` only to the
+    # in-memory return - the file never showed whether a leg was posted.
     status = summary["status"]
     if status != "ok" and prev_status != status:
         summary["alert"] = _alert_degraded(status, surfaces, build, report_path)
@@ -453,4 +455,7 @@ def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[st
         summary["alert"] = {"posted": False, "reason": f"unchanged ({status}) since {prev.get('timestamp_utc') if prev else 'n/a'}"}
     elif prev_status not in ("ok", "none", "unknown"):
         summary["alert"] = _alert_recovered(prev_status, report_path)
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
     return summary
