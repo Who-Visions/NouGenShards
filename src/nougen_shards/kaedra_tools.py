@@ -370,18 +370,36 @@ def _shards_recall(args: dict) -> dict:
 
 
 # Only shards this agent lane wrote may be amended through the bridge: the
-# source_uri prefix core.capture() stamps for kaedra-authored captures.
-_AMENDABLE_SOURCE_PREFIX = os.environ.get("NOUGEN_KAEDRA_AMEND_SOURCE_PREFIX", "agent:kaedra")
+# source_uri namespace core.capture() stamps for kaedra-authored captures.
+# Namespace match is exact-or-child ("agent:kaedra" or "agent:kaedra:..."),
+# never a plain string prefix, and a blank override fails closed.
+_AMENDABLE_SOURCE_NS = (os.environ.get("NOUGEN_KAEDRA_AMEND_SOURCE_PREFIX") or "agent:kaedra").strip().rstrip(":")
+
+
+def _in_amendable_namespace(source_uri: str) -> bool:
+    ns = _AMENDABLE_SOURCE_NS
+    if not ns:
+        return False
+    s = str(source_uri or "").strip()
+    return s == ns or s.startswith(ns + ":")
 
 
 def _shards_amend(args: dict) -> dict:
     from nougen_shards import core
-    addition = str(args.get("content", "")).strip()
+    from nougen_shards.brain_scan.redaction import redact_content
+    # Same redactor core.capture() runs on every write: an amendment is a
+    # write too, and the UPDATE below bypasses capture(), so redact here.
+    addition = redact_content(str(args.get("content", ""))).strip()
     if not addition:
         return {"error": "content is required for shards_amend"}
     ref = locator.parse(args.get("locator") or args.get("shard_id"))
     if ref is None:
         return {"error": "locator (node:db#id) or shard_id + db_index is required"}
+    # Ids are per node AND per db: a locator naming another node must never be
+    # resolved against a colliding local row. This bridge only writes locally.
+    here = locator.current_node()
+    if ref.node and ref.node != here:
+        return {"error": f"refusing: {ref} lives on node {ref.node}, this bridge only amends {here}"}
     db_index = ref.db_index
     if db_index is None:
         try:
@@ -398,7 +416,7 @@ def _shards_amend(args: dict) -> dict:
                            (ref.shard_id,)).fetchone()
         if not row:
             return {"error": f"no shard {loc}"}
-        if not str(row["source_uri"] or "").startswith(_AMENDABLE_SOURCE_PREFIX):
+        if not _in_amendable_namespace(row["source_uri"]):
             return {"error": f"refusing: {loc} was not authored by this agent lane"}
         mode = str(args.get("mode") or "append").lower()
         new_content = addition if mode == "replace" else (str(row["content"] or "").rstrip() + "\n\n" + addition)
@@ -406,7 +424,7 @@ def _shards_amend(args: dict) -> dict:
         cap = _env_int("NOUGEN_KAEDRA_AMEND_MAX_CHARS", 60000)
         if len(new_content) > cap:
             new_content = "[...earlier turns trimmed...]\n" + new_content[-cap:]
-        new_title = str(args.get("title") or "").strip() or None
+        new_title = redact_content(str(args.get("title") or "")).strip() or None
         if new_title:
             conn.execute("UPDATE shards SET content = ?, title = ? WHERE id = ?",
                          (new_content, new_title, ref.shard_id))

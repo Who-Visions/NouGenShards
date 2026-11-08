@@ -288,7 +288,8 @@ def test_loop_falls_back_to_workers_ai_on_local_error(monkeypatch):
 
 
 def test_shards_amend_appends_only_to_own_shards(tmp_path, monkeypatch):
-    from nougen_shards import core
+    from nougen_shards import core, locator
+    here = locator.current_node()
     monkeypatch.setattr(core, "get_db_path", lambda i: tmp_path / f"amend_{i}.db")
     monkeypatch.setattr(core, "GLOBAL_DIR", tmp_path)
     # capture() routes each row to a db by content hash, so take the db it chose.
@@ -299,16 +300,37 @@ def test_shards_amend_appends_only_to_own_shards(tmp_path, monkeypatch):
     mine, mdb = r1["shard_id"], r1["db_index"]
     theirs, tdb = r2["shard_id"], r2["db_index"]
 
-    out = kt.dispatch("shards_amend", {"locator": f"blade:{mdb}#{mine}", "content": "T2: found y"})
+    out = kt.dispatch("shards_amend", {"locator": f"{here}:{mdb}#{mine}", "content": "T2: found y"})
     assert out["amended"] and out["mode"] == "append"
     assert core.get_shard_by_id(mine, mdb)["content"] == "T1: asked x\n\nT2: found y"
 
-    out = kt.dispatch("shards_amend", {"locator": f"blade:{mdb}#{mine}", "content": "fresh", "mode": "replace", "title": "renamed"})
+    out = kt.dispatch("shards_amend", {"locator": f"{here}:{mdb}#{mine}", "content": "fresh", "mode": "replace", "title": "renamed"})
     row = core.get_shard_by_id(mine, mdb)
     assert out["amended"] and row["content"] == "fresh" and row["title"] == "renamed"
 
     # Operator-authored rows are refused; FTS stays in sync for the amended one.
-    assert "refusing" in kt.dispatch("shards_amend", {"locator": f"blade:{tdb}#{theirs}", "content": "nope"})["error"]
+    assert "refusing" in kt.dispatch("shards_amend", {"locator": f"{here}:{tdb}#{theirs}", "content": "nope"})["error"]
     assert core.get_shard_by_id(theirs, tdb)["content"] == "do not touch"
     assert "error" in kt.dispatch("shards_amend", {"shard_id": mine, "content": "x"})
-    assert "error" in kt.dispatch("shards_amend", {"locator": f"blade:{mdb}#{mine}"})
+    assert "error" in kt.dispatch("shards_amend", {"locator": f"{here}:{mdb}#{mine}"})
+
+
+def test_shards_amend_namespace_and_node_boundaries(tmp_path, monkeypatch):
+    from nougen_shards import core, locator
+    monkeypatch.setattr(core, "get_db_path", lambda i: tmp_path / f"amend2_{i}.db")
+    monkeypatch.setattr(core, "GLOBAL_DIR", tmp_path)
+    # "agent:kaedra-other" shares the string prefix but is a different lane.
+    r = core.capture(event_type="kaedra_insight", title="lookalike", content="x",
+                     tags=["t"], source_uri="agent:kaedra-other:move3")
+    sid, db = r["shard_id"], r["db_index"]
+    assert "refusing" in kt.dispatch("shards_amend", {"locator": f"{locator.current_node()}:{db}#{sid}", "content": "y"})["error"]
+    # Exact namespace root is allowed, child is allowed.
+    r2 = core.capture(event_type="kaedra_insight", title="root", content="root body", tags=["t"], source_uri="agent:kaedra")
+    assert kt.dispatch("shards_amend", {"shard_id": r2["shard_id"], "db_index": r2["db_index"], "content": "y"})["amended"]
+    # A locator naming ANOTHER node is refused before any query.
+    out = kt.dispatch("shards_amend", {"locator": f"phoebus:{r2['db_index']}#{r2['shard_id']}", "content": "z"})
+    assert "refusing" in out["error"] and "phoebus" in out["error"]
+    assert core.get_shard_by_id(r2["shard_id"], r2["db_index"])["content"] == "root body\n\ny"
+    # Blank namespace override fails closed.
+    monkeypatch.setattr(kt, "_AMENDABLE_SOURCE_NS", "")
+    assert "refusing" in kt.dispatch("shards_amend", {"shard_id": r2["shard_id"], "db_index": r2["db_index"], "content": "w"})["error"]
