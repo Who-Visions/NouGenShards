@@ -35,6 +35,51 @@ if sys.platform == "win32":
 PORT = int(os.environ.get("NOUGEN_REMOTE_PORT", 8767))
 HOST = os.environ.get("NOUGEN_REMOTE_HOST", "0.0.0.0")
 TOKEN = os.environ.get("NOUGEN_REMOTE_TOKEN", "").strip()
+
+
+def _google_oauth_client_id() -> str:
+    """Google OAuth client ID whose ID tokens this server accepts.
+
+    Reads GOOGLE_CLIENT_ID first, then the fleet-wide NOUGEN_GOOGLE_CLIENT_ID.
+    Empty means Google-ID-token auth is off: the validator fails closed.
+    """
+    return (os.environ.get("GOOGLE_CLIENT_ID") or os.environ.get("NOUGEN_GOOGLE_CLIENT_ID") or "").strip()
+
+
+def _google_allowed_emails() -> set[str]:
+    """Allowlisted Google account emails, from GOOGLE_ALLOWED_EMAILS (comma-separated)."""
+    return {e.strip().lower() for e in os.environ.get("GOOGLE_ALLOWED_EMAILS", "").split(",") if e.strip()}
+
+
+def _google_id_token_valid(token: str) -> bool:
+    """Validate a Google ID token against the configured OAuth client.
+
+    Verifies signature, expiry and audience with google-auth, requires a
+    verified email, and requires that email to be on GOOGLE_ALLOWED_EMAILS.
+    Fails closed on any error, on a missing client ID, and on a missing
+    allowlist -- a token is never accepted on the strength of being a
+    well-formed JWT alone.
+    """
+    if not token or token.count(".") != 2:
+        return False
+    client_id = _google_oauth_client_id()
+    if not client_id:
+        return False
+    try:
+        from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token as google_id_token
+
+        claims = google_id_token.verify_oauth2_token(token, google_requests.Request(), client_id)
+    except Exception:
+        return False
+    if not claims.get("email_verified"):
+        return False
+    allowed = _google_allowed_emails()
+    if not allowed:
+        return False
+    return (claims.get("email") or "").strip().lower() in allowed
+
+
 REMOTE_ROOT = os.path.realpath(os.environ.get("NOUGEN_REMOTE_ROOT") or str(Path.home()))
 WORKING_DIR = os.environ.get("NOUGEN_WORKING_DIR", str(Path.home()))
 
@@ -1195,7 +1240,9 @@ class RemoteHandler(BaseHTTPRequestHandler):
         given = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
         if not given:
             given = self.headers.get("Authorization", "").replace("Bearer ", "", 1)
-        return bool(TOKEN) and hmac.compare_digest(given.encode(), TOKEN.encode())
+        if given and bool(TOKEN) and hmac.compare_digest(given.encode(), TOKEN.encode()):
+            return True
+        return bool(given) and _google_id_token_valid(given)
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -1252,11 +1299,11 @@ class RemoteHandler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
 
-        # This used to be a standalone check against only the static TOKEN,
-        # never the Google ID token path do_GET's _get_authorized already
-        # had - so every POST endpoint (chat, terminal, inject_agy, and the
-        # new tools/* bridge) silently rejected a signed-in Google user even
-        # after sign-in itself worked. Unify on the one auth check.
+        # POST used to check only the static TOKEN, so every POST endpoint
+        # (chat, terminal, inject_agy, and the tools/* bridge) silently
+        # rejected a signed-in Google user even after sign-in itself worked.
+        # Accept the static token or a validated Google ID token -- the same
+        # check do_GET's _get_authorized now uses.
         given = payload.get("token") or self.headers.get("Authorization", "").replace("Bearer ", "", 1)
         authorized = bool(TOKEN) and hmac.compare_digest(given.encode(), TOKEN.encode()) if given else False
         if not authorized and given:
