@@ -4,7 +4,7 @@ import json
 from nougen_shards import kaedra_tools as kt
 
 
-EXPECTED = ["fleet_whoami", "shards_search", "shards_recall",
+EXPECTED = ["fleet_whoami", "shards_search", "shards_window", "shards_recall",
             "relay_latest", "relay_open", "reach_state",
             "shards_capture", "nougenmsg_send", "nougenmsg_inbox",
             "rsi_status", "unfinished_destinies", "search_destinies",
