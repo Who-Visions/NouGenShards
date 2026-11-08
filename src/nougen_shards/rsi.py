@@ -22,7 +22,6 @@ import subprocess
 import hmac
 import urllib.error
 import urllib.request
-import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -336,7 +335,7 @@ def _alert_degraded(status: str, surfaces: Dict[str, Any], build: Dict[str, Any]
     try:
         from . import handoff
         failing = surfaces.get("degraded", [])
-        lines = [f"## Active Incidents", f"- RSI canary status: **{status}**"]
+        lines = ["## Active Incidents", f"- RSI canary status: **{status}**"]
         for k in failing:
             v = surfaces.get(k, {})
             lines.append(f"- {k}: HTTP {v.get('status', '-')} {v.get('error', '')}".rstrip())
