@@ -28,7 +28,7 @@ from . import core
 from . import keymaker
 from . import temporal_fabric
 
-REPORTS_DIR_DEFAULT = r"C:\Users\super\Watchtower\NouGen\rsi"
+REPORTS_DIR_DEFAULT = str(Path.home() / "Watchtower" / "NouGen" / "rsi")
 EXA_API_URL = "https://api.exa.ai/search"
 EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 
@@ -39,7 +39,7 @@ def _env_path(name: str, fallback: str) -> str:
 
 
 def _repo_path() -> Path:
-    return Path(_env_path("NOUGEN_RSI_REPO", r"C:\Users\super\Watchtower\NouGenRemote-Android"))
+    return Path(_env_path("NOUGEN_RSI_REPO", str(Path.home() / "Watchtower" / "NouGenRemote-Android")))
 
 
 def _reports_dir() -> Path:
@@ -71,10 +71,17 @@ def check_builds(repo: Path) -> Dict[str, Any]:
     return {"checked": True, **result}
 
 
-def check_self_update_health(version_url: str = "https://chat.nougenai.com/version") -> Dict[str, Any]:
-    """Confirms the self-update chain this lane depends on is actually alive."""
+def check_self_update_health(version_url: Optional[str] = None) -> Dict[str, Any]:
+    """Confirms the self-update chain this lane depends on is actually alive.
+
+    The version URL comes from the caller or NOUGEN_RSI_VERSION_URL; no
+    operator host may appear as a default in shipped runtime code.
+    """
+    url = (version_url or os.environ.get("NOUGEN_RSI_VERSION_URL") or "").strip()
+    if not url:
+        return {"checked": False, "reason": "no version URL configured (set NOUGEN_RSI_VERSION_URL)"}
     try:
-        req = urllib.request.Request(version_url, headers={"User-Agent": "nougen-rsi/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "nougen-rsi/1.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
             return {"ok": resp.status == 200, "status": resp.status, "body": json.loads(resp.read().decode())}
     except Exception as exc:  # pylint: disable=broad-except
