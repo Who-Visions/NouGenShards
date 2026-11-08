@@ -350,6 +350,33 @@ def _alert_degraded(status: str, surfaces: Dict[str, Any], build: Dict[str, Any]
         return {"posted": False, "error": str(exc)}
 
 
+def _previous_report() -> Optional[Dict[str, Any]]:
+    """Newest per-run report on disk (the one this run will supersede), or None."""
+    files = sorted(_reports_dir().glob("rsi_*T*.json"))
+    if not files:
+        return None
+    try:
+        with open(files[-1], "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _alert_recovered(prev_status: str, report_path: Path) -> Dict[str, Any]:
+    if os.environ.get("NOUGEN_RSI_ALERT", "1") == "0":
+        return {"posted": False, "reason": "NOUGEN_RSI_ALERT=0"}
+    try:
+        from . import handoff
+        msg = "\n".join([
+            "## Active Incidents", f"- None - RSI canary recovered to **ok** (was {prev_status}).",
+            "", "## Recent Changes", f"- Report: {report_path}",
+        ])
+        path = handoff.create_handoff(message=msg, agent="rsi", goal=f"RSI canary RECOVERED (was {prev_status})")
+        return {"posted": bool(path), "path": str(path) if path else None, "kind": "recovered"}
+    except Exception as exc:  # pylint: disable=broad-except
+        return {"posted": False, "error": str(exc)}
+
+
 def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[str, Any]:
     """
     One RSI cycle with Exa MCP temporal grounding and bitemporal provenance.
@@ -401,10 +428,29 @@ def run(apply_trivial: bool = False, exa_query: Optional[str] = None) -> Dict[st
     # overwrote itself 48 times a day and a single test run could clobber the
     # real result. Lexical sort == chronological, so "newest = last" still
     # holds for rsi_status / `nougen rsi status`.
+    # Alert on TRANSITIONS, not on every tick. On a 30-minute schedule a
+    # steady-state outage would otherwise post 48 identical legs a day and
+    # bury the one that mattered; and a recovery deserves its own leg so
+    # nobody keeps chasing a fixed problem.
+    prev = _previous_report()
+    prev_status = str(prev.get("status", "unknown")) if prev else "none"
+    prev_tools = ((prev or {}).get("surfaces", {}).get("bridge_tools", {}) or {}).get("tool_count")
+    now_tools = (surfaces.get("bridge_tools", {}) or {}).get("tool_count")
+    summary["previous_status"] = prev_status
+    summary["transition"] = f"{prev_status}->{summary['status']}"
+    if isinstance(prev_tools, int) and isinstance(now_tools, int) and prev_tools != now_tools:
+        summary["tool_count_delta"] = now_tools - prev_tools
+
     report_path = _reports_dir() / f"rsi_{instant.utc_dt.strftime('%Y-%m-%dT%H%M%SZ')}.json"
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
     summary["report_path"] = str(report_path)
-    if summary["status"] != "ok":
-        summary["alert"] = _alert_degraded(summary["status"], surfaces, build, report_path)
+
+    status = summary["status"]
+    if status != "ok" and prev_status != status:
+        summary["alert"] = _alert_degraded(status, surfaces, build, report_path)
+    elif status != "ok":
+        summary["alert"] = {"posted": False, "reason": f"unchanged ({status}) since {prev.get('timestamp_utc') if prev else 'n/a'}"}
+    elif prev_status not in ("ok", "none", "unknown"):
+        summary["alert"] = _alert_recovered(prev_status, report_path)
     return summary
