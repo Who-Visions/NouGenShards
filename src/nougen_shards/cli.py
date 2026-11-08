@@ -1121,11 +1121,33 @@ def cmd_get(args):
         print(f"\n[... {len(content) - 2000} more characters — pass --full]")
 
 
+def cmd_window(args):
+    """Browse the substrate by time: `nougen window march`, `nougen window "last 30 minutes" --query gemini`."""
+    from nougen_shards import window as _window  # pylint: disable=import-outside-toplevel
+    res = _window.retrieve_window(args.when, query=getattr(args, "query", "") or "",
+                                  limit=getattr(args, "limit", None), tz=getattr(args, "tz", None) or None)
+    if getattr(args, "json", False):
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        print(_window.format_packet(res))
+
+
 def cmd_search(args):
     """Search for shards across local substrate and external DBs."""
     domain_key = getattr(args, 'domain', None)
     if domain_key is not None and type(domain_key).__name__ in ('MagicMock', 'Mock'):
         domain_key = None
+
+    # "nougen search march" / "search gemini in march": a period in the query
+    # is a time window, natively, same as the MCP gateway and the phone.
+    if isinstance(getattr(args, "query", None), str) and not getattr(args, "no_window", False):
+        from nougen_shards import window as _window  # pylint: disable=import-outside-toplevel
+        win, rest = _window.split_temporal(args.query)
+        if win is not None:
+            res = _window.retrieve_window(start_utc=win.start_utc, end_utc=win.end_utc, query=rest)
+            res["window"] = win.as_dict()
+            print(json.dumps(res, indent=2, default=str) if getattr(args, "json", False) else _window.format_packet(res))
+            return
 
     dual_flag = getattr(args, 'dual', False)
     if dual_flag is not False and type(dual_flag).__name__ not in ('MagicMock', 'Mock') and dual_flag:
@@ -2186,6 +2208,14 @@ def get_parser():
     p_search.add_argument("--domain", help="Explicit domain boundary key filter override")
     p_search.add_argument("--dual", action="store_true", help="Use dual-system memory recall (episodic + semantic rules)")
     p_search.add_argument("--fast", action="store_true", help="Ultra low-latency fast local keyword search (skips remote/external lanes)")
+    p_search.add_argument("--no-window", action="store_true", help="Treat a time-looking query ('march') as plain text")
+
+    p_window = subparsers.add_parser("window", help="Browse the substrate by time ('march', 'last week', 'yesterday 7pm')")
+    p_window.add_argument("when", help="Time phrase: month, date, year, quarter, clock time, 'last N minutes/hours/days', range")
+    p_window.add_argument("--query", help="Narrow to shards in the window mentioning this text")
+    p_window.add_argument("--limit", type=int, help="Max records to list")
+    p_window.add_argument("--tz", help="IANA zone for day boundaries (default NOUGEN_TZ or UTC)")
+    p_window.add_argument("--json", action="store_true", help="Machine-readable output")
 
     p_assure = subparsers.add_parser("assure", help="Label a claim through Iris evidence assurance")
     p_assure.add_argument("claim")
@@ -4258,7 +4288,7 @@ def main():
 
     args = parser.parse_args()
     cmds = {
-        "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "assure": cmd_assure, "chat": cmd_chat,
+        "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "window": cmd_window, "assure": cmd_assure, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,

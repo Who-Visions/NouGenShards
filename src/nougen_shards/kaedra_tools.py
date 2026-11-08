@@ -319,124 +319,15 @@ def _shards_search(args: dict) -> dict:
     return {"query": query, "shards": out}
 
 
-def _window_limit(args: dict) -> int:
-    # A month of vault is bigger than a search page; separate ceiling.
-    ceiling = _env_int("NOUGEN_KAEDRA_WINDOW_LIMIT", 20)
-    try:
-        want = int(args.get("limit", ceiling))
-    except (TypeError, ValueError):
-        want = ceiling
-    return max(1, min(want, ceiling))
-
-
 def _shards_window(args: dict) -> dict:
-    """Time-first recall: scan every grid DB for timestamp in [start, end)."""
-    import sqlite3
-    from nougen_shards import core, timewindow
-    when = str(args.get("when", "")).strip()
-    if not when:
-        return {"error": "when is required (e.g. 'march', '2026-03', 'last week')"}
-    win = timewindow.parse_window(when, tz=args.get("tz") or os.getenv("NOUGEN_TZ"))
-    if win is None:
-        return {"error": f"could not read {when!r} as a time period; say a month, date, "
-                         f"year, quarter, or 'last N days'", "when": when}
-    query = str(args.get("query", "") or "").strip()
-    limit = _window_limit(args)
-    like = f"%{query}%" if query else None
-    rows: List[dict] = []
-    by_day: Dict[str, int] = {}
-    by_type: Dict[str, int] = {}
-    total = 0
-    errored: List[int] = []
-    where = "timestamp >= ? AND timestamp < ?"
-    params: list = [win.start_utc, win.end_utc]
-    if like:
-        where += " AND (title LIKE ? OR content LIKE ? OR tags LIKE ?)"
-        params += [like, like, like]
-    live_dbs = [i for i in range(1, core.MAX_DB_COUNT + 1) if core.get_db_path(i).exists()]
-
-    def _scan(i: int, sql: str, p: list):
-        try:
-            conn = core.get_connection(i)
-        except (sqlite3.DatabaseError, OSError):
-            if i not in errored:
-                errored.append(i)
-            return []
-        try:
-            return conn.execute(sql, p).fetchall()
-        except (sqlite3.DatabaseError, OSError) as exc:
-            logger.warning("shards_window: DB %s unreadable, skipped: %s", i, exc)
-            if i not in errored:
-                errored.append(i)
-            return []
-        finally:
-            conn.close()
-
-    # Pass 1: shape of the window (per day, per event type) across the grid.
-    for i in live_dbs:
-        for ts, n in _scan(i, f"SELECT substr(timestamp, 1, 10) d, COUNT(*) FROM shards WHERE {where} GROUP BY d", params):
-            by_day[ts] = by_day.get(ts, 0) + n
-            total += n
-        for et, n in _scan(i, f"SELECT event_type, COUNT(*) FROM shards WHERE {where} GROUP BY event_type", params):
-            by_type[et or ""] = by_type.get(et or "", 0) + n
-
-    # Bulk types (arXiv sweeps, env scrapes, vault recoveries) are whatever
-    # dominates THIS window - decided from the histogram, not a hardcoded
-    # list. They are folded into a count; the listing comes from the long
-    # tail, which is where hand-written decisions and incidents live.
-    share = float(os.getenv("NOUGEN_KAEDRA_BULK_TYPE_SHARE") or 0.15)
-    bulk = {et for et, n in by_type.items() if total and n / total >= share} if len(by_type) > 1 else set()
-    type_filter, type_params = "", []
-    if bulk:
-        type_filter = " AND event_type NOT IN (%s)" % ",".join("?" * len(bulk))
-        type_params = sorted(bulk)
-
-    # Pass 2: list by usefulness, not recency - newest-first surfaced
-    # "Phoebus Memory 1472" import noise over the month's real decisions.
-    list_sql = (f"SELECT id, timestamp, event_type, title, tags, utility_score, access_count "
-                f"FROM shards WHERE {where}{type_filter} "
-                f"ORDER BY utility_score DESC, access_count DESC, timestamp DESC LIMIT ?")
-    for i in live_dbs:
-        for r in _scan(i, list_sql, params + type_params + [limit * 2]):
-            rows.append({"id": r[0], "db_index": i, "locator": locator.format_locator(r[0], i),
-                         "timestamp": r[1], "event_type": r[2], "title": r[3],
-                         "tags": (r[4] or "")[:160], "utility": r[5], "access_count": r[6]})
-    if not rows and bulk:  # the window was ONLY bulk rows: list those rather than nothing
-        bulk, type_params = set(), []
-        for i in live_dbs:
-            for r in _scan(i, list_sql.replace(type_filter, ""), params + [limit * 2]):
-                rows.append({"id": r[0], "db_index": i, "locator": locator.format_locator(r[0], i),
-                             "timestamp": r[1], "event_type": r[2], "title": r[3],
-                             "tags": (r[4] or "")[:160], "utility": r[5], "access_count": r[6]})
-    rows.sort(key=lambda r: (r["utility"] or 0, r["access_count"] or 0, r["timestamp"] or ""), reverse=True)
-    # Spread the listing across the window: one bulk day (an import burst)
-    # must not fill every slot. Titles are compared digit-blind so
-    # "Phoebus Memory 1472/1484/1506: Project" counts as one shape.
-    import re as _re
-    per_day_cap = max(1, limit // max(1, min(len(by_day), 3)))
-    seen_titles: set = set()
-    day_used: Dict[str, int] = {}
-    picked: List[dict] = []
-    for r in rows:
-        key = _re.sub(r"\d+", "#", " ".join(str(r["title"] or "").lower().split()))[:80]
-        day = str(r["timestamp"] or "")[:10]
-        if key in seen_titles or day_used.get(day, 0) >= per_day_cap:
-            continue
-        seen_titles.add(key)
-        day_used[day] = day_used.get(day, 0) + 1
-        picked.append(r)
-        if len(picked) >= limit:
-            break
-    picked.sort(key=lambda r: r["timestamp"] or "", reverse=True)
-    return {"when": when, "window": win.as_dict(), "query": query or None,
-            "total": total, "shown": len(picked),
-            "by_day": dict(sorted(by_day.items())),
-            "by_type": dict(sorted(by_type.items(), key=lambda kv: -kv[1])),
-            "bulk_types_folded": {et: by_type[et] for et in sorted(bulk)},
-            "shards": picked, "databases_errored": errored,
-            "note": ("empty window: nothing recorded in that period" if total == 0 else
-                     f"{total} shards in {win.label}; listing the {len(picked)} most useful"
-                     f" (distinct titles, by utility then access), newest first")}
+    """Time-first recall - the native substrate implementation (nougen_shards.window)."""
+    from nougen_shards import window
+    try:
+        limit = int(args.get("limit")) if args.get("limit") is not None else None
+    except (TypeError, ValueError):
+        limit = None
+    return window.retrieve_window(str(args.get("when", "")), query=str(args.get("query", "") or ""),
+                                  limit=limit, tz=args.get("tz") or None)
 
 
 def _shards_recall(args: dict) -> dict:

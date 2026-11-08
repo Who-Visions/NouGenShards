@@ -155,6 +155,18 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
     # which is where those filters live.
     sweep_report: dict = {}
     scope = {k: v for k, v in {"agent": agent, "user": user, "machine": machine, "project": project}.items() if v}
+    # Time-shaped recall is native: "march", "last week", "yesterday 7pm",
+    # "gemini upgrade in march" read as a window (plus optional text inside
+    # it), not as a keyword search for the word "march". Scoped/as-of calls
+    # keep their own path.
+    if not (scope or as_of):
+        from nougen_shards import window as _window  # pylint: disable=import-outside-toplevel
+        win, rest = _window.split_temporal(query)
+        if win is not None:
+            res = _window.retrieve_window(start_utc=win.start_utc, end_utc=win.end_utc, query=rest,
+                                          limit=max(limit, 8))
+            res["window"] = win.as_dict()
+            return _window.format_packet(res)
     if scope or as_of:
         from nougen_shards import core as _core  # pylint: disable=import-outside-toplevel
         shards_list = _core.retrieve(query, limit=limit, domain_key="*", scope=scope or None, as_of=as_of)
@@ -198,6 +210,24 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
         packet += ("\n\n[COVERAGE WARNING] Partial result: " + holes
                    + "Shards below are real; absence below proves nothing.")
     return packet
+
+@mcp.tool()
+def recall_window(when: str, query: str = "", limit: int = 20, tz: str = "") -> str:
+    """
+    Browse the memory substrate BY TIME: everything recorded in a period, with
+    per-day and per-type counts and the most useful records (locators included).
+
+    Args:
+        when: Plain time phrase - 'march', 'march 2026', '2026-03-19', '2026-03-19 14:05',
+            'q1 2026', 'yesterday', 'last week', 'last 30 minutes', 'between 7pm and 8pm
+            yesterday', 'march..may 2026'. A bare month is the most recent one that has started.
+        query: Optional text to narrow to shards in that window mentioning it.
+        limit: Max records to list (server ceiling applies).
+        tz: IANA zone for day boundaries (e.g. America/New_York); default NOUGEN_TZ or UTC.
+    """
+    from nougen_shards import window as _window  # pylint: disable=import-outside-toplevel
+    return _window.format_packet(_window.retrieve_window(when, query=query, limit=limit, tz=tz or None))
+
 
 @mcp.tool()
 def recall_layered(query: str, token_budget: int = 1200) -> str:
