@@ -205,8 +205,8 @@ def format_packet(res: Dict[str, Any], max_days: int = 5) -> str:
     lines = [f"Window: {w['label']}  [{w['start_utc']} .. {w['end_utc']}) tz={w['tz']}  ({w['interpreted_as']})"]
     if res.get("query"):
         lines.append(f"Narrowed to shards mentioning: {res['query']!r}")
-    lines.append(f"Recorded: {res['total']} shards" + (f"; folded bulk: " + ", ".join(
-        f"{k} x{v}" for k, v in res["bulk_types_folded"].items()) if res.get("bulk_types_folded") else ""))
+    folded = ", ".join(f"{k} x{v}" for k, v in (res.get("bulk_types_folded") or {}).items())
+    lines.append(f"Recorded: {res['total']} shards" + (f"; folded bulk: {folded}" if folded else ""))
     if res["by_day"]:
         busiest = sorted(res["by_day"].items(), key=lambda kv: -kv[1])[:max_days]
         lines.append("Busiest days: " + ", ".join(f"{d} ({n})" for d, n in busiest))

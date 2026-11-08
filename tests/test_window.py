@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 import pytest
 
 from nougen_shards import window as w
-from nougen_shards import timewindow as tw
 
 
 NOW = datetime(2026, 11, 8, 1, 0, tzinfo=timezone.utc)
