@@ -358,6 +358,10 @@ def session_tail(session_id: str, limit: int = 12) -> dict:
     through the vault redactor so a secret in a transcript never reaches the phone.
     The id must be a registered session (same check as sending)."""
     session_id = str(session_id or "").strip()
+    # The id becomes part of a file path: only plain session-id characters pass.
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9-]{4,64}", session_id):
+        return {"ok": False, "error": "bad session id", "status": 400}
     try:
         from nougen_shards.nougenmsg import AgentPinger
         if session_id not in {s["session_id"] for s in AgentPinger.list_sessions()}:
