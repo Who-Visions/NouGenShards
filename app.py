@@ -302,6 +302,13 @@ def capture_experience(title: str, content: str, event_type: str = "KNOWLEDGE",
     sees a tool error rather than a quiet false."""
     result = core.capture(event_type, title, content, tags=tags,
                           original_timestamp=original_timestamp)
+    # core.capture returns a bare False when the proof-of-execution gate refuses
+    # a completion-tagged shard; dict(False) used to raise TypeError, which the
+    # client saw as an opaque tool error. Say why instead.
+    if result is False:
+        return {"captured": False, "stored": False, "reason": "poe_gate_rejected",
+                "detail": "completion-tagged shard needs proof of execution "
+                          "(an ```evidence block the PoE validator accepts), or drop the completion tag"}
     return dict(result)
 
 

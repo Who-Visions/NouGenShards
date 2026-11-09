@@ -251,7 +251,9 @@ def main() -> int:
                 "ephemeralMessage": context
             }
         ],
-        "terminationBehavior": "force_continue"
+        # agy 1.5.3 rejects "force_continue" in PreInvocation ("unknown termination
+        # behavior"), so every agy turn started with a pending ping failed (2026-11-09).
+        "terminationBehavior": ""
     }))
     return 0
 
