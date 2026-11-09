@@ -407,6 +407,57 @@ class AgentPinger:
         return (auth_line + chr(10) + user_line + chr(10)).encode("utf-8")
 
     @staticmethod
+    def list_sessions() -> List[Dict[str, Any]]:
+        """Registered Claude Code sessions on this machine, safe to show a client.
+
+        Merges both registry shapes (nested {"sessions": {socket: entry}} and
+        top-level {session_id: entry}) and marks each one live when its pipe or
+        socket is in the kernel table right now. The socket path and its token
+        never leave this function: a client gets an id to address, a project
+        name to recognise, and a live flag. Newest registration first."""
+        if _tenant_scope():
+            return []
+        try:
+            with open(AgentPinger._cc_registry_path(), "r", encoding="utf-8") as f:
+                registry = json.load(f)
+        except (OSError, ValueError):
+            return []
+        if not isinstance(registry, dict):
+            return []
+        entries: Dict[str, Dict[str, Any]] = {}
+        nested = registry.get("sessions")
+        if isinstance(nested, dict):
+            for sock, entry in nested.items():
+                if isinstance(entry, dict):
+                    entries[str(entry.get("socket") or sock)] = entry
+        for sid, entry in registry.items():
+            if sid != "sessions" and isinstance(entry, dict) and entry.get("socket"):
+                entries[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
+
+        def _base(path: str) -> str:
+            return os.path.basename(str(path).replace("/", "\\")).casefold()
+
+        live = {_base(p) for p in AgentPinger._discover_claude_endpoints()}
+        out = []
+        for sock, entry in entries.items():
+            sid = str(entry.get("session_id") or "").strip()
+            if not sid:
+                continue
+            cwd = str(entry.get("cwd") or "")
+            out.append({
+                "session_id": sid,
+                "project": os.path.basename(cwd.rstrip("\\/")) or cwd,
+                "machine": str(entry.get("machine") or get_current_node()),
+                "agent": str(entry.get("agent") or "claude"),
+                "registered_utc": str(entry.get("registered_utc") or ""),
+                "live": _base(sock) in live,
+            })
+        # Live first, then newest registration first within each group.
+        live_rows = sorted([s for s in out if s["live"]], key=lambda s: s["registered_utc"], reverse=True)
+        idle_rows = sorted([s for s in out if not s["live"]], key=lambda s: s["registered_utc"], reverse=True)
+        return live_rows + idle_rows
+
+    @staticmethod
     def ping_claude(
         prompt: str,
         origin: Optional[Dict[str, Any]] = None,

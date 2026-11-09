@@ -276,6 +276,67 @@ def get_crd_host_status() -> dict:
     }
 
 
+def _session_msg_max() -> int:
+    """Longest message the phone may push into a session (env-tunable)."""
+    try:
+        return max(1, int(os.environ.get("NOUGEN_REMOTE_SESSION_MSG_MAX", "4000")))
+    except ValueError:
+        return 4000
+
+
+def list_agent_sessions() -> dict:
+    """Claude Code sessions registered on this machine, live ones first.
+
+    The phone's Sessions screen: which agent sessions exist here, which are
+    reachable right now, and an id to address one. Socket paths and their
+    auth tokens stay on this machine (AgentPinger.list_sessions strips them)."""
+    try:
+        from nougen_shards.nougenmsg import AgentPinger
+        sessions = AgentPinger.list_sessions()
+    except Exception as exc:  # registry unreadable: say so, never a 500
+        return {"ok": False, "node": platform.node(), "sessions": [], "error": str(exc)[:200]}
+    return {"ok": True, "node": platform.node(), "sessions": sessions,
+            "live": sum(1 for s in sessions if s.get("live"))}
+
+
+def send_to_agent_session(session_id: str, text: str) -> dict:
+    """Deliver one phone message into one live Claude Code session.
+
+    Uses NouGenMsg's own transport (auth line + user line over the session's
+    messaging pipe), addressed to exactly one registered, live session. The
+    wire has no ack, so "delivered" means the pipe accepted the bytes; the
+    session's own transcript is the proof it was read."""
+    session_id = str(session_id or "").strip()
+    text = str(text or "").strip()
+    if not session_id or not text:
+        return {"ok": False, "error": "session_id and text are required", "status": 400}
+    limit = _session_msg_max()
+    if len(text) > limit:
+        return {"ok": False, "error": f"message over {limit} characters", "status": 413}
+    try:
+        from nougen_shards.nougenmsg import AgentPinger
+        known = {s["session_id"]: s for s in AgentPinger.list_sessions()}
+        target = known.get(session_id)
+        if target is None:
+            return {"ok": False, "error": "session not registered on this machine", "status": 404}
+        if not target.get("live"):
+            return {"ok": False, "error": "session is not running", "status": 409}
+        res = AgentPinger.ping_claude(
+            f"[from phone] {text}", origin={"via": "nougenai-android"}, target_session=session_id,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:200], "status": 502}
+    delivered = len(res.get("delivered") or [])
+    return {
+        "ok": delivered > 0,
+        "delivered": delivered,
+        "session_id": session_id,
+        "project": target.get("project", ""),
+        "error": "" if delivered else (res.get("reason") or "pipe did not accept the message"),
+        **({} if delivered else {"status": 502}),
+    }
+
+
 def capture_screen_frame(max_width: int = 960, quality: int = 60) -> dict:
     """Captures live Windows desktop frame as base64 JPEG for mobile CRD viewport."""
     try:
@@ -1333,6 +1394,10 @@ class RemoteHandler(BaseHTTPRequestHandler):
             self._send_json(capture_screen_frame())
             return
 
+        if path == "/api/v1/sessions":
+            self._send_json(list_agent_sessions())
+            return
+
         self._send_json({"error": "Not found"}, 404)
 
     def do_POST(self):
@@ -1396,6 +1461,11 @@ class RemoteHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/screen/input":
             self._send_json(dispatch_screen_input(payload))
+            return
+
+        if path == "/api/v1/sessions/send":
+            res = send_to_agent_session(payload.get("session_id", ""), payload.get("text", ""))
+            self._send_json(res, 200 if res.get("ok") else res.pop("status", 400))
             return
 
         if path == "/api/v1/launch":
