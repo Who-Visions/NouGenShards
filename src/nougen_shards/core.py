@@ -254,7 +254,7 @@ def get_db_path(index: int) -> Path:
 
 
 def is_db_full(index: int) -> bool:
-    """Checks if a database file has reached its 1GB constraint."""
+    """Checks if a database file has reached MAX_DB_SIZE (2GB by default)."""
     path = get_db_path(index)
     if not path.exists():
         return False
@@ -277,7 +277,7 @@ def get_write_index(fhash: str) -> int:
     """
     Resolves the destination DB for a new shard (Module 4: Surface Leverage).
     Routes deterministically by content hash for uniform O(1) distribution across
-    the 9-DB cluster, then skips any database that has hit its 1GB constraint.
+    the 9-DB cluster, then skips any database that has hit MAX_DB_SIZE.
     """
     start = get_routing_index(fhash)
     for offset in range(MAX_DB_COUNT):
