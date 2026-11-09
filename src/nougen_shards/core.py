@@ -414,15 +414,14 @@ def _ro_pool_max() -> int:
 
 def _prune_dead_thread_connections() -> int:
     """Close pooled connections owned by threads that no longer exist. Caller holds _RO_POOL_LOCK."""
+    # Drop, don't force-close: the shared grid scan opens connections in worker
+    # threads and keeps reading their rows after those threads end, so closing
+    # from here broke live readers ("Cannot operate on a closed database"). Once
+    # the pool lets go, CPython closes each connection when its last reader does.
     alive = {t.ident for t in _threading.enumerate()}
     dead = [key for key in _RO_CONN_POOL if key[0] not in alive]
     for key in dead:
-        conn = _RO_CONN_POOL.pop(key, None)
-        try:
-            if conn is not None:
-                conn.close()
-        except Exception:
-            pass
+        _RO_CONN_POOL.pop(key, None)
     return len(dead)
 
 
