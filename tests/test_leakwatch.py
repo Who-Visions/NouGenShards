@@ -105,3 +105,18 @@ def test_trace_respects_its_budget_instead_of_hanging():
         assert t["root"] is None and "budget" in t["note"]
     finally:
         sys.modules.pop("lw_fake_budget", None)
+
+
+def test_hub_object_with_many_referrers_stays_within_budget():
+    """Codex P2 on #986: the budget must hold inside one huge referrer list."""
+    import time as _t
+    mod = _fake_module("lw_fake_hub")
+    try:
+        hub = _Leaky()
+        mod.HOLDERS = [[hub] for _ in range(20000)]   # 20k lists all referring to one object
+        w = leakwatch.LeakWatch(trace_depth=4, trace_budget_s=1.0, trace_referrers_per_object=50, log_path=None)
+        t0 = _t.monotonic()
+        w._walk(hub, {id(mod.__dict__): ("lw_fake_hub", mod.__dict__)}, set(), None)
+        assert _t.monotonic() - t0 < 5.0
+    finally:
+        sys.modules.pop("lw_fake_hub", None)

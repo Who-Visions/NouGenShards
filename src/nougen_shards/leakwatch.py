@@ -90,7 +90,9 @@ class LeakWatch:
         trace_budget_calls: int = 40,
         trace_budget_s: float = 8.0,
         trace_width: int = 24,
+        trace_referrers_per_object: int = 256,
     ) -> None:
+        self.trace_referrers_per_object = int(trace_referrers_per_object)
         # gc.get_referrers() scans the WHOLE heap per call. On a gateway holding an
         # embedding model that is millions of objects, so an unbounded walk hung
         # the first live run. Every trace is capped in calls, seconds and width;
@@ -130,6 +132,7 @@ class LeakWatch:
             trace_budget_calls=int(_env_num("NOUGEN_LEAKWATCH_TRACE_CALLS", 40)),
             trace_budget_s=_env_num("NOUGEN_LEAKWATCH_TRACE_SECONDS", 8.0),
             trace_width=int(_env_num("NOUGEN_LEAKWATCH_TRACE_WIDTH", 24)),
+            trace_referrers_per_object=int(_env_num("NOUGEN_LEAKWATCH_TRACE_REFERRERS", 256)),
         )
 
     # -- 1. sample ---------------------------------------------------------
@@ -162,7 +165,16 @@ class LeakWatch:
         if not targets:
             return None
         frame = sys._getframe()
-        modules = {id(m): name for name, m in list(sys.modules.items()) if m is not None}
+        # id(module.__dict__) -> (name, the dict itself): one lookup per referrer
+        # instead of scanning every module. The dict is held, and matched by
+        # identity, because some extension modules build a fresh __dict__ on each
+        # access; its id is freed at once and reused by unrelated dicts, which an
+        # id-only map then mislabels as a module global (caught by test, _openssl.lib).
+        modules = {}
+        for name, m in list(sys.modules.items()):
+            d = getattr(m, "__dict__", None) if m is not None else None
+            if isinstance(d, dict):
+                modules[id(d)] = (name, d)
         ignore = {id(targets), id(frame)}
         for target in targets:
             chain = self._walk(target, modules, ignore, frame)
@@ -178,7 +190,7 @@ class LeakWatch:
         return {"type": type_key, "trace": [], "root": None, "fingerprint": None,
                 "note": f"no root within budget (depth {self.trace_depth}, {self.trace_budget_calls} calls, {self.trace_budget_s}s)"}
 
-    def _walk(self, target: Any, modules: Dict[int, str], ignore: set, frame) -> Optional[List[Dict[str, str]]]:
+    def _walk(self, target: Any, modules: Dict[int, Tuple[str, dict]], ignore: set, frame) -> Optional[List[Dict[str, str]]]:
         # BFS from the leaking object up through referrers; parent map rebuilds the path.
         start = id(target)
         parent: Dict[int, Tuple[int, Dict[str, str]]] = {}
@@ -193,7 +205,13 @@ class LeakWatch:
                 if calls >= self.trace_budget_calls or time.monotonic() > deadline:
                     return None
                 calls += 1
-                for ref in gc.get_referrers(child):
+                # The budget holds inside one referrer list too (Codex P2 on #986): a
+                # hub object can have thousands of referrers, each labelled with a
+                # dict/list scan. Cap the referrers examined per object and re-check
+                # the deadline as we go.
+                for n, ref in enumerate(gc.get_referrers(child)):
+                    if n >= self.trace_referrers_per_object or time.monotonic() > deadline:
+                        break
                     rid = id(ref)
                     if rid in seen or rid in ignore or isinstance(ref, types.FrameType) or ref is frontier or ref is nxt:
                         continue
@@ -222,14 +240,14 @@ class LeakWatch:
         return path  # root first
 
     @staticmethod
-    def _label(ref: Any, child: Any, modules: Dict[int, str]) -> Dict[str, str]:
+    def _label(ref: Any, child: Any, modules: Dict[int, Tuple[str, dict]]) -> Dict[str, str]:
         if isinstance(ref, dict):
-            # A module's or class's __dict__ is how globals hold things.
-            for mid, mname in modules.items():
-                mod = sys.modules.get(mname)
-                if mod is not None and getattr(mod, "__dict__", None) is ref:
-                    key = next((k for k, v in ref.items() if v is child), "?")
-                    return {"kind": "module", "name": f"{mname}.{key}", "label": f"module {mname} . {key}"}
+            # A module's __dict__ is how globals hold things (O(1) lookup).
+            entry = modules.get(id(ref))
+            if entry is not None and entry[1] is ref:
+                mname = entry[0]
+                key = next((k for k, v in ref.items() if v is child), "?")
+                return {"kind": "module", "name": f"{mname}.{key}", "label": f"module {mname} . {key}"}
             key = next((k for k, v in ref.items() if v is child), None)
             if key is not None:
                 return {"kind": "key", "name": str(key)[:60], "label": f"dict[{str(key)[:60]!r}]"}
