@@ -2069,11 +2069,37 @@ def _scan_pool_capacity(workers: int) -> int:
     return max(workers, workers * recalls)
 
 
-def _scan_pool(workers: int):
-    """Lazily build the single bounded ThreadPoolExecutor shared by all recalls."""
-    global _SCAN_POOL  # pylint: disable=global-statement
+#: Second bounded pool, for the exact lanes (keyword + title) only. They used to
+#: share _SCAN_POOL with the vector lane. A vector scan can sit on the vector
+#: cache lock for seconds per DB while a cold index loads, and a scan that
+#: misses its deadline keeps its slot until it finishes - so a few timed-out
+#: vector recalls filled every slot and the sub-second keyword scans queued
+#: behind them, then waited out their own full deadline. Measured on whoart
+#: 2026-11-09: POST /search fast=true (keyword only, vector lane not even run)
+#: took 17.7s inside the node while the identical call in a fresh process took
+#: 0.18s. The fast path existed and could not be fast. Each pool is bounded on
+#: its own, so the thread ceiling is 2x the cap, still fixed.
+_EXACT_SCAN_POOL = None
+EXACT_SCAN_LANE = "exact"
+VECTOR_SCAN_LANE = "vector"
+
+
+def _scan_pool(workers: int, lane: str = VECTOR_SCAN_LANE):
+    """Lazily build the bounded ThreadPoolExecutor for ``lane``.
+
+    One process-wide pool per lane class, shared by every recall: ``vector``
+    (may block on the cache lock) and ``exact`` (keyword/title SQL).
+    """
+    global _SCAN_POOL, _EXACT_SCAN_POOL  # pylint: disable=global-statement
     import concurrent.futures  # pylint: disable=import-outside-toplevel
     with _SCAN_POOL_LOCK:
+        if lane == EXACT_SCAN_LANE:
+            if _EXACT_SCAN_POOL is None:
+                cap = _scan_pool_capacity(workers)
+                _EXACT_SCAN_POOL = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=cap, thread_name_prefix="ngs-grid-scan-exact")
+                logger.info("exact grid scan pool created: %d worker(s)", cap)
+            return _EXACT_SCAN_POOL
         if _SCAN_POOL is None:
             cap = _scan_pool_capacity(workers)
             _SCAN_POOL = concurrent.futures.ThreadPoolExecutor(
@@ -2082,7 +2108,7 @@ def _scan_pool(workers: int):
         return _SCAN_POOL
 
 
-def _run_db_scans(scan_fn):
+def _run_db_scans(scan_fn, lane: str = VECTOR_SCAN_LANE):
     """Run scan_fn(i) for every grid DB concurrently; yield (i, result) in DB order.
 
     The per-DB scan loops in both retrieval lanes were serial — on a 9-DB,
@@ -2103,7 +2129,7 @@ def _run_db_scans(scan_fn):
     # locked scan accumulated threads without cap. Dropped scans still finish
     # in the background and are discarded, but outstanding scans are bounded by
     # the pool size and later recalls queue instead of spawning more threads.
-    executor = _scan_pool(workers)
+    executor = _scan_pool(workers, lane)
     futures = {i: executor.submit(copy_context().run, scan_fn, i)
                for i in range(1, MAX_DB_COUNT + 1)}
     deadline = time.monotonic() + elevated_lane_timeout(alpha=10.0, beta_param=1.0, max_deadline=20.0, min_deadline=1.5)
@@ -2353,7 +2379,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
             history.log_events([(sid, i, "ACCESSED") for sid in accessed])
         return db_rows, missed
 
-    for i, (db_rows, missed) in _run_db_scans(_scan_db):
+    for i, (db_rows, missed) in _run_db_scans(_scan_db, EXACT_SCAN_LANE):
         results.extend(db_rows)
         if missed:
             missed_dbs.append(i)
@@ -3160,7 +3186,7 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
         return rows
 
     out: list = []
-    for _, scan_res in _run_db_scans(scan):
+    for _, scan_res in _run_db_scans(scan, EXACT_SCAN_LANE):
         if isinstance(scan_res, tuple):
             rows = scan_res[0]
         else:
