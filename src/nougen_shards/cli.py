@@ -1270,6 +1270,48 @@ def cmd_recall_hook(args):
     else:
         print(recall_hook.format_block(result))
 
+def cmd_embed(args):
+    """Embedding provider: status, fetch the onnx model, backfill, self-test."""
+    from . import embed_providers as ep  # pylint: disable=import-outside-toplevel
+    if args.embed_cmd == "status":
+        st = ep.provider_status()
+        # Per-DB stored dimension mix, so a provider switch without a backfill is visible.
+        from . import core as _core  # pylint: disable=import-outside-toplevel
+        import sqlite3 as _sq  # pylint: disable=import-outside-toplevel
+        dims = {}
+        for i in range(1, _core.MAX_DB_COUNT + 1):
+            p = _core.get_db_path(i)
+            if not p.exists():
+                continue
+            try:
+                con = _sq.connect(f"file:{p}?mode=ro", uri=True)
+                rows = con.execute("SELECT length(embedding)/4 AS d, count(*) FROM shards "
+                                   "WHERE embedding IS NOT NULL GROUP BY d").fetchall()
+                nulls = con.execute("SELECT count(*) FROM shards WHERE embedding IS NULL").fetchone()[0]
+                con.close()
+                dims[f"db{i}"] = {"by_dim": {str(int(d)): n for d, n in rows if d}, "unembedded": nulls}
+            except Exception as exc:  # pylint: disable=broad-except
+                dims[f"db{i}"] = {"error": str(exc)[:80]}
+        st["stored_dims"] = dims
+        print(json.dumps(st, indent=2))
+        return
+    if args.embed_cmd == "fetch":
+        receipt = ep.fetch_onnx_model(args.repo or ep.DEFAULT_ONNX_REPO, force=args.force)
+        print(json.dumps(receipt, indent=2))
+        return
+    if args.embed_cmd == "selftest":
+        print(json.dumps(ep.timed_self_test(args.repo or ep.DEFAULT_ONNX_REPO), indent=2))
+        return
+    if args.embed_cmd == "backfill":
+        from . import embedding_backfill as bf  # pylint: disable=import-outside-toplevel
+        from . import core as _core  # pylint: disable=import-outside-toplevel
+        vault = str(_core.active_vault_dir())
+        model = args.model or os.environ.get("NOUGEN_EMBED_MODEL") or ep.DEFAULT_OLLAMA_MODEL
+        for db in bf._vault_dbs(vault):  # pylint: disable=protected-access
+            print(json.dumps(bf.backfill_db(db, model, execute=args.execute, batch=args.batch,
+                                            reembed=args.reembed), default=str))
+        return
+
 
 def cmd_mark(args):
     """Close the outcome loop (usefulness update)."""
@@ -2265,6 +2307,20 @@ def get_parser():
     p_rh.add_argument("--json", action="store_true", help="Emit the full result as JSON")
     p_rh.add_argument("--claude-code", action="store_true", dest="claude_code",
                       help="Claude Code UserPromptSubmit adapter: hook JSON on stdin, hookSpecificOutput on stdout")
+    p_embed = subparsers.add_parser("embed", help="Embedding provider: status | fetch | selftest | backfill")
+    embed_sub = p_embed.add_subparsers(dest="embed_cmd", required=True)
+    embed_sub.add_parser("status", help="Resolved provider, onnx model presence, stored dims per DB")
+    p_ef = embed_sub.add_parser("fetch", help="Download the onnx model files into ~/.nougen/models")
+    p_ef.add_argument("--repo", default=None)
+    p_ef.add_argument("--force", action="store_true")
+    p_es = embed_sub.add_parser("selftest", help="Embed one string in-process and time it")
+    p_es.add_argument("--repo", default=None)
+    p_eb = embed_sub.add_parser("backfill", help="Embed rows with embedding IS NULL via the resolved provider")
+    p_eb.add_argument("--model", default=None, help="ollama model name, or 'onnx[:repo]'")
+    p_eb.add_argument("--execute", action="store_true", help="Write (default is a dry run)")
+    p_eb.add_argument("--batch", type=int, default=64)
+    p_eb.add_argument("--reembed", action="store_true",
+                      help="Also re-embed rows whose stored dimension differs from the provider's (after a provider switch)")
 
     p_mark = subparsers.add_parser("mark", help="Update utility")
     p_mark.add_argument("id", type=int)
@@ -4312,7 +4368,7 @@ def main():
     args = parser.parse_args()
     cmds = {
         "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "window": cmd_window, "assure": cmd_assure, "chat": cmd_chat,
-        "auth": cmd_auth, "mark": cmd_mark, "recall-hook": cmd_recall_hook, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
+        "auth": cmd_auth, "mark": cmd_mark, "recall-hook": cmd_recall_hook, "embed": cmd_embed, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,

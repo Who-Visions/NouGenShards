@@ -385,8 +385,15 @@ def get_readonly_connection(index: int) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
 
     with _RO_POOL_LOCK:
-        # Enforce max pool size (bound resident FDs to 64 connections)
-        if len(_RO_CONN_POOL) >= 64:
+        # Connections are keyed by thread id, but a thread-per-request server
+        # (http.server, uvicorn threadpools) never comes back to a finished
+        # thread's key: its connection, each with a 64 MB page cache plus an mmap
+        # window, stayed open until the 64-entry cap. Measured 2026-11-09: the
+        # phone bridge grew ~45 MB per vault search and reached 6-8 GB in about an
+        # hour. Close connections whose owning thread has ended, then cap the pool.
+        _prune_dead_thread_connections()
+        cap = _ro_pool_max()
+        while len(_RO_CONN_POOL) >= cap:
             oldest_key, oldest_conn = next(iter(_RO_CONN_POOL.items()))
             _RO_CONN_POOL.pop(oldest_key, None)
             try:
@@ -395,6 +402,27 @@ def get_readonly_connection(index: int) -> sqlite3.Connection:
                 pass
         _RO_CONN_POOL[pool_key] = conn
     return conn
+
+
+def _ro_pool_max() -> int:
+    """Upper bound on pooled read-only connections (env NOUGEN_RO_POOL_MAX, default 24)."""
+    try:
+        return max(1, int(os.environ.get("NOUGEN_RO_POOL_MAX", "24")))
+    except ValueError:
+        return 24
+
+
+def _prune_dead_thread_connections() -> int:
+    """Close pooled connections owned by threads that no longer exist. Caller holds _RO_POOL_LOCK."""
+    # Drop, don't force-close: the shared grid scan opens connections in worker
+    # threads and keeps reading their rows after those threads end, so closing
+    # from here broke live readers ("Cannot operate on a closed database"). Once
+    # the pool lets go, CPython closes each connection when its last reader does.
+    alive = {t.ident for t in _threading.enumerate()}
+    dead = [key for key in _RO_CONN_POOL if key[0] not in alive]
+    for key in dead:
+        _RO_CONN_POOL.pop(key, None)
+    return len(dead)
 
 
 def close_readonly_pool() -> None:
@@ -1078,17 +1106,22 @@ def _embed_for_capture(title: str, content: str) -> Optional[List[float]]:
     except ValueError:
         timeout = 1.5
     try:
-        from .embedding_backfill import embed as _embed  # local import: optional dep path
-        vec = _embed(((title or "") + "\n" + (content or ""))[:4000], model, timeout=timeout)
+        from . import embed_providers  # local import: optional dep path
+        vec = embed_providers.embed_text(((title or "") + "\n" + (content or ""))[:4000], os.environ.get("NOUGEN_EMBED_MODEL") or None, timeout=timeout)
     except Exception as exc:  # pylint: disable=broad-except
         vec = None
         logger.debug("embed-at-capture raised: %s", exc)
     if not vec:
         EMBED_AT_CAPTURE_MISSES += 1
+        try:
+            from . import embed_providers  # pylint: disable=import-outside-toplevel
+            why = embed_providers.describe_unavailable(model)
+        except Exception:  # pylint: disable=broad-except
+            why = "is ollama up?"
         logger.warning(
             "shard written WITHOUT embedding (model=%s, miss #%d) -- semantic recall "
-            "will not see it until backfill runs; is ollama up?",
-            model, EMBED_AT_CAPTURE_MISSES,
+            "will not see it until backfill runs; %s",
+            model, EMBED_AT_CAPTURE_MISSES, why,
         )
         return None
     return vec
@@ -1123,14 +1156,19 @@ def _embed_query(query: str) -> Optional[np.ndarray]:
         # connection at once, so only a hung one ever waits the full budget.
         timeout = 6.0
     try:
-        from .embedding_backfill import embed as _embed  # local import: optional dep path
-        vec = _embed((query or "")[:4000], model, timeout=timeout)
+        from . import embed_providers  # local import: optional dep path
+        vec = embed_providers.embed_text((query or "")[:4000], os.environ.get("NOUGEN_EMBED_MODEL") or None, timeout=timeout)
     except Exception as exc:  # pylint: disable=broad-except
         vec = None
         logger.debug("query embedding raised: %s", exc)
     if not vec:
+        try:
+            from . import embed_providers  # pylint: disable=import-outside-toplevel
+            why = embed_providers.describe_unavailable(model)
+        except Exception:  # pylint: disable=broad-except
+            why = "is ollama up?"
         logger.warning("query embedding unavailable (model=%s); recall is keyword-only "
-                       "for this query -- is ollama up?", model)
+                       "for this query -- %s", model, why)
         return None
     arr = np.array(vec, dtype=np.float32)
     norm = np.linalg.norm(arr)
@@ -2692,6 +2730,10 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
         lock.release()
 
 
+#: (db_index, stored_dim, query_dim) triples already warned about this process.
+_DIM_MISMATCH_WARNED: set = set()
+
+
 def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                      domain_key: str = "global", include_research: bool = False) -> list:
     """Scans for semantic vector matches independent of FTS.
@@ -2738,6 +2780,17 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             conn = get_readonly_connection(i)
             cache = _vector_cache_entry(i, conn)
             scored = []  # (final_score, id)
+            if cache and cache["dim"] and cache["dim"] != qdim and len(cache["ids"]):
+                # A 384-d query against a 768-d DB (or the reverse) is a provider
+                # switch without a backfill. Say so once per DB rather than
+                # returning an empty lane that reads as "no semantic matches".
+                key = (i, cache["dim"], qdim)
+                if key not in _DIM_MISMATCH_WARNED:
+                    _DIM_MISMATCH_WARNED.add(key)
+                    logger.warning(
+                        "vector lane skipped DB %s: stored embeddings are %d-d, query is %d-d "
+                        "(embedding provider changed?) -- run `nougen embed status` / backfill",
+                        i, cache["dim"], qdim)
             if cache and cache["dim"] == qdim and len(cache["ids"]):
                 sem_scores = np.array(cache["matrix"] @ q_vec)
                 # Mask rows excluded by domain scope / ingest filter by sinking

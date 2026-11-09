@@ -210,8 +210,12 @@ def test_backfill_waits_out_memory_pressure_and_still_embeds_the_chunk(tmp_path,
     monkeypatch.setattr(darwin_gate, "get_memory_pressure_level", lambda: next(levels, 1))
     monkeypatch.setattr(darwin_gate, "demote_to_background_qos", lambda: None)
     monkeypatch.setattr(eb.time, "sleep", lambda s: None)
+    # PR #983 routes backfill through embed_providers; resolve() must see an
+    # answering Ollama for the patched embed_many to run, and embed_texts now
+    # passes timeout through to embed_many.
+    monkeypatch.setattr("nougen_shards.embed_providers._ollama_reachable", lambda: True)
     monkeypatch.setattr(eb, "embed", lambda *a, **k: [0.1, 0.2])
-    monkeypatch.setattr(eb, "embed_many", lambda texts, model: [[0.1, 0.2] for _ in texts])
+    monkeypatch.setattr(eb, "embed_many", lambda texts, model, timeout=None: [[0.1, 0.2] for _ in texts])
     res = eb.backfill_db(_backfill_db(tmp_path, 3), "m", execute=True, batch=3, probe=False, progress=False)
     assert res["embedded"] == 3 and "deferred" not in res
 
