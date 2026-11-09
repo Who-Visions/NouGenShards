@@ -49,11 +49,9 @@ def _agent() -> str:
 
 
 def _handoff_dir() -> Path:
-    try:
-        from .handoff import _default_handoff_dir  # pylint: disable=import-outside-toplevel
-        return Path(os.environ.get("NOUGEN_HANDOFF_DIR") or _default_handoff_dir())
-    except Exception:  # pylint: disable=broad-except
-        return Path(os.environ.get("NOUGEN_HANDOFF_DIR") or (Path.home() / ".nougen" / "handoffs"))
+    """The same registry `nougen handoff` writes to (handoff.HANDOFF_DIR)."""
+    from . import handoff  # pylint: disable=import-outside-toplevel
+    return Path(handoff.HANDOFF_DIR)
 
 
 def _marker(session_id: str) -> Path:
@@ -149,7 +147,20 @@ def _started(evt: dict) -> float:
 
 
 def _handoff_written_since(start: float) -> bool:
-    return max((os.path.getmtime(f) for f in _handoff_files()), default=0.0) > start
+    """True when a handoff record newer than ``start`` was written from this
+    working directory. Records from other sessions/projects in the shared
+    registry do not count, so they never suppress this session's auto-handoff."""
+    here = str(Path.cwd())
+    for f in glob.glob(str(_handoff_dir() / "**" / "handoff_*.json"), recursive=True):
+        try:
+            if os.path.getmtime(f) <= start:
+                continue
+            with open(f, encoding="utf-8") as fh:
+                if json.load(fh).get("cwd") == here:
+                    return True
+        except (OSError, ValueError, AttributeError):
+            continue
+    return False
 
 
 def stop(evt: dict) -> dict:
@@ -164,23 +175,21 @@ def stop(evt: dict) -> dict:
 def session_end(evt: dict) -> dict:
     marker = _marker(evt.get("session_id", ""))
     if not _handoff_written_since(_started(evt)):
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        agent = _agent()
-        body = (f"# Agent Handoff (AUTO): {_git('branch', '--show-current') or 'no-git'} @ {ts}\n\n"
-                f"**Agent**: `{agent}` (auto: the session ended without writing one)\n"
-                f"**Session ID**: `{evt.get('session_id', 'unknown')}`\n"
-                f"**Working dir**: `{Path.cwd().name}`\n\n"
-                f"## Uncommitted Changes\n```\n{_git('status', '--short') or '(clean or not a repo)'}\n```\n\n"
-                f"## Recent Commits\n```\n{_git('log', '--oneline', '-3')}\n```\n")
+        note = (f"AUTO: the session ended without writing a handoff.\n"
+                f"Host session: {evt.get('session_id', 'unknown')}\n"
+                f"Working dir: {Path.cwd().name}\n\n"
+                f"Uncommitted changes:\n{_git('status', '--short') or '(clean or not a repo)'}\n\n"
+                f"Recent commits:\n{_git('log', '--oneline', '-3')}")
         try:
-            outdir = _handoff_dir() / f"{agent.replace('-', ' ')} handoffs"
-            outdir.mkdir(parents=True, exist_ok=True)
-            (outdir / f"handoff_{ts}_{agent}_auto.md").write_text(body, encoding="utf-8")
+            import contextlib  # pylint: disable=import-outside-toplevel
+            import io  # pylint: disable=import-outside-toplevel
             from . import handoff  # pylint: disable=import-outside-toplevel
-            # handoff.HANDOFF_DIR is fixed at import; only re-index when it is the
-            # registry we just wrote to, never some other one.
-            if Path(handoff.HANDOFF_DIR).resolve() == _handoff_dir().resolve():
-                handoff.rebuild_handoff_db()
+            # The registry's own writer: a JSON record plus Markdown, listed and
+            # indexed like any manual handoff. Its console output must not reach
+            # this hook's stdout, which the host parses as JSON.
+            with contextlib.redirect_stdout(io.StringIO()):
+                handoff.create_handoff(message=note, agent=_agent(),
+                                       goal="auto: session ended without a handoff")
         except Exception:  # pylint: disable=broad-except
             pass
     try:
@@ -216,8 +225,28 @@ def _command(event: str, python: str) -> str:
     return f'"{python}" -m {SIGNATURE} {event}'
 
 
+def _is_ours(handler: Any) -> bool:
+    return isinstance(handler, dict) and SIGNATURE in str(handler.get("command", ""))
+
+
 def _ours(entry: dict) -> bool:
-    return any(SIGNATURE in str(h.get("command", "")) for h in entry.get("hooks", []) if isinstance(h, dict))
+    return any(_is_ours(h) for h in entry.get("hooks", []))
+
+
+def _strip_ours(entries: list) -> list:
+    """Remove only our handlers. An entry that also holds foreign handlers keeps
+    them along with its matcher and other settings; one left empty is dropped."""
+    kept = []
+    for e in entries:
+        if not isinstance(e, dict) or not isinstance(e.get("hooks"), list):
+            kept.append(e)
+            continue
+        handlers = [h for h in e["hooks"] if not _is_ours(h)]
+        if len(handlers) == len(e["hooks"]):
+            kept.append(e)
+        elif handlers:
+            kept.append({**e, "hooks": handlers})
+    return kept
 
 
 def plan_settings(settings: dict, python: str, uninstall: bool = False) -> dict:
@@ -225,7 +254,7 @@ def plan_settings(settings: dict, python: str, uninstall: bool = False) -> dict:
     out = json.loads(json.dumps(settings))
     hooks = out.setdefault("hooks", {})
     for event, claude_event in CLAUDE_EVENTS.items():
-        kept = [e for e in hooks.get(claude_event, []) if not (isinstance(e, dict) and _ours(e))]
+        kept = _strip_ours(hooks.get(claude_event, []))
         if not uninstall:
             timeout = _int_env("NOUGEN_HOOK_TIMEOUT_S", 20 if event == "session-end" else 10)
             kept.append({"hooks": [{"type": "command", "command": _command(event, python), "timeout": timeout}]})
