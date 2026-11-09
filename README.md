@@ -31,6 +31,23 @@ pip install .
 nougen.bat
 ```
 
+### Wire it into your agent (Claude Code)
+
+A memory store only helps if the agent reads it without being told. One command adds four hooks to `~/.claude/settings.json` (your own hooks are left alone, and a backup is written first):
+
+```bash
+nougen hook install      # --dry-run to preview, `nougen hook status` to check, `nougen hook uninstall` to remove
+```
+
+| Hook | What it does |
+|---|---|
+| SessionStart | Injects the latest handoff and the newest shards before the first reply |
+| UserPromptSubmit | Budgeted recall against each message (fails open inside its time budget) |
+| Stop | Reminds the agent to leave a handoff when there is uncommitted work |
+| SessionEnd | Writes an auto-handoff if the session ended without one, so no session is traceless |
+
+Every hook is fail-soft: an error prints nothing and never blocks the session.
+
 ## 🔎 CLI Workflow: Memory Recon
 
 Execute the core discovery sequence to map and import fragmented AI tool history. This is the initial leverage point for capturing scattered machine intelligence:
