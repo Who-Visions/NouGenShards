@@ -38,6 +38,7 @@ if os.environ.get("SPACE_ID"):
 from nougen_shards import agents, bind_probe, core, history, locator, machine, mcp_oauth, tenants
 from nougen_shards.federation import federated_retrieve
 from nougen_shards import fd_budget
+from nougen_shards import leakwatch
 from nougen_shards.brain_scan import scan_environment
 
 # NGS_NODE_TOKEN remains the operator credential.  A fleet peer receives its
@@ -1211,6 +1212,9 @@ async def _lifespan(_app):
     _start_recall_warmup()
     _start_listener_selfcheck()
     _seed_upstreams()
+    # Retained-object watcher (LeakCanary's idea for a Python server). Off unless
+    # NOUGEN_LEAKWATCH=1; see nougen_shards/leakwatch.py and /debug/leakwatch.
+    leakwatch.start_from_env()
     # The streamable-HTTP session manager needs a running task group.
     async with node_mcp.session_manager.run():
         yield
@@ -1618,6 +1622,32 @@ def _redaction_fingerprint() -> str:
         return redaction.pattern_fingerprint()
     except Exception:                       # pragma: no cover
         return "unavailable"
+
+
+def _leakwatch_owner(tenant: tenants.Tenant = Depends(verify_token)) -> tenants.Tenant:
+    # Heap shape is process-wide operator data, not tenant data: owner only.
+    if tenant.tenant_id != tenants.OWNER_TENANT_ID:
+        raise HTTPException(status_code=403, detail="leakwatch is owner-only")
+    return tenant
+
+
+@app.get("/debug/leakwatch")
+def debug_leakwatch(_owner: tenants.Tenant = Depends(_leakwatch_owner)):
+    """Last retained-object report (type growth, leak traces, fingerprints)."""
+    w = leakwatch.instance()
+    if w is None:
+        return {"enabled": False, "hint": "start the node with NOUGEN_LEAKWATCH=1"}
+    return {"enabled": True, "interval_s": w.interval_s, "window": w.window,
+            "min_growth": w.min_growth, "report": w.last_report}
+
+
+@app.post("/debug/leakwatch/check")
+def debug_leakwatch_check(_owner: tenants.Tenant = Depends(_leakwatch_owner)):
+    """Sample now and report (LeakCanary's tap-the-notification to dump immediately)."""
+    w = leakwatch.instance()
+    if w is None:
+        return {"enabled": False, "hint": "start the node with NOUGEN_LEAKWATCH=1"}
+    return {"enabled": True, "report": w.check()}
 
 
 @app.get("/health")
@@ -2150,6 +2180,31 @@ async def local_health():
     }
 
 
+def _federation_v1():
+    """The v1 federation package (config/client/service). It was replaced by the
+    single-module nougen_shards/federation.py on 2026-06-10 (d2c5082), so these
+    imports raised on every call and both /v1 routes answered 500 - including
+    scope=local recall, whose imports ran before its own branch. Resolve at call
+    time; None means "not installed" and the route says so explicitly."""
+    try:
+        from nougen_shards.federation.config import load_vault_peers
+        from nougen_shards.federation.client import FederationClient
+        from nougen_shards.federation.service import FederationService
+    except ImportError:
+        return None
+    return load_vault_peers, FederationClient, FederationService
+
+
+def _federation_v1_gone(route: str):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=501, content={
+        "error": "federation_v1_unavailable",
+        "route": route,
+        "detail": "the v1 federation package was removed; use POST /search "
+                  "(federated fanout) or POST /v1/recall with scope=local",
+    })
+
+
 @app.get("/v1/health/fleet")
 async def fleet_health_endpoint(
     x_nougen_correlation_id: Optional[str] = Header(None, alias="X-NouGen-Correlation-ID"),
@@ -2157,9 +2212,10 @@ async def fleet_health_endpoint(
 ):
     """Fleet-wide 3-vault symmetric health check."""
     from dataclasses import asdict
-    from nougen_shards.federation.config import load_vault_peers
-    from nougen_shards.federation.client import FederationClient
-    from nougen_shards.federation.service import FederationService
+    v1 = _federation_v1()
+    if v1 is None:
+        return _federation_v1_gone("/v1/health/fleet")
+    load_vault_peers, FederationClient, FederationService = v1
 
     token = NODE_TOKEN or ""
     peers = load_vault_peers()
@@ -2179,9 +2235,6 @@ async def recall_endpoint(
 ):
     """3-vault loop-preventing recall endpoint."""
     from dataclasses import asdict
-    from nougen_shards.federation.config import load_vault_peers
-    from nougen_shards.federation.client import FederationClient
-    from nougen_shards.federation.service import FederationService
 
     local_only = (
         body.scope == "local"
@@ -2198,6 +2251,10 @@ async def recall_endpoint(
             "scope": "local",
         }
 
+    v1 = _federation_v1()
+    if v1 is None:
+        return _federation_v1_gone("/v1/recall (scope != local)")
+    load_vault_peers, FederationClient, FederationService = v1
     token = NODE_TOKEN or ""
     peers = load_vault_peers()
     client = FederationClient(token=token)
