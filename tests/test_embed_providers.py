@@ -196,3 +196,20 @@ def test_real_minilm_paraphrase_recall(vault, monkeypatch):
     assert q is not None and q.shape == (384,)
     hits = core._vector_retrieve(q.tolist(), limit=3, domain_key="*")  # pylint: disable=protected-access
     assert hits and hits[0].get("id") == int(res["shard_id"]), [(h.get("id"), h.get("title")) for h in hits]
+
+
+def test_core_query_embed_uses_cached_auto_resolution(monkeypatch):
+    """With NOUGEN_EMBED_MODEL unset, core passes model=None so resolve() caches
+    the auto decision instead of re-probing ollama on every capture and query."""
+    from nougen_shards import core
+    import nougen_shards.embed_providers as ep
+    monkeypatch.delenv("NOUGEN_EMBED_MODEL", raising=False)
+    monkeypatch.setenv("NOUGEN_EMBED_PROVIDER", "auto")
+    monkeypatch.setattr(ep, "_RESOLVED", None)
+    probes = []
+    monkeypatch.setattr(ep, "_ollama_reachable", lambda timeout_s=0.4: probes.append(1) or False)
+    monkeypatch.setattr(ep, "onnx_deps_present", lambda: False)
+    monkeypatch.setattr(ep, "describe_unavailable", lambda model=None: "test")  # its own probe is diagnostics, not routing
+    for _ in range(3):
+        core._embed_query("hello world")  # pylint: disable=protected-access
+    assert len(probes) == 1

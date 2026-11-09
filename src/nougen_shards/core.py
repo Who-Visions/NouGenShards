@@ -1079,7 +1079,7 @@ def _embed_for_capture(title: str, content: str) -> Optional[List[float]]:
         timeout = 1.5
     try:
         from . import embed_providers  # local import: optional dep path
-        vec = embed_providers.embed_text(((title or "") + "\n" + (content or ""))[:4000], model, timeout=timeout)
+        vec = embed_providers.embed_text(((title or "") + "\n" + (content or ""))[:4000], os.environ.get("NOUGEN_EMBED_MODEL") or None, timeout=timeout)
     except Exception as exc:  # pylint: disable=broad-except
         vec = None
         logger.debug("embed-at-capture raised: %s", exc)
@@ -1129,7 +1129,7 @@ def _embed_query(query: str) -> Optional[np.ndarray]:
         timeout = 6.0
     try:
         from . import embed_providers  # local import: optional dep path
-        vec = embed_providers.embed_text((query or "")[:4000], model, timeout=timeout)
+        vec = embed_providers.embed_text((query or "")[:4000], os.environ.get("NOUGEN_EMBED_MODEL") or None, timeout=timeout)
     except Exception as exc:  # pylint: disable=broad-except
         vec = None
         logger.debug("query embedding raised: %s", exc)
