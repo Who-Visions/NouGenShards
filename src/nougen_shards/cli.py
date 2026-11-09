@@ -1944,11 +1944,34 @@ def cmd_connect(args):
 
 
 def cmd_hook(args):
-    """Install auto-capture hooks into the user's shell."""
-    if args.action == "install":
-        print("✅ Auto-capture hook installed into your shell.")
-    else:
-        print("Usage: nougen hook install")
+    """Agent harness hooks: install/uninstall/status for Claude Code, and the runtime entry."""
+    from . import agent_hooks  # pylint: disable=import-outside-toplevel
+    settings = Path(args.settings) if getattr(args, "settings", None) else None
+    if args.action == "run":
+        event = args.event or ""
+        if event not in agent_hooks.EVENTS:
+            print("{}")
+            return
+        raw = sys.stdin.buffer.read().decode("utf-8", "replace") if not sys.stdin.isatty() else "{}"
+        sys.stdout.write(agent_hooks.run(event, raw) + "\n")
+        return
+    if args.action in ("install", "uninstall"):
+        rep = agent_hooks.install(settings, uninstall=args.action == "uninstall", dry_run=args.dry_run)
+        if args.json:
+            print(json.dumps(rep, indent=2))
+            return
+        verb = "Would " + args.action if rep.get("dry_run") else ("Updated" if rep["changed"] else "Already up to date:")
+        print(f"{verb} Claude Code hooks in {rep['settings']}")
+        if rep.get("backup"):
+            print(f"  backup: {rep['backup']}")
+        if args.action == "install":
+            print("  SessionStart: latest handoff + newest shards | UserPromptSubmit: budgeted recall")
+            print("  Stop: handoff nudge | SessionEnd: auto-handoff if none was written")
+        return
+    if args.action == "status":
+        print(json.dumps(agent_hooks.status(settings), indent=2))
+        return
+    print("Usage: nougen hook {install|uninstall|status|run <event>} [--dry-run] [--settings PATH]")
 
 
 def cmd_ingest(args):
@@ -2338,8 +2361,12 @@ def get_parser():
     p_connect = subparsers.add_parser("connect", help="Connect agent")
     p_connect.add_argument("--mcp", action="store_true")
 
-    p_hook = subparsers.add_parser("hook", help="Auto-capture")
-    p_hook.add_argument("action")
+    p_hook = subparsers.add_parser("hook", help="Agent hooks: wire the vault into Claude Code (install|uninstall|status|run)")
+    p_hook.add_argument("action", choices=["install", "uninstall", "status", "run"])
+    p_hook.add_argument("event", nargs="?", default=None, help="for run: session-start | prompt | stop | session-end")
+    p_hook.add_argument("--settings", default=None, help="settings.json to edit (default: ~/.claude/settings.json or $CLAUDE_CONFIG_DIR)")
+    p_hook.add_argument("--dry-run", action="store_true", dest="dry_run")
+    p_hook.add_argument("--json", action="store_true")
 
     p_ingest = subparsers.add_parser("ingest", help="Ingest file")
     p_ingest.add_argument("file")
