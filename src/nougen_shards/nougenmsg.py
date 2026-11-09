@@ -444,9 +444,12 @@ class AgentPinger:
             if not sid:
                 continue
             cwd = str(entry.get("cwd") or "")
+            # Split on both separators: a Windows cwd read on a POSIX node (and the
+            # other way round) must still give the folder name, not the whole path.
+            project = re.split(r"[\\/]", cwd.rstrip("\\/"))[-1] if cwd else ""
             out.append({
                 "session_id": sid,
-                "project": os.path.basename(cwd.rstrip("\\/")) or cwd,
+                "project": project or cwd,
                 "machine": str(entry.get("machine") or get_current_node()),
                 "agent": str(entry.get("agent") or "claude"),
                 "registered_utc": str(entry.get("registered_utc") or ""),

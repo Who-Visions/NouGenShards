@@ -36,7 +36,7 @@ def registry(tmp_path, monkeypatch):
         },
         # phoebus-style top-level entry, idle
         "33333333-cccc": {"socket": r"\\.\pipe\LOCAL\cc-msg-ccc", "token": SECRET,
-                          "cwd": "/home/x/site", "registered_utc": "2026-11-08T13:00:00Z"},
+                          "cwd": "/srv/apps/site", "registered_utc": "2026-11-08T13:00:00Z"},
     }
     path = tmp_path / "cc_sessions.json"
     path.write_text(json.dumps(reg), encoding="utf-8")
