@@ -368,8 +368,17 @@ def session_tail(session_id: str, limit: int = 12) -> dict:
             return {"ok": False, "error": "session not registered on this machine", "status": 404}
     except Exception as exc:
         return {"ok": False, "error": str(exc)[:200], "status": 502}
-    import glob
-    matches = glob.glob(os.path.join(_claude_projects_dir(), "*", session_id + ".jsonl"))
+    # Find the transcript by listing what exists and comparing names, so the path
+    # we open always comes from the filesystem, never from the request.
+    matches = []
+    root = _claude_projects_dir()
+    if os.path.isdir(root):
+        for proj in os.scandir(root):
+            if not proj.is_dir():
+                continue
+            for entry in os.scandir(proj.path):
+                if entry.is_file() and entry.name.endswith(".jsonl") and entry.name[:-6] == session_id:
+                    matches.append(entry.path)
     if not matches:
         return {"ok": False, "error": "no transcript for this session", "status": 404}
     try:
