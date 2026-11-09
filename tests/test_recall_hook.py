@@ -138,3 +138,11 @@ def test_claude_code_adapter_envelope(vault):
     hso = out["hookSpecificOutput"]
     assert hso["hookEventName"] == "UserPromptSubmit"
     assert hso["additionalContext"].startswith("[NouGen recall")
+
+
+def test_claude_code_hook_tolerates_non_object_json():
+    import json as _json
+    from nougen_shards import recall_hook as rh
+    for raw in ("[]", "null", '"text"', "42"):
+        out = _json.loads(rh.claude_code_hook(raw))
+        assert out["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"

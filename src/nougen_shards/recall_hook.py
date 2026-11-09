@@ -73,7 +73,9 @@ def _node_search(query: str, limit: int, timeout_s: float, token: Optional[str] 
                                                            "X-NGS-Token": token})
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
         data = json.load(resp)
-    return data if isinstance(data, list) else list(data.get("results") or [])
+    if isinstance(data, list):
+        return data
+    return list(data.get("results") or []) if isinstance(data, dict) else []
 
 MARK_CONTRACT = {
     "worked": "nougen mark <id> --db <db> --worked",
@@ -227,6 +229,8 @@ def claude_code_hook(stdin_text: str, **kwargs: Any) -> str:
     try:
         payload = json.loads(stdin_text or "{}")
     except Exception:
+        payload = {}
+    if not isinstance(payload, dict):  # valid JSON that is not an object ([] / null / "x")
         payload = {}
     prompt = str(payload.get("prompt") or "")
     block = format_block(recall_hook(prompt, **kwargs))
