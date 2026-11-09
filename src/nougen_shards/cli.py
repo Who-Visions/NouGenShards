@@ -1256,6 +1256,20 @@ def cmd_assure(args):
     print("Operator gate required: yes")
 
 
+def cmd_recall_hook(args):
+    """Budgeted per-turn recall for a host (recall_hook.py). Message from arg or stdin."""
+    from . import recall_hook  # pylint: disable=import-outside-toplevel
+    if args.claude_code:
+        raw = sys.stdin.buffer.read().decode("utf-8", "replace")
+        sys.stdout.write(recall_hook.claude_code_hook(raw, limit=args.limit, budget_ms=args.budget_ms) + "\n")
+        return
+    message = args.message if args.message else sys.stdin.buffer.read().decode("utf-8", "replace")
+    result = recall_hook.recall_hook(message, limit=args.limit, budget_ms=args.budget_ms)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(recall_hook.format_block(result))
+
 def cmd_embed(args):
     """Embedding provider: status, fetch the onnx model, backfill, self-test."""
     from . import embed_providers as ep  # pylint: disable=import-outside-toplevel
@@ -2286,6 +2300,13 @@ def get_parser():
     p_auth.add_argument("--timeout", type=float, default=10.0,
                         help="Per-provider probe timeout in seconds (auth check)")
 
+    p_rh = subparsers.add_parser("recall-hook", help="Budgeted per-turn recall for a host (prints a compact block)")
+    p_rh.add_argument("message", nargs="?", default=None, help="Message to recall against (stdin if omitted)")
+    p_rh.add_argument("--limit", type=int, default=5)
+    p_rh.add_argument("--budget-ms", type=int, default=800, dest="budget_ms")
+    p_rh.add_argument("--json", action="store_true", help="Emit the full result as JSON")
+    p_rh.add_argument("--claude-code", action="store_true", dest="claude_code",
+                      help="Claude Code UserPromptSubmit adapter: hook JSON on stdin, hookSpecificOutput on stdout")
     p_embed = subparsers.add_parser("embed", help="Embedding provider: status | fetch | selftest | backfill")
     embed_sub = p_embed.add_subparsers(dest="embed_cmd", required=True)
     embed_sub.add_parser("status", help="Resolved provider, onnx model presence, stored dims per DB")
@@ -4347,7 +4368,7 @@ def main():
     args = parser.parse_args()
     cmds = {
         "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "window": cmd_window, "assure": cmd_assure, "chat": cmd_chat,
-        "auth": cmd_auth, "mark": cmd_mark, "embed": cmd_embed, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
+        "auth": cmd_auth, "mark": cmd_mark, "recall-hook": cmd_recall_hook, "embed": cmd_embed, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,
