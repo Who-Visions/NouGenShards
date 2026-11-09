@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import contextvars
 import threading
 import time
 from typing import Any, Optional
@@ -150,9 +151,9 @@ def recall_hook(message: str, *, limit: int = DEFAULT_LIMIT, budget_ms: int = DE
         except Exception as exc:
             errors["keyword"] = f"{type(exc).__name__}: {exc}"[:200]
 
-    t_node = threading.Thread(target=run_node, daemon=True, name="recall-hook-node") if use_node else None
-    t_full = threading.Thread(target=run_full, daemon=True, name="recall-hook-full")
-    t_kw = threading.Thread(target=run_keyword, daemon=True, name="recall-hook-keyword")
+    t_node = threading.Thread(target=contextvars.copy_context().run, args=(run_node,), daemon=True, name="recall-hook-node") if use_node else None
+    t_full = threading.Thread(target=contextvars.copy_context().run, args=(run_full,), daemon=True, name="recall-hook-full")
+    t_kw = threading.Thread(target=contextvars.copy_context().run, args=(run_keyword,), daemon=True, name="recall-hook-keyword")
     if t_node:
         t_node.start()
     t_full.start()
@@ -214,7 +215,7 @@ def format_block(result: dict[str, Any]) -> str:
         for s in result["shards"]:
             lines.append(f"- {s['ref']} {s['title']}: {s['snippet']}")
         lines.append("If one of these helped, say so: nougen mark <id> --db <db> --worked")
-    elif tier == "none" and result.get("partial"):
+    elif result.get("partial"):
         lines.append(f"[NouGen recall via {label}] sweep did not finish "
                      f"({result.get('reason', 'unknown')}); absence here is not absence in the vault.")
     elif result.get("reason") == "message too short":

@@ -146,3 +146,24 @@ def test_claude_code_hook_tolerates_non_object_json():
     for raw in ("[]", "null", '"text"', "42"):
         out = _json.loads(rh.claude_code_hook(raw))
         assert out["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+
+
+def test_recall_threads_inherit_caller_vault_context(monkeypatch):
+    """A tenant host's bind_active_vault must reach the worker threads."""
+    from nougen_shards import core, recall_hook as rh
+    seen = []
+    monkeypatch.setattr(core, "retrieve", lambda q, limit=5: seen.append(core._ACTIVE_TENANT_ID.get()) or [])  # pylint: disable=protected-access
+    monkeypatch.setattr(core, "_keyword_retrieve", lambda q, limit=5, domain_key="*": [])
+    monkeypatch.setenv("NOUGEN_RECALL_HOOK_NODE", "0")
+    token = core._ACTIVE_TENANT_ID.set("tenant-x")  # pylint: disable=protected-access
+    try:
+        rh.recall_hook("what is the tenant isolation rule", budget_ms=2000)
+    finally:
+        core._ACTIVE_TENANT_ID.reset(token)  # pylint: disable=protected-access
+    assert seen == ["tenant-x"]
+
+
+def test_partial_keyword_with_no_hits_says_incomplete():
+    from nougen_shards import recall_hook as rh
+    block = rh.format_block({"tier": "keyword", "partial": True, "reason": "vector lane did not finish inside budget", "shards": []})
+    assert "did not finish" in block
