@@ -384,7 +384,8 @@ def session_tail(session_id: str, limit: int = 12) -> dict:
     try:
         from nougen_shards.brain_scan.redaction import redact_content
     except Exception:
-        redact_content = lambda s: s  # noqa: E731 - redactor optional on minimal installs
+        # Fail closed: without the redactor, transcript text never leaves the PC.
+        return {"ok": False, "error": "redactor unavailable; refusing to send unredacted transcript", "status": 503}
     limit = max(1, min(int(limit or 12), 40))
     max_bytes = int(os.environ.get("NOUGEN_REMOTE_TAIL_BYTES", "600000"))
     events = []

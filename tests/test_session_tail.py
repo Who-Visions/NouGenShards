@@ -62,3 +62,16 @@ def test_tail_missing_transcript(transcript, monkeypatch):
     monkeypatch.setattr(AgentPinger, "list_sessions", staticmethod(lambda: [{"session_id": "22222222-bbbb"}]))
     res = _load_bridge().session_tail("22222222-bbbb")
     assert res["ok"] is False and res["status"] == 404
+
+
+def test_tail_fails_closed_without_redactor(transcript, monkeypatch):
+    import builtins
+    real = builtins.__import__
+
+    def fake(name, *a, **k):
+        if name == "nougen_shards.brain_scan.redaction":
+            raise ImportError("no redactor")
+        return real(name, *a, **k)
+    monkeypatch.setattr(builtins, "__import__", fake)
+    res = _load_bridge().session_tail(SID)
+    assert res["ok"] is False and res["status"] == 503 and "events" not in res
