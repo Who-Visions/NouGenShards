@@ -385,8 +385,15 @@ def get_readonly_connection(index: int) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
 
     with _RO_POOL_LOCK:
-        # Enforce max pool size (bound resident FDs to 64 connections)
-        if len(_RO_CONN_POOL) >= 64:
+        # Connections are keyed by thread id, but a thread-per-request server
+        # (http.server, uvicorn threadpools) never comes back to a finished
+        # thread's key: its connection, each with a 64 MB page cache plus an mmap
+        # window, stayed open until the 64-entry cap. Measured 2026-11-09: the
+        # phone bridge grew ~45 MB per vault search and reached 6-8 GB in about an
+        # hour. Close connections whose owning thread has ended, then cap the pool.
+        _prune_dead_thread_connections()
+        cap = _ro_pool_max()
+        while len(_RO_CONN_POOL) >= cap:
             oldest_key, oldest_conn = next(iter(_RO_CONN_POOL.items()))
             _RO_CONN_POOL.pop(oldest_key, None)
             try:
@@ -395,6 +402,28 @@ def get_readonly_connection(index: int) -> sqlite3.Connection:
                 pass
         _RO_CONN_POOL[pool_key] = conn
     return conn
+
+
+def _ro_pool_max() -> int:
+    """Upper bound on pooled read-only connections (env NOUGEN_RO_POOL_MAX, default 24)."""
+    try:
+        return max(1, int(os.environ.get("NOUGEN_RO_POOL_MAX", "24")))
+    except ValueError:
+        return 24
+
+
+def _prune_dead_thread_connections() -> int:
+    """Close pooled connections owned by threads that no longer exist. Caller holds _RO_POOL_LOCK."""
+    alive = {t.ident for t in _threading.enumerate()}
+    dead = [key for key in _RO_CONN_POOL if key[0] not in alive]
+    for key in dead:
+        conn = _RO_CONN_POOL.pop(key, None)
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+    return len(dead)
 
 
 def close_readonly_pool() -> None:
