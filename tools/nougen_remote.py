@@ -337,6 +337,75 @@ def send_to_agent_session(session_id: str, text: str) -> dict:
     }
 
 
+def _claude_projects_dir() -> str:
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    return os.path.join(base, "projects")
+
+
+def _tail_lines(path: str, max_bytes: int) -> list:
+    size = os.path.getsize(path)
+    with open(path, "rb") as fh:
+        fh.seek(max(0, size - max_bytes))
+        chunk = fh.read().decode("utf-8", errors="replace").splitlines()
+    return chunk[1:] if size > max_bytes else chunk  # first line may be cut mid-record
+
+
+def session_tail(session_id: str, limit: int = 12) -> dict:
+    """Recent activity of one Claude Code session, for the phone's live view.
+
+    Reads only the end of the session transcript (``<projects>/<proj>/<id>.jsonl``),
+    keeps user/assistant text and tool calls, newest last, each trimmed and passed
+    through the vault redactor so a secret in a transcript never reaches the phone.
+    The id must be a registered session (same check as sending)."""
+    session_id = str(session_id or "").strip()
+    try:
+        from nougen_shards.nougenmsg import AgentPinger
+        if session_id not in {s["session_id"] for s in AgentPinger.list_sessions()}:
+            return {"ok": False, "error": "session not registered on this machine", "status": 404}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:200], "status": 502}
+    import glob
+    matches = glob.glob(os.path.join(_claude_projects_dir(), "*", session_id + ".jsonl"))
+    if not matches:
+        return {"ok": False, "error": "no transcript for this session", "status": 404}
+    try:
+        from nougen_shards.brain_scan.redaction import redact_content
+    except Exception:
+        redact_content = lambda s: s  # noqa: E731 - redactor optional on minimal installs
+    limit = max(1, min(int(limit or 12), 40))
+    max_bytes = int(os.environ.get("NOUGEN_REMOTE_TAIL_BYTES", "600000"))
+    events = []
+    for line in reversed(_tail_lines(matches[0], max_bytes)):
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("type") not in ("user", "assistant"):
+            continue
+        msg = rec.get("message") or {}
+        content = msg.get("content")
+        blocks = content if isinstance(content, list) else [{"type": "text", "text": str(content or "")}]
+        for b in reversed(blocks):
+            kind = b.get("type")
+            if kind == "text" and str(b.get("text", "")).strip():
+                text = str(b["text"]).strip()
+                if rec["type"] == "user" and text.startswith("<"):
+                    continue  # harness/system wrappers, not the person
+                events.append({"role": rec["type"], "kind": "text", "ts": rec.get("timestamp"),
+                               "text": redact_content(text)[:400]})
+            elif kind == "tool_use":
+                inp = b.get("input") or {}
+                hint = inp.get("description") or inp.get("command") or inp.get("file_path") or inp.get("query") or ""
+                events.append({"role": "assistant", "kind": "tool", "ts": rec.get("timestamp"),
+                               "tool": str(b.get("name", "")), "text": redact_content(str(hint))[:160]})
+            if len(events) >= limit:
+                break
+        if len(events) >= limit:
+            break
+    events.reverse()
+    return {"ok": True, "session_id": session_id, "events": events}
+
+
 def capture_screen_frame(max_width: int = 960, quality: int = 60) -> dict:
     """Captures live Windows desktop frame as base64 JPEG for mobile CRD viewport."""
     try:
@@ -1396,6 +1465,13 @@ class RemoteHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/sessions":
             self._send_json(list_agent_sessions())
+            return
+
+        if path.startswith("/api/v1/sessions/") and path.endswith("/tail"):
+            sid = path[len("/api/v1/sessions/"):-len("/tail")]
+            q = urllib.parse.parse_qs(parsed.query)
+            res = session_tail(sid, int((q.get("n") or ["12"])[0] or 12))
+            self._send_json(res, 200 if res.get("ok") else res.pop("status", 400))
             return
 
         self._send_json({"error": "Not found"}, 404)
