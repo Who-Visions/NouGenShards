@@ -124,9 +124,16 @@ def active_relay_summary() -> str:
             current_file = matches[0] if matches else None
         if current_file and current_file.exists():
             data = json.loads(current_file.read_text(encoding="utf-8"))
-            session = data.get("session_id", "none")
+            # The relay writer persists `session` (not `session_id`) and no baton path;
+            # the baton lives beside current.json as baton_<date>_<session>.json.
+            session = str(data.get("session") or data.get("session_id") or "")
+            if not session or data.get("active") is False:
+                return ""
             phase = data.get("phase", "mid")
-            baton_file = data.get("baton_file", "")
+            suffix = f"_{session}.json"
+            baton = next((f for f in sorted(current_file.parent.iterdir())
+                          if f.name.startswith("baton_") and f.name.endswith(suffix)), None)
+            baton_file = str(baton) if baton else ""
             return f"ACTIVE RELAY BATON: Session {session} (phase: {phase}) | {baton_file}"
     except Exception:
         pass
@@ -221,7 +228,8 @@ def _handoff_written_since(start: float) -> bool:
 # NOUGEN_REFLEX = block (default) | nudge | off.  NOUGEN_CTX_GATE = deny (default) | warn | off.
 
 _SHARD_TOOL = re.compile(r"(shards_capture|shards_amend|capture_experience|add_shard|promote_context_to_shard)", re.I)
-_RELAY_TOOL = re.compile(r"(relay_(create|ack|checkpoint|complete|handoff|sync)|send_msg|nougenmsg)", re.I)
+# Only the send operation counts as an outgoing handoff. Reading the inbox does not.
+_RELAY_TOOL = re.compile(r"(relay_(create|ack|checkpoint|complete|handoff|sync)|send_msg|nougenmsg_send)", re.I)
 _SHARD_CMD = re.compile(r"(\bnougen(\.bat)?\s+(add|capture|shard\s+add)\b|nougen_shards\.cli\s+(add|capture)\b|core\.capture\()", re.I)
 _RELAY_CMD = re.compile(r"(\bnougen(\.bat)?\s+(relay\s+(create|ack|checkpoint|complete|handoff|sync)|msg)\b|nougen_relay\.cli\s+(create|ack|checkpoint|complete|handoff|sync)\b|git_handoff\.py\s+(create|ack)\b|\brelay\s+(create|ack|checkpoint|complete|handoff|sync)\b)", re.I)
 _WORK_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
