@@ -127,3 +127,33 @@ def test_mixed_entry_keeps_foreign_handler(env):
 def test_every_event_is_fail_soft(env, raw):
     for event in ah.EVENTS:
         json.loads(ah.run(event, raw))  # always valid JSON, never raises
+
+
+# --- a session moves between a workspace root and a project inside it --------
+def test_handoff_from_a_project_inside_counts_at_the_workspace_root(env):
+    inner = env / "proj" / "sub"
+    inner.mkdir()
+    _manual_handoff(env, inner)
+    assert ah._handoff_written_since(0)
+
+
+def test_handoff_from_the_workspace_root_counts_inside_a_project(env, monkeypatch):
+    inner = env / "proj" / "sub"
+    inner.mkdir()
+    _manual_handoff(env, env / "proj")
+    monkeypatch.chdir(inner)
+    assert ah._handoff_written_since(0)
+
+
+def test_handoff_from_a_sibling_project_does_not_count(env):
+    sibling = env / "other"
+    sibling.mkdir()
+    _manual_handoff(env, sibling)
+    assert not ah._handoff_written_since(0)
+
+
+def test_handoff_with_no_cwd_does_not_count(env):
+    d = env / "handoffs" / "claude cli handoffs"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "handoff_x.json").write_text(json.dumps({"handoff_id": "x", "agent": "claude-cli"}), encoding="utf-8")
+    assert not ah._handoff_written_since(0)

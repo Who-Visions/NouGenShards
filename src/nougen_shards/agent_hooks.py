@@ -164,18 +164,32 @@ def _started(evt: dict) -> float:
         return time.time() - 12 * 3600
 
 
+def _same_tree(a: str, b: Path) -> bool:
+    """True when two directories are the same or one contains the other.
+
+    A session moves between a workspace root and a project inside it, so a
+    handoff written from one must count for a hook running in the other."""
+    try:
+        written = Path(a).resolve()
+    except (OSError, TypeError, ValueError):
+        return False
+    return written == b or written in b.parents or b in written.parents
+
+
 def _handoff_written_since(start: float) -> bool:
     """True when a handoff record newer than ``start`` was written from this
-    working directory. Records from other sessions/projects in the shared
-    registry do not count, so they never suppress this session's auto-handoff."""
-    here = str(Path.cwd())
+    working directory, a project inside it, or the workspace that holds it.
+    Records from unrelated projects in the shared registry do not count, so
+    they never suppress this session's auto-handoff."""
+    here = Path.cwd().resolve()
     for f in glob.glob(str(_handoff_dir() / "**" / "handoff_*.json"), recursive=True):
         try:
             if os.path.getmtime(f) <= start:
                 continue
             with open(f, encoding="utf-8") as fh:
-                if json.load(fh).get("cwd") == here:
-                    return True
+                written = json.load(fh).get("cwd")
+            if written and _same_tree(written, here):
+                return True
         except (OSError, ValueError, AttributeError):
             continue
     return False
