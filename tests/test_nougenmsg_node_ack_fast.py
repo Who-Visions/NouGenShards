@@ -134,3 +134,18 @@ def test_without_a_token_nothing_is_elevated(monkeypatch, tmp_path):
         assert reply["elevated"] == {"attempted": False}
     finally:
         server.shutdown()
+
+
+def test_a_gate_faster_than_the_reply_is_not_overwritten_by_pending(monkeypatch, tmp_path):
+    node = _load_node(monkeypatch, tmp_path)
+    monkeypatch.setattr(node, "gate_and_deliver", lambda *a, **k: {"attempted": True, "kaedra_approved": False})
+    real_put = node._ELEVATED.put_nowait
+
+    def put_and_finish(item):  # the worker finishes the gate before queue_elevated returns
+        real_put(item)
+        node._ELEVATED.join()
+
+    monkeypatch.setattr(node._ELEVATED, "put_nowait", put_and_finish)
+    out = node.queue_elevated({"message_id": "fast01", "text": "x"})
+    assert out["state"] == "pending"  # what the sender is told
+    assert node.elevated_state("fast01")["state"] == "done"  # what the receipt says
