@@ -2442,7 +2442,7 @@ def get_parser():
 
     p_hook = subparsers.add_parser("hook", help="Agent hooks: wire the vault into Claude Code (install|uninstall|status|run)")
     p_hook.add_argument("action", choices=["install", "uninstall", "status", "run"])
-    p_hook.add_argument("event", nargs="?", default=None, help="for run: session-start | prompt | stop | session-end")
+    p_hook.add_argument("event", nargs="?", default=None, help="for run: session-start | prompt | stop | session-end | pre-tool | post-tool")
     p_hook.add_argument("--settings", default=None, help="settings.json to edit (default: ~/.claude/settings.json or $CLAUDE_CONFIG_DIR)")
     p_hook.add_argument("--dry-run", action="store_true", dest="dry_run")
     p_hook.add_argument("--json", action="store_true")
