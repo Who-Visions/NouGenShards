@@ -1,13 +1,6 @@
 """Tests for Kokoro v1.0 / v0.19 dual-version model resolution in tools/voice/speak.py."""
 import os
-import sys
-from pathlib import Path
 import unittest.mock as mock
-import pytest
-
-VOICE = Path(__file__).resolve().parents[1] / "tools" / "voice"
-sys.path.insert(0, str(VOICE))
-import speak
 
 
 def test_kokoro_model_candidates_order():
