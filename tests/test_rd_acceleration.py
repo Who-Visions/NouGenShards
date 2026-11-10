@@ -73,7 +73,7 @@ def test_jsonl_and_ledger_loaders(tmp_path):
 
 
 def test_cli_rd_accel(tmp_path, capsys):
-    import json, sys
+    import json
     from nougen_shards import cli
     p = tmp_path / "g.jsonl"
     gens = series([1.0, 1.0, 1.0, 2.0, 2.0, 2.0])
