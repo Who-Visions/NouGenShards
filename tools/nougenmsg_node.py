@@ -288,6 +288,80 @@ def record(msg: dict) -> Path:
 MAX_INFLIGHT = int(os.environ.get("NOUGEN_AGY_MSG_MAX_INFLIGHT", "16") or 16)
 
 
+# Elevated delivery runs after the reply, on one worker thread. Its Kaedra gate is a
+# local model call, and on a CPU-only node (phoebus: kaedracode:e2b at ~8 tok/s) one
+# verdict outlasts a sender's 10 s peer timeout. Waiting for it before answering made
+# every authenticated send look failed although the inbox file was already written.
+# The outcome is kept for the authenticated receipt (GET /msg/<id>) instead.
+ELEVATED_QUEUE_MAX = int(os.environ.get("NOUGEN_AGY_MSG_ELEVATED_QUEUE", "64") or 64)
+ELEVATED_KEEP = 256  # outcomes remembered for receipts, oldest dropped first
+_ELEVATED: "queue.Queue" = queue.Queue(maxsize=max(1, ELEVATED_QUEUE_MAX))
+_ELEVATED_RESULTS: "dict" = {}
+_ELEVATED_LOCK = threading.Lock()
+_elevated_worker_started = False
+
+
+def _note_elevated(message_id: str, outcome: dict) -> None:
+    with _ELEVATED_LOCK:
+        _ELEVATED_RESULTS.pop(message_id, None)
+        _ELEVATED_RESULTS[message_id] = outcome
+        while len(_ELEVATED_RESULTS) > ELEVATED_KEEP:
+            _ELEVATED_RESULTS.pop(next(iter(_ELEVATED_RESULTS)))
+
+
+def elevated_state(message_id: str) -> "dict | None":
+    with _ELEVATED_LOCK:
+        outcome = _ELEVATED_RESULTS.get(message_id)
+        return dict(outcome) if outcome is not None else None
+
+
+def _run_elevated(msg: dict) -> None:
+    try:
+        verdict = gate_and_deliver(
+            str(msg.get("text", "")), str(msg.get("sender", "unknown")),
+            message_id=msg.get("message_id"),  # honored if the sender provides one
+            origin=str(msg.get("origin", "peer")),
+            origin_proof=msg.get("origin_proof"))
+        # Waking STARTS an agent where delivery only reaches one that is
+        # already live, so it runs strictly after the same gates and only
+        # on their approval. Never reachable for an unapproved message,
+        # and never switched on by anything in the message itself: see
+        # tools/wake for why availability is discovered, not configured.
+        verdict["wake"] = _maybe_wake(msg, verdict)
+        outcome = {"state": "done", **verdict}
+    except Exception as exc:  # a failed gate must not kill the worker
+        outcome = {"state": "error", "attempted": True, "error": "{}: {}".format(type(exc).__name__, exc)}
+    _note_elevated(msg["message_id"], outcome)
+
+
+def _elevated_worker() -> None:
+    while True:
+        msg = _ELEVATED.get()
+        try:
+            _run_elevated(msg)
+        finally:
+            _ELEVATED.task_done()
+
+
+def queue_elevated(msg: dict) -> dict:
+    """Hand a recorded message to the elevated worker; returns what the sender is told."""
+    global _elevated_worker_started
+    with _ELEVATED_LOCK:
+        if not _elevated_worker_started:
+            threading.Thread(target=_elevated_worker, name="elevated-delivery", daemon=True).start()
+            _elevated_worker_started = True
+    try:
+        _ELEVATED.put_nowait(dict(msg))
+    except queue.Full:
+        outcome = {"state": "skipped", "attempted": False,
+                   "reason": "elevated queue full; the inbox file was written"}
+        _note_elevated(msg["message_id"], outcome)
+        return outcome
+    outcome = {"state": "pending", "attempted": True}
+    _note_elevated(msg["message_id"], outcome)
+    return outcome
+
+
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     """ThreadingHTTPServer with a cap on concurrent handlers.
 
@@ -400,7 +474,12 @@ class Handler(BaseHTTPRequestHandler):
         elif route.startswith("/msg/"):
             if self._reject_unauthorized():   # receipts reveal traffic: same gate as /pop
                 return
-            self._send(receipt_state(route[len("/msg/"):]))
+            message_id = route[len("/msg/"):]
+            state = receipt_state(message_id)
+            elevated = elevated_state(message_id)
+            if elevated is not None:
+                state["elevated"] = elevated
+            self._send(state)
         elif route == "/pop":
             if self._reject_unauthorized():   # /pop MUTATES: read-and-destroy
                 return
@@ -438,17 +517,7 @@ class Handler(BaseHTTPRequestHandler):
 
         elevated = {"attempted": False}
         if AUTH_TOKEN:  # opting into auth is opting into the elevated pathway
-            elevated = gate_and_deliver(
-                str(msg.get("text", "")), str(msg.get("sender", "unknown")),
-                message_id=msg.get("message_id"),  # honored if the sender provides one
-                origin=str(msg.get("origin", "peer")),
-                origin_proof=msg.get("origin_proof"))
-            # Waking STARTS an agent where delivery only reaches one that is
-            # already live, so it runs strictly after the same gates and only
-            # on their approval. Never reachable for an unapproved message,
-            # and never switched on by anything in the message itself: see
-            # tools/wake for why availability is discovered, not configured.
-            elevated["wake"] = _maybe_wake(msg, elevated)
+            elevated = queue_elevated(msg)  # gated and delivered after this reply
 
         # build id rides the AUTHENTICATED response only. /status is open for
         # liveness, and telling an anonymous LAN caller exactly which build a
