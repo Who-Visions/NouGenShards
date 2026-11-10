@@ -109,3 +109,65 @@ def test_private_get_routes_require_token(monkeypatch):
         assert status(base + "/api/v1/health") == 200
     finally:
         srv.shutdown()
+
+
+def test_google_id_token_refused_in_query_string(monkeypatch):
+    """A Google ID token in ?token= must not authenticate; only the Authorization header may carry it."""
+    import importlib
+    import io
+    import sys
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    monkeypatch.setenv("NOUGEN_REMOTE_TOKEN", "test-token-123")
+    monkeypatch.setenv("NOUGEN_GOOGLE_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
+    monkeypatch.setenv("NOUGEN_GOOGLE_ALLOWED_EMAILS", "owner@example.com")
+    nr = importlib.reload(importlib.import_module("nougen_remote"))
+
+    real_urlopen = urllib.request.urlopen
+
+    class _Resp(io.BytesIO):
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, *a, **kw):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if "oauth2.googleapis.com/tokeninfo" in url and "good.token.here" in url:
+            body = {"aud": "test-client-id.apps.googleusercontent.com",
+                    "email": "owner@example.com", "email_verified": "true"}
+            return _Resp(__import__("json").dumps(body).encode())
+        if "oauth2.googleapis.com/tokeninfo" in url:
+            raise urllib.error.HTTPError(url, 400, "invalid", {}, None)
+        return real_urlopen(req, *a, **kw)
+
+    monkeypatch.setattr(nr.urllib.request, "urlopen", fake_urlopen)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), nr.RemoteHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+
+    def get_status(url, headers=None):
+        req = urllib.request.Request(url, headers=headers or {})
+        try:
+            return real_urlopen(req, timeout=5).status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    try:
+        # Google token in the query string: refused.
+        assert get_status(base + "/api/v1/inbox?token=good.token.here") == 401
+        # Same Google token in the Authorization header: accepted.
+        assert get_status(base + "/api/v1/inbox",
+                          {"Authorization": "Bearer good.token.here"}) != 401
+        # Static token in the query string still works, as before.
+        assert get_status(base + "/api/v1/inbox?token=test-token-123") != 401
+    finally:
+        srv.shutdown()

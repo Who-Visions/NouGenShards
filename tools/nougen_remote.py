@@ -1237,16 +1237,19 @@ class RemoteHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _get_authorized(self, parsed) -> bool:
-        given = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
-        if not given:
-            given = self.headers.get("Authorization", "").replace("Bearer ", "", 1)
+        query_token = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
+        header_token = self.headers.get("Authorization", "").replace("Bearer ", "", 1)
+        given = query_token or header_token
         if not given:
             return False
         if TOKEN and hmac.compare_digest(given.encode(), TOKEN.encode()):
             return True
-        # Not the static token - might be a Google ID token from the app's
-        # Credential Manager sign-in.
-        return _google_id_token_valid(given)
+        # A Google ID token is accepted only in the Authorization header. Query
+        # strings end up in access logs and browser history, and an ID token is
+        # a bearer credential for the whole session.
+        if header_token and header_token == given:
+            return _google_id_token_valid(header_token)
+        return False
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
