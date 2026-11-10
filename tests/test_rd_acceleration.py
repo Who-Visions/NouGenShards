@@ -47,6 +47,45 @@ def test_too_few_points():
     assert assess(gens, gens[2].released).pattern == "insufficient"
 
 
+def test_empty_generations():
+    rep = assess([], T0)
+    assert rep.pattern == "insufficient"
+    assert math.isnan(rep.ratio)
+
+
+def test_nonpositive_baseline_slope_undefined():
+    # Pre-breakpoint slope is nonpositive (4.0 -> 4.0 -> 2.0 -> 1.0)
+    d = T0
+    gens = []
+    for i, s in enumerate([4.0, 4.0, 2.0, 1.0]):
+        gens.append(Generation(f"m{i}", d, s))
+        d += timedelta(days=180)
+    rep = assess(gens, gens[2].released)
+    assert math.isnan(rep.ratio)
+    assert rep.pattern == "insufficient"
+    assert any("baseline slope is nonpositive" in n for n in rep.notes)
+
+
+def test_reaction_window_zero_lag_observations():
+    # lags = [0, 0, 200, 0] with 4 gens -> reaction window expands from 0 to 200/gap
+    d = T0
+    gens = []
+    for i, lag in enumerate([0, 0, 200, 0]):
+        gens.append(Generation(f"m{i}", d, float(i + 1), float(lag)))
+        d += timedelta(days=100)
+    rep = assess(gens, gens[2].released)
+    assert rep.reaction_window_shrinking
+
+    # lags = [200, 0, 0, 0, 0] -> latest finished eval is 0 lag, should not flag late eval note
+    d = T0
+    gens_stale_cleared = []
+    for i, lag in enumerate([200, 0, 0, 0, 0]):
+        gens_stale_cleared.append(Generation(f"m{i}", d, float(i + 1), float(lag)))
+        d += timedelta(days=100)
+    rep2 = assess(gens_stale_cleared, gens_stale_cleared[2].released)
+    assert not any("latest eval finished after the next generation shipped" in n for n in rep2.notes)
+
+
 def test_jsonl_and_ledger_loaders(tmp_path):
     import json, sqlite3
     from nougen_shards.rd_acceleration import from_evaluation_ledger, load_jsonl

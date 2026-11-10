@@ -57,6 +57,12 @@ def assess(gens: list[Generation], breakpoint: date, *, boots: int = 2000,
     or methodology uncertainty, and it says nothing about *why* (the
     no-AI-assist counterfactual is not observable here).
     """
+    notes = ["CI excludes model-selection and benchmark-choice uncertainty",
+             "attribution to AI assistance is not measured"]
+    if not gens:
+        return AccelerationReport(float("nan"), float("nan"), float("nan"),
+                                  "insufficient", False,
+                                  notes + ["need >=2 generations each side"])
     if any(g.score <= 0 for g in gens):
         raise ValueError("scores must be positive")
     gens = sorted(gens, key=lambda g: g.released)
@@ -64,8 +70,6 @@ def assess(gens: list[Generation], breakpoint: date, *, boots: int = 2000,
     pts = [(_years(g.released, origin), math.log(g.score)) for g in gens]
     before = [p for g, p in zip(gens, pts) if g.released < breakpoint]
     after = [p for g, p in zip(gens, pts) if g.released >= breakpoint]
-    notes = ["CI excludes model-selection and benchmark-choice uncertainty",
-             "attribution to AI assistance is not measured"]
     if len(before) < 2 or len(after) < 2:
         return AccelerationReport(float("nan"), float("nan"), float("nan"),
                                   "insufficient", False,
@@ -73,16 +77,37 @@ def assess(gens: list[Generation], breakpoint: date, *, boots: int = 2000,
 
     def ratio(b, a):
         sb = _slope(b)
-        return _slope(a) / sb if sb > 0 else float("inf")
+        if sb <= 0:
+            return float("nan")
+        return _slope(a) / sb
 
     r = ratio(before, after)
+
+    # Reaction window: eval lag as a share of the gap to the next release.
+    shares = []
+    for g, nxt in zip(gens, gens[1:]):
+        gap = (nxt.released - g.released).days
+        if gap > 0 and g.eval_lag_days is not None:
+            shares.append(g.eval_lag_days / gap)
+    shrinking = len(shares) >= 2 and shares[-1] > shares[0]
+    if shares and shares[-1] >= 1:
+        notes.append("latest eval finished after the next generation shipped")
+
+    if math.isnan(r):
+        return AccelerationReport(
+            float("nan"), float("nan"), float("nan"), "insufficient", shrinking,
+            notes + ["baseline slope is nonpositive; acceleration undefined"]
+        )
+
     rng = random.Random(seed)
     samples = []
     for _ in range(boots):
         b = [rng.choice(before) for _ in before]
         a = [rng.choice(after) for _ in after]
         try:
-            samples.append(ratio(b, a))
+            val = ratio(b, a)
+            if not math.isnan(val):
+                samples.append(val)
         except ValueError:
             continue
     samples.sort()
@@ -102,15 +127,6 @@ def assess(gens: list[Generation], breakpoint: date, *, boots: int = 2000,
     else:
         pattern = "one_time"
 
-    # Reaction window: eval lag as a share of the gap to the next release.
-    shares = []
-    for g, nxt in zip(gens, gens[1:]):
-        gap = (nxt.released - g.released).days
-        if gap > 0 and g.eval_lag_days:
-            shares.append(g.eval_lag_days / gap)
-    shrinking = len(shares) >= 2 and shares[-1] > shares[0]
-    if shares and shares[-1] >= 1:
-        notes.append("latest eval finished after the next generation shipped")
     return AccelerationReport(r, lo, hi, pattern, shrinking, notes)
 
 
