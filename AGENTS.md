@@ -1,3 +1,9 @@
+# Read first: LLM_README.md
+
+Every lane entering NouGen reads [`LLM_README.md`](LLM_README.md) before working — the doctrine
+primer (authority, evidence rule, how Shards memory works, canon discipline, permission posture).
+The GM's live word outranks it.
+
 # UI design
 
 Before changing a NouGen UI, read root DESIGN.md and the applicable brand package.
@@ -37,3 +43,9 @@ These directives tell any agent how to set up or change a tenant's own NouGen no
 - Create tenants with `nougen tenant mint <tenant_id> --label "<label>"`. Store the printed token only in the tenant's own environment. Never print it into logs, chat or commits.
 - Tenant vaults live under the tenant directory. Recall and search must never read sibling or owner local vaults. A regression test guards this (`tests/test_multitenancy.py`).
 - Changes to this repo go through a branch, a pull request, and a merge only after the tenancy tests pass (`PYTHONPATH=src pytest tests/test_multitenancy.py tests/test_mcp_oauth.py`).
+
+---
+
+## Rule 0.10: Autonomous Lane Execution Protocol (binding, 2026-10-27)
+
+Every lane that takes a NouGenShards objective runs the closed loop in `docs/lane-execution-protocol.md`: claim + recall, scoped implementation, self-healing build, hardening, branch + PR (never the default branch, never `git add -A`), durable shard + relay handoff, and a terminal receipt with commit SHA, PR URL, test count, shard id and relay leg. A turn may not end on a diagnosis when the toolset can land the fix. A gate that is genuinely outside the toolset (missing credential, branch protection, operator-only action) is reported as `BLOCKED: <exact blocker>` in the receipt, never hidden and never softened into "next steps for you".

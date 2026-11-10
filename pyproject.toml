@@ -10,7 +10,7 @@ authors = [
 ]
 description = "Persistent local memory for coding agents. Store machine experience as shards."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: Other/Proprietary License",
@@ -58,11 +58,23 @@ dependencies = [
 # Optional because the core substrate never touches YouTube; only the tube
 # tool lazy-imports these, and it degrades with a clear message when absent.
 tube = [
-    "youtube-transcript-api>=0.6",
+    "youtube-transcript-api>=1.0",
     "yt-dlp>=2024.1.1",
 ]
 transcribe = [
     "faster-whisper>=1.1.0",
+]
+# In-process semantic recall with no Ollama server (embed_providers.py):
+# all-MiniLM-L6-v2 on CPU via onnxruntime. Model files are fetched once with
+# `nougen embed fetch`; the keyword lane stays the zero-dependency default.
+embed = [
+    "onnxruntime>=1.17",
+    "tokenizers>=0.15",
+    "huggingface_hub>=0.20",
+]
+# Optional real driver for nougen_shards.browser_toolset; the core is stdlib only.
+browser = [
+    "playwright>=1.48",
 ]
 
 test = [
@@ -85,7 +97,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # War Games scenarios and schema ship with the wheel (nougen wargame list/run).
-nougen_shards = ["wargames/scenarios/*.json", "wargames/schema/*.json"]
+nougen_shards = ["wargames/scenarios/*.json", "wargames/schema/*.json", "sfx/*.json"]
 nougen_verse = ["data/*.json", "data/*.txt", "schemas/*.json"]
 
 [tool.pytest.ini_options]

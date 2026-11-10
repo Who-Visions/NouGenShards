@@ -17,11 +17,21 @@ verdict instead of raising, so callers can route to the fleet or skip:
 from __future__ import annotations
 
 import json
+import logging
+import os
 import subprocess
 import urllib.request
 from dataclasses import dataclass
 
-OLLAMA = "http://127.0.0.1:11434"
+from . import ollama_host
+
+logger = logging.getLogger(__name__)
+
+
+def _ollama_url() -> str:
+    """The live local daemon; the port moves between boxes, so probe it."""
+    return ollama_host.discover_ollama_url() or ollama_host.resolve_ollama_url(log=False)
+
 
 # Measured Ollama LOAD sizes on WhoArt (/api/ps during generation, 2026-08-08).
 # Disk size and vendor Q4_0 tables are both wrong for this — per-layer
@@ -39,6 +49,28 @@ MEASURED_LOAD_GB = {
     "deepseek-ocr:3b": 6.9,
     "nomic-embed-text:latest": 0.4,
 }
+
+
+def _slot_load_gb() -> float:
+    """NOUGEN_LOCAL_E2B_LOAD_GB, measured on the node; stock size until then."""
+    fallback = MEASURED_LOAD_GB["gemma4:e2b"]
+    raw = os.environ.get("NOUGEN_LOCAL_E2B_LOAD_GB")
+    if not raw:
+        return fallback
+    try:
+        gb = float(raw)
+    except ValueError:
+        gb = 0.0
+    if 0 < gb < float("inf"):
+        return gb
+    logger.warning("ignoring bad NOUGEN_LOCAL_E2B_LOAD_GB %r; using %.2f", raw, fallback)
+    return fallback
+
+
+# A node's own build in the stock e2b slot, admitted at its measured size.
+_local_e2b = os.environ.get("NOUGEN_LOCAL_E2B_MODEL")
+if _local_e2b:
+    MEASURED_LOAD_GB.setdefault(_local_e2b, _slot_load_gb())
 SAFETY_MARGIN_GB = 0.4  # display/compositor churn headroom
 
 
@@ -52,6 +84,10 @@ class Verdict:
 
 
 def _free_vram_gb() -> float:
+    import platform
+    if platform.system() == "Darwin":
+        from .darwin_gate import get_apple_silicon_vram_headroom_gb
+        return get_apple_silicon_vram_headroom_gb()
     out = subprocess.run(
         ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
         capture_output=True, text=True, timeout=15)
@@ -59,7 +95,7 @@ def _free_vram_gb() -> float:
 
 
 def _residents() -> list[dict]:
-    with urllib.request.urlopen(f"{OLLAMA}/api/ps", timeout=10) as r:
+    with urllib.request.urlopen(f"{_ollama_url()}/api/ps", timeout=10) as r:
         return json.loads(r.read()).get("models", [])
 
 
@@ -120,7 +156,7 @@ def free_card() -> list[str]:
             if not name:
                 continue
             req = urllib.request.Request(
-                f"{OLLAMA}/api/generate",
+                f"{_ollama_url()}/api/generate",
                 data=json.dumps({"model": name, "keep_alive": 0}).encode(),
                 headers={"Content-Type": "application/json"})
             urllib.request.urlopen(req, timeout=30).read()
@@ -166,6 +202,11 @@ def check_vram(model: str, need_gb: float | None = None,
 
     if ":cloud" in model or model.endswith("-cloud") or "/cloud" in model:
         return Verdict(True, f"admitted to Ollama Cloud gateway ({model}); zero local VRAM footprint")
+
+    import platform
+    if platform.system() == "Darwin":
+        from .darwin_gate import check_darwin_admission
+        return check_darwin_admission(model, need_gb=need_gb)
 
     need = need_gb if need_gb is not None else MEASURED_LOAD_GB.get(model)
     if need is None:

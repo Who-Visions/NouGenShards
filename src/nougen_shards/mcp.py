@@ -61,6 +61,7 @@ from .core import capture, mark_shard, compile_recall_packet
 from . import nougen_context
 from . import nougen_sandbox
 from . import evolution
+from . import hardcade_sfx
 from . import skills as skill_registry
 
 from .history import HistoryEngine
@@ -102,6 +103,9 @@ except TypeError:
     # Older builds predate the instructions kwarg; the apply_skills tool
     # still enforces skills, the roster just does not ride the handshake.
     mcp = MCPServer("NouGenShards", dependencies=["mcp"])
+
+# Hardcade SFX: every tool registered below plays its move when it lands.
+hardcade_sfx.install_on(mcp)
 
 # --- Memory Core (Shards) ---
 
@@ -151,19 +155,40 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
     # which is where those filters live.
     sweep_report: dict = {}
     scope = {k: v for k, v in {"agent": agent, "user": user, "machine": machine, "project": project}.items() if v}
+    # Time-shaped recall is native: "march", "last week", "yesterday 7pm",
+    # "gemini upgrade in march" read as a window (plus optional text inside
+    # it), not as a keyword search for the word "march". Scoped/as-of calls
+    # keep their own path.
+    if not (scope or as_of):
+        from nougen_shards import window as _window  # pylint: disable=import-outside-toplevel
+        win, rest = _window.split_temporal(query)
+        if win is not None:
+            res = _window.retrieve_window(start_utc=win.start_utc, end_utc=win.end_utc, query=rest,
+                                          limit=max(limit, 8))
+            res["window"] = win.as_dict()
+            return _window.format_packet(res)
     if scope or as_of:
         from nougen_shards import core as _core  # pylint: disable=import-outside-toplevel
         shards_list = _core.retrieve(query, limit=limit, domain_key="*", scope=scope or None, as_of=as_of)
     else:
         shards_list = federated_retrieve(query, limit=limit, sweep_report=sweep_report)
     dropped = sweep_report.get("lanes_timed_out") or []
+    # A lane that ERRORED (vault offline, gateway 530) is as much a hole as one
+    # that timed out; reporting only timeouts let an offline vault read as
+    # "nothing there".
+    errored = [str(e.get("store", "?")) + ": " + str(e.get("error", ""))[:120]
+               for e in sweep_report.get("errored") or [] if isinstance(e, dict)]
+    holes = ""
+    if dropped:
+        holes += (f"{len(dropped)} lane(s) ({', '.join(dropped)}) missed the "
+                  f"{sweep_report.get('deadline_s')}s recall deadline. ")
+    if errored:
+        holes += f"{len(errored)} lane(s) failed: {'; '.join(errored)}. "
     if not shards_list:
-        if dropped:
+        if holes:
             return ("Recall INCOMPLETE — no answer, not an empty substrate: "
-                    f"{len(dropped)} lane(s) ({', '.join(dropped)}) missed the "
-                    f"{sweep_report.get('deadline_s')}s recall deadline. "
-                    "Retry, or raise NOUGEN_RECALL_DEADLINE_S; do NOT conclude "
-                    "the substrate holds nothing on this query.")
+                    + holes + "Retry, or raise NOUGEN_RECALL_DEADLINE_S; do NOT "
+                    "conclude the substrate holds nothing on this query.")
         return "No relevant shards found in the memory substrate."
     budget = os.environ.get("NOUGEN_RECALL_TOKEN_BUDGET", "").strip()
     # Unbounded used to be the default; one 994k-char screenplay shard then
@@ -181,12 +206,59 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
         _distill.mark_sent(session_id, sent)
     else:
         packet = compile_recall_packet(shards_list, token_budget=token_budget)
-    if dropped:
-        packet += ("\n\n[COVERAGE WARNING] Partial result: "
-                   f"{len(dropped)} lane(s) ({', '.join(dropped)}) missed the "
-                   f"{sweep_report.get('deadline_s')}s recall deadline. "
-                   "Shards below are real; absence below proves nothing.")
+    if holes:
+        packet += ("\n\n[COVERAGE WARNING] Partial result: " + holes
+                   + "Shards below are real; absence below proves nothing.")
     return packet
+
+@mcp.tool()
+def recall_window(when: str = "", query: str = "", limit: int = 20, tz: str = "",
+                  since: str = "", until: str = "", start: str = "", end: str = "") -> str:
+    """
+    Browse the memory substrate BY TIME: everything recorded in a period, with
+    per-day and per-type counts and the most useful records (locators included).
+
+    Args:
+        when: Plain time phrase - 'march', 'march 2026', '2026-03-19', '2026-03-19 14:05',
+            'q1 2026', 'yesterday', 'last week', 'last 30 minutes', 'between 7pm and 8pm
+            yesterday', 'march..may 2026'. A bare month is the most recent one that has started.
+        query: Optional text to narrow to shards in that window mentioning it.
+        limit: Max records to list (server ceiling applies).
+        tz: IANA zone for day boundaries (e.g. America/New_York); default NOUGEN_TZ or UTC.
+        since: Alternative to `when`: start of the era ('2026-03', '2026-03-01', 'march') -
+            inclusive. The fleet connector's era browser sends since/until.
+        until: End of the era, inclusive of the period named ('2026-03' = through March 31).
+        start: Alias of since. end: alias of until.
+    """
+    from nougen_shards import timewindow as _tw, window as _window  # pylint: disable=import-outside-toplevel
+    zone = tz or None
+    since, until = since or start, until or end
+    if not when and (since or until):
+        s_win = _tw.parse_window(since, tz=zone) if since else None
+        u_win = _tw.parse_window(until, tz=zone) if until else None
+        if since and s_win is None:
+            return f"Window recall: could not read since={since!r} as a time."
+        if until and u_win is None:
+            return f"Window recall: could not read until={until!r} as a time."
+        from datetime import datetime, timezone as _utc  # pylint: disable=import-outside-toplevel
+        start_utc = s_win.start_utc if s_win else "0001-01-01T00:00:00Z"
+        end_utc = u_win.end_utc if u_win else datetime.now(_utc.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        res = _window.retrieve_window(start_utc=start_utc, end_utc=end_utc, query=query, limit=limit, tz=zone)
+        if not res.get("error"):
+            res["window"]["label"] = f"{s_win.label if s_win else 'beginning'} .. {u_win.label if u_win else 'now'}"
+            res["window"]["interpreted_as"] = "era bounds since/until, inclusive"
+        return _window.format_packet(res)
+    if not when:
+        # Nothing time-shaped given: the connector's old fallback sent only
+        # {query, limit}. Try to read the query itself as a period.
+        win, rest = _window.split_temporal(query, tz=zone)
+        if win is None:
+            return "Window recall: give `when` (e.g. 'march', 'last week') or since/until."
+        res = _window.retrieve_window(start_utc=win.start_utc, end_utc=win.end_utc, query=rest, limit=limit, tz=zone)
+        res["window"] = win.as_dict()
+        return _window.format_packet(res)
+    return _window.format_packet(_window.retrieve_window(when, query=query, limit=limit, tz=zone))
+
 
 @mcp.tool()
 def recall_layered(query: str, token_budget: int = 1200) -> str:
@@ -1164,6 +1236,9 @@ def search_shards(query: str, limit: int = 5, context_budget: int = 0) -> str:
         if context_budget < 0 or limit < 1 or limit > 100:
             raise ValueError("context_budget must be nonnegative and limit must be 1..100")
         results = federated_retrieve(query, limit=limit * 4 if context_budget else limit)
+        # Read coverage before any slicing: a slice drops FederatedResult's flags.
+        coverage = {"complete": getattr(results, "complete", True),
+                    "lane_failures": list(getattr(results, "lane_failures", []))}
         if context_budget:
             from .context_packet import graph_context_packet
             from . import core
@@ -1196,8 +1271,11 @@ def search_shards(query: str, limit: int = 5, context_budget: int = 0) -> str:
             packet = graph_context_packet(query, results[:limit], results[limit:],
                                           token_budget=context_budget, max_results=limit,
                                           load_dependency=load_dependency)
+            if isinstance(packet, dict):
+                packet.setdefault("coverage", coverage)
             return json.dumps(packet, default=str, indent=2)
-        return json.dumps({"query": query, "count": len(results), "shards": results}, default=str, indent=2)
+        return json.dumps({"query": query, "count": len(results), "coverage": coverage,
+                           "shards": results}, default=str, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -1323,6 +1401,20 @@ def morph_gate(ref: str, claims: List[str]) -> str:
     """
     from .arxiv_radar import run_morph_gate
     res = run_morph_gate(ref=ref, claims=claims)
+    return json.dumps(res, default=str, indent=2)
+
+
+@mcp.tool()
+def morph_atom_catalog(query: str = "", limit: int = 20) -> str:
+    """
+    Catalog already morph_gate-verified (source, claim) pairs into named structural atoms.
+
+    Args:
+        query: optional substring filter over claim/title text.
+        limit: max atoms to return (default 20).
+    """
+    from .nougen_morph_atoms import run_morph_atom_catalog
+    res = run_morph_atom_catalog(query=query, limit=limit)
     return json.dumps(res, default=str, indent=2)
 
 

@@ -53,7 +53,7 @@ import urllib.request
 import zlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Sequence
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT / "src") not in sys.path:
@@ -117,8 +117,9 @@ def expand_playlist(url: str) -> List[str]:
     entries = (info or {}).get("entries") or []
     urls = []
     for e in entries:
-        vid = e.get("id")
-        if vid:
+        vid = e.get("id") if isinstance(e, dict) else None
+        # Channel tabs nest playlists here; their ids are not video ids.
+        if vid and _STRICT_ID_RE.match(vid):
             urls.append(f"https://www.youtube.com/watch?v={vid}")
     return urls
 
@@ -146,13 +147,31 @@ def _fetch_via_transcript_api(video_id: str) -> Optional[str]:
         return None
 
 
+def _fetch_via_innertube(video_id: str) -> Optional[str]:
+    """Tier 1b: YouTube's own player endpoint, caption tracks picked manual-first (see nougentube_study)."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import nougentube_study as study  # sibling module, stdlib only
+        return study.fetch_via_innertube(video_id, LANGS)
+    except Exception as exc:  # noqa: BLE001 - any failure falls to the next tier
+        logger.info("tier-1b innertube failed for %s: %s", video_id, exc)
+        return None
+
+
+_STRICT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _VTT_TAG_RE = re.compile(r"<[^>]*>")
 _VTT_TS_RE = re.compile(r"^(\d+):(\d\d):(\d\d)\.\d+\s+-->")
 
 
 def _parse_vtt(text: str) -> str:
-    """Minimal VTT -> timestamped transcript (no extra dependency)."""
-    lines, seen = [], set()
+    """Minimal VTT -> timestamped transcript (no extra dependency).
+
+    Rolling captions repeat a line in the next cue, so a line is dropped only
+    when it was in the previous cue or this one. The same words spoken again
+    later stay in the transcript."""
+    lines: List[str] = []
+    previous_cue: set = set()
+    this_cue: set = set()
     stamp = "[00:00]"
     for raw in text.splitlines():
         line = raw.strip()
@@ -161,14 +180,17 @@ def _parse_vtt(text: str) -> str:
             h, mnt, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
             total = h * 3600 + mnt * 60 + s
             stamp = f"[{total // 60:02d}:{total % 60:02d}]"
+            previous_cue, this_cue = this_cue, set()
             continue
         if not line or line in ("WEBVTT",) or line.startswith(("Kind:", "Language:", "NOTE")):
             continue
         clean = _VTT_TAG_RE.sub("", line)
         clean = clean.replace("&amp;", "&").replace("&gt;", ">").replace("&lt;", "<").strip()
-        if clean and clean not in seen:
+        if not clean:
+            continue
+        if clean not in previous_cue and clean not in this_cue:
             lines.append(f"{stamp} {clean}")
-            seen.add(clean)
+        this_cue.add(clean)
     return "\n\n".join(lines)
 
 
@@ -192,7 +214,10 @@ def _fetch_via_ytdlp(url: str) -> Optional[str]:
                     ydl.download([url])
                 except Exception as exc:  # noqa: BLE001
                     logger.info("yt-dlp sub download issue for %s: %s", url, exc)
-            for f in sorted(Path(tmp).glob("sub*.vtt")):
+            found = sorted(Path(tmp).glob("sub*.vtt"))
+            preferred = [Path(tmp) / f"sub.{lang}.vtt" for lang in (LANGS)]
+            # Language priority, not filename order, picks the track.
+            for f in [p for p in preferred if p in found] + [p for p in found if p not in preferred]:
                 parsed = _parse_vtt(f.read_text(encoding="utf-8", errors="replace"))
                 if parsed:
                     return parsed
@@ -211,6 +236,9 @@ def fetch_transcript(video_id: str, url: str) -> Tuple[Optional[str], Optional[s
     text = _fetch_via_transcript_api(video_id)
     if text:
         return text, "youtube-transcript-api"
+    text = _fetch_via_innertube(video_id)
+    if text:
+        return text, "innertube-android"
     text = _fetch_via_ytdlp(url)
     if text:
         return text, "yt-dlp-autosubs"
@@ -316,22 +344,35 @@ def _fmt_duration(seconds) -> str:
         return "unknown"
 
 
-def recursive_split(text: str, max_size: int, overlap: int) -> List[str]:
+def recursive_split(text: str, max_size: int, overlap: int,
+                    separators: Sequence[str] = ("\n\n", "\n", ". ", " ")) -> List[str]:
     """Recursive character splitting (the Recursive-512 shape): try paragraph,
     newline, sentence, then space boundaries; keep `overlap` chars of context
-    between adjacent chunks so no thought is cut mid-air."""
+    between adjacent chunks. A piece over `max_size` recurses on the remaining
+    separators, so no chunk exceeds `max_size`."""
     if len(text) <= max_size:
         return [text]
-    separator = next((s for s in ("\n\n", "\n", ". ", " ") if s in text), "")
-    splits = text.split(separator) if separator else list(text)
+    index = next((i for i, s in enumerate(separators) if s in text), None)
+    if index is None:
+        step = max(1, max_size - min(overlap, max_size // 2))
+        return [text[i:i + max_size] for i in range(0, len(text), step)]
+    separator = separators[index]
+    pieces: List[str] = []
+    for piece in text.split(separator):
+        if len(piece) > max_size:
+            pieces.extend(recursive_split(piece, max_size, overlap, separators[index + 1:]))
+        else:
+            pieces.append(piece)
     chunks: List[str] = []
     current = ""
-    for piece in splits:
+    for piece in pieces:
         if len(current) + len(piece) + len(separator) > max_size:
             if current:
                 chunks.append(current.strip())
             tail = current[max(0, len(current) - overlap):]
             current = tail + separator + piece
+            if len(current) > max_size:  # the overlap yields to the cap
+                current = piece
         else:
             current = current + separator + piece if current else piece
     if current.strip():
@@ -428,9 +469,11 @@ def grid_capture(title: str, content: str, tags: List[str],
     """Single write chokepoint — the only line in this tool that mutates the
     grid, so dry-run gating and tests both hang off one seam."""
     import nougen_shards.core as core  # lazy
-    return core.capture(EVENT_TYPE, title, content, tags=tags,
-                        density_score=_local_density(content),
-                        original_timestamp=original_timestamp)
+    result = core.capture(EVENT_TYPE, title, content, tags=tags,
+                          density_score=_local_density(content),
+                          original_timestamp=original_timestamp)
+    # A duplicate is already stored: a resumed video must pass its landed parts.
+    return bool(result) or getattr(result, "reason", None) == "duplicate"
 
 
 def process_video(url: str, dry_run: bool = False,
@@ -441,6 +484,8 @@ def process_video(url: str, dry_run: bool = False,
     if not video_id:
         logger.warning("no video id in %s; skipping", url)
         return "skipped-bad-url"
+    if "list=" in url:
+        logger.info("ingesting %s alone; its list= is ignored", video_id)
     if dedupe_check(video_id):
         logger.info("SKIP tube:%s already in the grid (%s)", video_id, url)
         return "skipped-duplicate"
@@ -452,7 +497,7 @@ def process_video(url: str, dry_run: bool = False,
     transcript, tier = fetch_transcript(video_id, url)
 
     tags = ["youtube", "nougentube", _slug(meta.get("channel")),
-            f"tube:{video_id}", "provenance:third_party"]
+            "provenance:third_party"]
     published = meta.get("published")
     if not published:
         tags.append("era-unknown")  # capture at now; never invent a date
@@ -460,19 +505,25 @@ def process_video(url: str, dry_run: bool = False,
         tags.append("no-transcript")
 
     payloads = distill(meta, url, transcript, tier)
+    total = len(payloads)
+
+    def part_tags(index: int) -> List[str]:
+        """tube:<id> is the dedupe marker, so only the last part carries it: a
+        run that dies partway must not read as complete on the next run."""
+        marker = [f"tube:{video_id}"] if index == total else []
+        return tags + [f"tube-part:{video_id}:{index}/{total}"] + marker
+
     if dry_run:
-        for p in payloads:
+        for i, p in enumerate(payloads, start=1):
             logger.info("DRY-RUN would capture: %r (%d chars, ts=%s, tags=%s)",
-                        p["title"], len(p["content"]), published or "now", tags)
+                        p["title"], len(p["content"]), published or "now", part_tags(i))
         return "captured-stub" if not transcript else "captured"
 
-    ok_all = True
-    for p in payloads:
-        ok = grid_capture(p["title"], p["content"], list(tags), published)
+    for i, p in enumerate(payloads, start=1):
+        ok = grid_capture(p["title"], p["content"], part_tags(i), published)
         logger.info("%s %s", "captured:" if ok else "REJECTED:", p["title"])
-        ok_all = ok_all and ok
-    if not ok_all:
-        return "failed"
+        if not ok:
+            return "failed"
     return "captured-stub" if not transcript else "captured"
 
 
@@ -494,7 +545,10 @@ def load_state(path: Path) -> Dict[str, Any]:
 
 
 def save_state(path: Path, state: Dict[str, Any]) -> None:
-    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    """Atomic: a kill mid-write must not cost the whole resume history."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def run_manifest(manifest_path: Path, dry_run: bool, limit: int) -> Dict[str, int]:
@@ -534,6 +588,40 @@ def run_manifest(manifest_path: Path, dry_run: bool, limit: int) -> Dict[str, in
 
 # ------------------------------------------------------------------------ CLI
 
+def _study_main(args) -> int:
+    """Export / summarise / ask / prompt for ONE video. Reads only; writes no shard."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import nougentube_study as study
+    vid = extract_video_id(args.source or "")
+    if not vid:
+        print("study commands need one video URL", file=sys.stderr)
+        return 2
+    text, tier = fetch_transcript(vid, args.source)
+    segs = study.parse_segments(text or "")
+    if not segs:
+        print(f"no transcript could be fetched for {vid} (tried every tier)", file=sys.stderr)
+        return 1
+    title = fetch_metadata(args.source, vid).get("title") or vid
+    try:
+        if args.export:
+            print(study.export(segs, args.export, vid, title))
+        elif args.prompt:
+            print(study.handoff_prompt(title, segs, lang=args.lang, timestamps=not args.no_timestamps))
+        else:
+            if args.summary:
+                r = study.summarize(title, segs, args.length, args.lang, not args.no_timestamps)
+            else:
+                r = study.chat(title, segs, args.ask)
+            print(r["text"])
+            if r["dropped"]:
+                print(f"\n[{len(r['dropped'])} line(s) left out: the transcript did not support them]", file=sys.stderr)
+            print(f"\n[transcript tier: {tier}; model: {study.OLLAMA_MODEL}; revisions: {r['revisions']}]", file=sys.stderr)
+    except study.StudyError as exc:
+        print(f"nougentube: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         prog="nougentube", description=__doc__.splitlines()[0])
@@ -547,7 +635,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="stop after N videos (0 = no limit)")
     ap.add_argument("--print-config", action="store_true",
                     help="show every resolved value and its source")
+    study = ap.add_argument_group("study (work on one video; nothing is captured unless you omit these)")
+    study.add_argument("--export", choices=["txt", "md", "srt", "vtt"], help="print the transcript in this format")
+    study.add_argument("--summary", action="store_true", help="summarise with the local model (verified against the transcript)")
+    study.add_argument("--length", choices=["short", "medium", "long"], default="medium", help="summary length")
+    study.add_argument("--lang", default="en", help="summary language code")
+    study.add_argument("--no-timestamps", action="store_true", help="summary without timestamps")
+    study.add_argument("--ask", metavar="QUESTION", help="answer a question from the transcript, citing moments")
+    study.add_argument("--prompt", action="store_true", help="print a paste-ready prompt (task + transcript) for another chat")
     args = ap.parse_args(argv)
+
+    if args.export or args.summary or args.ask or args.prompt:
+        return _study_main(args)
 
     if args.print_config:
         for name, value, source in _CONFIG_SOURCES:

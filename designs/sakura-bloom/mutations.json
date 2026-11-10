@@ -1,0 +1,14 @@
+[
+  {
+    "change": "Organic cherry bark panel (#381724 / #481e2e) with delicate rose border and 180ms lift.",
+    "selector": ".cherry-card"
+  },
+  {
+    "change": "High-contrast petal tip (#fcd1d7) with dark cherry ink (#210d15) for maximum conversion affordance.",
+    "selector": ".von-restorff-cta"
+  },
+  {
+    "change": "Accessible blossom focus ring outline with 3px offset.",
+    "selector": ":focus-visible"
+  }
+]

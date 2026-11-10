@@ -1,0 +1,67 @@
+{
+  "description": "Matte graphite capture instrument for browser extension popup, options page, context menu actions, and store listing.",
+  "dialect": "nougendesigns/v0",
+  "entry": {
+    "prose": "DESIGN.md",
+    "tokens": "tokens.css"
+  },
+  "name": "nougen-capture",
+  "provenance": [
+    {
+      "kind": "observed",
+      "note": "Existing semantic token names and workbench selectors.",
+      "source": "ui/src/styles.css"
+    },
+    {
+      "kind": "invented",
+      "note": "Graphite and amber palette; local Ollama draft, Codex review.",
+      "source": "NouGenDesigns v0 relay brief"
+    },
+    {
+      "kind": "observed",
+      "note": "200 Web Store extensions rated >=4.5 from 20 category listings; not a global ranking",
+      "source": "references/chrome-webstore-top200.json"
+    },
+    {
+      "kind": "observed",
+      "note": "icon hue neutral 51/blue 43 of 200; first screenshot light 85, mid 68, dark 47; 86/200 names use a tagline separator; median name 28 chars, description 99 chars; 22/200 mention AI; screenshot count median 10 per listing (range 1-12, saturates at 12, includes carousel promo tiles)",
+      "source": "references/chrome-webstore-analysis.md"
+    },
+    {
+      "kind": "inferred",
+      "note": "Popup states (capture ok/not captured/not configured/offline) must read the server's captured flag, never HTTP status.",
+      "source": "popup state specification"
+    },
+    {
+      "kind": "inferred",
+      "note": "Authentication token must never be shown after save; display masked verification status instead.",
+      "source": "options security rule"
+    },
+    {
+      "kind": "inferred",
+      "note": "Store title formatted as 'Brand: Function' under ~30 chars and store summary near ~100 chars derived from top-200 medians.",
+      "source": "store metadata constraints"
+    },
+    {
+      "kind": "inferred",
+      "note": "In-extension UI retains dark graphite surfaces, while light canvas is permitted only for store hero art based on screenshot brightness analysis.",
+      "source": "store visual presentation"
+    },
+    {
+      "kind": "inferred",
+      "note": "Reject AI badges and tags in copy, aligning with the observed 22/200 low-incidence pattern and instrument voice.",
+      "source": "copywriting policy"
+    }
+  ],
+  "schemaVersion": "od-design-system-project/v1",
+  "sourceDigest": "729945082cce61e351d575f5c6305e34cb9606d0dee6d2561d674dbd5b6db6db",
+  "surfaces": {
+    "ground": "--bg",
+    "ink": "--text"
+  },
+  "themes": [
+    "dark",
+    "light"
+  ],
+  "version": "0.1.0"
+}

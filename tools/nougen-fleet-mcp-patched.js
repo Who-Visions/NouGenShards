@@ -277,12 +277,14 @@ async function authenticate(request, env) {
     if (!await identityStillEnrolled(env, payload)) return null;
     let allowedTools = null;
     let tenantNodeUrl = null;
+    let tenantNodeToken = null;
     if (payload.eml && env.TENANTS && typeof env.TENANTS.get === "function") {
       try {
         const tRaw = await env.TENANTS.get(`tenant:${payload.eml.toLowerCase()}`);
         if (tRaw) {
           const tData = JSON.parse(tRaw);
           if (tData.node_url) tenantNodeUrl = tData.node_url;
+          if (typeof tData.token === "string" && tData.token) tenantNodeToken = tData.token;
           if (tData.tools && Array.isArray(tData.tools)) allowedTools = tData.tools;
         }
       } catch (_) {}
@@ -293,6 +295,7 @@ async function authenticate(request, env) {
       static: false,
       email: payload.eml || null,
       nodeUrl: tenantNodeUrl,
+      nodeToken: tenantNodeToken,
       allowedTools: allowedTools
     };
   }
@@ -994,6 +997,124 @@ function totalActivity(t) {
   return (t.input_tokens || 0) + (t.output_tokens || 0) + (t.cache_read || 0) + (t.cache_creation || 0);
 }
 __name(totalActivity, "totalActivity");
+
+// Cost rate table (USD per 1M tokens: input, output, cache_read, cache_creation, confidence).
+// "confirmed" = pulled from the provider's own current rate card. "guess" = no
+// published rate found for this exact model/field; a reasonable stand-in is used
+// so nothing silently drops out of a cost total, but it must never be presented
+// as exact. Matched by substring against the lowercased model name, first match
+// wins, most-specific patterns first -- mirrors the manual audit done 2026-11-06.
+var RATE_TABLE_VERSION = "tracker_rates/v1 (2026-11-06)";
+var RATE_TABLE = [
+  ["fable-5-1", 10.00, 50.00, 0.25, 12.50, "confirmed"],
+  ["fable 5.1", 10.00, 50.00, 0.25, 12.50, "confirmed"],
+  ["fable-5", 10.00, 50.00, 0.25, 12.50, "confirmed (prior-gen, same tier price)"],
+  ["mythos-5-1", 10.00, 50.00, 0.25, 12.50, "confirmed (same tier)"],
+  ["mythos 5.1", 10.00, 50.00, 0.25, 12.50, "confirmed (same tier)"],
+  ["opus-5-5", 4.00, 20.00, 0.20, 5.00, "confirmed"],
+  ["opus 5.5", 4.00, 20.00, 0.20, 5.00, "confirmed"],
+  ["opus-5", 5.00, 25.00, 0.50, 6.25, "confirmed (prior-gen table rate)"],
+  ["opus-4-8", 5.00, 25.00, 0.50, 6.25, "confirmed (table)"],
+  ["opus 4.8", 5.00, 25.00, 0.50, 6.25, "confirmed (table)"],
+  ["opus-4-6", 5.00, 25.00, 0.50, 6.25, "confirmed (table, 4.6==4.7/4.8 rate)"],
+  ["opus 4.6", 5.00, 25.00, 0.50, 6.25, "confirmed (table, 4.6==4.7/4.8 rate)"],
+  ["sonnet-5-5", 2.00, 10.00, 0.20, 2.50, "confirmed"],
+  ["sonnet 5.5", 2.00, 10.00, 0.20, 2.50, "confirmed"],
+  ["sonnet-5", 2.00, 10.00, 0.20, 2.50, "confirmed (prior-gen, same price as 5.5)"],
+  ["sonnet-4-6", 3.00, 15.00, 0.30, 3.75, "confirmed (table)"],
+  ["sonnet 4.6", 3.00, 15.00, 0.30, 3.75, "confirmed (table)"],
+  ["haiku-5-5", 0.10, 0.50, 0.01, 0.125, "guess: cache rate unpublished, assumed 1/10 input"],
+  ["haiku 5.5", 0.10, 0.50, 0.01, 0.125, "guess: cache rate unpublished, assumed 1/10 input"],
+  ["haiku-4-5", 1.00, 5.00, 0.10, 1.25, "confirmed i/o (table, 200K ctx); guess cache=1/10 input"],
+  ["gemini-4-argon", 2.00, 10.00, 0.10, 2.00, "confirmed (Google pricing page, thru 2026-11-30)"],
+  ["gemini 4 argon", 2.00, 10.00, 0.10, 2.00, "confirmed (Google pricing page, thru 2026-11-30)"],
+  ["gemini-3.1-pro", 2.00, 12.00, 0.20, 0, "confirmed (<=200K tier, search-verified)"],
+  ["gemini-3-flash", 0.50, 3.00, 0.05, 0.50, "confirmed i/o; guess cache=1/10 input"],
+  ["gemini-3.5-flash", 0.50, 3.00, 0.05, 0.50, "confirmed i/o; guess cache=1/10 input"],
+  ["gemini-2.5-flash", 0.50, 3.00, 0.05, 0.50, "guess: unverified this session, assumed gemini-3-flash tier"],
+  ["gemini-2.5-pro", 1.25, 10.00, 0.31, 1.25, "guess: legacy public rate, unverified this session"],
+  ["gpt-6-astra", 10.00, 50.00, 1.00, 10.00, "confirmed (OpenAI help page, search-verified)"],
+  ["gpt-6.1-sol", 2.00, 10.00, 0.20, 2.50, "guess: assumed gpt-6-sol tier (6.1 unconfirmed)"],
+  ["gpt-6-sol", 2.00, 10.00, 0.20, 2.50, "guess: assumed gpt-6-sol tier"],
+  ["gpt-5.6-sol", 2.00, 10.00, 0.20, 2.50, "guess: assumed gpt-6-sol tier"],
+  ["gpt-6-luna", 0.10, 0.50, 0.01, 0.10, "guess: aggregator-only, no official source"],
+  ["gpt-5.6-luna", 0.10, 0.50, 0.01, 0.10, "guess: assumed luna/cheapest tier"],
+  ["gpt-5.5", 0.10, 0.50, 0.01, 0.10, "guess: assumed luna/cheapest tier"],
+  ["gpt-5.4-mini", 0.15, 0.60, 0.015, 0.15, "guess: mini tier, no official source"],
+  ["gpt-5-codex-mini", 0.15, 0.60, 0.015, 0.15, "guess: codex-mini tier, no official source"],
+  ["gpt-5.1-codex-mini", 0.15, 0.60, 0.015, 0.15, "guess: codex-mini tier, no official source"],
+  ["gpt-5.1-codex-max", 5.00, 20.00, 0.50, 5.00, "guess: codex-max/premium tier, no official source"],
+  ["gpt-5.2-codex", 1.00, 5.00, 0.10, 1.00, "guess: codex-standard tier, no official source"],
+  ["gpt-5.6-terra", 1.00, 5.00, 0.10, 1.00, "guess: assumed mid-tier (terra)"],
+  ["gpt-5.4", 2.00, 10.00, 0.20, 2.00, "guess: assumed standard GPT tier"],
+  ["gpt-reserve", 0.50, 2.50, 0.05, 0.50, "guess: internal reserve/fallback lane, no published rate"],
+  ["codex-auto-review", 0.10, 0.50, 0.01, 0.10, "guess: no official rate, assumed cheapest/luna tier"],
+  ["gpt-oss-120b", 0, 0, 0, 0, "guess: open-weight model, assumed $0 (self-hosted/free lane)"],
+  ["gemma4", 0, 0, 0, 0, "confirmed: NouGen free local/cloud ollama lane, $0 by policy"],
+  ["gemini-m", 0.50, 3.00, 0.05, 0.50, "guess: unrecognized internal codename, assumed gemini-3-flash tier"],
+  ["auto-gemini-3", 0.50, 3.00, 0.05, 0.50, "guess: assumed gemini-3-flash tier (auto-router alias)"]
+];
+// Free-lane classification runs BEFORE the substring table and the paid
+// fallback (Codex P2 on #971): local ollama tags, custom fleet models,
+// OpenRouter ":free" routes and HF spaces are $0 by policy
+// (AGENTS.md free-lane mandate, tools/token_tracker.py::price_for). Without
+// this, `local/sol-ai:e4b` or `llama-3.3-70b-instruct:free` priced at the
+// generic mid-tier and tracker_daily invented spend for the free workload.
+const FREE_LANE_MARKERS = [
+  ":free", "local/", "ollama", "gemma", "sol-ai", "solai", "dav1d", "kaedra", "iris-ai",
+  "rhea-noir", "griot", "davos", "mrs-b", "yukiai", ":e2b", ":e4b", "-cloud", "gpt-oss",
+  "hf/", "huggingface", "qwen3-coder-next", "deepseek-v4", "glm-5.1",
+];
+function isFreeLane(m) {
+  return FREE_LANE_MARKERS.some((k) => m.includes(k));
+}
+__name(isFreeLane, "isFreeLane");
+function rateFor(model) {
+  const m = String(model || "").toLowerCase();
+  if (m.includes("synthetic") || m === "(unknown)" || m === "unknown" || !m) return null;
+  if (isFreeLane(m)) return { input: 0, output: 0, cache_read: 0, cache_creation: 0, confidence: "confirmed: free lane (local/ollama-cloud/openrouter :free/hf), $0 by policy" };
+  for (const [pat, inp, out, cread, ccreate, confidence] of RATE_TABLE) {
+    if (m.includes(pat)) return { input: inp, output: out, cache_read: cread, cache_creation: ccreate, confidence };
+  }
+  return { input: 1.00, output: 5.00, cache_read: 0.10, cache_creation: 1.00, confidence: "guess: fully unrecognized model, assumed generic mid-tier -- check RATE_TABLE" };
+}
+__name(rateFor, "rateFor");
+// cold = price every token (incl. cache_read/cache_creation) at the full input
+// rate, as if no caching existed. cached = what was actually billed.
+function priceModel(model, t) {
+  const r = rateFor(model);
+  if (!r) return null;
+  const inp = t.input_tokens || 0, out = t.output_tokens || 0, cread = t.cache_read || 0, ccreate = t.cache_creation || 0;
+  const cold = (inp + cread + ccreate) * r.input / 1e6 + out * r.output / 1e6;
+  const cached = inp * r.input / 1e6 + cread * r.cache_read / 1e6 + ccreate * r.cache_creation / 1e6 + out * r.output / 1e6;
+  // Unrounded: callers aggregate these (priceModelsMap, continuation windows).
+  // Rounding here zeroed sub-cent buckets before they were summed (Codex P2).
+  return { cold, cached, confidence: r.confidence };
+}
+__name(priceModel, "priceModel");
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+__name(round2, "round2");
+// Display rounding keeps 4 decimals so a $0.004 bucket survives being summed
+// across 100 daily responses instead of reading as $0 in each.
+function round4(n) {
+  return Math.round(n * 1e4) / 1e4;
+}
+__name(round4, "round4");
+function priceModelsMap(models) {
+  const out = {};
+  let cold = 0, cached = 0, unpriced = [];
+  for (const [model, t] of Object.entries(models || {})) {
+    const p = priceModel(model, t);
+    if (!p) { unpriced.push(model); continue; }
+    cold += p.cold;
+    cached += p.cached;
+    out[model] = { cold: round4(p.cold), cached: round4(p.cached), confidence: p.confidence };
+  }
+  return { by_model: out, cold: round4(cold), cached: round4(cached), unpriced, rate_table_version: RATE_TABLE_VERSION };
+}
+__name(priceModelsMap, "priceModelsMap");
 async function shardHeaders(env) {
   return {
     // blade's _TokenGatedMCP reads x-ngs-token (or ?token=) only — it never
@@ -1716,6 +1837,55 @@ function toolError(message) {
   return { content: [{ type: "text", text: "Error: " + message }], isError: true };
 }
 __name(toolError, "toolError");
+// Engine attestation (2026-11-06): blade's Dav1d routes return JSON naming the
+// engine that actually ran ("agy-cli" or "ollama" + model). Passed through raw,
+// a caller read a dav1d:e2b persona answer as an AGY CLI analysis of a video.
+// Every Dav1d result now leads with the engine, and says plainly when it was a
+// model answer with no tools rather than a CLI run.
+function attestEngine(raw) {
+  let p = null;
+  try { p = JSON.parse(raw); } catch (e) {}
+  const engine = p && typeof p.engine === "string" ? p.engine : null;
+  const model = p && typeof p.model === "string" ? p.model : null;
+  let header;
+  if (engine === "agy-cli") {
+    header = `[engine: agy-cli (real CLI run), exit ${p.exit_code ?? "?"}, host ${p.host ?? "?"}]`;
+  } else if (engine === "ollama") {
+    header = `[engine: ollama/${model ?? "?"}: a local model answer, NOT an AGY CLI run; it had no tools, no web and no video access, so treat any claims about external content as unverified]`;
+  } else {
+    header = "[engine: unattested: the node did not say what ran; treat this as unverified]";
+  }
+  return { header, engine, model, attested: engine !== null, parsed: p };
+}
+__name(attestEngine, "attestEngine");
+// Source verification for media routes: a transcript counts as retrieved only
+// when it carries real timestamped segments, and an ingest only when the node
+// reports captured shards. Anything else is not evidence of retrieval.
+function transcriptEvidence(body, structured) {
+  let s = structured && typeof structured === "object" ? structured : null;
+  if (!s) { try { const p = JSON.parse(body); if (p && typeof p === "object") s = p; } catch (e) {} }
+  const stamps = /* @__PURE__ */ __name((t) => (String(t || "").match(/\[?\b\d{1,2}:\d{2}(?::\d{2})?\]?\s+\S/g) || []).length, "stamps");
+  let segments = (String(body || "").match(/^\s*\[?\d{1,2}:\d{2}(?::\d{2})?\]?\s+\S/gm) || []).length;
+  let captured = 0;
+  if (s) {
+    // nougentube_transcript: {transcript_available, transcript}
+    // Every media route returns a decoded `transcript` (subtitles or Whisper);
+    // a non-empty one is retrieval unless the node says transcript_available: false.
+    const hasTranscript = typeof s.transcript === "string" && s.transcript.trim() !== "" && s.transcript_available !== false;
+    if (hasTranscript) segments = Math.max(segments, stamps(s.transcript) || 1);
+    // `sharded` is also true for a captured-stub, so it counts only with a transcript.
+    if (hasTranscript && s.sharded === true) captured = Math.max(captured, 1);
+    // nougentube_ingest: {counts: {captured: N}}. "captured-stub" (no transcript)
+    // and "skipped-duplicate" are deliberately not evidence.
+    if (Number.isFinite(s.captured)) captured = Math.max(captured, s.captured);
+    else if (s.counts && Number.isFinite(s.counts.captured)) captured = Math.max(captured, s.counts.captured);
+  } else {
+    const m = String(body || "").match(/"captured"\s*:\s*(\d+)/);
+    if (m) captured = Number(m[1]);
+  }
+  return { segments, captured, verified: segments > 0 || captured > 0 };
+}
+__name(transcriptEvidence, "transcriptEvidence");
 // Freshness signal for shard reads (relay leg 20260831T235317Z, item 4): the
 // blade/Space split-brain history means "which node answered" matters as
 // much as "when" - a recall that quietly hit a lagging replica should be
@@ -2034,7 +2204,7 @@ var TOOLS = [
   {
     name: "tracker_daily",
     title: "Tracker Daily",
-    description: "One lane's usage daily for a date: token counts (exact + estimated), invocations, per-model breakdown.\n\nArgs: lane (e.g. 'blade1tb'), date (YYYY-MM-DD).",
+    description: "One lane's usage daily for a date: token counts (exact + estimated), invocations, per-model breakdown, and a priced `cost` field (cold = uncached-equivalent, cached = actual, per-model + total, each tagged confirmed/guess). The raw `sketch` debug array is stripped -- it carried no usage signal and was the single largest cause of context blowups on multi-day sweeps.\n\nArgs: lane (e.g. 'blade1tb'), date (YYYY-MM-DD).",
     inputSchema: {
       type: "object",
       properties: {
@@ -2049,7 +2219,7 @@ var TOOLS = [
   {
     name: "tracker_spend",
     title: "Tracker Spend Summary",
-    description: "Aggregate usage across dailies: invocations, exact token counts and total_activity, per lane. Dates are inclusive; omit lane to sweep all lanes. Spends a bounded subrequest budget: if the window needs more dailies than the budget allows, the result is marked partial:true and returns next_since \u2014 continue from there and sum the non-overlapping windows for an exact total. A total is only complete when complete:true. total_activity = input_tokens + output_tokens + cache_read + cache_creation (total_activity/v1); reasoning tokens are reported separately and not summed.\n\nArgs: lane (optional), since (YYYY-MM-DD, optional), until (YYYY-MM-DD, optional).",
+    description: "Aggregate usage across dailies: invocations, exact token counts, total_activity, and a per-model token breakdown, per lane -- plus a priced `cost` field (cold = uncached-equivalent, cached = actual; per-model and grand total; each model tagged confirmed/guess, never silently dropped). Dates are inclusive; omit lane to sweep all lanes. Spends a bounded subrequest budget: if the window needs more dailies than the budget allows, the result is marked partial:true and returns next_since \u2014 continue from there and sum the non-overlapping windows for an exact total (including per-model). A total is only complete when complete:true -- cost on a partial result will undercount. total_activity = input_tokens + output_tokens + cache_read + cache_creation (total_activity/v1); reasoning tokens are reported separately and not summed.\n\nArgs: lane (optional), since (YYYY-MM-DD, optional), until (YYYY-MM-DD, optional).",
     inputSchema: {
       type: "object",
       properties: {
@@ -4608,14 +4778,23 @@ Other lanes see it on their next relay check.`,
     return text(lines.join("\n"), { lanes, unreadable, complete: unreadable.length === 0 });
   },
   async tracker_daily(args, env) {
-    const daily = await trackerDaily(env, args.lane, args.date);
+    const raw = await trackerDaily(env, args.lane, args.date);
+    // `sketch` is an internal dedup/debug array (dozens of hashes) with no
+    // value to a caller and no bearing on token totals -- it was the single
+    // biggest cause of context blowups when sweeping many days (2026-11-06
+    // incident: a 10-day pull exhausted a subagent's budget on this field
+    // alone). Dropped here, not upstream, so the raw store stays untouched.
+    const { sketch, ...daily } = raw;
     const e = daily.exact || {};
+    const cost = priceModelsMap(daily.models);
+    daily.cost = cost;
     const md = [
       `**${args.lane} \u2014 ${args.date}**`,
       "",
       `invocations: ${daily.invocations ?? "?"}`,
       `exact tokens: in ${e.input_tokens ?? 0} / out ${e.output_tokens ?? 0} / cache-read ${e.cache_read ?? 0} / cache-create ${e.cache_creation ?? 0}`,
-      `models: ${Object.keys(daily.models || {}).join(", ") || "(none)"}`
+      `models: ${Object.keys(daily.models || {}).join(", ") || "(none)"}`,
+      `cost (USD, ${RATE_TABLE_VERSION}): cold $${cost.cold.toFixed(2)} / cached $${cost.cached.toFixed(2)}` + (cost.unpriced.length ? ` -- unpriced: ${cost.unpriced.join(", ")}` : "")
     ].join("\n");
     return text(md, daily);
   },
@@ -4640,7 +4819,8 @@ Other lanes see it on their next relay check.`,
         input_tokens: 0,
         output_tokens: 0,
         cache_read: 0,
-        cache_creation: 0
+        cache_creation: 0,
+        models: {}
       };
       // Oldest-first so next_since walks forward deterministically and a
       // caller summing consecutive windows reproduces the full total exactly.
@@ -4663,17 +4843,34 @@ Other lanes see it on their next relay check.`,
         totals.output_tokens += e.output_tokens || 0;
         totals.cache_read += e.cache_read || 0;
         totals.cache_creation += e.cache_creation || 0;
+        for (const [model, mt] of Object.entries(daily.models || {})) {
+          const acc = totals.models[model] || (totals.models[model] = { input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0 });
+          acc.input_tokens += mt.input_tokens || 0;
+          acc.output_tokens += mt.output_tokens || 0;
+          acc.cache_read += mt.cache_read || 0;
+          acc.cache_creation += mt.cache_creation || 0;
+        }
       }
       totals.total_activity = totalActivity(totals);
+      totals.cost = priceModelsMap(totals.models);
       perLane.push(totals);
     }
     const grand = perLane.reduce((acc, t) => {
       for (const k of ["days", "requested_days", "missing_days", "invocations", "input_tokens", "output_tokens", "cache_read", "cache_creation"]) {
         acc[k] = (acc[k] || 0) + t[k];
       }
+      acc.models = acc.models || {};
+      for (const [model, mt] of Object.entries(t.models)) {
+        const a = acc.models[model] || (acc.models[model] = { input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0 });
+        a.input_tokens += mt.input_tokens;
+        a.output_tokens += mt.output_tokens;
+        a.cache_read += mt.cache_read;
+        a.cache_creation += mt.cache_creation;
+      }
       return acc;
     }, {});
     grand.total_activity = totalActivity(grand);
+    grand.cost = priceModelsMap(grand.models);
     const nextSince = deferred.length ? deferred.map((d) => d.date).sort()[0] : null;
     const partial = failures.length > 0 || deferred.length > 0;
     const span = args.since || args.until ? ` (${args.since || "\u2026"} \u2192 ${args.until || "\u2026"})` : " (all time scanned)";
@@ -4688,6 +4885,7 @@ Other lanes see it on their next relay check.`,
       lines.push(`- **${t.lane}**: ${t.days}/${t.requested_days} days aggregated, ${t.invocations} invocations, in ${t.input_tokens.toLocaleString()} / out ${t.output_tokens.toLocaleString()}, activity ${t.total_activity.toLocaleString()}`);
     }
     lines.push("", `**Total**: ${grand.invocations || 0} invocations, in ${(grand.input_tokens || 0).toLocaleString()} / out ${(grand.output_tokens || 0).toLocaleString()}, activity ${grand.total_activity.toLocaleString()} (${TOTAL_ACTIVITY_VERSION} = ${TOTAL_ACTIVITY_DEF})`);
+    lines.push(`**Cost** (USD, ${RATE_TABLE_VERSION}${partial ? " -- PARTIAL, will undercount" : ""}): cold $${grand.cost.cold.toFixed(2)} / cached $${grand.cost.cached.toFixed(2)}` + (grand.cost.unpriced.length ? ` -- unpriced: ${grand.cost.unpriced.join(", ")}` : "") + " -- entries marked guess in by_model are not official rates.");
     if (partial) {
       lines.push(
         "",
@@ -5257,7 +5455,14 @@ ${body}`,
       });
       const raw = await res.text();
       if (!res.ok) return toolError("dav1d /dav1d/exec " + res.status + ": " + raw.slice(0, 300));
-      return { content: [{ type: "text", text: raw }] };
+      const att = attestEngine(raw);
+      const structured = { engine: att.engine, model: att.model, attested: att.attested, agy_cli: att.engine === "agy-cli" };
+      // This tool promises an AGY CLI execution; anything else answering is a
+      // failure to deliver that, not a success with a different engine.
+      if (att.engine !== "agy-cli") {
+        return { content: [{ type: "text", text: "Error: dav1d_exec did not run the AGY CLI. " + att.header + "\n" + raw }], structuredContent: structured, isError: true };
+      }
+      return { content: [{ type: "text", text: att.header + "\n" + raw }], structuredContent: structured };
     } catch (err) {
       if (err.name === "AbortError") {
         return toolError(`dav1d_exec timed out waiting on blade (client bound ${innerTimeoutS}s + ${bufferMs}ms buffer) — Dav1d's own ${innerTimeoutS}s bound should have answered first; check blade's node directly if this recurs`);
@@ -5300,7 +5505,11 @@ ${body}`,
         return out;
       }
       if (!res.ok) return toolError("ask_dav1d /dav1d/ask " + res.status + ": " + raw.slice(0, 300));
-      return { content: [{ type: "text", text: raw }] };
+      const att = attestEngine(raw);
+      return {
+        content: [{ type: "text", text: att.header + "\n" + raw }],
+        structuredContent: { engine: att.engine, model: att.model, attested: att.attested, agy_cli: att.engine === "agy-cli" }
+      };
     } catch (err) {
       if (err.name === "AbortError") return toolError(`ask_dav1d timed out after ${timeoutS}s waiting on blade's ollama lane (cold load can take 5-30s; raise timeout or check ollama on blade)`);
       return toolError("ask_dav1d unreachable: " + (err.message || String(err)));
@@ -5564,55 +5773,46 @@ ${body}`,
     if (unset) return toolError(unset);
     const url = args.url || args.source;
     if (!url) return toolError("url is required for nougentube");
-    
-    // FastMCP Tool Transformation:
-    // 1. Native nougentube across fleet (Phoebus / Blade)
-    try {
-      const res = await shardCall(env, "nougentube", { url });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-
-    // 2. Subtitle extraction (nougentube_transcript on Phoebus / Blade / Space)
-    try {
-      const res = await shardCall(env, "nougentube_transcript", { url });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-
-    // 3. Media transcribe fallback
-    try {
-      const res = await shardCall(env, "transcribe_media", { source: url, url, language: args.language, whisper_model: args.whisper_model });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-
-    // 4. Whisper transcription fallback
-    try {
-      const res = await shardCall(env, "nougen_media_transcribe", {
-        url,
-        language: args.language || null,
-        whisper_model: args.whisper_model || "tiny",
-        auto_shard: args.auto_shard !== false
-      });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-    } catch (e) {}
-
-    // 5. Grid YouTube ingest fallback
-    try {
-      const res = await shardCall(env, "youtube_ingest", {
-        url,
-        extract_chars: 2000,
-        shard: args.auto_shard !== false
-      });
-      const body = (res.content || []).map((c) => c.text || "").join("\n");
-      if (!res.isError && body && !body.includes("unknown tool")) return text(body, res.structuredContent);
-      if (body) return toolError(body);
-    } catch (e) {
-      return toolError(`nougentube ingest failed: ${e.message || String(e)}`);
+    const shard = args.auto_shard !== false;
+    // Each route must PROVE retrieval: timestamped transcript segments, or a node
+    // report of captured shards. A route that answers without that evidence (or
+    // a gateway 524) is recorded as failed and the next independent route runs;
+    // nothing is ever returned as retrieved without evidence.
+    const routes = [
+      ["nougentube", { url }],
+      ["nougentube_transcript", { url }],
+      ["transcribe_media", { source: url, url, language: args.language, whisper_model: args.whisper_model }],
+      ["nougen_media_transcribe", { url, language: args.language || null, whisper_model: args.whisper_model || "tiny", auto_shard: shard }],
+      ["youtube_ingest", { url, extract_chars: 2000, shard }]
+    ];
+    const failures = [];
+    for (const [tool, payload] of routes) {
+      try {
+        const res = await shardCall(env, tool, payload);
+        const body = (res.content || []).map((c) => c.text || "").join("\n");
+        if (res.isError || !body || body.includes("unknown tool")) {
+          failures.push(`${tool}: ${res.isError ? body.slice(0, 160) || "error" : body ? "unknown tool on node" : "empty reply"}`);
+          continue;
+        }
+        const ev = transcriptEvidence(body, res.structuredContent);
+        if (!ev.verified) {
+          failures.push(`${tool}: answered without transcript segments or captured shards (not evidence of retrieval)`);
+          continue;
+        }
+        const header = ev.segments > 0
+          ? `[transcript verified: ${ev.segments} timestamped segment(s) via ${tool}]`
+          : `[ingest verified: ${ev.captured} shard(s) captured on the node via ${tool}]`;
+        const structured = { ...(res.structuredContent || {}), retrieved: true, route: tool, segments: ev.segments, captured: ev.captured, failed_routes: failures };
+        return text(header + "\n" + body, structured);
+      } catch (e) {
+        failures.push(`${tool}: ${(e && e.message) || String(e)}`.slice(0, 200));
+      }
     }
-    return toolError("nougentube: all media and transcript routes failed");
+    return {
+      content: [{ type: "text", text: "Error: nougentube retrieved nothing; no route returned a transcript or captured shards. Nothing about this video is verified.\n" + failures.map((f) => "- " + f).join("\n") }],
+      structuredContent: { retrieved: false, failed_routes: failures },
+      isError: true
+    };
   },
   async transcribe_media(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -6028,13 +6228,11 @@ ${body}`,
     return text(body || "(no output)", result.structuredContent);
   },
   async nougenmsg_peers(args, env) {
-    return text(JSON.stringify({
-      peers: [
-        { name: "blade", host: "192.168.1.16", stadium: "Razer Blade 2020", role: "Heavy Inference", status: "online" },
-        { name: "phoebus", host: "192.168.1.78", stadium: "Mac Mini", role: "Backbone", status: "online" },
-        { name: "whoart", host: "192.168.1.187", stadium: "ProArt PX13", role: "Tactical/Edge (Hyperion)", status: "online" }
-      ]
-    }, null, 2));
+    // Peers come from Worker config (NOUGEN_PEERS_JSON), never from source.
+    let peers = [];
+    try { peers = JSON.parse((env && env.NOUGEN_PEERS_JSON) || "[]"); } catch { peers = []; }
+    if (!Array.isArray(peers)) peers = [];
+    return text(JSON.stringify({ peers, source: peers.length ? "NOUGEN_PEERS_JSON" : "unset" }, null, 2));
   },
   async promote_context_to_shard(args, env) {
     const unset = gatewayUnconfigured(env);
@@ -6313,6 +6511,10 @@ async function handleMcp(request, env, origin) {
   if (auth.nodeUrl) {
     env = Object.assign(Object.create(env), {
       SHARD_GATEWAY_URL: auth.nodeUrl,
+      // The tenant's node authenticates with the tenant's own token. Never fall back to the
+      // worker-global SHARD_GATEWAY_TOKEN here: that is the owner's credential, and this
+      // URL is a tenant-controlled host.
+      SHARD_GATEWAY_TOKEN: auth.nodeToken || "",
       HALLWAY_CAPTURE_URL: `${auth.nodeUrl.replace(/\/+$/, "")}/v1/shards/capture`
     });
   }

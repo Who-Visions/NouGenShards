@@ -27,6 +27,8 @@ import json
 import glob
 import time
 import struct
+import functools
+import logging
 import sqlite3
 import urllib.request
 from typing import List, Optional
@@ -34,16 +36,32 @@ from typing import List, Optional
 def _normalize_host(h: str) -> str:
     """ollama client target. Handles missing scheme/port and 0.0.0.0 bind addr."""
     from urllib.parse import urlparse
-    h = (h or "").strip() or "http://127.0.0.1:11434"
+    h = (h or "").strip() or "http://127.0.0.1"
     if "://" not in h:
         h = "http://" + h
     h = h.replace("0.0.0.0", "127.0.0.1")  # bind-all is not a connectable target
     if not urlparse(h).port:
-        h = h.rstrip("/") + ":11434"
+        h = h.rstrip("/") + ":" + _discover_port(h.rstrip("/"))
     return h.rstrip("/")
 
 
-OLLAMA_HOST = _normalize_host(os.environ.get("OLLAMA_HOST"))
+def _discover_port(base: str) -> str:
+    """The daemon's port moves on this fleet (11434 and 11436 both seen); probe, then log the fallback."""
+    candidates = [p for p in (os.environ.get("OLLAMA_PORT"), "11434", "11436") if p]
+    for p in candidates:
+        try:
+            urllib.request.urlopen(f"{base}:{p}/api/tags", timeout=1.5)
+            return p
+        except Exception:  # pylint: disable=broad-except
+            continue
+    logging.getLogger(__name__).warning("no ollama daemon answered on %s; using %s", candidates, candidates[0])
+    return candidates[0]
+
+
+@functools.lru_cache(maxsize=1)
+def ollama_host() -> str:
+    """Resolved once per process, on first use, so importing this module never probes the network."""
+    return _normalize_host(os.environ.get("OLLAMA_HOST"))
 
 
 def _keep_alive():
@@ -64,6 +82,11 @@ VRAM_CHECK_EVERY = int(os.environ.get("NOUGEN_VRAM_CHECK_EVERY", "64"))  # rows 
 
 def _vram_used_mib() -> Optional[int]:
     import subprocess
+    import platform
+    if platform.system() == "Darwin":
+        from .darwin_gate import get_darwin_vm_telemetry
+        vm = get_darwin_vm_telemetry()
+        return int((vm.wired_ram_gb + vm.compressor_occupied_gb) * 1024)
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
@@ -78,7 +101,7 @@ def embed(text: str, model: str, timeout: float = 60.0) -> Optional[List[float]]
     """Single embedding via ollama /api/embed. Returns None on failure."""
     body = json.dumps({"model": model, "input": text, "keep_alive": _keep_alive()}).encode("utf-8")
     req = urllib.request.Request(
-        f"{OLLAMA_HOST}/api/embed", data=body,
+        f"{ollama_host()}/api/embed", data=body,
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -105,7 +128,7 @@ def embed_many(texts: List[str], model: str, timeout: float = 180.0) -> Optional
     """
     body = json.dumps({"model": model, "input": texts, "keep_alive": _keep_alive()}).encode("utf-8")
     req = urllib.request.Request(
-        f"{OLLAMA_HOST}/api/embed", data=body,
+        f"{ollama_host()}/api/embed", data=body,
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -137,6 +160,8 @@ def count_pending(vault_dir: str) -> dict:
     for db in _vault_dbs(vault_dir):
         conn = sqlite3.connect(db)
         try:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shards'").fetchone():
+                continue  # archive/side DBs in the vault dir carry no shards table
             total = conn.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
             pending = conn.execute("SELECT COUNT(*) FROM shards WHERE embedding IS NULL").fetchone()[0]
             out[os.path.basename(db)] = (pending, total)
@@ -146,43 +171,110 @@ def count_pending(vault_dir: str) -> dict:
 
 
 def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool = True,
-                progress: bool = True) -> dict:
+                progress: bool = True, reembed: bool = False) -> dict:
+    """Embed rows with ``embedding IS NULL``.
+
+    ``reembed=True`` also re-embeds rows whose stored vector has a different
+    dimension from the resolved provider's (768-d nomic rows after a switch to
+    384-d MiniLM, or the reverse). Without it a provider switch leaves the
+    vector lane skipping every mismatched DB (core logs it once per DB); with
+    it the vault converges on one dimension and stays resumable, because a row
+    already at the right dimension is never touched.
+    """
+    import platform
+    if platform.system() == "Darwin":
+        from .darwin_gate import demote_to_background_qos
+        demote_to_background_qos()
+
     conn = sqlite3.connect(db)
     done = 0
     failed = 0
+    deferred: dict = {}
     try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shards'").fetchone():
+            return {"db": os.path.basename(db), "skipped": "no shards table"}
         has_ver = _has_col(conn, "shards", "schema_version")
         conn.execute("PRAGMA busy_timeout=15000;")
+        # Provider-aware: ollama when it answers, in-process onnx otherwise
+        # (embed_providers). `model` keeps its meaning: an ollama model name, or
+        # 'onnx[:repo]'.
+        from . import embed_providers  # pylint: disable=import-outside-toplevel
+        _embed_one = lambda text: embed_providers.embed_text(text, model)          # noqa: E731
+        _embed_batch = lambda texts: embed_providers.embed_texts(texts, model)     # noqa: E731
+        where = "embedding IS NULL"
+        params: tuple = ()
+        dim = None
+        if probe or reembed:
+            # Smoke-test one embedding before committing to the whole DB. Its
+            # length is the provider's dimension, which --reembed needs to know
+            # which stored rows are stale.
+            sample = conn.execute("SELECT title, content FROM shards WHERE " + where + " LIMIT 1").fetchone() \
+                or conn.execute("SELECT title, content FROM shards LIMIT 1").fetchone()
+            if sample:
+                test = _embed_one((sample[0] or "") + "\n" + (sample[1] or "")[:512])
+                if not test:
+                    return {"db": os.path.basename(db),
+                            "error": "no embedding provider answered: " + embed_providers.describe_unavailable(model)}
+                dim = len(test)
+        if reembed and dim:
+            where = "(embedding IS NULL OR length(embedding) != ?)"
+            params = (dim * 4,)
         rows = conn.execute(
-            "SELECT id, title, content FROM shards WHERE embedding IS NULL"
+            "SELECT id, title, content FROM shards WHERE " + where, params
         ).fetchall()
-        if probe and rows:
-            # Smoke-test one embedding before committing to the whole DB.
-            test = embed((rows[0][1] or "") + "\n" + (rows[0][2] or "")[:512], model)
-            if not test:
-                return {"db": os.path.basename(db), "error": "embed endpoint unavailable (start ollama with --embeddings + valid model)"}
+        mismatched = 0
+        if reembed and dim:
+            mismatched = conn.execute(
+                "SELECT COUNT(*) FROM shards WHERE embedding IS NOT NULL AND length(embedding) != ?",
+                (dim * 4,)).fetchone()[0]
         if not execute:
-            return {"db": os.path.basename(db), "pending": len(rows), "would_write": True}
+            out = {"db": os.path.basename(db), "pending": len(rows), "would_write": True}
+            if dim:
+                out["provider_dim"] = dim
+            if reembed:
+                out["mismatched"] = mismatched
+            return out
 
         # VRAM is polled per batch, not per row: nvidia-smi is a subprocess spawn
         # (~50-100ms), and at one spawn per shard the probe costs more wall-clock
         # than the embedding it guards. Interval is env-tunable.
         for start in range(0, len(rows), batch):
             chunk = rows[start:start + batch]
+
+            # Darwin Jetsam memory pressure guard: pause if memory is tight
+            if platform.system() == "Darwin":
+                from .darwin_gate import get_memory_pressure_level, PRESSURE_WARNING, get_memory_pressure_name
+                pressure = get_memory_pressure_level()
+                if pressure >= PRESSURE_WARNING:
+                    import logging
+                    # Wait for the pressure to clear and then process THIS chunk; never skip it
+                    # (a skipped chunk stays embedding IS NULL while the run reports success).
+                    deadline = time.monotonic() + float(os.environ.get("NOUGEN_BACKFILL_PRESSURE_WAIT_S", "600"))
+                    while pressure >= PRESSURE_WARNING and time.monotonic() < deadline:
+                        logging.getLogger(__name__).warning(
+                            "darwin_gate: macOS memory pressure is %s (level %s); pausing backfill",
+                            get_memory_pressure_name(pressure), pressure
+                        )
+                        time.sleep(3)
+                        pressure = get_memory_pressure_level()
+                    if pressure >= PRESSURE_WARNING:
+                        deferred = {"deferred": "memory pressure", "remaining": len(rows) - start}
+                        break
+
             if (start // max(batch, 1)) % max(VRAM_CHECK_EVERY // max(batch, 1), 1) == 0:
                 used = _vram_used_mib()
                 if used is not None and used > VRAM_CEILING_MIB:
                     time.sleep(3)  # GPU hot — let it cool before continuing
 
             texts = [((t or "") + "\n" + (c or ""))[:4000] for _, t, c in chunk]
-            vecs = embed_many(texts, model)
+            vecs = _embed_batch(texts)
 
             pending_batch = []
             if vecs is None:
                 # Batch endpoint failed (oversized payload, transient error) --
                 # fall back per text so one bad row cannot drop the whole chunk.
                 for (rid, title, content), text in zip(chunk, texts):
-                    vec = embed(text, model)
+                    vec = _embed_one(text)
                     if not vec:
                         failed += 1
                         continue
@@ -201,7 +293,13 @@ def backfill_db(db: str, model: str, execute: bool, batch: int = 64, probe: bool
                 print(f"    {os.path.basename(db)}: {done}/{len(rows)} embedded, {failed} failed", flush=True)
     finally:
         conn.close()
-    return {"db": os.path.basename(db), "embedded": done, "failed": failed}
+    result = {"db": os.path.basename(db), "embedded": done, "failed": failed}
+    if dim:
+        result["provider_dim"] = dim
+    if reembed:
+        result["reembedded_mismatched"] = mismatched
+    result.update(deferred)
+    return result
 
 
 def _flush(conn, batch, has_ver):
@@ -224,6 +322,8 @@ def _main(argv=None):
     ap.add_argument("--model", default=os.environ.get("NOUGEN_EMBED_MODEL", "nomic-embed-text"))
     ap.add_argument("--execute", action="store_true")
     ap.add_argument("--batch", type=int, default=64)
+    ap.add_argument("--reembed", action="store_true",
+                    help="also re-embed rows whose stored dimension differs from the provider's")
     args = ap.parse_args(argv)
     if not args.vault:
         ap.error("--vault or NOUGEN_VAULT_DIR required")
@@ -235,7 +335,7 @@ def _main(argv=None):
     tot_t = sum(t for _, t in pend.values())
     print(f"pending (embedding IS NULL): {tot_p}/{tot_t} shards across {len(pend)} DBs")
     for db in _vault_dbs(args.vault):
-        res = backfill_db(db, args.model, execute=args.execute, batch=args.batch)
+        res = backfill_db(db, args.model, execute=args.execute, batch=args.batch, reembed=args.reembed)
         print(" ", res)
         if res.get("error"):
             print("\nABORT:", res["error"]); return 2

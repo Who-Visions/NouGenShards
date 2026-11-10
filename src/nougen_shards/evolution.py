@@ -165,7 +165,9 @@ class EvolutionEngine:
                 event_type="SKILL_EVOLVED",
                 title=f"Evolved Skill: {instruction}",
                 content=skill_content,
-                tags=["evolution", "openskill", "verified"]
+                # "sandbox-passed", not "verified": the evidence is a sandbox
+                # run, not the commit + test PoE the completion gate requires.
+                tags=["evolution", "openskill", "sandbox-passed"]
             )
             
             return {

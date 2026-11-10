@@ -1,0 +1,34 @@
+name: iterate-check
+
+on:
+  push:
+    paths: ["skills/nougen-iterate/check/**", ".github/workflows/iterate-check.yml"]
+  pull_request:
+    paths: ["skills/nougen-iterate/check/**", ".github/workflows/iterate-check.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: skills/nougen-iterate/check
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: skills/nougen-iterate/check/go.mod
+          cache: false
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test ./...
+      - name: smoke on template
+        run: go run . "$GITHUB_WORKSPACE/skills/nougen-iterate/ITERATE.template.md"

@@ -55,3 +55,34 @@ def test_emit_fleet_background_makes_models_async(monkeypatch):
     res = m.NouGenMsgBus.emit_fleet("hi", target="all", background=True)
     assert time.monotonic() - t0 < 0.3
     assert res["phoebus"]["ollama"] == {"queued": True, "via": "model"}
+
+
+def _stub_default_env(monkeypatch):
+    """Like _stub, but leaves NOUGEN_MSG_MODEL_LANES_ON_ALL unset to test the default."""
+    hits, done = _stub(monkeypatch, delay=0)
+    monkeypatch.delenv("NOUGEN_MSG_MODEL_LANES_ON_ALL", raising=False)
+    return hits, done
+
+
+def test_all_broadcast_skips_model_lanes_by_default(monkeypatch):
+    hits, _ = _stub_default_env(monkeypatch)
+    res = m.NouGenMsgBus.live_ping(target="all", text="hi")
+    assert "ollama" not in res and "openrouter" not in res
+    assert "ping_ollama" not in hits and "ping_openrouter" not in hits
+    assert {"ping_claude", "ping_codex", "ping_antigravity"} <= set(hits)
+
+
+def test_all_broadcast_model_lanes_are_opt_in(monkeypatch):
+    hits, _ = _stub_default_env(monkeypatch)
+    monkeypatch.setenv("NOUGEN_MSG_MODEL_LANES_ON_ALL", "1")
+    res = m.NouGenMsgBus.live_ping(target="all", text="hi")
+    assert "ollama" in res and "openrouter" in res
+
+
+def test_explicit_model_targets_still_reach_their_lane(monkeypatch):
+    hits, _ = _stub_default_env(monkeypatch)
+    m.NouGenMsgBus.live_ping(target="ollama:gemma4:e2b", text="hi")
+    assert hits == ["ping_ollama"]
+    hits.clear()
+    m.NouGenMsgBus.live_ping(target="openrouter", text="hi")
+    assert hits == ["ping_openrouter"]

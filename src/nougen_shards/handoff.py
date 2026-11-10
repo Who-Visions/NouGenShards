@@ -736,6 +736,9 @@ def create_handoff(
         "git": git_info,
         "tasks": compact_tasks if compact else tasks,
         "session_id": brain_dir.name if brain_dir else "unknown",
+        # Where the handoff was written from: lets a session-end hook tell its own
+        # handoff from one another session wrote into the shared registry.
+        "cwd": str(Path.cwd()),
         "agent": agent.lower(),
         "machine": identity,
         "status": "open",

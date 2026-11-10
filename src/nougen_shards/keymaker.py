@@ -148,6 +148,11 @@ class _DataBlob(ctypes.Structure):
 
 def _dpapi_call(func_name: str, data: bytes) -> bytes:
     """Invokes CryptProtectData/CryptUnprotectData on the given bytes."""
+    # A vault synced from a Windows node can carry DPAPI rows onto macOS/Linux.
+    # Raise the OSError callers already handle, not AttributeError on `windll`,
+    # which escaped _export_to_csv and failed ingest_secret after its commit.
+    if not hasattr(ctypes, "windll"):
+        raise OSError(f"{func_name} unavailable: DPAPI is Windows-only")
     blob_in = _DataBlob(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)),
                                               ctypes.POINTER(ctypes.c_char)))
     blob_out = _DataBlob()
@@ -322,7 +327,7 @@ def find_legacy_stores(roots=None) -> list:
 # rows) so that "wrong store" and "never ingested" become distinguishable, and
 # a divergence fails loud instead of None.
 ENV_VAULT_PROBE = "NOUGEN_VAULT_PROBE"          # "0" disables discovery (tests)
-ENV_VAULT_DIVERGENCE = "NOUGEN_VAULT_DIVERGENCE"  # warn (default) | error | adopt
+ENV_VAULT_DIVERGENCE = "NOUGEN_VAULT_DIVERGENCE"  # adopt (default) | warn (default when the store is pinned) | error
 _DIVERGENCE_MODES = ("warn", "error", "adopt")
 
 
@@ -334,12 +339,24 @@ def _probe_enabled() -> bool:
     return os.getenv(ENV_VAULT_PROBE, "1").strip() != "0"
 
 
+def _default_divergence_mode() -> str:
+    """adopt when nobody chose the active store (it was discovered), warn when it was pinned.
+
+    A pinned store (NOUGEN_SECRETS_VAULT_DIR) is an explicit choice, so a key elsewhere is
+    reported, not used. A discovered store is just the probe's best guess: a key that lives
+    in another live store is returned read-only (with the same warning) instead of dropped,
+    which is what left 134 Blade keys looking absent on 2026-11-05.
+    """
+    return "warn" if os.getenv(ENV_SECRETS_VAULT, "").strip() else "adopt"
+
+
 def _divergence_mode() -> str:
-    mode = os.getenv(ENV_VAULT_DIVERGENCE, "warn").strip().lower() or "warn"
+    default = _default_divergence_mode()
+    mode = os.getenv(ENV_VAULT_DIVERGENCE, default).strip().lower() or default
     if mode not in _DIVERGENCE_MODES:
-        logger.warning("%s=%r is not one of %s; using 'warn'.",
-                       ENV_VAULT_DIVERGENCE, mode, "|".join(_DIVERGENCE_MODES))
-        mode = "warn"
+        logger.warning("%s=%r is not one of %s; using '%s'.",
+                       ENV_VAULT_DIVERGENCE, mode, "|".join(_DIVERGENCE_MODES), default)
+        mode = default
     return mode
 
 
@@ -848,6 +865,8 @@ def list_cloud_nodes() -> list:
 
 
 CANONICAL_ALIASES = {
+    "EXA_API_KEY": ["EXA_API_KEY_1", "EXA_API_KEY_2", "EXA_API_KEY_3", "EXA_API_KEY_4"],
+    "CLOUDFLARE_API_TOKEN": ["CLOUDFLARE_API_TOKEN_NOUGEN_FULL", "CLOUDFLARE_API_TOKEN_WHOENTERTAINS"],
     "ARLAI_API_KEY": ["ARLIAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
     "ARLIAI_API_KEY": ["ARLAI_API_KEY", "ARLIAI_KEY_EATSRUGER_GMAIL_COM", "arlai_eatsruger_key"],
     "OLLAMA_MRSB_OLLAMA_KEY": ["OLLAMA_MRSB_OLLAMAA_KEY"],
@@ -933,6 +952,12 @@ def get_secret(key: str) -> Optional[str]:
     val = _read_secret_row(resolution["active"], key)
     if val is not None:
         return val
+    # The active store's own alias (GEMINI_API_KEY for GOOGLE_API_KEY) beats any other store,
+    # so adopting from elsewhere never replaces a credential the active store already holds.
+    for alias in CANONICAL_ALIASES.get(key, []):
+        alias_val = _read_secret_row(resolution["active"], alias)
+        if alias_val is not None:
+            return alias_val
 
     # Absent from the active store: check the other live candidates before
     # concluding "never ingested" (the moved-vault trap, measured 2026-08-15).
@@ -1271,4 +1296,3 @@ if __name__ == "__main__":
             print(f"[*] Auto-enved {res['repo']}: {res['populated_count']} keys written to {res['path']}")
     else:
         print("Invalid command or arguments.")
-

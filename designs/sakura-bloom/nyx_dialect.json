@@ -1,0 +1,34 @@
+{
+  "package": "sakura-bloom",
+  "nyx_version": "1.0.0-cyber",
+  "aesthetic_dialect": "Cyberpunk-Nocturnal-Matrix",
+  "surfaces": {
+    "canvas": "#120b10",
+    "card_substrate": "#381725",
+    "glass_ambient": "#28111b",
+    "specular_rim": "inset 0 1px 0 rgba(255, 255, 255, 0.12)"
+  },
+  "light_trail": {
+    "gradient": "conic-gradient(from 0deg, transparent 0deg, #c3829e 90deg, #e9b1cd 180deg, #fcd1d7 270deg, transparent 360deg)",
+    "glow_spread": "0 0 28px -4px #e9b1cd80",
+    "border_width": "1px"
+  },
+  "glitch": {
+    "channel_red": "#fcd1d7",
+    "channel_cyan": "#e9b1cd",
+    "displacement_px": "2px",
+    "cycle_ms": 180
+  },
+  "hud_telemetry": {
+    "label_color": "#d8b2c2",
+    "meter_bg": "#120b10cc",
+    "meter_fill": "linear-gradient(90deg, #c3829e 0%, #e9b1cd 60%, #fcd1d7 100%)",
+    "meter_glow": "0 0 12px #fcd1d7aa"
+  },
+  "typography": {
+    "heading": "#ffe7de",
+    "body": "#ffe7de",
+    "caption": "#d8b2c2",
+    "mono_code": "#fcd1d7"
+  }
+}

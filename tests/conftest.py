@@ -10,11 +10,65 @@ The accident was doing the isolating. This makes it explicit: every test gets it
 own empty secrets vault, so no test can read, mutate, or leak real credentials.
 A test that wants a specific location can still set the env var itself.
 """
+import gc
 import os
+import tempfile
 
 import pytest
 
-from nougen_shards import keymaker
+from nougen_shards import core, keymaker
+
+# The read-only connection pool keeps SQLite handles open across calls. On
+# Windows an open handle blocks deleting the file, so every test fixture that
+# yields from a TemporaryDirectory failed teardown with WinError 32/267. Module
+# fixtures tear down before conftest ones, so a conftest fixture would close the
+# pool too late; closing it inside cleanup runs at the right moment everywhere.
+_tempdir_cleanup = tempfile.TemporaryDirectory.cleanup
+
+
+def _cleanup_closing_pool(self):
+    core.close_readonly_pool()
+    gc.collect()  # unreferenced sqlite3 connections close only when collected
+    _tempdir_cleanup(self)
+
+
+tempfile.TemporaryDirectory.cleanup = _cleanup_closing_pool
+
+
+def _dpapi_usable() -> bool:
+    try:
+        keymaker._dpapi_call("CryptProtectData", b"probe")
+        return True
+    except OSError:
+        return False
+
+
+# Sandboxed or service shells on Windows get ERROR_ACCESS_DENIED from DPAPI
+# even though the code path is fine. Swap in a reversible stand-in only there,
+# so the keymaker logic stays covered instead of failing on the host.
+_DPAPI_FAKE = os.name == "nt" and not _dpapi_usable()
+
+
+def _fake_dpapi_call(func_name, data):
+    # Real blobs start with _DPAPI_MAGIC and the read path detects layers by it.
+    magic = keymaker._DPAPI_MAGIC
+    if func_name == "CryptProtectData":
+        return magic + bytes(b ^ 0x5A for b in data)
+    if not data.startswith(magic):
+        raise OSError(f"{func_name} failed (DPAPI)")
+    return bytes(b ^ 0x5A for b in data[len(magic):])
+
+
+@pytest.fixture(autouse=True)
+def dpapi_stand_in(monkeypatch):
+    """Returns ``apply(module)`` so tests that reload keymaker can re-patch it."""
+    def apply(module):
+        if _DPAPI_FAKE:
+            monkeypatch.setattr(module, "_dpapi_call", _fake_dpapi_call)
+        return module
+
+    apply(keymaker)
+    return apply
 
 
 @pytest.fixture(autouse=True)

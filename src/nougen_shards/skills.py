@@ -132,6 +132,7 @@ class Skill:
     description: str
     path: Path
     body: str = field(repr=False, default="")
+    tier: str = ""
 
     @property
     def summary(self) -> str:
@@ -156,7 +157,23 @@ def _load_file(path: Path, fallback_name: str) -> Optional[Skill]:
             if candidate:
                 description = candidate[:200]
                 break
-    return Skill(name=name, description=description, path=path, body=body)
+    return Skill(name=name, description=description, path=path, body=body,
+                 tier=meta.get("tier", "").strip().upper())
+
+
+def _include_candidates() -> bool:
+    return os.environ.get("NOUGEN_SKILLS_INCLUDE_CANDIDATES", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _cache_ttl_s() -> float:
+    """Cache TTL in seconds; ``NOUGEN_SKILLS_CACHE_TTL_S`` overrides the default."""
+    raw = _env("NOUGEN_SKILLS_CACHE_TTL_S")
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            logger.warning("bad NOUGEN_SKILLS_CACHE_TTL_S=%r, using %ss", raw, _CACHE_TTL_S)
+    return _CACHE_TTL_S
 
 
 def invalidate_cache() -> None:
@@ -180,7 +197,7 @@ def discover(roots: Optional[list[Path]] = None) -> list[Skill]:
         with _SKILLS_CACHE_LOCK:
             if _CACHED_SKILLS is not None:
                 cached_time, cached_list = _CACHED_SKILLS
-                if (now - cached_time) < _CACHE_TTL_S:
+                if (now - cached_time) < _cache_ttl_s():
                     return cached_list
 
     found: dict[str, Skill] = {}
@@ -202,13 +219,18 @@ def discover(roots: Optional[list[Path]] = None) -> list[Skill]:
             elif entry.suffix.lower() == ".md" and entry.name != "SKILL.md":
                 skill = _load_file(entry, entry.stem)
 
+            if skill and skill.tier == "CANDIDATE" and not _include_candidates():
+                # Dream-evolved candidates are unverified; they must not govern live work.
+                continue
             if skill and skill.name not in found:
                 found[skill.name] = skill
 
     result = sorted(found.values(), key=lambda s: s.name)
     if roots is None:
         with _SKILLS_CACHE_LOCK:
-            _CACHED_SKILLS = (now, result)
+            # Stamp after the scan: on a large root a scan can outlast the TTL,
+            # and a start-time stamp would hand back an already-expired entry.
+            _CACHED_SKILLS = (time.monotonic(), result)
     return result
 
 

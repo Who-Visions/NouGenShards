@@ -107,10 +107,14 @@ def _agy_inbox_dirs(archive: bool = False) -> List[str]:
     """
     if _tenant_scope():
         return _with_archives([os.path.join(_home(), "inbox", "antigravity")], archive)
-    agy_raw = os.environ.get("NOUGEN_AGY_INBOX_DIR", "").strip()  # same override agy_msg.py honours
+    # NOUGEN_AGY_INBOX_DIR is the override agy_msg.py honours; NOUGEN_AGY_INBOX and
+    # NOUGEN_GEMINI_INBOX are the search-side names (owner only, never for a tenant).
+    agy_raw = (os.environ.get("NOUGEN_AGY_INBOX_DIR", "").strip()
+               or os.environ.get("NOUGEN_AGY_INBOX", "").strip())
+    gemini_raw = os.environ.get("NOUGEN_GEMINI_INBOX", "").strip()
     return _with_archives([
-        os.path.expanduser(os.path.join("~", ".gemini", "config", "inbox")),
-        agy_raw or os.path.join(_home(), "agy_inbox"),
+        os.path.expanduser(gemini_raw or os.path.join("~", ".gemini", "config", "inbox")),
+        os.path.expanduser(agy_raw) if agy_raw else os.path.join(_home(), "agy_inbox"),
     ], archive)
 
 
@@ -361,12 +365,17 @@ class AgentPinger:
     @staticmethod
     def _endpoint_gone(exc: OSError) -> bool:
         """True only when the pipe/socket does not exist any more (the session
-        ended). Busy, timeout, and refused-while-alive are not 'gone'."""
+        ended) or is permanently unreachable (e.g. ERROR_ACCESS_DENIED when the
+        pipe server runs in another security context or elevation boundary).
+        Transient conditions like busy pipe or wait timeout are NOT 'gone'."""
         win = getattr(exc, "winerror", None)
         if win is not None:
-            return win in (2, 3)  # ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND
+            # 2: ERROR_FILE_NOT_FOUND
+            # 3: ERROR_PATH_NOT_FOUND
+            # 5: ERROR_ACCESS_DENIED (e.g. pipe created in elevated or different user context)
+            return win in (2, 3, 5)
         import errno
-        return getattr(exc, "errno", None) in (errno.ENOENT, errno.ECONNREFUSED)
+        return getattr(exc, "errno", None) in (errno.ENOENT, errno.ECONNREFUSED, errno.EACCES)
 
     @staticmethod
     def enforce_claim_execution(text: str) -> str:
@@ -398,7 +407,65 @@ class AgentPinger:
         return (auth_line + chr(10) + user_line + chr(10)).encode("utf-8")
 
     @staticmethod
-    def ping_claude(prompt: str, origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def list_sessions() -> List[Dict[str, Any]]:
+        """Registered Claude Code sessions on this machine, safe to show a client.
+
+        Merges both registry shapes (nested {"sessions": {socket: entry}} and
+        top-level {session_id: entry}) and marks each one live when its pipe or
+        socket is in the kernel table right now. The socket path and its token
+        never leave this function: a client gets an id to address, a project
+        name to recognise, and a live flag. Newest registration first."""
+        if _tenant_scope():
+            return []
+        try:
+            with open(AgentPinger._cc_registry_path(), "r", encoding="utf-8") as f:
+                registry = json.load(f)
+        except (OSError, ValueError):
+            return []
+        if not isinstance(registry, dict):
+            return []
+        entries: Dict[str, Dict[str, Any]] = {}
+        nested = registry.get("sessions")
+        if isinstance(nested, dict):
+            for sock, entry in nested.items():
+                if isinstance(entry, dict):
+                    entries[str(entry.get("socket") or sock)] = entry
+        for sid, entry in registry.items():
+            if sid != "sessions" and isinstance(entry, dict) and entry.get("socket"):
+                entries[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
+
+        def _base(path: str) -> str:
+            return os.path.basename(str(path).replace("/", "\\")).casefold()
+
+        live = {_base(p) for p in AgentPinger._discover_claude_endpoints()}
+        out = []
+        for sock, entry in entries.items():
+            sid = str(entry.get("session_id") or "").strip()
+            if not sid:
+                continue
+            cwd = str(entry.get("cwd") or "")
+            # Split on both separators: a Windows cwd read on a POSIX node (and the
+            # other way round) must still give the folder name, not the whole path.
+            project = re.split(r"[\\/]", cwd.rstrip("\\/"))[-1] if cwd else ""
+            out.append({
+                "session_id": sid,
+                "project": project or cwd,
+                "machine": str(entry.get("machine") or get_current_node()),
+                "agent": str(entry.get("agent") or "claude"),
+                "registered_utc": str(entry.get("registered_utc") or ""),
+                "live": _base(sock) in live,
+            })
+        # Live first, then newest registration first within each group.
+        live_rows = sorted([s for s in out if s["live"]], key=lambda s: s["registered_utc"], reverse=True)
+        idle_rows = sorted([s for s in out if not s["live"]], key=lambda s: s["registered_utc"], reverse=True)
+        return live_rows + idle_rows
+
+    @staticmethod
+    def ping_claude(
+        prompt: str,
+        origin: Optional[Dict[str, Any]] = None,
+        target_session: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Deliver a NouGenMsg into every live, registered Claude Code session
         over its own messaging socket, and drop the same message in the Claude
         inbox for the UserPromptSubmit drain hook. Sessions whose socket no
@@ -432,6 +499,32 @@ class AgentPinger:
         for sid, entry in registry.items():
             if sid != "sessions" and isinstance(entry, dict) and entry.get("token") and entry.get("socket"):
                 sessions[str(entry["socket"])] = dict(entry, session_id=entry.get("session_id") or sid)
+        registered_count = len(sessions)
+        if target_session:
+            target = str(target_session).strip().casefold()
+            live_names = {
+                os.path.basename(str(pipe).replace("/", "\\\\")).casefold()
+                for pipe in AgentPinger._discover_claude_endpoints()
+            }
+            selected = {
+                sock: entry for sock, entry in sessions.items()
+                if os.path.basename(str(sock).replace("/", "\\\\")).casefold() in live_names
+                if target in {
+                    str((entry or {}).get("session_id") or "").casefold(),
+                    os.path.basename(str(sock).replace("/", "\\\\")).casefold(),
+                }
+            }
+            if len(selected) != 1:
+                reason = "not_found" if not selected else "ambiguous"
+                return {
+                    "delivered": [], "pruned": [], "registered": registered_count,
+                    "inbox_file": None, "delivery_verified": False, "errors": [],
+                    "target_session": target_session,
+                    "error": f"target_session_{reason}",
+                    "note": "targeted delivery requires exactly one registered Claude session; no message was sent",
+                }
+            sessions = selected
+
         delivered, pruned, errors = [], [], []
         for sock, entry in list(sessions.items()):
             token = str((entry or {}).get("token") or "")
@@ -460,14 +553,19 @@ class AgentPinger:
                         break  # no pipe/socket at all: retrying cannot help
                     time.sleep(AgentPinger._pipe_retry_wait_s())
             if last_exc is not None:
+                is_gone = AgentPinger._endpoint_gone(last_exc)
                 errors.append({"socket": sock, "error": str(last_exc), "winerror": getattr(last_exc, "winerror", None),
-                               "pruned": AgentPinger._endpoint_gone(last_exc)})
-                # Prune ONLY when the endpoint is gone. A busy pipe or a wait
+                               "pruned": is_gone})
+                # Prune when the endpoint is gone or permanently unreachable
+                # (WinError 2/3, WinError 5 Access Denied). A busy pipe or a wait
                 # timeout is the session being mid-turn (2026-09-02 20:36 EDT: a
                 # live session was dropped from the registry on one such timeout).
-                if AgentPinger._endpoint_gone(last_exc):
+                if is_gone:
                     pruned.append(sock)
                     sessions.pop(sock, None)
+                    print(f"[nougenmsg] pruned unreachable Claude endpoint {sock}: {last_exc}", file=sys.stderr, flush=True)
+                else:
+                    print(f"[nougenmsg] delivery error on Claude endpoint {sock} (retained): {last_exc}", file=sys.stderr, flush=True)
         if pruned:
             try:
                 registry["sessions"] = sessions
@@ -477,30 +575,33 @@ class AgentPinger:
                 os.replace(tmp, reg_path)
             except OSError:
                 pass
-        # inbox copy for the drain hook (and for sessions that start later)
+        # A targeted delivery must never leave a second copy in the shared
+        # Claude inbox: another session could drain it and receive the wrong
+        # project's message.
         inbox_file = None
-        try:
-            inbox_dir = AgentPinger._claude_inbox_dir()
-            os.makedirs(inbox_dir, exist_ok=True)
-            inbox_file = os.path.join(inbox_dir, f"ping_{int(time.time() * 1000)}.json")
-            with open(inbox_file, "w", encoding="utf-8") as f:
-                _msg_session = resolve_session()
-                _msg_host = resolve_origin_host()
-                json.dump({"source": source, "sender": origin.get("original_sender") if origin else source,
-                           "origin": origin, "target": "claude", "text": prompt, "timestamp": time.time(),
-                           "delivered_live": bool(delivered), "delivered_to": [d.get("session_id") for d in delivered],
-                           **({"session": _msg_session} if _msg_session else {}),
-                           **({"origin_host": _msg_host} if _msg_host else {})}, f, indent=2)
-        except OSError:
-            inbox_file = None
+        if not target_session:
+            try:
+                inbox_dir = AgentPinger._claude_inbox_dir()
+                os.makedirs(inbox_dir, exist_ok=True)
+                inbox_file = os.path.join(inbox_dir, f"ping_{int(time.time() * 1000)}.json")
+                with open(inbox_file, "w", encoding="utf-8") as f:
+                    _msg_session = resolve_session()
+                    _msg_host = resolve_origin_host()
+                    json.dump({"source": source, "sender": origin.get("original_sender") if origin else source,
+                               "origin": origin, "target": "claude", "text": prompt, "timestamp": time.time(),
+                               "delivered_live": bool(delivered), "delivered_to": [d.get("session_id") for d in delivered],
+                               **({"session": _msg_session} if _msg_session else {}),
+                               **({"origin_host": _msg_host} if _msg_host else {})}, f, indent=2)
+            except OSError:
+                inbox_file = None
         if not sessions and not delivered:
             note = ("no registered live Claude Code session (SessionStart hook (nougenmsg_register.py on blade, nougenmsg_wake.py on phoebus) has not run, "
                     "or every registered session is gone); inbox file dropped for the drain hook")
         else:
             note = (f"socket write accepted by {len(delivered)} live session(s); the harness writes no ack, "
                     "the receiver's context is the proof")
-        return {"delivered": delivered, "pruned": pruned, "registered": len(sessions), "inbox_file": inbox_file,
-                "delivery_verified": False, "errors": errors, "note": note}
+        return {"delivered": delivered, "pruned": pruned, "registered": registered_count, "inbox_file": inbox_file,
+                "delivery_verified": False, "errors": errors, "target_session": target_session, "note": note}
 
     @staticmethod
     def ping_antigravity(
@@ -656,8 +757,11 @@ class AgentPinger:
         build. Key off the serving machine instead.
         """
         current = get_current_node()
-        machine = current if node in ("local", "", None, current) else node
-        return AgentPinger._OLLAMA_DEFAULTS.get(machine, AgentPinger._OLLAMA_FALLBACK)
+        is_local = node in ("local", "", None, current)
+        machine = current if is_local else node
+        # The slot names a tag on THIS box; a remote node may not hold it.
+        slot = os.environ.get("NOUGEN_LOCAL_E2B_MODEL") if is_local else None
+        return AgentPinger._OLLAMA_DEFAULTS.get(machine, slot or AgentPinger._OLLAMA_FALLBACK)
 
     @staticmethod
     def _drop_model_reply(lane: str, model: str, reply: str,
@@ -936,11 +1040,14 @@ class NouGenMsgBus:
         family, _, model = target.partition(":")
         family = normalize_fleet_node(family)
         model = model or None
-        # Model lanes ride on 'all' broadcasts by default (GM 2026-09-08: the
-        # fleet includes its models). NOUGEN_MSG_MODEL_LANES_ON_ALL=0 opts out
-        # for a chatty lane that should not wake a model on every ping.
-        models_on_all = os.environ.get("NOUGEN_MSG_MODEL_LANES_ON_ALL", "1").strip().lower() \
-            not in ("0", "false", "no")
+        # An 'all' broadcast reaches real session lanes only (claude pipes, antigravity,
+        # codex). Model lanes are opt-in: GM 2026-10-30 reversed the 2026-09-08 default
+        # after a Gemini @all directive woke ollama:gemma4:e2b and unconfigured
+        # openrouter lanes, which echoed unverified replies and missing-key errors into
+        # ~/.nougen/claude_inbox. NOUGEN_MSG_MODEL_LANES_ON_ALL=1 restores it; an
+        # explicit '@ollama[:model]' or '@openrouter[:model]' target always works.
+        models_on_all = os.environ.get("NOUGEN_MSG_MODEL_LANES_ON_ALL", "0").strip().lower() \
+            in ("1", "true", "yes")
 
         # A node-name target ('@blade') matched no family branch, so the node it
         # addressed returned {} and woke nobody while the caller saw "delivered"
@@ -949,10 +1056,19 @@ class NouGenMsgBus:
         # ours to deliver, and saying so beats an empty dict.
         fleet_nodes = {normalize_fleet_node(n) for n in os.environ.get(
             "NOUGEN_PEER_NODES", "").split(",") if n.strip()}
-        if family in fleet_nodes:
-            if family != (get_current_node() or "").lower():
-                return {"skipped": f"addressed to {family}, not this node"}
+        current_node = (get_current_node() or "").lower()
+        # NOUGEN_PEER_NODES being unset/incomplete used to make a node-name
+        # target match nothing below, falling through to results == {} with
+        # no indication anything was wrong (2026-11-04: connector @blade ->
+        # results.blade == {} even though blade answered the call). Compare
+        # against this node's own name directly so a self-addressed target
+        # always resolves, regardless of that env var's contents.
+        if family == current_node or family in fleet_nodes:
+            if family != current_node:
+                return {"skipped": f"addressed to {family}, not this node ({current_node or 'unknown'})"}
             family, model = "agents", None
+        elif family not in ("claude", "all", "agents", "antigravity", "codex", "ollama", "openrouter"):
+            return {"error": f"unrecognized target {target!r}; nothing delivered"}
 
         if family in ["claude", "all", "agents"]:
             results["claude_pipes"] = AgentPinger.ping_claude(text, envelope)
@@ -1481,14 +1597,15 @@ class NouGenMsgBus:
 
     @classmethod
     def search_messages(cls, query: str, target: str = "all", limit: int = 20, timeout_s: float = 3.0, as_contract: bool = False) -> Any:
-        """Search across active and archived inbox messages using indexed FTS5 + fast scanner.
+        """Search active and archived inboxes through a persistent incremental FTS5 index.
         Fulfills the Hurricane Kick 2/3 Search Contract:
         {complete, query, normalized_query, results, checked_sources, timed_out_sources, ordering_basis, coverage_hash}
         """
         import time
         import hashlib
+        import sqlite3
 
-        t_start = time.time()
+        t_start = time.monotonic()
         q_raw = query or ""
         q_norm = q_raw.strip().lower()
 
@@ -1505,6 +1622,7 @@ class NouGenMsgBus:
         if not q_norm:
             return empty_res if as_contract else []
 
+        target = (target or "all").strip().lower()
         inbox_dirs = []
         if target in ("antigravity", "all"):
             inbox_dirs.extend(_agy_inbox_dirs(archive=True))
@@ -1513,55 +1631,125 @@ class NouGenMsgBus:
                 inbox_dirs.extend([legacy, os.path.join(legacy, "archive")])
         if target in ("codex", "all"):
             inbox_dirs.extend(_codex_inbox_dirs(archive=True))
+        if target in ("claude", "all"):
+            # this PR's addition: search the Claude inbox too, resolved the same way the
+            # senders resolve it (NOUGEN_CLAUDE_INBOX, tenant-aware home)
+            claude = AgentPinger._claude_inbox_dir()
+            inbox_dirs.extend([claude, os.path.join(claude, "archive")])
 
-        checked_sources = [d for d in inbox_dirs if os.path.exists(d)]
-        timed_out_sources = []
+        checked_sources = sorted({os.path.abspath(d) for d in inbox_dirs if os.path.isdir(d)})
+        timed_out_sources = set()
         all_files = []
-        for d in checked_sources:
+        source_by_path = {}
+        for directory in checked_sources:
             try:
-                for entry in os.scandir(d):
-                    if entry.name.endswith(".json") and entry.is_file():
-                        all_files.append((entry.path, entry.stat().st_mtime))
-            except Exception:
-                pass
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        if not entry.name.lower().endswith(".json") or not entry.is_file():
+                            continue
+                        try:
+                            path = os.path.abspath(entry.path)
+                            mtime = entry.stat().st_mtime
+                        except OSError:
+                            timed_out_sources.add(directory)
+                            continue
+                        all_files.append((path, mtime))
+                        source_by_path[path] = directory
+            except OSError:
+                timed_out_sources.add(directory)
+        all_files.sort(key=lambda item: item[1], reverse=True)
 
-        # Sort files newest first
-        all_files.sort(key=lambda x: x[1], reverse=True)
-        cov_hash = hashlib.sha256(f"{len(all_files)}:{all_files[0][1] if all_files else 0}".encode("utf-8")).hexdigest()[:16]
+        # The FTS table was present but never populated by search_messages,
+        # forcing every query to parse thousands of inbox JSON files again.
+        # Index changed entries within the request budget and resume on the
+        # next query. Warm searches only stat entries and hit SQLite FTS.
+        index_complete = True
+        conn = None
+        indexed = {}
+        try:
+            conn = sqlite3.connect(cls._get_msg_index_db(), timeout=1.0)
+            conn.execute("PRAGMA busy_timeout=1000")
+            cls._init_msg_fts5(conn)
+            indexed = {str(path): float(mtime) for path, mtime in conn.execute("SELECT file_path, mtime FROM messages_meta")}
+            pending = [(path, mtime) for path, mtime in all_files if indexed.get(path) != mtime]
+            for offset, (fpath, mtime) in enumerate(pending):
+                if time.monotonic() - t_start >= max(0.05, timeout_s):
+                    index_complete = False
+                    timed_out_sources.update(source_by_path[p] for p, _ in pending[offset:])
+                    break
+                try:
+                    with open(fpath, "rb") as fp:
+                        raw = fp.read()
+                    data = json.loads(raw.decode("utf-8", errors="replace"))
+                    if not isinstance(data, dict):
+                        data = {}
+                    message_id = str(data.get("message_id") or data.get("id") or "")
+                    source = str(data.get("source") or data.get("origin") or "")
+                    sender = str(data.get("sender") or data.get("agent") or "")
+                    body = raw.decode("utf-8", errors="replace")
+                    conn.execute("DELETE FROM messages_fts WHERE file_path = ?", (fpath,))
+                    conn.execute("INSERT OR REPLACE INTO messages_meta (file_path, mtime, message_id, source, sender, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                                 (fpath, mtime, message_id, source, sender, data.get("timestamp")))
+                    conn.execute("INSERT INTO messages_fts (file_path, message_id, source, sender, text) VALUES (?, ?, ?, ?, ?)",
+                                 (fpath, message_id, source, sender, body))
+                    indexed[fpath] = mtime
+                except (OSError, ValueError, sqlite3.Error):
+                    index_complete = False
+                    timed_out_sources.add(source_by_path[fpath])
+            conn.commit()
+
+            tokens = [token for token in re.findall(r"[\w\d#-]+", q_norm) if re.search(r"[\w\d]", token)]
+            if not tokens:
+                tokens = [q_norm]
+            fts_query = " AND ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+            where = ["messages_fts MATCH ?"]
+            params = [fts_query]
+            source_filters = []
+            for directory in checked_sources:
+                prefix = directory.rstrip("\\/") + os.sep
+                source_filters.append("substr(messages_meta.file_path, 1, length(?)) = ?")
+                params.extend([prefix, prefix])
+            if source_filters:
+                where.append("(" + " OR ".join(source_filters) + ")")
+            sql = ("SELECT messages_meta.file_path, messages_meta.mtime FROM messages_fts "
+                   "JOIN messages_meta USING (file_path) WHERE " + " AND ".join(["(" + clause + ")" for clause in where]) +
+                   " ORDER BY messages_meta.mtime DESC LIMIT ?")
+            params.append(max(1, limit) * 5)
+            rows = conn.execute(sql, params).fetchall() if checked_sources else []
+        except sqlite3.Error:
+            # FTS5 is optional in some Python builds. Preserve bounded search
+            # behavior there rather than failing the NouGenMsg tool outright.
+            index_complete = False
+            timed_out_sources.update(checked_sources)
+            rows = [(path, mtime) for path, mtime in all_files]
+        finally:
+            if conn is not None:
+                conn.close()
 
         matches = []
         seen = set()
-        q_bytes = q_norm.encode("utf-8", errors="ignore")
-        # Split search tokens for multi-term matching (e.g. "PR #671", "formal proof runtime")
-        tokens = [t.encode("utf-8", errors="ignore") for t in re.findall(r"[\w\d#\-]+", q_norm)]
-        if not tokens:
-            tokens = [q_bytes]
-
-        is_complete = True
-        for fpath, mtime in all_files:
-            if time.time() - t_start > timeout_s:
-                is_complete = False
-                timed_out_sources.append(os.path.dirname(fpath))
+        tokens_bytes = [token.encode("utf-8", errors="ignore") for token in re.findall(r"[\w\d#-]+", q_norm) if re.search(r"[\w\d]", token)]
+        for fpath, mtime in rows:
+            if len(matches) >= max(1, limit):
                 break
-            if len(matches) >= limit:
+            if time.monotonic() - t_start >= max(0.05, timeout_s):
+                index_complete = False
+                timed_out_sources.add(source_by_path.get(fpath, os.path.dirname(fpath)))
                 break
             try:
+                if os.path.getmtime(fpath) != mtime:
+                    continue
                 with open(fpath, "rb") as fp:
                     raw = fp.read()
-                raw_lower = raw.lower()
-                # Fast check: all tokens must be present in raw bytes
-                if not all(tok in raw_lower for tok in tokens):
+                if tokens_bytes and not all(token in raw.lower() for token in tokens_bytes):
                     continue
-
                 data = json.loads(raw.decode("utf-8", errors="replace"))
                 if not isinstance(data, dict):
                     continue
-
                 identity = data.get("message_id") or f"{data.get('source')}|{data.get('timestamp')}|{fpath}"
                 if identity in seen:
                     continue
                 seen.add(identity)
-
                 data["_file"] = os.path.basename(fpath)
                 data["_mtime"] = mtime
                 if "text" not in data and "content" in data:
@@ -1569,16 +1757,18 @@ class NouGenMsgBus:
                 if not data.get("sender") and data.get("source"):
                     data["sender"] = data["source"]
                 matches.append(data)
-            except Exception:
+            except (OSError, ValueError):
                 continue
 
+        newest = all_files[0][1] if all_files else 0
+        cov_hash = hashlib.sha256(f"{len(all_files)}:{newest}:{len(indexed)}".encode("utf-8")).hexdigest()[:16]
         contract = {
-            "complete": is_complete,
+            "complete": index_complete and not timed_out_sources,
             "query": q_raw,
             "normalized_query": q_norm,
             "results": matches,
-            "checked_sources": list(set(checked_sources)),
-            "timed_out_sources": list(set(timed_out_sources)),
+            "checked_sources": checked_sources,
+            "timed_out_sources": sorted(timed_out_sources),
             "ordering_basis": "mtime_desc",
             "coverage_hash": cov_hash
         }
