@@ -350,6 +350,8 @@ def queue_elevated(msg: dict) -> dict:
         if not _elevated_worker_started:
             threading.Thread(target=_elevated_worker, name="elevated-delivery", daemon=True).start()
             _elevated_worker_started = True
+    outcome = {"state": "pending", "attempted": True}
+    _note_elevated(msg["message_id"], outcome)
     try:
         _ELEVATED.put_nowait(dict(msg))
     except queue.Full:
@@ -357,8 +359,6 @@ def queue_elevated(msg: dict) -> dict:
                    "reason": "elevated queue full; the inbox file was written"}
         _note_elevated(msg["message_id"], outcome)
         return outcome
-    outcome = {"state": "pending", "attempted": True}
-    _note_elevated(msg["message_id"], outcome)
     return outcome
 
 
