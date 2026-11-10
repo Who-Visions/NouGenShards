@@ -2303,6 +2303,12 @@ def get_parser():
                           help="Evidence item; repeat for multiple items")
     p_assure.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    p_rdacc = subparsers.add_parser("rd-accel", help="METR-style R&D acceleration report")
+    p_rdacc.add_argument("--jsonl", help="Generation records, one JSON per line")
+    p_rdacc.add_argument("--ledger", help="RSI evaluation ledger sqlite (promotions as generations)")
+    p_rdacc.add_argument("--breakpoint", required=True, help="YYYY-MM-DD")
+    p_rdacc.add_argument("--json", action="store_true")
+
     p_chat = subparsers.add_parser("chat", help="Chat with memory")
     p_chat.add_argument("query", nargs="?")
     p_chat.add_argument("--model")
@@ -4338,6 +4344,26 @@ def cmd_open(args):
     open_main(forwarded)
 
 
+def cmd_rd_accel(args):
+    from dataclasses import asdict
+    from datetime import date as _date
+    from . import rd_acceleration as rd
+    if bool(args.jsonl) == bool(args.ledger):
+        print("give exactly one of --jsonl or --ledger", file=sys.stderr)
+        return 2
+    gens = rd.load_jsonl(args.jsonl) if args.jsonl else rd.from_evaluation_ledger(args.ledger)
+    rep = rd.assess(gens, _date.fromisoformat(args.breakpoint))
+    if args.json:
+        print(json.dumps({"generations": len(gens), **asdict(rep)}))
+    else:
+        print(f"generations={len(gens)} ratio={rep.ratio:.2f} "
+              f"ci=[{rep.ci_low:.2f}, {rep.ci_high:.2f}] pattern={rep.pattern} "
+              f"reaction_window_shrinking={rep.reaction_window_shrinking}")
+        for n in rep.notes:
+            print(f"  note: {n}")
+    return 0
+
+
 def main():
     """Execution entry point."""
     if len(sys.argv) == 1:
@@ -4394,7 +4420,7 @@ def main():
 
     args = parser.parse_args()
     cmds = {
-        "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "window": cmd_window, "assure": cmd_assure, "chat": cmd_chat,
+        "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "window": cmd_window, "assure": cmd_assure, "rd-accel": cmd_rd_accel, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "recall-hook": cmd_recall_hook, "embed": cmd_embed, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
