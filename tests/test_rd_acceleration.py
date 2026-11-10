@@ -45,3 +45,42 @@ def test_reaction_window_shrinks():
 def test_too_few_points():
     gens = series([1.0, 1.0])
     assert assess(gens, gens[2].released).pattern == "insufficient"
+
+
+def test_jsonl_and_ledger_loaders(tmp_path):
+    import json, sqlite3
+    from nougen_shards.rd_acceleration import from_evaluation_ledger, load_jsonl
+    from nougen_shards.rsi_evaluation_ledger import EvaluationLedger
+
+    p = tmp_path / "g.jsonl"
+    p.write_text("\n".join(json.dumps({"name": g.name, "released": g.released.isoformat(),
+                                       "score": g.score}) for g in series([1.0] * 3)))
+    assert [g.name for g in load_jsonl(p)] == ["m0", "m1", "m2", "m3"]
+
+    db = tmp_path / "ledger.db"
+    EvaluationLedger(db)  # creates the real schema
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO epochs VALUES ('e1','ev','ds',10)")
+    rows = [("r1", "aaa", 1, "2026-01-01"), ("r2", "bbb", 0, "2026-02-01"),
+            ("r3", "ccc", 1, "2026-03-01"), ("r4", "ddd", 1, "2026-03-01 09:00:00")]
+    for rid, c, d, ts in rows:
+        con.execute("INSERT INTO receipts VALUES (?, 'e1', 'ctx', ?, 'lin', 'tok', ?, ?)",
+                    (rid, c, d, ts))
+    con.commit(); con.close()
+    gens = from_evaluation_ledger(db)
+    assert [(g.released.isoformat(), g.score) for g in gens] == [
+        ("2026-01-01", 1.0), ("2026-03-01", 3.0)]
+
+
+def test_cli_rd_accel(tmp_path, capsys):
+    import json, sys
+    from nougen_shards import cli
+    p = tmp_path / "g.jsonl"
+    gens = series([1.0, 1.0, 1.0, 2.0, 2.0, 2.0])
+    p.write_text("\n".join(json.dumps({"name": g.name, "released": g.released.isoformat(),
+                                       "score": g.score}) for g in gens))
+    args = type("A", (), {"jsonl": str(p), "ledger": None, "json": True,
+                          "breakpoint": gens[4].released.isoformat()})
+    assert cli.cmd_rd_accel(args) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["generations"] == 7 and 1.6 < out["ratio"] < 2.4

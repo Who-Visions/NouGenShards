@@ -112,3 +112,37 @@ def assess(gens: list[Generation], breakpoint: date, *, boots: int = 2000,
     if shares and shares[-1] >= 1:
         notes.append("latest eval finished after the next generation shipped")
     return AccelerationReport(r, lo, hi, pattern, shrinking, notes)
+
+
+def load_jsonl(path) -> list[Generation]:
+    """One record per line: {"name","released":"YYYY-MM-DD","score",["eval_lag_days"]}."""
+    import json
+    out = []
+    with open(path) as fh:
+        for line in fh:
+            if line.strip():
+                r = json.loads(line)
+                out.append(Generation(r["name"], date.fromisoformat(r["released"][:10]),
+                                      float(r["score"]), float(r.get("eval_lag_days", 0))))
+    return out
+
+
+def from_evaluation_ledger(path) -> list[Generation]:
+    """Fleet feed: each promoted candidate in the RSI evaluation ledger is a generation.
+
+    The ledger is sealed (it stores only the promotion bit), so the score is the
+    cumulative promotion count, a proxy for capability, not a benchmark score.
+    Same-day promotions collapse to that day's last count.
+    """
+    import sqlite3
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        rows = db.execute("SELECT candidate_hash, created_at FROM receipts "
+                          "WHERE decision = 1 ORDER BY created_at").fetchall()
+    finally:
+        db.close()
+    by_day: dict[date, Generation] = {}
+    for n, (cand, ts) in enumerate(rows, 1):
+        d = date.fromisoformat(ts[:10])
+        by_day[d] = Generation(cand[:12], d, float(n))
+    return list(by_day.values())
