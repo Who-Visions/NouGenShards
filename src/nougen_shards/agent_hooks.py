@@ -22,6 +22,7 @@ and handoff defaults the rest of the package uses.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime
 import glob
 import json
@@ -240,6 +241,48 @@ def _save_reflex(session_id: str, state: dict) -> None:
         pass
 
 
+@contextlib.contextmanager
+def _reflex_lock(session_id: str):
+    """Serialize read-modify-write of one session's reflex state across processes.
+
+    Tool calls can finish together, each in its own hook process. Atomic replace
+    keeps the file well-formed but not the update: a shard and a leg landing at
+    once could each read the old state and one would be lost, so Stop would ask
+    again for a record that exists. O_EXCL lock file; a lock older than 10s is
+    from a dead hook and is taken over. On timeout the caller proceeds unlocked:
+    a hook must never wedge the host.
+    """
+    lock = _reflex_path(session_id).with_suffix(".lock")
+    held = False
+    deadline = time.monotonic() + _int_env("NOUGEN_REFLEX_LOCK_MS", 2000) / 1000.0
+    while True:
+        try:
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            os.close(os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            held = True
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > 10:
+                    lock.unlink()
+                    continue
+            except OSError:
+                pass
+        except OSError:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
+    try:
+        yield held
+    finally:
+        if held:
+            try:
+                lock.unlink()
+            except OSError:
+                pass
+
+
 def _command_of(evt: dict) -> str:
     inp = evt.get("tool_input")
     if not isinstance(inp, dict):
@@ -256,17 +299,18 @@ def post_tool(evt: dict) -> dict:
     if not (shard or relay or work):
         return {}
     sid = str(evt.get("session_id") or "")
-    state = reflex_state(sid)
-    if work:
-        state["work"] = int(state.get("work", 0)) + 1
-    if shard:
-        state["shard"] = True
-    if relay:
-        state["relay"] = True
-    if state.get("shard") and state.get("relay"):
-        # Both done: this stretch of work is on the record. Start a new one.
-        state = {"work": 0, "done": int(state.get("done", 0)) + 1}
-    _save_reflex(sid, state)
+    with _reflex_lock(sid):
+        state = reflex_state(sid)
+        if work:
+            state["work"] = int(state.get("work", 0)) + 1
+        if shard:
+            state["shard"] = True
+        if relay:
+            state["relay"] = True
+        if state.get("shard") and state.get("relay"):
+            # Both done: this stretch of work is on the record. Start a new one.
+            state = {"work": 0, "done": int(state.get("done", 0)) + 1}
+        _save_reflex(sid, state)
     return {}
 
 
@@ -297,7 +341,7 @@ def _reflex_text(state: dict, missing: list[str]) -> str:
 _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
 _BOUNDED = re.compile(
     r"\|\s*(head|tail|wc|more|less|select(-object)?\s+-(first|last|skip)|measure(-object)?|sls\b.*-quiet)"
-    r"|(^|\s)>>?\s*[^&\s]|\bout-file\b|\bset-content\b|\btee(-object)?\b", re.I)
+    r"|(^|\s)>>?\s*[^&\s]|\bout-file\b|\bset-content\b", re.I)  # not tee: it also copies to stdout
 _CMD_START = r"(?:^|[;&|(]\s*|\s&&\s*)"
 _FETCH = re.compile(_CMD_START + r"(curl|wget|invoke-webrequest|iwr|invoke-restmethod|irm)\b", re.I)
 _LOCAL_URL = re.compile(r"https?://(localhost|127\.0\.0\.1|\[::1\])[:/]", re.I)
@@ -386,15 +430,18 @@ def stop(evt: dict) -> dict:
     mode = _mode("NOUGEN_REFLEX", "block", ("block", "nudge", "off"))
     if mode != "off":
         sid = str(evt.get("session_id") or "")
-        state = reflex_state(sid)
-        missing = reflex_missing(state)
-        work = int(state.get("work", 0))
-        # stop_hook_active: the host is already continuing because of a Stop
-        # hook, so blocking again would loop. asked_at: once per stretch of work.
-        if missing and not evt.get("stop_hook_active") and state.get("asked_at") != work:
-            state["asked_at"] = work
-            _save_reflex(sid, state)
-            text = _reflex_text(state, missing)
+        text = ""
+        with _reflex_lock(sid):
+            state = reflex_state(sid)
+            missing = reflex_missing(state)
+            work = int(state.get("work", 0))
+            # stop_hook_active: the host is already continuing because of a Stop
+            # hook, so blocking again would loop. asked_at: once per stretch of work.
+            if missing and not evt.get("stop_hook_active") and state.get("asked_at") != work:
+                state["asked_at"] = work
+                _save_reflex(sid, state)
+                text = _reflex_text(state, missing)
+        if text:
             return {"decision": "block", "reason": text} if mode == "block" else _context("stop", text)
     # Otherwise never block, only nudge when work is pending.
     if _handoff_written_since(_started(evt)) or not _git("status", "--short"):

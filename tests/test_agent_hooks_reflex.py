@@ -120,6 +120,49 @@ def test_nudge_mode_does_not_block_and_off_mode_is_silent(env, monkeypatch):
     assert "NouGen reflex" in out["hookSpecificOutput"]["additionalContext"]
 
 
+def test_simultaneous_shard_and_leg_are_both_recorded(env):
+    """Codex P2 on PR 994: two PostToolUse processes finishing together must not
+    overwrite each other, or Stop asks for a record that already exists."""
+    import threading
+    _tool("Edit", file_path="a.py")
+    real_read = ah.reflex_state
+    gate = threading.Barrier(2, timeout=5)
+
+    def slow_read(sid):
+        state = real_read(sid)
+        try:
+            gate.wait(timeout=0.3)  # without the lock both readers meet here holding the old state
+        except threading.BrokenBarrierError:
+            pass
+        return state
+
+    ah.reflex_state = slow_read
+    try:
+        threads = [threading.Thread(target=_tool, args=(name,), kwargs={"x": 1})
+                   for name in ("mcp__n__shards_capture", "mcp__n__relay_create")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        ah.reflex_state = real_read
+    assert ah.reflex_state(SID) == {"work": 0, "done": 1}
+    assert _stop() == {}
+    assert not ah._reflex_path(SID).with_suffix(".lock").exists()
+
+
+def test_a_stale_lock_from_a_dead_hook_is_taken_over(env):
+    import os
+    import time
+    lock = ah._reflex_path(SID).with_suffix(".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("", encoding="utf-8")
+    old = time.time() - 60
+    os.utime(lock, (old, old))
+    _tool("Edit", file_path="a.py")
+    assert ah.reflex_state(SID)["work"] == 1 and not lock.exists()
+
+
 def test_session_end_clears_the_reflex_state(env):
     _tool("Edit", file_path="a.py")
     assert ah._reflex_path(SID).exists()
@@ -141,6 +184,8 @@ def test_session_end_clears_the_reflex_state(env):
     "find . -name '*.py'",
     "python -m pytest tests -q",
     "cd repo && git diff",
+    "python -m pytest tests | tee /tmp/test.log",  # tee copies to stdout too
+    "git diff | Tee-Object diff.log",
 ])
 def test_unbounded_commands_are_refused_with_the_sandbox_route(env, command):
     out = _pre("Bash", command=command)
