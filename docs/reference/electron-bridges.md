@@ -37,4 +37,4 @@ will-attach-webview 3, workAreaSize 4, powerSaveBlocker 2.
 - Tablet layout and the menu bar wrap were checked in a browser on a stubbed renderer copy, not in a built app.
 - The vault holds more than one copy of the Electron docs: several lanes sharded them the same day under
   different titles (`electron/electron: docs/...`, `Electron docs: ...`, and this tool's plain page titles).
-  Recall returns all copies. Pick one sharder as canonical before the next refresh.
+  Recall returns all copies. This is accepted: the same docs were sent to every lane on purpose.
