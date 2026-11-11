@@ -167,7 +167,7 @@ def main(argv=None) -> int:
 
     if a.from_cache:  # no network: re-capture the cached pages (dedupes) to repair or rebuild the manifest
         cached = {"/" + f.stem.replace("__", "/"): f.read_text(encoding="utf-8") for f in sorted((out / "pages").glob("*.md"))}
-        return write(out, a.domain, cached, [])
+        return write(out, a.domain, cached, [], fetched=False)
     paths, source = [p for p in sitemap_paths() if in_scope(p, prefixes)], "sitemap"
     if not paths:  # sitemap_N_of_2.xml answered 500 on 2026-10-25: fall back to following .md.txt links
         print("  sitemap gave nothing; link-following from scope seeds", flush=True)
@@ -189,13 +189,18 @@ def main(argv=None) -> int:
     return write(out, a.domain, pages, missing)
 
 
-def write(out: Path, domain: str, pages: dict[str, str], missing: list[str]) -> int:
-    """Cache each page, capture one shard per section, and merge the result into the manifest."""
+def write(out: Path, domain: str, pages: dict[str, str], missing: list[str], fetched: bool = True) -> int:
+    """Cache each page, capture one shard per section, and merge the result into the manifest.
+
+    `fetched=False` is a cache repair: nothing was downloaded, so page files and fetch dates are left alone.
+    """
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     index, new = [], 0
     for p in sorted(pages):
         md = pages[p]
-        (out / "pages" / (p.strip("/").replace("/", "__") + ".md")).write_text(md, encoding="utf-8")
+        page_file = out / "pages" / (p.strip("/").replace("/", "__") + ".md")
+        if fetched:
+            page_file.write_text(md, encoding="utf-8")
         page_title = " / ".join(p.strip("/").split("/")[1:])
         tags = ["firebase-docs", *[s for s in p.strip("/").split("/")[1:3] if s]]
         for n, (head, body) in enumerate(sections(md), 1):
@@ -209,12 +214,17 @@ def write(out: Path, domain: str, pages: dict[str, str], missing: list[str]) -> 
                 # a duplicate answers with existing_*; without them every refresh nulled the ids in the manifest
                 index.append({"path": p, "section": n, "part": k, "heading": head,
                               "shard": r.get("shard_id") or r.get("existing_shard_id"),
-                              "db": r.get("db_index", r.get("existing_db_index")), "fetched_utc": stamp})
+                              "db": r.get("db_index", r.get("existing_db_index")), "fetched_utc": stamp if fetched else None})
     mf = out / "_manifest.json"
     old = json.loads(mf.read_text(encoding="utf-8")) if mf.exists() else {}
     merged = {(e["path"], e["section"], e["part"]): e for e in old.get("index", [])}
-    merged.update({(e["path"], e["section"], e["part"]): e for e in index})
-    manifest = {"domain": domain, "runs": old.get("runs", []) + [{"fetched_utc": stamp, "pages": len(pages), "new_shards": new}],
+    when = {e["path"]: e["fetched_utc"] for e in old.get("index", []) if e.get("fetched_utc")}
+    for e in index:
+        if not fetched:  # keep the real fetch date; a page the manifest never saw falls back to its file time
+            f = out / "pages" / (e["path"].strip("/").replace("/", "__") + ".md")
+            e["fetched_utc"] = when.get(e["path"]) or datetime.fromtimestamp(f.stat().st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        merged[(e["path"], e["section"], e["part"])] = e
+    manifest = {"domain": domain, "runs": old.get("runs", []) + [{"fetched_utc" if fetched else "repaired_utc": stamp, "pages": len(pages), "new_shards": new}],
                 "pages": len({k[0] for k in merged}), "shards": len(merged), "missing": missing,
                 "index": [merged[k] for k in sorted(merged)]}
     mf.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
