@@ -23,20 +23,49 @@ SCRIPT = "nougen-join"
 ZONE = os.environ.get("NOUGEN_JOIN_ZONE", "nougenai.com")
 
 
-def newest(prefix):
-    names = set()
+DEFAULT_JOIN_TOKEN_NAME = "CLOUDFLARE_JOIN_TOKEN_20261111_1657"
+
+
+def newest(prefix, fallback=DEFAULT_JOIN_TOKEN_NAME):
+    names = {k for k in os.environ if k.startswith(prefix) and os.environ.get(k)}
     try:
-        con = sqlite3.connect(str(keymaker.db_path()))
-        for (tbl,) in con.execute("select name from sqlite_master where type='table'"):
-            cols = [c[1] for c in con.execute(f"pragma table_info({tbl})")]
-            col = next((c for c in cols if c in ("key", "name", "title")), None)
-            if col:
-                names |= {n for (n,) in con.execute(f"select {col} from {tbl}") if str(n).startswith(prefix)}
-    except sqlite3.Error:
+        names |= {str(k) for k in keymaker.list_providers() if str(k).startswith(prefix)}
+    except Exception:
         pass
-    if not names:
-        raise SystemExit(f"no keymaker secret starting {prefix}; run tools/join_mint_token.py")
-    return keymaker.get_secret(sorted(names)[-1])
+    store_paths = [keymaker.db_path()]
+    try:
+        res = keymaker.resolve_secrets_store()
+        store_paths.append(res.get("active"))
+        store_paths.extend(item["path"] for item in res.get("live", ()))
+    except Exception:
+        pass
+    seen = set()
+    for p in store_paths:
+        if not p or str(p) in seen:
+            continue
+        seen.add(str(p))
+        con = None
+        try:
+            con = sqlite3.connect(str(p))
+            for (tbl,) in con.execute("select name from sqlite_master where type='table'"):
+                cols = [c[1] for c in con.execute(f"pragma table_info({tbl})")]
+                col = next((c for c in cols if c in ("secret_key", "key", "name", "title")), None)
+                if col:
+                    names |= {n for (n,) in con.execute(f"select {col} from {tbl}") if str(n).startswith(prefix)}
+        except sqlite3.Error:
+            pass
+        finally:
+            if con is not None:
+                con.close()
+    for candidate in sorted(names, reverse=True):
+        val = keymaker.get_secret(candidate)
+        if val:
+            return val
+    if fallback:
+        val = keymaker.get_secret(fallback)
+        if val:
+            return val
+    raise SystemExit(f"no keymaker secret starting {prefix}; run tools/join_mint_token.py")
 
 
 def client():
