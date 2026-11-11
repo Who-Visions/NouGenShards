@@ -1,9 +1,9 @@
 {
   "dialect": "nougendesigns/v0",
   "name": "mono-violet",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "One violet-branded console design system with four colorways: Dark, Light, Arcade and Hardcade. Colorways remap tokens only; layout, permissions, telemetry meaning and component behavior never change.",
-  "referenceWorld": "Cloud and AI developer consoles (the model-API and cloud-resource consoles of the large providers, used as analogies, not authority), precision instrument panels, and for the optional colorways retro arcade cabinets (Arcade) and competitive hardware control surfaces (Hardcade). Hardcade is the GM's own aesthetic label, not a standardized UI category.",
+  "referenceWorld": "Cloud and AI developer consoles (the model-API and cloud-resource consoles of the large providers, used as analogies, not authority), precision instrument panels, and for the optional colorways retro arcade cabinets (Arcade) and competitive hardware control surfaces (Hardcade). Hardcade is the GM's own aesthetic label, not a standardized UI category. Inside NouGen, docs/hardcade-lexicon.md uses Hardcade for the fleet command lexicon (relay verbs and moves); that document carries no color values, so the Hardcade palette in this spec is provisional.",
   "antiPatterns": "Reject decorative gradients on data surfaces, backdrop blur on content, glow on text or chart marks, pill radii larger than the control, meaning carried by color alone, and any theme that moves, hides or renames a control. Arcade and Hardcade effects are opt-in and never the default.",
   "materiality": "Dark and Light use opaque matte surfaces, fine dividers and violet as the single accent. Arcade uses flat rounded panels (16px) with warm secondary colors. Hardcade uses angular panels (2px radius), 2px outlines and no soft shadows. An optional decorative grid texture sits behind content on its own layer, is off by default, and never sits behind text or data. Glow is limited to the focus ring and one primary control, and only when effects are enabled.",
   "density": "Compact operator density in every theme: 0.25rem spacing steps, tables and inspectors sized for scanning. Theme choice never changes spacing, column counts or information density.",
@@ -16,7 +16,7 @@
   "iconography": "Monochrome line icons with one stroke weight and the same glyphs in every theme; Hardcade may sharpen stroke terminals but not change meaning. Unfamiliar symbols are paired with text.",
   "dataViz": "Four chart series tokens per theme, all at least 3:1 on the surface, with labeled axes and legends. Good, warning and error keep fixed meanings in every theme and always pair color with a text label or shape, so a colorway cannot reverse a signal.",
   "stateGrammar": "Specify default, hover, focus, selected, disabled, loading, empty, error, stale, offline and permission-denied states per component. Status chips read LIVE, WARN and ERROR as text. Colorways remap color only, never the set of states or what they mean.",
-  "provenance": "Dark, Light, Arcade and Hardcade primary, background, surface and text hex values are observed from a GM-supplied brief of 2026-11-10 written by an outside assistant. Muted, border, status, chart and radius tokens are NouGen derivations chosen so the compiler contrast checks pass. The brief did not verify Hardcade as an established category and neither does this spec. The brief itself says to check contrast per theme instead of assuming WCAG AA, which this spec does.",
+  "provenance": "Dark, Light, Arcade and Hardcade primary, background, surface and text hex values are observed from a GM-supplied brief of 2026-11-10 written by an outside assistant. Muted, border, status, chart and radius tokens are NouGen derivations chosen so the compiler contrast checks pass. The brief did not verify Hardcade as an established category and neither does this spec. The brief itself says to check contrast per theme instead of assuming WCAG AA, which this spec does. Recovery check 2026-11-10: 34 files in NouGenShards mention Hardcade and none put a color value near it, so no canonical Hardcade palette was found. The Hardcade tokens here come from the brief and stay provisional until the GM supplies or points to the canon.",
   "tokens": {
     "--accent": "#a47bff",
     "--bad": "#ff8a8a",
@@ -132,6 +132,11 @@
       "kind": "inferred",
       "source": "designs/saas-console-morph.md",
       "note": "Shell and state invariants shared with the console architecture."
+    },
+    {
+      "kind": "observed",
+      "source": "docs/hardcade-lexicon.md",
+      "note": "Hardcade in the repo names a command lexicon; no palette or token values found in it or in 33 other files that mention the word."
     }
   ],
   "contrastPairs": [

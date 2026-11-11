@@ -1,6 +1,6 @@
 ---
 name: "mono-violet"
-version: "0.1.0"
+version: "0.1.1"
 description: "One violet-branded console design system with four colorways: Dark, Light, Arcade and Hardcade. Colorways remap tokens only; layout, permissions, telemetry meaning and component behavior never change."
 colors: {"--accent": "#a47bff", "--bad": "#ff8a8a", "--bg": "#0b0911", "--border": "#332b43", "--border-strong": "#7d7094", "--chart-1": "#a47bff", "--chart-2": "#4fd1e5", "--chart-3": "#f2b84b", "--chart-4": "#5bd6a0", "--control-ink": "#0b0911", "--extra": "#d2bbff", "--focus": "#d2bbff", "--good": "#4cc38a", "--muted": "#a79cb9", "--raised": "#211a30", "--surface": "#171321", "--text": "#f5f1ff", "--warn": "#e6aa3a"}
 ---
@@ -9,7 +9,7 @@ colors: {"--accent": "#a47bff", "--bad": "#ff8a8a", "--bg": "#0b0911", "--border
 
 ## referenceWorld
 
-Cloud and AI developer consoles (the model-API and cloud-resource consoles of the large providers, used as analogies, not authority), precision instrument panels, and for the optional colorways retro arcade cabinets (Arcade) and competitive hardware control surfaces (Hardcade). Hardcade is the GM's own aesthetic label, not a standardized UI category.
+Cloud and AI developer consoles (the model-API and cloud-resource consoles of the large providers, used as analogies, not authority), precision instrument panels, and for the optional colorways retro arcade cabinets (Arcade) and competitive hardware control surfaces (Hardcade). Hardcade is the GM's own aesthetic label, not a standardized UI category. Inside NouGen, docs/hardcade-lexicon.md uses Hardcade for the fleet command lexicon (relay verbs and moves); that document carries no color values, so the Hardcade palette in this spec is provisional.
 
 ## antiPatterns
 
@@ -61,4 +61,4 @@ Specify default, hover, focus, selected, disabled, loading, empty, error, stale,
 
 ## provenance
 
-Dark, Light, Arcade and Hardcade primary, background, surface and text hex values are observed from a GM-supplied brief of 2026-11-10 written by an outside assistant. Muted, border, status, chart and radius tokens are NouGen derivations chosen so the compiler contrast checks pass. The brief did not verify Hardcade as an established category and neither does this spec. The brief itself says to check contrast per theme instead of assuming WCAG AA, which this spec does.
+Dark, Light, Arcade and Hardcade primary, background, surface and text hex values are observed from a GM-supplied brief of 2026-11-10 written by an outside assistant. Muted, border, status, chart and radius tokens are NouGen derivations chosen so the compiler contrast checks pass. The brief did not verify Hardcade as an established category and neither does this spec. The brief itself says to check contrast per theme instead of assuming WCAG AA, which this spec does. Recovery check 2026-11-10: 34 files in NouGenShards mention Hardcade and none put a color value near it, so no canonical Hardcade palette was found. The Hardcade tokens here come from the brief and stay provisional until the GM supplies or points to the canon.

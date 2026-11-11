@@ -21,10 +21,15 @@
       "kind": "inferred",
       "note": "Shell and state invariants shared with the console architecture.",
       "source": "designs/saas-console-morph.md"
+    },
+    {
+      "kind": "observed",
+      "note": "Hardcade in the repo names a command lexicon; no palette or token values found in it or in 33 other files that mention the word.",
+      "source": "docs/hardcade-lexicon.md"
     }
   ],
   "schemaVersion": "od-design-system-project/v1",
-  "sourceDigest": "f39bf760b8170d125f58ec0f2762d0d64fa5a034f162661ea1d8ac0ad2f05c22",
+  "sourceDigest": "6f1938b55bdd5c682920d60ac06c5b897cd945e74a76428e850859b3588c1c2b",
   "surfaces": {
     "ground": "--bg",
     "ink": "--text"
@@ -35,5 +40,5 @@
     "hardcade",
     "light"
   ],
-  "version": "0.1.0"
+  "version": "0.1.1"
 }
