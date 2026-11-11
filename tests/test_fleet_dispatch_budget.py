@@ -173,3 +173,48 @@ def test_identity_mismatch_reported_explicitly_without_500(tmp_path, monkeypatch
 
     tripped = f.map(["prompt"], retries=0)[0][1]
     assert "identity_mismatch" in tripped and "re-point the route" in tripped
+
+
+def test_constructor_diversify_opt_out_preserved_across_probe(tmp_path, monkeypatch):
+    config = tmp_path / "routes.json"
+    config.write_text(json.dumps({"mcpServers": {
+        "openrouter-a": {"type": "openai-compatible", "url": "https://openrouter.ai/api/v1", "model": "pinned/m:free"},
+        "openrouter-b": {"type": "openai-compatible", "url": "https://openrouter.ai/api/v1", "model": "pinned/m:free"},
+    }}))
+    f = fleet.Fleet(str(config), include_local=False, include_vertex=False, diversify=False)
+    assert [r["model"] for r in f.routes] == ["pinned/m:free", "pinned/m:free"]
+
+    seen_models = []
+
+    def respond(request, timeout):
+        body = json.loads(request.data)
+        seen_models.append(body["model"])
+        return io.BytesIO(json.dumps({
+            "model": body["model"],
+            "choices": [{"finish_reason": "stop", "message": {"content": "OK"}}],
+        }).encode())
+
+    monkeypatch.setattr(fleet.urllib.request, "urlopen", respond)
+    healthy = f.probe(verbose=False)
+    assert len(healthy) == 2
+    assert seen_models == ["pinned/m:free", "pinned/m:free"]
+
+
+def test_live_privacy_mode_blocks_remote_refresh_on_probe(tmp_path, monkeypatch):
+    config = tmp_path / "routes.json"
+    config.write_text(json.dumps({"mcpServers": {
+        "openrouter-a": {"type": "openai-compatible", "url": "https://openrouter.ai/api/v1", "model": "pinned/m:free"},
+        "openrouter-b": {"type": "openai-compatible", "url": "https://openrouter.ai/api/v1", "model": "pinned/m:free"},
+    }}))
+    monkeypatch.delenv("NOUGEN_PRIVACY", raising=False)
+    monkeypatch.setattr(fleet, "OR_FREE_CACHE", str(tmp_path / "absent.json"))
+    f = fleet.Fleet(str(config), include_local=False, include_vertex=False)
+
+    def boom(*a, **k):
+        raise AssertionError("network must not be touched under live NOUGEN_PRIVACY")
+
+    monkeypatch.setattr(fleet.urllib.request, "urlopen", boom)
+    monkeypatch.setenv("NOUGEN_PRIVACY", "1")
+    f.diversify(refresh=True)
+    assert f.probe(verbose=False) == []
+    assert f.probe(verbose=False, diversify=True) == []

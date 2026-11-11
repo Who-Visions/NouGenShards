@@ -251,6 +251,8 @@ def refresh_or_diverse(max_age_s: int = 6 * 3600, timeout: int = 15) -> list[tup
             if cached:
                 OR_DIVERSE = cached
                 return OR_DIVERSE
+        if privacy_mode():
+            return OR_DIVERSE
         url = "https://openrouter.ai/api/v1/models?sort=throughput-high-to-low"
         with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "nougen-fleet"}), timeout=timeout) as r:
             data = json.load(r)["data"]
@@ -359,11 +361,15 @@ class Fleet:
         self.healthy: list[dict] = []
         self._lock = threading.Lock()
         self._or_spread_pending_refresh = False
+        self._diversify_opt_out = diversify is False
         # Auto-spread colliding OpenRouter accounts immediately (without blocking __init__
         # on a network fetch) so ask()/map() do not hammer one rate-limited pool.
-        if not self.privacy and (diversify is True or (diversify is None and self._needs_openrouter_diversify())):
+        if not self._is_private() and (diversify is True or (diversify is None and self._needs_openrouter_diversify())):
             self.diversify(refresh=False)
             self._or_spread_pending_refresh = True
+
+    def _is_private(self) -> bool:
+        return bool(getattr(self, "privacy", False) or privacy_mode())
 
     def _needs_openrouter_diversify(self) -> bool:
         or_routes = [r for r in self.routes if r.get("kind") == "openrouter"]
@@ -383,7 +389,7 @@ class Fleet:
         or_routes = [r for r in self.routes if r["kind"] == "openrouter"]
         if not or_routes:
             return self.routes
-        if refresh:
+        if refresh and not self._is_private():
             refresh_or_diverse()
             self._or_spread_pending_refresh = False
         extra = []
@@ -415,7 +421,7 @@ class Fleet:
     def _call_once(self, route: dict, prompt, timeout: int = 120,
                    max_tokens: int = 2048, temperature: float = 0.0) -> dict:
         """prompt: a string (sent as one user message) or a ready chat list [{"role", "content"}, ...]."""
-        if (getattr(self, "privacy", False) or privacy_mode()) and not is_private_url(route["url"]):
+        if self._is_private() and not is_private_url(route["url"]):
             raise PrivacyError(f"privacy mode: refused cloud route {route['name']} "
                                f"({urllib.parse.urlsplit(route['url']).hostname})")
         # Reasoning models spend a hidden budget before emitting content and
@@ -506,10 +512,11 @@ class Fleet:
     def probe(self, timeout: int = 25, workers: int = 16, verbose: bool = True,
               max_tokens: int = PROBE_MAX_TOKENS, diversify: bool | None = None) -> list[dict]:
         """Health-check every route in parallel. Populates self.healthy."""
-        if not self.privacy and (
+        if not self._is_private() and (
             diversify is True
             or (
                 diversify is None
+                and not getattr(self, "_diversify_opt_out", False)
                 and (self._needs_openrouter_diversify() or getattr(self, "_or_spread_pending_refresh", False))
             )
         ):
