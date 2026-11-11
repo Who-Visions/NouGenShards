@@ -114,6 +114,32 @@ def recent_shards(limit: Optional[int] = None) -> list[tuple[str, str, str]]:
     return [(str(t or ""), str(e or "SHARD"), str(title or "")) for t, e, title in rows[:limit]]
 
 
+def active_relay_summary() -> str:
+    """Active relay baton info across the fleet, read-only."""
+    try:
+        relay_dir = Path(os.environ.get("NOUGEN_RELAY_DIR") or Path.home() / ".nougen" / "relay")
+        current_file = relay_dir / "phoebus" / "current.json"
+        if not current_file.exists():
+            matches = list(relay_dir.glob("*/current.json"))
+            current_file = matches[0] if matches else None
+        if current_file and current_file.exists():
+            data = json.loads(current_file.read_text(encoding="utf-8"))
+            # The relay writer persists `session` (not `session_id`) and no baton path;
+            # the baton lives beside current.json as baton_<date>_<session>.json.
+            session = str(data.get("session") or data.get("session_id") or "")
+            if not session or data.get("active") is False:
+                return ""
+            phase = data.get("phase", "mid")
+            suffix = f"_{session}.json"
+            baton = next((f for f in sorted(current_file.parent.iterdir())
+                          if f.name.startswith("baton_") and f.name.endswith(suffix)), None)
+            baton_file = str(baton) if baton else ""
+            return f"ACTIVE RELAY BATON: Session {session} (phase: {phase}) | {baton_file}"
+    except Exception:
+        pass
+    return ""
+
+
 def _git(*args: str) -> str:
     try:
         return subprocess.run(["git", *args], capture_output=True, text=True, timeout=10).stdout.strip()
@@ -144,6 +170,9 @@ def session_start(evt: dict) -> dict:
     if shards:
         parts.append("NOUGEN VAULT, newest shards:\n" + "\n".join(
             f"- [{t[:16]}] {e}: {title[:100]}" for t, e, title in shards))
+    active_relay = active_relay_summary()
+    if active_relay:
+        parts.append(active_relay)
     parts.append("Recall from the vault (`nougen recall` / the nougen-shards MCP tools) before "
                  "reasoning from scratch, and capture decisions and fixes back to it.")
     return _context("session-start", "\n\n".join(parts))
@@ -164,18 +193,32 @@ def _started(evt: dict) -> float:
         return time.time() - 12 * 3600
 
 
+def _same_tree(a: str, b: Path) -> bool:
+    """True when two directories are the same or one contains the other.
+
+    A session moves between a workspace root and a project inside it, so a
+    handoff written from one must count for a hook running in the other."""
+    try:
+        written = Path(a).resolve()
+    except (OSError, TypeError, ValueError):
+        return False
+    return written == b or written in b.parents or b in written.parents
+
+
 def _handoff_written_since(start: float) -> bool:
     """True when a handoff record newer than ``start`` was written from this
-    working directory. Records from other sessions/projects in the shared
-    registry do not count, so they never suppress this session's auto-handoff."""
-    here = str(Path.cwd())
+    working directory, a project inside it, or the workspace that holds it.
+    Records from unrelated projects in the shared registry do not count, so
+    they never suppress this session's auto-handoff."""
+    here = Path.cwd().resolve()
     for f in glob.glob(str(_handoff_dir() / "**" / "handoff_*.json"), recursive=True):
         try:
             if os.path.getmtime(f) <= start:
                 continue
             with open(f, encoding="utf-8") as fh:
-                if json.load(fh).get("cwd") == here:
-                    return True
+                written = json.load(fh).get("cwd")
+            if written and _same_tree(written, here):
+                return True
         except (OSError, ValueError, AttributeError):
             continue
     return False
@@ -199,9 +242,10 @@ def _handoff_written_since(start: float) -> bool:
 # NOUGEN_REFLEX = block (default) | nudge | off.  NOUGEN_CTX_GATE = deny (default) | warn | off.
 
 _SHARD_TOOL = re.compile(r"(shards_capture|shards_amend|capture_experience|add_shard|promote_context_to_shard)", re.I)
-_RELAY_TOOL = re.compile(r"relay_(create|ack)", re.I)
-_SHARD_CMD = re.compile(r"(\bnougen(\.bat)?\s+(add|capture)\b|nougen_shards\.cli\s+(add|capture)\b|core\.capture\()", re.I)
-_RELAY_CMD = re.compile(r"(nougen_relay\.cli\s+(create|ack)\b|git_handoff\.py\s+(create|ack)\b|\brelay\s+(create|ack)\b)", re.I)
+# Only the send operation counts as an outgoing handoff. Reading the inbox does not.
+_RELAY_TOOL = re.compile(r"(relay_(create|ack|checkpoint|complete|handoff|sync)|send_msg|nougenmsg_send)", re.I)
+_SHARD_CMD = re.compile(r"(\bnougen(\.bat)?\s+(add|capture|shard\s+add)\b|nougen_shards\.cli\s+(add|capture)\b|core\.capture\()", re.I)
+_RELAY_CMD = re.compile(r"(\bnougen(\.bat)?\s+(relay\s+(create|ack|checkpoint|complete|handoff|sync)|msg)\b|nougen_relay\.cli\s+(create|ack|checkpoint|complete|handoff|sync)\b|git_handoff\.py\s+(create|ack)\b|\brelay\s+(create|ack|checkpoint|complete|handoff|sync)\b)", re.I)
 _WORK_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
 _WORK_CMD = re.compile(r"\bgit\s+commit\b", re.I)
 _SHELL_TOOLS = {"Bash", "PowerShell", "shell", "local_shell"}
@@ -353,11 +397,11 @@ _GIT_LOG_LIMITED = re.compile(r"(\s-n\s*\d+|\s-\d+\b|--max-count)", re.I)
 _GIT_DIFF = re.compile(_CMD_START + r"git\s+(-C\s+\S+\s+)?(diff|show)\b", re.I)
 _GIT_DIFF_LIMITED = re.compile(r"--(stat|shortstat|numstat|name-only|name-status|quiet|format|pretty)\b|\s-s\b", re.I)
 _RECURSE = re.compile(
-    _CMD_START + r"(grep\s+(-\w*\s+)*-\w*[rR]\w*\b|rg\b|findstr\s+/s\b|find\s+\S|ls\s+-\w*R|dir\s+/s\b)", re.I)
+    _CMD_START + r"(grep\s+(-\w*\s+)*-\w*[rR]\w*\b|rg\b|findstr\s+/s\b|find\s+\S|ls\s+-\w*R|dir\s+/s\b|fd\b|tree\b)", re.I)
 # -l / -c style short flags only mean "names" or "count" to grep and rg.
-_RECURSE_LIMITED = re.compile(r"(\s-[a-z]{0,6}[lc][a-z]{0,6}\b|--count\b|--files-with-matches\b|-maxdepth\s+[12]\b|\s-quit\b)", re.I)
+_RECURSE_LIMITED = re.compile(r"(\s-[a-z]{0,6}[lc][a-z]{0,6}\b|--count\b|--files-with-matches\b|-maxdepth\s+[12]\b|\s-quit\b|-L\s+[12]\b|--max-depth\s+[12]\b)", re.I)
 _PS_RECURSE = re.compile(_CMD_START + r"(get-childitem|gci|select-string|sls)\b[^|;]*-recurse\b", re.I)
-_TESTS = re.compile(_CMD_START + r"((python\S*\s+-m\s+)?pytest|npm\s+(run\s+)?test|pnpm\s+test|yarn\s+test|cargo\s+test|go\s+test)\b", re.I)
+_TESTS = re.compile(_CMD_START + r"((python\S*\s+-m\s+)?pytest|npm\s+(run\s+)?test|pnpm\s+test|yarn\s+test|bun\s+(run\s+)?test|cargo\s+test|go\s+test|ctest\b|(\./)?gradlew(\.bat)?\s+test|swift\s+test)\b", re.I)
 
 CTX_HINT = ("Run it in context mode instead: `ctx_execute` / `ctx_batch_execute` (or `nougen ctx execute`) "
             "and print only the answer. Or bound it here: pipe to `head` / `Select-Object -First N`, "

@@ -96,6 +96,12 @@ def test_more_work_after_a_declined_ask_is_asked_again(env):
     ('.venv/Scripts/python.exe -m nougen_shards.cli capture -t x', "shard"),
     ('python -m nougen_relay.cli create -g "goal" -M body.md', "relay"),
     ('python tools/git_handoff.py ack 20261109T000000Z__x__y', "relay"),
+    ('nougen relay checkpoint leg-123 --notes "checkpointed"', "relay"),
+    ('nougen relay complete leg-123 --notes "landed"', "relay"),
+    ('nougen relay handoff leg-123 --to @whoart', "relay"),
+    ('nougen relay sync', "relay"),
+    ('nougen msg --to @whoart "touchdown"', "relay"),
+    ('nougen shard add -t "title" "body"', "shard"),
 ])
 def test_cli_forms_count_as_the_reflex(env, command, key):
     _tool("Edit", file_path="a.py")
@@ -183,6 +189,11 @@ def test_session_end_clears_the_reflex_state(env):
     "Get-ChildItem C:\\repo -Recurse",
     "find . -name '*.py'",
     "python -m pytest tests -q",
+    "bun test",
+    "ctest",
+    "./gradlew test",
+    "fd . src",
+    "tree src",
     "cd repo && git diff",
     "python -m pytest tests | tee /tmp/test.log",  # tee copies to stdout too
     "git diff | Tee-Object diff.log",
@@ -211,6 +222,7 @@ def test_unbounded_commands_are_refused_with_the_sandbox_route(env, command):
     "curl -L -o model.bin https://example.com/model.bin",
     'git commit -m "fix: stop curl and git log from flooding context"',
     "ls",
+    "tree -L 2",
     "git push -u origin feat/x",
 ])
 def test_bounded_or_small_commands_pass(env, command):
