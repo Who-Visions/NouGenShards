@@ -195,6 +195,51 @@ def test_anthropic_markdown_table_supported():
     assert built["models"]["claude-opus-5.5"]["cache_read"] == 0.20
 
 
+def test_html_section_tier_attribution_and_inline_qualifiers():
+    """HTML section parser must verify tier labels (not overwrite Standard with Batch)
+    and preserve inline <span>/<a> text continuity with date qualifiers."""
+    html_page = """
+    <html><body>
+      <h2>Gemini 4.2 Pro</h2>
+      <button type="button">Standard</button>
+      <table>
+        <tr><th>Feature</th><th>Free Tier</th><th>Paid Tier, per 1M tokens in USD</th></tr>
+        <tr>
+          <td>Input price</td>
+          <td>Not available</td>
+          <td><span>$2</span> through November 30, 2026.<br><span>$4</span> starting December 1, 2026.</td>
+        </tr>
+        <tr>
+          <td>Output price</td>
+          <td>Not available</td>
+          <td><a href="/pricing">$10</a> through November 30, 2026.<br><span>$20</span> starting December 1, 2026.</td>
+        </tr>
+      </table>
+      <button type="button">Batch</button>
+      <table>
+        <tr><th>Feature</th><th>Free Tier</th><th>Paid Tier, per 1M tokens in USD</th></tr>
+        <tr><td>Input price</td><td>Not available</td><td>$1.00</td></tr>
+        <tr><td>Output price</td><td>Not available</td><td>$5.00</td></tr>
+      </table>
+
+      <h2>Gemini Unverified Model</h2>
+      <table>
+        <tr><th>Feature</th><th>Free Tier</th><th>Paid Tier, per 1M tokens in USD</th></tr>
+        <tr><td>Input price</td><td>Not available</td><td>$1.00</td></tr>
+        <tr><td>Output price</td><td>Not available</td><td>$5.00</td></tr>
+      </table>
+    </body></html>
+    """
+    built = ip.build("google", {"shape": "sections", "tier": "Standard"}, html_page, "test")
+    assert "gemini-unverified-model" not in built["models"]
+    m = built["models"]["gemini-4.2-pro"]
+    assert m["input"] == 2.0
+    assert m["output"] == 10.0
+    assert m["schedule"] == {
+        "2026-12-01": {"input": 4.0, "output": 20.0},
+    }
+
+
 def test_shipped_pricing_snapshots_load_in_billing():
     p_nov = billing._load_pricing("2026-11-11")
     p_dec = billing._load_pricing("2026-12-01")

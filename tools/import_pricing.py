@@ -112,7 +112,18 @@ class _DocParser(HTMLParser):
     """Collects tables (as cell-text rows) and the heading in force above each."""
 
     HEADINGS = {"h1", "h2", "h3", "h4"}
+    BLOCK_CELL_TAGS = {"br", "p", "div", "li"}
     TIER_WORDS = ("Standard", "Batch", "Priority", "Flex", "Scale")
+    TIER_MAP = {w.lower(): w for w in TIER_WORDS}
+
+    @classmethod
+    def match_tier(cls, text: str) -> str | None:
+        cleaned = " ".join((text or "").split()).strip().lower()
+        if cleaned in cls.TIER_MAP:
+            return cls.TIER_MAP[cleaned]
+        if cleaned.endswith(" tier") and cleaned[:-5] in cls.TIER_MAP:
+            return cls.TIER_MAP[cleaned[:-5]]
+        return None
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -121,9 +132,15 @@ class _DocParser(HTMLParser):
         self._table: list[list[str]] | None = None
         self._row: list[str] | None = None
         self._cell: list[str] | None = None
+        self._cell_breaks: list[bool] = []
         self._heading_tag: str | None = None
         self._heading_buf: list[str] = []
         self.headings: dict[str, str] = {}
+
+    def _is_caption_inline(self, attrs: list[tuple[str, str | None]]) -> bool:
+        cls_val = dict(attrs).get("class") or ""
+        tokens = cls_val.lower().split()
+        return any(tok in ("text-caption", "caption", "block") or tok.endswith("-caption") for tok in tokens)
 
     def handle_starttag(self, tag, attrs):
         if tag == "table":
@@ -132,11 +149,20 @@ class _DocParser(HTMLParser):
             self._row = []
         elif tag in ("td", "th") and self._row is not None:
             self._cell = []
+            self._cell_breaks = []
         elif tag in self.HEADINGS:
             self._heading_tag = tag
             self._heading_buf = []
-        elif tag in ("br", "p", "div", "li", "span", "a") and self._cell is not None:
-            self._cell.append("\n")
+        elif self._cell is not None:
+            if tag in self.BLOCK_CELL_TAGS:
+                self._cell.append("\n")
+                if tag != "br":
+                    self._cell_breaks.append(True)
+            elif tag in ("span", "small", "a"):
+                should_break = self._is_caption_inline(attrs)
+                self._cell_breaks.append(should_break)
+                if should_break:
+                    self._cell.append("\n")
 
     def handle_data(self, data):
         if self._cell is not None:
@@ -144,9 +170,9 @@ class _DocParser(HTMLParser):
         elif self._heading_tag:
             self._heading_buf.append(data)
         elif self._table is None:
-            text = data.strip()
-            if text in self.TIER_WORDS:
-                self._last_tier = text
+            matched = self.match_tier(data)
+            if matched:
+                self._last_tier = matched
 
     def handle_endtag(self, tag):
         if tag in ("td", "th") and self._cell is not None:
@@ -154,8 +180,10 @@ class _DocParser(HTMLParser):
             lines = [" ".join(ln.split()) for ln in raw_cell.splitlines()]
             self._row.append("\n".join(ln for ln in lines if ln))
             self._cell = None
-        elif tag in ("p", "div", "li", "span", "a") and self._cell is not None:
-            self._cell.append("\n")
+            self._cell_breaks = []
+        elif self._cell is not None and tag in ("p", "div", "li", "span", "small", "a"):
+            if self._cell_breaks and self._cell_breaks.pop():
+                self._cell.append("\n")
         elif tag == "tr" and self._row is not None:
             if any(c for c in self._row):
                 self._table.append(self._row)
@@ -168,6 +196,7 @@ class _DocParser(HTMLParser):
                     "tier": self._last_tier,
                 })
             self._table = None
+            self._last_tier = None
         elif tag in self.HEADINGS and self._heading_tag == tag:
             text = " ".join("".join(self._heading_buf).split())
             if text:
@@ -176,6 +205,7 @@ class _DocParser(HTMLParser):
                     if deeper > tag:
                         self.headings.pop(deeper, None)
             self._heading_tag = None
+            self._last_tier = None
 
 
 # --------------------------------------------------------------------------
@@ -386,7 +416,8 @@ def _record_section_model(
     if schedule:
         entry["schedule"] = schedule
 
-    models[key] = entry
+    if key not in models:
+        models[key] = entry
 
 
 # --------------------------------------------------------------------------
@@ -515,13 +546,30 @@ def parse_sections_markdown(md: str, tier: str) -> dict:
     return {}
 
 
+def _resolve_html_table_tier(table: dict) -> str | None:
+    """Resolve an HTML table's service tier from button/text context or h4/h3 headings."""
+    direct = _DocParser.match_tier(table.get("tier") or "")
+    if direct:
+        return direct
+    heads = table.get("headings") or {}
+    for level in ("h4", "h3"):
+        matched = _DocParser.match_tier(heads.get(level) or "")
+        if matched:
+            return matched
+    return None
+
+
 def parse_sections_html(doc: _DocParser, tier: str) -> dict:
     models: dict = {}
     for table in doc.tables:
         heads = table["headings"]
-        model, current_tier = heads.get("h2"), heads.get("h3")
-        if not model or (tier and current_tier and current_tier != tier):
+        model = heads.get("h2")
+        if not model:
             continue
+        if tier:
+            resolved_tier = _resolve_html_table_tier(table)
+            if not resolved_tier or resolved_tier.lower() != tier.lower():
+                continue
         rows = table["rows"]
         if len(rows) < 2:
             continue

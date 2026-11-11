@@ -1,5 +1,5 @@
 {
-  "imported_at": "2026-11-11T11:06:53-05:00",
+  "imported_at": "2026-11-11T11:21:42-05:00",
   "models": {
     "gemini-2.5-flash": {
       "cache_read": 0.03,
@@ -127,7 +127,7 @@
       "output": 9.0
     },
     "gemini-omni-1.2-flash": {
-      "display_name": "gemini-omni-1.2-flash",
+      "display_name": "Gemini Omni 1.2 Flash",
       "input": 1.5,
       "output": 9.0
     }
