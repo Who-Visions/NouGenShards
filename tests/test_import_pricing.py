@@ -279,6 +279,34 @@ def test_html_section_tier_attribution_and_inline_qualifiers():
     }
 
 
+def test_markdown_section_pipe_table_fallback_supported():
+    md_doc = """
+## Gemini 2.5 Flash
+### Standard
+| Feature | Free Tier | Paid Tier, per 1M tokens in USD |
+| --- | --- | --- |
+| Input price | Free | $0.30 |
+| Output price | Free | $2.50 |
+### Batch
+| Feature | Free Tier | Paid Tier, per 1M tokens in USD |
+| --- | --- | --- |
+| Input price | Free | $0.15 |
+| Output price | Free | $1.25 |
+
+## Gemini 2.5 Pro
+### Standard
+| Input price | Free | $1.25 through November 30, 2026. $2.00 starting December 1, 2026. |
+| Output price | Free | $10.00 |
+"""
+    built = ip.build("google", {"shape": "sections", "tier": "Standard"}, md_doc, "test")
+    assert built["models"]["gemini-2.5-flash"]["input"] == 0.30
+    assert built["models"]["gemini-2.5-flash"]["output"] == 2.50
+    pro = built["models"]["gemini-2.5-pro"]
+    assert pro["input"] == 1.25
+    assert pro["output"] == 10.0
+    assert pro["schedule"] == {"2026-12-01": {"input": 2.0}}
+
+
 def test_shipped_pricing_snapshots_load_in_billing():
     p_nov = billing._load_pricing("2026-11-11")
     p_dec = billing._load_pricing("2026-12-01")

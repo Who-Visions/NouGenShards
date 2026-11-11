@@ -539,7 +539,78 @@ def parse_sections_markdoc(md: str, tier: str = "Standard") -> dict:
 def parse_sections_markdown(md: str, tier: str) -> dict:
     if "{% table %}" in md:
         return parse_sections_markdoc(md, tier=tier)
-    return {}
+
+    models: dict = {}
+    model: str | None = None
+    current_tier: str | None = None
+    cols: tuple[int, int] | None = None
+    header_unit: float = 1.0
+    inp_entries: list = []
+    out_entries: list = []
+    cache_entries: list = []
+
+    def _flush() -> None:
+        if model:
+            s = slug(model)
+            if s:
+                _record_section_model(models, s, model, inp_entries, out_entries, cache_entries)
+
+    for line in md.splitlines():
+        h2 = re.match(r"^##\s+(.+?)\s*$", line)
+        if h2:
+            _flush()
+            model = h2.group(1).strip()
+            current_tier = None
+            cols = None
+            header_unit = 1.0
+            inp_entries, out_entries, cache_entries = [], [], []
+            continue
+        h3 = re.match(r"^###\s+(.+?)\s*$", line)
+        if h3:
+            _flush()
+            raw_t = h3.group(1).strip()
+            current_tier = _DocParser.match_tier(raw_t) or raw_t
+            cols = None
+            header_unit = 1.0
+            inp_entries, out_entries, cache_entries = [], [], []
+            continue
+
+        if not model or (tier and (not current_tier or current_tier.lower() != tier.lower())):
+            continue
+        sline = line.strip()
+        if not sline.startswith("|"):
+            continue
+        cells = [c.strip() for c in sline.strip("|").split("|")]
+        if not cells or all(not c or re.fullmatch(r":?-+:?", c) for c in cells):
+            continue
+
+        if cols is None and not inp_entries and not out_entries:
+            found = _find_gemini_columns(cells, require_feature_name=False)
+            if found is not None:
+                cols = found
+                header_unit = _detect_unit_multiplier(cells[cols[1]]) or 1.0
+                continue
+
+        if cols is not None:
+            if len(cells) <= max(cols):
+                continue
+            feat_i, paid_i = cols
+        else:
+            if len(cells) < 2:
+                continue
+            feat_i, paid_i = 0, -1
+
+        label = _clean_cell_text(cells[feat_i]).lower()
+        paid_raw = cells[paid_i]
+        if "input price" in label and not inp_entries:
+            inp_entries = _parse_section_paid_cell(paid_raw, header_unit)
+        elif "output price" in label and not out_entries:
+            out_entries = _parse_section_paid_cell(paid_raw, header_unit)
+        elif "context caching" in label and not cache_entries:
+            cache_entries = _parse_section_paid_cell(paid_raw, header_unit)
+
+    _flush()
+    return models
 
 
 def _resolve_html_table_tier(table: dict) -> str | None:
