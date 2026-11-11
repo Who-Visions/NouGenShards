@@ -58,12 +58,29 @@ def speak(text: str, voice: str | None = None, speed: float | None = None):
         import soundfile as sf
 
         voice_dir = os.path.expanduser("~/.nougen/voices")
-        model_path = os.path.join(voice_dir, "kokoro-v0_19.onnx")
-        voices_path = os.path.join(voice_dir, "voices.bin")
+        model_path = None
+        voices_path = None
+        for m, v in (("kokoro-v1.0.onnx", "voices-v1.0.bin"), ("kokoro-v0_19.onnx", "voices.bin")):
+            cand_m = os.path.join(voice_dir, m)
+            cand_v = os.path.join(voice_dir, v)
+            if os.path.exists(cand_m) and os.path.exists(cand_v):
+                model_path = cand_m
+                voices_path = cand_v
+                break
 
-        if os.path.exists(model_path) and os.path.exists(voices_path):
+        if model_path and voices_path:
             kokoro = Kokoro(model_path, voices_path)
-            lang = "en-gb" if active_voice.startswith("b") else "en-us"
+            available = set(kokoro.get_voices()) if hasattr(kokoro, "get_voices") else set(kokoro.voices)
+            resolved_voice = active_voice
+            if resolved_voice not in available:
+                for fallback_v in ("af_river", "af_bella", "af_sky", "am_adam"):
+                    if fallback_v in available:
+                        resolved_voice = fallback_v
+                        break
+                else:
+                    resolved_voice = next(iter(available)) if available else active_voice
+
+            lang = "en-gb" if resolved_voice.startswith("b") else "en-us"
 
             # Vocal Rhythm v2 Dynamics: Modulate articulation rate based on phrase emphasis
             effective_speed = active_speed
@@ -81,7 +98,7 @@ def speak(text: str, voice: str | None = None, speed: float | None = None):
             except Exception:
                 pass
 
-            samples, sr = kokoro.create(text, voice=active_voice, speed=effective_speed, lang=lang)
+            samples, sr = kokoro.create(text, voice=resolved_voice, speed=effective_speed, lang=lang)
 
             wav_path = f"/tmp/nougen_voice_{os.getpid()}.wav"
             sf.write(wav_path, samples, sr)
