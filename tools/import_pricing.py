@@ -5,12 +5,13 @@ most likely to "remember" wrongly. This pulls them live from the vendor's own
 pricing page, so the meter is grounded in the published table rather than in
 anybody's memory of it.
 
-Two page shapes are supported, chosen per source:
+Page shapes supported (chosen per source):
 
-  sections  A heading per model, a sub-heading per tier, rows labelled
-            "Input price" / "Output price".            (ai.google.dev)
-  matrix    One table, one row per model, prices in named columns.
-            (platform.claude.com)
+  sections  A heading per model with Markdoc {% table %} / {% tabs %} or HTML
+            tables, rows labelled "Input price" / "Output price"  (ai.google.dev)
+  matrix    One table, one row per model, prices in named columns
+            (HTML or Markdown pipe table).                       (platform.claude.com)
+  json_api  Provider JSON catalog (e.g. OpenRouter /api/v1/models).
 
 Dated increases ("$0.75 through December 31, 2026. $1.50 starting January 1,
 2027.") are preserved as a schedule rather than flattened, so the resolver in
@@ -28,12 +29,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import html as html_lib
 import json
 import os
 import re
 import sys
 import urllib.request
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -65,11 +67,34 @@ USER_AGENT = os.environ.get("NOUGEN_PRICING_UA", "NouGenShards-pricing-importer/
 
 _PRICE = re.compile(r"\$\s*([0-9][0-9,]*\.?[0-9]*)")
 _STARTING = re.compile(
-    r"\$\s*([0-9][0-9,]*\.?[0-9]*)\s*starting\s+([A-Z][a-z]+\s+\d{1,2},\s*\d{4})"
+    r"\$\s*([0-9][0-9,]*\.?[0-9]*)\s*(?:through|starting|effective|from)\s+([A-Z][a-z]+\s+\d{1,2},?\s*\d{4})",
+    re.IGNORECASE,
 )
-_MD_H2 = re.compile(r"^##\s+(.+?)\s*$")
-_MD_H3 = re.compile(r"^###\s+(.+?)\s*$")
-_MD_ROW = re.compile(r"^\|\s*(Input price|Output price)[^|]*\|([^|]*)\|([^|]*)\|")
+_DATE_CLAUSE = re.compile(
+    r"\b(through|starting|effective|after|from)\s+([A-Za-z]+\s+\d{1,2},?\s+\d{4})",
+    re.IGNORECASE,
+)
+_MONTHS = {
+    "january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3, "mar": 3,
+    "april": 4, "apr": 4, "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7,
+    "august": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9,
+    "october": 10, "oct": 10, "november": 11, "nov": 11, "december": 12, "dec": 12,
+}
+
+# Column header synonym aliases for matrix tables (all lowercase normalized)
+_MATRIX_COL_ALIASES = {
+    "input": ("base input tokens", "input", "short context input"),
+    "output": ("output tokens", "output", "short context output"),
+    "cache_read": (
+        "cache hits & refreshes",
+        "cache hits and refreshes",
+        "hits and refreshes",
+        "hits & refreshes",
+        "cached input",
+    ),
+    "cache_write_5m": ("5m cache writes", "5m writes"),
+    "cache_write_1h": ("1h cache writes", "1h writes"),
+}
 
 
 # --------------------------------------------------------------------------
@@ -87,10 +112,6 @@ class _DocParser(HTMLParser):
     """Collects tables (as cell-text rows) and the heading in force above each."""
 
     HEADINGS = {"h1", "h2", "h3", "h4"}
-
-    # Pages that price the same models at several service tiers label them in
-    # running text rather than in headings. Track the last one seen so a parse
-    # can select a tier instead of grabbing whichever table came first.
     TIER_WORDS = ("Standard", "Batch", "Priority", "Flex", "Scale")
 
     def __init__(self) -> None:
@@ -114,6 +135,8 @@ class _DocParser(HTMLParser):
         elif tag in self.HEADINGS:
             self._heading_tag = tag
             self._heading_buf = []
+        elif tag in ("br", "p", "div", "li", "span", "a") and self._cell is not None:
+            self._cell.append("\n")
 
     def handle_data(self, data):
         if self._cell is not None:
@@ -127,8 +150,12 @@ class _DocParser(HTMLParser):
 
     def handle_endtag(self, tag):
         if tag in ("td", "th") and self._cell is not None:
-            self._row.append(" ".join("".join(self._cell).split()))
+            raw_cell = "".join(self._cell)
+            lines = [" ".join(ln.split()) for ln in raw_cell.splitlines()]
+            self._row.append("\n".join(ln for ln in lines if ln))
             self._cell = None
+        elif tag in ("p", "div", "li", "span", "a") and self._cell is not None:
+            self._cell.append("\n")
         elif tag == "tr" and self._row is not None:
             if any(c for c in self._row):
                 self._table.append(self._row)
@@ -145,7 +172,6 @@ class _DocParser(HTMLParser):
             text = " ".join("".join(self._heading_buf).split())
             if text:
                 self.headings[tag] = text
-                # A new heading invalidates deeper ones (h2 resets h3/h4).
                 for deeper in ("h2", "h3", "h4"):
                     if deeper > tag:
                         self.headings.pop(deeper, None)
@@ -153,14 +179,384 @@ class _DocParser(HTMLParser):
 
 
 # --------------------------------------------------------------------------
-# value parsing
+# value & date helpers
 # --------------------------------------------------------------------------
 
 def slug(name: str) -> str:
     ascii_name = name.encode("ascii", "ignore").decode("ascii")
+    ascii_name = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", ascii_name)
     ascii_name = re.sub(r"\(.*?\)", " ", ascii_name)
     return re.sub(r"[^a-z0-9.]+", "-", ascii_name.lower()).strip("-")
 
+
+def _parse_english_date(date_str: str) -> str | None:
+    if not date_str:
+        return None
+    cleaned = re.sub(r"\s+", " ", date_str.replace(",", " ")).strip()
+    m = re.fullmatch(r"([A-Za-z]+)\s+(\d{1,2})\s+(\d{4})", cleaned)
+    if not m:
+        return None
+    month = _MONTHS.get(m.group(1).lower())
+    if not month:
+        return None
+    try:
+        return date(int(m.group(3)), month, int(m.group(2))).isoformat()
+    except ValueError:
+        return None
+
+
+def _clean_cell_text(raw: str) -> str:
+    if not raw:
+        return ""
+    s = html_lib.unescape(raw)
+    s = re.sub(r"<br\s*/?>|</p>|</div>|</li>", "\n", s, flags=re.IGNORECASE)
+    s = re.sub(r"{%\s*/?\s*sup\s*%}.*?{%\s*/\s*sup\s*%}", " ", s, flags=re.IGNORECASE | re.DOTALL)
+    s = re.sub(r"{%[^%]*%}", " ", s)
+    s = re.sub(r"<sup[^>]*>[\s\S]*?</sup>", " ", s, flags=re.IGNORECASE)
+    s = re.sub(r"<[^>]+>", " ", s)
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in s.splitlines()]
+    return "\n".join(ln for ln in lines if ln)
+
+
+def _detect_unit_multiplier(text: str) -> float | None:
+    if not text:
+        return None
+    low = text.lower()
+    if any(bad in low for bad in ("request", "query", "queries", "image", "frame", "second", "min", "hour")):
+        if "token" not in low:
+            return None
+    has_1k = bool(
+        re.search(r"/\s*(?:1\s*k|ktok|k\b|thousand)", low)
+        or re.search(r"per\s+(?:1\s*k|1000|thousand)", low)
+        or re.search(r"\b1k\s*tokens?\b", low)
+        or (re.search(r"\b1,?000\b", low) and not re.search(r"\b1,?000,?000\b", low) and "token" in low)
+    )
+    has_1m = bool(
+        re.search(r"/\s*(?:1\s*m|mtok|m\b|million)", low)
+        or re.search(r"per\s+(?:1\s*m|1000000|million)", low)
+        or re.search(r"\b1m\s*tokens?\b", low)
+        or re.search(r"\b1,?000,?000\b", low)
+    )
+    if has_1k and has_1m:
+        return None
+    if has_1m:
+        return 1.0
+    if has_1k:
+        return 1000.0
+    return None
+
+
+def _is_non_token_segment(seg_low: str) -> bool:
+    if any(tok in seg_low for tok in (
+        "storage price", "/ hour", "per hour", "equivalent to",
+        "per image", "/image", "per frame", "per second", "per 10s",
+        "/min", "/ min", "per min", "search request", "search quer",
+        "grounded prompt", "requests per",
+    )):
+        return True
+    if ("request" in seg_low or "quer" in seg_low) and "token" not in seg_low:
+        return True
+    return False
+
+
+def _parse_section_paid_cell(cell_raw: str, header_unit: float | None) -> list[tuple[float, str | None, str | None]]:
+    """Extract text-compatible token prices [(usd_per_1m, start_iso, end_iso), ...] from Paid Tier cell."""
+    cleaned = _clean_cell_text(cell_raw)
+    if not cleaned:
+        return []
+
+    normalized = re.sub(
+        r"\bor\s+\$[0-9]+(?:\.[0-9]+)?\s*/\s*(?:min|10s|sec|second|image|frame|hour)\b",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(r"\bEquivalent to\b[^\n.]*\.?", "", normalized, flags=re.IGNORECASE)
+
+    raw_segments = []
+    for line in normalized.splitlines():
+        parts = re.split(r"(?=\$[0-9])", line)
+        raw_segments.extend(p.strip() for p in parts if p.strip())
+
+    baseline_entries = []
+    for seg in raw_segments:
+        if "$" not in seg:
+            continue
+        seg_low = seg.lower()
+        if _is_non_token_segment(seg_low):
+            continue
+
+        # Exclude audio/video/image-only price lines unless 'text' is explicitly part of the modality
+        has_non_text = bool(re.search(r"\b(audio|video|image)\b", seg_low))
+        has_text = bool(re.search(r"\btext\b", seg_low))
+        if has_non_text and not has_text:
+            continue
+
+        # Skip long-context tier rows (> 200k / > 128k)
+        if re.search(r">\s*200k|>\s*128k", seg_low):
+            continue
+
+        m_dollar = re.search(r"\$([0-9]+(?:\.[0-9]+)?)", seg)
+        if not m_dollar:
+            continue
+
+        seg_unit = _detect_unit_multiplier(seg)
+        unit = seg_unit if seg_unit is not None else header_unit
+        if unit is None:
+            continue
+
+        val = float(m_dollar.group(1)) * unit
+        start_iso, end_iso = None, None
+        m_date = _DATE_CLAUSE.search(seg)
+        if m_date:
+            kw = m_date.group(1).lower()
+            parsed_dt = _parse_english_date(m_date.group(2))
+            if parsed_dt:
+                if kw == "through":
+                    end_iso = parsed_dt
+                else:
+                    start_iso = parsed_dt
+        baseline_entries.append((val, start_iso, end_iso))
+
+    return baseline_entries
+
+
+def _find_gemini_columns(headers: list[str], *, require_feature_name: bool = True) -> tuple[int, int] | None:
+    if not headers or len(headers) < 2:
+        return None
+    norm = [re.sub(r"\s+", " ", _clean_cell_text(h)).strip().lower() for h in headers]
+    paid_matches = [i for i, h in enumerate(norm) if "paid tier" in h]
+    if len(paid_matches) != 1:
+        return None
+    paid_idx = paid_matches[0]
+    feat_matches = [i for i, h in enumerate(norm) if h == "feature" or h.startswith("feature ")]
+    if len(feat_matches) == 1:
+        feat_idx = feat_matches[0]
+    elif not require_feature_name and not feat_matches and paid_idx != 0 and norm[0] == "":
+        feat_idx = 0
+    else:
+        return None
+    if feat_idx == paid_idx:
+        return None
+    return (feat_idx, paid_idx)
+
+
+def _record_section_model(
+    models: dict,
+    key: str,
+    display_name: str,
+    inp_entries: list[tuple[float, str | None, str | None]],
+    out_entries: list[tuple[float, str | None, str | None]],
+    cache_entries: list[tuple[float, str | None, str | None]],
+) -> None:
+    if not (inp_entries and out_entries):
+        return
+
+    # Base rate: earliest / pre-transition ('through' or first undated)
+    def _base(entries):
+        through_list = [e for e in entries if e[2] is not None]
+        if through_list:
+            return through_list[0][0]
+        undated = [e for e in entries if e[1] is None and e[2] is None]
+        if undated:
+            return undated[0][0]
+        return entries[0][0]
+
+    inp_base = _base(inp_entries)
+    out_base = _base(out_entries)
+    if inp_base <= 0 or out_base <= 0 or out_base < inp_base:
+        return
+
+    entry: dict = {
+        "display_name": display_name,
+        "input": inp_base,
+        "output": out_base,
+    }
+    if cache_entries:
+        cache_base = _base(cache_entries)
+        if 0 < cache_base < inp_base:
+            entry["cache_read"] = cache_base
+
+    # Future dated schedule steps ('starting <date>')
+    schedule: dict[str, dict] = {}
+    for kind, entries in (("input", inp_entries), ("output", out_entries), ("cache_read", cache_entries)):
+        for val, start_iso, _ in entries:
+            if start_iso is not None:
+                schedule.setdefault(start_iso, {})[kind] = val
+    if schedule:
+        entry["schedule"] = schedule
+
+    models[key] = entry
+
+
+# --------------------------------------------------------------------------
+# shapes: sections (Google Gemini Markdoc & HTML)
+# --------------------------------------------------------------------------
+
+def _split_markdoc_rows(table_body: str) -> list[list[str]]:
+    raw_rows = re.split(r"\n[ \t]*---+[ \t]*\n", table_body.strip())
+    rows = []
+    for raw_r in raw_rows:
+        r_str = raw_r.strip("\n")
+        if not r_str.strip():
+            continue
+        parts = re.split(r"(?:^|\n)[ \t]*\*(?:[ \t]+|$)", r_str)
+        if parts and parts[0].strip() == "":
+            parts = parts[1:]
+        if parts:
+            rows.append([p.strip() for p in parts])
+    return rows
+
+
+def _extract_markdoc_keys(heading_raw: str, pre_tab_text: str) -> list[tuple[str, str]]:
+    heading_clean = re.sub(r"{%[^%]*%}", "", heading_raw).strip()
+    heading_ascii = heading_clean.encode("ascii", "ignore").decode("ascii").strip()
+    low_head = heading_ascii.lower()
+    if not heading_ascii or any(skip in low_head for skip in (
+        "pricing", "notes", "ai agent context", "gemma ", "lyria", "embedding", "robotics",
+    )):
+        return []
+
+    out: list[tuple[str, str]] = []
+    for m in re.finditer(r"\[\s*`([^`]*)`\s*\]\([^)]*/docs/models/[^)]*\)", pre_tab_text, re.IGNORECASE):
+        raw_slug = m.group(1).strip()
+        if not raw_slug:
+            return []
+        s = slug(raw_slug)
+        if s and all(k != s for k, _ in out):
+            out.append((s, heading_clean if len(out) == 0 else raw_slug))
+    if out:
+        return out
+    s_head = slug(heading_ascii)
+    if s_head.startswith("gemini-"):
+        return [(s_head, heading_clean)]
+    return []
+
+
+def parse_sections_markdoc(md: str, tier: str = "Standard") -> dict:
+    """Parse Google Gemini Markdoc ({% table %} / {% tabs %}) pricing document."""
+    models: dict = {}
+    if not md or "{% table %}" not in md:
+        return models
+    md = html_lib.unescape(md)
+
+    sections = re.split(r"^##[ \t]+", md, flags=re.MULTILINE)[1:]
+    for sec in sections:
+        lines = sec.splitlines()
+        heading_raw = lines[0] if lines else ""
+        body = "\n".join(lines[1:])
+
+        pre_end = body.find("{% tabs %}")
+        if pre_end == -1:
+            pre_end = body.find("{% table %}")
+        pre_text = body[:pre_end] if pre_end != -1 else body
+
+        key_pairs = _extract_markdoc_keys(heading_raw, pre_text)
+        if not key_pairs:
+            continue
+
+        if "{% tabs %}" in body:
+            tab_m = re.search(
+                rf'{{%\s*tab\s+title=["\']{re.escape(tier)}["\']\s*%}}([\s\S]*?){{%\s*/tab\s*%}}',
+                body,
+                re.IGNORECASE,
+            )
+            if not tab_m:
+                continue
+            search_block = tab_m.group(1)
+        else:
+            search_block = body
+
+        table_m = re.search(r"{%\s*table\s*%}([\s\S]*?){%\s*/table\s*%}", search_block, re.IGNORECASE)
+        if not table_m:
+            continue
+
+        rows = _split_markdoc_rows(table_m.group(1))
+        if len(rows) < 2:
+            continue
+
+        headers = rows[0]
+        cols = _find_gemini_columns(headers, require_feature_name=True)
+        if cols is None:
+            continue
+        feat_idx, paid_idx = cols
+        header_unit = _detect_unit_multiplier(headers[paid_idx])
+
+        inp_entries: list = []
+        out_entries: list = []
+        cache_entries: list = []
+        malformed = False
+
+        for cells in rows[1:]:
+            if len(cells) != len(headers):
+                malformed = True
+                break
+            label = _clean_cell_text(cells[feat_idx]).lower()
+            paid_raw = cells[paid_idx]
+            if "input price" in label and not inp_entries:
+                inp_entries = _parse_section_paid_cell(paid_raw, header_unit)
+            elif "output price" in label and not out_entries:
+                out_entries = _parse_section_paid_cell(paid_raw, header_unit)
+            elif "context caching" in label and not cache_entries:
+                cache_entries = _parse_section_paid_cell(paid_raw, header_unit)
+
+        if malformed:
+            continue
+
+        for k, disp in key_pairs:
+            _record_section_model(models, k, disp, inp_entries, out_entries, cache_entries)
+
+    return models
+
+
+def parse_sections_markdown(md: str, tier: str) -> dict:
+    if "{% table %}" in md:
+        return parse_sections_markdoc(md, tier=tier)
+    return {}
+
+
+def parse_sections_html(doc: _DocParser, tier: str) -> dict:
+    models: dict = {}
+    for table in doc.tables:
+        heads = table["headings"]
+        model, current_tier = heads.get("h2"), heads.get("h3")
+        if not model or (tier and current_tier and current_tier != tier):
+            continue
+        rows = table["rows"]
+        if len(rows) < 2:
+            continue
+        headers = rows[0]
+        cols = _find_gemini_columns(headers, require_feature_name=False)
+        if cols is None:
+            continue
+        feat_idx, paid_idx = cols
+        header_unit = _detect_unit_multiplier(headers[paid_idx])
+
+        inp_entries: list = []
+        out_entries: list = []
+        cache_entries: list = []
+
+        for row in rows[1:]:
+            if len(row) != len(headers):
+                continue
+            label = _clean_cell_text(row[feat_idx]).lower()
+            paid_raw = row[paid_idx]
+            if "input price" in label and not inp_entries:
+                inp_entries = _parse_section_paid_cell(paid_raw, header_unit)
+            elif "output price" in label and not out_entries:
+                out_entries = _parse_section_paid_cell(paid_raw, header_unit)
+            elif "context caching" in label and not cache_entries:
+                cache_entries = _parse_section_paid_cell(paid_raw, header_unit)
+
+        s = slug(model)
+        if s:
+            _record_section_model(models, s, model, inp_entries, out_entries, cache_entries)
+    return models
+
+
+# --------------------------------------------------------------------------
+# shapes: matrix (Anthropic HTML & Markdown pipe tables)
+# --------------------------------------------------------------------------
 
 def parse_cell(cell: str):
     """(price_now, (effective_date_iso, price_then)) — None when not priced."""
@@ -171,86 +567,69 @@ def parse_cell(cell: str):
     if low.startswith("free of charge") or low == "free":
         return 0.0, None
 
-    future = None
-    sched = _STARTING.search(text)
-    if sched:
-        when = datetime.strptime(sched.group(2).replace(",", ""), "%B %d %Y").date()
-        future = (when.isoformat(), float(sched.group(1).replace(",", "")))
-
     found = _PRICE.findall(text)
     if not found:
-        return None, future
-    return float(found[0].replace(",", "")), future
+        return None, None
+    return float(found[0].replace(",", "")), None
 
 
-def _record(models: dict, name: str, kind: str, cell: str) -> None:
-    price, future = parse_cell(cell)
-    if price is None:
+def _resolve_matrix_columns(headers: list[str], columns: dict) -> dict[str, int]:
+    """Match configured column roles against actual headers using case-insensitive aliases."""
+    norm_headers = [re.sub(r"\s+", " ", _clean_cell_text(h)).strip().lower() for h in headers]
+    idx: dict[str, int] = {}
+    for role, configured in columns.items():
+        candidates = [configured.lower()] + list(_MATRIX_COL_ALIASES.get(role, ()))
+        for cand in candidates:
+            hit = next((j for j, h in enumerate(norm_headers) if h == cand), None)
+            if hit is not None:
+                idx[role] = hit
+                break
+    return idx
+
+
+_SKIP_MATRIX_SECTIONS = ("fast mode", "batch", "flex", "priority", "worked example")
+
+
+def _is_skipped_matrix_heading(heading_text: str) -> bool:
+    low = (heading_text or "").lower()
+    return any(tok in low for tok in _SKIP_MATRIX_SECTIONS)
+
+
+def _record_matrix_row(models: dict, name: str, row: list[str], idx: dict[str, int]) -> None:
+    if not name or _PRICE.search(name):
         return
-    entry = models.setdefault(slug(name), {"display_name": name})
-    entry[kind] = price
-    if future:
-        when, amount = future
-        entry.setdefault("schedule", {}).setdefault(when, {})[kind] = amount
+    first_line = next((ln.strip() for ln in name.splitlines() if ln.strip()), "")
+    if not first_line:
+        return
+    clean_name = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", first_line)
+    clean_name = re.sub(r"<[^>]+>", "", clean_name)
+    clean_name = re.sub(r"[\uE000-\uF8FF]", "", clean_name).strip()
+    if "over " in clean_name.lower() and "tokens" in clean_name.lower():
+        s = slug(clean_name)
+        if s in models:
+            return
+    s = slug(clean_name)
+    if not s:
+        return
+    if s in models:
+        return
 
-
-# --------------------------------------------------------------------------
-# shapes
-# --------------------------------------------------------------------------
-
-def parse_sections_markdown(md: str, tier: str) -> dict:
-    models: dict = {}
-    model = current_tier = None
-    for line in md.splitlines():
-        h2 = _MD_H2.match(line)
-        if h2:
-            model, current_tier = h2.group(1), None
+    entry = models.setdefault(s, {"display_name": clean_name})
+    for kind, i in idx.items():
+        if i >= len(row):
             continue
-        h3 = _MD_H3.match(line)
-        if h3:
-            current_tier = h3.group(1)
-            continue
-        if not model or current_tier != tier:
-            continue
-        row = _MD_ROW.match(line)
-        if row:
-            kind = "input" if row.group(1) == "Input price" else "output"
-            _record(models, model, kind, row.group(3))
-    return models
-
-
-def parse_sections_html(doc: _DocParser, tier: str) -> dict:
-    models: dict = {}
-    for table in doc.tables:
-        heads = table["headings"]
-        model, current_tier = heads.get("h2"), heads.get("h3")
-        if not model or (tier and current_tier != tier):
-            continue
-        for row in table["rows"]:
-            if not row:
-                continue
-            label = row[0]
-            if label.startswith("Input price"):
-                kind = "input"
-            elif label.startswith("Output price"):
-                kind = "output"
-            else:
-                continue
-            # Paid tier is the last column; free tier sits before it.
-            _record(models, model, kind, row[-1])
-    return models
+        price, _ = parse_cell(row[i])
+        if price is not None and kind not in entry:
+            entry[kind] = price
 
 
 def parse_matrix_html(doc: _DocParser, columns: dict, tier: str | None = None) -> dict:
-    """One row per model, prices in named columns.
-
-    The header is located by content, not by position: some pages stack a
-    spanning group header ('', 'Short context', 'Long context') above the real
-    one, so row 0 is not reliably the header.
-    """
+    """One row per model, prices in named columns (supports split subheaders like 'Base tokens' -> 'Input')."""
     models: dict = {}
-    wanted = {v: k for k, v in columns.items()}
     for table in doc.tables:
+        heads_text = " ".join(table.get("headings", {}).values())
+        if _is_skipped_matrix_heading(heads_text):
+            continue
         rows = table["rows"]
         if len(rows) < 2:
             continue
@@ -259,7 +638,7 @@ def parse_matrix_html(doc: _DocParser, columns: dict, tier: str | None = None) -
 
         header_i, idx = None, {}
         for i, row in enumerate(rows[:3]):
-            found = {wanted[h]: j for j, h in enumerate(row) if h in wanted}
+            found = _resolve_matrix_columns(row, columns)
             if "input" in found and "output" in found:
                 header_i, idx = i, found
                 break
@@ -269,21 +648,45 @@ def parse_matrix_html(doc: _DocParser, columns: dict, tier: str | None = None) -
         for row in rows[header_i + 1:]:
             if len(row) <= max(idx.values()):
                 continue
-            name = row[0]
-            # Continuation rows (e.g. a second modality) carry a price, not a name.
-            if not name or _PRICE.search(name):
-                continue
-            for kind, i in idx.items():
-                _record(models, name, kind, row[i])
+            _record_matrix_row(models, row[0], row, idx)
+    return models
+
+
+def parse_matrix_markdown(md: str, columns: dict) -> dict:
+    """Parse Markdown pipe-delimited pricing tables, skipping Fast mode / Batch / example sections."""
+    models: dict = {}
+    headers = None
+    idx: dict[str, int] = {}
+    cur_heading = ""
+    for line in md.splitlines():
+        s = line.strip()
+        if re.match(r"^#{1,4}\s+", s):
+            cur_heading = s
+            headers = None
+            idx = {}
+            continue
+        if not s.startswith("|"):
+            headers = None
+            idx = {}
+            continue
+        if _is_skipped_matrix_heading(cur_heading):
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if all(re.fullmatch(r":?-+:?", c) for c in cells):
+            continue
+        if headers is None:
+            found = _resolve_matrix_columns(cells, columns)
+            if "input" in found and "output" in found:
+                headers = cells
+                idx = found
+            continue
+        if len(cells) >= len(headers):
+            _record_matrix_row(models, cells[0], cells, idx)
     return models
 
 
 def parse_json_api(text: str, cfg: dict) -> dict:
-    """Provider JSON catalogues (e.g. OpenRouter /api/v1/models).
-
-    Prices there are per-token strings; normalise to per-1M so every table in
-    data/pricing shares one unit.
-    """
+    """Provider JSON catalogues (e.g. OpenRouter /api/v1/models)."""
     doc = json.loads(text)
     items = doc.get(cfg.get("items_key", "data"), doc if isinstance(doc, list) else [])
     fields = cfg.get("fields", {"input": "prompt", "output": "completion"})
@@ -301,7 +704,7 @@ def parse_json_api(text: str, cfg: dict) -> dict:
                 value = float(pricing.get(key))
             except (TypeError, ValueError):
                 continue
-            if value < 0:  # -1 marks "varies"/unpriced on some catalogues
+            if value < 0:
                 continue
             entry[kind] = round(value * scale, 6)
         if "input" in entry and "output" in entry:
@@ -325,13 +728,20 @@ def load_sources() -> dict:
 def build(provider: str, cfg: dict, text: str, origin: str) -> dict:
     shape = cfg.get("shape", "sections")
     looks_html = "<table" in text.lower()
+    looks_markdoc = "{% table %}" in text
 
     if shape == "sections":
-        models = (parse_sections_html(_feed(text), cfg.get("tier", "Standard"))
-                  if looks_html else
-                  parse_sections_markdown(text, cfg.get("tier", "Standard")))
+        if looks_markdoc:
+            models = parse_sections_markdoc(text, cfg.get("tier", "Standard"))
+        elif looks_html:
+            models = parse_sections_html(_feed(text), cfg.get("tier", "Standard"))
+        else:
+            models = parse_sections_markdown(text, cfg.get("tier", "Standard"))
     elif shape == "matrix":
-        models = parse_matrix_html(_feed(text), cfg.get("columns", {}), cfg.get("tier"))
+        if looks_html:
+            models = parse_matrix_html(_feed(text), cfg.get("columns", {}), cfg.get("tier"))
+        else:
+            models = parse_matrix_markdown(text, cfg.get("columns", {}))
     elif shape == "json_api":
         models = parse_json_api(text, cfg)
     else:
@@ -383,8 +793,6 @@ def main(argv: list[str]) -> int:
 
     failures = 0
     for provider, cfg in sources.items():
-        # A source whose parse isn't trusted yet stays configured but unshipped,
-        # so a wrong price never silently reaches the meter.
         if cfg.get("enabled") is False and not args.provider:
             print(f"[--] {provider}: disabled ({cfg.get('note', 'no reason given')})")
             continue
@@ -396,7 +804,7 @@ def main(argv: list[str]) -> int:
                 origin = args.url or cfg["url"]
                 text = fetch(origin)
             doc = build(provider, cfg, text, origin)
-        except Exception as exc:  # network, parse, config — report and keep going
+        except Exception as exc:
             print(f"[X] {provider}: {type(exc).__name__}: {exc}", file=sys.stderr)
             failures += 1
             continue

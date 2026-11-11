@@ -1,5 +1,5 @@
 {
-  "imported_at": "2026-08-15T17:14:26-04:00",
+  "imported_at": "2026-11-11T11:06:53-05:00",
   "models": {
     "claude-fable-5": {
       "cache_read": 1.0,
@@ -9,13 +9,21 @@
       "input": 10.0,
       "output": 50.0
     },
-    "claude-haiku-3.5": {
-      "cache_read": 0.08,
-      "cache_write_1h": 1.6,
-      "cache_write_5m": 1.0,
-      "display_name": "Claude Haiku 3.5 (retired, except on Bedrock and Google Cloud)",
-      "input": 0.8,
-      "output": 4.0
+    "claude-fable-5.1": {
+      "cache_read": 0.25,
+      "cache_write_1h": 20.0,
+      "cache_write_5m": 12.5,
+      "display_name": "Claude Fable 5.1",
+      "input": 10.0,
+      "output": 50.0
+    },
+    "claude-fable-5.2": {
+      "cache_read": 0.2,
+      "cache_write_1h": 16.0,
+      "cache_write_5m": 10.0,
+      "display_name": "Claude Fable 5.2",
+      "input": 8.0,
+      "output": 40.0
     },
     "claude-haiku-4.5": {
       "cache_read": 0.1,
@@ -25,19 +33,43 @@
       "input": 1.0,
       "output": 5.0
     },
+    "claude-haiku-5.5": {
+      "cache_read": 0.01,
+      "cache_write_1h": 0.2,
+      "cache_write_5m": 0.125,
+      "display_name": "Claude Haiku 5.5",
+      "input": 0.1,
+      "output": 0.5
+    },
     "claude-mythos-5": {
       "cache_read": 1.0,
       "cache_write_1h": 20.0,
       "cache_write_5m": 12.5,
-      "display_name": "Claude Mythos 5 (limited availability)",
+      "display_name": "Claude Mythos 5",
       "input": 10.0,
       "output": 50.0
+    },
+    "claude-mythos-5.1": {
+      "cache_read": 0.25,
+      "cache_write_1h": 20.0,
+      "cache_write_5m": 12.5,
+      "display_name": "Claude Mythos 5.1",
+      "input": 10.0,
+      "output": 50.0
+    },
+    "claude-mythos-5.2": {
+      "cache_read": 0.2,
+      "cache_write_1h": 16.0,
+      "cache_write_5m": 10.0,
+      "display_name": "Claude Mythos 5.2",
+      "input": 8.0,
+      "output": 40.0
     },
     "claude-opus-4": {
       "cache_read": 1.5,
       "cache_write_1h": 30.0,
       "cache_write_5m": 18.75,
-      "display_name": "Claude Opus 4 (retired, except on Google Cloud)",
+      "display_name": "Claude Opus 4",
       "input": 15.0,
       "output": 75.0
     },
@@ -45,7 +77,7 @@
       "cache_read": 1.5,
       "cache_write_1h": 30.0,
       "cache_write_5m": 18.75,
-      "display_name": "Claude Opus 4.1 (retired, except on Bedrock and Google Cloud)",
+      "display_name": "Claude Opus 4.1",
       "input": 15.0,
       "output": 75.0
     },
@@ -89,11 +121,19 @@
       "input": 5.0,
       "output": 25.0
     },
+    "claude-opus-5.5": {
+      "cache_read": 0.2,
+      "cache_write_1h": 8.0,
+      "cache_write_5m": 5.0,
+      "display_name": "Claude Opus 5.5",
+      "input": 4.0,
+      "output": 20.0
+    },
     "claude-sonnet-4": {
       "cache_read": 0.3,
       "cache_write_1h": 6.0,
       "cache_write_5m": 3.75,
-      "display_name": "Claude Sonnet 4 (retired, except on Bedrock and Google Cloud)",
+      "display_name": "Claude Sonnet 4",
       "input": 3.0,
       "output": 15.0
     },
@@ -118,6 +158,14 @@
       "cache_write_1h": 4.0,
       "cache_write_5m": 2.5,
       "display_name": "Claude Sonnet 5",
+      "input": 2.0,
+      "output": 10.0
+    },
+    "claude-sonnet-5.5": {
+      "cache_read": 0.1,
+      "cache_write_1h": 4.0,
+      "cache_write_5m": 2.5,
+      "display_name": "Claude Sonnet 5.5",
       "input": 2.0,
       "output": 10.0
     }
