@@ -102,6 +102,43 @@ def test_embed_falls_back_across_embed_models(monkeypatch):
     c, _ = _client({("/embeddings", second): (200, {"data": [{"index": 0, "embedding": [0.5]}]})}, monkeypatch)
     assert c.embed(None, "a") == [0.5]
     assert c.last_model == second
+    assert c.pinned_embed_model == second
+
+
+def test_named_embed_model_is_pinned_and_never_falls_back(monkeypatch):
+    first, second = nim.VERIFIED_EMBED_MODELS[:2]
+    c, calls = _client({
+        ("/embeddings", first): (503, None),
+        ("/embeddings", second): (200, {"data": [{"index": 0, "embedding": [0.9]}]}),
+    }, monkeypatch)
+    assert c.embed(first, "doc") == []
+    assert c.last_model is None
+    assert c.last_errors == {first: "503"}
+    assert [m for _, m, _ in calls] == [first]
+
+
+def test_auto_embed_pins_selected_model_across_subsequent_calls(monkeypatch):
+    first, second, third = nim.VERIFIED_EMBED_MODELS[:3]
+    responses = {
+        ("/embeddings", first): (404, None),
+        ("/embeddings", second): (200, {"data": [{"index": 0, "embedding": [0.5]}]}),
+        ("/embeddings", third): (200, {"data": [{"index": 0, "embedding": [0.7]}]}),
+    }
+    c, calls = _client(responses, monkeypatch)
+    assert c.batch_embed(None, ["doc"]) == [[0.5]]
+    assert c.pinned_embed_model == second
+
+    # Transient failure on pinned model must fail rather than mixing embedding spaces.
+    responses[("/embeddings", second)] = (503, None)
+    calls.clear()
+    assert c.embed(None, "query", input_type="query") == []
+    assert c.last_model is None
+    assert [m for _, m, _ in calls] == [second]
+
+    # Explicit reset lets a caller re-select before re-indexing.
+    c.reset_embed_model()
+    assert c.embed(None, "reindexed") == [0.7]
+    assert c.pinned_embed_model == third
 
 
 def test_list_models_and_probe(monkeypatch):

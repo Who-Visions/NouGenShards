@@ -67,6 +67,7 @@ class NvidiaNimClient(LLMClient):
         usage = key_usage.usage_for(KEY_NAME) or {}
         self.base_url = (base_url or usage.get("base_url") or DEFAULT_BASE_URL).rstrip("/")
         self.last_model: Optional[str] = None
+        self.pinned_embed_model: Optional[str] = None
         self.last_errors: Dict[str, str] = {}
 
     # --------------------------------------------------------------- transport
@@ -134,23 +135,47 @@ class NvidiaNimClient(LLMClient):
         detail = ", ".join(f"{m}={e}" for m, e in self.last_errors.items())
         return f"Error: no NVIDIA model answered ({detail})"
 
-    def embed(self, model: Optional[str], text: str) -> list:
-        vectors = self.batch_embed(model, [text])
+    def reset_embed_model(self) -> None:
+        """Clear any pinned auto-selected embedding model before re-indexing."""
+        self.pinned_embed_model = None
+
+    def embed(self, model: Optional[str], text: str, input_type: str = "passage") -> list:
+        vectors = self.batch_embed(model, [text], input_type=input_type)
         return vectors[0] if vectors else []
 
     def batch_embed(self, model: Optional[str], texts: List[str],
                     input_type: str = "passage") -> List[list]:
-        """Vectors for ``texts``. NIM embed models require input_type (query|passage)."""
+        """Vectors for ``texts`` pinned to a single embedding space.
+
+        Unlike chat, embeddings cannot silently switch models mid-index:
+        - Explicit ``model`` never falls back to another model.
+        - ``None`` / ``"auto"`` probes ``VERIFIED_EMBED_MODELS`` until one
+          succeeds, then pins ``self.pinned_embed_model`` so subsequent
+          batches/queries fail instead of mixing incompatible vector spaces.
+        """
         if not texts or not self.api_key:
             return [[] for _ in texts]
-        for name in self._chain(model, None, VERIFIED_EMBED_MODELS):
+        explicit = bool(model and model != "auto")
+        if explicit:
+            chain = [model]
+        elif self.pinned_embed_model:
+            chain = [self.pinned_embed_model]
+        else:
+            chain = list(VERIFIED_EMBED_MODELS)
+        self.last_errors = {}
+        for name in chain:
             status, data = self._request("/embeddings", {
                 "model": name, "input": list(texts), "input_type": input_type,
                 "encoding_format": "float"})
             if status == 200 and data and data.get("data"):
                 self.last_model = name
+                if self.pinned_embed_model is None or explicit:
+                    self.pinned_embed_model = name
                 rows = sorted(data["data"], key=lambda r: r.get("index", 0))
                 return [r.get("embedding", []) for r in rows]
+            self.last_errors[name] = "empty data" if status == 200 else str(status)
+            if isinstance(status, int) and status not in _SKIP_STATUSES:
+                break
         self.last_model = None
         return [[] for _ in texts]
 
