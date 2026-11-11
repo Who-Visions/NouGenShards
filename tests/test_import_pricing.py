@@ -311,7 +311,7 @@ def test_section_supports_whitespace_after_dollar_and_commas():
     md_doc = """
 ## Gemini Format Edge
 ### Standard
-| Feature | Free Tier | Paid Tier, per 1M tokens in USD |
+| Feature | Free Tier | Paid Tier, per 1000000 tokens in USD |
 | --- | --- | --- |
 | Input price | Free | $ 0.30 through November 30, 2026. $&nbsp;1,000.00 starting December 1, 2026. |
 | Output price | Free | $&nbsp;2.50 through November 30, 2026. $ 2,500.00 starting December 1, 2026. |

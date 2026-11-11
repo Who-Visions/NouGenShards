@@ -261,15 +261,15 @@ def _detect_unit_multiplier(text: str) -> float | None:
         if "token" not in low:
             return None
     has_1k = bool(
-        re.search(r"/\s*(?:1\s*k|ktok|k\b|thousand)", low)
-        or re.search(r"per\s+(?:1\s*k|1000|thousand)", low)
-        or re.search(r"\b1k\s*tokens?\b", low)
+        re.search(r"/\s*(?:1\s*k\b|ktok\b|k\b|thousand\b)", low)
+        or re.search(r"per\s+(?:1\s*k\b|1,?000\b|thousand\b)", low)
+        or re.search(r"\b1\s*k\s*tokens?\b", low)
         or (re.search(r"\b1,?000\b", low) and not re.search(r"\b1,?000,?000\b", low) and "token" in low)
     )
     has_1m = bool(
-        re.search(r"/\s*(?:1\s*m|mtok|m\b|million)", low)
-        or re.search(r"per\s+(?:1\s*m|1000000|million)", low)
-        or re.search(r"\b1m\s*tokens?\b", low)
+        re.search(r"/\s*(?:1\s*m\b|mtok\b|m\b|million\b)", low)
+        or re.search(r"per\s+(?:1\s*m\b|1,?000,?000\b|million\b)", low)
+        or re.search(r"\b1\s*m\s*tokens?\b", low)
         or re.search(r"\b1,?000,?000\b", low)
     )
     if has_1k and has_1m:
