@@ -61,41 +61,46 @@ function setupCmd(t) {
     "exit /b", "::PS",
     "$ErrorActionPreference = 'Stop'", "$ProgressPreference = 'SilentlyContinue'",
     "[Net.ServicePointManager]::SecurityProtocol = 'Tls12'",
-    "$home_ = Join-Path $env:LOCALAPPDATA 'NouGen'", "New-Item -ItemType Directory -Force $home_ | Out-Null",
+    "$home_ = Join-Path $env:LOCALAPPDATA 'NouGen'",
+    `$td = Join-Path $home_ '${psq(t.id)}'`, "New-Item -ItemType Directory -Force $td | Out-Null",
     "Write-Host 'Setting up NouGen on this computer. This takes a few minutes and needs nothing from you.'",
     "function Get-File($url, $out) { if (-not (Test-Path $out)) { Invoke-WebRequest -UseBasicParsing $url -OutFile $out } }",
     "$uv = Join-Path $home_ 'uv.exe'",
     "if (-not (Test-Path $uv)) { $z = Join-Path $home_ 'uv.zip'; Get-File 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip' $z; Expand-Archive -Force $z $home_; Remove-Item $z }",
-    "$cf = Join-Path $home_ 'cloudflared.exe'",
+    "$cf = Join-Path $td 'cloudflared.exe'",
     "Get-File 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' $cf",
-    "$src = Join-Path $home_ 'NouGenShards'; $z = Join-Path $home_ 'src.zip'",
+    "Get-Process cloudflared -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $cf } | Stop-Process -Force",
+    "$src = Join-Path $td 'NouGenShards'; $z = Join-Path $td 'src.zip'",
     "Invoke-WebRequest -UseBasicParsing 'https://github.com/Who-Visions/NouGenShards/archive/refs/heads/main.zip' -OutFile $z",
     "if (Test-Path $src) { Remove-Item -Recurse -Force $src }",
-    "Expand-Archive -Force $z $home_; Remove-Item $z; Move-Item (Join-Path $home_ 'NouGenShards-main') $src",
-    "$run = Join-Path $home_ 'run.ps1'", "@'",
+    "Expand-Archive -Force $z $td; Remove-Item $z; Move-Item (Join-Path $td 'NouGenShards-main') $src",
+    "$run = Join-Path $td 'run.ps1'", "@'",
     `$env:NGS_NODE_TOKEN = '${psq(t.token)}'`, `$env:NGS_PORT = '${t.port}'`,
     "$h = Join-Path $env:LOCALAPPDATA 'NouGen'",
-    "Start-Process -WindowStyle Hidden -WorkingDirectory (Join-Path $h 'NouGenShards') -FilePath (Join-Path $h 'uv.exe') -ArgumentList 'run','--python','3.11','app.py'",
-    `Start-Process -WindowStyle Hidden -FilePath (Join-Path $h 'cloudflared.exe') -ArgumentList 'tunnel','--no-autoupdate','run','--token','${psq(t.tunnel)}'`,
+    `$t = Join-Path $h '${psq(t.id)}'`,
+    "$env:NOUGEN_VAULT_DIR = Join-Path $t 'shards'; $env:NOUGEN_HOME = $t",
+    "Start-Process -WindowStyle Hidden -WorkingDirectory (Join-Path $t 'NouGenShards') -FilePath (Join-Path $h 'uv.exe') -ArgumentList 'run','--python','3.11','app.py'",
+    `Start-Process -WindowStyle Hidden -FilePath (Join-Path $t 'cloudflared.exe') -ArgumentList 'tunnel','--no-autoupdate','run','--token','${psq(t.tunnel)}'`,
     "'@ | Set-Content -Encoding UTF8 $run",
     "$launch = \"conhost.exe --headless powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `\"$run`\"\"",
-    "Set-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'NouGen' -Value $launch",
-    "Get-Process cloudflared -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $cf } | Stop-Process -Force",
+    `Set-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'NouGen-${psq(t.id)}' -Value $launch`,
     "& powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $run",
     "Write-Host 'Starting... (first start downloads Python once)'",
-    `for ($i = 0; $i -lt 90; $i++) { try { Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:${t.port}/health' -TimeoutSec 3 | Out-Null; break } catch { Start-Sleep 5 } }`,
-    `Start-Process '${psq(t.url)}'`,
-    "Write-Host 'Done. NouGen is on and will start by itself whenever this computer starts.'", "Start-Sleep 5", ""].join("\r\n");
+    "$ok = $false",
+    `for ($i = 0; $i -lt 90; $i++) { try { Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:${t.port}/health' -TimeoutSec 3 | Out-Null; $ok = $true; break } catch { Start-Sleep 5 } }`,
+    `if ($ok) { Start-Process '${psq(t.url)}'; Write-Host 'Done. NouGen is on and will start by itself whenever this computer starts.' }`,
+    "else { Write-Host 'NouGen did not start yet. Restart the computer once; it starts by itself. If it still does not, send a photo of this window to the person who sent you the link.' -ForegroundColor Yellow }",
+    "Start-Sleep 15", ""].join("\r\n");
 }
 
 function setupSh(t) {
   return `#!/bin/sh
 # NouGen setup for ${t.id} (macOS / Linux). Private: contains this computer's keys.
 set -e
-H="$HOME/.nougen-node"; mkdir -p "$H"; cd "$H"
+B="$HOME/.nougen-node"; H="$B/${shq(t.id)}"; mkdir -p "$H"; cd "$H"
 echo "Setting up NouGen on this computer. This takes a few minutes and needs nothing from you."
 OS=$(uname -s); ARCH=$(uname -m)
-[ -x "$H/uv" ] || { curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$H" UV_NO_MODIFY_PATH=1 sh >/dev/null; }
+[ -x "$B/uv" ] || { curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$B" UV_NO_MODIFY_PATH=1 sh >/dev/null; }
 if [ ! -x "$H/cloudflared" ]; then
   case "$OS-$ARCH" in
     Darwin-arm64) U=cloudflared-darwin-arm64.tgz;; Darwin-*) U=cloudflared-darwin-amd64.tgz;;
@@ -105,27 +110,31 @@ if [ ! -x "$H/cloudflared" ]; then
   case "$U" in *.tgz) tar -xzf cf.dl && rm cf.dl;; *) mv cf.dl cloudflared;; esac; chmod +x cloudflared
 fi
 rm -rf NouGenShards src.zip; curl -LsSf https://github.com/Who-Visions/NouGenShards/archive/refs/heads/main.zip -o src.zip
-"$H/uv" run --python 3.11 python -c "import zipfile;zipfile.ZipFile('src.zip').extractall('.')" && mv NouGenShards-main NouGenShards && rm src.zip
+"$B/uv" run --python 3.11 python -c "import zipfile;zipfile.ZipFile('src.zip').extractall('.')" && mv NouGenShards-main NouGenShards && rm src.zip
 cat > run.sh <<'RUN'
 #!/bin/sh
-H="$HOME/.nougen-node"
-export NGS_NODE_TOKEN='${shq(t.token)}' NGS_PORT='${t.port}'
-(cd "$H/NouGenShards" && nohup "$H/uv" run --python 3.11 app.py >"$H/node.log" 2>&1 &)
+B="$HOME/.nougen-node"; H="$B/${shq(t.id)}"
+export NGS_NODE_TOKEN='${shq(t.token)}' NGS_PORT='${t.port}' NOUGEN_VAULT_DIR="$H/shards" NOUGEN_HOME="$H"
+(cd "$H/NouGenShards" && nohup "$B/uv" run --python 3.11 app.py >"$H/node.log" 2>&1 &)
 nohup "$H/cloudflared" tunnel --no-autoupdate run --token '${shq(t.tunnel)}' >"$H/tunnel.log" 2>&1 &
 RUN
 chmod 700 run.sh
 if [ "$OS" = Darwin ]; then
-  P="$HOME/Library/LaunchAgents/com.nougen.node.plist"; mkdir -p "$(dirname "$P")"
-  printf '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>com.nougen.node</string><key>ProgramArguments</key><array><string>/bin/sh</string><string>%s</string></array><key>RunAtLoad</key><true/></dict></plist>' "$H/run.sh" > "$P"
+  P="$HOME/Library/LaunchAgents/com.nougen.node.${shq(t.id)}.plist"; mkdir -p "$(dirname "$P")"
+  printf '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>com.nougen.node.${shq(t.id)}</string><key>ProgramArguments</key><array><string>/bin/sh</string><string>%s</string></array><key>RunAtLoad</key><true/></dict></plist>' "$H/run.sh" > "$P"
 else
-  (crontab -l 2>/dev/null | grep -v nougen-node; echo "@reboot $H/run.sh") | crontab - 2>/dev/null || true
+  (crontab -l 2>/dev/null | grep -v "$H/run.sh"; echo "@reboot $H/run.sh") | crontab - 2>/dev/null || true
 fi
 pkill -f "$H/cloudflared" 2>/dev/null || true
 sh "$H/run.sh"
 echo "Starting... (first start downloads Python once)"
-i=0; while [ $i -lt 90 ]; do curl -fs "http://127.0.0.1:${t.port}/health" >/dev/null 2>&1 && break; sleep 5; i=$((i+1)); done
-(command -v open >/dev/null && open '${shq(t.url)}') || (command -v xdg-open >/dev/null && xdg-open '${shq(t.url)}') || true
-echo "Done. NouGen is on and will start by itself whenever this computer starts."
+ok=0; i=0; while [ $i -lt 90 ]; do curl -fs "http://127.0.0.1:${t.port}/health" >/dev/null 2>&1 && { ok=1; break; }; sleep 5; i=$((i+1)); done
+if [ $ok = 1 ]; then
+  (command -v open >/dev/null && open '${shq(t.url)}') || (command -v xdg-open >/dev/null && xdg-open '${shq(t.url)}') || true
+  echo "Done. NouGen is on and will start by itself whenever this computer starts."
+else
+  echo "NouGen did not start yet. Restart the computer once; details are in $H/node.log"; exit 1
+fi
 `;
 }
 
@@ -144,7 +153,8 @@ async function provision(env, email) {
   const tun = await kv.get("tunnel:" + email, "json");
   if (tenant && tenant.token && tun && tun.tunnel_token) return { tenant, tun, created: false };
 
-  const acct = env.CF_ACCOUNT_ID, zone = env.CF_ZONE_ID, port = parseInt(env.NODE_PORT || "4444", 10);
+  const acct = env.CF_ACCOUNT_ID, zone = env.CF_ZONE_ID;
+  const port = (tenant && tenant.port) || await nextPort(env);
   const id = (tenant && tenant.tenant_id) || slug(email.split("@")[0]);
   const host = (tun && tun.hostname) || `${id}-${hex(2)}.${env.ZONE_NAME}`;
   const name = "tenant-" + id;
@@ -166,6 +176,13 @@ async function provision(env, email) {
   await kv.put("tenant:" + email, JSON.stringify(nt));
   await kv.put("tunnel:" + email, JSON.stringify(ntun));
   return { tenant: nt, tun: ntun, created: true };
+}
+
+// Every tenant gets its own local port so several accounts can run on one computer.
+async function nextPort(env) {
+  const n = parseInt((await env.TENANTS.get("portseq")) || "0", 10) + 1;
+  await env.TENANTS.put("portseq", String(n));
+  return 4444 + (n % 20000);
 }
 
 async function mintLink(env, email) {
