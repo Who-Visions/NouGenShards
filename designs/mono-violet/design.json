@@ -1,0 +1,236 @@
+{
+  "dialect": "nougendesigns/v0",
+  "name": "mono-violet",
+  "version": "0.1.1",
+  "description": "One violet-branded console design system with four colorways: Dark, Light, Arcade and Hardcade. Colorways remap tokens only; layout, permissions, telemetry meaning and component behavior never change.",
+  "referenceWorld": "Cloud and AI developer consoles (the model-API and cloud-resource consoles of the large providers, used as analogies, not authority), precision instrument panels, and for the optional colorways retro arcade cabinets (Arcade) and competitive hardware control surfaces (Hardcade). Hardcade is the GM's own aesthetic label, not a standardized UI category. Inside NouGen, docs/hardcade-lexicon.md uses Hardcade for the fleet command lexicon (relay verbs and moves); that document carries no color values, so the Hardcade palette in this spec is provisional.",
+  "antiPatterns": "Reject decorative gradients on data surfaces, backdrop blur on content, glow on text or chart marks, pill radii larger than the control, meaning carried by color alone, and any theme that moves, hides or renames a control. Arcade and Hardcade effects are opt-in and never the default.",
+  "materiality": "Dark and Light use opaque matte surfaces, fine dividers and violet as the single accent. Arcade uses flat rounded panels (16px) with warm secondary colors. Hardcade uses angular panels (2px radius), 2px outlines and no soft shadows. An optional decorative grid texture sits behind content on its own layer, is off by default, and never sits behind text or data. Glow is limited to the focus ring and one primary control, and only when effects are enabled.",
+  "density": "Compact operator density in every theme: 0.25rem spacing steps, tables and inspectors sized for scanning. Theme choice never changes spacing, column counts or information density.",
+  "motionGrammar": "Fast 140ms and base 220ms transitions for hover, selection and panel changes. Nonessential motion is disabled under prefers-reduced-motion. Arcade and Hardcade may add stepped or pixel-style transitions only when effects are on. No looping animation on data, status or charts.",
+  "interactionPhysics": "All four colorways share the same components and behavior. A theme change applies instantly, follows the operating-system preference when nothing is chosen, and for signed-in users persists on the server so it follows them across devices. Every route authorizes on the server regardless of theme.",
+  "informationHierarchy": "Same five-element console shell in every theme: organization and project switcher, global command search, categorized sidebar, main work surface and optional inspector. The primary reading of each page (health, the active resource, the chart) is identical across themes; a colorway changes atmosphere, never hierarchy.",
+  "responsiveBehavior": "Navigation collapses to a drawer at narrow widths and the inspector becomes a panel. Tables and code scroll inside their own containers. Panels use container width, long identifiers wrap, and no theme adds a fixed width that breaks a phone layout.",
+  "accessibility": "Body text and muted text meet 4.5:1 on their surface in all four themes, status text meets 4.5:1, focus indicators and chart marks meet 3:1, and every contrast pair is checked by the compiler for every theme. Decorative effects are off by default, contrast takes priority over decoration, and the focus ring stays visible in every colorway. Respect forced-colors and reduced-motion.",
+  "brandVoice": "Mono Violet stays the brand in every colorway. Labels and errors are plain and concrete, with identical wording across themes. Arcade and Hardcade may add flavor only in decorative text, never in controls, errors or billing copy.",
+  "iconography": "Monochrome line icons with one stroke weight and the same glyphs in every theme; Hardcade may sharpen stroke terminals but not change meaning. Unfamiliar symbols are paired with text.",
+  "dataViz": "Four chart series tokens per theme, all at least 3:1 on the surface, with labeled axes and legends. Good, warning and error keep fixed meanings in every theme and always pair color with a text label or shape, so a colorway cannot reverse a signal.",
+  "stateGrammar": "Specify default, hover, focus, selected, disabled, loading, empty, error, stale, offline and permission-denied states per component. Status chips read LIVE, WARN and ERROR as text. Colorways remap color only, never the set of states or what they mean.",
+  "provenance": "Dark, Light, Arcade and Hardcade primary, background, surface and text hex values are observed from a GM-supplied brief of 2026-11-10 written by an outside assistant. Muted, border, status, chart and radius tokens are NouGen derivations chosen so the compiler contrast checks pass. The brief did not verify Hardcade as an established category and neither does this spec. The brief itself says to check contrast per theme instead of assuming WCAG AA, which this spec does. Recovery check 2026-11-10: 34 files in NouGenShards mention Hardcade and none put a color value near it, so no canonical Hardcade palette was found. The Hardcade tokens here come from the brief and stay provisional until the GM supplies or points to the canon.",
+  "tokens": {
+    "--accent": "#a47bff",
+    "--bad": "#ff8a8a",
+    "--bg": "#0b0911",
+    "--border": "#332b43",
+    "--border-strong": "#7d7094",
+    "--chart-1": "#a47bff",
+    "--chart-2": "#4fd1e5",
+    "--chart-3": "#f2b84b",
+    "--chart-4": "#5bd6a0",
+    "--control-ink": "#0b0911",
+    "--decor-opacity": "0",
+    "--extra": "#d2bbff",
+    "--focus": "#d2bbff",
+    "--font-mono": "'Geist Mono', ui-monospace, monospace",
+    "--font-ui": "'Geist', system-ui, sans-serif",
+    "--good": "#4cc38a",
+    "--motion-base": "220ms",
+    "--motion-fast": "140ms",
+    "--muted": "#a79cb9",
+    "--outline-width": "1px",
+    "--radius-control": "8px",
+    "--radius-panel": "12px",
+    "--raised": "#211a30",
+    "--space-1": "0.25rem",
+    "--space-2": "0.5rem",
+    "--space-3": "1rem",
+    "--space-4": "1.5rem",
+    "--surface": "#171321",
+    "--text": "#f5f1ff",
+    "--warn": "#e6aa3a"
+  },
+  "themes": {
+    "dark": {},
+    "light": {
+      "--accent": "#6941c6",
+      "--bad": "#b42318",
+      "--bg": "#f8f6fc",
+      "--border": "#ddd5ec",
+      "--border-strong": "#7d7094",
+      "--chart-1": "#6941c6",
+      "--chart-2": "#0b7a8c",
+      "--chart-3": "#9a6200",
+      "--chart-4": "#1b7f4e",
+      "--control-ink": "#ffffff",
+      "--extra": "#4b2e9c",
+      "--focus": "#6941c6",
+      "--good": "#1b7f4e",
+      "--muted": "#5e5470",
+      "--raised": "#f0ecf8",
+      "--surface": "#ffffff",
+      "--text": "#211a2f",
+      "--warn": "#8a5a00"
+    },
+    "arcade": {
+      "--accent": "#c47dff",
+      "--bad": "#ff7d98",
+      "--bg": "#17102a",
+      "--border": "#4a3777",
+      "--border-strong": "#9a82cc",
+      "--chart-1": "#c47dff",
+      "--chart-2": "#5ce1ff",
+      "--chart-3": "#ffd166",
+      "--chart-4": "#5cf2b6",
+      "--control-ink": "#17102a",
+      "--extra": "#ff7ac0",
+      "--focus": "#ffe066",
+      "--good": "#5cf2b6",
+      "--muted": "#cbbbe3",
+      "--radius-control": "12px",
+      "--radius-panel": "16px",
+      "--raised": "#33245a",
+      "--surface": "#261a44",
+      "--text": "#fff3fe",
+      "--warn": "#ffd166"
+    },
+    "hardcade": {
+      "--accent": "#b14cff",
+      "--bad": "#ff5c78",
+      "--bg": "#080711",
+      "--border": "#3a2a5c",
+      "--border-strong": "#8a6cc4",
+      "--chart-1": "#b14cff",
+      "--chart-2": "#00e5ff",
+      "--chart-3": "#b6ff3b",
+      "--chart-4": "#ff5c78",
+      "--control-ink": "#080711",
+      "--extra": "#00e5ff",
+      "--focus": "#00e5ff",
+      "--good": "#b6ff3b",
+      "--muted": "#b9acce",
+      "--outline-width": "2px",
+      "--radius-control": "0px",
+      "--radius-panel": "2px",
+      "--raised": "#1f1733",
+      "--surface": "#151024",
+      "--text": "#f8f2ff",
+      "--warn": "#ffb020"
+    }
+  },
+  "evidence": [
+    {
+      "kind": "observed",
+      "source": "GM brief 2026-11-10 (Mono Violet theme engine)",
+      "note": "Bg, surface, accent and text hex per colorway; four-theme structure; data-theme attribute approach."
+    },
+    {
+      "kind": "invented",
+      "source": "designs/mono-violet/design.json",
+      "note": "Muted, border, status, chart, radius and outline tokens; contrast-driven."
+    },
+    {
+      "kind": "inferred",
+      "source": "designs/saas-console-morph.md",
+      "note": "Shell and state invariants shared with the console architecture."
+    },
+    {
+      "kind": "observed",
+      "source": "docs/hardcade-lexicon.md",
+      "note": "Hardcade in the repo names a command lexicon; no palette or token values found in it or in 33 other files that mention the word."
+    }
+  ],
+  "contrastPairs": [
+    {
+      "ink": "--text",
+      "ground": "--bg"
+    },
+    {
+      "ink": "--text",
+      "ground": "--surface"
+    },
+    {
+      "ink": "--text",
+      "ground": "--raised"
+    },
+    {
+      "ink": "--muted",
+      "ground": "--surface"
+    },
+    {
+      "ink": "--muted",
+      "ground": "--bg"
+    },
+    {
+      "ink": "--control-ink",
+      "ground": "--accent"
+    },
+    {
+      "ink": "--accent",
+      "ground": "--surface"
+    },
+    {
+      "ink": "--extra",
+      "ground": "--surface"
+    },
+    {
+      "ink": "--good",
+      "ground": "--surface"
+    },
+    {
+      "ink": "--warn",
+      "ground": "--surface"
+    },
+    {
+      "ink": "--bad",
+      "ground": "--surface"
+    },
+    {
+      "ink": "--focus",
+      "ground": "--bg",
+      "role": "ui"
+    },
+    {
+      "ink": "--border-strong",
+      "ground": "--surface",
+      "role": "ui"
+    },
+    {
+      "ink": "--chart-1",
+      "ground": "--surface",
+      "role": "ui"
+    },
+    {
+      "ink": "--chart-2",
+      "ground": "--surface",
+      "role": "ui"
+    },
+    {
+      "ink": "--chart-3",
+      "ground": "--surface",
+      "role": "ui"
+    },
+    {
+      "ink": "--chart-4",
+      "ground": "--surface",
+      "role": "ui"
+    }
+  ],
+  "componentMutations": [
+    {
+      "selector": ".panel",
+      "change": "Radius and outline width come from --radius-panel and --outline-width; no per-theme layout."
+    },
+    {
+      "selector": ".decor-grid",
+      "change": "Optional texture layer, opacity from --decor-opacity (0 by default), never behind text or data."
+    },
+    {
+      "selector": ".status-chip",
+      "change": "Text label (LIVE, WARN, ERROR) plus color from --good, --warn, --bad."
+    },
+    {
+      "selector": ":focus-visible",
+      "change": "Focus ring uses --focus at 2px offset in every theme."
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+[
+  {
+    "change": "Radius and outline width come from --radius-panel and --outline-width; no per-theme layout.",
+    "selector": ".panel"
+  },
+  {
+    "change": "Optional texture layer, opacity from --decor-opacity (0 by default), never behind text or data.",
+    "selector": ".decor-grid"
+  },
+  {
+    "change": "Text label (LIVE, WARN, ERROR) plus color from --good, --warn, --bad.",
+    "selector": ".status-chip"
+  },
+  {
+    "change": "Focus ring uses --focus at 2px offset in every theme.",
+    "selector": ":focus-visible"
+  }
+]
