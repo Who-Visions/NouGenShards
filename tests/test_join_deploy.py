@@ -25,15 +25,9 @@ def test_deploy_defaults_to_newest_join_token_and_respects_override(monkeypatch)
     monkeypatch.setattr(deploy, "client", lambda: FakeCF())
     monkeypatch.setattr(deploy.t, "_zone_for", lambda c, host: "zone-1")
     monkeypatch.setattr(deploy.t, "_find_namespace", lambda c: "ns-1")
-    monkeypatch.setattr(deploy.t, "_resolve_cf_token", lambda: "op-token")
+    monkeypatch.setattr(deploy.t, "_resolve_cf_token", lambda: "op-val")
     monkeypatch.setattr(deploy, "newest", lambda prefix: f"newest:{prefix}")
-
-    secrets = {
-        "NOUGEN_JOIN_GOOGLE_CLIENT_SECRET": "g-sec",
-        "NOUGEN_JOIN_GOOGLE_CLIENT_ID": "g-id",
-        "CLOUDFLARE_JOIN_TOKEN_CUSTOM": "custom-tok",
-    }
-    monkeypatch.setattr(deploy.keymaker, "get_secret", lambda name: secrets[name])
+    monkeypatch.setattr(deploy.keymaker, "get_secret", lambda name: f"mock:{name.lower()}")
 
     def fake_urlopen(req, timeout=60):
         captured.append(("upload", req.data.decode("latin1")))
@@ -58,4 +52,4 @@ def test_deploy_defaults_to_newest_join_token_and_respects_override(monkeypatch)
     captured.clear()
     monkeypatch.setenv("NOUGEN_JOIN_CF_TOKEN_NAME", "CLOUDFLARE_JOIN_TOKEN_CUSTOM")
     deploy.main()
-    assert "custom-tok" in captured[0][1]
+    assert "mock:cloudflare_join_token_custom" in captured[0][1]

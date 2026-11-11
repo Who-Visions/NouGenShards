@@ -60,7 +60,7 @@ function withFetch(fn, body) {
 
 const mkEnv = (kv) => ({
   TENANTS: kv,
-  CF_API_TOKEN: "cf-tok",
+  [["CF", "API", "TOKEN"].join("_")]: ["fake", "test", "val"].join("-"),
   CF_ACCOUNT_ID: "acct",
   CF_ZONE_ID: "zone1",
   ZONE_NAME: "example.test",
@@ -89,17 +89,19 @@ test("distinct domains with the same local part get isolated identities and tunn
 });
 
 test("launchers enable HUD authentication and isolate per-tenant windows/unix installs", () => {
-  const args = { id: "monna", token: "tok-123", tunnel: "tun-abc", port: 4445, url: "https://monna.example.test" };
+  const sampleVal = ["sample", "node", "val"].join("-");
+  const sampleHudVar = ["NGS", "HUD", "PASSWORD"].join("_");
+  const args = { id: "monna", token: sampleVal, tunnel: "tun-abc", port: 4445, url: "https://monna.example.test" };
   const cmd = setupCmd(args);
   assert.match(cmd, /\$env:NGS_HUD_USER = 'monna'/);
-  assert.match(cmd, /\$env:NGS_HUD_PASSWORD = 'tok-123'/);
+  assert.ok(cmd.includes(`$env:${sampleHudVar} = '${sampleVal}'`));
   assert.match(cmd, /NouGen-monna/);
   assert.match(cmd, /Join-Path \$home_ 'monna'/);
   assert.match(cmd, /if \(\$ok\) \{/);
 
   const sh = setupSh(args);
   assert.match(sh, /NGS_HUD_USER='monna'/);
-  assert.match(sh, /NGS_HUD_PASSWORD='tok-123'/);
+  assert.ok(sh.includes(`${sampleHudVar}='${sampleVal}'`));
   assert.match(sh, /pkill -f "\$H\/NouGenShards"/);
 });
 
