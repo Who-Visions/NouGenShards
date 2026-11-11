@@ -1,0 +1,39 @@
+{
+  "description": "One violet-branded console design system with four colorways: Dark, Light, Arcade and Hardcade. Colorways remap tokens only; layout, permissions, telemetry meaning and component behavior never change.",
+  "dialect": "nougendesigns/v0",
+  "entry": {
+    "prose": "DESIGN.md",
+    "tokens": "tokens.css"
+  },
+  "name": "mono-violet",
+  "provenance": [
+    {
+      "kind": "observed",
+      "note": "Bg, surface, accent and text hex per colorway; four-theme structure; data-theme attribute approach.",
+      "source": "GM brief 2026-11-10 (Mono Violet theme engine)"
+    },
+    {
+      "kind": "invented",
+      "note": "Muted, border, status, chart, radius and outline tokens; contrast-driven.",
+      "source": "designs/mono-violet/design.json"
+    },
+    {
+      "kind": "inferred",
+      "note": "Shell and state invariants shared with the console architecture.",
+      "source": "designs/saas-console-morph.md"
+    }
+  ],
+  "schemaVersion": "od-design-system-project/v1",
+  "sourceDigest": "f39bf760b8170d125f58ec0f2762d0d64fa5a034f162661ea1d8ac0ad2f05c22",
+  "surfaces": {
+    "ground": "--bg",
+    "ink": "--text"
+  },
+  "themes": [
+    "arcade",
+    "dark",
+    "hardcade",
+    "light"
+  ],
+  "version": "0.1.0"
+}

@@ -112,10 +112,7 @@
     "themes": {
       "type": "object",
       "propertyNames": {
-        "enum": [
-          "dark",
-          "light"
-        ]
+        "pattern": "^[a-z][a-z0-9-]*$"
       },
       "additionalProperties": {
         "type": "object"

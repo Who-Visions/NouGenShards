@@ -43,7 +43,7 @@ def validate(spec):
         if not isinstance(value, str) or not value or re.search(r'[;{}\n\r]', value):
             errors.append(f'invalid token value: {key}')
     for theme, values in spec.get('themes', {}).items():
-        if theme not in ('light', 'dark') or not isinstance(values, dict):
+        if not re.fullmatch(r'[a-z][a-z0-9-]*', theme) or not isinstance(values, dict):
             errors.append(f'invalid theme: {theme}')
             continue
         for key, value in values.items():
