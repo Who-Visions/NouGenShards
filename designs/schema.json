@@ -112,7 +112,10 @@
     "themes": {
       "type": "object",
       "propertyNames": {
-        "pattern": "^[a-z][a-z0-9-]*$"
+        "pattern": "^[a-z][a-z0-9-]*$",
+        "not": {
+          "const": "default"
+        }
       },
       "additionalProperties": {
         "type": "object"

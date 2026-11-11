@@ -43,7 +43,7 @@ def validate(spec):
         if not isinstance(value, str) or not value or re.search(r'[;{}\n\r]', value):
             errors.append(f'invalid token value: {key}')
     for theme, values in spec.get('themes', {}).items():
-        if not re.fullmatch(r'[a-z][a-z0-9-]*', theme) or not isinstance(values, dict):
+        if theme == 'default' or not re.fullmatch(r'[a-z][a-z0-9-]*', theme) or not isinstance(values, dict):
             errors.append(f'invalid theme: {theme}')
             continue
         for key, value in values.items():
@@ -97,8 +97,12 @@ def contrast(a, b):
 def lint(spec, css=''):
     errors = validate(spec)
     ratios = []
-    for theme in ['default', *sorted(spec.get('themes', {}))]:
-        tokens = {**spec.get('tokens', {}), **spec.get('themes', {}).get(theme, {})}
+    variants = [('default', {})]
+    for theme, overrides in sorted(spec.get('themes', {}).items()):
+        if isinstance(overrides, dict):
+            variants.append((theme, overrides))
+    for theme, overrides in variants:
+        tokens = {**spec.get('tokens', {}), **overrides}
         for pair in spec.get('contrastPairs', []):
             try:
                 ratio = contrast(tokens[pair['ink']], tokens[pair['ground']])
