@@ -50,9 +50,11 @@ def main():
     c = client()
     acct = c.account_id
     zone = t._zone_for(c, "join." + ZONE)
+    join_token_name = os.environ.get("NOUGEN_JOIN_CF_TOKEN_NAME", "").strip()
+    join_cf_token = keymaker.get_secret(join_token_name) if join_token_name else newest("CLOUDFLARE_JOIN_TOKEN_")
     bindings = [
         {"type": "kv_namespace", "name": "TENANTS", "namespace_id": t._find_namespace(c)},
-        {"type": "secret_text", "name": "CF_API_TOKEN", "text": keymaker.get_secret(os.environ.get("NOUGEN_JOIN_CF_TOKEN_NAME", "CLOUDFLARE_JOIN_TOKEN_20261111_1657"))},
+        {"type": "secret_text", "name": "CF_API_TOKEN", "text": join_cf_token},
         {"type": "secret_text", "name": "GOOGLE_CLIENT_SECRET", "text": keymaker.get_secret("NOUGEN_JOIN_GOOGLE_CLIENT_SECRET")},
         {"type": "plain_text", "name": "GOOGLE_CLIENT_ID", "text": keymaker.get_secret("NOUGEN_JOIN_GOOGLE_CLIENT_ID")},
         {"type": "plain_text", "name": "CF_ACCOUNT_ID", "text": acct},

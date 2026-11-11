@@ -1,0 +1,64 @@
+@import "../../designs/nougen-core/tokens.css";
+
+body {
+  font-family: var(--font-main);
+  font-size: var(--type-body);
+  line-height: var(--line-body);
+  max-width: var(--reading-measure);
+  margin: 10vh auto;
+  padding: 0 var(--space-4);
+  color: var(--text);
+  background: var(--bg);
+}
+
+h1 {
+  font-size: 1.875rem;
+  line-height: 1.2;
+  margin: 0 0 var(--space-3);
+}
+
+.join-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--target-touch);
+  padding: var(--space-3) var(--space-5);
+  background: var(--accent);
+  color: var(--control-ink);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 1.125rem;
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+
+.join-action:hover {
+  background: var(--accent-2);
+}
+
+.join-meta,
+small {
+  color: var(--muted);
+  font-size: var(--type-meta);
+}
+
+.join-meta a {
+  color: var(--muted);
+}
+
+.join-footer {
+  margin-top: var(--space-6);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: var(--type-meta);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.125rem var(--space-1);
+  overflow-wrap: anywhere;
+}

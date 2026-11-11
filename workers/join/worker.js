@@ -8,11 +8,9 @@
 //   GET  /j/<code>/setup.sh  macOS / Linux one-file setup
 //   GET  /privacy, /terms, /health
 //
-// Provisioning mirrors nougen_shards.tenant_onboard: a Cloudflare tunnel named
-// tenant-<id>, a proxied CNAME <id>-<hex>.<zone>, ingress -> 127.0.0.1:<port>, and
-// KV records allow:/tenant:/tunnel:<email>. The worker's own CF token is scoped to
-// Tunnel + KV + DNS on this one zone (tools/join_mint_token.py). Nothing here needs
-// the operator: an email that already exists is reused, never re-minted.
+// Provisioning mirrors nougen_shards.tenant_onboard: a collision-resistant tunnel
+// identity derived from the full normalized email, a proxied CNAME <id>-<hex>.<zone>,
+// ingress -> 127.0.0.1:<port>, and KV records allow:/tenant:/tunnel:<email>.
 //
 // Abuse limits: verified Google email required; at most JOIN_MAX_PER_IP_DAY new
 // tenants per client IP per day; links expire (LINK_TTL_DAYS).
@@ -31,31 +29,53 @@ const rand = (n) => { const b = crypto.getRandomValues(new Uint8Array(n)); retur
 const hex = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map((b) => b.toString(16).padStart(2, "0")).join("");
 const slug = (s) => (String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 20) || "node");
 
+async function sha256Hex(s) {
+  const buf = await crypto.subtle.digest("SHA-256", enc.encode(String(s)));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export async function emailTenantId(email) {
+  const norm = String(email || "").trim().toLowerCase();
+  const [local] = norm.split("@");
+  const digest = (await sha256Hex(norm)).slice(0, 10);
+  return `${slug(local).slice(0, 21)}-${digest}`;
+}
+
+export function tunnelIdFromToken(tok) {
+  try {
+    const b64 = String(tok || "").replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(b64)).t || null;
+  } catch {
+    return null;
+  }
+}
+
 // ------------------------------------------------------------------ pages
-const shell = (title, body) => new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+// BEGIN GENERATED NOUGEN-CORE CSS
+const JOIN_CSS = ":root {\n  --accent: #e8b86d;\n  --accent-2: #e8b86d;\n  --accent-green: #a9c79b;\n  --accent-purple: #c8bfad;\n  --accent-rgb: 232, 184, 109;\n  --bg: #141414;\n  --bg-gradient: var(--bg);\n  --cluster-gap: 1.25rem;\n  --control-ink: #141414;\n  --danger: #ffb4ab;\n  --fleet-card-min: 23rem;\n  --focus: #e8b86d;\n  --font-main: system-ui, sans-serif;\n  --font-mono: Consolas, monospace;\n  --line: #777777;\n  --line-body: 1.65;\n  --line-glow: #777777;\n  --motion-ease: ease-out;\n  --motion-fast: 120ms;\n  --muted: #bdb8ad;\n  --panel: #202020;\n  --panel-2: #282828;\n  --panel-hover: #333333;\n  --panel-solid: #202020;\n  --radius-lg: 4px;\n  --radius-md: 3px;\n  --radius-sm: 2px;\n  --reading-measure: 65ch;\n  --space-1: 0.25rem;\n  --space-2: 0.5rem;\n  --space-3: 0.75rem;\n  --space-4: 1rem;\n  --space-5: 1.5rem;\n  --space-6: 2rem;\n  --status-conflict-bg: rgba(255, 180, 171, 0.12);\n  --status-conflict-border: #ffb4ab;\n  --status-conflict-text: #ffb4ab;\n  --status-offline-bg: rgba(189, 184, 173, 0.10);\n  --status-offline-border: #777777;\n  --status-offline-text: #bdb8ad;\n  --status-pending-bg: rgba(232, 184, 109, 0.12);\n  --status-pending-border: #e8b86d;\n  --status-pending-text: #e8b86d;\n  --status-sim-bg: rgba(189, 184, 173, 0.10);\n  --status-sim-border: #777777;\n  --status-sim-text: #bdb8ad;\n  --status-verified-bg: rgba(169, 199, 155, 0.12);\n  --status-verified-border: #a9c79b;\n  --status-verified-text: #a9c79b;\n  --target-min: 1.5rem;\n  --target-touch: 2.75rem;\n  --text: #f2eee6;\n  --type-body: 1rem;\n  --type-meta: 0.8125rem;\n  --warn: #e8b86d;\n  --workbench-width: 87.5rem;\n}\n:root[data-theme=\"dark\"] {\n\n}\n:root[data-theme=\"light\"] {\n  --accent: #765013;\n  --accent-2: #765013;\n  --bg: #f5f1e8;\n  --control-ink: #ffffff;\n  --danger: #a62520;\n  --focus: #765013;\n  --line: #76716a;\n  --muted: #555047;\n  --panel: #ffffff;\n  --panel-2: #eee9df;\n  --panel-hover: #e1dbce;\n  --panel-solid: #ffffff;\n  --status-conflict-bg: rgba(166, 37, 32, 0.10);\n  --status-conflict-border: #a62520;\n  --status-conflict-text: #a62520;\n  --status-offline-bg: rgba(85, 80, 71, 0.08);\n  --status-offline-border: #76716a;\n  --status-offline-text: #555047;\n  --status-pending-bg: rgba(118, 80, 19, 0.10);\n  --status-pending-border: #765013;\n  --status-pending-text: #765013;\n  --status-sim-bg: rgba(85, 80, 71, 0.08);\n  --status-sim-border: #76716a;\n  --status-sim-text: #555047;\n  --status-verified-bg: rgba(20, 90, 50, 0.10);\n  --status-verified-border: #145a32;\n  --status-verified-text: #145a32;\n  --text: #202020;\n}\n\n:where(a, button, input, select, textarea, [tabindex]):focus-visible {\n  outline: 2px solid var(--focus);\n  outline-offset: 3px;\n}\n@media (prefers-reduced-motion: reduce) {\n  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }\n}\n\nbody {\n  font-family: var(--font-main);\n  font-size: var(--type-body);\n  line-height: var(--line-body);\n  max-width: var(--reading-measure);\n  margin: 10vh auto;\n  padding: 0 var(--space-4);\n  color: var(--text);\n  background: var(--bg);\n}\n\nh1 {\n  font-size: 1.875rem;\n  line-height: 1.2;\n  margin: 0 0 var(--space-3);\n}\n\n.join-action {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  min-height: var(--target-touch);\n  padding: var(--space-3) var(--space-5);\n  background: var(--accent);\n  color: var(--control-ink);\n  border: 1px solid var(--accent);\n  border-radius: var(--radius-md);\n  text-decoration: none;\n  font-weight: 600;\n  font-size: 1.125rem;\n  transition: background-color var(--motion-fast) var(--motion-ease);\n}\n\n.join-action:hover {\n  background: var(--accent-2);\n}\n\n.join-meta,\nsmall {\n  color: var(--muted);\n  font-size: var(--type-meta);\n}\n\n.join-meta a {\n  color: var(--muted);\n}\n\n.join-footer {\n  margin-top: var(--space-6);\n  padding-top: var(--space-4);\n  border-top: 1px solid var(--line);\n}\n\ncode {\n  font-family: var(--font-mono);\n  font-size: var(--type-meta);\n  background: var(--panel);\n  border: 1px solid var(--line);\n  border-radius: var(--radius-sm);\n  padding: 0.125rem var(--space-1);\n  overflow-wrap: anywhere;\n}";
+// END GENERATED NOUGEN-CORE CSS
+
+export const shell = (title, body) => new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>
-<style>:root{--bg:#fff;--fg:#111;--mut:#555;--acc:#1a56db}@media(prefers-color-scheme:dark){:root{--bg:#111;--fg:#eee;--mut:#aaa;--acc:#4b83ff}}
-body{font:18px/1.55 system-ui,-apple-system,Segoe UI,sans-serif;max-width:560px;margin:10vh auto;padding:0 16px;color:var(--fg);background:var(--bg)}
-a.b{display:inline-block;background:var(--acc);color:#fff;padding:16px 28px;border-radius:10px;text-decoration:none;font-weight:600;font-size:20px}
-p.s,small{color:var(--mut);font-size:15px}p.s a{color:var(--mut)}h1{font-size:30px;margin:0 0 12px}</style></head><body>${body}
-<p class="s" style="margin-top:48px"><a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p></body></html>`,
+<style>${JOIN_CSS}</style></head><body><main class="join-shell">${body}
+<footer class="join-meta join-footer"><a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer></main></body></html>`,
   { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 
 const LANDING = `<h1>Join NouGen</h1><p>Sign in with Google and your computer becomes your own NouGen node. No passwords to create, nothing to install by hand.</p>
-<p><a class="b" href="/google/start">Continue with Google</a></p>`;
+<p><a class="join-action" href="/google/start">Continue with Google</a></p>`;
 
 const PRIVACY = `<h1>Privacy</h1><p>We use your Google sign-in only to read your email address, which names your node and lets you sign in again. We store your email, your node's address and its connection keys. We do not read your mail, contacts or files, and we do not sell or share your information.</p><p>To remove your node and its records, sign in again and use the delete option, or contact the operator.</p>`;
 const TERMS = `<h1>Terms</h1><p>NouGen nodes are provided as-is, without warranty. Do not use your node for anything unlawful or abusive; nodes used that way are removed. Unused nodes that never connect may be removed after the setup link expires.</p>`;
 
 const linkPage = (name, code) => shell("NouGen setup", `<h1>Hi ${esc(name)}</h1>
 <p>Press the button, then open the file it saves. It sets everything up by itself and opens your page when it's done.</p>
-<p><a class="b" id="go" href="/j/${code}/setup">Set up this computer</a></p>
-<p class="s" id="hint">If Windows asks "Do you want to run this file?", choose <b>Run</b>.</p>
+<p><a class="join-action" id="go" href="/j/${code}/setup">Set up this computer</a></p>
+<p class="join-meta" id="hint">If Windows asks "Do you want to run this file?", choose <b>Run</b>.</p>
 <script>if(!/Windows/i.test(navigator.userAgent)){var g=document.getElementById('go');g.href='/j/${code}/setup.sh';g.download='setup-nougen.sh';
 document.getElementById('hint').innerHTML='On Mac or Linux: open Terminal and run <code>sh ~/Downloads/setup-nougen.sh</code>';}</script>`);
 
 // ------------------------------------------------------------------ setup files
-function setupCmd(t) {
+export function setupCmd(t) {
   return ["@echo off", `rem NouGen setup for ${t.id}. Private: contains this computer's keys.`,
     `powershell -NoProfile -ExecutionPolicy Bypass -Command "$f='%~f0'; $s=(Get-Content -Raw $f) -split '(?m)^::PS\\s*$',2; iex $s[1]"`,
     "exit /b", "::PS",
@@ -64,22 +84,29 @@ function setupCmd(t) {
     "$home_ = Join-Path $env:LOCALAPPDATA 'NouGen'",
     `$td = Join-Path $home_ '${psq(t.id)}'`, "New-Item -ItemType Directory -Force $td | Out-Null",
     "Write-Host 'Setting up NouGen on this computer. This takes a few minutes and needs nothing from you.'",
+    "$escTd = [regex]::Escape($td)",
+    "$procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath -match $escTd) -or ($_.CommandLine -and $_.CommandLine -match $escTd) })",
+    "$targetPids = @($procs | Select-Object -ExpandProperty ProcessId)",
+    "if ($targetPids.Count -gt 0) { $kids = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $targetPids -contains $_.ParentProcessId } | Select-Object -ExpandProperty ProcessId); foreach ($procId in ($kids + $targetPids | Select-Object -Unique)) { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 500 }",
     "function Get-File($url, $out) { if (-not (Test-Path $out)) { Invoke-WebRequest -UseBasicParsing $url -OutFile $out } }",
     "$uv = Join-Path $home_ 'uv.exe'",
     "if (-not (Test-Path $uv)) { $z = Join-Path $home_ 'uv.zip'; Get-File 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip' $z; Expand-Archive -Force $z $home_; Remove-Item $z }",
     "$cf = Join-Path $td 'cloudflared.exe'",
     "Get-File 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' $cf",
-    "Get-Process cloudflared -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $cf } | Stop-Process -Force",
     "$src = Join-Path $td 'NouGenShards'; $z = Join-Path $td 'src.zip'",
     "Invoke-WebRequest -UseBasicParsing 'https://github.com/Who-Visions/NouGenShards/archive/refs/heads/main.zip' -OutFile $z",
     "if (Test-Path $src) { Remove-Item -Recurse -Force $src }",
     "Expand-Archive -Force $z $td; Remove-Item $z; Move-Item (Join-Path $td 'NouGenShards-main') $src",
     "$run = Join-Path $td 'run.ps1'", "@'",
-    `$env:NGS_NODE_TOKEN = '${psq(t.token)}'`, `$env:NGS_PORT = '${t.port}'`,
+    `$env:NGS_NODE_TOKEN = '${psq(t.token)}'`,
+    `$env:NGS_HUD_USER = '${psq(t.id)}'`,
+    `$env:NGS_HUD_PASSWORD = '${psq(t.token)}'`,
+    `$env:NGS_PORT = '${t.port}'`,
     "$h = Join-Path $env:LOCALAPPDATA 'NouGen'",
     `$t = Join-Path $h '${psq(t.id)}'`,
     "$env:NOUGEN_VAULT_DIR = Join-Path $t 'shards'; $env:NOUGEN_HOME = $t",
-    "Start-Process -WindowStyle Hidden -WorkingDirectory (Join-Path $t 'NouGenShards') -FilePath (Join-Path $h 'uv.exe') -ArgumentList 'run','--python','3.11','app.py'",
+    "$srcDir = Join-Path $t 'NouGenShards'",
+    "Start-Process -WindowStyle Hidden -WorkingDirectory $srcDir -FilePath (Join-Path $h 'uv.exe') -ArgumentList 'run','--python','3.11',(Join-Path $srcDir 'app.py')",
     `Start-Process -WindowStyle Hidden -FilePath (Join-Path $t 'cloudflared.exe') -ArgumentList 'tunnel','--no-autoupdate','run','--token','${psq(t.tunnel)}'`,
     "'@ | Set-Content -Encoding UTF8 $run",
     "$launch = \"conhost.exe --headless powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `\"$run`\"\"",
@@ -93,13 +120,15 @@ function setupCmd(t) {
     "Start-Sleep 15", ""].join("\r\n");
 }
 
-function setupSh(t) {
+export function setupSh(t) {
   return `#!/bin/sh
 # NouGen setup for ${t.id} (macOS / Linux). Private: contains this computer's keys.
 set -e
 B="$HOME/.nougen-node"; H="$B/${shq(t.id)}"; mkdir -p "$H"; cd "$H"
 echo "Setting up NouGen on this computer. This takes a few minutes and needs nothing from you."
 OS=$(uname -s); ARCH=$(uname -m)
+pkill -f "$H/NouGenShards" 2>/dev/null || true
+pkill -f "$H/cloudflared" 2>/dev/null || true
 [ -x "$B/uv" ] || { curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$B" UV_NO_MODIFY_PATH=1 sh >/dev/null; }
 if [ ! -x "$H/cloudflared" ]; then
   case "$OS-$ARCH" in
@@ -114,8 +143,8 @@ rm -rf NouGenShards src.zip; curl -LsSf https://github.com/Who-Visions/NouGenSha
 cat > run.sh <<'RUN'
 #!/bin/sh
 B="$HOME/.nougen-node"; H="$B/${shq(t.id)}"
-export NGS_NODE_TOKEN='${shq(t.token)}' NGS_PORT='${t.port}' NOUGEN_VAULT_DIR="$H/shards" NOUGEN_HOME="$H"
-(cd "$H/NouGenShards" && nohup "$B/uv" run --python 3.11 app.py >"$H/node.log" 2>&1 &)
+export NGS_NODE_TOKEN='${shq(t.token)}' NGS_HUD_USER='${shq(t.id)}' NGS_HUD_PASSWORD='${shq(t.token)}' NGS_PORT='${t.port}' NOUGEN_VAULT_DIR="$H/shards" NOUGEN_HOME="$H"
+(cd "$H/NouGenShards" && nohup "$B/uv" run --python 3.11 "$H/NouGenShards/app.py" >"$H/node.log" 2>&1 &)
 nohup "$H/cloudflared" tunnel --no-autoupdate run --token '${shq(t.tunnel)}' >"$H/tunnel.log" 2>&1 &
 RUN
 chmod 700 run.sh
@@ -125,7 +154,6 @@ if [ "$OS" = Darwin ]; then
 else
   (crontab -l 2>/dev/null | grep -v "$H/run.sh"; echo "@reboot $H/run.sh") | crontab - 2>/dev/null || true
 fi
-pkill -f "$H/cloudflared" 2>/dev/null || true
 sh "$H/run.sh"
 echo "Starting... (first start downloads Python once)"
 ok=0; i=0; while [ $i -lt 90 ]; do curl -fs "http://127.0.0.1:${t.port}/health" >/dev/null 2>&1 && { ok=1; break; }; sleep 5; i=$((i+1)); done
@@ -147,7 +175,8 @@ async function cf(env, method, path, body) {
   return j.result;
 }
 
-async function provision(env, email) {
+export async function provision(env, email) {
+  email = String(email || "").trim().toLowerCase();
   const kv = env.TENANTS;
   const tenant = await kv.get("tenant:" + email, "json");
   const tun = await kv.get("tunnel:" + email, "json");
@@ -155,10 +184,19 @@ async function provision(env, email) {
 
   const acct = env.CF_ACCOUNT_ID, zone = env.CF_ZONE_ID;
   const port = (tenant && tenant.port) || await nextPort(env);
-  const id = (tenant && tenant.tenant_id) || slug(email.split("@")[0]);
+  const id = (tenant && tenant.tenant_id) || await emailTenantId(email);
   const host = (tun && tun.hostname) || `${id}-${hex(2)}.${env.ZONE_NAME}`;
   const name = "tenant-" + id;
-  let t = (await cf(env, "GET", `/accounts/${acct}/cfd_tunnel?name=${encodeURIComponent(name)}&is_deleted=false`))[0];
+  let t = null;
+  const knownId = tunnelIdFromToken(tun && tun.tunnel_token);
+  if (knownId) {
+    try {
+      const got = await cf(env, "GET", `/accounts/${acct}/cfd_tunnel/${encodeURIComponent(knownId)}`);
+      if (got && !got.deleted_at) t = got;
+    } catch {
+      t = null;
+    }
+  }
   if (!t) t = await cf(env, "POST", `/accounts/${acct}/cfd_tunnel`, { name, config_src: "cloudflare", tunnel_secret: btoa(rand(32)) });
   await cf(env, "PUT", `/accounts/${acct}/cfd_tunnel/${t.id}/configurations`,
     { config: { ingress: [{ hostname: host, service: `http://127.0.0.1:${port}` }, { service: "http_status:404" }] } });
@@ -255,7 +293,7 @@ export default {
       const m = path.match(/^\/j\/([^/]+)(\/setup(\.sh)?)?\/?$/);
       if (m) {
         const t = await lookup(env, m[1]);
-        if (!t) return shell("Link expired", `<h1>This link has expired</h1><p><a class="b" href="/">Start again</a></p>`);
+        if (!t) return shell("Link expired", `<h1>This link has expired</h1><p><a class="join-action" href="/">Start again</a></p>`);
         if (!m[2]) return linkPage(t.name, m[1]);
         const sh = !!m[3];
         return new Response(sh ? setupSh(t) : setupCmd(t), { headers: { "content-type": "application/octet-stream", "cache-control": "no-store",
@@ -263,7 +301,7 @@ export default {
       }
       return new Response("Not found", { status: 404 });
     } catch (e) {
-      return shell("Something went wrong", `<h1>Something went wrong</h1><p>${esc(e.message || e)}</p><p><a class="b" href="/">Try again</a></p>`);
+      return shell("Something went wrong", `<h1>Something went wrong</h1><p>${esc(e.message || e)}</p><p><a class="join-action" href="/">Try again</a></p>`);
     }
   },
 };

@@ -30,5 +30,9 @@
   {
     "change": "Preserve label/value grouping; stack inside cards below 18rem and wrap long values.",
     "selector": ".hw-row, .role-item"
+  },
+  {
+    "change": "Render public join onboarding pages from compiled nougen-core tokens (65ch reading measure, 44px touch action target, monochrome divider footer, visible focus ring, reduced-motion respect).",
+    "selector": ".join-shell, .join-action, .join-footer"
   }
 ]
