@@ -6624,11 +6624,415 @@ function openapiDocument(origin) {
   };
 }
 __name(openapiDocument, "openapiDocument");
+
+// ---------------------------------------------------------------------------
+// Tenant onboarding: redeem a one-time invite and provision the tenant's tunnel,
+// DNS record and worker routing. The Cloudflare token lives only in the Worker's
+// secret store, so the person onboarding needs no token on their own machine.
+// Port of src/nougen_shards/tenant_onboard.py (the local node registry step stays
+// on the owner's node; see the digest key written below).
+// Bindings: TENANTS (KV), CLOUDFLARE_API_TOKEN_NOUGEN_FULL (secret),
+// CLOUDFLARE_ACCOUNT_ID (var or secret), optional NOUGEN_TENANT_DOMAIN, CLOUDFLARE_API_BASE.
+// ---------------------------------------------------------------------------
+const ONBOARD_TENANT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+const ONBOARD_EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const ONBOARD_FALLBACK_DOMAIN = "nougenai.com";
+
+class OnboardError extends Error {}
+
+function onboardSlug(text, limit = 24) {
+  const s = String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return (s.slice(0, limit).replace(/-+$/, "")) || "tenant";
+}
+
+function onboardRandomBytes(n) {
+  const out = new Uint8Array(n);
+  crypto.getRandomValues(out);
+  return out;
+}
+
+function onboardB64(bytes) {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+function onboardB64Url(bytes) {
+  return onboardB64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function onboardSha256Hex(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function onboardCfClient(env) {
+  const token = env.CLOUDFLARE_API_TOKEN_NOUGEN_FULL;
+  const account = env.CLOUDFLARE_ACCOUNT_ID;
+  if (!token || !account) {
+    throw new OnboardError("Worker secrets CLOUDFLARE_API_TOKEN_NOUGEN_FULL and CLOUDFLARE_ACCOUNT_ID must be set");
+  }
+  const base = env.CLOUDFLARE_API_BASE || "https://api.cloudflare.com/client/v4";
+  return {
+    account,
+    async call(method, path, body, query) {
+      let url = base + path;
+      if (query) url += "?" + new URLSearchParams(query).toString();
+      const headers = { Authorization: `Bearer ${token}` };
+      const init = { method, headers };
+      if (body !== undefined) {
+        headers["Content-Type"] = "application/json";
+        init.body = JSON.stringify(body);
+      }
+      const resp = await fetch(url, init);
+      const text = await resp.text();
+      if (resp.status === 404 && method === "GET") return null;
+      let parsed;
+      try { parsed = JSON.parse(text); } catch { parsed = text; }
+      if (!resp.ok || (parsed && typeof parsed === "object" && parsed.success === false)) {
+        // Status and path only: the response body can echo sensitive input.
+        throw new OnboardError(`Cloudflare ${method} ${path} failed with HTTP ${resp.status}`);
+      }
+      if (parsed && typeof parsed === "object" && "success" in parsed) return parsed.result;
+      return parsed;
+    },
+  };
+}
+
+async function onboardZoneFor(cf, hostname) {
+  const parts = hostname.split(".");
+  for (let i = 0; i < parts.length - 1; i++) {
+    const zones = (await cf.call("GET", "/zones", undefined, { name: parts.slice(i).join(".") })) || [];
+    if (zones.length) return zones[0].id;
+  }
+  throw new OnboardError(`no Cloudflare zone on this account covers ${hostname}`);
+}
+
+function onboardTunnelIdFromToken(tunnelToken) {
+  if (!tunnelToken) return null;
+  try {
+    const padded = tunnelToken + "=".repeat((4 - (tunnelToken.length % 4)) % 4);
+    return JSON.parse(atob(padded)).t || null;
+  } catch {
+    return null;
+  }
+}
+
+async function onboardEnsureTunnel(cf, name, hostname, port, knownId) {
+  let found = [];
+  if (knownId) {
+    const got = await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel/${knownId}`);
+    if (got && !got.deleted_at) found = [got];
+  }
+  if (!found.length) {
+    found = (await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel`, undefined,
+      { name, is_deleted: "false" })) || [];
+  }
+  const created = !found.length;
+  let tunnelId;
+  if (created) {
+    const made = await cf.call("POST", `/accounts/${cf.account}/cfd_tunnel`, {
+      name, config_src: "cloudflare", tunnel_secret: onboardB64(onboardRandomBytes(32)),
+    });
+    tunnelId = made.id;
+  } else {
+    tunnelId = found[0].id;
+  }
+  // A live tunnel already names the tenant's real port; never overwrite it.
+  const current = (await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel/${tunnelId}/configurations`)) || {};
+  const rules = (current.config && current.config.ingress) || [];
+  const existingRule = rules.find((r) => r.hostname === hostname && String(r.service || "").startsWith("http://"));
+  if (existingRule) {
+    port = Number(existingRule.service.split(":").pop());
+  } else {
+    await cf.call("PUT", `/accounts/${cf.account}/cfd_tunnel/${tunnelId}/configurations`, {
+      config: { ingress: [
+        { hostname, service: `http://127.0.0.1:${port}` },
+        { service: "http_status:404" },
+      ] },
+    });
+  }
+  const token = await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel/${tunnelId}/token`);
+  if (typeof token !== "string" || !token) throw new OnboardError("Cloudflare returned no tunnel token");
+  return { tunnelId, tunnelToken: token.trim().replace(/^"|"$/g, ""), created, port };
+}
+
+async function onboardEnsureDns(cf, zone, hostname, tunnelId) {
+  const target = `${tunnelId}.cfargotunnel.com`;
+  const body = { type: "CNAME", name: hostname, content: target, proxied: true };
+  const existing = (await cf.call("GET", `/zones/${zone}/dns_records`, undefined, { name: hostname })) || [];
+  if (existing.length) {
+    if (existing[0].content !== target) {
+      await cf.call("PUT", `/zones/${zone}/dns_records/${existing[0].id}`, body);
+    }
+  } else {
+    await cf.call("POST", `/zones/${zone}/dns_records`, body);
+  }
+}
+
+async function onboardReadJson(kv, key) {
+  const raw = await kv.get(key);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+// Redeem a single-use invite and provision everything for that tenant.
+// Returns the values the tenant's own machine needs. The invite is consumed only
+// after every Cloudflare and KV step succeeds, so a failed run can be retried.
+async function provisionTenant(env, input) {
+  const code = String((input && input.code) || "").trim();
+  if (!code) throw new OnboardError("an invite code is required");
+  const kv = env.TENANTS;
+  if (!kv) throw new OnboardError("TENANTS KV binding is missing");
+
+  const invite = await onboardReadJson(kv, "invite:" + code);
+  if (!invite.eml) throw new OnboardError("invite code is not valid or was already used");
+  if (!(Number(invite.exp) > Date.now() / 1000)) throw new OnboardError("invite code has expired");
+  const email = String(invite.eml).trim().toLowerCase();
+  if (!ONBOARD_EMAIL_RE.test(email)) throw new OnboardError("invite is not tied to a valid email");
+
+  const existing = await onboardReadJson(kv, "tenant:" + email);
+  // The tenant id is never taken from the caller: a public redeemer could otherwise
+  // name another tenant's id and reuse its tunnel and gateway mapping.
+  const who = input.name || email.split("@")[0].split("+")[0];
+  const tid = existing.tenant_id || `${onboardSlug(who)}-shards`;
+  if (!ONBOARD_TENANT_ID_RE.test(tid)) throw new OnboardError(`tenant id '${tid}' must be lowercase letters, digits, - or _ (max 32)`);
+  // Each tenant id belongs to the email that first claimed it. Refuse before any
+  // Cloudflare or KV write if a different email already owns it.
+  const owner = await kv.get("tenant-owner:" + tid);
+  if (owner && owner !== email) throw new OnboardError("that tenant name is already in use; ask the operator for a new invite");
+
+  const domain = input.domain || env.NOUGEN_TENANT_DOMAIN || ONBOARD_FALLBACK_DOMAIN;
+  const hostFromRecord = existing.node_url ? new URL(existing.node_url).hostname : null;
+  const suffix = [...onboardRandomBytes(2)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const host = hostFromRecord || `${onboardSlug(tid, 20)}-${suffix}.${domain}`;
+  const nodeUrl = `https://${host}`;
+  const port = Number(input.port || env.NGS_PORT || 4444);
+
+  const cf = onboardCfClient(env);
+
+  // One Durable Object per invite code serializes redemptions, so two requests
+  // cannot both pass the check (KV reads alone can be stale for up to 60s).
+  await inviteCall(env, code, "claim", { eml: email });
+  try {
+    const result = await onboardSteps(cf, email, tid, host, nodeUrl, port, existing, kv);
+    await inviteCall(env, code, "consume");
+    await kv.delete("invite:" + code);
+    return result;
+  } catch (err) {
+    // Release the claim so the same invite can be retried after a failure.
+    await inviteCall(env, code, "release").catch(() => {});
+    throw err;
+  }
+}
+
+async function onboardSteps(cf, email, tid, host, nodeUrl, port, existing, kv) {
+  const steps = [];
+
+  // 1. credential: keep the one the tenant already has, otherwise mint a new one.
+  const token = typeof existing.token === "string" && existing.token
+    ? existing.token
+    : onboardB64Url(onboardRandomBytes(32));
+  steps.push(existing.token ? "credential: already consistent" : "credential: minted");
+
+  // 2. tunnel + DNS
+  const zone = await onboardZoneFor(cf, host);
+  const prior = await onboardReadJson(kv, "tunnel:" + email);
+  const tunnel = await onboardEnsureTunnel(cf, `tenant-${tid}`, host, port,
+    onboardTunnelIdFromToken(prior.tunnel_token));
+  await onboardEnsureDns(cf, zone, host, tunnel.tunnelId);
+  steps.push(`tunnel: ${tunnel.created ? "created" : "reused"} tenant-${tid}; DNS ${host} points at it`);
+
+  // 3. worker routing (KV keyed by email). The digest lets the owner's node verify the token.
+  await kv.put("allow:" + email, "1");
+  await kv.put("tenant:" + email, JSON.stringify({ ...existing, token, node_url: nodeUrl, tenant_id: tid }));
+  await kv.put("tunnel:" + email, JSON.stringify({ tunnel_token: tunnel.tunnelToken, hostname: host }));
+  await kv.put("tenant-owner:" + tid, email);
+  await kv.put("tenant-digest:" + tid, await onboardSha256Hex(token));
+  steps.push(`worker: ${email} allowed and routed to ${nodeUrl}`);
+
+  return {
+    tenant_id: tid,
+    email,
+    node_url: nodeUrl,
+    port: tunnel.port,
+    token,
+    tunnel_token: tunnel.tunnelToken,
+    steps,
+  };
+}
+
+// Serializes redemptions of one invite. A Durable Object handles one request at a
+// time, so the check-and-set in "claim" cannot interleave. States:
+//   open -> claimed (lease) -> consumed (permanent); a failed run releases back to open.
+const INVITE_LEASE_MS = 600_000; // 10 min: longer than any provisioning run, short enough to recover a crash
+
+export class InviteClaim {
+  constructor(state) {
+    this.state = state;
+    // Load once; afterwards check-and-set runs on memory with no await in between,
+    // so concurrent requests cannot interleave inside the check.
+    this.ready = (async () => {
+      this.rec = (await state.storage.get("claim")) || { status: "open" };
+    })();
+  }
+
+  async fetch(request) {
+    await this.ready;
+    const action = new URL(request.url).pathname.replace(/^\//, "");
+    const rec = this.rec;
+    const now = Date.now();
+    const save = async (next) => {
+      this.rec = next;
+      await this.state.storage.put("claim", next);
+    };
+    const reply = (body, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+    if (action === "claim") {
+      if (rec.status === "consumed") return reply({ error: "invite code is not valid or was already used" }, 409);
+      if (rec.status === "claimed" && rec.leaseUntil > now) {
+        return reply({ error: "this invite is being redeemed; try again in a minute" }, 409);
+      }
+      await save({ status: "claimed", leaseUntil: now + INVITE_LEASE_MS });
+      return reply({ ok: true });
+    }
+    if (action === "release") {
+      if (rec.status === "claimed") await save({ status: "open" });
+      return reply({ ok: true });
+    }
+    if (action === "consume") {
+      await save({ status: "consumed" });
+      return reply({ ok: true });
+    }
+    return reply({ error: "unknown action" }, 404);
+  }
+}
+
+async function inviteCall(env, code, action, body) {
+  if (!env.INVITE_CLAIMS) throw new OnboardError("INVITE_CLAIMS Durable Object binding is missing");
+  const stub = env.INVITE_CLAIMS.get(env.INVITE_CLAIMS.idFromName(code));
+  const resp = await stub.fetch("https://invite.internal/" + action, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  if (!resp.ok) {
+    const detail = await resp.json().catch(() => ({}));
+    throw new OnboardError(detail.error || `invite ${action} failed`);
+  }
+  return resp.json().catch(() => ({}));
+}
+
+async function handleOnboard(request, env) {
+  if (request.method !== "POST") return json({ error: "POST only" }, 405);
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "body must be JSON" }, 400); }
+  try {
+    return json(await provisionTenant(env, body || {}));
+  } catch (err) {
+    if (err instanceof OnboardError) return json({ error: err.message }, 400);
+    return json({ error: "onboarding failed; try again or ask the operator" }, 500);
+  }
+}
+
+// Plain form for the person being onboarded: enter the invite code and a name.
+// Posts to /onboard/redeem and shows the node details. Server data is written with
+// textContent only.
+// One-button page. The invite code arrives in the link, so the person clicks once.
+function renderOnboardPage(code) {
+  const safeCode = JSON.stringify(String(code || "")).replace(/</g, "\\u003c");
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Join NouGen</title>
+<style>
+  :root { --bg:#fbfaf7; --fg:#1d1d1f; --muted:#5b5b61; --card:#fff; --line:#d9d6cf; --accent:#2c5fd6; --ok:#1e7a46; --bad:#b3261e; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#15161a; --fg:#ededf0; --muted:#a6a6ad; --card:#1d1f25; --line:#3a3d46; --accent:#7aa2ff; --ok:#6fd39a; --bad:#ff8a80; } }
+  :root[data-theme="dark"] { --bg:#15161a; --fg:#ededf0; --muted:#a6a6ad; --card:#1d1f25; --line:#3a3d46; --accent:#7aa2ff; --ok:#6fd39a; --bad:#ff8a80; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:18px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
+  main { max-width:30rem; margin:0 auto; padding:2.5rem 1rem; text-align:center; }
+  h1 { font-size:1.6rem; margin:0 0 .5rem; }
+  p { color:var(--muted); margin:.5rem 0 1.25rem; }
+  button { width:100%; font:inherit; font-weight:600; padding:1rem; border:0; border-radius:10px; background:var(--accent); color:#fff; cursor:pointer; }
+  button[disabled] { opacity:.6; cursor:progress; }
+  button:focus-visible, summary:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  .ok { color:var(--ok); font-weight:600; font-size:1.15rem; }
+  .err { color:var(--bad); font-weight:600; }
+  .done { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1.25rem; margin-top:1.25rem; text-align:left; }
+  details { margin-top:1rem; }
+  code { display:block; overflow-wrap:anywhere; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.6rem; margin:.25rem 0 .75rem; }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
+</style></head>
+<body><main>
+  <h1>Set up NouGen</h1>
+  <p>Press the button once. Nothing else to type.</p>
+  <button id="go" type="button">Set up my NouGen</button>
+  <div id="result" role="status" aria-live="polite"></div>
+</main>
+<script>
+  const CODE = ${safeCode};
+  const go = document.getElementById("go");
+  const out = document.getElementById("result");
+  function msg(text, cls) { const p = document.createElement("p"); p.className = cls || ""; p.textContent = text; return p; }
+  go.addEventListener("click", async () => {
+    out.replaceChildren();
+    if (!CODE) { out.append(msg("This link is missing its code. Ask for a new link.", "err")); return; }
+    go.disabled = true; go.textContent = "Setting up...";
+    try {
+      const resp = await fetch("/onboard/redeem", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: CODE }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) { out.append(msg(data.error || "This link has expired. Ask for a new one.", "err")); return; }
+      const setup = JSON.stringify({ node_url: data.node_url, token: data.token, tunnel_token: data.tunnel_token });
+      const box = document.createElement("div"); box.className = "done";
+      const ok = document.createElement("p"); ok.className = "ok"; ok.textContent = "You're all set.";
+      const sub = document.createElement("p"); sub.textContent = "Your NouGen node is ready. Keep this page; it has your setup code.";
+      const det = document.createElement("details");
+      const sum = document.createElement("summary"); sum.textContent = "Show my setup code";
+      const c = document.createElement("code"); c.textContent = setup;
+      det.append(sum, c);
+      box.append(ok, sub, det);
+      out.append(box);
+      go.hidden = true;
+    } catch (e) {
+      out.append(msg("Couldn't reach the server. Check your internet and press the button again.", "err"));
+    } finally {
+      go.disabled = false; go.textContent = "Set up my NouGen";
+    }
+  });
+</script></body></html>`;
+}
+
+function onboardPageResponse(code) {
+  return new Response(renderOnboardPage(code), {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; base-uri 'none'",
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer",
+    },
+  });
+}
+
 var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const origin = url.origin;
     const path = url.pathname.replace(/\/$/, "") || "/";
+    if (path.startsWith("/onboard/") && path !== "/onboard/redeem") {
+      if (request.method !== "GET") return new Response("GET only", { status: 405 });
+      let code = "";
+      try { code = decodeURIComponent(path.slice("/onboard/".length)); } catch { code = ""; }
+      return onboardPageResponse(code);
+    }
     switch (path) {
       case "/":
         return new Response(
@@ -6650,6 +7054,10 @@ var worker_default = {
         return handleGoogleCallback(request, env, url);
       case "/token":
         return request.method === "POST" ? handleToken(request, env) : new Response("POST only", { status: 405 });
+      case "/onboard":
+        return request.method === "GET" ? onboardPageResponse("") : new Response("GET only", { status: 405 });
+      case "/onboard/redeem":
+        return handleOnboard(request, env);
       case "/openapi.json":
       case "/openapi":
         return json(openapiDocument(origin));
@@ -6662,6 +7070,9 @@ var worker_default = {
 };
 export {
   __test__,
+  provisionTenant,
+  handleOnboard,
+  renderOnboardPage,
   worker_default as default
 };
 //# sourceMappingURL=worker.js.map

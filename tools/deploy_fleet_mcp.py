@@ -135,6 +135,23 @@ def main() -> None:
         })
         preserved_types.add("kv_namespace")
 
+    # Ensure the InviteClaim Durable Object is bound: it serializes tenant invite
+    # redemption. First deploy also needs a migration to create the class.
+    migrations = None
+    has_invite_do = any(
+        b.get("type") == "durable_object_namespace" and b.get("name") == "INVITE_CLAIMS"
+        for b in updated_bindings
+    )
+    if not has_invite_do:
+        print("      Injecting durable_object_namespace binding INVITE_CLAIMS -> InviteClaim")
+        updated_bindings.append({
+            "type": "durable_object_namespace",
+            "name": "INVITE_CLAIMS",
+            "class_name": "InviteClaim",
+        })
+        preserved_types.add("durable_object_namespace")
+        migrations = {"new_tag": "invite-claim-v1", "new_sqlite_classes": ["InviteClaim"]}
+
     # Verify HALLWAY_BEARER_TOKEN exists on the worker
     if "HALLWAY_BEARER_TOKEN" not in existing_secrets:
         print("      [WARN] 'HALLWAY_BEARER_TOKEN' is not in worker secret_text bindings!")
@@ -154,6 +171,8 @@ def main() -> None:
         "bindings": updated_bindings,
         "keep_bindings": sorted(preserved_types),
     }
+    if migrations:
+        metadata["migrations"] = migrations
 
     # 3. Read patched worker.js
     print(f"[3/4] Reading patched worker from {WORKER_JS_PATH.name}...")

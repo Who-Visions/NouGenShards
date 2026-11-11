@@ -71,6 +71,9 @@ def test_query_embedding_gets_room_for_a_cold_load(monkeypatch):
         seen["timeout"] = timeout
         return [3.0, 4.0]
 
+    # PR #983 routes query embedding through embed_providers.resolve();
+    # the fake only runs when the provider resolves to ollama.
+    monkeypatch.setattr("nougen_shards.embed_providers._ollama_reachable", lambda: True)
     monkeypatch.setattr(eb, "embed", fake_embed)
     vec = core._embed_query("relay legs auto close")
     assert seen["timeout"] == 6.0

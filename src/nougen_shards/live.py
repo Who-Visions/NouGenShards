@@ -746,7 +746,70 @@ def handle_live_command(args: List[str]) -> str:
     elif subcmd == "sessions":
         return json.dumps(control.sessions(), indent=2)
     elif subcmd == "inbox":
-        return control.render_pending_inline()
+        limit = 10
+        as_json = False
+        inbox_args = args[1:]
+        i = 0
+        while i < len(inbox_args):
+            option = inbox_args[i]
+            if option == "--json":
+                as_json = True
+            elif option == "--limit":
+                i += 1
+                if i >= len(inbox_args):
+                    return json.dumps({
+                        "status": "usage_error",
+                        "error": "--limit requires a positive integer.",
+                    }, indent=2)
+                try:
+                    limit = int(inbox_args[i])
+                except ValueError:
+                    return json.dumps({
+                        "status": "usage_error",
+                        "error": "--limit requires a positive integer.",
+                    }, indent=2)
+                if limit < 1:
+                    return json.dumps({
+                        "status": "usage_error",
+                        "error": "--limit requires a positive integer.",
+                    }, indent=2)
+            elif option.startswith("--limit="):
+                try:
+                    limit = int(option.partition("=")[2])
+                except ValueError:
+                    return json.dumps({
+                        "status": "usage_error",
+                        "error": "--limit requires a positive integer.",
+                    }, indent=2)
+                if limit < 1:
+                    return json.dumps({
+                        "status": "usage_error",
+                        "error": "--limit requires a positive integer.",
+                    }, indent=2)
+            else:
+                return json.dumps({
+                    "status": "usage_error",
+                    "error": f"Unknown inbox option: {option}",
+                }, indent=2)
+            i += 1
+
+        if as_json:
+            from . import codex_pipe  # pylint: disable=import-outside-toplevel
+            messages = control.pending_nougenmsgs(limit)
+            relays = control.pending_relays(limit)
+            pending_execution = codex_pipe.pending_execution()
+            return json.dumps({
+                "status": "ok",
+                "limit": limit,
+                "messages": messages,
+                "relays": relays,
+                "pending_execution": {
+                    "total": len(pending_execution),
+                    "shown": min(limit, len(pending_execution)),
+                    "items": pending_execution[:limit],
+                },
+            }, indent=2)
+        return control.render_pending_inline(limit=limit)
     elif subcmd == "claim-msg" and len(args) >= 2:
         from . import codex_pipe  # pylint: disable=import-outside-toplevel
         return json.dumps(codex_pipe.take(

@@ -276,6 +276,150 @@ def get_crd_host_status() -> dict:
     }
 
 
+def _session_msg_max() -> int:
+    """Longest message the phone may push into a session (env-tunable)."""
+    try:
+        return max(1, int(os.environ.get("NOUGEN_REMOTE_SESSION_MSG_MAX", "4000")))
+    except ValueError:
+        return 4000
+
+
+def list_agent_sessions() -> dict:
+    """Claude Code sessions registered on this machine, live ones first.
+
+    The phone's Sessions screen: which agent sessions exist here, which are
+    reachable right now, and an id to address one. Socket paths and their
+    auth tokens stay on this machine (AgentPinger.list_sessions strips them)."""
+    try:
+        from nougen_shards.nougenmsg import AgentPinger
+        sessions = AgentPinger.list_sessions()
+    except Exception as exc:  # registry unreadable: say so, never a 500
+        return {"ok": False, "node": platform.node(), "sessions": [], "error": str(exc)[:200]}
+    return {"ok": True, "node": platform.node(), "sessions": sessions,
+            "live": sum(1 for s in sessions if s.get("live"))}
+
+
+def send_to_agent_session(session_id: str, text: str) -> dict:
+    """Deliver one phone message into one live Claude Code session.
+
+    Uses NouGenMsg's own transport (auth line + user line over the session's
+    messaging pipe), addressed to exactly one registered, live session. The
+    wire has no ack, so "delivered" means the pipe accepted the bytes; the
+    session's own transcript is the proof it was read."""
+    session_id = str(session_id or "").strip()
+    text = str(text or "").strip()
+    if not session_id or not text:
+        return {"ok": False, "error": "session_id and text are required", "status": 400}
+    limit = _session_msg_max()
+    if len(text) > limit:
+        return {"ok": False, "error": f"message over {limit} characters", "status": 413}
+    try:
+        from nougen_shards.nougenmsg import AgentPinger
+        known = {s["session_id"]: s for s in AgentPinger.list_sessions()}
+        target = known.get(session_id)
+        if target is None:
+            return {"ok": False, "error": "session not registered on this machine", "status": 404}
+        if not target.get("live"):
+            return {"ok": False, "error": "session is not running", "status": 409}
+        res = AgentPinger.ping_claude(
+            f"[from phone] {text}", origin={"via": "nougenai-android"}, target_session=session_id,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:200], "status": 502}
+    delivered = len(res.get("delivered") or [])
+    return {
+        "ok": delivered > 0,
+        "delivered": delivered,
+        "session_id": session_id,
+        "project": target.get("project", ""),
+        "error": "" if delivered else (res.get("reason") or "pipe did not accept the message"),
+        **({} if delivered else {"status": 502}),
+    }
+
+
+def _claude_projects_dir() -> str:
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    return os.path.join(base, "projects")
+
+
+def _tail_lines(path: str, max_bytes: int) -> list:
+    size = os.path.getsize(path)
+    with open(path, "rb") as fh:
+        fh.seek(max(0, size - max_bytes))
+        chunk = fh.read().decode("utf-8", errors="replace").splitlines()
+    return chunk[1:] if size > max_bytes else chunk  # first line may be cut mid-record
+
+
+def session_tail(session_id: str, limit: int = 12) -> dict:
+    """Recent activity of one Claude Code session, for the phone's live view.
+
+    Reads only the end of the session transcript (``<projects>/<proj>/<id>.jsonl``),
+    keeps user/assistant text and tool calls, newest last, each trimmed and passed
+    through the vault redactor so a secret in a transcript never reaches the phone.
+    The id must be a registered session (same check as sending)."""
+    session_id = str(session_id or "").strip()
+    # The id becomes part of a file path: only plain session-id characters pass.
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9-]{4,64}", session_id):
+        return {"ok": False, "error": "bad session id", "status": 400}
+    try:
+        from nougen_shards.nougenmsg import AgentPinger
+        if session_id not in {s["session_id"] for s in AgentPinger.list_sessions()}:
+            return {"ok": False, "error": "session not registered on this machine", "status": 404}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:200], "status": 502}
+    # Find the transcript by listing what exists and comparing names, so the path
+    # we open always comes from the filesystem, never from the request.
+    matches = []
+    root = _claude_projects_dir()
+    if os.path.isdir(root):
+        for proj in os.scandir(root):
+            if not proj.is_dir():
+                continue
+            for entry in os.scandir(proj.path):
+                if entry.is_file() and entry.name.endswith(".jsonl") and entry.name[:-6] == session_id:
+                    matches.append(entry.path)
+    if not matches:
+        return {"ok": False, "error": "no transcript for this session", "status": 404}
+    try:
+        from nougen_shards.brain_scan.redaction import redact_content
+    except Exception:
+        # Fail closed: without the redactor, transcript text never leaves the PC.
+        return {"ok": False, "error": "redactor unavailable; refusing to send unredacted transcript", "status": 503}
+    limit = max(1, min(int(limit or 12), 40))
+    max_bytes = int(os.environ.get("NOUGEN_REMOTE_TAIL_BYTES", "600000"))
+    events = []
+    for line in reversed(_tail_lines(matches[0], max_bytes)):
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("type") not in ("user", "assistant"):
+            continue
+        msg = rec.get("message") or {}
+        content = msg.get("content")
+        blocks = content if isinstance(content, list) else [{"type": "text", "text": str(content or "")}]
+        for b in reversed(blocks):
+            kind = b.get("type")
+            if kind == "text" and str(b.get("text", "")).strip():
+                text = str(b["text"]).strip()
+                if rec["type"] == "user" and text.startswith("<"):
+                    continue  # harness/system wrappers, not the person
+                events.append({"role": rec["type"], "kind": "text", "ts": rec.get("timestamp"),
+                               "text": redact_content(text)[:400]})
+            elif kind == "tool_use":
+                inp = b.get("input") or {}
+                hint = inp.get("description") or inp.get("command") or inp.get("file_path") or inp.get("query") or ""
+                events.append({"role": "assistant", "kind": "tool", "ts": rec.get("timestamp"),
+                               "tool": str(b.get("name", "")), "text": redact_content(str(hint))[:160]})
+            if len(events) >= limit:
+                break
+        if len(events) >= limit:
+            break
+    events.reverse()
+    return {"ok": True, "session_id": session_id, "events": events}
+
+
 def capture_screen_frame(max_width: int = 960, quality: int = 60) -> dict:
     """Captures live Windows desktop frame as base64 JPEG for mobile CRD viewport."""
     try:
@@ -1333,6 +1477,17 @@ class RemoteHandler(BaseHTTPRequestHandler):
             self._send_json(capture_screen_frame())
             return
 
+        if path == "/api/v1/sessions":
+            self._send_json(list_agent_sessions())
+            return
+
+        if path.startswith("/api/v1/sessions/") and path.endswith("/tail"):
+            sid = path[len("/api/v1/sessions/"):-len("/tail")]
+            q = urllib.parse.parse_qs(parsed.query)
+            res = session_tail(sid, int((q.get("n") or ["12"])[0] or 12))
+            self._send_json(res, 200 if res.get("ok") else res.pop("status", 400))
+            return
+
         self._send_json({"error": "Not found"}, 404)
 
     def do_POST(self):
@@ -1396,6 +1551,11 @@ class RemoteHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/screen/input":
             self._send_json(dispatch_screen_input(payload))
+            return
+
+        if path == "/api/v1/sessions/send":
+            res = send_to_agent_session(payload.get("session_id", ""), payload.get("text", ""))
+            self._send_json(res, 200 if res.get("ok") else res.pop("status", 400))
             return
 
         if path == "/api/v1/launch":

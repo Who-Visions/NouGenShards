@@ -161,7 +161,7 @@ ollama==0.6.2
     # via nougen-shards (pyproject.toml)
 openai==3.23.0
     # via nougen-shards (pyproject.toml)
-opentelemetry-api==1.44.0
+opentelemetry-api==1.45.2
     # via
     #   google-api-core
     #   mcp
