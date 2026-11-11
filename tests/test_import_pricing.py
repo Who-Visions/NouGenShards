@@ -307,6 +307,24 @@ def test_markdown_section_pipe_table_fallback_supported():
     assert pro["schedule"] == {"2026-12-01": {"input": 2.0}}
 
 
+def test_section_supports_whitespace_after_dollar_and_commas():
+    md_doc = """
+## Gemini Format Edge
+### Standard
+| Feature | Free Tier | Paid Tier, per 1M tokens in USD |
+| --- | --- | --- |
+| Input price | Free | $ 0.30 through November 30, 2026. $&nbsp;1,000.00 starting December 1, 2026. |
+| Output price | Free | $&nbsp;2.50 through November 30, 2026. $ 2,500.00 starting December 1, 2026. |
+"""
+    built = ip.build("google", {"shape": "sections", "tier": "Standard"}, md_doc, "test")
+    m = built["models"]["gemini-format-edge"]
+    assert m["input"] == 0.30
+    assert m["output"] == 2.50
+    assert m["schedule"] == {
+        "2026-12-01": {"input": 1000.0, "output": 2500.0},
+    }
+
+
 def test_shipped_pricing_snapshots_load_in_billing():
     p_nov = billing._load_pricing("2026-11-11")
     p_dec = billing._load_pricing("2026-12-01")

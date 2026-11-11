@@ -234,7 +234,7 @@ def _parse_english_date(date_str: str) -> str | None:
 def _clean_cell_text(raw: str) -> str:
     if not raw:
         return ""
-    s = html_lib.unescape(raw)
+    s = html_lib.unescape(raw).replace("\u00a0", " ")
     s = re.sub(r"<br\s*/?>|</p>|</div>|</li>", "\n", s, flags=re.IGNORECASE)
     s = re.sub(r"{%\s*/?\s*sup\s*%}.*?{%\s*/\s*sup\s*%}", " ", s, flags=re.IGNORECASE | re.DOTALL)
     s = re.sub(r"{%[^%]*%}", " ", s)
@@ -242,6 +242,15 @@ def _clean_cell_text(raw: str) -> str:
     s = re.sub(r"<[^>]+>", " ", s)
     lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in s.splitlines()]
     return "\n".join(ln for ln in lines if ln)
+
+
+def _split_price_segments(text: str) -> list[str]:
+    """Split multi-rate cell lines on each currency token while keeping inline qualifiers intact."""
+    segments: list[str] = []
+    for line in text.splitlines():
+        parts = re.split(r"(?=\$\s*[0-9])", line)
+        segments.extend(p.strip() for p in parts if p.strip())
+    return segments
 
 
 def _detect_unit_multiplier(text: str) -> float | None:
@@ -292,17 +301,14 @@ def _parse_section_paid_cell(cell_raw: str, header_unit: float | None) -> list[t
         return []
 
     normalized = re.sub(
-        r"\bor\s+\$[0-9]+(?:\.[0-9]+)?\s*/\s*(?:min|10s|sec|second|image|frame|hour)\b",
+        r"\bor\s+\$\s*[0-9][0-9,]*(?:\.[0-9]+)?\s*/\s*(?:min|10s|sec|second|image|frame|hour)\b",
         "",
         cleaned,
         flags=re.IGNORECASE,
     )
     normalized = re.sub(r"\bEquivalent to\b[^\n.]*\.?", "", normalized, flags=re.IGNORECASE)
 
-    raw_segments = []
-    for line in normalized.splitlines():
-        parts = re.split(r"(?=\$[0-9])", line)
-        raw_segments.extend(p.strip() for p in parts if p.strip())
+    raw_segments = _split_price_segments(normalized)
 
     baseline_entries = []
     for seg in raw_segments:
@@ -322,7 +328,7 @@ def _parse_section_paid_cell(cell_raw: str, header_unit: float | None) -> list[t
         if re.search(r">\s*200k|>\s*128k", seg_low):
             continue
 
-        m_dollar = re.search(r"\$([0-9]+(?:\.[0-9]+)?)", seg)
+        m_dollar = _PRICE.search(seg)
         if not m_dollar:
             continue
 
@@ -331,7 +337,7 @@ def _parse_section_paid_cell(cell_raw: str, header_unit: float | None) -> list[t
         if unit is None:
             continue
 
-        val = float(m_dollar.group(1)) * unit
+        val = float(m_dollar.group(1).replace(",", "")) * unit
         start_iso, end_iso = None, None
         m_date = _DATE_CLAUSE.search(seg)
         if m_date:
@@ -682,10 +688,7 @@ def _parse_cell_with_schedules(cell: str) -> tuple[float | None, list[tuple[str,
     if (low.startswith("free of charge") or low == "free") and "$" not in low:
         return 0.0, []
 
-    segments: list[str] = []
-    for line in cleaned.splitlines():
-        parts = re.split(r"(?=\$[0-9])", line)
-        segments.extend(p.strip() for p in parts if p.strip())
+    segments = _split_price_segments(cleaned)
 
     through_prices: list[float] = []
     undated_prices: list[float] = []
