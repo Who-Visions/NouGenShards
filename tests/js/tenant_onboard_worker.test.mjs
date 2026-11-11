@@ -186,3 +186,32 @@ test("a claim is still held after 2 minutes, so a slow run cannot be overlapped"
     Date.now = realNow;
   }
 });
+
+test("an invitee cannot take over another tenant by naming its id", async () => {
+  const log = [];
+  const kv = memKv({
+    "invite:evil": JSON.stringify({ eml: "mallory@example.com", exp: Date.now() / 1000 + 3600 }),
+    "tenant-owner:victim-shards": "victim@example.com",
+    "tenant-digest:victim-shards": "victim-digest",
+    "tunnel:victim@example.com": JSON.stringify({ tunnel_token: "victim-tunnel", hostname: "victim.example.test" }),
+  });
+  await assert.rejects(
+    withFetch(fakeCloudflare(log), () => provisionTenant(env(kv, log), { code: "evil", tenant_id: "victim-shards", name: "Victim" })),
+    /already in use/);
+  assert.equal(log.length, 0, "no Cloudflare call may happen");
+  assert.equal(kv.m.get("tenant-owner:victim-shards"), "victim@example.com");
+  assert.equal(kv.m.get("tenant-digest:victim-shards"), "victim-digest");
+  assert.ok(kv.m.has("invite:evil"), "the invite is not consumed by a refused attempt");
+});
+
+test("a caller-supplied tenant_id is ignored; the tenant id comes from the invitee", async () => {
+  const log = [];
+  const kv = memKv({
+    "invite:pat": JSON.stringify({ eml: "pat@example.com", exp: Date.now() / 1000 + 3600 }),
+    "tenant-owner:victim-shards": "victim@example.com",
+  });
+  const res = await withFetch(fakeCloudflare(log), () =>
+    provisionTenant(env(kv, log), { code: "pat", tenant_id: "victim-shards", name: "Pat" }));
+  assert.equal(res.tenant_id, "pat-shards");
+  assert.equal(kv.m.get("tenant-owner:victim-shards"), "victim@example.com");
+});

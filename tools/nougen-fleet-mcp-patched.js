@@ -6651,10 +6651,15 @@ async function provisionTenant(env, input) {
   if (!ONBOARD_EMAIL_RE.test(email)) throw new OnboardError("invite is not tied to a valid email");
 
   const existing = await onboardReadJson(kv, "tenant:" + email);
-  const explicitId = input.tenant_id ? String(input.tenant_id) : null;
+  // The tenant id is never taken from the caller: a public redeemer could otherwise
+  // name another tenant's id and reuse its tunnel and gateway mapping.
   const who = input.name || email.split("@")[0].split("+")[0];
-  const tid = explicitId || existing.tenant_id || `${onboardSlug(who)}-shards`;
+  const tid = existing.tenant_id || `${onboardSlug(who)}-shards`;
   if (!ONBOARD_TENANT_ID_RE.test(tid)) throw new OnboardError(`tenant id '${tid}' must be lowercase letters, digits, - or _ (max 32)`);
+  // Each tenant id belongs to the email that first claimed it. Refuse before any
+  // Cloudflare or KV write if a different email already owns it.
+  const owner = await kv.get("tenant-owner:" + tid);
+  if (owner && owner !== email) throw new OnboardError("that tenant name is already in use; ask the operator for a new invite");
 
   const domain = input.domain || env.NOUGEN_TENANT_DOMAIN || ONBOARD_FALLBACK_DOMAIN;
   const hostFromRecord = existing.node_url ? new URL(existing.node_url).hostname : null;
@@ -6701,6 +6706,7 @@ async function onboardSteps(cf, email, tid, host, nodeUrl, port, existing, kv) {
   await kv.put("allow:" + email, "1");
   await kv.put("tenant:" + email, JSON.stringify({ ...existing, token, node_url: nodeUrl, tenant_id: tid }));
   await kv.put("tunnel:" + email, JSON.stringify({ tunnel_token: tunnel.tunnelToken, hostname: host }));
+  await kv.put("tenant-owner:" + tid, email);
   await kv.put("tenant-digest:" + tid, await onboardSha256Hex(token));
   steps.push(`worker: ${email} allowed and routed to ${nodeUrl}`);
 
