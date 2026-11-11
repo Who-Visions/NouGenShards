@@ -100,8 +100,14 @@ def _resolve_cf_token() -> str:
         except Exception:  # keymaker absent or locked: fall through to the clear error
             token = None
     if not token:
-        raise OnboardError("no Cloudflare credential: set CLOUDFLARE_API_TOKEN or store "
-                           f"{TOKEN_KEY} in the keymaker")
+        # The usual cause is not a missing key but a keymaker that resolved the wrong
+        # store: without NOUGEN_SECRETS_VAULT_DIR it reads a cwd-relative vault and
+        # silently finds nothing. Say so, so no lane asks the operator for a key it holds.
+        searched = os.environ.get("NOUGEN_SECRETS_VAULT_DIR") or "(unset: cwd-relative default)"
+        raise OnboardError(f"no Cloudflare credential: {TOKEN_KEY} not found in keymaker store "
+                           f"{searched}. Rerun with NOUGEN_SECRETS_VAULT_DIR=~/.nougen/secrets "
+                           "NOUGEN_VAULT_DIR=~/.nougen/shards before asking anyone for "
+                           "CLOUDFLARE_API_TOKEN; CLOUDFLARE_ACCOUNT_ID is derived from the token")
     return token
 
 
@@ -274,6 +280,58 @@ Write-Host 'Connecting to NouGen... leave this window open.'
 cloudflared tunnel run --token {tunnel_token}
 """
 
+# Zero-prerequisite Windows setup: one double-click, no admin, no questions. The tenant's
+# machine needs nothing installed first: it fetches uv (which brings its own Python), the
+# public NouGenShards source and cloudflared into %LOCALAPPDATA%\NouGen, starts both hidden,
+# registers them to start at sign-in (HKCU Run, no admin), waits for health and opens the
+# tenant's page. The operator's side already did every other prerequisite at onboard time.
+KIT_SETUP_CMD = r"""@echo off
+rem NouGen setup for {tenant_id}: double-click once. Private: contains this computer's keys.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$f='%~f0'; $s=(Get-Content -Raw $f) -split '(?m)^::PS\s*$',2; iex $s[1]"
+exit /b
+::PS
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = 'Tls12'
+$home_ = Join-Path $env:LOCALAPPDATA 'NouGen'
+New-Item -ItemType Directory -Force $home_ | Out-Null
+Write-Host 'Setting up NouGen on this computer. This takes a few minutes and needs nothing from you.'
+function Get-File($url, $out) {{ if (-not (Test-Path $out)) {{ Invoke-WebRequest -UseBasicParsing $url -OutFile $out }} }}
+$uv = Join-Path $home_ 'uv.exe'
+if (-not (Test-Path $uv)) {{
+  $z = Join-Path $home_ 'uv.zip'
+  Get-File 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip' $z
+  Expand-Archive -Force $z $home_; Remove-Item $z
+}}
+$cf = Join-Path $home_ 'cloudflared.exe'
+Get-File 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' $cf
+$src = Join-Path $home_ 'NouGenShards'
+$z = Join-Path $home_ 'src.zip'
+Invoke-WebRequest -UseBasicParsing 'https://github.com/Who-Visions/NouGenShards/archive/refs/heads/main.zip' -OutFile $z
+if (Test-Path $src) {{ Remove-Item -Recurse -Force $src }}
+Expand-Archive -Force $z $home_; Remove-Item $z
+Move-Item (Join-Path $home_ 'NouGenShards-main') $src
+$run = Join-Path $home_ 'run.ps1'
+@'
+$env:NGS_NODE_TOKEN = '{token}'
+$env:NGS_PORT = '{port}'
+{dedicated_ps1}$h = Join-Path $env:LOCALAPPDATA 'NouGen'
+Start-Process -WindowStyle Hidden -WorkingDirectory (Join-Path $h 'NouGenShards') -FilePath (Join-Path $h 'uv.exe') -ArgumentList 'run','--python','3.11','app.py'
+Start-Process -WindowStyle Hidden -FilePath (Join-Path $h 'cloudflared.exe') -ArgumentList 'tunnel','--no-autoupdate','run','--token','{tunnel_token}'
+'@ | Set-Content -Encoding UTF8 $run
+$launch = "conhost.exe --headless powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$run`""
+Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'NouGen' -Value $launch
+Get-Process cloudflared -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -eq $cf }} | Stop-Process -Force
+& powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $run
+Write-Host 'Starting... (first start downloads Python once)'
+for ($i = 0; $i -lt 90; $i++) {{
+  try {{ Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:{port}/health' -TimeoutSec 3 | Out-Null; break }} catch {{ Start-Sleep 5 }}
+}}
+Start-Process '{node_url}'
+Write-Host 'Done. NouGen is on and will start by itself whenever this computer starts.'
+Start-Sleep 5
+"""
+
 KIT_SH = """#!/bin/sh
 # NouGen tenant join kit for {tenant_id}. Contains secrets: keep private.
 export NGS_NODE_TOKEN='{token}' NGS_PORT='{port}'
@@ -285,7 +343,7 @@ exec cloudflared tunnel run --token {tunnel_token}
 
 
 def write_kit(tenant_id: str, token: str, tunnel_token: str, port: int,
-              root: Optional[Path] = None, dedicated: bool = False) -> Path:
+              root: Optional[Path] = None, dedicated: bool = False, node_url: str = "") -> Path:
     """Write the join kit for the tenant's computer.
 
     The kit holds the node and tunnel tokens, so by default it goes to a private (0700)
@@ -299,16 +357,17 @@ def write_kit(tenant_id: str, token: str, tunnel_token: str, port: int,
     base = Path(root) if root else Path(tempfile.mkdtemp(prefix="nougen-kit-"))
     kit_dir = base / "tenant-kits" / tenant_id
     kit_dir.mkdir(parents=True, exist_ok=True)
-    vals = dict(tenant_id=tenant_id, token=token, tunnel_token=tunnel_token, port=port,
+    vals = dict(tenant_id=tenant_id, token=token, tunnel_token=tunnel_token, port=port, node_url=node_url,
                 dedicated_ps1=f"$env:NOUGEN_DEDICATED_TENANT = '{tenant_id}'\n" if dedicated else "",
                 dedicated_sh=f"export NOUGEN_DEDICATED_TENANT='{tenant_id}'\n" if dedicated else "",
                 # the setting only reaches a node THIS kit starts; say so instead of implying it applied
                 dedicated_running_ps1=("    Write-Host 'Dedicated mode only applies to a node this kit starts. "
                                        "Stop the running node, then run this kit again.' -ForegroundColor Yellow\n")
                 if dedicated else "")
-    for name, template in (("join.ps1", KIT_PS1), ("join.sh", KIT_SH)):
+    for name, template, nl in (("Set up NouGen.cmd", KIT_SETUP_CMD, "\r\n"),
+                               ("join.ps1", KIT_PS1, "\n"), ("join.sh", KIT_SH, "\n")):
         path = kit_dir / name
-        path.write_text(template.format(**vals), encoding="utf-8", newline="\n")
+        path.write_text(template.format(**vals), encoding="utf-8", newline=nl)
         try:
             path.chmod(0o600)
         except OSError:
@@ -430,7 +489,7 @@ def onboard(email: str, name: Optional[str] = None, tenant_id: Optional[str] = N
     steps.append(f"worker: {email} allowed and routed to {node_url}")
 
     # 4. the join kit for the tenant's computer
-    kit_dir = write_kit(tid, token, tunnel_token, port, kit_root, dedicated=dedicated)
+    kit_dir = write_kit(tid, token, tunnel_token, port, kit_root, dedicated=dedicated, node_url=node_url)
     steps.append(f"kit: {kit_dir}")
 
     status, reading = prober(node_url)
