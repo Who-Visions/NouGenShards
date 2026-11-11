@@ -11,6 +11,7 @@ which models answer, so the list can be refreshed from evidence.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import socket
@@ -88,7 +89,8 @@ class NvidiaNimClient(LLMClient):
                 return res.status, json.loads(res.read().decode() or "{}")
         except urllib.error.HTTPError as exc:
             return exc.code, None
-        except (urllib.error.URLError, socket.timeout, TimeoutError, OSError, ValueError) as exc:
+        except (urllib.error.URLError, http.client.HTTPException, socket.timeout,
+                TimeoutError, OSError, ValueError, UnicodeDecodeError) as exc:
             return type(exc).__name__, None
 
     # --------------------------------------------------------------- LLMClient

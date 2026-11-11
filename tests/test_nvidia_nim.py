@@ -160,3 +160,49 @@ def test_model_side_failures_fall_through(monkeypatch, status):
     c, _ = _client({("/chat/completions", first): (status, None),
                     ("/chat/completions", second): _answer("OK")}, monkeypatch)
     assert c.chat("auto", [{"role": "user", "content": "hi"}]) == "OK"
+
+
+def test_incomplete_read_is_caught_in_request_and_falls_back(monkeypatch):
+    import http.client
+    import json
+
+    class _FakeResp:
+        def __init__(self, status, payload=None, fail=None):
+            self.status = status
+            self._payload = payload
+            self._fail = fail
+
+        def read(self):
+            if self._fail is not None:
+                raise self._fail
+            return json.dumps(self._payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    first, second = nim.VERIFIED_CHAT_MODELS[:2]
+    attempts = []
+
+    def fake_urlopen(req, timeout=None):
+        model = json.loads(req.data.decode())["model"]
+        attempts.append(model)
+        if model == first:
+            return _FakeResp(200, fail=http.client.IncompleteRead(b'{"choices":'))
+        return _FakeResp(200, payload={"choices": [{"message": {"content": "OK"}}]})
+
+    monkeypatch.setattr(nim.urllib.request, "urlopen", fake_urlopen)
+    c = nim.NvidiaNimClient(api_key="test-key", base_url="https://nim.example/v1")
+    assert c.chat("auto", [{"role": "user", "content": "hi"}]) == "OK"
+    assert attempts == [first, second]
+    assert c.last_errors[first] == "IncompleteRead"
+
+    monkeypatch.setattr(
+        nim.urllib.request,
+        "urlopen",
+        lambda req, timeout=None: _FakeResp(200, fail=http.client.IncompleteRead(b"partial")),
+    )
+    assert c.embed(nim.VERIFIED_EMBED_MODELS[0], "hello") == []
+    assert c.last_errors[nim.VERIFIED_EMBED_MODELS[0]] == "IncompleteRead"
