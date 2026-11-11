@@ -107,7 +107,7 @@ def fetch(url: str) -> str:
 class _DocParser(HTMLParser):
     """Collects tables (as cell-text rows) and the heading in force above each."""
 
-    HEADINGS = {"h1", "h2", "h3", "h4"}
+    HEADINGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
     BLOCK_CELL_TAGS = {"br", "p", "div", "li"}
     TIER_WORDS = ("Standard", "Batch", "Priority", "Flex", "Scale")
     TIER_MAP = {w.lower(): w for w in TIER_WORDS}
@@ -197,7 +197,7 @@ class _DocParser(HTMLParser):
             text = " ".join("".join(self._heading_buf).split())
             if text:
                 self.headings[tag] = text
-                for deeper in ("h2", "h3", "h4"):
+                for deeper in ("h2", "h3", "h4", "h5", "h6"):
                     if deeper > tag:
                         self.headings.pop(deeper, None)
             self._heading_tag = None
@@ -820,11 +820,15 @@ def parse_matrix_markdown(md: str, columns: dict) -> dict:
     models: dict = {}
     headers = None
     idx: dict[str, int] = {}
-    cur_heading = ""
+    headings_by_level: dict[int, str] = {}
     for line in md.splitlines():
         s = line.strip()
-        if re.match(r"^#{1,4}\s+", s):
-            cur_heading = s
+        m_head = re.match(r"^(#{1,6})\s+(.+?)\s*$", s)
+        if m_head:
+            level = len(m_head.group(1))
+            headings_by_level[level] = m_head.group(2)
+            for deeper in [k for k in headings_by_level if k > level]:
+                del headings_by_level[deeper]
             headers = None
             idx = {}
             continue
@@ -832,7 +836,8 @@ def parse_matrix_markdown(md: str, columns: dict) -> dict:
             headers = None
             idx = {}
             continue
-        if _is_skipped_matrix_heading(cur_heading):
+        heads_text = " ".join(headings_by_level[k] for k in sorted(headings_by_level))
+        if _is_skipped_matrix_heading(heads_text):
             continue
         cells = [c.strip() for c in s.strip("|").split("|")]
         if all(re.fullmatch(r":?-+:?", c) for c in cells):
@@ -843,7 +848,7 @@ def parse_matrix_markdown(md: str, columns: dict) -> dict:
                 headers = cells
                 idx = found
             continue
-        if len(cells) >= len(headers):
+        if len(cells) > max(idx.values()):
             _record_matrix_row(models, cells[0], cells, idx)
     return models
 

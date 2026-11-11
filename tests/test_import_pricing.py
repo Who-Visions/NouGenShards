@@ -325,6 +325,27 @@ def test_section_supports_whitespace_after_dollar_and_commas():
     }
 
 
+def test_matrix_markdown_preserves_ancestor_headings():
+    """Nested subsection headings (### Pricing under ## Batch processing) must stay filtered."""
+    md_page = """
+## Batch processing
+### Pricing
+| Model | Base Input Tokens | Output Tokens |
+| :--- | :--- | :--- |
+| Claude Opus 5.5 | $1 / MTok | $5 / MTok |
+
+## Model pricing
+### Pricing
+| Model | Base Input Tokens | Output Tokens |
+| :--- | :--- | :--- |
+| Claude Opus 5.5 | $2 / MTok | $10 / MTok |
+"""
+    cfg = ip.DEFAULT_SOURCES["anthropic"]
+    built = ip.build("anthropic", cfg, md_page, "test")
+    assert built["models"]["claude-opus-5.5"]["input"] == 2.0
+    assert built["models"]["claude-opus-5.5"]["output"] == 10.0
+
+
 def test_shipped_pricing_snapshots_load_in_billing():
     p_nov = billing._load_pricing("2026-11-11")
     p_dec = billing._load_pricing("2026-12-01")
