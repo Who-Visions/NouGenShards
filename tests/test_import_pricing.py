@@ -195,6 +195,45 @@ def test_anthropic_markdown_table_supported():
     assert built["models"]["claude-opus-5.5"]["cache_read"] == 0.20
 
 
+def test_matrix_preserves_dated_schedules_html_and_markdown():
+    html_page = """
+    <html><body>
+      <h2>Model pricing</h2>
+      <table>
+        <tr><th>Model</th><th>Base Input Tokens</th><th>Output Tokens</th><th>Cache Hits &amp; Refreshes</th></tr>
+        <tr>
+          <td>Claude Future 6</td>
+          <td><span>$8</span> through November 30, 2026.<br><span>$10</span> starting December 1, 2026.</td>
+          <td>$40 through November 30, 2026. $50 starting December 1, 2026.</td>
+          <td>$0.80 through November 30, 2026. $1.00 starting December 1, 2026.</td>
+        </tr>
+      </table>
+    </body></html>
+    """
+    cfg = ip.DEFAULT_SOURCES["anthropic"]
+    built_html = ip.build("anthropic", cfg, html_page, "test")
+    m = built_html["models"]["claude-future-6"]
+    assert m["input"] == 8.0
+    assert m["output"] == 40.0
+    assert m["cache_read"] == 0.80
+    assert m["schedule"] == {
+        "2026-12-01": {"input": 10.0, "output": 50.0, "cache_read": 1.0},
+    }
+    assert billing._resolve_scheduled(m, "2026-11-15") == pytest.approx((8.0, 40.0))
+    assert billing._resolve_scheduled(m, "2026-12-01") == pytest.approx((10.0, 50.0))
+
+    md_page = """
+## Model pricing
+| Model | Base Input Tokens | Output Tokens |
+| :--- | :--- | :--- |
+| Claude Future 6 | $8 through November 30, 2026. $10 starting December 1, 2026. | $40 through November 30, 2026. $50 starting December 1, 2026. |
+"""
+    built_md = ip.build("anthropic", cfg, md_page, "test")
+    assert built_md["models"]["claude-future-6"]["schedule"] == {
+        "2026-12-01": {"input": 10.0, "output": 50.0},
+    }
+
+
 def test_html_section_tier_attribution_and_inline_qualifiers():
     """HTML section parser must verify tier labels (not overwrite Standard with Batch)
     and preserve inline <span>/<a> text continuity with date qualifiers."""

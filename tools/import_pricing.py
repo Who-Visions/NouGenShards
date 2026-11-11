@@ -66,10 +66,6 @@ FETCH_TIMEOUT_S = float(os.environ.get("NOUGEN_PRICING_TIMEOUT_S", "30"))
 USER_AGENT = os.environ.get("NOUGEN_PRICING_UA", "NouGenShards-pricing-importer/1.0")
 
 _PRICE = re.compile(r"\$\s*([0-9][0-9,]*\.?[0-9]*)")
-_STARTING = re.compile(
-    r"\$\s*([0-9][0-9,]*\.?[0-9]*)\s*(?:through|starting|effective|from)\s+([A-Z][a-z]+\s+\d{1,2},?\s*\d{4})",
-    re.IGNORECASE,
-)
 _DATE_CLAUSE = re.compile(
     r"\b(through|starting|effective|after|from)\s+([A-Za-z]+\s+\d{1,2},?\s+\d{4})",
     re.IGNORECASE,
@@ -606,19 +602,62 @@ def parse_sections_html(doc: _DocParser, tier: str) -> dict:
 # shapes: matrix (Anthropic HTML & Markdown pipe tables)
 # --------------------------------------------------------------------------
 
+def _parse_cell_with_schedules(cell: str) -> tuple[float | None, list[tuple[str, float]]]:
+    """Parse a matrix cell into (current_price, [(effective_date_iso, future_price), ...])."""
+    cleaned = _clean_cell_text(cell or "")
+    low = cleaned.lower()
+    if not cleaned or low.startswith("not available") or low in {"n/a", "-", "—"}:
+        return None, []
+    if (low.startswith("free of charge") or low == "free") and "$" not in low:
+        return 0.0, []
+
+    segments: list[str] = []
+    for line in cleaned.splitlines():
+        parts = re.split(r"(?=\$[0-9])", line)
+        segments.extend(p.strip() for p in parts if p.strip())
+
+    through_prices: list[float] = []
+    undated_prices: list[float] = []
+    all_prices: list[float] = []
+    schedules: list[tuple[str, float]] = []
+
+    if segments and segments[0].lower().startswith("free") and "$" not in segments[0]:
+        undated_prices.append(0.0)
+        all_prices.append(0.0)
+
+    for seg in segments:
+        m_price = _PRICE.search(seg)
+        if not m_price:
+            continue
+        val = float(m_price.group(1).replace(",", ""))
+        all_prices.append(val)
+
+        m_date = _DATE_CLAUSE.search(seg)
+        if m_date:
+            kw = m_date.group(1).lower()
+            parsed_dt = _parse_english_date(m_date.group(2))
+            if parsed_dt:
+                if kw == "through":
+                    through_prices.append(val)
+                else:
+                    schedules.append((parsed_dt, val))
+                continue
+        undated_prices.append(val)
+
+    if not all_prices:
+        return None, []
+    price_now = (
+        through_prices[0]
+        if through_prices
+        else (undated_prices[0] if undated_prices else all_prices[0])
+    )
+    return price_now, schedules
+
+
 def parse_cell(cell: str):
     """(price_now, (effective_date_iso, price_then)) — None when not priced."""
-    text = (cell or "").strip()
-    low = text.lower()
-    if not text or low.startswith("not available") or low in {"n/a", "-", "—"}:
-        return None, None
-    if low.startswith("free of charge") or low == "free":
-        return 0.0, None
-
-    found = _PRICE.findall(text)
-    if not found:
-        return None, None
-    return float(found[0].replace(",", "")), None
+    price_now, schedules = _parse_cell_with_schedules(cell)
+    return price_now, (schedules[0] if schedules else None)
 
 
 def _resolve_matrix_columns(headers: list[str], columns: dict) -> dict[str, int]:
@@ -666,9 +705,11 @@ def _record_matrix_row(models: dict, name: str, row: list[str], idx: dict[str, i
     for kind, i in idx.items():
         if i >= len(row):
             continue
-        price, _ = parse_cell(row[i])
+        price, schedules = _parse_cell_with_schedules(row[i])
         if price is not None and kind not in entry:
             entry[kind] = price
+            for when, amount in schedules:
+                entry.setdefault("schedule", {}).setdefault(when, {})[kind] = amount
 
 
 def parse_matrix_html(doc: _DocParser, columns: dict, tier: str | None = None) -> dict:
