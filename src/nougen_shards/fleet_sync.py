@@ -24,14 +24,10 @@ Mathematical Foundations & State Transition Model:
 
 from __future__ import annotations
 
-import argparse
-import json
-import os
 import subprocess
-import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 
 @dataclass
@@ -154,7 +150,7 @@ class FleetSyncManager:
 
         # 2. Check porcelain status
         _, status_out, _ = self._run_git(repo, ["status", "--porcelain"])
-        dirty_lines = [l for l in status_out.splitlines() if l.strip()]
+        dirty_lines = [line for line in status_out.splitlines() if line.strip()]
         dirty_count = len(dirty_lines)
 
         # 3. Ensure wildcard fetch refspec exists so all remote branches are tracked
@@ -248,7 +244,7 @@ class FleetSyncManager:
                     status="conflict_aborted",
                     ahead=ahead,
                     behind=0,
-                    dirty_files=len([l for l in post_status.splitlines() if l.strip()]),
+                    dirty_files=len([line for line in post_status.splitlines() if line.strip()]),
                     error=f"Autostash pop encountered unmerged conflicts: {', '.join(unmerged)}"
                 )
             behind = 0

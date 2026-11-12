@@ -32,7 +32,7 @@ import enum
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 
 class QuotaLevel(str, enum.Enum):

@@ -4,9 +4,7 @@ Tests target repo validation, branch tracking discovery, and divergence reconcil
 """
 
 import subprocess
-import pytest
-from pathlib import Path
-from nougen_shards.fleet_sync import FleetSyncManager, SyncResult
+from nougen_shards.fleet_sync import FleetSyncManager
 
 
 def test_is_target_repo(tmp_path):

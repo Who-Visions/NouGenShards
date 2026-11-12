@@ -21,7 +21,7 @@ Mathematical Formulations:
 from dataclasses import dataclass, field
 import math
 import random
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 
 @dataclass

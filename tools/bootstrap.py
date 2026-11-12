@@ -142,7 +142,7 @@ def ensure_git_sync(report: list, check_only: bool) -> bool:
         return step(report, "git_sync", True, "detached HEAD (skipped)", required=False)
 
     if check_only:
-        proc_fetch = run(["git", "fetch", "--dry-run", "origin"])
+        run(["git", "fetch", "--dry-run", "origin"])
         return step(report, "git_sync", True, f"tracking {branch} (check-only)")
 
     # Ensure wildcard fetch refspec

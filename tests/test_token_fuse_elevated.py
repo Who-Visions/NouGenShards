@@ -5,11 +5,9 @@ and circuit breaker thresholds.
 """
 
 import math
-import time
 import pytest
 from nougen_shards.token_fuse_elevated import (
     TokenFuseElevated,
-    ElevatedTaskProfile,
     TokenFuseBreaker
 )
 

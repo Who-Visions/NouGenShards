@@ -1,4 +1,3 @@
-import math
 import pytest
 from nougen_shards.evolution_elevated import (
     SkillGene,

@@ -7,8 +7,7 @@ Pareto optimal escalation boundaries, and health decoupling invariants.
 import pytest
 from nougen_shards.proportional_retrieval_elevated import (
     ProportionalRetrievalElevated,
-    RetrievalLevel,
-    LEVEL_BUDGETS
+    RetrievalLevel
 )
 
 

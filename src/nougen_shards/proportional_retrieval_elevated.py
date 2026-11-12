@@ -28,10 +28,9 @@ Mathematical Foundations:
 '''
 
 import enum
-import math
 import random
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Tuple
 
 
 class RetrievalLevel(str, enum.Enum):
