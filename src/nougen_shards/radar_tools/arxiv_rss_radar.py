@@ -339,8 +339,11 @@ def route_papers(papers: list[dict], recipe: dict) -> dict[str, list[dict]]:
     eligible_cats = set(priors.get("promotion_eligible", []))
     conditional_cats = set(priors.get("conditional", []))
 
-    beacon_cap = recipe.get("lanes", {}).get("beacon", {}).get("burst_cap", 10)
-    review_cap = recipe.get("lanes", {}).get("review", {}).get("burst_cap", 60)
+    lane_cfg = recipe.get("lanes", {})
+    beacon_cap = lane_cfg.get("beacon", {}).get("burst_cap", 10)
+    review_cap = lane_cfg.get("review", {}).get("burst_cap", 60)
+    beacon_min = float(lane_cfg.get("beacon", {}).get("min_percentile", 99.5))
+    review_min = float(lane_cfg.get("review", {}).get("min_percentile", 97.0))
 
     for p in papers:
         pct = p["priority_pct"]
@@ -355,12 +358,12 @@ def route_papers(papers: list[dict], recipe: dict) -> dict[str, list[dict]]:
             continue
 
         # Beacon Lane: p99.5+, pillars passed, concrete reason code, and cap not reached
-        if (pct >= 99.0 and has_reasons and has_pillars and len(lanes["beacon"]) < beacon_cap and 
+        if (pct >= beacon_min and has_reasons and has_pillars and len(lanes["beacon"]) < beacon_cap and 
             (cat in eligible_cats or (cat in conditional_cats and p["score"] >= 3))):
             lanes["beacon"].append(p)
             p["route"] = "beacon"
         # Review Lane: p97.0+, eligible or conditional with relevance, cap not reached
-        elif (pct >= 95.0 and len(lanes["review"]) < review_cap and 
+        elif (pct >= review_min and len(lanes["review"]) < review_cap and 
               (cat in eligible_cats or cat in conditional_cats or has_pillars)):
             lanes["review"].append(p)
             p["route"] = "review"

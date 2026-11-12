@@ -117,6 +117,53 @@ def test_gate_does_not_pass_a_preamble_only_paper_on_a_wildcard(tmp_path, monkey
     del gate_mod
 
 
+def _tar_gz(files):
+    import gzip, io, tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name, text in files.items():
+            data = text.encode()
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return gzip.compress(buf.getvalue())
+
+
+def test_input_resolves_exact_path_not_a_suffix_match(tmp_path, monkeypatch):
+    paper = _load("arxiv_paper", tmp_path, monkeypatch)
+    blob = _tar_gz({
+        "unused/intro.tex": "decoy 99 percent",
+        "main.tex": r"\documentclass{article}\begin{document}\input{intro}\end{document}",
+        "intro.tex": "real intro",
+    })
+    tex = paper.extract_tex(blob)
+    assert "real intro" in tex and "decoy" not in tex
+
+
+def test_gzip_bomb_is_refused(tmp_path, monkeypatch):
+    import gzip
+    import pytest
+    paper = _load("arxiv_paper", tmp_path, monkeypatch)
+    monkeypatch.setattr(paper, "MAX_EXPANDED_BYTES", 1000)
+    with pytest.raises(IOError):
+        paper.extract_tex(gzip.compress(b"a" * 5000))
+
+
+def test_routing_honours_recipe_min_percentiles(tmp_path, monkeypatch):
+    rss = _load("arxiv_rss_radar", tmp_path, monkeypatch)
+    recipe = {"category_priors": {"promotion_eligible": ["cs.AI"]},
+              "lanes": {"beacon": {"min_percentile": 99.5, "burst_cap": 10},
+                        "review": {"min_percentile": 97.0, "burst_cap": 60}}}
+
+    def p(pct):
+        return {"priority_pct": pct, "primary_category": "cs.AI", "reason_codes": ["x"],
+                "matched_pillars": ["y"], "score": 5, "abstract": "word " * 20}
+    lanes = rss.route_papers([p(99.1), p(96.0)], recipe)
+    assert [x["priority_pct"] for x in lanes["beacon"]] == []
+    assert [x["priority_pct"] for x in lanes["review"]] == [99.1]
+    assert [x["priority_pct"] for x in lanes["shard"]] == [96.0]
+
+
 def test_vendored_text_names_no_person():
     for path in arxiv_radar.VENDORED_RADAR_DIR.glob("*.py"):
         assert "Tom Brown" not in path.read_text(encoding="utf-8"), path.name

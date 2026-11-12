@@ -19,6 +19,7 @@ import gzip
 import io
 import json
 import os
+import posixpath
 import re
 import tarfile
 import time
@@ -49,6 +50,7 @@ def cache_dir() -> Path:
 
 
 MAX_SOURCE_BYTES = 25_000_000
+MAX_EXPANDED_BYTES = 25_000_000  # cap on decompressed and inlined source, so a small bomb cannot balloon
 NS = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
 _NEW = re.compile(r"^(\d{4}\.\d{4,5})(v\d+)?$")
 _OLD = re.compile(r"^([a-z\-]+(?:\.[A-Z]{2})?/\d{7})(v\d+)?$", re.I)
@@ -126,28 +128,50 @@ def extract_tex(blob: bytes) -> str:
     """e-print payloads are a gzipped tar of sources, a single gzipped .tex, or a bare PDF."""
     if blob[:4] == b"%PDF":
         raise LookupError("no LaTeX source: this paper is PDF-only on arXiv")
-    raw = gzip.decompress(blob) if blob[:2] == b"\x1f\x8b" else blob
+    if blob[:2] == b"\x1f\x8b":
+        with gzip.GzipFile(fileobj=io.BytesIO(blob)) as gz:  # bounded: a gzip bomb must not exhaust memory
+            raw = gz.read(MAX_EXPANDED_BYTES + 1)
+        if len(raw) > MAX_EXPANDED_BYTES:
+            raise IOError(f"source expands past {MAX_EXPANDED_BYTES} bytes")
+    else:
+        raw = blob
     try:
         with tarfile.open(fileobj=io.BytesIO(raw)) as tf:
-            texs = {m.name: tf.extractfile(m).read().decode("utf-8", "replace")
-                    for m in tf.getmembers() if m.isfile() and m.name.endswith(".tex")}
+            texs, total = {}, 0
+            for m in tf.getmembers():
+                if not (m.isfile() and m.name.endswith(".tex")):
+                    continue
+                total += m.size
+                if total > MAX_EXPANDED_BYTES:
+                    raise IOError(f"source .tex files exceed {MAX_EXPANDED_BYTES} bytes")
+                texs[posixpath.normpath(m.name)] = \
+                    tf.extractfile(m).read().decode("utf-8", "replace")
     except tarfile.ReadError:
         texs = {"main.tex": raw.decode("utf-8", "replace")}
     if not texs:
         raise LookupError("source archive contains no .tex files")
     main = next((n for n, t in texs.items() if "\\documentclass" in t), max(texs, key=lambda n: len(texs[n])))
-    body = texs[main]
+    base = posixpath.dirname(main)
+    budget = [MAX_EXPANDED_BYTES]
 
     def inline(text: str, depth: int = 0) -> str:  # resolve \input{...} / \include{...}
         if depth > 5:
             return text
         def sub(m):
-            name = m.group(1) if m.group(1).endswith(".tex") else m.group(1) + ".tex"
-            hit = next((t for n, t in texs.items() if n.endswith(name)), None)
-            return inline(hit, depth + 1) if hit is not None else m.group(0)
+            name = m.group(1).strip()
+            name = name if name.endswith(".tex") else name + ".tex"
+            # LaTeX resolves includes relative to the main file: exact path only, never a suffix match
+            # (a stray unused/intro.tex must not stand in for intro.tex).
+            hit = texs.get(posixpath.normpath(posixpath.join(base, name)))
+            if hit is None:
+                return m.group(0)
+            budget[0] -= len(hit)
+            if budget[0] < 0:
+                raise IOError(f"inlined source exceeds {MAX_EXPANDED_BYTES} bytes")
+            return inline(hit, depth + 1)
         return re.sub(r"\\(?:input|include)\{([^}]+)\}", sub, text)
 
-    return re.sub(r"(?m)(?<!\\)%.*$", "", inline(body))  # drop LaTeX comments
+    return re.sub(r"(?m)(?<!\\)%.*$", "", inline(texs[main]))  # drop LaTeX comments
 
 
 def fulltext(ref: str, refresh: bool = False) -> Path:
