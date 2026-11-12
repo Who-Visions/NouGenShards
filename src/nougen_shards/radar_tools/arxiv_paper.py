@@ -144,8 +144,10 @@ def extract_tex(blob: bytes) -> str:
                 total += m.size
                 if total > MAX_EXPANDED_BYTES:
                     raise IOError(f"source .tex files exceed {MAX_EXPANDED_BYTES} bytes")
-                texs[posixpath.normpath(m.name)] = \
-                    tf.extractfile(m).read().decode("utf-8", "replace")
+                fh = tf.extractfile(m)
+                if fh is None:  # not a regular file after all; skip rather than crash
+                    continue
+                texs[posixpath.normpath(m.name)] = fh.read().decode("utf-8", "replace")
     except tarfile.ReadError:
         texs = {"main.tex": raw.decode("utf-8", "replace")}
     if not texs:
