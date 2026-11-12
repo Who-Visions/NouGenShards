@@ -69,12 +69,82 @@ def _type_key(o: Any) -> str:
     return f"{mod}.{t.__qualname__}" if mod not in ("builtins", "") else t.__qualname__
 
 
+def _rss_psutil() -> Optional[int]:
+    import psutil  # optional dependency
+    return int(psutil.Process().memory_info().rss)
+
+
+def _rss_windows() -> Optional[int]:
+    import ctypes
+    from ctypes import wintypes
+
+    class _Counters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    k32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(_Counters), wintypes.DWORD]
+    k32.K32GetProcessMemoryInfo.restype = wintypes.BOOL
+    c = _Counters()
+    c.cb = ctypes.sizeof(c)
+    if not k32.K32GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(c), c.cb):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(c.WorkingSetSize)
+
+
+def _rss_procfs() -> Optional[int]:
+    with open("/proc/self/statm", "r", encoding="ascii") as fh:
+        resident_pages = int(fh.read().split()[1])
+    return resident_pages * os.sysconf("SC_PAGE_SIZE")
+
+
+def _rss_sources() -> List[Tuple[str, Any]]:
+    """RSS readers in preference order. psutil is optional and was absent from the
+    gateway venv, which left every report with rss_mb=[null, ...]; the stdlib
+    readers below need no install."""
+    out: List[Tuple[str, Any]] = [("psutil", _rss_psutil)]
+    if sys.platform == "win32":
+        out.append(("win32", _rss_windows))
+    elif os.path.exists("/proc/self/statm"):
+        out.append(("procfs", _rss_procfs))
+    return out
+
+
+_rss_warned = False
+
+
+def _rss_probe() -> Tuple[Optional[int], str]:
+    """(rss bytes, source name). Source is "none" when every reader failed, and the
+    reasons are logged once so a null never passes silently again."""
+    global _rss_warned
+    errors: List[str] = []
+    for name, fn in _rss_sources():
+        try:
+            val = fn()
+            if val:
+                return int(val), name
+            errors.append(f"{name}: returned {val!r}")
+        except Exception as exc:  # each reader is best effort
+            errors.append(f"{name}: {type(exc).__name__}: {exc}")
+    if not _rss_warned:
+        _rss_warned = True
+        logger.warning("leakwatch: no RSS source worked (%s)", "; ".join(errors) or "no readers for this platform")
+    return None, "none"
+
+
 def _rss_bytes() -> Optional[int]:
-    try:
-        import psutil  # optional
-        return int(psutil.Process().memory_info().rss)
-    except Exception:
-        return None
+    return _rss_probe()[0]
 
 
 class LeakWatch:
@@ -109,6 +179,7 @@ class LeakWatch:
         self.log_path = log_path
         self.samples: Deque[Tuple[float, Counter, Optional[int]]] = deque(maxlen=self.window)
         self.last_report: Optional[Dict[str, Any]] = None
+        self.rss_source = "none"
         self._tm_prev = None
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
@@ -143,7 +214,8 @@ class LeakWatch:
             counts = Counter(_type_key(o) for o in objs)
         finally:
             del objs  # never let the sampling list become a referrer in a trace
-        self.samples.append((time.time(), counts, _rss_bytes()))
+        rss, self.rss_source = _rss_probe()
+        self.samples.append((time.time(), counts, rss))
         return counts
 
     # -- 2. retained -------------------------------------------------------
@@ -301,6 +373,7 @@ class LeakWatch:
                 "samples": len(self.samples),
                 "window": self.window,
                 "rss_mb": [round(r / 1048576, 1) if r else None for r in rss],
+                "rss_source": self.rss_source,
                 "retained": ret[:20],
                 "leaks": traces,
                 "tracemalloc_top_growth": self._tracemalloc_growth(),
