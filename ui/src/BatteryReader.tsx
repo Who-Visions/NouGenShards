@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { CSSProperties } from 'react';
 import './battery-reader.css';
 
 type BatterySnapshot = {
@@ -24,6 +23,28 @@ const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const HEALTH_HISTORY_KEY = 'nougen.cortex.battery.health.v1';
 const HEALTH_HISTORY_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
 const POLL_INTERVAL_MS = 60_000;
+const MAX_SAMPLE_GAP_MS = 3 * POLL_INTERVAL_MS;
+
+export function computeMeasuredDrain(samples: Sample[], isDischarging: boolean): number | null {
+  if (!isDischarging || samples.length < 2) return null;
+  const latest = samples[samples.length - 1];
+  if (!latest.state.includes('Discharging')) return null;
+
+  let prior: Sample | null = null;
+  for (let i = samples.length - 1; i >= 1; i--) {
+    const curr = samples[i];
+    const prev = samples[i - 1];
+    if (!prev.state.includes('Discharging')) break;
+    const stepMs = curr.at - prev.at;
+    if (stepMs <= 0 || stepMs > MAX_SAMPLE_GAP_MS) break;
+    if (latest.at - prev.at > 6 * 60 * 60_000) break;
+    prior = prev;
+  }
+  if (!prior || latest.at - prior.at < 5 * 60_000) return null;
+  const elapsedHours = (latest.at - prior.at) / 3_600_000;
+  const watts = (prior.energy - latest.energy) / elapsedHours;
+  return watts > 0.1 ? watts : null;
+}
 
 function loadHistory(): Sample[] {
   try {
@@ -199,18 +220,10 @@ export default function BatteryReader({ readBattery, isDesktop }: { readBattery:
     return () => window.clearInterval(timer);
   }, [isDesktop, refresh]);
 
-  const measuredDrain = useMemo(() => {
-    if (!reading || !reading.state.includes('Discharging')) return null;
-    const latest = [...samples].reverse().find((sample) => sample.state.includes('Discharging'));
-    if (!latest) return null;
-    const prior = [...samples].reverse().find((sample) =>
-      sample.state.includes('Discharging') && latest.at - sample.at >= 5 * 60_000 && latest.at - sample.at <= 6 * 60 * 60_000,
-    );
-    if (!prior) return null;
-    const elapsedHours = (latest.at - prior.at) / 3_600_000;
-    const watts = (prior.energy - latest.energy) / elapsedHours;
-    return watts > 0.1 ? watts : null;
-  }, [reading, samples]);
+  const measuredDrain = useMemo(
+    () => computeMeasuredDrain(samples, Boolean(reading?.state.includes('Discharging'))),
+    [reading, samples],
+  );
 
   const charge = reading?.chargePercent ?? 0;
   const health = reading?.healthPercent;
@@ -246,8 +259,9 @@ export default function BatteryReader({ readBattery, isDesktop }: { readBattery:
             <strong>{Math.round(charge)}<small>%</small></strong>
             <p>{reading.state} · updated {observedLabel}</p>
           </div>
-          <div className="battery-capacity-ring" style={{ '--battery-charge': `${charge}%` } as CSSProperties} aria-label={`${Math.round(charge)} percent charge`}>
+          <div className="battery-capacity-ring" aria-label={`${Math.round(charge)} percent charge`}>
             <div><span aria-hidden="true">▰</span><span>{Math.round(charge)}%</span></div>
+            <div className="battery-capacity-ring-track" aria-hidden="true"><span style={{ width: `${Math.min(Math.max(charge, 0), 100)}%` }} /></div>
           </div>
         </div>
 

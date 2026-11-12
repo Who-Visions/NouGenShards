@@ -38,10 +38,12 @@
   font: inherit;
   cursor: pointer;
 }
+.battery-refresh:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .battery-refresh:hover:not(:disabled) { border-color: var(--battery-accent); }
 .battery-refresh:disabled { cursor: not-allowed; opacity: 0.65; }
 .battery-spin { display: inline-block; animation: battery-spin 1s linear infinite; }
 @keyframes battery-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .battery-spin { animation: none; } }
 
 .battery-hero,
 .battery-panel,
@@ -80,16 +82,18 @@
 .battery-charge-copy > strong small { margin-left: 3px; color: var(--battery-accent); font-size: 0.42em; }
 .battery-charge-copy p { margin-top: 4px; color: var(--muted); font-size: var(--type-meta); }
 .battery-capacity-ring {
-  --battery-charge: 0%;
   display: grid;
-  width: 88px;
-  height: 88px;
+  min-width: 96px;
   margin-left: auto;
-  place-items: center;
-  border-radius: 50%;
-  background: conic-gradient(var(--battery-accent) var(--battery-charge), var(--battery-track) 0);
+  padding: 10px 12px;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
 }
-.battery-capacity-ring > div { display: grid; width: 70px; height: 70px; place-items: center; align-content: center; gap: 3px; border-radius: 50%; background: var(--panel); color: var(--battery-accent); font-size: var(--type-meta); font-weight: 700; }
+.battery-capacity-ring > div:first-child { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--battery-accent); font-size: var(--type-meta); font-weight: 700; font-variant-numeric: tabular-nums; }
+.battery-capacity-ring-track { height: 5px; overflow: hidden; border-radius: var(--radius-sm); background: var(--battery-track); }
+.battery-capacity-ring-track > span { display: block; height: 100%; background: var(--battery-accent); }
 
 .battery-metrics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .battery-metric { display: grid; min-height: 116px; align-content: start; gap: 9px; padding: 14px; }
@@ -104,7 +108,7 @@
 .battery-capacity-lines { display: grid; gap: 11px; }
 .battery-capacity-lines > div { display: flex; justify-content: space-between; gap: 14px; }
 .battery-capacity-lines strong { font-size: var(--type-meta); font-variant-numeric: tabular-nums; text-align: right; }
-.battery-capacity-track { height: 6px; margin-top: 16px; overflow: hidden; border-radius: 99px; background: var(--battery-track); }
+.battery-capacity-track { height: 6px; margin-top: 16px; overflow: hidden; border-radius: var(--radius-sm); background: var(--battery-track); }
 .battery-capacity-track span { display: block; height: 100%; border-radius: inherit; background: var(--battery-accent); }
 .battery-panel-footnote { margin: 12px 0 0; }
 .battery-trend-empty { display: flex; min-height: 125px; align-items: center; justify-content: center; gap: 10px; color: var(--muted); font-size: var(--type-meta); line-height: 1.55; }
