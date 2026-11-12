@@ -1,0 +1,63 @@
+name: supervisor
+
+on:
+  push:
+    branches: [main]
+    paths: ["tools/nougen-supervisor/**", ".github/workflows/supervisor.yml"]
+    tags: ["supervisor-v*"]
+  pull_request:
+    paths: ["tools/nougen-supervisor/**", ".github/workflows/supervisor.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: tools/nougen-supervisor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: false
+      - run: test -z "$(gofmt -l .)"
+        shell: bash
+      - run: go vet ./...
+      - run: go test -count=1 ./...
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/supervisor-v')
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: tools/nougen-supervisor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: false
+      - name: Build every platform
+        run: |
+          V="${GITHUB_REF_NAME#supervisor-v}"
+          mkdir dist
+          for t in windows/amd64 windows/arm64 darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os="${t%/*}"; arch="${t#*/}"; ext=""; ld="-s -w -X main.version=$V"
+            if [ "$os" = windows ]; then ext=.exe; ld="$ld -H windowsgui"; fi
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "$ld" -o "dist/nougen-supervisor-$os-$arch$ext" .
+          done
+          (cd dist && sha256sum nougen-supervisor-* > SHA256SUMS && cat SHA256SUMS)
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "nougen-supervisor ${GITHUB_REF_NAME#supervisor-v}" --notes "Keeps every NouGen account on a computer online. See tools/nougen-supervisor/README.md."
