@@ -140,6 +140,26 @@ def test_input_resolves_exact_path_not_a_suffix_match(tmp_path, monkeypatch):
     assert "real intro" in tex and "decoy" not in tex
 
 
+def test_commented_out_input_is_not_expanded(tmp_path, monkeypatch):
+    paper = _load("arxiv_paper", tmp_path, monkeypatch)
+    blob = _tar_gz({
+        "main.tex": "\\documentclass{article}\\begin{document}\n% \\input{decoy}\nreal\n\\end{document}",
+        "decoy.tex": "line one\ndecoy 99 percent",
+    })
+    tex = paper.extract_tex(blob)
+    assert "real" in tex and "decoy 99" not in tex
+
+
+def test_routing_accepts_unlimited_caps(tmp_path, monkeypatch):
+    rss = _load("arxiv_rss_radar", tmp_path, monkeypatch)
+    recipe = {"category_priors": {"promotion_eligible": ["cs.AI"]},
+              "lanes": {"beacon": {"min_percentile": 99.5, "burst_cap": None},
+                        "review": {"min_percentile": 97.0, "burst_cap": None}}}
+    paper = {"priority_pct": 99.9, "primary_category": "cs.AI", "reason_codes": ["x"],
+             "matched_pillars": ["y"], "score": 5, "abstract": "word " * 20}
+    assert rss.route_papers([paper], recipe)["beacon"]
+
+
 def test_gzip_bomb_is_refused(tmp_path, monkeypatch):
     import gzip
     import pytest

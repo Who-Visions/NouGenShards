@@ -340,8 +340,11 @@ def route_papers(papers: list[dict], recipe: dict) -> dict[str, list[dict]]:
     conditional_cats = set(priors.get("conditional", []))
 
     lane_cfg = recipe.get("lanes", {})
+    # burst_cap None means unlimited (the recipe's shard lane uses it that way).
     beacon_cap = lane_cfg.get("beacon", {}).get("burst_cap", 10)
     review_cap = lane_cfg.get("review", {}).get("burst_cap", 60)
+    beacon_cap = float("inf") if beacon_cap is None else beacon_cap
+    review_cap = float("inf") if review_cap is None else review_cap
     beacon_min = float(lane_cfg.get("beacon", {}).get("min_percentile", 99.5))
     review_min = float(lane_cfg.get("review", {}).get("min_percentile", 97.0))
 

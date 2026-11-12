@@ -171,7 +171,14 @@ def extract_tex(blob: bytes) -> str:
             return inline(hit, depth + 1)
         return re.sub(r"\\(?:input|include)\{([^}]+)\}", sub, text)
 
-    return re.sub(r"(?m)(?<!\\)%.*$", "", inline(texs[main]))  # drop LaTeX comments
+    # Strip comments from every file BEFORE inlining, so a commented-out `% \input{x}` is never expanded.
+    for n in texs:
+        texs[n] = _strip_comments(texs[n])
+    return inline(texs[main])
+
+
+def _strip_comments(text: str) -> str:
+    return re.sub(r"(?m)(?<!\\)%.*$", "", text)
 
 
 def fulltext(ref: str, refresh: bool = False) -> Path:
