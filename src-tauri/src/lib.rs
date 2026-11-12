@@ -1,7 +1,97 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use battery::units::{energy::watt_hour, power::watt, ratio::percent};
+use serde::Serialize;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatterySnapshot {
+  present: bool,
+  charge_percent: Option<f64>,
+  health_percent: Option<f64>,
+  energy_wh: Option<f64>,
+  full_capacity_wh: Option<f64>,
+  design_capacity_wh: Option<f64>,
+  discharge_watts: Option<f64>,
+  time_to_empty_minutes: Option<f64>,
+  cycle_count: Option<u32>,
+  state: String,
+  observed_at: String,
+}
+
+#[tauri::command]
+fn read_battery() -> Result<BatterySnapshot, String> {
+  let manager = battery::Manager::new()
+    .map_err(|_| "The operating system did not provide battery telemetry.".to_string())?;
+  let batteries = manager.batteries()
+    .map_err(|_| "The operating system could not enumerate battery devices.".to_string())?;
+
+  let mut count = 0usize;
+  let mut energy_wh = 0.0;
+  let mut full_capacity_wh = 0.0;
+  let mut design_capacity_wh = 0.0;
+  let mut discharge_watts = 0.0;
+  let mut has_discharge_rate = false;
+  let mut charge_weight = 0.0;
+  let mut health_weight = 0.0;
+  let mut cycle_count = 0u32;
+  let mut has_cycle_count = false;
+  let mut states = Vec::new();
+
+  for battery in batteries {
+    let battery = battery.map_err(|_| "A battery device could not be read.".to_string())?;
+    count += 1;
+    energy_wh += f64::from(battery.energy().get::<watt_hour>());
+    let full_wh = f64::from(battery.energy_full().get::<watt_hour>());
+    let design_wh = f64::from(battery.energy_full_design().get::<watt_hour>());
+    full_capacity_wh += full_wh;
+    design_capacity_wh += design_wh;
+    if full_wh > 0.0 {
+      charge_weight += f64::from(battery.state_of_charge().get::<percent>()) * full_wh;
+    }
+    if design_wh > 0.0 {
+      health_weight += f64::from(battery.state_of_health().get::<percent>()) * design_wh;
+    }
+    let rate = f64::from(battery.energy_rate().get::<watt>());
+    if rate.is_finite() && rate > 0.0 {
+      discharge_watts += rate;
+      has_discharge_rate = true;
+    }
+    if let Some(cycles) = battery.cycle_count() {
+      cycle_count = cycle_count.saturating_add(cycles);
+      has_cycle_count = true;
+    }
+    states.push(format!("{:?}", battery.state()));
+  }
+
+  let present = count > 0;
+  let charge_percent = (full_capacity_wh > 0.0)
+    .then(|| (charge_weight / full_capacity_wh).clamp(0.0, 100.0));
+  let discharge_watts = (has_discharge_rate && states.iter().any(|state| state == "Discharging"))
+    .then_some(discharge_watts);
+  let time_to_empty_minutes = discharge_watts
+    .filter(|rate| *rate > 0.05)
+    .map(|rate| (energy_wh / rate * 60.0).max(0.0));
+  let observed_at = SystemTime::now().duration_since(UNIX_EPOCH)
+    .unwrap_or_default().as_secs().to_string();
+
+  Ok(BatterySnapshot {
+    present,
+    charge_percent,
+    health_percent: (health_weight > 0.0 && design_capacity_wh > 0.0)
+      .then(|| (health_weight / design_capacity_wh).clamp(0.0, 100.0)),
+    energy_wh: present.then_some(energy_wh),
+    full_capacity_wh: (full_capacity_wh > 0.0).then_some(full_capacity_wh),
+    design_capacity_wh: (design_capacity_wh > 0.0).then_some(design_capacity_wh),
+    discharge_watts,
+    time_to_empty_minutes,
+    cycle_count: has_cycle_count.then_some(cycle_count),
+    state: if states.is_empty() { "Unavailable".to_string() } else { states.join(" + ") },
+    observed_at,
+  })
+}
 
 /// Hard ceiling on a single engine invocation. Cold Python / PyInstaller
 /// start-up plus a substrate query should finish well inside this; anything
@@ -541,6 +631,7 @@ pub fn run() {
       token_usage,
       relay_feed,
       fleet_nodes,
+      read_battery,
       identity,
       audit_component,
       terminal_intent,
