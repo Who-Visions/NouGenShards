@@ -114,6 +114,8 @@ test("setup hands each account to the supervisor: node.json, a pinned download, 
 
   const sh = setupSh(args);
   assert.ok(sh.includes("cat > node.json <<'NODE'\n" + nodeJson(args) + "\nNODE"));
+  assert.ok(!sh.includes("pkill -x nougen-supervisor"), "Linux comm names truncate at 15 chars");
+  assert.match(sh, /pkill -f "\$B\/nougen-supervisor"/);
   assert.match(sh, /pkill -f "\$H\/NouGenShards"/);
   assert.match(sh, /"\$S" install/);
   for (const k of ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"]) assert.ok(sh.includes(SUPERVISOR.sha256[k]));

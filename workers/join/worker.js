@@ -169,7 +169,8 @@ set -e
 B="$HOME/.nougen-node"; H="$B/${shq(t.id)}"; mkdir -p "$H"; cd "$H"
 echo "Setting up NouGen on this computer. This takes a few minutes and needs nothing from you."
 OS=$(uname -s); ARCH=$(uname -m)
-pkill -x nougen-supervisor 2>/dev/null || true
+pkill -f "$B/nougen-supervisor" 2>/dev/null || true
+i=0; while pgrep -f "$B/nougen-supervisor" >/dev/null 2>&1 && [ $i -lt 5 ]; do sleep 1; i=$((i+1)); done
 pkill -f "$H/NouGenShards" 2>/dev/null || true
 pkill -f "$H/cloudflared" 2>/dev/null || true
 [ -x "$B/uv" ] || { curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$B" UV_NO_MODIFY_PATH=1 sh >/dev/null; }
