@@ -23,6 +23,19 @@
   --join-cta-ink: #111111;
 }
 
+/* Light theme: same roles, darker inks so the warm accents keep contrast on a pale background. */
+:root[data-theme="light"] {
+  --join-amber: #765013;
+  --join-amber-bg: #f3e6cf;
+  --join-amber-border: #d8bf91;
+  --join-emerald: #145a32;
+  --join-emerald-bg: #dcefe3;
+  --join-emerald-border: #9cc9ad;
+  --join-cta-bg: #765013;
+  --join-cta-ink: #ffffff;
+  --join-cta-hover: #5e400f;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -35,7 +48,7 @@ body {
   justify-content: space-between;
   gap: var(--space-5);
   padding: var(--space-5) var(--space-4);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  font-family: var(--font-main);
   font-size: var(--type-body);
   line-height: var(--line-body);
   color: var(--text);
