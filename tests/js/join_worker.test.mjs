@@ -133,6 +133,8 @@ test("landing and onboarding pages render generated nougen-core styles", async (
   const html = await resp.text();
   assert.match(html, /class="join-action"/);
   assert.match(html, /--accent:\s*#e8b86d/);
+  assert.match(html, /--bg:\s*#0A0A0A/);
+  assert.match(html, /grid-template-columns:\s*repeat\(3,\s*1fr\)/);
   assert.match(html, /:focus-visible/);
   assert.match(html, /prefers-reduced-motion/);
 });
