@@ -106,10 +106,11 @@ function BatteryTrend({ samples }: { samples: Sample[] }) {
 
   const min = Math.min(...points.map((point) => point.charge));
   const max = Math.max(...points.map((point) => point.charge));
-  const span = Math.max(max - min, 1);
+  const span = max - min;
   const polyline = points.map((point, index) => {
     const x = (index / (points.length - 1)) * 100;
-    const y = 92 - ((point.charge - min) / span) * 76;
+    // Flat line: plot at its absolute level instead of pinning it to the floor.
+    const y = span > 0 ? 92 - ((point.charge - min) / span) * 76 : 92 - (point.charge / 100) * 76;
     return `${x},${y}`;
   }).join(' ');
 
@@ -280,7 +281,7 @@ export default function BatteryReader({ readBattery, isDesktop }: { readBattery:
           {healthTrend ? <>
             <div className="battery-forecast-metrics">
               <div><span>Observed health trend</span><strong>{healthTrend.healthPerMonth.toFixed(2)} points / month</strong></div>
-              <div><span>Modeled time to 80%</span><strong>{healthTrend.daysTo80 < 3650 ? `${Math.round(healthTrend.daysTo80 / 30.4)} months` : '10+ years'}</strong></div>
+              <div><span>Modeled time to 80%</span><strong>{healthTrend.daysTo80 <= 0 ? 'Already below 80%' : healthTrend.daysTo80 < 3650 ? `${Math.round(healthTrend.daysTo80 / 30.4)} months` : '10+ years'}</strong></div>
             </div>
             <p className="battery-panel-footnote">Robust trend from {healthTrend.points} local daily readings across {Math.round(healthTrend.spanDays)} days. Based on this device’s reported capacity history; it is a straight-line estimate, not a cell-test or LLM prediction.</p>
           </> : <>

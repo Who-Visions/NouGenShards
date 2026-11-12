@@ -21,12 +21,35 @@ struct BatterySnapshot {
   observed_at: String,
 }
 
+fn finite(value: f64) -> Option<f64> {
+  value.is_finite().then_some(value)
+}
+
+fn now_secs() -> String {
+  SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs().to_string()
+}
+
+/// No battery subsystem (desktop, VM, container) is a normal answer, not an error.
+fn no_battery() -> BatterySnapshot {
+  BatterySnapshot {
+    present: false, charge_percent: None, health_percent: None, energy_wh: None,
+    full_capacity_wh: None, design_capacity_wh: None, discharge_watts: None,
+    time_to_empty_minutes: None, cycle_count: None,
+    state: "Unavailable".to_string(), observed_at: now_secs(),
+  }
+}
+
+/// Runs off the UI thread: ACPI/IOKit/sysfs queries can block.
 #[tauri::command]
-fn read_battery() -> Result<BatterySnapshot, String> {
-  let manager = battery::Manager::new()
-    .map_err(|_| "The operating system did not provide battery telemetry.".to_string())?;
-  let batteries = manager.batteries()
-    .map_err(|_| "The operating system could not enumerate battery devices.".to_string())?;
+async fn read_battery() -> Result<BatterySnapshot, String> {
+  tauri::async_runtime::spawn_blocking(collect_battery)
+    .await
+    .map_err(|_| "The battery reader stopped unexpectedly.".to_string())?
+}
+
+fn collect_battery() -> Result<BatterySnapshot, String> {
+  let Ok(manager) = battery::Manager::new() else { return Ok(no_battery()) };
+  let Ok(batteries) = manager.batteries() else { return Ok(no_battery()) };
 
   let mut count = 0usize;
   let mut energy_wh = 0.0;
@@ -39,10 +62,17 @@ fn read_battery() -> Result<BatterySnapshot, String> {
   let mut cycle_count = 0u32;
   let mut has_cycle_count = false;
   let mut states = Vec::new();
+  let mut os_time_to_empty: Option<f64> = None;
 
   for battery in batteries {
-    let battery = battery.map_err(|_| "A battery device could not be read.".to_string())?;
+    let Ok(battery) = battery else { continue };
     count += 1;
+    if let Some(t) = battery.time_to_empty() {
+      let minutes = f64::from(t.get::<battery::units::time::minute>());
+      if minutes.is_finite() && minutes > 0.0 {
+        os_time_to_empty = Some(os_time_to_empty.unwrap_or(0.0).max(minutes));
+      }
+    }
     energy_wh += f64::from(battery.energy().get::<watt_hour>());
     let full_wh = f64::from(battery.energy_full().get::<watt_hour>());
     let design_wh = f64::from(battery.energy_full_design().get::<watt_hour>());
@@ -74,18 +104,18 @@ fn read_battery() -> Result<BatterySnapshot, String> {
   let time_to_empty_minutes = discharge_watts
     .filter(|rate| *rate > 0.05)
     .map(|rate| (energy_wh / rate * 60.0).max(0.0));
-  let observed_at = SystemTime::now().duration_since(UNIX_EPOCH)
-    .unwrap_or_default().as_secs().to_string();
+  let time_to_empty_minutes = os_time_to_empty.or(time_to_empty_minutes).and_then(finite);
+  let observed_at = now_secs();
 
   Ok(BatterySnapshot {
     present,
-    charge_percent,
+    charge_percent: charge_percent.and_then(finite),
     health_percent: (health_weight > 0.0 && design_capacity_wh > 0.0)
-      .then(|| (health_weight / design_capacity_wh).clamp(0.0, 100.0)),
-    energy_wh: present.then_some(energy_wh),
+      .then(|| (health_weight / design_capacity_wh).clamp(0.0, 100.0)).and_then(finite),
+    energy_wh: present.then_some(energy_wh).and_then(finite),
     full_capacity_wh: (full_capacity_wh > 0.0).then_some(full_capacity_wh),
     design_capacity_wh: (design_capacity_wh > 0.0).then_some(design_capacity_wh),
-    discharge_watts,
+    discharge_watts: discharge_watts.and_then(finite),
     time_to_empty_minutes,
     cycle_count: has_cycle_count.then_some(cycle_count),
     state: if states.is_empty() { "Unavailable".to_string() } else { states.join(" + ") },
