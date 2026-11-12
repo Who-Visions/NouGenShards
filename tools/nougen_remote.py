@@ -35,53 +35,14 @@ if sys.platform == "win32":
 PORT = int(os.environ.get("NOUGEN_REMOTE_PORT", 8767))
 HOST = os.environ.get("NOUGEN_REMOTE_HOST", "0.0.0.0")
 TOKEN = os.environ.get("NOUGEN_REMOTE_TOKEN", "").strip()
-REMOTE_ROOT = os.path.realpath(os.environ.get("NOUGEN_REMOTE_ROOT") or str(Path.home()))
-WORKING_DIR = os.environ.get("NOUGEN_WORKING_DIR", str(Path.home()))
-
-# Google Sign-In: the app gets a signed Google ID token directly from
-# Android's own Credential Manager (real "Sign in with Google" - the native
-# account picker, no redirect broker, no PKCE dance). We verify it the
-# simple way Google itself provides: ask tokeninfo whether it's genuine,
-# check the audience is our client, check the email against our allowlist.
 GOOGLE_CLIENT_ID = os.environ.get("NOUGEN_GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_ALLOWED_EMAILS = {
-    e.strip().lower() for e in os.environ.get("NOUGEN_GOOGLE_ALLOWED_EMAILS", "").split(",") if e.strip()
+    e.strip().lower()
+    for e in os.environ.get("NOUGEN_GOOGLE_ALLOWED_EMAILS", "").split(",")
+    if e.strip()
 }
-_google_token_cache: dict[str, float] = {}  # id_token -> expiry epoch
-_GOOGLE_TOKEN_CACHE_TTL = 300  # seconds; re-check with Google after this
-
-
-def _google_id_token_valid(token: str) -> bool:
-    """Verify a Google ID token the app got from Credential Manager.
-
-    Cached for _GOOGLE_TOKEN_CACHE_TTL so every API call doesn't round-trip
-    to Google. tokeninfo is Google's own free verification endpoint.
-    """
-    if not token or not GOOGLE_CLIENT_ID or not GOOGLE_ALLOWED_EMAILS:
-        return False
-    now = time.time()
-    exp = _google_token_cache.get(token)
-    if exp and exp > now:
-        return True
-    try:
-        req = urllib.request.Request(
-            "https://oauth2.googleapis.com/tokeninfo?id_token=" + urllib.parse.quote(token),
-            method="GET",
-        )
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            if resp.status != 200:
-                return False
-            info = json.loads(resp.read().decode("utf-8"))
-        if info.get("aud") != GOOGLE_CLIENT_ID:
-            return False
-        if info.get("email_verified") != "true":
-            return False
-        if info.get("email", "").lower() not in GOOGLE_ALLOWED_EMAILS:
-            return False
-        _google_token_cache[token] = now + _GOOGLE_TOKEN_CACHE_TTL
-        return True
-    except Exception:
-        return False
+REMOTE_ROOT = os.path.realpath(os.environ.get("NOUGEN_REMOTE_ROOT") or str(Path.home()))
+WORKING_DIR = os.environ.get("NOUGEN_WORKING_DIR", str(Path.home()))
 
 SESSION_HISTORY: list[dict] = []
 MAX_HISTORY_TURNS = 8
@@ -313,6 +274,150 @@ def get_crd_host_status() -> dict:
             "trackpad_mode": ["1-finger swipe: move cursor (dx,dy)", "1-finger tap: left-click", "2-finger tap: right-click", "3-finger tap: middle-click", "touch-hold-drag: select/drag"]
         }
     }
+
+
+def _session_msg_max() -> int:
+    """Longest message the phone may push into a session (env-tunable)."""
+    try:
+        return max(1, int(os.environ.get("NOUGEN_REMOTE_SESSION_MSG_MAX", "4000")))
+    except ValueError:
+        return 4000
+
+
+def list_agent_sessions() -> dict:
+    """Claude Code sessions registered on this machine, live ones first.
+
+    The phone's Sessions screen: which agent sessions exist here, which are
+    reachable right now, and an id to address one. Socket paths and their
+    auth tokens stay on this machine (AgentPinger.list_sessions strips them)."""
+    try:
+        from nougen_shards.nougenmsg import AgentPinger
+        sessions = AgentPinger.list_sessions()
+    except Exception as exc:  # registry unreadable: say so, never a 500
+        return {"ok": False, "node": platform.node(), "sessions": [], "error": str(exc)[:200]}
+    return {"ok": True, "node": platform.node(), "sessions": sessions,
+            "live": sum(1 for s in sessions if s.get("live"))}
+
+
+def send_to_agent_session(session_id: str, text: str) -> dict:
+    """Deliver one phone message into one live Claude Code session.
+
+    Uses NouGenMsg's own transport (auth line + user line over the session's
+    messaging pipe), addressed to exactly one registered, live session. The
+    wire has no ack, so "delivered" means the pipe accepted the bytes; the
+    session's own transcript is the proof it was read."""
+    session_id = str(session_id or "").strip()
+    text = str(text or "").strip()
+    if not session_id or not text:
+        return {"ok": False, "error": "session_id and text are required", "status": 400}
+    limit = _session_msg_max()
+    if len(text) > limit:
+        return {"ok": False, "error": f"message over {limit} characters", "status": 413}
+    try:
+        from nougen_shards.nougenmsg import AgentPinger
+        known = {s["session_id"]: s for s in AgentPinger.list_sessions()}
+        target = known.get(session_id)
+        if target is None:
+            return {"ok": False, "error": "session not registered on this machine", "status": 404}
+        if not target.get("live"):
+            return {"ok": False, "error": "session is not running", "status": 409}
+        res = AgentPinger.ping_claude(
+            f"[from phone] {text}", origin={"via": "nougenai-android"}, target_session=session_id,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:200], "status": 502}
+    delivered = len(res.get("delivered") or [])
+    return {
+        "ok": delivered > 0,
+        "delivered": delivered,
+        "session_id": session_id,
+        "project": target.get("project", ""),
+        "error": "" if delivered else (res.get("reason") or "pipe did not accept the message"),
+        **({} if delivered else {"status": 502}),
+    }
+
+
+def _claude_projects_dir() -> str:
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    return os.path.join(base, "projects")
+
+
+def _tail_lines(path: str, max_bytes: int) -> list:
+    size = os.path.getsize(path)
+    with open(path, "rb") as fh:
+        fh.seek(max(0, size - max_bytes))
+        chunk = fh.read().decode("utf-8", errors="replace").splitlines()
+    return chunk[1:] if size > max_bytes else chunk  # first line may be cut mid-record
+
+
+def session_tail(session_id: str, limit: int = 12) -> dict:
+    """Recent activity of one Claude Code session, for the phone's live view.
+
+    Reads only the end of the session transcript (``<projects>/<proj>/<id>.jsonl``),
+    keeps user/assistant text and tool calls, newest last, each trimmed and passed
+    through the vault redactor so a secret in a transcript never reaches the phone.
+    The id must be a registered session (same check as sending)."""
+    session_id = str(session_id or "").strip()
+    # The id becomes part of a file path: only plain session-id characters pass.
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9-]{4,64}", session_id):
+        return {"ok": False, "error": "bad session id", "status": 400}
+    try:
+        from nougen_shards.nougenmsg import AgentPinger
+        if session_id not in {s["session_id"] for s in AgentPinger.list_sessions()}:
+            return {"ok": False, "error": "session not registered on this machine", "status": 404}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:200], "status": 502}
+    # Find the transcript by listing what exists and comparing names, so the path
+    # we open always comes from the filesystem, never from the request.
+    matches = []
+    root = _claude_projects_dir()
+    if os.path.isdir(root):
+        for proj in os.scandir(root):
+            if not proj.is_dir():
+                continue
+            for entry in os.scandir(proj.path):
+                if entry.is_file() and entry.name.endswith(".jsonl") and entry.name[:-6] == session_id:
+                    matches.append(entry.path)
+    if not matches:
+        return {"ok": False, "error": "no transcript for this session", "status": 404}
+    try:
+        from nougen_shards.brain_scan.redaction import redact_content
+    except Exception:
+        # Fail closed: without the redactor, transcript text never leaves the PC.
+        return {"ok": False, "error": "redactor unavailable; refusing to send unredacted transcript", "status": 503}
+    limit = max(1, min(int(limit or 12), 40))
+    max_bytes = int(os.environ.get("NOUGEN_REMOTE_TAIL_BYTES", "600000"))
+    events = []
+    for line in reversed(_tail_lines(matches[0], max_bytes)):
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("type") not in ("user", "assistant"):
+            continue
+        msg = rec.get("message") or {}
+        content = msg.get("content")
+        blocks = content if isinstance(content, list) else [{"type": "text", "text": str(content or "")}]
+        for b in reversed(blocks):
+            kind = b.get("type")
+            if kind == "text" and str(b.get("text", "")).strip():
+                text = str(b["text"]).strip()
+                if rec["type"] == "user" and text.startswith("<"):
+                    continue  # harness/system wrappers, not the person
+                events.append({"role": rec["type"], "kind": "text", "ts": rec.get("timestamp"),
+                               "text": redact_content(text)[:400]})
+            elif kind == "tool_use":
+                inp = b.get("input") or {}
+                hint = inp.get("description") or inp.get("command") or inp.get("file_path") or inp.get("query") or ""
+                events.append({"role": "assistant", "kind": "tool", "ts": rec.get("timestamp"),
+                               "tool": str(b.get("name", "")), "text": redact_content(str(hint))[:160]})
+            if len(events) >= limit:
+                break
+        if len(events) >= limit:
+            break
+    events.reverse()
+    return {"ok": True, "session_id": session_id, "events": events}
 
 
 def capture_screen_frame(max_width: int = 960, quality: int = 60) -> dict:
@@ -1216,18 +1321,124 @@ HTML_PWA = """<!DOCTYPE html>
 </html>
 """
 
+_google_token_cache: dict[str, float] = {}  # sha256(id_token) -> expiry epoch
+_GOOGLE_TOKEN_CACHE_TTL = 300  # seconds; capped by token exp
+
+
+def _google_id_token_valid(id_token: str) -> bool:
+    # Mirrors nougenai-agent's worker.js verifyGoogleIdToken: the app's own
+    # Worker already verifies this same token before forwarding it here as
+    # the bearer, but this bridge is reachable on its own
+    # (droid.nougenai.com), so it has to verify independently rather than
+    # trust an unauthenticated caller.
+    if not id_token or not GOOGLE_CLIENT_ID or not GOOGLE_ALLOWED_EMAILS:
+        return False
+    now = time.time()
+    # Prune expired cache entries
+    for k, exp_ts in list(_google_token_cache.items()):
+        if exp_ts <= now:
+            _google_token_cache.pop(k, None)
+    key = hashlib.sha256(id_token.encode("utf-8")).hexdigest()
+    cached_exp = _google_token_cache.get(key)
+    if cached_exp and cached_exp > now:
+        return True
+    try:
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/tokeninfo",
+            data=urllib.parse.urlencode({"id_token": id_token}).encode("utf-8"),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            info = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return False
+    if info.get("iss") not in ("accounts.google.com", "https://accounts.google.com"):
+        return False
+    if info.get("aud") != GOOGLE_CLIENT_ID:
+        return False
+    if str(info.get("email_verified")).lower() != "true":
+        return False
+    try:
+        token_exp = float(info.get("exp", 0))
+    except (ValueError, TypeError):
+        return False
+    if token_exp <= now:
+        return False
+    if info.get("email", "").lower() not in GOOGLE_ALLOWED_EMAILS:
+        return False
+    _google_token_cache[key] = min(now + _GOOGLE_TOKEN_CACHE_TTL, token_exp)
+    return True
+
+
+SESSION_SECRET = os.environ.get("NOUGEN_SESSION_SECRET", "").strip()
+
+
+def _b64url_decode(s: str) -> bytes:
+    import base64
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def _session_token_valid(token: str) -> bool:
+    """App session minted by nougenai-agent's /session (same HMAC-SHA256 blob
+    shape, same shared secret), so a multi-account phone doesn't get Google's
+    account picker on every launch. Verified locally - no tokeninfo hop.
+    Fails closed when NOUGEN_SESSION_SECRET is unset."""
+    import base64
+    import hashlib
+    import time
+    if not SESSION_SECRET or not token:
+        return False
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != "v1":
+        return False
+    expected = base64.urlsafe_b64encode(
+        hmac.new(SESSION_SECRET.encode(), ("v1." + parts[1]).encode(), hashlib.sha256).digest()
+    ).rstrip(b"=").decode()
+    if not hmac.compare_digest(expected, parts[2]):
+        return False
+    try:
+        payload = json.loads(_b64url_decode(parts[1]).decode("utf-8"))
+    except Exception:
+        return False
+    if payload.get("typ") != "session":
+        return False
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)) or exp < time.time():
+        return False
+    return str(payload.get("eml", "")).lower() in GOOGLE_ALLOWED_EMAILS
+
+
+def _bearer_authorized(given: str) -> bool:
+    """One auth decision for every endpoint: static remote token, app session, or Google ID token."""
+    if not given:
+        return False
+    if bool(TOKEN) and hmac.compare_digest(given.encode(), TOKEN.encode()):
+        return True
+    if _session_token_valid(given):
+        return True
+    return _google_id_token_valid(given)
+
+
 class RemoteHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
     def _send_json(self, data: dict, status: int = 200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError) as exc:
+            # The caller gave up and closed the socket before we finished
+            # writing - normal under the Worker's own tool-bridge timeout
+            # (8s/15s retry), not a server fault. A full traceback here is
+            # log noise, not a finding; one line is the whole story.
+            print(f"[nougen_remote] client disconnected mid-response: {exc}")
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -1239,26 +1450,16 @@ class RemoteHandler(BaseHTTPRequestHandler):
     def _get_authorized(self, parsed) -> bool:
         query_token = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
         header_token = self.headers.get("Authorization", "").replace("Bearer ", "", 1)
-        given = query_token or header_token
-        if not given:
-            return False
-        if TOKEN and hmac.compare_digest(given.encode(), TOKEN.encode()):
-            return True
-        # A Google ID token is accepted only in the Authorization header. Query
-        # strings end up in access logs and browser history, and an ID token is
-        # a bearer credential for the whole session.
-        if header_token and header_token == given:
-            return _google_id_token_valid(header_token)
-        return False
+        if query_token:
+            return bool(TOKEN) and hmac.compare_digest(query_token.encode(), TOKEN.encode())
+        return _bearer_authorized(header_token)
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        # Only the page shell and liveness are public; everything else is
-        # private state.
-        public_paths = ("/", "/index.html", "/api/v1/health")
-        if path not in public_paths and not self._get_authorized(parsed):
+        # Only the page shell and liveness are public; everything else is private state.
+        if path not in ("/", "/index.html", "/api/v1/health") and not self._get_authorized(parsed):
             self._send_json({"error": "Unauthorized"}, 401)
             return
 
@@ -1280,6 +1481,16 @@ class RemoteHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "node": platform.node(), "port": PORT, "design_choices": len(DESIGN_CHOICES_100)})
             return
 
+        if path == "/api/v1/tools":
+            # Single source of truth for the Worker's function-calling schema -
+            # kaedra_tools.TOOLS is already OpenAI-function-call shaped, so the
+            # Worker fetches this live instead of hand-duplicating a second
+            # copy of 19+ tool schemas in JS that would drift the moment one
+            # side changes without the other.
+            from nougen_shards import kaedra_tools
+            self._send_json({"tools": kaedra_tools.TOOLS})
+            return
+
         if path == "/api/v1/design-choices":
             self._send_json({"ok": True, "count": len(DESIGN_CHOICES_100), "choices": DESIGN_CHOICES_100})
             return
@@ -1296,6 +1507,17 @@ class RemoteHandler(BaseHTTPRequestHandler):
             self._send_json(capture_screen_frame())
             return
 
+        if path == "/api/v1/sessions":
+            self._send_json(list_agent_sessions())
+            return
+
+        if path.startswith("/api/v1/sessions/") and path.endswith("/tail"):
+            sid = path[len("/api/v1/sessions/"):-len("/tail")]
+            q = urllib.parse.parse_qs(parsed.query)
+            res = session_tail(sid, int((q.get("n") or ["12"])[0] or 12))
+            self._send_json(res, 200 if res.get("ok") else res.pop("status", 400))
+            return
+
         self._send_json({"error": "Not found"}, 404)
 
     def do_POST(self):
@@ -1308,8 +1530,18 @@ class RemoteHandler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
 
-        token = payload.get("token") or self.headers.get("Authorization", "").replace("Bearer ", "")
-        if token != TOKEN:
+        # This used to be a standalone check against only the static TOKEN,
+        # never the Google ID token path do_GET's _get_authorized already
+        # had - so every POST endpoint (chat, terminal, inject_agy, and the
+        # tools/* bridge) silently rejected a signed-in Google user even
+        # after sign-in itself worked. Unify on the one auth check.
+        body_token = payload.get("token")
+        header_token = self.headers.get("Authorization", "").replace("Bearer ", "", 1)
+        if body_token:
+            authorized = bool(TOKEN) and hmac.compare_digest(str(body_token).encode(), TOKEN.encode())
+        else:
+            authorized = _bearer_authorized(header_token)
+        if not authorized:
             self._send_json({"error": "Unauthorized", "ok": False}, 401)
             return
 
@@ -1356,6 +1588,11 @@ class RemoteHandler(BaseHTTPRequestHandler):
             self._send_json(dispatch_screen_input(payload))
             return
 
+        if path == "/api/v1/sessions/send":
+            res = send_to_agent_session(payload.get("session_id", ""), payload.get("text", ""))
+            self._send_json(res, 200 if res.get("ok") else res.pop("status", 400))
+            return
+
         if path == "/api/v1/launch":
             target = payload.get("target", "")
             if not target:
@@ -1374,6 +1611,21 @@ class RemoteHandler(BaseHTTPRequestHandler):
             inject_to_antigravity(prompt, sender="iPhone")
             reply = query_solai_chat(prompt, model=os.environ.get("NOUGEN_REMOTE_CHAT_MODEL", "dav1d:e2b"))
             self._send_json({"ok": True, "reply": reply})
+            return
+
+        if path.startswith("/api/v1/tools/"):
+            # HTTP bridge so edge-side callers (the nougenai-agent Cloudflare
+            # Worker, which cannot reach the local vault directly) can run
+            # Kaedra's existing read-mostly tool loop over this already-
+            # authenticated, already-tunneled connection, instead of standing
+            # up a second auth system against shards.nougenai.com.
+            tool_name = path[len("/api/v1/tools/"):]
+            from nougen_shards import kaedra_tools
+            if tool_name not in kaedra_tools.TOOL_NAMES:
+                self._send_json({"error": "unknown tool"}, 404)
+                return
+            result = kaedra_tools.dispatch(tool_name, payload)
+            self._send_json(result)
             return
 
         self._send_json({"error": "Endpoint not found"}, 404)

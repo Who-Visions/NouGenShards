@@ -51,6 +51,22 @@ _BUILTIN: list[dict[str, Any]] = [
         "notes": ["Free models end in :free and return 429 under load."],
     },
     {
+        "provider": "NVIDIA NIM (build.nvidia.com)",
+        "example": {"path": "/models"},
+        "prefixes": ["NVIDIA", "NGC_", "NVAPI"],
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "auth": BEARER,
+        "docs": ["https://docs.api.nvidia.com/nim/reference/llm-apis",
+                 "https://build.nvidia.com/models"],
+        "notes": [
+            "OpenAI-compatible: POST /chat/completions with model, messages, max_tokens.",
+            "Keys start with nvapi-. No key gives 401.",
+            "/models lists models this account cannot call; those return 404 "
+            "'Function not found for account'. Retry with another model.",
+            "Retired models return 410 Gone; pick a current id from /models.",
+        ],
+    },
+    {
         "provider": "Hugging Face",
         "prefixes": ["HF_", "HF-", "HUGGINGFACE"],
         "base_url": "https://router.huggingface.co/v1",

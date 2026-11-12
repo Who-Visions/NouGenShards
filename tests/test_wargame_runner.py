@@ -272,7 +272,10 @@ def test_cli_wargame_run_and_replay(tmp_path, capsys):
                                    "--no-write"]))
     text = capsys.readouterr().out
     assert "FAIL" in text and "repeating_task_must_have_future_run" in text
-    assert not list((tmp_path / "receipts").glob("*0001*"))
+    # Match the scenario-id field only: receipt names embed a UTC stamp, and
+    # "*0001*" also matched any receipt written at hh:00:01 (CI, 2026-11-09
+    # 00:00:01Z, receipt WG-2026-0002-20261109T000001Z-s9.json).
+    assert not list((tmp_path / "receipts").glob("WG-*-0001-*"))
 
     cmd_wargame(argparse.Namespace(wargame_action=None, json=False))
     assert "false-green-scheduler" in capsys.readouterr().out

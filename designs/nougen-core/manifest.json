@@ -51,10 +51,15 @@
       "kind": "inferred",
       "note": "Read as an alphaXiv-generated report, not full text. Reusable design logics retrieved and followed for question synthesis; evaluated on LLM reasoning data, not interface design. Candidate only.",
       "source": "https://arxiv.org/abs/2508.12726"
+    },
+    {
+      "kind": "inferred",
+      "note": "Console shell, scope, routing and gating invariants adapted from GM-supplied briefs; vendor console behavior unverified.",
+      "source": "designs/saas-console-morph.md"
     }
   ],
   "schemaVersion": "od-design-system-project/v1",
-  "sourceDigest": "f12d8aea5c1354aaa9c0168b0f89d8ce8eeb6f11733cded11aabee9490f7d9b4",
+  "sourceDigest": "8813e6b637b23d989b98fb2819409d91901fe4bd3f24c69d5a235c1ce340d453",
   "surfaces": {
     "ground": "--bg",
     "ink": "--text"
@@ -63,5 +68,5 @@
     "dark",
     "light"
   ],
-  "version": "0.5.0"
+  "version": "0.6.0"
 }

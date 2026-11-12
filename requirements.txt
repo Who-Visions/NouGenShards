@@ -6,7 +6,7 @@ annotated-doc==0.0.5
     #   typer
 annotated-types==0.8.0
     # via pydantic
-anyio==4.15.1
+anyio==4.16.0
     # via
     #   gradio
     #   httpx
@@ -155,13 +155,13 @@ numpy==2.5.0 ; python_full_version >= '3.12'
     #   nougen-shards (pyproject.toml)
     #   gradio
     #   pandas
-oauthlib==4.0.0
+oauthlib==4.0.1
     # via requests-oauthlib
 ollama==0.6.2
     # via nougen-shards (pyproject.toml)
 openai==3.23.0
     # via nougen-shards (pyproject.toml)
-opentelemetry-api==1.44.0
+opentelemetry-api==1.45.2
     # via
     #   google-api-core
     #   mcp
@@ -187,9 +187,9 @@ pyasn1==0.6.5
     # via pyasn1-modules
 pyasn1-modules==0.4.2
     # via google-auth
-pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
+pycparser==3.12 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
     # via cffi
-pydantic==2.14.2
+pydantic==2.14.3
     # via
     #   nougen-shards (pyproject.toml)
     #   fastapi
@@ -198,7 +198,7 @@ pydantic==2.14.2
     #   mcp-types
     #   ollama
     #   openai
-pydantic-core==2.50.2
+pydantic-core==2.50.4
     # via pydantic
 pydub==0.25.1
     # via gradio
@@ -252,7 +252,7 @@ sniffio==1.3.1
     # via openai
 sqlalchemy==2.1.6
     # via nougen-shards (pyproject.toml)
-sse-starlette==3.4.11
+sse-starlette==3.6.0
     # via mcp
 starlette==1.7.0
     # via
