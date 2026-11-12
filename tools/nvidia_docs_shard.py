@@ -25,7 +25,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
-os.environ.setdefault("NOUGEN_VAULT_DIR", str(Path.home() / ".nougen" / "shards"))
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 from nougen_shards.core import capture  # noqa: E402
@@ -100,6 +99,12 @@ def main(argv=None) -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     state_f = OUT / "_state.json"
     state = json.loads(state_f.read_text(encoding="utf-8")) if state_f.exists() else {}
+    manifest_f = OUT / "_manifest.json"
+    prev_manifest = json.loads(manifest_f.read_text(encoding="utf-8")) if manifest_f.exists() else []
+    by_path: dict[str, list[dict]] = {}
+    for entry in prev_manifest if isinstance(prev_manifest, list) else []:
+        if isinstance(entry, dict) and entry.get("path"):
+            by_path.setdefault(entry["path"], []).append(entry)
 
     seeds = [p for p in sitemap_paths() if p != "/" and (not a.section or p.startswith(f"/{a.section}/"))]
     queue, seen = deque(seeds), set(seeds)
@@ -118,8 +123,7 @@ def main(argv=None) -> int:
                     seen.add(n); queue.append(n)
         print(f"fetched {len(pages)}  queued {len(queue)}", flush=True)
 
-    written = skipped = 0
-    manifest = []
+    written = skipped = failed = 0
     for path, md in sorted(pages.items()):
         f = OUT / (path.strip("/") + ".md")
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -131,19 +135,36 @@ def main(argv=None) -> int:
         title = title_of(md, path)
         section = path.strip("/").split("/")[0]
         parts = split(md)
+        page_entries = []
+        page_ok = True
         for k, body in enumerate(parts, 1):
             head = f"SOURCE: {BASE}{path}\nSECTION: {section}\n" + (f"PART: {k}/{len(parts)}\n" if len(parts) > 1 else "") + "\n"
-            r = capture("doc-page", f"NVIDIA API docs: {title}" + (f" (part {k}/{len(parts)})" if len(parts) > 1 else ""),
-                        head + body, tags=["nvidia-api-docs", section], domain_key=DOMAIN, source_uri=f"{BASE}{path}")
-            written += bool(isinstance(r, dict) and r.get("reason") == "written")
-            manifest.append({"path": path, "part": k, "shard": r.get("shard_id") if isinstance(r, dict) else None,
-                             "db": r.get("db_index") if isinstance(r, dict) else None})
-        state[path] = h
+            try:
+                r = capture("doc-page", f"NVIDIA API docs: {title}" + (f" (part {k}/{len(parts)})" if len(parts) > 1 else ""),
+                            head + body, tags=["nvidia-api-docs", section], domain_key=DOMAIN, source_uri=f"{BASE}{path}")
+            except Exception as exc:
+                print(f"[!] {path} part {k}: {exc}", file=sys.stderr)
+                page_ok = False
+                break
+            reason = r.get("reason") if isinstance(r, dict) else None
+            if reason == "written":
+                written += 1
+            elif reason != "duplicate" and not (isinstance(r, dict) and r.get("shard_id")):
+                page_ok = False
+                break
+            page_entries.append({"path": path, "part": k, "shard": r.get("shard_id") if isinstance(r, dict) else None,
+                                 "db": r.get("db_index") if isinstance(r, dict) else None})
+        if page_ok:
+            state[path] = h
+            by_path[path] = page_entries
+        else:
+            failed += 1
+    manifest = [entry for p in sorted(by_path) for entry in by_path[p]]
     state_f.write_text(json.dumps(state, indent=1), encoding="utf-8")
-    (OUT / "_manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+    manifest_f.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     print(json.dumps({"pages": len(pages), "sitemap_seeds": len(seeds), "found_by_links": len(pages) - len([p for p in pages if p in set(seeds)]),
-                      "shards_written": written, "unchanged_skipped": skipped, "mirror": str(OUT)}))
-    return 0
+                      "shards_written": written, "unchanged_skipped": skipped, "failed_pages": failed, "mirror": str(OUT)}))
+    return 0 if failed == 0 else 2
 
 
 if __name__ == "__main__":
