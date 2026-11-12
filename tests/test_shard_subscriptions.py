@@ -1,6 +1,5 @@
 """Proactive surfacing: a subscription returns only NEW matching shards, once."""
 import sqlite3
-import sys
 
 import pytest
 
