@@ -131,3 +131,36 @@ test("legacy KV port reservations are imported before any newcomer is assigned a
     assert.notEqual(r.port, 4446, "legacy owner keeps 4446");
   } finally { restore(); }
 });
+
+test("tunnel created but its id never recorded: retry recovers it instead of creating a second", async () => {
+  const calls = [];
+  const kv = kvStore();
+  const { env, restore } = cfStubEnv(kv, calls);
+  const realFetch = globalThis.fetch;
+  try {
+    // First attempt: the POST succeeds, then the coordinator's tunnel-set "fails".
+    const stub = env.COORD.get();
+    const realGet = env.COORD.get;
+    let failSet = true;
+    env.COORD.get = () => ({ fetch: async (u, init) => {
+      const body = JSON.parse(init.body);
+      if (body.op === "tunnel-set" && failSet) { failSet = false; throw new Error("coordinator write failed"); }
+      return stub.fetch(u, init);
+    } });
+    const created = [];
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      if (/cfd_tunnel$/.test(u.split("?")[0]) && init.method === "POST") {
+        const id = "tid-" + (created.length + 1);
+        created.push({ id, name: JSON.parse(init.body).name, created_at: new Date().toISOString() });
+        return new Response(JSON.stringify({ success: true, result: { id } }));
+      }
+      if (/cfd_tunnel\?/.test(u)) return new Response(JSON.stringify({ success: true, result: created }));
+      return realFetch(url, init);
+    };
+    await assert.rejects(provision(env, "four@x.org"));
+    env.COORD.get = realGet.bind(env.COORD) && (() => stub);
+    await provision(env, "four@x.org");
+    assert.equal(created.length, 1, "exactly one tunnel was ever created");
+  } finally { globalThis.fetch = realFetch; restore(); }
+});

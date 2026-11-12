@@ -6,6 +6,7 @@ export function fakeCoord() {
   const m = new Map();
   const storage = {
     get: async (k) => m.get(k),
+    delete: async (k) => { m.delete(k); },
     put: async (k, v) => {
       if (typeof k === "object") { for (const [kk, vv] of Object.entries(k)) m.set(kk, vv); }
       else m.set(k, v);

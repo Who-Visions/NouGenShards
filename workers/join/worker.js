@@ -212,7 +212,19 @@ export async function provision(env, email) {
       t = null;
     }
   }
+  // A creation that succeeded but whose id never reached the coordinator: the
+  // coordinator holds a begin-marker (name + time) written BEFORE the POST, so the
+  // lookup is by that exact name AND created after that moment, never by name alone.
   if (!t) {
+    const begun = await coord(env, { op: "tunnel-begun", email });
+    if (begun && begun.name === name) {
+      const list = (await cf(env, "GET", `/accounts/${acct}/cfd_tunnel?name=${encodeURIComponent(name)}&is_deleted=false`)) || [];
+      t = list.find((x) => x.name === name && Date.parse(x.created_at || 0) >= begun.at - 60000) || null;
+      if (t) await coord(env, { op: "tunnel-set", email, id: t.id });
+    }
+  }
+  if (!t) {
+    await coord(env, { op: "tunnel-begin", email, name, at: Date.now() });
     t = await cf(env, "POST", `/accounts/${acct}/cfd_tunnel`, { name, config_src: "cloudflare", tunnel_secret: btoa(rand(32)) });
     await coord(env, { op: "tunnel-set", email, id: t.id });
   }
@@ -286,7 +298,13 @@ export class JoinCoordinator {
     if (b.op === "seeded") return { seeded: Boolean(await s.get("seeded")) };
     if (b.op === "mark-seeded") { await s.put("seeded", true); return { seeded: true }; }
     if (b.op === "tunnel-get") return { id: (await s.get("tunnel:" + b.email)) || null };
-    if (b.op === "tunnel-set") { await s.put("tunnel:" + b.email, b.id); return { id: b.id }; }
+    if (b.op === "tunnel-set") {
+      await s.put("tunnel:" + b.email, b.id);
+      await s.delete("tbegin:" + b.email);
+      return { id: b.id };
+    }
+    if (b.op === "tunnel-begin") { await s.put("tbegin:" + b.email, { name: b.name, at: b.at }); return { id: null }; }
+    if (b.op === "tunnel-begun") return { begun: (await s.get("tbegin:" + b.email)) || null };
     return { error: "unknown op" };
   }
 }
@@ -297,6 +315,7 @@ async function coord(env, body) {
   const r = await stub.fetch("https://coord/op", { method: "POST", body: JSON.stringify(body) });
   const j = await r.json();
   if (j.error) throw new Error(j.error);
+  if (body.op === "tunnel-begun") return j.begun;
   return body.op.startsWith("tunnel") ? j.id : j;
 }
 
