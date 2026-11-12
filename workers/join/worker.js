@@ -23,6 +23,23 @@ const CF = "https://api.cloudflare.com/client/v4";
 const enc = new TextEncoder();
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// The supervisor keeps every account on a computer online (tools/nougen-supervisor).
+// Each file is pinned by SHA-256: setup refuses a download that does not match.
+export const SUPERVISOR = {
+  version: "1.3.1",
+  base: "https://github.com/Who-Visions/NouGenShards/releases/download/supervisor-v1.3.1/",
+  sha256: {
+    "windows-amd64.exe": "f145dbb6ee8b94abe3692c54dba4e485483f2909dc96399b05d22044ba84b485",
+    "windows-arm64.exe": "833a8e210b6577817258752a3893dcadc7cae24abde6ba9fecd3dd0d18975f12",
+    "darwin-arm64": "018cbe6b10ad63123af2e8802f7ba258659af9b8715a1b47024ad66810d38568",
+    "darwin-amd64": "5a729210d3c5324824052529487c82dcc77ad65f0aa405e624a7b9285e5a8da1",
+    "linux-amd64": "1c97553dcc40c7acb7fae33b22ed6258c34a855e9b2e157ab9b3b6b796bf6513",
+    "linux-arm64": "8c2406164f5bfafb64ec9674e6587f17369dd0935aa5e28492871a77a6c2f6b2",
+  },
+};
+// What the supervisor reads for one account. One line of JSON, so it can sit
+// inside a literal here-string or heredoc without any escaping rules applying.
+export const nodeJson = (t) => JSON.stringify({ id: String(t.id), port: Number(t.port), token: String(t.token), tunnel: String(t.tunnel || ""), url: String(t.url || "") });
 const psq = (s) => String(s).replace(/'/g, "''");
 const shq = (s) => String(s).replace(/'/g, "'\\''");
 const rand = (n) => { const b = crypto.getRandomValues(new Uint8Array(n)); return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
@@ -98,7 +115,27 @@ ${step(3, "Use it", "connect your AI to https://shards.nougenai.com/mcp with thi
 document.getElementById('hint').innerHTML='On Mac or Linux: open Terminal and run <code>sh ~/Downloads/setup-nougen.sh</code>';}</script>`);
 
 // ------------------------------------------------------------------ setup files
-export function setupCmd(t) {
+// Everything below becomes script text on someone's computer. Values are only
+// ever placed inside single-quoted literals, and the two that also name a
+// folder or a port are checked first, so nothing here can turn into code.
+const SAFE_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
+export function setupArgs(t) {
+  const id = String((t && t.id) || "");
+  const port = Number(t && t.port);
+  if (!SAFE_ID.test(id)) throw new Error("setup: the account id is not a safe folder name");
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("setup: the port is not usable");
+  return { ...t, id, port };
+}
+// Where a running supervisor answers. A build that reports "holds" leaves an
+// account alone while its folder carries an "updating" file, so setup can
+// replace one account without stopping supervision of the others.
+const SUP_STATUS = "http://127.0.0.1:47411/status";
+
+// Order matters in both scripts: (1) download and verify everything into
+// staging while the old install keeps running, (2) only then stop this
+// account and swap. A failed download or a fingerprint mismatch changes nothing.
+export function setupCmd(raw) {
+  const t = setupArgs(raw);
   return ["@echo off", `rem NouGen setup for ${t.id}. Private: contains this computer's keys.`,
     // The file path reaches PowerShell through an env var, never as source text: a
     // folder like O'Connor (or a crafted name) must not be able to break out.
@@ -110,34 +147,53 @@ export function setupCmd(t) {
     "$home_ = Join-Path $env:LOCALAPPDATA 'NouGen'",
     `$td = Join-Path $home_ '${psq(t.id)}'`, "New-Item -ItemType Directory -Force $td | Out-Null",
     "Write-Host 'Setting up NouGen on this computer. This takes a few minutes and needs nothing from you.'",
-    "$escTd = [regex]::Escape($td)",
-    "$procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath -match $escTd) -or ($_.CommandLine -and $_.CommandLine -match $escTd) })",
-    "$targetPids = @($procs | Select-Object -ExpandProperty ProcessId)",
-    "if ($targetPids.Count -gt 0) { $kids = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $targetPids -contains $_.ParentProcessId } | Select-Object -ExpandProperty ProcessId); foreach ($procId in ($kids + $targetPids | Select-Object -Unique)) { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 500 }",
-    "function Get-File($url, $out) { if (-not (Test-Path $out)) { Invoke-WebRequest -UseBasicParsing $url -OutFile $out } }",
+    "function Get-File($url, $out) { if (-not (Test-Path $out)) { Invoke-WebRequest -UseBasicParsing $url -OutFile \"$out.part\"; Move-Item -Force \"$out.part\" $out } }",
+
+    // ---- 1. Download and verify. Nothing that is running is touched yet.
+    "$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') { 'arm64' } else { 'amd64' }",
+    `$want = if ($arch -eq 'arm64') { '${SUPERVISOR.sha256["windows-arm64.exe"]}' } else { '${SUPERVISOR.sha256["windows-amd64.exe"]}' }`,
+    "$sup = Join-Path $home_ 'nougen-supervisor.exe'", "$supNew = $null",
+    "if (-not ((Test-Path $sup) -and ((Get-FileHash -Algorithm SHA256 $sup).Hash -eq $want))) {",
+    "  $supNew = \"$sup.download\"",
+    `  Invoke-WebRequest -UseBasicParsing ('${SUPERVISOR.base}nougen-supervisor-windows-' + $arch + '.exe') -OutFile $supNew`,
+    "  if ((Get-FileHash -Algorithm SHA256 $supNew).Hash -ne $want) { Remove-Item -Force $supNew; throw 'The NouGen download did not match its fingerprint. Nothing was changed. Try the link again.' }",
+    "}",
     "$uv = Join-Path $home_ 'uv.exe'",
     "if (-not (Test-Path $uv)) { $z = Join-Path $home_ 'uv.zip'; Get-File 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip' $z; Expand-Archive -Force $z $home_; Remove-Item $z }",
-    "$cf = Join-Path $td 'cloudflared.exe'",
-    "Get-File 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' $cf",
-    "$src = Join-Path $td 'NouGenShards'; $z = Join-Path $td 'src.zip'",
+    "Get-File 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' (Join-Path $td 'cloudflared.exe')",
+    "$src = Join-Path $td 'NouGenShards'; $z = Join-Path $td 'src.zip'; $stage = Join-Path $td 'incoming'",
+    "if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }",
     "Invoke-WebRequest -UseBasicParsing 'https://github.com/Who-Visions/NouGenShards/archive/refs/heads/main.zip' -OutFile $z",
-    "if (Test-Path $src) { Remove-Item -Recurse -Force $src }",
-    "Expand-Archive -Force $z $td; Remove-Item $z; Move-Item (Join-Path $td 'NouGenShards-main') $src",
-    "$run = Join-Path $td 'run.ps1'", "@'",
-    `$env:NGS_NODE_TOKEN = '${psq(t.token)}'`,
-    `$env:NGS_HUD_USER = '${psq(t.id)}'`,
-    `$env:NGS_HUD_PASSWORD = '${psq(t.token)}'`,
-    `$env:NGS_PORT = '${t.port}'`,
-    "$h = Join-Path $env:LOCALAPPDATA 'NouGen'",
-    `$t = Join-Path $h '${psq(t.id)}'`,
-    "$env:NOUGEN_VAULT_DIR = Join-Path $t 'shards'; $env:NOUGEN_HOME = $t",
-    "$srcDir = Join-Path $t 'NouGenShards'",
-    "Start-Process -WindowStyle Hidden -WorkingDirectory $srcDir -FilePath (Join-Path $h 'uv.exe') -ArgumentList 'run','--python','3.11',(Join-Path $srcDir 'app.py')",
-    `Start-Process -WindowStyle Hidden -FilePath (Join-Path $t 'cloudflared.exe') -ArgumentList 'tunnel','--no-autoupdate','run','--token','${psq(t.tunnel)}'`,
-    "'@ | Set-Content -Encoding UTF8 $run",
-    "$launch = \"conhost.exe --headless powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `\"$run`\"\"",
-    `Set-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'NouGen-${psq(t.id)}' -Value $launch`,
-    "& powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $run",
+    "Expand-Archive -Force $z $stage; Remove-Item $z",
+    "$fresh = Join-Path $stage 'NouGenShards-main'",
+    "if (-not (Test-Path (Join-Path $fresh 'app.py'))) { Remove-Item -Recurse -Force $stage; throw 'The NouGen download was incomplete. Nothing was changed. Try the link again.' }",
+
+    // ---- 2. Switch this account over. Other accounts keep running and stay watched.
+    "$hold = Join-Path $td 'updating'",
+    "try {",
+    "  Set-Content -Path $hold -Value ''",
+    "  $holds = $false",
+    `  try { $holds = [bool](Invoke-RestMethod -Uri '${SUP_STATUS}' -TimeoutSec 3).holds } catch { }`,
+    // A build from before "updating" existed would restart the node mid-swap; only that one is stopped.
+    "  if (-not $holds) { Get-Process nougen-supervisor -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }",
+    "  $escTd = [regex]::Escape($td + '\\')",
+    "  $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath -match $escTd) -or ($_.CommandLine -and $_.CommandLine -match $escTd) })",
+    "  $targetPids = @($procs | Select-Object -ExpandProperty ProcessId)",
+    "  if ($targetPids.Count -gt 0) { $kids = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $targetPids -contains $_.ParentProcessId } | Select-Object -ExpandProperty ProcessId); foreach ($procId in ($kids + $targetPids | Select-Object -Unique)) { Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 500 }",
+    "  if (Test-Path $src) { Remove-Item -Recurse -Force $src }",
+    "  Move-Item $fresh $src; Remove-Item -Recurse -Force $stage",
+    // The account is described by node.json; the supervisor starts and watches it.
+    "  $nj = Join-Path $td 'node.json'", "@'", nodeJson(t), "'@ | Set-Content -Encoding UTF8 $nj",
+    "  Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $td 'run.ps1')",
+    // A running .exe cannot be overwritten but can be renamed, so the old build keeps working until install replaces it.
+    "  if ($supNew) {",
+    "    Get-ChildItem $home_ -Filter 'nougen-supervisor.exe.old-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue",
+    "    if (Test-Path $sup) { Rename-Item $sup ('nougen-supervisor.exe.old-' + [DateTime]::UtcNow.Ticks) }",
+    "    Move-Item -Force $supNew $sup",
+    "  }",
+    "} finally { Remove-Item -Force -ErrorAction SilentlyContinue $hold }",
+    "& $sup install | Out-Null",
+    "if ($LASTEXITCODE -ne 0) { throw 'NouGen could not start its background helper.' }",
     "Write-Host 'Starting... (first start downloads Python once)'",
     "$ok = $false",
     `for ($i = 0; $i -lt 90; $i++) { try { Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:${t.port}/health' -TimeoutSec 3 | Out-Null; $ok = $true; break } catch { Start-Sleep 5 } }`,
@@ -146,41 +202,60 @@ export function setupCmd(t) {
     "Start-Sleep 15", ""].join("\r\n");
 }
 
-export function setupSh(t) {
+export function setupSh(raw) {
+  const t = setupArgs(raw);
   return `#!/bin/sh
 # NouGen setup for ${t.id} (macOS / Linux). Private: contains this computer's keys.
 set -e
-B="$HOME/.nougen-node"; H="$B/${shq(t.id)}"; mkdir -p "$H"; cd "$H"
+B="$HOME/.nougen-node"; H="$B"/'${shq(t.id)}'; mkdir -p "$H"; cd "$H"
 echo "Setting up NouGen on this computer. This takes a few minutes and needs nothing from you."
 OS=$(uname -s); ARCH=$(uname -m)
-pkill -f "$H/NouGenShards" 2>/dev/null || true
-pkill -f "$H/cloudflared" 2>/dev/null || true
+
+# ---- 1. Download and verify. Nothing that is running is touched yet.
+case "$OS-$ARCH" in
+  Darwin-arm64) A=darwin-arm64; W='${SUPERVISOR.sha256["darwin-arm64"]}';; Darwin-*) A=darwin-amd64; W='${SUPERVISOR.sha256["darwin-amd64"]}';;
+  Linux-aarch64|Linux-arm64) A=linux-arm64; W='${SUPERVISOR.sha256["linux-arm64"]}';; *) A=linux-amd64; W='${SUPERVISOR.sha256["linux-amd64"]}';;
+esac
+sum() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+S="$B/nougen-supervisor"; SN=""
+if [ ! -x "$S" ] || [ "$(sum "$S")" != "$W" ]; then
+  curl -LsSf '${SUPERVISOR.base}'"nougen-supervisor-$A" -o "$S.download"
+  if [ "$(sum "$S.download")" != "$W" ]; then rm -f "$S.download"; echo "The NouGen download did not match its fingerprint. Nothing was changed. Try the link again."; exit 1; fi
+  chmod 700 "$S.download"; SN="$S.download"
+fi
 [ -x "$B/uv" ] || { curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$B" UV_NO_MODIFY_PATH=1 sh >/dev/null; }
 if [ ! -x "$H/cloudflared" ]; then
   case "$OS-$ARCH" in
     Darwin-arm64) U=cloudflared-darwin-arm64.tgz;; Darwin-*) U=cloudflared-darwin-amd64.tgz;;
     Linux-aarch64|Linux-arm64) U=cloudflared-linux-arm64;; *) U=cloudflared-linux-amd64;;
   esac
-  curl -LsSf "https://github.com/cloudflare/cloudflared/releases/latest/download/$U" -o cf.dl
-  case "$U" in *.tgz) tar -xzf cf.dl && rm cf.dl;; *) mv cf.dl cloudflared;; esac; chmod +x cloudflared
+  rm -rf cf.tmp; mkdir cf.tmp
+  curl -LsSf "https://github.com/cloudflare/cloudflared/releases/latest/download/$U" -o cf.tmp/cf.dl
+  case "$U" in *.tgz) tar -xzf cf.tmp/cf.dl -C cf.tmp;; *) mv cf.tmp/cf.dl cf.tmp/cloudflared;; esac
+  chmod +x cf.tmp/cloudflared; mv -f cf.tmp/cloudflared cloudflared; rm -rf cf.tmp
 fi
-rm -rf NouGenShards src.zip; curl -LsSf https://github.com/Who-Visions/NouGenShards/archive/refs/heads/main.zip -o src.zip
-"$B/uv" run --python 3.11 python -c "import zipfile;zipfile.ZipFile('src.zip').extractall('.')" && mv NouGenShards-main NouGenShards && rm src.zip
-cat > run.sh <<'RUN'
-#!/bin/sh
-B="$HOME/.nougen-node"; H="$B/${shq(t.id)}"
-export NGS_NODE_TOKEN='${shq(t.token)}' NGS_HUD_USER='${shq(t.id)}' NGS_HUD_PASSWORD='${shq(t.token)}' NGS_PORT='${t.port}' NOUGEN_VAULT_DIR="$H/shards" NOUGEN_HOME="$H"
-(cd "$H/NouGenShards" && nohup "$B/uv" run --python 3.11 "$H/NouGenShards/app.py" >"$H/node.log" 2>&1 &)
-nohup "$H/cloudflared" tunnel --no-autoupdate run --token '${shq(t.tunnel)}' >"$H/tunnel.log" 2>&1 &
-RUN
-chmod 700 run.sh
-if [ "$OS" = Darwin ]; then
-  P="$HOME/Library/LaunchAgents/com.nougen.node.${shq(t.id)}.plist"; mkdir -p "$(dirname "$P")"
-  printf '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>com.nougen.node.${shq(t.id)}</string><key>ProgramArguments</key><array><string>/bin/sh</string><string>%s</string></array><key>RunAtLoad</key><true/></dict></plist>' "$H/run.sh" > "$P"
-else
-  (crontab -l 2>/dev/null | grep -v "$H/run.sh"; echo "@reboot $H/run.sh") | crontab - 2>/dev/null || true
+rm -rf incoming src.zip; curl -LsSf https://github.com/Who-Visions/NouGenShards/archive/refs/heads/main.zip -o src.zip
+mkdir incoming; "$B/uv" run --python 3.11 python -c "import zipfile;zipfile.ZipFile('src.zip').extractall('incoming')"; rm -f src.zip
+if [ ! -f incoming/NouGenShards-main/app.py ]; then rm -rf incoming; echo "The NouGen download was incomplete. Nothing was changed. Try the link again."; exit 1; fi
+
+# ---- 2. Switch this account over. Other accounts keep running and stay watched.
+: > updating; trap 'rm -f "$H/updating"' EXIT
+if curl -fs -m 3 '${SUP_STATUS}' 2>/dev/null | grep -q '"holds":true'; then :; else
+  # A build from before "updating" existed would restart the node mid-swap; only that one
+  # is stopped. Matched on its full path: the kernel cuts process names to 15 characters.
+  pkill -f "$B/nougen-supervisor" 2>/dev/null || true
+  i=0; while pgrep -f "$B/nougen-supervisor" >/dev/null 2>&1 && [ $i -lt 5 ]; do sleep 1; i=$((i+1)); done
 fi
-sh "$H/run.sh"
+pkill -f "$H/NouGenShards" 2>/dev/null || true
+pkill -f "$H/cloudflared" 2>/dev/null || true
+rm -rf NouGenShards; mv incoming/NouGenShards-main NouGenShards; rm -rf incoming
+cat > node.json <<'NODE'
+${nodeJson(t)}
+NODE
+chmod 600 node.json; rm -f run.sh
+if [ -n "$SN" ]; then mv -f "$SN" "$S"; fi
+rm -f updating; trap - EXIT
+"$S" install >/dev/null
 echo "Starting... (first start downloads Python once)"
 ok=0; i=0; while [ $i -lt 90 ]; do curl -fs "http://127.0.0.1:${t.port}/health" >/dev/null 2>&1 && { ok=1; break; }; sleep 5; i=$((i+1)); done
 if [ $ok = 1 ]; then
