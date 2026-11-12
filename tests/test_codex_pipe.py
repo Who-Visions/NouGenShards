@@ -48,6 +48,32 @@ class CodexPipeTests(unittest.TestCase):
         self.assertEqual(result['status'], 'saved')
         self.assertEqual(Path(result['file']).parent, Path(self.temp.name))
 
+    def test_preflight_paused_usage_saves_without_sending(self):
+        paused = {'ok': True, 'paused': True, 'available_at': 'later'}
+        with patch('nougen_shards.codex_status.status', return_value=paused), \
+                patch.object(codex_pipe, 'request') as req:
+            result = codex_pipe.deliver('hold me')
+        req.assert_not_called()
+        self.assertEqual(result['status'], 'saved')
+        self.assertIn('usage limit', result['error'])
+
+    def test_preflight_status_probe_failure_names_receiver(self):
+        with patch('nougen_shards.codex_status.status', return_value={'ok': True, 'paused': False}), \
+                patch.object(codex_pipe, 'request', side_effect=OSError('[WinError 2]')) as req:
+            result = codex_pipe.deliver('x')
+        self.assertEqual(req.call_count, 1)
+        self.assertEqual(req.call_args[0][0], {'op': 'status'})
+        self.assertIn('not listening', result['error'])
+        self.assertFalse(result['pipe_delivered'])
+
+    def test_preflight_ok_sends_and_attaches_check(self):
+        replies = [{'status': 'listening'}, {'status': 'saved', 'pipe_delivered': True}]
+        with patch('nougen_shards.codex_status.status', return_value={'ok': True, 'paused': False}), \
+                patch.object(codex_pipe, 'request', side_effect=replies):
+            result = codex_pipe.deliver('go')
+        self.assertTrue(result['pipe_delivered'])
+        self.assertTrue(result['preflight']['ready'])
+
     def test_offline_fallback_uses_unique_files(self):
         with patch.object(codex_pipe, 'request', side_effect=OSError('offline')):
             first = codex_pipe.deliver('first')

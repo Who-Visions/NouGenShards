@@ -196,11 +196,39 @@ def deliver(text, origin=None):
     source = origin.get("original_sender") or "nougen-" + os.environ.get("COMPUTERNAME", "local").lower()
     payload = {"message_id": str(uuid.uuid4()), "source": source,
                "target": "codex", "text": text, "origin": origin, "timestamp": time.time()}
+    check = preflight()
+    if not check["ready"]:
+        return {"status": "saved", "file": str(save(payload)), "pipe_delivered": False,
+                "delivery_verified": False, "error": check["reason"], "preflight": check}
     try:
-        return request(payload)
+        result = request(payload)
     except (OSError, ValueError) as exc:
         return {"status": "saved", "file": str(save(payload)), "pipe_delivered": False,
-                "delivery_verified": False, "error": str(exc)}
+                "delivery_verified": False, "error": str(exc), "preflight": check}
+    if isinstance(result, dict):
+        result["preflight"] = check
+    return result
+
+
+def preflight():
+    """Ask Codex for /usage and /status before sending, so a paused or absent lane
+    fails with a named reason instead of a bare WinError 2."""
+    try:
+        from .codex_status import status as usage_status
+        usage = usage_status()
+    except Exception as exc:  # usage telemetry is advisory; never block on its own failure
+        usage = {"ok": False, "error": str(exc)}
+    check = {"usage": usage, "status": None, "ready": False, "reason": None}
+    if usage.get("paused"):
+        check["reason"] = f"codex usage limit reached; available at {usage.get('available_at')}"
+        return check
+    try:
+        check["status"] = request({"op": "status"})
+    except (OSError, ValueError) as exc:
+        check["reason"] = f"codex pipe receiver not listening ({PIPE}): {exc}"
+        return check
+    check["ready"] = True
+    return check
 
 
 def handle(payload, thread, executable, transport="windows_pipe"):
