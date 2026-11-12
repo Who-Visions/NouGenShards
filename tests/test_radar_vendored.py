@@ -205,3 +205,26 @@ def test_request_bound_tenant_vault_wins_over_process_env(tmp_path, monkeypatch)
     finally:
         core.reset_active_vault(tokens)
     assert paper.cache_dir() == tmp_path / "process-vault" / "lab" / "papers"
+
+
+def _upstream_tools():
+    import os
+    env = os.environ.get(arxiv_radar.RADAR_REPO_ENV, "").strip()
+    candidates = [Path(env)] if env else []
+    candidates.append(Path(__file__).resolve().parents[2] / "nougen-radar")
+    return next((c / "tools" for c in candidates if (c / "tools" / "arxiv_paper.py").is_file()), None)
+
+
+def test_vendored_copy_matches_upstream_when_present():
+    """Drift guard: on any node with a nougen-radar checkout, the two copies must agree.
+
+    Skipped in CI (upstream is private). Refresh with:
+    cp ../nougen-radar/tools/{arxiv_rss_radar,arxiv_lab_watch,arxiv_paper,morph_gate}.py src/nougen_shards/radar_tools/
+    """
+    import pytest
+    upstream = _upstream_tools()
+    if upstream is None:
+        pytest.skip("no nougen-radar checkout on this node")
+    drift = [name for name in ("arxiv_rss_radar.py", "arxiv_lab_watch.py", "arxiv_paper.py", "morph_gate.py")
+             if (upstream / name).read_bytes() != (arxiv_radar.VENDORED_RADAR_DIR / name).read_bytes()]
+    assert not drift, f"vendored radar tools drifted from {upstream}: {drift}"
