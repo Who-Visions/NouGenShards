@@ -1,5 +1,19 @@
 @import "../../designs/nougen-core/tokens.css";
 
+:root:not([data-theme="light"]) {
+  --bg: #0A0A0A;
+  --bg-gradient: var(--bg);
+  --panel: #121212;
+  --panel-2: #1a1a1a;
+  --panel-hover: #1f1f1f;
+  --panel-solid: #121212;
+  --line: #262626;
+  --line-glow: #262626;
+  --join-cta-bg: #EDEDED;
+  --join-cta-ink: #0A0A0A;
+  --join-cta-hover: #d4d4d4;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -90,9 +104,9 @@ h1 {
   gap: var(--space-3);
   min-height: var(--target-touch);
   padding: var(--space-3) var(--space-5);
-  background: var(--text);
-  color: var(--bg);
-  border: 1px solid var(--text);
+  background: var(--join-cta-bg, var(--text));
+  color: var(--join-cta-ink, var(--bg));
+  border: 1px solid var(--join-cta-bg, var(--text));
   border-radius: var(--radius-md);
   text-decoration: none;
   font-weight: 600;
@@ -101,7 +115,7 @@ h1 {
 }
 
 .join-action:hover {
-  background: var(--muted);
+  background: var(--join-cta-hover, var(--muted));
 }
 
 .join-host {
@@ -122,15 +136,19 @@ h1 {
   border-top: 1px solid var(--line);
   list-style: none;
   display: grid;
+  grid-template-columns: repeat(3, 1fr);
   gap: var(--space-3);
 }
 
 .join-step {
-  display: grid;
-  grid-template-columns: 1.5rem 1fr;
-  gap: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
   font-size: var(--type-meta);
   color: var(--muted);
+  padding-top: var(--space-3);
+  border-top: 2px solid var(--line);
 }
 
 .join-step-num {
@@ -146,8 +164,13 @@ h1 {
 }
 
 .join-step strong {
+  display: block;
   color: var(--text);
   font-weight: 600;
+}
+
+@media (max-width: 30rem) {
+  .join-steps { grid-template-columns: 1fr; }
 }
 
 .join-meta,
