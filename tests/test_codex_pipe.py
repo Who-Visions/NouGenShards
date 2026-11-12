@@ -482,3 +482,42 @@ class CodexPipeServeSurvivesBadConnectsTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_newest_codex_thread_picks_latest_rollout(tmp_path):
+    import os as _os
+    from nougen_shards import codex_pipe as cp
+    day = tmp_path / "2026" / "11" / "12"
+    day.mkdir(parents=True)
+    old = day / "rollout-2026-11-12T01-00-00-11111111-1111-1111-1111-111111111111.jsonl"
+    new = day / "rollout-2026-11-12T02-00-00-22222222-2222-2222-2222-222222222222.jsonl"
+    old.write_text("{}"); new.write_text("{}")
+    (day / "notes.jsonl").write_text("{}")
+    _os.utime(old, (1000, 1000)); _os.utime(new, (2000, 2000))
+    assert cp.newest_codex_thread(tmp_path) == "22222222-2222-2222-2222-222222222222"
+
+
+def test_watchdog_without_sessions_is_unavailable(tmp_path):
+    from nougen_shards import codex_pipe as cp
+    assert cp.watchdog(tmp_path)["status"] == "unavailable"
+
+
+def test_watchdog_activates_newest_thread(tmp_path, monkeypatch):
+    from nougen_shards import codex_pipe as cp
+    (tmp_path / "rollout-x-33333333-3333-3333-3333-333333333333.jsonl").write_text("{}")
+    seen = {}
+    monkeypatch.setattr(cp, "activate", lambda t=None: seen.setdefault("t", t) and {"status": "ready"})
+    cp.watchdog(tmp_path)
+    assert seen["t"] == "33333333-3333-3333-3333-333333333333"
+
+
+def test_native_exe_falls_back_to_desktop_app_install(tmp_path, monkeypatch):
+    from nougen_shards import codex_pipe as cp
+    exe = tmp_path / "OpenAI" / "Codex" / "bin" / "9e1da79431da526b" / "codex.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    monkeypatch.delenv("NOUGEN_CODEX_EXE", raising=False)
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(cp.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError()))
+    assert cp._native_codex_executable() == str(exe)
