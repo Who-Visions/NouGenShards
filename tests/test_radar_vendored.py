@@ -81,6 +81,42 @@ def test_body_only_without_begin_document_fails_closed(tmp_path, monkeypatch):
     assert paper.body_only("plain fragment") == ""
 
 
+def test_body_only_drops_text_after_end_document(tmp_path, monkeypatch):
+    paper = _load("arxiv_paper", tmp_path, monkeypatch)
+    tex = r"\begin{document}" "\nreal body\n" r"\end{document}" "\ntrailing 99 percent\n"
+    body = paper.body_only(tex)
+    assert "real body" in body
+    assert "99 percent" not in body
+
+
+def test_body_only_unclosed_abstract_fails_closed(tmp_path, monkeypatch):
+    paper = _load("arxiv_paper", tmp_path, monkeypatch)
+    assert paper.body_only(r"\begin{document}\begin{abstract}99 percent") == ""
+
+
+def test_empty_body_and_zero_length_matches_are_not_evidence(tmp_path, monkeypatch):
+    paper = _load("arxiv_paper", tmp_path, monkeypatch)
+    assert paper.body_hits("", ".*") == []
+    assert paper.body_hits("some body", "x*") == []
+    assert paper.body_hits("some body", "body")
+
+
+def test_gate_does_not_pass_a_preamble_only_paper_on_a_wildcard(tmp_path, monkeypatch):
+    import importlib.util
+    gate_mod = _load("arxiv_paper", tmp_path, monkeypatch)  # sets env/home
+    spec = importlib.util.spec_from_file_location(
+        "_vend_morph_gate", arxiv_radar.VENDORED_RADAR_DIR / "morph_gate.py")
+    mg = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mg)
+    src = tmp_path / "fulltext.tex"
+    src.write_text(r"\documentclass{article}" "\n" r"\newcommand{\s}{99 percent}" "\n", encoding="utf-8")
+    monkeypatch.setattr(mg.ap, "fulltext", lambda ref, refresh=False: src)
+    result = mg.gate("2609.34785", [".*"])
+    assert result["evidence_type"] != "paper_body"
+    assert result["confidence"] == 0
+    del gate_mod
+
+
 def test_vendored_text_names_no_person():
     for path in arxiv_radar.VENDORED_RADAR_DIR.glob("*.py"):
         assert "Tom Brown" not in path.read_text(encoding="utf-8"), path.name

@@ -178,13 +178,29 @@ def body_only(tex: str) -> str:
         # nothing counts as body evidence (a preamble-only macro must never satisfy a claim).
         return ""
     tex = tex[start.end():]
-    return re.sub(r"\\begin\{abstract\}.*?\\end\{abstract\}", " ", tex, flags=re.S)
+    end = re.search(r"\\end\{document\}", tex)
+    if end:
+        tex = tex[:end.start()]  # text after \end{document} is not part of the paper
+    tex = re.sub(r"\\begin\{abstract\}.*?\\end\{abstract\}", " ", tex, flags=re.S)
+    if re.search(r"\\(?:begin|end)\{abstract\}", tex):
+        # An unmatched abstract boundary: the abstract cannot be told apart from the body. Fail closed.
+        return ""
+    return tex
+
+
+def body_hits(body: str, pattern: str, context: int = 90) -> list[str]:
+    """Non-empty matches of a claim pattern in an extracted body. An empty body or a zero-length match
+    (e.g. '.*' against nothing) is never evidence."""
+    text = " ".join(body.split())
+    if not text:
+        return []
+    return [text[max(0, m.start() - context): m.end() + context]
+            for m in re.finditer(pattern, text) if m.end() > m.start()]
 
 
 def claim(ref: str, pattern: str, context: int = 90) -> list[str]:
     """Every place a claim pattern appears in the BODY (abstract excluded), with surrounding text."""
-    text = " ".join(body_only(fulltext(ref).read_text(encoding="utf-8")).split())
-    return [text[max(0, m.start() - context): m.end() + context] for m in re.finditer(pattern, text)]
+    return body_hits(body_only(fulltext(ref).read_text(encoding="utf-8")), pattern, context)
 
 
 def main() -> int:
