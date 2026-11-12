@@ -1321,25 +1321,54 @@ HTML_PWA = """<!DOCTYPE html>
 </html>
 """
 
+_google_token_cache: dict[str, float] = {}  # sha256(id_token) -> expiry epoch
+_GOOGLE_TOKEN_CACHE_TTL = 300  # seconds; capped by token exp
+
+
 def _google_id_token_valid(id_token: str) -> bool:
     # Mirrors nougenai-agent's worker.js verifyGoogleIdToken: the app's own
     # Worker already verifies this same token before forwarding it here as
     # the bearer, but this bridge is reachable on its own
     # (droid.nougenai.com), so it has to verify independently rather than
     # trust an unauthenticated caller.
-    if not id_token or not GOOGLE_CLIENT_ID:
+    if not id_token or not GOOGLE_CLIENT_ID or not GOOGLE_ALLOWED_EMAILS:
         return False
+    now = time.time()
+    # Prune expired cache entries
+    for k, exp_ts in list(_google_token_cache.items()):
+        if exp_ts <= now:
+            _google_token_cache.pop(k, None)
+    key = hashlib.sha256(id_token.encode("utf-8")).hexdigest()
+    cached_exp = _google_token_cache.get(key)
+    if cached_exp and cached_exp > now:
+        return True
     try:
-        url = "https://oauth2.googleapis.com/tokeninfo?id_token=" + urllib.parse.quote(id_token)
-        with urllib.request.urlopen(url, timeout=8) as resp:
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/tokeninfo",
+            data=urllib.parse.urlencode({"id_token": id_token}).encode("utf-8"),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
             info = json.loads(resp.read().decode("utf-8"))
     except Exception:
         return False
+    if info.get("iss") not in ("accounts.google.com", "https://accounts.google.com"):
+        return False
     if info.get("aud") != GOOGLE_CLIENT_ID:
         return False
-    if info.get("email_verified") != "true":
+    if str(info.get("email_verified")).lower() != "true":
         return False
-    return info.get("email", "").lower() in GOOGLE_ALLOWED_EMAILS
+    try:
+        token_exp = float(info.get("exp", 0))
+    except (ValueError, TypeError):
+        return False
+    if token_exp <= now:
+        return False
+    if info.get("email", "").lower() not in GOOGLE_ALLOWED_EMAILS:
+        return False
+    _google_token_cache[key] = min(now + _GOOGLE_TOKEN_CACHE_TTL, token_exp)
+    return True
 
 
 SESSION_SECRET = os.environ.get("NOUGEN_SESSION_SECRET", "").strip()
@@ -1419,10 +1448,11 @@ class RemoteHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _get_authorized(self, parsed) -> bool:
-        given = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
-        if not given:
-            given = self.headers.get("Authorization", "").replace("Bearer ", "", 1)
-        return _bearer_authorized(given)
+        query_token = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
+        header_token = self.headers.get("Authorization", "").replace("Bearer ", "", 1)
+        if query_token:
+            return bool(TOKEN) and hmac.compare_digest(query_token.encode(), TOKEN.encode())
+        return _bearer_authorized(header_token)
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -1505,8 +1535,13 @@ class RemoteHandler(BaseHTTPRequestHandler):
         # had - so every POST endpoint (chat, terminal, inject_agy, and the
         # tools/* bridge) silently rejected a signed-in Google user even
         # after sign-in itself worked. Unify on the one auth check.
-        given = payload.get("token") or self.headers.get("Authorization", "").replace("Bearer ", "", 1)
-        if not _bearer_authorized(given):
+        body_token = payload.get("token")
+        header_token = self.headers.get("Authorization", "").replace("Bearer ", "", 1)
+        if body_token:
+            authorized = bool(TOKEN) and hmac.compare_digest(str(body_token).encode(), TOKEN.encode())
+        else:
+            authorized = _bearer_authorized(header_token)
+        if not authorized:
             self._send_json({"error": "Unauthorized", "ok": False}, 401)
             return
 

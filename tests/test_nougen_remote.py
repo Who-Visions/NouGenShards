@@ -109,3 +109,124 @@ def test_private_get_routes_require_token(monkeypatch):
         assert status(base + "/api/v1/health") == 200
     finally:
         srv.shutdown()
+
+
+def test_google_id_token_post_verification_cache_and_header_only_policy(monkeypatch):
+    """Google ID tokens are verified via POST to tokeninfo (iss, aud, exp, email_verified, allowlist),
+    cached by SHA-256 up to min(TTL, exp) with expired-entry eviction, and accepted only in the
+    Authorization header across both GET and POST routes."""
+    import hashlib
+    import importlib
+    import io
+    import sys
+    import threading
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    monkeypatch.setenv("NOUGEN_REMOTE_TOKEN", "test-token-123")
+    monkeypatch.setenv("NOUGEN_GOOGLE_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
+    monkeypatch.setenv("NOUGEN_GOOGLE_ALLOWED_EMAILS", "owner@example.com")
+    nr = importlib.reload(importlib.import_module("nougen_remote"))
+
+    real_urlopen = urllib.request.urlopen
+    now = time.time()
+
+    class _Resp(io.BytesIO):
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, *a, **kw):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if url == "https://oauth2.googleapis.com/tokeninfo":
+            assert req.get_method() == "POST"
+            form = urllib.parse.parse_qs((req.data or b"").decode("utf-8"))
+            tok = (form.get("id_token") or [""])[0]
+            if tok == "good.token.here":
+                body = {
+                    "iss": "https://accounts.google.com",
+                    "aud": "test-client-id.apps.googleusercontent.com",
+                    "email": "owner@example.com",
+                    "email_verified": "true",
+                    "exp": str(int(now + 60)),
+                }
+                return _Resp(json.dumps(body).encode())
+            if tok == "wrong.iss.token":
+                body = {
+                    "iss": "https://evil.example.com",
+                    "aud": "test-client-id.apps.googleusercontent.com",
+                    "email": "owner@example.com",
+                    "email_verified": "true",
+                    "exp": str(int(now + 60)),
+                }
+                return _Resp(json.dumps(body).encode())
+            if tok == "expired.token.here":
+                body = {
+                    "iss": "accounts.google.com",
+                    "aud": "test-client-id.apps.googleusercontent.com",
+                    "email": "owner@example.com",
+                    "email_verified": "true",
+                    "exp": str(int(now - 5)),
+                }
+                return _Resp(json.dumps(body).encode())
+            raise urllib.error.HTTPError(url, 400, "invalid", {}, None)
+        return real_urlopen(req, *a, **kw)
+
+    monkeypatch.setattr(nr.urllib.request, "urlopen", fake_urlopen)
+
+    # Pre-seed an expired entry to verify eviction and sha256 keying
+    nr._google_token_cache["stale_hash"] = now - 10
+    assert nr._google_id_token_valid("wrong.iss.token") is False
+    assert nr._google_id_token_valid("expired.token.here") is False
+    assert "stale_hash" not in nr._google_token_cache
+
+    assert nr._google_id_token_valid("good.token.here") is True
+    good_hash = hashlib.sha256(b"good.token.here").hexdigest()
+    assert good_hash in nr._google_token_cache
+    assert "good.token.here" not in nr._google_token_cache
+    assert nr._google_token_cache[good_hash] <= now + 60
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), nr.RemoteHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+
+    def req_status(path, headers=None, data=None, method="GET"):
+        req = urllib.request.Request(base + path, data=data, headers=headers or {}, method=method)
+        try:
+            return real_urlopen(req, timeout=5).status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    try:
+        # Query string Google token refused
+        assert req_status("/api/v1/inbox?token=good.token.here") == 401
+        # Query string + valid Authorization header fails closed when query token is not static TOKEN
+        assert req_status("/api/v1/inbox?token=bad", {"Authorization": "Bearer good.token.here"}) == 401
+        # Valid Google token in Authorization header succeeds on GET
+        assert req_status("/api/v1/inbox", {"Authorization": "Bearer good.token.here"}) == 200
+        # Valid Google token in Authorization header succeeds on POST (400 = authed, missing text)
+        assert req_status(
+            "/api/v1/inject_agy",
+            {"Authorization": "Bearer good.token.here", "Content-Type": "application/json"},
+            data=b"{}",
+            method="POST",
+        ) == 400
+        # Google token in POST JSON body refused
+        assert req_status(
+            "/api/v1/inject_agy",
+            {"Content-Type": "application/json"},
+            data=b'{"token":"good.token.here"}',
+            method="POST",
+        ) == 401
+    finally:
+        srv.shutdown()
+
