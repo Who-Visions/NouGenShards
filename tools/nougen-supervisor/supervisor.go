@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,13 +19,14 @@ import (
 // Timing holds every interval the supervisor uses, so tests can shrink them.
 type Timing struct {
 	Tick        time.Duration // how often every node is checked
-	NodeGrace   time.Duration // how long a started node may take to answer (first start downloads Python)
+	NodeGrace   time.Duration // how long a node may go without answering (first start downloads Python)
 	TunnelGrace time.Duration // how long a started tunnel may take to connect
 	BackoffMin  time.Duration // wait before the first restart
 	BackoffMax  time.Duration // longest wait between restarts
 	Stable      time.Duration // healthy this long resets the wait to BackoffMin
 	Probe       time.Duration // timeout of one health request
-	Fails       int           // failed checks in a row before starting a node this program did not start
+	Hold        time.Duration // longest an account may stay marked as updating
+	Fails       int           // failed checks in a row before acting on a node this program did not start
 }
 
 // DefaultTiming is what runs on a real computer.
@@ -31,7 +34,7 @@ func DefaultTiming() Timing {
 	return Timing{
 		Tick: 30 * time.Second, NodeGrace: 8 * time.Minute, TunnelGrace: 2 * time.Minute,
 		BackoffMin: 5 * time.Second, BackoffMax: 5 * time.Minute, Stable: 2 * time.Minute,
-		Probe: 4 * time.Second, Fails: 2,
+		Probe: 4 * time.Second, Hold: 30 * time.Minute, Fails: 2,
 	}
 }
 
@@ -57,6 +60,8 @@ func (l realLauncher) Node(n Node) *exec.Cmd {
 	cmd.Env = append(os.Environ(),
 		"NGS_NODE_TOKEN="+n.Token, "NGS_HUD_USER="+n.ID, "NGS_HUD_PASSWORD="+n.Token,
 		fmt.Sprintf("NGS_PORT=%d", n.Port),
+		// Every path the node may write to is inside the account's own
+		// folder, so two accounts on one computer never share state or secrets.
 		"NOUGEN_VAULT_DIR="+filepath.Join(n.Dir, "shards"),
 		"NOUGEN_HOME="+n.Dir,
 		"NOUGEN_ROOT="+n.Dir,
@@ -65,13 +70,13 @@ func (l realLauncher) Node(n Node) *exec.Cmd {
 }
 
 func (l realLauncher) Tunnel(n Node, metricsAddr string) *exec.Cmd {
-	// The token goes in the environment, not the arguments: arguments are
-	// visible to every other program on the computer.
 	// Each account has its own copy; the earliest setups kept one in base.
 	cf := filepath.Join(n.Dir, exe("cloudflared"))
 	if _, err := os.Stat(cf); err != nil {
 		cf = filepath.Join(l.base, exe("cloudflared"))
 	}
+	// The token goes in the environment, not the arguments: arguments are
+	// visible to every other program on the computer.
 	cmd := exec.Command(cf, "tunnel", "--no-autoupdate", "--metrics", metricsAddr, "run")
 	cmd.Dir = n.Dir
 	cmd.Env = append(os.Environ(), "TUNNEL_TOKEN="+n.Tunnel)
@@ -80,10 +85,14 @@ func (l realLauncher) Tunnel(n Node, metricsAddr string) *exec.Cmd {
 
 // proc is one running child. done is closed when it exits, which is the only
 // thing other goroutines ever read, so there is no shared flag to race on.
+// group identifies the child together with everything it started, so the
+// whole tree can be stopped without ever naming a process id that the
+// operating system may already have handed to something else.
 type proc struct {
 	cmd     *exec.Cmd
 	done    chan struct{}
 	started time.Time
+	group   uintptr
 }
 
 func (p *proc) alive() bool {
@@ -116,6 +125,9 @@ func startProc(cmd *exec.Cmd, logPath string, now time.Time) (*proc, error) {
 		return nil, err
 	}
 	p := &proc{cmd: cmd, done: make(chan struct{}), started: now}
+	// Grouped before anything waits on the child: until Wait returns, its
+	// process id cannot be reused, so the group is certain to hold this child.
+	p.group = track(cmd)
 	go func() {
 		_ = cmd.Wait()
 		logf.Close()
@@ -134,7 +146,17 @@ type unit struct {
 	nextStart time.Time
 	upSince   time.Time
 	lastOK    time.Time
+	downSince time.Time
 	lastErr   string
+}
+
+// retire stops whatever is left of the unit's previous child (for instance
+// Python outliving the uv that started it) and lets go of its group.
+func (u *unit) retire() {
+	if u.proc != nil {
+		killGroup(u.proc)
+		closeGroup(u.proc)
+	}
 }
 
 type entry struct {
@@ -148,25 +170,32 @@ type Supervisor struct {
 	T      Timing
 	L      Launcher
 	Log    *slog.Logger
+	Online func() bool // can this computer reach the internet at all?
 	client *http.Client
 
-	mu      sync.Mutex
+	tickMu  sync.Mutex // one check at a time; never held by /status
 	entries map[string]*entry
 	started time.Time
 
-	snapMu sync.RWMutex
-	snap   Status
+	mu   sync.Mutex // guards snap only, so /status never waits on a probe
+	snap Status
 }
 
 // NewSupervisor builds a supervisor over the accounts under base.
 func NewSupervisor(base string, t Timing, l Launcher, log *slog.Logger) *Supervisor {
-	started := time.Now()
-	return &Supervisor{
-		Base: base, T: t, L: l, Log: log,
+	s := &Supervisor{Base: base, T: t, L: l, Log: log,
 		client:  &http.Client{Timeout: t.Probe},
-		entries: map[string]*entry{}, started: started,
-		snap: Status{Version: version, Base: base, Started: started.UTC().Format(time.RFC3339), Nodes: []NodeStatus{}},
+		entries: map[string]*entry{}, started: time.Now()}
+	s.Online = func() bool {
+		c, err := net.DialTimeout("tcp", "1.1.1.1:443", t.Probe)
+		if err != nil {
+			return false
+		}
+		c.Close()
+		return true
 	}
+	s.publish()
+	return s
 }
 
 func (s *Supervisor) ok(url string) bool {
@@ -191,6 +220,20 @@ func portOpen(port int, timeout time.Duration) bool {
 // from the node port so two accounts never collide.
 func metricsAddr(port int) string { return fmt.Sprintf("127.0.0.1:%d", 20000+port%40000) }
 
+// sameAccount reports whether a command line belongs to the account in dir.
+func sameAccount(cmdline, dir string) bool {
+	norm := func(s string) string { return strings.ToLower(strings.ReplaceAll(s, "\\", "/")) }
+	return dir != "" && strings.Contains(norm(cmdline), norm(dir)+"/")
+}
+
+// held reports whether setup is replacing this account's files right now.
+// Setup drops an "updating" file in the folder; while it is fresh the
+// supervisor leaves the account alone and keeps watching everyone else.
+func (s *Supervisor) held(dir string, now time.Time) bool {
+	st, err := os.Stat(filepath.Join(dir, "updating"))
+	return err == nil && now.Sub(st.ModTime()) < s.T.Hold
+}
+
 func (s *Supervisor) bump(u *unit, now time.Time) {
 	if u.backoff < s.T.BackoffMin {
 		u.backoff = s.T.BackoffMin
@@ -206,16 +249,18 @@ func (s *Supervisor) markUp(u *unit, now time.Time) {
 	if u.state != "up" {
 		u.upSince = now
 	}
-	u.state, u.fails, u.lastOK, u.lastErr = "up", 0, now, ""
+	u.state, u.fails, u.lastOK, u.lastErr, u.downSince = "up", 0, now, "", time.Time{}
 	if now.Sub(u.upSince) >= s.T.Stable {
 		u.backoff = s.T.BackoffMin
 	}
 }
 
 func (s *Supervisor) launch(u *unit, cmd *exec.Cmd, logPath, id, kind string, now time.Time) {
+	u.retire()
 	p, err := startProc(cmd, logPath, now)
 	s.bump(u, now)
 	if err != nil {
+		u.proc = nil
 		u.state, u.lastErr = "failed", err.Error()
 		s.Log.Error("start failed", "account", id, "what", kind, "err", err)
 		return
@@ -232,33 +277,43 @@ func (s *Supervisor) checkNode(e *entry, now time.Time) {
 		return
 	}
 	u.fails++
+	if u.downSince.IsZero() {
+		u.downSince = now
+	}
 	if u.proc.alive() {
 		if now.Sub(u.proc.started) < s.T.NodeGrace {
 			u.state = "starting"
 			return
 		}
 		s.Log.Warn("not answering, stopping it", "account", n.ID, "what", "node", "pid", u.proc.cmd.Process.Pid)
-		killTree(u.proc.cmd)
+		killGroup(u.proc)
 		u.state = "restarting"
 		return
 	}
-	// Nothing of ours is running. If something else is listening on the port
-	// (a node started by an older launcher that answered slowly), it gets
-	// T.Fails checks before we call the port busy. A closed port means there
-	// is nothing to wait for, so the node starts on this very check.
-	busy := portOpen(n.Port, s.T.Probe)
-	if busy && u.fails < s.T.Fails {
-		u.state = "down"
+	// Our own child is gone. Anything it left behind goes with it.
+	u.retire()
+	if portOpen(n.Port, s.T.Probe) {
+		// Something this program did not start is listening. A node started
+		// by an older launcher gets the same patience as one of ours.
+		if u.fails < s.T.Fails || now.Sub(u.downSince) < s.T.NodeGrace {
+			u.state = "down"
+			return
+		}
+		pid, cmdline := portOwner(n.Port)
+		if pid > 0 && sameAccount(cmdline, n.Dir) {
+			// It runs out of this account's folder: it is this account's
+			// node, hung. Stop it; the next check starts a fresh one.
+			s.Log.Warn("node from an older launcher is not answering, stopping it", "account", n.ID, "pid", pid)
+			killPID(pid)
+			u.state = "restarting"
+			return
+		}
+		u.state, u.lastErr = "port-busy", "another program is using this port and is not a healthy node"
+		s.Log.Error("port busy", "account", n.ID, "port", n.Port, "pid", pid)
 		return
 	}
 	if now.Before(u.nextStart) {
 		u.state = "waiting"
-		return
-	}
-	if busy {
-		u.state, u.lastErr = "port-busy", "another program is using this port and is not a healthy node"
-		s.bump(u, now)
-		s.Log.Error("port busy", "account", n.ID, "port", n.Port)
 		return
 	}
 	s.launch(u, s.L.Node(n), filepath.Join(n.Dir, "node.log"), n.ID, "node", now)
@@ -281,8 +336,19 @@ func (s *Supervisor) checkTunnel(e *entry, now time.Time) {
 			u.state = "starting"
 			return
 		}
+		// No internet is not a broken tunnel. cloudflared reconnects by
+		// itself; restarting it every few minutes on every account would
+		// only add load when the connection returns.
+		if !s.Online() {
+			u.state = "offline"
+			return
+		}
+		if now.Before(u.nextStart) {
+			u.state = "waiting"
+			return
+		}
 		s.Log.Warn("not connected, stopping it", "account", n.ID, "what", "tunnel", "pid", u.proc.cmd.Process.Pid)
-		killTree(u.proc.cmd)
+		killGroup(u.proc)
 		u.state = "restarting"
 		return
 	}
@@ -298,11 +364,10 @@ func (s *Supervisor) checkTunnel(e *entry, now time.Time) {
 // Tick checks every account once. New account folders are picked up here, so
 // a second person can join on a running computer without restarting anything.
 func (s *Supervisor) Tick(now time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	discovered := Discover(s.Base)
+	s.tickMu.Lock()
+	defer s.tickMu.Unlock()
 	seen := map[string]bool{}
-	for _, n := range discovered {
+	for _, n := range Discover(s.Base) {
 		seen[n.ID] = true
 		e := s.entries[n.ID]
 		if e == nil {
@@ -311,6 +376,11 @@ func (s *Supervisor) Tick(now time.Time) {
 			s.Log.Info("watching", "account", n.ID, "port", n.Port, "from", n.Source)
 		}
 		e.node = n
+		if s.held(n.Dir, now) {
+			e.n.state, e.tun.state = "updating", "updating"
+			s.publish()
+			continue
+		}
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -320,31 +390,21 @@ func (s *Supervisor) Tick(now time.Time) {
 			s.checkNode(e, now)
 			s.checkTunnel(e, now)
 		}()
+		s.publish()
 	}
 	for id, e := range s.entries {
-		if !seen[id] {
-			s.Log.Info("account removed, stopping it", "account", id)
-			if e.n.proc.alive() {
-				killTree(e.n.proc.cmd)
-			}
-			if e.tun.proc.alive() {
-				killTree(e.tun.proc.cmd)
-			}
-			delete(s.entries, id)
-		}
-	}
-	out := Status{Version: version, Base: s.Base, Started: s.started.UTC().Format(time.RFC3339), Nodes: make([]NodeStatus, 0, len(discovered))}
-	for _, n := range discovered {
-		e := s.entries[n.ID]
-		if e == nil {
+		if seen[id] {
 			continue
 		}
-		out.Nodes = append(out.Nodes, NodeStatus{ID: n.ID, Port: n.Port, URL: n.URL, Source: n.Source,
-			Node: unitStatus(&e.n), Tunnel: unitStatus(&e.tun)})
+		if s.held(e.node.Dir, now) {
+			continue // its files are being replaced; it will be back
+		}
+		s.Log.Info("account removed, stopping it", "account", id)
+		e.n.retire()
+		e.tun.retire()
+		delete(s.entries, id)
 	}
-	s.snapMu.Lock()
-	s.snap = out
-	s.snapMu.Unlock()
+	s.publish()
 }
 
 // Run checks on every tick until ctx ends. Children are left running on exit:
@@ -383,10 +443,13 @@ type NodeStatus struct {
 }
 
 type Status struct {
-	Version string       `json:"version"`
-	Base    string       `json:"base"`
-	Started string       `json:"started"`
-	Nodes   []NodeStatus `json:"nodes"`
+	Version string `json:"version"`
+	Base    string `json:"base"`
+	Started string `json:"started"`
+	// Holds tells setup that this build leaves an account alone while its
+	// folder carries an "updating" file, so setup need not stop it.
+	Holds bool         `json:"holds"`
+	Nodes []NodeStatus `json:"nodes"`
 }
 
 func unitStatus(u *unit) UnitStatus {
@@ -400,10 +463,25 @@ func unitStatus(u *unit) UnitStatus {
 	return st
 }
 
-// Snapshot reports what the supervisor currently believes without waiting on health probes.
+// publish refreshes what /status returns. It only reads memory, so the lock
+// it takes is never held across a network call.
+func (s *Supervisor) publish() {
+	out := Status{Version: version, Base: s.Base, Started: s.started.UTC().Format(time.RFC3339), Holds: true, Nodes: []NodeStatus{}}
+	for _, e := range s.entries {
+		n := e.node
+		out.Nodes = append(out.Nodes, NodeStatus{ID: n.ID, Port: n.Port, URL: n.URL, Source: n.Source,
+			Node: unitStatus(&e.n), Tunnel: unitStatus(&e.tun)})
+	}
+	sort.Slice(out.Nodes, func(i, j int) bool { return out.Nodes[i].Port < out.Nodes[j].Port })
+	s.mu.Lock()
+	s.snap = out
+	s.mu.Unlock()
+}
+
+// Snapshot reports what the supervisor believed at its last check.
 func (s *Supervisor) Snapshot() Status {
-	s.snapMu.RLock()
-	defer s.snapMu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	out := s.snap
 	out.Nodes = append([]NodeStatus(nil), s.snap.Nodes...)
 	return out

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -13,8 +14,18 @@ import (
 const (
 	createNoWindow        = 0x08000000
 	createNewProcessGroup = 0x00000200
+	processTerminate      = 0x0001
+	processSetQuota       = 0x0100
 	runKey                = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 	runName               = "NouGen-Supervisor"
+)
+
+var (
+	kernel32            = syscall.NewLazyDLL("kernel32.dll")
+	procCreateJobObject = kernel32.NewProc("CreateJobObjectW")
+	procAssignToJob     = kernel32.NewProc("AssignProcessToJobObject")
+	procTerminateJob    = kernel32.NewProc("TerminateJobObject")
+	procAttachConsole   = kernel32.NewProc("AttachConsole")
 )
 
 // hideAndGroup makes sure a child never opens a window.
@@ -28,15 +39,82 @@ func hidden(name string, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// killTree stops a child and everything it started. `uv run` starts Python
-// as its own child, so killing only uv would leave the node holding its port.
-func killTree(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
+// track puts a freshly started child in a job object of its own. Everything
+// the child starts later (uv starts Python) lands in the same job, so the
+// tree can be stopped through the job handle instead of by process id.
+// The job is not set to die with this program: nodes outlive the supervisor.
+func track(cmd *exec.Cmd) uintptr {
+	job, _, _ := procCreateJobObject.Call(0, 0)
+	if job == 0 {
+		return 0
+	}
+	h, err := syscall.OpenProcess(processTerminate|processSetQuota, false, uint32(cmd.Process.Pid))
+	if err != nil {
+		syscall.CloseHandle(syscall.Handle(job))
+		return 0
+	}
+	ok, _, _ := procAssignToJob.Call(job, uintptr(h))
+	syscall.CloseHandle(h)
+	if ok == 0 {
+		syscall.CloseHandle(syscall.Handle(job))
+		return 0
+	}
+	return job
+}
+
+// killGroup stops a child and everything it started. With a job it never
+// names a process id. Without one (grouping failed) it falls back to
+// taskkill, and only while the child is still running, so the id it names
+// cannot have been handed to another program.
+func killGroup(p *proc) {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return
 	}
-	if hidden("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run() != nil {
-		_ = cmd.Process.Kill()
+	if p.group != 0 {
+		procTerminateJob.Call(p.group, 1)
+		return
 	}
+	if p.alive() {
+		if hidden("taskkill", "/T", "/F", "/PID", strconv.Itoa(p.cmd.Process.Pid)).Run() != nil {
+			_ = p.cmd.Process.Kill()
+		}
+	}
+}
+
+func closeGroup(p *proc) {
+	if p != nil && p.group != 0 {
+		syscall.CloseHandle(syscall.Handle(p.group))
+		p.group = 0
+	}
+}
+
+// portOwner finds the program listening on a local port and its command line.
+func portOwner(port int) (int, string) {
+	out, err := hidden("netstat", "-ano", "-p", "TCP").Output()
+	if err != nil {
+		return 0, ""
+	}
+	suffix := ":" + strconv.Itoa(port)
+	pid := 0
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 5 && f[3] == "LISTENING" && strings.HasSuffix(f[1], suffix) {
+			pid, _ = strconv.Atoi(f[4])
+			break
+		}
+	}
+	if pid <= 4 {
+		return 0, ""
+	}
+	q := fmt.Sprintf("(Get-CimInstance Win32_Process -Filter 'ProcessId=%d').CommandLine", pid)
+	cl, _ := hidden("powershell", "-NoProfile", "-NonInteractive", "-Command", q).Output()
+	return pid, strings.TrimSpace(string(cl))
+}
+
+// killPID stops a program this supervisor did not start, with its children.
+// Callers confirm what the id belongs to immediately before calling.
+func killPID(pid int) {
+	_ = hidden("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid)).Run()
 }
 
 func quoteArg(s string) string {
@@ -81,6 +159,13 @@ func autostartOn() bool {
 	return hidden("reg", "query", runKey, "/v", runName).Run() == nil
 }
 
+// stopOthers ends every other supervisor process. A build from before the
+// control endpoint existed cannot be asked to quit, and two supervisors would
+// fight over the same ports.
+func stopOthers() {
+	_ = hidden("taskkill", "/F", "/IM", "nougen-supervisor.exe", "/FI", "PID ne "+strconv.Itoa(os.Getpid())).Run()
+}
+
 func startDetached(self string, args []string) error {
 	cmd := hidden(self, args...)
 	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup
@@ -97,8 +182,7 @@ func attachConsole() {
 	if _, err := os.Stdout.Stat(); err == nil {
 		return // output is already a pipe or file
 	}
-	proc := syscall.NewLazyDLL("kernel32.dll").NewProc("AttachConsole")
-	if r, _, _ := proc.Call(^uintptr(0)); r == 0 {
+	if r, _, _ := procAttachConsole.Call(^uintptr(0)); r == 0 {
 		return
 	}
 	if f, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0); err == nil {

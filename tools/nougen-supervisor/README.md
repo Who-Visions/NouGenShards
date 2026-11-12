@@ -48,7 +48,7 @@ whose download never finished (no `NouGenShards/app.py`) is ignored.
 ## Build and test
 
     go vet ./... && go test ./...
-    go build -trimpath -ldflags "-s -w -H windowsgui -X main.version=1.3.0" -o nougen-supervisor.exe .
+    go build -trimpath -ldflags "-s -w -H windowsgui -X main.version=1.3.1" -o nougen-supervisor.exe .
 
 `-H windowsgui` is what keeps a console window from flashing at sign-in. Drop
 it on macOS and Linux. Releases are built by `.github/workflows/supervisor.yml`

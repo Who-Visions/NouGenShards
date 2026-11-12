@@ -86,7 +86,7 @@ func writeNode(t *testing.T, base, id string, port int, tunnel string) {
 func fastTiming() Timing {
 	return Timing{Tick: 50 * time.Millisecond, NodeGrace: 3 * time.Second, TunnelGrace: 3 * time.Second,
 		BackoffMin: 10 * time.Millisecond, BackoffMax: 80 * time.Millisecond, Stable: time.Hour,
-		Probe: time.Second, Fails: 2}
+		Probe: time.Second, Hold: time.Hour, Fails: 2}
 }
 
 func newTest(t *testing.T, l Launcher, tm Timing) (*Supervisor, string) {
@@ -96,11 +96,11 @@ func newTest(t *testing.T, l Launcher, tm Timing) (*Supervisor, string) {
 	t.Cleanup(func() {
 		for _, e := range s.entries {
 			if e.n.proc.alive() {
-				killTree(e.n.proc.cmd)
+				killGroup(e.n.proc)
 				<-e.n.proc.done
 			}
 			if e.tun.proc.alive() {
-				killTree(e.tun.proc.cmd)
+				killGroup(e.tun.proc)
 				<-e.tun.proc.done
 			}
 		}
@@ -181,8 +181,8 @@ func TestStartsThenRestartsADeadNodeAndTunnel(t *testing.T) {
 
 	e := s.entries["acct"]
 	oldNode, oldTun := e.n.proc, e.tun.proc
-	killTree(oldNode.cmd)
-	killTree(oldTun.cmd)
+	killGroup(oldNode)
+	killGroup(oldTun)
 	<-oldNode.done
 	<-oldTun.done
 

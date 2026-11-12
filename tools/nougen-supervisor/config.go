@@ -48,12 +48,16 @@ var (
 	ps1Token  = regexp.MustCompile(`\$env:NGS_NODE_TOKEN\s*=\s*'((?:[^']|'')*)'`)
 	ps1Port   = regexp.MustCompile(`\$env:NGS_PORT\s*=\s*'(\d+)'`)
 	ps1User   = regexp.MustCompile(`\$env:NGS_HUD_USER\s*=\s*'((?:[^']|'')*)'`)
-	shUser    = regexp.MustCompile(`NGS_HUD_USER='([^']*)'`)
 	ps1Tunnel = regexp.MustCompile(`'--token'\s*,\s*'((?:[^']|'')*)'`)
-	shToken   = regexp.MustCompile(`NGS_NODE_TOKEN='([^']*)'`)
-	shPort    = regexp.MustCompile(`NGS_PORT='(\d+)'`)
-	shTunnel  = regexp.MustCompile(`--token '([^']*)'`)
+	// In sh, a single quote inside a single-quoted value is written '\''.
+	shUser   = regexp.MustCompile(`NGS_HUD_USER='((?:[^']|'\\'')*)'`)
+	shToken  = regexp.MustCompile(`NGS_NODE_TOKEN='((?:[^']|'\\'')*)'`)
+	shPort   = regexp.MustCompile(`NGS_PORT='(\d+)'`)
+	shTunnel = regexp.MustCompile(`--token '((?:[^']|'\\'')*)'`)
 )
+
+// shValue undoes sh single-quote escaping.
+func shValue(s string) string { return strings.ReplaceAll(s, `'\''`, "'") }
 
 func first(re *regexp.Regexp, s string) string {
 	m := re.FindStringSubmatch(s)
@@ -84,8 +88,8 @@ func loadNode(dir string) (Node, bool) {
 		n.Source = "run.ps1"
 	} else if b, err := os.ReadFile(filepath.Join(dir, "run.sh")); err == nil {
 		s := string(b)
-		n.Token, n.Tunnel = first(shToken, s), first(shTunnel, s)
-		n.ID = first(shUser, s)
+		n.Token, n.Tunnel = shValue(first(shToken, s)), shValue(first(shTunnel, s))
+		n.ID = shValue(first(shUser, s))
 		n.Port, _ = strconv.Atoi(first(shPort, s))
 		n.Source = "run.sh"
 	} else {

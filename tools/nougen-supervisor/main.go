@@ -38,11 +38,41 @@ const (
 	guardHeader = "X-NouGen-Supervisor"
 )
 
+// addr is where the control endpoint listens. It is always a loopback
+// address: a wildcard or port-only value keeps its port and is pinned to
+// 127.0.0.1, so the endpoint can never be reached from another computer.
 func addr() string {
-	if a := os.Getenv("NOUGEN_SUPERVISOR_ADDR"); a != "" {
-		return a
+	a := os.Getenv("NOUGEN_SUPERVISOR_ADDR")
+	if a == "" {
+		return defaultAddr
 	}
-	return defaultAddr
+	host, port, err := net.SplitHostPort(a)
+	if err != nil {
+		return defaultAddr
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
+}
+
+// localHost reports whether a request's Host header names this computer on
+// the port we listen on. A page that reaches us through a rebound DNS name
+// carries its own host name here and is refused.
+func localHost(host, listen string) bool {
+	h, p, err := net.SplitHostPort(host)
+	if err != nil {
+		return false
+	}
+	_, want, _ := net.SplitHostPort(listen)
+	if p != want {
+		return false
+	}
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 // rotatingFile is the supervisor's own log: one file capped at max bytes,
@@ -82,7 +112,7 @@ func (r *rotatingFile) Write(p []byte) (int, error) {
 func handler(s *Supervisor, listen string, quit func()) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-		if r.Host != listen {
+		if !localHost(r.Host, listen) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -90,7 +120,7 @@ func handler(s *Supervisor, listen string, quit func()) http.Handler {
 		_ = json.NewEncoder(w).Encode(s.Snapshot())
 	})
 	mux.HandleFunc("/quit", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.Host != listen || r.Header.Get(guardHeader) != "1" {
+		if r.Method != http.MethodPost || !localHost(r.Host, listen) || r.Header.Get(guardHeader) != "1" {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -181,17 +211,24 @@ func cmdInstall(base string, baseSet bool) int {
 		fmt.Fprintln(os.Stderr, "autostart:", err)
 		return 1
 	}
-	// Replace a running older build, then start this one.
-	if st, err := fetchStatus(2 * time.Second); err == nil && st.Version != version {
-		_ = requestQuit()
-		for i := 0; i < 50; i++ {
-			if _, err := fetchStatus(time.Second); err != nil {
-				break
+	// Replace a running older build, then start this one. A build that
+	// answers is asked to quit; anything left (a build from before the
+	// control endpoint, or one that did not quit in time) is ended, because
+	// two supervisors would fight over the same ports.
+	if st, err := fetchStatus(5 * time.Second); err != nil || st.Version != version {
+		if err == nil {
+			_ = requestQuit()
+			for i := 0; i < 25; i++ {
+				if _, err := fetchStatus(time.Second); err != nil {
+					break
+				}
+				time.Sleep(200 * time.Millisecond)
 			}
-			time.Sleep(200 * time.Millisecond)
 		}
+		stopOthers()
+		time.Sleep(300 * time.Millisecond)
 	}
-	if _, err := fetchStatus(2 * time.Second); err != nil {
+	if _, err := fetchStatus(5 * time.Second); err != nil {
 		if err := startDetached(self, args); err != nil {
 			fmt.Fprintln(os.Stderr, "start:", err)
 			return 1
