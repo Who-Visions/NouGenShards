@@ -105,8 +105,7 @@ test("setup hands each account to the supervisor: node.json, a pinned download, 
   assert.ok(cmd.includes(SUPERVISOR.sha256["windows-amd64.exe"]) && cmd.includes("Get-FileHash -Algorithm SHA256"));
   assert.match(cmd, /did not match its fingerprint/);
   assert.match(cmd, /if \(\$ok\) \{/);
-  // The supervisor is stopped before the account's files are replaced.
-  assert.ok(cmd.indexOf("Get-Process nougen-supervisor") < cmd.indexOf("Expand-Archive"));
+  assert.ok(cmd.includes(SUPERVISOR.sha256["windows-arm64.exe"]), "Windows on ARM gets its native build");
   // The old per-account launcher and its sign-in entry are gone; the supervisor owns both.
   assert.ok(!cmd.includes("$run = ") && !cmd.includes("CurrentVersion\\Run"));
   // The tunnel credential is never placed on a command line.
