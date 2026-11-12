@@ -2378,6 +2378,13 @@ def get_parser():
     p_rdacc.add_argument("--breakpoint", required=True, help="YYYY-MM-DD")
     p_rdacc.add_argument("--json", action="store_true")
 
+    p_sub = subparsers.add_parser("subscribe", help="Proactive surfacing: subscribe to tags/keywords, surface new shards")
+    p_sub.add_argument("action", choices=["add", "rm", "list", "surface", "peek"])
+    p_sub.add_argument("name", nargs="?")
+    p_sub.add_argument("--tag", action="append", default=[])
+    p_sub.add_argument("--keyword", action="append", default=[])
+    p_sub.add_argument("--json", action="store_true")
+
     p_chat = subparsers.add_parser("chat", help="Chat with memory")
     p_chat.add_argument("query", nargs="?")
     p_chat.add_argument("--model")
@@ -4422,6 +4429,37 @@ def cmd_open(args):
     open_main(forwarded)
 
 
+def cmd_subscribe(args):
+    from . import shard_subscriptions as ss
+    if args.action in ("add", "rm") and not args.name:
+        print(f"subscribe {args.action} needs a name", file=sys.stderr)
+        sys.exit(2)
+    if args.action == "add":
+        try:
+            out = ss.subscribe(args.name, tags=args.tag, keywords=args.keyword)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(2)
+    elif args.action == "rm":
+        out = {"removed": ss.unsubscribe(args.name)}
+    elif args.action == "list":
+        out = ss.list_subscriptions()
+    else:
+        try:
+            out = ss.surface(args.name, advance=(args.action == "surface"))
+        except KeyError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(2)
+    if args.json or args.action in ("add", "rm", "list"):
+        print(json.dumps(out, indent=2))
+        return 0
+    for name, hits in out.items():
+        print(f"[{name}] {len(hits)} new")
+        for h in hits:
+            print(f"  {h['ref']}  {h['timestamp']}  {h['title']}")
+    return 0
+
+
 def cmd_rd_accel(args):
     from dataclasses import asdict
     from datetime import date as _date
@@ -4498,7 +4536,7 @@ def main():
 
     args = parser.parse_args()
     cmds = {
-        "init": cmd_init, "setup": cmd_setup, "add": cmd_add, "get": cmd_get, "search": cmd_search, "window": cmd_window, "assure": cmd_assure, "rd-accel": cmd_rd_accel, "chat": cmd_chat,
+        "init": cmd_init, "setup": cmd_setup, "add": cmd_add, "get": cmd_get, "search": cmd_search, "window": cmd_window, "assure": cmd_assure, "rd-accel": cmd_rd_accel, "subscribe": cmd_subscribe, "chat": cmd_chat,
         "auth": cmd_auth, "mark": cmd_mark, "forget": cmd_forget, "recall-hook": cmd_recall_hook, "embed": cmd_embed, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
