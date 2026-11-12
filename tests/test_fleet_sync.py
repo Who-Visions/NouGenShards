@@ -62,3 +62,38 @@ def test_sync_repository_skipped_on_non_target(tmp_path):
     result = manager.sync_repository(repo_ext)
     assert result.status == "skipped"
     assert "Not a WhoVisions" in result.details
+
+
+def test_sync_repository_autostash_unmerged_conflict_aborts(tmp_path, monkeypatch):
+    repo = tmp_path / "nougen_repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+
+    manager = FleetSyncManager()
+
+    def fake_run_git(path, args, timeout=30):
+        cmd = tuple(args)
+        if cmd == ("config", "--get", "remote.origin.url"):
+            return 0, "https://github.com/Who-Visions/NouGenShards.git", ""
+        if cmd == ("branch", "--show-current"):
+            return 0, "main", ""
+        if cmd == ("status", "--porcelain"):
+            # First call (pre-pull): 1 dirty file; second call (post-pull): autostash conflict UU
+            if getattr(fake_run_git, "pulled", False):
+                return 0, "UU README.md", ""
+            return 0, " M README.md", ""
+        if cmd[0] in ("config", "fetch"):
+            return 0, "", ""
+        if cmd == ("rev-parse", "--abbrev-ref", "@{u}"):
+            return 0, "origin/main", ""
+        if cmd == ("rev-list", "--left-right", "--count", "HEAD...origin/main"):
+            return 0, "0\t1", ""
+        if cmd[:3] == ("pull", "--rebase", "--autostash"):
+            fake_run_git.pulled = True
+            return 0, "Autostash pop conflict", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(manager, "_run_git", fake_run_git)
+    result = manager.sync_repository(repo)
+    assert result.status == "conflict_aborted"
+    assert "UU README.md" in (result.error or "")

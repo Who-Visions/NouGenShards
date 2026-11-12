@@ -155,6 +155,22 @@ class TokenFuseElevated:
                 self.trip_reason = f"Session budget {self.max_session_tokens} tokens exceeded"
                 raise TokenFuseBreaker(self.trip_reason)
 
+            existing = self.tasks.get(task_id)
+            if existing is not None:
+                if not existing.active and self.active_tasks_count >= self.max_tasks:
+                    raise TokenFuseBreaker(
+                        f"Concurrent task ceiling reached ({self.active_tasks_count}/{self.max_tasks}). Prohibiting fan-out."
+                    )
+                if existing.total_tokens > self.max_task_tokens:
+                    raise TokenFuseBreaker(
+                        f"Task {task_id} already exceeded hard limit ({existing.total_tokens}/{self.max_task_tokens} tokens)."
+                    )
+                existing.active = True
+                existing.last_event_time = now
+                if model and model != "unknown":
+                    existing.model = model
+                return True
+
             if self.active_tasks_count >= self.max_tasks:
                 raise TokenFuseBreaker(
                     f"Concurrent task ceiling reached ({self.active_tasks_count}/{self.max_tasks}). Prohibiting fan-out."

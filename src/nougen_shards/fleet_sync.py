@@ -233,6 +233,24 @@ class FleetSyncManager:
                     dirty_files=dirty_count,
                     error=f"Rebase encountered conflict; safely aborted: {rebase_err}"
                 )
+            _, post_status, _ = self._run_git(repo, ["status", "--porcelain"])
+            unmerged_prefixes = ("UU ", "AA ", "DD ", "AU ", "UA ", "DU ", "UD ")
+            unmerged = [
+                line for line in post_status.splitlines()
+                if line.startswith(unmerged_prefixes)
+            ]
+            if unmerged:
+                return SyncResult(
+                    repo_name=repo.name,
+                    path=str(repo),
+                    branch=branch,
+                    remote_url=remote_url,
+                    status="conflict_aborted",
+                    ahead=ahead,
+                    behind=0,
+                    dirty_files=len([l for l in post_status.splitlines() if l.strip()]),
+                    error=f"Autostash pop encountered unmerged conflicts: {', '.join(unmerged)}"
+                )
             behind = 0
 
         # 8. Push if ahead and auto_push is enabled

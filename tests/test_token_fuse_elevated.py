@@ -99,3 +99,24 @@ def test_token_fuse_concurrent_task_ceiling():
 
     fuse.close_task("worker_1")
     assert fuse.request_task_lease("worker_3") is True
+
+
+def test_request_task_lease_preserves_existing_task_accounting():
+    fuse = TokenFuseElevated(
+        session_id="test_reacquire",
+        max_session_tokens=50000,
+        max_task_tokens=2000,
+        max_tasks=2,
+    )
+    assert fuse.request_task_lease("worker_1", model="gemma4") is True
+    fuse.record_usage("worker_1", input_tokens=1200, output_tokens=300)
+    assert fuse.cumulative_tokens == 1500
+    fuse.close_task("worker_1")
+    assert fuse.tasks["worker_1"].active is False
+
+    # Re-acquiring the same task_id must preserve prior spend and reactivate
+    assert fuse.request_task_lease("worker_1", model="gemma4-pro") is True
+    assert fuse.tasks["worker_1"].active is True
+    assert fuse.tasks["worker_1"].total_tokens == 1500
+    assert fuse.cumulative_tokens == 1500
+    assert fuse.tasks["worker_1"].model == "gemma4-pro"
