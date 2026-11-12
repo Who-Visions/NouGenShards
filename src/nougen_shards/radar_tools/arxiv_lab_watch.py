@@ -31,8 +31,14 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+
+def _vault_root() -> Path:
+    """Active vault root: NOUGEN_VAULT_DIR when set (a tenant node), else ~/.nougen/shards."""
+    env = os.environ.get("NOUGEN_VAULT_DIR", "").strip()
+    return Path(env).expanduser() if env else Path.home() / ".nougen" / "shards"
+
 _HERE = Path(__file__).resolve().parent
-LAB_ROOT = Path(os.path.expanduser("~/.nougen/shards/lab"))
+LAB_ROOT = _vault_root() / "lab"
 UA = "nougen-lab-watch/0.1 (+phoebus)"
 
 

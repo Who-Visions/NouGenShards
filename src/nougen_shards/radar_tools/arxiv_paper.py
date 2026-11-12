@@ -7,7 +7,7 @@
 
 Why: radar and lab decisions were made from abstracts only. The e-print source is the
 paper's own LaTeX, so a claim can be checked against the body with plain text search,
-no PDF parsing. Clean-room: method inspired by Tom Brown's arxiv.py (GPL-3), no code taken.
+no PDF parsing. Clean-room: method inspired by a GPL-3 arxiv.py utility, no code taken.
 
 Disk discipline (this node runs near full): only extracted .tex text is kept, under
 ~/.nougen/shards/lab/papers/<id>/fulltext.tex; downloads over MAX_SOURCE_BYTES are refused.
@@ -26,8 +26,14 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+
+def _vault_root() -> Path:
+    """Active vault root: NOUGEN_VAULT_DIR when set (a tenant node), else ~/.nougen/shards."""
+    env = os.environ.get("NOUGEN_VAULT_DIR", "").strip()
+    return Path(env).expanduser() if env else Path.home() / ".nougen" / "shards"
+
 UA = "nougen-radar/arxiv_paper (+phoebus)"
-CACHE = Path(os.path.expanduser("~/.nougen/shards/lab/papers"))
+CACHE = _vault_root() / "lab" / "papers"
 MAX_SOURCE_BYTES = 25_000_000
 NS = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
 _NEW = re.compile(r"^(\d{4}\.\d{4,5})(v\d+)?$")
@@ -149,8 +155,12 @@ def fulltext(ref: str, refresh: bool = False) -> Path:
 
 
 def body_only(tex: str) -> str:
-    """The paper minus its abstract. A claim 'verified in the body' must not be satisfied by the
-    abstract, which is part of the LaTeX source."""
+    """The paper minus its preamble and abstract. A claim 'verified in the body' must not be
+    satisfied by the abstract or by a preamble macro (\\newcommand, \\title), both of which are
+    part of the LaTeX source."""
+    start = re.search(r"\\begin\{document\}", tex)
+    if start:
+        tex = tex[start.end():]
     return re.sub(r"\\begin\{abstract\}.*?\\end\{abstract\}", " ", tex, flags=re.S)
 
 

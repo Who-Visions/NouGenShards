@@ -29,8 +29,14 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+
+def _vault_root() -> Path:
+    """Active vault root: NOUGEN_VAULT_DIR when set (a tenant node), else ~/.nougen/shards."""
+    env = os.environ.get("NOUGEN_VAULT_DIR", "").strip()
+    return Path(env).expanduser() if env else Path.home() / ".nougen" / "shards"
+
 # Paths
-RADAR_DIR = Path(os.path.expanduser("~/.nougen/shards/radar"))
+RADAR_DIR = _vault_root() / "radar"
 ROUTE_RECIPE_PATH = RADAR_DIR / "route-v1.json"
 CURSOR_PATH = RADAR_DIR / "cursor.json"
 QUEUES_DIR = RADAR_DIR / "queues"
