@@ -1,4 +1,5 @@
 """leakwatch: retained-type detection, leak trace to a module root, fingerprint grouping."""
+import pytest
 import sys
 import types
 
@@ -120,3 +121,40 @@ def test_hub_object_with_many_referrers_stays_within_budget():
         assert _t.monotonic() - t0 < 5.0
     finally:
         sys.modules.pop("lw_fake_hub", None)
+
+
+def test_rss_falls_back_to_stdlib_when_psutil_is_missing(monkeypatch):
+    """The gateway venv has no psutil; rss_mb was [null, ...] in every report."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_psutil(name, *a, **k):
+        if name == "psutil":
+            raise ModuleNotFoundError("No module named 'psutil'")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_psutil)
+    rss, source = leakwatch._rss_probe()
+    stdlib = [n for n, _ in leakwatch._rss_sources() if n != "psutil"]
+    if not stdlib:
+        pytest.skip("no stdlib RSS reader on this platform")
+    assert source in stdlib
+    assert rss and rss > 1024 * 1024
+
+    lw = leakwatch.LeakWatch(log_path=None)
+    report = lw.check()
+    assert report["rss_source"] == source
+    assert report["rss_mb"][-1] and report["rss_mb"][-1] > 1
+
+
+def test_rss_reports_none_source_when_every_reader_fails(monkeypatch, caplog):
+    def boom():
+        raise OSError("nope")
+
+    monkeypatch.setattr(leakwatch, "_rss_sources", lambda: [("fake", boom)])
+    monkeypatch.setattr(leakwatch, "_rss_warned", False)
+    with caplog.at_level("WARNING"):
+        assert leakwatch._rss_probe() == (None, "none")
+    assert "no RSS source worked" in caplog.text
+    assert "fake: OSError" in caplog.text
