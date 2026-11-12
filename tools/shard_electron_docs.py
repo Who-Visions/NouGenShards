@@ -57,8 +57,8 @@ def main() -> int:
         title = _title(text, rel)
         body = f"SOURCE: electron/electron docs/{rel}\n\n{text[:MAX_CHARS]}"
         try:
-            res = core.capture(DOMAIN, title, body)
-            if res and res.get("shard_id"):
+            res = core.capture("doc", title, body, domain_key=DOMAIN)
+            if (res and res.get("shard_id")) or (isinstance(res, dict) and res.get("reason") == "duplicate"):
                 captured += 1
             else:
                 failed += 1
