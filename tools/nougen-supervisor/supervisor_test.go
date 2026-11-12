@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -345,6 +347,79 @@ func TestTunnelCredentialNeverAppearsInArguments(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(l.Tunnel(n, "x").Env, "\n"), "TUNNEL_TOKEN=tunnel-secret") {
 		t.Fatal("tunnel credential not passed in the environment")
+	}
+	nodeEnv := strings.Join(l.Node(n).Env, "\n")
+	for _, want := range []string{
+		"NOUGEN_VAULT_DIR=" + filepath.Join(n.Dir, "shards"),
+		"NOUGEN_HOME=" + n.Dir,
+		"NOUGEN_ROOT=" + n.Dir,
+		"NOUGEN_SECRETS_VAULT_DIR=" + filepath.Join(n.Dir, "secrets"),
+	} {
+		if !strings.Contains(nodeEnv, want) {
+			t.Fatalf("node env missing %q", want)
+		}
+	}
+}
+
+func TestSnapshotDoesNotBlockDuringSlowProbes(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+	}))
+	defer func() {
+		releaseOnce()
+		srv.Close()
+	}()
+	_, portStr, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+
+	tm := fastTiming()
+	tm.Probe = 2 * time.Second
+	s, base := newTest(t, fakeLauncher{node: "ok"}, tm)
+	writeNode(t, base, "acct", port, "")
+
+	done := make(chan struct{})
+	go func() {
+		s.Tick(time.Now())
+		close(done)
+	}()
+	<-started
+
+	snapStart := time.Now()
+	_ = s.Snapshot()
+	if elapsed := time.Since(snapStart); elapsed > 200*time.Millisecond {
+		t.Fatalf("Snapshot blocked %v behind slow Tick probe", elapsed)
+	}
+	releaseOnce()
+	<-done
+}
+
+func TestCmdStatusJSONPreservesUnhealthyExitCode(t *testing.T) {
+	tm := fastTiming()
+	tm.NodeGrace = time.Hour
+	s, base := newTest(t, fakeLauncher{node: "sick"}, tm)
+	writeNode(t, base, "acct", freePort(t), "")
+	s.Tick(time.Now())
+
+	srv := httptest.NewServer(nil)
+	srv.Config.Handler = handler(s, srv.Listener.Addr().String(), func() {})
+	defer srv.Close()
+	t.Setenv("NOUGEN_SUPERVISOR_ADDR", srv.Listener.Addr().String())
+
+	var out bytes.Buffer
+	code := cmdStatus(&out, true)
+	if code != 2 {
+		t.Fatalf("cmdStatus(-json) with unhealthy node returned %d, want 2 (body: %s)", code, out.String())
+	}
+	if !strings.Contains(out.String(), `"running":true`) || !strings.Contains(out.String(), `"acct"`) {
+		t.Fatalf("unexpected status JSON: %s", out.String())
 	}
 }
 

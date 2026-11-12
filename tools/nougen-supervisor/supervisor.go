@@ -57,7 +57,10 @@ func (l realLauncher) Node(n Node) *exec.Cmd {
 	cmd.Env = append(os.Environ(),
 		"NGS_NODE_TOKEN="+n.Token, "NGS_HUD_USER="+n.ID, "NGS_HUD_PASSWORD="+n.Token,
 		fmt.Sprintf("NGS_PORT=%d", n.Port),
-		"NOUGEN_VAULT_DIR="+filepath.Join(n.Dir, "shards"), "NOUGEN_HOME="+n.Dir)
+		"NOUGEN_VAULT_DIR="+filepath.Join(n.Dir, "shards"),
+		"NOUGEN_HOME="+n.Dir,
+		"NOUGEN_ROOT="+n.Dir,
+		"NOUGEN_SECRETS_VAULT_DIR="+filepath.Join(n.Dir, "secrets"))
 	return cmd
 }
 
@@ -150,13 +153,20 @@ type Supervisor struct {
 	mu      sync.Mutex
 	entries map[string]*entry
 	started time.Time
+
+	snapMu sync.RWMutex
+	snap   Status
 }
 
 // NewSupervisor builds a supervisor over the accounts under base.
 func NewSupervisor(base string, t Timing, l Launcher, log *slog.Logger) *Supervisor {
-	return &Supervisor{Base: base, T: t, L: l, Log: log,
+	started := time.Now()
+	return &Supervisor{
+		Base: base, T: t, L: l, Log: log,
 		client:  &http.Client{Timeout: t.Probe},
-		entries: map[string]*entry{}, started: time.Now()}
+		entries: map[string]*entry{}, started: started,
+		snap: Status{Version: version, Base: base, Started: started.UTC().Format(time.RFC3339), Nodes: []NodeStatus{}},
+	}
 }
 
 func (s *Supervisor) ok(url string) bool {
@@ -290,8 +300,9 @@ func (s *Supervisor) checkTunnel(e *entry, now time.Time) {
 func (s *Supervisor) Tick(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	discovered := Discover(s.Base)
 	seen := map[string]bool{}
-	for _, n := range Discover(s.Base) {
+	for _, n := range discovered {
 		seen[n.ID] = true
 		e := s.entries[n.ID]
 		if e == nil {
@@ -322,6 +333,18 @@ func (s *Supervisor) Tick(now time.Time) {
 			delete(s.entries, id)
 		}
 	}
+	out := Status{Version: version, Base: s.Base, Started: s.started.UTC().Format(time.RFC3339), Nodes: make([]NodeStatus, 0, len(discovered))}
+	for _, n := range discovered {
+		e := s.entries[n.ID]
+		if e == nil {
+			continue
+		}
+		out.Nodes = append(out.Nodes, NodeStatus{ID: n.ID, Port: n.Port, URL: n.URL, Source: n.Source,
+			Node: unitStatus(&e.n), Tunnel: unitStatus(&e.tun)})
+	}
+	s.snapMu.Lock()
+	s.snap = out
+	s.snapMu.Unlock()
 }
 
 // Run checks on every tick until ctx ends. Children are left running on exit:
@@ -377,18 +400,11 @@ func unitStatus(u *unit) UnitStatus {
 	return st
 }
 
-// Snapshot reports what the supervisor currently believes.
+// Snapshot reports what the supervisor currently believes without waiting on health probes.
 func (s *Supervisor) Snapshot() Status {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := Status{Version: version, Base: s.Base, Started: s.started.UTC().Format(time.RFC3339), Nodes: []NodeStatus{}}
-	for _, n := range Discover(s.Base) {
-		e := s.entries[n.ID]
-		if e == nil {
-			continue
-		}
-		out.Nodes = append(out.Nodes, NodeStatus{ID: n.ID, Port: n.Port, URL: n.URL, Source: n.Source,
-			Node: unitStatus(&e.n), Tunnel: unitStatus(&e.tun)})
-	}
+	s.snapMu.RLock()
+	defer s.snapMu.RUnlock()
+	out := s.snap
+	out.Nodes = append([]NodeStatus(nil), s.snap.Nodes...)
 	return out
 }

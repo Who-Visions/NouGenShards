@@ -233,23 +233,28 @@ func cmdStatus(out io.Writer, asJSON bool) int {
 		}
 		return 1
 	}
+	bad := 0
+	for _, n := range st.Nodes {
+		if n.Node.State != "up" || (n.Tunnel.State != "up" && n.Tunnel.State != "none") {
+			bad++
+		}
+	}
 	if asJSON {
 		_ = json.NewEncoder(out).Encode(struct {
 			Running   bool   `json:"running"`
 			Autostart string `json:"autostart"`
 			Status
 		}{true, auto, st})
+		if bad > 0 {
+			return 2
+		}
 		return 0
 	}
 	fmt.Fprintf(out, "supervisor: running %s   autostart: %s\n", st.Version, auto)
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "ACCOUNT\tPORT\tNODE\tTUNNEL\tSTARTS\tADDRESS")
-	bad := 0
 	for _, n := range st.Nodes {
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d/%d\t%s\n", n.ID, n.Port, n.Node.State, n.Tunnel.State, n.Node.Starts, n.Tunnel.Starts, n.URL)
-		if n.Node.State != "up" || (n.Tunnel.State != "up" && n.Tunnel.State != "none") {
-			bad++
-		}
 	}
 	tw.Flush()
 	if len(st.Nodes) == 0 {
