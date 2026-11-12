@@ -312,3 +312,5 @@ uvicorn==0.54.0
     #   nougen-shards (pyproject.toml)
     #   gradio
     #   mcp
+z3-solver==5.4.1.0
+    # via nougen-shards (pyproject.toml)
