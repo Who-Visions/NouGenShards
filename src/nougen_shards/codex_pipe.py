@@ -44,47 +44,13 @@ def _native_codex_executable():
     appdata = os.environ.get("APPDATA")
     if appdata:
         candidates.append(Path(appdata) / "npm/node_modules" / suffix)
-    # npm is a .cmd shim, so `npm root -g` fails under pythonw/schtasks; derive the
-    # global root from wherever the `codex` shim itself lives (nvm4w, nodejs, ...).
-    shim = shutil.which("codex")
-    if shim:
-        candidates.append(Path(shim).parent / "node_modules" / suffix)
-    # Codex desktop app: versioned hash dirs, newest wins.
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        desktop = sorted((Path(local) / "OpenAI/Codex/bin").glob("*/codex.exe"),
-                         key=lambda p: p.stat().st_mtime, reverse=True)
-        candidates.extend(desktop)
     return next((str(path) for path in candidates if path.is_file()), "")
-
-
-_SESSION_ID = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$", re.I)
-
-
-def _discover_thread():
-    """Thread for an unattended (watchdog) activate: the saved target if it is a
-    real UUID, else the newest Codex session rollout. Empty string if neither."""
-    try:
-        saved = str(json.loads(_target_file().read_text(encoding="utf-8")).get("thread_id") or "").strip()
-        uuid.UUID(saved)
-        return saved
-    except (OSError, ValueError, AttributeError):
-        pass
-    home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "sessions"
-    try:
-        newest = max(home.rglob("rollout-*.jsonl"), key=lambda p: p.stat().st_mtime)
-    except (OSError, ValueError):
-        return ""
-    match = _SESSION_ID.search(newest.name)
-    return match.group(1) if match else ""
 
 
 def activate(thread=None):
     """Bind the persistent receiver to the current Codex thread, idempotently."""
     thread = (thread or os.environ.get("CODEX_THREAD_ID")
               or os.environ.get("NOUGEN_CODEX_THREAD") or "").strip()
-    if not thread:
-        thread = _discover_thread()
     try:
         current = request({"op": "status"})
     except (OSError, ValueError):

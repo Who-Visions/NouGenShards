@@ -74,18 +74,6 @@ class CodexPipeTests(unittest.TestCase):
         self.assertTrue(result['pipe_delivered'])
         self.assertTrue(result['preflight']['ready'])
 
-    def test_discover_thread_skips_invalid_saved_target_for_newest_session(self):
-        root = Path(self.temp.name)
-        target = root / 'target.json'
-        target.write_text(json.dumps({'thread_id': 'test'}), encoding='utf-8')
-        day = root / 'codex' / 'sessions' / '2026' / '11' / '12'
-        day.mkdir(parents=True)
-        tid = '01a1cea4-f264-7b93-b187-7ea1011a2879'
-        (day / f'rollout-2026-11-12T02-24-42-{tid}.jsonl').write_text('', encoding='utf-8')
-        with patch.dict(os.environ, {'NOUGEN_CODEX_TARGET_FILE': str(target),
-                                     'CODEX_HOME': str(root / 'codex')}):
-            self.assertEqual(codex_pipe._discover_thread(), tid)
-
     def test_offline_fallback_uses_unique_files(self):
         with patch.object(codex_pipe, 'request', side_effect=OSError('offline')):
             first = codex_pipe.deliver('first')
