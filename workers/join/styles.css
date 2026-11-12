@@ -1,40 +1,153 @@
 @import "../../designs/nougen-core/tokens.css";
 
+* {
+  box-sizing: border-box;
+}
+
 body {
+  min-height: 100vh;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--space-5);
+  padding: var(--space-5) var(--space-4);
   font-family: var(--font-main);
   font-size: var(--type-body);
   line-height: var(--line-body);
-  max-width: var(--reading-measure);
-  margin: 10vh auto;
-  padding: 0 var(--space-4);
   color: var(--text);
   background: var(--bg);
 }
 
+.join-bar {
+  width: 100%;
+  max-width: 30rem;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--type-meta);
+  color: var(--muted);
+}
+
+.join-wordmark {
+  color: var(--text);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-decoration: none;
+}
+
+.join-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  font-family: var(--font-mono);
+  font-size: var(--type-meta);
+  color: var(--muted);
+}
+
+.join-card {
+  width: 100%;
+  max-width: 30rem;
+  margin: auto;
+  padding: var(--space-6) var(--space-5);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+
+.join-eyebrow {
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--type-meta);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
 h1 {
-  font-size: 1.875rem;
-  line-height: 1.2;
+  font-size: 1.75rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
   margin: 0 0 var(--space-3);
 }
 
+.join-lead {
+  margin: 0 0 var(--space-5);
+  color: var(--muted);
+}
+
 .join-action {
+  width: 100%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: var(--space-3);
   min-height: var(--target-touch);
   padding: var(--space-3) var(--space-5);
-  background: var(--accent);
-  color: var(--control-ink);
-  border: 1px solid var(--accent);
+  background: var(--text);
+  color: var(--bg);
+  border: 1px solid var(--text);
   border-radius: var(--radius-md);
   text-decoration: none;
   font-weight: 600;
-  font-size: 1.125rem;
+  font-size: 1rem;
   transition: background-color var(--motion-fast) var(--motion-ease);
 }
 
 .join-action:hover {
-  background: var(--accent-2);
+  background: var(--muted);
+}
+
+.join-host {
+  display: inline-block;
+  margin: 0 0 var(--space-4);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  font-family: var(--font-mono);
+  font-size: var(--type-meta);
+  overflow-wrap: anywhere;
+}
+
+.join-steps {
+  margin: var(--space-5) 0 0;
+  padding: var(--space-4) 0 0;
+  border-top: 1px solid var(--line);
+  list-style: none;
+  display: grid;
+  gap: var(--space-3);
+}
+
+.join-step {
+  display: grid;
+  grid-template-columns: 1.5rem 1fr;
+  gap: var(--space-3);
+  font-size: var(--type-meta);
+  color: var(--muted);
+}
+
+.join-step-num {
+  width: 1.375rem;
+  height: 1.375rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+
+.join-step strong {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .join-meta,
@@ -47,16 +160,20 @@ small {
   color: var(--muted);
 }
 
-.join-footer {
-  margin-top: var(--space-6);
-  padding-top: var(--space-4);
-  border-top: 1px solid var(--line);
+.join-meta a:hover {
+  color: var(--text);
+}
+
+.join-hint {
+  margin: var(--space-3) 0 0;
+  color: var(--muted);
+  font-size: var(--type-meta);
 }
 
 code {
   font-family: var(--font-mono);
   font-size: var(--type-meta);
-  background: var(--panel);
+  background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   padding: 0.125rem var(--space-1);
