@@ -1,0 +1,44 @@
+{
+  "description": "One violet-branded console design system with four colorways: Dark, Light, Arcade and Hardcade. Colorways remap tokens only; layout, permissions, telemetry meaning and component behavior never change.",
+  "dialect": "nougendesigns/v0",
+  "entry": {
+    "prose": "DESIGN.md",
+    "tokens": "tokens.css"
+  },
+  "name": "mono-violet",
+  "provenance": [
+    {
+      "kind": "observed",
+      "note": "Bg, surface, accent and text hex per colorway; four-theme structure; data-theme attribute approach.",
+      "source": "GM brief 2026-11-10 (Mono Violet theme engine)"
+    },
+    {
+      "kind": "invented",
+      "note": "Muted, border, status, chart, radius and outline tokens; contrast-driven.",
+      "source": "designs/mono-violet/design.json"
+    },
+    {
+      "kind": "inferred",
+      "note": "Shell and state invariants shared with the console architecture.",
+      "source": "designs/saas-console-morph.md"
+    },
+    {
+      "kind": "observed",
+      "note": "Hardcade in the repo names a command lexicon; no palette or token values found in it or in 33 other files that mention the word.",
+      "source": "docs/hardcade-lexicon.md"
+    }
+  ],
+  "schemaVersion": "od-design-system-project/v1",
+  "sourceDigest": "6f1938b55bdd5c682920d60ac06c5b897cd945e74a76428e850859b3588c1c2b",
+  "surfaces": {
+    "ground": "--bg",
+    "ink": "--text"
+  },
+  "themes": [
+    "arcade",
+    "dark",
+    "hardcade",
+    "light"
+  ],
+  "version": "0.1.1"
+}

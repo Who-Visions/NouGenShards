@@ -1,0 +1,5 @@
+nougen-supervisor
+nougen-supervisor.exe
+nougen-supervisor-*
+*.test
+*.test.exe

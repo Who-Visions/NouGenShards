@@ -160,3 +160,47 @@ def test_run_db_scans_reports_miss_count_for_warmup(monkeypatch):
     finally:
         release.set()
         monkeypatch.setattr(core, "_SCAN_POOL", None)
+
+
+def test_stuck_vector_scans_do_not_starve_the_exact_lanes(monkeypatch):
+    """whoart 2026-11-09: /search fast=true took 17.7s in the node, 0.18s in a
+    fresh process. Timed-out vector scans held every slot of the one shared pool
+    and the keyword scans queued behind them for their whole deadline."""
+    monkeypatch.setenv("NOUGEN_SCAN_POOL_WORKERS", "4")
+    monkeypatch.setattr(core, "_SCAN_POOL", None)
+    monkeypatch.setattr(core, "_EXACT_SCAN_POOL", None)
+    monkeypatch.setattr(core, "_retrieve_db_workers", lambda: 4)
+    monkeypatch.setattr(core, "elevated_lane_timeout", lambda **k: 0.3)
+    release = threading.Event()
+
+    def stuck(i):
+        release.wait(10.0)  # e.g. waiting on the vector cache lock
+        return ([], True)
+
+    try:
+        # Two vector recalls time out; their scans keep all 4 vector slots.
+        for _ in range(2):
+            out = dict(core._run_db_scans(stuck, core.VECTOR_SCAN_LANE))
+            assert all(v == ([], True) for v in out.values())
+
+        monkeypatch.setattr(core, "elevated_lane_timeout", lambda **k: 5.0)
+        started = time.monotonic()
+        out = dict(core._run_db_scans(lambda i: ([f"db{i}"], False), core.EXACT_SCAN_LANE))
+        elapsed = time.monotonic() - started
+        assert all(out[i] == ([f"db{i}"], False) for i in range(1, core.MAX_DB_COUNT + 1)), out
+        assert elapsed < 1.0, f"exact lane waited {elapsed:.2f}s behind stuck vector scans"
+        assert core._scan_pool(4, core.EXACT_SCAN_LANE) is not core._scan_pool(4, core.VECTOR_SCAN_LANE)
+        assert core._scan_pool(4, core.EXACT_SCAN_LANE)._max_workers == 4  # bounded too
+    finally:
+        release.set()
+        monkeypatch.setattr(core, "_SCAN_POOL", None)
+        monkeypatch.setattr(core, "_EXACT_SCAN_POOL", None)
+
+
+def test_keyword_and_title_lanes_use_the_exact_pool(monkeypatch):
+    seen = []
+    monkeypatch.setattr(core, "_run_db_scans",
+                        lambda fn, lane=core.VECTOR_SCAN_LANE: seen.append(lane) or iter(()))
+    core._keyword_retrieve("anything at all", 3, None, "*")
+    core._title_retrieve("anything at all", 3, None, False)
+    assert seen and set(seen) == {core.EXACT_SCAN_LANE}, seen

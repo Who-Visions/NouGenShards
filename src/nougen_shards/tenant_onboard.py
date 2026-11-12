@@ -316,6 +316,38 @@ def write_kit(tenant_id: str, token: str, tunnel_token: str, port: int,
     return kit_dir
 
 
+def redeem_invite(code: str, join_url: str, opener: Optional[Callable] = None) -> dict:
+    """Redeem an invite with the hosted join endpoint; returns the node's setup values.
+
+    Nothing is persisted here. The caller writes the kit. ``opener`` is injectable for tests.
+    """
+    code = (code or "").strip()
+    if not code:
+        raise OnboardError("an invite code is required")
+    if not join_url:
+        raise OnboardError("NOUGEN_JOIN_URL is not set; ask the operator for the join address")
+    req = urllib.request.Request(join_url, data=json.dumps({"code": code}).encode("utf-8"),
+                                 method="POST", headers={"Content-Type": "application/json"})
+    open_fn = opener or (lambda r: urllib.request.urlopen(r, timeout=60, context=ssl.create_default_context()))
+    try:
+        with open_fn(req) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            msg = json.loads(exc.read().decode("utf-8")).get("error")
+        except Exception:
+            msg = None
+        raise OnboardError(msg or "that invite code didn't work; ask the operator for a new one") from exc
+    except urllib.error.URLError as exc:
+        raise OnboardError(f"could not reach the join server ({exc.reason}); check your internet") from exc
+    for key in ("tenant_id", "node_url", "token", "tunnel_token"):
+        if not data.get(key):
+            raise OnboardError("the join server's reply was incomplete; ask the operator to check it")
+    return {"tenant_id": data["tenant_id"], "node_url": data["node_url"],
+            "token": data["token"], "tunnel_token": data["tunnel_token"],
+            "port": int(data.get("port") or os.environ.get("NGS_PORT", "4444"))}
+
+
 # --------------------------------------------------------------------------- onboard
 
 @dataclass

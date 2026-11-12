@@ -997,6 +997,124 @@ function totalActivity(t) {
   return (t.input_tokens || 0) + (t.output_tokens || 0) + (t.cache_read || 0) + (t.cache_creation || 0);
 }
 __name(totalActivity, "totalActivity");
+
+// Cost rate table (USD per 1M tokens: input, output, cache_read, cache_creation, confidence).
+// "confirmed" = pulled from the provider's own current rate card. "guess" = no
+// published rate found for this exact model/field; a reasonable stand-in is used
+// so nothing silently drops out of a cost total, but it must never be presented
+// as exact. Matched by substring against the lowercased model name, first match
+// wins, most-specific patterns first -- mirrors the manual audit done 2026-11-06.
+var RATE_TABLE_VERSION = "tracker_rates/v1 (2026-11-06)";
+var RATE_TABLE = [
+  ["fable-5-1", 10.00, 50.00, 0.25, 12.50, "confirmed"],
+  ["fable 5.1", 10.00, 50.00, 0.25, 12.50, "confirmed"],
+  ["fable-5", 10.00, 50.00, 0.25, 12.50, "confirmed (prior-gen, same tier price)"],
+  ["mythos-5-1", 10.00, 50.00, 0.25, 12.50, "confirmed (same tier)"],
+  ["mythos 5.1", 10.00, 50.00, 0.25, 12.50, "confirmed (same tier)"],
+  ["opus-5-5", 4.00, 20.00, 0.20, 5.00, "confirmed"],
+  ["opus 5.5", 4.00, 20.00, 0.20, 5.00, "confirmed"],
+  ["opus-5", 5.00, 25.00, 0.50, 6.25, "confirmed (prior-gen table rate)"],
+  ["opus-4-8", 5.00, 25.00, 0.50, 6.25, "confirmed (table)"],
+  ["opus 4.8", 5.00, 25.00, 0.50, 6.25, "confirmed (table)"],
+  ["opus-4-6", 5.00, 25.00, 0.50, 6.25, "confirmed (table, 4.6==4.7/4.8 rate)"],
+  ["opus 4.6", 5.00, 25.00, 0.50, 6.25, "confirmed (table, 4.6==4.7/4.8 rate)"],
+  ["sonnet-5-5", 2.00, 10.00, 0.20, 2.50, "confirmed"],
+  ["sonnet 5.5", 2.00, 10.00, 0.20, 2.50, "confirmed"],
+  ["sonnet-5", 2.00, 10.00, 0.20, 2.50, "confirmed (prior-gen, same price as 5.5)"],
+  ["sonnet-4-6", 3.00, 15.00, 0.30, 3.75, "confirmed (table)"],
+  ["sonnet 4.6", 3.00, 15.00, 0.30, 3.75, "confirmed (table)"],
+  ["haiku-5-5", 0.10, 0.50, 0.01, 0.125, "guess: cache rate unpublished, assumed 1/10 input"],
+  ["haiku 5.5", 0.10, 0.50, 0.01, 0.125, "guess: cache rate unpublished, assumed 1/10 input"],
+  ["haiku-4-5", 1.00, 5.00, 0.10, 1.25, "confirmed i/o (table, 200K ctx); guess cache=1/10 input"],
+  ["gemini-4-argon", 2.00, 10.00, 0.10, 2.00, "confirmed (Google pricing page, thru 2026-11-30)"],
+  ["gemini 4 argon", 2.00, 10.00, 0.10, 2.00, "confirmed (Google pricing page, thru 2026-11-30)"],
+  ["gemini-3.1-pro", 2.00, 12.00, 0.20, 0, "confirmed (<=200K tier, search-verified)"],
+  ["gemini-3-flash", 0.50, 3.00, 0.05, 0.50, "confirmed i/o; guess cache=1/10 input"],
+  ["gemini-3.5-flash", 0.50, 3.00, 0.05, 0.50, "confirmed i/o; guess cache=1/10 input"],
+  ["gemini-2.5-flash", 0.50, 3.00, 0.05, 0.50, "guess: unverified this session, assumed gemini-3-flash tier"],
+  ["gemini-2.5-pro", 1.25, 10.00, 0.31, 1.25, "guess: legacy public rate, unverified this session"],
+  ["gpt-6-astra", 10.00, 50.00, 1.00, 10.00, "confirmed (OpenAI help page, search-verified)"],
+  ["gpt-6.1-sol", 2.00, 10.00, 0.20, 2.50, "guess: assumed gpt-6-sol tier (6.1 unconfirmed)"],
+  ["gpt-6-sol", 2.00, 10.00, 0.20, 2.50, "guess: assumed gpt-6-sol tier"],
+  ["gpt-5.6-sol", 2.00, 10.00, 0.20, 2.50, "guess: assumed gpt-6-sol tier"],
+  ["gpt-6-luna", 0.10, 0.50, 0.01, 0.10, "guess: aggregator-only, no official source"],
+  ["gpt-5.6-luna", 0.10, 0.50, 0.01, 0.10, "guess: assumed luna/cheapest tier"],
+  ["gpt-5.5", 0.10, 0.50, 0.01, 0.10, "guess: assumed luna/cheapest tier"],
+  ["gpt-5.4-mini", 0.15, 0.60, 0.015, 0.15, "guess: mini tier, no official source"],
+  ["gpt-5-codex-mini", 0.15, 0.60, 0.015, 0.15, "guess: codex-mini tier, no official source"],
+  ["gpt-5.1-codex-mini", 0.15, 0.60, 0.015, 0.15, "guess: codex-mini tier, no official source"],
+  ["gpt-5.1-codex-max", 5.00, 20.00, 0.50, 5.00, "guess: codex-max/premium tier, no official source"],
+  ["gpt-5.2-codex", 1.00, 5.00, 0.10, 1.00, "guess: codex-standard tier, no official source"],
+  ["gpt-5.6-terra", 1.00, 5.00, 0.10, 1.00, "guess: assumed mid-tier (terra)"],
+  ["gpt-5.4", 2.00, 10.00, 0.20, 2.00, "guess: assumed standard GPT tier"],
+  ["gpt-reserve", 0.50, 2.50, 0.05, 0.50, "guess: internal reserve/fallback lane, no published rate"],
+  ["codex-auto-review", 0.10, 0.50, 0.01, 0.10, "guess: no official rate, assumed cheapest/luna tier"],
+  ["gpt-oss-120b", 0, 0, 0, 0, "guess: open-weight model, assumed $0 (self-hosted/free lane)"],
+  ["gemma4", 0, 0, 0, 0, "confirmed: NouGen free local/cloud ollama lane, $0 by policy"],
+  ["gemini-m", 0.50, 3.00, 0.05, 0.50, "guess: unrecognized internal codename, assumed gemini-3-flash tier"],
+  ["auto-gemini-3", 0.50, 3.00, 0.05, 0.50, "guess: assumed gemini-3-flash tier (auto-router alias)"]
+];
+// Free-lane classification runs BEFORE the substring table and the paid
+// fallback (Codex P2 on #971): local ollama tags, custom fleet models,
+// OpenRouter ":free" routes and HF spaces are $0 by policy
+// (AGENTS.md free-lane mandate, tools/token_tracker.py::price_for). Without
+// this, `local/sol-ai:e4b` or `llama-3.3-70b-instruct:free` priced at the
+// generic mid-tier and tracker_daily invented spend for the free workload.
+const FREE_LANE_MARKERS = [
+  ":free", "local/", "ollama", "gemma", "sol-ai", "solai", "dav1d", "kaedra", "iris-ai",
+  "rhea-noir", "griot", "davos", "mrs-b", "yukiai", ":e2b", ":e4b", "-cloud", "gpt-oss",
+  "hf/", "huggingface", "qwen3-coder-next", "deepseek-v4", "glm-5.1",
+];
+function isFreeLane(m) {
+  return FREE_LANE_MARKERS.some((k) => m.includes(k));
+}
+__name(isFreeLane, "isFreeLane");
+function rateFor(model) {
+  const m = String(model || "").toLowerCase();
+  if (m.includes("synthetic") || m === "(unknown)" || m === "unknown" || !m) return null;
+  if (isFreeLane(m)) return { input: 0, output: 0, cache_read: 0, cache_creation: 0, confidence: "confirmed: free lane (local/ollama-cloud/openrouter :free/hf), $0 by policy" };
+  for (const [pat, inp, out, cread, ccreate, confidence] of RATE_TABLE) {
+    if (m.includes(pat)) return { input: inp, output: out, cache_read: cread, cache_creation: ccreate, confidence };
+  }
+  return { input: 1.00, output: 5.00, cache_read: 0.10, cache_creation: 1.00, confidence: "guess: fully unrecognized model, assumed generic mid-tier -- check RATE_TABLE" };
+}
+__name(rateFor, "rateFor");
+// cold = price every token (incl. cache_read/cache_creation) at the full input
+// rate, as if no caching existed. cached = what was actually billed.
+function priceModel(model, t) {
+  const r = rateFor(model);
+  if (!r) return null;
+  const inp = t.input_tokens || 0, out = t.output_tokens || 0, cread = t.cache_read || 0, ccreate = t.cache_creation || 0;
+  const cold = (inp + cread + ccreate) * r.input / 1e6 + out * r.output / 1e6;
+  const cached = inp * r.input / 1e6 + cread * r.cache_read / 1e6 + ccreate * r.cache_creation / 1e6 + out * r.output / 1e6;
+  // Unrounded: callers aggregate these (priceModelsMap, continuation windows).
+  // Rounding here zeroed sub-cent buckets before they were summed (Codex P2).
+  return { cold, cached, confidence: r.confidence };
+}
+__name(priceModel, "priceModel");
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+__name(round2, "round2");
+// Display rounding keeps 4 decimals so a $0.004 bucket survives being summed
+// across 100 daily responses instead of reading as $0 in each.
+function round4(n) {
+  return Math.round(n * 1e4) / 1e4;
+}
+__name(round4, "round4");
+function priceModelsMap(models) {
+  const out = {};
+  let cold = 0, cached = 0, unpriced = [];
+  for (const [model, t] of Object.entries(models || {})) {
+    const p = priceModel(model, t);
+    if (!p) { unpriced.push(model); continue; }
+    cold += p.cold;
+    cached += p.cached;
+    out[model] = { cold: round4(p.cold), cached: round4(p.cached), confidence: p.confidence };
+  }
+  return { by_model: out, cold: round4(cold), cached: round4(cached), unpriced, rate_table_version: RATE_TABLE_VERSION };
+}
+__name(priceModelsMap, "priceModelsMap");
 async function shardHeaders(env) {
   return {
     // blade's _TokenGatedMCP reads x-ngs-token (or ?token=) only — it never
@@ -2086,7 +2204,7 @@ var TOOLS = [
   {
     name: "tracker_daily",
     title: "Tracker Daily",
-    description: "One lane's usage daily for a date: token counts (exact + estimated), invocations, per-model breakdown.\n\nArgs: lane (e.g. 'blade1tb'), date (YYYY-MM-DD).",
+    description: "One lane's usage daily for a date: token counts (exact + estimated), invocations, per-model breakdown, and a priced `cost` field (cold = uncached-equivalent, cached = actual, per-model + total, each tagged confirmed/guess). The raw `sketch` debug array is stripped -- it carried no usage signal and was the single largest cause of context blowups on multi-day sweeps.\n\nArgs: lane (e.g. 'blade1tb'), date (YYYY-MM-DD).",
     inputSchema: {
       type: "object",
       properties: {
@@ -2101,7 +2219,7 @@ var TOOLS = [
   {
     name: "tracker_spend",
     title: "Tracker Spend Summary",
-    description: "Aggregate usage across dailies: invocations, exact token counts and total_activity, per lane. Dates are inclusive; omit lane to sweep all lanes. Spends a bounded subrequest budget: if the window needs more dailies than the budget allows, the result is marked partial:true and returns next_since \u2014 continue from there and sum the non-overlapping windows for an exact total. A total is only complete when complete:true. total_activity = input_tokens + output_tokens + cache_read + cache_creation (total_activity/v1); reasoning tokens are reported separately and not summed.\n\nArgs: lane (optional), since (YYYY-MM-DD, optional), until (YYYY-MM-DD, optional).",
+    description: "Aggregate usage across dailies: invocations, exact token counts, total_activity, and a per-model token breakdown, per lane -- plus a priced `cost` field (cold = uncached-equivalent, cached = actual; per-model and grand total; each model tagged confirmed/guess, never silently dropped). Dates are inclusive; omit lane to sweep all lanes. Spends a bounded subrequest budget: if the window needs more dailies than the budget allows, the result is marked partial:true and returns next_since \u2014 continue from there and sum the non-overlapping windows for an exact total (including per-model). A total is only complete when complete:true -- cost on a partial result will undercount. total_activity = input_tokens + output_tokens + cache_read + cache_creation (total_activity/v1); reasoning tokens are reported separately and not summed.\n\nArgs: lane (optional), since (YYYY-MM-DD, optional), until (YYYY-MM-DD, optional).",
     inputSchema: {
       type: "object",
       properties: {
@@ -4660,14 +4778,23 @@ Other lanes see it on their next relay check.`,
     return text(lines.join("\n"), { lanes, unreadable, complete: unreadable.length === 0 });
   },
   async tracker_daily(args, env) {
-    const daily = await trackerDaily(env, args.lane, args.date);
+    const raw = await trackerDaily(env, args.lane, args.date);
+    // `sketch` is an internal dedup/debug array (dozens of hashes) with no
+    // value to a caller and no bearing on token totals -- it was the single
+    // biggest cause of context blowups when sweeping many days (2026-11-06
+    // incident: a 10-day pull exhausted a subagent's budget on this field
+    // alone). Dropped here, not upstream, so the raw store stays untouched.
+    const { sketch, ...daily } = raw;
     const e = daily.exact || {};
+    const cost = priceModelsMap(daily.models);
+    daily.cost = cost;
     const md = [
       `**${args.lane} \u2014 ${args.date}**`,
       "",
       `invocations: ${daily.invocations ?? "?"}`,
       `exact tokens: in ${e.input_tokens ?? 0} / out ${e.output_tokens ?? 0} / cache-read ${e.cache_read ?? 0} / cache-create ${e.cache_creation ?? 0}`,
-      `models: ${Object.keys(daily.models || {}).join(", ") || "(none)"}`
+      `models: ${Object.keys(daily.models || {}).join(", ") || "(none)"}`,
+      `cost (USD, ${RATE_TABLE_VERSION}): cold $${cost.cold.toFixed(2)} / cached $${cost.cached.toFixed(2)}` + (cost.unpriced.length ? ` -- unpriced: ${cost.unpriced.join(", ")}` : "")
     ].join("\n");
     return text(md, daily);
   },
@@ -4692,7 +4819,8 @@ Other lanes see it on their next relay check.`,
         input_tokens: 0,
         output_tokens: 0,
         cache_read: 0,
-        cache_creation: 0
+        cache_creation: 0,
+        models: {}
       };
       // Oldest-first so next_since walks forward deterministically and a
       // caller summing consecutive windows reproduces the full total exactly.
@@ -4715,17 +4843,34 @@ Other lanes see it on their next relay check.`,
         totals.output_tokens += e.output_tokens || 0;
         totals.cache_read += e.cache_read || 0;
         totals.cache_creation += e.cache_creation || 0;
+        for (const [model, mt] of Object.entries(daily.models || {})) {
+          const acc = totals.models[model] || (totals.models[model] = { input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0 });
+          acc.input_tokens += mt.input_tokens || 0;
+          acc.output_tokens += mt.output_tokens || 0;
+          acc.cache_read += mt.cache_read || 0;
+          acc.cache_creation += mt.cache_creation || 0;
+        }
       }
       totals.total_activity = totalActivity(totals);
+      totals.cost = priceModelsMap(totals.models);
       perLane.push(totals);
     }
     const grand = perLane.reduce((acc, t) => {
       for (const k of ["days", "requested_days", "missing_days", "invocations", "input_tokens", "output_tokens", "cache_read", "cache_creation"]) {
         acc[k] = (acc[k] || 0) + t[k];
       }
+      acc.models = acc.models || {};
+      for (const [model, mt] of Object.entries(t.models)) {
+        const a = acc.models[model] || (acc.models[model] = { input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0 });
+        a.input_tokens += mt.input_tokens;
+        a.output_tokens += mt.output_tokens;
+        a.cache_read += mt.cache_read;
+        a.cache_creation += mt.cache_creation;
+      }
       return acc;
     }, {});
     grand.total_activity = totalActivity(grand);
+    grand.cost = priceModelsMap(grand.models);
     const nextSince = deferred.length ? deferred.map((d) => d.date).sort()[0] : null;
     const partial = failures.length > 0 || deferred.length > 0;
     const span = args.since || args.until ? ` (${args.since || "\u2026"} \u2192 ${args.until || "\u2026"})` : " (all time scanned)";
@@ -4740,6 +4885,7 @@ Other lanes see it on their next relay check.`,
       lines.push(`- **${t.lane}**: ${t.days}/${t.requested_days} days aggregated, ${t.invocations} invocations, in ${t.input_tokens.toLocaleString()} / out ${t.output_tokens.toLocaleString()}, activity ${t.total_activity.toLocaleString()}`);
     }
     lines.push("", `**Total**: ${grand.invocations || 0} invocations, in ${(grand.input_tokens || 0).toLocaleString()} / out ${(grand.output_tokens || 0).toLocaleString()}, activity ${grand.total_activity.toLocaleString()} (${TOTAL_ACTIVITY_VERSION} = ${TOTAL_ACTIVITY_DEF})`);
+    lines.push(`**Cost** (USD, ${RATE_TABLE_VERSION}${partial ? " -- PARTIAL, will undercount" : ""}): cold $${grand.cost.cold.toFixed(2)} / cached $${grand.cost.cached.toFixed(2)}` + (grand.cost.unpriced.length ? ` -- unpriced: ${grand.cost.unpriced.join(", ")}` : "") + " -- entries marked guess in by_model are not official rates.");
     if (partial) {
       lines.push(
         "",
@@ -6478,11 +6624,415 @@ function openapiDocument(origin) {
   };
 }
 __name(openapiDocument, "openapiDocument");
+
+// ---------------------------------------------------------------------------
+// Tenant onboarding: redeem a one-time invite and provision the tenant's tunnel,
+// DNS record and worker routing. The Cloudflare token lives only in the Worker's
+// secret store, so the person onboarding needs no token on their own machine.
+// Port of src/nougen_shards/tenant_onboard.py (the local node registry step stays
+// on the owner's node; see the digest key written below).
+// Bindings: TENANTS (KV), CLOUDFLARE_API_TOKEN_NOUGEN_FULL (secret),
+// CLOUDFLARE_ACCOUNT_ID (var or secret), optional NOUGEN_TENANT_DOMAIN, CLOUDFLARE_API_BASE.
+// ---------------------------------------------------------------------------
+const ONBOARD_TENANT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+const ONBOARD_EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const ONBOARD_FALLBACK_DOMAIN = "nougenai.com";
+
+class OnboardError extends Error {}
+
+function onboardSlug(text, limit = 24) {
+  const s = String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return (s.slice(0, limit).replace(/-+$/, "")) || "tenant";
+}
+
+function onboardRandomBytes(n) {
+  const out = new Uint8Array(n);
+  crypto.getRandomValues(out);
+  return out;
+}
+
+function onboardB64(bytes) {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+function onboardB64Url(bytes) {
+  return onboardB64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function onboardSha256Hex(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function onboardCfClient(env) {
+  const token = env.CLOUDFLARE_API_TOKEN_NOUGEN_FULL;
+  const account = env.CLOUDFLARE_ACCOUNT_ID;
+  if (!token || !account) {
+    throw new OnboardError("Worker secrets CLOUDFLARE_API_TOKEN_NOUGEN_FULL and CLOUDFLARE_ACCOUNT_ID must be set");
+  }
+  const base = env.CLOUDFLARE_API_BASE || "https://api.cloudflare.com/client/v4";
+  return {
+    account,
+    async call(method, path, body, query) {
+      let url = base + path;
+      if (query) url += "?" + new URLSearchParams(query).toString();
+      const headers = { Authorization: `Bearer ${token}` };
+      const init = { method, headers };
+      if (body !== undefined) {
+        headers["Content-Type"] = "application/json";
+        init.body = JSON.stringify(body);
+      }
+      const resp = await fetch(url, init);
+      const text = await resp.text();
+      if (resp.status === 404 && method === "GET") return null;
+      let parsed;
+      try { parsed = JSON.parse(text); } catch { parsed = text; }
+      if (!resp.ok || (parsed && typeof parsed === "object" && parsed.success === false)) {
+        // Status and path only: the response body can echo sensitive input.
+        throw new OnboardError(`Cloudflare ${method} ${path} failed with HTTP ${resp.status}`);
+      }
+      if (parsed && typeof parsed === "object" && "success" in parsed) return parsed.result;
+      return parsed;
+    },
+  };
+}
+
+async function onboardZoneFor(cf, hostname) {
+  const parts = hostname.split(".");
+  for (let i = 0; i < parts.length - 1; i++) {
+    const zones = (await cf.call("GET", "/zones", undefined, { name: parts.slice(i).join(".") })) || [];
+    if (zones.length) return zones[0].id;
+  }
+  throw new OnboardError(`no Cloudflare zone on this account covers ${hostname}`);
+}
+
+function onboardTunnelIdFromToken(tunnelToken) {
+  if (!tunnelToken) return null;
+  try {
+    const padded = tunnelToken + "=".repeat((4 - (tunnelToken.length % 4)) % 4);
+    return JSON.parse(atob(padded)).t || null;
+  } catch {
+    return null;
+  }
+}
+
+async function onboardEnsureTunnel(cf, name, hostname, port, knownId) {
+  let found = [];
+  if (knownId) {
+    const got = await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel/${knownId}`);
+    if (got && !got.deleted_at) found = [got];
+  }
+  if (!found.length) {
+    found = (await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel`, undefined,
+      { name, is_deleted: "false" })) || [];
+  }
+  const created = !found.length;
+  let tunnelId;
+  if (created) {
+    const made = await cf.call("POST", `/accounts/${cf.account}/cfd_tunnel`, {
+      name, config_src: "cloudflare", tunnel_secret: onboardB64(onboardRandomBytes(32)),
+    });
+    tunnelId = made.id;
+  } else {
+    tunnelId = found[0].id;
+  }
+  // A live tunnel already names the tenant's real port; never overwrite it.
+  const current = (await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel/${tunnelId}/configurations`)) || {};
+  const rules = (current.config && current.config.ingress) || [];
+  const existingRule = rules.find((r) => r.hostname === hostname && String(r.service || "").startsWith("http://"));
+  if (existingRule) {
+    port = Number(existingRule.service.split(":").pop());
+  } else {
+    await cf.call("PUT", `/accounts/${cf.account}/cfd_tunnel/${tunnelId}/configurations`, {
+      config: { ingress: [
+        { hostname, service: `http://127.0.0.1:${port}` },
+        { service: "http_status:404" },
+      ] },
+    });
+  }
+  const token = await cf.call("GET", `/accounts/${cf.account}/cfd_tunnel/${tunnelId}/token`);
+  if (typeof token !== "string" || !token) throw new OnboardError("Cloudflare returned no tunnel token");
+  return { tunnelId, tunnelToken: token.trim().replace(/^"|"$/g, ""), created, port };
+}
+
+async function onboardEnsureDns(cf, zone, hostname, tunnelId) {
+  const target = `${tunnelId}.cfargotunnel.com`;
+  const body = { type: "CNAME", name: hostname, content: target, proxied: true };
+  const existing = (await cf.call("GET", `/zones/${zone}/dns_records`, undefined, { name: hostname })) || [];
+  if (existing.length) {
+    if (existing[0].content !== target) {
+      await cf.call("PUT", `/zones/${zone}/dns_records/${existing[0].id}`, body);
+    }
+  } else {
+    await cf.call("POST", `/zones/${zone}/dns_records`, body);
+  }
+}
+
+async function onboardReadJson(kv, key) {
+  const raw = await kv.get(key);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+// Redeem a single-use invite and provision everything for that tenant.
+// Returns the values the tenant's own machine needs. The invite is consumed only
+// after every Cloudflare and KV step succeeds, so a failed run can be retried.
+async function provisionTenant(env, input) {
+  const code = String((input && input.code) || "").trim();
+  if (!code) throw new OnboardError("an invite code is required");
+  const kv = env.TENANTS;
+  if (!kv) throw new OnboardError("TENANTS KV binding is missing");
+
+  const invite = await onboardReadJson(kv, "invite:" + code);
+  if (!invite.eml) throw new OnboardError("invite code is not valid or was already used");
+  if (!(Number(invite.exp) > Date.now() / 1000)) throw new OnboardError("invite code has expired");
+  const email = String(invite.eml).trim().toLowerCase();
+  if (!ONBOARD_EMAIL_RE.test(email)) throw new OnboardError("invite is not tied to a valid email");
+
+  const existing = await onboardReadJson(kv, "tenant:" + email);
+  // The tenant id is never taken from the caller: a public redeemer could otherwise
+  // name another tenant's id and reuse its tunnel and gateway mapping.
+  const who = input.name || email.split("@")[0].split("+")[0];
+  const tid = existing.tenant_id || `${onboardSlug(who)}-shards`;
+  if (!ONBOARD_TENANT_ID_RE.test(tid)) throw new OnboardError(`tenant id '${tid}' must be lowercase letters, digits, - or _ (max 32)`);
+  // Each tenant id belongs to the email that first claimed it. Refuse before any
+  // Cloudflare or KV write if a different email already owns it.
+  const owner = await kv.get("tenant-owner:" + tid);
+  if (owner && owner !== email) throw new OnboardError("that tenant name is already in use; ask the operator for a new invite");
+
+  const domain = input.domain || env.NOUGEN_TENANT_DOMAIN || ONBOARD_FALLBACK_DOMAIN;
+  const hostFromRecord = existing.node_url ? new URL(existing.node_url).hostname : null;
+  const suffix = [...onboardRandomBytes(2)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const host = hostFromRecord || `${onboardSlug(tid, 20)}-${suffix}.${domain}`;
+  const nodeUrl = `https://${host}`;
+  const port = Number(input.port || env.NGS_PORT || 4444);
+
+  const cf = onboardCfClient(env);
+
+  // One Durable Object per invite code serializes redemptions, so two requests
+  // cannot both pass the check (KV reads alone can be stale for up to 60s).
+  await inviteCall(env, code, "claim", { eml: email });
+  try {
+    const result = await onboardSteps(cf, email, tid, host, nodeUrl, port, existing, kv);
+    await inviteCall(env, code, "consume");
+    await kv.delete("invite:" + code);
+    return result;
+  } catch (err) {
+    // Release the claim so the same invite can be retried after a failure.
+    await inviteCall(env, code, "release").catch(() => {});
+    throw err;
+  }
+}
+
+async function onboardSteps(cf, email, tid, host, nodeUrl, port, existing, kv) {
+  const steps = [];
+
+  // 1. credential: keep the one the tenant already has, otherwise mint a new one.
+  const token = typeof existing.token === "string" && existing.token
+    ? existing.token
+    : onboardB64Url(onboardRandomBytes(32));
+  steps.push(existing.token ? "credential: already consistent" : "credential: minted");
+
+  // 2. tunnel + DNS
+  const zone = await onboardZoneFor(cf, host);
+  const prior = await onboardReadJson(kv, "tunnel:" + email);
+  const tunnel = await onboardEnsureTunnel(cf, `tenant-${tid}`, host, port,
+    onboardTunnelIdFromToken(prior.tunnel_token));
+  await onboardEnsureDns(cf, zone, host, tunnel.tunnelId);
+  steps.push(`tunnel: ${tunnel.created ? "created" : "reused"} tenant-${tid}; DNS ${host} points at it`);
+
+  // 3. worker routing (KV keyed by email). The digest lets the owner's node verify the token.
+  await kv.put("allow:" + email, "1");
+  await kv.put("tenant:" + email, JSON.stringify({ ...existing, token, node_url: nodeUrl, tenant_id: tid }));
+  await kv.put("tunnel:" + email, JSON.stringify({ tunnel_token: tunnel.tunnelToken, hostname: host }));
+  await kv.put("tenant-owner:" + tid, email);
+  await kv.put("tenant-digest:" + tid, await onboardSha256Hex(token));
+  steps.push(`worker: ${email} allowed and routed to ${nodeUrl}`);
+
+  return {
+    tenant_id: tid,
+    email,
+    node_url: nodeUrl,
+    port: tunnel.port,
+    token,
+    tunnel_token: tunnel.tunnelToken,
+    steps,
+  };
+}
+
+// Serializes redemptions of one invite. A Durable Object handles one request at a
+// time, so the check-and-set in "claim" cannot interleave. States:
+//   open -> claimed (lease) -> consumed (permanent); a failed run releases back to open.
+const INVITE_LEASE_MS = 600_000; // 10 min: longer than any provisioning run, short enough to recover a crash
+
+export class InviteClaim {
+  constructor(state) {
+    this.state = state;
+    // Load once; afterwards check-and-set runs on memory with no await in between,
+    // so concurrent requests cannot interleave inside the check.
+    this.ready = (async () => {
+      this.rec = (await state.storage.get("claim")) || { status: "open" };
+    })();
+  }
+
+  async fetch(request) {
+    await this.ready;
+    const action = new URL(request.url).pathname.replace(/^\//, "");
+    const rec = this.rec;
+    const now = Date.now();
+    const save = async (next) => {
+      this.rec = next;
+      await this.state.storage.put("claim", next);
+    };
+    const reply = (body, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+    if (action === "claim") {
+      if (rec.status === "consumed") return reply({ error: "invite code is not valid or was already used" }, 409);
+      if (rec.status === "claimed" && rec.leaseUntil > now) {
+        return reply({ error: "this invite is being redeemed; try again in a minute" }, 409);
+      }
+      await save({ status: "claimed", leaseUntil: now + INVITE_LEASE_MS });
+      return reply({ ok: true });
+    }
+    if (action === "release") {
+      if (rec.status === "claimed") await save({ status: "open" });
+      return reply({ ok: true });
+    }
+    if (action === "consume") {
+      await save({ status: "consumed" });
+      return reply({ ok: true });
+    }
+    return reply({ error: "unknown action" }, 404);
+  }
+}
+
+async function inviteCall(env, code, action, body) {
+  if (!env.INVITE_CLAIMS) throw new OnboardError("INVITE_CLAIMS Durable Object binding is missing");
+  const stub = env.INVITE_CLAIMS.get(env.INVITE_CLAIMS.idFromName(code));
+  const resp = await stub.fetch("https://invite.internal/" + action, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  if (!resp.ok) {
+    const detail = await resp.json().catch(() => ({}));
+    throw new OnboardError(detail.error || `invite ${action} failed`);
+  }
+  return resp.json().catch(() => ({}));
+}
+
+async function handleOnboard(request, env) {
+  if (request.method !== "POST") return json({ error: "POST only" }, 405);
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "body must be JSON" }, 400); }
+  try {
+    return json(await provisionTenant(env, body || {}));
+  } catch (err) {
+    if (err instanceof OnboardError) return json({ error: err.message }, 400);
+    return json({ error: "onboarding failed; try again or ask the operator" }, 500);
+  }
+}
+
+// Plain form for the person being onboarded: enter the invite code and a name.
+// Posts to /onboard/redeem and shows the node details. Server data is written with
+// textContent only.
+// One-button page. The invite code arrives in the link, so the person clicks once.
+function renderOnboardPage(code) {
+  const safeCode = JSON.stringify(String(code || "")).replace(/</g, "\\u003c");
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Join NouGen</title>
+<style>
+  :root { --bg:#fbfaf7; --fg:#1d1d1f; --muted:#5b5b61; --card:#fff; --line:#d9d6cf; --accent:#2c5fd6; --ok:#1e7a46; --bad:#b3261e; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#15161a; --fg:#ededf0; --muted:#a6a6ad; --card:#1d1f25; --line:#3a3d46; --accent:#7aa2ff; --ok:#6fd39a; --bad:#ff8a80; } }
+  :root[data-theme="dark"] { --bg:#15161a; --fg:#ededf0; --muted:#a6a6ad; --card:#1d1f25; --line:#3a3d46; --accent:#7aa2ff; --ok:#6fd39a; --bad:#ff8a80; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:18px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
+  main { max-width:30rem; margin:0 auto; padding:2.5rem 1rem; text-align:center; }
+  h1 { font-size:1.6rem; margin:0 0 .5rem; }
+  p { color:var(--muted); margin:.5rem 0 1.25rem; }
+  button { width:100%; font:inherit; font-weight:600; padding:1rem; border:0; border-radius:10px; background:var(--accent); color:#fff; cursor:pointer; }
+  button[disabled] { opacity:.6; cursor:progress; }
+  button:focus-visible, summary:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  .ok { color:var(--ok); font-weight:600; font-size:1.15rem; }
+  .err { color:var(--bad); font-weight:600; }
+  .done { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1.25rem; margin-top:1.25rem; text-align:left; }
+  details { margin-top:1rem; }
+  code { display:block; overflow-wrap:anywhere; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.6rem; margin:.25rem 0 .75rem; }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
+</style></head>
+<body><main>
+  <h1>Set up NouGen</h1>
+  <p>Press the button once. Nothing else to type.</p>
+  <button id="go" type="button">Set up my NouGen</button>
+  <div id="result" role="status" aria-live="polite"></div>
+</main>
+<script>
+  const CODE = ${safeCode};
+  const go = document.getElementById("go");
+  const out = document.getElementById("result");
+  function msg(text, cls) { const p = document.createElement("p"); p.className = cls || ""; p.textContent = text; return p; }
+  go.addEventListener("click", async () => {
+    out.replaceChildren();
+    if (!CODE) { out.append(msg("This link is missing its code. Ask for a new link.", "err")); return; }
+    go.disabled = true; go.textContent = "Setting up...";
+    try {
+      const resp = await fetch("/onboard/redeem", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: CODE }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) { out.append(msg(data.error || "This link has expired. Ask for a new one.", "err")); return; }
+      const setup = JSON.stringify({ node_url: data.node_url, token: data.token, tunnel_token: data.tunnel_token });
+      const box = document.createElement("div"); box.className = "done";
+      const ok = document.createElement("p"); ok.className = "ok"; ok.textContent = "You're all set.";
+      const sub = document.createElement("p"); sub.textContent = "Your NouGen node is ready. Keep this page; it has your setup code.";
+      const det = document.createElement("details");
+      const sum = document.createElement("summary"); sum.textContent = "Show my setup code";
+      const c = document.createElement("code"); c.textContent = setup;
+      det.append(sum, c);
+      box.append(ok, sub, det);
+      out.append(box);
+      go.hidden = true;
+    } catch (e) {
+      out.append(msg("Couldn't reach the server. Check your internet and press the button again.", "err"));
+    } finally {
+      go.disabled = false; go.textContent = "Set up my NouGen";
+    }
+  });
+</script></body></html>`;
+}
+
+function onboardPageResponse(code) {
+  return new Response(renderOnboardPage(code), {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; base-uri 'none'",
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer",
+    },
+  });
+}
+
 var worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const origin = url.origin;
     const path = url.pathname.replace(/\/$/, "") || "/";
+    if (path.startsWith("/onboard/") && path !== "/onboard/redeem") {
+      if (request.method !== "GET") return new Response("GET only", { status: 405 });
+      let code = "";
+      try { code = decodeURIComponent(path.slice("/onboard/".length)); } catch { code = ""; }
+      return onboardPageResponse(code);
+    }
     switch (path) {
       case "/":
         return new Response(
@@ -6504,6 +7054,10 @@ var worker_default = {
         return handleGoogleCallback(request, env, url);
       case "/token":
         return request.method === "POST" ? handleToken(request, env) : new Response("POST only", { status: 405 });
+      case "/onboard":
+        return request.method === "GET" ? onboardPageResponse("") : new Response("GET only", { status: 405 });
+      case "/onboard/redeem":
+        return handleOnboard(request, env);
       case "/openapi.json":
       case "/openapi":
         return json(openapiDocument(origin));
@@ -6516,6 +7070,9 @@ var worker_default = {
 };
 export {
   __test__,
+  provisionTenant,
+  handleOnboard,
+  renderOnboardPage,
   worker_default as default
 };
 //# sourceMappingURL=worker.js.map

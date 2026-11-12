@@ -51,14 +51,12 @@ OLLAMA_CHAT_URL = "https://ollama.com/api/chat"
 
 
 def _resolve_api_key() -> str:
-    """env first (NOUGEN_OLLAMA_CLOUD_KEY), else keyfor.py via subprocess."""
+    """Resolve Ollama Cloud API key from NOUGEN_OLLAMA_CLOUD_KEY or OLLAMA_API_KEY."""
     env_key = os.environ.get("NOUGEN_OLLAMA_CLOUD_KEY") or os.environ.get("OLLAMA_API_KEY")
     if env_key:
         return env_key
     raise RuntimeError(
-        "No Ollama Cloud key in env. Run via: "
-        "python ~/.nougen/bin/keyfor.py OLLAMA_KEY_CONTACT_WHOVISIONS_COM "
-        "--exec -- python tools/davos_cloud_chat.py \"<message>\""
+        "No Ollama Cloud key in environment. Set NOUGEN_OLLAMA_CLOUD_KEY or OLLAMA_API_KEY."
     )
 
 

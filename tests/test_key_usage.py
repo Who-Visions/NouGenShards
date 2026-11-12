@@ -104,3 +104,12 @@ def test_overrides_use_the_tenant_aware_db_path(vault, tmp_path, monkeypatch):
     assert key_usage.usage_for("ACME_API_KEY")["provider"] == "Acme (tenant)"
     monkeypatch.setattr(keymaker, "db_path", lambda: tmp_path / "shards_secrets.db")
     assert key_usage.usage_for("ACME_API_KEY") is None
+
+
+def test_nvidia_key_resolves_to_bearer_on_the_nim_endpoint(vault):
+    u = key_usage.usage_for("NVIDIA_API_KEY")
+    assert u["base_url"] == "https://integrate.api.nvidia.com/v1"
+    assert u["auth"] == {"header": "Authorization", "scheme": "Bearer {key}"}
+    assert u["curl"] == ('curl -s -H "Authorization: Bearer $NVIDIA_API_KEY" '
+                         '"https://integrate.api.nvidia.com/v1/models"')
+    assert key_usage.usage_for("NGC_API_KEY")["provider"].startswith("NVIDIA")

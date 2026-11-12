@@ -254,7 +254,7 @@ def get_db_path(index: int) -> Path:
 
 
 def is_db_full(index: int) -> bool:
-    """Checks if a database file has reached its 1GB constraint."""
+    """Checks if a database file has reached MAX_DB_SIZE (2GB by default)."""
     path = get_db_path(index)
     if not path.exists():
         return False
@@ -277,7 +277,7 @@ def get_write_index(fhash: str) -> int:
     """
     Resolves the destination DB for a new shard (Module 4: Surface Leverage).
     Routes deterministically by content hash for uniform O(1) distribution across
-    the 9-DB cluster, then skips any database that has hit its 1GB constraint.
+    the 9-DB cluster, then skips any database that has hit MAX_DB_SIZE.
     """
     start = get_routing_index(fhash)
     for offset in range(MAX_DB_COUNT):
@@ -385,8 +385,15 @@ def get_readonly_connection(index: int) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
 
     with _RO_POOL_LOCK:
-        # Enforce max pool size (bound resident FDs to 64 connections)
-        if len(_RO_CONN_POOL) >= 64:
+        # Connections are keyed by thread id, but a thread-per-request server
+        # (http.server, uvicorn threadpools) never comes back to a finished
+        # thread's key: its connection, each with a 64 MB page cache plus an mmap
+        # window, stayed open until the 64-entry cap. Measured 2026-11-09: the
+        # phone bridge grew ~45 MB per vault search and reached 6-8 GB in about an
+        # hour. Close connections whose owning thread has ended, then cap the pool.
+        _prune_dead_thread_connections()
+        cap = _ro_pool_max()
+        while len(_RO_CONN_POOL) >= cap:
             oldest_key, oldest_conn = next(iter(_RO_CONN_POOL.items()))
             _RO_CONN_POOL.pop(oldest_key, None)
             try:
@@ -395,6 +402,27 @@ def get_readonly_connection(index: int) -> sqlite3.Connection:
                 pass
         _RO_CONN_POOL[pool_key] = conn
     return conn
+
+
+def _ro_pool_max() -> int:
+    """Upper bound on pooled read-only connections (env NOUGEN_RO_POOL_MAX, default 24)."""
+    try:
+        return max(1, int(os.environ.get("NOUGEN_RO_POOL_MAX", "24")))
+    except ValueError:
+        return 24
+
+
+def _prune_dead_thread_connections() -> int:
+    """Close pooled connections owned by threads that no longer exist. Caller holds _RO_POOL_LOCK."""
+    # Drop, don't force-close: the shared grid scan opens connections in worker
+    # threads and keeps reading their rows after those threads end, so closing
+    # from here broke live readers ("Cannot operate on a closed database"). Once
+    # the pool lets go, CPython closes each connection when its last reader does.
+    alive = {t.ident for t in _threading.enumerate()}
+    dead = [key for key in _RO_CONN_POOL if key[0] not in alive]
+    for key in dead:
+        _RO_CONN_POOL.pop(key, None)
+    return len(dead)
 
 
 def close_readonly_pool() -> None:
@@ -1078,17 +1106,22 @@ def _embed_for_capture(title: str, content: str) -> Optional[List[float]]:
     except ValueError:
         timeout = 1.5
     try:
-        from .embedding_backfill import embed as _embed  # local import: optional dep path
-        vec = _embed(((title or "") + "\n" + (content or ""))[:4000], model, timeout=timeout)
+        from . import embed_providers  # local import: optional dep path
+        vec = embed_providers.embed_text(((title or "") + "\n" + (content or ""))[:4000], os.environ.get("NOUGEN_EMBED_MODEL") or None, timeout=timeout)
     except Exception as exc:  # pylint: disable=broad-except
         vec = None
         logger.debug("embed-at-capture raised: %s", exc)
     if not vec:
         EMBED_AT_CAPTURE_MISSES += 1
+        try:
+            from . import embed_providers  # pylint: disable=import-outside-toplevel
+            why = embed_providers.describe_unavailable(model)
+        except Exception:  # pylint: disable=broad-except
+            why = "is ollama up?"
         logger.warning(
             "shard written WITHOUT embedding (model=%s, miss #%d) -- semantic recall "
-            "will not see it until backfill runs; is ollama up?",
-            model, EMBED_AT_CAPTURE_MISSES,
+            "will not see it until backfill runs; %s",
+            model, EMBED_AT_CAPTURE_MISSES, why,
         )
         return None
     return vec
@@ -1123,14 +1156,19 @@ def _embed_query(query: str) -> Optional[np.ndarray]:
         # connection at once, so only a hung one ever waits the full budget.
         timeout = 6.0
     try:
-        from .embedding_backfill import embed as _embed  # local import: optional dep path
-        vec = _embed((query or "")[:4000], model, timeout=timeout)
+        from . import embed_providers  # local import: optional dep path
+        vec = embed_providers.embed_text((query or "")[:4000], os.environ.get("NOUGEN_EMBED_MODEL") or None, timeout=timeout)
     except Exception as exc:  # pylint: disable=broad-except
         vec = None
         logger.debug("query embedding raised: %s", exc)
     if not vec:
+        try:
+            from . import embed_providers  # pylint: disable=import-outside-toplevel
+            why = embed_providers.describe_unavailable(model)
+        except Exception:  # pylint: disable=broad-except
+            why = "is ollama up?"
         logger.warning("query embedding unavailable (model=%s); recall is keyword-only "
-                       "for this query -- is ollama up?", model)
+                       "for this query -- %s", model, why)
         return None
     arr = np.array(vec, dtype=np.float32)
     norm = np.linalg.norm(arr)
@@ -1596,8 +1634,93 @@ def shards_retract(ref: CanonicalShardRef, reason: str = "Retracted by cognitive
         conn.close()
 
 
+def purge_shard(shard_id: int, db_index: int, confirm_title: Optional[str] = None,
+                content_hash: Optional[str] = None) -> dict:
+    """Delete a shard from every place it is recorded, and say so.
+
+    ``shards_forget`` SUPPRESSES (utility 0, tags) and is recoverable. This is
+    the irreversible path, and it has to be complete or it is a worse lie than
+    suppression: the ``shards_ad`` trigger removes the FTS entry, but the row's
+    ``file_hash`` also lives in the central ``dedup_index.db`` ``hashes`` map.
+    Leave that behind and a later re-capture of the same text is silently
+    reported as a duplicate of a row that no longer exists (observed on the
+    node's ``shard_forget`` before this existed). Order: dedup map first, then
+    the row, so a crash between the two leaves a re-capturable row rather than
+    an unreachable hash.
+
+    Requires ``confirm_title`` (exact current title) or ``content_hash``
+    (CanonicalShardRef) so a caller cannot purge a shard it has not seen.
+    Returns a receipt with every store touched; raises ValueError on refusal.
+    """
+    if not confirm_title and not content_hash:
+        raise ValueError("purge_shard requires confirm_title or content_hash")
+    if not get_db_path(db_index).exists():
+        raise ValueError(f"no shard DB at index {db_index}")
+    init_db(db_index)
+    conn = get_connection(db_index)
+    try:
+        row = conn.execute(
+            "SELECT title, domain_key, content, timestamp, file_hash FROM shards WHERE id = ?",
+            (shard_id,)).fetchone()
+        if not row:
+            raise ValueError(f"no shard with id {shard_id} in db {db_index}")
+        title = row["title"] or ""
+        domain = row["domain_key"] or ""
+        content = row["content"] or ""
+        # Core's CanonicalShardRef hashes over `timestamp` (see shards_forget /
+        # shards_amend). The node's resolver prefers `original_timestamp` when
+        # that column exists and is set, so accept a hash computed either way.
+        actual_hash = CanonicalShardRef.compute_hash(domain, title, content, str(row["timestamp"] or ""))
+        accepted = {actual_hash.lower()}
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(shards)").fetchall()}
+        if "original_timestamp" in cols:
+            ots = conn.execute("SELECT original_timestamp FROM shards WHERE id = ?", (shard_id,)).fetchone()[0]
+            if ots:
+                accepted.add(CanonicalShardRef.compute_hash(domain, title, content, str(ots)).lower())
+        if content_hash and content_hash.strip().lower() not in accepted:
+            raise ValueError(f"CanonicalShardRef hash mismatch for id {shard_id}@db{db_index}: "
+                             f"expected {content_hash!r}, found {actual_hash!r}; refusing to purge")
+        if confirm_title and title != confirm_title:
+            raise ValueError(f"title mismatch for id {shard_id}@db{db_index}: expected "
+                             f"{confirm_title[:60]!r}, found {title[:60]!r}; refusing to purge")
+        file_hash = row["file_hash"]
+
+        dedup_removed = 0
+        if file_hash:
+            dconn = _get_dedup_connection()
+            try:
+                dedup_removed = dconn.execute("DELETE FROM hashes WHERE file_hash = ?", (file_hash,)).rowcount
+                dconn.commit()
+            finally:
+                dconn.close()
+
+        # shards_ad trigger removes the shards_fts entry in the same statement.
+        rows_removed = conn.execute("DELETE FROM shards WHERE id = ?", (shard_id,)).rowcount
+        conn.commit()
+        fts_left = conn.execute("SELECT count(*) FROM shards_fts WHERE rowid = ?", (shard_id,)).fetchone()[0]
+    finally:
+        conn.close()
+
+    try:
+        from . import history  # pylint: disable=import-outside-toplevel
+        # Audit row carries identity and hashes only -- never the content.
+        history.log_event(shard_id, db_index, "purged",
+                          metadata={"content_hash": actual_hash, "file_hash": file_hash})
+    except Exception as exc:
+        logger.warning("purge_shard: history event not written for %s@db%s: %s", shard_id, db_index, exc)
+
+    return {
+        "purged": shard_id, "db_index": db_index, "title": title, "content_hash": actual_hash,
+        "canonical_ref": f"{db_index}#{shard_id}:{actual_hash}",
+        "rows_removed": rows_removed, "fts_entries_left": fts_left,
+        "dedup_entries_removed": dedup_removed, "recoverable": False,
+    }
+
+
 def shards_forget(ref: CanonicalShardRef) -> bool:
-    """Suppresses a shard completely after CanonicalShardRef verification."""
+    """Suppresses a shard (utility 0.0, tags 'forgotten,suppressed') after
+    CanonicalShardRef verification. Recoverable: the row, its FTS entry and its
+    dedup hash all stay. For deletion use ``purge_shard``."""
     if not get_db_path(ref.db_index).exists():
         return False
     init_db(ref.db_index)
@@ -2031,11 +2154,37 @@ def _scan_pool_capacity(workers: int) -> int:
     return max(workers, workers * recalls)
 
 
-def _scan_pool(workers: int):
-    """Lazily build the single bounded ThreadPoolExecutor shared by all recalls."""
-    global _SCAN_POOL  # pylint: disable=global-statement
+#: Second bounded pool, for the exact lanes (keyword + title) only. They used to
+#: share _SCAN_POOL with the vector lane. A vector scan can sit on the vector
+#: cache lock for seconds per DB while a cold index loads, and a scan that
+#: misses its deadline keeps its slot until it finishes - so a few timed-out
+#: vector recalls filled every slot and the sub-second keyword scans queued
+#: behind them, then waited out their own full deadline. Measured on whoart
+#: 2026-11-09: POST /search fast=true (keyword only, vector lane not even run)
+#: took 17.7s inside the node while the identical call in a fresh process took
+#: 0.18s. The fast path existed and could not be fast. Each pool is bounded on
+#: its own, so the thread ceiling is 2x the cap, still fixed.
+_EXACT_SCAN_POOL = None
+EXACT_SCAN_LANE = "exact"
+VECTOR_SCAN_LANE = "vector"
+
+
+def _scan_pool(workers: int, lane: str = VECTOR_SCAN_LANE):
+    """Lazily build the bounded ThreadPoolExecutor for ``lane``.
+
+    One process-wide pool per lane class, shared by every recall: ``vector``
+    (may block on the cache lock) and ``exact`` (keyword/title SQL).
+    """
+    global _SCAN_POOL, _EXACT_SCAN_POOL  # pylint: disable=global-statement
     import concurrent.futures  # pylint: disable=import-outside-toplevel
     with _SCAN_POOL_LOCK:
+        if lane == EXACT_SCAN_LANE:
+            if _EXACT_SCAN_POOL is None:
+                cap = _scan_pool_capacity(workers)
+                _EXACT_SCAN_POOL = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=cap, thread_name_prefix="ngs-grid-scan-exact")
+                logger.info("exact grid scan pool created: %d worker(s)", cap)
+            return _EXACT_SCAN_POOL
         if _SCAN_POOL is None:
             cap = _scan_pool_capacity(workers)
             _SCAN_POOL = concurrent.futures.ThreadPoolExecutor(
@@ -2044,7 +2193,7 @@ def _scan_pool(workers: int):
         return _SCAN_POOL
 
 
-def _run_db_scans(scan_fn):
+def _run_db_scans(scan_fn, lane: str = VECTOR_SCAN_LANE):
     """Run scan_fn(i) for every grid DB concurrently; yield (i, result) in DB order.
 
     The per-DB scan loops in both retrieval lanes were serial — on a 9-DB,
@@ -2065,7 +2214,7 @@ def _run_db_scans(scan_fn):
     # locked scan accumulated threads without cap. Dropped scans still finish
     # in the background and are discarded, but outstanding scans are bounded by
     # the pool size and later recalls queue instead of spawning more threads.
-    executor = _scan_pool(workers)
+    executor = _scan_pool(workers, lane)
     futures = {i: executor.submit(copy_context().run, scan_fn, i)
                for i in range(1, MAX_DB_COUNT + 1)}
     deadline = time.monotonic() + elevated_lane_timeout(alpha=10.0, beta_param=1.0, max_deadline=20.0, min_deadline=1.5)
@@ -2315,7 +2464,7 @@ def _keyword_retrieve(query: str, limit: int = 20, query_embedding: Optional[Lis
             history.log_events([(sid, i, "ACCESSED") for sid in accessed])
         return db_rows, missed
 
-    for i, (db_rows, missed) in _run_db_scans(_scan_db):
+    for i, (db_rows, missed) in _run_db_scans(_scan_db, EXACT_SCAN_LANE):
         results.extend(db_rows)
         if missed:
             missed_dbs.append(i)
@@ -2692,6 +2841,10 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
         lock.release()
 
 
+#: (db_index, stored_dim, query_dim) triples already warned about this process.
+_DIM_MISMATCH_WARNED: set = set()
+
+
 def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                      domain_key: str = "global", include_research: bool = False) -> list:
     """Scans for semantic vector matches independent of FTS.
@@ -2738,6 +2891,17 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             conn = get_readonly_connection(i)
             cache = _vector_cache_entry(i, conn)
             scored = []  # (final_score, id)
+            if cache and cache["dim"] and cache["dim"] != qdim and len(cache["ids"]):
+                # A 384-d query against a 768-d DB (or the reverse) is a provider
+                # switch without a backfill. Say so once per DB rather than
+                # returning an empty lane that reads as "no semantic matches".
+                key = (i, cache["dim"], qdim)
+                if key not in _DIM_MISMATCH_WARNED:
+                    _DIM_MISMATCH_WARNED.add(key)
+                    logger.warning(
+                        "vector lane skipped DB %s: stored embeddings are %d-d, query is %d-d "
+                        "(embedding provider changed?) -- run `nougen embed status` / backfill",
+                        i, cache["dim"], qdim)
             if cache and cache["dim"] == qdim and len(cache["ids"]):
                 sem_scores = np.array(cache["matrix"] @ q_vec)
                 # Mask rows excluded by domain scope / ingest filter by sinking
@@ -3107,7 +3271,7 @@ def _title_retrieve(query: str, limit: int, domain_key: Optional[str], include_r
         return rows
 
     out: list = []
-    for _, scan_res in _run_db_scans(scan):
+    for _, scan_res in _run_db_scans(scan, EXACT_SCAN_LANE):
         if isinstance(scan_res, tuple):
             rows = scan_res[0]
         else:

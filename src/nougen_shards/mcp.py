@@ -155,6 +155,18 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
     # which is where those filters live.
     sweep_report: dict = {}
     scope = {k: v for k, v in {"agent": agent, "user": user, "machine": machine, "project": project}.items() if v}
+    # Time-shaped recall is native: "march", "last week", "yesterday 7pm",
+    # "gemini upgrade in march" read as a window (plus optional text inside
+    # it), not as a keyword search for the word "march". Scoped/as-of calls
+    # keep their own path.
+    if not (scope or as_of):
+        from nougen_shards import window as _window  # pylint: disable=import-outside-toplevel
+        win, rest = _window.split_temporal(query)
+        if win is not None:
+            res = _window.retrieve_window(start_utc=win.start_utc, end_utc=win.end_utc, query=rest,
+                                          limit=max(limit, 8))
+            res["window"] = win.as_dict()
+            return _window.format_packet(res)
     if scope or as_of:
         from nougen_shards import core as _core  # pylint: disable=import-outside-toplevel
         shards_list = _core.retrieve(query, limit=limit, domain_key="*", scope=scope or None, as_of=as_of)
@@ -198,6 +210,55 @@ def recall_memory(query: str, limit: int = 3, session_id: Optional[str] = None,
         packet += ("\n\n[COVERAGE WARNING] Partial result: " + holes
                    + "Shards below are real; absence below proves nothing.")
     return packet
+
+@mcp.tool()
+def recall_window(when: str = "", query: str = "", limit: int = 20, tz: str = "",
+                  since: str = "", until: str = "", start: str = "", end: str = "") -> str:
+    """
+    Browse the memory substrate BY TIME: everything recorded in a period, with
+    per-day and per-type counts and the most useful records (locators included).
+
+    Args:
+        when: Plain time phrase - 'march', 'march 2026', '2026-03-19', '2026-03-19 14:05',
+            'q1 2026', 'yesterday', 'last week', 'last 30 minutes', 'between 7pm and 8pm
+            yesterday', 'march..may 2026'. A bare month is the most recent one that has started.
+        query: Optional text to narrow to shards in that window mentioning it.
+        limit: Max records to list (server ceiling applies).
+        tz: IANA zone for day boundaries (e.g. America/New_York); default NOUGEN_TZ or UTC.
+        since: Alternative to `when`: start of the era ('2026-03', '2026-03-01', 'march') -
+            inclusive. The fleet connector's era browser sends since/until.
+        until: End of the era, inclusive of the period named ('2026-03' = through March 31).
+        start: Alias of since. end: alias of until.
+    """
+    from nougen_shards import timewindow as _tw, window as _window  # pylint: disable=import-outside-toplevel
+    zone = tz or None
+    since, until = since or start, until or end
+    if not when and (since or until):
+        s_win = _tw.parse_window(since, tz=zone) if since else None
+        u_win = _tw.parse_window(until, tz=zone) if until else None
+        if since and s_win is None:
+            return f"Window recall: could not read since={since!r} as a time."
+        if until and u_win is None:
+            return f"Window recall: could not read until={until!r} as a time."
+        from datetime import datetime, timezone as _utc  # pylint: disable=import-outside-toplevel
+        start_utc = s_win.start_utc if s_win else "0001-01-01T00:00:00Z"
+        end_utc = u_win.end_utc if u_win else datetime.now(_utc.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        res = _window.retrieve_window(start_utc=start_utc, end_utc=end_utc, query=query, limit=limit, tz=zone)
+        if not res.get("error"):
+            res["window"]["label"] = f"{s_win.label if s_win else 'beginning'} .. {u_win.label if u_win else 'now'}"
+            res["window"]["interpreted_as"] = "era bounds since/until, inclusive"
+        return _window.format_packet(res)
+    if not when:
+        # Nothing time-shaped given: the connector's old fallback sent only
+        # {query, limit}. Try to read the query itself as a period.
+        win, rest = _window.split_temporal(query, tz=zone)
+        if win is None:
+            return "Window recall: give `when` (e.g. 'march', 'last week') or since/until."
+        res = _window.retrieve_window(start_utc=win.start_utc, end_utc=win.end_utc, query=rest, limit=limit, tz=zone)
+        res["window"] = win.as_dict()
+        return _window.format_packet(res)
+    return _window.format_packet(_window.retrieve_window(when, query=query, limit=limit, tz=zone))
+
 
 @mcp.tool()
 def recall_layered(query: str, token_budget: int = 1200) -> str:

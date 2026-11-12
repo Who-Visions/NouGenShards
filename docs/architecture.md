@@ -27,7 +27,7 @@ NouGenMorph is mathematically grounded in the [Architecture of Adjacency](theory
 ## Phase 3: The Substrate (Storage & Hardening)
 9. **Synthesize Coherent Signal**: Raw traces are compiled into discrete, context-rich "Shards" of memory.
 10. **Integrate Constraints**: `brain_scan.redaction` aggressively strips API keys (`sk-...`, `gl-pat-...`) and skips dangerous directories to enforce local security boundaries.
-11. **Transform Architecture**: `core.py` manages a 9-node SQLite cluster (1GB limits) using Deterministic Hash-Based Routing for O(1) reads.
+11. **Transform Architecture**: `core.py` manages a 9-node SQLite cluster (2GB per database by default, `NOUGEN_MAX_DB_SIZE` overrides) using Deterministic Hash-Based Routing for O(1) reads.
 12. **Refactor Complexity**: `core.capture` calculates an MD5 hash of every shard, ensuring immediate O(1) deduplication across the entire 9-DB cluster.
 
 ## Phase 4: The Dream State (Evolution & Recall)
