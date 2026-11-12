@@ -580,6 +580,37 @@ def cmd_auth(args):
                 print(f"   Missing in vault: {', '.join(res['missing_vault'])}")
 
 
+def cmd_setup(args):
+    """One step for a new person: set up NouGen, redeem the invite, start the node."""
+    import subprocess
+    from pathlib import Path
+    from . import tenant_onboard
+
+    code = getattr(args, "code", None)
+    if not code:
+        if not sys.stdin.isatty():
+            print("Error: pass the invite code with --code.")
+            return 2
+        code = input("Invite code: ").strip()
+    try:
+        print("Setting up NouGen on this computer...")
+        cmd_init(argparse.Namespace(defaults=True, no_onboarding=False, json=False))
+        print("Joining your NouGen node...")
+        join_url = os.environ.get("NOUGEN_JOIN_URL", "")
+        values = tenant_onboard.redeem_invite(code, join_url)
+        kit_dir = tenant_onboard.write_kit(values["tenant_id"], values["token"], values["tunnel_token"],
+                                           values["port"], root=Path.home() / ".nougen")
+    except tenant_onboard.OnboardError as exc:
+        print(f"Error: {exc}")
+        return 1
+    script = kit_dir / ("join.ps1" if os.name == "nt" else "join.sh")
+    print(f"Your node address: {values['node_url']}")
+    print("Starting your node. Keep this window open.")
+    cmd = (["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)] if os.name == "nt"
+           else ["sh", str(script)])
+    return subprocess.call(cmd)
+
+
 def cmd_init(args):
     """Bootstrap the local shard layer, then adaptively onboard.
 
@@ -1254,6 +1285,41 @@ def cmd_assure(args):
     for caveat in result["caveats"]:
         print(f"Caveat: {caveat}")
     print("Operator gate required: yes")
+
+
+def cmd_forget(args):
+    """Suppress a shard (default, recoverable) or --purge it from every store."""
+    from . import core as _core  # pylint: disable=import-outside-toplevel
+    if args.purge:
+        try:
+            receipt = _core.purge_shard(args.id, args.db, confirm_title=args.confirm_title,
+                                        content_hash=args.content_hash)
+        except ValueError as exc:
+            print(f"refused: {exc}")
+            sys.exit(2)
+        print(json.dumps(receipt, indent=2, default=str))
+        return
+    conn = _core.get_connection(args.db)
+    try:
+        row = conn.execute("SELECT title, domain_key, content, timestamp FROM shards WHERE id = ?",
+                           (args.id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        print(f"refused: no shard with id {args.id} in db {args.db}")
+        sys.exit(2)
+    if args.confirm_title and (row["title"] or "") != args.confirm_title:
+        print(f"refused: title mismatch; found {str(row['title'])[:60]!r}")
+        sys.exit(2)
+    ts = row["timestamp"] or ""
+    c_hash = args.content_hash or _core.CanonicalShardRef.compute_hash(
+        row["domain_key"] or "", row["title"] or "", row["content"] or "", str(ts))
+    ref = _core.CanonicalShardRef(db_index=args.db, shard_id=args.id, content_hash=c_hash)
+    ok = _core.shards_forget(ref)
+    print(json.dumps({"suppressed": args.id if ok else None, "db_index": args.db, "recoverable": True,
+                      "note": "row, FTS entry and dedup hash remain; use --purge to delete"}, indent=2))
+    if not ok:
+        sys.exit(2)
 
 
 def cmd_recall_hook(args):
@@ -2266,6 +2332,9 @@ def get_parser():
                         help="Create the substrate only; skip capability discovery")
     p_init.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    p_setup = subparsers.add_parser("setup", help="Set up NouGen and join with your invite code")
+    p_setup.add_argument("--code", help="Your invite code (asked for if omitted)")
+
     p_add = subparsers.add_parser("add", help="Save shard")
     p_add.add_argument("content", nargs="?")
     p_add.add_argument("--tags")
@@ -2336,6 +2405,15 @@ def get_parser():
     p_auth.add_argument("--timeout", type=float, default=10.0,
                         help="Per-provider probe timeout in seconds (auth check)")
 
+    p_forget = subparsers.add_parser("forget", help="Suppress a shard (recoverable) or --purge it from every store")
+    p_forget.add_argument("id", type=int)
+    p_forget.add_argument("--db", type=int, required=True, help="Cluster DB index (1-9)")
+    p_forget.add_argument("--purge", action="store_true",
+                          help="Delete the row, its FTS entry and its dedup hash; irreversible")
+    p_forget.add_argument("--confirm-title", dest="confirm_title", default=None,
+                          help="Exact current title; required for --purge unless --content-hash is given")
+    p_forget.add_argument("--content-hash", dest="content_hash", default=None,
+                          help="CanonicalShardRef content hash (16 hex chars)")
     p_rh = subparsers.add_parser("recall-hook", help="Budgeted per-turn recall for a host (prints a compact block)")
     p_rh.add_argument("message", nargs="?", default=None, help="Message to recall against (stdin if omitted)")
     p_rh.add_argument("--limit", type=int, default=5)
@@ -4355,13 +4433,13 @@ def cmd_subscribe(args):
     from . import shard_subscriptions as ss
     if args.action in ("add", "rm") and not args.name:
         print(f"subscribe {args.action} needs a name", file=sys.stderr)
-        return 2
+        sys.exit(2)
     if args.action == "add":
         try:
             out = ss.subscribe(args.name, tags=args.tag, keywords=args.keyword)
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
-            return 2
+            sys.exit(2)
     elif args.action == "rm":
         out = {"removed": ss.unsubscribe(args.name)}
     elif args.action == "list":
@@ -4371,7 +4449,7 @@ def cmd_subscribe(args):
             out = ss.surface(args.name, advance=(args.action == "surface"))
         except KeyError as exc:
             print(str(exc), file=sys.stderr)
-            return 2
+            sys.exit(2)
     if args.json or args.action in ("add", "rm", "list"):
         print(json.dumps(out, indent=2))
         return 0
@@ -4458,8 +4536,8 @@ def main():
 
     args = parser.parse_args()
     cmds = {
-        "init": cmd_init, "add": cmd_add, "get": cmd_get, "search": cmd_search, "window": cmd_window, "assure": cmd_assure, "rd-accel": cmd_rd_accel, "subscribe": cmd_subscribe, "chat": cmd_chat,
-        "auth": cmd_auth, "mark": cmd_mark, "recall-hook": cmd_recall_hook, "embed": cmd_embed, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
+        "init": cmd_init, "setup": cmd_setup, "add": cmd_add, "get": cmd_get, "search": cmd_search, "window": cmd_window, "assure": cmd_assure, "rd-accel": cmd_rd_accel, "subscribe": cmd_subscribe, "chat": cmd_chat,
+        "auth": cmd_auth, "mark": cmd_mark, "forget": cmd_forget, "recall-hook": cmd_recall_hook, "embed": cmd_embed, "status": cmd_status, "models": cmd_models, "ctx": cmd_ctx,
         "config": cmd_config, "connect": cmd_connect, "hook": cmd_hook, "ingest": cmd_ingest,
         "hi": cmd_hi, "bye": cmd_bye, "hijack": cmd_hijack, "time": cmd_time,
         "db": cmd_db, "node": cmd_node, "stats": cmd_stats, "router": cmd_router,

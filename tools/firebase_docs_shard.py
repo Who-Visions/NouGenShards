@@ -8,6 +8,7 @@ capture dedupes by content hash, and the fetch date lives in the manifest, not t
 
   pythonw firebase_docs_shard.py            # default scope (auth, admin, firestore, rules, app-check, emulators)
   python  firebase_docs_shard.py --prefix /docs/auth/web/ --max 50
+  python  firebase_docs_shard.py --from-cache   # no network: rebuild the manifest from canon/firebase-docs/pages
 """
 from __future__ import annotations
 
@@ -44,7 +45,10 @@ SCOPE = [  # priority order from the brief
     "/docs/auth/web/", "/docs/auth/admin/", "/docs/auth/", "/docs/admin/", "/docs/reference/admin/node/firebase-admin.auth",
     "/docs/firestore/", "/docs/rules/", "/docs/app-check/", "/docs/emulator-suite/",
     "/docs/hosting/frameworks/nextjs", "/docs/app-hosting/", "/docs/web/setup", "/docs/web/learn-more",
+    "/docs/reference/js/auth",
 ]
+# API-reference pages wanted despite the blanket /docs/reference/ skip (they serve .md.txt like the guides).
+ALLOW = ("/docs/reference/admin/node/firebase-admin.auth", "/docs/reference/js/auth")
 SEEDS = ["/docs/auth/web/start", "/docs/auth/web/password-auth", "/docs/auth/web/google-signin", "/docs/auth/web/manage-users",
          "/docs/auth/web/email-link-auth", "/docs/auth/admin/verify-id-tokens", "/docs/auth/admin/custom-claims",
          "/docs/auth/admin/manage-sessions", "/docs/auth/admin/manage-cookies", "/docs/admin/setup", "/docs/firestore",
@@ -52,7 +56,8 @@ SEEDS = ["/docs/auth/web/start", "/docs/auth/web/password-auth", "/docs/auth/web
          "/docs/firestore/manage-data/data-types", "/docs/firestore/query-data/indexing", "/docs/firestore/data-model",
          "/docs/rules", "/docs/app-check", "/docs/app-check/web/recaptcha-enterprise-provider", "/docs/emulator-suite",
          "/docs/emulator-suite/connect_auth", "/docs/emulator-suite/connect_firestore", "/docs/app-hosting",
-         "/docs/hosting/frameworks/nextjs", "/docs/web/setup"]
+         "/docs/hosting/frameworks/nextjs", "/docs/web/setup", "/docs/auth/web/redirect-best-practices",
+         "/docs/reference/js/auth", "/docs/reference/js/auth.auth"]
 SKIP = ("/docs/auth/android", "/docs/auth/ios", "/docs/auth/flutter", "/docs/auth/unity", "/docs/auth/cpp",
         "/docs/app-check/android", "/docs/app-check/ios", "/docs/app-check/flutter", "/docs/app-check/unity",
         "/docs/app-check/cpp", "/docs/firestore/solutions/", "/docs/firestore/enterprise/", "/docs/reference/")
@@ -119,8 +124,8 @@ def crawl_links(prefixes: list[str], cap: int) -> list[str]:
                     continue
                 found.append(p)
                 for m in LINK.finditer(md):
-                    n = m.group(1).rstrip("/")
-                    if n not in seen and in_scope(n + "/", prefixes) or (n not in seen and in_scope(n, prefixes)):
+                    n = m.group(1).rstrip("/").removesuffix(".md")  # reference links are written as `auth.md`
+                    if n not in seen and (in_scope(n + "/", prefixes) or in_scope(n, prefixes)):
                         seen.add(n)
                         frontier.append(n)
             time.sleep(0.5)
@@ -128,7 +133,9 @@ def crawl_links(prefixes: list[str], cap: int) -> list[str]:
 
 
 def in_scope(p: str, prefixes: list[str]) -> bool:
-    return any(p.startswith(x) for x in prefixes) and not any(p.startswith(s) for s in SKIP)
+    if not any(p.startswith(x) for x in prefixes):
+        return False
+    return any(p.startswith(a) for a in ALLOW) or not any(p.startswith(s) for s in SKIP)
 
 
 def sections(md: str) -> list[tuple[str, str]]:
@@ -152,18 +159,22 @@ def main(argv=None) -> int:
     ap.add_argument("--max", type=int, default=600)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--domain", default="firebase-docs")
+    ap.add_argument("--from-cache", action="store_true", help="skip the crawl; re-capture cached pages to repair the manifest")
     a = ap.parse_args(argv)
     prefixes = a.prefix or SCOPE
     out = ROOT / "canon" / "firebase-docs"
     (out / "pages").mkdir(parents=True, exist_ok=True)
 
-    paths = [p for p in sitemap_paths() if in_scope(p, prefixes)]
+    if a.from_cache:  # no network: re-capture the cached pages (dedupes) to repair or rebuild the manifest
+        cached = {"/" + f.stem.replace("__", "/"): f.read_text(encoding="utf-8") for f in sorted((out / "pages").glob("*.md"))}
+        return write(out, a.domain, cached, [], fetched=False)
+    paths, source = [p for p in sitemap_paths() if in_scope(p, prefixes)], "sitemap"
     if not paths:  # sitemap_N_of_2.xml answered 500 on 2026-10-25: fall back to following .md.txt links
         print("  sitemap gave nothing; link-following from scope seeds", flush=True)
-        paths = crawl_links(prefixes, a.max)
+        paths, source = crawl_links(prefixes, a.max), "link crawl"
     paths.sort(key=lambda p: next((i for i, x in enumerate(prefixes) if (p + "/").startswith(x) or p.startswith(x)), len(prefixes)))
     paths = paths[: a.max]
-    print(f"  {len(paths)} in-scope pages from sitemap", flush=True)
+    print(f"  {len(paths)} in-scope pages from {source}", flush=True)
 
     def get(p):
         time.sleep(0.25)  # be polite: ~4 req/s ceiling at 4 workers
@@ -175,12 +186,21 @@ def main(argv=None) -> int:
             (pages.__setitem__(p, md) if md and not md.lstrip().lower().startswith("<!doctype") else missing.append(p))
             if i % 25 == 0:
                 print(f"  fetched {i}/{len(paths)}", flush=True)
+    return write(out, a.domain, pages, missing)
 
+
+def write(out: Path, domain: str, pages: dict[str, str], missing: list[str], fetched: bool = True) -> int:
+    """Cache each page, capture one shard per section, and merge the result into the manifest.
+
+    `fetched=False` is a cache repair: nothing was downloaded, so page files and fetch dates are left alone.
+    """
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     index, new = [], 0
     for p in sorted(pages):
         md = pages[p]
-        (out / "pages" / (p.strip("/").replace("/", "__") + ".md")).write_text(md, encoding="utf-8")
+        page_file = out / "pages" / (p.strip("/").replace("/", "__") + ".md")
+        if fetched:
+            page_file.write_text(md, encoding="utf-8")
         page_title = " / ".join(p.strip("/").split("/")[1:])
         tags = ["firebase-docs", *[s for s in p.strip("/").split("/")[1:3] if s]]
         for n, (head, body) in enumerate(sections(md), 1):
@@ -188,16 +208,23 @@ def main(argv=None) -> int:
             for k, chunk in enumerate(parts, 1):
                 title = f"Firebase {page_title} — {head}" + (f" (part {k}/{len(parts)})" if len(parts) > 1 else "")
                 text = f"SOURCE: {BASE}{p}\nSECTION: {head}\n\n{chunk}"
-                r = capture("doc-section", title[:200], text, tags=tags, domain_key=a.domain, source_uri=f"{BASE}{p}")
-                new += bool(isinstance(r, dict) and r.get("reason") == "written")
+                r = capture("doc-section", title[:200], text, tags=tags, domain_key=domain, source_uri=f"{BASE}{p}")
+                r = r if isinstance(r, dict) else {}
+                new += r.get("reason") == "written"
+                # a duplicate answers with existing_*; without them every refresh nulled the ids in the manifest
                 index.append({"path": p, "section": n, "part": k, "heading": head,
-                              "shard": r.get("shard_id") if isinstance(r, dict) else None,
-                              "db": r.get("db_index") if isinstance(r, dict) else None, "fetched_utc": stamp})
+                              "shard": r.get("shard_id") or r.get("existing_shard_id"),
+                              "db": r.get("db_index", r.get("existing_db_index")), "fetched_utc": stamp if fetched else None})
     mf = out / "_manifest.json"
     old = json.loads(mf.read_text(encoding="utf-8")) if mf.exists() else {}
     merged = {(e["path"], e["section"], e["part"]): e for e in old.get("index", [])}
-    merged.update({(e["path"], e["section"], e["part"]): e for e in index})
-    manifest = {"domain": a.domain, "runs": old.get("runs", []) + [{"fetched_utc": stamp, "pages": len(pages), "new_shards": new}],
+    when = {e["path"]: e["fetched_utc"] for e in old.get("index", []) if e.get("fetched_utc")}
+    for e in index:
+        if not fetched:  # keep the real fetch date; a page the manifest never saw falls back to its file time
+            f = out / "pages" / (e["path"].strip("/").replace("/", "__") + ".md")
+            e["fetched_utc"] = when.get(e["path"]) or datetime.fromtimestamp(f.stat().st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        merged[(e["path"], e["section"], e["part"])] = e
+    manifest = {"domain": domain, "runs": old.get("runs", []) + [{"fetched_utc" if fetched else "repaired_utc": stamp, "pages": len(pages), "new_shards": new}],
                 "pages": len({k[0] for k in merged}), "shards": len(merged), "missing": missing,
                 "index": [merged[k] for k in sorted(merged)]}
     mf.write_text(json.dumps(manifest, indent=2), encoding="utf-8")

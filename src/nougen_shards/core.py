@@ -1634,8 +1634,93 @@ def shards_retract(ref: CanonicalShardRef, reason: str = "Retracted by cognitive
         conn.close()
 
 
+def purge_shard(shard_id: int, db_index: int, confirm_title: Optional[str] = None,
+                content_hash: Optional[str] = None) -> dict:
+    """Delete a shard from every place it is recorded, and say so.
+
+    ``shards_forget`` SUPPRESSES (utility 0, tags) and is recoverable. This is
+    the irreversible path, and it has to be complete or it is a worse lie than
+    suppression: the ``shards_ad`` trigger removes the FTS entry, but the row's
+    ``file_hash`` also lives in the central ``dedup_index.db`` ``hashes`` map.
+    Leave that behind and a later re-capture of the same text is silently
+    reported as a duplicate of a row that no longer exists (observed on the
+    node's ``shard_forget`` before this existed). Order: dedup map first, then
+    the row, so a crash between the two leaves a re-capturable row rather than
+    an unreachable hash.
+
+    Requires ``confirm_title`` (exact current title) or ``content_hash``
+    (CanonicalShardRef) so a caller cannot purge a shard it has not seen.
+    Returns a receipt with every store touched; raises ValueError on refusal.
+    """
+    if not confirm_title and not content_hash:
+        raise ValueError("purge_shard requires confirm_title or content_hash")
+    if not get_db_path(db_index).exists():
+        raise ValueError(f"no shard DB at index {db_index}")
+    init_db(db_index)
+    conn = get_connection(db_index)
+    try:
+        row = conn.execute(
+            "SELECT title, domain_key, content, timestamp, file_hash FROM shards WHERE id = ?",
+            (shard_id,)).fetchone()
+        if not row:
+            raise ValueError(f"no shard with id {shard_id} in db {db_index}")
+        title = row["title"] or ""
+        domain = row["domain_key"] or ""
+        content = row["content"] or ""
+        # Core's CanonicalShardRef hashes over `timestamp` (see shards_forget /
+        # shards_amend). The node's resolver prefers `original_timestamp` when
+        # that column exists and is set, so accept a hash computed either way.
+        actual_hash = CanonicalShardRef.compute_hash(domain, title, content, str(row["timestamp"] or ""))
+        accepted = {actual_hash.lower()}
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(shards)").fetchall()}
+        if "original_timestamp" in cols:
+            ots = conn.execute("SELECT original_timestamp FROM shards WHERE id = ?", (shard_id,)).fetchone()[0]
+            if ots:
+                accepted.add(CanonicalShardRef.compute_hash(domain, title, content, str(ots)).lower())
+        if content_hash and content_hash.strip().lower() not in accepted:
+            raise ValueError(f"CanonicalShardRef hash mismatch for id {shard_id}@db{db_index}: "
+                             f"expected {content_hash!r}, found {actual_hash!r}; refusing to purge")
+        if confirm_title and title != confirm_title:
+            raise ValueError(f"title mismatch for id {shard_id}@db{db_index}: expected "
+                             f"{confirm_title[:60]!r}, found {title[:60]!r}; refusing to purge")
+        file_hash = row["file_hash"]
+
+        dedup_removed = 0
+        if file_hash:
+            dconn = _get_dedup_connection()
+            try:
+                dedup_removed = dconn.execute("DELETE FROM hashes WHERE file_hash = ?", (file_hash,)).rowcount
+                dconn.commit()
+            finally:
+                dconn.close()
+
+        # shards_ad trigger removes the shards_fts entry in the same statement.
+        rows_removed = conn.execute("DELETE FROM shards WHERE id = ?", (shard_id,)).rowcount
+        conn.commit()
+        fts_left = conn.execute("SELECT count(*) FROM shards_fts WHERE rowid = ?", (shard_id,)).fetchone()[0]
+    finally:
+        conn.close()
+
+    try:
+        from . import history  # pylint: disable=import-outside-toplevel
+        # Audit row carries identity and hashes only -- never the content.
+        history.log_event(shard_id, db_index, "purged",
+                          metadata={"content_hash": actual_hash, "file_hash": file_hash})
+    except Exception as exc:
+        logger.warning("purge_shard: history event not written for %s@db%s: %s", shard_id, db_index, exc)
+
+    return {
+        "purged": shard_id, "db_index": db_index, "title": title, "content_hash": actual_hash,
+        "canonical_ref": f"{db_index}#{shard_id}:{actual_hash}",
+        "rows_removed": rows_removed, "fts_entries_left": fts_left,
+        "dedup_entries_removed": dedup_removed, "recoverable": False,
+    }
+
+
 def shards_forget(ref: CanonicalShardRef) -> bool:
-    """Suppresses a shard completely after CanonicalShardRef verification."""
+    """Suppresses a shard (utility 0.0, tags 'forgotten,suppressed') after
+    CanonicalShardRef verification. Recoverable: the row, its FTS entry and its
+    dedup hash all stay. For deletion use ``purge_shard``."""
     if not get_db_path(ref.db_index).exists():
         return False
     init_db(ref.db_index)

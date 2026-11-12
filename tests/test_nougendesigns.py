@@ -23,6 +23,27 @@ class DesignTests(unittest.TestCase):
         self.spec['themes']['light']['--text'] = '#f5f1e8'
         self.assertFalse(design.lint(self.spec)['passed'])
 
+    def test_named_colorway_themes(self):
+        self.spec['themes']['arcade'] = {'--bg': '#17102a'}
+        self.assertEqual(design.validate(self.spec), [])
+        self.spec['themes']['Bad Name'] = {}
+        self.assertTrue(any('invalid theme' in error for error in design.validate(self.spec)))
+
+    def test_default_theme_name_reserved_and_cannot_mask_base_contrast(self):
+        self.spec['tokens']['--text'] = self.spec['tokens']['--bg']
+        self.spec['themes'] = {'default': {'--text': '#f2eee6'}}
+        self.assertTrue(any('invalid theme: default' in error for error in design.validate(self.spec)))
+        result = design.lint(self.spec)
+        self.assertFalse(result['passed'])
+        self.assertTrue(any(error.startswith('default: --text/--bg') for error in result['errors']))
+
+    def test_mono_violet_colorways_pass_contrast_and_match_outputs(self):
+        spec = json.loads((ROOT / 'designs/mono-violet/design.json').read_text())
+        self.assertEqual(sorted(spec['themes']), ['arcade', 'dark', 'hardcade', 'light'])
+        self.assertTrue(design.lint(spec)['passed'])
+        for name, body in design.render(spec).items():
+            self.assertEqual(body, (ROOT / 'designs/mono-violet' / name).read_text())
+
     def test_missing_section_and_css_injection(self):
         del self.spec['density']
         self.spec['tokens']['--bg'] = '#fff; } body { display:none'
