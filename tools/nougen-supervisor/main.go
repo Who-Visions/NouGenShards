@@ -171,6 +171,10 @@ func cmdInstall(base string, baseSet bool) int {
 	}
 	var ids []string
 	for _, n := range Discover(base) {
+		if n.Dir == base {
+			ids = append(ids, "root") // the earliest layout registered itself as plain "NouGen"
+			continue
+		}
 		ids = append(ids, n.ID)
 	}
 	if err := installAutostart(self, args, base, ids); err != nil {
