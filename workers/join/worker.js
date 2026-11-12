@@ -23,6 +23,22 @@ const CF = "https://api.cloudflare.com/client/v4";
 const enc = new TextEncoder();
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// The supervisor keeps every account on a computer online (tools/nougen-supervisor).
+// Each file is pinned by SHA-256: setup refuses a download that does not match.
+export const SUPERVISOR = {
+  version: "1.3.0",
+  base: "https://github.com/Who-Visions/NouGenShards/releases/download/supervisor-v1.3.0/",
+  sha256: {
+    "windows-amd64.exe": "c8aa69a914ad59b018e219f71b56cb4fc568a781a1c329c7302bf2ead340b5e1",
+    "darwin-arm64": "50dacae5da2b08ed5032c5f6ae71be5ad83b786e4cb77fb0109f71b6c0bbced2",
+    "darwin-amd64": "5b0283e8f79cc7779f143b3d0703721c720db1fd0aff748b8338375ad284f44f",
+    "linux-amd64": "68448fa713e5bf18f04c4685d33b0963e28d221ea8e45033b25af34957fd999a",
+    "linux-arm64": "7af22c9547d5e95f91f012c12f883002e205a42d1a5dede3faddcc8adb135496",
+  },
+};
+// What the supervisor reads for one account. One line of JSON, so it can sit
+// inside a literal here-string or heredoc without any escaping rules applying.
+export const nodeJson = (t) => JSON.stringify({ id: String(t.id), port: Number(t.port), token: String(t.token), tunnel: String(t.tunnel || ""), url: String(t.url || "") });
 const psq = (s) => String(s).replace(/'/g, "''");
 const shq = (s) => String(s).replace(/'/g, "'\\''");
 const rand = (n) => { const b = crypto.getRandomValues(new Uint8Array(n)); return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
@@ -87,6 +103,8 @@ export function setupCmd(t) {
     "$home_ = Join-Path $env:LOCALAPPDATA 'NouGen'",
     `$td = Join-Path $home_ '${psq(t.id)}'`, "New-Item -ItemType Directory -Force $td | Out-Null",
     "Write-Host 'Setting up NouGen on this computer. This takes a few minutes and needs nothing from you.'",
+    // The supervisor would restart the node mid-update; stop it first. Other accounts' nodes keep running.
+    "Get-Process nougen-supervisor -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
     "$escTd = [regex]::Escape($td)",
     "$procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath -match $escTd) -or ($_.CommandLine -and $_.CommandLine -match $escTd) })",
     "$targetPids = @($procs | Select-Object -ExpandProperty ProcessId)",
@@ -100,21 +118,19 @@ export function setupCmd(t) {
     "Invoke-WebRequest -UseBasicParsing 'https://github.com/Who-Visions/NouGenShards/archive/refs/heads/main.zip' -OutFile $z",
     "if (Test-Path $src) { Remove-Item -Recurse -Force $src }",
     "Expand-Archive -Force $z $td; Remove-Item $z; Move-Item (Join-Path $td 'NouGenShards-main') $src",
-    "$run = Join-Path $td 'run.ps1'", "@'",
-    `$env:NGS_NODE_TOKEN = '${psq(t.token)}'`,
-    `$env:NGS_HUD_USER = '${psq(t.id)}'`,
-    `$env:NGS_HUD_PASSWORD = '${psq(t.token)}'`,
-    `$env:NGS_PORT = '${t.port}'`,
-    "$h = Join-Path $env:LOCALAPPDATA 'NouGen'",
-    `$t = Join-Path $h '${psq(t.id)}'`,
-    "$env:NOUGEN_VAULT_DIR = Join-Path $t 'shards'; $env:NOUGEN_HOME = $t",
-    "$srcDir = Join-Path $t 'NouGenShards'",
-    "Start-Process -WindowStyle Hidden -WorkingDirectory $srcDir -FilePath (Join-Path $h 'uv.exe') -ArgumentList 'run','--python','3.11',(Join-Path $srcDir 'app.py')",
-    `Start-Process -WindowStyle Hidden -FilePath (Join-Path $t 'cloudflared.exe') -ArgumentList 'tunnel','--no-autoupdate','run','--token','${psq(t.tunnel)}'`,
-    "'@ | Set-Content -Encoding UTF8 $run",
-    "$launch = \"conhost.exe --headless powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `\"$run`\"\"",
-    `Set-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'NouGen-${psq(t.id)}' -Value $launch`,
-    "& powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $run",
+    // The account is described by node.json; the supervisor starts and watches it.
+    "$nj = Join-Path $td 'node.json'", "@'", nodeJson(t), "'@ | Set-Content -Encoding UTF8 $nj",
+    "Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $td 'run.ps1')",
+    "$sup = Join-Path $home_ 'nougen-supervisor.exe'",
+    `$want = '${SUPERVISOR.sha256["windows-amd64.exe"]}'`,
+    "if (-not ((Test-Path $sup) -and ((Get-FileHash -Algorithm SHA256 $sup).Hash -eq $want))) {",
+    "  $dl = \"$sup.download\"",
+    `  Invoke-WebRequest -UseBasicParsing '${SUPERVISOR.base}nougen-supervisor-windows-amd64.exe' -OutFile $dl`,
+    "  if ((Get-FileHash -Algorithm SHA256 $dl).Hash -ne $want) { Remove-Item -Force $dl; throw 'The NouGen download did not match its fingerprint. Nothing was installed. Try the link again.' }",
+    "  Move-Item -Force $dl $sup",
+    "}",
+    "& $sup install | Out-Null",
+    "if ($LASTEXITCODE -ne 0) { throw 'NouGen could not start its background helper.' }",
     "Write-Host 'Starting... (first start downloads Python once)'",
     "$ok = $false",
     `for ($i = 0; $i -lt 90; $i++) { try { Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:${t.port}/health' -TimeoutSec 3 | Out-Null; $ok = $true; break } catch { Start-Sleep 5 } }`,
@@ -130,6 +146,7 @@ set -e
 B="$HOME/.nougen-node"; H="$B/${shq(t.id)}"; mkdir -p "$H"; cd "$H"
 echo "Setting up NouGen on this computer. This takes a few minutes and needs nothing from you."
 OS=$(uname -s); ARCH=$(uname -m)
+pkill -x nougen-supervisor 2>/dev/null || true
 pkill -f "$H/NouGenShards" 2>/dev/null || true
 pkill -f "$H/cloudflared" 2>/dev/null || true
 [ -x "$B/uv" ] || { curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$B" UV_NO_MODIFY_PATH=1 sh >/dev/null; }
@@ -143,21 +160,22 @@ if [ ! -x "$H/cloudflared" ]; then
 fi
 rm -rf NouGenShards src.zip; curl -LsSf https://github.com/Who-Visions/NouGenShards/archive/refs/heads/main.zip -o src.zip
 "$B/uv" run --python 3.11 python -c "import zipfile;zipfile.ZipFile('src.zip').extractall('.')" && mv NouGenShards-main NouGenShards && rm src.zip
-cat > run.sh <<'RUN'
-#!/bin/sh
-B="$HOME/.nougen-node"; H="$B/${shq(t.id)}"
-export NGS_NODE_TOKEN='${shq(t.token)}' NGS_HUD_USER='${shq(t.id)}' NGS_HUD_PASSWORD='${shq(t.token)}' NGS_PORT='${t.port}' NOUGEN_VAULT_DIR="$H/shards" NOUGEN_HOME="$H"
-(cd "$H/NouGenShards" && nohup "$B/uv" run --python 3.11 "$H/NouGenShards/app.py" >"$H/node.log" 2>&1 &)
-nohup "$H/cloudflared" tunnel --no-autoupdate run --token '${shq(t.tunnel)}' >"$H/tunnel.log" 2>&1 &
-RUN
-chmod 700 run.sh
-if [ "$OS" = Darwin ]; then
-  P="$HOME/Library/LaunchAgents/com.nougen.node.${shq(t.id)}.plist"; mkdir -p "$(dirname "$P")"
-  printf '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>com.nougen.node.${shq(t.id)}</string><key>ProgramArguments</key><array><string>/bin/sh</string><string>%s</string></array><key>RunAtLoad</key><true/></dict></plist>' "$H/run.sh" > "$P"
-else
-  (crontab -l 2>/dev/null | grep -v "$H/run.sh"; echo "@reboot $H/run.sh") | crontab - 2>/dev/null || true
+cat > node.json <<'NODE'
+${nodeJson(t)}
+NODE
+chmod 600 node.json; rm -f run.sh
+case "$OS-$ARCH" in
+  Darwin-arm64) A=darwin-arm64; W='${SUPERVISOR.sha256["darwin-arm64"]}';; Darwin-*) A=darwin-amd64; W='${SUPERVISOR.sha256["darwin-amd64"]}';;
+  Linux-aarch64|Linux-arm64) A=linux-arm64; W='${SUPERVISOR.sha256["linux-arm64"]}';; *) A=linux-amd64; W='${SUPERVISOR.sha256["linux-amd64"]}';;
+esac
+sum() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+S="$B/nougen-supervisor"
+if [ ! -x "$S" ] || [ "$(sum "$S")" != "$W" ]; then
+  curl -LsSf "${SUPERVISOR.base}nougen-supervisor-$A" -o "$S.download"
+  if [ "$(sum "$S.download")" != "$W" ]; then rm -f "$S.download"; echo "The NouGen download did not match its fingerprint. Nothing was installed. Try the link again."; exit 1; fi
+  chmod 700 "$S.download"; mv -f "$S.download" "$S"
 fi
-sh "$H/run.sh"
+"$S" install >/dev/null
 echo "Starting... (first start downloads Python once)"
 ok=0; i=0; while [ $i -lt 90 ]; do curl -fs "http://127.0.0.1:${t.port}/health" >/dev/null 2>&1 && { ok=1; break; }; sleep 5; i=$((i+1)); done
 if [ $ok = 1 ]; then

@@ -2,7 +2,7 @@ import { fakeCoord } from "./fake_coord.mjs";
 // Run: node --test tests/js/join_worker.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import worker, { emailTenantId, provision, setupCmd, setupSh } from "../../workers/join/worker.js";
+import worker, { emailTenantId, provision, setupCmd, setupSh, nodeJson, SUPERVISOR } from "../../workers/join/worker.js";
 
 function memKv(seed = {}) {
   const m = new Map(Object.entries(seed));
@@ -90,21 +90,40 @@ test("distinct domains with the same local part get isolated identities and tunn
   assert.equal(log.filter((l) => l === "POST /client/v4/accounts/acct/cfd_tunnel").length, 2);
 });
 
-test("launchers enable HUD authentication and isolate per-tenant windows/unix installs", () => {
+test("setup hands each account to the supervisor: node.json, a pinned download, no per-account launcher", () => {
   const sampleVal = ["sample", "node", "val"].join("-");
-  const sampleHudVar = ["NGS", "HUD", "PASSWORD"].join("_");
   const args = { id: "monna", token: sampleVal, tunnel: "tun-abc", port: 4445, url: "https://monna.example.test" };
+  const described = JSON.parse(nodeJson(args));
+  assert.deepEqual(described, { id: "monna", port: 4445, token: sampleVal, tunnel: "tun-abc", url: "https://monna.example.test" });
+  assert.ok(!nodeJson(args).includes("\n"), "node.json must be one line so it is safe inside a here-string");
+
   const cmd = setupCmd(args);
-  assert.match(cmd, /\$env:NGS_HUD_USER = 'monna'/);
-  assert.ok(cmd.includes(`$env:${sampleHudVar} = '${sampleVal}'`));
-  assert.match(cmd, /NouGen-monna/);
+  assert.ok(cmd.includes(nodeJson(args)));
   assert.match(cmd, /Join-Path \$home_ 'monna'/);
+  assert.match(cmd, /nougen-supervisor\.exe/);
+  assert.match(cmd, /& \$sup install/);
+  assert.ok(cmd.includes(SUPERVISOR.sha256["windows-amd64.exe"]) && cmd.includes("Get-FileHash -Algorithm SHA256"));
+  assert.match(cmd, /did not match its fingerprint/);
   assert.match(cmd, /if \(\$ok\) \{/);
+  // The supervisor is stopped before the account's files are replaced.
+  assert.ok(cmd.indexOf("Get-Process nougen-supervisor") < cmd.indexOf("Expand-Archive"));
+  // The old per-account launcher and its sign-in entry are gone; the supervisor owns both.
+  assert.ok(!cmd.includes("$run = ") && !cmd.includes("CurrentVersion\\Run"));
+  // The tunnel credential is never placed on a command line.
+  assert.ok(!cmd.includes("'--token'"));
 
   const sh = setupSh(args);
-  assert.match(sh, /NGS_HUD_USER='monna'/);
-  assert.ok(sh.includes(`${sampleHudVar}='${sampleVal}'`));
+  assert.ok(sh.includes("cat > node.json <<'NODE'\n" + nodeJson(args) + "\nNODE"));
   assert.match(sh, /pkill -f "\$H\/NouGenShards"/);
+  assert.match(sh, /"\$S" install/);
+  for (const k of ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"]) assert.ok(sh.includes(SUPERVISOR.sha256[k]));
+  assert.ok(!sh.includes("--token") && !sh.includes("crontab") && !sh.includes("run.sh <<"));
+});
+
+test("every supervisor download is pinned to a real SHA-256", () => {
+  assert.match(SUPERVISOR.base, /^https:\/\/github\.com\/Who-Visions\/NouGenShards\/releases\/download\/supervisor-v\d+\.\d+\.\d+\/$/);
+  assert.ok(SUPERVISOR.base.includes("supervisor-v" + SUPERVISOR.version + "/"));
+  for (const [k, v] of Object.entries(SUPERVISOR.sha256)) assert.match(v, /^[0-9a-fA-F]{64}$/, k);
 });
 
 test("landing and onboarding pages render generated nougen-core styles", async () => {
