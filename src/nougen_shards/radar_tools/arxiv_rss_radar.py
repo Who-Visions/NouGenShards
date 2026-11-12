@@ -32,6 +32,14 @@ from pathlib import Path
 
 def _vault_root() -> Path:
     """Active vault root: NOUGEN_VAULT_DIR when set (a tenant node), else ~/.nougen/shards."""
+    # A request bound to a tenant (core.bind_active_vault) wins: one server process can serve several tenants,
+    # so the env var read here is only the process default.
+    try:
+        from nougen_shards.core import active_vault_dir, vault_context_is_set
+        if vault_context_is_set():
+            return Path(active_vault_dir())
+    except Exception:  # standalone run outside the package
+        pass
     env = os.environ.get("NOUGEN_VAULT_DIR", "").strip()
     return Path(env).expanduser() if env else Path.home() / ".nougen" / "shards"
 
@@ -41,6 +49,13 @@ ROUTE_RECIPE_PATH = RADAR_DIR / "route-v1.json"
 CURSOR_PATH = RADAR_DIR / "cursor.json"
 QUEUES_DIR = RADAR_DIR / "queues"
 DIGESTS_DIR = RADAR_DIR / "digests"
+
+
+def radar_dir() -> Path:
+    """Per-call radar root (the constants above are the process default)."""
+    return _vault_root() / "radar"
+
+
 
 NAMESPACES = {
     "arxiv": "http://arxiv.org/schemas/atom",
@@ -137,9 +152,9 @@ def is_agentic_memory(searchable: str, title: str = "") -> bool:
 
 
 def load_route_recipe() -> dict:
-    if ROUTE_RECIPE_PATH.exists():
+    if (radar_dir() / "route-v1.json").exists():
         try:
-            return json.loads(ROUTE_RECIPE_PATH.read_text(encoding="utf-8"))
+            return json.loads((radar_dir() / "route-v1.json").read_text(encoding="utf-8"))
         except Exception:
             pass
     return {
@@ -156,17 +171,17 @@ def load_route_recipe() -> dict:
 
 
 def load_cursor() -> dict:
-    if CURSOR_PATH.exists():
+    if (radar_dir() / "cursor.json").exists():
         try:
-            return json.loads(CURSOR_PATH.read_text(encoding="utf-8"))
+            return json.loads((radar_dir() / "cursor.json").read_text(encoding="utf-8"))
         except Exception:
             pass
     return {"channels": {}, "seen_ids": []}
 
 
 def save_cursor(cursor: dict):
-    RADAR_DIR.mkdir(parents=True, exist_ok=True)
-    CURSOR_PATH.write_text(json.dumps(cursor, indent=2), encoding="utf-8")
+    radar_dir().mkdir(parents=True, exist_ok=True)
+    (radar_dir() / "cursor.json").write_text(json.dumps(cursor, indent=2), encoding="utf-8")
 
 
 def fetch_arxiv_rss_conditional(channel: str = "cs", cursor: dict = None) -> tuple[bytes, dict]:
@@ -501,9 +516,9 @@ def run_pipeline(mode: str = "reconcile", channels: list[str] = None, broadcast_
     print(f"✔ Routing complete: {len(lanes['beacon'])} BEACON | {len(lanes['review'])} REVIEW | {len(lanes['shard'])} SHARD")
 
     # Persist queues
-    QUEUES_DIR.mkdir(parents=True, exist_ok=True)
-    (QUEUES_DIR / "beacon.json").write_text(json.dumps(lanes["beacon"], indent=2), encoding="utf-8")
-    (QUEUES_DIR / "review.json").write_text(json.dumps(lanes["review"], indent=2), encoding="utf-8")
+    (radar_dir() / "queues").mkdir(parents=True, exist_ok=True)
+    (radar_dir() / "queues" / "beacon.json").write_text(json.dumps(lanes["beacon"], indent=2), encoding="utf-8")
+    (radar_dir() / "queues" / "review.json").write_text(json.dumps(lanes["review"], indent=2), encoding="utf-8")
 
     # Ingest Beacon & Review papers into the 108K+ NouGen Substrate
     priority_papers = lanes["beacon"] + lanes["review"]
@@ -519,8 +534,8 @@ def run_pipeline(mode: str = "reconcile", channels: list[str] = None, broadcast_
 
     # Generate Daily Digest markdown if reconcile mode
     if mode == "reconcile":
-        DIGESTS_DIR.mkdir(parents=True, exist_ok=True)
-        digest_file = DIGESTS_DIR / f"arxiv_digest_{today_slug}.md"
+        (radar_dir() / "digests").mkdir(parents=True, exist_ok=True)
+        digest_file = (radar_dir() / "digests") / f"arxiv_digest_{today_slug}.md"
         
         digest_lines = [
             f"# 📡 arXiv Morning Radar Digest — {today_slug}",

@@ -34,11 +34,25 @@ from pathlib import Path
 
 def _vault_root() -> Path:
     """Active vault root: NOUGEN_VAULT_DIR when set (a tenant node), else ~/.nougen/shards."""
+    # A request bound to a tenant (core.bind_active_vault) wins: one server process can serve several tenants,
+    # so the env var read here is only the process default.
+    try:
+        from nougen_shards.core import active_vault_dir, vault_context_is_set
+        if vault_context_is_set():
+            return Path(active_vault_dir())
+    except Exception:  # standalone run outside the package
+        pass
     env = os.environ.get("NOUGEN_VAULT_DIR", "").strip()
     return Path(env).expanduser() if env else Path.home() / ".nougen" / "shards"
 
 _HERE = Path(__file__).resolve().parent
-LAB_ROOT = _vault_root() / "lab"
+LAB_ROOT = _vault_root() / "lab"  # process default; writes resolve per call
+
+
+def lab_root() -> Path:
+    return _vault_root() / "lab"
+
+
 UA = "nougen-lab-watch/0.1 (+phoebus)"
 
 
@@ -87,7 +101,7 @@ def classify(title: str, abstract: str) -> dict:
 
 
 def _paths(channel: str) -> dict:
-    root = LAB_ROOT / channel
+    root = lab_root() / channel
     return {"root": root, "cursor": root / "cursor.json", "queue": root / "queue.json", "digests": root / "digests"}
 
 

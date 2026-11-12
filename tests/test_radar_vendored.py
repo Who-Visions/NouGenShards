@@ -82,3 +82,21 @@ def test_body_only_without_begin_document_keeps_text(tmp_path, monkeypatch):
 def test_vendored_text_names_no_person():
     for path in arxiv_radar.VENDORED_RADAR_DIR.glob("*.py"):
         assert "Tom Brown" not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_request_bound_tenant_vault_wins_over_process_env(tmp_path, monkeypatch):
+    """One process can serve several tenants: a request-bound vault must win over NOUGEN_VAULT_DIR."""
+    from nougen_shards import core
+
+    paper = _load("arxiv_paper", tmp_path, monkeypatch, tmp_path / "process-vault")
+    lab = _load("arxiv_lab_watch", tmp_path, monkeypatch, tmp_path / "process-vault")
+    rss = _load("arxiv_rss_radar", tmp_path, monkeypatch, tmp_path / "process-vault")
+    tenant = tmp_path / "tenant-b"
+    tokens = core.bind_active_vault(tenant, "tenant-b")
+    try:
+        assert paper.cache_dir() == tenant / "lab" / "papers"
+        assert lab.lab_root() == tenant / "lab"
+        assert rss.radar_dir() == tenant / "radar"
+    finally:
+        core.reset_active_vault(tokens)
+    assert paper.cache_dir() == tmp_path / "process-vault" / "lab" / "papers"

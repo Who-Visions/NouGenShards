@@ -29,11 +29,25 @@ from pathlib import Path
 
 def _vault_root() -> Path:
     """Active vault root: NOUGEN_VAULT_DIR when set (a tenant node), else ~/.nougen/shards."""
+    # A request bound to a tenant (core.bind_active_vault) wins: one server process can serve several tenants,
+    # so the env var read here is only the process default.
+    try:
+        from nougen_shards.core import active_vault_dir, vault_context_is_set
+        if vault_context_is_set():
+            return Path(active_vault_dir())
+    except Exception:  # standalone run outside the package
+        pass
     env = os.environ.get("NOUGEN_VAULT_DIR", "").strip()
     return Path(env).expanduser() if env else Path.home() / ".nougen" / "shards"
 
 UA = "nougen-radar/arxiv_paper (+phoebus)"
-CACHE = _vault_root() / "lab" / "papers"
+CACHE = _vault_root() / "lab" / "papers"  # process default; writes resolve per call
+
+
+def cache_dir() -> Path:
+    return _vault_root() / "lab" / "papers"
+
+
 MAX_SOURCE_BYTES = 25_000_000
 NS = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
 _NEW = re.compile(r"^(\d{4}\.\d{4,5})(v\d+)?$")
@@ -138,7 +152,7 @@ def extract_tex(blob: bytes) -> str:
 
 def fulltext(ref: str, refresh: bool = False) -> Path:
     aid = normalize_id(ref)
-    out = CACHE / aid.replace("/", "_") / "fulltext.tex"
+    out = cache_dir() / aid.replace("/", "_") / "fulltext.tex"
     if out.exists() and not refresh:
         return out
     tex = extract_tex(_get(f"https://arxiv.org/e-print/{aid}"))
