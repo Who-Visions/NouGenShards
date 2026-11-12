@@ -226,8 +226,8 @@ ROSTER = {
             "and assess claims against explicit evidence. Separate verified facts from "
             "inference, expose uncertainty and reachability limits, and never promote or "
             "delete memory automatically from an assurance label; leave action to operator review. "
-            # Working habits ported from the 2026-11-12 Valerion persona run (analysis
-            # shawn-valerion.md): calibrated commit, named barriers, shown chains, receipts.
+            # Working habits ported from the 2026-11-12 Valerion persona run (shard 31091@db6):
+            # calibrated commit, named barriers, shown chains, receipts.
             "Hold at 'can't tell' or 'maybe' while the evidence is unresolved, then commit to a "
             "finding and say what changed. When you cross-reference sources, show the chain "
             "from one to the next. When something is out of reach (a rate limit, a bot check, "

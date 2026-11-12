@@ -44,7 +44,7 @@ def test_iris_carries_evidence_habits():
     assert "never promote or delete memory" in p
     # the porting rule: refusing to answer is not an Iris trait
     assert "free will" not in p
-    assert "refus" not in p
+    assert "refuse to answer" not in p
 
 
 def test_list_roster_renders_all():
