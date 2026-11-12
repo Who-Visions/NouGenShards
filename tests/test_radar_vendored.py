@@ -74,9 +74,11 @@ def test_body_only_ignores_preamble_macros_and_abstract(tmp_path, monkeypatch):
     assert "abstract-only claim" not in body
 
 
-def test_body_only_without_begin_document_keeps_text(tmp_path, monkeypatch):
+def test_body_only_without_begin_document_fails_closed(tmp_path, monkeypatch):
     paper = _load("arxiv_paper", tmp_path, monkeypatch)
-    assert "plain fragment" in paper.body_only("plain fragment")
+    preamble_only = r"\documentclass{article}" "\n" r"\newcommand{\score}{99 percent}" "\n"
+    assert "99 percent" not in paper.body_only(preamble_only)
+    assert paper.body_only("plain fragment") == ""
 
 
 def test_vendored_text_names_no_person():

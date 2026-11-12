@@ -173,8 +173,11 @@ def body_only(tex: str) -> str:
     satisfied by the abstract or by a preamble macro (\\newcommand, \\title), both of which are
     part of the LaTeX source."""
     start = re.search(r"\\begin\{document\}", tex)
-    if start:
-        tex = tex[start.end():]
+    if not start:
+        # Fail closed: with no \begin{document} the body cannot be told apart from the preamble, so
+        # nothing counts as body evidence (a preamble-only macro must never satisfy a claim).
+        return ""
+    tex = tex[start.end():]
     return re.sub(r"\\begin\{abstract\}.*?\\end\{abstract\}", " ", tex, flags=re.S)
 
 
