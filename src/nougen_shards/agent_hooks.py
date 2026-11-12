@@ -151,6 +151,37 @@ def _context(event: str, text: str) -> dict:
     return {"hookSpecificOutput": {"hookEventName": CLAUDE_EVENTS[event], "additionalContext": text}}
 
 
+SUBSCRIPTION_SHOW = 8  # per subscription; the cursor still advances past all of them
+
+
+def subscription_digest() -> str:
+    """New shards matching `nougen subscribe` subscriptions, consumed once per session.
+
+    Surfacing advances the cursors, so each new shard is shown to exactly one session
+    start instead of repeating forever. Never raises: a broken state file must not
+    break session start.
+    """
+    try:
+        from . import shard_subscriptions as ss  # pylint: disable=import-outside-toplevel
+        if not ss.list_subscriptions():
+            return ""
+        found = ss.surface(advance=True)
+    except Exception:  # pylint: disable=broad-except
+        return ""
+    lines = []
+    for name, hits in found.items():
+        if not hits:
+            continue
+        lines.append(f"[{name}] {len(hits)} new")
+        for h in hits[-SUBSCRIPTION_SHOW:]:
+            lines.append(f"- {h['ref']} [{str(h.get('timestamp') or '')[:16]}] {str(h['title'])[:100]}")
+        if len(hits) > SUBSCRIPTION_SHOW:
+            lines.append(f"  (+{len(hits) - SUBSCRIPTION_SHOW} older; `nougen get <id> --db <n>`)")
+    if not lines:
+        return ""
+    return "NOUGEN SUBSCRIPTIONS, new since last session:\n" + "\n".join(lines)
+
+
 def session_start(evt: dict) -> dict:
     marker = _marker(evt.get("session_id", ""))
     try:
@@ -170,6 +201,9 @@ def session_start(evt: dict) -> dict:
     if shards:
         parts.append("NOUGEN VAULT, newest shards:\n" + "\n".join(
             f"- [{t[:16]}] {e}: {title[:100]}" for t, e, title in shards))
+    subs = subscription_digest()
+    if subs:
+        parts.append(subs)
     active_relay = active_relay_summary()
     if active_relay:
         parts.append(active_relay)
