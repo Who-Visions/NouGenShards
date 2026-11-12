@@ -488,8 +488,22 @@ def stop(evt: dict) -> dict:
         if text:
             return {"decision": "block", "reason": text} if mode == "block" else _context("stop", text)
     # Otherwise never block, only nudge when work is pending.
-    if _handoff_written_since(_started(evt)) or not _git("status", "--short"):
+    status = _git("status", "--short")
+    if _handoff_written_since(_started(evt)) or not status:
         return {}
+    # Nudge once per session per distinct dirty state: a tree dirtied by another
+    # lane (or a gitignored deliverable) must not re-nag every turn.
+    import hashlib, pathlib
+    sid = str(evt.get("session_id") or "nosid")
+    fp = hashlib.sha1(status.encode("utf-8", "replace")).hexdigest()[:16]
+    mark = pathlib.Path.home() / ".nougen" / "state" / "stop-nudge" / f"{sid}.txt"
+    try:
+        if mark.exists() and mark.read_text(encoding="utf-8").strip() == fp:
+            return {}
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        mark.write_text(fp, encoding="utf-8")
+    except OSError:
+        pass
     return _context("stop", "Uncommitted work exists and no handoff was written this session. "
                             "Before you finish, write one: `nougen handoff create -a " + _agent() +
                             " -g \"<goal>\" -M <note-file>`.")

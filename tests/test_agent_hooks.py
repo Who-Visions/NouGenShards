@@ -157,3 +157,23 @@ def test_handoff_with_no_cwd_does_not_count(env):
     d.mkdir(parents=True, exist_ok=True)
     (d / "handoff_x.json").write_text(json.dumps({"handoff_id": "x", "agent": "claude-cli"}), encoding="utf-8")
     assert not ah._handoff_written_since(0)
+
+
+def test_stop_nudge_fires_once_per_session_per_dirty_state(env, monkeypatch):
+    import pathlib
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: env))
+    monkeypatch.setattr(ah, "_git", lambda *args: " M dirty_a.py" if args == ("status", "--short") else "")
+
+    evt = {"session_id": "sess-nudge-1"}
+    out1 = ah.stop(evt)
+    assert "Uncommitted work exists" in out1["hookSpecificOutput"]["additionalContext"]
+
+    # Same dirty state in the same session stays quiet
+    out2 = ah.stop(evt)
+    assert out2 == {}
+
+    # Different dirty state in the same session nudges again
+    monkeypatch.setattr(ah, "_git", lambda *args: " M dirty_a.py\n M dirty_b.py" if args == ("status", "--short") else "")
+    out3 = ah.stop(evt)
+    assert "Uncommitted work exists" in out3["hookSpecificOutput"]["additionalContext"]
+
