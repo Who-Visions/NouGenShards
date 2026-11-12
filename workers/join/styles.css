@@ -138,6 +138,16 @@ h1 {
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
 }
 
+.join-panel a:not(.join-action) {
+  color: var(--join-amber, var(--accent));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.join-panel a:not(.join-action):hover {
+  color: var(--text);
+}
+
 .join-action {
   width: 100%;
   display: inline-flex;

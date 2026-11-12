@@ -59,12 +59,12 @@
     },
     {
       "kind": "observed",
-      "note": "Public self-serve join onboarding shell consumes generated nougen-core tokens directly with 65ch measure and 44px touch targets.",
+      "note": "Public self-serve join onboarding shell consumes generated nougen-core tokens with warm contact-page adaptation (flat gold CTA #e2b86b/#111111, amber eyebrow #d9a75a/#231c12, emerald status dot #34d399, readable dark-theme panel links, 65ch measure and 44px touch targets).",
       "source": "workers/join/styles.css"
     }
   ],
   "schemaVersion": "od-design-system-project/v1",
-  "sourceDigest": "72f9452df33c1467e59371542a02065576795d8561da7f75ca98ae0cd3d8057c",
+  "sourceDigest": "fd22d55c723faac18f088504e9b283744badda124b944eb79e9611d4ddc48718",
   "surfaces": {
     "ground": "--bg",
     "ink": "--text"

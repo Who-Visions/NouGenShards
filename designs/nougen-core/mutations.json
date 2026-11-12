@@ -32,7 +32,7 @@
     "selector": ".hw-row, .role-item"
   },
   {
-    "change": "Render public join onboarding pages from compiled nougen-core tokens (65ch reading measure, 44px touch action target, monochrome divider footer, visible focus ring, reduced-motion respect).",
-    "selector": ".join-shell, .join-action, .join-footer"
+    "change": "Render public join onboarding pages from compiled nougen-core tokens with the warm contact-page adaptation (flat gold CTA, amber eyebrow, emerald status dot, accessible dark-theme panel links, 65ch reading measure, 44px touch action target, visible focus ring, reduced-motion respect).",
+    "selector": ".join-shell, .join-panel, .join-action, .join-footer"
   }
 ]

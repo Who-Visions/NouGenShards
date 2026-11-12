@@ -162,7 +162,7 @@
     {
       "kind": "observed",
       "source": "workers/join/styles.css",
-      "note": "Public self-serve join onboarding shell consumes generated nougen-core tokens directly with 65ch measure and 44px touch targets."
+      "note": "Public self-serve join onboarding shell consumes generated nougen-core tokens with warm contact-page adaptation (flat gold CTA #e2b86b/#111111, amber eyebrow #d9a75a/#231c12, emerald status dot #34d399, readable dark-theme panel links, 65ch measure and 44px touch targets)."
     }
   ],
   "contrastPairs": [
@@ -233,8 +233,8 @@
       "change": "Preserve label/value grouping; stack inside cards below 18rem and wrap long values."
     },
     {
-      "selector": ".join-shell, .join-action, .join-footer",
-      "change": "Render public join onboarding pages from compiled nougen-core tokens (65ch reading measure, 44px touch action target, monochrome divider footer, visible focus ring, reduced-motion respect)."
+      "selector": ".join-shell, .join-panel, .join-action, .join-footer",
+      "change": "Render public join onboarding pages from compiled nougen-core tokens with the warm contact-page adaptation (flat gold CTA, amber eyebrow, emerald status dot, accessible dark-theme panel links, 65ch reading measure, 44px touch action target, visible focus ring, reduced-motion respect)."
     }
   ]
 }
