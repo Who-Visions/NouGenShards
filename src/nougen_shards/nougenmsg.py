@@ -472,6 +472,9 @@ class AgentPinger:
         longer opens are pruned from the registry. There is no ack on the wire,
         so delivery_verified stays False by design: the receiver's context is
         the proof, never the byte count (shard 17142)."""
+        # Periodic heartbeats are bus noise; never push them into a live session.
+        if "24/7 Heartbeat #" in str(prompt):
+            return {"delivered": [], "skipped": "heartbeat", "delivery_verified": False}
         if _tenant_scope():
             inbox_dir = AgentPinger._claude_inbox_dir()
             os.makedirs(inbox_dir, exist_ok=True)
