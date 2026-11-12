@@ -51,6 +51,11 @@ dependencies = [
     "google-auth-oauthlib>=1.2",
     "google-auth-httplib2>=0.2",
     "z3-solver>=4.12.0",
+    # Process RSS for leakwatch and memory diagnostics. leakwatch has a stdlib
+    # fallback, but an undeclared psutil vanished on every venv rebuild and the
+    # reader silently changed. 5.9 is the floor for Process.memory_info() on
+    # the Python versions this project supports.
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]
