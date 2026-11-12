@@ -158,6 +158,11 @@
       "kind": "inferred",
       "source": "designs/saas-console-morph.md",
       "note": "Console shell, scope, routing and gating invariants adapted from GM-supplied briefs; vendor console behavior unverified."
+    },
+    {
+      "kind": "observed",
+      "source": "ui/src/BatteryReader.tsx",
+      "note": "Cortex Hub Battery Reader tab: matte panel cards, flat gauge meter without gradients/pills, local-only 24h charge trend, longitudinal wear forecast, and explicit non-battery/non-desktop notices."
     }
   ],
   "contrastPairs": [
@@ -226,6 +231,10 @@
     {
       "selector": ".hw-row, .role-item",
       "change": "Preserve label/value grouping; stack inside cards below 18rem and wrap long values."
+    },
+    {
+      "selector": ".battery-reader, .battery-metrics-grid, .battery-capacity-ring",
+      "change": "Render Battery Reader telemetry on opaque panel surfaces with solid accent gauge bars (no gradients or 50%/999px pills), accessible focus rings, reduced-motion guard, and explicit absent/web-only notices."
     }
   ]
 }

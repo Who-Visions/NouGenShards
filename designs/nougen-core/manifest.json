@@ -56,10 +56,15 @@
       "kind": "inferred",
       "note": "Console shell, scope, routing and gating invariants adapted from GM-supplied briefs; vendor console behavior unverified.",
       "source": "designs/saas-console-morph.md"
+    },
+    {
+      "kind": "observed",
+      "note": "Cortex Hub Battery Reader tab: matte panel cards, flat gauge meter without gradients/pills, local-only 24h charge trend, longitudinal wear forecast, and explicit non-battery/non-desktop notices.",
+      "source": "ui/src/BatteryReader.tsx"
     }
   ],
   "schemaVersion": "od-design-system-project/v1",
-  "sourceDigest": "8813e6b637b23d989b98fb2819409d91901fe4bd3f24c69d5a235c1ce340d453",
+  "sourceDigest": "6a09773ee14933de11261fd9a7c40effc88d987addd673ec95ba69e6a195c0a8",
   "surfaces": {
     "ground": "--bg",
     "ink": "--text"
