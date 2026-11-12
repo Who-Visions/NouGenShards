@@ -28,6 +28,9 @@ from typing import Any, Dict, List, Optional
 RADAR_REPO_ENV = "NOUGEN_RADAR_DIR"
 
 
+VENDORED_RADAR_DIR = Path(__file__).resolve().parent / "radar_tools"
+
+
 def find_radar_root() -> Optional[Path]:
     """Locate the canonical nougen-radar repository root."""
     env_path = os.environ.get(RADAR_REPO_ENV)
@@ -43,6 +46,9 @@ def find_radar_root() -> Optional[Path]:
         Path.home() / "The Observatory" / "tools",
         Path.home() / ".nougen" / "tools",
         Path.home() / "Observatory" / "tools",
+        # Last resort: the copy vendored into this package, so tenant nodes that
+        # cannot reach the private nougen-radar repo still get working tools.
+        VENDORED_RADAR_DIR,
     ]
     for c in candidates:
         root_dir = c.parent if c.name == "tools" else c

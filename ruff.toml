@@ -26,3 +26,8 @@ ignore = [
     "E702",
     "E401",
 ]
+
+[lint.per-file-ignores]
+# Vendored verbatim from the private nougen-radar repo and refreshed by copying;
+# keep them byte-identical to upstream instead of restyling them here.
+"src/nougen_shards/radar_tools/*.py" = ["E731", "F401", "F541"]
