@@ -35,6 +35,18 @@ def test_iris_owns_assurance():
     assert "operator" in iris.system_prompt.lower()
 
 
+def test_iris_carries_evidence_habits():
+    p = agents.ROSTER["Iris"].system_prompt.lower()
+    # calibrated commit, shown chains, named barriers, and a closing receipt
+    for phrase in ("can't tell", "show the chain", "what blocks you", "what is still open"):
+        assert phrase in p, phrase
+    # still gated: Iris advises, the operator decides
+    assert "never promote or delete memory" in p
+    # the porting rule: refusing to answer is not an Iris trait
+    assert "free will" not in p
+    assert "refus" not in p
+
+
 def test_list_roster_renders_all():
     depth_chart = agents.list_roster()
     for name in EXPECTED_ROSTER:
