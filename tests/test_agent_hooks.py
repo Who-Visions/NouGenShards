@@ -88,6 +88,35 @@ def test_session_start_injects_handoff_and_shards(env):
     assert "ship hooks" in ctx and "hooks ship publicly" in ctx
 
 
+def test_session_start_surfaces_subscriptions_once(env, monkeypatch):
+    from nougen_shards import shard_subscriptions as ss
+    state = env / "subs.json"
+    real_list, real_surface = ss.list_subscriptions, ss.surface
+    monkeypatch.setattr(ss, "list_subscriptions", lambda path=None: real_list(path=state))
+    monkeypatch.setattr(ss, "surface", lambda name=None, advance=True, path=None: real_surface(name, advance, path=state))
+    ss.subscribe("morph", tags=["nougenmorph"], path=state)
+    con = sqlite3.connect(env / "vault" / "nougen_shards_1.db")
+    con.execute("ALTER TABLE shards ADD COLUMN tags TEXT")
+    con.execute("INSERT INTO shards (timestamp, event_type, title, tags) VALUES "
+                "('2026-11-12T16:00:00Z','KNOWLEDGE','second brain morph','[\"nougenmorph\"]')")
+    con.commit()
+    con.close()
+    first = json.loads(ah.run("session-start", json.dumps({"session_id": "s9"})))
+    ctx = first["hookSpecificOutput"]["additionalContext"]
+    assert "NOUGEN SUBSCRIPTIONS" in ctx and "second brain morph" in ctx and "[morph] 1 new" in ctx
+    second = json.loads(ah.run("session-start", json.dumps({"session_id": "s10"})))
+    assert "NOUGEN SUBSCRIPTIONS" not in second["hookSpecificOutput"]["additionalContext"]
+
+
+def test_session_start_survives_broken_subscription_state(env, monkeypatch):
+    from nougen_shards import shard_subscriptions as ss
+    def boom(path=None):
+        raise ValueError("corrupt")
+    monkeypatch.setattr(ss, "list_subscriptions", boom)
+    out = json.loads(ah.run("session-start", json.dumps({"session_id": "s11"})))
+    assert "hooks ship publicly" in out["hookSpecificOutput"]["additionalContext"]
+
+
 def test_session_end_writes_registry_record_once(env):
     ah.run("session-start", json.dumps({"session_id": "s2"}))
     ah.run("session-end", json.dumps({"session_id": "s2"}))
