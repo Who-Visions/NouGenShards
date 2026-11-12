@@ -1,3 +1,4 @@
+import { fakeCoord } from "./fake_coord.mjs";
 // Run: node --test tests/js/join_worker.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -60,6 +61,7 @@ function withFetch(fn, body) {
 
 const mkEnv = (kv) => ({
   TENANTS: kv,
+  COORD: fakeCoord(),
   [["CF", "API", "TOKEN"].join("_")]: ["fake", "test", "val"].join("-"),
   CF_ACCOUNT_ID: "acct",
   CF_ZONE_ID: "zone1",

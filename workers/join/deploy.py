@@ -83,6 +83,7 @@ def main():
     join_cf_token = keymaker.get_secret(join_token_name) if join_token_name else newest("CLOUDFLARE_JOIN_TOKEN_")
     bindings = [
         {"type": "ratelimit", "name": "JOIN_RL", "namespace_id": "1001", "simple": {"limit": 3, "period": 60}},
+        {"type": "durable_object_namespace", "name": "COORD", "class_name": "JoinCoordinator"},
         {"type": "kv_namespace", "name": "TENANTS", "namespace_id": t._find_namespace(c)},
         {"type": "secret_text", "name": "CF_API_TOKEN", "text": join_cf_token},
         {"type": "secret_text", "name": "GOOGLE_CLIENT_SECRET", "text": keymaker.get_secret("NOUGEN_JOIN_GOOGLE_CLIENT_SECRET")},
@@ -96,7 +97,16 @@ def main():
     ]
     if any(b.get("text") in (None, "") for b in bindings if b["type"] in ("secret_text", "plain_text")):
         raise SystemExit("a keymaker value is missing; nothing deployed")
-    meta = {"main_module": "worker.js", "compatibility_date": "2026-08-01", "bindings": bindings}
+    meta = {"main_module": "worker.js", "compatibility_date": "2026-11-11", "bindings": bindings,
+            "observability": {"enabled": True}}
+    # First deploy with the coordinator creates its SQLite-backed class (migration v1);
+    # later deploys must not repeat the migration.
+    try:
+        tag = (c.call("GET", f"/accounts/{acct}/workers/scripts/{SCRIPT}/settings") or {}).get("migration_tag")
+    except Exception:  # noqa: BLE001 - first deploy of the script
+        tag = None
+    if tag != "v1":
+        meta["migrations"] = {"new_tag": "v1", "new_sqlite_classes": ["JoinCoordinator"]}
     b = uuid.uuid4().hex
     body = b""
     for name, ctype, data in (("metadata", "application/json", json.dumps(meta).encode()),

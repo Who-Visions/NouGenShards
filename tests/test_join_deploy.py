@@ -47,12 +47,12 @@ def test_deploy_defaults_to_newest_join_token_and_respects_override(monkeypatch)
     monkeypatch.setattr(deploy.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.delenv("NOUGEN_JOIN_CF_TOKEN_NAME", raising=False)
     deploy.main()
-    assert "newest:CLOUDFLARE_JOIN_TOKEN_" in captured[0][1]
+    assert "newest:CLOUDFLARE_JOIN_TOKEN_" in next(x for x in captured if x[0] == "upload")[1]
 
     captured.clear()
     monkeypatch.setenv("NOUGEN_JOIN_CF_TOKEN_NAME", "CLOUDFLARE_JOIN_TOKEN_CUSTOM")
     deploy.main()
-    assert "mock:cloudflare_join_token_custom" in captured[0][1]
+    assert "mock:cloudflare_join_token_custom" in next(x for x in captured if x[0] == "upload")[1]
 
 
 def test_newest_reads_secret_key_column_and_falls_back_when_scan_empty(monkeypatch, tmp_path):
