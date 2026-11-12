@@ -91,10 +91,8 @@ class LeakWatch:
         trace_budget_s: float = 8.0,
         trace_width: int = 24,
         trace_referrers_per_object: int = 256,
-        max_rss_gb: float = 4.5,
     ) -> None:
         self.trace_referrers_per_object = int(trace_referrers_per_object)
-        self.max_rss_bytes = int(max_rss_gb * (1024**3)) if max_rss_gb > 0 else 0
         # gc.get_referrers() scans the WHOLE heap per call. On a gateway holding an
         # embedding model that is millions of objects, so an unbounded walk hung
         # the first live run. Every trace is capped in calls, seconds and width;
@@ -135,45 +133,17 @@ class LeakWatch:
             trace_budget_s=_env_num("NOUGEN_LEAKWATCH_TRACE_SECONDS", 8.0),
             trace_width=int(_env_num("NOUGEN_LEAKWATCH_TRACE_WIDTH", 24)),
             trace_referrers_per_object=int(_env_num("NOUGEN_LEAKWATCH_TRACE_REFERRERS", 256)),
-            max_rss_gb=_env_num("NOUGEN_LEAKWATCH_MAX_RSS_GB", 4.5),
         )
 
     # -- 1. sample ---------------------------------------------------------
     def sample(self) -> Counter:
         gc.collect()
-        if sys.platform == "win32":
-            try:
-                import ctypes
-                ctypes.windll.kernel32.SetProcessWorkingSetSize(ctypes.c_void_p(-1), -1, -1)
-            except Exception:
-                pass
-        rss = _rss_bytes()
-        if rss is not None and self.max_rss_bytes > 0 and rss > self.max_rss_bytes:
-            logger.warning(
-                "leakwatch: RSS %.2f GB exceeds ceiling %.2f GB; purging vector cache and forcing GC",
-                rss / (1024**3), self.max_rss_bytes / (1024**3)
-            )
-            try:
-                from . import core
-                if hasattr(core, "_VECTOR_CACHE"):
-                    with core._VECTOR_CACHE_LOCK:
-                        core._VECTOR_CACHE.clear()
-            except Exception as e:
-                logger.warning("leakwatch: vector cache purge failed: %s", e)
-            gc.collect()
-            if sys.platform == "win32":
-                try:
-                    import ctypes
-                    ctypes.windll.kernel32.SetProcessWorkingSetSize(ctypes.c_void_p(-1), -1, -1)
-                except Exception:
-                    pass
-            rss = _rss_bytes()
         objs = gc.get_objects()
         try:
             counts = Counter(_type_key(o) for o in objs)
         finally:
             del objs  # never let the sampling list become a referrer in a trace
-        self.samples.append((time.time(), counts, rss))
+        self.samples.append((time.time(), counts, _rss_bytes()))
         return counts
 
     # -- 2. retained -------------------------------------------------------
