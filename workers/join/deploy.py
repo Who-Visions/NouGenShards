@@ -11,6 +11,7 @@ import os
 import pathlib
 import sqlite3
 import sys
+import urllib.error
 import urllib.request
 import uuid
 
@@ -101,24 +102,39 @@ def main():
             "observability": {"enabled": True}}
     # First deploy with the coordinator creates its SQLite-backed class (migration v1);
     # later deploys must not repeat the migration.
+    # The settings endpoint does not reliably report the applied migration tag, so the
+    # script LIST is the source of truth; a 412 (migration already applied) is retried
+    # once without the migration.
     try:
-        tag = (c.call("GET", f"/accounts/{acct}/workers/scripts/{SCRIPT}/settings") or {}).get("migration_tag")
+        listed = c.call("GET", f"/accounts/{acct}/workers/scripts") or []
+        tag = next((s.get("migration_tag") for s in listed if s.get("id") == SCRIPT), None)
     except Exception:  # noqa: BLE001 - first deploy of the script
         tag = None
     if tag != "v1":
         meta["migrations"] = {"new_tag": "v1", "new_sqlite_classes": ["JoinCoordinator"]}
-    b = uuid.uuid4().hex
-    body = b""
-    for name, ctype, data in (("metadata", "application/json", json.dumps(meta).encode()),
-                              ("worker.js", "application/javascript+module", (HERE / "worker.js").read_bytes())):
-        fn = f'; filename="{name}"' if name != "metadata" else ""
-        body += f'--{b}\r\nContent-Disposition: form-data; name="{name}"{fn}\r\nContent-Type: {ctype}\r\n\r\n'.encode() + data + b"\r\n"
-    body += f"--{b}--\r\n".encode()
-    req = urllib.request.Request(f"{t.CF_API}/accounts/{acct}/workers/scripts/{SCRIPT}", data=body, method="PUT",
-                                 headers={"Authorization": "Bearer " + t._resolve_cf_token(),
-                                          "Content-Type": f"multipart/form-data; boundary={b}"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        print("script uploaded:", json.loads(r.read())["success"])
+
+    def upload(m):
+        b = uuid.uuid4().hex
+        body = b""
+        for name, ctype, data in (("metadata", "application/json", json.dumps(m).encode()),
+                                  ("worker.js", "application/javascript+module", (HERE / "worker.js").read_bytes())):
+            fn = f'; filename="{name}"' if name != "metadata" else ""
+            body += f'--{b}\r\nContent-Disposition: form-data; name="{name}"{fn}\r\nContent-Type: {ctype}\r\n\r\n'.encode() + data + b"\r\n"
+        body += f"--{b}--\r\n".encode()
+        req = urllib.request.Request(f"{t.CF_API}/accounts/{acct}/workers/scripts/{SCRIPT}", data=body, method="PUT",
+                                     headers={"Authorization": "Bearer " + t._resolve_cf_token(),
+                                              "Content-Type": f"multipart/form-data; boundary={b}"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read())["success"]
+
+    try:
+        ok = upload(meta)
+    except urllib.error.HTTPError as e:
+        if e.code != 412 or "migrations" not in meta:
+            raise
+        meta.pop("migrations")  # already applied on a previous deploy
+        ok = upload(meta)
+    print("script uploaded:", ok)
     c.call("PUT", f"/accounts/{acct}/workers/domains",
            body={"hostname": "join." + ZONE, "service": SCRIPT, "zone_id": zone, "environment": "production"})
     print("live at https://join." + ZONE)
