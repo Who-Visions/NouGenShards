@@ -35,7 +35,7 @@ python3 tools/sync_fleet.py
 
 ### 2. Sync a Specific Target Repository
 ```bash
-nougen sync --repo "/Users/kushboygroup/The Observatory/NouGenTracker"
+nougen sync --repo "~/workspace/NouGenTracker"
 ```
 
 ### 3. Fetch and Rebase Without Pushing Ahead Commits
