@@ -92,14 +92,14 @@ test("distinct domains with the same local part get isolated identities and tunn
 
 test("setup hands each account to the supervisor: node.json, a pinned download, no per-account launcher", () => {
   const sampleVal = ["sample", "node", "val"].join("-");
-  const args = { id: "monna", token: sampleVal, tunnel: "tun-abc", port: 4445, url: "https://monna.example.test" };
+  const args = { id: "sample-acct", token: sampleVal, tunnel: "tun-abc", port: 4445, url: "https://sample-acct.example.test" };
   const described = JSON.parse(nodeJson(args));
-  assert.deepEqual(described, { id: "monna", port: 4445, token: sampleVal, tunnel: "tun-abc", url: "https://monna.example.test" });
+  assert.deepEqual(described, { id: "sample-acct", port: 4445, token: sampleVal, tunnel: "tun-abc", url: "https://sample-acct.example.test" });
   assert.ok(!nodeJson(args).includes("\n"), "node.json must be one line so it is safe inside a here-string");
 
   const cmd = setupCmd(args);
   assert.ok(cmd.includes(nodeJson(args)));
-  assert.match(cmd, /Join-Path \$home_ 'monna'/);
+  assert.match(cmd, /Join-Path \$home_ 'sample-acct'/);
   assert.match(cmd, /nougen-supervisor\.exe/);
   assert.match(cmd, /& \$sup install/);
   assert.ok(cmd.includes(SUPERVISOR.sha256["windows-amd64.exe"]) && cmd.includes("Get-FileHash -Algorithm SHA256"));
