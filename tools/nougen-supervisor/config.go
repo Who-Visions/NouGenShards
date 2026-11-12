@@ -47,6 +47,8 @@ var utf8BOM = string([]byte{0xEF, 0xBB, 0xBF})
 var (
 	ps1Token  = regexp.MustCompile(`\$env:NGS_NODE_TOKEN\s*=\s*'((?:[^']|'')*)'`)
 	ps1Port   = regexp.MustCompile(`\$env:NGS_PORT\s*=\s*'(\d+)'`)
+	ps1User   = regexp.MustCompile(`\$env:NGS_HUD_USER\s*=\s*'((?:[^']|'')*)'`)
+	shUser    = regexp.MustCompile(`NGS_HUD_USER='([^']*)'`)
 	ps1Tunnel = regexp.MustCompile(`'--token'\s*,\s*'((?:[^']|'')*)'`)
 	shToken   = regexp.MustCompile(`NGS_NODE_TOKEN='([^']*)'`)
 	shPort    = regexp.MustCompile(`NGS_PORT='(\d+)'`)
@@ -77,11 +79,13 @@ func loadNode(dir string) (Node, bool) {
 		s := string(b)
 		n.Token = strings.ReplaceAll(first(ps1Token, s), "''", "'")
 		n.Tunnel = strings.ReplaceAll(first(ps1Tunnel, s), "''", "'")
+		n.ID = strings.ReplaceAll(first(ps1User, s), "''", "'")
 		n.Port, _ = strconv.Atoi(first(ps1Port, s))
 		n.Source = "run.ps1"
 	} else if b, err := os.ReadFile(filepath.Join(dir, "run.sh")); err == nil {
 		s := string(b)
 		n.Token, n.Tunnel = first(shToken, s), first(shTunnel, s)
+		n.ID = first(shUser, s)
 		n.Port, _ = strconv.Atoi(first(shPort, s))
 		n.Source = "run.sh"
 	} else {
@@ -100,24 +104,35 @@ func loadNode(dir string) (Node, bool) {
 	return n, true
 }
 
-// Discover lists every runnable account under base, ordered by port. Two
-// folders claiming one port cannot both run; the first by name keeps it.
+// Discover lists every runnable account under base, ordered by port. The
+// earliest setups put the first account directly in base instead of a folder
+// of its own, so base itself is checked too. Two accounts claiming one port or
+// one name cannot both run; the first found keeps it.
 func Discover(base string) []Node {
 	entries, err := os.ReadDir(base)
 	if err != nil {
 		return nil
 	}
-	var nodes []Node
-	taken := map[int]bool{}
+	dirs := []string{base}
 	for _, e := range entries {
-		if !e.IsDir() {
+		if e.IsDir() {
+			dirs = append(dirs, filepath.Join(base, e.Name()))
+		}
+	}
+	var nodes []Node
+	ports, ids := map[int]bool{}, map[string]bool{}
+	for _, dir := range dirs {
+		n, ok := loadNode(dir)
+		if !ok {
 			continue
 		}
-		n, ok := loadNode(filepath.Join(base, e.Name()))
-		if !ok || taken[n.Port] {
+		if dir == base && n.ID == filepath.Base(base) {
+			n.ID = "root"
+		}
+		if ports[n.Port] || ids[n.ID] {
 			continue
 		}
-		taken[n.Port] = true
+		ports[n.Port], ids[n.ID] = true, true
 		nodes = append(nodes, n)
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Port < nodes[j].Port })

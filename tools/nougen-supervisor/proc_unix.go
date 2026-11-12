@@ -68,7 +68,7 @@ func installAutostart(self string, args []string, base string, ids []string) err
 		for _, a := range append([]string{self}, args...) {
 			b.WriteString("<string>" + html.EscapeString(a) + "</string>")
 		}
-		b.WriteString(`</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>`)
+		b.WriteString(`</array><key>RunAtLoad</key><true/></dict></plist>`)
 		if err := os.MkdirAll(filepath.Dir(agentPath()), 0o755); err != nil {
 			return err
 		}

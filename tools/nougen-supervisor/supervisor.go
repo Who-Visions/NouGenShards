@@ -64,7 +64,12 @@ func (l realLauncher) Node(n Node) *exec.Cmd {
 func (l realLauncher) Tunnel(n Node, metricsAddr string) *exec.Cmd {
 	// The token goes in the environment, not the arguments: arguments are
 	// visible to every other program on the computer.
-	cmd := exec.Command(filepath.Join(n.Dir, exe("cloudflared")), "tunnel", "--no-autoupdate", "--metrics", metricsAddr, "run")
+	// Each account has its own copy; the earliest setups kept one in base.
+	cf := filepath.Join(n.Dir, exe("cloudflared"))
+	if _, err := os.Stat(cf); err != nil {
+		cf = filepath.Join(l.base, exe("cloudflared"))
+	}
+	cmd := exec.Command(cf, "tunnel", "--no-autoupdate", "--metrics", metricsAddr, "run")
 	cmd.Dir = n.Dir
 	cmd.Env = append(os.Environ(), "TUNNEL_TOKEN="+n.Tunnel)
 	return cmd
@@ -227,10 +232,12 @@ func (s *Supervisor) checkNode(e *entry, now time.Time) {
 		u.state = "restarting"
 		return
 	}
-	// Nothing of ours is running. A node started by something else gets
-	// T.Fails checks before we step in, so one slow answer does not start a
-	// second copy on the same port.
-	if u.proc == nil && u.fails < s.T.Fails {
+	// Nothing of ours is running. If something else is listening on the port
+	// (a node started by an older launcher that answered slowly), it gets
+	// T.Fails checks before we call the port busy. A closed port means there
+	// is nothing to wait for, so the node starts on this very check.
+	busy := portOpen(n.Port, s.T.Probe)
+	if busy && u.fails < s.T.Fails {
 		u.state = "down"
 		return
 	}
@@ -238,7 +245,7 @@ func (s *Supervisor) checkNode(e *entry, now time.Time) {
 		u.state = "waiting"
 		return
 	}
-	if portOpen(n.Port, s.T.Probe) {
+	if busy {
 		u.state, u.lastErr = "port-busy", "another program is using this port and is not a healthy node"
 		s.bump(u, now)
 		s.Log.Error("port busy", "account", n.ID, "port", n.Port)

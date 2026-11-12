@@ -54,10 +54,18 @@ func installAutostart(self string, args []string, base string, ids []string) err
 	if err := hidden("reg", "add", runKey, "/v", runName, "/t", "REG_SZ", "/d", line, "/f").Run(); err != nil {
 		return err
 	}
-	// Older setups registered one launcher per account. Left in place they
-	// would race this program at sign-in for the same ports.
+	// Older setups registered one launcher per account (and "NouGen" for the
+	// first one). Left in place they would race this program at sign-in for
+	// the same ports. Only values that point at a run.ps1 launcher are removed.
 	for _, id := range ids {
-		_ = hidden("reg", "delete", runKey, "/v", "NouGen-"+id, "/f").Run()
+		name := "NouGen-" + id
+		if id == "root" {
+			name = "NouGen"
+		}
+		out, err := hidden("reg", "query", runKey, "/v", name).Output()
+		if err == nil && strings.Contains(string(out), "run.ps1") {
+			_ = hidden("reg", "delete", runKey, "/v", name, "/f").Run()
+		}
 	}
 	return nil
 }

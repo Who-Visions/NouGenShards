@@ -149,17 +149,22 @@ func TestDiscoverReadsEveryLayout(t *testing.T) {
 	os.WriteFile(filepath.Join(bom, "NouGenShards", "app.py"), nil, 0o600)
 	os.WriteFile(filepath.Join(bom, "node.json"), []byte(utf8BOM+`{"id":"bom-acct","port":4448,"token":"x"}`), 0o600)
 
+	// The earliest setup: the first account lives in base itself.
+	os.MkdirAll(filepath.Join(base, "NouGenShards"), 0o700)
+	os.WriteFile(filepath.Join(base, "NouGenShards", "app.py"), nil, 0o600)
+	os.WriteFile(filepath.Join(base, "run.ps1"), []byte("$env:NGS_NODE_TOKEN = 'r'\r\n$env:NGS_HUD_USER = 'first'\r\n$env:NGS_PORT = '4443'\r\n"), 0o600)
+
 	got := Discover(base)
 	var ids []string
 	for _, n := range got {
 		ids = append(ids, fmt.Sprintf("%s:%d:%s", n.ID, n.Port, n.Source))
 	}
-	want := "ps-acct:4444:run.ps1 sh-acct:4445:run.sh json-acct:4446:node.json bom-acct:4448:node.json"
+	want := "first:4443:run.ps1 ps-acct:4444:run.ps1 sh-acct:4445:run.sh json-acct:4446:node.json bom-acct:4448:node.json"
 	if strings.Join(ids, " ") != want {
 		t.Fatalf("got  %s\nwant %s", strings.Join(ids, " "), want)
 	}
-	if got[0].Token != "it's" || got[0].Tunnel != "TT" || got[1].Tunnel != "UU" {
-		t.Fatalf("legacy secrets not read: %+v %+v", got[0], got[1])
+	if got[1].Token != "it's" || got[1].Tunnel != "TT" || got[2].Tunnel != "UU" || got[0].Dir != base {
+		t.Fatalf("legacy layouts not read: %+v %+v %+v", got[0], got[1], got[2])
 	}
 }
 
