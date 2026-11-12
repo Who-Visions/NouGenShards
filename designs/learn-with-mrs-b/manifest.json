@@ -1,0 +1,46 @@
+{
+  "description": "One look for learnwithmrsb.com and the Board + Zoom desktop app: calm, warm, trustworthy one-to-one tutoring for families in Palm Beach County, and a quiet working tool for the tutor. A light site with one brand blue and a navy back office; the app's bar follows the Windows light or dark setting.",
+  "dialect": "nougendesigns/v0",
+  "entry": {
+    "prose": "DESIGN.md",
+    "tokens": "tokens.css"
+  },
+  "name": "learn-with-mrs-b",
+  "provenance": [
+    {
+      "kind": "observed",
+      "note": "bg-[#0C7FAC] 132 uses, hover #0a6b92, navy #0f172a sidebar, rounded-xl 226 and rounded-2xl 91 uses, Playfair Display + Roboto.",
+      "source": "learnwithmrsb repo, src/ (Tailwind classes) and src/app/globals.css, 2026-11-12"
+    },
+    {
+      "kind": "observed",
+      "note": "App bar 56px, 12px controls, status colours for light and dark bars, the 48px navy Zoom rail.",
+      "source": "learnwithmrsb repo, desktop/zoom-board-shell/bar.html and rail.html"
+    },
+    {
+      "kind": "inferred",
+      "note": "Layout breakpoints, component states and wording rules; the source this spec mirrors.",
+      "source": "learnwithmrsb repo, DESIGN.md (google-labs-code/design.md, lint 0 errors)"
+    },
+    {
+      "kind": "inferred",
+      "note": "Icon rail, compact stat cards and empty-state pattern at the 760px pane width.",
+      "source": "Google Stitch project 6019807897591723314, screen Tutor Back Office Overview"
+    },
+    {
+      "kind": "invented",
+      "note": "--accent-on-navy, --disabled, --border-strong, --on-celebrate and the dark-bar theme values, chosen to pass the compiler's contrast checks.",
+      "source": "designs/learn-with-mrs-b/design.json"
+    }
+  ],
+  "schemaVersion": "od-design-system-project/v1",
+  "sourceDigest": "f2b8daf93be7a42f9397d6da5ff95b13d557721b933bdccb422bf40dc8b36f2a",
+  "surfaces": {
+    "ground": "--bg",
+    "ink": "--text"
+  },
+  "themes": [
+    "dark-bar"
+  ],
+  "version": "0.1.0"
+}

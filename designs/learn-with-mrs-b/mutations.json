@@ -1,0 +1,18 @@
+[
+  {
+    "change": "72px navy icon rail from 640 to 1279px; active item navy-raised with an --accent-on-navy bar and icon; tooltip and accessible name per item.",
+    "selector": ".backoffice nav[aria-label='Back office']"
+  },
+  {
+    "change": "Radius from --radius-control (12px), 44px tall on the site, 40px in the app bar; keyboard focus ring 3px --focus at 2px offset.",
+    "selector": "button, a.button, input"
+  },
+  {
+    "change": "--surface, 1px --border, --radius-card (16px), 24px padding (16px under 640px); no shadow beyond 1px.",
+    "selector": ".card"
+  },
+  {
+    "change": "Status word plus colour from --good / --warn; the dark-bar theme swaps to its brighter values.",
+    "selector": "#status.live, #status.alert"
+  }
+]
