@@ -82,6 +82,7 @@ def main():
     join_token_name = os.environ.get("NOUGEN_JOIN_CF_TOKEN_NAME", "").strip()
     join_cf_token = keymaker.get_secret(join_token_name) if join_token_name else newest("CLOUDFLARE_JOIN_TOKEN_")
     bindings = [
+        {"type": "ratelimit", "name": "JOIN_RL", "namespace_id": "1001", "simple": {"limit": 3, "period": 60}},
         {"type": "kv_namespace", "name": "TENANTS", "namespace_id": t._find_namespace(c)},
         {"type": "secret_text", "name": "CF_API_TOKEN", "text": join_cf_token},
         {"type": "secret_text", "name": "GOOGLE_CLIENT_SECRET", "text": keymaker.get_secret("NOUGEN_JOIN_GOOGLE_CLIENT_SECRET")},
@@ -93,7 +94,7 @@ def main():
         {"type": "plain_text", "name": "JOIN_MAX_PER_IP_DAY", "text": "5"},
         {"type": "plain_text", "name": "LINK_TTL_DAYS", "text": "14"},
     ]
-    if any(b.get("text") in (None, "") for b in bindings if b["type"] != "kv_namespace"):
+    if any(b.get("text") in (None, "") for b in bindings if b["type"] in ("secret_text", "plain_text")):
         raise SystemExit("a keymaker value is missing; nothing deployed")
     meta = {"main_module": "worker.js", "compatibility_date": "2026-08-01", "bindings": bindings}
     b = uuid.uuid4().hex

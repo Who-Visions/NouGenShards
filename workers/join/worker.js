@@ -77,7 +77,10 @@ document.getElementById('hint').innerHTML='On Mac or Linux: open Terminal and ru
 // ------------------------------------------------------------------ setup files
 export function setupCmd(t) {
   return ["@echo off", `rem NouGen setup for ${t.id}. Private: contains this computer's keys.`,
-    `powershell -NoProfile -ExecutionPolicy Bypass -Command "$f='%~f0'; $s=(Get-Content -Raw $f) -split '(?m)^::PS\\s*$',2; iex $s[1]"`,
+    // The file path reaches PowerShell through an env var, never as source text: a
+    // folder like O'Connor (or a crafted name) must not be able to break out.
+    `set "NG_SELF=%~f0"`,
+    `powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=(Get-Content -Raw -LiteralPath $env:NG_SELF) -split '(?m)^::PS\\s*$',2; iex $s[1]"`,
     "exit /b", "::PS",
     "$ErrorActionPreference = 'Stop'", "$ProgressPreference = 'SilentlyContinue'",
     "[Net.ServicePointManager]::SecurityProtocol = 'Tls12'",
@@ -183,7 +186,7 @@ export async function provision(env, email) {
   if (tenant && tenant.token && tun && tun.tunnel_token) return { tenant, tun, created: false };
 
   const acct = env.CF_ACCOUNT_ID, zone = env.CF_ZONE_ID;
-  const port = (tenant && tenant.port) || await nextPort(env);
+  const port = (tenant && tenant.port) || await portFor(env, email);
   const id = (tenant && tenant.tenant_id) || await emailTenantId(email);
   const host = (tun && tun.hostname) || `${id}-${hex(2)}.${env.ZONE_NAME}`;
   const name = "tenant-" + id;
@@ -197,7 +200,22 @@ export async function provision(env, email) {
       t = null;
     }
   }
-  if (!t) t = await cf(env, "POST", `/accounts/${acct}/cfd_tunnel`, { name, config_src: "cloudflare", tunnel_secret: btoa(rand(32)) });
+  // Recover a tunnel created by an earlier attempt that failed before the tenant
+  // records were written: its id is persisted the moment it exists (never looked up
+  // by name, which other accounts could share or rename).
+  const pendingId = !t ? await kv.get("tunnelid:" + email) : null;
+  if (pendingId) {
+    try {
+      const got = await cf(env, "GET", `/accounts/${acct}/cfd_tunnel/${encodeURIComponent(pendingId)}`);
+      if (got && !got.deleted_at) t = got;
+    } catch {
+      t = null;
+    }
+  }
+  if (!t) {
+    t = await cf(env, "POST", `/accounts/${acct}/cfd_tunnel`, { name, config_src: "cloudflare", tunnel_secret: btoa(rand(32)) });
+    await kv.put("tunnelid:" + email, t.id);
+  }
   await cf(env, "PUT", `/accounts/${acct}/cfd_tunnel/${t.id}/configurations`,
     { config: { ingress: [{ hostname: host, service: `http://127.0.0.1:${port}` }, { service: "http_status:404" }] } });
   const tunnelToken = String(await cf(env, "GET", `/accounts/${acct}/cfd_tunnel/${t.id}/token`)).replace(/"/g, "").trim();
@@ -217,10 +235,17 @@ export async function provision(env, email) {
 }
 
 // Every tenant gets its own local port so several accounts can run on one computer.
-async function nextPort(env) {
-  const n = parseInt((await env.TENANTS.get("portseq")) || "0", 10) + 1;
-  await env.TENANTS.put("portseq", String(n));
-  return 4444 + (n % 20000);
+// Derived from the email (no shared counter for concurrent sign-ups to race on) and
+// reserved under port:<n>; on a hash collision it probes the next port.
+async function portFor(env, email) {
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(email)));
+  const base = ((d[0] << 16) | (d[1] << 8) | d[2]) % 20000;
+  for (let i = 0; i < 64; i++) {
+    const p = 4445 + ((base + i) % 20000);
+    const owner = await env.TENANTS.get("port:" + p);
+    if (!owner || owner === email) { await env.TENANTS.put("port:" + p, email); return p; }
+  }
+  throw new Error("no free local port; contact the operator");
 }
 
 async function mintLink(env, email) {
@@ -230,6 +255,12 @@ async function mintLink(env, email) {
 }
 
 async function underIpLimit(env, ip) {
+  // KV is eventually consistent, so concurrent requests could slip past the daily cap.
+  // The Rate Limiting binding is the burst gate; the KV count stays as the daily cap.
+  if (env.JOIN_RL && typeof env.JOIN_RL.limit === "function") {
+    const { success } = await env.JOIN_RL.limit({ key: "join:" + ip });
+    if (!success) return false;
+  }
   const day = new Date().toISOString().slice(0, 10), key = `joinrate:${day}:${ip}`;
   const n = parseInt((await env.TENANTS.get(key)) || "0", 10);
   if (n >= parseInt(env.JOIN_MAX_PER_IP_DAY || "5", 10)) return false;
@@ -240,16 +271,21 @@ async function underIpLimit(env, ip) {
 // ------------------------------------------------------------------ Google
 async function googleStart(env, url) {
   const state = rand(18);
+  await env.TENANTS.put("oauthstate:" + state, "1", { expirationTtl: 600 });
   const q = new URLSearchParams({ client_id: env.GOOGLE_CLIENT_ID, redirect_uri: `${url.origin}/google/callback`,
     response_type: "code", scope: "openid email", state, prompt: "select_account" });
   return new Response(null, { status: 302, headers: { location: "https://accounts.google.com/o/oauth2/v2/auth?" + q,
-    "set-cookie": `nj_state=${state}; Path=/google; Max-Age=600; HttpOnly; Secure; SameSite=Lax` } });
+    "set-cookie": `__Host-nj_state=${state}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax` } });
 }
 
 async function googleEmail(env, url, req) {
   const state = url.searchParams.get("state"), code = url.searchParams.get("code");
-  const cookie = (req.headers.get("cookie") || "").match(/(?:^|;\s*)nj_state=([^;]+)/);
+  // __Host- cookies cannot be set by any subdomain (tenants control *.nougenai.com hosts),
+  // and the state must also exist server-side, once: login CSRF needs both.
+  const cookie = (req.headers.get("cookie") || "").match(/(?:^|;\s*)__Host-nj_state=([^;]+)/);
   if (!code || !state || !cookie || cookie[1] !== state) throw new Error("sign-in expired; start again");
+  if ((await env.TENANTS.get("oauthstate:" + state)) !== "1") throw new Error("sign-in expired; start again");
+  await env.TENANTS.delete("oauthstate:" + state);
   const r = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ code, client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET,
       redirect_uri: `${url.origin}/google/callback`, grant_type: "authorization_code" }) });
