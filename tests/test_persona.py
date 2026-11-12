@@ -223,3 +223,46 @@ def test_render_fleet_state_orthogonal_dimensions():
     assert "node_liveness" in parsed
     assert "evidence_provenance" in parsed
 
+
+
+def test_zero_evidence_is_marked_unresolved_not_matched():
+    # Every audience scores 0, so the alphabetical fallback is returned but flagged.
+    p = P.resolve(P.Signals())
+    assert p.evidence["resolved"] is False
+    sig = P.Signals()
+    sig.lexicon.update({"fleet-ops": 6})
+    assert P.resolve(sig).evidence["resolved"] is True
+
+
+def test_check_refuses_a_vacuous_pass_when_unresolved(tmp_path: Path, capsys):
+    msgs = tmp_path / "msgs.txt"
+    msgs.write_text("Have you ever felt like your context just isn't recalling?\nOr working memory.\n", encoding="utf-8")
+    rc = P._main(["--file", str(msgs), "--check", str(msgs)])
+    out = capsys.readouterr()
+    assert rc == 2
+    assert "UNRESOLVED" in out.out and "PASS" not in out.out
+    assert "alphabetical fallback" in out.err
+    fleet = tmp_path / "fleet.txt"
+    fleet.write_text("relay the leg to the fleet\nshard it, then probe the lanes\n", encoding="utf-8")
+    assert P._main(["--file", str(fleet), "--check", str(fleet)]) == 0
+
+
+def test_agent_memory_family_counts_without_moving_default_audiences(tmp_path: Path):
+    spot = ["Have you ever felt like your agent's context just isn't recalling?",
+            "Every session loses context.", "Engineered for local-first speed, with deterministic SQLite indexing."]
+    sig = P.Signals.from_texts(spot)
+    assert sig.lexicon["agent-memory"] >= 5
+    # No default audience claims the family, so the defaults still have no evidence for this copy.
+    assert P.resolve(sig).evidence["resolved"] is False
+    # A registry audience that claims it resolves, against every default audience.
+    import json
+    from dataclasses import asdict
+    reg = {"markets": [asdict(m) for m in P.DEFAULT_MARKETS] + [{"key": "agent-builders", "problem": "agents forget", "decides": []}],
+           "audiences": [asdict(a) for a in P.DEFAULT_AUDIENCES] + [{"key": "agent-builder", "market": "agent-builders",
+                         "affinities": ["agent-memory"], "channels": ["youtube"], "values": [], "pains": [], "support": "",
+                         "languages": ["en"], "contract": ["one-fact-per-line"]}]}
+    path = tmp_path / "audiences.json"
+    path.write_text(json.dumps(reg), encoding="utf-8")
+    p = P.resolve(sig, path)
+    assert p.audience == "agent-builder" and p.evidence["resolved"] is True
+    assert p.contract == ("one-fact-per-line",)
