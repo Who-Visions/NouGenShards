@@ -67,6 +67,14 @@ class DesignTests(unittest.TestCase):
     def test_real_ui_passes_measured_gate(self):
         self.assertTrue(design.lint(self.spec, (ROOT / 'ui/src/styles.css').read_text())['passed'])
 
+    def test_join_worker_styles_pass_gate_and_match_generated_design(self):
+        join_css = (ROOT / 'workers/join/styles.css').read_text(encoding='utf-8')
+        compiled = design.compile_inline_css(self.spec, join_css)
+        report = design.lint(self.spec, compiled)
+        self.assertTrue(report['passed'], report['errors'])
+        worker_text = (ROOT / 'workers/join/worker.js').read_text(encoding='utf-8')
+        self.assertEqual(worker_text, design.sync_join_worker(self.spec, join_css, worker_text))
+
     def test_analysis_draft_is_deterministic_and_reports_measured_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'sample-ui'

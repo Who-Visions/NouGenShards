@@ -34,5 +34,9 @@
   {
     "change": "Render Battery Reader telemetry on opaque panel surfaces with solid accent gauge bars (no gradients or 50%/999px pills), accessible focus rings, reduced-motion guard, and explicit absent/web-only notices.",
     "selector": ".battery-reader, .battery-metrics-grid, .battery-capacity-ring"
+  },
+  {
+    "change": "Render public join onboarding pages from compiled nougen-core tokens with the warm contact-page adaptation (flat gold CTA, amber eyebrow, emerald status dot, accessible dark-theme panel links, 65ch reading measure, 44px touch action target, visible focus ring, reduced-motion respect).",
+    "selector": ".join-shell, .join-panel, .join-action, .join-footer"
   }
 ]

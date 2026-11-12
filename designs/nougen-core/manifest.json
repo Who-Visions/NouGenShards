@@ -61,10 +61,15 @@
       "kind": "observed",
       "note": "Cortex Hub Battery Reader tab: matte panel cards, flat gauge meter without gradients/pills, local-only 24h charge trend, longitudinal wear forecast, and explicit non-battery/non-desktop notices.",
       "source": "ui/src/BatteryReader.tsx"
+    },
+    {
+      "kind": "observed",
+      "note": "Public self-serve join onboarding shell consumes generated nougen-core tokens with warm contact-page adaptation (flat gold CTA #e2b86b/#111111, amber eyebrow #d9a75a/#231c12, emerald status dot #34d399, readable dark-theme panel links, 65ch measure and 44px touch targets).",
+      "source": "workers/join/styles.css"
     }
   ],
   "schemaVersion": "od-design-system-project/v1",
-  "sourceDigest": "6a09773ee14933de11261fd9a7c40effc88d987addd673ec95ba69e6a195c0a8",
+  "sourceDigest": "5bfa6d4cd154527a7d037e5cbbff80f2ca18a30805fe624f0b54c8d6143c66b9",
   "surfaces": {
     "ground": "--bg",
     "ink": "--text"
