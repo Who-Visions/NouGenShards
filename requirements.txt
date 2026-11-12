@@ -183,6 +183,8 @@ protobuf==7.36.2
     #   google-api-core
     #   googleapis-common-protos
     #   proto-plus
+psutil==7.2.2
+    # via nougen-shards (pyproject.toml)
 pyasn1==0.6.5
     # via pyasn1-modules
 pyasn1-modules==0.4.2
@@ -310,3 +312,5 @@ uvicorn==0.54.0
     #   nougen-shards (pyproject.toml)
     #   gradio
     #   mcp
+z3-solver==5.4.1.0
+    # via nougen-shards (pyproject.toml)
