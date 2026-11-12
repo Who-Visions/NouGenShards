@@ -136,3 +136,15 @@ def test_plain_broadcast_is_unchanged(cli):
 def test_target_flag_without_a_value_is_refused(cli, capsys, flag):
     cli(["send", flag])
     assert "requires a value" in capsys.readouterr().out
+
+
+def test_stdin_flag_sends_stdin_body_not_the_flag(cli, monkeypatch):
+    """`--stdin` used to arrive fleet-wide as the literal body "--stdin"."""
+    import io
+    body = "## multi-line\n- keeps\n- newlines"
+    monkeypatch.setattr("sys.stdin", io.StringIO(body + "\n"))
+    result = cli(["@phoebus:codex", "--stdin"])
+    # The CLI wraps bodies in its fleet header; every body line must survive.
+    for line in ("multi-line", "keeps", "newlines"):
+        assert line in result["text"]
+    assert "--stdin" not in result["text"]

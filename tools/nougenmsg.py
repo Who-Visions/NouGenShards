@@ -434,6 +434,14 @@ def print_inline_banner(title: str, results: Any, message_text: str = "") -> Non
     print(f"{border}\n")
 
 def main():
+    # `--stdin`: read the message body from stdin (multi-line notes survive shells).
+    # Without this the flag itself was sent as the message text.
+    if "--stdin" in sys.argv:
+        body = sys.stdin.read().strip()
+        if not body:
+            print("[ERROR] --stdin given but stdin was empty; nothing sent.", file=sys.stderr)
+            sys.exit(2)
+        sys.argv[sys.argv.index("--stdin")] = body
     if len(sys.argv) < 2 or "--help" in sys.argv or "-h" in sys.argv:
         print_help()
         return
