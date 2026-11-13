@@ -30,9 +30,13 @@ def open_ro(path: str) -> sqlite3.Connection:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--vault", default=os.path.expanduser(r"~\.nougen\shards"))
+    ap.add_argument("--vault", default=os.path.join(os.path.expanduser("~"), ".nougen", "shards"))
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
+    if not os.path.isdir(a.vault):
+        # A missing vault must not look like an empty September: fail loudly.
+        print("vault directory not found: {}".format(a.vault), file=sys.stderr)
+        return 2
     os.makedirs(a.out, exist_ok=True)
 
     dbs = sorted(glob.glob(os.path.join(a.vault, "*.db")))
