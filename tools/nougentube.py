@@ -42,6 +42,7 @@ at import time.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import time
 import json
@@ -517,6 +518,26 @@ def _lease_dir() -> Path:
     return Path(override) if override else Path.home() / ".nougen" / "tube_inflight"
 
 
+@contextlib.contextmanager
+def _lease_guard(d: Path):
+    """Serialise takeover and release so a stale owner cannot unlink a successor's lease
+    between checking the token and unlinking (same-host lease dir)."""
+    with open(d / ".guard", "a+") as fh:
+        try:
+            import fcntl  # POSIX
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            unlock = lambda: fcntl.flock(fh, fcntl.LOCK_UN)  # noqa: E731
+        except ImportError:  # Windows nodes (blade, whoart)
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            unlock = lambda: (fh.seek(0), msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1))  # noqa: E731
+        try:
+            yield
+        finally:
+            unlock()
+
+
 def acquire_lease(video_id: str) -> Optional[Path]:
     """Claim the per-video lease, or None while another live run holds it."""
     d = _lease_dir()
@@ -538,11 +559,14 @@ def acquire_lease(video_id: str) -> Optional[Path]:
                 continue  # released between our checks; try again
             if age < LEASE_STALE_S:
                 return None
-            logger.warning("taking over stale tube lease %s (%.0fs old)", video_id, age)
-            try:
-                path.unlink()
-            except OSError:
-                pass
+            with _lease_guard(d):
+                try:  # re-check under the guard: it may have just been refreshed or replaced
+                    if time.time() - path.stat().st_mtime < LEASE_STALE_S:
+                        return None
+                    logger.warning("taking over stale tube lease %s (%.0fs old)", video_id, age)
+                    path.unlink()
+                except OSError:
+                    pass
     return None
 
 
@@ -580,8 +604,9 @@ def release_lease(lease: Optional[Path]) -> None:
     if lease is None:
         return
     try:
-        if _owns(lease):
-            lease.unlink()
+        with _lease_guard(lease.parent):
+            if _owns(lease):
+                lease.unlink()
     except OSError:
         pass
 
