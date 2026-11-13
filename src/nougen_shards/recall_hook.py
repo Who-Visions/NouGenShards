@@ -110,7 +110,7 @@ def recall_hook(message: str, *, limit: int = DEFAULT_LIMIT, budget_ms: int = DE
     """
     from . import core  # pylint: disable=import-outside-toplevel
 
-    started = time.monotonic()
+    t_call = time.monotonic()
     query = " ".join((message or "").split())[:MAX_QUERY_CHARS]
     result: dict[str, Any] = {
         "query": query, "tier": "none", "partial": False, "shards": [],
@@ -129,6 +129,12 @@ def recall_hook(message: str, *, limit: int = DEFAULT_LIMIT, budget_ms: int = DE
     # Resolve the token on the calling thread: the keymaker import is not free
     # and must not come out of the node lane's share of the budget.
     node_token = _node_token() if use_node else None
+    # The budget is for SEARCHING. Measured on WhoArt 2026-11-11: a cold keymaker
+    # lookup takes ~780 ms, and starting the clock before it left the node ~20 ms
+    # of an 800 ms budget, so nearly every prompt reported "budget exhausted
+    # before any lane finished" while the node itself answers in ~440 ms.
+    started = time.monotonic()
+    result["setup_ms"] = int((started - t_call) * 1000)
 
     def run_node() -> None:
         try:
