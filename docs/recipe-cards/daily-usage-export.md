@@ -17,7 +17,7 @@ totals and the public tracker node reflect reality.
 
 ## Ask the operator first
 
-- Is publishing to the **public** repo authorised? (`WhoVisions/NouGenTracker`
+- Is publishing to the **public** repo authorised? (`Who-Visions/NouGenTracker`
   is public. The dailies carry token counts, model names, machine, date — no
   paths, no session ids. Confirmed by inspection, not assumption.)
 - Should a gap be backfilled, or left as an honest absence?
