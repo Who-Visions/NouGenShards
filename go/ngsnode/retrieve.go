@@ -226,7 +226,7 @@ func openReadOnly(path string) (*sql.DB, error) {
 	if db := retrieveStates.dbs[path]; db != nil {
 		return db, nil
 	}
-	dsn := (&url.URL{Scheme: "file", Path: path}).String() + "?mode=ro&_pragma=busy_timeout(5000)"
+	dsn := sqliteReadOnlyDSN(path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -234,6 +234,17 @@ func openReadOnly(path string) (*sql.DB, error) {
 	db.SetMaxOpenConns(2)
 	retrieveStates.dbs[path] = db
 	return db, nil
+}
+
+// sqliteReadOnlyDSN is a read-only file: URI for path. A Windows path
+// (C:\\vault\\x.db) has to become file:///C:/vault/x.db: put straight into a
+// URI its drive letter is read as the authority and SQLite refuses it.
+func sqliteReadOnlyDSN(path string) string {
+	p := strings.ReplaceAll(path, "\\", "/")
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return "file://" + (&url.URL{Path: p}).EscapedPath() + "?mode=ro&_pragma=busy_timeout(5000)"
 }
 
 // dbWriteSignature mirrors core._db_write_signature: whole-second mtime and

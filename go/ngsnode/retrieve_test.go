@@ -54,7 +54,17 @@ func newGrid(t *testing.T, rows []testRow, saved int) (*grid, *vectorIndex) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		db.Close()
+		// Drop the lane's own read-only handle too: Windows cannot remove the
+		// temp dir while a handle on the DB file is open.
+		retrieveStates.Lock()
+		if h := retrieveStates.dbs[g.path]; h != nil {
+			h.Close()
+			delete(retrieveStates.dbs, g.path)
+		}
+		retrieveStates.Unlock()
+	})
 	g.db = db
 	g.exec(`CREATE TABLE shards (id INTEGER PRIMARY KEY, timestamp TEXT, utility_score REAL,
 		domain_key TEXT, event_type TEXT, embedding BLOB)`)
@@ -394,5 +404,19 @@ func TestSaveSkipsWhenAnotherWriterHoldsTheLock(t *testing.T) {
 	}
 	if _, err := os.Stat(base + ".npy.lock"); err != nil {
 		t.Fatal("removed another writer's lock")
+	}
+}
+
+func TestSQLiteReadOnlyDSN(t *testing.T) {
+	cases := map[string]string{
+		"/Users/me/.nougen/shards/nougen_shards_1.db": "file:///Users/me/.nougen/shards/nougen_shards_1.db",
+		"/Users/me/The Observatory/x.db":              "file:///Users/me/The%20Observatory/x.db",
+		`C:\Users\RUNNER~1\AppData\x.db`:              "file:///C:/Users/RUNNER~1/AppData/x.db",
+		`C:\Users\super\Watch tower\x.db`:             "file:///C:/Users/super/Watch%20tower/x.db",
+	}
+	for path, want := range cases {
+		if got := sqliteReadOnlyDSN(path); got != want+"?mode=ro&_pragma=busy_timeout(5000)" {
+			t.Errorf("sqliteReadOnlyDSN(%q) = %q", path, got)
+		}
 	}
 }
