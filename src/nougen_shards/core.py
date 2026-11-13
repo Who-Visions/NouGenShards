@@ -487,6 +487,56 @@ def _nofile_soft_limit():
 _INITIALIZED_DBS = set()
 
 
+_QUARANTINE_STATE = "boot_quick_check.json"
+
+
+def _quarantine_state_path() -> Path:
+    return Path(active_vault_dir()) / _QUARANTINE_STATE
+
+
+def _quarantine_recheck_s() -> float:
+    """Seconds a clean quick_check stays valid. NOUGEN_QUARANTINE_RECHECK_HOURS
+    (default 24); 0 checks every boot, the previous behaviour."""
+    raw = os.environ.get("NOUGEN_QUARANTINE_RECHECK_HOURS", "24")
+    try:
+        return max(0.0, float(raw)) * 3600.0
+    except ValueError:
+        logger.warning("NOUGEN_QUARANTINE_RECHECK_HOURS=%r is not a number; using 24", raw)
+        return 24 * 3600.0
+
+
+def _quarantine_recent_ok() -> set:
+    """Paths whose last clean quick_check is inside the recheck window."""
+    window = _quarantine_recheck_s()
+    if window <= 0:
+        return set()
+    try:
+        state = json.loads(_quarantine_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    now = time.time()
+    return {p for p, ts in (state if isinstance(state, dict) else {}).items()
+            if isinstance(ts, (int, float)) and 0 <= now - ts < window}
+
+
+def _quarantine_record_ok(path) -> None:
+    """Stamp a clean quick_check. Best-effort: a failed write only costs a recheck."""
+    state_path = _quarantine_state_path()
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            state = {}
+    except (OSError, ValueError):
+        state = {}
+    state[str(path)] = time.time()
+    try:
+        tmp = state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp, state_path)
+    except OSError as exc:
+        logger.debug("boot quick_check state not saved: %s", exc)
+
+
 def quarantine_malformed_dbs() -> list:
     """Rename unreadable grid DB files aside so the grid heals itself at boot.
 
@@ -513,9 +563,17 @@ def quarantine_malformed_dbs() -> list:
     if snapshot_mode.enabled() and snapshot_mode.snapshot_dir() is not None:
         return []
     quarantined = []
+    recent_ok = _quarantine_recent_ok()
     for i in range(1, MAX_DB_COUNT + 1):
         path = get_db_path(i)
         if not path.exists():
+            continue
+        if str(path) in recent_ok:
+            # Checked clean inside the recheck window: skip. quick_check is
+            # O(file size) - 741s over a 12 GB grid on WhoArt (2026-11-12) - and
+            # a node that restarts several times an hour paid it every boot,
+            # starving recall the whole time. Corruption between checks is still
+            # covered by the per-DB scan guards (see the docstring above).
             continue
         reason = None
         # Attempt 1: check integrity. If it fails, retry once on a fresh connection
@@ -539,6 +597,7 @@ def quarantine_malformed_dbs() -> list:
                 time.sleep(0.1)
 
         if reason is None:
+            _quarantine_record_ok(path)
             continue
 
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -2030,6 +2089,26 @@ def _build_fts_match_query(query: str, joiner: str = " ") -> Optional[str]:
     filtered_tokens = [t for t in tokens if t.lower() not in boilerplate]
     if filtered_tokens:
         tokens = filtered_tokens
+
+    # Cap the term count. Recall hooks send whole chat prompts; on a 12 GB grid
+    # the ranked-OR retry over ~20 common words took 6s per call against 0.4s
+    # for four words (WhoArt, 2026-11-12), and hook traffic stacked those scans
+    # until every /search missed its 20s deadline. Keep distinct terms, longest
+    # first (length is a cheap proxy for rarity), in their original order.
+    try:
+        max_terms = max(1, int(os.environ.get("NOUGEN_FTS_MAX_TERMS", "8")))
+    except ValueError:
+        max_terms = 8
+    seen: set = set()
+    distinct = []
+    for t in tokens:
+        if t.lower() not in seen:
+            seen.add(t.lower())
+            distinct.append(t)
+    if len(distinct) > max_terms:
+        keep = set(sorted(range(len(distinct)), key=lambda k: (-len(distinct[k]), k))[:max_terms])
+        distinct = [t for k, t in enumerate(distinct) if k in keep]
+    tokens = distinct
 
     return joiner.join('"' + t.replace('"', '""') + '"' for t in tokens)
 
