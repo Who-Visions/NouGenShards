@@ -265,6 +265,19 @@ def assign_message_id(msg: dict) -> str:
     return mid
 
 
+def seen_marker(key: str) -> Path:
+    """Resolve the dedupe marker for ``key`` inside the seen dir, refusing any escape.
+
+    Same barrier as ``inbox_path``: the name is reduced to its last component,
+    resolved against the seen root, and refused unless it lands under that root.
+    """
+    root = os.path.realpath(os.path.join(str(INBOX), SEEN_DIRNAME))
+    candidate = os.path.realpath(os.path.join(root, os.path.basename("{}.json".format(key))))
+    if not candidate.startswith(root + os.sep):
+        raise ValueError("refusing a dedupe marker outside the seen dir: {!r}".format(key))
+    return Path(candidate)
+
+
 def _atomic_write(path: Path, text: str) -> None:
     """Write beside the target and rename over it, so a crash leaves no partial file."""
     tmp = path.with_name("." + path.name + ".tmp")
@@ -283,9 +296,8 @@ def claim_message(msg: dict) -> "tuple[bool, dict]":
     """
     if msg.get("allow_duplicate") is True:
         return True, {}
-    seen = INBOX / SEEN_DIRNAME
-    seen.mkdir(parents=True, exist_ok=True)
-    marker = seen / "{}.json".format(msg["message_id"])
+    (INBOX / SEEN_DIRNAME).mkdir(parents=True, exist_ok=True)
+    marker = seen_marker(msg["message_id"])
     for _ in range(2):
         try:
             fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -308,7 +320,7 @@ def claim_message(msg: dict) -> "tuple[bool, dict]":
 
 def note_delivery(msg: dict, path: Path) -> None:
     """Record which inbox file carries this key, so a repeat can point at it."""
-    marker = INBOX / SEEN_DIRNAME / "{}.json".format(msg["message_id"])
+    marker = seen_marker(msg["message_id"])
     if marker.exists():
         _atomic_write(marker, json.dumps({"message_id": msg["message_id"], "file": path.name,
                                           "received_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}))
