@@ -44,6 +44,16 @@ def _native_codex_executable():
     appdata = os.environ.get("APPDATA")
     if appdata:
         candidates.append(Path(appdata) / "npm/node_modules" / suffix)
+    # The Codex desktop app ships its own codex.exe under a per-version hash
+    # directory; the newest one is the live install.
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        try:
+            app_bins = sorted((Path(local) / "OpenAI" / "Codex" / "bin").glob("*/codex.exe"),
+                              key=lambda path: path.stat().st_mtime, reverse=True)
+        except OSError:
+            app_bins = []
+        candidates.extend(app_bins)
     return next((str(path) for path in candidates if path.is_file()), "")
 
 
@@ -870,9 +880,49 @@ def serve(thread, executable, pipe_name=None):
         kernel.CloseHandle(pipe)
 
 
+SESSION_FILE_RE = re.compile(
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$", re.I)
+
+
+def newest_codex_thread(sessions_dir=None):
+    """Thread id of the most recently written Codex session rollout, or ""."""
+    root = Path(sessions_dir or os.environ.get("NOUGEN_CODEX_SESSIONS")
+                or Path.home() / ".codex" / "sessions")
+    best, best_mtime = "", -1.0
+    try:
+        files = root.rglob("*.jsonl")
+        for path in files:
+            match = SESSION_FILE_RE.search(path.name)
+            if not match:
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if mtime > best_mtime:
+                best, best_mtime = match.group(1).lower(), mtime
+    except OSError:
+        return ""
+    return best
+
+
+def watchdog(sessions_dir=None):
+    """Keep the receiver up without relying on Codex hooks firing.
+
+    Codex hooks stopped firing on blade (2026-10-13), so nothing ever started
+    the receiver and every @codex send fell back to the inbox. A scheduled task
+    runs this every few minutes: it binds the receiver to the newest Codex
+    session, starting it if it is down. `activate` is idempotent.
+    """
+    thread = newest_codex_thread(sessions_dir)
+    if not thread:
+        return {"status": "unavailable", "reason": "no Codex session rollout found"}
+    return activate(thread)
+
+
 def main():
     parser = argparse.ArgumentParser(description="NouGen Codex wake receiver")
-    parser.add_argument("action", choices=["serve", "status", "activate"])
+    parser.add_argument("action", choices=["serve", "status", "activate", "watchdog"])
     parser.add_argument("--thread")
     parser.add_argument("--executable")
     args = parser.parse_args()
@@ -883,6 +933,8 @@ def main():
             result = {"status": "offline", "error": str(exc)}
     elif args.action == "activate":
         result = activate(args.thread)
+    elif args.action == "watchdog":
+        result = watchdog()
     else:
         if not args.thread or not args.executable:
             parser.error("serve requires --thread and --executable")
