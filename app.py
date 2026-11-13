@@ -3598,9 +3598,66 @@ def nougentube_preview(url: str, limit: int = 1) -> dict:
 
 @node_mcp.tool()
 @_offloaded
-def nougentube_ingest(url: str, limit: int = 1) -> dict:
-    """Ingest a YouTube video or a bounded number of playlist videos as shards."""
-    return _run_nougentube(url, dry_run=False, limit=limit)
+def nougentube_ingest(url: str, limit: int = 1, wait: bool = True) -> dict:
+    """Ingest a YouTube video or a bounded number of playlist videos as shards.
+
+    ``wait=False`` returns a job id at once; poll ``nougentube_job``. Cloudflare cuts a request
+    at ~100 s with a 524 while the node keeps writing, and a caller that retried
+    on that 524 stored a video twice. The job id is derived from the request,
+    so a repeat returns the same job instead of starting a second ingest.
+    ``wait=True`` (the default until the fleet Worker polls jobs) blocks as
+    before; the per-part keys and per-video lease in nougentube already stop a
+    retried ingest from storing twice either way.
+    """
+    if wait:
+        return _run_nougentube(url, dry_run=False, limit=limit)
+    return _tube_job_submit(url, limit)
+
+
+@node_mcp.tool()
+def nougentube_job(job_id: str) -> dict:
+    """Status of a nougentube_ingest job: queued, running, done or error (with its result)."""
+    with _TUBE_JOBS_LOCK:
+        job = _TUBE_JOBS.get(str(job_id or "").strip())
+        return dict(job) if job else {"job_id": job_id, "status": "unknown"}
+
+
+_TUBE_JOBS: dict = {}
+_TUBE_JOBS_LOCK = __import__("threading").Lock()
+
+
+def _tube_job_id(url: str, limit: int) -> str:
+    import hashlib
+    return "tube-" + hashlib.sha256(f"{url.strip()}|{int(limit)}".encode()).hexdigest()[:16]
+
+
+def _tube_job_submit(url: str, limit: int) -> dict:
+    """Start (or rejoin) the ingest job for this exact request."""
+    import threading
+    if not url or not url.strip():
+        raise ValueError("a YouTube video or playlist URL is required")
+    job_id = _tube_job_id(url, limit)
+    with _TUBE_JOBS_LOCK:
+        job = _TUBE_JOBS.get(job_id)
+        if job and job["status"] in ("queued", "running"):
+            return {**job, "repeat": True}
+        _TUBE_JOBS[job_id] = {"job_id": job_id, "status": "queued", "source": url.strip(),
+                              "submitted_at": time.time()}
+
+    def _work():
+        with _TUBE_JOBS_LOCK:
+            _TUBE_JOBS[job_id]["status"] = "running"
+        try:
+            result = _run_nougentube(url, dry_run=False, limit=limit)
+            update = {"status": "done", "result": result}
+        except Exception as exc:  # noqa: BLE001  (reported to the poller, not raised)
+            update = {"status": "error", "error": f"{type(exc).__name__}: {exc}"[:500]}
+        with _TUBE_JOBS_LOCK:
+            _TUBE_JOBS[job_id].update(update, finished_at=time.time())
+
+    threading.Thread(target=_work, name=job_id, daemon=True).start()
+    with _TUBE_JOBS_LOCK:
+        return dict(_TUBE_JOBS[job_id])
 
 
 @node_mcp.tool()

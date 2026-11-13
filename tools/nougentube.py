@@ -42,6 +42,8 @@ at import time.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import time
 import json
 import logging
 import os
@@ -476,6 +478,84 @@ def grid_capture(title: str, content: str, tags: List[str],
     return bool(result) or getattr(result, "reason", None) == "duplicate"
 
 
+def part_key(video_id: str, index: int, content: str) -> str:
+    """Idempotency key for one part: tube:<id>:part:<n>:<content hash>."""
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+    return f"tube:{video_id}:part:{index}:{digest}"
+
+
+def key_exists(key: str) -> bool:
+    """True when some grid shard already carries this exact idempotency tag."""
+    try:
+        import nougen_shards.core as core  # lazy
+        for idx in range(1, core.MAX_DB_COUNT + 1):
+            if not core.get_db_path(idx).exists():
+                continue
+            conn = core.get_connection(idx)
+            try:
+                if conn.execute("SELECT 1 FROM shards WHERE tags LIKE ? LIMIT 1",
+                                (f'%"{key}"%',)).fetchone():
+                    return True
+            finally:
+                conn.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("key scan failed (%s); treating %s as new", exc, key)
+    return False
+
+
+# A second ingest of the same video while the first is still writing is what
+# stored eys5TpLWdgQ twice (2026-11-12: a 524 made the caller retry). One lease
+# per video id; a lease whose heartbeat is older than LEASE_STALE_S is a dead
+# worker and is taken over.
+LEASE_STALE_S = 60.0
+
+
+def _lease_dir() -> Path:
+    override = os.environ.get("NOUGEN_TUBE_LEASE_DIR")
+    return Path(override) if override else Path.home() / ".nougen" / "tube_inflight"
+
+
+def acquire_lease(video_id: str) -> Optional[Path]:
+    """Claim the per-video lease, or None while another live run holds it."""
+    d = _lease_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{video_id}.lease"
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, json.dumps({"pid": os.getpid(), "at": time.time()}).encode())
+            os.close(fd)
+            return path
+        except FileExistsError:
+            try:
+                age = time.time() - path.stat().st_mtime
+            except OSError:
+                continue  # released between our checks; try again
+            if age < LEASE_STALE_S:
+                return None
+            logger.warning("taking over stale tube lease %s (%.0fs old)", video_id, age)
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    return None
+
+
+def heartbeat(lease: Path) -> None:
+    try:
+        os.utime(lease, None)
+    except OSError:
+        pass
+
+
+def release_lease(lease: Optional[Path]) -> None:
+    if lease is not None:
+        try:
+            lease.unlink()
+        except OSError:
+            pass
+
+
 def process_video(url: str, dry_run: bool = False,
                   manifest_hint: Optional[Dict[str, Any]] = None) -> str:
     """Full per-video pipeline. Returns a status string:
@@ -489,6 +569,24 @@ def process_video(url: str, dry_run: bool = False,
     if dedupe_check(video_id):
         logger.info("SKIP tube:%s already in the grid (%s)", video_id, url)
         return "skipped-duplicate"
+    if dry_run:
+        return _process_video_locked(url, video_id, True, manifest_hint, None)
+    lease = acquire_lease(video_id)
+    if lease is None:
+        logger.info("SKIP tube:%s is being ingested by another run", video_id)
+        return "in-progress"
+    try:
+        # Re-check under the lease: the run we waited on may have just finished.
+        if dedupe_check(video_id):
+            return "skipped-duplicate"
+        return _process_video_locked(url, video_id, False, manifest_hint, lease)
+    finally:
+        release_lease(lease)
+
+
+def _process_video_locked(url: str, video_id: str, dry_run: bool,
+                          manifest_hint: Optional[Dict[str, Any]],
+                          lease: Optional[Path]) -> str:
 
     meta = fetch_metadata(url, video_id)
     for key in ("title", "channel"):  # manifest may pre-supply metadata
@@ -507,11 +605,12 @@ def process_video(url: str, dry_run: bool = False,
     payloads = distill(meta, url, transcript, tier)
     total = len(payloads)
 
-    def part_tags(index: int) -> List[str]:
+    def part_tags(index: int, content: str = "") -> List[str]:
         """tube:<id> is the dedupe marker, so only the last part carries it: a
         run that dies partway must not read as complete on the next run."""
         marker = [f"tube:{video_id}"] if index == total else []
-        return tags + [f"tube-part:{video_id}:{index}/{total}"] + marker
+        key = [part_key(video_id, index, content)] if content else []
+        return tags + [f"tube-part:{video_id}:{index}/{total}"] + key + marker
 
     if dry_run:
         for i, p in enumerate(payloads, start=1):
@@ -520,7 +619,13 @@ def process_video(url: str, dry_run: bool = False,
         return "captured-stub" if not transcript else "captured"
 
     for i, p in enumerate(payloads, start=1):
-        ok = grid_capture(p["title"], p["content"], part_tags(i), published)
+        if lease is not None:
+            heartbeat(lease)
+        key = part_key(video_id, i, p["content"])
+        if key_exists(key):
+            logger.info("part already stored, skipping: %s", key)
+            continue
+        ok = grid_capture(p["title"], p["content"], part_tags(i, p["content"]), published)
         logger.info("%s %s", "captured:" if ok else "REJECTED:", p["title"])
         if not ok:
             return "failed"
