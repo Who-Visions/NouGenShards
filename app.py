@@ -1634,6 +1634,56 @@ def _leakwatch_owner(tenant: tenants.Tenant = Depends(verify_token)) -> tenants.
     return tenant
 
 
+def _local_msg_token() -> str:
+    """Token the co-located NouGenMsg node expects: env first, then the keymaker."""
+    tok = os.environ.get("NOUGEN_AGY_MSG_TOKEN", "").strip()
+    if tok:
+        return tok
+    try:
+        from nougen_shards.keymaker import get_secret  # pylint: disable=import-outside-toplevel
+        return (get_secret("NOUGEN_AGY_MSG_TOKEN") or "").strip()
+    except Exception:  # pylint: disable=broad-except
+        return ""
+
+
+@app.post("/msg")
+async def msg_forward(request: Request, _owner: tenants.Tenant = Depends(_leakwatch_owner)):
+    """Deliver a NouGenMsg to the message node running beside this one.
+
+    The fleet connector sends a peer-targeted message (``@whoart``) to
+    ``<peer origin>/msg`` - the shard node's public origin. The message node is a
+    separate process (default 127.0.0.1:8766) with no public hostname, so every
+    peer send answered 404 and "Nothing delivered" (WhoArt and blade,
+    2026-11-12). Owner token only: a tenant must not inject into the owner's
+    inbox. The local node's status and body are passed through unchanged, so a
+    refusal there is still a refusal here, never a silent drop.
+    """
+    import urllib.error  # pylint: disable=import-outside-toplevel
+    import urllib.request  # pylint: disable=import-outside-toplevel
+
+    url = os.environ.get("NOUGEN_MSG_LOCAL_URL", "http://127.0.0.1:8766/msg")
+    body = await request.body()
+    headers = {"Content-Type": "application/json"}
+    tok = _local_msg_token()
+    if tok:
+        headers["X-NGS-Token"] = tok
+
+    def _send():
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+
+    try:
+        status, raw = await run_in_threadpool(_send)
+    except Exception as exc:  # pylint: disable=broad-except
+        raise HTTPException(status_code=502,
+                            detail=f"local NouGenMsg node unreachable at {url}: {type(exc).__name__}: {exc}")
+    return Response(content=raw, status_code=status, media_type="application/json")
+
+
 @app.get("/debug/leakwatch")
 def debug_leakwatch(_owner: tenants.Tenant = Depends(_leakwatch_owner)):
     """Last retained-object report (type growth, leak traces, fingerprints)."""
@@ -3598,9 +3648,66 @@ def nougentube_preview(url: str, limit: int = 1) -> dict:
 
 @node_mcp.tool()
 @_offloaded
-def nougentube_ingest(url: str, limit: int = 1) -> dict:
-    """Ingest a YouTube video or a bounded number of playlist videos as shards."""
-    return _run_nougentube(url, dry_run=False, limit=limit)
+def nougentube_ingest(url: str, limit: int = 1, wait: bool = True) -> dict:
+    """Ingest a YouTube video or a bounded number of playlist videos as shards.
+
+    ``wait=False`` returns a job id at once; poll ``nougentube_job``. Cloudflare cuts a request
+    at ~100 s with a 524 while the node keeps writing, and a caller that retried
+    on that 524 stored a video twice. The job id is derived from the request,
+    so a repeat returns the same job instead of starting a second ingest.
+    ``wait=True`` (the default until the fleet Worker polls jobs) blocks as
+    before; the per-part keys and per-video lease in nougentube already stop a
+    retried ingest from storing twice either way.
+    """
+    if wait:
+        return _run_nougentube(url, dry_run=False, limit=limit)
+    return _tube_job_submit(url, limit)
+
+
+@node_mcp.tool()
+def nougentube_job(job_id: str) -> dict:
+    """Status of a nougentube_ingest job: queued, running, done or error (with its result)."""
+    with _TUBE_JOBS_LOCK:
+        job = _TUBE_JOBS.get(str(job_id or "").strip())
+        return dict(job) if job else {"job_id": job_id, "status": "unknown"}
+
+
+_TUBE_JOBS: dict = {}
+_TUBE_JOBS_LOCK = __import__("threading").Lock()
+
+
+def _tube_job_id(url: str, limit: int) -> str:
+    import hashlib
+    return "tube-" + hashlib.sha256(f"{url.strip()}|{int(limit)}".encode()).hexdigest()[:16]
+
+
+def _tube_job_submit(url: str, limit: int) -> dict:
+    """Start (or rejoin) the ingest job for this exact request."""
+    import threading
+    if not url or not url.strip():
+        raise ValueError("a YouTube video or playlist URL is required")
+    job_id = _tube_job_id(url, limit)
+    with _TUBE_JOBS_LOCK:
+        job = _TUBE_JOBS.get(job_id)
+        if job and job["status"] in ("queued", "running"):
+            return {**job, "repeat": True}
+        _TUBE_JOBS[job_id] = {"job_id": job_id, "status": "queued", "source": url.strip(),
+                              "submitted_at": time.time()}
+
+    def _work():
+        with _TUBE_JOBS_LOCK:
+            _TUBE_JOBS[job_id]["status"] = "running"
+        try:
+            result = _run_nougentube(url, dry_run=False, limit=limit)
+            update = {"status": "done", "result": result}
+        except Exception as exc:  # noqa: BLE001  (reported to the poller, not raised)
+            update = {"status": "error", "error": f"{type(exc).__name__}: {exc}"[:500]}
+        with _TUBE_JOBS_LOCK:
+            _TUBE_JOBS[job_id].update(update, finished_at=time.time())
+
+    threading.Thread(target=_work, name=job_id, daemon=True).start()
+    with _TUBE_JOBS_LOCK:
+        return dict(_TUBE_JOBS[job_id])
 
 
 @node_mcp.tool()

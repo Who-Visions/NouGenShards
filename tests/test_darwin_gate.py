@@ -230,3 +230,65 @@ def test_backfill_reports_deferred_when_pressure_never_clears(tmp_path, monkeypa
     res = eb.backfill_db(_backfill_db(tmp_path, 3), "m", execute=True, batch=3, probe=False, progress=False)
     assert res["embedded"] == 0
     assert res["deferred"] == "memory pressure" and res["remaining"] == 3
+
+
+def test_telemetry_readings_are_shared_within_the_ttl(monkeypatch):
+    """One recall opens a connection per grid DB; each used to fork sysctl/vm_stat.
+
+    Phoebus 2026-11-12: ~90 forks per search, ~18,000 in the node log, /search past
+    its 20 s deadline. Readings inside the TTL must come from one fork.
+    """
+    import subprocess
+    from types import SimpleNamespace
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd[0])
+        return SimpleNamespace(stdout="1\n")
+
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setenv("NOUGEN_DARWIN_TELEMETRY_TTL_S", "60")
+    darwin_gate.clear_telemetry_cache()
+    for _ in range(9):
+        assert darwin_gate.get_memory_pressure_level() == 1
+        darwin_gate.get_scaled_sqlite_mmap_size()
+    assert calls.count("sysctl") == 1
+
+    calls.clear()
+    monkeypatch.setenv("NOUGEN_DARWIN_TELEMETRY_TTL_S", "0")
+    darwin_gate.get_memory_pressure_level()
+    darwin_gate.get_memory_pressure_level()
+    assert calls.count("sysctl") == 2
+    darwin_gate.clear_telemetry_cache()
+
+
+def test_concurrent_misses_share_one_reading(monkeypatch):
+    """Codex review on #1046: parallel callers that all miss must coalesce onto one subprocess read."""
+    import threading
+    import time as _time
+    from nougen_shards import darwin_gate as dg
+    monkeypatch.setenv("NOUGEN_DARWIN_TELEMETRY_TTL_S", "5")
+    dg.clear_telemetry_cache()
+    calls = []
+
+    def slow_read():
+        calls.append(1)
+        _time.sleep(0.2)
+        return "reading"
+
+    start = threading.Barrier(8)
+    out = []
+
+    def worker():
+        start.wait()
+        out.append(dg._cached("concurrency-test", slow_read))
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert out == ["reading"] * 8
+    assert len(calls) == 1
+    dg.clear_telemetry_cache()

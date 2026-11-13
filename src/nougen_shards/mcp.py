@@ -417,6 +417,8 @@ def promote_context_to_shard(event_id: int, tags: Optional[List[str]] = None) ->
     )
     if success:
         return f"Context event #{event['id']} successfully promoted to durable memory."
+    if isinstance(success, dict) and success.get("reason") not in (None, "duplicate"):
+        return f"Not promoted: {success.get('error') or success.get('reason')}"
     return "Shard already exists in memory."
 
 # --- Execution Layer (Sandbox) ---
