@@ -130,6 +130,49 @@ def status() -> Dict[str, Any]:
     }
 
 
+def _wait_for_change(dirs: List[Path], timeout_s: float) -> None:
+    """Block until a watched directory changes or ``timeout_s`` elapses.
+
+    Uses Win32 ``FindFirstChangeNotificationW`` + ``WaitForMultipleObjects`` on
+    Windows for sub-50ms wake latency when ``timeout_s > 0.2``, falling back to
+    ``time.sleep`` on POSIX, short test intervals, or if no watched dir exists.
+    """
+    if os.name != "nt" or timeout_s <= 0.2:
+        time.sleep(timeout_s)
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.FindFirstChangeNotificationW.argtypes = [wintypes.LPCWSTR, wintypes.BOOL, wintypes.DWORD]
+        kernel32.FindFirstChangeNotificationW.restype = wintypes.HANDLE
+        kernel32.WaitForMultipleObjects.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE), wintypes.BOOL, wintypes.DWORD]
+        kernel32.WaitForMultipleObjects.restype = wintypes.DWORD
+        kernel32.FindCloseChangeNotification.argtypes = [wintypes.HANDLE]
+        kernel32.FindCloseChangeNotification.restype = wintypes.BOOL
+
+        invalid_handle = wintypes.HANDLE(-1).value
+        notify_mask = 0x00000001 | 0x00000010  # FILE_NOTIFY_CHANGE_FILE_NAME | LAST_WRITE
+        handles: List[int] = []
+        try:
+            for d in dirs:
+                if d.is_dir():
+                    h = kernel32.FindFirstChangeNotificationW(str(d), False, notify_mask)
+                    if h and h != invalid_handle:
+                        handles.append(h)
+            if not handles:
+                time.sleep(timeout_s)
+                return
+            arr = (wintypes.HANDLE * len(handles))(*handles)
+            kernel32.WaitForMultipleObjects(len(handles), arr, False, max(1, int(timeout_s * 1000)))
+        finally:
+            for h in handles:
+                kernel32.FindCloseChangeNotification(h)
+    except Exception:
+        time.sleep(timeout_s)
+
+
 def run_wake_loop(timeout_s: Optional[float] = None, interval_s: Optional[float] = None,
                   verbose: bool = True) -> int:
     """Run the wake monitor loop until an inbound ping is detected or timeout expires.
@@ -144,7 +187,7 @@ def run_wake_loop(timeout_s: Optional[float] = None, interval_s: Optional[float]
     start_time = time.time()
 
     while time.time() - start_time < timeout_s:
-        time.sleep(interval_s)
+        _wait_for_change(watch_dirs(), interval_s)
         current = get_snapshot()
         new_or_modified = [p for p, m in current.items() if p not in initial or m > initial.get(p, 0)]
 
