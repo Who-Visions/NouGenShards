@@ -40,7 +40,8 @@ def client(monkeypatch):
 
 
 def _stub_retrieve(rows, report):
-    def _fake(query, limit=3, query_embedding=None, domain_key=None, sweep_report=None):
+    def _fake(query, limit=3, query_embedding=None, domain_key=None, sweep_report=None,
+              lane_futures=None):
         if sweep_report is not None:
             sweep_report.update(report)
         return list(rows)

@@ -135,7 +135,8 @@ class FederatedResult(list):
 
 def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[List[float]] = None,
                        domain_key: Optional[str] = None,
-                       sweep_report: Optional[dict] = None) -> list:
+                       sweep_report: Optional[dict] = None,
+                       lane_futures: Optional[list] = None) -> list:
     """
     Module 8: Combine Compatible Systems (Parallel Multi-Lane Execution).
     Polls local Shard substrate, external DBs, sibling vaults, and remote cloud nodes concurrently.
@@ -342,6 +343,10 @@ def federated_retrieve(query: str, limit: int = 3, query_embedding: Optional[Lis
             f_cloud = executor.submit(copy_context().run, _timed("cloud", _fetch_cloud))
             f_vaults = executor.submit(copy_context().run, _timed("vaults", _fetch_vaults))
 
+        if lane_futures is not None:
+            # Hand the caller the live lane futures so it can hold its admission slot until
+            # the work actually finishes, not just until this function stops waiting on it.
+            lane_futures.extend(f for f in (f_local, f_external, f_cloud, f_vaults) if f is not None)
         local_results = _lane_result(f_local, "local", [])
         external_results = _lane_result(f_external, "external", []) if f_external is not None else []
         cloud_results = _lane_result(f_cloud, "cloud", []) if f_cloud is not None else []
