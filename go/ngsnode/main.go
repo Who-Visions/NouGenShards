@@ -314,6 +314,13 @@ func main() {
 	}
 	log.Printf("vector index: %d DB(s), %d rows mapped from %s", len(n.index.status()), rows, n.index.dir)
 
+	// Bind before starting the worker: a port clash must exit here, not after
+	// a Python worker has been started and would be left running without a front.
+	listener, err := net.Listen("tcp", *listen)
+	if err != nil {
+		log.Fatalf("cannot listen on %s: %v", *listen, err)
+	}
+
 	if argv := flag.Args(); len(argv) > 0 {
 		port := *workerPort
 		if port == 0 {
@@ -341,7 +348,10 @@ func main() {
 		_ = srv.Shutdown(ctx)
 	}()
 	log.Printf("ngsnode listening on %s (token %s)", *listen, map[bool]string{true: "set", false: "MISSING"}[n.token != ""])
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if n.worker != nil {
+			n.worker.stop(15 * time.Second)
+		}
 		log.Fatal(err)
 	}
 }
