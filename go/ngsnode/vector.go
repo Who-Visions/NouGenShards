@@ -20,7 +20,6 @@ import (
 	"sort"
 	"strconv"
 	"sync"
-	"syscall"
 	"unsafe"
 )
 
@@ -42,13 +41,13 @@ type dbMatrix struct {
 	ids     []int64
 	dom     []string
 	sha256  string
-	mapped  []byte    // whole file, for Munmap
+	mapped  []byte    // whole file, for unmapFile
 	data    []float32 // rows*dim view into mapped
 }
 
 func (m *dbMatrix) close() {
 	if m.mapped != nil {
-		_ = syscall.Munmap(m.mapped)
+		unmapFile(m.mapped)
 		m.mapped, m.data = nil, nil
 	}
 }
@@ -115,21 +114,16 @@ func openMatrix(db int, npyPath, metaPath string) (*dbMatrix, error) {
 	if meta.V != 2 {
 		return nil, fmt.Errorf("%s: sidecar version %d, want 2", metaPath, meta.V)
 	}
-	f, err := os.Open(npyPath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	st, err := f.Stat()
+	st, err := os.Stat(npyPath)
 	if err != nil {
 		return nil, err
 	}
 	if st.Size() == 0 {
 		return nil, errors.New("empty npy")
 	}
-	mapped, err := syscall.Mmap(int(f.Fd()), 0, int(st.Size()), syscall.PROT_READ, syscall.MAP_SHARED)
+	mapped, err := mapFile(npyPath)
 	if err != nil {
-		return nil, fmt.Errorf("mmap %s: %w", npyPath, err)
+		return nil, fmt.Errorf("map %s: %w", npyPath, err)
 	}
 	off, rows, dim, err := parseNpyHeader(mapped)
 	if err == nil && (rows != len(meta.IDs) || dim != meta.Dim || len(meta.Dom) != rows) {
@@ -140,7 +134,7 @@ func openMatrix(db int, npyPath, metaPath string) (*dbMatrix, error) {
 			npyPath, rows, dim, len(meta.IDs), meta.Dim)
 	}
 	if err != nil {
-		_ = syscall.Munmap(mapped)
+		unmapFile(mapped)
 		return nil, err
 	}
 	m := &dbMatrix{db: db, npyPath: npyPath, modTime: st.ModTime().UnixNano(), size: st.Size(),

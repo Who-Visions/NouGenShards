@@ -276,7 +276,10 @@ func (w *worker) stop(grace time.Duration) {
 	cmd := w.cmd
 	w.mu.Unlock()
 	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
+		// Windows has no SIGTERM to deliver; end the worker outright there.
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			_ = cmd.Process.Kill()
+		}
 	}
 	select {
 	case <-w.done:
