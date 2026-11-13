@@ -2048,6 +2048,24 @@ async def whatsapp_inbound(request: Request):
 # makes it safe to run the Space public: reads and writes are both gated;
 # only /health and the separately-authed HUD are reachable without the token.
 
+def _env_num(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        logger.warning("%s is not a number; using %s", name, default)
+        return default
+
+
+# Full federated recalls allowed at once (NOUGEN_SEARCH_CONCURRENCY, default 3) and how long an
+# extra caller may wait for a slot before it is served from the fast local lane
+# (NOUGEN_SEARCH_QUEUE_S, default 1.5).
+_SEARCH_SLOTS = threading.BoundedSemaphore(max(1, int(_env_num("NOUGEN_SEARCH_CONCURRENCY", 3))))
+
+
+def _search_queue_s() -> float:
+    return max(0.0, _env_num("NOUGEN_SEARCH_QUEUE_S", 1.5))
+
+
 @app.post("/search")
 def search(req: SearchRequest, response: Response,
            _tenant: tenants.Tenant = Depends(tenant_vault_context)):
@@ -2076,7 +2094,15 @@ def search(req: SearchRequest, response: Response,
     fetch = min(limit * 5, 250) if bounded else limit
     sweep_report: dict = {}
     _no_fuzzy_token = core.NO_FUZZY.set(not req.fuzzy)
-    _fast_token = core.FAST_LOCAL.set(bool(req.fast))
+    # Admission control: a full recall fans out to every grid DB on two lanes, so N concurrent
+    # recalls are ~18N SQLite scans on one disk. Recall hooks fire one per prompt from every
+    # session; on WhoArt (2026-11-13) a dozen stacked up and EVERY call missed the 20s deadline.
+    # Over the cap, answer from the local keyword lane at once (still 200, still marked degraded)
+    # instead of joining a queue that can only make everyone late.
+    admitted = _SEARCH_SLOTS.acquire(timeout=_search_queue_s())
+    if not admitted:
+        response.headers["X-NouGen-Busy"] = "1"
+    _fast_token = core.FAST_LOCAL.set(bool(req.fast) or not admitted)
     try:
         # Federated, not core.retrieve: a remote caller must see the same corpus a
         # local CLI caller does. core.retrieve reads only nougen_shards_1..9.db,
@@ -2096,6 +2122,8 @@ def search(req: SearchRequest, response: Response,
     finally:
         core.NO_FUZZY.reset(_no_fuzzy_token)
         core.FAST_LOCAL.reset(_fast_token)
+        if admitted:
+            _SEARCH_SLOTS.release()
 
     if bounded:
         results, held_back = _era_filter(results, req.since, req.until)
