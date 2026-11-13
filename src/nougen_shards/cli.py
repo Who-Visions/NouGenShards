@@ -4080,6 +4080,25 @@ def _import_relay_main(registry):
     return relay_main
 
 
+def _with_create_publish(forwarded, registry):
+    """`nougen relay create` always targets the registry, so publish the leg.
+
+    A leg left untracked is invisible to every other node. Older relay
+    checkouts have no --publish flag, so it is only added when the
+    registry's relay source knows it; opt out with --no-publish.
+    """
+    if forwarded[:1] != ["create"] or "--publish" in forwarded:
+        return forwarded
+    if "--no-publish" in forwarded:
+        return [a for a in forwarded if a != "--no-publish"]
+    core_py = Path(registry) / "src" / "nougen_relay" / "core.py"
+    try:
+        supported = '"--publish"' in core_py.read_text(encoding="utf-8")
+    except OSError:
+        supported = False
+    return [*forwarded, "--publish"] if supported else forwarded
+
+
 def cmd_relay(args):
     """Forward to the NouGenRelay CLI inside the fleet registry clone."""
     registry = find_relay_registry()
@@ -4097,6 +4116,7 @@ def cmd_relay(args):
         forwarded = forwarded[1:]
     prev_cwd = os.getcwd()
     prev_argv = sys.argv
+    forwarded = _with_create_publish(forwarded, registry)
     os.chdir(registry)
     sys.argv = ["relay", *forwarded]
     action_mode = os.environ.get("NOUGEN_CONFLICT_ACTION", "").strip().lower() or "report"
