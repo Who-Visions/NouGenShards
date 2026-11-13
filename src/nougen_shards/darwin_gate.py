@@ -21,6 +21,8 @@ import logging
 import os
 import platform
 import subprocess
+import threading
+import time
 import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -76,7 +78,53 @@ def is_darwin() -> bool:
     return platform.system() == "Darwin"
 
 
+# --- Telemetry cache ---
+# Every SQLite connection sizes its cache and mmap from live memory telemetry,
+# and each reading forks sysctl/vm_stat. One recall opens a connection per grid
+# DB per lane, so a single search forked ~90 processes; on a swapping 16 GB
+# mini (phoebus, 2026-11-12) the node logged ~18,000 spawns and its /search
+# missed the 20 s deadline. Pressure does not change meaningfully inside a
+# couple of seconds, so readings are shared for NOUGEN_DARWIN_TELEMETRY_TTL_S
+# (default 2.0; 0 turns the cache off).
+_TELEMETRY_LOCK = threading.Lock()
+_TELEMETRY_CACHE: dict = {}
+
+
+def _telemetry_ttl_s() -> float:
+    raw = os.environ.get("NOUGEN_DARWIN_TELEMETRY_TTL_S", "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else 2.0
+    except ValueError:
+        return 2.0
+
+
+def _cached(key: str, read):
+    ttl = _telemetry_ttl_s()
+    if ttl <= 0:
+        return read()
+    now = time.monotonic()
+    with _TELEMETRY_LOCK:
+        hit = _TELEMETRY_CACHE.get(key)
+        if hit is not None and now - hit[0] < ttl:
+            return hit[1]
+    value = read()
+    with _TELEMETRY_LOCK:
+        _TELEMETRY_CACHE[key] = (time.monotonic(), value)
+    return value
+
+
+def clear_telemetry_cache() -> None:
+    """Forget cached readings (tests, or a caller that must see a fresh value)."""
+    with _TELEMETRY_LOCK:
+        _TELEMETRY_CACHE.clear()
+
+
 def get_memory_pressure_level() -> int:
+    """Kernel memory pressure level, shared across callers for a short TTL."""
+    return _cached("pressure", _read_memory_pressure_level)
+
+
+def _read_memory_pressure_level() -> int:
     """Returns the live macOS kernel memory pressure level.
 
     Values:
@@ -121,6 +169,11 @@ class DarwinVMTelemetry:
 
 
 def get_darwin_vm_telemetry() -> DarwinVMTelemetry:
+    """Mach VM statistics, shared across callers for a short TTL (see _cached)."""
+    return _cached("vm", _read_darwin_vm_telemetry)
+
+
+def _read_darwin_vm_telemetry() -> DarwinVMTelemetry:
     """Reads live Mach Virtual Memory statistics and compressor metrics."""
     if not is_darwin():
         return DarwinVMTelemetry(

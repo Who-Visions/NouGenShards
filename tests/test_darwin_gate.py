@@ -230,3 +230,34 @@ def test_backfill_reports_deferred_when_pressure_never_clears(tmp_path, monkeypa
     res = eb.backfill_db(_backfill_db(tmp_path, 3), "m", execute=True, batch=3, probe=False, progress=False)
     assert res["embedded"] == 0
     assert res["deferred"] == "memory pressure" and res["remaining"] == 3
+
+
+def test_telemetry_readings_are_shared_within_the_ttl(monkeypatch):
+    """One recall opens a connection per grid DB; each used to fork sysctl/vm_stat.
+
+    Phoebus 2026-11-12: ~90 forks per search, ~18,000 in the node log, /search past
+    its 20 s deadline. Readings inside the TTL must come from one fork.
+    """
+    import subprocess
+    from types import SimpleNamespace
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd[0])
+        return SimpleNamespace(stdout="1\n")
+
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setenv("NOUGEN_DARWIN_TELEMETRY_TTL_S", "60")
+    darwin_gate.clear_telemetry_cache()
+    for _ in range(9):
+        assert darwin_gate.get_memory_pressure_level() == 1
+        darwin_gate.get_scaled_sqlite_mmap_size()
+    assert calls.count("sysctl") == 1
+
+    calls.clear()
+    monkeypatch.setenv("NOUGEN_DARWIN_TELEMETRY_TTL_S", "0")
+    darwin_gate.get_memory_pressure_level()
+    darwin_gate.get_memory_pressure_level()
+    assert calls.count("sysctl") == 2
+    darwin_gate.clear_telemetry_cache()
