@@ -113,3 +113,22 @@ def test_nvidia_key_resolves_to_bearer_on_the_nim_endpoint(vault):
     assert u["curl"] == ('curl -s -H "Authorization: Bearer $NVIDIA_API_KEY" '
                          '"https://integrate.api.nvidia.com/v1/models"')
     assert key_usage.usage_for("NGC_API_KEY")["provider"].startswith("NVIDIA")
+
+
+def test_format_usage_prints_a_partial_record_instead_of_crashing(monkeypatch):
+    from nougen_shards import key_usage
+    partial = {"auth": {"header": "Authorization"}, "mcp": {"url": "https://x.test/mcp/"}, "key_name": "K"}
+    monkeypatch.setattr(key_usage, "usage_for", lambda key: partial)
+    out = key_usage.format_usage("K")
+    assert "provider not recorded" in out
+    assert "header:   Authorization" in out
+    assert "type unknown" in out
+
+
+def test_format_usage_prints_free_form_records(monkeypatch):
+    from nougen_shards import key_usage
+    rec = {"account": "acct", "auth": "GH_TOKEN env for gh CLI", "use": "approvals only", "never": "merge", "key_name": "K", "curl": None}
+    monkeypatch.setattr(key_usage, "usage_for", lambda key: rec)
+    out = key_usage.format_usage("K")
+    for text in ("auth:     GH_TOKEN env for gh CLI", "account:  acct", "use:      approvals only", "never:    merge"):
+        assert text in out

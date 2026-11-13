@@ -57,8 +57,8 @@ OWNER_ONLY: frozenset[str] = frozenset({
     "pr_lease_status", "pr_lease_acquire", "pr_lease_release", "token_fuse_status",
     "shard_vacuum", "dream_trigger", "turn_compound", "studio_lighting",
     # owner media pipelines and services
-    "wispr_latest", "wispr_history", "youtube_ingest", "nougentube_preview", "nougentube_ingest",
-    "nougentube_transcript", "nougentube_job", "nougen_media_transcribe", "nougentube", "transcribe_media",
+    "wispr_latest", "wispr_history", "youtube_ingest", "nougentube_preview", "nougentube_ingest", "nougentube_job",
+    "nougentube_transcript", "nougen_media_transcribe", "nougentube", "transcribe_media",
     # owner GitHub token
     "github_repo_inspect", "github_repo_read", "github_repo_capture_readme",
     # author-exclusive IP / personas (xoah_* register from the node plugin dir

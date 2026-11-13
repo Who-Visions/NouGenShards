@@ -678,6 +678,13 @@ def _process_video_locked(url: str, video_id: str, dry_run: bool,
                         p["title"], len(p["content"]), published or "now", part_tags(i))
         return "captured-stub" if not transcript else "captured"
 
+    # The gate above ran before the slow transcript fetch and distill. Another node, or an earlier request
+    # whose HTTP reply timed out (a 524) after its write landed, can have stored this id meanwhile; two lanes
+    # ingesting one video at the same moment stored it twice on 2026-11-12. Check again right before writing.
+    if dedupe_check(video_id):
+        logger.info("SKIP tube:%s appeared in the grid while fetching (%s)", video_id, url)
+        return "skipped-duplicate"
+
     for i, p in enumerate(payloads, start=1):
         if lease is not None:
             heartbeat(lease)

@@ -502,7 +502,9 @@ def cmd_auth(args):
             print(f"Error: Unknown provider '{args.provider}'.")
             return
 
-        keymaker.ingest_secret(key_map[provider], args.input)
+        if keymaker.ingest_secret(key_map[provider], args.input) is False:
+            print(f"Error: the {provider} key was empty; nothing was saved.")
+            return 1
         print(f"✅ API key for {provider} saved to vault.")
 
     elif args.action == "usage":
@@ -974,7 +976,16 @@ def cmd_add(args):
     if success:
         print("✅ Shard captured!")
     else:
-        print("ℹ️ Shard already exists.")
+        print(_capture_failure_message(success))
+
+
+def _capture_failure_message(result):
+    """Say why nothing was written; "already exists" only for a real duplicate."""
+    reason = result.get("reason") if isinstance(result, dict) else None
+    if reason == "duplicate":
+        return "ℹ️ Shard already exists."
+    detail = (result.get("error") if isinstance(result, dict) else None) or reason or "unknown"
+    return f"❌ Shard not captured: {detail}"
 
 
 def cmd_get(args):
@@ -1756,7 +1767,7 @@ def cmd_ctx(args):
         if success:
             print(f"✅ Context event #{event['id']} promoted to durable memory.")
         else:
-            print("ℹ️ Shard already exists.")
+            print(_capture_failure_message(success))
     elif args.action == "web":
         if not args.input:
             print("Error: Usage: nougen ctx web <url> [--tags <label>]")

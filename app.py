@@ -1634,6 +1634,56 @@ def _leakwatch_owner(tenant: tenants.Tenant = Depends(verify_token)) -> tenants.
     return tenant
 
 
+def _local_msg_token() -> str:
+    """Token the co-located NouGenMsg node expects: env first, then the keymaker."""
+    tok = os.environ.get("NOUGEN_AGY_MSG_TOKEN", "").strip()
+    if tok:
+        return tok
+    try:
+        from nougen_shards.keymaker import get_secret  # pylint: disable=import-outside-toplevel
+        return (get_secret("NOUGEN_AGY_MSG_TOKEN") or "").strip()
+    except Exception:  # pylint: disable=broad-except
+        return ""
+
+
+@app.post("/msg")
+async def msg_forward(request: Request, _owner: tenants.Tenant = Depends(_leakwatch_owner)):
+    """Deliver a NouGenMsg to the message node running beside this one.
+
+    The fleet connector sends a peer-targeted message (``@whoart``) to
+    ``<peer origin>/msg`` - the shard node's public origin. The message node is a
+    separate process (default 127.0.0.1:8766) with no public hostname, so every
+    peer send answered 404 and "Nothing delivered" (WhoArt and blade,
+    2026-11-12). Owner token only: a tenant must not inject into the owner's
+    inbox. The local node's status and body are passed through unchanged, so a
+    refusal there is still a refusal here, never a silent drop.
+    """
+    import urllib.error  # pylint: disable=import-outside-toplevel
+    import urllib.request  # pylint: disable=import-outside-toplevel
+
+    url = os.environ.get("NOUGEN_MSG_LOCAL_URL", "http://127.0.0.1:8766/msg")
+    body = await request.body()
+    headers = {"Content-Type": "application/json"}
+    tok = _local_msg_token()
+    if tok:
+        headers["X-NGS-Token"] = tok
+
+    def _send():
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+
+    try:
+        status, raw = await run_in_threadpool(_send)
+    except Exception as exc:  # pylint: disable=broad-except
+        raise HTTPException(status_code=502,
+                            detail=f"local NouGenMsg node unreachable at {url}: {type(exc).__name__}: {exc}")
+    return Response(content=raw, status_code=status, media_type="application/json")
+
+
 @app.get("/debug/leakwatch")
 def debug_leakwatch(_owner: tenants.Tenant = Depends(_leakwatch_owner)):
     """Last retained-object report (type growth, leak traces, fingerprints)."""
