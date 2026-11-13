@@ -4,6 +4,7 @@ Logic: SQLite + FTS5 + BM25 + Trigram (n-gram) + Vector Embeddings + Weighted Re
 Architecture: NouGenMorph 21-step cognitive loop. Weighted multi-signal relevance blend (BM25 + semantic + usefulness prior).
 """
 # pylint: disable=duplicate-code
+import bisect
 import hashlib
 import json
 import logging
@@ -2747,6 +2748,71 @@ def _db_write_signature(i: int) -> tuple:
     return tuple(sig)
 
 
+class _RowBlocks:
+    """A (rows, dim) float32 matrix kept as a base block plus a small tail.
+
+    The base is normally the saved matrix, memory-mapped. Appending a row with
+    ``np.vstack`` copied the whole base into the heap (~70 MB per grid DB, for
+    one new shard), which undid the mapping one DB at a time. Here an append
+    only grows the tail; the next save writes both out and maps the result.
+
+    Supports what the cache does with a matrix: ``.shape``, ``@ vector``,
+    row selection by a list of indices, and conversion to an array.
+    """
+
+    __slots__ = ("blocks",)
+
+    def __init__(self, blocks):
+        self.blocks = tuple(b for b in blocks if b.shape[0]) or (blocks[0],)
+
+    @classmethod
+    def appended(cls, matrix, new_rows):
+        """``matrix`` followed by ``new_rows``; at most two blocks."""
+        blocks = _matrix_blocks(matrix)
+        if len(blocks) > 1:
+            return cls((blocks[0], np.vstack([*blocks[1:], new_rows])))
+        return cls((blocks[0], new_rows))
+
+    @property
+    def shape(self):
+        return (sum(b.shape[0] for b in self.blocks), self.blocks[0].shape[1])
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __matmul__(self, vec):
+        if len(self.blocks) == 1:
+            return self.blocks[0] @ vec
+        return np.concatenate([b @ vec for b in self.blocks])
+
+    def __array__(self, dtype=None, copy=None):
+        out = self.blocks[0] if len(self.blocks) == 1 else np.vstack(self.blocks)
+        return out if dtype is None else out.astype(dtype, copy=False)
+
+    def take(self, keep):
+        """Rows ``keep`` (ascending indices). While every base row is kept the
+        base stays as it is and only the tail is copied - the canary's
+        write-then-delete lands there, so it never costs a matrix copy."""
+        base = self.blocks[0]
+        n_base = base.shape[0]
+        split = bisect.bisect_left(keep, n_base)
+        rest = [k - n_base for k in keep[split:]]
+        tail = np.vstack(self.blocks[1:])[rest] if len(self.blocks) > 1 else base[:0]
+        if split == n_base:
+            return _RowBlocks((base, tail))
+        return np.vstack([base[keep[:split]], tail])
+
+    def __getitem__(self, key):
+        if isinstance(key, list):
+            return self.take(key)
+        return np.asarray(self)[key]
+
+
+def _matrix_blocks(matrix) -> tuple:
+    """The array blocks of a cache matrix, in row order."""
+    return matrix.blocks if isinstance(matrix, _RowBlocks) else (matrix,)
+
+
 def _prune_deleted(conn, entry: dict) -> dict:
     """Drop deleted rows from a cache entry without re-reading embeddings.
 
@@ -2768,7 +2834,7 @@ def _prune_deleted(conn, entry: dict) -> dict:
         "dom": [entry["dom"][k] for k in keep],
         "etype": [entry["etype"][k] for k in keep],
         "util": entry["util"][keep],
-        "matrix": entry["matrix"][keep],
+        "matrix": _RowBlocks(_matrix_blocks(entry["matrix"])).take(keep),
         "legacy": legacy,
     })
     pruned["n_embedded"] = len(pruned["ids"]) + len(legacy)
@@ -2892,8 +2958,21 @@ def _save_vector_sidecar(i: int, entry: dict) -> None:
     tag = f".{os.getpid()}.{_threading.get_ident()}.tmp"
     tmp_npy, tmp_meta = npy + tag + ".npy", meta + tag
     try:
-        matrix = np.ascontiguousarray(entry["matrix"], dtype=np.float32)
-        np.save(tmp_npy, matrix)
+        matrix = entry["matrix"]
+        blocks = _matrix_blocks(matrix)
+        if len(blocks) == 1:
+            matrix = np.ascontiguousarray(blocks[0], dtype=np.float32)
+            np.save(tmp_npy, matrix)
+        else:
+            # Write block by block: joining them first would hold a full copy
+            # of the matrix in the heap for the length of the save.
+            out = np.lib.format.open_memmap(tmp_npy, mode="w+", dtype=np.float32, shape=matrix.shape)
+            row = 0
+            for block in blocks:
+                out[row:row + block.shape[0]] = block
+                row += block.shape[0]
+            out.flush()
+            del out
         with open(tmp_meta, "w", encoding="utf-8") as fh:
             json.dump({"v": 2, "path": entry["path"], "dim": entry["dim"],
                        "n_embedded": entry["n_embedded"], "max_id": entry["max_id"],
@@ -2911,6 +2990,22 @@ def _save_vector_sidecar(i: int, entry: dict) -> None:
         os.replace(tmp_npy, npy)
         os.replace(tmp_meta, meta)
         entry["saved_n"] = len(entry["ids"])
+        if _vector_sidecar_mmap():
+            # Serve from the file just written and let the heap copy go (a
+            # fresh build, or a tail grown since the last save). Same rows in
+            # the same order, so a recall that already holds the old object
+            # ranks identically.
+            try:
+                if matrix.shape[0]:
+                    mapped = np.load(npy, mmap_mode="r")
+                    if mapped.shape == tuple(matrix.shape):
+                        entry["matrix"] = mapped
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.info("grid DB %s: saved vector cache not mapped, serving from memory: %s", i, exc)
+        elif len(blocks) > 1:
+            # No mapping here (Windows): fold the tail back in once per save,
+            # so it stays small and scoring stays one matmul.
+            entry["matrix"] = np.ascontiguousarray(matrix, dtype=np.float32)
     except Exception as exc:  # disk full, permissions: keep serving from memory
         logger.warning("grid DB %s: could not save vector cache to disk: %s", i, exc)
     finally:
@@ -2934,9 +3029,10 @@ def _matrix_sha256(matrix) -> str:
     concatenation.
     """
     digest = hashlib.sha256()
-    for start in range(0, matrix.shape[0], _MATRIX_HASH_CHUNK_ROWS):
-        digest.update(np.ascontiguousarray(
-            matrix[start:start + _MATRIX_HASH_CHUNK_ROWS], dtype=np.float32).tobytes())
+    for block in _matrix_blocks(matrix):
+        for start in range(0, block.shape[0], _MATRIX_HASH_CHUNK_ROWS):
+            digest.update(np.ascontiguousarray(
+                block[start:start + _MATRIX_HASH_CHUNK_ROWS], dtype=np.float32).tobytes())
     return digest.hexdigest()
 
 
@@ -3092,7 +3188,7 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
                 "ids": entry["ids"] + ids, "ts": entry["ts"] + ts,
                 "util": np.concatenate([entry["util"], np.asarray(util, dtype=np.float32)]),
                 "dom": entry["dom"] + dom, "etype": entry["etype"] + etype,
-                "matrix": np.vstack([entry["matrix"], new_matrix]) if len(ids) else entry["matrix"],
+                "matrix": _RowBlocks.appended(entry["matrix"], new_matrix) if len(ids) else entry["matrix"],
                 "legacy": entry["legacy"] + legacy,
             }
         else:
