@@ -2750,19 +2750,55 @@ def _vector_sidecar_paths(i: int, path: str):
     return stem + ".npy", stem + ".json"
 
 
+#: A save lock older than this is treated as left behind by a crashed process.
+_VECTOR_SIDECAR_LOCK_STALE_S = 600.0
+
+
+def _acquire_sidecar_lock(lock_path: str) -> bool:
+    """Cross-process: only one writer per DB at a time. Two nodes (or a node
+    and a CLI recall) starting together would otherwise both write the same
+    files. The loser skips its save; the winner's copy serves both."""
+    for _ in range(2):
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("ascii"))
+            os.close(fd)
+            return True
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(lock_path) < _VECTOR_SIDECAR_LOCK_STALE_S:
+                    return False
+                os.remove(lock_path)  # left by a crashed writer: take it over once
+            except OSError:
+                return False
+        except OSError:
+            return False
+    return False
+
+
 def _save_vector_sidecar(i: int, entry: dict) -> None:
-    """Best effort: a failed save only costs the next restart a rebuild."""
+    """Best effort: a failed or skipped save only costs the next restart a rebuild."""
     paths = _vector_sidecar_paths(i, entry["path"])
     if paths is None or not len(entry["ids"]):
         return
     npy, meta = paths
+    lock_path = npy + ".lock"
     try:
         os.makedirs(os.path.dirname(npy), exist_ok=True)
-        tmp_npy, tmp_meta = npy + ".tmp.npy", meta + ".tmp"
-        np.save(tmp_npy, np.ascontiguousarray(entry["matrix"], dtype=np.float32))
+    except OSError as exc:
+        logger.warning("grid DB %s: could not create vector cache dir: %s", i, exc)
+        return
+    if not _acquire_sidecar_lock(lock_path):
+        return
+    tag = f".{os.getpid()}.{_threading.get_ident()}.tmp"
+    tmp_npy, tmp_meta = npy + tag + ".npy", meta + tag
+    try:
+        matrix = np.ascontiguousarray(entry["matrix"], dtype=np.float32)
+        np.save(tmp_npy, matrix)
         with open(tmp_meta, "w", encoding="utf-8") as fh:
-            json.dump({"v": 1, "path": entry["path"], "dim": entry["dim"],
+            json.dump({"v": 2, "path": entry["path"], "dim": entry["dim"],
                        "n_embedded": entry["n_embedded"], "max_id": entry["max_id"],
+                       "sha256": hashlib.sha256(matrix.tobytes()).hexdigest(),
                        "ids": entry["ids"], "ts": entry["ts"],
                        "util": [float(x) for x in entry["util"]],
                        "dom": entry["dom"], "etype": entry["etype"],
@@ -2771,20 +2807,30 @@ def _save_vector_sidecar(i: int, entry: dict) -> None:
                        "legacy": [[r[0], r[1], r[2], r[3], r[4],
                                    {"hex": bytes(r[5]).hex()} if isinstance(r[5], (bytes, bytearray)) else r[5]]
                                   for r in entry["legacy"]]}, fh)
+        # Matrix first, metadata last: a reader that sees the new metadata
+        # checks it against the matrix hash, so a half-swapped pair is rejected.
         os.replace(tmp_npy, npy)
         os.replace(tmp_meta, meta)
         entry["saved_n"] = len(entry["ids"])
     except Exception as exc:  # disk full, permissions: keep serving from memory
         logger.warning("grid DB %s: could not save vector cache to disk: %s", i, exc)
+    finally:
+        for leftover in (tmp_npy, tmp_meta, lock_path):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
 
 
-def _load_vector_sidecar(i: int, path: str) -> Optional[dict]:
-    """Return DB i's saved matrix as a stale entry (sig=None), or None.
+def _load_vector_sidecar(i: int, path: str, conn=None) -> Optional[dict]:
+    """Return DB i's saved matrix as a stale entry (sig=None), or None to rebuild.
 
-    The caller treats it like any stale entry: the append path adds rows newer
-    than max_id, the prune path drops deleted ones, and the consistency gate
-    forces a full rebuild if the counts still disagree. A saved copy that is
-    behind or no longer matches the DB therefore costs time, never a wrong answer."""
+    Rejected (rebuilt from SQLite instead) when the files are unreadable, the
+    matrix bytes do not match the recorded sha256, the copy was built from a
+    different DB file, or the DB holds an embedded row at or below the saved
+    max_id that the copy does not know (a backfill or replaced rows). Rows
+    deleted since the save, and rows newer than max_id, are left to the
+    caller's prune and append paths; its consistency gate is the backstop."""
     paths = _vector_sidecar_paths(i, path)
     if paths is None or not os.path.exists(paths[0]) or not os.path.exists(paths[1]):
         return None
@@ -2793,16 +2839,29 @@ def _load_vector_sidecar(i: int, path: str) -> Optional[dict]:
             meta = json.load(fh)
         matrix = np.load(paths[0])
         n = len(meta["ids"])
-        if meta.get("v") != 1 or meta["path"] != path or matrix.shape != (n, meta["dim"]) \
+        if meta.get("v") != 2 or meta["path"] != path or matrix.shape != (n, meta["dim"]) \
                 or not (len(meta["ts"]) == len(meta["util"]) == len(meta["dom"]) == len(meta["etype"]) == n):
+            logger.info("grid DB %s: vector cache on disk does not match this build; rebuilding", i)
             return None
+        if hashlib.sha256(np.ascontiguousarray(matrix, dtype=np.float32).tobytes()).hexdigest() != meta.get("sha256"):
+            logger.warning("grid DB %s: vector cache on disk failed its checksum; rebuilding", i)
+            return None
+        legacy = [(r[0], r[1], r[2], r[3], r[4],
+                   bytes.fromhex(r[5]["hex"]) if isinstance(r[5], dict) else r[5])
+                  for r in meta.get("legacy", [])]
+        if conn is not None:
+            known = set(meta["ids"])
+            known.update(r[0] for r in legacy)
+            for (row_id,) in conn.execute(
+                    "SELECT id FROM shards WHERE embedding IS NOT NULL AND id <= ?", (meta["max_id"],)):
+                if row_id not in known:
+                    logger.info("grid DB %s: vector cache on disk is missing row %s "
+                                "(backfilled since it was saved); rebuilding", i, row_id)
+                    return None
         return {"sig": None, "path": path, "dim": meta["dim"], "n_embedded": meta["n_embedded"],
                 "max_id": meta["max_id"], "ids": meta["ids"], "ts": meta["ts"],
                 "util": np.asarray(meta["util"], dtype=np.float32), "dom": meta["dom"],
-                "etype": meta["etype"], "matrix": matrix, "saved_n": n,
-                "legacy": [(r[0], r[1], r[2], r[3], r[4],
-                            bytes.fromhex(r[5]["hex"]) if isinstance(r[5], dict) else r[5])
-                           for r in meta.get("legacy", [])]}
+                "etype": meta["etype"], "matrix": matrix, "saved_n": n, "legacy": legacy}
     except Exception as exc:  # truncated or corrupt: rebuild from SQLite
         logger.warning("grid DB %s: ignoring unreadable vector cache on disk: %s", i, exc)
         return None
@@ -2857,7 +2916,7 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
             # A restart would otherwise rebuild the whole matrix from SQLite
             # (minutes on a ~300k-row grid); the copy on disk is topped up
             # by the append path below like any other stale entry.
-            entry = _load_vector_sidecar(i, path)
+            entry = _load_vector_sidecar(i, path, conn)
         count = conn.execute(
             "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM shards WHERE embedding IS NOT NULL"
         ).fetchone()

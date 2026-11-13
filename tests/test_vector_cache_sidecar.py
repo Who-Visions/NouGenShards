@@ -137,3 +137,90 @@ def test_legacy_rows_survive_the_round_trip(db, monkeypatch):
     got = core._vector_cache_entry(1, conn)
     assert got["legacy"] == first["legacy"]
     assert got["ids"] == [1, 2, 3, 4, 5]
+
+
+def _sidecar(tmp):
+    npy = next((tmp / "vec").glob("*.npy"))
+    return npy, npy.with_suffix(".json")
+
+
+def test_flipped_matrix_bytes_fail_the_checksum_and_rebuild(db, monkeypatch):
+    conn, sig, tmp = db
+    core._vector_cache_entry(1, conn)
+    npy, _ = _sidecar(tmp)
+    m = np.load(npy)
+    m[0, 0] = 99.0
+    np.save(npy, m)
+    assert core._load_vector_sidecar(1, str(tmp / "grid.db"), conn) is None
+    _restart(monkeypatch)
+    assert core._vector_cache_entry(1, conn)["matrix"][0, 0] == 1.0
+
+
+def test_row_backfilled_below_max_id_forces_a_rebuild(db, monkeypatch):
+    conn, sig, tmp = db
+    conn.execute("UPDATE shards SET embedding = NULL WHERE id = 3")
+    core._vector_cache_entry(1, conn)
+    conn.execute("UPDATE shards SET embedding = ? WHERE id = 3", (_vec(30),))
+    sig["n"] += 1
+    assert core._load_vector_sidecar(1, str(tmp / "grid.db"), conn) is None
+    _restart(monkeypatch)
+    got = core._vector_cache_entry(1, conn)
+    assert got["ids"] == [1, 2, 3, 4, 5] and got["matrix"][2, 0] == 30.0
+
+
+def test_a_held_save_lock_skips_the_save(db, monkeypatch):
+    conn, sig, tmp = db
+    (tmp / "vec").mkdir()
+    entry = core._vector_cache_entry  # build without saving first
+    monkeypatch.setenv("NOUGEN_VECTOR_SIDECAR", "0")
+    built = entry(1, conn)
+    monkeypatch.delenv("NOUGEN_VECTOR_SIDECAR")
+    npy, _ = core._vector_sidecar_paths(1, built["path"])
+    lock = Path(npy + ".lock")
+    lock.write_text("4242", encoding="utf-8")
+    core._save_vector_sidecar(1, built)
+    assert not Path(npy).exists() and lock.exists()  # the other writer's lock is untouched
+
+
+def test_a_stale_lock_from_a_crash_is_taken_over(db, monkeypatch):
+    conn, sig, tmp = db
+    (tmp / "vec").mkdir()
+    monkeypatch.setenv("NOUGEN_VECTOR_SIDECAR", "0")
+    built = core._vector_cache_entry(1, conn)
+    monkeypatch.delenv("NOUGEN_VECTOR_SIDECAR")
+    npy, _ = core._vector_sidecar_paths(1, built["path"])
+    lock = Path(npy + ".lock")
+    lock.write_text("4242", encoding="utf-8")
+    old = __import__("time").time() - 3600
+    __import__("os").utime(lock, (old, old))
+    core._save_vector_sidecar(1, built)
+    assert Path(npy).exists() and not lock.exists()
+
+
+def _concurrent_save(args):
+    import os
+    src, vec_dir, grid = args
+    os.environ["NOUGEN_VECTOR_SIDECAR_DIR"] = vec_dir
+    sys.path.insert(0, src)
+    import nougen_shards.core as c
+    n = 2000
+    rng = np.random.default_rng(os.getpid())
+    entry = {"path": grid, "dim": 8, "n_embedded": n, "max_id": n, "ids": list(range(1, n + 1)),
+             "ts": ["t"] * n, "util": np.ones(n, dtype=np.float32), "dom": [""] * n,
+             "etype": [""] * n, "matrix": rng.random((n, 8), dtype=np.float32), "legacy": []}
+    for _ in range(5):
+        c._save_vector_sidecar(1, entry)
+    return True
+
+
+def test_two_processes_saving_at_once_leave_a_valid_pair(tmp_path, monkeypatch):
+    import multiprocessing as mp
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    grid = str(tmp_path / "grid.db")
+    with mp.get_context("spawn").Pool(2) as pool:
+        assert all(pool.map(_concurrent_save, [(src, str(tmp_path / "vec"), grid)] * 2))
+    monkeypatch.setenv("NOUGEN_VECTOR_SIDECAR_DIR", str(tmp_path / "vec"))
+    got = core._load_vector_sidecar(1, grid)
+    assert got is not None and got["matrix"].shape == (2000, 8)  # checksum matched its own metadata
+    leftovers = [p.name for p in (tmp_path / "vec").iterdir() if p.suffix not in (".npy", ".json")]
+    assert leftovers == []
