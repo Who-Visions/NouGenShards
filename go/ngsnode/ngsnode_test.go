@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -42,10 +44,20 @@ func writeSidecar(t *testing.T, vault string, db int, rows [][]float32, ids []in
 	if err := os.WriteFile(base+".npy", buf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	meta, _ := json.Marshal(map[string]interface{}{"v": 2, "dim": dim, "sha256": "x", "ids": ids, "dom": dom})
+	meta, _ := json.Marshal(map[string]interface{}{"v": 2, "dim": dim, "sha256": payloadSHA(rows), "ids": ids, "dom": dom})
 	if err := os.WriteFile(base+".json", meta, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// payloadSHA is the sha256 the Python writer records: over the float32 bytes.
+func payloadSHA(rows [][]float32) string {
+	var b bytes.Buffer
+	for _, r := range rows {
+		_ = binary.Write(&b, binary.LittleEndian, r)
+	}
+	sum := sha256.Sum256(b.Bytes())
+	return hex.EncodeToString(sum[:])
 }
 
 func unit(v ...float32) []float32 {
@@ -208,5 +220,42 @@ func TestProxyWorkerDownIs502(t *testing.T) {
 	n.routes().ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
 	if rec.Code != 502 {
 		t.Fatalf("worker down: %d, want 502", rec.Code)
+	}
+}
+
+// A pair caught mid-swap can have the same shape: new matrix, old metadata.
+// Only the recorded hash tells them apart.
+func TestRefreshRejectsSameShapePairMidSwap(t *testing.T) {
+	vault := t.TempDir()
+	writeSidecar(t, vault, 1, [][]float32{unit(1, 0), unit(0, 1)}, []int64{1, 2}, []string{"g", "g"})
+	ix := newVectorIndex(vault)
+	if errs := ix.refresh(); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	base := filepath.Join(vault, ".vector-cache", fmt.Sprintf("db%d-%016x", 1, 1))
+	oldMeta, _ := os.ReadFile(base + ".json")
+	// The writer builds the new pair beside the old one and renames it into
+	// place, matrix first (a rename, so the old mapping keeps its own file).
+	staging := t.TempDir()
+	writeSidecar(t, staging, 1, [][]float32{unit(0, 1), unit(1, 0)}, []int64{7, 8}, []string{"g", "g"}) // same shape
+	staged := filepath.Join(staging, ".vector-cache", fmt.Sprintf("db%d-%016x", 1, 1))
+	newMeta, _ := os.ReadFile(staged + ".json")
+	if err := os.Rename(staged+".npy", base+".npy"); err != nil {
+		t.Fatal(err)
+	}
+	_ = oldMeta // the metadata has not been replaced yet
+	errs := ix.refresh()
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "sha256") {
+		t.Fatalf("want a sha256 mismatch, got %v", errs)
+	}
+	if res := ix.search(unit(1, 0), 1, "*"); res.Hits[0].ID != 1 {
+		t.Fatalf("served the half-swapped pair: top hit %d, want 1 from the previous mapping", res.Hits[0].ID)
+	}
+	_ = os.WriteFile(base+".json", newMeta, 0o644)
+	if errs := ix.refresh(); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	if res := ix.search(unit(1, 0), 1, "*"); res.Hits[0].ID != 8 {
+		t.Fatalf("top hit after the swap finished = %d, want 8", res.Hits[0].ID)
 	}
 }

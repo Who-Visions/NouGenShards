@@ -265,7 +265,10 @@ func upper(s sql.NullString) string { return strings.ToUpper(s.String) }
 
 // refreshState brings st up to date with the DB behind m. Called with st.mu held.
 func (st *retrieveState) refresh(m *dbMatrix) error {
-	key := m.npyPath + "|" + m.sha256
+	// Everything that identifies the pair this state was built for. The
+	// matrix hash alone is not enough: a rewrite can keep the same vector
+	// bytes and change the ids or metadata beside them.
+	key := fmt.Sprintf("%s|%s|%d|%s", m.npyPath, m.sha256, m.modTime, m.metaSig)
 	if st.key != key {
 		meta, err := loadRetrieveMeta(strings.TrimSuffix(m.npyPath, ".npy")+".json", m.rows)
 		if err != nil {

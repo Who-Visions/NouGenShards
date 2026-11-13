@@ -92,7 +92,7 @@ func newGrid(t *testing.T, rows []testRow, saved int) (*grid, *vectorIndex) {
 	}
 	writeSidecar(t, vault, 1, vecs, ids, dom)
 	base := filepath.Join(vault, ".vector-cache", fmt.Sprintf("db%d-%016x", 1, 1))
-	meta, _ := json.Marshal(map[string]interface{}{"v": 2, "dim": 8, "sha256": "x", "path": g.path,
+	meta, _ := json.Marshal(map[string]interface{}{"v": 2, "dim": 8, "sha256": payloadSHA(vecs), "path": g.path,
 		"max_id": maxID, "n_embedded": saved, "ids": ids, "ts": ts, "util": util, "dom": dom,
 		"etype": etype, "legacy": legacy})
 	if err := os.WriteFile(base+".json", meta, 0o644); err != nil {
@@ -409,14 +409,62 @@ func TestSaveSkipsWhenAnotherWriterHoldsTheLock(t *testing.T) {
 
 func TestSQLiteReadOnlyDSN(t *testing.T) {
 	cases := map[string]string{
-		"/Users/me/.nougen/shards/nougen_shards_1.db": "file:///Users/me/.nougen/shards/nougen_shards_1.db",
-		"/Users/me/The Observatory/x.db":              "file:///Users/me/The%20Observatory/x.db",
-		`C:\Users\RUNNER~1\AppData\x.db`:              "file:///C:/Users/RUNNER~1/AppData/x.db",
-		`C:\Users\super\Watch tower\x.db`:             "file:///C:/Users/super/Watch%20tower/x.db",
+		"/srv/vault/shards/nougen_shards_1.db": "file:///srv/vault/shards/nougen_shards_1.db",
+		"/srv/my vault/x.db":                   "file:///srv/my%20vault/x.db",
+		`C:\vault\SHORT~1\x.db`:                "file:///C:/vault/SHORT~1/x.db",
+		`D:\my vault\x.db`:                     "file:///D:/my%20vault/x.db",
 	}
 	for path, want := range cases {
 		if got := sqliteReadOnlyDSN(path); got != want+"?mode=ro&_pragma=busy_timeout(5000)" {
 			t.Errorf("sqliteReadOnlyDSN(%q) = %q", path, got)
 		}
+	}
+}
+
+// A rewrite can keep the same vector bytes and change what is beside them
+// (a deleted row replaced by one with the same embedding). The lane's
+// per-DB state must be rebuilt for the new pair, not reused.
+func TestRetrieveReloadsStateWhenOnlyMetadataChanges(t *testing.T) {
+	rows := baseRows()
+	g, ix := newGrid(t, rows, 4)
+	req := retrieveRequest{Embedding: query(), Limit: 10, Now: testNowRFC}
+	g.exec("DELETE FROM shards WHERE id = 2")
+	if got := idsOf(ix.retrieve(req).Rows); got != "1 3 4" { // id 2 is masked as dead
+		t.Fatalf("before rewrite: %s", got)
+	}
+	// Same embedding as the deleted row, new id, new metadata; the sidecar is
+	// rewritten with identical matrix bytes.
+	g.insert(testRow{9, "2026-10-14T00:00:00Z", 0.5, "ops", "note", rows[1].emb})
+	base := filepath.Join(g.vault, ".vector-cache", fmt.Sprintf("db%d-%016x", 1, 1))
+	raw, _ := os.ReadFile(base + ".json")
+	var meta map[string]interface{}
+	_ = json.Unmarshal(raw, &meta)
+	meta["ids"] = []int64{1, 9, 3, 4}
+	meta["ts"].([]interface{})[1] = "2026-10-14T00:00:00Z"
+	meta["util"].([]interface{})[1] = 0.5
+	meta["dom"].([]interface{})[1] = "ops"
+	meta["etype"].([]interface{})[1] = "NOTE"
+	meta["max_id"] = 9
+	out, _ := json.Marshal(meta)
+	if err := os.WriteFile(base+".json", out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Hour)
+	_ = os.Chtimes(base+".json", later, later)
+	if errs := ix.refresh(); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	res := ix.retrieve(req)
+	if got := idsOf(res.Rows); got != "1 3 9 4" || len(res.Fallback) != 0 { // 9 is back in, 2 stays out
+		t.Fatalf("after rewrite: %s fallback=%v (stale dead mask or metadata reused?)", got, res.Fallback)
+	}
+	// The ranking above can come out right by luck (the new row is also in
+	// SQLite). What must hold is that the state was rebuilt for the new pair.
+	if st := stateFor(1); st.meta.maxID != 9 || st.nDead != 0 || len(st.tail.ids) != 0 {
+		t.Fatalf("state not rebuilt: max_id=%d dead=%d tail=%d, want 9/0/0", st.meta.maxID, st.nDead, len(st.tail.ids))
+	}
+	want := float64(float32(0.9))*0.7 + float64(float32(0.5))*0.5*0.3
+	if math.Abs(res.Rows[2].FinalScore-want) > 1e-9 {
+		t.Fatalf("id 9 scored %v, want %v from its own utility and timestamp", res.Rows[2].FinalScore, want)
 	}
 }

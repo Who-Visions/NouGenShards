@@ -10,7 +10,9 @@ package main
 
 import (
 	"container/heap"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,6 +43,7 @@ type dbMatrix struct {
 	ids     []int64
 	dom     []string
 	sha256  string
+	metaSig string    // mtime and size of the .json this mapping was paired with
 	mapped  []byte    // whole file, for unmapFile
 	data    []float32 // rows*dim view into mapped
 }
@@ -137,8 +140,15 @@ func openMatrix(db int, npyPath, metaPath string) (*dbMatrix, error) {
 		unmapFile(mapped)
 		return nil, err
 	}
+	// The writer replaces the matrix first and the metadata last. A pair
+	// caught between the two can have the same shape, so the shape check
+	// above is not enough: the metadata must describe THIS matrix.
+	if sum := sha256.Sum256(mapped[off : off+rows*dim*4]); hex.EncodeToString(sum[:]) != meta.SHA256 {
+		unmapFile(mapped)
+		return nil, fmt.Errorf("%s: matrix does not match the sha256 in its metadata (pair mid-swap?)", npyPath)
+	}
 	m := &dbMatrix{db: db, npyPath: npyPath, modTime: st.ModTime().UnixNano(), size: st.Size(),
-		rows: rows, dim: dim, ids: meta.IDs, dom: meta.Dom, sha256: meta.SHA256, mapped: mapped}
+		rows: rows, dim: dim, ids: meta.IDs, dom: meta.Dom, sha256: meta.SHA256, metaSig: fileSig(metaPath), mapped: mapped}
 	if rows*dim > 0 {
 		m.data = unsafe.Slice((*float32)(unsafe.Pointer(&mapped[off])), rows*dim)
 	}
@@ -154,6 +164,15 @@ type vectorIndex struct {
 
 func newVectorIndex(vaultDir string) *vectorIndex {
 	return &vectorIndex{dir: filepath.Join(vaultDir, ".vector-cache"), dbs: map[int]*dbMatrix{}}
+}
+
+// fileSig identifies a file's current content cheaply: mtime and size.
+func fileSig(path string) string {
+	st, err := os.Stat(path)
+	if err != nil {
+		return "-"
+	}
+	return fmt.Sprintf("%d:%d", st.ModTime().UnixNano(), st.Size())
 }
 
 var sidecarNameRe = regexp.MustCompile(`^db(\d+)-[0-9a-f]+\.npy$`)
@@ -193,10 +212,11 @@ func (ix *vectorIndex) refresh() []error {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 	for db, c := range newest {
-		if cur, ok := ix.dbs[db]; ok && cur.npyPath == c.path && cur.modTime == c.mod && cur.size == c.size {
+		meta := c.path[:len(c.path)-len(".npy")] + ".json"
+		if cur, ok := ix.dbs[db]; ok && cur.npyPath == c.path && cur.modTime == c.mod && cur.size == c.size &&
+			cur.metaSig == fileSig(meta) {
 			continue
 		}
-		meta := c.path[:len(c.path)-len(".npy")] + ".json"
 		m, err := openMatrix(db, c.path, meta)
 		if err != nil {
 			errs = append(errs, err) // keep serving the previous mapping, if any
