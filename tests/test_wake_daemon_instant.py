@@ -33,3 +33,21 @@ def test_wait_for_change_handles_missing_dirs(tmp_path: Path) -> None:
     started = time.monotonic()
     wake_daemon._wait_for_change([missing], 0.25)
     assert time.monotonic() - started >= 0.2
+
+
+def test_run_wake_loop_skips_closed_relay_watch_and_updates_initial(monkeypatch, tmp_path: Path) -> None:
+    """Closed relay-watch tickets are ignored and recorded in initial."""
+    monkeypatch.setattr(wake_daemon, "watch_dirs", lambda: [tmp_path])
+    closed = tmp_path / "closed.json"
+    step = [0]
+
+    def fake_sleep(_s: float) -> None:
+        step[0] += 1
+        if step[0] == 1:
+            closed.write_text('{"source": "relay-watch", "status": "closed", "target": "local", "text": "(closed)"}', encoding="utf-8")
+
+    monkeypatch.setattr(wake_daemon.time, "sleep", fake_sleep)
+    rc = wake_daemon.run_wake_loop(timeout_s=0.05, interval_s=0.02, verbose=False)
+    assert rc == 0
+
+
