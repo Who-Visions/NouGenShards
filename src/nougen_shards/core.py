@@ -4,6 +4,7 @@ Logic: SQLite + FTS5 + BM25 + Trigram (n-gram) + Vector Embeddings + Weighted Re
 Architecture: NouGenMorph 21-step cognitive loop. Weighted multi-signal relevance blend (BM25 + semantic + usefulness prior).
 """
 # pylint: disable=duplicate-code
+import bisect
 import hashlib
 import json
 import logging
@@ -2747,6 +2748,71 @@ def _db_write_signature(i: int) -> tuple:
     return tuple(sig)
 
 
+class _RowBlocks:
+    """A (rows, dim) float32 matrix kept as a base block plus a small tail.
+
+    The base is normally the saved matrix, memory-mapped. Appending a row with
+    ``np.vstack`` copied the whole base into the heap (~70 MB per grid DB, for
+    one new shard), which undid the mapping one DB at a time. Here an append
+    only grows the tail; the next save writes both out and maps the result.
+
+    Supports what the cache does with a matrix: ``.shape``, ``@ vector``,
+    row selection by a list of indices, and conversion to an array.
+    """
+
+    __slots__ = ("blocks",)
+
+    def __init__(self, blocks):
+        self.blocks = tuple(b for b in blocks if b.shape[0]) or (blocks[0],)
+
+    @classmethod
+    def appended(cls, matrix, new_rows):
+        """``matrix`` followed by ``new_rows``; at most two blocks."""
+        blocks = _matrix_blocks(matrix)
+        if len(blocks) > 1:
+            return cls((blocks[0], np.vstack([*blocks[1:], new_rows])))
+        return cls((blocks[0], new_rows))
+
+    @property
+    def shape(self):
+        return (sum(b.shape[0] for b in self.blocks), self.blocks[0].shape[1])
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __matmul__(self, vec):
+        if len(self.blocks) == 1:
+            return self.blocks[0] @ vec
+        return np.concatenate([b @ vec for b in self.blocks])
+
+    def __array__(self, dtype=None, copy=None):
+        out = self.blocks[0] if len(self.blocks) == 1 else np.vstack(self.blocks)
+        return out if dtype is None else out.astype(dtype, copy=False)
+
+    def take(self, keep):
+        """Rows ``keep`` (ascending indices). While every base row is kept the
+        base stays as it is and only the tail is copied - the canary's
+        write-then-delete lands there, so it never costs a matrix copy."""
+        base = self.blocks[0]
+        n_base = base.shape[0]
+        split = bisect.bisect_left(keep, n_base)
+        rest = [k - n_base for k in keep[split:]]
+        tail = np.vstack(self.blocks[1:])[rest] if len(self.blocks) > 1 else base[:0]
+        if split == n_base:
+            return _RowBlocks((base, tail))
+        return np.vstack([base[keep[:split]], tail])
+
+    def __getitem__(self, key):
+        if isinstance(key, list):
+            return self.take(key)
+        return np.asarray(self)[key]
+
+
+def _matrix_blocks(matrix) -> tuple:
+    """The array blocks of a cache matrix, in row order."""
+    return matrix.blocks if isinstance(matrix, _RowBlocks) else (matrix,)
+
+
 def _prune_deleted(conn, entry: dict) -> dict:
     """Drop deleted rows from a cache entry without re-reading embeddings.
 
@@ -2768,7 +2834,7 @@ def _prune_deleted(conn, entry: dict) -> dict:
         "dom": [entry["dom"][k] for k in keep],
         "etype": [entry["etype"][k] for k in keep],
         "util": entry["util"][keep],
-        "matrix": entry["matrix"][keep],
+        "matrix": _RowBlocks(_matrix_blocks(entry["matrix"])).take(keep),
         "legacy": legacy,
     })
     pruned["n_embedded"] = len(pruned["ids"]) + len(legacy)
@@ -2892,12 +2958,25 @@ def _save_vector_sidecar(i: int, entry: dict) -> None:
     tag = f".{os.getpid()}.{_threading.get_ident()}.tmp"
     tmp_npy, tmp_meta = npy + tag + ".npy", meta + tag
     try:
-        matrix = np.ascontiguousarray(entry["matrix"], dtype=np.float32)
-        np.save(tmp_npy, matrix)
+        matrix = entry["matrix"]
+        blocks = _matrix_blocks(matrix)
+        if len(blocks) == 1:
+            matrix = np.ascontiguousarray(blocks[0], dtype=np.float32)
+            np.save(tmp_npy, matrix)
+        else:
+            # Write block by block: joining them first would hold a full copy
+            # of the matrix in the heap for the length of the save.
+            out = np.lib.format.open_memmap(tmp_npy, mode="w+", dtype=np.float32, shape=matrix.shape)
+            row = 0
+            for block in blocks:
+                out[row:row + block.shape[0]] = block
+                row += block.shape[0]
+            out.flush()
+            del out
         with open(tmp_meta, "w", encoding="utf-8") as fh:
             json.dump({"v": 2, "path": entry["path"], "dim": entry["dim"],
                        "n_embedded": entry["n_embedded"], "max_id": entry["max_id"],
-                       "sha256": hashlib.sha256(matrix.tobytes()).hexdigest(),
+                       "sha256": _matrix_sha256(matrix),
                        "ids": entry["ids"], "ts": entry["ts"],
                        "util": [float(x) for x in entry["util"]],
                        "dom": entry["dom"], "etype": entry["etype"],
@@ -2911,6 +2990,22 @@ def _save_vector_sidecar(i: int, entry: dict) -> None:
         os.replace(tmp_npy, npy)
         os.replace(tmp_meta, meta)
         entry["saved_n"] = len(entry["ids"])
+        if _vector_sidecar_mmap():
+            # Serve from the file just written and let the heap copy go (a
+            # fresh build, or a tail grown since the last save). Same rows in
+            # the same order, so a recall that already holds the old object
+            # ranks identically.
+            try:
+                if matrix.shape[0]:
+                    mapped = np.load(npy, mmap_mode="r")
+                    if mapped.shape == tuple(matrix.shape):
+                        entry["matrix"] = mapped
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.info("grid DB %s: saved vector cache not mapped, serving from memory: %s", i, exc)
+        elif len(blocks) > 1:
+            # No mapping here (Windows): fold the tail back in once per save,
+            # so it stays small and scoring stays one matmul.
+            entry["matrix"] = np.ascontiguousarray(matrix, dtype=np.float32)
     except Exception as exc:  # disk full, permissions: keep serving from memory
         logger.warning("grid DB %s: could not save vector cache to disk: %s", i, exc)
     finally:
@@ -2919,6 +3014,42 @@ def _save_vector_sidecar(i: int, entry: dict) -> None:
                 os.remove(leftover)
             except OSError:
                 pass
+
+
+#: Rows hashed per step by _matrix_sha256 (~12 MB at 768 dims).
+_MATRIX_HASH_CHUNK_ROWS = 4096
+
+
+def _matrix_sha256(matrix) -> str:
+    """sha256 of the matrix's float32 bytes, hashed in row chunks.
+
+    ``matrix.tobytes()`` holds a second full copy of the matrix while it is
+    hashed (hundreds of MB per grid DB, on every load and every save). The
+    digest is identical: sha256 over the chunks in order is sha256 over the
+    concatenation.
+    """
+    digest = hashlib.sha256()
+    for block in _matrix_blocks(matrix):
+        for start in range(0, block.shape[0], _MATRIX_HASH_CHUNK_ROWS):
+            digest.update(np.ascontiguousarray(
+                block[start:start + _MATRIX_HASH_CHUNK_ROWS], dtype=np.float32).tobytes())
+    return digest.hexdigest()
+
+
+def _vector_sidecar_mmap() -> bool:
+    """Whether a saved matrix is memory-mapped instead of read into the heap.
+
+    Mapped pages are file-backed, so the OS can drop them under memory
+    pressure and page them back in; a heap copy can only go to swap. Off on
+    Windows, where the mapped file could not be replaced by the next save.
+    NOUGEN_VECTOR_SIDECAR_MMAP=0 turns it off, =1 forces it on.
+    """
+    raw = os.environ.get("NOUGEN_VECTOR_SIDECAR_MMAP", "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    return os.name != "nt"
 
 
 def _load_vector_sidecar(i: int, path: str, conn=None) -> Optional[dict]:
@@ -2936,13 +3067,13 @@ def _load_vector_sidecar(i: int, path: str, conn=None) -> Optional[dict]:
     try:
         with open(paths[1], encoding="utf-8") as fh:
             meta = json.load(fh)
-        matrix = np.load(paths[0])
+        matrix = np.load(paths[0], mmap_mode="r" if _vector_sidecar_mmap() else None)
         n = len(meta["ids"])
         if meta.get("v") != 2 or os.path.normcase(meta["path"]) != os.path.normcase(path) or matrix.shape != (n, meta["dim"]) \
                 or not (len(meta["ts"]) == len(meta["util"]) == len(meta["dom"]) == len(meta["etype"]) == n):
             logger.info("grid DB %s: vector cache on disk does not match this build; rebuilding", i)
             return None
-        if hashlib.sha256(np.ascontiguousarray(matrix, dtype=np.float32).tobytes()).hexdigest() != meta.get("sha256"):
+        if _matrix_sha256(matrix) != meta.get("sha256"):
             logger.warning("grid DB %s: vector cache on disk failed its checksum; rebuilding", i)
             return None
         legacy = [(r[0], r[1], r[2], r[3], r[4],
@@ -3057,7 +3188,7 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
                 "ids": entry["ids"] + ids, "ts": entry["ts"] + ts,
                 "util": np.concatenate([entry["util"], np.asarray(util, dtype=np.float32)]),
                 "dom": entry["dom"] + dom, "etype": entry["etype"] + etype,
-                "matrix": np.vstack([entry["matrix"], new_matrix]) if len(ids) else entry["matrix"],
+                "matrix": _RowBlocks.appended(entry["matrix"], new_matrix) if len(ids) else entry["matrix"],
                 "legacy": entry["legacy"] + legacy,
             }
         else:
@@ -3108,6 +3239,60 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
 _DIM_MISMATCH_WARNED: set = set()
 
 
+_GO_LANE_WARNED = False
+
+
+def _go_vector_lane_url() -> Optional[str]:
+    """Where the Go front's vector lane is, when this process should use it.
+
+    Opt-in: NOUGEN_VECTOR_GO=1, and the front must have started this process
+    (it sets NGS_GO_FRONT_URL). With it on, this process never builds the
+    vector cache for a DB the front answers, so it holds no matrix and no
+    per-row lists for that DB.
+    """
+    if os.environ.get("NOUGEN_VECTOR_GO", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return None
+    return os.environ.get("NGS_GO_FRONT_URL", "").strip() or None
+
+
+def _go_vector_rows(q_vec, limit: int, domain_key, excluded_types):
+    """Ask the Go front to score the vector lane.
+
+    Returns ({db_index: db_path}, {db_index: [(final_score, id), ...]}) for
+    the DBs it answered, or None when the lane is off or the call failed -
+    then every DB is scored in this process, exactly as without the front.
+    A DB the front hands back, or does not know, is simply absent.
+    """
+    url = _go_vector_lane_url()
+    if url is None:
+        return None
+    import urllib.request  # pylint: disable=import-outside-toplevel
+    body = json.dumps({
+        "embedding": [float(x) for x in q_vec], "limit": int(limit),
+        "domain_key": "*" if domain_key in (None, "*") else domain_key,
+        "excluded_types": sorted(excluded_types),
+    }).encode()
+    req = urllib.request.Request(
+        url.rstrip("/") + "/v1/vector/retrieve", data=body,
+        headers={"Content-Type": "application/json", "X-NGS-Token": os.environ.get("NGS_NODE_TOKEN", "")})
+    try:
+        timeout = float(os.environ.get("NOUGEN_VECTOR_GO_TIMEOUT_S", "") or 5.0)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            out = json.loads(resp.read())
+        paths = {int(k): v for k, v in (out.get("paths") or {}).items()}
+        answered = set(out.get("dbs") or ()) | set(out.get("skipped_dim_mismatch") or ())
+        rows: dict = {}
+        for r in out.get("rows") or ():
+            rows.setdefault(int(r["db"]), []).append((float(r["final_score"]), int(r["id"])))
+        return {i: paths[i] for i in answered if i in paths}, rows
+    except Exception as exc:  # pylint: disable=broad-except
+        global _GO_LANE_WARNED  # pylint: disable=global-statement
+        if not _GO_LANE_WARNED:
+            _GO_LANE_WARNED = True
+            logger.warning("Go vector lane unavailable (%s: %s); scoring in-process", type(exc).__name__, exc)
+        return None
+
+
 def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                      domain_key: str = "global", include_research: bool = False) -> list:
     """Scans for semantic vector matches independent of FTS.
@@ -3140,6 +3325,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     q_vec = np.asarray(query_embedding, dtype=np.float32)
     qdim = int(q_vec.shape[0])
     excluded_types = frozenset() if include_research else frozenset(bulk_ingest_event_types())
+    go_lane = _go_vector_rows(q_vec, limit, domain_key, excluded_types)
 
     def _scan_db(i: int) -> list:
         from . import history  # pylint: disable=import-outside-toplevel
@@ -3152,8 +3338,12 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             if not get_db_path(i).exists():
                 return db_rows
             conn = get_readonly_connection(i)
-            cache = _vector_cache_entry(i, conn)
-            scored = []  # (final_score, id)
+            # The Go front answers for a DB only when it names the same file
+            # this request resolves that DB to (a tenant's vault is another
+            # file under the same index); anything else is scored here.
+            delegated = go_lane is not None and go_lane[0].get(i) == str(get_db_path(i))
+            cache = None if delegated else _vector_cache_entry(i, conn)
+            scored = list(go_lane[1].get(i, ())) if delegated else []  # (final_score, id)
             if cache and cache["dim"] and cache["dim"] != qdim and len(cache["ids"]):
                 # A 384-d query against a 768-d DB (or the reverse) is a provider
                 # switch without a backfill. Say so once per DB rather than

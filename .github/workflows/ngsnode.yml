@@ -1,0 +1,34 @@
+name: ngsnode
+
+on:
+  push:
+    branches: [main]
+    paths: ["go/ngsnode/**", ".github/workflows/ngsnode.yml"]
+  pull_request:
+    paths: ["go/ngsnode/**", ".github/workflows/ngsnode.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: go/ngsnode
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go/ngsnode/go.mod
+          cache: false
+      - run: test -z "$(gofmt -l .)"
+        shell: bash
+      - run: go vet ./...
+      - run: go test -count=1 ./...
