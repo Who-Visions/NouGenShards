@@ -502,7 +502,9 @@ def cmd_auth(args):
             print(f"Error: Unknown provider '{args.provider}'.")
             return
 
-        keymaker.ingest_secret(key_map[provider], args.input)
+        if keymaker.ingest_secret(key_map[provider], args.input) is False:
+            print(f"Error: the {provider} key was empty; nothing was saved.")
+            return 1
         print(f"✅ API key for {provider} saved to vault.")
 
     elif args.action == "usage":
