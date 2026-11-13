@@ -261,3 +261,34 @@ def test_telemetry_readings_are_shared_within_the_ttl(monkeypatch):
     darwin_gate.get_memory_pressure_level()
     assert calls.count("sysctl") == 2
     darwin_gate.clear_telemetry_cache()
+
+
+def test_concurrent_misses_share_one_reading(monkeypatch):
+    """Codex review on #1046: parallel callers that all miss must coalesce onto one subprocess read."""
+    import threading
+    import time as _time
+    from nougen_shards import darwin_gate as dg
+    monkeypatch.setenv("NOUGEN_DARWIN_TELEMETRY_TTL_S", "5")
+    dg.clear_telemetry_cache()
+    calls = []
+
+    def slow_read():
+        calls.append(1)
+        _time.sleep(0.2)
+        return "reading"
+
+    start = threading.Barrier(8)
+    out = []
+
+    def worker():
+        start.wait()
+        out.append(dg._cached("concurrency-test", slow_read))
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert out == ["reading"] * 8
+    assert len(calls) == 1
+    dg.clear_telemetry_cache()

@@ -98,19 +98,38 @@ def _telemetry_ttl_s() -> float:
         return 2.0
 
 
+_KEY_LOCKS: dict = {}
+
+
+def _key_lock(key: str) -> threading.Lock:
+    with _TELEMETRY_LOCK:
+        return _KEY_LOCKS.setdefault(key, threading.Lock())
+
+
 def _cached(key: str, read):
+    """One reading per key per TTL. Concurrent misses on the same key wait for the one in-flight read
+    instead of each forking its own subprocess (Codex review on #1046); other keys are not blocked."""
     ttl = _telemetry_ttl_s()
     if ttl <= 0:
         return read()
-    now = time.monotonic()
-    with _TELEMETRY_LOCK:
+
+    def fresh():
         hit = _TELEMETRY_CACHE.get(key)
-        if hit is not None and now - hit[0] < ttl:
-            return hit[1]
-    value = read()
+        return hit if hit is not None and time.monotonic() - hit[0] < ttl else None
+
     with _TELEMETRY_LOCK:
-        _TELEMETRY_CACHE[key] = (time.monotonic(), value)
-    return value
+        hit = fresh()
+    if hit is not None:
+        return hit[1]
+    with _key_lock(key):
+        with _TELEMETRY_LOCK:
+            hit = fresh()  # another caller may have filled it while this one waited
+        if hit is not None:
+            return hit[1]
+        value = read()
+        with _TELEMETRY_LOCK:
+            _TELEMETRY_CACHE[key] = (time.monotonic(), value)
+        return value
 
 
 def clear_telemetry_cache() -> None:
