@@ -519,3 +519,37 @@ def test_search_falls_back_when_the_node_answers_an_unrecognised_body(monkeypatc
         assert cli_mod._search_via_node("q", 5, False) is None, body
     monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: Resp(json.dumps({"results": [{"id": 1}]}).encode()))
     assert cli_mod._search_via_node("q", 5, False)[0] == [{"id": 1}]
+
+
+def _node_must_not_be_called(monkeypatch):
+    from nougen_shards import cli as cli_mod, recall_hook
+    monkeypatch.setenv("NOUGEN_SEARCH_VIA_NODE", "1")
+    monkeypatch.setattr(recall_hook, "_node_token", lambda: "t")
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("the node must not be asked")))
+    monkeypatch.setattr(cli_mod.federation, "federated_retrieve",
+                        lambda *a, **k: [{"id": 5, "_db_index": 1, "title": "local", "content": "x"}])
+    return cli_mod
+
+
+def test_semantic_search_stays_local_even_when_the_embedding_is_unavailable(monkeypatch, capsys):
+    """Codex review on #1051: --semantic with no embedding client must not quietly become a node keyword search."""
+    import argparse
+    cli_mod = _node_must_not_be_called(monkeypatch)
+    monkeypatch.delenv("NOUGEN_VAULT_DIR", raising=False)
+    monkeypatch.setattr(cli_mod, "get_client", lambda prov: None)
+    args = argparse.Namespace(query="x", json=True, domain=None, dual=False, semantic=True,
+                              provider=None, fast=False, no_window=True, local=False, plain=False)
+    cli_mod.cmd_search(args)
+    assert json.loads(capsys.readouterr().out)[0]["id"] == 5
+
+
+def test_an_explicit_vault_dir_stays_local(monkeypatch, capsys, tmp_path):
+    """Connector review on #1051: the node searches its own vault, not the one NOUGEN_VAULT_DIR points at."""
+    import argparse
+    cli_mod = _node_must_not_be_called(monkeypatch)
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(tmp_path))
+    args = argparse.Namespace(query="x", json=True, domain=None, dual=False, semantic=False,
+                              provider=None, fast=False, no_window=True, local=False, plain=False)
+    cli_mod.cmd_search(args)
+    assert json.loads(capsys.readouterr().out)[0]["id"] == 5

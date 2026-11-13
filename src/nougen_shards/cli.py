@@ -1264,7 +1264,12 @@ def cmd_search(args):
     if getattr(args, 'fast', False):
         fast_token = shards.FAST_LOCAL.set(True)
     via_node = None
-    if embedding is None and not domain_key and not getattr(args, 'local', False):
+    # The node answers for its own vault, keyword path only. Stay in-process for an explicit --semantic
+    # (even when the embedding came back empty), a --domain, --local, or a vault chosen with
+    # NOUGEN_VAULT_DIR (Codex and connector reviews on #1051).
+    vault_override = bool(os.environ.get("NOUGEN_VAULT_DIR"))
+    if (embedding is None and not getattr(args, 'semantic', False) and not domain_key
+            and not getattr(args, 'local', False) and not vault_override):
         via_node = _search_via_node(args.query, 5, bool(getattr(args, 'fast', False)))
     try:
         if via_node is not None:
