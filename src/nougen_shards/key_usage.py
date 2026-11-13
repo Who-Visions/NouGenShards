@@ -323,10 +323,15 @@ def format_usage(key: str) -> str:
     if record is None:
         return (f"No usage record for {key}. Add one with key_usage.set_usage(); "
                 "do not guess the header.")
-    lines = [f"{key}: {record['provider']}"]
+    # Records written with set_usage() may be partial; print what is there.
+    lines = [f"{key}: {record.get('provider') or 'provider not recorded'}"]
     auth = record.get("auth") or {}
+    if isinstance(auth, str):  # free-form records describe auth in prose
+        lines.append(f"  auth:     {auth}")
+        auth = {}
     if auth.get("header"):
-        lines.append(f"  header:   {auth['header']}: {auth['scheme']}")
+        scheme = auth.get("scheme")
+        lines.append(f"  header:   {auth['header']}: {scheme}" if scheme else f"  header:   {auth['header']}")
     if auth.get("query"):
         lines.append(f"  query:    ?{auth['query']}=<key>")
     for name, value in (record.get("extra_headers") or {}).items():
@@ -334,11 +339,16 @@ def format_usage(key: str) -> str:
     if record.get("base_url"):
         lines.append(f"  base URL: {record['base_url']}")
     if record.get("mcp"):
-        lines.append(f"  MCP:      {record['mcp']['url']}  (type {record['mcp']['type']})")
+        mcp = record["mcp"]
+        lines.append(f"  MCP:      {mcp.get('url')}  (type {mcp.get('type', 'unknown')})")
     for doc in record.get("docs", []):
         lines.append(f"  docs:     {doc}")
     for note in record.get("notes", []):
         lines.append(f"  note:     {note}")
     if record.get("curl"):
         lines.append(f"  example:  {record['curl']}")
+    known = {"provider", "auth", "extra_headers", "base_url", "mcp", "docs", "notes", "curl", "key_name"}
+    for name, value in record.items():  # free-form fields (account, use, never, ...)
+        if name not in known and isinstance(value, (str, int, float)) and value != "":
+            lines.append(f"  {name + ':':<9} {value}")
     return "\n".join(lines)

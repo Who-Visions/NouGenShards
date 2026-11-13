@@ -46,10 +46,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import uuid
 import os
 import queue
 import socket
+import tempfile
 import threading
 import sys
 import time
@@ -234,17 +234,151 @@ def _maybe_wake(msg: dict, verdict: dict) -> dict:
 MESSAGE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 
 
+DEDUP_TTL_S = float(os.environ.get("NOUGEN_AGY_MSG_DEDUP_TTL_S", "21600") or 21600)
+SEEN_DIRNAME = ".seen"
+INFLIGHT_GRACE_S = float(os.environ.get("NOUGEN_AGY_MSG_INFLIGHT_GRACE_S", "5") or 5)
+
+
+def derive_message_key(msg: dict) -> str:
+    """A key taken from the event itself, so a retry of the same event has the same key.
+
+    Sender, target, thread and text identify the event. A fresh random key per
+    attempt is what lets a retry look like a new message, so none is generated.
+    The hex digest satisfies MESSAGE_ID_RE, so it is also the message id.
+    """
+    basis = json.dumps([str(msg.get("sender") or ""), str(msg.get("target") or ""),
+                        str(msg.get("in_reply_to") or ""), str(msg.get("type") or ""),
+                        str(msg.get("text") or "")],
+                       ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32]
+
+
 def assign_message_id(msg: dict) -> str:
     """Give every message the id cc-msg senders already get back.
 
     A sender-supplied id is kept when it is filename-safe (it rides in the
-    inbox file name); anything else is replaced, never trusted into a path.
+    inbox file name). Otherwise the id is derived from the event, never random
+    and never trusted into a path.
     """
     mid = str(msg.get("message_id") or "")
     if not MESSAGE_ID_RE.match(mid):
-        mid = uuid.uuid4().hex
+        mid = derive_message_key(msg)
     msg["message_id"] = mid
     return mid
+
+
+def seen_marker(key: str) -> Path:
+    """Resolve the dedupe marker for ``key`` inside the seen dir, refusing any escape.
+
+    Same barrier as ``inbox_path``: the name is reduced to its last component,
+    resolved against the seen root, and refused unless it lands under that root.
+    """
+    root = os.path.realpath(os.path.join(str(INBOX), SEEN_DIRNAME))
+    candidate = os.path.realpath(os.path.join(root, os.path.basename("{}.json".format(key))))
+    if not candidate.startswith(root + os.sep):
+        raise ValueError("refusing a dedupe marker outside the seen dir: {!r}".format(key))
+    return Path(candidate)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write to a unique temp file beside the target, then rename over it.
+
+    The temp name is unique per call (two handlers writing the shared STATE file
+    must not share one), and a crash leaves no partial target. On Windows a
+    rename onto a file another handler is replacing can briefly fail, so it is
+    retried a few times.
+    """
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix="." + path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        for attempt in range(8):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def claim_message(msg: dict) -> "tuple[bool, dict]":
+    """Set-if-absent on the message key: (True, {}) for the first copy, (False, seen) for a repeat.
+
+    The marker is created with O_EXCL, so two concurrent copies cannot both win.
+    A marker only counts as a completed delivery once it names the inbox file
+    (``note_delivery``). A marker still without a file is an unfinished claim:
+    a copy that finds one waits up to INFLIGHT_GRACE_S for the claimant to
+    finish, and if it never does the claim is taken over and the message is
+    delivered, so a crash between claim and write cannot swallow a retry.
+    A marker older than DEDUP_TTL_S is replaced, so an identical message sent
+    much later is delivered again. A sender who really wants a repeat sets
+    ``allow_duplicate``. If the claim cannot be settled after a few rounds the
+    message is delivered: losing a message is worse than a duplicate.
+    """
+    if msg.get("allow_duplicate") is True:
+        return True, {}
+    (INBOX / SEEN_DIRNAME).mkdir(parents=True, exist_ok=True)
+    marker = seen_marker(msg["message_id"])
+    for _ in range(4):
+        try:
+            fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                if time.time() - marker.stat().st_mtime >= DEDUP_TTL_S:
+                    marker.unlink()
+                    continue
+                seen = _read_marker(marker)
+                deadline = time.time() + INFLIGHT_GRACE_S
+                while seen is not None and not seen.get("file") and time.time() < deadline:
+                    time.sleep(0.05)
+                    seen = _read_marker(marker)
+                if seen is not None and seen.get("file"):
+                    return False, seen  # a completed delivery
+                if seen is not None:
+                    marker.unlink()  # unfinished past the grace: take the claim over
+            except FileNotFoundError:
+                pass  # released or taken over under us: claim again
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"message_id": msg["message_id"], "file": None}))
+        return True, {}
+    return True, {}
+
+
+def _read_marker(marker: Path) -> "dict | None":
+    """The marker's content, {} while it is still empty, None once it is gone."""
+    try:
+        return json.loads(marker.read_text(encoding="utf-8") or "{}")
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        return {}
+
+
+def release_claim(msg: dict) -> None:
+    """Drop an unfinished claim after a failed delivery so the sender's retry is delivered."""
+    marker = seen_marker(msg["message_id"])
+    seen = _read_marker(marker)
+    if seen is not None and not seen.get("file"):
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def note_delivery(msg: dict, path: Path) -> None:
+    """Record which inbox file carries this key, so a repeat can point at it."""
+    marker = seen_marker(msg["message_id"])
+    if marker.exists():
+        _atomic_write(marker, json.dumps({"message_id": msg["message_id"], "file": path.name,
+                                          "received_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}))
 
 
 def receipt_state(message_id: str) -> dict:
@@ -276,8 +410,8 @@ def record(msg: dict) -> Path:
     filename = "msg_{}_{}_{}.json".format(int(time.time() * 1000), msg["message_id"],
                                           safe_sender(msg.get("sender")))
     path = inbox_path(filename)
-    path.write_text(json.dumps(msg, indent=2), encoding="utf-8")
-    STATE.write_text(json.dumps(msg, indent=2), encoding="utf-8")
+    _atomic_write(path, json.dumps(msg, indent=2))
+    _atomic_write(STATE, json.dumps(msg, indent=2))
     PENDING.put(msg)
     stamp = format_log_time(time.time())
     print("\n[LIVE INCOMING MSG] ({}) from [{}]:\n   {}\n".format(
@@ -513,7 +647,21 @@ class Handler(BaseHTTPRequestHandler):
         msg.setdefault("timestamp", time.time())
         msg["target"] = msg.get("target") or NODE
         assign_message_id(msg)
-        path = record(msg)  # inbox write always happens — covers a session that's asleep
+        first, seen = claim_message(msg)
+        if not first:
+            # Same event again (a retry, or a sender that re-sends): acknowledge with
+            # the original delivery and do nothing else, so a retry is always safe.
+            self._send({"delivered": True, "duplicate": True, "method": "http", "node": NODE,
+                        "file": seen.get("file"), "message_id": msg["message_id"],
+                        "receipt": "/msg/{}".format(msg["message_id"]),
+                        "build": build_id(), "elevated": {"attempted": False, "skipped": "duplicate"}})
+            return
+        try:
+            path = record(msg)  # inbox write always happens — covers a session that's asleep
+        except Exception:
+            release_claim(msg)  # nothing was delivered, so the retry must not look like a repeat
+            raise
+        note_delivery(msg, path)
 
         elevated = {"attempted": False}
         if AUTH_TOKEN:  # opting into auth is opting into the elevated pathway
@@ -524,7 +672,8 @@ class Handler(BaseHTTPRequestHandler):
         # node runs is a rung toward choosing an exploit against a node it can
         # already reach — not a secret, but not free either. A checker holding
         # the token gets it cheaply; a scanner does not.
-        self._send({"delivered": True, "method": "http", "node": NODE, "file": path.name,
+        self._send({"delivered": True, "duplicate": False, "method": "http", "node": NODE,
+                    "file": path.name,
                     "message_id": msg["message_id"], "in_reply_to": msg.get("in_reply_to"),
                     "receipt": "/msg/{}".format(msg["message_id"]),
                     "build": build_id(),

@@ -104,8 +104,10 @@ def _keyring_get(ref: str, timeout: float = 1.5) -> Optional[str]:
     not pre-cached or if GUI prompts are disabled, skips cleanly without blocking.
     """
     _load_keyring_cache()
-    if ref in _KEYRING_CACHE:
+    if _KEYRING_CACHE.get(ref):
         return _KEYRING_CACHE[ref]
+    # A blank cached value is a failed write, not a secret: treat it as a miss so
+    # the probe chain keeps looking instead of handing callers an empty string.
 
     # Rule 0.2 & Zero Friction: If running in non-interactive/automation environment,
     # or if NOUGEN_DISABLE_KEYCHAIN_POPUP is set (defaulted to active on macOS),
@@ -601,7 +603,13 @@ def _export_to_csv():
 def ingest_secret(key: str, value: str):
     """
     Ingests a secret into the DB, exports to CSV, and redacts output.
+
+    A blank value is refused: storing it would overwrite a good secret with
+    nothing, and every later read would quietly come back empty.
     """
+    if value is None or not str(value).strip():
+        print(f"  [!] Refused: {key} has an empty value; nothing stored")
+        return False
     init_vault()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = sqlite3.connect(str(db_path()))

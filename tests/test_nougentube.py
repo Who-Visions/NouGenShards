@@ -247,3 +247,35 @@ def test_vtt_parser_strips_tags_and_dedupes():
     assert out.count("hello there") == 1            # rolling-caption dedupe
     assert "[01:05] general & kenobi" in out
     assert "<c>" not in out
+
+
+# ------------------------------------------- written by someone else mid-fetch
+
+@pytest.mark.parametrize("module", ["tool", "package"])
+def test_id_stored_by_another_node_during_fetch_is_not_written_twice(monkeypatch, module):
+    """2026-11-12: two nodes ingested one video at once (a connector call timed out with a 524 but its write
+    landed), because the gate only ran before the slow fetch. It must run again right before the write."""
+    from nougen_shards import tube as package_tube
+    target = tube if module == "tool" else package_tube
+    monkeypatch.setattr(target, "fetch_metadata", lambda u, v: _meta())
+    monkeypatch.setattr(target, "fetch_transcript", lambda v, u: ("[00:00] hello", "mock-tier"))
+    answers = iter([False, True])           # new at the first look, present by the second
+    monkeypatch.setattr(target, "dedupe_check", lambda vid: next(answers))
+
+    def _boom(*a, **k):
+        raise AssertionError("wrote despite the id appearing during the fetch")
+    monkeypatch.setattr(target, "grid_capture", _boom)
+    assert target.process_video(URL) == "skipped-duplicate"
+    assert not _all_rows()
+
+
+@pytest.mark.parametrize("module", ["tool", "package"])
+def test_dry_run_still_makes_one_gate_check_and_no_second(monkeypatch, module):
+    from nougen_shards import tube as package_tube
+    target = tube if module == "tool" else package_tube
+    monkeypatch.setattr(target, "fetch_metadata", lambda u, v: _meta())
+    monkeypatch.setattr(target, "fetch_transcript", lambda v, u: ("[00:00] hello", "mock-tier"))
+    calls = []
+    monkeypatch.setattr(target, "dedupe_check", lambda vid: calls.append(vid) or False)
+    assert target.process_video(URL, dry_run=True) == "captured"
+    assert len(calls) == 1

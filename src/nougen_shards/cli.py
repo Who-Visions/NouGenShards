@@ -502,7 +502,9 @@ def cmd_auth(args):
             print(f"Error: Unknown provider '{args.provider}'.")
             return
 
-        keymaker.ingest_secret(key_map[provider], args.input)
+        if keymaker.ingest_secret(key_map[provider], args.input) is False:
+            print(f"Error: the {provider} key was empty; nothing was saved.")
+            return 1
         print(f"✅ API key for {provider} saved to vault.")
 
     elif args.action == "usage":
@@ -974,7 +976,16 @@ def cmd_add(args):
     if success:
         print("✅ Shard captured!")
     else:
-        print("ℹ️ Shard already exists.")
+        print(_capture_failure_message(success))
+
+
+def _capture_failure_message(result):
+    """Say why nothing was written; "already exists" only for a real duplicate."""
+    reason = result.get("reason") if isinstance(result, dict) else None
+    if reason == "duplicate":
+        return "ℹ️ Shard already exists."
+    detail = (result.get("error") if isinstance(result, dict) else None) or reason or "unknown"
+    return f"❌ Shard not captured: {detail}"
 
 
 def cmd_get(args):
@@ -1756,7 +1767,7 @@ def cmd_ctx(args):
         if success:
             print(f"✅ Context event #{event['id']} promoted to durable memory.")
         else:
-            print("ℹ️ Shard already exists.")
+            print(_capture_failure_message(success))
     elif args.action == "web":
         if not args.input:
             print("Error: Usage: nougen ctx web <url> [--tags <label>]")
@@ -4080,6 +4091,32 @@ def _import_relay_main(registry):
     return relay_main
 
 
+def _relay_core_path(relay_main):
+    """core.py of the nougen_relay that was ACTUALLY imported (installed or registry src)."""
+    mod = sys.modules.get(getattr(relay_main, "__module__", "") or "")
+    return Path(mod.__file__).parent / "core.py" if getattr(mod, "__file__", None) else None
+
+
+def _with_create_publish(forwarded, registry, core_py=None):
+    """`nougen relay create` always targets the registry, so publish the leg.
+
+    A leg left untracked is invisible to every other node. Older relay
+    checkouts have no --publish flag, so it is only added when the
+    relay implementation that will run knows it (`core_py`, which
+    cmd_relay takes from the imported module); opt out with --no-publish.
+    """
+    if forwarded[:1] != ["create"] or "--publish" in forwarded:
+        return forwarded
+    if "--no-publish" in forwarded:
+        return [a for a in forwarded if a != "--no-publish"]
+    core_py = Path(core_py) if core_py else Path(registry) / "src" / "nougen_relay" / "core.py"
+    try:
+        supported = '"--publish"' in core_py.read_text(encoding="utf-8")
+    except OSError:
+        supported = False
+    return [*forwarded, "--publish"] if supported else forwarded
+
+
 def cmd_relay(args):
     """Forward to the NouGenRelay CLI inside the fleet registry clone."""
     registry = find_relay_registry()
@@ -4097,6 +4134,7 @@ def cmd_relay(args):
         forwarded = forwarded[1:]
     prev_cwd = os.getcwd()
     prev_argv = sys.argv
+    forwarded = _with_create_publish(forwarded, registry, _relay_core_path(relay_main))
     os.chdir(registry)
     sys.argv = ["relay", *forwarded]
     action_mode = os.environ.get("NOUGEN_CONFLICT_ACTION", "").strip().lower() or "report"
