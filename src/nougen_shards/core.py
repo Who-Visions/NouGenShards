@@ -2897,7 +2897,7 @@ def _save_vector_sidecar(i: int, entry: dict) -> None:
         with open(tmp_meta, "w", encoding="utf-8") as fh:
             json.dump({"v": 2, "path": entry["path"], "dim": entry["dim"],
                        "n_embedded": entry["n_embedded"], "max_id": entry["max_id"],
-                       "sha256": hashlib.sha256(matrix.tobytes()).hexdigest(),
+                       "sha256": _matrix_sha256(matrix),
                        "ids": entry["ids"], "ts": entry["ts"],
                        "util": [float(x) for x in entry["util"]],
                        "dom": entry["dom"], "etype": entry["etype"],
@@ -2921,6 +2921,41 @@ def _save_vector_sidecar(i: int, entry: dict) -> None:
                 pass
 
 
+#: Rows hashed per step by _matrix_sha256 (~12 MB at 768 dims).
+_MATRIX_HASH_CHUNK_ROWS = 4096
+
+
+def _matrix_sha256(matrix) -> str:
+    """sha256 of the matrix's float32 bytes, hashed in row chunks.
+
+    ``matrix.tobytes()`` holds a second full copy of the matrix while it is
+    hashed (hundreds of MB per grid DB, on every load and every save). The
+    digest is identical: sha256 over the chunks in order is sha256 over the
+    concatenation.
+    """
+    digest = hashlib.sha256()
+    for start in range(0, matrix.shape[0], _MATRIX_HASH_CHUNK_ROWS):
+        digest.update(np.ascontiguousarray(
+            matrix[start:start + _MATRIX_HASH_CHUNK_ROWS], dtype=np.float32).tobytes())
+    return digest.hexdigest()
+
+
+def _vector_sidecar_mmap() -> bool:
+    """Whether a saved matrix is memory-mapped instead of read into the heap.
+
+    Mapped pages are file-backed, so the OS can drop them under memory
+    pressure and page them back in; a heap copy can only go to swap. Off on
+    Windows, where the mapped file could not be replaced by the next save.
+    NOUGEN_VECTOR_SIDECAR_MMAP=0 turns it off, =1 forces it on.
+    """
+    raw = os.environ.get("NOUGEN_VECTOR_SIDECAR_MMAP", "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    return os.name != "nt"
+
+
 def _load_vector_sidecar(i: int, path: str, conn=None) -> Optional[dict]:
     """Return DB i's saved matrix as a stale entry (sig=None), or None to rebuild.
 
@@ -2936,13 +2971,13 @@ def _load_vector_sidecar(i: int, path: str, conn=None) -> Optional[dict]:
     try:
         with open(paths[1], encoding="utf-8") as fh:
             meta = json.load(fh)
-        matrix = np.load(paths[0])
+        matrix = np.load(paths[0], mmap_mode="r" if _vector_sidecar_mmap() else None)
         n = len(meta["ids"])
         if meta.get("v") != 2 or os.path.normcase(meta["path"]) != os.path.normcase(path) or matrix.shape != (n, meta["dim"]) \
                 or not (len(meta["ts"]) == len(meta["util"]) == len(meta["dom"]) == len(meta["etype"]) == n):
             logger.info("grid DB %s: vector cache on disk does not match this build; rebuilding", i)
             return None
-        if hashlib.sha256(np.ascontiguousarray(matrix, dtype=np.float32).tobytes()).hexdigest() != meta.get("sha256"):
+        if _matrix_sha256(matrix) != meta.get("sha256"):
             logger.warning("grid DB %s: vector cache on disk failed its checksum; rebuilding", i)
             return None
         legacy = [(r[0], r[1], r[2], r[3], r[4],
