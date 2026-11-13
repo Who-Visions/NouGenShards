@@ -7,6 +7,17 @@ import sys
 import json
 import numpy as np
 import nougen_shards.cli as cli
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_live_node_search(monkeypatch):
+    """`nougen search` asks the warm NGS node first; no test here may reach the host's live node.
+
+    Kept in this file (not conftest.py) so this change shares no file with #1047.
+    The node-path tests below opt back in.
+    """
+    monkeypatch.setenv("NOUGEN_SEARCH_VIA_NODE", "0")
 
 class TestCLI(unittest.TestCase):
     """Test suite for CLI commands."""
@@ -403,3 +414,57 @@ if __name__ == '__main__':
     unittest.main()
 
 
+
+
+def test_search_uses_the_warm_node_and_reads_its_coverage_trailer(monkeypatch, capsys):
+    """A cold CLI process overran the 20 s deadline on phoebus (2026-11-12); the warm node answers first."""
+    import argparse
+    import io
+    from nougen_shards import cli as cli_mod, recall_hook
+    monkeypatch.setenv("NOUGEN_SEARCH_VIA_NODE", "1")
+    monkeypatch.setattr(recall_hook, "_node_token", lambda: "t")
+    sent = {}
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        sent["url"], sent["body"], sent["token"] = req.full_url, json.loads(req.data), req.headers.get("X-ngs-token")
+        rows = [{"id": 7, "_db_index": 2, "title": "probe", "content": "loopprobe row", "final_score": 1.0},
+                {"id": "federation_meta", "content": 'federation: {"lanes_timed_out": ["cloud"]}'}]
+        return Resp(json.dumps(rows).encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(cli_mod.federation, "federated_retrieve",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("in-process path must not run")))
+    args = argparse.Namespace(query="loopprobe", json=True, domain=None, dual=False, semantic=False,
+                              provider=None, fast=False, no_window=True, local=False, plain=False)
+    cli_mod.cmd_search(args)
+    out = capsys.readouterr()
+    assert sent["url"].endswith("/search") and sent["body"]["query"] == "loopprobe" and sent["token"] == "t"
+    assert json.loads(out.out)[0]["id"] == 7
+    assert "INCOMPLETE" in out.err and "cloud" in out.err
+
+
+def test_search_falls_back_in_process_when_the_node_is_down(monkeypatch, capsys):
+    import argparse
+    from nougen_shards import cli as cli_mod, recall_hook
+    monkeypatch.setenv("NOUGEN_SEARCH_VIA_NODE", "1")
+    monkeypatch.setattr(recall_hook, "_node_token", lambda: "t")
+
+    def down(req, timeout=None):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", down)
+    monkeypatch.setattr(cli_mod.federation, "federated_retrieve",
+                        lambda *a, **k: [{"id": 9, "_db_index": 1, "title": "local", "content": "x"}])
+    args = argparse.Namespace(query="x", json=True, domain=None, dual=False, semantic=False,
+                              provider=None, fast=False, no_window=True, local=False, plain=False)
+    cli_mod.cmd_search(args)
+    out = capsys.readouterr()
+    assert json.loads(out.out)[0]["id"] == 9
+    assert "searching in-process" in out.err

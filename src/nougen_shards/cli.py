@@ -1163,6 +1163,53 @@ def cmd_window(args):
         print(_window.format_packet(res))
 
 
+def _search_via_node(query: str, limit: int, fast: bool):
+    """Ask the always-running NGS node to run the search; None means "do it here".
+
+    A fresh CLI process starts with a cold vector cache: measured on phoebus
+    2026-11-12, the cold matrix build alone took 18.5 s against the 9-DB grid, so
+    `nougen search` overran the 20 s recall deadline and printed "INCOMPLETE" for
+    shards written seconds earlier. The node keeps that cache warm and runs the
+    same federated_retrieve, so its answer is the same answer, minus the cold
+    start. Any failure (no token, node down, timeout, bad body) returns None and
+    the caller searches in-process exactly as before.
+
+    Returns (rows, coverage) where coverage is the node's trailer, if any.
+    """
+    if os.environ.get("NOUGEN_SEARCH_VIA_NODE", "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    import urllib.request  # pylint: disable=import-outside-toplevel
+    from . import recall_hook  # pylint: disable=import-outside-toplevel
+    try:
+        token = recall_hook._node_token()  # pylint: disable=protected-access
+        if not token:
+            return None
+        timeout = float(os.environ.get("NOUGEN_SEARCH_NODE_TIMEOUT_S", "25"))
+        url = os.environ.get("NOUGEN_NODE_URL", recall_hook.DEFAULT_NODE_URL).rstrip("/") + "/search"
+        body = json.dumps({"query": query, "limit": limit, "fast": bool(fast)}).encode("utf-8")
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json",
+                                                               "X-NGS-Token": token})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.load(resp)
+    except Exception as exc:  # node unavailable: the in-process path is the fallback
+        print(f"[i] warm node unavailable ({type(exc).__name__}); searching in-process",
+              file=sys.stderr)
+        return None
+    rows = data if isinstance(data, list) else (data.get("results") or [] if isinstance(data, dict) else [])
+    coverage: dict = {}
+    kept = []
+    for row in rows:
+        if isinstance(row, dict) and row.get("id") == "federation_meta":
+            text = str(row.get("content") or "")
+            try:
+                coverage = json.loads(text[text.index("{"):])
+            except (ValueError, TypeError):
+                coverage = {"errored": [{"store": "node", "error": text[:200]}]}
+        elif isinstance(row, dict):
+            kept.append(row)
+    return kept, coverage
+
+
 def cmd_search(args):
     """Search for shards across local substrate and external DBs."""
     domain_key = getattr(args, 'domain', None)
@@ -1207,9 +1254,15 @@ def cmd_search(args):
     fast_token = None
     if getattr(args, 'fast', False):
         fast_token = shards.FAST_LOCAL.set(True)
+    via_node = None
+    if embedding is None and not domain_key and not getattr(args, 'local', False):
+        via_node = _search_via_node(args.query, 5, bool(getattr(args, 'fast', False)))
     try:
-        results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding,
-                                                domain_key=domain_key, sweep_report=sweep_report)
+        if via_node is not None:
+            results, sweep_report = via_node
+        else:
+            results = federation.federated_retrieve(args.query, limit=5, query_embedding=embedding,
+                                                    domain_key=domain_key, sweep_report=sweep_report)
     finally:
         if fast_token is not None:
             shards.FAST_LOCAL.reset(fast_token)
@@ -2358,6 +2411,8 @@ def get_parser():
     p_search.add_argument("--dual", action="store_true", help="Use dual-system memory recall (episodic + semantic rules)")
     p_search.add_argument("--fast", action="store_true", help="Ultra low-latency fast local keyword search (skips remote/external lanes)")
     p_search.add_argument("--no-window", action="store_true", help="Treat a time-looking query ('march') as plain text")
+    p_search.add_argument("--local", action="store_true",
+                          help="Search in this process only; skip the warm NGS node (NOUGEN_SEARCH_VIA_NODE=0 does the same)")
 
     p_window = subparsers.add_parser("window", help="Browse the substrate by time ('march', 'last week', 'yesterday 7pm')")
     p_window.add_argument("when", help="Time phrase: month, date, year, quarter, clock time, 'last N minutes/hours/days', range")
