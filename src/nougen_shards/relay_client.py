@@ -106,6 +106,7 @@ def ca_bundle(env: Optional[dict] = None) -> Optional[str]:
 
 def tls_context(env: Optional[dict] = None) -> ssl.SSLContext:
     ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     extra = ca_bundle(env)
     if extra:
         ctx.load_verify_locations(cafile=extra)  # added to, not instead of, the system store
