@@ -18,6 +18,7 @@ never diverted by any command here.
 | CHARGE | do the work: hold context, gather evidence, verify locally before bouncing the baton |
 | LOOT | source extraction primitive: `LOOT <source>` inspects authorized/public sources, recovers structured assets/content, preserves provenance, and returns an inventory. Evidence-gated |
 | INTELLIGIZE | natural speech/shorthand -> memory+context+canon resolution -> executable intent -> reasoning/action. User does not craft prompts when context is sufficient ("I don't send prompts anymore. I intelligize my words.") |
+| IDEMPOTENT | doing it twice lands the same as doing it once. A repeat sees the work already done and stands down ("already have it"); it never doubles a shard, a leg, a message or a charge. Spoken: "make it MAX". Move: MAX ACTIVATION |
 
 ## Moves (named commands)
 
@@ -33,6 +34,7 @@ never diverted by any command here.
 | KILLSTREAK | inherited state, repeat until stop | stateful multi-target loop: acquire unresolved valid target -> isolate safely -> test -> HEADSHOT -> verify -> score -> acquire next. INHERITS unfinished combat state, so the operator never restates the bug, machine, hypothesis, test or desired outcome. Stops on: blocker, quota threshold, unsafe mutation boundary, or no valid targets remain |
 | ZANGIEF SPD | full circle | one full relay-direction circle through a scope |
 | 720 | double circle | two full verification circles before any verdict — the anti-single-source rule |
+| MAX ACTIVATION | A+B+C (King of Fighters) | the IDEMPOTENT move. In KOF, A+B+C puts you in MAX mode; pressing it again while you are already in MAX changes nothing, no second meter, no double effect. Fleet meaning: every write is safe to retry. Before acting, check whether the result already exists (a content key, a `tube:<id>` gate, a leg id, an already-filed file) and stand down if it does. Proof: retry the same call and show exactly one result. Live examples: NouGenTube ingest gate (NouGenShards #1053/#1054), NouGen News relay outbox (fleet-mcp #80), nougenmsg delivery receipts (#1055) |
 
 ## 10-hit combo macros
 
