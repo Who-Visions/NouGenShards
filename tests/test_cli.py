@@ -468,3 +468,33 @@ def test_search_falls_back_in_process_when_the_node_is_down(monkeypatch, capsys)
     out = capsys.readouterr()
     assert json.loads(out.out)[0]["id"] == 9
     assert "searching in-process" in out.err
+
+
+def test_search_reads_the_nodes_real_trailer_contract(monkeypatch):
+    """Codex review on #1051: test against the node's own trailer (app._deadline_trailer), not a hand-made row,
+    and accept the FEDERATION_STATUS event_type the /search contract test pins, even without the id."""
+    import io
+    import importlib.util
+    from pathlib import Path
+    from nougen_shards import cli as cli_mod, recall_hook
+    spec = importlib.util.spec_from_file_location("node_app_for_trailer", Path(__file__).resolve().parents[1] / "app.py")
+    node_app = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(node_app)
+    real = node_app._deadline_trailer({"lanes_timed_out": ["vaults"], "lanes": {"vaults": {"status": "timeout"}}})
+    no_id = {k: v for k, v in real.items() if k != "id"}
+    monkeypatch.setenv("NOUGEN_SEARCH_VIA_NODE", "1")
+    monkeypatch.setattr(recall_hook, "_node_token", lambda: "t")
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    for trailer in (real, no_id):
+        rows = [{"id": 3, "_db_index": 1, "title": "hit", "content": "c", "final_score": 1.0}, trailer]
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None, rows=rows: Resp(json.dumps(rows).encode()))
+        kept, coverage = cli_mod._search_via_node("q", 5, False)
+        assert [r["id"] for r in kept] == [3]
+        assert coverage.get("complete") is False and coverage.get("lanes_timed_out") == ["vaults"]

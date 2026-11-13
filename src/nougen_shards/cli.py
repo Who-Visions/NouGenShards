@@ -1199,7 +1199,8 @@ def _search_via_node(query: str, limit: int, fast: bool):
     coverage: dict = {}
     kept = []
     for row in rows:
-        if isinstance(row, dict) and row.get("id") == "federation_meta":
+        # The node marks its coverage trailer both ways; the /search contract test pins event_type.
+        if isinstance(row, dict) and (row.get("event_type") == "FEDERATION_STATUS" or row.get("id") == "federation_meta"):
             text = str(row.get("content") or "")
             try:
                 coverage = json.loads(text[text.index("{"):])
