@@ -14,7 +14,7 @@ The open/public fleet modules synchronized by this engine include:
 |---|---|---|
 | **NouGenShards** | `https://github.com/Who-Visions/NouGenShards.git` | Primary memory substrate, 9-node SQLite cluster, FTS5 recall, and CLI. |
 | **nougen-relay** | `https://github.com/Who-Visions/nougen-relay.git` | Relay orchestration, multi-machine handoffs, and baton passing. |
-| **NouGenTracker** | `https://github.com/WhoVisions/NouGenTracker.git` | Fleet-wide token usage tracking, quota governance, and cost analytics. |
+| **NouGenTracker** | `https://github.com/Who-Visions/NouGenTracker.git` | Fleet-wide token usage tracking, quota governance, and cost analytics. |
 | **nougenmsg** | Included in NouGenShards (`src/nougen_shards/nougenmsg.py`) | Real-time agent messaging bus, socket bridge, and node listener. |
 | **nougenstocks** | `https://github.com/Who-Visions/nougenstocks.git` | Market analytics and financial intelligence workspace. |
 | **NouGenNews** | `https://github.com/Who-Visions/NouGenNews.git` | Real-time news pipeline and RSS intelligence ingestion. |
