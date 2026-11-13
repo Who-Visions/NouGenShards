@@ -216,3 +216,20 @@ def test_dpapi_row_off_windows_does_not_break_ingest(km):
         km._unprotect(blob)
     ledger = open(km.CSV_PATH, encoding="utf-8").read()
     assert "WINDOWS_ROW" in ledger and "unreadable" in ledger
+
+
+def test_blank_ingest_is_refused_and_keeps_the_good_value(km):
+    km.ingest_secret("NGS_TEST_TOKEN", "good-value-123")
+    assert km.ingest_secret("NGS_TEST_TOKEN", "   ") is False
+    assert km.ingest_secret("NGS_TEST_TOKEN", "") is False
+    assert km._read_secret_row(km.db_path(), "NGS_TEST_TOKEN") == "good-value-123"
+
+
+def test_blank_keyring_cache_entry_is_a_miss(km, monkeypatch):
+    monkeypatch.setenv("NOUGEN_DISABLE_KEYCHAIN_POPUP", "1")
+    km._KEYRING_CACHE.clear()
+    km._KEYRING_CACHE["SOME_REF"] = ""
+    km._KEYRING_CACHE["OTHER_REF"] = "cached"
+    assert km._keyring_get("SOME_REF") is None
+    assert km._keyring_get("OTHER_REF") == "cached"
+    km._KEYRING_CACHE.clear()
