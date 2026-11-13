@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
@@ -303,4 +304,95 @@ func TestDecayMatchesPython(t *testing.T) {
 		}
 	}
 	t.Logf("%d timestamps compared, %d differ", n, bad)
+}
+
+func TestSaveFoldsTheTailIntoTheSidecar(t *testing.T) {
+	old := sidecarResaveRows
+	sidecarResaveRows = 2
+	defer func() { sidecarResaveRows = old }()
+	rows := append(baseRows(), testRow{5, "2026-11-13T00:00:00Z", 1.0, "global", "knowledge", []byte("[0.5,0,0,0,0,0,0,0]")})
+	g, ix := newGrid(t, rows, 5)
+	req := retrieveRequest{Embedding: query(), Limit: 10, Now: testNowRFC}
+	g.exec("DELETE FROM shards WHERE id = 2") // a saved row goes
+	g.insert(testRow{6, "2026-11-13T00:00:00Z", 1.0, "ops", "note", axis(0, 0.95)})
+	before := ix.retrieve(req) // one tail row: below the threshold, nothing written
+	base := filepath.Join(g.vault, ".vector-cache", fmt.Sprintf("db%d-%016x", 1, 1))
+	if st, _ := os.Stat(base + ".npy"); st.Size() != 128+4*8*4 {
+		t.Fatalf("saved too early: %d bytes", st.Size())
+	}
+	g.insert(testRow{7, "", 0.5, "global", "knowledge", axis(0, 0.6)})
+	g.insert(testRow{8, "2026-11-13T00:00:00Z", 1.0, "global", "knowledge", []byte("[0.7,0,0,0,0,0,0,0]")}) // legacy, tail
+	want := ix.retrieve(req)                                                                                // tail is now 2 vectors + 1 legacy: saved after scoring
+	if got := idsOf(want.Rows); got != "1 6 8 3 5 7 4" {
+		t.Fatalf("order before reload = %s (first pass %s)", got, idsOf(before.Rows))
+	}
+	var meta struct {
+		V         int                 `json:"v"`
+		Path      string              `json:"path"`
+		Dim       int                 `json:"dim"`
+		NEmbedded int                 `json:"n_embedded"`
+		MaxID     int64               `json:"max_id"`
+		SHA256    string              `json:"sha256"`
+		IDs       []int64             `json:"ids"`
+		Util      []float64           `json:"util"`
+		EType     []string            `json:"etype"`
+		Legacy    [][]json.RawMessage `json:"legacy"`
+	}
+	raw, _ := os.ReadFile(base + ".json")
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(meta.IDs) != "[1 3 4 6 7]" || meta.MaxID != 8 || meta.NEmbedded != 7 || meta.V != 2 ||
+		meta.Dim != 8 || meta.Path != g.path || len(meta.Legacy) != 2 || meta.EType[3] != "NOTE" {
+		t.Fatalf("metadata = %+v", meta)
+	}
+	npy, _ := os.ReadFile(base + ".npy")
+	off, n, dim, err := parseNpyHeader(npy)
+	if err != nil || n != 5 || dim != 8 || off%64 != 0 {
+		t.Fatalf("npy header: off=%d rows=%d dim=%d err=%v", off, n, dim, err)
+	}
+	if sum := sha256.Sum256(npy[off:]); hex.EncodeToString(sum[:]) != meta.SHA256 {
+		t.Fatal("sha256 in the metadata is not the matrix's")
+	}
+	if _, err := os.Stat(base + ".npy.lock"); !os.IsNotExist(err) {
+		t.Fatal("save lock left behind")
+	}
+	// The next refresh maps the new pair; the tail is empty and ranking is unchanged.
+	if errs := ix.refresh(); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	after := ix.retrieve(req)
+	if idsOf(after.Rows) != idsOf(want.Rows) || len(after.Fallback) != 0 {
+		t.Fatalf("after reload = %s fallback=%v", idsOf(after.Rows), after.Fallback)
+	}
+	for i := range want.Rows {
+		if math.Abs(after.Rows[i].FinalScore-want.Rows[i].FinalScore) > 1e-12 {
+			t.Fatalf("score of %d changed across the save", want.Rows[i].ID)
+		}
+	}
+	if st := stateFor(1); len(st.tail.ids)+len(st.tail.legacy) != 0 || st.nDead != 0 {
+		t.Fatalf("tail=%d legacy=%d dead=%d after reload", len(st.tail.ids), len(st.tail.legacy), st.nDead)
+	}
+}
+
+func TestSaveSkipsWhenAnotherWriterHoldsTheLock(t *testing.T) {
+	old := sidecarResaveRows
+	sidecarResaveRows = 1
+	defer func() { sidecarResaveRows = old }()
+	g, ix := newGrid(t, baseRows(), 4)
+	base := filepath.Join(g.vault, ".vector-cache", fmt.Sprintf("db%d-%016x", 1, 1))
+	if err := os.WriteFile(base+".npy.lock", []byte("999"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g.insert(testRow{5, "2026-11-13T00:00:00Z", 1.0, "global", "knowledge", axis(0, 0.95)})
+	res := ix.retrieve(retrieveRequest{Embedding: query(), Limit: 10, Now: testNowRFC})
+	if got := idsOf(res.Rows); got != "1 5 2 3 4" {
+		t.Fatalf("order = %s", got)
+	}
+	if st, _ := os.Stat(base + ".npy"); st.Size() != 128+4*8*4 {
+		t.Fatal("wrote under another writer's lock")
+	}
+	if _, err := os.Stat(base + ".npy.lock"); err != nil {
+		t.Fatal("removed another writer's lock")
+	}
 }

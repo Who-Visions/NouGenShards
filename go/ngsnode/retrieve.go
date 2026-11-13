@@ -198,6 +198,9 @@ type retrieveState struct {
 	nDead      int
 	baseLegacy []legacyRow
 	fallback   bool
+	nEmbedded  int    // embedded rows in the DB at sig
+	dbMaxID    int64  // highest embedded id in the DB at sig
+	savedSig   string // sig a sidecar save was last attempted at
 }
 
 var retrieveStates = struct {
@@ -260,6 +263,7 @@ func (st *retrieveState) refresh(m *dbMatrix) error {
 		// Field by field: st.mu is held by the caller and must not be copied over.
 		st.key, st.meta, st.sig = key, meta, ""
 		st.tail, st.dead, st.nDead, st.baseLegacy, st.fallback = tailRows{}, nil, 0, nil, false
+		st.savedSig = ""
 	}
 	sig := dbWriteSignature(st.meta.path)
 	if sig == st.sig {
@@ -308,6 +312,7 @@ func (st *retrieveState) refresh(m *dbMatrix) error {
 		fallback = m.rows-nDead+len(baseLegacy)+len(tail.ids)+len(tail.legacy) != nEmbedded
 	}
 	st.tail, st.dead, st.nDead, st.baseLegacy, st.fallback, st.sig = tail, dead, nDead, baseLegacy, fallback, sig
+	st.nEmbedded, st.dbMaxID = nEmbedded, maxID
 	return nil
 }
 
@@ -552,6 +557,9 @@ func (ix *vectorIndex) retrieve(req retrieveRequest) retrieveResult {
 				}
 			default:
 				rows = scoreDB(m, st, req.Embedding, limit, req.DomainKey, excluded, now)
+			}
+			if err == nil && st.needsSave() {
+				st.save(m)
 			}
 			mu.Lock()
 			*outcome = append(*outcome, m.db)
