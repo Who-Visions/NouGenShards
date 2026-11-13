@@ -1,0 +1,26 @@
+# Stages for ~/.nougen/bin/local_gate.sh: one shell command per line, run from
+# the repo root. They mirror .github/workflows/ci.yml, so a green local gate
+# and a green CI run mean the same thing.
+#
+# Without this file the gate guesses: a bare "ruff check ." (fails on files
+# CI never lints), a serial pytest (48 minutes on phoebus, past the gate's
+# 15-minute stage limit), and "npm test" (which is "python -m pytest tests",
+# and there is no "python" on PATH on the Macs).
+#
+# The interpreter is .venv/bin/python when the checkout has one, else python3.
+# PYTHONPATH puts THIS checkout's src first: an editable install points at the
+# main clone, and the gate must test the code in front of it.
+#
+# Do not put a hash character inside a command: the gate cuts each line there.
+
+PY=python3; [ -x .venv/bin/python ] && PY=.venv/bin/python; PYTHONPATH=$PWD/src $PY -m ruff check src tests
+PY=python3; [ -x .venv/bin/python ] && PY=.venv/bin/python; PYTHONPATH=$PWD/src $PY -m ruff check tools --select F,E722
+
+# pytest in parallel when pytest-xdist is importable (under 5 minutes on
+# phoebus), serially otherwise. Never point --basetemp inside a dot-directory:
+# the scanner tests treat hidden paths as out of bounds and fail.
+PY=python3; [ -x .venv/bin/python ] && PY=.venv/bin/python; W=""; $PY -c "import xdist" 2>/dev/null && W="-n 4"; PYTHONPATH=$PWD/src $PY -m pytest tests -q -p no:cacheprovider ${=W}
+
+# Go modules, each only where it exists in this checkout.
+[ ! -f go/ngsnode/go.mod ] || (cd go/ngsnode && test -z "$(gofmt -l .)" && go vet ./... && go test -count=1 ./...)
+[ ! -f tools/nougen-supervisor/go.mod ] || (cd tools/nougen-supervisor && test -z "$(gofmt -l .)" && go vet ./... && go test -count=1 ./...)
