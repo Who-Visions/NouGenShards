@@ -60,6 +60,12 @@ def _fake_dpapi_call(func_name, data):
 
 
 @pytest.fixture(autouse=True)
+def isolated_vector_sidecar(tmp_path_factory, monkeypatch):
+    """Vector matrices a test builds must never land in the real ~/.nougen/cache."""
+    monkeypatch.setenv("NOUGEN_VECTOR_SIDECAR_DIR", str(tmp_path_factory.mktemp("vector-sidecar")))
+
+
+@pytest.fixture(autouse=True)
 def dpapi_stand_in(monkeypatch):
     """Returns ``apply(module)`` so tests that reload keymaker can re-patch it."""
     def apply(module):
