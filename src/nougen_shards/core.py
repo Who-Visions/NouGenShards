@@ -2745,7 +2745,7 @@ def _vector_sidecar_paths(i: int, path: str):
         return None
     base = os.environ.get("NOUGEN_VECTOR_SIDECAR_DIR") or os.path.join(
         os.path.expanduser("~"), ".nougen", "cache", "vector")
-    key = hashlib.sha256(os.path.abspath(path).encode("utf-8")).hexdigest()[:16]
+    key = hashlib.sha256(os.path.normcase(os.path.abspath(path)).encode("utf-8")).hexdigest()[:16]
     stem = os.path.join(base, f"db{i}-{key}")
     return stem + ".npy", stem + ".json"
 
@@ -2779,9 +2779,18 @@ def _acquire_sidecar_lock(lock_path: str) -> bool:
 def _save_vector_sidecar(i: int, entry: dict) -> None:
     """Best effort: a failed or skipped save only costs the next restart a rebuild."""
     paths = _vector_sidecar_paths(i, entry["path"])
-    if paths is None or not len(entry["ids"]):
+    if paths is None:
         return
     npy, meta = paths
+    if not len(entry["ids"]) and not entry["legacy"]:
+        # Nothing embedded any more: drop the old copy rather than reload and
+        # prune it to empty on every restart.
+        for stale in (meta, npy):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
+        return
     lock_path = npy + ".lock"
     try:
         os.makedirs(os.path.dirname(npy), exist_ok=True)
@@ -2839,7 +2848,7 @@ def _load_vector_sidecar(i: int, path: str, conn=None) -> Optional[dict]:
             meta = json.load(fh)
         matrix = np.load(paths[0])
         n = len(meta["ids"])
-        if meta.get("v") != 2 or meta["path"] != path or matrix.shape != (n, meta["dim"]) \
+        if meta.get("v") != 2 or os.path.normcase(meta["path"]) != os.path.normcase(path) or matrix.shape != (n, meta["dim"]) \
                 or not (len(meta["ts"]) == len(meta["util"]) == len(meta["dom"]) == len(meta["etype"]) == n):
             logger.info("grid DB %s: vector cache on disk does not match this build; rebuilding", i)
             return None
@@ -2973,14 +2982,19 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
                 "ids": ids, "ts": ts, "util": np.asarray(util, dtype=np.float32),
                 "dom": dom, "etype": etype, "matrix": matrix, "legacy": legacy,
             }
+        # Rows already on disk carry over from the entry this refresh grew from;
+        # a full build starts from zero and is always saved.
+        fresh["saved_n"] = entry.get("saved_n", 0) if (entry is not None and since_id) else 0
         _VECTOR_CACHE[i] = fresh
-        if since_id == 0 or len(fresh["ids"]) - fresh.get("saved_n", 0) >= _VECTOR_SIDECAR_RESAVE_ROWS:
-            _save_vector_sidecar(i, fresh)
-        else:
-            fresh["saved_n"] = entry.get("saved_n", 0) if entry else 0
-        return fresh
+        save_now = since_id == 0 or len(fresh["ids"]) - fresh["saved_n"] >= _VECTOR_SIDECAR_RESAVE_ROWS
     finally:
         lock.release()
+    # Outside the DB lock: a ~100 MB write must not make concurrent recalls of
+    # this DB wait past NOUGEN_VECTOR_CACHE_WAIT_S and fall back to keyword-only.
+    # `fresh` is never mutated after publication except its saved_n counter.
+    if save_now:
+        _save_vector_sidecar(i, fresh)
+    return fresh
 
 
 #: (db_index, stored_dim, query_dim) triples already warned about this process.

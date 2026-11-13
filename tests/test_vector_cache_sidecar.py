@@ -224,3 +224,49 @@ def test_two_processes_saving_at_once_leave_a_valid_pair(tmp_path, monkeypatch):
     assert got is not None and got["matrix"].shape == (2000, 8)  # checksum matched its own metadata
     leftovers = [p.name for p in (tmp_path / "vec").iterdir() if p.suffix not in (".npy", ".json")]
     assert leftovers == []
+
+
+def test_small_appends_do_not_resave_every_time(db, monkeypatch):
+    conn, sig, _ = db
+    saves = []
+    real = core._save_vector_sidecar
+    monkeypatch.setattr(core, "_save_vector_sidecar", lambda i, e: (saves.append(len(e["ids"])), real(i, e)))
+    monkeypatch.setattr(core, "_VECTOR_SIDECAR_RESAVE_ROWS", 3)
+    core._vector_cache_entry(1, conn)                     # full build: saved
+    for sid in (6, 7):                                    # 2 appends: below the threshold
+        conn.execute("INSERT INTO shards VALUES (?, 't', 1.0, 'd', 'system', ?)", (sid, _vec(sid)))
+        sig["n"] += 1
+        core._vector_cache_entry(1, conn)
+    assert saves == [5]
+    conn.execute("INSERT INTO shards VALUES (8, 't', 1.0, 'd', 'system', ?)", (_vec(8),))
+    sig["n"] += 1
+    core._vector_cache_entry(1, conn)                     # 3rd append reaches it
+    assert saves == [5, 8]
+
+
+def test_save_happens_outside_the_db_lock(db, monkeypatch):
+    conn, sig, _ = db
+    held = []
+    real = core._save_vector_sidecar
+
+    def spy(i, e):
+        lk = core._vector_cache_lock(i)
+        got = lk.acquire(blocking=False)
+        held.append(not got)
+        if got:
+            lk.release()
+        real(i, e)
+    monkeypatch.setattr(core, "_save_vector_sidecar", spy)
+    core._vector_cache_entry(1, conn)
+    assert held == [False]
+
+
+def test_emptied_db_removes_its_copy(db, monkeypatch):
+    conn, sig, tmp = db
+    core._vector_cache_entry(1, conn)
+    assert list((tmp / "vec").glob("*.npy"))
+    conn.execute("DELETE FROM shards")
+    sig["n"] += 1
+    _restart(monkeypatch)
+    core._vector_cache_entry(1, conn)
+    assert not list((tmp / "vec").glob("*.npy")) and not list((tmp / "vec").glob("*.json"))
