@@ -83,7 +83,7 @@ class FakeRelay:
             raw.close()
             return
         head = rc._read_head(s).decode()
-        lines = dict(l.split(": ", 1) for l in head.split("\r\n")[1:] if ": " in l)
+        lines = dict(ln.split(": ", 1) for ln in head.split("\r\n")[1:] if ": " in ln)
         self.auth.append(lines.get("Authorization"))
         if lines.get("Authorization") != f"Bearer {TOKEN}":
             s.sendall(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
