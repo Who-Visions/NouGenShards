@@ -3239,6 +3239,60 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
 _DIM_MISMATCH_WARNED: set = set()
 
 
+_GO_LANE_WARNED = False
+
+
+def _go_vector_lane_url() -> Optional[str]:
+    """Where the Go front's vector lane is, when this process should use it.
+
+    Opt-in: NOUGEN_VECTOR_GO=1, and the front must have started this process
+    (it sets NGS_GO_FRONT_URL). With it on, this process never builds the
+    vector cache for a DB the front answers, so it holds no matrix and no
+    per-row lists for that DB.
+    """
+    if os.environ.get("NOUGEN_VECTOR_GO", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return None
+    return os.environ.get("NGS_GO_FRONT_URL", "").strip() or None
+
+
+def _go_vector_rows(q_vec, limit: int, domain_key, excluded_types):
+    """Ask the Go front to score the vector lane.
+
+    Returns ({db_index: db_path}, {db_index: [(final_score, id), ...]}) for
+    the DBs it answered, or None when the lane is off or the call failed -
+    then every DB is scored in this process, exactly as without the front.
+    A DB the front hands back, or does not know, is simply absent.
+    """
+    url = _go_vector_lane_url()
+    if url is None:
+        return None
+    import urllib.request  # pylint: disable=import-outside-toplevel
+    body = json.dumps({
+        "embedding": [float(x) for x in q_vec], "limit": int(limit),
+        "domain_key": "*" if domain_key in (None, "*") else domain_key,
+        "excluded_types": sorted(excluded_types),
+    }).encode()
+    req = urllib.request.Request(
+        url.rstrip("/") + "/v1/vector/retrieve", data=body,
+        headers={"Content-Type": "application/json", "X-NGS-Token": os.environ.get("NGS_NODE_TOKEN", "")})
+    try:
+        timeout = float(os.environ.get("NOUGEN_VECTOR_GO_TIMEOUT_S", "") or 5.0)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            out = json.loads(resp.read())
+        paths = {int(k): v for k, v in (out.get("paths") or {}).items()}
+        answered = set(out.get("dbs") or ()) | set(out.get("skipped_dim_mismatch") or ())
+        rows: dict = {}
+        for r in out.get("rows") or ():
+            rows.setdefault(int(r["db"]), []).append((float(r["final_score"]), int(r["id"])))
+        return {i: paths[i] for i in answered if i in paths}, rows
+    except Exception as exc:  # pylint: disable=broad-except
+        global _GO_LANE_WARNED  # pylint: disable=global-statement
+        if not _GO_LANE_WARNED:
+            _GO_LANE_WARNED = True
+            logger.warning("Go vector lane unavailable (%s: %s); scoring in-process", type(exc).__name__, exc)
+        return None
+
+
 def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
                      domain_key: str = "global", include_research: bool = False) -> list:
     """Scans for semantic vector matches independent of FTS.
@@ -3271,6 +3325,7 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
     q_vec = np.asarray(query_embedding, dtype=np.float32)
     qdim = int(q_vec.shape[0])
     excluded_types = frozenset() if include_research else frozenset(bulk_ingest_event_types())
+    go_lane = _go_vector_rows(q_vec, limit, domain_key, excluded_types)
 
     def _scan_db(i: int) -> list:
         from . import history  # pylint: disable=import-outside-toplevel
@@ -3283,8 +3338,12 @@ def _vector_retrieve(query_embedding: Optional[List[float]], limit: int = 20,
             if not get_db_path(i).exists():
                 return db_rows
             conn = get_readonly_connection(i)
-            cache = _vector_cache_entry(i, conn)
-            scored = []  # (final_score, id)
+            # The Go front answers for a DB only when it names the same file
+            # this request resolves that DB to (a tenant's vault is another
+            # file under the same index); anything else is scored here.
+            delegated = go_lane is not None and go_lane[0].get(i) == str(get_db_path(i))
+            cache = None if delegated else _vector_cache_entry(i, conn)
+            scored = list(go_lane[1].get(i, ())) if delegated else []  # (final_score, id)
             if cache and cache["dim"] and cache["dim"] != qdim and len(cache["ids"]):
                 # A 384-d query against a 768-d DB (or the reverse) is a provider
                 # switch without a backfill. Say so once per DB rather than

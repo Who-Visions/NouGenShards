@@ -11,6 +11,7 @@
 //	GET  /livez             liveness of this process and its worker (open)
 //	GET  /v1/vector/status  mapped matrices (token)
 //	POST /v1/vector/search  exact cosine top-N over the vault's matrices (token)
+//	POST /v1/vector/retrieve  the recall vector lane: fresh rows, decayed utility (token)
 //
 // Usage:
 //
@@ -171,6 +172,7 @@ func (n *node) routes() http.Handler {
 	mux.HandleFunc("/livez", n.handleLivez)
 	mux.HandleFunc("/v1/vector/status", n.handleVectorStatus)
 	mux.HandleFunc("/v1/vector/search", n.handleVectorSearch)
+	mux.HandleFunc("/v1/vector/retrieve", n.handleVectorRetrieve)
 	mux.HandleFunc("/", n.handleFallback)
 	return mux
 }
@@ -206,6 +208,7 @@ func newProxy(target *url.URL) *httputil.ReverseProxy {
 type worker struct {
 	argv     []string
 	port     int
+	frontURL string // where the worker reaches this process
 	mu       sync.Mutex
 	cmd      *exec.Cmd
 	restarts int
@@ -235,7 +238,7 @@ func (w *worker) run() {
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		cmd.Env = append(os.Environ(),
 			fmt.Sprintf("NGS_PORT=%d", w.port), "NGS_HOST=127.0.0.1", "NGS_BIND_HOST=127.0.0.1",
-			"NGS_GO_FRONT=1")
+			"NGS_GO_FRONT=1", "NGS_GO_FRONT_URL="+w.frontURL)
 		started := time.Now()
 		if err := cmd.Start(); err != nil {
 			log.Printf("worker: cannot start %q: %v", w.argv[0], err)
@@ -316,6 +319,15 @@ func main() {
 		rows += s.Rows
 	}
 	log.Printf("vector index: %d DB(s), %d rows mapped from %s", len(n.index.status()), rows, n.index.dir)
+	if st := n.index.status(); len(st) > 0 {
+		// Read every DB's fresh rows once now, so the first recall does not pay for it.
+		go func(dim int) {
+			started := time.Now()
+			res := n.index.retrieve(retrieveRequest{Embedding: make([]float32, dim), Limit: 1})
+			log.Printf("vector retrieve: warm in %s (%d DB(s) served, %d handed back)",
+				time.Since(started).Round(time.Millisecond), len(res.DBs), len(res.Fallback))
+		}(st[0].Dim)
+	}
 
 	// Bind before starting the worker: a port clash must exit here, not after
 	// a Python worker has been started and would be left running without a front.
@@ -332,7 +344,8 @@ func main() {
 				log.Fatalf("no free loopback port for the worker: %v", err)
 			}
 		}
-		n.worker = &worker{argv: argv, port: port, done: make(chan struct{})}
+		_, frontPort, _ := net.SplitHostPort(listener.Addr().String())
+		n.worker = &worker{argv: argv, port: port, frontURL: "http://127.0.0.1:" + frontPort, done: make(chan struct{})}
 		n.proxy = newProxy(&url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", port)})
 		go n.worker.run()
 	}
