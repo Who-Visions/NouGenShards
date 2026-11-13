@@ -1195,7 +1195,15 @@ def _search_via_node(query: str, limit: int, fast: bool):
         print(f"[i] warm node unavailable ({type(exc).__name__}); searching in-process",
               file=sys.stderr)
         return None
-    rows = data if isinstance(data, list) else (data.get("results") or [] if isinstance(data, dict) else [])
+    # Only a list, or an object carrying a results list, is a search answer. Anything else ({} or an error
+    # object) is not "no matches": fall back in-process rather than hide local results (Codex review on #1051).
+    if isinstance(data, list):
+        rows = data
+    elif isinstance(data, dict) and isinstance(data.get("results"), list):
+        rows = data["results"]
+    else:
+        print("[i] warm node answered an unrecognised body; searching in-process", file=sys.stderr)
+        return None
     coverage: dict = {}
     kept = []
     for row in rows:

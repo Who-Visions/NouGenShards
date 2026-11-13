@@ -498,3 +498,24 @@ def test_search_reads_the_nodes_real_trailer_contract(monkeypatch):
         kept, coverage = cli_mod._search_via_node("q", 5, False)
         assert [r["id"] for r in kept] == [3]
         assert coverage.get("complete") is False and coverage.get("lanes_timed_out") == ["vaults"]
+
+
+def test_search_falls_back_when_the_node_answers_an_unrecognised_body(monkeypatch):
+    """Codex review on #1051: {} or an error object is not an empty result set; use the in-process path."""
+    import io
+    from nougen_shards import cli as cli_mod, recall_hook
+    monkeypatch.setenv("NOUGEN_SEARCH_VIA_NODE", "1")
+    monkeypatch.setattr(recall_hook, "_node_token", lambda: "t")
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    for body in ({}, {"error": "boom"}, {"results": "nope"}, "text"):
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None, body=body: Resp(json.dumps(body).encode()))
+        assert cli_mod._search_via_node("q", 5, False) is None, body
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: Resp(json.dumps({"results": [{"id": 1}]}).encode()))
+    assert cli_mod._search_via_node("q", 5, False)[0] == [{"id": 1}]
