@@ -82,7 +82,9 @@ def main() -> int:
                 tags[str(t)] += 1
         except Exception:
             pass
-    skip = lambda t: t.startswith(("via:", "tube:", "bash-error")) or len(t) > 40
+    def skip(t: str) -> bool:
+        return t.startswith(("via:", "tube:", "bash-error")) or len(t) > 40
+
     with open(os.path.join(a.out, "themes.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["tag", "count"])
