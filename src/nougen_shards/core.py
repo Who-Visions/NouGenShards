@@ -1289,7 +1289,8 @@ def capture(event_type: str, title: str, content: str,
     if not allowed:
         logger.warning("capture: rejected unproven completion claim %r: %s",
                        title, "; ".join(poe_errors))
-        return False
+        return CaptureResult(captured=False, reason="unproven_completion",
+                             error="completion claim without proof: " + "; ".join(poe_errors)[:300])
 
     # Opt-in write-time consolidation (consolidate.py): tags a fact that supersedes,
     # conflicts with, or duplicates a neighbour. Never blocks or alters the write.
