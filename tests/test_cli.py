@@ -421,6 +421,7 @@ def test_search_uses_the_warm_node_and_reads_its_coverage_trailer(monkeypatch, c
     import argparse
     import io
     from nougen_shards import cli as cli_mod, recall_hook
+    monkeypatch.delenv("NOUGEN_VAULT_DIR", raising=False)  # CI sets it; an explicit vault stays local
     monkeypatch.setenv("NOUGEN_SEARCH_VIA_NODE", "1")
     monkeypatch.setattr(recall_hook, "_node_token", lambda: "t")
     sent = {}
@@ -453,6 +454,7 @@ def test_search_uses_the_warm_node_and_reads_its_coverage_trailer(monkeypatch, c
 def test_search_falls_back_in_process_when_the_node_is_down(monkeypatch, capsys):
     import argparse
     from nougen_shards import cli as cli_mod, recall_hook
+    monkeypatch.delenv("NOUGEN_VAULT_DIR", raising=False)  # CI sets it; an explicit vault stays local
     monkeypatch.setenv("NOUGEN_SEARCH_VIA_NODE", "1")
     monkeypatch.setattr(recall_hook, "_node_token", lambda: "t")
 
