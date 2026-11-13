@@ -289,3 +289,13 @@ def test_default_location_is_beside_the_vault(monkeypatch, tmp_path):
     b = core._vector_sidecar_paths(1, str(tmp_path / "tenantB" / "nougen_shards_1.db"))[0]
     assert Path(a).parent == tmp_path / "tenantA" / ".vector-cache"
     assert Path(b).parent == tmp_path / "tenantB" / ".vector-cache"
+
+
+def test_spot_check_spans_the_whole_table(db, monkeypatch):
+    conn, sig, tmp = db
+    for sid in range(6, 400):
+        conn.execute("INSERT INTO shards VALUES (?, 't', 1.0, 'd', 'system', ?)", (sid, _vec(sid)))
+    sig["n"] += 1
+    core._vector_cache_entry(1, conn)
+    conn.execute("UPDATE shards SET embedding = ? WHERE id = 399", (_vec(9999),))  # only the last row
+    assert core._load_vector_sidecar(1, str(tmp / "grid.db"), conn) is None

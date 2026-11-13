@@ -2788,22 +2788,26 @@ def _save_vector_sidecar(i: int, entry: dict) -> None:
     if paths is None:
         return
     npy, meta = paths
-    if not len(entry["ids"]) and not entry["legacy"]:
-        # Nothing embedded any more: drop the old copy rather than reload and
-        # prune it to empty on every restart.
-        for stale in (meta, npy):
-            try:
-                os.remove(stale)
-            except OSError:
-                pass
-        return
     lock_path = npy + ".lock"
+    emptied = not len(entry["ids"]) and not entry["legacy"]
+    if emptied and not os.path.exists(npy) and not os.path.exists(meta):
+        return
     try:
-        os.makedirs(os.path.dirname(npy), exist_ok=True)
+        # Owner-only on POSIX: on a shared node the vectors are tenant data.
+        os.makedirs(os.path.dirname(npy), mode=0o700, exist_ok=True)
     except OSError as exc:
         logger.warning("grid DB %s: could not create vector cache dir: %s", i, exc)
         return
     if not _acquire_sidecar_lock(lock_path):
+        return
+    if emptied:
+        # Nothing embedded any more: drop the old copy (under the lock) rather
+        # than reload and prune it to empty on every restart.
+        for stale in (meta, npy, lock_path):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
         return
     tag = f".{os.getpid()}.{_threading.get_ident()}.tmp"
     tmp_npy, tmp_meta = npy + tag + ".npy", meta + tag
@@ -2869,8 +2873,8 @@ def _load_vector_sidecar(i: int, path: str, conn=None) -> Optional[dict]:
             # provider change) rewrites vectors without changing ids or counts.
             # Spot-check evenly spaced rows against the DB; any difference means
             # the copy is stale and is rebuilt.
-            step = max(1, n // _VECTOR_SIDECAR_SPOT_CHECK)
-            picks = list(range(0, n, step))[:_VECTOR_SIDECAR_SPOT_CHECK]
+            k_max = min(n, _VECTOR_SIDECAR_SPOT_CHECK)
+            picks = sorted({(k * (n - 1)) // max(1, k_max - 1) for k in range(k_max)})  # spans first..last row
             pick_ids = [meta["ids"][k] for k in picks]
             row_of = {meta["ids"][k]: k for k in picks}
             for start in range(0, len(pick_ids), 500):
