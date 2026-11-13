@@ -52,3 +52,38 @@ def test_lease_is_released_after_a_run(monkeypatch, lease_dir):
     _mock_pipeline(monkeypatch)
     tube.process_video(URL)
     assert not list(lease_dir.glob("*.lease"))
+
+
+def test_slow_pipeline_keeps_its_lease_and_release_spares_a_takeover(monkeypatch):
+    """A run slower than LEASE_STALE_S keeps heartbeating, so a second run sees it live;
+    and a run whose lease was taken over never unlinks the new owner's lease."""
+    import threading
+
+    monkeypatch.setattr(tube, "LEASE_STALE_S", 0.4)
+    _mock_pipeline(monkeypatch)
+    started, finish = threading.Event(), threading.Event()
+
+    def slow(*a, **k):
+        started.set()
+        finish.wait(5)
+        return "captured"
+
+    monkeypatch.setattr(tube, "_process_video_locked", slow)
+    monkeypatch.setattr(tube, "dedupe_check", lambda vid: False)
+    t = threading.Thread(target=tube.process_video, args=(URL,))
+    t.start()
+    assert started.wait(5)
+    time.sleep(1.0)  # well past LEASE_STALE_S: only the heartbeat keeps it live
+    assert tube.acquire_lease(VID) is None
+    finish.set()
+    t.join(5)
+
+    first = tube.acquire_lease(VID)
+    assert first is not None
+    os.utime(first, (time.time() - 10, time.time() - 10))  # first run stalls
+    second = tube.acquire_lease(VID)  # takeover
+    assert second is not None
+    tube.release_lease(first)  # stale owner releases late
+    assert second.exists()
+    tube.release_lease(second)
+    assert not second.exists()

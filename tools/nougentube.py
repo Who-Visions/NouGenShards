@@ -50,8 +50,10 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import urllib.parse
 import urllib.request
+import uuid
 import zlib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -523,9 +525,12 @@ def acquire_lease(video_id: str) -> Optional[Path]:
     for _ in range(2):
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, json.dumps({"pid": os.getpid(), "at": time.time()}).encode())
+            token = uuid.uuid4().hex
+            os.write(fd, json.dumps({"pid": os.getpid(), "at": time.time(), "token": token}).encode())
             os.close(fd)
-            return path
+            lease = _Lease(path)
+            lease.token = token
+            return lease
         except FileExistsError:
             try:
                 age = time.time() - path.stat().st_mtime
@@ -541,6 +546,28 @@ def acquire_lease(video_id: str) -> Optional[Path]:
     return None
 
 
+class _Lease(type(Path())):
+    """A lease path that remembers the ownership token this acquire wrote."""
+    token: str = ""
+
+
+def _owns(lease: Path) -> bool:
+    """True while the lease file still carries the token this handle wrote."""
+    want = getattr(lease, "token", "")
+    try:
+        return bool(want) and json.loads(lease.read_text()).get("token") == want
+    except (OSError, ValueError):
+        return False
+
+
+def _keep_alive(lease: Path, stop: threading.Event) -> None:
+    """Heartbeat for the WHOLE pipeline, so a slow fetch/transcript/distil never looks stale."""
+    while not stop.wait(LEASE_STALE_S / 4):
+        if not _owns(lease):
+            return
+        heartbeat(lease)
+
+
 def heartbeat(lease: Path) -> None:
     try:
         os.utime(lease, None)
@@ -549,11 +576,14 @@ def heartbeat(lease: Path) -> None:
 
 
 def release_lease(lease: Optional[Path]) -> None:
-    if lease is not None:
-        try:
+    """Unlink only a lease this run still owns; never another run's takeover."""
+    if lease is None:
+        return
+    try:
+        if _owns(lease):
             lease.unlink()
-        except OSError:
-            pass
+    except OSError:
+        pass
 
 
 def process_video(url: str, dry_run: bool = False,
@@ -575,12 +605,17 @@ def process_video(url: str, dry_run: bool = False,
     if lease is None:
         logger.info("SKIP tube:%s is being ingested by another run", video_id)
         return "in-progress"
+    stop = threading.Event()
+    keeper = threading.Thread(target=_keep_alive, args=(lease, stop), daemon=True)
+    keeper.start()
     try:
         # Re-check under the lease: the run we waited on may have just finished.
         if dedupe_check(video_id):
             return "skipped-duplicate"
         return _process_video_locked(url, video_id, False, manifest_hint, lease)
     finally:
+        stop.set()
+        keeper.join(timeout=5)
         release_lease(lease)
 
 
