@@ -7,6 +7,17 @@ import sys
 import json
 import numpy as np
 import nougen_shards.cli as cli
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_live_node_search(monkeypatch):
+    """`nougen search` asks the warm NGS node first; no test here may reach the host's live node.
+
+    Kept in this file (not conftest.py) so this change shares no file with #1047.
+    The node-path tests below opt back in.
+    """
+    monkeypatch.setenv("NOUGEN_SEARCH_VIA_NODE", "0")
 
 class TestCLI(unittest.TestCase):
     """Test suite for CLI commands."""
@@ -403,3 +414,144 @@ if __name__ == '__main__':
     unittest.main()
 
 
+
+
+def test_search_uses_the_warm_node_and_reads_its_coverage_trailer(monkeypatch, capsys):
+    """A cold CLI process overran the 20 s deadline on phoebus (2026-11-12); the warm node answers first."""
+    import argparse
+    import io
+    from nougen_shards import cli as cli_mod, recall_hook
+    monkeypatch.delenv("NOUGEN_VAULT_DIR", raising=False)  # CI sets it; an explicit vault stays local
+    monkeypatch.setenv("NOUGEN_SEARCH_VIA_NODE", "1")
+    monkeypatch.setattr(recall_hook, "_node_token", lambda: "t")
+    sent = {}
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        sent["url"], sent["body"], sent["token"] = req.full_url, json.loads(req.data), req.headers.get("X-ngs-token")
+        rows = [{"id": 7, "_db_index": 2, "title": "probe", "content": "loopprobe row", "final_score": 1.0},
+                {"id": "federation_meta", "content": 'federation: {"lanes_timed_out": ["cloud"]}'}]
+        return Resp(json.dumps(rows).encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(cli_mod.federation, "federated_retrieve",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("in-process path must not run")))
+    args = argparse.Namespace(query="loopprobe", json=True, domain=None, dual=False, semantic=False,
+                              provider=None, fast=False, no_window=True, local=False, plain=False)
+    cli_mod.cmd_search(args)
+    out = capsys.readouterr()
+    assert sent["url"].endswith("/search") and sent["body"]["query"] == "loopprobe" and sent["token"] == "t"
+    assert json.loads(out.out)[0]["id"] == 7
+    assert "INCOMPLETE" in out.err and "cloud" in out.err
+
+
+def test_search_falls_back_in_process_when_the_node_is_down(monkeypatch, capsys):
+    import argparse
+    from nougen_shards import cli as cli_mod, recall_hook
+    monkeypatch.delenv("NOUGEN_VAULT_DIR", raising=False)  # CI sets it; an explicit vault stays local
+    monkeypatch.setenv("NOUGEN_SEARCH_VIA_NODE", "1")
+    monkeypatch.setattr(recall_hook, "_node_token", lambda: "t")
+
+    def down(req, timeout=None):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", down)
+    monkeypatch.setattr(cli_mod.federation, "federated_retrieve",
+                        lambda *a, **k: [{"id": 9, "_db_index": 1, "title": "local", "content": "x"}])
+    args = argparse.Namespace(query="x", json=True, domain=None, dual=False, semantic=False,
+                              provider=None, fast=False, no_window=True, local=False, plain=False)
+    cli_mod.cmd_search(args)
+    out = capsys.readouterr()
+    assert json.loads(out.out)[0]["id"] == 9
+    assert "searching in-process" in out.err
+
+
+def test_search_reads_the_nodes_real_trailer_contract(monkeypatch):
+    """Codex review on #1051: test against the node's own trailer (app._deadline_trailer), not a hand-made row,
+    and accept the FEDERATION_STATUS event_type the /search contract test pins, even without the id."""
+    import io
+    import importlib.util
+    from pathlib import Path
+    from nougen_shards import cli as cli_mod, recall_hook
+    spec = importlib.util.spec_from_file_location("node_app_for_trailer", Path(__file__).resolve().parents[1] / "app.py")
+    node_app = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(node_app)
+    real = node_app._deadline_trailer({"lanes_timed_out": ["vaults"], "lanes": {"vaults": {"status": "timeout"}}})
+    no_id = {k: v for k, v in real.items() if k != "id"}
+    monkeypatch.setenv("NOUGEN_SEARCH_VIA_NODE", "1")
+    monkeypatch.setattr(recall_hook, "_node_token", lambda: "t")
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    for trailer in (real, no_id):
+        rows = [{"id": 3, "_db_index": 1, "title": "hit", "content": "c", "final_score": 1.0}, trailer]
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None, rows=rows: Resp(json.dumps(rows).encode()))
+        kept, coverage = cli_mod._search_via_node("q", 5, False)
+        assert [r["id"] for r in kept] == [3]
+        assert coverage.get("complete") is False and coverage.get("lanes_timed_out") == ["vaults"]
+
+
+def test_search_falls_back_when_the_node_answers_an_unrecognised_body(monkeypatch):
+    """Codex review on #1051: {} or an error object is not an empty result set; use the in-process path."""
+    import io
+    from nougen_shards import cli as cli_mod, recall_hook
+    monkeypatch.setenv("NOUGEN_SEARCH_VIA_NODE", "1")
+    monkeypatch.setattr(recall_hook, "_node_token", lambda: "t")
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    for body in ({}, {"error": "boom"}, {"results": "nope"}, "text"):
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None, body=body: Resp(json.dumps(body).encode()))
+        assert cli_mod._search_via_node("q", 5, False) is None, body
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: Resp(json.dumps({"results": [{"id": 1}]}).encode()))
+    assert cli_mod._search_via_node("q", 5, False)[0] == [{"id": 1}]
+
+
+def _node_must_not_be_called(monkeypatch):
+    from nougen_shards import cli as cli_mod, recall_hook
+    monkeypatch.setenv("NOUGEN_SEARCH_VIA_NODE", "1")
+    monkeypatch.setattr(recall_hook, "_node_token", lambda: "t")
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("the node must not be asked")))
+    monkeypatch.setattr(cli_mod.federation, "federated_retrieve",
+                        lambda *a, **k: [{"id": 5, "_db_index": 1, "title": "local", "content": "x"}])
+    return cli_mod
+
+
+def test_semantic_search_stays_local_even_when_the_embedding_is_unavailable(monkeypatch, capsys):
+    """Codex review on #1051: --semantic with no embedding client must not quietly become a node keyword search."""
+    import argparse
+    cli_mod = _node_must_not_be_called(monkeypatch)
+    monkeypatch.delenv("NOUGEN_VAULT_DIR", raising=False)
+    monkeypatch.setattr(cli_mod, "get_client", lambda prov: None)
+    args = argparse.Namespace(query="x", json=True, domain=None, dual=False, semantic=True,
+                              provider=None, fast=False, no_window=True, local=False, plain=False)
+    cli_mod.cmd_search(args)
+    assert json.loads(capsys.readouterr().out)[0]["id"] == 5
+
+
+def test_an_explicit_vault_dir_stays_local(monkeypatch, capsys, tmp_path):
+    """Connector review on #1051: the node searches its own vault, not the one NOUGEN_VAULT_DIR points at."""
+    import argparse
+    cli_mod = _node_must_not_be_called(monkeypatch)
+    monkeypatch.setenv("NOUGEN_VAULT_DIR", str(tmp_path))
+    args = argparse.Namespace(query="x", json=True, domain=None, dual=False, semantic=False,
+                              provider=None, fast=False, no_window=True, local=False, plain=False)
+    cli_mod.cmd_search(args)
+    assert json.loads(capsys.readouterr().out)[0]["id"] == 5
