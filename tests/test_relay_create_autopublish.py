@@ -22,3 +22,26 @@ def test_opt_out_and_other_actions(tmp_path):
     assert cli._with_create_publish(["create", "--no-publish"], reg) == ["create"]
     assert cli._with_create_publish(["open"], reg) == ["open"]
     assert cli._with_create_publish(["create", "--publish"], reg).count("--publish") == 1
+
+
+def test_support_is_read_from_the_imported_relay_not_the_registry(tmp_path):
+    """An installed nougen_relay without --publish must win over a registry that has it."""
+    reg = _registry(tmp_path, True)
+    old = tmp_path / "installed_core.py"
+    old.write_text("# relay without the flag\n", encoding="utf-8")
+    assert cli._with_create_publish(["create", "-g", "x"], reg, old) == ["create", "-g", "x"]
+
+
+def test_relay_core_path_follows_the_imported_module():
+    import sys
+    import types
+    mod = types.ModuleType("fake_relay_cli")
+    mod.__file__ = "/x/nougen_relay/cli.py"
+    sys.modules["fake_relay_cli"] = mod
+    try:
+        def main():
+            pass
+        main.__module__ = "fake_relay_cli"
+        assert str(cli._relay_core_path(main)) == "/x/nougen_relay/core.py"
+    finally:
+        del sys.modules["fake_relay_cli"]
