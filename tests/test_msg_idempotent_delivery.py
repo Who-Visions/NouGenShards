@@ -133,12 +133,12 @@ def test_concurrent_copies_deliver_exactly_once(server):
     def go():
         # A refused or dropped connection under burst load is retried, as a real sender
         # would; the retry is safe only because delivery is idempotent.
-        for _ in range(4):
+        for _ in range(10):
             try:
                 results.append(_send(text="burst")[1])
                 return
             except (ConnectionError, urllib.error.URLError, OSError):
-                time.sleep(0.1)
+                time.sleep(0.25)
 
     threads = [threading.Thread(target=go) for _ in range(8)]
     for t in threads:
