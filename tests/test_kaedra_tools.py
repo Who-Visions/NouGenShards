@@ -319,6 +319,11 @@ def test_shards_amend_namespace_and_node_boundaries(tmp_path, monkeypatch):
     from nougen_shards import core, locator
     monkeypatch.setattr(core, "get_db_path", lambda i: tmp_path / f"amend2_{i}.db")
     monkeypatch.setattr(core, "GLOBAL_DIR", tmp_path)
+    # Pin this node's name: the "another node" case below used the literal
+    # "phoebus", which IS this node when the suite runs on phoebus, so the
+    # amend was accepted there and the test failed on that one machine.
+    monkeypatch.setenv("NOUGEN_NODE", "this-node")
+    assert locator.current_node() == "this-node"
     # "agent:kaedra-other" shares the string prefix but is a different lane.
     r = core.capture(event_type="kaedra_insight", title="lookalike", content="x",
                      tags=["t"], source_uri="agent:kaedra-other:move3")
@@ -328,8 +333,8 @@ def test_shards_amend_namespace_and_node_boundaries(tmp_path, monkeypatch):
     r2 = core.capture(event_type="kaedra_insight", title="root", content="root body", tags=["t"], source_uri="agent:kaedra")
     assert kt.dispatch("shards_amend", {"shard_id": r2["shard_id"], "db_index": r2["db_index"], "content": "y"})["amended"]
     # A locator naming ANOTHER node is refused before any query.
-    out = kt.dispatch("shards_amend", {"locator": f"phoebus:{r2['db_index']}#{r2['shard_id']}", "content": "z"})
-    assert "refusing" in out["error"] and "phoebus" in out["error"]
+    out = kt.dispatch("shards_amend", {"locator": f"another-node:{r2['db_index']}#{r2['shard_id']}", "content": "z"})
+    assert "refusing" in out["error"] and "another-node" in out["error"]
     assert core.get_shard_by_id(r2["shard_id"], r2["db_index"])["content"] == "root body\n\ny"
     # Blank namespace override fails closed.
     monkeypatch.setattr(kt, "_AMENDABLE_SOURCE_NS", "")
