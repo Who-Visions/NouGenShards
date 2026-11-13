@@ -60,7 +60,8 @@ def test_restart_loads_from_disk_without_a_full_scan(db, monkeypatch):
     assert got["ids"] == [1, 2, 3, 4, 5]
     np.testing.assert_array_equal(got["matrix"], first["matrix"])
     # Only the append query (id > max_id) runs, and it returns nothing.
-    assert all("id > ?" in sql or "id > 5" in sql for sql in reads), reads
+    # Only the append query (id > max_id) and the bounded spot-check (id IN ...) run.
+    assert all("id > ?" in sql or "id > 5" in sql or "id IN (" in sql for sql in reads), reads
 
 
 def test_rows_written_while_down_are_appended(db, monkeypatch):
@@ -270,3 +271,21 @@ def test_emptied_db_removes_its_copy(db, monkeypatch):
     _restart(monkeypatch)
     core._vector_cache_entry(1, conn)
     assert not list((tmp / "vec").glob("*.npy")) and not list((tmp / "vec").glob("*.json"))
+
+
+def test_in_place_reembed_is_caught_and_rebuilt(db, monkeypatch):
+    conn, sig, tmp = db
+    core._vector_cache_entry(1, conn)
+    conn.execute("UPDATE shards SET embedding = ?", (_vec(77),))   # provider change, same ids
+    sig["n"] += 1
+    assert core._load_vector_sidecar(1, str(tmp / "grid.db"), conn) is None
+    _restart(monkeypatch)
+    assert core._vector_cache_entry(1, conn)["matrix"][0, 0] == 77.0
+
+
+def test_default_location_is_beside_the_vault(monkeypatch, tmp_path):
+    monkeypatch.delenv("NOUGEN_VECTOR_SIDECAR_DIR", raising=False)
+    a = core._vector_sidecar_paths(1, str(tmp_path / "tenantA" / "nougen_shards_1.db"))[0]
+    b = core._vector_sidecar_paths(1, str(tmp_path / "tenantB" / "nougen_shards_1.db"))[0]
+    assert Path(a).parent == tmp_path / "tenantA" / ".vector-cache"
+    assert Path(b).parent == tmp_path / "tenantB" / ".vector-cache"

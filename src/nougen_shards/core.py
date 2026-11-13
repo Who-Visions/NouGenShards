@@ -2734,17 +2734,23 @@ def _scan_embedding_rows(cursor, dim: Optional[int], capacity: int):
     return ids, ts, util, dom, etype, matrix, legacy, dim
 
 
+#: Rows compared against the DB when a saved matrix is loaded (catches in-place re-embedding).
+_VECTOR_SIDECAR_SPOT_CHECK = 256
+
 #: Re-save a DB's matrix to disk once this many rows were appended since the last save.
 _VECTOR_SIDECAR_RESAVE_ROWS = 512
 
 
 def _vector_sidecar_paths(i: int, path: str):
-    """Where DB i's matrix is kept on disk, keyed by the DB file it was built
-    from. NOUGEN_VECTOR_SIDECAR=0 turns it off; NOUGEN_VECTOR_SIDECAR_DIR moves it."""
+    """Where DB i's matrix is kept on disk (<vault>/.vector-cache by default),
+    keyed by the DB file it was built from. NOUGEN_VECTOR_SIDECAR=0 turns it
+    off; NOUGEN_VECTOR_SIDECAR_DIR moves every vault's copies to one place."""
     if os.environ.get("NOUGEN_VECTOR_SIDECAR", "1").strip().lower() in ("0", "false", "no", "off"):
         return None
+    # Default: beside the DB itself, so each vault (and each tenant's runtime
+    # root on a shared node) keeps its own copy and never reads another's.
     base = os.environ.get("NOUGEN_VECTOR_SIDECAR_DIR") or os.path.join(
-        os.path.expanduser("~"), ".nougen", "cache", "vector")
+        os.path.dirname(os.path.abspath(path)), ".vector-cache")
     key = hashlib.sha256(os.path.normcase(os.path.abspath(path)).encode("utf-8")).hexdigest()[:16]
     stem = os.path.join(base, f"db{i}-{key}")
     return stem + ".npy", stem + ".json"
@@ -2858,7 +2864,24 @@ def _load_vector_sidecar(i: int, path: str, conn=None) -> Optional[dict]:
         legacy = [(r[0], r[1], r[2], r[3], r[4],
                    bytes.fromhex(r[5]["hex"]) if isinstance(r[5], dict) else r[5])
                   for r in meta.get("legacy", [])]
-        if conn is not None:
+        if conn is not None and n:
+            # In-place re-embedding (embedding_backfill reembed=True after a
+            # provider change) rewrites vectors without changing ids or counts.
+            # Spot-check evenly spaced rows against the DB; any difference means
+            # the copy is stale and is rebuilt.
+            step = max(1, n // _VECTOR_SIDECAR_SPOT_CHECK)
+            picks = list(range(0, n, step))[:_VECTOR_SIDECAR_SPOT_CHECK]
+            pick_ids = [meta["ids"][k] for k in picks]
+            row_of = {meta["ids"][k]: k for k in picks}
+            for start in range(0, len(pick_ids), 500):
+                chunk = pick_ids[start:start + 500]
+                q = ",".join("?" * len(chunk))
+                for rid, emb in conn.execute(
+                        f"SELECT id, embedding FROM shards WHERE id IN ({q})", chunk):
+                    if not isinstance(emb, (bytes, bytearray)) or bytes(emb) != matrix[row_of[rid]].tobytes():
+                        logger.info("grid DB %s: vector cache on disk differs from the DB at row %s "
+                                    "(re-embedded since it was saved); rebuilding", i, rid)
+                        return None
             known = set(meta["ids"])
             known.update(r[0] for r in legacy)
             for (row_id,) in conn.execute(
