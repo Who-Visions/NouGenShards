@@ -79,7 +79,7 @@ func (l realLauncher) Tunnel(n Node, metricsAddr string) *exec.Cmd {
 	// visible to every other program on the computer.
 	cmd := exec.Command(cf, "tunnel", "--no-autoupdate", "--metrics", metricsAddr, "run")
 	cmd.Dir = n.Dir
-	cmd.Env = append(os.Environ(), "TUNNEL_TOKEN="+n.Tunnel)
+	cmd.Env = append(append(os.Environ(), tunnelEnv(n.Dir)...), "TUNNEL_TOKEN="+n.Tunnel)
 	return cmd
 }
 
@@ -484,5 +484,25 @@ func (s *Supervisor) Snapshot() Status {
 	defer s.mu.Unlock()
 	out := s.snap
 	out.Nodes = append([]NodeStatus(nil), s.snap.Nodes...)
+	return out
+}
+
+// tunnelKeys are the cloudflared settings an account's tunnel.env may set.
+// Setup writes it when the default edge discovery fails (for example DNS that
+// only works through a proxy): http2 transport and explicit edge addresses.
+var tunnelKeys = map[string]bool{"TUNNEL_TRANSPORT_PROTOCOL": true, "TUNNEL_EDGE": true, "TUNNEL_EDGE_IP_VERSION": true, "TUNNEL_REGION": true}
+
+func tunnelEnv(dir string) []string {
+	b, err := os.ReadFile(filepath.Join(dir, "tunnel.env"))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, l := range strings.Split(string(b), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(l), "=")
+		if ok && tunnelKeys[k] && v != "" && !strings.ContainsAny(v, "\x00\r ") {
+			out = append(out, k+"="+v)
+		}
+	}
 	return out
 }

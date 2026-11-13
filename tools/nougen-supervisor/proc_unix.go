@@ -124,15 +124,7 @@ func installAutostart(self string, args []string, base string, ids []string) err
 		}
 		return nil
 	}
-	line := "@reboot " + shQuote(self)
-	for _, a := range args {
-		line += " " + shQuote(a)
-	}
-	line += " >/dev/null 2>&1 " + cronMark
-	return writeCrontab(func(l string) bool {
-		// Drop our old line and the per-account run.sh lines older setups added.
-		return !strings.Contains(l, cronMark) && !(strings.Contains(l, base) && strings.Contains(l, "run.sh"))
-	}, line)
+	return installLinux(self, args, base)
 }
 
 func removeAutostart() error {
@@ -143,10 +135,7 @@ func removeAutostart() error {
 		}
 		return err
 	}
-	if !autostartOn() {
-		return nil
-	}
-	return writeCrontab(func(l string) bool { return !strings.Contains(l, cronMark) }, "")
+	return removeLinux()
 }
 
 func autostartOn() bool {
@@ -154,7 +143,7 @@ func autostartOn() bool {
 		_, err := os.Stat(agentPath())
 		return err == nil
 	}
-	return strings.Contains(crontab(), cronMark)
+	return linuxAutostartKind() != ""
 }
 
 // stopOthers ends every other supervisor process started from the same file.

@@ -189,3 +189,6 @@ func attachConsole() {
 		os.Stdout, os.Stderr = f, f
 	}
 }
+
+// Windows always has the Run key, so autostart is never unavailable.
+func isNoAutostart(error) bool { return false }
