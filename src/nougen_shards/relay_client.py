@@ -53,8 +53,20 @@ def _envf(name: str, default: float) -> float:
         return default
 
 
-def default_relay_url() -> str:
-    return os.environ.get("NOUGEN_RELAY_URL", "wss://relay.nougenai.com/_relay/connect")
+def default_relay_url() -> Optional[str]:
+    """Relay URL from NOUGEN_RELAY_URL, else the endpoints file key ``relay_url``.
+
+    node.json's own ``relay_url`` (written at provisioning) takes precedence over both.
+    No built-in host: a deployment names its relay, the client never guesses one.
+    """
+    v = os.environ.get("NOUGEN_RELAY_URL", "").strip()
+    if v:
+        return v
+    try:
+        from nougen_shards import endpoints
+        return endpoints._from_file("relay_url")
+    except ImportError:
+        return None
 
 
 # ------------------------------------------------------------------ proxy / TLS / DNS
@@ -383,7 +395,11 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     logging.basicConfig(level=os.environ.get("NOUGEN_RELAY_LOG", "INFO"), format="%(asctime)s relay %(message)s")
     n = _load_node(a.node_json)
-    c = RelayClient(a.relay_url or n.get("relay_url") or default_relay_url(), str(n["id"]).lower(),
+    url = a.relay_url or n.get("relay_url") or default_relay_url()
+    if not url:
+        print("relay: unavailable (no relay_url in node.json, NOUGEN_RELAY_URL or endpoints file)")
+        return 2
+    c = RelayClient(url, str(n["id"]).lower(),
                     str(n["token"]), int(n["port"]))
     if a.cmd == "probe":
         try:
