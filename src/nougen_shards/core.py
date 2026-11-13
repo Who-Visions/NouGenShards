@@ -2696,6 +2696,214 @@ def _prune_deleted(conn, entry: dict) -> dict:
     return pruned
 
 
+def _scan_embedding_rows(cursor, dim: Optional[int], capacity: int):
+    """Read (id, timestamp, utility, domain, type, embedding) rows into one
+    preallocated float32 matrix. Collecting per-row bytes and joining them held
+    three copies of every vector at once (~3.7 GB peak for a 950 MB grid), which
+    pushed the WhoArt node over its memory watchdog on every rebuild."""
+    ids, ts, util, dom, etype, legacy = [], [], [], [], [], []
+    matrix = None
+    k = 0
+    for row in cursor:
+        emb = row["embedding"]
+        if isinstance(emb, (bytes, bytearray)) and not emb.startswith(b"[") \
+                and len(emb) % 4 == 0 and len(emb) > 0:
+            row_dim = len(emb) // 4
+            if dim is None:
+                dim = row_dim
+            if row_dim == dim:
+                if matrix is None:
+                    matrix = np.empty((max(capacity, 1), dim), dtype=np.float32)
+                elif k >= matrix.shape[0]:
+                    grown = np.empty((matrix.shape[0] * 2, dim), dtype=np.float32)
+                    grown[:k] = matrix[:k]
+                    matrix = grown
+                matrix[k] = np.frombuffer(emb, dtype=np.float32)
+                k += 1
+                ids.append(row["id"])
+                ts.append(row["timestamp"])
+                util.append(row["utility_score"] if row["utility_score"] is not None else 0.0)
+                dom.append(row["domain_key"] or "")
+                etype.append((row["event_type"] or "").upper())
+                continue
+        legacy.append((row["id"], row["utility_score"] or 0.0, row["timestamp"],
+                       row["domain_key"] or "", (row["event_type"] or "").upper(), emb))
+    if matrix is None:
+        matrix = np.zeros((0, dim or 0), dtype=np.float32)
+    elif k < matrix.shape[0]:
+        matrix = matrix[:k].copy()
+    return ids, ts, util, dom, etype, matrix, legacy, dim
+
+
+#: Rows compared against the DB when a saved matrix is loaded (catches in-place re-embedding).
+_VECTOR_SIDECAR_SPOT_CHECK = 256
+
+#: Re-save a DB's matrix to disk once this many rows were appended since the last save.
+_VECTOR_SIDECAR_RESAVE_ROWS = 512
+
+
+def _vector_sidecar_paths(i: int, path: str):
+    """Where DB i's matrix is kept on disk (<vault>/.vector-cache by default),
+    keyed by the DB file it was built from. NOUGEN_VECTOR_SIDECAR=0 turns it
+    off; NOUGEN_VECTOR_SIDECAR_DIR moves every vault's copies to one place."""
+    if os.environ.get("NOUGEN_VECTOR_SIDECAR", "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    # Default: beside the DB itself, so each vault (and each tenant's runtime
+    # root on a shared node) keeps its own copy and never reads another's.
+    base = os.environ.get("NOUGEN_VECTOR_SIDECAR_DIR") or os.path.join(
+        os.path.dirname(os.path.abspath(path)), ".vector-cache")
+    key = hashlib.sha256(os.path.normcase(os.path.abspath(path)).encode("utf-8")).hexdigest()[:16]
+    stem = os.path.join(base, f"db{i}-{key}")
+    return stem + ".npy", stem + ".json"
+
+
+#: A save lock older than this is treated as left behind by a crashed process.
+_VECTOR_SIDECAR_LOCK_STALE_S = 600.0
+
+
+def _acquire_sidecar_lock(lock_path: str) -> bool:
+    """Cross-process: only one writer per DB at a time. Two nodes (or a node
+    and a CLI recall) starting together would otherwise both write the same
+    files. The loser skips its save; the winner's copy serves both."""
+    for _ in range(2):
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("ascii"))
+            os.close(fd)
+            return True
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(lock_path) < _VECTOR_SIDECAR_LOCK_STALE_S:
+                    return False
+                os.remove(lock_path)  # left by a crashed writer: take it over once
+            except OSError:
+                return False
+        except OSError:
+            return False
+    return False
+
+
+def _save_vector_sidecar(i: int, entry: dict) -> None:
+    """Best effort: a failed or skipped save only costs the next restart a rebuild."""
+    paths = _vector_sidecar_paths(i, entry["path"])
+    if paths is None:
+        return
+    npy, meta = paths
+    lock_path = npy + ".lock"
+    emptied = not len(entry["ids"]) and not entry["legacy"]
+    if emptied and not os.path.exists(npy) and not os.path.exists(meta):
+        return
+    try:
+        # Owner-only on POSIX: on a shared node the vectors are tenant data.
+        os.makedirs(os.path.dirname(npy), mode=0o700, exist_ok=True)
+    except OSError as exc:
+        logger.warning("grid DB %s: could not create vector cache dir: %s", i, exc)
+        return
+    if not _acquire_sidecar_lock(lock_path):
+        return
+    if emptied:
+        # Nothing embedded any more: drop the old copy (under the lock) rather
+        # than reload and prune it to empty on every restart.
+        for stale in (meta, npy, lock_path):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
+        return
+    tag = f".{os.getpid()}.{_threading.get_ident()}.tmp"
+    tmp_npy, tmp_meta = npy + tag + ".npy", meta + tag
+    try:
+        matrix = np.ascontiguousarray(entry["matrix"], dtype=np.float32)
+        np.save(tmp_npy, matrix)
+        with open(tmp_meta, "w", encoding="utf-8") as fh:
+            json.dump({"v": 2, "path": entry["path"], "dim": entry["dim"],
+                       "n_embedded": entry["n_embedded"], "max_id": entry["max_id"],
+                       "sha256": hashlib.sha256(matrix.tobytes()).hexdigest(),
+                       "ids": entry["ids"], "ts": entry["ts"],
+                       "util": [float(x) for x in entry["util"]],
+                       "dom": entry["dom"], "etype": entry["etype"],
+                       # Rows stored in an older format (JSON text or another
+                       # width) ride along; bytes are kept as hex.
+                       "legacy": [[r[0], r[1], r[2], r[3], r[4],
+                                   {"hex": bytes(r[5]).hex()} if isinstance(r[5], (bytes, bytearray)) else r[5]]
+                                  for r in entry["legacy"]]}, fh)
+        # Matrix first, metadata last: a reader that sees the new metadata
+        # checks it against the matrix hash, so a half-swapped pair is rejected.
+        os.replace(tmp_npy, npy)
+        os.replace(tmp_meta, meta)
+        entry["saved_n"] = len(entry["ids"])
+    except Exception as exc:  # disk full, permissions: keep serving from memory
+        logger.warning("grid DB %s: could not save vector cache to disk: %s", i, exc)
+    finally:
+        for leftover in (tmp_npy, tmp_meta, lock_path):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
+
+
+def _load_vector_sidecar(i: int, path: str, conn=None) -> Optional[dict]:
+    """Return DB i's saved matrix as a stale entry (sig=None), or None to rebuild.
+
+    Rejected (rebuilt from SQLite instead) when the files are unreadable, the
+    matrix bytes do not match the recorded sha256, the copy was built from a
+    different DB file, or the DB holds an embedded row at or below the saved
+    max_id that the copy does not know (a backfill or replaced rows). Rows
+    deleted since the save, and rows newer than max_id, are left to the
+    caller's prune and append paths; its consistency gate is the backstop."""
+    paths = _vector_sidecar_paths(i, path)
+    if paths is None or not os.path.exists(paths[0]) or not os.path.exists(paths[1]):
+        return None
+    try:
+        with open(paths[1], encoding="utf-8") as fh:
+            meta = json.load(fh)
+        matrix = np.load(paths[0])
+        n = len(meta["ids"])
+        if meta.get("v") != 2 or os.path.normcase(meta["path"]) != os.path.normcase(path) or matrix.shape != (n, meta["dim"]) \
+                or not (len(meta["ts"]) == len(meta["util"]) == len(meta["dom"]) == len(meta["etype"]) == n):
+            logger.info("grid DB %s: vector cache on disk does not match this build; rebuilding", i)
+            return None
+        if hashlib.sha256(np.ascontiguousarray(matrix, dtype=np.float32).tobytes()).hexdigest() != meta.get("sha256"):
+            logger.warning("grid DB %s: vector cache on disk failed its checksum; rebuilding", i)
+            return None
+        legacy = [(r[0], r[1], r[2], r[3], r[4],
+                   bytes.fromhex(r[5]["hex"]) if isinstance(r[5], dict) else r[5])
+                  for r in meta.get("legacy", [])]
+        if conn is not None and n:
+            # In-place re-embedding (embedding_backfill reembed=True after a
+            # provider change) rewrites vectors without changing ids or counts.
+            # Spot-check evenly spaced rows against the DB; any difference means
+            # the copy is stale and is rebuilt.
+            k_max = min(n, _VECTOR_SIDECAR_SPOT_CHECK)
+            picks = sorted({(k * (n - 1)) // max(1, k_max - 1) for k in range(k_max)})  # spans first..last row
+            pick_ids = [meta["ids"][k] for k in picks]
+            row_of = {meta["ids"][k]: k for k in picks}
+            for start in range(0, len(pick_ids), 500):
+                chunk = pick_ids[start:start + 500]
+                q = ",".join("?" * len(chunk))
+                for rid, emb in conn.execute(
+                        f"SELECT id, embedding FROM shards WHERE id IN ({q})", chunk):
+                    if not isinstance(emb, (bytes, bytearray)) or bytes(emb) != matrix[row_of[rid]].tobytes():
+                        logger.info("grid DB %s: vector cache on disk differs from the DB at row %s "
+                                    "(re-embedded since it was saved); rebuilding", i, rid)
+                        return None
+            known = set(meta["ids"])
+            known.update(r[0] for r in legacy)
+            for (row_id,) in conn.execute(
+                    "SELECT id FROM shards WHERE embedding IS NOT NULL AND id <= ?", (meta["max_id"],)):
+                if row_id not in known:
+                    logger.info("grid DB %s: vector cache on disk is missing row %s "
+                                "(backfilled since it was saved); rebuilding", i, row_id)
+                    return None
+        return {"sig": None, "path": path, "dim": meta["dim"], "n_embedded": meta["n_embedded"],
+                "max_id": meta["max_id"], "ids": meta["ids"], "ts": meta["ts"],
+                "util": np.asarray(meta["util"], dtype=np.float32), "dom": meta["dom"],
+                "etype": meta["etype"], "matrix": matrix, "saved_n": n, "legacy": legacy}
+    except Exception as exc:  # truncated or corrupt: rebuild from SQLite
+        logger.warning("grid DB %s: ignoring unreadable vector cache on disk: %s", i, exc)
+        return None
+
+
 def _vector_cache_entry(i: int, conn) -> Optional[dict]:
     """Return the (fresh) cache entry for DB i, loading or refreshing as needed.
 
@@ -2741,6 +2949,11 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
         # change always forces a full reload. [codex finding, 2026-08-30]
         if entry is not None and entry["path"] != path:
             entry = None
+        if entry is None:
+            # A restart would otherwise rebuild the whole matrix from SQLite
+            # (minutes on a ~300k-row grid); the copy on disk is topped up
+            # by the append path below like any other stale entry.
+            entry = _load_vector_sidecar(i, path, conn)
         count = conn.execute(
             "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM shards WHERE embedding IS NOT NULL"
         ).fetchone()
@@ -2756,29 +2969,9 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
             SELECT id, timestamp, utility_score, domain_key, event_type, embedding
             FROM shards WHERE embedding IS NOT NULL AND id > ? ORDER BY id ASC
         """, (since_id,))
-        ids, ts, util, dom, etype, blobs, legacy = [], [], [], [], [], [], []
-        dim = entry["dim"] if entry else None
-        for row in cursor:
-            emb = row["embedding"]
-            if isinstance(emb, (bytes, bytearray)) and not emb.startswith(b"[") \
-                    and len(emb) % 4 == 0 and len(emb) > 0:
-                row_dim = len(emb) // 4
-                if dim is None:
-                    dim = row_dim
-                if row_dim == dim:
-                    ids.append(row["id"])
-                    ts.append(row["timestamp"])
-                    util.append(row["utility_score"] if row["utility_score"] is not None else 0.0)
-                    dom.append(row["domain_key"] or "")
-                    etype.append((row["event_type"] or "").upper())
-                    blobs.append(bytes(emb))
-                    continue
-            legacy.append((row["id"], row["utility_score"] or 0.0, row["timestamp"],
-                           row["domain_key"] or "", (row["event_type"] or "").upper(), emb))
-        if blobs:
-            new_matrix = np.frombuffer(b"".join(blobs), dtype=np.float32).reshape(len(blobs), dim)
-        else:
-            new_matrix = np.zeros((0, dim or 0), dtype=np.float32)
+        ids, ts, util, dom, etype, new_matrix, legacy, dim = _scan_embedding_rows(
+            cursor, entry["dim"] if entry else None,
+            max(0, n_embedded - (entry["n_embedded"] if entry else 0)))
         if entry is not None:
             fresh = {
                 "sig": sig, "path": path, "dim": dim, "n_embedded": n_embedded, "max_id": max_id,
@@ -2809,37 +3002,27 @@ def _vector_cache_entry(i: int, conn) -> Optional[dict]:
                 SELECT id, timestamp, utility_score, domain_key, event_type, embedding
                 FROM shards WHERE embedding IS NOT NULL ORDER BY id ASC
             """)
-            ids, ts, util, dom, etype, blobs, legacy = [], [], [], [], [], [], []
-            dim = None
-            for row in cursor:
-                emb = row["embedding"]
-                if isinstance(emb, (bytes, bytearray)) and not emb.startswith(b"[") \
-                        and len(emb) % 4 == 0 and len(emb) > 0:
-                    row_dim = len(emb) // 4
-                    if dim is None:
-                        dim = row_dim
-                    if row_dim == dim:
-                        ids.append(row["id"])
-                        ts.append(row["timestamp"])
-                        util.append(row["utility_score"] if row["utility_score"] is not None else 0.0)
-                        dom.append(row["domain_key"] or "")
-                        etype.append((row["event_type"] or "").upper())
-                        blobs.append(bytes(emb))
-                        continue
-                legacy.append((row["id"], row["utility_score"] or 0.0, row["timestamp"],
-                               row["domain_key"] or "", (row["event_type"] or "").upper(), emb))
-            matrix = (np.frombuffer(b"".join(blobs), dtype=np.float32).reshape(len(blobs), dim)
-                      if blobs else np.zeros((0, dim or 0), dtype=np.float32))
+            ids, ts, util, dom, etype, matrix, legacy, dim = _scan_embedding_rows(cursor, None, n_embedded)
+            since_id = 0  # a full rebuild: save it like one
             fresh = {
                 "sig": _db_write_signature(i), "path": path, "dim": dim,
                 "n_embedded": n_embedded, "max_id": max_id,
                 "ids": ids, "ts": ts, "util": np.asarray(util, dtype=np.float32),
                 "dom": dom, "etype": etype, "matrix": matrix, "legacy": legacy,
             }
+        # Rows already on disk carry over from the entry this refresh grew from;
+        # a full build starts from zero and is always saved.
+        fresh["saved_n"] = entry.get("saved_n", 0) if (entry is not None and since_id) else 0
         _VECTOR_CACHE[i] = fresh
-        return fresh
+        save_now = since_id == 0 or len(fresh["ids"]) - fresh["saved_n"] >= _VECTOR_SIDECAR_RESAVE_ROWS
     finally:
         lock.release()
+    # Outside the DB lock: a ~100 MB write must not make concurrent recalls of
+    # this DB wait past NOUGEN_VECTOR_CACHE_WAIT_S and fall back to keyword-only.
+    # `fresh` is never mutated after publication except its saved_n counter.
+    if save_now:
+        _save_vector_sidecar(i, fresh)
+    return fresh
 
 
 #: (db_index, stored_dim, query_dim) triples already warned about this process.
