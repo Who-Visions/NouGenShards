@@ -115,6 +115,10 @@ ${step(2, "Run the file", "it takes a few minutes the first time and starts by i
 ${step(3, "Use it", "connect your AI to https://shards.nougenai.com/mcp with this Google account.")}
 </ol>
 </section>
+<p class="join-hint" id="state" role="status" aria-live="polite"></p>
+<script>(function(){var el=document.getElementById('state'),ey=document.querySelector('.join-eyebrow');
+function tick(){fetch('/j/${code}/state',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){
+if(j.message)el.textContent=j.message;if(j.state==='ok'){ey.textContent='Step 3 of 3';return}setTimeout(tick,5000)}).catch(function(){setTimeout(tick,15000)})}tick()})();</script>
 <script>if(!/Windows/i.test(navigator.userAgent)){var g=document.getElementById('go');g.href='/j/${code}/setup.sh';g.download='setup-nougen.sh';
 document.getElementById('hint').innerHTML='On Mac or Linux: open Terminal and run <code>sh ~/Downloads/setup-nougen.sh</code>';}</script>`);
 
@@ -128,7 +132,11 @@ export function setupArgs(t) {
   const port = Number(t && t.port);
   if (!SAFE_ID.test(id)) throw new Error("setup: the account id is not a safe folder name");
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("setup: the port is not usable");
-  return { ...t, id, port };
+  // Where setup reports progress back to the Join page. Optional: a script
+  // without them just does not report.
+  const code = /^[A-Za-z0-9_-]{24,}$/.test(String((t && t.code) || "")) ? String(t.code) : "";
+  const origin = /^https:\/\/[a-z0-9.-]+(:[0-9]{1,5})?$/.test(String((t && t.origin) || "")) ? String(t.origin) : "";
+  return { ...t, id, port, code: origin ? code : "", origin: code ? origin : "" };
 }
 // Where a running supervisor answers. A build that reports "holds" leaves an
 // account alone while its folder carries an "updating" file, so setup can
@@ -206,14 +214,89 @@ export function setupCmd(raw) {
     "Start-Sleep 15", ""].join("\r\n");
 }
 
+// What the Join page shows for each state setup.sh reports. Setup can only
+// send one of these names; the words shown are always ours.
+export const SETUP_STATES = {
+  started: "Setup is running on your computer.",
+  node_ok: "Your node is running. Connecting it to the internet...",
+  ok: "Done. Your node is online.",
+  no_tunnel_egress: "This box can't host a public node: no direct egress for the tunnel.",
+  uv_failed: "Setup could not download its Python tools. Check the proxy settings and run it again.",
+  download_failed: "Setup could not download NouGen. Check the internet or proxy settings and run it again.",
+  node_failed: "Your node did not start. The setup window shows the last lines of its log.",
+  failed: "Setup stopped. The setup window shows what went wrong and where the log is.",
+};
+
+// The shell script is POSIX sh so it runs on macOS, Debian, Ubuntu, Alpine and
+// sandboxes alike. It never installs system packages (no apt-get, no sudo):
+// anything missing is worked around or reported.
+//   - Every line of output goes to ~/.nougen-node/setup.log; on failure the
+//     last 30 lines are printed with the log path.
+//   - Downloads go through curl, which honors HTTPS_PROXY / HTTP_PROXY, use a
+//     custom CA bundle when one is set, and retry with backoff.
+//   - Steps already done are skipped, so running it again is safe and fast.
+//   - In a container or sandbox (no systemd, no cron) it runs NouGen without
+//     autostart and prints the exact command to run it again.
+//   - It ends with a health check on the node's port, read from node.json,
+//     and one PASS / FAIL line.
 export function setupSh(raw) {
   const t = setupArgs(raw);
   return `#!/bin/sh
 # NouGen setup for ${t.id} (macOS / Linux). Private: contains this computer's keys.
-set -e
-B="$HOME/.nougen-node"; H="$B"/'${shq(t.id)}'; mkdir -p "$H"; cd "$H"
-echo "Setting up NouGen on this computer. This takes a few minutes and needs nothing from you."
-OS=$(uname -s); ARCH=$(uname -m)
+# Safe to run again: steps that are already done are skipped.
+umask 077
+B="$HOME/.nougen-node"; H="$B"/'${shq(t.id)}'
+mkdir -p "$H" || { echo "NouGen setup: cannot create $H"; exit 1; }
+cd "$H" || exit 1
+LOG="$B/setup.log"; [ -f "$LOG" ] && mv -f "$LOG" "$LOG.1"; : > "$LOG"
+JOIN='${shq(t.origin)}'; CODE='${shq(t.code)}'
+note() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >> "$LOG"; }
+say() { echo "$*"; note "$*"; }
+report() { [ -n "$JOIN" ] && [ -n "$CODE" ] || return 0; note "report: $1"; curl -fsS -m 10 -X POST -H 'content-type: application/json' --data '{"state":"'"$1"'"}' "$JOIN/j/$CODE/report" >> "$LOG" 2>&1 || true; }
+fail() {
+  st=$2; [ -n "$st" ] || st=failed
+  note "FAIL: $1"; echo; echo "NouGen setup stopped: $1"
+  echo "---- last 30 lines of $LOG ----"; tail -n 30 "$LOG"; echo "----"
+  echo "Full log: $LOG"; echo "NOUGEN SETUP: FAIL ($st)"
+  report "$st"; rm -f "$H/updating"; exit 1
+}
+say "Setting up NouGen on this computer. This takes a few minutes and needs nothing from you."
+OS=$(uname -s); ARCH=$(uname -m); note "system: $OS $ARCH"
+report started
+
+# ---- 0. Network and machine. Proxies are read by curl and uv from the environment.
+CA=""
+for c in "$NOUGEN_CA_BUNDLE" "$CURL_CA_BUNDLE" "$SSL_CERT_FILE" "$REQUESTS_CA_BUNDLE"; do
+  if [ -n "$c" ] && [ -f "$c" ]; then CA=$c; break; fi
+done
+if [ -n "$CA" ]; then export SSL_CERT_FILE="$CA" CURL_CA_BUNDLE="$CA" REQUESTS_CA_BUNDLE="$CA"; note "CA bundle: $CA"; fi
+[ -n "$HTTPS_PROXY$https_proxy$HTTP_PROXY$http_proxy" ] && note "a proxy is set; downloads go through it"
+TRIES=\${NOUGEN_DL_TRIES:-4}
+dl() {
+  n=0
+  while :; do
+    if curl -LfsS --connect-timeout 20 -o "$2" "$1" >> "$LOG" 2>&1; then return 0; fi
+    n=$((n+1)); [ $n -ge "$TRIES" ] && { note "download failed after $n tries: $1"; return 1; }
+    note "download failed (try $n of $TRIES): $1; retrying in $((n*n*3))s"; sleep $((n*n*3))
+  done
+}
+MODE=\${NOUGEN_MODE:-auto}; why="NOUGEN_MODE=$MODE"
+if [ "$MODE" = auto ]; then
+  MODE=service
+  if [ "$OS" = Linux ]; then
+    if [ -f /.dockerenv ] || [ -f /run/.containerenv ] || grep -qsE 'docker|containerd|kubepods|lxc|podman' /proc/1/cgroup; then
+      MODE=foreground; why="this is a container"
+    elif ! { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; } && ! command -v crontab >/dev/null 2>&1; then
+      MODE=foreground; why="no systemd user session and no cron"
+    fi
+    case "$HOME" in /tmp/*|/run/*|/dev/shm/*) MODE=foreground; why="the home folder is temporary";; esac
+  fi
+fi
+note "mode: $MODE $why"
+if [ "$MODE" = foreground ]; then
+  export NOUGEN_AUTOSTART=none
+  say "This looks like a sandbox ($why), so NouGen will run without starting by itself after a restart."
+fi
 
 # ---- 1. Download and verify. Nothing that is running is touched yet.
 case "$OS-$ARCH" in
@@ -222,52 +305,139 @@ case "$OS-$ARCH" in
 esac
 sum() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 S="$B/nougen-supervisor"; SN=""
-if [ ! -x "$S" ] || [ "$(sum "$S")" != "$W" ]; then
-  curl -LsSf '${SUPERVISOR.base}'"nougen-supervisor-$A" -o "$S.download"
-  if [ "$(sum "$S.download")" != "$W" ]; then rm -f "$S.download"; echo "The NouGen download did not match its fingerprint. Nothing was changed. Try the link again."; exit 1; fi
+if [ -x "$S" ] && [ "$(sum "$S")" = "$W" ]; then note "supervisor: already current"; else
+  dl '${SUPERVISOR.base}'"nougen-supervisor-$A" "$S.download" || fail "could not download the NouGen helper. Check the internet or proxy settings." download_failed
+  if [ "$(sum "$S.download")" != "$W" ]; then rm -f "$S.download"; fail "The NouGen download did not match its fingerprint. Nothing was changed. Try the link again."; fi
   chmod 700 "$S.download"; SN="$S.download"
 fi
-[ -x "$B/uv" ] || { curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$B" UV_NO_MODIFY_PATH=1 sh >/dev/null; }
-if [ ! -x "$H/cloudflared" ]; then
+if [ -x "$B/uv" ]; then note "uv: already installed"
+elif command -v uv >/dev/null 2>&1; then ln -sf "$(command -v uv)" "$B/uv"; say "Using the uv already on this computer."
+else
+  say "Downloading uv (it manages Python for NouGen)..."
+  if dl https://astral.sh/uv/install.sh "$B/uv-install.sh" && env UV_INSTALL_DIR="$B" UV_NO_MODIFY_PATH=1 sh "$B/uv-install.sh" >> "$LOG" 2>&1 && [ -x "$B/uv" ]; then note "uv: installed"
+  else
+    note "uv installer did not work; trying pip"
+    for py in python3 python; do
+      command -v "$py" >/dev/null 2>&1 || continue
+      if "$py" -m pip install --quiet --target "$B/uv-pip" uv >> "$LOG" 2>&1 && [ -x "$B/uv-pip/bin/uv" ]; then ln -sf "$B/uv-pip/bin/uv" "$B/uv"; note "uv: installed with $py -m pip"; break; fi
+    done
+  fi
+  rm -f "$B/uv-install.sh"
+  [ -x "$B/uv" ] || fail "could not install uv. Check the proxy settings (HTTPS_PROXY), or install uv yourself and run this again." uv_failed
+fi
+if [ -x "$H/cloudflared" ]; then note "cloudflared: already installed"; else
   case "$OS-$ARCH" in
     Darwin-arm64) U=cloudflared-darwin-arm64.tgz;; Darwin-*) U=cloudflared-darwin-amd64.tgz;;
     Linux-aarch64|Linux-arm64) U=cloudflared-linux-arm64;; *) U=cloudflared-linux-amd64;;
   esac
   rm -rf cf.tmp; mkdir cf.tmp
-  curl -LsSf "https://github.com/cloudflare/cloudflared/releases/latest/download/$U" -o cf.tmp/cf.dl
+  dl "https://github.com/cloudflare/cloudflared/releases/latest/download/$U" cf.tmp/cf.dl || fail "could not download cloudflared. Check the internet or proxy settings." download_failed
   case "$U" in *.tgz) tar -xzf cf.tmp/cf.dl -C cf.tmp;; *) mv cf.tmp/cf.dl cf.tmp/cloudflared;; esac
   chmod +x cf.tmp/cloudflared; mv -f cf.tmp/cloudflared cloudflared; rm -rf cf.tmp
 fi
-rm -rf incoming src.zip; curl -LsSf https://github.com/Who-Visions/NouGenShards/archive/refs/heads/main.zip -o src.zip
-mkdir incoming; "$B/uv" run --python 3.11 python -c "import zipfile;zipfile.ZipFile('src.zip').extractall('incoming')"; rm -f src.zip
-if [ ! -f incoming/NouGenShards-main/app.py ]; then rm -rf incoming; echo "The NouGen download was incomplete. Nothing was changed. Try the link again."; exit 1; fi
+SHA=$(curl -fsS -m 15 -H 'accept: application/vnd.github.sha' https://api.github.com/repos/Who-Visions/NouGenShards/commits/main 2>> "$LOG") || SHA=""
+FRESH=0
+if [ -f NouGenShards/app.py ] && { [ -z "$SHA" ] || [ "$SHA" = "$(cat .src-sha 2>/dev/null)" ]; }; then note "source: already current"; else
+  say "Downloading NouGen..."
+  rm -rf incoming src.zip
+  dl https://github.com/Who-Visions/NouGenShards/archive/refs/heads/main.zip src.zip || fail "could not download NouGen. Check the internet or proxy settings." download_failed
+  mkdir incoming
+  if ! "$B/uv" run --python 3.11 python -c "import sys,zipfile;zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" src.zip incoming >> "$LOG" 2>&1; then
+    command -v unzip >/dev/null 2>&1 && unzip -q src.zip -d incoming >> "$LOG" 2>&1
+  fi
+  rm -f src.zip
+  if [ ! -f incoming/NouGenShards-main/app.py ]; then rm -rf incoming; fail "The NouGen download was incomplete. Nothing was changed. Try the link again." download_failed; fi
+  FRESH=1
+fi
 
 # ---- 2. Switch this account over. Other accounts keep running and stay watched.
 : > updating; trap 'rm -f "$H/updating"' EXIT
-if curl -fs -m 3 '${SUP_STATUS}' 2>/dev/null | grep -q '"holds":true'; then :; else
-  # A build from before "updating" existed would restart the node mid-swap; only that one
-  # is stopped. Matched on its full path: the kernel cuts process names to 15 characters.
-  pkill -f "$B/nougen-supervisor" 2>/dev/null || true
-  i=0; while pgrep -f "$B/nougen-supervisor" >/dev/null 2>&1 && [ $i -lt 5 ]; do sleep 1; i=$((i+1)); done
+if [ -n "$SN" ]; then
+  if curl -fs -m 3 '${SUP_STATUS}' 2>/dev/null | grep -q '"holds":true'; then :; else
+    # A build from before "updating" existed would restart the node mid-swap; only that one
+    # is stopped. Matched on its full path: the kernel cuts process names to 15 characters.
+    pkill -f "$B/nougen-supervisor" 2>/dev/null || true
+    i=0; while pgrep -f "$B/nougen-supervisor" >/dev/null 2>&1 && [ $i -lt 5 ]; do sleep 1; i=$((i+1)); done
+  fi
 fi
-pkill -f "$H/NouGenShards" 2>/dev/null || true
-pkill -f "$H/cloudflared" 2>/dev/null || true
-rm -rf NouGenShards; mv incoming/NouGenShards-main NouGenShards; rm -rf incoming
-cat > node.json <<'NODE'
+if [ $FRESH = 1 ]; then
+  pkill -f "$H/NouGenShards" 2>/dev/null || true
+  pkill -f "$H/cloudflared" 2>/dev/null || true
+  rm -rf NouGenShards; mv incoming/NouGenShards-main NouGenShards; rm -rf incoming
+  [ -n "$SHA" ] && echo "$SHA" > .src-sha
+fi
+cat > node.json.new <<'NODE'
 ${nodeJson(t)}
 NODE
-chmod 600 node.json; rm -f run.sh
+chmod 600 node.json.new; mv -f node.json.new node.json; rm -f run.sh
 if [ -n "$SN" ]; then mv -f "$SN" "$S"; fi
 rm -f updating; trap - EXIT
-"$S" install >/dev/null
-echo "Starting... (first start downloads Python once)"
-ok=0; i=0; while [ $i -lt 90 ]; do curl -fs "http://127.0.0.1:${t.port}/health" >/dev/null 2>&1 && { ok=1; break; }; sleep 5; i=$((i+1)); done
-if [ $ok = 1 ]; then
-  (command -v open >/dev/null && open '${shq(t.url)}') || (command -v xdg-open >/dev/null && xdg-open '${shq(t.url)}') || true
-  echo "Done. NouGen is on and will start by itself whenever this computer starts."
-else
-  echo "NouGen did not start yet. Restart the computer once; details are in $H/node.log"; exit 1
+
+start_sup() {
+  if [ "$MODE" = foreground ]; then
+    if curl -fs -m 3 '${SUP_STATUS}' >/dev/null 2>&1; then note "supervisor: already running"; return 0; fi
+    nohup "$S" run >> "$B/supervisor.out" 2>&1 &
+    note "supervisor: started without autostart (pid $!)"
+  elif "$S" install >> "$LOG" 2>&1; then note "supervisor: installed with autostart"
+  else
+    say "WARN: this computer has no way to start NouGen by itself (no systemd, no cron). Running it now without autostart."
+    MODE=foreground; export NOUGEN_AUTOSTART=none; start_sup
+  fi
+}
+start_sup
+
+# ---- 3. Check it. The port is the one node.json gives the supervisor.
+P=\${NOUGEN_NODE_PORT:-$(grep -o '"port": *[0-9]*' node.json | grep -o '[0-9]*$')}
+say "Starting... (first start downloads Python once)"
+ok=0; i=0; n=\${NOUGEN_HEALTH_TRIES:-90}
+while [ $i -lt "$n" ]; do curl -fs -m 3 "http://127.0.0.1:$P/health" >/dev/null 2>&1 && { ok=1; break; }; sleep 5; i=$((i+1)); done
+if [ $ok != 1 ]; then
+  tail -n 30 "$H/node.log" >> "$LOG" 2>/dev/null
+  fail "NouGen did not start on port $P. Its log is $H/node.log." node_failed
 fi
+report node_ok
+MA="127.0.0.1:$((20000 + P % 40000))"
+tunnel_up() {
+  w=\${NOUGEN_TUNNEL_WAIT:-60}; j=0
+  while [ $j -lt "$w" ]; do curl -fs -m 3 "http://$MA/ready" >/dev/null 2>&1 && return 0; sleep 3; j=$((j+3)); done
+  return 1
+}
+if ! tunnel_up; then
+  # Often DNS for the tunnel edge is blocked while HTTPS through a proxy works.
+  # Look the edge up over HTTPS instead, and switch the tunnel to http2.
+  say "The tunnel did not connect. Trying again over http2 with the edge addresses looked up over HTTPS..."
+  tail -n 20 tunnel.log >> "$LOG" 2>/dev/null
+  EDGE=""
+  for name in region1.v2.argotunnel.com region2.v2.argotunnel.com; do
+    for ip in $(curl -fsS -m 10 -H 'accept: application/dns-json' "https://cloudflare-dns.com/dns-query?name=$name&type=A" 2>> "$LOG" | grep -o '"data":"[0-9.]*"' | cut -d'"' -f4); do
+      for port in \${NOUGEN_TUNNEL_EDGE_PORTS:-443 7844}; do EDGE="$EDGE,$ip:$port"; done
+    done
+  done
+  EDGE=\${EDGE#,}
+  { echo "TUNNEL_TRANSPORT_PROTOCOL=http2"; [ -n "$EDGE" ] && echo "TUNNEL_EDGE=$EDGE"; } > tunnel.env
+  note "tunnel fallback: $(tr '\\n' ' ' < tunnel.env)"
+  # Newer supervisors read tunnel.env; older ones pass on what they inherit from here.
+  export TUNNEL_TRANSPORT_PROTOCOL=http2; [ -n "$EDGE" ] && export TUNNEL_EDGE="$EDGE"
+  pkill -f "$B/nougen-supervisor" 2>/dev/null || true
+  pkill -f "$H/cloudflared" 2>/dev/null || true
+  sleep 2; start_sup
+  if ! tunnel_up; then
+    tail -n 20 tunnel.log >> "$LOG" 2>/dev/null
+    echo; echo "this box can't host a public node: no direct egress for the tunnel"
+    echo "NouGen itself is running here at http://127.0.0.1:$P (log: $LOG)"
+    echo "NOUGEN SETUP: FAIL (no_tunnel_egress) node=127.0.0.1:$P"
+    report no_tunnel_egress; exit 3
+  fi
+fi
+report ok
+(command -v open >/dev/null && open '${shq(t.url)}') || (command -v xdg-open >/dev/null && xdg-open '${shq(t.url)}' >/dev/null 2>&1) || true
+if [ "$MODE" = foreground ]; then
+  echo "NouGen is on. It will not start by itself after a restart here; to start it again run:"
+  echo "  $S run"
+else
+  echo "Done. NouGen is on and will start by itself whenever this computer starts."
+fi
+echo "NOUGEN SETUP: PASS node=127.0.0.1:$P tunnel=connected mode=$MODE"
 `;
 }
 
@@ -516,6 +686,25 @@ async function googleEmail(env, url, req) {
 }
 
 // ------------------------------------------------------------------ links
+// setup.sh reports how far it got, so the Join page can say "online" or say
+// exactly why not, instead of sitting on Step 2. Only the names in
+// SETUP_STATES are accepted; the page shows our words, never the script's.
+async function setupState(env, req, code, op) {
+  const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  if (!(await env.TENANTS.get("enroll:" + code))) return json({ error: "unknown link" }, 404);
+  if (op === "state") {
+    if (req.method !== "GET") return json({ error: "use GET" }, 405);
+    const s = await env.TENANTS.get("setup:" + code, "json");
+    return json(s ? { state: s.state, message: SETUP_STATES[s.state] || "", at: s.at } : { state: "waiting", message: "" });
+  }
+  if (req.method !== "POST") return json({ error: "use POST" }, 405);
+  const body = (await req.text()).slice(0, 256);
+  let state = "";
+  try { state = String(JSON.parse(body).state || ""); } catch { /* not JSON */ }
+  if (!Object.prototype.hasOwnProperty.call(SETUP_STATES, state)) return json({ error: "unknown state" }, 400);
+  await env.TENANTS.put("setup:" + code, JSON.stringify({ state, at: new Date().toISOString() }), { expirationTtl: 86400 * 14 });
+  return json({ ok: true });
+}
 async function lookup(env, code) {
   if (!/^[A-Za-z0-9_-]{24,}$/.test(code)) return null;
   const email = await env.TENANTS.get("enroll:" + code);
@@ -544,13 +733,15 @@ export default {
         await provision(env, email);
         return Response.redirect(`${url.origin}/j/${await mintLink(env, email)}`, 302);
       }
+      const r = path.match(/^\/j\/([A-Za-z0-9_-]{24,})\/(report|state)$/);
+      if (r) return setupState(env, req, r[1], r[2]);
       const m = path.match(/^\/j\/([^/]+)(\/setup(\.sh)?)?\/?$/);
       if (m) {
         const t = await lookup(env, m[1]);
         if (!t) return shell("Link expired", `<h1>This link has expired</h1><p><a class="join-action" href="/">Start again</a></p>`);
         if (!m[2]) return linkPage(t.name, m[1], String(t.url || "").replace(/^https:\/\//, ""));
         const sh = !!m[3];
-        return new Response(sh ? setupSh(t) : setupCmd(t), { headers: { "content-type": "application/octet-stream", "cache-control": "no-store",
+        return new Response(sh ? setupSh({ ...t, code: m[1], origin: url.origin }) : setupCmd(t), { headers: { "content-type": "application/octet-stream", "cache-control": "no-store",
           "content-disposition": `attachment; filename="${sh ? "setup-nougen.sh" : "Set up NouGen.cmd"}"` } });
       }
       return new Response("Not found", { status: 404 });
