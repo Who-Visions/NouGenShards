@@ -160,13 +160,18 @@ export class RelaySession {
     // Pairs keep repeated headers (Set-Cookie); a plain object is still accepted.
     const pairs = Array.isArray(raw) ? raw : Object.entries(raw);
     for (const pair of pairs) {
-      if (!Array.isArray(pair) || typeof pair[0] !== "string" || typeof pair[1] !== "string") continue;
-      if (!HOP.has(pair[0].toLowerCase())) { try { h.append(pair[0], pair[1]); } catch { /* bad header */ } }
+      if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "string" || typeof pair[1] !== "string") {
+        return new Response("node sent invalid headers", { status: 502 });
+      }
+      if (HOP.has(pair[0].toLowerCase())) continue;
+      try { h.append(pair[0], pair[1]); } catch { return new Response("node sent invalid headers", { status: 502 }); }
     }
     h.set("x-nougen-transport", "relay");
     const nullBody = status === 204 || status === 304 || req.method === "HEAD";
     let out;
     try { out = nullBody ? null : unb64(res.body); } catch { return new Response("node sent an invalid body", { status: 502 }); }
+    // The encoded-length check above is a cheap pre-filter; this is the exact decoded limit.
+    if (out && out.byteLength > maxBody) return new Response("node response too large for relay", { status: 502 });
     return new Response(out, { status, headers: h });
   }
 

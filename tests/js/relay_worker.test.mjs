@@ -210,6 +210,25 @@ test("node response larger than the relay limit becomes 502", async () => {
   const { env, objects } = await seeded();
   env.RELAY_MAX_BODY_BYTES = "6";
   const { server } = await connect(env, objects);
-  autoAnswer(server, () => ({ status: 200, headers: [["x-ok", "1"], ["bad"], [1, 2]], body: btoa("way too long") }));
+  autoAnswer(server, () => ({ status: 200, headers: [["x-ok", "1"]], body: btoa("way too long") }));
   assert.equal((await worker.fetch(new Request("https://alice.nougenai.com/"), env)).status, 502);
+});
+
+test("decoded response size is enforced exactly at the limit", async () => {
+  for (const [body, want] of [["abcd", 200], ["abcde", 502], ["abcdef", 502]]) {
+    const { env, objects } = await seeded();
+    env.RELAY_MAX_BODY_BYTES = "4";
+    const { server } = await connect(env, objects);
+    autoAnswer(server, () => ({ status: 200, headers: [], body: btoa(body) }));
+    assert.equal((await worker.fetch(new Request("https://alice.nougenai.com/"), env)).status, want, body);
+  }
+});
+
+test("a single malformed header pair rejects the whole node response", async () => {
+  for (const headers of [[["x-ok", "1"], ["bad"]], [["x-ok", "1"], [1, 2]], [["x", "1", "extra"]], { "x-num": 5 }]) {
+    const { env, objects } = await seeded();
+    const { server } = await connect(env, objects);
+    autoAnswer(server, () => ({ status: 200, headers, body: btoa("ok") }));
+    assert.equal((await worker.fetch(new Request("https://alice.nougenai.com/"), env)).status, 502, JSON.stringify(headers));
+  }
 });
