@@ -359,7 +359,7 @@ func foregroundCmd(self string, args []string) string {
 		}) < 0 {
 			return a
 		}
-		return "'" + strings.ReplaceAll(a, "'", `'''`) + "'"
+		return "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
 	}
 	out := q(self)
 	for _, a := range args {
