@@ -41,7 +41,7 @@ browser ──https──> Worker ──> Durable Object (one per node) ══ws
   relay host over DNS-over-HTTPS internally. There is nothing for users to set up.
 - **Limits**: `RELAY_REQUEST_TIMEOUT_MS` (504 after), `RELAY_MAX_BODY_BYTES` (413 above).
   Offline node → 502 page that says so. Responses carry `x-nougen-transport: relay`.
-- **Status**: `GET /_relay/status?id=<id>` → `{"live":true,"transport":"relay","since":…}`
+- **Status**: `GET /_relay/status?id=<id>` with `Authorization: Bearer <node token>` → `{"live":true,"transport":"relay","since":…}`
   for the Join page.
 
 ## Setup transport order
