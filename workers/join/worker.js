@@ -26,15 +26,15 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 // The supervisor keeps every account on a computer online (tools/nougen-supervisor).
 // Each file is pinned by SHA-256: setup refuses a download that does not match.
 export const SUPERVISOR = {
-  version: "1.3.1",
-  base: "https://github.com/Who-Visions/NouGenShards/releases/download/supervisor-v1.3.1/",
+  version: "1.3.2",
+  base: "https://github.com/Who-Visions/NouGenShards/releases/download/supervisor-v1.3.2/",
   sha256: {
-    "windows-amd64.exe": "f145dbb6ee8b94abe3692c54dba4e485483f2909dc96399b05d22044ba84b485",
-    "windows-arm64.exe": "833a8e210b6577817258752a3893dcadc7cae24abde6ba9fecd3dd0d18975f12",
-    "darwin-arm64": "018cbe6b10ad63123af2e8802f7ba258659af9b8715a1b47024ad66810d38568",
-    "darwin-amd64": "5a729210d3c5324824052529487c82dcc77ad65f0aa405e624a7b9285e5a8da1",
-    "linux-amd64": "1c97553dcc40c7acb7fae33b22ed6258c34a855e9b2e157ab9b3b6b796bf6513",
-    "linux-arm64": "8c2406164f5bfafb64ec9674e6587f17369dd0935aa5e28492871a77a6c2f6b2",
+    "windows-amd64.exe": "845f0e1c360c216f36f8bed8eb94ede020ab221a7dc4755552eb364a1e3a2876",
+    "windows-arm64.exe": "f13fa2c9b2bdbd2ffc470c42fc220de43932e1a768c7262aaf6269c1e4c9ebe2",
+    "darwin-arm64": "d7ef2cb46d7b90638aba1a7df1d645e51fd150a06666bc8823080a6631950fc6",
+    "darwin-amd64": "576d5466aa23f6b693af9ff6bd78b33849beaf83403fba9375dc92fe509f5e05",
+    "linux-amd64": "cd07ddd9956adb2f1ed8bd73e648bf175873920e374552f328ed76a2ad32848d",
+    "linux-arm64": "35b228480fd6d74bd741ba1055745fa442af93b82e5ead1bdafad43632198d96",
   },
 };
 // What the supervisor reads for one account. One line of JSON, so it can sit
