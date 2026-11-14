@@ -84,3 +84,36 @@ def test_api_url_override_and_quoting(calls, monkeypatch):
     search_arxiv("a b")
     assert calls["url"].startswith("https://mirror.example/api/query?")
     assert "search_query=all:a%20b" in calls["url"]
+
+
+def test_ingest_paper_to_shard_passes_valid_capture_kwargs(monkeypatch):
+    from nougen_shards import core as shards
+    from nougen_shards.arxiv_core import ingest_paper_to_shard
+
+    captured_kwargs = {}
+
+    def fake_capture(event_type, title, content, **kwargs):
+        captured_kwargs["event_type"] = event_type
+        captured_kwargs["title"] = title
+        captured_kwargs["content"] = content
+        captured_kwargs.update(kwargs)
+        return True
+
+    monkeypatch.setattr(shards, "capture", fake_capture)
+    paper = {
+        "arxiv_id": "2401.00001v1",
+        "title": "Deep Learning with Python",
+        "summary": "A summary of deep learning.",
+        "published": "2024-01-01T00:00:00Z",
+        "authors": ["Author One", "Author Two"],
+        "url": "https://arxiv.org/abs/2401.00001v1",
+        "pdf_url": "https://arxiv.org/pdf/2401.00001v1.pdf",
+    }
+    res = ingest_paper_to_shard(paper, vault_dir="/tmp/ignored")
+    assert res["captured"] is True
+    assert res["status"] == "success"
+    assert captured_kwargs["event_type"] == "research"
+    assert captured_kwargs["domain_key"] == "arxiv"
+    assert captured_kwargs["source_uri"] == "https://arxiv.org/abs/2401.00001v1"
+    assert "vault_dir" not in captured_kwargs
+
