@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
+from contextlib import contextmanager
 
 import pytest
 from pathlib import Path
+import nougen_shards.rsi_artifact_snapshot as snapshot_module
 from nougen_shards.rsi_artifact_snapshot import (
     SnapshotMutated,
     SnapshotRefused,
@@ -60,7 +63,110 @@ def test_symlink_is_refused_and_outside_bytes_never_enter_the_snapshot(tmp_path:
             pytest.fail("snapshot must not be handed to the evaluator")
 
 
-@posix_only
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction behavior")
+def test_windows_junction_is_refused_and_outside_bytes_never_enter_snapshot(tmp_path: Path):
+    outside = tmp_path / "outside"; outside.mkdir()
+    (outside / "secret.txt").write_text("SECRET")
+    cand = tmp_path / "cand"; cand.mkdir()
+    junction = cand / "linked-dir"
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    with pytest.raises(SnapshotRefused):
+        with evaluator_readonly_snapshot(cand):
+            pytest.fail("snapshot must not traverse a junction outside the candidate")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory-handle sharing semantics")
+def test_windows_child_directory_cannot_be_replaced_during_scan(tmp_path: Path, monkeypatch):
+    outside = tmp_path / "outside"; outside.mkdir()
+    (outside / "secret.txt").write_text("SECRET")
+    cand = tmp_path / "cand"; cand.mkdir()
+    child = cand / "child"; child.mkdir()
+    original_scandir = os.scandir
+    state = {"attempted": False, "blocked": False, "swapped": False}
+
+    def racing_scandir(path):
+        if Path(path) == child and not state["attempted"]:
+            state["attempted"] = True
+            try:
+                child.rmdir()
+            except OSError as exc:
+                state["blocked"] = getattr(exc, "winerror", None) == 32
+            else:
+                result = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(child), str(outside)],
+                    capture_output=True,
+                    text=True,
+                )
+                assert result.returncode == 0, result.stderr
+                state["swapped"] = True
+        return original_scandir(path)
+
+    monkeypatch.setattr(snapshot_module.os, "scandir", racing_scandir)
+    with evaluator_readonly_snapshot(cand) as (snap, _):
+        assert state["attempted"]
+        assert state["blocked"]
+        assert not state["swapped"]
+        assert not (snap / "child" / "secret.txt").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory-handle and junction semantics")
+def test_windows_child_directory_swap_before_handle_open_is_refused(tmp_path: Path, monkeypatch):
+    outside = tmp_path / "outside"; outside.mkdir()
+    (outside / "secret.txt").write_text("SECRET")
+    cand = tmp_path / "cand"; cand.mkdir()
+    child = cand / "child"; child.mkdir()
+    displaced = cand / "displaced"
+    state = {"attempted": False, "blocked": False, "swapped": False}
+    original_hold = snapshot_module._hold_windows_directory
+    original_write_bytes = Path.write_bytes
+    copied_secrets = []
+
+    def record_secret_copy(path, data):
+        if path.name == "secret.txt":
+            copied_secrets.append(path)
+        return original_write_bytes(path, data)
+
+    @contextmanager
+    def racing_hold(path, expected_stat):
+        if Path(path) == child and not state["attempted"]:
+            state["attempted"] = True
+            try:
+                child.rename(displaced)
+            except OSError as exc:
+                state["blocked"] = getattr(exc, "winerror", None) == 32
+            else:
+                result = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(child), str(outside)],
+                    capture_output=True,
+                    text=True,
+                )
+                assert result.returncode == 0, result.stderr
+                state["swapped"] = True
+        with original_hold(path, expected_stat):
+            yield
+
+    monkeypatch.setattr(snapshot_module, "_hold_windows_directory", racing_hold)
+    monkeypatch.setattr(Path, "write_bytes", record_secret_copy)
+    try:
+        try:
+            with evaluator_readonly_snapshot(cand):
+                assert state["attempted"]
+        except SnapshotRefused:
+            assert state["swapped"]
+        else:
+            assert state["blocked"]
+        assert copied_secrets == []
+    finally:
+        if state["swapped"]:
+            child.rmdir()
+            displaced.rmdir()
+
+
 def test_hardlinked_file_is_refused(tmp_path: Path):
     outside = tmp_path / "shared.txt"; outside.write_text("SHARED")
     cand = tmp_path / "cand"; cand.mkdir()
