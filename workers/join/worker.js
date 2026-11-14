@@ -237,6 +237,7 @@ export const SETUP_STATES = {
 //   - Steps already done are skipped, so running it again is safe and fast.
 //   - In a container or sandbox (no systemd, no cron) it runs NouGen without
 //     autostart and prints the exact command to run it again.
+//   - Checks against this computer (127.0.0.1) never go through a proxy.
 //   - It ends with a health check on the node's port, read from node.json,
 //     and one PASS / FAIL line.
 export function setupSh(raw) {
@@ -353,7 +354,7 @@ fi
 # ---- 2. Switch this account over. Other accounts keep running and stay watched.
 : > updating; trap 'rm -f "$H/updating"' EXIT
 if [ -n "$SN" ]; then
-  if curl -fs -m 3 '${SUP_STATUS}' 2>/dev/null | grep -q '"holds":true'; then :; else
+  if curl --noproxy '*' -fs -m 3 '${SUP_STATUS}' 2>/dev/null | grep -q '"holds":true'; then :; else
     # A build from before "updating" existed would restart the node mid-swap; only that one
     # is stopped. Matched on its full path: the kernel cuts process names to 15 characters.
     pkill -f "$B/nougen-supervisor" 2>/dev/null || true
@@ -375,7 +376,7 @@ rm -f updating; trap - EXIT
 
 start_sup() {
   if [ "$MODE" = foreground ]; then
-    if curl -fs -m 3 '${SUP_STATUS}' >/dev/null 2>&1; then note "supervisor: already running"; return 0; fi
+    if curl --noproxy '*' -fs -m 3 '${SUP_STATUS}' >/dev/null 2>&1; then note "supervisor: already running"; return 0; fi
     nohup "$S" run >> "$B/supervisor.out" 2>&1 &
     note "supervisor: started without autostart (pid $!)"
   elif "$S" install >> "$LOG" 2>&1; then note "supervisor: installed with autostart"
@@ -390,7 +391,7 @@ start_sup
 P=\${NOUGEN_NODE_PORT:-$(grep -o '"port": *[0-9]*' node.json | grep -o '[0-9]*$')}
 say "Starting... (first start downloads Python once)"
 ok=0; i=0; n=\${NOUGEN_HEALTH_TRIES:-90}
-while [ $i -lt "$n" ]; do curl -fs -m 3 "http://127.0.0.1:$P/health" >/dev/null 2>&1 && { ok=1; break; }; sleep 5; i=$((i+1)); done
+while [ $i -lt "$n" ]; do curl --noproxy '*' -fs -m 3 "http://127.0.0.1:$P/health" >/dev/null 2>&1 && { ok=1; break; }; sleep 5; i=$((i+1)); done
 if [ $ok != 1 ]; then
   tail -n 30 "$H/node.log" >> "$LOG" 2>/dev/null
   fail "NouGen did not start on port $P. Its log is $H/node.log." node_failed
@@ -399,25 +400,17 @@ report node_ok
 MA="127.0.0.1:$((20000 + P % 40000))"
 tunnel_up() {
   w=\${NOUGEN_TUNNEL_WAIT:-60}; j=0
-  while [ $j -lt "$w" ]; do curl -fs -m 3 "http://$MA/ready" >/dev/null 2>&1 && return 0; sleep 3; j=$((j+3)); done
+  while [ $j -lt "$w" ]; do curl --noproxy '*' -fs -m 3 "http://$MA/ready" >/dev/null 2>&1 && return 0; sleep 3; j=$((j+3)); done
   return 1
 }
 if ! tunnel_up; then
-  # Often DNS for the tunnel edge is blocked while HTTPS through a proxy works.
-  # Look the edge up over HTTPS instead, and switch the tunnel to http2.
-  say "The tunnel did not connect. Trying again over http2 with the edge addresses looked up over HTTPS..."
+  # QUIC (UDP) is often blocked where TCP still gets out. http2 runs over TCP;
+  # it is the only supported switch here (TUNNEL_EDGE works only inside Cloudflare).
+  say "The tunnel did not connect. Trying again over http2..."
   tail -n 20 tunnel.log >> "$LOG" 2>/dev/null
-  EDGE=""
-  for name in region1.v2.argotunnel.com region2.v2.argotunnel.com; do
-    for ip in $(curl -fsS -m 10 -H 'accept: application/dns-json' "https://cloudflare-dns.com/dns-query?name=$name&type=A" 2>> "$LOG" | grep -o '"data":"[0-9.]*"' | cut -d'"' -f4); do
-      for port in \${NOUGEN_TUNNEL_EDGE_PORTS:-443 7844}; do EDGE="$EDGE,$ip:$port"; done
-    done
-  done
-  EDGE=\${EDGE#,}
-  { echo "TUNNEL_TRANSPORT_PROTOCOL=http2"; [ -n "$EDGE" ] && echo "TUNNEL_EDGE=$EDGE"; } > tunnel.env
-  note "tunnel fallback: $(tr '\\n' ' ' < tunnel.env)"
+  echo "TUNNEL_TRANSPORT_PROTOCOL=http2" > tunnel.env; note "tunnel fallback: http2"
   # Newer supervisors read tunnel.env; older ones pass on what they inherit from here.
-  export TUNNEL_TRANSPORT_PROTOCOL=http2; [ -n "$EDGE" ] && export TUNNEL_EDGE="$EDGE"
+  export TUNNEL_TRANSPORT_PROTOCOL=http2
   pkill -f "$B/nougen-supervisor" 2>/dev/null || true
   pkill -f "$H/cloudflared" 2>/dev/null || true
   sleep 2; start_sup

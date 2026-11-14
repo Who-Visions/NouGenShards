@@ -489,8 +489,9 @@ func (s *Supervisor) Snapshot() Status {
 
 // tunnelKeys are the cloudflared settings an account's tunnel.env may set.
 // Setup writes it when the default edge discovery fails (for example DNS that
-// only works through a proxy): http2 transport and explicit edge addresses.
-var tunnelKeys = map[string]bool{"TUNNEL_TRANSPORT_PROTOCOL": true, "TUNNEL_EDGE": true, "TUNNEL_EDGE_IP_VERSION": true, "TUNNEL_REGION": true}
+// only works through a proxy): http2 transport. TUNNEL_EDGE is left out on
+// purpose: cloudflared honors it only in Cloudflare's internal testing.
+var tunnelKeys = map[string]bool{"TUNNEL_TRANSPORT_PROTOCOL": true, "TUNNEL_EDGE_IP_VERSION": true, "TUNNEL_REGION": true}
 
 func tunnelEnv(dir string) []string {
 	b, err := os.ReadFile(filepath.Join(dir, "tunnel.env"))

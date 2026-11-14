@@ -27,7 +27,7 @@ const STUBS = {
   curl: `
 url=""; out=""; data=""
 while [ $# -gt 0 ]; do
-  case "$1" in -o) out=$2; shift;; --data) data=$2; shift;; http*) url=$1;; esac; shift
+  case "$1" in -o) out=$2; shift;; --data) data=$2; shift;; --noproxy) echo "$2" >> "$T/noproxy.log"; shift;; http*) url=$1;; esac; shift
 done
 echo "$url $data" >> "$T/curl.log"
 [ -n "$out" ] && echo "$url -o" >> "$T/downloads.log"
@@ -39,7 +39,6 @@ case "$url" in
   */ready) case "$READY" in always) exit 0;; fallback) [ -f "$ACCT/tunnel.env" ] && exit 0;; esac; exit 7 ;;
   *47411/status) exit 7 ;;
   *api.github.com*) echo "$SRC_SHA" ;;
-  *dns-query*) echo '{"Status":0,"Answer":[{"name":"region1.v2.argotunnel.com","type":1,"data":"198.41.192.7"}]}' ;;
 esac
 [ -n "$out" ] && echo "downloaded $url" > "$out"
 exit 0`,
@@ -117,14 +116,21 @@ test("a rerun skips every finished step and downloads nothing", { skip: !hasSh }
   assert.ok(!existsSync(join(b.T, "killed")) || !/NouGenShards/.test(b.read("killed")), "a rerun stopped a current node");
 });
 
-test("tunnel fallback: http2 with edge addresses looked up over HTTPS, then it connects", { skip: !hasSh }, () => {
+test("tunnel fallback: retries over http2 (no unsupported edge override), then it connects", { skip: !hasSh }, () => {
   const b = box(); b.healthy();
   const r = b.run({ READY: "fallback" });
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  const env = readFileSync(join(b.acct, "tunnel.env"), "utf8");
-  assert.match(env, /^TUNNEL_TRANSPORT_PROTOCOL=http2$/m);
-  assert.match(env, /^TUNNEL_EDGE=198\.41\.192\.7:443,198\.41\.192\.7:7844/m);
+  assert.equal(readFileSync(join(b.acct, "tunnel.env"), "utf8"), "TUNNEL_TRANSPORT_PROTOCOL=http2\n");
+  assert.ok(!/TUNNEL_EDGE/.test(setupSh({ id: "sample-acct", port: 4445, token: "t", tunnel: "u", url: "https://x.example.test" }).replace(/^ *#.*$/gm, "")), "TUNNEL_EDGE only works inside Cloudflare");
   assert.match(r.stdout, /NOUGEN SETUP: PASS/);
+});
+
+test("local checks bypass any proxy, so a proxy-only box still sees its own node", { skip: !hasSh }, () => {
+  const b = box(); b.healthy();
+  const r = b.run({ READY: "always", http_proxy: "http://proxy.invalid:3128", ALL_PROXY: "http://proxy.invalid:3128" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const local = b.read("curl.log").split("\n").filter((l) => l.startsWith("http://127.0.0.1")).length;
+  assert.ok(local > 0 && b.read("noproxy.log").split("\n").filter(Boolean).length >= local, "a loopback check went without --noproxy");
 });
 
 test("no egress for the tunnel: stops cleanly with the plain reason and tells the Join page", { skip: !hasSh }, () => {

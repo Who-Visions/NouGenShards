@@ -52,7 +52,7 @@ func TestUnitTextQuotesForSystemd(t *testing.T) {
 }
 
 func TestForegroundCmdIsPasteable(t *testing.T) {
-	if got := foregroundCmd("/home/a/.nougen-node/nougen-supervisor", []string{"run"}); got != "/home/a/.nougen-node/nougen-supervisor run" {
+	if got := foregroundCmd("/opt/ng/.nougen-node/nougen-supervisor", []string{"run"}); got != "/opt/ng/.nougen-node/nougen-supervisor run" {
 		t.Fatal(got)
 	}
 	if got := foregroundCmd("/o'k dir/s", nil); got != `'/o'\''k dir/s'` {
@@ -67,7 +67,7 @@ func TestTunnelEnvAllowlist(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := tunnelEnv(d)
-	want := []string{"TUNNEL_TRANSPORT_PROTOCOL=http2", "TUNNEL_EDGE=198.41.192.7:7844,198.41.200.7:7844"}
+	want := []string{"TUNNEL_TRANSPORT_PROTOCOL=http2"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
