@@ -51,7 +51,7 @@ def relay_dir():
     env = os.environ.get("NOUGEN_RELAY_DIR")
     cands = [env] if env else []
     cands += [os.path.join(HOME, p) for p in (
-        "Watchtower/NouGenRelay-main", "NouGenRelay-main", "NouGenRelay", "Watchtower/NouGenRelay")]
+        ".nougen/relay", "Watchtower/NouGenRelay-main", "NouGenRelay-main", "NouGenRelay", "Watchtower/NouGenRelay")]
     for c in cands:
         if c and os.path.isdir(os.path.join(c, ".handoffs")):
             return c
@@ -95,19 +95,21 @@ def open_legs(rdir, limit):
         if not isinstance(r, dict) or r.get("status", "open") != "open" or r.get("acked_by"):
             continue
         legs.append((os.path.basename(f)[:-5], r))
-    legs.sort(key=lambda x: x[0], reverse=True)
+    legs.sort(key=lambda x: (x[0][:1].isdigit(), x[0]), reverse=True)
     return legs[:limit]
 
 
 def inbox(limit=5):
-    d = os.environ.get("NOUGEN_INBOX_DIR", os.path.join(HOME, ".nougen", "claude_inbox"))
+    d = (os.environ.get("NOUGEN_CLAUDE_INBOX")
+         or os.environ.get("NOUGEN_INBOX_DIR")
+         or os.path.join(HOME, ".nougen", "claude_inbox"))
     files = sorted(glob.glob(os.path.join(d, "*.json")), key=os.path.getmtime, reverse=True)[:limit]
     out = []
     for f in files:
         try:
             with open(f, encoding="utf-8") as fh:
                 m = json.load(fh)
-            body = m.get("message") or m.get("body") or ""
+            body = m.get("message") or m.get("body") or m.get("text") or m.get("prompt") or ""
             when = datetime.fromtimestamp(os.path.getmtime(f), timezone.utc).isoformat()
             out.append((local_time(when), body))
         except Exception:
