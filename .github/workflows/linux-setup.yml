@@ -40,14 +40,16 @@ jobs:
     container:
       image: ${{ matrix.image }}
     env:
-      # Neither image has systemd or cron, so setup must pick foreground mode by itself.
+      # Neither image has systemd, so setup must pick foreground mode by itself.
       NOUGEN_EXPECT_SANDBOX: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: No systemd, no cron
+      # No systemd here. Alpine's busybox still ships a crontab binary, which
+      # setup must ignore inside a container: nothing runs it after a restart.
+      - name: No systemd
         run: |
-          if command -v systemctl || command -v crontab; then echo "expected a box with no systemd and no cron"; exit 1; fi
+          if command -v systemctl; then echo "expected a box with no systemd"; exit 1; fi
       - name: Join and setup.sh tests
         run: node --test --test-reporter=spec tests/js/*.test.mjs
