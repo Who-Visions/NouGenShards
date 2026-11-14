@@ -1,6 +1,5 @@
 # Stages for ~/.nougen/bin/local_gate.sh: one shell command per line, run from
-# the repo root. They mirror .github/workflows/ci.yml, so a green local gate
-# and a green CI run mean the same thing.
+# the repo root. They cover the Python, Go, and UI checks from .github/workflows/ci.yml.
 #
 # Without this file the gate guesses: a bare "ruff check ." (fails on files
 # CI never lints), a serial pytest (48 minutes on phoebus, past the gate's
@@ -19,8 +18,11 @@ PY=python3; [ -x .venv/bin/python ] && PY=.venv/bin/python; PYTHONPATH=$PWD/src 
 # pytest in parallel when pytest-xdist is importable (under 5 minutes on
 # phoebus), serially otherwise. Never point --basetemp inside a dot-directory:
 # the scanner tests treat hidden paths as out of bounds and fail.
-PY=python3; [ -x .venv/bin/python ] && PY=.venv/bin/python; W=""; $PY -c "import xdist" 2>/dev/null && W="-n 4"; PYTHONPATH=$PWD/src $PY -m pytest tests -q -p no:cacheprovider ${=W}
+PY=python3; [ -x .venv/bin/python ] && PY=.venv/bin/python; W=""; $PY -c "import xdist" 2>/dev/null && W="-n 4"; PYTHONPATH=$PWD/src $PY -m pytest tests -q -p no:cacheprovider $W
 
 # Go modules, each only where it exists in this checkout.
 [ ! -f go/ngsnode/go.mod ] || (cd go/ngsnode && test -z "$(gofmt -l .)" && go vet ./... && go test -count=1 ./...)
 [ ! -f tools/nougen-supervisor/go.mod ] || (cd tools/nougen-supervisor && test -z "$(gofmt -l .)" && go vet ./... && go test -count=1 ./...)
+
+# TypeScript / UI tests when ui/node_modules is installed.
+[ ! -d ui/node_modules ] || (cd ui && npx vitest run)
