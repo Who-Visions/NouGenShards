@@ -382,6 +382,21 @@ class RelayClient:
             delay = min(self.backoff_max, delay * 2)
 
 
+def relay_id(n: dict) -> str:
+    """The id the relay routes on: the public hostname's first label.
+
+    node.json "id" is the tenant id, which can differ from the hostname label the Worker
+    sees (e.g. tenant "dave-abc" served at "dave-abc-d334.<domain>"). Order: explicit
+    "relay_id", then the label of "url", then "id".
+    """
+    if n.get("relay_id"):
+        return str(n["relay_id"]).lower()
+    host = urllib.parse.urlsplit(str(n.get("url") or "")).hostname
+    if host and "." in host:
+        return host.split(".", 1)[0].lower()
+    return str(n["id"]).lower()
+
+
 def _load_node(path: str) -> dict:
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
@@ -400,7 +415,7 @@ def main(argv=None) -> int:
     if not url:
         print("relay: unavailable (no relay_url in node.json, NOUGEN_RELAY_URL or endpoints file)")
         return 2
-    c = RelayClient(url, str(n["id"]).lower(),
+    c = RelayClient(url, relay_id(n),
                     str(n["token"]), int(n["port"]))
     if a.cmd == "probe":
         try:

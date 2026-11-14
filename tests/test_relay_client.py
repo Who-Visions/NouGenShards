@@ -293,3 +293,9 @@ def test_probe_cli_exit_codes(pki, local_node, tmp_path, monkeypatch, capsys):
     nj.write_text(json.dumps({"id": "alice", "port": local_node, "token": "bad", "relay_url": "wss://relay.test/_relay/connect"}))
     assert rc.main(["probe", "--node-json", str(nj), "--timeout", "5"]) == 2
     assert "unavailable" in capsys.readouterr().out
+
+
+def test_relay_id_follows_public_hostname_label():
+    assert rc.relay_id({"id": "dave-336", "url": "https://dave-336-d334.example.com"}) == "dave-336-d334"
+    assert rc.relay_id({"id": "Alice", "relay_id": "Alice-X", "url": "https://a.example.com"}) == "alice-x"
+    assert rc.relay_id({"id": "Bob"}) == "bob"
