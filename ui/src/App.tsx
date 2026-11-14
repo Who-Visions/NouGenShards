@@ -1,5 +1,6 @@
 import { recoverMessages, validWidgets, buildContext, type Widget } from './chatPersistence';
 import ChatWidgetRenderer from './ChatWidgetRenderer';
+import BatteryReader from './BatteryReader';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // ---------------------------------------------------------------------------
@@ -153,7 +154,7 @@ interface RelayEntry {
   acknowledged_by: string;
 }
 
-type Tab = 'search' | 'chat' | 'design' | 'substrate' | 'fleet' | 'tracker' | 'relay' | 'stats';
+type Tab = 'search' | 'chat' | 'design' | 'substrate' | 'fleet' | 'battery' | 'tracker' | 'relay' | 'stats';
 
 const TABS: { key: Tab; label: string; icon: string }[] = [
   { key: 'chat', label: 'Chat', icon: '💬' },
@@ -161,6 +162,7 @@ const TABS: { key: Tab; label: string; icon: string }[] = [
   { key: 'design', label: 'Design Intelligence', icon: '🎨' },
   { key: 'substrate', label: 'Storage', icon: '💾' },
   { key: 'fleet', label: 'Your Machines', icon: '💻' },
+  { key: 'battery', label: 'Battery', icon: '🔋' },
   { key: 'tracker', label: 'Token & Cost Meter', icon: '⚡' },
   { key: 'relay', label: 'Team Handoffs', icon: '🤝' },
   { key: 'stats', label: 'Growth Stats', icon: '📈' },
@@ -182,6 +184,7 @@ function getModelDisplayMeta(model: string, provider: string) {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('chat');
+  const readBattery = useCallback(() => callEngine('read_battery', {}), []);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Shard[]>([]);
   const [identity, setIdentity] = useState<any>(null);
@@ -1082,6 +1085,8 @@ export default function App() {
             </div>
           </section>
         )}
+
+        {tab === 'battery' && <BatteryReader readBattery={readBattery} isDesktop={Boolean(tauriInvoke)} />}
 
         {tab === "tracker" && !usage?.ledger_present && <p className="panel">No published usage records are available for this scope and period.</p>}
         {/* TAB 4: Token & Cost Meter */}
