@@ -115,13 +115,16 @@ test("public request is piped over the socket and back", async () => {
 
 test("status reports live transport; offline node gets a clear 502", async () => {
   const { env, objects } = await seeded();
-  let s = await (await worker.fetch(new Request("https://relay.example/_relay/status?id=alice"), env)).json();
+  const statusReq = (token = TOKEN) => new Request("https://relay.example/_relay/status?id=alice", { headers: { authorization: `Bearer ${token}` } });
+  assert.equal((await worker.fetch(new Request("https://relay.example/_relay/status?id=alice"), env)).status, 401);
+  assert.equal((await worker.fetch(statusReq("wrong"), env)).status, 401);
+  let s = await (await worker.fetch(statusReq(), env)).json();
   assert.deepEqual([s.live, s.transport], [false, "relay"]);
   const off = await worker.fetch(new Request("https://alice.nougenai.com/"), env);
   assert.equal(off.status, 502);
   assert.match(await off.text(), /offline/);
   await connect(env, objects);
-  s = await (await worker.fetch(new Request("https://relay.example/_relay/status?id=alice"), env)).json();
+  s = await (await worker.fetch(statusReq(), env)).json();
   assert.equal(s.live, true);
   assert.ok(s.since > 0);
 });
@@ -164,4 +167,49 @@ test("repeated Set-Cookie headers from the node all reach the browser", async ()
   autoAnswer(server, () => ({ status: 200, headers: [["set-cookie", "a=1"], ["set-cookie", "b=2"], ["content-type", "text/plain"]], body: btoa("ok") }));
   const res = await worker.fetch(new Request("https://alice.nougenai.com/login"), env);
   assert.deepEqual(res.headers.getSetCookie(), ["a=1", "b=2"]);
+});
+
+test("oversized body with no Content-Length is cut off while streaming", async () => {
+  const { env, objects } = await seeded();
+  env.RELAY_MAX_BODY_BYTES = "4";
+  const { server } = await connect(env, objects);
+  const n = server.sent.length;
+  const stream = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("abc")); c.enqueue(new TextEncoder().encode("defgh")); c.close(); } });
+  const res = await worker.fetch(new Request("https://alice.nougenai.com/up", { method: "POST", body: stream, duplex: "half" }), env);
+  assert.equal(res.status, 413);
+  assert.equal(server.sent.length, n);
+});
+
+test("concurrent requests each get their own answer with distinct rids", async () => {
+  const { env, objects } = await seeded();
+  const { server } = await connect(env, objects);
+  const rids = new Set();
+  autoAnswer(server, (f) => { rids.add(f.rid); return { status: 200, headers: {}, body: btoa(f.path) }; });
+  const paths = ["/a", "/b", "/c", "/d"];
+  const bodies = await Promise.all(paths.map(async (p) => (await worker.fetch(new Request("https://alice.nougenai.com" + p), env)).text()));
+  assert.deepEqual(bodies, paths);
+  assert.equal(rids.size, paths.length);
+});
+
+test("malformed node responses become 502, never pass through", async () => {
+  for (const bad of [
+    { status: 99, headers: {}, body: "" },
+    { status: "x", headers: {}, body: "" },
+    { status: 200, headers: "nope", body: "" },
+    { status: 200, headers: {}, body: 42 },
+    { status: 200, headers: {}, body: "%%%not-base64%%%" },
+  ]) {
+    const { env, objects } = await seeded();
+    const { server } = await connect(env, objects);
+    autoAnswer(server, () => bad);
+    assert.equal((await worker.fetch(new Request("https://alice.nougenai.com/"), env)).status, 502, JSON.stringify(bad));
+  }
+});
+
+test("node response larger than the relay limit becomes 502", async () => {
+  const { env, objects } = await seeded();
+  env.RELAY_MAX_BODY_BYTES = "6";
+  const { server } = await connect(env, objects);
+  autoAnswer(server, () => ({ status: 200, headers: [["x-ok", "1"], ["bad"], [1, 2]], body: btoa("way too long") }));
+  assert.equal((await worker.fetch(new Request("https://alice.nougenai.com/"), env)).status, 502);
 });

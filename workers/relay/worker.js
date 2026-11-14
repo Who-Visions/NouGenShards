@@ -7,7 +7,7 @@
 // comes back the same way.
 //
 //   GET  /_relay/connect?id=<id>   WebSocket upgrade, Authorization: Bearer <node token>
-//   GET  /_relay/status?id=<id>    {"live":bool,"transport":"relay","since":ms|null}
+//   GET  /_relay/status?id=<id>    (Bearer <node token>) {"live":bool,"transport":"relay","since":ms|null}
 //   *    <id>.<suffix>/<path>       proxied to the node
 //   *    /n/<id>/<path>             same, for workers.dev / preview routes
 //
@@ -69,6 +69,26 @@ const unb64 = (s) => Uint8Array.from(atob(s || ""), (c) => c.charCodeAt(0));
 const HOP = new Set(["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer", "host", "content-length"]);
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
+// Read a request body without ever buffering more than maxBody bytes: refuse early on a
+// declared Content-Length, then count while streaming. Returns null when it is too large.
+async function readCapped(req, maxBody) {
+  if (!req.body) return new ArrayBuffer(0);
+  const declared = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBody) return null;
+  const reader = req.body.getReader();
+  const chunks = []; let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBody) { try { await reader.cancel(); } catch { /* gone */ } return null; }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total); let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.byteLength; }
+  return out.buffer;
+}
+
 const OFFLINE = (id) => new Response(
   `<!doctype html><meta charset="utf-8"><title>Node offline</title><body style="font-family:system-ui;background:#0d0d0d;color:#f2eee6;display:grid;place-items:center;min-height:100vh;margin:0"><div style="max-width:32rem;padding:1rem"><h1>This node is offline</h1><p>${id} is not connected right now. If this is your computer, make sure it is on and NouGen is running.</p></div>`,
   { status: 502, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
@@ -115,11 +135,12 @@ export class RelaySession {
     const id = new URL(req.url).searchParams.get("id") || "node";
     if (!ws) return OFFLINE(id);
     const { timeoutMs, maxBody } = limits(this.env);
-    const body = req.body ? await req.arrayBuffer() : new ArrayBuffer(0);
-    if (body.byteLength > maxBody) return new Response("request too large for relay", { status: 413 });
+    const body = await readCapped(req, maxBody);
+    if (!body) return new Response("request too large for relay", { status: 413 });
     const headers = {};
     for (const [k, v] of req.headers) if (!HOP.has(k.toLowerCase())) headers[k] = v;
-    const rid = String(++this.seq) + "-" + Date.now().toString(36);
+    // A random rid: seq restarts at 0 if the object is evicted and rebuilt, so on its own it can repeat.
+    const rid = crypto.randomUUID();
     const res = await new Promise((resolve) => {
       const timer = setTimeout(() => { this.pending.delete(rid); resolve(null); }, timeoutMs);
       this.pending.set(rid, { resolve, timer });
@@ -128,14 +149,25 @@ export class RelaySession {
       } catch { clearTimeout(timer); this.pending.delete(rid); resolve(null); }
     });
     if (!res) return new Response("node did not answer in time", { status: 504 });
+    // The node is outside our trust boundary: check status, header shape and body size before relaying.
+    const status = Number(res.status);
+    if (!Number.isInteger(status) || status < 200 || status > 599) return new Response("node sent an invalid status", { status: 502 });
+    if (res.body != null && typeof res.body !== "string") return new Response("node sent an invalid body", { status: 502 });
+    if ((res.body || "").length > Math.ceil(maxBody / 3) * 4) return new Response("node response too large for relay", { status: 502 });
+    const raw = res.headers == null ? [] : res.headers;
+    if (typeof raw !== "object") return new Response("node sent invalid headers", { status: 502 });
     const h = new Headers();
     // Pairs keep repeated headers (Set-Cookie); a plain object is still accepted.
-    const pairs = Array.isArray(res.headers) ? res.headers : Object.entries(res.headers || {});
-    for (const [k, v] of pairs) if (!HOP.has(k.toLowerCase())) { try { h.append(k, v); } catch { /* bad header */ } }
+    const pairs = Array.isArray(raw) ? raw : Object.entries(raw);
+    for (const pair of pairs) {
+      if (!Array.isArray(pair) || typeof pair[0] !== "string" || typeof pair[1] !== "string") continue;
+      if (!HOP.has(pair[0].toLowerCase())) { try { h.append(pair[0], pair[1]); } catch { /* bad header */ } }
+    }
     h.set("x-nougen-transport", "relay");
-    const status = Number(res.status) || 502;
     const nullBody = status === 204 || status === 304 || req.method === "HEAD";
-    return new Response(nullBody ? null : unb64(res.body), { status, headers: h });
+    let out;
+    try { out = nullBody ? null : unb64(res.body); } catch { return new Response("node sent an invalid body", { status: 502 }); }
+    return new Response(out, { status, headers: h });
   }
 
   webSocketMessage(ws, msg) {
@@ -167,7 +199,8 @@ export default {
     if (url.pathname === "/_relay/connect" || url.pathname === "/_relay/status") {
       const id = (url.searchParams.get("id") || "").toLowerCase();
       if (!validId(id)) return json({ error: "bad id" }, 400);
-      if (url.pathname === "/_relay/connect" && !(await authorized(env, id, req))) return json({ error: "unauthorized" }, 401);
+      // Status needs the node's own token too: open status let anyone enumerate ids and learn which nodes are online.
+      if (!(await authorized(env, id, req))) return json({ error: "unauthorized" }, 401);
       const u = new URL(req.url); u.searchParams.set("id", id);
       return stub(id).fetch(new Request(u, req));
     }
