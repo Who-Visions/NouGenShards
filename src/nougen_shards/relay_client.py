@@ -153,7 +153,7 @@ def open_tunnel(host: str, port: int, timeout: float = 15.0, env: Optional[dict]
     p = proxy_for(host, env)
     if not p:
         return _connect_direct(host, port, timeout, resolver)
-    s = socket.create_connection((p.hostname, p.port or (443 if p.scheme == "https" else 8080)), timeout=timeout)
+    s = socket.create_connection((p.hostname, p.port or (443 if p.scheme == "https" else 80)), timeout=timeout)
     if p.scheme == "https":
         s = tls_context(env).wrap_socket(s, server_hostname=p.hostname)
     req = f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\nUser-Agent: nougen-relay\r\n"
@@ -325,10 +325,8 @@ class RelayClient:
             conn.request(f.get("method", "GET"), f.get("path", "/"), base64.b64decode(f.get("body") or ""), hdrs)
             r = conn.getresponse()
             body = r.read()
-            out_h: dict = {}
-            for k, v in r.getheaders():
-                if k.lower() not in HOP:
-                    out_h[k] = f"{out_h[k]}, {v}" if k in out_h and k.lower() != "set-cookie" else v
+            # A list of [name, value] pairs, so repeated headers (Set-Cookie) all survive.
+            out_h = [[k, v] for k, v in r.getheaders() if k.lower() not in HOP]
             res = {"t": "res", "rid": f.get("rid"), "status": r.status, "headers": out_h,
                    "body": base64.b64encode(body).decode()}
             conn.close()

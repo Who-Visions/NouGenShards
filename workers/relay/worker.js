@@ -129,7 +129,9 @@ export class RelaySession {
     });
     if (!res) return new Response("node did not answer in time", { status: 504 });
     const h = new Headers();
-    for (const [k, v] of Object.entries(res.headers || {})) if (!HOP.has(k.toLowerCase())) { try { h.append(k, v); } catch { /* bad header */ } }
+    // Pairs keep repeated headers (Set-Cookie); a plain object is still accepted.
+    const pairs = Array.isArray(res.headers) ? res.headers : Object.entries(res.headers || {});
+    for (const [k, v] of pairs) if (!HOP.has(k.toLowerCase())) { try { h.append(k, v); } catch { /* bad header */ } }
     h.set("x-nougen-transport", "relay");
     const status = Number(res.status) || 502;
     const nullBody = status === 204 || status === 304 || req.method === "HEAD";

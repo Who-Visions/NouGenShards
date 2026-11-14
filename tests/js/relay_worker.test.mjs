@@ -157,3 +157,11 @@ test("oversized body is refused before it reaches the socket", async () => {
   assert.equal(res.status, 413);
   assert.equal(server.sent.length, n);
 });
+
+test("repeated Set-Cookie headers from the node all reach the browser", async () => {
+  const { env, objects } = await seeded();
+  const { server } = await connect(env, objects);
+  autoAnswer(server, () => ({ status: 200, headers: [["set-cookie", "a=1"], ["set-cookie", "b=2"], ["content-type", "text/plain"]], body: btoa("ok") }));
+  const res = await worker.fetch(new Request("https://alice.nougenai.com/login"), env);
+  assert.deepEqual(res.headers.getSetCookie(), ["a=1", "b=2"]);
+});

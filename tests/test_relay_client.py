@@ -180,6 +180,8 @@ def local_node():
                                "body": self.rfile.read(n).decode()}).encode()
             self.send_response(200)
             self.send_header("content-type", "application/json")
+            self.send_header("set-cookie", "a=1")
+            self.send_header("set-cookie", "b=2")
             self.send_header("content-length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -222,6 +224,7 @@ def test_requests_flow_through_connect_proxy_with_custom_ca(pki, local_node):
     assert res["status"] == 200
     got = json.loads(base64.b64decode(res["body"]))
     assert got == {"method": "POST", "path": "/api/x?q=1", "x": "1", "body": "hello"}
+    assert [v for k, v in res["headers"] if k.lower() == "set-cookie"] == ["a=1", "b=2"]
     time.sleep(0.7)
     assert relay.pings >= 2, "heartbeat not sent"
     c.stop.set()
@@ -299,3 +302,15 @@ def test_relay_id_follows_public_hostname_label():
     assert rc.relay_id({"id": "dave-336", "url": "https://dave-336-d334.example.com"}) == "dave-336-d334"
     assert rc.relay_id({"id": "Alice", "relay_id": "Alice-X", "url": "https://a.example.com"}) == "alice-x"
     assert rc.relay_id({"id": "Bob"}) == "bob"
+
+
+def test_proxy_url_without_port_uses_scheme_default(monkeypatch):
+    seen = []
+
+    def fake_conn(addr, timeout=None):
+        seen.append(addr)
+        raise OSError("stop")
+    monkeypatch.setattr(rc.socket, "create_connection", fake_conn)
+    with pytest.raises(OSError):
+        rc.open_tunnel("relay.test", 443, 1, {"HTTPS_PROXY": "http://proxy.corp"})
+    assert seen == [("proxy.corp", 80)]
