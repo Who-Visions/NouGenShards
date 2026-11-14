@@ -43,8 +43,8 @@ func TestNoAutostartIsAWarningNotAFailure(t *testing.T) {
 }
 
 func TestUnitTextQuotesForSystemd(t *testing.T) {
-	u := unitText("/home/o'k/$b/nougen-supervisor", []string{"run", "-base", "/a b/100%"})
-	for _, want := range []string{`ExecStart="/home/o'k/$$b/nougen-supervisor" "run" "-base" "/a b/100%%"`, "WantedBy=default.target"} {
+	u := unitText("/opt/o'k/$b/nougen-supervisor", []string{"run", "-base", "/a b/100%"})
+	for _, want := range []string{`ExecStart="/opt/o'k/$$b/nougen-supervisor" "run" "-base" "/a b/100%%"`, "WantedBy=default.target"} {
 		if !strings.Contains(u, want) {
 			t.Fatalf("unit missing %q:\n%s", want, u)
 		}
