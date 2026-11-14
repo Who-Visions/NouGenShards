@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"text/tabwriter"
@@ -207,9 +208,18 @@ func cmdInstall(base string, baseSet bool) int {
 		}
 		ids = append(ids, n.ID)
 	}
+	noAuto := false
 	if err := installAutostart(self, args, base, ids); err != nil {
-		fmt.Fprintln(os.Stderr, "autostart:", err)
-		return 1
+		if !isNoAutostart(err) {
+			fmt.Fprintln(os.Stderr, "autostart:", err)
+			return 1
+		}
+		// Containers and sandboxes have no systemd and no cron. That is not a
+		// failed install: run now, and say exactly how to run it again.
+		noAuto = true
+		fmt.Fprintln(os.Stderr, "WARN autostart:", err)
+		fmt.Fprintln(os.Stderr, "WARN NouGen will not start by itself after a restart here. To run it in the foreground:")
+		fmt.Fprintln(os.Stderr, "  "+foregroundCmd(self, args))
 	}
 	// Replace a running older build, then start this one. A build that
 	// answers is asked to quit; anything left (a build from before the
@@ -236,7 +246,11 @@ func cmdInstall(base string, baseSet bool) int {
 	}
 	for i := 0; i < 50; i++ {
 		if _, err := fetchStatus(time.Second); err == nil {
-			fmt.Println("installed: running, and starts at sign-in")
+			if noAuto {
+				fmt.Println("installed: running (foreground mode, no autostart)")
+			} else {
+				fmt.Println("installed: running, and starts at sign-in")
+			}
 			return 0
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -335,4 +349,21 @@ func main() {
 		code = 64
 	}
 	os.Exit(code)
+}
+
+// foregroundCmd is the exact command that runs the supervisor without autostart.
+func foregroundCmd(self string, args []string) string {
+	q := func(a string) string {
+		if a != "" && strings.IndexFunc(a, func(r rune) bool {
+			return !(r == '/' || r == '-' || r == '_' || r == '.' || r == ':' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z')
+		}) < 0 {
+			return a
+		}
+		return "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	out := q(self)
+	for _, a := range args {
+		out += " " + q(a)
+	}
+	return out
 }

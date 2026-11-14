@@ -112,13 +112,15 @@ test("setup hands each account to the supervisor: node.json, a pinned download, 
   assert.ok(!cmd.includes("'--token'"));
 
   const sh = setupSh(args);
-  assert.ok(sh.includes("cat > node.json <<'NODE'\n" + nodeJson(args) + "\nNODE"));
+  assert.ok(sh.includes("cat > node.json.new <<'NODE'\n" + nodeJson(args) + "\nNODE"));
+  assert.ok(sh.includes("mv -f node.json.new node.json"), "node.json is replaced in one step");
   assert.ok(!sh.includes("pkill -x nougen-supervisor"), "Linux comm names truncate at 15 chars");
   assert.match(sh, /pkill -f "\$B\/nougen-supervisor"/);
   assert.match(sh, /pkill -f "\$H\/NouGenShards"/);
   assert.match(sh, /"\$S" install/);
   for (const k of ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"]) assert.ok(sh.includes(SUPERVISOR.sha256[k]));
-  assert.ok(!sh.includes("--token") && !sh.includes("crontab") && !sh.includes("run.sh <<"));
+  // Setup may look for crontab (to spot a sandbox) but never edits it: the supervisor owns autostart.
+  assert.ok(!sh.includes("--token") && !/crontab +-/.test(sh) && !sh.includes("run.sh <<"));
 });
 
 test("every supervisor download is pinned to a real SHA-256", () => {
