@@ -36,8 +36,8 @@ def server(monkeypatch, tmp_path):
     srv.server_close()
 
 
-def _post(port: int, target: str) -> tuple[int, dict]:
-    data = json.dumps({"text": "ping", "sender": "probe", "target": target}).encode()
+def _post(port: int, target: str, **extra) -> tuple[int, dict]:
+    data = json.dumps({"text": "ping", "sender": "probe", "target": target, **extra}).encode()
     req = urllib.request.Request(f"http://127.0.0.1:{port}/msg", data=data, headers=AUTH)
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -62,9 +62,33 @@ def test_cross_node_target_routes_via_fleet_bus(server, monkeypatch):
     assert body["delivered"] is True
     assert body["routed"] is True
     assert body["method"] == "fleet_bus"
-    assert calls == [("blade", "antigravity", "ping", {"sender": "probe"})]
+    assert calls == [("blade", "antigravity", "ping", {"original_sender": "probe"})]
     if node.INBOX.exists():
         assert not list(node.INBOX.glob("*.json"))
+
+
+def test_forwarded_preserves_origin_envelope_and_dedups_retries(server, monkeypatch):
+    node, port = server
+    monkeypatch.setattr(node, "INFLIGHT_GRACE_S", 0.05)
+    calls = []
+
+    class FakeBus:
+        @staticmethod
+        def emit_node(node: str, target: str, text: str, origin=None):
+            calls.append((node, target, text, origin))
+            return {node: "DELIVERED"}
+
+    monkeypatch.setattr(node, "_get_fleet_bus", lambda: FakeBus)
+    env = {"original_sender": "whoart/claude", "correlation_id": "corr-123", "reply_to": "@whoart:claude"}
+    code1, body1 = _post(port, "@blade", message_id="fwd-dedup-1", origin_envelope=env)
+    code2, body2 = _post(port, "@blade", message_id="fwd-dedup-1", origin_envelope=env)
+    assert code1 == 200 and code2 == 200
+    assert body1["duplicate"] is False
+    assert body2["duplicate"] is True
+    assert body2["routed"] is True
+    assert body2["method"] == "fleet_bus"
+    assert len(calls) == 1
+    assert calls[0][3] == env
 
 
 def test_broadcast_target_routes_via_emit_fleet_background(server, monkeypatch):
@@ -82,7 +106,7 @@ def test_broadcast_target_routes_via_emit_fleet_background(server, monkeypatch):
     assert code == 200
     assert body["delivered"] is True
     assert body["routed"] is True
-    assert calls == [("ping", "all", {"sender": "probe"}, True)]
+    assert calls == [("ping", "all", {"original_sender": "probe"}, True)]
 
 
 def test_cross_node_route_error_returns_502_and_releases_claim(server, monkeypatch):

@@ -127,7 +127,9 @@ def _dispatch_foreign_target(msg: dict, dest: "tuple[str, str]") -> "tuple[int, 
             "node": NODE,
             "target": msg["target"],
         }
-    origin = {"sender": msg.get("sender", "unknown")}
+    raw_env = msg.get("origin_envelope")
+    origin = dict(raw_env) if isinstance(raw_env, dict) else {}
+    origin.setdefault("original_sender", msg.get("sender", "unknown"))
     if dest_node == "fleet":
         res = bus.emit_fleet(text=msg["text"], target=dest_agent, origin=origin, background=True)
         return 200, {
@@ -434,10 +436,10 @@ def claim_message(msg: dict) -> "tuple[bool, dict]":
                     continue
                 seen = _read_marker(marker)
                 deadline = time.time() + INFLIGHT_GRACE_S
-                while seen is not None and not seen.get("file") and time.time() < deadline:
+                while seen is not None and not _is_completed_marker(seen) and time.time() < deadline:
                     time.sleep(0.05)
                     seen = _read_marker(marker)
-                if seen is not None and seen.get("file"):
+                if seen is not None and _is_completed_marker(seen):
                     return False, seen  # a completed delivery
                 if seen is not None:
                     marker.unlink()  # unfinished past the grace: take the claim over
@@ -460,11 +462,16 @@ def _read_marker(marker: Path) -> "dict | None":
         return {}
 
 
+def _is_completed_marker(seen: dict) -> bool:
+    """Return True when a dedup marker represents a finished local or routed delivery."""
+    return bool(seen.get("file") or seen.get("routed"))
+
+
 def release_claim(msg: dict) -> None:
     """Drop an unfinished claim after a failed delivery so the sender's retry is delivered."""
     marker = seen_marker(msg["message_id"])
     seen = _read_marker(marker)
-    if seen is not None and not seen.get("file"):
+    if seen is not None and not _is_completed_marker(seen):
         try:
             marker.unlink()
         except FileNotFoundError:
@@ -476,6 +483,15 @@ def note_delivery(msg: dict, path: Path) -> None:
     marker = seen_marker(msg["message_id"])
     if marker.exists():
         _atomic_write(marker, json.dumps({"message_id": msg["message_id"], "file": path.name,
+                                          "received_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}))
+
+
+def note_routed_delivery(msg: dict, target: str) -> None:
+    """Record a completed cross-node/fleet forward so retries do not re-forward."""
+    marker = seen_marker(msg["message_id"])
+    if marker.exists():
+        _atomic_write(marker, json.dumps({"message_id": msg["message_id"], "file": None,
+                                          "routed": True, "target": target,
                                           "received_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}))
 
 
@@ -859,10 +875,15 @@ class Handler(BaseHTTPRequestHandler):
         if not first:
             # Same event again (a retry, or a sender that re-sends): acknowledge with
             # the original delivery and do nothing else, so a retry is always safe.
-            self._send({"delivered": True, "duplicate": True, "method": "http", "node": NODE,
-                        "file": seen.get("file"), "message_id": msg["message_id"],
-                        "receipt": "/msg/{}".format(msg["message_id"]),
-                        "build": build_id(), "elevated": {"attempted": False, "skipped": "duplicate"}})
+            dup = {"delivered": True, "duplicate": True,
+                   "method": "fleet_bus" if seen.get("routed") else "http",
+                   "node": NODE, "file": seen.get("file"), "message_id": msg["message_id"],
+                   "build": build_id(), "elevated": {"attempted": False, "skipped": "duplicate"}}
+            if seen.get("routed"):
+                dup["routed"] = True
+            else:
+                dup["receipt"] = "/msg/{}".format(msg["message_id"])
+            self._send(dup)
             return
         if foreign is not None:
             try:
@@ -872,6 +893,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise
             if status >= 400:
                 release_claim(msg)
+            else:
+                note_routed_delivery(msg, str(msg["target"]))
             self._send(payload, status)
             return
         try:
