@@ -26,3 +26,5 @@ PY=python3; [ -x .venv/bin/python ] && PY=.venv/bin/python; W=""; $PY -c "import
 
 # TypeScript / UI tests when ui/node_modules is installed.
 [ ! -d ui/node_modules ] || (cd ui && npx vitest run)
+# Bun tests (tools/aiwithdav3_review_lib.ts); skipped where bun is not installed.
+[ ! -x "$HOME/.bun/bin/bun" ] || "$HOME/.bun/bin/bun" test tests/bun
