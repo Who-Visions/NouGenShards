@@ -66,3 +66,14 @@ def test_lane_marker_and_clean_helper(tmp_path):
     mod = load()
     assert mod.clean("a b\x00c", 50) == "a b c"
     assert mod.clean("x" * 20, 10).endswith("...") and len(mod.clean("x" * 20, 10)) == 10
+
+
+def test_registry_helper_files_are_not_legs_and_scan_stops_early(tmp_path):
+    legs = {"usage_2026-07-31": {"status": "open", "goal": "not a leg"}}
+    for i in range(30):
+        legs[f"20261114T{i:06d}Z__a__b"] = {"status": "open", "goal": f"leg {i}"}
+    out = run_hook(tmp_path, legs, {"NOUGEN_HOOK_LEGS": "3"})
+    lines = [line for line in out.stdout.splitlines() if line.startswith("- ")]
+    assert len(lines) == 3, "stops at NOUGEN_HOOK_LEGS"
+    assert "not a leg" not in out.stdout and "usage_2026" not in out.stdout
+    assert "leg 29" in lines[0], "newest dated leg first"
