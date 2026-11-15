@@ -1,6 +1,7 @@
 """Model Context Protocol (MCP) server for NouGenShards — Valerion Engine."""
 import json
 import os
+from pathlib import Path
 import sqlite3
 from nougen_shards import agents
 from typing import Optional, List
@@ -1661,6 +1662,154 @@ def nougen_web_crawl(url: str, max_pages: int = 10, max_depth: int = 2,
         return json.dumps(result, ensure_ascii=False, default=str)
     except (WebResearchError, TypeError, ValueError) as exc:
         return json.dumps({"error": str(exc), "untrusted_source": True}, ensure_ascii=False)
+
+
+
+_PR_REVIEW_LEDGER = Path.home() / ".nougen" / "research" / "reviews" / "aiwithdav3" / "ledger.jsonl"
+
+
+def _pr_review_script() -> Path:
+    """review.ts installed by tools/pr_reviewer/install.ps1 (~/.nougen/bin), else the repo copy."""
+    installed = Path.home() / ".nougen" / "bin" / "pr_reviewer" / "review.ts"
+    if installed.exists():
+        return installed
+    return Path(__file__).resolve().parents[2] / "tools" / "pr_reviewer" / "review.ts"
+
+
+@mcp.tool()
+def review_pr(repo: str, pr: int, dry_run: bool = True) -> str:
+    """Review a GitHub PR as aiwithdav3 (free lanes -> local e2b -> agy, second-lane supervisor).
+
+    dry_run=True (default) reviews without posting. dry_run=False posts one GitHub review per head SHA.
+    Never merges. Gated: set NOUGEN_ENABLE_PR_REVIEW=1 on the server to enable.
+    """
+    gate = _tool_gate("NOUGEN_ENABLE_PR_REVIEW", "review_pr")
+    if gate:
+        return gate
+    import re as _re
+    import shutil
+    import subprocess
+    # GitHub owner/name; "." and ".." segments are refused so /repos/<repo> cannot traverse
+    if (not _re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo or "")
+            or any(part in (".", "..") for part in repo.split("/")) or int(pr) <= 0):
+        return json.dumps({"error": "repo must be owner/name and pr a positive number"})
+    bun = shutil.which("bun") or str(Path.home() / ".bun" / "bin" / "bun.exe")
+    cmd = [bun, str(_pr_review_script()), "review", repo, str(int(pr))] + (["--dry-run"] if dry_run else [])
+    try:
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8",
+                           errors="replace", timeout=3000, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return json.dumps({"error": str(exc)})
+    tail = "\n".join((r.stdout or "").strip().splitlines()[-15:])
+    err = "\n".join((r.stderr or "").strip().splitlines()[-10:])
+    return json.dumps({"repo": repo, "pr": int(pr), "dry_run": dry_run, "exit": r.returncode, "log": tail, "stderr": err})
+
+
+def _run_review_ts(args: List[str], timeout: int = 900) -> dict:
+    import shutil
+    import subprocess
+    bun = shutil.which("bun") or str(Path.home() / ".bun" / "bin" / "bun.exe")
+    try:
+        r = subprocess.run([bun, str(_pr_review_script()), *args], stdin=subprocess.DEVNULL, capture_output=True,
+                           encoding="utf-8", errors="replace", timeout=timeout,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"error": str(exc)}
+    return {"exit": r.returncode, "stdout": (r.stdout or "").strip()[-6000:],
+            "stderr": "\n".join((r.stderr or "").strip().splitlines()[-10:])}
+
+
+@mcp.tool()
+def rsi_status() -> str:
+    """aiwithdav3 reviewer RSI loop: checklist versions, active one, rejected streak, gate rejections, weights. Read-only."""
+    out = _run_review_ts(["rsi", "status"], timeout=120)
+    try:
+        return json.dumps(json.loads(out.get("stdout") or ""), ensure_ascii=False)
+    except ValueError:
+        return json.dumps(out)
+
+
+@mcp.tool()
+def rsi_evolve() -> str:
+    """Run one RSI scoring pass (judge findings vs later pushes, propose a checklist, holdout gate). Gated by NOUGEN_ENABLE_PR_REVIEW=1."""
+    gate = _tool_gate("NOUGEN_ENABLE_PR_REVIEW", "rsi_evolve")
+    if gate:
+        return gate
+    return json.dumps(_run_review_ts(["rsi", "evolve"]))
+
+
+@mcp.tool()
+def rsi_rollback(version: int) -> str:
+    """Re-issue checklist v<version> as the newest version (append-only; history is kept). Gated by NOUGEN_ENABLE_PR_REVIEW=1."""
+    gate = _tool_gate("NOUGEN_ENABLE_PR_REVIEW", "rsi_rollback")
+    if gate:
+        return gate
+    if int(version) <= 0:
+        return json.dumps({"error": "version must be a positive number"})
+    return json.dumps(_run_review_ts(["rsi", "rollback", str(int(version))], timeout=120))
+
+
+def _pr_tool(name: str):
+    """Import a tools/pr_reviewer module (verdicts, reverse) from the repo checkout."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[2] / "tools" / "pr_reviewer" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"pr_reviewer_{name}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@mcp.tool()
+def pr_review_verdicts(repo: str, pr: int) -> str:
+    """Review-loop state for a PR from prreview logs: every round's verdict, FIXED/NOT FIXED, open P1/P2/P3,
+    whether the loop is done, and the exact next command. Read-only."""
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo or "") or any(p in (".", "..") for p in repo.split("/")) \
+            or int(pr) <= 0:
+        return json.dumps({"error": "repo must be owner/name and pr a positive number"})
+    return json.dumps(_pr_tool("verdicts").loop_state(repo, int(pr)), ensure_ascii=False)
+
+
+@mcp.tool()
+def rsi_reverse(targets: List[str], lanes: int = 2) -> str:
+    """Fleet reads donor repos' source (owner/repo[:pat1,pat2]) in 7k chunks and extracts RSI mechanisms to
+    ~/.nougen/research/reverse/fleet_raw.json. Free lanes only. Gated by NOUGEN_ENABLE_PR_REVIEW=1."""
+    gate = _tool_gate("NOUGEN_ENABLE_PR_REVIEW", "rsi_reverse")
+    if gate:
+        return gate
+    import subprocess
+    import sys as _sys
+    try:
+        rev = _pr_tool("reverse")
+        clean = [t for t in (targets or [])[:8] if rev.parse_target(t)]
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    if not clean:
+        return json.dumps({"error": "give at least one owner/repo target"})
+    try:
+        r = subprocess.run([_sys.executable, rev.__file__, *clean, "--lanes", str(max(1, min(int(lanes), 3)))],
+                           stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", errors="replace",
+                           timeout=1800, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps({"exit": r.returncode, "stdout": (r.stdout or "").strip()[-2000:],
+                       "stderr": "\n".join((r.stderr or "").strip().splitlines()[-10:])})
+
+
+@mcp.tool()
+def pr_review_status(repo: str = "", pr: int = 0, limit: int = 10) -> str:
+    """Latest aiwithdav3 review verdicts from the local ledger, newest first. Read-only."""
+    rows = []
+    if _PR_REVIEW_LEDGER.exists():
+        for line in _PR_REVIEW_LEDGER.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(e, dict) and (not repo or e.get("repo") == repo) and (not pr or e.get("pr") == int(pr)):
+                rows.append(e)
+    return json.dumps({"ledger": str(_PR_REVIEW_LEDGER), "reviews": rows[::-1][:max(1, min(int(limit), 50))]},
+                      ensure_ascii=False, default=str)
 
 
 if __name__ == "__main__":
