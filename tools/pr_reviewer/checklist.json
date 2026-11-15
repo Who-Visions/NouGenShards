@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "created": "2026-11-15",
+  "sources": [
+    "aihero.dev/skills-code-review",
+    "aihero.dev/skills-pr",
+    "aiskill.market/blog/pr-reviewer-skill-tutorial",
+    "mcpmarket.com/tools/skills/pr-review-agent-1",
+    "medium.com/@dorinbaba (403 at fetch time; not used)"
+  ],
+  "technique": [
+    "Cite every finding: a changed file and a RIGHT-side line that appears in the diff, plus the quoted hunk. No citation, no finding.",
+    "Report only what you are at least 80/100 confident is a real defect. Smells are labelled 'possible' and carry a fix.",
+    "Skip anything a linter or formatter already enforces. No style nits unless the repo's own rules require it.",
+    "Classify the change as a one-way or two-way door; read one-way doors (migrations, public API removal, auth, deploy config) hardest.",
+    "If there is no spec or issue, say so; never invent requirements.",
+    "Large diffs: focus on the highest-impact files and say coverage was limited."
+  ],
+  "items": [
+    {"id": "spec-conformance", "check": "Does the diff do what the PR title/body says, fully, without scope creep?", "weight": 1.0},
+    {"id": "bug-hunt-logic", "check": "Objective bugs in changed code: null/undefined paths, races, off-by-one, wrong conditions, stale state.", "weight": 1.0},
+    {"id": "error-handling", "check": "Unhandled promise rejections, swallowed errors, async without error handling, uninformative errors.", "weight": 1.0},
+    {"id": "injection-flaws", "check": "String-built SQL, unsafe HTML rendering of input, shell commands built from input.", "weight": 1.0},
+    {"id": "authz-session", "check": "New endpoints/IPC without auth checks; inconsistent permission checks; session handling.", "weight": 1.0},
+    {"id": "secrets-pii", "check": "Hardcoded secrets, tokens or PII in code, logs or error messages.", "weight": 1.0},
+    {"id": "breaking-change", "check": "Changed public API, schema, IPC channel or config: are all consumers updated?", "weight": 1.0},
+    {"id": "resource-leaks", "check": "Listeners/timers/intervals never cleaned up, unbounded growth, closures capturing large objects.", "weight": 1.0},
+    {"id": "perf-cost", "check": "O(n^2) searches, queries or awaits inside loops, repeated work on hot paths.", "weight": 0.8},
+    {"id": "dependency-risk", "check": "New or unpinned dependencies, known-vulnerable packages.", "weight": 0.8},
+    {"id": "test-gaps", "check": "New behaviour without a test, or missing edge cases for the change.", "weight": 0.6},
+    {"id": "evidence", "check": "Does the PR body show before/after evidence (failing test now passing, screenshot), not just 'tests green'?", "weight": 0.4},
+    {"id": "complexity", "check": "Long functions, mixed responsibilities, duplicated logic in the changed hunks (possible smell).", "weight": 0.4},
+    {"id": "naming", "check": "Names that do not reveal intent (possible smell).", "weight": 0.3}
+  ],
+  "lessons": []
+}
