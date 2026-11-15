@@ -1,6 +1,7 @@
 """Model Context Protocol (MCP) server for NouGenShards — Valerion Engine."""
 import json
 import os
+from pathlib import Path
 import sqlite3
 from nougen_shards import agents
 from typing import Optional, List
@@ -1612,6 +1613,60 @@ def nougen_web_crawl(url: str, max_pages: int = 10, max_depth: int = 2,
         return json.dumps(result, ensure_ascii=False, default=str)
     except (WebResearchError, TypeError, ValueError) as exc:
         return json.dumps({"error": str(exc), "untrusted_source": True}, ensure_ascii=False)
+
+
+
+_PR_REVIEW_LEDGER = Path.home() / ".nougen" / "research" / "reviews" / "aiwithdav3" / "ledger.jsonl"
+
+
+def _pr_review_script() -> Path:
+    """review.ts installed by tools/pr_reviewer/install.ps1 (~/.nougen/bin), else the repo copy."""
+    installed = Path.home() / ".nougen" / "bin" / "pr_reviewer" / "review.ts"
+    if installed.exists():
+        return installed
+    return Path(__file__).resolve().parents[2] / "tools" / "pr_reviewer" / "review.ts"
+
+
+@mcp.tool()
+def review_pr(repo: str, pr: int, dry_run: bool = True) -> str:
+    """Review a GitHub PR as aiwithdav3 (free lanes -> local e2b -> agy, second-lane supervisor).
+
+    dry_run=True (default) reviews without posting. dry_run=False posts one GitHub review per head SHA.
+    Never merges. Gated: set NOUGEN_ENABLE_PR_REVIEW=1 on the server to enable.
+    """
+    gate = _tool_gate("NOUGEN_ENABLE_PR_REVIEW", "review_pr")
+    if gate:
+        return gate
+    import re as _re
+    import shutil
+    import subprocess
+    if not _re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo or "") or int(pr) <= 0:
+        return json.dumps({"error": "repo must be owner/name and pr a positive number"})
+    bun = shutil.which("bun") or str(Path.home() / ".bun" / "bin" / "bun.exe")
+    cmd = [bun, str(_pr_review_script()), "review", repo, str(int(pr))] + (["--dry-run"] if dry_run else [])
+    try:
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8",
+                           errors="replace", timeout=3000, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return json.dumps({"error": str(exc)})
+    tail = "\n".join((r.stdout or r.stderr or "").strip().splitlines()[-15:])
+    return json.dumps({"repo": repo, "pr": int(pr), "dry_run": dry_run, "exit": r.returncode, "log": tail})
+
+
+@mcp.tool()
+def pr_review_status(repo: str = "", pr: int = 0, limit: int = 10) -> str:
+    """Latest aiwithdav3 review verdicts from the local ledger, newest first. Read-only."""
+    rows = []
+    if _PR_REVIEW_LEDGER.exists():
+        for line in _PR_REVIEW_LEDGER.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(e, dict) and (not repo or e.get("repo") == repo) and (not pr or e.get("pr") == int(pr)):
+                rows.append(e)
+    return json.dumps({"ledger": str(_PR_REVIEW_LEDGER), "reviews": rows[::-1][:max(1, min(int(limit), 50))]},
+                      ensure_ascii=False, default=str)
 
 
 if __name__ == "__main__":

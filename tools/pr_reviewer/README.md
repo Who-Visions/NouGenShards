@@ -10,7 +10,7 @@ bun review.ts review Who-Visions/NouGenFlix 168       # review + post once for t
 bun review.ts review <repo> <n> --dry-run --fail-lane huggingface,openrouter   # prove the fallback
 bun review.ts poll --owner Who-Visions                # the hook: new PR heads in recently pushed repos
 bun review.ts score                                   # RSI pass (also runs at the end of every poll)
-prreview <repo> <n> --agent aiwithdav3                # same, from the existing prreview flow (or --post)
+python prreview.py <repo> <n> --agent aiwithdav3       # single CLI entry: codex/agy read-only, or the aiwithdav3 posting lane (--post)
 ```
 
 ## Failsafe rules
@@ -39,9 +39,13 @@ The seed checklist in `checklist.json` is distilled from aihero.dev `skills-code
 
 ## Hook
 
-`install.ps1` copies the tool to `~/.nougen/bin/pr_reviewer` and registers the `NouGen-PRReviewer-aiwithdav3` scheduled task. The task runs every 20 minutes through `conhost --headless`, so no window flashes. It runs locally because it needs the keymaker. It polls `Who-Visions` repos pushed in the last 72 hours and reviews up to 4 new PR heads per run.
+`install.ps1` copies the tool to `~/.nougen/bin/pr_reviewer` and registers the `NouGen-PRReviewer-aiwithdav3` scheduled task. The task runs every 20 minutes through `pythonw poll_task.pyw`, which starts bun with `CREATE_NO_WINDOW`. No console window opens, unlike `conhost --headless`, which still flashed one. Launcher failures go to `run.log`. It runs locally because it needs the keymaker. It polls `Who-Visions` repos pushed in the last 72 hours and reviews up to 4 new PR heads per run.
 
 ## Known
 
 - HF Inference and Ollama Cloud free tiers are returning 402 (credits) on 2026-11-15, so OpenRouter and agy carry the load.
 - The local e2b lane returned empty content on a 14k-character review prompt. It stays in the chain, and the chain moves past it.
+
+## MCP
+
+The `nougen-shards` server exposes `review_pr(repo, pr, dry_run=True)` and `pr_review_status(repo, pr, limit)`. `review_pr` stays off until the server has `NOUGEN_ENABLE_PR_REVIEW=1`. `pr_review_status` only reads `ledger.jsonl`.
