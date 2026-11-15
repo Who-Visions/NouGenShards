@@ -58,9 +58,16 @@ CREATE TABLE IF NOT EXISTS skill_notes (
 
 
 def db_path() -> Path:
-    """Sidecar location; ``NOUGEN_SKILL_PLAYBOOK_DB`` overrides the vault default."""
+    """Sidecar location; ``NOUGEN_SKILL_PLAYBOOK_DB`` overrides the vault default.
+
+    The default follows the request's active vault, so a tenant's outcomes and
+    field notes stay in that tenant's vault and never reach another tenant.
+    """
     override = os.environ.get("NOUGEN_SKILL_PLAYBOOK_DB", "").strip()
-    return Path(override) if override else Path(core.GLOBAL_DIR) / "skill_playbook.db"
+    return Path(override) if override else Path(core.active_vault_dir()) / "skill_playbook.db"
+
+
+_READY: set[str] = set()
 
 
 @contextmanager
@@ -69,11 +76,21 @@ def _connect() -> Iterator[sqlite3.Connection]:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=5.0)
     try:
-        conn.executescript(_SCHEMA)
+        # Schema and WAL are set once per file per process, not on every read:
+        # executescript commits and takes a write lock, which readers should not need.
+        if str(path) not in _READY or not _has_schema(conn):
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(_SCHEMA)
+            _READY.add(str(path))
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+def _has_schema(conn: sqlite3.Connection) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'skill_counts'").fetchone() is not None
 
 
 def _key(skill: str) -> str:

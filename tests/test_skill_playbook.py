@@ -121,3 +121,17 @@ def test_mcp_mark_skill_feeds_apply_skills(tmp_path, monkeypatch):
     text = mcp_mod.apply_skills("read the open legs")
     assert "FIELD NOTES" in text and "[sk-00001] helpful=0 harmful=0 :: Read the leg body before acking." in text
     assert 'mark_skill("<name>"' in text
+
+
+def test_default_sidecar_follows_the_active_vault(tmp_path, monkeypatch):
+    import nougen_shards.core as core
+    monkeypatch.delenv("NOUGEN_SKILL_PLAYBOOK_DB")
+    owner, tenant = tmp_path / "owner", tmp_path / "tenant"
+    monkeypatch.setattr(core, "active_vault_dir", lambda: owner)
+    playbook.mark("relay", True, note="Owner lesson.")
+    monkeypatch.setattr(core, "active_vault_dir", lambda: tenant)
+    assert playbook.counts("relay") == (0, 0) and playbook.field_notes("relay") == []
+    playbook.mark("relay", False)
+    assert (tenant / "skill_playbook.db").exists() and (owner / "skill_playbook.db").exists()
+    monkeypatch.setattr(core, "active_vault_dir", lambda: owner)
+    assert playbook.counts("relay") == (1, 0)

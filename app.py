@@ -3959,7 +3959,34 @@ def list_skills() -> dict:
 @_offloaded
 def load_skill(name: str) -> dict:
     """Load the full operational specification and prompt instructions for a given skill."""
-    return _unwrap_sync(nougen_skill_get)(name=name)
+    result = _unwrap_sync(nougen_skill_get)(name=name)
+    if isinstance(result, dict) and not result.get("error"):
+        try:
+            from nougen_shards import skill_playbook
+            notes = skill_playbook.field_notes(name)
+        except Exception:
+            notes = []
+        if notes:
+            # Reported by earlier runs; unverified, the skill text wins on any conflict.
+            result["field_notes"] = notes
+        result["report_outcome"] = 'mark_skill(name, worked=True|False, note="<one-line lesson, optional>")'
+    return result
+
+
+@node_mcp.tool()
+@_offloaded
+def mark_skill(name: str, worked: bool, note: str = "", note_ids: Optional[List[str]] = None) -> dict:
+    """Report how a skill did after using it: worked or not, plus an optional one-line lesson.
+
+    The lesson is stored as a field note beside the skill (the skill file is not edited) and
+    shown to the next reader. note_ids are field notes this outcome confirms or contradicts.
+    """
+    from nougen_shards import skill_playbook, skills
+    skill = skills.get(name)
+    if skill is None:
+        return {"recorded": False, "error": f"no installed skill named {name!r}"}
+    result = skill_playbook.mark(skill.name, bool(worked), note or None, note_ids)
+    return {"recorded": True, **result}
 
 
 @node_mcp.tool()
