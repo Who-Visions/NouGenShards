@@ -104,7 +104,10 @@ try {
   await $`git -C ${W} fetch -q origin pull/${pr}/head`.quiet();
   await $`git -C ${W} checkout -q --detach ${HEAD}`.quiet();
   const name = repo.split("/")[1];
-  for (const d of [`${HOME}/The Observatory/${name}`, `${HOME}/The Observatory/NouGen/${name}`])
+  // Reuse the local clone's .venv / node_modules. Folder case differs from the repo name
+  // (NouGenShards lives in nougenshards), so match case-insensitively, as land_pr.sh does.
+  const found = (await $`find ${HOME + "/The Observatory"} -maxdepth 3 -type d -iname ${name}`.quiet().nothrow()).stdout.toString().split("\n").filter((d) => d && existsSync(`${d}/.git`));
+  for (const d of found)
     for (const x of [".venv", "node_modules"]) if (existsSync(`${d}/${x}`) && !existsSync(`${W}/${x}`)) await $`ln -s ${d}/${x} ${W}/${x}`.quiet().nothrow();
   const gate = await $`${HOME}/.nougen/bin/local_gate.sh ${W}`.quiet().nothrow();
   const gateLine = gate.stdout.toString().split("\n").filter((l) => l.startsWith("GATE ")).pop() || "GATE ?";
