@@ -23,13 +23,14 @@ import { $ } from "bun";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalize, parseJson, type Finding, type LaneOut } from "./aiwithdav3_review_lib.ts";
+import { changedFiles, normalize, parseJson, playbookText, ungrounded, type Finding, type LaneOut, type Lesson } from "./aiwithdav3_review_lib.ts";
 
 const HOME = process.env.HOME!;
 const SHARDS = `${HOME}/The Observatory/NouGen/nougenshards`;
 const OPEN = `${HOME}/The Observatory/NouGen/NouGenOpen`;
 const PY = `${SHARDS}/.venv/bin/python`;
 const RSI = `${HOME}/.nougen/state/review_rsi.jsonl`;
+const PLAYBOOK = `${HOME}/.nougen/state/review_playbook.jsonl`;
 const REVIEWER = "aiwithdav3";
 const MIN_CONF = 80;
 const QUORUM = 2;
@@ -109,7 +110,9 @@ try {
   if (!diff.trim()) stop("empty diff");
   const DIFF = diff.length > 120_000 ? diff.slice(0, 120_000) + "\n[diff truncated]" : diff;
   const guides = ["CLAUDE.md", "AGENTS.md", "CONTRIBUTING.md"].flatMap((f) => existsSync(`${W}/${f}`) ? [`--- ${f}\n${readFileSync(`${W}/${f}`, "utf8").slice(0, 6000)}`] : []).join("\n");
-  const { text: track, benched } = lessons();
+  const { text: track0, benched } = lessons();
+  const book: Lesson[] = existsSync(PLAYBOOK) ? readFileSync(PLAYBOOK, "utf8").trim().split("\n").flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } }) : [];
+  const track = [track0, playbookText(book)].filter(Boolean).join("\n\n");
 
   const schema = `Answer with ONLY this JSON, nothing after it:
 {"verdict":"READY"|"CHANGES","findings":[{"file":"path","line":123,"severity":"blocking"|"minor","confidence":0-100,"claim":"one sentence: concrete input -> wrong result"}]}
@@ -155,9 +158,18 @@ Diff:\n${DIFF}\n\n${schema}`;
   const answered = outs.filter((o) => o.ok);
 
   // ---------- 4. supervisor: adversarial validation by NouGenOpen
-  const claims = answered.flatMap((o) => o.findings).filter((f) => f.confidence >= MIN_CONF);
+  // CRITIC-style grounding before any model judges a finding.
+  const files = changedFiles(diff);
+  const lineCount = (f: string) => { try { return readFileSync(join(W, f), "utf8").split("\n").length; } catch { return null; } };
+  const strong = answered.flatMap((o) => o.findings).filter((f) => f.confidence >= MIN_CONF);
+  const groundless = strong.flatMap((f) => { const why = ungrounded(f, files, lineCount); return why ? [{ f, why }] : []; });
+  for (const g of groundless) log(`grounding rejected [${g.f.lane}] ${g.f.file}:${g.f.line ?? "?"}: ${g.why}`);
+  const claims = strong.filter((f) => !groundless.some((g) => g.f === f));
   let sup: { verdict: "READY" | "CHANGES"; rulings: { i: number; ruling: "CONFIRMED" | "REJECTED"; why: string }[] } | null = null;
-  try {
+  // Nothing to validate: the supervisor is not asked, because a verdict with no finding behind
+  // it is ungrounded (it flipped READY/CHANGES between identical runs).
+  if (!claims.length) { sup = { verdict: "READY", rulings: [] }; log("supervisor: no findings at or above the bar, nothing to rule on"); }
+  else try {
     const ask = `You supervise a PR review of ${repo} #${pr} at ${HEAD}. Lanes answered: ${answered.map((o) => `${o.lane}=${o.verdict}`).join(", ") || "none"}.
 Adversarially check each claimed finding against the diff. CONFIRMED only if the diff really shows the defect; otherwise REJECTED.
 Findings:\n${claims.map((f, i) => `${i}. [${f.lane}] ${f.file}:${f.line ?? "?"} (${f.severity}, ${f.confidence}) ${f.claim}`).join("\n") || "(none)"}
@@ -180,20 +192,28 @@ verdict is CHANGES if any CONFIRMED finding is blocking.`;
   for (const o of outs) {
     const mine = claims.map((f, i) => ({ f, i })).filter(({ f }) => f.lane === o.lane);
     laneStats[o.lane] = { ok: o.ok, verdict: o.verdict ?? null, err: o.err ?? null,
-      false_positives: mine.filter(({ i }) => sup?.rulings.find((r) => r.i === i)?.ruling === "REJECTED").length };
+      false_positives: mine.filter(({ i }) => sup?.rulings.find((r) => r.i === i)?.ruling === "REJECTED").length + groundless.filter((g) => g.f.lane === o.lane).length };
   }
 
   // ---------- 5. decide (fail closed)
   const reasons: string[] = [];
   if (answered.length < QUORUM) reasons.push(`only ${answered.length} lane(s) answered (need ${QUORUM})`);
+  // The decision comes from the per-finding rulings, never from a bare verdict word.
   if (!sup) reasons.push("supervisor gave no usable ruling");
-  else if (sup.verdict !== "READY") reasons.push("supervisor says CHANGES");
+  else if (sup.verdict !== "READY" && !blockers.length) log("supervisor said CHANGES without confirming a blocking finding; ignored as ungrounded");
+  else if (sup.verdict === "READY" && blockers.length) log("supervisor said READY but confirmed a blocking finding; the finding wins");
   if (blockers.length) reasons.push(`${blockers.length} confirmed blocking finding(s)`);
   if (unruled.length) reasons.push(`${unruled.length} finding(s) the supervisor did not rule on`);
   const nowHead = (await $`gh pr view ${pr} -R ${repo} --json headRefOid -q .headRefOid`.text()).trim();
   if (nowHead !== HEAD) reasons.push(`head moved to ${nowHead.slice(0, 9)} during review`);
   const approve = reasons.length === 0;
 
+  // Distil rejected findings into playbook lessons for the next reviews.
+  const lessonsNow: Lesson[] = [
+    ...groundless.map((g) => ({ at: new Date().toISOString(), repo, lesson: `${g.f.lane} claimed "${g.f.claim.slice(0, 140)}" but ${g.why}` })),
+    ...claims.flatMap((f, i) => { const r = sup?.rulings.find((x) => x.i === i); return r?.ruling === "REJECTED" ? [{ at: new Date().toISOString(), repo, lesson: `Wrong: "${f.claim.slice(0, 140)}" (${r.why.slice(0, 120)})` }] : []; }),
+  ];
+  for (const l of lessonsNow) appendFileSync(PLAYBOOK, JSON.stringify(l) + "\n");
   appendFileSync(RSI, JSON.stringify({ at: new Date().toISOString(), repo, pr, head: HEAD, gate: gateLine, approve, reasons, lanes: laneStats,
     supervisor: sup?.verdict ?? null, confirmed: confirmed.length, rejected: claims.length - confirmed.length - unruled.length }) + "\n");
 

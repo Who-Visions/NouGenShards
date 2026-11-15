@@ -34,3 +34,32 @@ export function normalize(lane: string, o: any): LaneOut {
       : []);
   return { lane, ok: true, verdict, findings };
 }
+
+// CRITIC-style grounding: check a finding against hard evidence before any model judges it.
+// A finding on a file the diff does not touch, or on a line past the end of that file, is
+// rejected here. Returns the reason, or null when the finding is grounded.
+export function changedFiles(diff: string): Set<string> {
+  return new Set([...diff.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((m) => m[1].trim()));
+}
+export function ungrounded(f: Finding, files: Set<string>, lineCount: (file: string) => number | null): string | null {
+  if (!files.has(f.file)) return `${f.file} is not changed by this diff`;
+  if (f.line != null) {
+    const n = lineCount(f.file);
+    if (n == null) return `${f.file} does not exist at the PR head`;
+    if (f.line < 1 || f.line > n) return `${f.file} has ${n} lines, no line ${f.line}`;
+  }
+  return null;
+}
+
+// Experience playbook (ExpeL / Reflexion / ACE): lessons distilled from findings the supervisor
+// or grounding rejected, kept short and deduplicated, newest first.
+export type Lesson = { at: string; repo: string; lesson: string };
+export function playbookText(lessons: Lesson[], max = 10): string {
+  const seen = new Set<string>(); const out: string[] = [];
+  for (const l of [...lessons].reverse()) {
+    const k = l.lesson.toLowerCase().replace(/\s+/g, " ").slice(0, 120);
+    if (seen.has(k)) continue; seen.add(k); out.push(`- ${l.lesson}`);
+    if (out.length >= max) break;
+  }
+  return out.length ? `Lessons from earlier reviews (findings like these were wrong, do not repeat them):\n${out.join("\n")}` : "";
+}

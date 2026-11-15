@@ -28,3 +28,19 @@ test("braces inside strings do not end the object", () => {
   expect(o.findings[0].claim).toBe("map {x} is nil }");
 });
 test("a truncated answer fails closed", () => { expect(() => parseJson('{"verdict":"CHANGES","findings":[{"file":"a"')).toThrow(); });
+
+import { changedFiles, playbookText, ungrounded } from "../../tools/aiwithdav3_review_lib.ts";
+const DIFF = "diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@\n-a\n+b\n";
+test("grounding rejects files outside the diff and lines past the end", () => {
+  const files = changedFiles(DIFF);
+  const lc = (f: string) => (f === "x.go" ? 40 : null);
+  const F = (file: string, line?: number) => ({ file, line, severity: "blocking" as const, confidence: 90, claim: "c" });
+  expect(ungrounded(F("x.go", 12), files, lc)).toBeNull();
+  expect(ungrounded(F("y.go", 1), files, lc)).toContain("not changed");
+  expect(ungrounded(F("x.go", 99), files, lc)).toContain("no line 99");
+});
+test("playbook dedupes and keeps the newest lessons", () => {
+  const t = playbookText([{ at: "1", repo: "r", lesson: "gofmt whitespace is not a syntax error" }, { at: "2", repo: "r", lesson: "gofmt whitespace is not a syntax error" }, { at: "3", repo: "r", lesson: "tests exist under tests/bun" }]);
+  expect(t.split("\n- ").length).toBe(3);
+  expect(t.indexOf("tests exist")).toBeLessThan(t.indexOf("gofmt"));
+});
