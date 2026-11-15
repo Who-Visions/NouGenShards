@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Land a PR the fleet way on Dave's FREE GitHub plan, end to end, never bypassing anything:
+# Land a PR the fleet way on the operator's free GitHub plan, end to end, never bypassing anything:
 #   update from main if behind -> LOCAL GATE on the exact PR head (local_gate.sh, result posted on the PR)
 #   -> headless non-Claude review -> aiwithdav3 approval only on READY at this head -> merge.
 # Private repos: Actions does not run on the free plan and there is no branch protection, so the local gate IS the CI;
@@ -41,7 +41,10 @@ $GATE_OUT
 
 # ---- non-Claude review, then approval on READY at this head
 # aiwithdav3 failsafe reviewer: gate + codex/agy/NouGenOpen lanes + NouGenOpen supervisor; approves only on READY.
-$HOME/.bun/bin/bun $HOME/.nougen/bin/aiwithdav3_review.ts $R $N | tail -3
+RV=$($HOME/.bun/bin/bun $HOME/.nougen/bin/aiwithdav3_review.ts $R $N 2>&1); RVC=$?
+print -r -- "$RV" | tail -3
+# The reviewer's own verdict decides: an older approval must not carry a PR past a failed review.
+[ $RVC -eq 0 ] || { echo "#$N not merged: aiwithdav3 review did not approve this head"; exit 1; }
 
 # ---- public repos: their Actions checks are free, so wait for them as a second opinion
 if [ "$PRIV" = "false" ]; then

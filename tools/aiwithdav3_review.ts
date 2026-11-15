@@ -39,6 +39,9 @@ process.env.PATH = `/usr/local/bin:${HOME}/.local/bin:${HOME}/.bun/bin:${process
 
 const [repo, prArg, ...flags] = process.argv.slice(2);
 const DRY = flags.includes("--dry-run");
+// Free lanes are the default. Codex and Antigravity are frontier lanes and run only on explicit
+// per-run approval (--frontier or AIW_FRONTIER=1), per the root AGENTS.md routing rule.
+const FRONTIER = flags.includes("--frontier") || process.env.AIW_FRONTIER === "1";
 const pr = Number(prArg);
 if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isInteger(pr)) {
   console.error("usage: aiwithdav3_review.ts <owner/repo> <pr> [--dry-run]"); process.exit(2);
@@ -93,6 +96,8 @@ if (!DRY) {
 
 // ---------- 2. local gate on the exact head
 const work = mkdtempSync(join(tmpdir(), "aiw-review-"));
+// process.exit() skips finally blocks, so the checkout is removed on exit instead.
+process.on("exit", () => { try { rmSync(work, { recursive: true, force: true }); } catch { /* best effort */ } });
 const W = join(work, "tree");
 try {
   if ((await $`gh repo clone ${repo} ${W} -- -q --filter=blob:none`.quiet().nothrow()).exitCode) stop("clone failed");
@@ -129,8 +134,8 @@ Diff:\n${DIFF}\n\n${schema}`;
 
   // ---------- 3. specialists in parallel
   const lanes: Record<string, () => Promise<string>> = {
-    codex: async () => (await $`codex exec --skip-git-repo-check -C ${W} ${brief("correctness bugs: logic errors, off-by-one, wrong conditions, broken contracts, missing cases.")}`.quiet()).stdout.toString(),
-    agy: async () => (await $`agy --dangerously-skip-permissions --print-timeout 900s -p ${brief("security and error handling: injection, auth, secrets, unsafe input, swallowed errors, resource leaks, failure paths.")}`.cwd(W).quiet()).stdout.toString(),
+    ...(FRONTIER ? { codex: async () => (await $`codex exec --skip-git-repo-check -C ${W} ${brief("correctness bugs: logic errors, off-by-one, wrong conditions, broken contracts, missing cases.")}`.quiet()).stdout.toString(),
+    agy: async () => (await $`agy --dangerously-skip-permissions --print-timeout 900s -p ${brief("security and error handling: injection, auth, secrets, unsafe input, swallowed errors, resource leaks, failure paths.")}`.cwd(W).quiet()).stdout.toString() } : {}),
     nougenopen: async () => openAsk(brief("tests and guidelines: is the change tested, do tests prove the claim, does it follow the project guidelines above.")),
     // A second, independent model family through NouGenOpen, so one exhausted lane (Codex hits
     // usage limits) does not cost the quorum.
@@ -168,7 +173,9 @@ Diff:\n${DIFF}\n\n${schema}`;
   let sup: { verdict: "READY" | "CHANGES"; rulings: { i: number; ruling: "CONFIRMED" | "REJECTED"; why: string }[] } | null = null;
   // Nothing to validate: the supervisor is not asked, because a verdict with no finding behind
   // it is ungrounded (it flipped READY/CHANGES between identical runs).
-  if (!claims.length) { sup = { verdict: "READY", rulings: [] }; log("supervisor: no findings at or above the bar, nothing to rule on"); }
+  const vagueChanges = answered.filter((o) => o.verdict === "CHANGES" && !o.findings.some((f) => f.confidence >= MIN_CONF));
+  if (!claims.length && !vagueChanges.length) { sup = { verdict: "READY", rulings: [] }; log("supervisor: every lane READY with no findings at or above the bar, nothing to rule on"); }
+  else if (!claims.length) log(`supervisor: ${vagueChanges.map((o) => o.lane).join(", ")} said CHANGES with no finding at or above the bar`);
   else try {
     const ask = `You supervise a PR review of ${repo} #${pr} at ${HEAD}. Lanes answered: ${answered.map((o) => `${o.lane}=${o.verdict}`).join(", ") || "none"}.
 Adversarially check each claimed finding against the diff. CONFIRMED only if the diff really shows the defect; otherwise REJECTED.
@@ -185,7 +192,7 @@ verdict is CHANGES if any CONFIRMED finding is blocking.`;
   const confirmed = claims.filter((_, i) => sup?.rulings.find((r) => r.i === i)?.ruling === "CONFIRMED");
   const blockers = confirmed.filter((f) => f.severity === "blocking");
   // Every claim the supervisor did not rule on counts as unresolved, so silence never approves.
-  const unruled = claims.filter((_, i) => !sup?.rulings.some((r) => r.i === i));
+  const unruled = claims.filter((_, i) => !sup?.rulings.some((r) => r.i === i && (r.ruling === "CONFIRMED" || r.ruling === "REJECTED")));
 
   // ---------- record for self-improvement
   const laneStats: Record<string, any> = {};
@@ -197,6 +204,7 @@ verdict is CHANGES if any CONFIRMED finding is blocking.`;
 
   // ---------- 5. decide (fail closed)
   const reasons: string[] = [];
+  if (vagueChanges.length) reasons.push(`${vagueChanges.map((o) => o.lane).join(", ")} said CHANGES without a finding at or above the bar`);
   if (answered.length < QUORUM) reasons.push(`only ${answered.length} lane(s) answered (need ${QUORUM})`);
   // The decision comes from the per-finding rulings, never from a bare verdict word.
   if (!sup) reasons.push("supervisor gave no usable ruling");

@@ -10,13 +10,13 @@ test("reads a fenced JSON answer", () => {
 });
 test("no JSON fails closed", () => { expect(() => parseJson("looks good to me")).toThrow(); });
 test("a verdict other than READY/CHANGES fails closed", () => { expect(() => normalize("l", { verdict: "LGTM" })).toThrow(); });
-test("findings are clamped and malformed ones dropped", () => {
-  const r = normalize("codex", { verdict: "CHANGES", findings: [
-    { file: "a.js", line: "7", severity: "blocking", confidence: 400, claim: "bad" },
-    { claim: "no file" }, { file: "b.js", severity: "weird", confidence: -3, claim: "c" }] });
-  expect(r.findings.length).toBe(2);
-  expect(r.findings[0]).toMatchObject({ line: 7, confidence: 100, severity: "blocking", lane: "codex" });
-  expect(r.findings[1]).toMatchObject({ severity: "minor", confidence: 0 });
+test("malformed findings fail the lane instead of vanishing", () => {
+  const ok = normalize("codex", { verdict: "CHANGES", findings: [{ file: "a.js", line: "7", severity: "blocking", confidence: 90, claim: "bad" }] });
+  expect(ok.findings[0]).toMatchObject({ line: 7, confidence: 90, severity: "blocking", lane: "codex" });
+  expect(() => normalize("l", { verdict: "CHANGES", findings: "blocking auth bug" })).toThrow("not a list");
+  expect(() => normalize("l", { verdict: "CHANGES", findings: [{ claim: "no file", severity: "blocking", confidence: 90 }] })).toThrow("lacks file");
+  expect(() => normalize("l", { verdict: "CHANGES", findings: [{ file: "a", claim: "c", severity: "critical", confidence: 90 }] })).toThrow("severity");
+  expect(() => normalize("l", { verdict: "CHANGES", findings: [{ file: "a", claim: "c", severity: "blocking", confidence: 400 }] })).toThrow("confidence");
 });
 
 test("reads a pretty-printed verdict", () => {

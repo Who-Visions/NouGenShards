@@ -27,11 +27,15 @@ export function parseJson(text: string): any {
 export function normalize(lane: string, o: any): LaneOut {
   const verdict = o?.verdict === "READY" ? "READY" : o?.verdict === "CHANGES" ? "CHANGES" : undefined;
   if (!verdict) throw new Error("verdict missing");
-  const findings: Finding[] = (Array.isArray(o.findings) ? o.findings : []).flatMap((f: any) =>
-    typeof f?.claim === "string" && typeof f?.file === "string"
-      ? [{ file: f.file, line: Number(f.line) || undefined, severity: f.severity === "blocking" ? "blocking" : "minor",
-           confidence: Math.max(0, Math.min(100, Number(f.confidence) || 0)), claim: f.claim.slice(0, 600), lane }]
-      : []);
+  // Malformed findings fail the whole lane: erasing or downgrading them could hide a blocker.
+  if (o.findings != null && !Array.isArray(o.findings)) throw new Error("findings is not a list");
+  const findings: Finding[] = (o.findings || []).map((f: any, i: number) => {
+    if (typeof f?.file !== "string" || !f.file || typeof f?.claim !== "string" || !f.claim) throw new Error(`finding ${i} lacks file or claim`);
+    if (f.severity !== "blocking" && f.severity !== "minor") throw new Error(`finding ${i} has severity ${JSON.stringify(f.severity)}`);
+    const c = Number(f.confidence);
+    if (!Number.isFinite(c) || c < 0 || c > 100) throw new Error(`finding ${i} has confidence ${JSON.stringify(f.confidence)}`);
+    return { file: f.file, line: Number(f.line) || undefined, severity: f.severity, confidence: c, claim: f.claim.slice(0, 600), lane };
+  });
   return { lane, ok: true, verdict, findings };
 }
 
