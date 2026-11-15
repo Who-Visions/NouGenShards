@@ -12,6 +12,7 @@ Safety properties (tested in tests/test_session_start_relay.py):
   * `git pull` is --ff-only with a short cap, and never touches a dirty checkout.
 
 Config (env, all optional):
+  NOUGEN_HOOK_RELAY_DIR  clone dedicated to this hook; wins over NOUGEN_RELAY_DIR
   NOUGEN_RELAY_DIR    NouGenRelay checkout (default: first of ~/.nougen/relay-hook, ~/Watchtower/NouGenRelay-main,
                       ~/NouGenRelay-main, ~/NouGenRelay, ~/Watchtower/NouGenRelay)
   NOUGEN_INBOX_DIR    claude inbox dir (default ~/.nougen/claude_inbox)
@@ -59,8 +60,9 @@ def clean(value, cap):
 
 
 def relay_dir():
-    env = os.environ.get("NOUGEN_RELAY_DIR")
-    cands = [env] if env else []
+    # NOUGEN_HOOK_RELAY_DIR is for a clone dedicated to this hook (clean, never edited by hand), so
+    # a working checkout set in NOUGEN_RELAY_DIR does not decide whether the legs are fresh.
+    cands = [e for e in (os.environ.get("NOUGEN_HOOK_RELAY_DIR"), os.environ.get("NOUGEN_RELAY_DIR")) if e]
     cands += [os.path.join(HOME, p) for p in (
         ".nougen/relay-hook", ".nougen/relay", "Watchtower/NouGenRelay-main", "NouGenRelay-main",
         "NouGenRelay", "Watchtower/NouGenRelay")]
