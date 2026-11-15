@@ -71,7 +71,12 @@ SENDER_LABEL_CHARS = 64
 _LOCAL_AGENT_TARGETS = frozenset({
     "antigravity", "agy", "claude", "claude-code", "codex", "codex-cli",
     "kaedra", "solai", "yukiai", "nobody",
+    "ollama", "openrouter", "agents",
 })
+
+# The bus addresses a model as '<lane>:<model>' ('@ollama:gemma4:e2b-qat'). The part before
+# the colon is a lane on this node, not another node.
+_LOCAL_MODEL_LANES = frozenset({"ollama", "openrouter"})
 
 
 def _foreign_target_reason(target: str) -> "str | None":
@@ -88,6 +93,8 @@ def _foreign_target_reason(target: str) -> "str | None":
     stripped = raw.lstrip("@")
     if ":" in stripped:
         node_part = stripped.split(":", 1)[0].strip()
+        if node_part in _LOCAL_MODEL_LANES:
+            return None
         if node_part and node_part not in (NODE, "local", "self"):
             return (
                 "local-only receiver on node '{}' does not route cross-node target '{}'; "
