@@ -540,6 +540,31 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._slots.release()
 
 
+# A person or agent who opens the node's address in a browser gets usage, not a JSON
+# blob or a 404. No secrets and no traffic data: only how to send and where the token lives.
+HELP_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>NouGenMsg</title>
+<style>body{background:#0d1117;color:#e6edf3;font:16px/1.55 system-ui,sans-serif;margin:0;
+display:flex;justify-content:center}main{max-width:40rem;padding:2rem 1rem}
+code,pre{background:#161b22;border:1px solid #30363d;border-radius:6px}
+code{padding:.1rem .3rem}pre{padding:.8rem;overflow-x:auto}p,li{color:#c9d1d9}</style></head>
+<body><main><h1>NouGenMsg</h1>
+<p>The NouGen fleet message bus. Send a message to any lane or node, then read its delivery receipt.</p>
+<h2>Send</h2>
+<pre>curl -X POST https://msgs.nougenai.com/msg \\
+  -H "X-NGS-Token: $NOUGEN_AGY_MSG_TOKEN" \\
+  -H "content-type: application/json" \\
+  -d '{"text":"hello","sender":"&lt;node&gt;/&lt;lane&gt;","target":"@all"}'</pre>
+<p>The reply carries a <code>message_id</code>.</p>
+<h2>Receipt</h2>
+<pre>curl https://msgs.nougenai.com/msg/&lt;message_id&gt; -H "X-NGS-Token: $NOUGEN_AGY_MSG_TOKEN"</pre>
+<h2>Notes</h2><ul>
+<li>The token is the Keymaker key <code>NOUGEN_AGY_MSG_TOKEN</code>. Never paste it into a chat, a leg or a shard.</li>
+<li>Targets: <code>@all</code>, a node (<code>@phoebus</code>, <code>@blade</code>, <code>@whoart</code>) or a lane (<code>@antigravity</code>, <code>@codex</code>).</li>
+<li>Inside a Claude app, the NouGen connector's <code>nougenmsg_send</code> tool does the same without a token.</li>
+<li><code>/health</code> reports liveness.</li></ul></main></body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -550,6 +575,15 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_html(self, page: str, code: int = 200) -> None:
+        body = page.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -601,7 +635,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         route = self._route()
-        if route in ("/status", "/health", "/"):
+        if route == "/" and "text/html" in (self.headers.get("Accept") or ""):
+            self._send_html(HELP_PAGE)
+        elif route in ("/status", "/health", "/"):
             self._send({"status": "online", "service": "agy-msg", "node": NODE,
                         "timestamp": time.time(), "pending_messages": PENDING.qsize(),
                         "ok": True, "transport": "http"})
