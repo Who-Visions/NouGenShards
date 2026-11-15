@@ -68,6 +68,35 @@ DEFAULT_PORT = 8766
 DEFAULT_BIND = "127.0.0.1"  # opt into a LAN bind with NOUGEN_AGY_MSG_BIND
 PREVIEW_CHARS = 400
 SENDER_LABEL_CHARS = 64
+_KNOWN_FLEET_NODES = frozenset({"blade", "blade1tb", "phoebus", "whoart", "hyperion", "apollo", "mac-mini"})
+_BROADCAST_TARGETS = frozenset({"all", "fleet"})
+
+
+def _foreign_target_reason(target: str) -> "str | None":
+    """Return a refusal reason if target addresses another node or fleet broadcast."""
+    raw = str(target or "").strip().lower()
+    if not raw:
+        return None
+    stripped = raw.lstrip("@")
+    if stripped in _BROADCAST_TARGETS:
+        return (
+            "local-only receiver on node '{}' does not route broadcast target '{}'; "
+            "use nougenmsg_send"
+        ).format(NODE, target)
+    if ":" in stripped:
+        node_part = stripped.split(":", 1)[0].strip()
+        if node_part and node_part not in (NODE, "local", "self"):
+            return (
+                "local-only receiver on node '{}' does not route cross-node target '{}'; "
+                "use nougenmsg_send"
+            ).format(NODE, target)
+        return None
+    if stripped in _KNOWN_FLEET_NODES and stripped != NODE:
+        return (
+            "local-only receiver on node '{}' does not route cross-node target '{}'; "
+            "use nougenmsg_send"
+        ).format(NODE, target)
+    return None
 
 
 def _env_path(key: str, *default_parts: str) -> Path:
@@ -756,6 +785,17 @@ class Handler(BaseHTTPRequestHandler):
         msg.setdefault("priority", "normal")
         msg.setdefault("timestamp", time.time())
         msg["target"] = msg.get("target") or NODE
+        not_routed = _foreign_target_reason(str(msg["target"]))
+        if not_routed:
+            self._send({
+                "delivered": False,
+                "routed": False,
+                "status": "not_routed",
+                "error": not_routed,
+                "node": NODE,
+                "target": msg["target"],
+            }, 422)
+            return
         assign_message_id(msg)
         first, seen = claim_message(msg)
         if not first:
