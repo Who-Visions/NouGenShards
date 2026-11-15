@@ -20,7 +20,7 @@
       "workers_dev": false,
       "durable_objects": { "bindings": [{ "name": "RELAY", "class_name": "RelaySession" }] },
       "kv_namespaces": [{ "binding": "RELAY_AUTH", "id": "818a2f89d45744b2acb49e3eefdc132d" }],
-      "vars": { "RELAY_HOST_SUFFIX": ".nougenai.com", "RELAY_REQUEST_TIMEOUT_MS": "30000", "RELAY_MAX_BODY_BYTES": "8388608" },
+      "vars": { "RELAY_HOST_SUFFIX": "", "RELAY_REQUEST_TIMEOUT_MS": "30000", "RELAY_MAX_BODY_BYTES": "8388608" },
       "routes": [
         { "pattern": "relay.nougenai.com", "custom_domain": true }
       ]
