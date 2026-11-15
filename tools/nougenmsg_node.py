@@ -543,6 +543,36 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
 # A person or agent who opens the node's address in a browser gets usage, not a JSON
 # blob or a 404. No secrets and no traffic data: only how to send and where the token lives.
+def wants_html(accept):
+    """True when the Accept header prefers HTML over JSON for the help page.
+
+    Media types are case-insensitive and a q=0 range is an explicit refusal, so this
+    parses the ranges instead of looking for a substring. text/html (or text/*) must
+    carry a weight above zero and at least that of application/json; */* alone or
+    a missing header keeps the JSON status that probes and scripts expect.
+    """
+    if not isinstance(accept, str):
+        return False
+    weights = {}
+    for part in accept.split(","):
+        bits = [b.strip() for b in part.split(";")]
+        media = bits[0].lower()
+        if not media:
+            continue
+        q = 1.0
+        for b in bits[1:]:
+            k, _, v = b.partition("=")
+            if k.strip().lower() == "q":
+                try:
+                    q = max(0.0, min(1.0, float(v)))
+                except ValueError:
+                    q = 0.0
+        weights[media] = max(q, weights.get(media, 0.0))
+    html_q = weights.get("text/html", weights.get("text/*", 0.0))
+    json_q = weights.get("application/json", weights.get("application/*", 0.0))
+    return html_q > 0 and html_q >= json_q
+
+
 _HELP_HOST = re.compile(r"^[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
 
 
@@ -668,7 +698,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         route = self._route()
-        if route == "/" and "text/html" in (self.headers.get("Accept") or ""):
+        if route == "/" and wants_html(self.headers.get("Accept")):
             self._send_html(help_page(self.headers.get("Host"), PENDING.qsize()))
         elif route in ("/status", "/health", "/"):
             self._send({"status": "online", "service": "agy-msg", "node": NODE,

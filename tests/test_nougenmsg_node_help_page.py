@@ -80,3 +80,15 @@ def test_designed_template_is_served_and_falls_back_cleanly(monkeypatch, tmp_pat
     monkeypatch.setattr(node, "_HELP_FILE", tmp_path / "missing.html")
     fallback = node.help_page("msgs.nougenai.com", 0)
     assert "NouGenMsg" in fallback and "https://msgs.nougenai.com/msg" in fallback and "{{" not in fallback
+
+
+def test_accept_negotiation_is_case_insensitive_and_honours_q(monkeypatch, tmp_path):
+    node = _load_node(monkeypatch, tmp_path)
+    yes = ["text/html", "TEXT/HTML", "Text/Html; charset=utf-8",
+           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "text/*"]
+    no = [None, "", "*/*", "application/json", "text/html;q=0", "TEXT/HTML; Q=0",
+          "application/json, text/html;q=0.5", "text/html;q=bogus"]
+    for a in yes:
+        assert node.wants_html(a), a
+    for a in no:
+        assert not node.wants_html(a), a
