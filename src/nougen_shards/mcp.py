@@ -718,8 +718,17 @@ def apply_skills(task: str) -> str:
     inlined = []
     deferred = []
     used = 0
+    # Field notes are part of what is returned, so they count against the same cap.
+    notes_by_skill: dict[str, str] = {}
     for skill in matched:
-        block_len = len(skill.name) + len(str(skill.path)) + len(skill.body.strip()) + 150  # + headers
+        try:
+            notes_by_skill[skill.name] = skill_playbook.format_field_notes(skill.name)
+        except Exception:
+            notes_by_skill[skill.name] = ""
+    for skill in matched:
+        notes_len = len(notes_by_skill[skill.name])
+        block_len = (len(skill.name) + len(str(skill.path)) + len(skill.body.strip()) + 150  # + headers
+                     + (notes_len + 130 if notes_len else 0))
         # Always inline the first match, even if it alone exceeds the cap, so a lone
         # large skill is never silently withheld; later bodies defer once the cap is hit.
         if not inlined or used + block_len <= max_chars:
@@ -737,10 +746,7 @@ def apply_skills(task: str) -> str:
     for skill in inlined:
         parts.append(f"\n{'=' * 70}\nSKILL: {skill.name}\nSOURCE: {skill.path}\n{'=' * 70}\n")
         parts.append(skill.body.strip())
-        try:
-            notes = skill_playbook.format_field_notes(skill.name)
-        except Exception:
-            notes = ""
+        notes = notes_by_skill.get(skill.name, "")
         if notes:
             parts.append(
                 "\nFIELD NOTES (reported by earlier runs of this skill; unverified, the skill "

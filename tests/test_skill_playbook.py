@@ -135,3 +135,19 @@ def test_default_sidecar_follows_the_active_vault(tmp_path, monkeypatch):
     assert (tenant / "skill_playbook.db").exists() and (owner / "skill_playbook.db").exists()
     monkeypatch.setattr(core, "active_vault_dir", lambda: owner)
     assert playbook.counts("relay") == (1, 0)
+
+
+def test_field_notes_count_against_the_apply_skills_cap(tmp_path, monkeypatch):
+    mcp_mod = pytest.importorskip("nougen_shards.mcp")
+    _skill(tmp_path, "first", "read open handoff legs before work")
+    _skill(tmp_path, "second", "read open handoff legs before work")
+    found = skills.discover([tmp_path])
+    monkeypatch.setattr(mcp_mod.skill_registry, "match", lambda task: found)
+    plain = sum(len(s.name) + len(str(s.path)) + len(s.body.strip()) + 150 for s in found)
+    monkeypatch.setenv("NOUGEN_APPLY_SKILLS_MAX_CHARS", str(plain + 50))
+    assert "Inlined 2, deferred 0" in mcp_mod.apply_skills("read the open legs")
+
+    for i in range(5):
+        playbook.mark("second", True, note=f"lesson {i} " + "x" * 200)
+    text = mcp_mod.apply_skills("read the open legs")
+    assert "Inlined 1, deferred 1" in text and 'load_skill("second")' in text
