@@ -21,6 +21,7 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, readdirSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { allowedLanes, finalVerdict, type Verdict } from "./gate";
 import { consensusFindings, curateLessons, evolve, judgeFindings, checkDiff, collectPages, compareFilesOrNull, driftViolations, normVerdict, parseJsonl, pickParent, rankTokens, rollbackTo, rsiStatus, seenKeys, withLock } from "./rsi";
 
 const HERE = dirname(import.meta.path);
@@ -164,8 +165,8 @@ async function callLane(lane: Lane, system: string, user: string, failLanes: Set
 }
 
 const VERDICTS = new Set(["APPROVE", "REQUEST_CHANGES", "COMMENT"]);
-async function reviewWithFallback(system: string, user: string, failLanes: Set<string>, attempts: any[]) {
-  for (const lane of LANES) {
+async function reviewWithFallback(system: string, user: string, failLanes: Set<string>, attempts: any[], lanes: readonly Lane[]) {
+  for (const lane of lanes) {
     const t0 = Date.now();
     try {
       const { text, model } = await callLane(lane, system, user, failLanes);
@@ -184,13 +185,13 @@ async function reviewWithFallback(system: string, user: string, failLanes: Set<s
   return null;
 }
 
-async function supervise(primaryLane: Lane, primaryModel: string, verdict: any, diff: string, failLanes: Set<string>, attempts: any[]) {
+async function supervise(primaryLane: Lane, primaryModel: string, verdict: any, diff: string, failLanes: Set<string>, attempts: any[], lanes: readonly Lane[]) {
   const system = `You supervise another reviewer. Check its verdict against the diff. Reject findings that cite lines not in the diff, ` +
     `misread the code, or are style nits. Reply with ONE JSON object: {"agree":true|false,"verdict":"APPROVE|REQUEST_CHANGES|COMMENT",` +
     `"drop":[indexes of findings that are wrong],"reason":"one sentence"}`;
   const user = `Reviewer verdict:\n${JSON.stringify(verdict, null, 1)}\n\nDiff:\n${diff.slice(0, 40_000)}`;
   // any lane may supervise except the exact model that wrote the verdict; same-lane retries rotate models
-  const order: Lane[] = [...LANES.filter((l) => l !== primaryLane && l !== "agy"), primaryLane, "agy"].filter((l, i, a) => a.indexOf(l) === i) as Lane[];
+  const order: Lane[] = [...lanes.filter((l) => l !== primaryLane && l !== "agy"), primaryLane, "agy"].filter((l, i, a) => lanes.includes(l) && a.indexOf(l) === i) as Lane[];
   for (const lane of order) {
     const t0 = Date.now();
     try {
@@ -255,7 +256,9 @@ async function reviewPr(repo: string, num: number) {
   const ck = currentChecklist();
   const { system, user } = buildPrompt(ck, pr, diff, truncated);
   const attempts: any[] = [];
-  const primary = await reviewWithFallback(system, user, failLanes, attempts);
+  // private repos: the diff only ever goes to lanes on this machine (gate.ts)
+  const allowed = allowedLanes(LANES, pr.base?.repo?.private === true);
+  const primary = await reviewWithFallback(system, user, failLanes, attempts, allowed);
   let rec_consensus: any = null;
   const rec: any = { repo, pr: num, sha, title: pr.title, checklist_version: ck.version, started: new Date().toISOString(), attempts, posted: false };
   const out = join(ROOT, `${repo.replace("/", "__")}-${num}-${sha.slice(0, 7)}-${stamp()}.json`);
@@ -271,7 +274,7 @@ async function reviewPr(repo: string, num: number) {
     const drafts = [{ lane: primary.lane as string, model: primary.model, findings: res.findings, verdict: res.verdict }];
     const used = new Set<string>([...failLanes, primary.lane]);
     for (let i = 0; i < +opt("consensus-lanes", "2"); i++) {
-      const d = await reviewWithFallback(system, user, used, attempts); if (!d) break;
+      const d = await reviewWithFallback(system, user, used, attempts, allowed); if (!d) break;
       used.add(d.lane); drafts.push({ lane: d.lane, model: d.model, findings: d.result.findings, verdict: d.result.verdict });
     }
     if (drafts.length >= 2) { const before = res.findings.length;
@@ -280,14 +283,11 @@ async function reviewPr(repo: string, num: number) {
       log(`  consensus over ${drafts.map((d) => d.lane).join("+")}: kept ${res.findings.length}/${before} primary findings`); }
   }
   res.findings = res.findings.filter((f: any) => (Number(f.confidence) || 0) >= 80 && f.body);
-  const sup = await supervise(primary.lane as Lane, primary.model, res, diff, failLanes, attempts);
-  let verdict = res.verdict as string;
+  const sup = await supervise(primary.lane as Lane, primary.model, res, diff, failLanes, attempts, allowed);
   if (sup) { const drop = new Set((sup.drop || []).map(Number)); res.findings = res.findings.filter((_: any, i: number) => !drop.has(i)); }
-  // no supervisor = no binding verdict: only COMMENT goes out unchecked
-  if (!sup && verdict !== "COMMENT") { log(`  no supervisor reachable: ${verdict} downgraded to COMMENT`); verdict = "COMMENT"; }
-  if (verdict === "APPROVE" && (!sup || !sup.agree || sup.verdict !== "APPROVE")) verdict = "COMMENT";
-  if (verdict === "REQUEST_CHANGES" && !res.findings.some((f: any) => f.severity === "P1")) verdict = "COMMENT";
-  if (verdict === "REQUEST_CHANGES" && sup && !sup.agree && sup.verdict !== "REQUEST_CHANGES") verdict = "COMMENT";
+  if (!sup && res.verdict !== "COMMENT") log(`  no supervisor reachable: ${res.verdict} downgraded to COMMENT`);
+  // all gating rules live in gate.ts (no supervisor, unagreed APPROVE, truncated APPROVE, P1 for REQUEST_CHANGES)
+  const verdict = finalVerdict({ primaryOk: true, verdict: res.verdict as Verdict, sup, findings: res.findings, truncated }) as string;
 
   const inline: any[] = [], loose: any[] = [];
   for (const f of res.findings) (valid.get(f.path)?.has(Number(f.line)) ? inline : loose).push(f);
