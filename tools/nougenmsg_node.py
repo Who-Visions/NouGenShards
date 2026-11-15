@@ -44,6 +44,7 @@ so it needs a supervisor to be a real transport.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import re
 import os
@@ -540,6 +541,104 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._slots.release()
 
 
+# A person or agent who opens the node's address in a browser gets usage, not a JSON
+# blob or a 404. No secrets and no traffic data: only how to send and where the token lives.
+def wants_html(accept):
+    """True when the Accept header prefers HTML over JSON for the help page.
+
+    Media types are case-insensitive and a q=0 range is an explicit refusal, so this
+    parses the ranges instead of looking for a substring. text/html (or text/*) must
+    carry a weight above zero and at least that of application/json; */* alone or
+    a missing header keeps the JSON status that probes and scripts expect.
+    """
+    if not isinstance(accept, str):
+        return False
+    weights = {}
+    for part in accept.split(","):
+        bits = [b.strip() for b in part.split(";")]
+        media = bits[0].lower()
+        if not media:
+            continue
+        q = 1.0
+        for b in bits[1:]:
+            k, _, v = b.partition("=")
+            if k.strip().lower() == "q":
+                try:
+                    q = max(0.0, min(1.0, float(v)))
+                except ValueError:
+                    q = 0.0
+        weights[media] = max(q, weights.get(media, 0.0))
+    html_q = weights.get("text/html", weights.get("text/*", 0.0))
+    json_q = weights.get("application/json", weights.get("application/*", 0.0))
+    return html_q > 0 and html_q >= json_q
+
+
+# The page's curl examples carry $NOUGEN_AGY_MSG_TOKEN, so the origin they point at must
+# be one we serve: never echo a visitor-supplied Host such as localhost.attacker.example.
+_HELP_PUBLIC_HOSTS = frozenset({"msgs.nougenai.com", "phoebus.nougenai.com"})
+_HELP_LOOPBACK = re.compile(r"^(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?$")
+
+
+def _help_origin(host):
+    """(scheme, host) for the page's examples: a known public host over https, an exact
+    loopback address over http, otherwise the canonical front door."""
+    if isinstance(host, str):
+        h = host.strip().lower()
+        if h in _HELP_PUBLIC_HOSTS:
+            return "https", h
+        if _HELP_LOOPBACK.match(h):
+            return "http", h
+    return "https", "msgs.nougenai.com"
+
+
+def help_page(host, pending):
+    """The usage page, written for the address the visitor actually opened, when that
+    address is one of ours; anything else gets the canonical front door."""
+    scheme, host = _help_origin(host)
+    base = "{}://{}".format(scheme, host)
+    page = _help_template() or HELP_PAGE.replace("https://msgs.nougenai.com", "{{BASE}}")
+    return (page.replace("{{BASE}}", base)
+            .replace("{{NODE}}", html.escape(str(NODE)))
+            .replace("{{PENDING}}", str(int(pending))))
+
+
+# The designed page (NouGenDesign nougen-core, Stitch reference, built by Antigravity) lives
+# next to this file. Read per request so a design change needs no restart; the inline page
+# below is the fallback when the file is missing or unreadable.
+_HELP_FILE = Path(__file__).with_name("nougenmsg_help.html")
+
+
+def _help_template():
+    try:
+        return _HELP_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+HELP_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>NouGenMsg</title>
+<style>body{background:#0d1117;color:#e6edf3;font:16px/1.55 system-ui,sans-serif;margin:0;
+display:flex;justify-content:center}main{max-width:40rem;padding:2rem 1rem}
+code,pre{background:#161b22;border:1px solid #30363d;border-radius:6px}
+code{padding:.1rem .3rem}pre{padding:.8rem;overflow-x:auto}p,li{color:#c9d1d9}</style></head>
+<body><main><h1>NouGenMsg</h1>
+<p>The NouGen message bus on node {{NODE}}. Send a message to its sessions, then read the delivery receipt.</p>
+<p><span style="color:#3fb950">&#9679;</span> Online: node <code>{{NODE}}</code>, {{PENDING}} message(s) waiting for pickup.</p>
+<h2>Send</h2>
+<pre>curl -X POST https://msgs.nougenai.com/msg \\
+  -H "X-NGS-Token: $NOUGEN_AGY_MSG_TOKEN" \\
+  -H "content-type: application/json" \\
+  -d '{"text":"hello","sender":"&lt;node&gt;/&lt;lane&gt;","target":"{{NODE}}"}'</pre>
+<p>The reply carries a <code>message_id</code>.</p>
+<h2>Receipt</h2>
+<pre>curl https://msgs.nougenai.com/msg/&lt;message_id&gt; -H "X-NGS-Token: $NOUGEN_AGY_MSG_TOKEN"</pre>
+<h2>Notes</h2><ul>
+<li>The token is the Keymaker key <code>NOUGEN_AGY_MSG_TOKEN</code>. Never paste it into a chat, a leg or a shard.</li>
+<li>This address delivers on node <code>{{NODE}}</code> only. For another node or <code>@all</code>, use the NouGen connector&#39;s <code>nougenmsg_send</code> tool.</li>
+<li>Inside a Claude app, the NouGen connector's <code>nougenmsg_send</code> tool does the same without a token.</li>
+<li><code>/health</code> reports liveness.</li></ul></main></body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -550,6 +649,15 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_html(self, page: str, code: int = 200) -> None:
+        body = page.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -601,7 +709,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         route = self._route()
-        if route in ("/status", "/health", "/"):
+        if route == "/" and wants_html(self.headers.get("Accept")):
+            self._send_html(help_page(self.headers.get("Host"), PENDING.qsize()))
+        elif route in ("/status", "/health", "/"):
             self._send({"status": "online", "service": "agy-msg", "node": NODE,
                         "timestamp": time.time(), "pending_messages": PENDING.qsize(),
                         "ok": True, "transport": "http"})
