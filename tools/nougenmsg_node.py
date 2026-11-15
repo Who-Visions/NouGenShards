@@ -573,17 +573,28 @@ def wants_html(accept):
     return html_q > 0 and html_q >= json_q
 
 
-_HELP_HOST = re.compile(r"^[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
+# The page's curl examples carry $NOUGEN_AGY_MSG_TOKEN, so the origin they point at must
+# be one we serve: never echo a visitor-supplied Host such as localhost.attacker.example.
+_HELP_PUBLIC_HOSTS = frozenset({"msgs.nougenai.com", "phoebus.nougenai.com"})
+_HELP_LOOPBACK = re.compile(r"^(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?$")
+
+
+def _help_origin(host):
+    """(scheme, host) for the page's examples: a known public host over https, an exact
+    loopback address over http, otherwise the canonical front door."""
+    if isinstance(host, str):
+        h = host.strip().lower()
+        if h in _HELP_PUBLIC_HOSTS:
+            return "https", h
+        if _HELP_LOOPBACK.match(h):
+            return "http", h
+    return "https", "msgs.nougenai.com"
 
 
 def help_page(host, pending):
-    """The usage page, written for the address the visitor actually opened.
-
-    Host comes from the request, so it is checked against a plain hostname pattern
-    before it is echoed: anything else falls back to the canonical front door.
-    """
-    host = host if isinstance(host, str) and _HELP_HOST.match(host) else "msgs.nougenai.com"
-    scheme = "http" if host.startswith(("127.0.0.1", "localhost")) else "https"
+    """The usage page, written for the address the visitor actually opened, when that
+    address is one of ours; anything else gets the canonical front door."""
+    scheme, host = _help_origin(host)
     base = "{}://{}".format(scheme, host)
     page = _help_template() or HELP_PAGE.replace("https://msgs.nougenai.com", "{{BASE}}")
     return (page.replace("{{BASE}}", base)

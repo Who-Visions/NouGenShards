@@ -92,3 +92,15 @@ def test_accept_negotiation_is_case_insensitive_and_honours_q(monkeypatch, tmp_p
         assert node.wants_html(a), a
     for a in no:
         assert not node.wants_html(a), a
+
+
+def test_help_page_only_points_at_hosts_we_serve(monkeypatch, tmp_path):
+    node = _load_node(monkeypatch, tmp_path)
+    for lookalike in ["localhost.attacker.example", "127.0.0.1.evil.example", "evil.example",
+                      "msgs.nougenai.com.evil.example", "localhostx:80", "127.0.0.1@evil.example"]:
+        page = node.help_page(lookalike, 0)
+        assert "https://msgs.nougenai.com/msg" in page, lookalike
+        assert "evil" not in page and "attacker" not in page, lookalike
+    assert "https://phoebus.nougenai.com/msg" in node.help_page("PHOEBUS.nougenai.com", 0)
+    assert "http://localhost:8766/msg" in node.help_page("localhost:8766", 0)
+    assert "http://[::1]:8766/msg" in node.help_page("[::1]:8766", 0)
