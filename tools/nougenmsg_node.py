@@ -622,19 +622,19 @@ display:flex;justify-content:center}main{max-width:40rem;padding:2rem 1rem}
 code,pre{background:#161b22;border:1px solid #30363d;border-radius:6px}
 code{padding:.1rem .3rem}pre{padding:.8rem;overflow-x:auto}p,li{color:#c9d1d9}</style></head>
 <body><main><h1>NouGenMsg</h1>
-<p>The NouGen fleet message bus. Send a message to any lane or node, then read its delivery receipt.</p>
+<p>The NouGen message bus on node {{NODE}}. Send a message to its sessions, then read the delivery receipt.</p>
 <p><span style="color:#3fb950">&#9679;</span> Online: node <code>{{NODE}}</code>, {{PENDING}} message(s) waiting for pickup.</p>
 <h2>Send</h2>
 <pre>curl -X POST https://msgs.nougenai.com/msg \\
   -H "X-NGS-Token: $NOUGEN_AGY_MSG_TOKEN" \\
   -H "content-type: application/json" \\
-  -d '{"text":"hello","sender":"&lt;node&gt;/&lt;lane&gt;","target":"@all"}'</pre>
+  -d '{"text":"hello","sender":"&lt;node&gt;/&lt;lane&gt;","target":"{{NODE}}"}'</pre>
 <p>The reply carries a <code>message_id</code>.</p>
 <h2>Receipt</h2>
 <pre>curl https://msgs.nougenai.com/msg/&lt;message_id&gt; -H "X-NGS-Token: $NOUGEN_AGY_MSG_TOKEN"</pre>
 <h2>Notes</h2><ul>
 <li>The token is the Keymaker key <code>NOUGEN_AGY_MSG_TOKEN</code>. Never paste it into a chat, a leg or a shard.</li>
-<li>Targets: <code>@all</code>, a node (<code>@phoebus</code>, <code>@blade</code>, <code>@whoart</code>) or a lane (<code>@antigravity</code>, <code>@codex</code>).</li>
+<li>This address delivers on node <code>{{NODE}}</code> only. For another node or <code>@all</code>, use the NouGen connector&#39;s <code>nougenmsg_send</code> tool.</li>
 <li>Inside a Claude app, the NouGen connector's <code>nougenmsg_send</code> tool does the same without a token.</li>
 <li><code>/health</code> reports liveness.</li></ul></main></body></html>"""
 

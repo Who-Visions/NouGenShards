@@ -104,3 +104,15 @@ def test_help_page_only_points_at_hosts_we_serve(monkeypatch, tmp_path):
     assert "https://phoebus.nougenai.com/msg" in node.help_page("PHOEBUS.nougenai.com", 0)
     assert "http://localhost:8766/msg" in node.help_page("localhost:8766", 0)
     assert "http://[::1]:8766/msg" in node.help_page("[::1]:8766", 0)
+
+
+def test_help_page_does_not_promise_cross_node_delivery(monkeypatch, tmp_path):
+    # This receiver writes the local inbox and local sessions only; it never forwards
+    # to other nodes, so the page must not advertise @blade/@whoart/@all as destinations.
+    node = _load_node(monkeypatch, tmp_path)
+    monkeypatch.setattr(node, "NODE", "phoebus")
+    for page in (node.help_page("msgs.nougenai.com", 0), node.HELP_PAGE):
+        assert 'data-copy="@blade"' not in page and "any lane or node" not in page
+        assert '"target":"@all"' not in page
+        assert "nougenmsg_send" in page
+    assert '"target":"phoebus"' in node.help_page("msgs.nougenai.com", 0)

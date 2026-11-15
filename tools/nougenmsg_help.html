@@ -338,7 +338,7 @@
           <span>Online · node {{NODE}} · {{PENDING}} waiting</span>
         </div>
       </div>
-      <p class="intro">Send a message to any lane or node, then read its delivery receipt.</p>
+      <p class="intro">Send a message to the sessions on node {{NODE}}, then read its delivery receipt.</p>
     </header>
 
     <section class="section" aria-labelledby="send-heading">
@@ -352,7 +352,7 @@
           <pre id="send-snippet"><code>curl -X POST {{BASE}}/msg \
   -H "X-NGS-Token: $NOUGEN_AGY_MSG_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"text":"hello","sender":"&lt;node&gt;/&lt;lane&gt;","target":"@all"}'</code></pre>
+  -d '{"text":"hello","sender":"&lt;node&gt;/&lt;lane&gt;","target":"{{NODE}}"}'</code></pre>
         </div>
       </div>
       <p class="section-note">The reply carries a <code>message_id</code>.</p>
@@ -372,16 +372,8 @@
     </section>
 
     <section class="section" aria-labelledby="targets-heading">
-      <h2 id="targets-heading" class="section-title">Targets</h2>
-      <p class="targets-intro">Specify operational destination scopes. Click a target chip to copy:</p>
-      <div class="targets-list" role="group" aria-label="Target scopes">
-        <button type="button" class="target-chip" data-copy="@all" aria-label="Copy target @all">@all</button>
-        <button type="button" class="target-chip" data-copy="@phoebus" aria-label="Copy target @phoebus">@phoebus</button>
-        <button type="button" class="target-chip" data-copy="@blade" aria-label="Copy target @blade">@blade</button>
-        <button type="button" class="target-chip" data-copy="@whoart" aria-label="Copy target @whoart">@whoart</button>
-        <button type="button" class="target-chip" data-copy="@antigravity" aria-label="Copy target @antigravity">@antigravity</button>
-        <button type="button" class="target-chip" data-copy="@codex" aria-label="Copy target @codex">@codex</button>
-      </div>
+      <h2 id="targets-heading" class="section-title">Where it goes</h2>
+      <p class="targets-intro">This address delivers on node <code>{{NODE}}</code> only: the message lands in its inbox and in its live sessions. It does not forward to other machines, so a target such as <code>@blade</code> would not reach blade. To message another node or the whole fleet (<code>@all</code>), use the NouGen connector&#39;s <code>nougenmsg_send</code> tool.</p>
     </section>
 
     <section class="section" aria-labelledby="good-to-know-heading">
