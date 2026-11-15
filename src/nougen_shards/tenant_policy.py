@@ -45,6 +45,8 @@ TENANT_SCOPED: frozenset[str] = frozenset({
     "evidence_assure", "evaluate_evidence_template", "evaluate_quota",
     "nougen_translate_response",
     "list_skills", "load_skill", "apply_skills", "nougen_skill_search", "nougen_skill_get",
+    # outcome counts and field notes live in active_vault_dir()/skill_playbook.db
+    "mark_skill",
 })
 
 # Touches the host, the owner's agents/hardware/shared services, or owner IP.

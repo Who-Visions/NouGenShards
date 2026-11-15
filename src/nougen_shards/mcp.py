@@ -63,6 +63,7 @@ from . import nougen_sandbox
 from . import evolution
 from . import hardcade_sfx
 from . import skills as skill_registry
+from . import skill_playbook
 
 from .history import HistoryEngine
 from .federation import federated_retrieve
@@ -717,8 +718,17 @@ def apply_skills(task: str) -> str:
     inlined = []
     deferred = []
     used = 0
+    # Field notes are part of what is returned, so they count against the same cap.
+    notes_by_skill: dict[str, str] = {}
     for skill in matched:
-        block_len = len(skill.name) + len(str(skill.path)) + len(skill.body.strip()) + 150  # + headers
+        try:
+            notes_by_skill[skill.name] = skill_playbook.format_field_notes(skill.name)
+        except Exception:
+            notes_by_skill[skill.name] = ""
+    for skill in matched:
+        notes_len = len(notes_by_skill[skill.name])
+        block_len = (len(skill.name) + len(str(skill.path)) + len(skill.body.strip()) + 150  # + headers
+                     + (notes_len + 130 if notes_len else 0))
         # Always inline the first match, even if it alone exceeds the cap, so a lone
         # large skill is never silently withheld; later bodies defer once the cap is hit.
         if not inlined or used + block_len <= max_chars:
@@ -736,11 +746,50 @@ def apply_skills(task: str) -> str:
     for skill in inlined:
         parts.append(f"\n{'=' * 70}\nSKILL: {skill.name}\nSOURCE: {skill.path}\n{'=' * 70}\n")
         parts.append(skill.body.strip())
+        notes = notes_by_skill.get(skill.name, "")
+        if notes:
+            parts.append(
+                "\nFIELD NOTES (reported by earlier runs of this skill; unverified, the skill "
+                "text above wins on any conflict):\n" + notes)
+    parts.append(
+        f"\n{'=' * 70}\nWhen the work is done, report how each skill did: "
+        'mark_skill("<name>", worked=True|False, note="<one-line lesson, optional>").')
     if deferred:
         parts.append(f"\n{'=' * 70}\nNot inlined (over {max_chars}-char budget) — load on demand:")
         for skill in deferred:
             parts.append(f'- {skill.name} ({len(skill.body.strip())} chars): load_skill("{skill.name}")')
     return "\n".join(parts)
+
+
+@mcp.tool()
+def mark_skill(name: str, worked: bool, note: str = "", note_ids: Optional[List[str]] = None) -> str:
+    """
+    Report how a skill did after using it. This is what lets the registry learn.
+
+    Args:
+        name: The skill's name, as apply_skills printed it.
+        worked: True if following the skill produced the right result, False if it
+            misled you or was wrong for the task.
+        note: Optional one-line lesson for the next reader (what to do differently,
+            a trap, a missing step). Stored as a field note under the skill; the
+            skill file itself is not edited.
+        note_ids: Optional ids of field notes shown with the skill (e.g. "sk-00012")
+            that this outcome confirms (worked=True) or contradicts (worked=False).
+    """
+    skill = skill_registry.get(name)
+    if skill is None:
+        return f"❌ No installed skill named {name!r}. Nothing recorded."
+    try:
+        result = skill_playbook.mark(skill.name, bool(worked), note or None, note_ids)
+    except Exception as exc:
+        return f"❌ Could not record the outcome for {skill.name!r}: {exc}"
+    line = (f"Recorded {'helpful' if worked else 'harmful'} for {skill.name!r}: "
+            f"helpful={result['helpful']} harmful={result['harmful']}.")
+    if result["note_added"]:
+        line += f" Field note {result['note_added']} added."
+    if result["notes_bumped"]:
+        line += f" Updated notes: {', '.join(result['notes_bumped'])}."
+    return line
 
 
 @mcp.tool()
