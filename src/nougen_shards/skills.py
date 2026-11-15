@@ -290,7 +290,17 @@ def match(task: str, roots: Optional[list[Path]] = None) -> list[Skill]:
         if overlap >= threshold:
             scored.append((overlap, skill))
 
-    scored.sort(key=lambda pair: (-pair[0], pair[1].name))
+    # Reported outcomes break ties between equally relevant skills. The bonus is
+    # under one matched term, so it reorders and never adds or removes a skill;
+    # a missing or unreadable outcome store just means no reordering.
+    try:
+        from . import skill_playbook
+        bonus = skill_playbook.bonuses() if len(scored) > 1 else {}
+    except Exception as exc:  # the registry must keep answering without the sidecar
+        logging.getLogger(__name__).debug("skill outcome bonus unavailable: %s", exc)
+        bonus = {}
+
+    scored.sort(key=lambda pair: (-(pair[0] + bonus.get(pair[1].name.lower(), 0.0)), pair[1].name))
     return [skill for _, skill in scored]
 
 
