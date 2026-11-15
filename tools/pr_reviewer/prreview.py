@@ -1,5 +1,6 @@
 """prreview: independent, read-only PR reviews by other agents, with the verdict extracted.
 
+    prreview rsi status|evolve|rollback <v>   (the aiwithdav3 RSI loop)
     prreview <owner/repo> <pr> [<pr> ...] [--focus "..."] [--prior FILE] [--agent codex|agy|both]
 
 - Runs Codex (`codex exec --yolo`) and/or Antigravity (`agy --dangerously-skip-permissions -p`)
@@ -78,7 +79,17 @@ def verdict_lines(log):
     return out
 
 
+def rsi(argv):
+    """prreview rsi status|evolve|rollback <v>: the aiwithdav3 RSI loop, via review.ts."""
+    here = pathlib.Path(__file__).resolve().parent
+    script = here / "review.ts" if (here / "review.ts").exists() else pathlib.Path.home() / ".nougen" / "bin" / "pr_reviewer" / "review.ts"
+    bun = shutil.which("bun") or str(pathlib.Path.home() / ".bun" / "bin" / "bun.exe")
+    return subprocess.run([bun, str(script), "rsi", *(argv or ["status"])], stdin=subprocess.DEVNULL).returncode
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "rsi":
+        return rsi(sys.argv[2:])
     ap = argparse.ArgumentParser(prog="prreview")
     ap.add_argument("repo")
     ap.add_argument("prs", nargs="+", type=int)

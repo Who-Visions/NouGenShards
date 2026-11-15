@@ -119,3 +119,71 @@ export function pickParent(archive: Checklist[], rejectedStreak: number, stall =
   if (rejectedStreak < stall) return latest;
   return sorted.reduce((best, c) => ((c.gate?.after ?? -1) > (best.gate?.after ?? -1) ? c : best), latest);
 }
+
+/** JSONL that survives a truncated/corrupt line (a crash mid-append must not take down review/poll/score). */
+export function parseJsonl(text: string): any[] {
+  const out: any[] = [];
+  for (const l of (text || "").split("\n")) { if (!l.trim()) continue; try { const v = JSON.parse(l); if (v && typeof v === "object") out.push(v); } catch { /* skip */ } }
+  return out;
+}
+
+/** PR heads poll() must not re-queue: anything posted, plus no-verdict runs only inside a cooldown, so a transient
+ *  402/429 delays the retry instead of blocking that SHA forever. */
+export function seenKeys(entries: any[], now = Date.now(), cooldownMs = 6 * 3600_000): Set<string> {
+  const s = new Set<string>();
+  for (const e of entries) {
+    const k = `${e.repo}#${e.pr}@${e.sha}`;
+    if (e.posted) s.add(k);
+    else if (e.outcome === "no-verdict" && now - Date.parse(e.finished || e.started || "") < cooldownMs) s.add(k);
+  }
+  return s;
+}
+
+/** Exclusive file lock (O_EXCL create); a lock older than staleMs is taken over. Returns fn's result. */
+export function withLock<T>(path: string, fn: () => T, staleMs = 10 * 60_000, waitMs = 30_000): T {
+  const fs = require("node:fs");
+  const t0 = Date.now();
+  for (;;) {
+    try { fs.writeFileSync(path, String(process.pid), { flag: "wx" }); break; }
+    catch (e: any) {
+      if (e.code !== "EEXIST") throw e;
+      try { if (Date.now() - fs.statSync(path).mtimeMs > staleMs) { fs.unlinkSync(path); continue; } } catch { continue; }
+      if (Date.now() - t0 > waitMs) throw new Error(`lock busy: ${path}`);
+      Bun.sleepSync(50);
+    }
+  }
+  try { return fn(); } finally { try { fs.unlinkSync(path); } catch {} }
+}
+
+/** Rollback is append-only: the target version's items+lessons are re-issued as a NEW version (history is kept). */
+export function rollbackTo(archive: Checklist[], target: number): Checklist {
+  const src = archive.find((c) => c.version === target);
+  if (!src) throw new Error(`no checklist v${target} in archive`);
+  const top = Math.max(...archive.map((c) => c.version));
+  return { ...structuredClone(src), version: top + 1, parent: target, created: new Date().toISOString(), gate: { rollback_of: target } };
+}
+
+/** One-screen status of the loop: versions, active one, rejected streak, recent gate decisions, per-item weights. */
+export function rsiStatus(archive: Checklist[], streak: number, scores: any[]) {
+  const sorted = [...archive].sort((a, b) => a.version - b.version);
+  const active = sorted.at(-1);
+  const judged = scores.filter((s) => s.checklist);
+  return {
+    versions: sorted.map((c) => ({ v: c.version, parent: c.parent ?? null, gate: c.gate ?? null, created: c.created ?? null })),
+    active: active?.version ?? null,
+    rejected_streak: streak,
+    judged: judged.length, held: judged.filter((s) => s.held).length,
+    rejections: scores.filter((s) => s.gate === "rejected").slice(-5),
+    weights: (active?.items || []).map((i) => ({ id: i.id, weight: i.weight, seed: i.seed_weight ?? null, stats: i.stats ?? null })),
+  };
+}
+
+/** Follow GitHub's 100-per-page lists until a short page (or `max` pages). */
+export async function collectPages(fetchPage: (page: number) => Promise<any[]>, max = 30): Promise<any[]> {
+  const out: any[] = [];
+  for (let page = 1; page <= max; page++) { const b = await fetchPage(page); out.push(...b); if (b.length < 100) break; }
+  return out;
+}
+
+/** Model verdicts arrive in any case ("approve"); compare only after normalising. */
+export const normVerdict = (v: unknown) => String(v ?? "").trim().toUpperCase();

@@ -5,6 +5,7 @@
  *   bun review.ts review <owner/repo> <pr> [--dry-run] [--fail-lane <lane>[,<lane>]] [--force]
  *   bun review.ts poll [--owner Who-Visions] [--since-hours 72] [--max 5]
  *   bun review.ts score                       # RSI pass over every logged review
+ *   bun review.ts rsi status|evolve|rollback <v>   # RSI loop: inspect, run a scoring pass, roll back (append-only)
  *   bun review.ts whoami
  *
  * Failsafe rules:
@@ -17,10 +18,10 @@
  *  - one review per repo#pr@sha (ledger + a live check of existing aiwithdav3 reviews).
  *  - the only GitHub write is POST /pulls/{n}/reviews. There is no merge code path.
  */
-import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, readdirSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, readdirSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { consensusFindings, curateLessons, evolve, judgeFindings, pickParent } from "./rsi";
+import { consensusFindings, curateLessons, evolve, judgeFindings, collectPages, normVerdict, parseJsonl, pickParent, rollbackTo, rsiStatus, seenKeys, withLock } from "./rsi";
 
 const HERE = dirname(import.meta.path);
 const ROOT = join(homedir(), ".nougen", "research", "reviews", "aiwithdav3");
@@ -184,6 +185,7 @@ async function supervise(primaryLane: Lane, primaryModel: string, verdict: any, 
       if (!j || typeof j.agree !== "boolean") throw new Error("no supervisor verdict");
       attempts.push({ lane, model, role: "supervisor", ok: true, ms: Date.now() - t0 });
       log(`  supervisor ${lane} via ${model}: agree=${j.agree} (${j.reason || ""})`);
+      if (j.verdict) j.verdict = normVerdict(j.verdict);
       return { lane, model, ...j };
     } catch (e: any) {
       attempts.push({ lane, role: "supervisor", ok: false, ms: Date.now() - t0, error: String(e?.message || e).slice(0, 300) });
@@ -205,7 +207,12 @@ function rightLines(patch: string): Set<number> {
 }
 
 // ---------------------------------------------------------------- ledger
-function ledger(): any[] { return existsSync(LEDGER) ? readFileSync(LEDGER, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []; }
+function ledger(): any[] { return existsSync(LEDGER) ? parseJsonl(readFileSync(LEDGER, "utf8")) : []; }
+// GitHub list endpoints page at 100; follow pages so >100 files/reviews are not silently dropped
+async function ghAll(path: string, max = 30): Promise<any[]> {
+  const sep = path.includes("?") ? "&" : "?";
+  return collectPages((page) => ghJson(`${path}${sep}per_page=100&page=${page}`), max);
+}
 
 // ---------------------------------------------------------------- review one PR
 async function reviewPr(repo: string, num: number) {
@@ -220,11 +227,11 @@ async function reviewPr(repo: string, num: number) {
   if (pr.user.login === REVIEWER) return log("  skip: authored by the reviewer"), "skip";
   if (!force && !dry) {
     if (ledger().some((e) => e.repo === repo && e.pr === num && e.sha === sha && e.posted)) return log("  skip: already reviewed this SHA (ledger)"), "skip";
-    const existing = await ghJson(`/repos/${repo}/pulls/${num}/reviews?per_page=100`);
+    const existing = await ghAll(`/repos/${repo}/pulls/${num}/reviews`);
     if (existing.some((r: any) => r.user?.login === REVIEWER && r.commit_id === sha)) return log("  skip: aiwithdav3 already reviewed this SHA"), "skip";
   }
 
-  const files = await ghJson(`/repos/${repo}/pulls/${num}/files?per_page=100`);
+  const files = await ghAll(`/repos/${repo}/pulls/${num}/files`);
   const diffFull = await (await gh(`/repos/${repo}/pulls/${num}`, { accept: "application/vnd.github.v3.diff" })).text();
   const truncated = diffFull.length > 60_000;
   const diff = truncated ? diffFull.slice(0, 60_000) : diffFull;
@@ -235,19 +242,25 @@ async function reviewPr(repo: string, num: number) {
   let rec_consensus: any = null;
   const rec: any = { repo, pr: num, sha, title: pr.title, checklist_version: ck.version, started: new Date().toISOString(), attempts, posted: false };
   const out = join(ROOT, `${repo.replace("/", "__")}-${num}-${sha.slice(0, 7)}-${stamp()}.json`);
-  if (!primary) { rec.outcome = "no-verdict"; writeFileSync(out, JSON.stringify(rec, null, 1)); appendFileSync(LEDGER, JSON.stringify(rec) + "\n"); log("  every lane failed: nothing posted"); return "fail"; }
+  if (!primary) { rec.outcome = "no-verdict"; writeFileSync(out, JSON.stringify(rec, null, 1)); withLock(LEDGER + ".lock", () => appendFileSync(LEDGER, JSON.stringify(rec) + "\n")); log("  every lane failed: nothing posted"); return "fail"; }
 
   // keep confident findings with a valid inline anchor; the rest go into the body
   const valid = new Map<string, Set<number>>(files.map((f: any) => [f.filename, rightLines(f.patch)]));
   const res = primary.result;
   // self-consistency (awesome-rsi: Self-Consistency / multiagent debate): a second, independent lane drafts too;
   // only findings both raise survive. If no second lane answers, the supervisor below is the only filter.
+  // Up to three vendors draft (primary + 2 more, each on a lane not yet used); a finding survives when >= 2 raise it.
   if (!flag("no-consensus") && res.findings.length) {
-    const second = await reviewWithFallback(system, user, new Set([...failLanes, primary.lane]), attempts);
-    if (second) { const before = res.findings.length;
-      res.findings = consensusFindings([{ lane: primary.lane, findings: res.findings }, { lane: second.lane, findings: second.result.findings }]);
-      rec_consensus = { lane: second.lane, model: second.model, verdict: second.result.verdict, kept: res.findings.length, of: before };
-      log(`  consensus with ${second.lane}: kept ${res.findings.length}/${before} findings`); }
+    const drafts = [{ lane: primary.lane as string, model: primary.model, findings: res.findings, verdict: res.verdict }];
+    const used = new Set<string>([...failLanes, primary.lane]);
+    for (let i = 0; i < +opt("consensus-lanes", "2"); i++) {
+      const d = await reviewWithFallback(system, user, used, attempts); if (!d) break;
+      used.add(d.lane); drafts.push({ lane: d.lane, model: d.model, findings: d.result.findings, verdict: d.result.verdict });
+    }
+    if (drafts.length >= 2) { const before = res.findings.length;
+      res.findings = consensusFindings(drafts, 2);
+      rec_consensus = { drafts: drafts.map(({ lane, model, verdict, findings }) => ({ lane, model, verdict, n: findings.length })), kept: res.findings.length, of: before };
+      log(`  consensus over ${drafts.map((d) => d.lane).join("+")}: kept ${res.findings.length}/${before} primary findings`); }
   }
   res.findings = res.findings.filter((f: any) => (Number(f.confidence) || 0) >= 80 && f.body);
   const sup = await supervise(primary.lane as Lane, primary.model, res, diff, failLanes, attempts);
@@ -283,13 +296,14 @@ async function reviewPr(repo: string, num: number) {
       const extra = comments.map((c) => `- \`${c.path}:${c.line}\` ${c.body}`).join("\n");
       const r2 = await gh(`/repos/${repo}/pulls/${num}/reviews`, { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ commit_id: sha, event: verdict, body: body + "\n\n" + extra }) });
-      Object.assign(j, await r2.json().catch(() => ({}))); rec.posted = r2.ok; rec.inline_fallback = true;
+      Object.assign(j, await r2.json().catch(() => ({}))); rec.posted = r2.ok; rec.inline_fallback = true; rec.retry_status = r2.status;
+      log(`  body-only retry -> ${r2.status}`);
     } else rec.posted = r.ok;
-    rec.review_id = j.id; rec.review_url = j.html_url; rec.outcome = rec.posted ? "posted" : `post-failed ${r.status} ${JSON.stringify(j).slice(0, 200)}`;
+    rec.review_id = j.id; rec.review_url = j.html_url; rec.outcome = rec.posted ? "posted" : `post-failed ${rec.retry_status ?? r.status}${JSON.stringify(j).slice(0, 200)}`;
     log(`  ${rec.outcome} ${verdict} (${comments.length} inline) ${j.html_url || ""}`);
   }
   rec.finished = new Date().toISOString();
-  writeFileSync(out, JSON.stringify(rec, null, 1)); appendFileSync(LEDGER, JSON.stringify(rec) + "\n");
+  writeFileSync(out, JSON.stringify(rec, null, 1)); withLock(LEDGER + ".lock", () => appendFileSync(LEDGER, JSON.stringify(rec) + "\n"));
   log(`  log ${out}`);
   return rec.outcome;
 }
@@ -308,12 +322,16 @@ async function score() {
   }
   if (!scored.length) return log("score: no newly judgeable findings");
   // rewrite ledger with scored flags
-  const all = ledger(); const key = (x: any) => `${x.repo}#${x.pr}@${x.sha}@${x.started}`;
+  const key = (x: any) => `${x.repo}#${x.pr}@${x.sha}@${x.started}`;
   const done = new Map(entries.filter((x) => x.scored).map((x) => [key(x), x.scored]));
-  writeFileSync(LEDGER, all.map((x) => JSON.stringify(done.has(key(x)) ? { ...x, scored: done.get(key(x)) } : x)).join("\n") + "\n");
+  withLock(LEDGER + ".lock", () => { // re-read under the lock so concurrent appends survive; write atomically
+    const cur = ledger(), tmp = LEDGER + ".tmp";
+    writeFileSync(tmp, cur.map((x) => JSON.stringify(done.has(key(x)) ? { ...x, scored: done.get(key(x)) } : x)).join("\n") + "\n");
+    renameSync(tmp, LEDGER);
+  });
   appendFileSync(join(ROOT, "scores.jsonl"), scored.map((s) => JSON.stringify({ at: new Date().toISOString(), ...s })).join("\n") + "\n");
   // evolve (rsi.ts): train/holdout split, bounded + seed-anchored steps, holdout gate, curated lessons, archive restart
-  const hist = readFileSync(join(ROOT, "scores.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const hist = parseJsonl(readFileSync(join(ROOT, "scores.jsonl"), "utf8"));
   const archive = readdirSync(CHECKDIR).filter((f) => /^v\d+\.json$/.test(f)).map((f) => JSON.parse(readFileSync(join(CHECKDIR, f), "utf8")));
   const streakFile = join(CHECKDIR, "rejected_streak");
   const streak = existsSync(streakFile) ? +readFileSync(streakFile, "utf8") || 0 : 0;
@@ -347,7 +365,7 @@ async function poll() {
   }
   let repos = [...byName.values()];
   repos = repos.filter((r) => r.owner.login === owner && !r.archived && Date.parse(r.pushed_at) >= since);
-  const seen = new Set(ledger().filter((e) => e.posted || e.outcome === "no-verdict").map((e) => `${e.repo}#${e.pr}@${e.sha}`));
+  const seen = seenKeys(ledger());
   const queue: [string, number][] = [];
   for (const r of repos) {
     await useTokenFor(r.full_name).catch(() => null);
@@ -364,7 +382,23 @@ async function poll() {
 const lock = join(ROOT, "poll.lock");
 try {
   const cmd = args[0];
+  // `rsi status|rollback <v>` are local-only (no GitHub token needed); `rsi evolve` = score.
+  if (cmd === "rsi" && args[1] !== "evolve") {
+    const archive = readdirSync(CHECKDIR).filter((f) => /^v\d+\.json$/.test(f)).map((f) => JSON.parse(readFileSync(join(CHECKDIR, f), "utf8")));
+    const sf = join(CHECKDIR, "rejected_streak");
+    if (args[1] === "rollback") {
+      const next = rollbackTo(archive, +args[2]);
+      writeFileSync(join(CHECKDIR, `v${next.version}.json`), JSON.stringify(next, null, 1)); writeFileSync(sf, "0");
+      log(`rsi: rolled back to v${args[2]} as v${next.version}`);
+      console.log(JSON.stringify({ rolled_back_to: +args[2], active: next.version }));
+    } else {
+      const scores = existsSync(join(ROOT, "scores.jsonl")) ? parseJsonl(readFileSync(join(ROOT, "scores.jsonl"), "utf8")) : [];
+      console.log(JSON.stringify(rsiStatus(archive, existsSync(sf) ? +readFileSync(sf, "utf8") || 0 : 0, scores), null, 1));
+    }
+    process.exit(0);
+  }
   const who = await auth();
+  if (cmd === "rsi") await score(); else
   if (cmd === "whoami") console.log(`${who.login}: ${who.tokens.join("; ")}`);
   else if (cmd === "review") { const r = await reviewPr(args[1], +args[2]); process.exitCode = r === "posted" || r === "skip" || r === "dry-run" ? 0 : 1; }
   else if (cmd === "score") await score();

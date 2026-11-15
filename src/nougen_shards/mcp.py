@@ -1640,7 +1640,9 @@ def review_pr(repo: str, pr: int, dry_run: bool = True) -> str:
     import re as _re
     import shutil
     import subprocess
-    if not _re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo or "") or int(pr) <= 0:
+    # GitHub owner/name; "." and ".." segments are refused so /repos/<repo> cannot traverse
+    if (not _re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo or "")
+            or any(part in (".", "..") for part in repo.split("/")) or int(pr) <= 0):
         return json.dumps({"error": "repo must be owner/name and pr a positive number"})
     bun = shutil.which("bun") or str(Path.home() / ".bun" / "bin" / "bun.exe")
     cmd = [bun, str(_pr_review_script()), "review", repo, str(int(pr))] + (["--dry-run"] if dry_run else [])
@@ -1649,8 +1651,53 @@ def review_pr(repo: str, pr: int, dry_run: bool = True) -> str:
                            errors="replace", timeout=3000, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.TimeoutExpired) as exc:
         return json.dumps({"error": str(exc)})
-    tail = "\n".join((r.stdout or r.stderr or "").strip().splitlines()[-15:])
-    return json.dumps({"repo": repo, "pr": int(pr), "dry_run": dry_run, "exit": r.returncode, "log": tail})
+    tail = "\n".join((r.stdout or "").strip().splitlines()[-15:])
+    err = "\n".join((r.stderr or "").strip().splitlines()[-10:])
+    return json.dumps({"repo": repo, "pr": int(pr), "dry_run": dry_run, "exit": r.returncode, "log": tail, "stderr": err})
+
+
+def _run_review_ts(args: List[str], timeout: int = 900) -> dict:
+    import shutil
+    import subprocess
+    bun = shutil.which("bun") or str(Path.home() / ".bun" / "bin" / "bun.exe")
+    try:
+        r = subprocess.run([bun, str(_pr_review_script()), *args], stdin=subprocess.DEVNULL, capture_output=True,
+                           encoding="utf-8", errors="replace", timeout=timeout,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"error": str(exc)}
+    return {"exit": r.returncode, "stdout": (r.stdout or "").strip()[-6000:],
+            "stderr": "\n".join((r.stderr or "").strip().splitlines()[-10:])}
+
+
+@mcp.tool()
+def rsi_status() -> str:
+    """aiwithdav3 reviewer RSI loop: checklist versions, active one, rejected streak, gate rejections, weights. Read-only."""
+    out = _run_review_ts(["rsi", "status"], timeout=120)
+    try:
+        return json.dumps(json.loads(out.get("stdout") or ""), ensure_ascii=False)
+    except ValueError:
+        return json.dumps(out)
+
+
+@mcp.tool()
+def rsi_evolve() -> str:
+    """Run one RSI scoring pass (judge findings vs later pushes, propose a checklist, holdout gate). Gated by NOUGEN_ENABLE_PR_REVIEW=1."""
+    gate = _tool_gate("NOUGEN_ENABLE_PR_REVIEW", "rsi_evolve")
+    if gate:
+        return gate
+    return json.dumps(_run_review_ts(["rsi", "evolve"]))
+
+
+@mcp.tool()
+def rsi_rollback(version: int) -> str:
+    """Re-issue checklist v<version> as the newest version (append-only; history is kept). Gated by NOUGEN_ENABLE_PR_REVIEW=1."""
+    gate = _tool_gate("NOUGEN_ENABLE_PR_REVIEW", "rsi_rollback")
+    if gate:
+        return gate
+    if int(version) <= 0:
+        return json.dumps({"error": "version must be a positive number"})
+    return json.dumps(_run_review_ts(["rsi", "rollback", str(int(version))], timeout=120))
 
 
 @mcp.tool()

@@ -37,3 +37,21 @@ MCP (nougen-shards): `review_pr(repo, pr, dry_run=True)` (it only runs when the 
 - **Disk full:** at 0 bytes free, bun and the poll fail silently. Check `run.log` and free C: first.
 - **Edits to `~/.nougen/bin` are not landed:** change the repo copy, re-run `install.ps1`, then open a PR.
 - **Never merge from here:** a merge needs an approving non-author review. A COMMENT does not unlock the guard.
+
+## RSI loop: evolve, inspect, roll back
+```bash
+python tools/pr_reviewer/prreview.py rsi status          # versions, active, rejected streak, gate rejections, weights
+python tools/pr_reviewer/prreview.py rsi evolve          # one scoring pass (also runs at the end of every poll)
+python tools/pr_reviewer/prreview.py rsi rollback 3      # re-issue v3 as the newest version (append-only)
+```
+MCP: `rsi_status` (read-only), `rsi_evolve` and `rsi_rollback(version)` (both require `NOUGEN_ENABLE_PR_REVIEW=1`).
+
+Mechanics live in `tools/pr_reviewer/rsi.ts`, tested in `rsi.test.ts` and `rsi.fixes.test.ts`. Sources are in `RSI.md`.
+- **Scoring:** a finding is *held* if the follow-up push touched its line (±3), otherwise *dismissed*. **Churn guard:** if the file has no patch or more than 150 lines were touched, the finding is left unscored. That stops a reformat from "holding" every finding.
+- **Gate:** weights learn from a hash-based ~80% train split. Each step is capped at 0.15 and pulled 10% toward the seed weight. A new version is adopted only if its weighted precision on the held-out ~20% drops by at most 0.02. With fewer than 5 holdout rows, it is adopted as a bootstrap.
+- **Rejection:** a rejected version is not written. It increments `checklist/rejected_streak`, and a `gate: rejected` row goes into `scores.jsonl`. After 3 rejections, the next pass evolves from the archived version with the best holdout score.
+- **Lessons:** ACE-style curation. Near-duplicates merge (newest wins), capped at 20.
+- **Consensus:** up to 3 vendor lanes draft. A finding survives only if at least 2 of them raise it (same path, ±3 lines). `--consensus-lanes N` changes how many extra lanes draft; `--no-consensus` turns it off.
+
+**Rollback:** run `rsi status`, pick the version with the best `gate.after`, then run `rsi rollback <v>`. Nothing is deleted.
+**Ledger safety:** `ledger.jsonl` is parsed line-tolerantly. Appends and rewrites take `ledger.jsonl.lock`, and a rewrite is a temp file plus a rename. A no-verdict run (402/429) is retried after a 6-hour cooldown, not blocked forever.
