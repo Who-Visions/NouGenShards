@@ -88,6 +88,6 @@ describe("pickParent", () => {
     { version: 1, items: [], gate: { after: 0.4 } }, { version: 2, items: [], gate: { after: 0.7 } }, { version: 3, items: [], gate: { after: 0.5 } }];
   test("latest unless stalled, then best archived", () => {
     expect(pickParent(arch, 0).version).toBe(3);
-    expect(pickParent(arch, 3).version).toBe(2);
+    expect(pickParent(arch, 3, 3, () => 0.5).version).toBe(2); // DGM draw, pinned rand lands on the 0.7 version
   });
 });

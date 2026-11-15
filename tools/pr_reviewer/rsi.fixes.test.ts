@@ -68,3 +68,11 @@ describe("rsi CLI helpers", () => {
     expect(st.rejections).toHaveLength(1); expect(st.weights[0]).toMatchObject({ id: "a", weight: 0.9 });
   });
 });
+
+import { compareFilesOrNull } from "./rsi";
+describe("re-review P2: failed compare is not a dismissal", () => {
+  test("null / error bodies / missing files mean retry later", () => {
+    for (const bad of [null, undefined, { message: "Not Found" }, { files: "x" }]) expect(compareFilesOrNull(bad)).toBeNull();
+    expect(compareFilesOrNull({ files: [] })).toEqual([]);
+  });
+});

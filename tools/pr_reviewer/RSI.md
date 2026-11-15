@@ -32,3 +32,15 @@ ACE (`ace-agent/ace`), harness-zero, meta-context-engineering, ReMe (`agentscope
 
 ## Out of scope
 Model-level RSI (SEAL, SPIN, Self-Rewarding, STaR) needs weight updates. Embodied RSI does not apply to the fleet.
+
+## Reversed from donor code (free fleet, 11/15 1:46 PM EST)
+`analysis/awesome-rsi-reverse/reverse.py` pulled the core source of six donor repos: ace, dgm, ReMe, openevolve, harness-zero and Memento-Skills. It sent each repo in 7k-character chunks to two independent lanes, and 30 of 34 calls returned. The first pass sent 24k prompts and every call failed with "budget exhausted". Ported, each with a test in `rsi.fleet.test.ts`:
+- **DGM `choose_selfimproves` (score_child_prop) → `dgmParent`:** sigmoid(10·(score−0.5)) / (1+children). Used when stalled, in place of greedy best.
+- **harness-zero instruction-drift check → `driftViolations`:** evolution may change weights, but never item ids, check text or the item set.
+- **DGM `is_compiled_self_improve` → `validFinding`:** malformed findings are skipped, not scored as dismissed.
+
+**Confirmed but already present:**
+- ACE: per-bullet helpful/harmful counters (our per-item stats) and similarity dedupe (`curateLessons`).
+- OpenEvolve: keeps the absolute best separately (the archive plus `rsi rollback`).
+
+**Not ported:** ReMe (session memory, not a review loop), Memento-Skills (the extracted code was packaging), and OpenEvolve MAP-Elites islands (too few versions to need them).

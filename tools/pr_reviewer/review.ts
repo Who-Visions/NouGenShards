@@ -21,7 +21,7 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, readdirSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { consensusFindings, curateLessons, evolve, judgeFindings, collectPages, normVerdict, parseJsonl, pickParent, rollbackTo, rsiStatus, seenKeys, withLock } from "./rsi";
+import { consensusFindings, curateLessons, evolve, judgeFindings, collectPages, compareFilesOrNull, driftViolations, normVerdict, parseJsonl, pickParent, rollbackTo, rsiStatus, seenKeys, withLock } from "./rsi";
 
 const HERE = dirname(import.meta.path);
 const ROOT = join(homedir(), ".nougen", "research", "reviews", "aiwithdav3");
@@ -316,19 +316,22 @@ async function score() {
     if (!(await useTokenFor(e.repo).catch(() => null))) continue;
     const pr = await ghJson(`/repos/${e.repo}/pulls/${e.pr}`).catch(() => null); if (!pr) continue;
     if (pr.head.sha === e.sha && pr.state === "open") continue; // nothing to judge yet
-    const cmp = await ghJson(`/repos/${e.repo}/compare/${e.sha}...${pr.head.sha}`).catch(() => null);
-    scored.push(...judgeFindings(e.findings, cmp?.files || [], { repo: e.repo, pr: e.pr }));
-    e.scored = new Date().toISOString();
+    // a failed compare (404 after force-push, 429, network) is "unknown", never "every finding dismissed": retry later
+    let cmp: any = null;
+    try { cmp = await ghJson(`/repos/${e.repo}/compare/${e.sha}...${pr.head.sha}`); } catch (err: any) { log(`  score: compare failed for ${e.repo}#${e.pr} (${String(err?.message || err).slice(0, 120)}); will retry`); continue; }
+    if (!compareFilesOrNull(cmp)) { log(`  score: compare for ${e.repo}#${e.pr} had no file list; will retry`); continue; }
+    scored.push(...judgeFindings(e.findings, cmp.files, { repo: e.repo, pr: e.pr }));
+    e.scored = new Date().toISOString(); // judged, even when every finding was ambiguous churn
   }
-  if (!scored.length) return log("score: no newly judgeable findings");
-  // rewrite ledger with scored flags
+  // persist scored flags first, so all-ambiguous entries are not re-fetched on every poll
   const key = (x: any) => `${x.repo}#${x.pr}@${x.sha}@${x.started}`;
   const done = new Map(entries.filter((x) => x.scored).map((x) => [key(x), x.scored]));
-  withLock(LEDGER + ".lock", () => { // re-read under the lock so concurrent appends survive; write atomically
+  if (done.size) withLock(LEDGER + ".lock", () => { // re-read under the lock so concurrent appends survive; write atomically
     const cur = ledger(), tmp = LEDGER + ".tmp";
     writeFileSync(tmp, cur.map((x) => JSON.stringify(done.has(key(x)) ? { ...x, scored: done.get(key(x)) } : x)).join("\n") + "\n");
     renameSync(tmp, LEDGER);
   });
+  if (!scored.length) return log(`score: no newly judgeable findings (${done.size} entries marked judged)`);
   appendFileSync(join(ROOT, "scores.jsonl"), scored.map((s) => JSON.stringify({ at: new Date().toISOString(), ...s })).join("\n") + "\n");
   // evolve (rsi.ts): train/holdout split, bounded + seed-anchored steps, holdout gate, curated lessons, archive restart
   const hist = parseJsonl(readFileSync(join(ROOT, "scores.jsonl"), "utf8"));
@@ -345,6 +348,8 @@ async function score() {
     appendFileSync(join(ROOT, "scores.jsonl"), JSON.stringify({ at: new Date().toISOString(), gate: "rejected", version: next.version, parent: ck.version, ...gate }) + "\n");
     return log(`score: v${next.version} REJECTED by holdout gate (${gate.before} -> ${gate.after} on ${gate.holdout}); keeping v${ck.version}`);
   }
+  const drift = driftViolations(ck, next); // harness-zero guard: weights may move, ids and check text may not
+  if (drift.length) return log(`score: v${next.version} REFUSED by drift guard: ${drift.join("; ")}`);
   writeFileSync(streakFile, "0");
   writeFileSync(join(CHECKDIR, `v${next.version}.json`), JSON.stringify(next, null, 1));
   log(`score: ${scored.length} findings judged (${scored.filter((s) => s.held).length} held) -> checklist v${next.version}`);

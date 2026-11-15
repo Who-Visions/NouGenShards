@@ -31,7 +31,7 @@ export function judgeFindings(findings: any[], compareFiles: any[], ctx: { repo:
     touched.set(f.previous_filename || f.filename, s && s.size <= MAX_TOUCHED ? s : null);
   }
   const out: Score[] = [];
-  for (const f of findings || []) {
+  for (const f of (findings || []).filter(validFinding)) {
     const t = touched.get(f.path);
     if (t === null) continue; // ambiguous churn
     const ln = Number(f.line);
@@ -113,11 +113,12 @@ export function consensusFindings(drafts: { lane: string; findings: any[] }[], k
 
 /** DGM/OpenEvolve-style archive parent: evolve from the latest version unless the last `stall` proposals were all
  *  rejected by the gate — then restart from the archived version with the best holdout score. */
-export function pickParent(archive: Checklist[], rejectedStreak: number, stall = 3): Checklist {
+export function pickParent(archive: Checklist[], rejectedStreak: number, stall = 3, rand: () => number = Math.random): Checklist {
   const sorted = [...archive].sort((a, b) => a.version - b.version);
   const latest = sorted.at(-1)!;
   if (rejectedStreak < stall) return latest;
-  return sorted.reduce((best, c) => ((c.gate?.after ?? -1) > (best.gate?.after ?? -1) ? c : best), latest);
+  // stalled: DGM-style weighted draw over the archive (score-weighted, child-penalised) instead of greedy best
+  return dgmParent(sorted, rand);
 }
 
 /** JSONL that survives a truncated/corrupt line (a crash mid-append must not take down review/poll/score). */
@@ -187,3 +188,43 @@ export async function collectPages(fetchPage: (page: number) => Promise<any[]>, 
 
 /** Model verdicts arrive in any case ("approve"); compare only after normalising. */
 export const normVerdict = (v: unknown) => String(v ?? "").trim().toUpperCase();
+
+// ---- from the fleet's code read of jennyzzt/dgm and metaevo-ai/harness-zero (analysis/awesome-rsi-reverse) ----
+
+/** DGM `choose_selfimproves` (score_child_prop): parent weight = sigmoid(10*(score-0.5)) / (1 + children).
+ *  Good versions get picked more, but a version that has already spawned many children yields to its siblings,
+ *  so the archive keeps exploring instead of hill-climbing one line. `rand` is injectable for tests. */
+export function dgmParent(archive: Checklist[], rand: () => number = Math.random): Checklist {
+  const kids = new Map<number, number>();
+  for (const c of archive) if (c.parent != null) kids.set(c.parent, (kids.get(c.parent) || 0) + 1);
+  const w = archive.map((c) => { const s = c.gate?.after ?? 0.5; return 1 / (1 + Math.exp(-10 * (s - 0.5))) / (1 + (kids.get(c.version) || 0)); });
+  const total = w.reduce((a, b) => a + b, 0);
+  let r = rand() * total;
+  for (let i = 0; i < archive.length; i++) { r -= w[i]; if (r <= 0) return archive[i]; }
+  return archive.at(-1)!;
+}
+
+/** harness-zero drift guard: evolution may change weights, notes and stats — never an item's id or its check text.
+ *  Returns the list of violations (empty = safe to write). */
+export function driftViolations(prev: Checklist, next: Checklist): string[] {
+  const out: string[] = [];
+  const before = new Map(prev.items.map((i) => [i.id, i.check]));
+  for (const it of next.items) {
+    if (!before.has(it.id)) out.push(`new item ${it.id} appeared outside a proposal`);
+    else if (before.get(it.id) !== it.check) out.push(`check text of ${it.id} changed`);
+    if (!(it.weight >= 0 && it.weight <= 1)) out.push(`weight of ${it.id} out of [0,1]`);
+  }
+  for (const id of before.keys()) if (!next.items.some((i) => i.id === id)) out.push(`item ${id} dropped`);
+  return out;
+}
+
+/** DGM `is_compiled_self_improve`: only well-formed records feed the loop (a finding needs path, numeric line,
+ *  checklist id). Malformed records are skipped instead of scoring as dismissed. */
+export function validFinding(f: any): boolean {
+  return !!f && typeof f.path === "string" && f.path.length > 0 && Number.isFinite(Number(f.line)) && Number(f.line) > 0 && typeof f.checklist === "string" && f.checklist.length > 0;
+}
+
+/** score(): the compare result's file list, or null when the compare failed / is malformed (judge later, not "dismissed"). */
+export function compareFilesOrNull(cmp: any): any[] | null {
+  return cmp && Array.isArray(cmp.files) ? cmp.files : null;
+}
