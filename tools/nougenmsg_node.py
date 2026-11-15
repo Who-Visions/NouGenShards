@@ -68,21 +68,24 @@ DEFAULT_PORT = 8766
 DEFAULT_BIND = "127.0.0.1"  # opt into a LAN bind with NOUGEN_AGY_MSG_BIND
 PREVIEW_CHARS = 400
 SENDER_LABEL_CHARS = 64
-_KNOWN_FLEET_NODES = frozenset({"blade", "blade1tb", "phoebus", "whoart", "hyperion", "apollo", "mac-mini"})
-_BROADCAST_TARGETS = frozenset({"all", "fleet"})
+_LOCAL_AGENT_TARGETS = frozenset({
+    "antigravity", "agy", "claude", "claude-code", "codex", "codex-cli",
+    "kaedra", "solai", "yukiai", "nobody",
+})
 
 
 def _foreign_target_reason(target: str) -> "str | None":
-    """Return a refusal reason if target addresses another node or fleet broadcast."""
+    """Return a refusal reason if target is not explicitly local to this node."""
     raw = str(target or "").strip().lower()
-    if not raw:
+    if not raw or raw == "all":
+        # Bare "all" is the wire agent target sent by send_direct_http for node-only sends.
         return None
-    stripped = raw.lstrip("@")
-    if stripped in _BROADCAST_TARGETS:
+    if raw in ("@all", "@fleet", "fleet"):
         return (
             "local-only receiver on node '{}' does not route broadcast target '{}'; "
             "use nougenmsg_send"
         ).format(NODE, target)
+    stripped = raw.lstrip("@")
     if ":" in stripped:
         node_part = stripped.split(":", 1)[0].strip()
         if node_part and node_part not in (NODE, "local", "self"):
@@ -91,12 +94,12 @@ def _foreign_target_reason(target: str) -> "str | None":
                 "use nougenmsg_send"
             ).format(NODE, target)
         return None
-    if stripped in _KNOWN_FLEET_NODES and stripped != NODE:
-        return (
-            "local-only receiver on node '{}' does not route cross-node target '{}'; "
-            "use nougenmsg_send"
-        ).format(NODE, target)
-    return None
+    if stripped in (NODE, "local", "self") or stripped in _LOCAL_AGENT_TARGETS:
+        return None
+    return (
+        "local-only receiver on node '{}' does not route non-local target '{}'; "
+        "use nougenmsg_send"
+    ).format(NODE, target)
 
 
 def _env_path(key: str, *default_parts: str) -> Path:
