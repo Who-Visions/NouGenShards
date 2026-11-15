@@ -1,6 +1,8 @@
 """prreview: independent, read-only PR reviews by other agents, with the verdict extracted.
 
     prreview rsi status|evolve|rollback <v>   (the aiwithdav3 RSI loop)
+    prreview verdicts <owner/repo> <pr>        (review-loop state: done? next command)
+    prreview reverse owner/repo[:pats] ...     (fleet reads donor code, extracts mechanisms)
     prreview <owner/repo> <pr> [<pr> ...] [--focus "..."] [--prior FILE] [--agent codex|agy|both]
 
 - Runs Codex (`codex exec --yolo`) and/or Antigravity (`agy --dangerously-skip-permissions -p`)
@@ -90,6 +92,9 @@ def rsi(argv):
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "rsi":
         return rsi(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] in ("verdicts", "reverse"):
+        here = pathlib.Path(__file__).resolve().parent
+        return subprocess.run([sys.executable, str(here / f"{sys.argv[1]}.py"), *sys.argv[2:]], stdin=subprocess.DEVNULL).returncode
     ap = argparse.ArgumentParser(prog="prreview")
     ap.add_argument("repo")
     ap.add_argument("prs", nargs="+", type=int)

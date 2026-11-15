@@ -1700,6 +1700,53 @@ def rsi_rollback(version: int) -> str:
     return json.dumps(_run_review_ts(["rsi", "rollback", str(int(version))], timeout=120))
 
 
+def _pr_tool(name: str):
+    """Import a tools/pr_reviewer module (verdicts, reverse) from the repo checkout."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[2] / "tools" / "pr_reviewer" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"pr_reviewer_{name}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@mcp.tool()
+def pr_review_verdicts(repo: str, pr: int) -> str:
+    """Review-loop state for a PR from prreview logs: every round's verdict, FIXED/NOT FIXED, open P1/P2/P3,
+    whether the loop is done, and the exact next command. Read-only."""
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo or "") or any(p in (".", "..") for p in repo.split("/")) \
+            or int(pr) <= 0:
+        return json.dumps({"error": "repo must be owner/name and pr a positive number"})
+    return json.dumps(_pr_tool("verdicts").loop_state(repo, int(pr)), ensure_ascii=False)
+
+
+@mcp.tool()
+def rsi_reverse(targets: List[str], lanes: int = 2) -> str:
+    """Fleet reads donor repos' source (owner/repo[:pat1,pat2]) in 7k chunks and extracts RSI mechanisms to
+    ~/.nougen/research/reverse/fleet_raw.json. Free lanes only. Gated by NOUGEN_ENABLE_PR_REVIEW=1."""
+    gate = _tool_gate("NOUGEN_ENABLE_PR_REVIEW", "rsi_reverse")
+    if gate:
+        return gate
+    import subprocess
+    import sys as _sys
+    try:
+        rev = _pr_tool("reverse")
+        clean = [t for t in (targets or [])[:8] if rev.parse_target(t)]
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    if not clean:
+        return json.dumps({"error": "give at least one owner/repo target"})
+    try:
+        r = subprocess.run([_sys.executable, rev.__file__, *clean, "--lanes", str(max(1, min(int(lanes), 3)))],
+                           stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", errors="replace",
+                           timeout=1800, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps({"exit": r.returncode, "stdout": (r.stdout or "").strip()[-2000:],
+                       "stderr": "\n".join((r.stderr or "").strip().splitlines()[-10:])})
+
+
 @mcp.tool()
 def pr_review_status(repo: str = "", pr: int = 0, limit: int = 10) -> str:
     """Latest aiwithdav3 review verdicts from the local ledger, newest first. Read-only."""

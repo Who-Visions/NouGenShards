@@ -55,3 +55,24 @@ Mechanics live in `tools/pr_reviewer/rsi.ts`, tested in `rsi.test.ts` and `rsi.f
 
 **Rollback:** run `rsi status`, pick the version with the best `gate.after`, then run `rsi rollback <v>`. Nothing is deleted.
 **Ledger safety:** `ledger.jsonl` is parsed line-tolerantly. Appends and rewrites take `ledger.jsonl.lock`, and a rewrite is a temp file plus a rename. A no-verdict run (402/429) is retried after a 6-hour cooldown, not blocked forever.
+
+## Review loop: fix until clean
+```bash
+python tools/pr_reviewer/prreview.py <repo> <n> --agent both                         # round 1
+python tools/pr_reviewer/prreview.py verdicts <repo> <n>                             # done? and the exact next command
+python tools/pr_reviewer/prreview.py <repo> <n> --agent agy --prior <latest log>     # after each fix round
+```
+MCP: `pr_review_verdicts(repo, pr)` (read-only).
+- **Done** means the newest log that has a verdict is not BLOCK, has no open P1 or P2, and has no NOT FIXED. P3s may remain.
+- `--prior` makes the reviewer mark every old finding FIXED or NOT FIXED, so it also catches regressions your fixes introduce. On #1079, the second pass caught a new P2 in compare handling.
+- **codex at its usage limit:** `--agent both` writes a codex log with no verdict, and `verdicts` ignores it. agy carries the loop.
+- Proof: #1079 ran 1:28 PM (3 P2) → 1:42 PM (1 P2) → 1:48 PM (0 P2, 8 FIXED). `verdicts` reports `done: true`.
+
+## Reverse donor code on the fleet
+```bash
+python tools/pr_reviewer/prreview.py reverse jennyzzt/dgm:DGM_outer.py,self_improve ace-agent/ace:ace/ --lanes 2
+```
+MCP: `rsi_reverse(targets, lanes)`. It requires `NOUGEN_ENABLE_PR_REVIEW=1` and uses free fleet lanes only.
+- It reads up to 21k characters of .py/.ts source per repo (tests excluded), in 7k chunks, with each chunk sent to `--lanes` independent routes. Output goes to `~/.nougen/research/reverse/fleet_raw.json`.
+- **Trap:** prompts of 24k characters fail every free route with "budget exhausted". Keep chunks at 7k or less.
+- Output is raw. The coach reads it, ports only what the code actually implements, and adds a test for each port (see `RSI.md`, `rsi.fleet.test.ts`).
