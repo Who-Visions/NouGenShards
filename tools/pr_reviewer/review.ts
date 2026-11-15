@@ -31,8 +31,15 @@ const REVIEWER = "aiwithdav3";
 // every aiwithdav3 token the keymaker holds, newest first; each repo uses the first one that can read it
 // (the fine-grained PAT covers only aiwithdav3-owned + public org repos; the classic one covers private org repos)
 const TOKEN_NAMES = (process.env.AIWITHDAV3_TOKEN_NAMES || "AIWITHDAV3_GITHUB_PAT_20261115,GITHUB_TOKEN_AIWITHDAV3_CLASSIC_20261112,GITHUB_TOKEN_AIWITHDAV3").split(",");
+// a real interpreter beside the keymaker: the Outpost checkout's venv, else the node install's venv
+// (blade and the Mac have no Outpost/NouGen/src), else PATH. Store aliases cannot be spawned.
 const PY = process.env.NOUGEN_PYTHON ||
-  [join(homedir(), "Outpost", "NouGen", ".venv", "Scripts", "pythonw.exe"), "pythonw", "python"].find((p) => !p.includes("\\") || existsSync(p))!;
+  [
+    join(homedir(), "Outpost", "NouGen", ".venv", "Scripts", "pythonw.exe"),
+    join(homedir(), ".nougen", "src", "nougenshards", ".venv", "Scripts", "pythonw.exe"),
+    join(homedir(), "Outpost", "NouGen", ".venv", "bin", "python"),
+    join(homedir(), ".nougen", "src", "nougenshards", ".venv", "bin", "python"),
+  ].find((p) => existsSync(p)) || (process.platform === "win32" ? "pythonw" : "python3");
 const LANES = ["huggingface", "openrouter", "ollama-cloud", "local-e2b", "agy"] as const;
 type Lane = (typeof LANES)[number];
 mkdirSync(CHECKDIR, { recursive: true });
