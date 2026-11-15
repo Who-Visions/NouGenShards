@@ -20,6 +20,7 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { consensusFindings, curateLessons, evolve, judgeFindings, pickParent } from "./rsi";
 
 const HERE = dirname(import.meta.path);
 const ROOT = join(homedir(), ".nougen", "research", "reviews", "aiwithdav3");
@@ -231,6 +232,7 @@ async function reviewPr(repo: string, num: number) {
   const { system, user } = buildPrompt(ck, pr, diff, truncated);
   const attempts: any[] = [];
   const primary = await reviewWithFallback(system, user, failLanes, attempts);
+  let rec_consensus: any = null;
   const rec: any = { repo, pr: num, sha, title: pr.title, checklist_version: ck.version, started: new Date().toISOString(), attempts, posted: false };
   const out = join(ROOT, `${repo.replace("/", "__")}-${num}-${sha.slice(0, 7)}-${stamp()}.json`);
   if (!primary) { rec.outcome = "no-verdict"; writeFileSync(out, JSON.stringify(rec, null, 1)); appendFileSync(LEDGER, JSON.stringify(rec) + "\n"); log("  every lane failed: nothing posted"); return "fail"; }
@@ -238,6 +240,15 @@ async function reviewPr(repo: string, num: number) {
   // keep confident findings with a valid inline anchor; the rest go into the body
   const valid = new Map<string, Set<number>>(files.map((f: any) => [f.filename, rightLines(f.patch)]));
   const res = primary.result;
+  // self-consistency (awesome-rsi: Self-Consistency / multiagent debate): a second, independent lane drafts too;
+  // only findings both raise survive. If no second lane answers, the supervisor below is the only filter.
+  if (!flag("no-consensus") && res.findings.length) {
+    const second = await reviewWithFallback(system, user, new Set([...failLanes, primary.lane]), attempts);
+    if (second) { const before = res.findings.length;
+      res.findings = consensusFindings([{ lane: primary.lane, findings: res.findings }, { lane: second.lane, findings: second.result.findings }]);
+      rec_consensus = { lane: second.lane, model: second.model, verdict: second.result.verdict, kept: res.findings.length, of: before };
+      log(`  consensus with ${second.lane}: kept ${res.findings.length}/${before} findings`); }
+  }
   res.findings = res.findings.filter((f: any) => (Number(f.confidence) || 0) >= 80 && f.body);
   const sup = await supervise(primary.lane as Lane, primary.model, res, diff, failLanes, attempts);
   let verdict = res.verdict as string;
@@ -256,7 +267,7 @@ async function reviewPr(repo: string, num: number) {
     ...(truncated ? ["", "_Diff was over 60k chars; coverage was limited._"] : []),
     "", `<sub>Lanes: ${lanesUsed}. Automated review; it never merges.</sub>`].join("\n");
   const comments = inline.map((f: any) => ({ path: f.path, line: Number(f.line), side: "RIGHT", body: `**${f.severity}** [${f.checklist}] ${f.body}` }));
-  Object.assign(rec, { lane: primary.lane, model: primary.model, supervisor: sup, verdict, model_verdict: res.verdict, summary: res.summary,
+  Object.assign(rec, { lane: primary.lane, model: primary.model, consensus: rec_consensus, supervisor: sup, verdict, model_verdict: res.verdict, summary: res.summary,
     findings: res.findings.map((f: any) => ({ ...f, inline: inline.includes(f) })) });
 
   // head SHA guard right before the write
@@ -292,18 +303,7 @@ async function score() {
     const pr = await ghJson(`/repos/${e.repo}/pulls/${e.pr}`).catch(() => null); if (!pr) continue;
     if (pr.head.sha === e.sha && pr.state === "open") continue; // nothing to judge yet
     const cmp = await ghJson(`/repos/${e.repo}/compare/${e.sha}...${pr.head.sha}`).catch(() => null);
-    const touched = new Map<string, Set<number>>();
-    for (const f of cmp?.files || []) { // old-side lines touched by the follow-up push
-      const s = new Set<number>(); let n = 0;
-      for (const l of (f.patch || "").split("\n")) { const h = l.match(/^@@ -(\d+)/); if (h) { n = +h[1]; continue; }
-        if (l.startsWith("+")) continue; if (l.startsWith("-")) s.add(n); n++; }
-      touched.set(f.previous_filename || f.filename, s);
-    }
-    for (const f of e.findings) {
-      const t = touched.get(f.path); const ln = Number(f.line);
-      const fixed = !!t && [...t].some((x) => Math.abs(x - ln) <= 3);
-      scored.push({ checklist: f.checklist, held: fixed, repo: e.repo, pr: e.pr, body: f.body });
-    }
+    scored.push(...judgeFindings(e.findings, cmp?.files || [], { repo: e.repo, pr: e.pr }));
     e.scored = new Date().toISOString();
   }
   if (!scored.length) return log("score: no newly judgeable findings");
@@ -312,31 +312,22 @@ async function score() {
   const done = new Map(entries.filter((x) => x.scored).map((x) => [key(x), x.scored]));
   writeFileSync(LEDGER, all.map((x) => JSON.stringify(done.has(key(x)) ? { ...x, scored: done.get(key(x)) } : x)).join("\n") + "\n");
   appendFileSync(join(ROOT, "scores.jsonl"), scored.map((s) => JSON.stringify({ at: new Date().toISOString(), ...s })).join("\n") + "\n");
-  // evolve: per-item precision over all history (Laplace-smoothed), weight moves toward it
-  const hist = readFileSync(join(ROOT, "scores.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((s: any) => s.checklist);
-  // holdout gate (awesome-rsi: RecurSE validation holdout; "block bad state at entry"): weights learn from the
-  // train split only, and a new version is adopted only if it ranks held-out findings no worse than the current one.
-  const isHold = (s: any) => [...`${s.repo}#${s.pr}:${s.body}`].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7) % 5 === 0;
-  const train = hist.filter((s) => !isHold(s)), hold = hist.filter(isHold);
-  const ck = currentChecklist(); const next = structuredClone(ck); next.version = ck.version + 1; next.created = new Date().toISOString();
-  for (const it of next.items) {
-    const h = train.filter((s) => s.checklist === it.id); if (!h.length) continue;
-    const held = h.filter((s) => s.held).length; const p = (held + 1) / (h.length + 2);
-    it.stats = { scored: h.length, held, precision: +p.toFixed(2) };
-    const target = Math.min(1, Math.max(0.1, 0.5 * it.weight + 0.5 * p * 1.25));
-    // bounded step: at most 0.15 per pass, so one noisy batch cannot silence an item
-    it.weight = +(it.weight + Math.max(-0.15, Math.min(0.15, target - it.weight))).toFixed(2);
-    it.note = h.length >= 3 && p < 0.35 ? "Often dismissed by authors: report only with a concrete failing input." : undefined;
-  }
-  const wPrec = (c: any) => { let num = 0, den = 0; for (const s of hold) { const w = c.items.find((i: any) => i.id === s.checklist)?.weight ?? 0.5; num += w * (s.held ? 1 : 0); den += w; } return den ? num / den : 0; };
-  const before = wPrec(ck), after = wPrec(next);
-  next.gate = { holdout: hold.length, before: +before.toFixed(3), after: +after.toFixed(3) };
-  if (hold.length >= 5 && after < before - 0.02) {
-    appendFileSync(join(ROOT, "scores.jsonl"), JSON.stringify({ at: new Date().toISOString(), gate: "rejected", version: next.version, ...next.gate }) + "\n");
-    return log(`score: v${next.version} REJECTED by holdout gate (${before.toFixed(3)} -> ${after.toFixed(3)} on ${hold.length}); keeping v${ck.version}`);
-  }
+  // evolve (rsi.ts): train/holdout split, bounded + seed-anchored steps, holdout gate, curated lessons, archive restart
+  const hist = readFileSync(join(ROOT, "scores.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const archive = readdirSync(CHECKDIR).filter((f) => /^v\d+\.json$/.test(f)).map((f) => JSON.parse(readFileSync(join(CHECKDIR, f), "utf8")));
+  const streakFile = join(CHECKDIR, "rejected_streak");
+  const streak = existsSync(streakFile) ? +readFileSync(streakFile, "utf8") || 0 : 0;
+  const ck = archive.length ? pickParent(archive, streak) : currentChecklist();
+  const { next, adopt, gate } = evolve(ck, hist);
+  next.version = Math.max(ck.version, ...archive.map((a: any) => a.version)) + 1; next.created = new Date().toISOString();
   const dismissed = scored.filter((s) => !s.held).slice(0, 3).map((s) => `Dismissed in ${s.repo}#${s.pr} [${s.checklist}]: ${String(s.body).slice(0, 140)}`);
-  next.lessons = [...(ck.lessons || []), ...dismissed].slice(-20);
+  next.lessons = curateLessons(ck.lessons || [], dismissed);
+  if (!adopt) {
+    writeFileSync(streakFile, String(streak + 1));
+    appendFileSync(join(ROOT, "scores.jsonl"), JSON.stringify({ at: new Date().toISOString(), gate: "rejected", version: next.version, parent: ck.version, ...gate }) + "\n");
+    return log(`score: v${next.version} REJECTED by holdout gate (${gate.before} -> ${gate.after} on ${gate.holdout}); keeping v${ck.version}`);
+  }
+  writeFileSync(streakFile, "0");
   writeFileSync(join(CHECKDIR, `v${next.version}.json`), JSON.stringify(next, null, 1));
   log(`score: ${scored.length} findings judged (${scored.filter((s) => s.held).length} held) -> checklist v${next.version}`);
 }
