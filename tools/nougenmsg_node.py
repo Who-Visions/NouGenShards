@@ -68,6 +68,45 @@ DEFAULT_PORT = 8766
 DEFAULT_BIND = "127.0.0.1"  # opt into a LAN bind with NOUGEN_AGY_MSG_BIND
 PREVIEW_CHARS = 400
 SENDER_LABEL_CHARS = 64
+_LOCAL_AGENT_TARGETS = frozenset({
+    "antigravity", "agy", "claude", "claude-code", "codex", "codex-cli",
+    "kaedra", "solai", "yukiai", "nobody",
+    "ollama", "openrouter", "agents",
+})
+
+# The bus addresses a model as '<lane>:<model>' ('@ollama:gemma4:e2b-qat'). The part before
+# the colon is a lane on this node, not another node.
+_LOCAL_MODEL_LANES = frozenset({"ollama", "openrouter"})
+
+
+def _foreign_target_reason(target: str) -> "str | None":
+    """Return a refusal reason if target is not explicitly local to this node."""
+    raw = str(target or "").strip().lower()
+    if not raw or raw == "all":
+        # Bare "all" is the wire agent target sent by send_direct_http for node-only sends.
+        return None
+    if raw in ("@all", "@fleet", "fleet"):
+        return (
+            "local-only receiver on node '{}' does not route broadcast target '{}'; "
+            "use nougenmsg_send"
+        ).format(NODE, target)
+    stripped = raw.lstrip("@")
+    if ":" in stripped:
+        node_part = stripped.split(":", 1)[0].strip()
+        if node_part in _LOCAL_MODEL_LANES:
+            return None
+        if node_part and node_part not in (NODE, "local", "self"):
+            return (
+                "local-only receiver on node '{}' does not route cross-node target '{}'; "
+                "use nougenmsg_send"
+            ).format(NODE, target)
+        return None
+    if stripped in (NODE, "local", "self") or stripped in _LOCAL_AGENT_TARGETS:
+        return None
+    return (
+        "local-only receiver on node '{}' does not route non-local target '{}'; "
+        "use nougenmsg_send"
+    ).format(NODE, target)
 
 
 def _env_path(key: str, *default_parts: str) -> Path:
@@ -639,41 +678,6 @@ code{padding:.1rem .3rem}pre{padding:.8rem;overflow-x:auto}p,li{color:#c9d1d9}</
 <li><code>/health</code> reports liveness.</li></ul></main></body></html>"""
 
 
-def _bus_view(target: str) -> "tuple[str, set]":
-    """(destination node, names that mean this node) from the bus's own parser, so both agree."""
-    from nougen_shards.nougenmsg import NouGenMsgBus, get_current_node, local_node
-    node, _agent = NouGenMsgBus.parse_destination(target)
-    return str(node or "local").lower(), {str(local_node()).lower(), str(get_current_node()).lower()}
-
-
-def delivery_scope(target: object) -> dict:
-    """Where a message POSTed here for ``target`` can actually go.
-
-    This receiver writes its own inbox and wakes its own sessions. It never forwards
-    to another node, so the reply must not claim that it did:
-
-      local    this node, or a lane on it
-      fleet    '@all': delivered here only; the other nodes were not reached
-      foreign  names another node: nothing here can deliver it
-    """
-    raw = str(target or "").strip()
-    bare = raw.lstrip("@").lower()
-    if not bare or bare == NODE:
-        return {"scope": "local"}
-    mine = {"local", NODE}
-    try:
-        node, names = _bus_view(raw)
-        mine |= names
-    except Exception:
-        # A standalone copy without the package cannot name other nodes; '@all' is still knowable.
-        node = "fleet" if bare in ("all", "fleet") else "local"
-    if node in mine:
-        return {"scope": "local"}
-    if node == "fleet":
-        return {"scope": "fleet", "routed": False, "reached": [NODE]}
-    return {"scope": "foreign", "routed": False, "target_node": node}
-
-
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -791,14 +795,16 @@ class Handler(BaseHTTPRequestHandler):
         msg.setdefault("priority", "normal")
         msg.setdefault("timestamp", time.time())
         msg["target"] = msg.get("target") or NODE
-        scope = delivery_scope(msg["target"])
-        if scope["scope"] == "foreign":
-            # delivered:true here told a sender its message reached a node it never left for.
-            # Nothing is written or claimed, so a resend through the right door is not a repeat.
-            self._send({"delivered": False, "routed": False, "node": NODE,
-                        "target_node": scope["target_node"],
-                        "error": "target is another node; this address delivers on {} only".format(NODE),
-                        "use": "nougenmsg_send"}, 421)
+        not_routed = _foreign_target_reason(str(msg["target"]))
+        if not_routed:
+            self._send({
+                "delivered": False,
+                "routed": False,
+                "status": "not_routed",
+                "error": not_routed,
+                "node": NODE,
+                "target": msg["target"],
+            }, 422)
             return
         assign_message_id(msg)
         first, seen = claim_message(msg)
@@ -807,7 +813,7 @@ class Handler(BaseHTTPRequestHandler):
             # the original delivery and do nothing else, so a retry is always safe.
             self._send({"delivered": True, "duplicate": True, "method": "http", "node": NODE,
                         "file": seen.get("file"), "message_id": msg["message_id"],
-                        "receipt": "/msg/{}".format(msg["message_id"]), "scope": scope,
+                        "receipt": "/msg/{}".format(msg["message_id"]),
                         "build": build_id(), "elevated": {"attempted": False, "skipped": "duplicate"}})
             return
         try:
@@ -830,7 +836,6 @@ class Handler(BaseHTTPRequestHandler):
                     "file": path.name,
                     "message_id": msg["message_id"], "in_reply_to": msg.get("in_reply_to"),
                     "receipt": "/msg/{}".format(msg["message_id"]),
-                    "scope": scope,  # 'fleet' carries routed:false: only this node got it
                     "build": build_id(),
                     "elevated": elevated})
 
