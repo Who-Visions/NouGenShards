@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NouGenMsg · Fleet message bus</title>
+  <style>
+    :root {
+      --bg: #141414;
+      --panel: #202020;
+      --panel-hover: #333333;
+      --divider: rgba(119, 119, 119, 0.22);
+      --accent: #e8b86d;
+      --accent-muted: rgba(232, 184, 109, 0.16);
+      --text: #f2eee6;
+      --muted: #bdb8ad;
+      --sage: #a9c79b;
+      --sage-bg: rgba(169, 199, 155, 0.14);
+      --font-main: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: Consolas, ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+      --focus-ring: #e8b86d;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-main);
+      font-size: 1rem;
+      line-height: 1.6;
+      padding: 2.5rem 1.25rem 4rem;
+      display: flex;
+      justify-content: center;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    main {
+      width: 100%;
+      max-width: 44rem;
+      display: flex;
+      flex-direction: column;
+      gap: 2rem;
+    }
+
+    :where(a, button, input, [tabindex]):focus-visible {
+      outline: 2px solid var(--focus-ring);
+      outline-offset: 3px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      padding-bottom: 1.75rem;
+      border-bottom: 1px solid var(--divider);
+    }
+
+    .header-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.875rem;
+    }
+
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .wordmark {
+      font-size: 1.625rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text);
+    }
+
+    .subtitle {
+      font-size: 0.9375rem;
+      color: var(--muted);
+      font-weight: 400;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--sage-bg);
+      color: var(--sage);
+      border: 1px solid rgba(169, 199, 155, 0.35);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      padding: 0.25rem 0.75rem;
+      border-radius: 1rem;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+
+    .status-dot {
+      width: 0.4375rem;
+      height: 0.4375rem;
+      border-radius: 50%;
+      background: var(--sage);
+      box-shadow: 0 0 6px rgba(169, 199, 155, 0.6);
+      flex-shrink: 0;
+    }
+
+    .intro {
+      color: var(--muted);
+      font-size: 1.0625rem;
+      line-height: 1.55;
+    }
+
+    /* Section & Cards */
+    .section {
+      display: flex;
+      flex-direction: column;
+      gap: 0.875rem;
+    }
+
+    .section-title {
+      font-size: 0.8125rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .code-panel {
+      background: var(--panel);
+      border: 1px solid var(--divider);
+      border-radius: 6px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .code-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.5rem 0.875rem;
+      background: rgba(0, 0, 0, 0.2);
+      border-bottom: 1px solid var(--divider);
+      min-height: 2.25rem;
+    }
+
+    .endpoint-badge {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+
+    .copy-btn {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid transparent;
+      border-radius: 4px;
+      font-family: var(--font-main);
+      font-size: 0.75rem;
+      font-weight: 500;
+      padding: 0.25rem 0.5rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .copy-btn:hover {
+      background: var(--panel-hover);
+      color: var(--text);
+      border-color: var(--divider);
+    }
+
+    .copy-btn.copied {
+      color: var(--accent);
+      border-color: rgba(232, 184, 109, 0.4);
+      background: var(--accent-muted);
+    }
+
+    .code-scroll {
+      overflow-x: auto;
+      padding: 1rem;
+    }
+
+    pre {
+      font-family: var(--font-mono);
+      font-size: 0.875rem;
+      line-height: 1.5;
+      color: var(--text);
+      white-space: pre;
+      margin: 0;
+    }
+
+    code {
+      font-family: var(--font-mono);
+      font-size: inherit;
+    }
+
+    p code, li code {
+      font-size: 0.875em;
+      background: var(--panel);
+      border: 1px solid var(--divider);
+      border-radius: 3px;
+      padding: 0.1rem 0.35rem;
+      color: var(--text);
+    }
+
+    .section-note {
+      font-size: 0.875rem;
+      color: var(--muted);
+    }
+
+    /* Targets Chips */
+    .targets-intro {
+      font-size: 0.9375rem;
+      color: var(--muted);
+      margin-bottom: 0.25rem;
+    }
+
+    .targets-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .target-chip {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--divider);
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 0.8125rem;
+      padding: 0.35rem 0.65rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+      user-select: none;
+    }
+
+    .target-chip:hover {
+      background: var(--panel-hover);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .target-chip.copied {
+      background: var(--accent-muted);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    /* Good to know list */
+    .good-to-know-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding: 0;
+    }
+
+    .good-to-know-list li {
+      position: relative;
+      padding-left: 1.25rem;
+      font-size: 0.9375rem;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .good-to-know-list li::before {
+      content: "•";
+      position: absolute;
+      left: 0;
+      top: 0;
+      color: var(--accent);
+      font-weight: bold;
+    }
+
+    .good-to-know-list a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .good-to-know-list a:hover {
+      text-decoration: underline;
+    }
+
+    /* Responsive */
+    @media (max-width: 520px) {
+      body {
+        padding: 1.5rem 0.875rem 2.5rem;
+      }
+      .header-top {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.75rem;
+      }
+      .brand {
+        flex-direction: column;
+        gap: 0.25rem;
+      }
+      .wordmark {
+        font-size: 1.375rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="header">
+      <div class="header-top">
+        <div class="brand">
+          <h1 class="wordmark">NouGenMsg</h1>
+          <span class="subtitle">Fleet message bus</span>
+        </div>
+        <div class="status-pill">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span>Online · node {{NODE}} · {{PENDING}} waiting</span>
+        </div>
+      </div>
+      <p class="intro">Send a message to any lane or node, then read its delivery receipt.</p>
+    </header>
+
+    <section class="section" aria-labelledby="send-heading">
+      <h2 id="send-heading" class="section-title">Send</h2>
+      <div class="code-panel">
+        <div class="code-panel-header">
+          <span class="endpoint-badge">POST /msg</span>
+          <button type="button" class="copy-btn" data-target="send-snippet" aria-label="Copy Send curl command">Copy</button>
+        </div>
+        <div class="code-scroll">
+          <pre id="send-snippet"><code>curl -X POST {{BASE}}/msg \
+  -H "X-NGS-Token: $NOUGEN_AGY_MSG_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"hello","sender":"&lt;node&gt;/&lt;lane&gt;","target":"@all"}'</code></pre>
+        </div>
+      </div>
+      <p class="section-note">The reply carries a <code>message_id</code>.</p>
+    </section>
+
+    <section class="section" aria-labelledby="receipt-heading">
+      <h2 id="receipt-heading" class="section-title">Receipt</h2>
+      <div class="code-panel">
+        <div class="code-panel-header">
+          <span class="endpoint-badge">GET /msg/:id</span>
+          <button type="button" class="copy-btn" data-target="receipt-snippet" aria-label="Copy Receipt curl command">Copy</button>
+        </div>
+        <div class="code-scroll">
+          <pre id="receipt-snippet"><code>curl {{BASE}}/msg/&lt;message_id&gt; -H "X-NGS-Token: $NOUGEN_AGY_MSG_TOKEN"</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="targets-heading">
+      <h2 id="targets-heading" class="section-title">Targets</h2>
+      <p class="targets-intro">Specify operational destination scopes. Click a target chip to copy:</p>
+      <div class="targets-list" role="group" aria-label="Target scopes">
+        <button type="button" class="target-chip" data-copy="@all" aria-label="Copy target @all">@all</button>
+        <button type="button" class="target-chip" data-copy="@phoebus" aria-label="Copy target @phoebus">@phoebus</button>
+        <button type="button" class="target-chip" data-copy="@blade" aria-label="Copy target @blade">@blade</button>
+        <button type="button" class="target-chip" data-copy="@whoart" aria-label="Copy target @whoart">@whoart</button>
+        <button type="button" class="target-chip" data-copy="@antigravity" aria-label="Copy target @antigravity">@antigravity</button>
+        <button type="button" class="target-chip" data-copy="@codex" aria-label="Copy target @codex">@codex</button>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="good-to-know-heading">
+      <h2 id="good-to-know-heading" class="section-title">Good to know</h2>
+      <ul class="good-to-know-list">
+        <li>The token is the Keymaker key <code>NOUGEN_AGY_MSG_TOKEN</code>, never paste it into a chat, a leg or a shard.</li>
+        <li>Inside a Claude app the NouGen connector tool <code>nougenmsg_send</code> does the same with no token.</li>
+        <li><code>{{BASE}}/health</code> reports liveness.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script>
+    (function() {
+      function copyText(text, btn, originalLabel) {
+        if (!navigator.clipboard) return;
+        navigator.clipboard.writeText(text).then(function() {
+          btn.classList.add('copied');
+          btn.textContent = 'Copied';
+          setTimeout(function() {
+            btn.classList.remove('copied');
+            btn.textContent = originalLabel;
+          }, 1500);
+        }).catch(function() {});
+      }
+
+      document.querySelectorAll('.copy-btn').forEach(function(btn) {
+        var targetId = btn.getAttribute('data-target');
+        var targetEl = document.getElementById(targetId);
+        if (!targetEl) return;
+        btn.addEventListener('click', function() {
+          copyText(targetEl.innerText, btn, 'Copy');
+        });
+      });
+
+      document.querySelectorAll('.target-chip').forEach(function(chip) {
+        var val = chip.getAttribute('data-copy');
+        chip.addEventListener('click', function() {
+          copyText(val, chip, val);
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

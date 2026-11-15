@@ -55,7 +55,7 @@ def test_help_page_uses_the_opened_host_and_shows_live_status(monkeypatch, tmp_p
     node = _load_node(monkeypatch, tmp_path)
     page = node.help_page("phoebus.nougenai.com", 3)
     assert "https://phoebus.nougenai.com/msg" in page
-    assert "3 message(s) waiting" in page
+    assert "3 waiting" in page
     assert node.html.escape(str(node.NODE)) in page
     assert "{{" not in page
 
@@ -67,3 +67,16 @@ def test_help_page_never_echoes_a_hostile_host(monkeypatch, tmp_path):
         assert "<script>alert" not in page
         assert "https://msgs.nougenai.com/msg" in page
     assert "http://127.0.0.1:8766/msg" in node.help_page("127.0.0.1:8766", 0)
+
+
+def test_designed_template_is_served_and_falls_back_cleanly(monkeypatch, tmp_path):
+    node = _load_node(monkeypatch, tmp_path)
+    page = node.help_page("msgs.nougenai.com", 2)
+    assert node._HELP_FILE.exists()
+    assert "Fleet message bus" in page and "2 waiting" in page
+    assert "https://msgs.nougenai.com/msg" in page and "{{" not in page
+    for banned in ("cdn.", "googleapis", "tailwind", "<link"):
+        assert banned not in page.lower()
+    monkeypatch.setattr(node, "_HELP_FILE", tmp_path / "missing.html")
+    fallback = node.help_page("msgs.nougenai.com", 0)
+    assert "NouGenMsg" in fallback and "https://msgs.nougenai.com/msg" in fallback and "{{" not in fallback

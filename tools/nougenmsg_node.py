@@ -554,9 +554,24 @@ def help_page(host, pending):
     """
     host = host if isinstance(host, str) and _HELP_HOST.match(host) else "msgs.nougenai.com"
     scheme = "http" if host.startswith(("127.0.0.1", "localhost")) else "https"
-    return (HELP_PAGE.replace("https://msgs.nougenai.com", "{}://{}".format(scheme, host))
+    base = "{}://{}".format(scheme, host)
+    page = _help_template() or HELP_PAGE.replace("https://msgs.nougenai.com", "{{BASE}}")
+    return (page.replace("{{BASE}}", base)
             .replace("{{NODE}}", html.escape(str(NODE)))
             .replace("{{PENDING}}", str(int(pending))))
+
+
+# The designed page (NouGenDesign nougen-core, Stitch reference, built by Antigravity) lives
+# next to this file. Read per request so a design change needs no restart; the inline page
+# below is the fallback when the file is missing or unreadable.
+_HELP_FILE = Path(__file__).with_name("nougenmsg_help.html")
+
+
+def _help_template():
+    try:
+        return _HELP_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 HELP_PAGE = """<!doctype html><html><head><meta charset="utf-8">
