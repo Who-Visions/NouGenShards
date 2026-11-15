@@ -49,3 +49,21 @@ def test_browser_gets_help_page_and_api_gets_status(monkeypatch, tmp_path):
         assert json.loads(body)["ok"] is True  # probes stay JSON regardless of Accept
     finally:
         server.shutdown()
+
+
+def test_help_page_uses_the_opened_host_and_shows_live_status(monkeypatch, tmp_path):
+    node = _load_node(monkeypatch, tmp_path)
+    page = node.help_page("phoebus.nougenai.com", 3)
+    assert "https://phoebus.nougenai.com/msg" in page
+    assert "3 message(s) waiting" in page
+    assert node.html.escape(str(node.NODE)) in page
+    assert "{{" not in page
+
+
+def test_help_page_never_echoes_a_hostile_host(monkeypatch, tmp_path):
+    node = _load_node(monkeypatch, tmp_path)
+    for bad in ['evil.com"><script>alert(1)</script>', "a b", "", None]:
+        page = node.help_page(bad, 0)
+        assert "<script>alert" not in page
+        assert "https://msgs.nougenai.com/msg" in page
+    assert "http://127.0.0.1:8766/msg" in node.help_page("127.0.0.1:8766", 0)

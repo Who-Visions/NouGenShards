@@ -44,6 +44,7 @@ so it needs a supervisor to be a real transport.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import re
 import os
@@ -542,6 +543,22 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
 # A person or agent who opens the node's address in a browser gets usage, not a JSON
 # blob or a 404. No secrets and no traffic data: only how to send and where the token lives.
+_HELP_HOST = re.compile(r"^[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
+
+
+def help_page(host, pending):
+    """The usage page, written for the address the visitor actually opened.
+
+    Host comes from the request, so it is checked against a plain hostname pattern
+    before it is echoed: anything else falls back to the canonical front door.
+    """
+    host = host if isinstance(host, str) and _HELP_HOST.match(host) else "msgs.nougenai.com"
+    scheme = "http" if host.startswith(("127.0.0.1", "localhost")) else "https"
+    return (HELP_PAGE.replace("https://msgs.nougenai.com", "{}://{}".format(scheme, host))
+            .replace("{{NODE}}", html.escape(str(NODE)))
+            .replace("{{PENDING}}", str(int(pending))))
+
+
 HELP_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>NouGenMsg</title>
 <style>body{background:#0d1117;color:#e6edf3;font:16px/1.55 system-ui,sans-serif;margin:0;
@@ -550,6 +567,7 @@ code,pre{background:#161b22;border:1px solid #30363d;border-radius:6px}
 code{padding:.1rem .3rem}pre{padding:.8rem;overflow-x:auto}p,li{color:#c9d1d9}</style></head>
 <body><main><h1>NouGenMsg</h1>
 <p>The NouGen fleet message bus. Send a message to any lane or node, then read its delivery receipt.</p>
+<p><span style="color:#3fb950">&#9679;</span> Online: node <code>{{NODE}}</code>, {{PENDING}} message(s) waiting for pickup.</p>
 <h2>Send</h2>
 <pre>curl -X POST https://msgs.nougenai.com/msg \\
   -H "X-NGS-Token: $NOUGEN_AGY_MSG_TOKEN" \\
@@ -636,7 +654,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         route = self._route()
         if route == "/" and "text/html" in (self.headers.get("Accept") or ""):
-            self._send_html(HELP_PAGE)
+            self._send_html(help_page(self.headers.get("Host"), PENDING.qsize()))
         elif route in ("/status", "/health", "/"):
             self._send({"status": "online", "service": "agy-msg", "node": NODE,
                         "timestamp": time.time(), "pending_messages": PENDING.qsize(),
