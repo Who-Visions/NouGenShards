@@ -15,11 +15,13 @@ import base64
 import json
 import pathlib
 import subprocess
+import os
 import sys
 
 CHUNK = 7000
 PER_REPO = 21000
-FLEET = pathlib.Path(r"C:\Users\super\Outpost\NouGen\tools")
+# The fleet dispatcher lives outside this repo; NOUGEN_FLEET_TOOLS points at its tools directory.
+FLEET = pathlib.Path(os.environ.get("NOUGEN_FLEET_TOOLS", str(pathlib.Path.home() / "Outpost" / "NouGen" / "tools")))
 ASK = ("You are reverse-engineering a self-improving AI system's SOURCE CODE for an LLM PR-reviewer whose RSI loop "
        "versions a weighted checklist, scores findings as held/dismissed from the author's later push, and adopts a new "
        "version only past a holdout gate. Extract ONLY mechanisms actually implemented in the code below (cite file and "
