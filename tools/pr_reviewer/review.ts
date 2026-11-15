@@ -21,7 +21,7 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, readdirSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { consensusFindings, curateLessons, evolve, judgeFindings, collectPages, compareFilesOrNull, driftViolations, normVerdict, parseJsonl, pickParent, rollbackTo, rsiStatus, seenKeys, withLock } from "./rsi";
+import { consensusFindings, curateLessons, evolve, judgeFindings, checkDiff, collectPages, compareFilesOrNull, driftViolations, normVerdict, parseJsonl, pickParent, rankTokens, rollbackTo, rsiStatus, seenKeys, withLock } from "./rsi";
 
 const HERE = dirname(import.meta.path);
 const ROOT = join(homedir(), ".nougen", "research", "reviews", "aiwithdav3");
@@ -80,9 +80,25 @@ async function auth() {
   TOKEN = TOKENS[0].value;
   return { login: REVIEWER, tokens: TOKENS.map((t) => `${t.name} fp ${t.fp}`) };
 }
+let TOKEN_ORDER: string[] = [];
 async function useTokenFor(repo: string) {
-  for (const t of TOKENS) { TOKEN = t.value; if ((await gh(`/repos/${repo}`)).ok) return t.name; }
-  throw new Error(`no ${REVIEWER} token can read ${repo}`);
+  const cands: { name: string; ok: boolean; perms?: any }[] = [];
+  for (const t of TOKENS) { TOKEN = t.value; const r = await gh(`/repos/${repo}`); cands.push({ name: t.name, ok: r.ok, perms: r.ok ? (await r.json().catch(() => ({}))).permissions : undefined }); }
+  TOKEN_ORDER = rankTokens(cands);
+  if (!TOKEN_ORDER.length) throw new Error(`no ${REVIEWER} token can read ${repo}`);
+  TOKEN = TOKENS.find((t) => t.name === TOKEN_ORDER[0])!.value;
+  return TOKEN_ORDER[0];
+}
+/** POST the review; on 403/404 (token cannot write here) retry with the next readable token. */
+async function postReview(repo: string, num: number, payload: any) {
+  let last: Response | null = null;
+  for (const name of TOKEN_ORDER.length ? TOKEN_ORDER : [""]) {
+    if (name) TOKEN = TOKENS.find((t) => t.name === name)!.value;
+    last = await gh(`/repos/${repo}/pulls/${num}/reviews`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    if (last.status !== 403 && last.status !== 404) return last;
+    log(`  post as ${name || "token"} -> ${last.status}; trying next token`);
+  }
+  return last!;
 }
 
 // ---------------------------------------------------------------- checklist (RSI-versioned)
@@ -232,7 +248,8 @@ async function reviewPr(repo: string, num: number) {
   }
 
   const files = await ghAll(`/repos/${repo}/pulls/${num}/files`);
-  const diffFull = await (await gh(`/repos/${repo}/pulls/${num}`, { accept: "application/vnd.github.v3.diff" })).text();
+  const dres = await gh(`/repos/${repo}/pulls/${num}`, { accept: "application/vnd.github.v3.diff" });
+  const diffFull = checkDiff(dres.status, await dres.text()); // never hand an error page to the models as "the diff"
   const truncated = diffFull.length > 60_000;
   const diff = truncated ? diffFull.slice(0, 60_000) : diffFull;
   const ck = currentChecklist();
@@ -288,14 +305,12 @@ async function reviewPr(repo: string, num: number) {
   if (now.head.sha !== sha || now.state !== "open") { rec.outcome = "head-moved"; log(`  head moved to ${now.head.sha.slice(0, 7)}: not posting`); }
   else if (dry) { rec.outcome = "dry-run"; log(`  dry run: would post ${verdict} with ${comments.length} inline`); }
   else {
-    const r = await gh(`/repos/${repo}/pulls/${num}/reviews`, { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ commit_id: sha, event: verdict, body, comments }) });
+    const r = await postReview(repo, num, { commit_id: sha, event: verdict, body, comments });
     const j: any = await r.json().catch(() => ({}));
     if (!r.ok && comments.length) { // a bad anchor rejects the whole review; retry body-only rather than lose it
       log(`  post with inline failed (${r.status}); retrying body-only`);
       const extra = comments.map((c) => `- \`${c.path}:${c.line}\` ${c.body}`).join("\n");
-      const r2 = await gh(`/repos/${repo}/pulls/${num}/reviews`, { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ commit_id: sha, event: verdict, body: body + "\n\n" + extra }) });
+      const r2 = await postReview(repo, num, { commit_id: sha, event: verdict, body: body + "\n\n" + extra });
       Object.assign(j, await r2.json().catch(() => ({}))); rec.posted = r2.ok; rec.inline_fallback = true; rec.retry_status = r2.status;
       log(`  body-only retry -> ${r2.status}`);
     } else rec.posted = r.ok;

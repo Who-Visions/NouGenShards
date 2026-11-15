@@ -228,3 +228,18 @@ export function validFinding(f: any): boolean {
 export function compareFilesOrNull(cmp: any): any[] | null {
   return cmp && Array.isArray(cmp.files) ? cmp.files : null;
 }
+
+/** Token order for a repo: readable tokens whose repo `permissions` allow writing reviews (push/triage/maintain/admin)
+ *  first, then read-only ones. A fine-grained PAT can read a public org repo without being able to review it. */
+export function rankTokens(cands: { name: string; ok: boolean; perms?: any }[]): string[] {
+  const canWrite = (p: any) => !!p && (p.push || p.triage || p.maintain || p.admin);
+  const ok = cands.filter((c) => c.ok);
+  return [...ok.filter((c) => canWrite(c.perms)), ...ok.filter((c) => !canWrite(c.perms))].map((c) => c.name);
+}
+
+/** The diff a model reviews must be a real diff: a failed fetch (HTTP error / error JSON / empty) aborts the review. */
+export function checkDiff(status: number, text: string): string {
+  if (status < 200 || status >= 300) throw new Error(`diff fetch failed: HTTP ${status}`);
+  if (!/^diff --git /m.test(text || "")) throw new Error(`diff fetch returned no diff (${(text || "").slice(0, 80)})`);
+  return text;
+}

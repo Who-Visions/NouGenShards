@@ -76,3 +76,23 @@ describe("re-review P2: failed compare is not a dismissal", () => {
     expect(compareFilesOrNull({ files: [] })).toEqual([]);
   });
 });
+
+import { checkDiff, rankTokens } from "./rsi";
+describe("codex P1: token that can write reviews", () => {
+  test("write-capable tokens first, read-only fallback kept, unreadable dropped", () => {
+    expect(rankTokens([
+      { name: "fine", ok: true, perms: { pull: true } },
+      { name: "classic", ok: true, perms: { pull: true, push: true } },
+      { name: "dead", ok: false },
+    ])).toEqual(["classic", "fine"]);
+    expect(rankTokens([{ name: "x", ok: false }])).toEqual([]);
+  });
+});
+describe("codex P1: failed diff fetch never reaches the models", () => {
+  test("HTTP error, error JSON and empty bodies throw; a real diff passes", () => {
+    expect(() => checkDiff(503, "Service Unavailable")).toThrow(/HTTP 503/);
+    expect(() => checkDiff(200, '{"message":"Not Found"}')).toThrow(/no diff/);
+    expect(() => checkDiff(200, "")).toThrow(/no diff/);
+    expect(checkDiff(200, "diff --git a/x b/x\n+1")).toContain("diff --git");
+  });
+});
