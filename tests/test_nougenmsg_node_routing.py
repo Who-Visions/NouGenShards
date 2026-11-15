@@ -1,4 +1,4 @@
-"""Verify local-only nougenmsg_node refuses foreign/fleet targets instead of returning delivered:true."""
+"""Verify nougenmsg_node cross-node/fleet routing via NouGenMsgBus and 422 fallback when unavailable."""
 from __future__ import annotations
 
 import importlib
@@ -46,19 +46,70 @@ def _post(port: int, target: str) -> tuple[int, dict]:
         return exc.code, json.loads(exc.read().decode() or "{}")
 
 
-@pytest.mark.parametrize(
-    "target",
-    ["@blade", "blade", "@blade:antigravity", "@whoart", "@unknown-node", "@all", "@fleet", "fleet"],
-)
-def test_foreign_or_broadcast_target_is_not_routed(server, target):
+def test_cross_node_target_routes_via_fleet_bus(server, monkeypatch):
     node, port = server
+    calls = []
+
+    class FakeBus:
+        @staticmethod
+        def emit_node(node: str, target: str, text: str, origin=None):
+            calls.append((node, target, text, origin))
+            return {node: "DELIVERED"}
+
+    monkeypatch.setattr(node, "_get_fleet_bus", lambda: FakeBus)
+    code, body = _post(port, "@blade:antigravity")
+    assert code == 200
+    assert body["delivered"] is True
+    assert body["routed"] is True
+    assert body["method"] == "fleet_bus"
+    assert calls == [("blade", "antigravity", "ping", {"sender": "probe"})]
+    if node.INBOX.exists():
+        assert not list(node.INBOX.glob("*.json"))
+
+
+def test_broadcast_target_routes_via_emit_fleet_background(server, monkeypatch):
+    node, port = server
+    calls = []
+
+    class FakeBus:
+        @staticmethod
+        def emit_fleet(text: str, target: str = "all", origin=None, background: bool = False):
+            calls.append((text, target, origin, background))
+            return {"phoebus": "ok", "blade": {"queued": True}}
+
+    monkeypatch.setattr(node, "_get_fleet_bus", lambda: FakeBus)
+    code, body = _post(port, "@all")
+    assert code == 200
+    assert body["delivered"] is True
+    assert body["routed"] is True
+    assert calls == [("ping", "all", {"sender": "probe"}, True)]
+
+
+def test_cross_node_route_error_returns_502_and_releases_claim(server, monkeypatch):
+    node, port = server
+
+    class FakeBus:
+        @staticmethod
+        def emit_node(node: str, target: str, text: str, origin=None):
+            return {node: "Error: ssh timeout"}
+
+    monkeypatch.setattr(node, "_get_fleet_bus", lambda: FakeBus)
+    code, body = _post(port, "@blade")
+    assert code == 502
+    assert body["delivered"] is False
+    assert body["routed"] is False
+    assert body["status"] == "route_failed"
+
+
+@pytest.mark.parametrize("target", ["@blade", "@whoart", "@all", "@fleet"])
+def test_foreign_target_returns_422_when_bus_unavailable(server, monkeypatch, target):
+    node, port = server
+    monkeypatch.setattr(node, "_get_fleet_bus", lambda: None)
     code, body = _post(port, target)
     assert code == 422
     assert body["delivered"] is False
     assert body["routed"] is False
     assert body["status"] == "not_routed"
-    if node.INBOX.exists():
-        assert not list(node.INBOX.glob("*.json"))
 
 
 @pytest.mark.parametrize(
