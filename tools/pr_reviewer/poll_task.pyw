@@ -2,6 +2,7 @@
 import pathlib, shutil, subprocess, datetime
 here = pathlib.Path(__file__).resolve().parent
 log = pathlib.Path.home() / ".nougen" / "research" / "reviews" / "aiwithdav3" / "run.log"
+log.parent.mkdir(parents=True, exist_ok=True)  # fresh machine: the except path must be able to log
 bun = shutil.which("bun") or str(pathlib.Path.home() / ".bun" / "bin" / "bun.exe")
 try:
     r = subprocess.run([bun, str(here / "review.ts"), "poll", "--owner", "Who-Visions", "--since-hours", "72", "--max", "4"],
