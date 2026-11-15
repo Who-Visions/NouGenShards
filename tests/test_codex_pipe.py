@@ -91,7 +91,10 @@ class CodexPipeTests(unittest.TestCase):
 
     def test_non_windows_queues_native_and_preserves_sender(self):
         done = subprocess.CompletedProcess([], 0, 'Queued message fixture', '')
-        with patch.object(codex_pipe.os, 'name', 'posix'), \
+        # Pin the usage preflight: it reads this machine's real Codex rate-limit snapshot,
+        # so on a box whose Codex window is spent the message is saved, not queued.
+        with patch('nougen_shards.codex_status.status', return_value={'ok': True, 'paused': False}), \
+             patch.object(codex_pipe.os, 'name', 'posix'), \
              patch.object(codex_pipe, 'native_destination', return_value=('fixture-thread', 'codex')), \
              patch.object(codex_pipe.subprocess, 'run', return_value=done) as run:
             result = codex_pipe.deliver('seat reply', {'original_sender': 'whoart/session-123'})
