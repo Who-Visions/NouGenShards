@@ -218,7 +218,9 @@ def prompt(evt: dict) -> dict:
     except ImportError:
         return {}
     text = str(evt.get("prompt") or "")
-    result = recall_hook.recall_hook(text)
+    # Same budget source as claude_code_hook (env-tunable once #1087 lands).
+    budget = getattr(recall_hook, "_env_budget_ms", None)
+    result = recall_hook.recall_hook(text, **({"budget_ms": budget()} if budget else {}))
     block = recall_hook.format_block(result)
     try:
         from . import context_receipt as cr  # pylint: disable=import-outside-toplevel
