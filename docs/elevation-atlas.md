@@ -118,8 +118,8 @@ How a step becomes a PR: (1) the step here names its evidence; (2) it becomes a 
 | 7 | Truth, Contradiction and Canon Engine | 601-700 | Canonical facts, evidence | 13 | 49 | 38 |
 | 8 | Security, Privacy and Sovereignty | 701-800 | Vault, keys, public hygiene | 42 | 17 | 41 |
 | 9 | Performance, Scale and Million-Shard Architecture | 801-900 | ANN, grid, benchmarks | 13 | 20 | 67 |
-| 10 | Autonomous Memory Organism | 901-1000 | Census, evolution, self-regeneration | 7 | 26 | 67 |
-| **Total** | | 1000 | | 179 | 270 | 551 |
+| 10 | Autonomous Memory Organism | 901-1000 | Census, evolution, self-regeneration | 8 | 26 | 66 |
+| **Total** | | 1000 | | 180 | 270 | 550 |
 
 ## Zone 1: Memory Physics (steps 1-100)
 
@@ -1110,7 +1110,7 @@ How a step becomes a PR: (1) the step here names its evidence; (2) it becomes a 
 
 ## Zone 10: Autonomous Memory Organism (steps 901-1000)
 
-901. **Fix the app.py destiny MCP tools that cannot run** — ⬜ defect: `app.py` `create_destiny` passes `required=/forbidden=/variance=` and `update_destiny` passes `status=`; `destiny.create_destiny`/`update_status(destiny_id, to_status)` accept neither, so both raise TypeError. Add a test in `tests/test_app_destiny_tools.py` [550:#32]
+901. **Fix the app.py destiny MCP tools that cannot run** — ✅ the `create_destiny`/`update_destiny` TypeErrors were fixed in #739 (`tests/test_app_destiny_wrappers.py`); `search_destinies` ignored its query until `tests/test_destiny_tools_dispatch.py`, which drives create, get, update, link and search through `node_mcp.call_tool` [550:#32]
 902. **Collapse the two destiny MCP surfaces into one** — 🟡 `src/nougen_shards/mcp.py` destiny tools are tested (`tests/test_mcp_destiny_nougenmsg.py`); `app.py` re-implements them untested and its docstring lists nonexistent statuses "fumbled, abandoned". Make `app.py` delegate to `mcp.py` [550:#32] [551:#995]
 903. **Refuse supersession of a missing or terminal destiny** — ⬜ defect: `destiny.create_destiny` ignores the error dict `_transition` returns, still inserts `supersedes=<id>` and runs `UPDATE ... superseded_by`. Check the result and roll back in `destiny.py` [550:#23]
 904. **Make dream decay idempotent per cycle** — ⬜ `dream.wake` calls `core.decay_utility_scores()` (0.95x, `core.py:3002`) with no run key; every invocation compounds decay. Gate with `hardcade_cron_out.run_key` plus a ledger row [550:#8] [550:#99]

@@ -3433,7 +3433,7 @@ def update_destiny(
     actor: Optional[str] = None,
     evidence: Optional[str] = None
 ) -> dict:
-    """Update prospective destiny status (dormant, active, fulfilled, fumbled, abandoned)."""
+    """Move a destiny to a new status (dormant, active, fulfilled, failed, superseded)."""
     from nougen_shards import destiny as _destiny
     return _destiny.update_status(destiny_id, status, actor=actor, evidence=evidence)
 
@@ -4038,9 +4038,16 @@ def mark_skill(name: str, worked: bool, note: str = "", note_ids: Optional[List[
 @node_mcp.tool()
 @_offloaded
 def search_destinies(query: str = "", limit: int = 20, include_finished: bool = False) -> dict:
-    """Search and filter recorded fleet destinies."""
-    status = None if include_finished else "active"
-    return _unwrap_sync(unfinished_destinies)(status=status, limit=limit)
+    """Search destinies by title, goal, trigger or verification keywords.
+
+    A query under two characters lists the unfinished ones (dormant + active).
+    include_finished also returns fulfilled, failed and superseded matches.
+    """
+    q = (query or "").strip()
+    if len(q) < 2:
+        return _unwrap_sync(unfinished_destinies)(limit=limit)
+    from nougen_shards import destiny as _destiny
+    return _destiny.search_destinies(q, limit=limit, include_finished=include_finished)
 
 
 @node_mcp.tool()
