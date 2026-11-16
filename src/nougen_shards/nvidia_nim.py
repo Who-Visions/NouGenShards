@@ -26,18 +26,26 @@ from .models_client import LLMClient
 KEY_NAME = "NVIDIA_API_KEY"
 DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
-# Answered 200 for this account on 2026-11-10 (phoebus), most reliable first.
-# Availability moves: gemma-4-31b hung for 280s and then answered in 0.4s the
-# same morning, and gpt-oss-20b answered once and timed out the next time.
-# Treat this as an ordering, not a guarantee; chat() falls through on failure.
+# Answered 200 for this account on 2026-11-16 (phoebus), most reliable first.
+# google/gemma-4-31b-it and openai/gpt-oss-20b timed out at 45 s in that probe
+# and so moved to the end. Treat this as an ordering, not a guarantee; chat()
+# falls through on failure.
 VERIFIED_CHAT_MODELS: Tuple[str, ...] = (
     "nvidia/nemotron-3.5-bolt-e4b",
-    "google/gemma-4-31b-it",
-    "nvidia/nemotron-3.5-lightning-30b-a3b",
-    "nvidia/nemotron-3.5-super-vl-120b-a12b",
     "nvidia/nemotron-3-ultra-550b-a55b",
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "nvidia/nemotron-3.5-super-vl-120b-a12b",
+    "google/gemma-4-31b-it",
     "openai/gpt-oss-20b",
+)
+
+# Answered a small coding prompt on 2026-11-16, strongest first; for drafting lanes.
+VERIFIED_CODE_MODELS: Tuple[str, ...] = (
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "mistralai/mistral-large-4-1t-a52b",
+    "poolside/laguna-xs-2.1",
+    "minimaxai/minimax-m3.1-flash",
 )
 VERIFIED_EMBED_MODELS: Tuple[str, ...] = (
     "nvidia/nemotron-3.5-embed-1b",
@@ -104,17 +112,19 @@ class NvidiaNimClient(LLMClient):
             return []
         return sorted(m.get("id", "") for m in data.get("data", []) if m.get("id"))
 
-    def chat(self, model: Optional[str], messages: list, stream: bool = False,
-             max_tokens: int = 1024, fallbacks: Optional[Iterable[str]] = None) -> str:
-        """Answer from ``model``, or the first verified model that answers.
-
-        ``model`` of None or "auto" uses the verified list. A named model is tried
-        first, then the verified list, unless ``fallbacks`` is given (pass () to
-        disable fallback). Returns "Error: ..." when no model answers, like the
-        other clients. ``stream`` is accepted for interface parity and ignored.
-        """
+    def chat_detail(self, model: Optional[str], messages: list, max_tokens: int = 1024,
+                    fallbacks: Optional[Iterable[str]] = None) -> Dict[str, object]:
+        """Run the model chain and return content, model, token counts, and errors."""
         if not self.api_key:
-            return f"Error: {KEY_NAME} missing from the Keymaker."
+            self.last_errors = {KEY_NAME: "missing"}
+            self.last_model = None
+            return {
+                "content": "",
+                "model": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "errors": dict(self.last_errors),
+            }
         chain = self._chain(model, fallbacks)
         messages = self._with_lane_header(messages)
         self.last_errors = {}
@@ -127,15 +137,50 @@ class NvidiaNimClient(LLMClient):
                 content = (msg.get("content") or "").strip()
                 if content:
                     self.last_model = name
-                    return content
+                    usage = data.get("usage") or {}
+                    prompt_tokens = usage.get("prompt_tokens")
+                    completion_tokens = usage.get("completion_tokens")
+                    if not isinstance(prompt_tokens, int):
+                        prompt_tokens = None
+                    if not isinstance(completion_tokens, int):
+                        completion_tokens = None
+                    return {
+                        "content": content,
+                        "model": name,
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "errors": dict(self.last_errors),
+                    }
                 self.last_errors[name] = "empty content"
                 continue
             self.last_errors[name] = str(status)
             if isinstance(status, int) and status not in _SKIP_STATUSES:
-                break  # 400/401/403: the request or key is wrong, another model won't help
+                break
         self.last_model = None
-        detail = ", ".join(f"{m}={e}" for m, e in self.last_errors.items())
-        return f"Error: no NVIDIA model answered ({detail})"
+        return {
+            "content": "",
+            "model": None,
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "errors": dict(self.last_errors),
+        }
+
+    def chat(self, model: Optional[str], messages: list, stream: bool = False,
+             max_tokens: int = 1024, fallbacks: Optional[Iterable[str]] = None) -> str:
+        """Answer from ``model``, or the first verified model that answers.
+
+        ``model`` of None or "auto" uses the verified list. A named model is tried
+        first, then the verified list, unless ``fallbacks`` is given (pass () to
+        disable fallback). Returns "Error: ..." when no model answers, like the
+        other clients. ``stream`` is accepted for interface parity and ignored.
+        """
+        detail = self.chat_detail(model, messages, max_tokens, fallbacks)
+        if detail["content"]:
+            return detail["content"]
+        if detail["model"] is None and not self.api_key:
+            return f"Error: {KEY_NAME} missing from the Keymaker."
+        errs = ", ".join(f"{m}={e}" for m, e in detail["errors"].items())
+        return f"Error: no NVIDIA model answered ({errs})"
 
     def reset_embed_model(self) -> None:
         """Clear any pinned auto-selected embedding model before re-indexing."""
