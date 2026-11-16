@@ -229,7 +229,10 @@ def prompt(evt: dict) -> dict:
             cr.save(receipt)
             block = block + "\n" + cr.status_line(receipt)
     except Exception:  # pylint: disable=broad-except
-        # Receipt write failed: say so instead of looking healthy.
+        # Receipt write failed: invalidate any prior receipt and say so instead of looking healthy.
+        with contextlib.suppress(Exception):
+            from . import context_receipt as cr  # pylint: disable=import-outside-toplevel
+            cr.invalidate(str(evt.get("session_id") or ""))
         block += "\nShards receipt: UNKNOWN (receipt could not be recorded); memory state not verified."
     block = block.encode("utf-8", "replace").decode("utf-8")
     return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": block}}
@@ -515,8 +518,12 @@ def shards_gate(evt: dict) -> dict:
     sid = str(evt.get("session_id") or "")
     receipt = cr.load(sid)
     if receipt is None:
-        return {}
-    ok, why = cr.validate(receipt, sid)
+        if cr.receipt_path(sid).exists():
+            ok, why = False, "context receipt for this session is unreadable or invalidated"
+        else:
+            return {}
+    else:
+        ok, why = cr.validate(receipt, sid)
     if ok:
         return {}
     text = (f"NouGen Shards-first gate: `{action}` is a protected mutation and {why}. "

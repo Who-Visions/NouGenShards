@@ -120,6 +120,40 @@ def test_protected_commands_detected(cmd):
 
 def test_protected_mcp_tool_detected():
     assert cr.protected_reason("mcp__nougen-shards__shards_forget", "")
+    assert cr.protected_reason("mcp__nougen-shards__cf_deploy_worker", "")
+
+
+def test_relay_check_reads_handoffs_claims_separately(tmp_path, monkeypatch):
+    relay = tmp_path / "relay2"
+    claims = relay / ".handoffs" / "claims"
+    claims.mkdir(parents=True)
+    (relay / "leg_a.json").write_text("{}")
+    (claims / "claim_1.json").write_text("{}")
+    (claims / "claim_2.json").write_text("{}")
+    monkeypatch.setenv("NOUGEN_RELAY_DIR", str(relay))
+    res = cr.relay_check()
+    assert res["ok"] is True
+    assert res["claims"] == 2
+    assert res["legs"] == 1
+
+
+def test_failed_receipt_save_invalidates_prior_complete_receipt(monkeypatch):
+    from nougen_shards import recall_hook
+    cr.save(cr.build("s", "first nougen prompt", FULL_EMPTY))
+    assert agent_hooks.pre_tool(_commit("s")) == {}
+
+    monkeypatch.setattr(recall_hook, "recall_hook", lambda text, **k: dict(NONE, query=text))
+    orig_save = cr.save
+
+    def broken_save(receipt):
+        if receipt.get("task_hash"):
+            raise OSError("disk full")
+        return orig_save(receipt)
+
+    monkeypatch.setattr(cr, "save", broken_save)
+    out = agent_hooks.prompt({"session_id": "s", "prompt": "second nougen prompt"})
+    assert "UNKNOWN" in out["hookSpecificOutput"]["additionalContext"]
+    assert _decision(agent_hooks.pre_tool(_commit("s"))) == "deny"
 
 
 def test_gate_off(monkeypatch):

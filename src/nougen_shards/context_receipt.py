@@ -40,7 +40,7 @@ _PROTECTED_CMD = re.compile(
     r"(\bgit\s+(commit|push|merge|rebase)\b|\bgh\s+pr\s+(create|merge)\b|"
     r"\b(wrangler|netlify|vercel|flyctl|gcloud\s+run)\s+deploy\b|\bnpm\s+publish\b|"
     r"\bnougen(\.bat)?\s+(forget|retract)\b)", re.I)
-_PROTECTED_TOOL = re.compile(r"(shards_forget|shards_retract|merge_pull_request|create_deployment)", re.I)
+_PROTECTED_TOOL = re.compile(r"(shards_forget|shards_retract|merge_pull_request|create_deployment|cf_deploy_worker)", re.I)
 
 
 def _int_env(name: str, default: int) -> int:
@@ -90,13 +90,17 @@ def relay_check() -> dict[str, Any]:
     """Count open relay legs and claims from the local registry. Read-only."""
     out: dict[str, Any] = {"ok": False, "legs": 0, "claims": 0}
     try:
+        from . import lane_claim  # pylint: disable=import-outside-toplevel
         relay_dir = Path(os.environ.get("NOUGEN_RELAY_DIR") or Path.home() / ".nougen" / "relay")
         if not relay_dir.exists():
             out["error"] = "relay dir missing"
             return out
-        out["legs"] = sum(1 for _ in relay_dir.glob("**/*.json"))
-        claims = relay_dir / "claims"
-        out["claims"] = sum(1 for _ in claims.glob("*.json")) if claims.exists() else 0
+        claims = lane_claim.resolve_claims_dir()
+        if not claims.exists() and (relay_dir / "claims").exists():
+            claims = relay_dir / "claims"
+        claim_files = set(claims.glob("*.json")) if claims.exists() else set()
+        out["claims"] = len(claim_files)
+        out["legs"] = sum(1 for p in relay_dir.glob("**/*.json") if p not in claim_files)
         out["ok"] = True
     except OSError as exc:
         out["error"] = type(exc).__name__
@@ -146,6 +150,33 @@ def save(receipt: dict[str, Any]) -> Path:
     tmp.write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)
     return path
+
+
+def invalidate(session_id: str, tenant_id: Optional[str] = None) -> None:
+    """Replace any prior receipt with an UNKNOWN tombstone (or delete if write fails)."""
+    tombstone = {
+        "schema": SCHEMA,
+        "tenant": tenant_id or tenant(),
+        "session_id": session_id,
+        "agent": os.environ.get("NOUGEN_AGENT", "claude-cli"),
+        "task_hash": "",
+        "status": UNKNOWN,
+        "reason": "receipt could not be recorded for current prompt",
+        "recall": {"tier": "none", "partial": True, "fanout": 0, "shard_refs": []},
+        "relay": {"ok": False},
+        "created": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "created_ts": time.time(),
+        "ttl_s": _int_env("NOUGEN_RECEIPT_TTL_S", 4 * 3600),
+    }
+    try:
+        save(tombstone)
+        return
+    except OSError:
+        pass
+    try:
+        receipt_path(session_id, tenant_id).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def load(session_id: str) -> Optional[dict[str, Any]]:
