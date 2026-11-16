@@ -50,7 +50,7 @@ FAST_EVENTS = ("pre-tool", "post-tool")
 #: Tool-name matchers for the per-tool events. PostToolUse only needs the tools
 #: that can count as work, a shard or a relay leg; anything else never spawns us.
 TOOL_MATCHERS = {
-    "pre-tool": "Bash|PowerShell|Read",
+    "pre-tool": "Bash|PowerShell|Read|mcp__.*(forget|retract|merge|deploy).*",
     "post-tool": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|mcp__.*(shard|relay|capture).*",
 }
 
@@ -217,7 +217,25 @@ def prompt(evt: dict) -> dict:
         from . import recall_hook  # pylint: disable=import-outside-toplevel
     except ImportError:
         return {}
-    return json.loads(recall_hook.claude_code_hook(json.dumps(evt)))
+    text = str(evt.get("prompt") or "")
+    # Same budget source as claude_code_hook (env-tunable once #1087 lands).
+    budget = getattr(recall_hook, "_env_budget_ms", None)
+    result = recall_hook.recall_hook(text, **({"budget_ms": budget()} if budget else {}))
+    block = recall_hook.format_block(result)
+    try:
+        from . import context_receipt as cr  # pylint: disable=import-outside-toplevel
+        if cr.is_sensitive(text):
+            receipt = cr.build(str(evt.get("session_id") or ""), text, result, agent=_agent())
+            cr.save(receipt)
+            block = block + "\n" + cr.status_line(receipt)
+    except Exception:  # pylint: disable=broad-except
+        # Receipt write failed: invalidate any prior receipt and say so instead of looking healthy.
+        with contextlib.suppress(Exception):
+            from . import context_receipt as cr  # pylint: disable=import-outside-toplevel
+            cr.invalidate(str(evt.get("session_id") or ""))
+        block += "\nShards receipt: UNKNOWN (receipt could not be recorded); memory state not verified."
+    block = block.encode("utf-8", "replace").decode("utf-8")
+    return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": block}}
 
 
 def _started(evt: dict) -> float:
@@ -401,7 +419,7 @@ def reflex_missing(state: dict) -> list[str]:
 def _reflex_text(state: dict, missing: list[str]) -> str:
     steps = []
     if "shard" in missing:
-        steps.append("Capture one shard (`shards_capture`, or `nougen add`): what changed, why, "
+        steps.append("Capture one shard, or amend the one it updates (`shards_capture` / `shards_amend`, or `nougen add`): what changed, why, "
                      "and the proof (commit, PR or path).")
     if "relay" in missing:
         steps.append("Relay it (`relay_create`, or `python -m nougen_relay.cli create`): one-line goal, "
@@ -476,7 +494,56 @@ def unbounded_command(command: str, read_max_kb: Optional[int] = None) -> str:
 _BINARY_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".pdf", ".ipynb", ".svg"}
 
 
+def _deny(text: str) -> dict:
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                   "permissionDecisionReason": text}}
+
+
+def shards_gate(evt: dict) -> dict:
+    """Block protected mutations without a fresh COMPLETE context receipt (#1084).
+
+    NOUGEN_SHARDS_GATE: warn (default, observe-only rollout per #1084 item 7) | deny | off. A missing receipt passes
+    silently: the session never classified a prompt as NouGen-sensitive. A receipt that says
+    DEGRADED/UNKNOWN, is stale, or belongs to another tenant/session denies, unless
+    NOUGEN_DEGRADED_MODE=reviewed is set.
+    """
+    from . import context_receipt as cr  # pylint: disable=import-outside-toplevel
+    mode = _mode("NOUGEN_SHARDS_GATE", "warn", ("deny", "warn", "off"))
+    if mode == "off":
+        return {}
+    name = str(evt.get("tool_name") or "")
+    action = cr.protected_reason(name, _command_of(evt) if name in _SHELL_TOOLS else "")
+    if not action:
+        return {}
+    sid = str(evt.get("session_id") or "")
+    receipt = cr.load(sid)
+    if receipt is None:
+        if cr.receipt_path(sid).exists():
+            ok, why = False, "context receipt for this session is unreadable or invalidated"
+        else:
+            return {}
+    else:
+        ok, why = cr.validate(receipt, sid)
+    if ok:
+        return {}
+    text = (f"NouGen Shards-first gate: `{action}` is a protected mutation and {why}. "
+            "Run task recall (`nougen recall '<task>'`) plus a relay/claims check, then retry. "
+            "If the memory service is down, report DEGRADED and get a reviewed override "
+            "(NOUGEN_DEGRADED_MODE=reviewed).")
+    if mode == "warn" or cr.degraded_mode() == "reviewed":
+        return _context("pre-tool", text)
+    return _deny(text)
+
+
 def pre_tool(evt: dict) -> dict:
+    gate = shards_gate(evt)
+    if gate.get("hookSpecificOutput", {}).get("permissionDecision") == "deny":
+        return gate
+    out = _ctx_gate(evt)
+    return out or gate
+
+
+def _ctx_gate(evt: dict) -> dict:
     mode = _mode("NOUGEN_CTX_GATE", "deny", ("deny", "warn", "off"))
     if mode == "off":
         return {}
@@ -584,7 +651,25 @@ def run(event: str, stdin_text: str) -> str:
         out = HANDLERS[event](evt)
     except Exception:  # pylint: disable=broad-except
         out = {}
+        if event == "pre-tool":
+            out = _fail_closed(stdin_text)
     return json.dumps(out, ensure_ascii=False)
+
+
+def _fail_closed(stdin_text: str) -> dict:
+    """A crashing gate must not wave a protected mutation through (#1084)."""
+    try:
+        from . import context_receipt as cr  # pylint: disable=import-outside-toplevel
+        evt = json.loads(stdin_text or "{}")
+        name = str(evt.get("tool_name") or "")
+        if cr.protected_reason(name, _command_of(evt) if name in _SHELL_TOOLS else ""):
+            if cr.degraded_mode() == "reviewed":
+                return {}
+            return _deny("NouGen Shards-first gate errored on a protected mutation; status UNKNOWN. "
+                         "Fix the hook or set NOUGEN_DEGRADED_MODE=reviewed.")
+    except Exception:  # pylint: disable=broad-except
+        pass
+    return {}
 
 
 # ----------------------------------------------------------------- installer
