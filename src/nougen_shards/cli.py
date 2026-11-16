@@ -2154,7 +2154,20 @@ def cmd_hook(args):
             print("{}")
             return
         raw = sys.stdin.buffer.read().decode("utf-8", "replace") if not sys.stdin.isatty() else "{}"
+        if event == "prompt":
+            try:  # this process only reads; see enter_read_only_process
+                from . import recall_hook  # pylint: disable=import-outside-toplevel
+                recall_hook.enter_read_only_process()
+            except Exception:  # pylint: disable=broad-except
+                pass  # a hook never fails on its own bookkeeping
         sys.stdout.write(agent_hooks.run(event, raw) + "\n")
+        if event == "prompt" and os.environ.get("NOUGEN_HOOK_HARD_EXIT", "1").strip().lower() not in ("0", "false", "no", "off"):
+            # The answer is written; nothing else is owed. Recall lanes that
+            # missed the budget still hold pool threads, and the interpreter
+            # joins those at exit, so a slow vault kept this process alive
+            # past the host's hook timeout (which then discards the answer).
+            sys.stdout.flush()
+            os._exit(0)  # pylint: disable=protected-access
         return
     if args.action in ("install", "uninstall"):
         rep = agent_hooks.install(settings, uninstall=args.action == "uninstall", dry_run=args.dry_run)
