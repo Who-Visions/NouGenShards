@@ -193,3 +193,13 @@ def test_default_mode_is_observe_only(monkeypatch):
     cr.save(cr.build("s", "x", NONE))
     out = agent_hooks.pre_tool(_commit())
     assert _decision(out) is None and "UNKNOWN" in json.dumps(out)
+
+
+def test_status_line_matches_gate_mode(monkeypatch):
+    r = cr.build("s", "x", NONE)
+    monkeypatch.delenv("NOUGEN_SHARDS_GATE", raising=False)
+    assert "draw a warning" in cr.status_line(r) and "are blocked" not in cr.status_line(r)
+    monkeypatch.setenv("NOUGEN_SHARDS_GATE", "deny")
+    assert "are blocked until recall completes" in cr.status_line(r)
+    monkeypatch.setenv("NOUGEN_SHARDS_GATE", "off")
+    assert "are not gated" in cr.status_line(r)
