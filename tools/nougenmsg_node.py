@@ -114,7 +114,7 @@ def _get_fleet_bus():
 def _dispatch_foreign_target(msg: dict, dest: "tuple[str, str]") -> "tuple[int, dict]":
     """Forward a non-local target via NouGenMsgBus, or refuse with 422 if unavailable."""
     dest_node, dest_agent = dest
-    bus = _get_fleet_bus()
+    bus = None if dest_agent.split(":", 1)[0].strip() in _LOCAL_MODEL_LANES else _get_fleet_bus()
     if bus is None:
         return 422, {
             "delivered": False,
