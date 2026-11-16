@@ -79,34 +79,94 @@ _LOCAL_AGENT_TARGETS = frozenset({
 _LOCAL_MODEL_LANES = frozenset({"ollama", "openrouter"})
 
 
-def _foreign_target_reason(target: str) -> "str | None":
-    """Return a refusal reason if target is not explicitly local to this node."""
+def _parse_foreign_target(target: str) -> "tuple[str, str] | None":
+    """Return (dest_node, dest_agent) if target is non-local, or None if local."""
     raw = str(target or "").strip().lower()
     if not raw or raw == "all":
         # Bare "all" is the wire agent target sent by send_direct_http for node-only sends.
         return None
     if raw in ("@all", "@fleet", "fleet"):
-        return (
-            "local-only receiver on node '{}' does not route broadcast target '{}'; "
-            "use nougenmsg_send"
-        ).format(NODE, target)
+        return ("fleet", "all")
     stripped = raw.lstrip("@")
     if ":" in stripped:
-        node_part = stripped.split(":", 1)[0].strip()
+        node_part, agent_part = stripped.split(":", 1)
+        node_part = node_part.strip()
+        agent_part = agent_part.strip() or "all"
         if node_part in _LOCAL_MODEL_LANES:
             return None
         if node_part and node_part not in (NODE, "local", "self"):
-            return (
-                "local-only receiver on node '{}' does not route cross-node target '{}'; "
-                "use nougenmsg_send"
-            ).format(NODE, target)
+            return (node_part, agent_part)
         return None
     if stripped in (NODE, "local", "self") or stripped in _LOCAL_AGENT_TARGETS:
         return None
-    return (
-        "local-only receiver on node '{}' does not route non-local target '{}'; "
-        "use nougenmsg_send"
-    ).format(NODE, target)
+    return (stripped, "all")
+
+
+def _get_fleet_bus():
+    """Return NouGenMsgBus when nougen_shards is importable, else None."""
+    try:
+        from nougen_shards.nougenmsg import NouGenMsgBus  # noqa: E402
+        return NouGenMsgBus
+    except Exception:
+        return None
+
+
+def _dispatch_foreign_target(msg: dict, dest: "tuple[str, str]") -> "tuple[int, dict]":
+    """Forward a non-local target via NouGenMsgBus, or refuse with 422 if unavailable."""
+    dest_node, dest_agent = dest
+    bus = None if dest_agent.split(":", 1)[0].strip() in _LOCAL_MODEL_LANES else _get_fleet_bus()
+    if bus is None:
+        return 422, {
+            "delivered": False,
+            "routed": False,
+            "status": "not_routed",
+            "error": (
+                "local-only receiver on node '{}' cannot route target '{}' "
+                "(NouGenMsgBus unavailable); use nougenmsg_send"
+            ).format(NODE, msg["target"]),
+            "node": NODE,
+            "target": msg["target"],
+        }
+    raw_env = msg.get("origin_envelope")
+    origin = dict(raw_env) if isinstance(raw_env, dict) else {}
+    origin.setdefault("original_sender", msg.get("sender", "unknown"))
+    if dest_node == "fleet":
+        res = bus.emit_fleet(text=msg["text"], target=dest_agent, origin=origin, background=True)
+        return 200, {
+            "delivered": True,
+            "routed": True,
+            "duplicate": False,
+            "method": "fleet_bus",
+            "node": NODE,
+            "target": msg["target"],
+            "message_id": msg["message_id"],
+            "build": build_id(),
+            "results": res,
+        }
+    res = bus.emit_node(node=dest_node, target=dest_agent, text=msg["text"], origin=origin)
+    node_res = res.get(dest_node) if isinstance(res, dict) else res
+    if not res or (isinstance(node_res, str) and node_res.startswith("Error")):
+        return 502, {
+            "delivered": False,
+            "routed": False,
+            "status": "route_failed",
+            "error": node_res or "empty dispatch result",
+            "node": NODE,
+            "target": msg["target"],
+            "message_id": msg["message_id"],
+            "results": res,
+        }
+    return 200, {
+        "delivered": True,
+        "routed": True,
+        "duplicate": False,
+        "method": "fleet_bus",
+        "node": NODE,
+        "target": msg["target"],
+        "message_id": msg["message_id"],
+        "build": build_id(),
+        "results": res,
+    }
 
 
 def _env_path(key: str, *default_parts: str) -> Path:
@@ -376,10 +436,10 @@ def claim_message(msg: dict) -> "tuple[bool, dict]":
                     continue
                 seen = _read_marker(marker)
                 deadline = time.time() + INFLIGHT_GRACE_S
-                while seen is not None and not seen.get("file") and time.time() < deadline:
+                while seen is not None and not _is_completed_marker(seen) and time.time() < deadline:
                     time.sleep(0.05)
                     seen = _read_marker(marker)
-                if seen is not None and seen.get("file"):
+                if seen is not None and _is_completed_marker(seen):
                     return False, seen  # a completed delivery
                 if seen is not None:
                     marker.unlink()  # unfinished past the grace: take the claim over
@@ -402,11 +462,16 @@ def _read_marker(marker: Path) -> "dict | None":
         return {}
 
 
+def _is_completed_marker(seen: dict) -> bool:
+    """Return True when a dedup marker represents a finished local or routed delivery."""
+    return bool(seen.get("file") or seen.get("routed"))
+
+
 def release_claim(msg: dict) -> None:
     """Drop an unfinished claim after a failed delivery so the sender's retry is delivered."""
     marker = seen_marker(msg["message_id"])
     seen = _read_marker(marker)
-    if seen is not None and not seen.get("file"):
+    if seen is not None and not _is_completed_marker(seen):
         try:
             marker.unlink()
         except FileNotFoundError:
@@ -418,6 +483,15 @@ def note_delivery(msg: dict, path: Path) -> None:
     marker = seen_marker(msg["message_id"])
     if marker.exists():
         _atomic_write(marker, json.dumps({"message_id": msg["message_id"], "file": path.name,
+                                          "received_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}))
+
+
+def note_routed_delivery(msg: dict, target: str) -> None:
+    """Record a completed cross-node/fleet forward so retries do not re-forward."""
+    marker = seen_marker(msg["message_id"])
+    if marker.exists():
+        _atomic_write(marker, json.dumps({"message_id": msg["message_id"], "file": None,
+                                          "routed": True, "target": target,
                                           "received_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}))
 
 
@@ -795,26 +869,33 @@ class Handler(BaseHTTPRequestHandler):
         msg.setdefault("priority", "normal")
         msg.setdefault("timestamp", time.time())
         msg["target"] = msg.get("target") or NODE
-        not_routed = _foreign_target_reason(str(msg["target"]))
-        if not_routed:
-            self._send({
-                "delivered": False,
-                "routed": False,
-                "status": "not_routed",
-                "error": not_routed,
-                "node": NODE,
-                "target": msg["target"],
-            }, 422)
-            return
+        foreign = _parse_foreign_target(str(msg["target"]))
         assign_message_id(msg)
         first, seen = claim_message(msg)
         if not first:
             # Same event again (a retry, or a sender that re-sends): acknowledge with
             # the original delivery and do nothing else, so a retry is always safe.
-            self._send({"delivered": True, "duplicate": True, "method": "http", "node": NODE,
-                        "file": seen.get("file"), "message_id": msg["message_id"],
-                        "receipt": "/msg/{}".format(msg["message_id"]),
-                        "build": build_id(), "elevated": {"attempted": False, "skipped": "duplicate"}})
+            dup = {"delivered": True, "duplicate": True,
+                   "method": "fleet_bus" if seen.get("routed") else "http",
+                   "node": NODE, "file": seen.get("file"), "message_id": msg["message_id"],
+                   "build": build_id(), "elevated": {"attempted": False, "skipped": "duplicate"}}
+            if seen.get("routed"):
+                dup["routed"] = True
+            else:
+                dup["receipt"] = "/msg/{}".format(msg["message_id"])
+            self._send(dup)
+            return
+        if foreign is not None:
+            try:
+                status, payload = _dispatch_foreign_target(msg, foreign)
+            except Exception:
+                release_claim(msg)
+                raise
+            if status >= 400:
+                release_claim(msg)
+            else:
+                note_routed_delivery(msg, str(msg["target"]))
+            self._send(payload, status)
             return
         try:
             path = record(msg)  # inbox write always happens — covers a session that's asleep
