@@ -149,7 +149,14 @@ class _DataBlob(ctypes.Structure):
 
 
 def _dpapi_call(func_name: str, data: bytes) -> bytes:
-    """Invokes CryptProtectData/CryptUnprotectData on the given bytes."""
+    """Invokes CryptProtectData/CryptUnprotectData on the given bytes.
+
+    When user-scope CryptProtectData fails (e.g. PIN logon session lock where
+    user master key is locked with 0x8009000B / ERROR_ACCESS_DENIED), falls back
+    to machine-scope DPAPI (CRYPTPROTECT_LOCAL_MACHINE = 0x4) so vault_put and
+    keymaker_import still encrypt at rest and remain decryptable by
+    CryptUnprotectData(flags=0) on this machine.
+    """
     # A vault synced from a Windows node can carry DPAPI rows onto macOS/Linux.
     # Raise the OSError callers already handle, not AttributeError on `windll`,
     # which escaped _export_to_csv and failed ingest_secret after its commit.
@@ -159,7 +166,11 @@ def _dpapi_call(func_name: str, data: bytes) -> bytes:
                                               ctypes.POINTER(ctypes.c_char)))
     blob_out = _DataBlob()
     func = getattr(ctypes.windll.crypt32, func_name)
-    if not func(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)):
+    ok = func(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out))
+    if not ok and func_name == "CryptProtectData":
+        # CRYPTPROTECT_LOCAL_MACHINE = 0x4 fallback when user DPAPI master key is locked
+        ok = func(ctypes.byref(blob_in), None, None, None, None, 0x4, ctypes.byref(blob_out))
+    if not ok:
         raise OSError(f"{func_name} failed (DPAPI)")
     try:
         return ctypes.string_at(blob_out.pbData, blob_out.cbData)
@@ -286,25 +297,67 @@ def find_legacy_stores(roots=None) -> list:
 
     `get_secret` returning None reads exactly like "never ingested" rather than
     "you are pointed at the wrong file", which is why this is worth surfacing.
+    Uses targeted os.scandir with heavy-directory pruning so Windows AppData /
+    node_modules / .git trees never turn a cold probe into a 12-second walk.
     """
     canonical = resolve_secrets_vault_dir().resolve()
     if roots is None:
         home = Path.home()
         roots = [home / "Watchtower", home / ".nougen" / "secrets", home]
     seen, found = set(), []
+    db_names = (DB_FILENAME, "agent_secrets.db")
+    skip_dirs = frozenset({
+        "appdata", "node_modules", ".git", ".cache", ".cargo", ".gradle",
+        ".bun", ".venv", "onedrive", ".rustup", ".npm", ".local",
+    })
     for root in roots:
+        root_p = Path(root)
         try:
             # A dead SMB symlink (Watchtower) raises OSError from exists() itself.
-            if not Path(root).exists():
+            if not root_p.exists():
                 continue
             candidates: list = []
-            for db_name in (DB_FILENAME, "agent_secrets.db"):
-                candidates += list(Path(root).glob(f"*/{_LEGACY_VAULT_DIRNAME}/{db_name}"))
-                candidates += list(Path(root).glob(f"*/*/{_LEGACY_VAULT_DIRNAME}/{db_name}"))
-                candidates += list(Path(root).glob(f"*/{db_name}"))
-                direct = Path(root) / db_name
+            for db_name in db_names:
+                direct = root_p / db_name
                 if direct.is_file():
                     candidates.append(direct)
+            with os.scandir(root_p) as it:
+                for entry in it:
+                    try:
+                        if not entry.is_dir(follow_symlinks=True):
+                            continue
+                    except OSError:
+                        continue
+                    sub = Path(entry.path)
+                    for db_name in db_names:
+                        for c in (sub / db_name, sub / _LEGACY_VAULT_DIRNAME / db_name):
+                            try:
+                                if c.is_file():
+                                    candidates.append(c)
+                            except OSError:
+                                pass
+                    if entry.name.lower() in skip_dirs:
+                        continue
+                    try:
+                        with os.scandir(sub) as it2:
+                            for entry2 in it2:
+                                try:
+                                    if not entry2.is_dir(follow_symlinks=True):
+                                        continue
+                                except OSError:
+                                    continue
+                                if entry2.name.lower() in skip_dirs:
+                                    continue
+                                vdir = Path(entry2.path) / _LEGACY_VAULT_DIRNAME
+                                for db_name in db_names:
+                                    c2 = vdir / db_name
+                                    try:
+                                        if c2.is_file():
+                                            candidates.append(c2)
+                                    except OSError:
+                                        pass
+                    except OSError:
+                        pass
         except OSError:
             continue
         for path in candidates:
