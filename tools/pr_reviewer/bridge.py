@@ -17,7 +17,8 @@ import sys
 HOME = pathlib.Path.home()
 os.environ.setdefault("NOUGEN_VAULT_DIR", str(HOME / ".nougen" / "shards"))
 os.environ.setdefault("NOUGEN_SECRETS_VAULT_DIR", str(HOME / ".nougen" / "secrets"))
-for p in (HOME / "Outpost" / "NouGen" / "src", HOME / "Outpost" / "NouGenOpen" / "src"):
+for p in (HOME / "Outpost" / "NouGen" / "src", HOME / ".nougen" / "src" / "nougenshards" / "src",
+          HOME / "Outpost" / "NouGenOpen" / "src"):
     if p.is_dir() and str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
