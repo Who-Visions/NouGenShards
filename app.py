@@ -2067,6 +2067,35 @@ def _search_queue_s() -> float:
     return max(0.0, _env_num("NOUGEN_SEARCH_QUEUE_S", 1.5))
 
 
+def _recall_guard_enter():
+    """None when the guard is off; else the SearchAdmission that was entered.
+    Raises core.SearchBusy when the hard cap is full."""
+    if not core.recall_memory_guard_enabled():
+        return None
+    gate = core.search_admission()
+    gate.enter()
+    return gate
+
+
+def _recall_busy_response(exc):
+    retry_after = exc.retry_after
+    retry_after_int = max(1, int(-(-retry_after // 1)))
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "search_busy",
+            "retry_after_s": retry_after,
+            "active": exc.active,
+            "waiting": exc.waiting,
+        },
+        headers={
+            "Retry-After": str(retry_after_int),
+            "X-NouGen-Busy": "hard",
+        },
+    )
+
+
 def _release_slot_when_done(lane_futs: list) -> None:
     """Free the admission slot once every lane future it admitted has finished.
 
@@ -2112,6 +2141,12 @@ def search(req: SearchRequest, response: Response,
     # the result set down to a handful of in-era rows.
     fetch = min(limit * 5, 250) if bounded else limit
     sweep_report: dict = {}
+    # Hard cap (NOUGEN_RECALL_MEMORY_GUARD=1 only): past it, refuse at once with 503 and
+    # Retry-After instead of stacking one more scan on a node that is already full.
+    try:
+        _hard_gate = _recall_guard_enter()
+    except core.SearchBusy as busy:
+        return _recall_busy_response(busy)
     # Admission control: a full recall fans out to every grid DB on two lanes, so N concurrent
     # recalls are ~18N SQLite scans on one disk. Recall hooks fire one per prompt from every
     # session; on WhoArt (2026-11-13) a dozen stacked up and EVERY call missed the 20s deadline.
@@ -2147,6 +2182,8 @@ def search(req: SearchRequest, response: Response,
         core.FAST_LOCAL.reset(_fast_token)
         if admitted:
             _release_slot_when_done(lane_futs)
+        if _hard_gate is not None:
+            _hard_gate.leave()
 
     if bounded:
         results, held_back = _era_filter(results, req.since, req.until)
@@ -2281,6 +2318,7 @@ async def local_health():
         "warm": warmup_status()["warm"],
         "warmup": warmup_status(),
         "listener": listener_selfcheck_status(),
+        "recall_memory": core.recall_memory_stats(),
     }
 
 
