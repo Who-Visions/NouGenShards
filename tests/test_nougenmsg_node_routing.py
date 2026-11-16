@@ -111,18 +111,28 @@ def test_broadcast_target_routes_via_emit_fleet_background(server, monkeypatch):
 
 def test_cross_node_route_error_returns_502_and_releases_claim(server, monkeypatch):
     node, port = server
+    succeed = False
 
     class FakeBus:
         @staticmethod
         def emit_node(node: str, target: str, text: str, origin=None):
+            if succeed:
+                return {node: "ok"}
             return {node: "Error: ssh timeout"}
 
     monkeypatch.setattr(node, "_get_fleet_bus", lambda: FakeBus)
-    code, body = _post(port, "@blade")
+    code, body = _post(port, "@blade", message_id="retry-after-502")
     assert code == 502
     assert body["delivered"] is False
     assert body["routed"] is False
     assert body["status"] == "route_failed"
+
+    succeed = True
+    code2, body2 = _post(port, "@blade", message_id="retry-after-502")
+    assert code2 == 200
+    assert body2["delivered"] is True
+    assert body2["routed"] is True
+    assert body2.get("dedup") is not True
 
 
 @pytest.mark.parametrize("target", ["@blade", "@whoart", "@all", "@fleet"])
