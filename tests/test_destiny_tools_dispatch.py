@@ -68,7 +68,7 @@ def test_create_get_update_link_round_trip(tmp_path):
         required="a;b",
         forbidden="x;y",
         verification="check",
-        actor="alice",
+        actor="operator",
     )
     assert created["status"] == "dormant"
     assert created["required_events"] == ["a", "b"]
@@ -81,9 +81,9 @@ def test_create_get_update_link_round_trip(tmp_path):
     assert len(got["events"]) == 1
     assert got["events"][0]["from_status"] is None
     assert got["events"][0]["to_status"] == "dormant"
-    assert got["events"][0]["actor"] == "alice"
+    assert got["events"][0]["actor"] == "operator"
 
-    upd = _call("update_destiny", destiny_id=did, status="active", actor="alice", evidence="begin")
+    upd = _call("update_destiny", destiny_id=did, status="active", actor="operator", evidence="begin")
     assert upd["status"] == "active"
 
     linked = _call("link_destiny", destiny_id=did, kind="shard", ref="123@db1", role="evidence", note="linked")
@@ -94,9 +94,9 @@ def test_create_get_update_link_round_trip(tmp_path):
     assert got2["status"] == "active"
     assert any(lk["ref"] == "123@db1" and lk["note"] == "linked" for lk in got2["links"])
     ev = [e for e in got2["events"] if e["to_status"] == "active"]
-    assert ev and ev[0]["from_status"] == "dormant" and ev[0]["actor"] == "alice"
+    assert ev and ev[0]["from_status"] == "dormant" and ev[0]["actor"] == "operator"
 
-    done = _call("update_destiny", destiny_id=did, status="fulfilled", actor="alice", evidence="done")
+    done = _call("update_destiny", destiny_id=did, status="fulfilled", actor="operator", evidence="done")
     assert done["status"] == "fulfilled"
 
     db_path = os.environ["NOUGEN_DESTINY_DB"]
