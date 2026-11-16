@@ -202,6 +202,15 @@ def create_destiny(title: str, goal: str, *, branch: Optional[str] = None,
         provenance = json.dumps(provenance)
     now = _now()
     with _connect() as conn:
+        if supersedes:
+            # Refuse before inserting: superseding a missing or terminal destiny
+            # used to insert the new row anyway and leave a dangling supersedes
+            # pointer (elevation-atlas 903).
+            tgt = conn.execute("SELECT status FROM destinies WHERE id=?", (supersedes,)).fetchone()
+            if tgt is None:
+                return {"error": f"cannot supersede destiny {supersedes}: not found"}
+            if "superseded" not in TRANSITIONS.get(tgt["status"], ()):
+                return {"error": f"cannot supersede destiny {supersedes}: it is {tgt['status']}, a terminal record is preserved"}
         cur = conn.execute(
             """INSERT INTO destinies (title, goal, status, branch, trigger, required_events,
                forbidden_outcomes, acceptable_variance, verification, confidence, deadline,
