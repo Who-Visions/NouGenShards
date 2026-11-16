@@ -95,6 +95,249 @@ def get_vault_journal_mode() -> str:
     return "WAL"
 
 
+#: Durability contract for the vault cluster (P0, Native Memory Engine).
+#: Before this, no ``PRAGMA synchronous`` was ever set on vault connections,
+#: so durability rested on SQLite's implicit default (FULL under WAL) —
+#: safe, but undocumented and untested as a deliberate choice. The default
+#: below preserves the exact effective behaviour that was already in force;
+#: it only makes it explicit and testable.
+#:
+#: - journal_mode: WAL by default (see :func:`get_vault_journal_mode`).
+#: - synchronous: FULL by default (see :func:`get_vault_synchronous_mode`).
+#:   FULL + WAL means a committed transaction survives a process crash and,
+#:   barring OS/filesystem failure, a power loss. NORMAL would be faster but
+#:   risks losing the last transactions on power loss; OFF risks corruption.
+#: - checkpoint policy: SQLite's default ``wal_autocheckpoint`` (1000 pages)
+#:   plus the passive checkpoint that runs when the last connection to a DB
+#:   closes. There is deliberately NO explicit ``wal_checkpoint`` call in the
+#:   vault path yet: on a live grid an aggressive checkpoint schedule can
+#:   stall readers, and no measurement justifies one. A measured checkpoint
+#:   policy is P1 work, not a P0 change.
+#: - Linux note: WAL needs POSIX shared-memory (``-shm``) and coherent file
+#:   locking on the vault directory. It is correct on local Linux filesystems
+#:   (ext4, xfs, btrfs). Network mounts without coherent locking (NFS without
+#:   proper lockd, FUSE object-storage mounts) must NOT use WAL — that is why
+#:   :func:`get_vault_journal_mode` auto-detects DELETE for such mounts.
+#:   A vault directory on ``tmpfs`` is fast but not durable across reboot;
+#:   never point NOUGEN_VAULT_DIR at tmpfs for a real vault.
+_VALID_SYNCHRONOUS_MODES = {"OFF", "NORMAL", "FULL", "EXTRA"}
+
+
+def get_vault_synchronous_mode() -> str:
+    """Return the SQLite ``PRAGMA synchronous`` mode for vault databases.
+
+    Defaults to FULL — the effective behaviour before this function existed
+    (SQLite's default under WAL), now set deliberately rather than inherited.
+    Override with ``NOUGEN_VAULT_SYNCHRONOUS`` (OFF, NORMAL, FULL, EXTRA).
+    An invalid value logs a warning and falls back to FULL; it never raises,
+    because a durability knob must fail closed toward the safest mode.
+    """
+    mode = os.environ.get("NOUGEN_VAULT_SYNCHRONOUS", "").strip().upper()
+    if mode in _VALID_SYNCHRONOUS_MODES:
+        return mode
+    if mode:
+        logger.warning(
+            "NOUGEN_VAULT_SYNCHRONOUS=%r is not a valid mode; using FULL", mode)
+    return "FULL"
+
+
+def _min_coverage_pct() -> float:
+    """Minimum embedding coverage % below which the semantic lane is degraded.
+
+    ``NOUGEN_MIN_COVERAGE_PCT`` (default 50), env-discovered per Rule 0.2.
+    """
+    raw = os.environ.get("NOUGEN_MIN_COVERAGE_PCT", "50")
+    try:
+        return max(0.0, min(100.0, float(raw)))
+    except ValueError:
+        logger.warning("NOUGEN_MIN_COVERAGE_PCT=%r is not a number; using 50", raw)
+        return 50.0
+
+
+def lane_health() -> dict:
+    """Report per-lane health of the local vault grid (HARDENING §4 sensor).
+
+    Read-only and never raising: every probe is guarded, so a broken DB
+    reports as degraded instead of crashing the caller. This is the sensor
+    that lets recall distinguish "no match" from "degraded lane" — an empty
+    result from a grid whose semantic lane is dead must never be reported
+    as a verified absence.
+
+    The function deliberately does NOT touch the recall path: it neither
+    calls :func:`retrieve` nor alters any recall result. Callers that want
+    coverage in a recall packet should call this separately.
+
+    Returns a dict with ``healthy`` (bool), ``degraded_lanes`` (list of lane
+    names), ``total_shards`` / ``embedded_shards`` / ``embedding_coverage_pct``
+    (``None`` on an empty grid), ``journal_mode`` / ``synchronous`` (the
+    durability contract as read back from a live connection), per-DB entries
+    under ``databases`` (``db1``..``db9``: exists, readable, quick_check,
+    shard/FTS/embedded counts), ``fts`` (present on all existing DBs, rows),
+    ``embedding`` (provider status from :mod:`embed_providers`), and
+    ``vector_cache`` (sidecar presence and per-DB staleness vs the DB file
+    and its ``-wal``; a missing sidecar is "not built", not degraded — the
+    cache is written lazily on first vector retrieve by design).
+    """
+    checked_utc = datetime.now(timezone.utc).isoformat()
+    vault_dir = str(active_vault_dir())
+    degraded: list[str] = []
+    databases: dict[str, dict] = {}
+    total = 0
+    embedded = 0
+    fts_rows = 0
+    fts_present_all = True
+    journal_mode = get_vault_journal_mode()
+    synchronous = get_vault_synchronous_mode()
+
+    for index in range(1, MAX_DB_COUNT + 1):
+        key = f"db{index}"
+        try:
+            path = get_db_path(index)
+        except Exception as exc:  # pylint: disable=broad-except
+            databases[key] = {"exists": False, "readable": False,
+                              "error": f"{type(exc).__name__}: {exc}"}
+            degraded.append(key)
+            continue
+        entry: dict = {"exists": bool(path.exists())}
+        if not path.exists():
+            entry.update({"readable": False, "shards": 0, "fts_present": False,
+                          "fts_rows": 0, "embedded": 0})
+            databases[key] = entry
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+        except (sqlite3.Error, OSError) as exc:
+            entry.update({"readable": False,
+                          "error": f"{type(exc).__name__}: {exc}"})
+            databases[key] = entry
+            degraded.append(key)
+            fts_present_all = False
+            continue
+        try:
+            quick = conn.execute("PRAGMA quick_check").fetchone()
+            entry["quick_check"] = (quick[0] if quick else "unknown")
+            entry["journal_mode"] = conn.execute(
+                "PRAGMA journal_mode").fetchone()[0]
+            entry["synchronous"] = conn.execute(
+                "PRAGMA synchronous").fetchone()[0]
+            has_shards = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='shards'").fetchone() is not None
+            entry["readable"] = bool(has_shards) and entry["quick_check"] == "ok"
+            if not entry["readable"]:
+                degraded.append(key)
+            if has_shards:
+                row = conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(embedding IS NOT NULL), 0) "
+                    "FROM shards").fetchone()
+                entry["shards"] = int(row[0])
+                entry["embedded"] = int(row[1])
+                total += entry["shards"]
+                embedded += entry["embedded"]
+            else:
+                entry["shards"] = 0
+                entry["embedded"] = 0
+            fts_present = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='shards_fts'").fetchone() is not None
+            entry["fts_present"] = bool(fts_present)
+            if not fts_present:
+                fts_present_all = False
+                if key not in degraded:
+                    degraded.append(key)
+            else:
+                try:
+                    count = conn.execute(
+                        "SELECT COUNT(*) FROM shards_fts").fetchone()[0]
+                    entry["fts_rows"] = int(count)
+                    fts_rows += int(count)
+                except sqlite3.Error:
+                    entry["fts_rows"] = 0
+                    fts_present_all = False
+        except (sqlite3.Error, OSError) as exc:
+            entry.update({"readable": False,
+                          "error": f"{type(exc).__name__}: {exc}"})
+            degraded.append(key)
+            fts_present_all = False
+        finally:
+            conn.close()
+        databases[key] = entry
+
+    if total > 0:
+        coverage = round(100.0 * embedded / total, 2)
+    else:
+        coverage = None
+    min_pct = _min_coverage_pct()
+    semantic_degraded = bool(
+        coverage is not None and coverage < min_pct)
+    if semantic_degraded and "embedding" not in degraded:
+        degraded.append("embedding")
+
+    embedding_status: dict = {"provider": "unknown", "model": "",
+                              "ollama_reachable": False}
+    try:
+        from . import embed_providers  # pylint: disable=import-outside-toplevel
+        embedding_status = embed_providers.provider_status()
+    except Exception as exc:  # pylint: disable=broad-except
+        embedding_status = {"provider": "unknown", "model": "",
+                            "ollama_reachable": False,
+                            "error": f"{type(exc).__name__}: {exc}"}
+    if embedding_status.get("provider") == "none" and "embedding" not in degraded:
+        degraded.append("embedding")
+
+    vector_cache: dict = {"present": False, "files": 0, "stale_dbs": []}
+    try:
+        sidecar_dir = Path(vault_dir) / ".vector-cache"
+        if sidecar_dir.is_dir():
+            files = [p for p in sidecar_dir.iterdir()
+                     if p.is_file() and p.suffix in (".npy", ".json")]
+            vector_cache["present"] = bool(files)
+            vector_cache["files"] = len(files)
+            for index in range(1, MAX_DB_COUNT + 1):
+                paths = _vector_sidecar_paths(
+                    index, str(get_db_path(index)))
+                if not paths:
+                    continue
+                npy_path, json_path = (Path(p) for p in paths)
+                if not (npy_path.exists() or json_path.exists()):
+                    continue
+                newest_sidecar = max(
+                    (p.stat().st_mtime for p in (npy_path, json_path)
+                     if p.exists()), default=0.0)
+                db_path = get_db_path(index)
+                newest_db = 0.0
+                for candidate in (db_path, Path(str(db_path) + "-wal")):
+                    try:
+                        newest_db = max(newest_db, candidate.stat().st_mtime)
+                    except OSError:
+                        pass
+                if newest_db > newest_sidecar:
+                    vector_cache["stale_dbs"].append(f"db{index}")
+    except Exception as exc:  # pylint: disable=broad-except
+        vector_cache = {"present": False, "files": 0, "stale_dbs": [],
+                        "error": f"{type(exc).__name__}: {exc}"}
+    if vector_cache["stale_dbs"] and "vector_cache" not in degraded:
+        degraded.append("vector_cache")
+
+    return {
+        "checked_utc": checked_utc,
+        "vault_dir": vault_dir,
+        "healthy": not degraded,
+        "degraded_lanes": sorted(degraded),
+        "total_shards": total,
+        "embedded_shards": embedded,
+        "embedding_coverage_pct": coverage,
+        "min_coverage_pct": min_pct,
+        "semantic_degraded": semantic_degraded,
+        "journal_mode": journal_mode,
+        "synchronous": synchronous,
+        "databases": databases,
+        "fts": {"present_all": fts_present_all, "rows": fts_rows},
+        "embedding": embedding_status,
+        "vector_cache": vector_cache,
+    }
+
+
 def _resolve_vault_dir() -> Path:
     """Pick the vault directory. Explicit beats implicit; nothing is CWD-relative.
 
@@ -469,6 +712,10 @@ def get_connection(index: int):
         raise
     mode = get_vault_journal_mode()
     conn.execute(f"PRAGMA journal_mode={mode};")
+    # Durability contract (P0): synchronous is set deliberately, not left to
+    # SQLite's implicit default. FULL is the behaviour that was already in
+    # force under WAL; see get_vault_synchronous_mode().
+    conn.execute(f"PRAGMA synchronous={get_vault_synchronous_mode()};")
     from .darwin_gate import get_scaled_sqlite_cache_size, get_scaled_sqlite_mmap_size
     mmap_bytes = get_scaled_sqlite_mmap_size(sqlite_mmap_size())
     conn.execute(f"PRAGMA mmap_size={mmap_bytes};")
@@ -892,6 +1139,8 @@ def _get_dedup_connection():
     conn = sqlite3.connect(str(get_dedup_path()), timeout=sqlite_timeout_s())
     mode = get_vault_journal_mode()
     conn.execute(f"PRAGMA journal_mode={mode};")
+    # Same durability contract as the shard DBs (P0): FULL, set deliberately.
+    conn.execute(f"PRAGMA synchronous={get_vault_synchronous_mode()};")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS hashes (
             file_hash TEXT PRIMARY KEY,
