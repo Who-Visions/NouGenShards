@@ -2117,6 +2117,22 @@ def _release_slot_when_done(lane_futs: list) -> None:
 @app.post("/search")
 def search(req: SearchRequest, response: Response,
            _tenant: tenants.Tenant = Depends(tenant_vault_context)):
+    """POST /search. With NOUGEN_RECALL_MEMORY_GUARD=1 the request holds one hard admission
+    slot from here until its response is built, bounded SQL sweep included, so the cap and
+    the stall counters cover all of its database work. Past the cap it is refused at once
+    with 503 and Retry-After instead of stacking one more scan on a node that is full."""
+    try:
+        hard_gate = _recall_guard_enter()
+    except core.SearchBusy as busy:
+        return _recall_busy_response(busy)
+    try:
+        return _search_admitted(req, response)
+    finally:
+        if hard_gate is not None:
+            hard_gate.leave()
+
+
+def _search_admitted(req: SearchRequest, response: Response):
     """Memory recall for cloud callers (mirrors the connector's POST /search).
 
     A crash in the full retrieval stack (vector lane, rerank, a bad shard row on
@@ -2141,12 +2157,6 @@ def search(req: SearchRequest, response: Response,
     # the result set down to a handful of in-era rows.
     fetch = min(limit * 5, 250) if bounded else limit
     sweep_report: dict = {}
-    # Hard cap (NOUGEN_RECALL_MEMORY_GUARD=1 only): past it, refuse at once with 503 and
-    # Retry-After instead of stacking one more scan on a node that is already full.
-    try:
-        _hard_gate = _recall_guard_enter()
-    except core.SearchBusy as busy:
-        return _recall_busy_response(busy)
     # Admission control: a full recall fans out to every grid DB on two lanes, so N concurrent
     # recalls are ~18N SQLite scans on one disk. Recall hooks fire one per prompt from every
     # session; on WhoArt (2026-11-13) a dozen stacked up and EVERY call missed the 20s deadline.
@@ -2182,8 +2192,6 @@ def search(req: SearchRequest, response: Response,
         core.FAST_LOCAL.reset(_fast_token)
         if admitted:
             _release_slot_when_done(lane_futs)
-        if _hard_gate is not None:
-            _hard_gate.leave()
 
     if bounded:
         results, held_back = _era_filter(results, req.since, req.until)

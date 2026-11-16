@@ -4872,9 +4872,12 @@ def recall_memory_stats() -> dict:
             if not isinstance(entry, dict):
                 continue
             matrix = entry.get("matrix")
+            if matrix is None:
+                continue
             try:
-                nbytes = getattr(matrix, "nbytes", 0) or 0
-                total_bytes += int(nbytes)
+                # After an append the matrix is a _RowBlocks (no nbytes of its own): sum its
+                # blocks, so a cached matrix does not vanish from the total between saves.
+                total_bytes += sum(int(getattr(blk, "nbytes", 0) or 0) for blk in _matrix_blocks(matrix))
             except Exception:
                 pass
         stats["vector_matrix_bytes"] = total_bytes

@@ -431,3 +431,56 @@ def test_matrix_build_ignores_the_gate_with_the_guard_off(monkeypatch, tmp_path)
         core._VECTOR_BUILD_GATE.release()
     assert core._VECTOR_BUILDS_STARTED == started + 1
     assert not core._vector_cache_lock(7).locked()
+
+
+def test_guard_holds_the_slot_through_the_bounded_sweep(monkeypatch):
+    """A since/until request runs a SQL sweep over every grid DB after retrieval; the hard
+    slot must still be held there, or slow sweeps escape the cap and the stall counters."""
+    seen = []
+    node, c = _client(monkeypatch, seen)
+    monkeypatch.setenv("NOUGEN_RECALL_MEMORY_GUARD", "1")
+    monkeypatch.setenv("NOUGEN_RECALL_MAX_INFLIGHT", "2")
+    core.reset_search_admission()
+    active_during_sweep = []
+
+    def fake_window(query="", since=None, until=None, limit=20, **kw):
+        active_during_sweep.append(core.search_admission().stats()["active"])
+        return []
+    monkeypatch.setattr(node, "_window_search", fake_window)
+    try:
+        r = c.post("/search", json={"query": "x", "limit": 3, "since": "2026-01"},
+                   headers={"X-NGS-Token": "tok"})
+        assert r.status_code == 200
+        assert active_during_sweep == [1]
+        assert core.search_admission().stats()["active"] == 0
+    finally:
+        core.reset_search_admission()
+
+
+def test_guard_releases_the_slot_when_the_handler_raises(monkeypatch):
+    seen = []
+    node, c = _client(monkeypatch, seen)
+    monkeypatch.setenv("NOUGEN_RECALL_MEMORY_GUARD", "1")
+    core.reset_search_admission()
+    monkeypatch.setattr(node, "_era_filter", lambda rows, since, until: 1 / 0)
+    try:
+        r = c.post("/search", json={"query": "x", "since": "2026-01"}, headers={"X-NGS-Token": "tok"})
+        assert r.status_code == 500
+        stats = core.search_admission().stats()
+        assert stats["active"] == 0 and stats["completed"] == 1
+    finally:
+        core.reset_search_admission()
+
+
+def test_matrix_bytes_count_block_backed_matrices(monkeypatch):
+    """After an incremental append the cached matrix is a _RowBlocks, which has no nbytes."""
+    base = numpy.zeros((4, 8), dtype=numpy.float32)
+    appended = core._RowBlocks.appended(base, numpy.zeros((2, 8), dtype=numpy.float32))
+    assert not hasattr(appended, "nbytes")
+    monkeypatch.setattr(core, "_VECTOR_CACHE", {1: {"matrix": appended}, 2: {"matrix": base}})
+    core.reset_search_admission()
+    try:
+        assert core.recall_memory_stats()["vector_matrix_bytes"] == 192 + 128
+    finally:
+        core.reset_search_admission()
+
