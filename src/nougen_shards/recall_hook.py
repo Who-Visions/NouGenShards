@@ -231,6 +231,22 @@ def format_block(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _env_budget_ms() -> int:
+    """Search budget for the installed hook: ``NOUGEN_RECALL_HOOK_BUDGET_MS``, else the default.
+
+    The installed command passes no budget, so without this every host ran at
+    the constant however long its vault takes to answer (a 10-database vault
+    measured about 3 s for the keyword lane on 2026-11-16, so 800 ms returned
+    nothing on every prompt).
+    """
+    raw = os.environ.get("NOUGEN_RECALL_HOOK_BUDGET_MS", "").strip()
+    try:
+        value = int(raw) if raw else DEFAULT_BUDGET_MS
+    except ValueError:
+        value = DEFAULT_BUDGET_MS
+    return value if value > 0 else DEFAULT_BUDGET_MS
+
+
 def claude_code_hook(stdin_text: str, **kwargs: Any) -> str:
     """UserPromptSubmit adapter: stdin JSON in, hookSpecificOutput JSON out."""
     try:
@@ -240,7 +256,19 @@ def claude_code_hook(stdin_text: str, **kwargs: Any) -> str:
     if not isinstance(payload, dict):  # valid JSON that is not an object ([] / null / "x")
         payload = {}
     prompt = str(payload.get("prompt") or "")
-    block = format_block(recall_hook(prompt, **kwargs))
+    if "budget_ms" not in kwargs:
+        kwargs["budget_ms"] = _env_budget_ms()
+    # This adapter is the entry of a one-shot process that only reads. The
+    # ACCESSED write a read leaves behind waits on the history database's
+    # writer slot, which made scans miss the budget on a busy vault.
+    from . import history  # pylint: disable=import-outside-toplevel
+    keep = os.environ.get("NOUGEN_RECALL_HOOK_ACCESS_LOG", "0").strip().lower() in ("1", "true", "yes", "on")
+    previous = history.set_access_logging(keep)
+    try:
+        block = format_block(recall_hook(prompt, **kwargs))
+    finally:
+        # Restored for in-process callers; the CLI entry exits right after.
+        history.set_access_logging(previous)
     block = block.encode("utf-8", "replace").decode("utf-8")
     return json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
                                               "additionalContext": block}})
