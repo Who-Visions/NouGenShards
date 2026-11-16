@@ -8,6 +8,9 @@ All notable changes to NouGenShards will be documented in this file.
 - **`voice_persona`** (#612): character briefs bound to `persona.py`.
 - **Elevation Atlas** (`docs/elevation-atlas.md`): a 1000-step, repository-grounded elevation roadmap in ten zones (memory physics, capture, retrieval, graph, temporal/Griot, federation, truth/canon, security, scale, autonomous memory). Every step carries a status: ✅ only when a file and function implement it, 🟡 for partial with the gap named, ⬜ for missing with a landing spot. Steps cross-reference #551 and #550. It includes a ground-truth table that corrects the draft plan against main @ ae40d10, and the first five verified moves.
 
+### Fixed
+- **`vault_put` on headless Linux (leg 20261116T165939Z)**: `keymaker._protect()` failed closed with `RuntimeError` whenever the `keyring` package was absent (or its backend unusable) and the plaintext escape hatch was unset, so every `vault_put` on the HF Space errored with "Error executing tool vault_put" while `vault_list` and shard writes kept working. The write path now falls back to machine-local AES-256-GCM (`enc1:` rows, 32-byte key in a 0600 file in the vault dir itself, tenant-scoped), so the secret still lands encrypted and round-trips through `get_secret`/`vault_list`. Plaintext is still only stored with explicit `NOUGEN_ALLOW_PLAINTEXT_VAULT=1`.
+
 ## [1.3.1] - 2026-08-20
 ### Added
 - **Dynamic Reasoning & Live Token Stream**: `OllamaClient` and `OpenAIClient` stream reasoning/thinking tokens live in dimmed ANSI styling with unbuffered real-time stdout delivery.

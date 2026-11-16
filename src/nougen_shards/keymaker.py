@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import sqlite3
+import stat
 import csv
 import json
 from datetime import datetime
@@ -30,6 +31,14 @@ _DPAPI_MAX_LAYERS = int(os.getenv("NOUGEN_KEYMAKER_MAX_LAYERS", "8"))
 # Marker prefix for values stored in the OS keyring (macOS Keychain / Secret Service).
 _KEYRING_PREFIX = "keyring1:"
 _KEYRING_SERVICE = "nougenshards-vault"
+# Marker prefix for values encrypted at rest with the machine-local AES-256-GCM
+# fallback (headless Linux: no DPAPI, no OS keyring backend). The 32-byte key
+# lives in the vault dir itself, 0600, so a tenant's rows encrypt under the
+# tenant key, never the owner's. See _local_encrypt (leg 20261116T165939Z).
+_LOCAL_ENC_PREFIX = "enc1:"
+_LOCAL_ENC_KEY_FILENAME = ".vault_enc_key"
+_LOCAL_ENC_KEY_BYTES = 32
+_LOCAL_ENC_NONCE_BYTES = 12
 
 # ---------------------------------------------------------------------------
 # Two-tier keyring cache: avoids repeated macOS Keychain ACL prompts that
@@ -139,8 +148,9 @@ def _keyring_get(ref: str, timeout: float = 1.5) -> Optional[str]:
     return value
 
 def _is_encrypted(stored: str) -> bool:
-    """True if the stored value is protected (DPAPI or keyring), not legacy plaintext."""
-    return str(stored).startswith((_DPAPI_PREFIX, _KEYRING_PREFIX))
+    """True if the stored value is protected (DPAPI, keyring, or the local
+    AES-256-GCM fallback), not legacy plaintext."""
+    return str(stored).startswith((_DPAPI_PREFIX, _KEYRING_PREFIX, _LOCAL_ENC_PREFIX))
 
 
 class _DataBlob(ctypes.Structure):
@@ -173,8 +183,14 @@ def _protect(value: str, key: Optional[str] = None) -> str:
 
     Windows  -> DPAPI (user-bound).
     Other OS -> OS keyring (macOS Keychain / freedesktop Secret Service) if `keyring`
-                is installed; the DB then stores only a reference, not the secret.
-                If keyring is unavailable, refuse unless NOUGEN_ALLOW_PLAINTEXT_VAULT=1.
+                is installed and a backend answers; the DB then stores only a
+                reference, not the secret.
+                If no keyring backend is usable (headless Linux: the package is
+                absent, or installed with no Secret Service behind it), fall
+                back to machine-local AES-256-GCM (enc1:, see _local_encrypt)
+                keyed by a 0600 file in the vault dir itself. The write lands
+                encrypted; only NOUGEN_ALLOW_PLAINTEXT_VAULT=1 stores plaintext,
+                as an explicit operator opt-in.
     """
     if os.name == "nt":
         encrypted = _dpapi_call("CryptProtectData", value.encode("utf-8"))
@@ -182,22 +198,29 @@ def _protect(value: str, key: Optional[str] = None) -> str:
 
     try:
         import keyring  # pylint: disable=import-outside-toplevel
-        ref = key or hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
-        keyring.set_password(_KEYRING_SERVICE, ref, value)
-        # Headless reads never touch the Keychain (no popups); they only consult this
-        # cache. Without seeding it here, a secret ingested from a headless session was
-        # written to the Keychain and then unreadable to every headless session.
-        _load_keyring_cache()
-        _KEYRING_CACHE[ref] = value
-        _save_keyring_cache()
-        return _KEYRING_PREFIX + ref
     except ImportError:
-        if os.getenv("NOUGEN_ALLOW_PLAINTEXT_VAULT") == "1":
-            return value
-        raise RuntimeError(
-            "No OS keyring backend available on this platform. "
-            "Install it with 'pip install keyring', or set "
-            "NOUGEN_ALLOW_PLAINTEXT_VAULT=1 to override (not recommended).") from None
+        keyring = None
+    if keyring is not None:
+        try:
+            ref = key or hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+            keyring.set_password(_KEYRING_SERVICE, ref, value)
+        except Exception as exc:
+            # No usable OS keyring backend on this machine (headless Linux):
+            # fall through to the local encrypted store, never plaintext and
+            # never an uncaught failure of the whole write (leg 20261116T165939Z).
+            logger.debug("OS keyring write failed (%s); using local encrypted vault",
+                         type(exc).__name__)
+        else:
+            # Headless reads never touch the Keychain (no popups); they only consult this
+            # cache. Without seeding it here, a secret ingested from a headless session was
+            # written to the Keychain and then unreadable to every headless session.
+            _load_keyring_cache()
+            _KEYRING_CACHE[ref] = value
+            _save_keyring_cache()
+            return _KEYRING_PREFIX + ref
+    if os.getenv("NOUGEN_ALLOW_PLAINTEXT_VAULT") == "1":
+        return value
+    return _local_encrypt(value)
 
 
 def _as_dpapi_blob(stored: str) -> Optional[bytes]:
@@ -208,6 +231,103 @@ def _as_dpapi_blob(stored: str) -> Optional[bytes]:
     except Exception:  # pylint: disable=broad-except
         return None
     return raw if raw[:8] == _DPAPI_MAGIC else None
+
+
+def _local_enc_key(create: bool = True) -> bytes:
+    """Load-or-create the machine-local AES key for the enc1 fallback.
+
+    The key file lives in the active secrets vault dir (tenant-scoped via
+    vault_dir()), so a tenant's rows encrypt under the tenant key, never the
+    owner's. Created 0600; a pre-existing world-readable file is repaired
+    to 0600 on read. With create=False a missing key raises OSError instead
+    of minting one (reads must never invent a key they cannot decrypt with).
+    """
+    import secrets as _secrets
+
+    path = vault_dir() / _LOCAL_ENC_KEY_FILENAME
+    for _attempt in range(2):
+        if path.is_file():
+            try:
+                raw = base64.b64decode(path.read_text("utf-8").strip(), validate=True)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"local vault key at {path} is not valid base64") from exc
+            if len(raw) != _LOCAL_ENC_KEY_BYTES:
+                raise RuntimeError(
+                    f"local vault key at {path} is not {_LOCAL_ENC_KEY_BYTES} bytes")
+            if os.name != "nt":
+                try:
+                    if stat.S_IMODE(os.stat(path).st_mode) != 0o600:
+                        os.chmod(path, 0o600)
+                except OSError:
+                    pass
+            return raw
+        if not create:
+            raise OSError(f"local vault key not found at {path}")
+        raw = _secrets.token_bytes(_LOCAL_ENC_KEY_BYTES)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # O_EXCL so two lanes racing the first write cannot interleave keys;
+        # the loser re-reads the winner's key on the next attempt.
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        try:
+            os.write(fd, base64.b64encode(raw).decode("ascii").encode("ascii"))
+        finally:
+            os.close(fd)
+        if os.name != "nt":
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        return raw
+    raise RuntimeError(f"could not establish local vault key at {path}")
+
+
+def _local_encrypt(value: str) -> str:
+    """AES-256-GCM encrypt with the machine-local vault key.
+
+    Wire format: ``enc1:`` + base64(nonce || ciphertext). `cryptography` is
+    a hard dependency of this package; its absence here is fail-closed.
+    """
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError as exc:
+        raise RuntimeError(
+            "No OS keyring backend and the 'cryptography' package is missing; "
+            "cannot store this secret encrypted. Install 'cryptography' or set "
+            "NOUGEN_ALLOW_PLAINTEXT_VAULT=1 to override (not recommended).") from exc
+    import secrets as _secrets
+
+    nonce = _secrets.token_bytes(_LOCAL_ENC_NONCE_BYTES)
+    blob = AESGCM(_local_enc_key(create=True)).encrypt(nonce, value.encode("utf-8"), None)
+    return _LOCAL_ENC_PREFIX + base64.b64encode(nonce + blob).decode("ascii")
+
+
+def _local_decrypt(stored: str) -> str:
+    """Decrypt an enc1: row with the machine-local vault key.
+
+    Raises OSError (the type _read_secret_row already handles) on a missing
+    key, a corrupt row, or a failed authentication tag — a row copied into a
+    vault whose key differs reads as absent, never as a leak.
+    """
+    key = _local_enc_key(create=False)
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError as exc:
+        raise OSError(
+            "cannot decrypt local vault row: 'cryptography' package is missing") from exc
+    try:
+        payload = base64.b64decode(stored[len(_LOCAL_ENC_PREFIX):], validate=True)
+        nonce, blob = payload[:_LOCAL_ENC_NONCE_BYTES], payload[_LOCAL_ENC_NONCE_BYTES:]
+        return AESGCM(key).decrypt(nonce, blob, None).decode("utf-8")
+    except (ValueError, OSError):
+        raise
+    except Exception as exc:
+        # InvalidTag and friends: wrong key or tampered row.
+        raise OSError(
+            f"local vault row failed authentication: {type(exc).__name__}") from exc
 
 
 def _unprotect(stored: str) -> str:
@@ -236,6 +356,8 @@ def _unprotect(stored: str) -> str:
                 return current
             current = _dpapi_call("CryptUnprotectData", raw).decode("utf-8")
         return current
+    if stored.startswith(_LOCAL_ENC_PREFIX):
+        return _local_decrypt(stored)
     if stored.startswith(_KEYRING_PREFIX):
         ref = stored[len(_KEYRING_PREFIX):]
         value = _keyring_get(ref)
